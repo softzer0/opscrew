@@ -25,6 +25,8 @@ it runs on 018's private network and extra servers.
 - **Licences:** Grafana and Loki are AGPL-3.0, which is fine run as containers (never linked into
   the CLI); OpsCrew says so when the user turns it on.
 - **Research first:** memory sizes, retention and disk use.
+- **Loki rather than Elasticsearch** for logs (lead, 2026-10-30): Loki indexes only labels, so it
+  fits a small server; Elasticsearch indexes every word and needs gigabytes of JVM heap.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
   the hosted control plane. On AWS (023), the light checks map to CloudWatch alarms.
 
@@ -135,6 +137,31 @@ with it unchanged; the app's code is never rewritten for a cloud service:
 - Cassandra → Amazon Keyspaces (CQL).
 - A container on EC2 with EBS stays a cheaper choice the user can pick; Fargate is not used for
   databases.
+
+**Observability on AWS (founder, 2026-10-30):** the same layers as 017 and 019, with AWS's own
+services, each one explained, priced at design and changeable:
+- **Logs:** CloudWatch Logs (ECS and App Runner send container logs there; EC2 through the
+  CloudWatch agent), queried with Logs Insights. `opscrew logs` reads them through AWS's API.
+  Retention and sampling are settings with their price shown.
+- **Figures:** CloudWatch metrics and Container Insights, plus RDS's and ElastiCache's, read on
+  demand by `opscrew status`.
+- **Alerts:** CloudWatch alarms to SNS (email or a chat webhook) for health, errors, CPU, memory
+  and database storage. The GitHub-issue check (017) can stay too.
+- **Dashboards and history, opt-in:** Amazon Managed Grafana with Amazon Managed Service for
+  Prometheus. Grafana reads CloudWatch Logs directly, so there is no second log store. CloudWatch
+  dashboards are the cheaper default. Grafana Cloud (017) stays an option.
+- **Full-text log search, opt-in:** Amazon OpenSearch Service with OpenSearch Dashboards (the
+  Kibana equivalent), only for large log volumes or users who already work that way. A
+  provisioned domain bills around the clock, and serverless has a minimum capacity charge, so
+  design says so plainly. Not the default: indexing every word costs far more memory and money
+  than CloudWatch Logs or Loki's label index. Elastic Cloud (Elasticsearch and Kibana, Elastic
+  License) stays the user's own choice.
+- **Traces, opt-in:** X-Ray or CloudWatch Application Signals.
+- **Collection** through OpenTelemetry (the AWS Distro for OpenTelemetry), so the destination is a
+  setting. Research first: current prices and free tiers, Container Insights' cost per container,
+  and what each compute choice sends by default.
+- Azure and Google Cloud follow the same pattern with Azure Monitor and Google Cloud Monitoring
+  and Logging.
 
 **Starts with a provider plugin system (founder, 2026-10-16),** possibly a feature of its own
 right before AWS if it proves bigger:

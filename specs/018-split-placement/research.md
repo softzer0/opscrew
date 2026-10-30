@@ -332,6 +332,42 @@ kernel has WireGuard. The real-server pass (R5b) covers what containers can't sh
   third way to be root (`docker`), next to `root` and `sudo`. A login in the `docker` group is
   already root-equivalent, so this grants nothing new. ADR 0022 records it.
 
+## R5b. Real-server pass (2026-10-30, two Hetzner servers)
+
+Two `cx23` servers (2 vCPU, 4 GB), A in fsn1 and B in hel1, on Ubuntu 24.04, set up like OpsCrew's
+cloud-init: Docker CE, `wireguard-tools`, ufw (deny incoming, 22/tcp and 51820/udp) and a
+`deploy` user in the `docker` group without sudo. About 30 minutes; everything deleted afterwards.
+
+- **MTU:** wg-quick chose 1420.
+- **Delay:** fsn1 to hel1 averaged 36.4 ms over the public addresses and 38.4 ms over WireGuard
+  (20 pings, no loss), so WireGuard added about 2 ms.
+- **Boot order works:** with the drop-in (`Wants=` and `After=wg-quick@wg0.service`), a rebooted B
+  had Postgres up with `10.77.0.2:5432` published, and A's container queried it about 20 s after
+  the reboot was issued. Even a disabled `wg-quick@wg0` was started through the drop-in's `Wants=`.
+- **The failure case, on a real VM:** without the drop-in and with the unit disabled, after a
+  reboot the container was `Exited (128)` with nothing published, and starting WireGuard didn't
+  recover it. Plain `docker compose up -d` started it with no published port; only
+  `--force-recreate` restored it (as in R5a).
+- **Peer changes:** the full temporary config (`PrivateKey` read from the key file, 0600 in
+  `/run`, removed right after) through `wg syncconf` added and removed a third peer while 300
+  pings ran: none lost, and the key stayed set.
+- **iptables:** Ubuntu 24.04 with Docker CE uses `iptables v1.8.10 (nf_tables)` (`iptables-nft`).
+  The `DOCKER-USER` rules with `--ctorigdst`/`--ctorigdstport` work there. A's container
+  connected, a device namespace was dropped, and the public address didn't answer on 5432.
+- **Root through Docker as `deploy`** works on a real VM: uid 0, `apt-get`, writing a systemd
+  drop-in, `daemon-reload` and ufw. `deploy` has no sudo rights (`sudo -n true` asks for a
+  password).
+- **SSH on the private network:** with the dead-man timer armed, ufw allowed SSH only on `wg0`. A
+  reached B's SSH at `10.77.0.2` (seen from `10.77.0.1`), B's public port 22 timed out, and
+  reopening restored it.
+
+**Decisions:**
+- **The delay estimate** is `2 ms + distance/50 km`: about 28 ms for fsn1 to hel1 (measured 36),
+  and about 6 ms for fsn1 to nbg1. Real routes are about twice the great-circle distance.
+- **Design's default** places an extra server in the app server's location, and warns when the
+  hop crosses locations.
+- The rest of plan.md "3." stands as written.
+
 ## R6a. Spike: device logins on the pinned images (2026-10-30, local Docker)
 
 Run with OpsCrew's pinned images and its own start settings: Postgres 17 (alpine), MySQL 8.4,
@@ -401,8 +437,8 @@ MariaDB 12.3, MongoDB 8.0, Valkey 8.1, Redis 8.10.2 and Dragonfly 2.0.2. The app
 ## R7. Latency between servers
 
 No provider publishes latency figures between its locations, or to other providers. Design
-estimates a cross-server hop from the two locations' great-circle distance: light in fibre covers
-about 100 km per millisecond of round trip once routing is counted, plus about 1 ms. It labels the
+estimates a cross-server hop from the two locations' great-circle distance: about 2 ms plus 1 ms
+per 50 km, since real routes run about twice the straight line (calibrated in R5b). It labels the
 result as an estimate. Design shows what that hop adds to a page that makes many database queries
 in a row, and warns when it does. `status` measures the real round trip over the link (from the
 app's server to each other server). The location of the user's own server isn't known, so design

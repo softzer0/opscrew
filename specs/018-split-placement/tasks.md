@@ -66,7 +66,7 @@ Effort`.
 
 - [X] T1801b The `uqr` dependency (lead): added to `packages/cli/package.json`, the lockfile regenerated, licence noted in plan.md's Technical Context.
 
-- [ ] T1802 The real-server pass (lead): research.md R5b's questions on two Hetzner servers (fsn1 and hel1).
+- [X] T1802 The real-server pass (lead): research.md R5b's questions on two Hetzner servers (fsn1 and hel1).
   - **The results** go into research.md as "R5b", one line per question: what was run, and what
     was seen.
   - **They settle:**
@@ -323,7 +323,7 @@ Effort`.
     - **The delay:**
       - a table of the providers' locations with coordinates (Hetzner fsn1, nbg1, hel1, ash, hil,
         sin; DigitalOcean's regions);
-      - each hop from `app` to a service elsewhere gets `≈ 1 ms + distance/100 km`, labelled as
+      - each hop from `app` to a service elsewhere gets `≈ 2 ms + distance/50 km` (R5b), labelled as
         an estimate, with what it adds to a page making 20 queries in a row;
       - a warning above 5 ms;
       - an own server's hop says `opscrew status` measures it.

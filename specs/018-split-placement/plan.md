@@ -317,7 +317,7 @@ wave 2. A result that changes the design goes into this plan first.
   its services' limits plus the system's share.
 - **Prices:** per server and the total. The cost block's server line becomes one line per server.
 - **The delay estimate:** a table of the providers' locations (Hetzner fsn1, nbg1, hel1, ash, hil,
-  sin; DigitalOcean's regions) with coordinates. A hop's round trip ≈ 1 ms + distance / 100 km.
+  sin; DigitalOcean's regions) with coordinates. A hop's round trip ≈ 2 ms + distance / 50 km (calibrated on fsn1 to hel1, R5b).
   - It's shown with what it adds to a page making 20 queries in a row.
   - It warns above 5 ms.
   - An own server's delay shows as "measured by `opscrew status`".
