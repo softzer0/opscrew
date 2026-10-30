@@ -430,6 +430,8 @@ Effort`.
       - on an extra own server, the undo host plans remove its services, `network` and
         `network-filter`, and leave what was there before;
       - on the app's server, `network` and `network-filter` are removed with the rest;
+      - with `network.publicSsh: false`, public SSH is reopened (the `public-ssh` step) before any
+        network is removed, since removing it deletes the SSH rule on its interface;
       - the confirmation lists every server.
     - **`retarget`:** refuses a plan with `servers` before any change, naming 022.
     - **The check:** provision passes every server of the environment (id, address, port, user,
@@ -518,6 +520,8 @@ Effort`.
         approved by its hash;
       - pins the host keys under the private addresses;
       - re-renders the workflow and the check, delivered in the deploy-setup pull request.
+    - **A network's removal** (vpn, destroy) never runs while public SSH is closed: it reopens it
+      first.
     - **Opening:** reverses it, with the allow-list the plan held before (kept in the plan's
       history field or asked again).
     - **Tests:** each refusal, the order of the plans, and a connection that then goes to the
