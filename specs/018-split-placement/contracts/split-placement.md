@@ -87,9 +87,9 @@ interface NetworkStepParams {
 // secret on stdin when the agents pass one: the private key (base64)
 
 interface NetworkFilterParams { interface: string; address: string; rules: { port: number; sources: string[] }[] }
-interface PublicSshParams { open: boolean; interface: string; allowedCidrs: string[] }
+interface PublicSshParams { open: boolean; interface: string; allowedCidrs: string[]; sshPort: number; cloudServer: boolean }
 interface GrantParams { service: string; kind: "postgres" | "mysql" | "mariadb" | "mongodb"; login: string; access: "read-only" | "full"; remove: boolean }
-// secrets on stdin: the login's password; for mysql and mariadb also the root password
+// secret on stdin: the login's password only; root credentials are read inside the container
 
 export function readWireGuard(remote: RemoteExec, iface: string, privilege: HostPrivilege):
   Promise<{ publicKey: string; endpoint?: string; latestHandshake?: Date; allowedIps: string[] }[]>;

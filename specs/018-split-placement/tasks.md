@@ -289,21 +289,25 @@ Effort`.
         `--ctorigdstport <port>`, on any input interface (traffic to the private address arriving
         on another interface, such as a LAN that routes the range through the server, is dropped
         too);
-      - a templated unit `opscrew-network-filter@.service` before Docker, and Docker's
-        `opscrew-network.conf` drop-in `Requires=` it (fail-closed);
+      - a templated unit `opscrew-network-filter@.service` before Docker, and a drop-in of its own
+        per interface, `docker.service.d/opscrew-network-filter-<if>.conf`, with `Requires=` and
+        `After=` on it (fail-closed); the `network` step's drop-in stays untouched;
       - the web filter's nftables-backend refusal reused;
       - removal deletes the chain, the jump, the unit instance and the drop-in line;
       - an empty rule list removes the step's chain.
-    - **`public-ssh`** (under the dead-man switch the `ufw` and `ssh-firewall` steps use):
-      - `open: false` removes ufw's public `22/tcp` rules OpsCrew added (comment `opscrew-ssh`)
-        and keeps the rule on the interface;
+    - **`public-ssh`** (under the dead-man switch the `ufw` and `ssh-firewall` steps use), with
+      `sshPort` and `cloudServer`:
+      - `open: false` removes ufw's public `<sshPort>/tcp` rules OpsCrew added (comment
+        `opscrew-ssh`), and on a server OpsCrew created also cloud-init's uncommented `22/tcp`
+        rule, and keeps the rule on the interface;
       - `open: true` restores them from `allowedCidrs`;
       - its check reads ufw's rules.
     - **`grant`:**
       - runs research R6a's statements for the kind through
         `docker compose -p <app> exec -T <service> <client>`, as `deploy`, with the passwords read
         from standard input inside the container, never on a command line;
-      - MySQL and MariaDB run as root;
+      - MySQL and MariaDB run as root with the container's own root password, read inside the
+        container (MongoDB with its own root login); only the login's password travels on stdin;
       - removal runs R6a's removal statements;
       - the check asks the engine whether the login exists with that access.
     - Every script is snapshot-tested, and no password appears in a plan, a snapshot or audit text.
