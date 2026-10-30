@@ -64,7 +64,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema && pnpm turbo run typecheck --filter=@opscrew/agents --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T1801b The `uqr` dependency (lead): added to `packages/cli/package.json`, the lockfile regenerated, licence noted in plan.md's Technical Context.
+- [X] T1801b The `uqr` dependency (lead): added to `packages/cli/package.json`, the lockfile regenerated, licence noted in plan.md's Technical Context.
 
 - [ ] T1802 The real-server pass (lead): research.md R5b's questions on two Hetzner servers (fsn1 and hel1).
   - **The results** go into research.md as "R5b", one line per question: what was run, and what
