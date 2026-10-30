@@ -55,6 +55,11 @@ export const HostRecordSchema = z.object({
   changes: z.array(HostRecordEntrySchema),
   /** The app that turned each add-on on (one of each per server); absent while it is off. */
   addons: z.object({ beszel: z.string().optional(), alloy: z.string().optional() }).optional(),
+  /**
+   * The app whose private network each of OpsCrew's WireGuard interfaces is, by interface, so a
+   * second app's network never touches the first one's.
+   */
+  networks: z.record(z.string(), z.string()).optional(),
 });
 export type HostRecord = z.infer<typeof HostRecordSchema>;
 
@@ -185,11 +190,42 @@ export const WebFilterFactsSchema = z.object({
 });
 export type WebFilterFacts = z.infer<typeof WebFilterFactsSchema>;
 
+/**
+ * OpsCrew's private networks on the server (the `network` step), read as root: Docker's drop-in,
+ * and each OpsCrew interface with a configuration in /etc/wireguard. Their ufw rules are in
+ * `firewall.ufwRules`.
+ */
+export const NetworkFactsSchema = z.object({
+  /** SHA-256 of Docker's drop-in for OpsCrew's interfaces, null when absent. */
+  dropIn: z.string().nullable(),
+  interfaces: z.array(
+    z.object({
+      name: z.string(),
+      /** SHA-256 of its configuration. */
+      config: z.string(),
+      /** The public key of its key file (`wg pubkey`), null without one. */
+      publicKey: z.string().nullable(),
+      /** `wg-quick@<if>` is enabled, and active. */
+      enabled: z.boolean(),
+      active: z.boolean(),
+      /** Its IPv4 addresses, such as `10.200.4.1/24`. */
+      addresses: z.array(z.string()),
+      /** Its peers' public keys (`wg show <if> peers`). */
+      peers: z.array(z.string()),
+    }),
+  ),
+});
+export type NetworkFacts = z.infer<typeof NetworkFactsSchema>;
+
 /** Facts about the server found by `inspectHost`; read-only, zod-validated. */
 export const HostFactsSchema = z.object({
   /** The admin login OpsCrew connected as. */
   user: z.string(),
-  privilege: z.enum(["root", "sudo", "sudo-password", "none"]),
+  /**
+   * How the login becomes root (`docker`: only through Docker, see `HostPrivilege`). Without root
+   * or sudo, inspection runs as the login and the facts that need root are missing.
+   */
+  privilege: z.enum(["root", "sudo", "docker", "sudo-password", "none"]),
   os: z.object({
     id: z.string(),
     versionId: z.string(),
@@ -246,6 +282,21 @@ export const HostFactsSchema = z.object({
     })
     .nullable(),
   listeners: z.array(ListenerSchema),
+  /** The server's WireGuard interfaces (OpsCrew's and any other), read without root. */
+  wireguardInterfaces: z.array(z.string()).default([]),
+  /** The UDP ports something listens on (`listeners`), sorted, so a network picks a free one. */
+  udpPortsInUse: z.array(z.number().int()).default([]),
+  /**
+   * The server's IPv4 routes (main table, without the default route), read without root, each as
+   * `<network>` or `<network> dev <interface>` (a single address without `/32`).
+   */
+  ipv4Routes: z.array(z.string()).default([]),
+  /**
+   * OpsCrew's private networks, read as root the way the apply becomes root (through Docker only
+   * when `inspectHost` was given the image; ufw's rules are then read that way too); null when
+   * inspection could not become root.
+   */
+  network: NetworkFactsSchema.nullable().default(null),
   firewall: z.object({
     ufw: z.enum(["absent", "inactive", "active"]),
     /** `ufw show added` rules without the `ufw ` prefix, e.g. `allow 22/tcp`. */

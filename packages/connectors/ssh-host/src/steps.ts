@@ -56,11 +56,29 @@ import {
   TUNNELS_DIR,
   tunnelDir,
   tunnelProject,
+  UFW_NETWORK_COMMENT,
+  UFW_NETWORK_LOCAL_COMMENT,
+  UFW_NETWORK_SSH_COMMENT,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
   WEB_RULES,
 } from "./constants";
 import type { AppRecord } from "./facts";
+import {
+  DOCKER_POOLS,
+  NETWORK_DROP_IN,
+  NetworkInterfaceSchema,
+  NetworkStepFieldsSchema,
+  networkConfig,
+  networkConfigPath,
+  networkDropIn,
+  networkKeyPath,
+  networkPeerSections,
+  networkPort,
+  networkSyncPath,
+  networkUnit,
+  WIREGUARD_DIR,
+} from "./network";
 import { canonicalIpv4Cidr, canonicalSshSource } from "./parse";
 import { runnerUnitText } from "./runner-unit";
 import { APT_FUNCTIONS, buildScript, type ScriptParams, shellQuote } from "./shell";
@@ -164,6 +182,13 @@ function params<T extends z.ZodType>(step: HostStep, schema: T): z.infer<T> {
 
 const PortsSchema = z.string().regex(/^\d{1,5}( \d{1,5})*$/);
 const RulesSchema = z.string().regex(/^(\d{1,5}\/(tcp|udp)( \d{1,5}\/(tcp|udp))*)?$/);
+
+/** Words of a space-separated parameter, each checked by `schema`. */
+const words = <T extends z.ZodString>(schema: T) =>
+  z
+    .string()
+    .transform((text) => text.split(" ").filter((word) => word !== ""))
+    .pipe(z.array(schema));
 
 /** What a step's check, apply and verify are made of, and the rest of its {@link StepScripts}. */
 type StepSpec = Omit<StepScripts, "check" | "apply" | "verify"> & {
@@ -1054,6 +1079,250 @@ systemctl start "$SERVICE"`,
 }
 
 // ---------------------------------------------------------------------------------------------
+// network: the app's private network, a WireGuard interface (see network.ts)
+
+const NETWORK_HELPERS = `${UFW_HELPERS}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }`;
+
+/** The removal's parameters: the interface, and the host's OpsCrew interfaces that stay. */
+const NetworkRemoveParams = z.strictObject({
+  interface: NetworkInterfaceSchema,
+  remove: z.literal(true),
+  otherInterfaces: words(NetworkInterfaceSchema),
+});
+
+/**
+ * `network`: the app's WireGuard interface. Its key arrives on stdin only when the agents pass one
+ * (the server lacks it or holds another); otherwise the key file must already hold the plan's key.
+ * The interface comes up when it is not, again when its address changed, and otherwise takes the
+ * new peers through `wg syncconf` without dropping the link. Removed in a teardown or an undo.
+ */
+function networkScripts(plan: HostPlan, step: HostStep): StepScripts {
+  if (plan.purpose !== "setup" || step.params.remove === true) return networkRemoveScripts(step);
+  const p = params(step, NetworkStepFieldsSchema);
+  const config = networkConfig(p);
+  const dropIn = networkDropIn([p.interface, ...p.otherInterfaces]);
+  return scripts({
+    name: "network",
+    params: {
+      IFACE: p.interface,
+      ADDRESS: p.address,
+      PORT: p.port,
+      PUBLIC_KEY: p.publicKey,
+      UNIT: networkUnit(p.interface),
+      WG_DIR: WIREGUARD_DIR,
+      CONFIG: networkConfigPath(p.interface),
+      KEY_FILE: networkKeyPath(p.interface),
+      SYNC: networkSyncPath(p.interface),
+      DROP_IN: NETWORK_DROP_IN,
+      CONFIG_B64: base64(config),
+      CONFIG_SHA256: sha256Hex(config),
+      PEERS_B64: base64(networkPeerSections(p.peers)),
+      // What `wg show <if> peers | sort | tr '\n' ' '` prints for exactly these peers.
+      PEER_KEYS: p.peers
+        .map((peer) => `${peer.publicKey} `)
+        .sort()
+        .join(""),
+      DROPIN_B64: base64(dropIn),
+      DROPIN_SHA256: sha256Hex(dropIn),
+      SSH_PORT: p.sshPort,
+      HOST_IP: p.address.slice(0, p.address.indexOf("/")),
+      POOLS: DOCKER_POOLS.join(" "),
+      LOCAL_PORTS: [...new Set(p.localPorts)].sort((a, b) => a - b).join(" "),
+      UDP_COMMENT: UFW_NETWORK_COMMENT,
+      SSH_COMMENT: UFW_NETWORK_SSH_COMMENT,
+      LOCAL_COMMENT: UFW_NETWORK_LOCAL_COMMENT,
+    },
+    helpers: `${NETWORK_HELPERS}
+address_ok() { ip -4 -o addr show dev "$IFACE" 2>/dev/null | grep -qF " inet $ADDRESS "; }
+ssh_rule() { echo "in on $IFACE to any port $SSH_PORT proto tcp"; }
+local_rule() { echo "from $1 to $HOST_IP port $2 proto tcp"; }
+# OpsCrew's rules that let Docker's networks reach this address on a port the plan no longer
+# names, as "<network> <port>" (from ufw_added).
+stale_local() {
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to $HOST_IP port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2|p" |
+    while read -r network port; do
+      case " $LOCAL_PORTS " in *" $port "*) ;; *) echo "$network $port" ;; esac
+    done
+}`,
+    verify: `  command -v wg >/dev/null 2>&1 || return 1
+  file_is "$CONFIG" "$CONFIG_SHA256" || return 1
+  [ -f "$KEY_FILE" ] && [ "$(wg pubkey < "$KEY_FILE" 2>/dev/null)" = "$PUBLIC_KEY" ] || return 1
+  [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" = enabled ] || return 1
+  file_is "$DROP_IN" "$DROPIN_SHA256" || return 1
+  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  has_rule "$PORT/udp" || return 1
+  has_rule "$(ssh_rule)" || return 1
+  for pool in $POOLS; do
+    for port in $LOCAL_PORTS; do has_rule "$(local_rule "$pool" "$port")" || return 1; done
+  done
+  [ -z "$(stale_local)" ] || return 1
+  systemctl is-active --quiet "$UNIT" || return 1
+  address_ok || return 1
+  [ "$(wg show "$IFACE" peers 2>/dev/null | sort | tr '\\n' ' ')" = "$PEER_KEYS" ]`,
+    apply: `# The private key, only when one arrived on standard input, read before anything else can read
+# the session's stdin (apt). Only builtins see it; the key file is root's alone, and the
+# configuration never holds it.
+key=''
+IFS= read -r key || true
+case "$key" in
+  *[!A-Za-z0-9+/=]*) key=''; fail 'The WireGuard key has unexpected characters, so it was not written.' ;;
+esac
+command -v ufw >/dev/null 2>&1 || fail "ufw is not installed, so OpsCrew cannot open the private network's port."
+if ! is_installed wireguard-tools; then
+  apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see ${APT_LOG} on the server.'
+  apt_get install wireguard-tools || fail 'Installing wireguard-tools failed; see ${APT_LOG} on the server.'
+fi
+install -d -m 0700 "$WG_DIR"
+if [ -n "$key" ]; then
+  if [ "$(printf '%s\\n' "$key" | wg pubkey)" != "$PUBLIC_KEY" ]; then
+    key=''
+    fail 'The WireGuard key that arrived on standard input is not the one the plan names, so it was not written.'
+  fi
+  (
+    umask 077
+    printf '%s\\n' "$key" | write_file "$KEY_FILE" 0600
+  )
+  key=''
+fi
+[ -f "$KEY_FILE" ] || fail "No WireGuard key arrived on standard input, and the server has none for $IFACE yet."
+[ "$(wg pubkey < "$KEY_FILE")" = "$PUBLIC_KEY" ] || fail "The server's WireGuard key for $IFACE is not the one the plan names, and no key arrived on standard input."
+printf '%s' "$CONFIG_B64" | base64 -d | write_file "$CONFIG" 0600
+# Docker starts after every OpsCrew interface, and wants them without requiring them.
+install -d -m 0755 "$(dirname "$DROP_IN")"
+printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROP_IN" 0644
+systemctl daemon-reload
+systemctl enable --quiet "$UNIT"
+if ! systemctl is-active --quiet "$UNIT"; then
+  systemctl start "$UNIT" || fail "WireGuard did not come up on $IFACE; see journalctl -u $UNIT on the server."
+elif ! address_ok; then
+  # A new address needs the interface brought up again: wg syncconf changes only the peers.
+  systemctl restart "$UNIT" || fail "WireGuard did not come up again on $IFACE; see journalctl -u $UNIT on the server."
+else
+  # The peers change without dropping the link. A configuration without the key would wipe the
+  # interface's key, so wg syncconf reads a full one: its key from the key file, in a root-only
+  # file that goes right after.
+  trap 'rm -f "$SYNC"' EXIT
+  (
+    umask 077
+    {
+      printf '[Interface]\\nPrivateKey = '
+      cat "$KEY_FILE"
+      printf 'ListenPort = %s\\n\\n' "$PORT"
+      printf '%s' "$PEERS_B64" | base64 -d
+    } > "$SYNC"
+  )
+  wg syncconf "$IFACE" "$SYNC" || fail "OpsCrew could not update the peers of $IFACE (wg syncconf)."
+  rm -f "$SYNC"
+fi
+# WireGuard's port is open to everyone (it answers nothing without a valid key), and SSH to the
+# network's members and devices on the interface. The host's own Docker networks reach the
+# services published on the private address, on their ports only: a container calling such a
+# port goes through docker-proxy, which ufw's default deny would drop.
+ADDED=$(ufw_added)
+if ! has_rule "$PORT/udp"; then ufw allow "$PORT/udp" comment "$UDP_COMMENT" >/dev/null; fi
+if ! has_rule "$(ssh_rule)"; then ufw allow in on "$IFACE" to any port "$SSH_PORT" proto tcp comment "$SSH_COMMENT" >/dev/null; fi
+for pool in $POOLS; do
+  for port in $LOCAL_PORTS; do
+    if ! has_rule "$(local_rule "$pool" "$port")"; then
+      ufw allow from "$pool" to "$HOST_IP" port "$port" proto tcp comment "$LOCAL_COMMENT" >/dev/null
+    fi
+  done
+done
+# A port no service publishes there any more is closed to them again.
+stale_local | while read -r network port; do
+  ufw --force delete allow from "$network" to "$HOST_IP" port "$port" proto tcp >/dev/null
+done`,
+    failed: "The private network is not as planned on the server.",
+    secrets: { names: ["wireguardKey"], required: false },
+    doing: "setting up the private network",
+    timeoutMs: 10 * MINUTE,
+  });
+}
+
+/**
+ * The interface's removal: its unit stopped and disabled, its configuration, key and ufw rules
+ * gone (OpsCrew's, by comment: its port, SSH on the interface whatever SSH's port was, and the
+ * Docker networks' rules to an address no interface that stays has), and Docker's drop-in written
+ * for the interfaces that stay, or deleted with the last.
+ */
+function networkRemoveScripts(step: HostStep): StepScripts {
+  const p = params(step, NetworkRemoveParams);
+  const dropIn = p.otherInterfaces.length > 0 ? networkDropIn(p.otherInterfaces) : "";
+  return scripts({
+    name: "network.remove",
+    params: {
+      IFACE: p.interface,
+      PORT: networkPort(p.interface),
+      UNIT: networkUnit(p.interface),
+      WG_DIR: WIREGUARD_DIR,
+      CONFIG: networkConfigPath(p.interface),
+      KEY_FILE: networkKeyPath(p.interface),
+      OTHERS: p.otherInterfaces.join(" "),
+      DROP_IN: NETWORK_DROP_IN,
+      DROPIN_B64: dropIn === "" ? "" : base64(dropIn),
+      DROPIN_SHA256: dropIn === "" ? "" : sha256Hex(dropIn),
+      UDP_COMMENT: UFW_NETWORK_COMMENT,
+      SSH_COMMENT: UFW_NETWORK_SSH_COMMENT,
+      LOCAL_COMMENT: UFW_NETWORK_LOCAL_COMMENT,
+    },
+    helpers: `${NETWORK_HELPERS}
+# The SSH ports of OpsCrew's rules on the interface (from ufw_added).
+ssh_ports() {
+  printf '%s\\n' "$ADDED" | sed -n "s/^ufw allow in on $IFACE to any port \\([0-9]*\\) proto tcp comment '$SSH_COMMENT'\\$/\\1/p"
+}
+# OpsCrew's rules that let Docker's networks reach an address no interface that stays has, as
+# "<network> <address>" (from ufw_added).
+local_rules() {
+  kept=' '
+  for other in $OTHERS; do
+    [ -f "$WG_DIR/$other.conf" ] || continue
+    kept="$kept$(sed -n 's/^Address = \\([0-9.]*\\)\\/[0-9]*$/\\1/p' "$WG_DIR/$other.conf") "
+  done
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to \\([0-9.]*\\) port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2 \\3|p" |
+    while read -r network address port; do
+      case "$kept" in *" $address "*) ;; *) echo "$network $address $port" ;; esac
+    done
+}`,
+    verify: `  [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" != enabled ] || return 1
+  ! systemctl is-active --quiet "$UNIT" || return 1
+  ! ip link show "$IFACE" >/dev/null 2>&1 || return 1
+  [ ! -e "$CONFIG" ] && [ ! -e "$KEY_FILE" ] || return 1
+  if command -v ufw >/dev/null 2>&1; then
+    ADDED=$(ufw_added)
+    ! has_own_rule "$PORT/udp" "$UDP_COMMENT" || return 1
+    [ -z "$(ssh_ports)" ] || return 1
+    [ -z "$(local_rules)" ] || return 1
+  fi
+  if [ -n "$DROPIN_SHA256" ]; then file_is "$DROP_IN" "$DROPIN_SHA256"; else [ ! -e "$DROP_IN" ]; fi`,
+    apply: `systemctl disable --now --quiet "$UNIT" >/dev/null 2>&1 || true
+if ip link show "$IFACE" >/dev/null 2>&1; then ip link delete "$IFACE"; fi
+rm -f "$CONFIG" "$KEY_FILE"
+# Only the rules OpsCrew added for this interface go; your own rules stay.
+if command -v ufw >/dev/null 2>&1; then
+  ADDED=$(ufw_added)
+  if has_own_rule "$PORT/udp" "$UDP_COMMENT"; then ufw --force delete allow "$PORT/udp" >/dev/null; fi
+  for port in $(ssh_ports); do
+    ufw --force delete allow in on "$IFACE" to any port "$port" proto tcp >/dev/null
+  done
+  local_rules | while read -r network address port; do
+    ufw --force delete allow from "$network" to "$address" port "$port" proto tcp >/dev/null
+  done
+fi
+if [ -n "$DROPIN_B64" ]; then
+  printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROP_IN" 0644
+else
+  rm -f "$DROP_IN"
+fi
+systemctl daemon-reload`,
+    failed: "The private network's interface is still on the server.",
+    doing: "removing the private network from the server",
+    timeoutMs: 2 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // unattended-upgrades
 
 /** Undo of a package step: remove the package OpsCrew installed, or turn off the service it turned on. */
@@ -1524,13 +1793,6 @@ export function dataKeptRecord(app: string, projectId: string): AppRecord {
     deployKey: "",
   };
 }
-
-/** Words of a space-separated parameter, each checked by `schema`. */
-const words = <T extends z.ZodString>(schema: T) =>
-  z
-    .string()
-    .transform((text) => text.split(" ").filter((word) => word !== ""))
-    .pipe(z.array(schema));
 
 const AppRecordParams = z.object({
   app: AppNameSchema.refine((app) => app !== EDGE_PROJECT, {
@@ -2640,6 +2902,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return sshFirewallScripts(step);
     case "web-filter":
       return webFilterScripts(step);
+    case "network":
+      return networkScripts(plan, step);
     case "unattended-upgrades":
       return upgradesScripts(plan.purpose, step);
     case "sysctl":

@@ -1,6 +1,6 @@
 import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { shellQuote } from "./shell";
+import { pipedScript } from "./shell";
 
 /**
  * A {@link RemoteExec} for the localhost target: it runs each command on this computer, as the
@@ -33,17 +33,10 @@ export function localExec(deps: {
       if (/^\s*sudo\b/.test(command)) {
         throw new OpsCrewError("INTERNAL", "OpsCrew never runs anything as root on this computer.");
       }
-      // The script goes on the shell's stdin. `input` cannot follow it there: dash (`sh` on Debian
-      // and Ubuntu) reads ahead from a pipe, so the command would never see it. It reaches the
-      // command through the builtin `printf` piped into the group instead, so it is in no
-      // program's arguments and in no file. `exit` stops the shell before anything after it.
-      const script = `{\n${command}\n} ; exit $?\n`;
+      // The script goes on the shell's stdin, with `input` piped into it (see `pipedScript`).
       return deps.runner.run(deps.shell, ["-s"], {
         env,
-        input:
-          options.input === undefined
-            ? script
-            : `printf '%s' ${shellQuote(options.input)} | ${script}`,
+        input: pipedScript(command, options.input),
         ...(options.timeoutMs !== undefined && { timeoutMs: options.timeoutMs }),
       });
     },

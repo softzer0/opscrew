@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: Compose interpolation in stand-in files.
 import { spawnSync } from "node:child_process";
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { applyHostPlan } from "../apply";
@@ -9,7 +9,7 @@ import { hostPlanHash } from "../hash";
 import { inspectHost } from "../inspect";
 import { planHost, planTeardown } from "../plan";
 import type { ApplyOptions, DesiredHost, DesiredRunner, HostPlan } from "../types";
-import { FakeHost } from "./fake-host";
+import { FakeHost, wgPublicKey } from "./fake-host";
 
 /** A synthetic OpenSSH public key line (public keys are not secrets). */
 export const DEPLOY_KEY =
@@ -272,6 +272,15 @@ export function addonSecrets() {
       grafanaCloudToken: `glc_${randomBytes(48).toString("base64")}`,
     },
   };
+}
+
+/**
+ * A WireGuard key pair made at runtime from `seed` (never committed; the same seed gives the same
+ * pair, so snapshots hold the same public keys), both base64 as the `wg` tools print them.
+ */
+export function wireguardKeys(seed: string): { privateKey: string; publicKey: string } {
+  const privateKey = createHash("sha256").update(`wireguard:${seed}`).digest("base64");
+  return { privateKey, publicKey: wgPublicKey(privateKey) };
 }
 
 /** `sh -n` on a script; `undefined` when no POSIX shell can be started here. */

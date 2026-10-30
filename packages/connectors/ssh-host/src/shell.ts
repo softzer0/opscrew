@@ -75,6 +75,18 @@ export function asDeployUser(script: string): string {
 }
 
 /**
+ * `command` as the standard input of `<shell> -s`, with `input` on the command's own stdin.
+ * `input` cannot follow the command there: dash (`sh` on Debian and Ubuntu) reads ahead from a
+ * pipe, so the command would never see it. It reaches the command through the builtin `printf`
+ * piped into the group instead, so it is in no program's arguments and in no file. `exit` stops
+ * the shell before anything after it.
+ */
+export function pipedScript(command: string, input?: string): string {
+  const script = `{\n${command}\n} ; exit $?\n`;
+  return input === undefined ? script : `printf '%s' ${shellQuote(input)} | ${script}`;
+}
+
+/**
  * Shell lines shared by the scripts. apt waits for other apt runs, writes its output to
  * {@link APT_LOG} (so a dropped SSH session cannot break it with a closed pipe) and, when it
  * fails, prints the last lines of that log for the error message. `write_file <path> <mode>

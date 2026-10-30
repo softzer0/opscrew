@@ -1,0 +1,974 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the network step's scripts > match their snapshot (setup, removal, removal of the last interface) 1`] = `
+{
+  "inspection through Docker": "# opscrew-host: network.inspect
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+docker_up() { systemctl is-active --quiet docker 2>/dev/null; }
+printf '\\n@@opscrew-section %s\\n' 'network'
+{
+if [ -f /etc/systemd/system/docker.service.d/opscrew-network.conf ]; then echo "dropin $(sha256sum /etc/systemd/system/docker.service.d/opscrew-network.conf | cut -d ' ' -f 1)"; else echo 'dropin -'; fi
+for conf in /etc/wireguard/wg-opscrew*.conf; do
+  [ -f "$conf" ] || continue
+  name=\${conf##*/}
+  name=\${name%.conf}
+  case "\${name#wg-opscrew}" in ''|*[!0-9]*) continue ;; esac
+  unit="wg-quick@$name.service"
+  echo "iface $name config $(sha256sum "$conf" | cut -d ' ' -f 1)"
+  pub=$(wg pubkey < "/etc/wireguard/$name.key") || pub=''
+  echo "iface $name key \${pub:--}"
+  if [ "$(systemctl is-enabled "$unit")" = enabled ]; then echo "iface $name enabled yes"; else echo "iface $name enabled no"; fi
+  if systemctl is-active --quiet "$unit"; then echo "iface $name active yes"; else echo "iface $name active no"; fi
+  ip -4 -o addr show dev "$name" | awk -v name="$name" '{ print "iface " name " address " $4 }'
+  wg show "$name" peers | sed "s/^/iface $name peer /"
+done
+} 2>/dev/null
+printf '\\n@@opscrew-exit %s\\n' "$?"
+printf '\\n@@opscrew-section %s\\n' 'ufw-added'
+{
+ufw show added
+} 2>/dev/null
+printf '\\n@@opscrew-exit %s\\n' "$?"
+",
+  "removal apply": "# opscrew-host: network.remove.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+PORT='51820'
+UNIT='wg-quick@wg-opscrew0.service'
+WG_DIR='/etc/wireguard'
+CONFIG='/etc/wireguard/wg-opscrew0.conf'
+KEY_FILE='/etc/wireguard/wg-opscrew0.key'
+OTHERS='wg-opscrew1'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network.conf'
+DROPIN_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IERvY2tlciBzdGFydHMgYWZ0ZXIgT3BzQ3JldydzIFdpcmVHdWFyZCBpbnRlcmZhY2VzLCBzbyB0aGUgc2VydmljZXMKIyBwdWJsaXNoZWQgb24gdGhlaXIgYWRkcmVzc2VzIGNvbWUgdXAgYWZ0ZXIgYSByZWJvb3QuIEl0IHdhbnRzIHRoZW0gd2l0aG91dCByZXF1aXJpbmcgdGhlbTogYW4KIyBpbnRlcmZhY2UgdGhhdCBmYWlscyBkb2VzIG5vdCBzdG9wIHRoZSBhcHAncyBvd24gY29udGFpbmVycy4gb3BzY3JldyBkZXN0cm95IHJlbW92ZXMgdGhpcyBmaWxlLgpbVW5pdF0KV2FudHM9d2ctcXVpY2tAd2ctb3BzY3JldzEuc2VydmljZQpBZnRlcj13Zy1xdWlja0B3Zy1vcHNjcmV3MS5zZXJ2aWNlCg=='
+DROPIN_SHA256='fc4787a946d0309a18201acfe72259cb02bb3ba10b83f8f748f3810622caae6d'
+UDP_COMMENT='opscrew-network'
+SSH_COMMENT='opscrew-network-ssh'
+LOCAL_COMMENT='opscrew-network-local'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+# The SSH ports of OpsCrew's rules on the interface (from ufw_added).
+ssh_ports() {
+  printf '%s\\n' "$ADDED" | sed -n "s/^ufw allow in on $IFACE to any port \\([0-9]*\\) proto tcp comment '$SSH_COMMENT'\\$/\\1/p"
+}
+# OpsCrew's rules that let Docker's networks reach an address no interface that stays has, as
+# "<network> <address>" (from ufw_added).
+local_rules() {
+  kept=' '
+  for other in $OTHERS; do
+    [ -f "$WG_DIR/$other.conf" ] || continue
+    kept="$kept$(sed -n 's/^Address = \\([0-9.]*\\)\\/[0-9]*$/\\1/p' "$WG_DIR/$other.conf") "
+  done
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to \\([0-9.]*\\) port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2 \\3|p" |
+    while read -r network address port; do
+      case "$kept" in *" $address "*) ;; *) echo "$network $address $port" ;; esac
+    done
+}
+systemctl disable --now --quiet "$UNIT" >/dev/null 2>&1 || true
+if ip link show "$IFACE" >/dev/null 2>&1; then ip link delete "$IFACE"; fi
+rm -f "$CONFIG" "$KEY_FILE"
+# Only the rules OpsCrew added for this interface go; your own rules stay.
+if command -v ufw >/dev/null 2>&1; then
+  ADDED=$(ufw_added)
+  if has_own_rule "$PORT/udp" "$UDP_COMMENT"; then ufw --force delete allow "$PORT/udp" >/dev/null; fi
+  for port in $(ssh_ports); do
+    ufw --force delete allow in on "$IFACE" to any port "$port" proto tcp >/dev/null
+  done
+  local_rules | while read -r network address port; do
+    ufw --force delete allow from "$network" to "$address" port "$port" proto tcp >/dev/null
+  done
+fi
+if [ -n "$DROPIN_B64" ]; then
+  printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROP_IN" 0644
+else
+  rm -f "$DROP_IN"
+fi
+systemctl daemon-reload
+",
+  "removal check": "# opscrew-host: network.remove.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+PORT='51820'
+UNIT='wg-quick@wg-opscrew0.service'
+WG_DIR='/etc/wireguard'
+CONFIG='/etc/wireguard/wg-opscrew0.conf'
+KEY_FILE='/etc/wireguard/wg-opscrew0.key'
+OTHERS='wg-opscrew1'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network.conf'
+DROPIN_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IERvY2tlciBzdGFydHMgYWZ0ZXIgT3BzQ3JldydzIFdpcmVHdWFyZCBpbnRlcmZhY2VzLCBzbyB0aGUgc2VydmljZXMKIyBwdWJsaXNoZWQgb24gdGhlaXIgYWRkcmVzc2VzIGNvbWUgdXAgYWZ0ZXIgYSByZWJvb3QuIEl0IHdhbnRzIHRoZW0gd2l0aG91dCByZXF1aXJpbmcgdGhlbTogYW4KIyBpbnRlcmZhY2UgdGhhdCBmYWlscyBkb2VzIG5vdCBzdG9wIHRoZSBhcHAncyBvd24gY29udGFpbmVycy4gb3BzY3JldyBkZXN0cm95IHJlbW92ZXMgdGhpcyBmaWxlLgpbVW5pdF0KV2FudHM9d2ctcXVpY2tAd2ctb3BzY3JldzEuc2VydmljZQpBZnRlcj13Zy1xdWlja0B3Zy1vcHNjcmV3MS5zZXJ2aWNlCg=='
+DROPIN_SHA256='fc4787a946d0309a18201acfe72259cb02bb3ba10b83f8f748f3810622caae6d'
+UDP_COMMENT='opscrew-network'
+SSH_COMMENT='opscrew-network-ssh'
+LOCAL_COMMENT='opscrew-network-local'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+# The SSH ports of OpsCrew's rules on the interface (from ufw_added).
+ssh_ports() {
+  printf '%s\\n' "$ADDED" | sed -n "s/^ufw allow in on $IFACE to any port \\([0-9]*\\) proto tcp comment '$SSH_COMMENT'\\$/\\1/p"
+}
+# OpsCrew's rules that let Docker's networks reach an address no interface that stays has, as
+# "<network> <address>" (from ufw_added).
+local_rules() {
+  kept=' '
+  for other in $OTHERS; do
+    [ -f "$WG_DIR/$other.conf" ] || continue
+    kept="$kept$(sed -n 's/^Address = \\([0-9.]*\\)\\/[0-9]*$/\\1/p' "$WG_DIR/$other.conf") "
+  done
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to \\([0-9.]*\\) port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2 \\3|p" |
+    while read -r network address port; do
+      case "$kept" in *" $address "*) ;; *) echo "$network $address $port" ;; esac
+    done
+}
+verify_state() {
+  [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" != enabled ] || return 1
+  ! systemctl is-active --quiet "$UNIT" || return 1
+  ! ip link show "$IFACE" >/dev/null 2>&1 || return 1
+  [ ! -e "$CONFIG" ] && [ ! -e "$KEY_FILE" ] || return 1
+  if command -v ufw >/dev/null 2>&1; then
+    ADDED=$(ufw_added)
+    ! has_own_rule "$PORT/udp" "$UDP_COMMENT" || return 1
+    [ -z "$(ssh_ports)" ] || return 1
+    [ -z "$(local_rules)" ] || return 1
+  fi
+  if [ -n "$DROPIN_SHA256" ]; then file_is "$DROP_IN" "$DROPIN_SHA256"; else [ ! -e "$DROP_IN" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "removal of the last apply": "# opscrew-host: network.remove.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+PORT='51820'
+UNIT='wg-quick@wg-opscrew0.service'
+WG_DIR='/etc/wireguard'
+CONFIG='/etc/wireguard/wg-opscrew0.conf'
+KEY_FILE='/etc/wireguard/wg-opscrew0.key'
+OTHERS=''
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network.conf'
+DROPIN_B64=''
+DROPIN_SHA256=''
+UDP_COMMENT='opscrew-network'
+SSH_COMMENT='opscrew-network-ssh'
+LOCAL_COMMENT='opscrew-network-local'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+# The SSH ports of OpsCrew's rules on the interface (from ufw_added).
+ssh_ports() {
+  printf '%s\\n' "$ADDED" | sed -n "s/^ufw allow in on $IFACE to any port \\([0-9]*\\) proto tcp comment '$SSH_COMMENT'\\$/\\1/p"
+}
+# OpsCrew's rules that let Docker's networks reach an address no interface that stays has, as
+# "<network> <address>" (from ufw_added).
+local_rules() {
+  kept=' '
+  for other in $OTHERS; do
+    [ -f "$WG_DIR/$other.conf" ] || continue
+    kept="$kept$(sed -n 's/^Address = \\([0-9.]*\\)\\/[0-9]*$/\\1/p' "$WG_DIR/$other.conf") "
+  done
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to \\([0-9.]*\\) port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2 \\3|p" |
+    while read -r network address port; do
+      case "$kept" in *" $address "*) ;; *) echo "$network $address $port" ;; esac
+    done
+}
+systemctl disable --now --quiet "$UNIT" >/dev/null 2>&1 || true
+if ip link show "$IFACE" >/dev/null 2>&1; then ip link delete "$IFACE"; fi
+rm -f "$CONFIG" "$KEY_FILE"
+# Only the rules OpsCrew added for this interface go; your own rules stay.
+if command -v ufw >/dev/null 2>&1; then
+  ADDED=$(ufw_added)
+  if has_own_rule "$PORT/udp" "$UDP_COMMENT"; then ufw --force delete allow "$PORT/udp" >/dev/null; fi
+  for port in $(ssh_ports); do
+    ufw --force delete allow in on "$IFACE" to any port "$port" proto tcp >/dev/null
+  done
+  local_rules | while read -r network address port; do
+    ufw --force delete allow from "$network" to "$address" port "$port" proto tcp >/dev/null
+  done
+fi
+if [ -n "$DROPIN_B64" ]; then
+  printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROP_IN" 0644
+else
+  rm -f "$DROP_IN"
+fi
+systemctl daemon-reload
+",
+  "removal of the last check": "# opscrew-host: network.remove.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+PORT='51820'
+UNIT='wg-quick@wg-opscrew0.service'
+WG_DIR='/etc/wireguard'
+CONFIG='/etc/wireguard/wg-opscrew0.conf'
+KEY_FILE='/etc/wireguard/wg-opscrew0.key'
+OTHERS=''
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network.conf'
+DROPIN_B64=''
+DROPIN_SHA256=''
+UDP_COMMENT='opscrew-network'
+SSH_COMMENT='opscrew-network-ssh'
+LOCAL_COMMENT='opscrew-network-local'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+# The SSH ports of OpsCrew's rules on the interface (from ufw_added).
+ssh_ports() {
+  printf '%s\\n' "$ADDED" | sed -n "s/^ufw allow in on $IFACE to any port \\([0-9]*\\) proto tcp comment '$SSH_COMMENT'\\$/\\1/p"
+}
+# OpsCrew's rules that let Docker's networks reach an address no interface that stays has, as
+# "<network> <address>" (from ufw_added).
+local_rules() {
+  kept=' '
+  for other in $OTHERS; do
+    [ -f "$WG_DIR/$other.conf" ] || continue
+    kept="$kept$(sed -n 's/^Address = \\([0-9.]*\\)\\/[0-9]*$/\\1/p' "$WG_DIR/$other.conf") "
+  done
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to \\([0-9.]*\\) port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2 \\3|p" |
+    while read -r network address port; do
+      case "$kept" in *" $address "*) ;; *) echo "$network $address $port" ;; esac
+    done
+}
+verify_state() {
+  [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" != enabled ] || return 1
+  ! systemctl is-active --quiet "$UNIT" || return 1
+  ! ip link show "$IFACE" >/dev/null 2>&1 || return 1
+  [ ! -e "$CONFIG" ] && [ ! -e "$KEY_FILE" ] || return 1
+  if command -v ufw >/dev/null 2>&1; then
+    ADDED=$(ufw_added)
+    ! has_own_rule "$PORT/udp" "$UDP_COMMENT" || return 1
+    [ -z "$(ssh_ports)" ] || return 1
+    [ -z "$(local_rules)" ] || return 1
+  fi
+  if [ -n "$DROPIN_SHA256" ]; then file_is "$DROP_IN" "$DROPIN_SHA256"; else [ ! -e "$DROP_IN" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "removal of the last verify": "# opscrew-host: network.remove.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+PORT='51820'
+UNIT='wg-quick@wg-opscrew0.service'
+WG_DIR='/etc/wireguard'
+CONFIG='/etc/wireguard/wg-opscrew0.conf'
+KEY_FILE='/etc/wireguard/wg-opscrew0.key'
+OTHERS=''
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network.conf'
+DROPIN_B64=''
+DROPIN_SHA256=''
+UDP_COMMENT='opscrew-network'
+SSH_COMMENT='opscrew-network-ssh'
+LOCAL_COMMENT='opscrew-network-local'
+VERIFY_FAILED='The private network'\\''s interface is still on the server.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+# The SSH ports of OpsCrew's rules on the interface (from ufw_added).
+ssh_ports() {
+  printf '%s\\n' "$ADDED" | sed -n "s/^ufw allow in on $IFACE to any port \\([0-9]*\\) proto tcp comment '$SSH_COMMENT'\\$/\\1/p"
+}
+# OpsCrew's rules that let Docker's networks reach an address no interface that stays has, as
+# "<network> <address>" (from ufw_added).
+local_rules() {
+  kept=' '
+  for other in $OTHERS; do
+    [ -f "$WG_DIR/$other.conf" ] || continue
+    kept="$kept$(sed -n 's/^Address = \\([0-9.]*\\)\\/[0-9]*$/\\1/p' "$WG_DIR/$other.conf") "
+  done
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to \\([0-9.]*\\) port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2 \\3|p" |
+    while read -r network address port; do
+      case "$kept" in *" $address "*) ;; *) echo "$network $address $port" ;; esac
+    done
+}
+verify_state() {
+  [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" != enabled ] || return 1
+  ! systemctl is-active --quiet "$UNIT" || return 1
+  ! ip link show "$IFACE" >/dev/null 2>&1 || return 1
+  [ ! -e "$CONFIG" ] && [ ! -e "$KEY_FILE" ] || return 1
+  if command -v ufw >/dev/null 2>&1; then
+    ADDED=$(ufw_added)
+    ! has_own_rule "$PORT/udp" "$UDP_COMMENT" || return 1
+    [ -z "$(ssh_ports)" ] || return 1
+    [ -z "$(local_rules)" ] || return 1
+  fi
+  if [ -n "$DROPIN_SHA256" ]; then file_is "$DROP_IN" "$DROPIN_SHA256"; else [ ! -e "$DROP_IN" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "removal verify": "# opscrew-host: network.remove.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+PORT='51820'
+UNIT='wg-quick@wg-opscrew0.service'
+WG_DIR='/etc/wireguard'
+CONFIG='/etc/wireguard/wg-opscrew0.conf'
+KEY_FILE='/etc/wireguard/wg-opscrew0.key'
+OTHERS='wg-opscrew1'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network.conf'
+DROPIN_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IERvY2tlciBzdGFydHMgYWZ0ZXIgT3BzQ3JldydzIFdpcmVHdWFyZCBpbnRlcmZhY2VzLCBzbyB0aGUgc2VydmljZXMKIyBwdWJsaXNoZWQgb24gdGhlaXIgYWRkcmVzc2VzIGNvbWUgdXAgYWZ0ZXIgYSByZWJvb3QuIEl0IHdhbnRzIHRoZW0gd2l0aG91dCByZXF1aXJpbmcgdGhlbTogYW4KIyBpbnRlcmZhY2UgdGhhdCBmYWlscyBkb2VzIG5vdCBzdG9wIHRoZSBhcHAncyBvd24gY29udGFpbmVycy4gb3BzY3JldyBkZXN0cm95IHJlbW92ZXMgdGhpcyBmaWxlLgpbVW5pdF0KV2FudHM9d2ctcXVpY2tAd2ctb3BzY3JldzEuc2VydmljZQpBZnRlcj13Zy1xdWlja0B3Zy1vcHNjcmV3MS5zZXJ2aWNlCg=='
+DROPIN_SHA256='fc4787a946d0309a18201acfe72259cb02bb3ba10b83f8f748f3810622caae6d'
+UDP_COMMENT='opscrew-network'
+SSH_COMMENT='opscrew-network-ssh'
+LOCAL_COMMENT='opscrew-network-local'
+VERIFY_FAILED='The private network'\\''s interface is still on the server.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+# The SSH ports of OpsCrew's rules on the interface (from ufw_added).
+ssh_ports() {
+  printf '%s\\n' "$ADDED" | sed -n "s/^ufw allow in on $IFACE to any port \\([0-9]*\\) proto tcp comment '$SSH_COMMENT'\\$/\\1/p"
+}
+# OpsCrew's rules that let Docker's networks reach an address no interface that stays has, as
+# "<network> <address>" (from ufw_added).
+local_rules() {
+  kept=' '
+  for other in $OTHERS; do
+    [ -f "$WG_DIR/$other.conf" ] || continue
+    kept="$kept$(sed -n 's/^Address = \\([0-9.]*\\)\\/[0-9]*$/\\1/p' "$WG_DIR/$other.conf") "
+  done
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to \\([0-9.]*\\) port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2 \\3|p" |
+    while read -r network address port; do
+      case "$kept" in *" $address "*) ;; *) echo "$network $address $port" ;; esac
+    done
+}
+verify_state() {
+  [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" != enabled ] || return 1
+  ! systemctl is-active --quiet "$UNIT" || return 1
+  ! ip link show "$IFACE" >/dev/null 2>&1 || return 1
+  [ ! -e "$CONFIG" ] && [ ! -e "$KEY_FILE" ] || return 1
+  if command -v ufw >/dev/null 2>&1; then
+    ADDED=$(ufw_added)
+    ! has_own_rule "$PORT/udp" "$UDP_COMMENT" || return 1
+    [ -z "$(ssh_ports)" ] || return 1
+    [ -z "$(local_rules)" ] || return 1
+  fi
+  if [ -n "$DROPIN_SHA256" ]; then file_is "$DROP_IN" "$DROPIN_SHA256"; else [ ! -e "$DROP_IN" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "setup apply": "# opscrew-host: network.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+ADDRESS='10.200.4.1/24'
+PORT='51820'
+PUBLIC_KEY='qavxBZmmvzkKoc7lkTv6T8j61WAQexNWAmqDrJ1ZEGg='
+UNIT='wg-quick@wg-opscrew0.service'
+WG_DIR='/etc/wireguard'
+CONFIG='/etc/wireguard/wg-opscrew0.conf'
+KEY_FILE='/etc/wireguard/wg-opscrew0.key'
+SYNC='/run/opscrew-wg-opscrew0.conf'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network.conf'
+CONFIG_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IHRoaXMgc2VydmVyJ3MgcHJpdmF0ZSBuZXR3b3JrIChXaXJlR3VhcmQpLiBvcHNjcmV3IHByb3Zpc2lvbiByZXdyaXRlcyBpdC4KIyBUaGUgcHJpdmF0ZSBrZXkgaXMgbm90IGluIHRoaXMgZmlsZTogd2ctcXVpY2sgc2V0cyBpdCBmcm9tIC9ldGMvd2lyZWd1YXJkLyVpLmtleSBvbmNlIHRoZQojIGludGVyZmFjZSBpcyB1cC4KW0ludGVyZmFjZV0KQWRkcmVzcyA9IDEwLjIwMC40LjEvMjQKTGlzdGVuUG9ydCA9IDUxODIwClBvc3RVcCA9IHdnIHNldCAlaSBwcml2YXRlLWtleSAvZXRjL3dpcmVndWFyZC8laS5rZXkKCltQZWVyXQojIGRiClB1YmxpY0tleSA9IEhmcnpsSzlweXJYa0VzQ05QZzh5aXphRmc3TVEvSTJ2c1FuS1F6eUQ2MnM9CkFsbG93ZWRJUHMgPSAxMC4yMDAuNC4yLzMyCkVuZHBvaW50ID0gMjAzLjAuMTEzLjIwOjUxODIwCgpbUGVlcl0KIyBsYXB0b3AKUHVibGljS2V5ID0gbm5lMVFvV201aGM3QXpBU3lteTN3SEg1TWlpaUhnOHJRY1lXcEpjL0swND0KQWxsb3dlZElQcyA9IDEwLjIwMC40LjEwMC8zMgo='
+CONFIG_SHA256='2ae53de3592fedc35ea08dddcba5d5814c59915d2326509dffaa585a5f30cb53'
+PEERS_B64='W1BlZXJdCiMgZGIKUHVibGljS2V5ID0gSGZyemxLOXB5clhrRXNDTlBnOHlpemFGZzdNUS9JMnZzUW5LUXp5RDYycz0KQWxsb3dlZElQcyA9IDEwLjIwMC40LjIvMzIKRW5kcG9pbnQgPSAyMDMuMC4xMTMuMjA6NTE4MjAKCltQZWVyXQojIGxhcHRvcApQdWJsaWNLZXkgPSBubmUxUW9XbTVoYzdBekFTeW15M3dISDVNaWlpSGc4clFjWVdwSmMvSzA0PQpBbGxvd2VkSVBzID0gMTAuMjAwLjQuMTAwLzMyCg=='
+PEER_KEYS='HfrzlK9pyrXkEsCNPg8yizaFg7MQ/I2vsQnKQzyD62s= nne1QoWm5hc7AzASymy3wHH5MiiiHg8rQcYWpJc/K04= '
+DROPIN_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IERvY2tlciBzdGFydHMgYWZ0ZXIgT3BzQ3JldydzIFdpcmVHdWFyZCBpbnRlcmZhY2VzLCBzbyB0aGUgc2VydmljZXMKIyBwdWJsaXNoZWQgb24gdGhlaXIgYWRkcmVzc2VzIGNvbWUgdXAgYWZ0ZXIgYSByZWJvb3QuIEl0IHdhbnRzIHRoZW0gd2l0aG91dCByZXF1aXJpbmcgdGhlbTogYW4KIyBpbnRlcmZhY2UgdGhhdCBmYWlscyBkb2VzIG5vdCBzdG9wIHRoZSBhcHAncyBvd24gY29udGFpbmVycy4gb3BzY3JldyBkZXN0cm95IHJlbW92ZXMgdGhpcyBmaWxlLgpbVW5pdF0KV2FudHM9d2ctcXVpY2tAd2ctb3BzY3JldzAuc2VydmljZQpBZnRlcj13Zy1xdWlja0B3Zy1vcHNjcmV3MC5zZXJ2aWNlCg=='
+DROPIN_SHA256='5eeeb750e941f8eb5f74305a77a1a27b6f937e27214c11d507c72c45c511db89'
+SSH_PORT='22'
+HOST_IP='10.200.4.1'
+POOLS='172.16.0.0/12 192.168.0.0/16'
+LOCAL_PORTS='5432'
+UDP_COMMENT='opscrew-network'
+SSH_COMMENT='opscrew-network-ssh'
+LOCAL_COMMENT='opscrew-network-local'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+address_ok() { ip -4 -o addr show dev "$IFACE" 2>/dev/null | grep -qF " inet $ADDRESS "; }
+ssh_rule() { echo "in on $IFACE to any port $SSH_PORT proto tcp"; }
+local_rule() { echo "from $1 to $HOST_IP port $2 proto tcp"; }
+# OpsCrew's rules that let Docker's networks reach this address on a port the plan no longer
+# names, as "<network> <port>" (from ufw_added).
+stale_local() {
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to $HOST_IP port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2|p" |
+    while read -r network port; do
+      case " $LOCAL_PORTS " in *" $port "*) ;; *) echo "$network $port" ;; esac
+    done
+}
+# The private key, only when one arrived on standard input, read before anything else can read
+# the session's stdin (apt). Only builtins see it; the key file is root's alone, and the
+# configuration never holds it.
+key=''
+IFS= read -r key || true
+case "$key" in
+  *[!A-Za-z0-9+/=]*) key=''; fail 'The WireGuard key has unexpected characters, so it was not written.' ;;
+esac
+command -v ufw >/dev/null 2>&1 || fail "ufw is not installed, so OpsCrew cannot open the private network's port."
+if ! is_installed wireguard-tools; then
+  apt_get update || fail 'apt-get update failed before OpsCrew changed anything; see /var/log/opscrew/apt.log on the server.'
+  apt_get install wireguard-tools || fail 'Installing wireguard-tools failed; see /var/log/opscrew/apt.log on the server.'
+fi
+install -d -m 0700 "$WG_DIR"
+if [ -n "$key" ]; then
+  if [ "$(printf '%s\\n' "$key" | wg pubkey)" != "$PUBLIC_KEY" ]; then
+    key=''
+    fail 'The WireGuard key that arrived on standard input is not the one the plan names, so it was not written.'
+  fi
+  (
+    umask 077
+    printf '%s\\n' "$key" | write_file "$KEY_FILE" 0600
+  )
+  key=''
+fi
+[ -f "$KEY_FILE" ] || fail "No WireGuard key arrived on standard input, and the server has none for $IFACE yet."
+[ "$(wg pubkey < "$KEY_FILE")" = "$PUBLIC_KEY" ] || fail "The server's WireGuard key for $IFACE is not the one the plan names, and no key arrived on standard input."
+printf '%s' "$CONFIG_B64" | base64 -d | write_file "$CONFIG" 0600
+# Docker starts after every OpsCrew interface, and wants them without requiring them.
+install -d -m 0755 "$(dirname "$DROP_IN")"
+printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROP_IN" 0644
+systemctl daemon-reload
+systemctl enable --quiet "$UNIT"
+if ! systemctl is-active --quiet "$UNIT"; then
+  systemctl start "$UNIT" || fail "WireGuard did not come up on $IFACE; see journalctl -u $UNIT on the server."
+elif ! address_ok; then
+  # A new address needs the interface brought up again: wg syncconf changes only the peers.
+  systemctl restart "$UNIT" || fail "WireGuard did not come up again on $IFACE; see journalctl -u $UNIT on the server."
+else
+  # The peers change without dropping the link. A configuration without the key would wipe the
+  # interface's key, so wg syncconf reads a full one: its key from the key file, in a root-only
+  # file that goes right after.
+  trap 'rm -f "$SYNC"' EXIT
+  (
+    umask 077
+    {
+      printf '[Interface]\\nPrivateKey = '
+      cat "$KEY_FILE"
+      printf 'ListenPort = %s\\n\\n' "$PORT"
+      printf '%s' "$PEERS_B64" | base64 -d
+    } > "$SYNC"
+  )
+  wg syncconf "$IFACE" "$SYNC" || fail "OpsCrew could not update the peers of $IFACE (wg syncconf)."
+  rm -f "$SYNC"
+fi
+# WireGuard's port is open to everyone (it answers nothing without a valid key), and SSH to the
+# network's members and devices on the interface. The host's own Docker networks reach the
+# services published on the private address, on their ports only: a container calling such a
+# port goes through docker-proxy, which ufw's default deny would drop.
+ADDED=$(ufw_added)
+if ! has_rule "$PORT/udp"; then ufw allow "$PORT/udp" comment "$UDP_COMMENT" >/dev/null; fi
+if ! has_rule "$(ssh_rule)"; then ufw allow in on "$IFACE" to any port "$SSH_PORT" proto tcp comment "$SSH_COMMENT" >/dev/null; fi
+for pool in $POOLS; do
+  for port in $LOCAL_PORTS; do
+    if ! has_rule "$(local_rule "$pool" "$port")"; then
+      ufw allow from "$pool" to "$HOST_IP" port "$port" proto tcp comment "$LOCAL_COMMENT" >/dev/null
+    fi
+  done
+done
+# A port no service publishes there any more is closed to them again.
+stale_local | while read -r network port; do
+  ufw --force delete allow from "$network" to "$HOST_IP" port "$port" proto tcp >/dev/null
+done
+",
+  "setup check": "# opscrew-host: network.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+ADDRESS='10.200.4.1/24'
+PORT='51820'
+PUBLIC_KEY='qavxBZmmvzkKoc7lkTv6T8j61WAQexNWAmqDrJ1ZEGg='
+UNIT='wg-quick@wg-opscrew0.service'
+WG_DIR='/etc/wireguard'
+CONFIG='/etc/wireguard/wg-opscrew0.conf'
+KEY_FILE='/etc/wireguard/wg-opscrew0.key'
+SYNC='/run/opscrew-wg-opscrew0.conf'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network.conf'
+CONFIG_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IHRoaXMgc2VydmVyJ3MgcHJpdmF0ZSBuZXR3b3JrIChXaXJlR3VhcmQpLiBvcHNjcmV3IHByb3Zpc2lvbiByZXdyaXRlcyBpdC4KIyBUaGUgcHJpdmF0ZSBrZXkgaXMgbm90IGluIHRoaXMgZmlsZTogd2ctcXVpY2sgc2V0cyBpdCBmcm9tIC9ldGMvd2lyZWd1YXJkLyVpLmtleSBvbmNlIHRoZQojIGludGVyZmFjZSBpcyB1cC4KW0ludGVyZmFjZV0KQWRkcmVzcyA9IDEwLjIwMC40LjEvMjQKTGlzdGVuUG9ydCA9IDUxODIwClBvc3RVcCA9IHdnIHNldCAlaSBwcml2YXRlLWtleSAvZXRjL3dpcmVndWFyZC8laS5rZXkKCltQZWVyXQojIGRiClB1YmxpY0tleSA9IEhmcnpsSzlweXJYa0VzQ05QZzh5aXphRmc3TVEvSTJ2c1FuS1F6eUQ2MnM9CkFsbG93ZWRJUHMgPSAxMC4yMDAuNC4yLzMyCkVuZHBvaW50ID0gMjAzLjAuMTEzLjIwOjUxODIwCgpbUGVlcl0KIyBsYXB0b3AKUHVibGljS2V5ID0gbm5lMVFvV201aGM3QXpBU3lteTN3SEg1TWlpaUhnOHJRY1lXcEpjL0swND0KQWxsb3dlZElQcyA9IDEwLjIwMC40LjEwMC8zMgo='
+CONFIG_SHA256='2ae53de3592fedc35ea08dddcba5d5814c59915d2326509dffaa585a5f30cb53'
+PEERS_B64='W1BlZXJdCiMgZGIKUHVibGljS2V5ID0gSGZyemxLOXB5clhrRXNDTlBnOHlpemFGZzdNUS9JMnZzUW5LUXp5RDYycz0KQWxsb3dlZElQcyA9IDEwLjIwMC40LjIvMzIKRW5kcG9pbnQgPSAyMDMuMC4xMTMuMjA6NTE4MjAKCltQZWVyXQojIGxhcHRvcApQdWJsaWNLZXkgPSBubmUxUW9XbTVoYzdBekFTeW15M3dISDVNaWlpSGc4clFjWVdwSmMvSzA0PQpBbGxvd2VkSVBzID0gMTAuMjAwLjQuMTAwLzMyCg=='
+PEER_KEYS='HfrzlK9pyrXkEsCNPg8yizaFg7MQ/I2vsQnKQzyD62s= nne1QoWm5hc7AzASymy3wHH5MiiiHg8rQcYWpJc/K04= '
+DROPIN_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IERvY2tlciBzdGFydHMgYWZ0ZXIgT3BzQ3JldydzIFdpcmVHdWFyZCBpbnRlcmZhY2VzLCBzbyB0aGUgc2VydmljZXMKIyBwdWJsaXNoZWQgb24gdGhlaXIgYWRkcmVzc2VzIGNvbWUgdXAgYWZ0ZXIgYSByZWJvb3QuIEl0IHdhbnRzIHRoZW0gd2l0aG91dCByZXF1aXJpbmcgdGhlbTogYW4KIyBpbnRlcmZhY2UgdGhhdCBmYWlscyBkb2VzIG5vdCBzdG9wIHRoZSBhcHAncyBvd24gY29udGFpbmVycy4gb3BzY3JldyBkZXN0cm95IHJlbW92ZXMgdGhpcyBmaWxlLgpbVW5pdF0KV2FudHM9d2ctcXVpY2tAd2ctb3BzY3JldzAuc2VydmljZQpBZnRlcj13Zy1xdWlja0B3Zy1vcHNjcmV3MC5zZXJ2aWNlCg=='
+DROPIN_SHA256='5eeeb750e941f8eb5f74305a77a1a27b6f937e27214c11d507c72c45c511db89'
+SSH_PORT='22'
+HOST_IP='10.200.4.1'
+POOLS='172.16.0.0/12 192.168.0.0/16'
+LOCAL_PORTS='5432'
+UDP_COMMENT='opscrew-network'
+SSH_COMMENT='opscrew-network-ssh'
+LOCAL_COMMENT='opscrew-network-local'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+address_ok() { ip -4 -o addr show dev "$IFACE" 2>/dev/null | grep -qF " inet $ADDRESS "; }
+ssh_rule() { echo "in on $IFACE to any port $SSH_PORT proto tcp"; }
+local_rule() { echo "from $1 to $HOST_IP port $2 proto tcp"; }
+# OpsCrew's rules that let Docker's networks reach this address on a port the plan no longer
+# names, as "<network> <port>" (from ufw_added).
+stale_local() {
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to $HOST_IP port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2|p" |
+    while read -r network port; do
+      case " $LOCAL_PORTS " in *" $port "*) ;; *) echo "$network $port" ;; esac
+    done
+}
+verify_state() {
+  command -v wg >/dev/null 2>&1 || return 1
+  file_is "$CONFIG" "$CONFIG_SHA256" || return 1
+  [ -f "$KEY_FILE" ] && [ "$(wg pubkey < "$KEY_FILE" 2>/dev/null)" = "$PUBLIC_KEY" ] || return 1
+  [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" = enabled ] || return 1
+  file_is "$DROP_IN" "$DROPIN_SHA256" || return 1
+  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  has_rule "$PORT/udp" || return 1
+  has_rule "$(ssh_rule)" || return 1
+  for pool in $POOLS; do
+    for port in $LOCAL_PORTS; do has_rule "$(local_rule "$pool" "$port")" || return 1; done
+  done
+  [ -z "$(stale_local)" ] || return 1
+  systemctl is-active --quiet "$UNIT" || return 1
+  address_ok || return 1
+  [ "$(wg show "$IFACE" peers 2>/dev/null | sort | tr '\\n' ' ')" = "$PEER_KEYS" ]
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "setup verify": "# opscrew-host: network.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+ADDRESS='10.200.4.1/24'
+PORT='51820'
+PUBLIC_KEY='qavxBZmmvzkKoc7lkTv6T8j61WAQexNWAmqDrJ1ZEGg='
+UNIT='wg-quick@wg-opscrew0.service'
+WG_DIR='/etc/wireguard'
+CONFIG='/etc/wireguard/wg-opscrew0.conf'
+KEY_FILE='/etc/wireguard/wg-opscrew0.key'
+SYNC='/run/opscrew-wg-opscrew0.conf'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network.conf'
+CONFIG_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IHRoaXMgc2VydmVyJ3MgcHJpdmF0ZSBuZXR3b3JrIChXaXJlR3VhcmQpLiBvcHNjcmV3IHByb3Zpc2lvbiByZXdyaXRlcyBpdC4KIyBUaGUgcHJpdmF0ZSBrZXkgaXMgbm90IGluIHRoaXMgZmlsZTogd2ctcXVpY2sgc2V0cyBpdCBmcm9tIC9ldGMvd2lyZWd1YXJkLyVpLmtleSBvbmNlIHRoZQojIGludGVyZmFjZSBpcyB1cC4KW0ludGVyZmFjZV0KQWRkcmVzcyA9IDEwLjIwMC40LjEvMjQKTGlzdGVuUG9ydCA9IDUxODIwClBvc3RVcCA9IHdnIHNldCAlaSBwcml2YXRlLWtleSAvZXRjL3dpcmVndWFyZC8laS5rZXkKCltQZWVyXQojIGRiClB1YmxpY0tleSA9IEhmcnpsSzlweXJYa0VzQ05QZzh5aXphRmc3TVEvSTJ2c1FuS1F6eUQ2MnM9CkFsbG93ZWRJUHMgPSAxMC4yMDAuNC4yLzMyCkVuZHBvaW50ID0gMjAzLjAuMTEzLjIwOjUxODIwCgpbUGVlcl0KIyBsYXB0b3AKUHVibGljS2V5ID0gbm5lMVFvV201aGM3QXpBU3lteTN3SEg1TWlpaUhnOHJRY1lXcEpjL0swND0KQWxsb3dlZElQcyA9IDEwLjIwMC40LjEwMC8zMgo='
+CONFIG_SHA256='2ae53de3592fedc35ea08dddcba5d5814c59915d2326509dffaa585a5f30cb53'
+PEERS_B64='W1BlZXJdCiMgZGIKUHVibGljS2V5ID0gSGZyemxLOXB5clhrRXNDTlBnOHlpemFGZzdNUS9JMnZzUW5LUXp5RDYycz0KQWxsb3dlZElQcyA9IDEwLjIwMC40LjIvMzIKRW5kcG9pbnQgPSAyMDMuMC4xMTMuMjA6NTE4MjAKCltQZWVyXQojIGxhcHRvcApQdWJsaWNLZXkgPSBubmUxUW9XbTVoYzdBekFTeW15M3dISDVNaWlpSGc4clFjWVdwSmMvSzA0PQpBbGxvd2VkSVBzID0gMTAuMjAwLjQuMTAwLzMyCg=='
+PEER_KEYS='HfrzlK9pyrXkEsCNPg8yizaFg7MQ/I2vsQnKQzyD62s= nne1QoWm5hc7AzASymy3wHH5MiiiHg8rQcYWpJc/K04= '
+DROPIN_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IERvY2tlciBzdGFydHMgYWZ0ZXIgT3BzQ3JldydzIFdpcmVHdWFyZCBpbnRlcmZhY2VzLCBzbyB0aGUgc2VydmljZXMKIyBwdWJsaXNoZWQgb24gdGhlaXIgYWRkcmVzc2VzIGNvbWUgdXAgYWZ0ZXIgYSByZWJvb3QuIEl0IHdhbnRzIHRoZW0gd2l0aG91dCByZXF1aXJpbmcgdGhlbTogYW4KIyBpbnRlcmZhY2UgdGhhdCBmYWlscyBkb2VzIG5vdCBzdG9wIHRoZSBhcHAncyBvd24gY29udGFpbmVycy4gb3BzY3JldyBkZXN0cm95IHJlbW92ZXMgdGhpcyBmaWxlLgpbVW5pdF0KV2FudHM9d2ctcXVpY2tAd2ctb3BzY3JldzAuc2VydmljZQpBZnRlcj13Zy1xdWlja0B3Zy1vcHNjcmV3MC5zZXJ2aWNlCg=='
+DROPIN_SHA256='5eeeb750e941f8eb5f74305a77a1a27b6f937e27214c11d507c72c45c511db89'
+SSH_PORT='22'
+HOST_IP='10.200.4.1'
+POOLS='172.16.0.0/12 192.168.0.0/16'
+LOCAL_PORTS='5432'
+UDP_COMMENT='opscrew-network'
+SSH_COMMENT='opscrew-network-ssh'
+LOCAL_COMMENT='opscrew-network-local'
+VERIFY_FAILED='The private network is not as planned on the server.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+address_ok() { ip -4 -o addr show dev "$IFACE" 2>/dev/null | grep -qF " inet $ADDRESS "; }
+ssh_rule() { echo "in on $IFACE to any port $SSH_PORT proto tcp"; }
+local_rule() { echo "from $1 to $HOST_IP port $2 proto tcp"; }
+# OpsCrew's rules that let Docker's networks reach this address on a port the plan no longer
+# names, as "<network> <port>" (from ufw_added).
+stale_local() {
+  printf '%s\\n' "$ADDED" | sed -n "s|^ufw allow from \\([0-9./]*\\) to $HOST_IP port \\([0-9]*\\) proto tcp comment '$LOCAL_COMMENT'\\$|\\1 \\2|p" |
+    while read -r network port; do
+      case " $LOCAL_PORTS " in *" $port "*) ;; *) echo "$network $port" ;; esac
+    done
+}
+verify_state() {
+  command -v wg >/dev/null 2>&1 || return 1
+  file_is "$CONFIG" "$CONFIG_SHA256" || return 1
+  [ -f "$KEY_FILE" ] && [ "$(wg pubkey < "$KEY_FILE" 2>/dev/null)" = "$PUBLIC_KEY" ] || return 1
+  [ "$(systemctl is-enabled "$UNIT" 2>/dev/null)" = enabled ] || return 1
+  file_is "$DROP_IN" "$DROPIN_SHA256" || return 1
+  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  has_rule "$PORT/udp" || return 1
+  has_rule "$(ssh_rule)" || return 1
+  for pool in $POOLS; do
+    for port in $LOCAL_PORTS; do has_rule "$(local_rule "$pool" "$port")" || return 1; done
+  done
+  [ -z "$(stale_local)" ] || return 1
+  systemctl is-active --quiet "$UNIT" || return 1
+  address_ok || return 1
+  [ "$(wg show "$IFACE" peers 2>/dev/null | sort | tr '\\n' ' ')" = "$PEER_KEYS" ]
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+}
+`;
+
+exports[`the network's files > the configuration holds no private key: wg-quick sets it from the key file 1`] = `
+"# Managed by OpsCrew: this server's private network (WireGuard). opscrew provision rewrites it.
+# The private key is not in this file: wg-quick sets it from /etc/wireguard/%i.key once the
+# interface is up.
+[Interface]
+Address = 10.200.4.1/24
+ListenPort = 51820
+PostUp = wg set %i private-key /etc/wireguard/%i.key
+
+[Peer]
+# db
+PublicKey = HfrzlK9pyrXkEsCNPg8yizaFg7MQ/I2vsQnKQzyD62s=
+AllowedIPs = 10.200.4.2/32
+Endpoint = 203.0.113.20:51820
+
+[Peer]
+# laptop
+PublicKey = nne1QoWm5hc7AzASymy3wHH5MiiiHg8rQcYWpJc/K04=
+AllowedIPs = 10.200.4.100/32
+"
+`;

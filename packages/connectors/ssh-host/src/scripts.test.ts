@@ -881,7 +881,7 @@ docker() { echo 28.5.1; }`;
   it("the privilege probe tells passwordless sudo, sudo and sudo-rs password prompts apart", () => {
     const probe = (sudo: string) =>
       runWithStubs(
-        `id() { echo 1000; }\nsudo() { ${sudo}; }`,
+        `id() { echo 1000; }\nsudo() { ${sudo}; }\nsystemctl() { return 0; }\ndocker() { return 1; }`,
         privilegeProbeScript(),
       ).stdout.trim();
     expect(probe("echo 0")).toBe("sudo");
@@ -890,6 +890,28 @@ docker() { echo 28.5.1; }`;
       "sudo-password",
     );
     expect(probe("echo 'alice is not in the sudoers file.' >&2; return 1")).toBe("none");
+  });
+
+  it("the privilege probe says docker for a login without root or passwordless sudo whose docker info works", () => {
+    // The probe hides docker's output; the exit trap says whether it asked Docker at all.
+    const probe = (sudo: string, active: number, docker: number) =>
+      runWithStubs(
+        `asked=no\ntrap 'echo "asked=$asked" >&2' EXIT\nid() { echo 1000; }\nsudo() { ${sudo}; }\nsystemctl() { return ${active}; }\ndocker() { asked="$*"; return ${docker}; }`,
+        privilegeProbeScript(),
+      );
+    const needsPassword = "echo 'sudo: a password is required' >&2; return 1";
+    expect(probe(needsPassword, 0, 0).stdout.trim()).toBe("docker");
+    expect(
+      probe("echo 'deploy is not in the sudoers file.' >&2; return 1", 0, 0).stdout.trim(),
+    ).toBe("docker");
+    // Passwordless sudo comes first; without docker info the old answers stay.
+    expect(probe("echo 0", 0, 0).stdout.trim()).toBe("sudo");
+    expect(probe(needsPassword, 0, 1).stdout.trim()).toBe("sudo-password");
+    // A stopped Docker is never started by asking it.
+    const stopped = probe(needsPassword, 3, 0);
+    expect(stopped.stdout.trim()).toBe("sudo-password");
+    expect(stopped.stderr).toContain("asked=no");
+    expect(probe(needsPassword, 0, 0).stderr).toContain("asked=info");
   });
 });
 

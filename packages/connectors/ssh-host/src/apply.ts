@@ -18,8 +18,10 @@ import {
 import { claimFindings, type HostFindings, hostFindings } from "./findings";
 import { hostPlanHash } from "./hash";
 import { probePrivilege, readAppsScript } from "./inspect";
+import { WireGuardKeySchema } from "./network";
 import { linesOf, parseAppRecords } from "./parse";
-import { asDeployUser, asLogin, asRoot, type Privilege } from "./shell";
+import { type HostPrivilege, type RemoteCall, requireRootImage, rootCall } from "./privilege";
+import { asDeployUser, asLogin } from "./shell";
 import {
   armScript,
   cancelScript,
@@ -44,14 +46,13 @@ import {
 } from "./types";
 
 /**
- * Options the adapter passes to `RemoteExec.run`. `input` is written to the command's stdin and
- * is the only way secrets reach the server. A transport that dropped it would make the secret
- * steps fail with a plain message (their scripts refuse an empty stdin), never write an empty
- * secret.
+ * A command the adapter sends with `RemoteExec.run`. `input` is written to the command's stdin
+ * and is the only way secrets reach the server (`secret`: it holds one). A transport that dropped
+ * it would make the secret steps fail with a plain message (their scripts refuse an empty stdin),
+ * never write an empty secret.
  */
-interface RunOptions {
-  timeoutMs?: number;
-  input?: string;
+interface Call extends RemoteCall {
+  secret: boolean;
 }
 
 const TOKEN_RE = /^[A-Za-z0-9+/=_.-]{16,8192}$/;
@@ -113,6 +114,13 @@ const SECRET_CHECKS: Record<
     invalid: "The Grafana Cloud token does not look like an access policy token.",
     hint: "Copy the token again from your Grafana Cloud stack's Access Policies.",
   },
+  wireguardKey: {
+    label: "wireguard-key",
+    needs: "the server's WireGuard private key",
+    valid: (value) => WireGuardKeySchema.safeParse(value).success,
+    invalid:
+      "The WireGuard private key must be the base64 of 32 bytes (44 characters ending in =).",
+  },
 };
 
 /**
@@ -131,7 +139,9 @@ function stdinOf(names: readonly SecretName[], secrets: ApplySecrets): string | 
 interface Context {
   remote: RemoteExec;
   plan: HostPlan;
-  privilege: Privilege | null;
+  privilege: HostPrivilege | null;
+  /** The image root steps run in with the `docker` privilege. */
+  rootImage: string | undefined;
   redactor: Redactor;
   secrets: ApplySecrets;
   runnerToken: ApplyOptions["runnerToken"];
@@ -166,14 +176,20 @@ function detail(result: CommandResult, redactor: Redactor): string {
   return redactor.redact(clipped || `the command exited with code ${result.exitCode}`);
 }
 
+/** Sends `call` to the server. */
+function send(ctx: Context, call: Call, timeoutMs: number): Promise<CommandResult> {
+  const { command, input } = call;
+  return ctx.remote.run(command, input === undefined ? { timeoutMs } : { timeoutMs, input });
+}
+
 async function run(
   ctx: Context,
-  command: string,
-  options: RunOptions,
+  call: Call,
+  timeoutMs: number,
   doing: string,
 ): Promise<CommandResult> {
   try {
-    return await ctx.remote.run(command, options);
+    return await send(ctx, call, timeoutMs);
   } catch (error) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
@@ -181,7 +197,7 @@ async function run(
       {
         hint: `Check that the server is reachable over SSH, then ${nextStep(ctx.command)}.`,
         // Never attach the error of a command that carried a secret on stdin.
-        ...(options.input === undefined ? { cause: error } : {}),
+        ...(call.secret ? {} : { cause: error }),
       },
     );
   }
@@ -189,11 +205,11 @@ async function run(
 
 async function runOk(
   ctx: Context,
-  command: string,
-  options: RunOptions,
+  call: Call,
+  timeoutMs: number,
   doing: string,
 ): Promise<CommandResult> {
-  const result = await run(ctx, command, options, doing);
+  const result = await run(ctx, call, timeoutMs, doing);
   if (result.exitCode !== 0) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
@@ -204,14 +220,28 @@ async function runOk(
   return result;
 }
 
-/** The command for one of `step`'s scripts; `asDeploy`: as the deploy user (`StepScripts.asDeploy`). */
-function wrap(ctx: Context, step: HostStep, script: string, asDeploy = false): string {
-  if (runAsOf(step) === "login" || ctx.privilege === null) return asLogin(script);
-  return asRoot(ctx.privilege, asDeploy ? asDeployUser(script) : script);
+/**
+ * The call for one of `step`'s scripts with `input` (its secrets) on the script's stdin;
+ * `asDeploy`: as the deploy user (`StepScripts.asDeploy`).
+ */
+function wrap(
+  ctx: Context,
+  step: HostStep,
+  script: string,
+  input?: string,
+  asDeploy = false,
+): Call {
+  const secret = input !== undefined;
+  if (runAsOf(step) === "login" || ctx.privilege === null) {
+    const command = asLogin(script);
+    return input === undefined ? { command, secret } : { command, input, secret };
+  }
+  const own = asDeploy ? asDeployUser(script) : script;
+  return { ...rootCall(ctx.privilege, own, input, ctx.rootImage), secret };
 }
 
-function wrapRoot(ctx: Context, script: string): string {
-  return asRoot(ctx.privilege ?? "root", script);
+function wrapRoot(ctx: Context, script: string): Call {
+  return { ...rootCall(ctx.privilege ?? "root", script, undefined, ctx.rootImage), secret: false };
 }
 
 /** `prev.<key>=<value>` lines from a check script. */
@@ -245,7 +275,7 @@ class Recorder {
     const result = await runOk(
       ctx,
       wrapRoot(ctx, readRecordScript()),
-      { timeoutMs: 60_000 },
+      60_000,
       "reading OpsCrew's record of its changes",
     );
     const text = result.stdout.trim();
@@ -292,6 +322,20 @@ class Recorder {
     await this.write();
   }
 
+  /** The app whose private network the WireGuard interface is, undefined when none's is. */
+  networkOwner(iface: string): string | undefined {
+    return this.record.networks?.[iface];
+  }
+
+  /** Records that the interface is `app`'s network, or (null) no one's; written only on a change. */
+  async setNetwork(iface: string, app: string | null): Promise<void> {
+    if ((this.networkOwner(iface) ?? null) === app) return;
+    const { [iface]: _, ...others } = this.record.networks ?? {};
+    const networks = app === null ? others : { ...others, [iface]: app };
+    this.record = { ...this.record, networks };
+    await this.write();
+  }
+
   /** Records the value a step is about to replace (the first setup change of a step only). */
   async before(step: HostStepId, previous: Record<string, string | boolean>): Promise<void> {
     const purpose = this.ctx.plan.purpose;
@@ -327,7 +371,7 @@ class Recorder {
     await runOk(
       this.ctx,
       wrapRoot(this.ctx, writeRecordScript(JSON.stringify(this.record))),
-      { timeoutMs: 60_000 },
+      60_000,
       "recording the change in /etc/opscrew/host.json",
     );
   }
@@ -336,9 +380,7 @@ class Recorder {
 /** Runs the scheduled undo now; true when the server confirmed it. */
 async function trigger(ctx: Context, step: HostStep, guarded: GuardedStep): Promise<boolean> {
   try {
-    const result = await ctx.remote.run(wrap(ctx, step, triggerScript(guarded)), {
-      timeoutMs: 120_000,
-    });
+    const result = await send(ctx, wrap(ctx, step, triggerScript(guarded)), 120_000);
     return result.exitCode === 0 && result.stdout.includes("restored");
   } catch {
     return false;
@@ -354,7 +396,7 @@ async function guardedApply(
   step: HostStep,
   scripts: StepScripts,
   deadMan: NonNullable<StepScripts["deadMan"]>,
-  options: RunOptions,
+  input: string | undefined,
 ): Promise<void> {
   const seconds = ctx.deadManSeconds;
   const what = {
@@ -365,11 +407,11 @@ async function guardedApply(
   await runOk(
     ctx,
     wrap(ctx, step, armScript(deadMan, seconds)),
-    { timeoutMs: 120_000 },
+    120_000,
     `scheduling the automatic undo for the ${what}`,
   );
   try {
-    await runOk(ctx, wrap(ctx, step, scripts.apply), options, scripts.doing);
+    await runOk(ctx, wrap(ctx, step, scripts.apply, input), scripts.timeoutMs, scripts.doing);
   } catch (error) {
     const restored = await trigger(ctx, step, deadMan.step);
     if (error instanceof OpsCrewError) {
@@ -406,9 +448,7 @@ async function guardedApply(
   let cancel: CommandResult | undefined;
   try {
     // Longer than the cancel's own wait for a running undo (flock -w 80).
-    cancel = await ctx.remote.run(wrap(ctx, step, cancelScript(deadMan.step)), {
-      timeoutMs: 90_000,
-    });
+    cancel = await send(ctx, wrap(ctx, step, cancelScript(deadMan.step)), 90_000);
   } catch {
     cancel = undefined;
   }
@@ -450,13 +490,9 @@ async function fetchRunnerToken(ctx: Context, kind: "registration" | "remove"): 
 
 /** Runs one change step; false when the server shows it is already in place. */
 async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Promise<boolean> {
-  const own = (script: string) => wrap(ctx, step, script, scripts.asDeploy === true);
-  const check = await runOk(
-    ctx,
-    own(scripts.check),
-    { timeoutMs: 120_000 },
-    `checking "${step.title}"`,
-  );
+  const own = (script: string, input?: string) =>
+    wrap(ctx, step, script, input, scripts.asDeploy === true);
+  const check = await runOk(ctx, own(scripts.check), 120_000, `checking "${step.title}"`);
   // An add-on's removal with keepData says whether a history stays (its check runs either way).
   if (/^addon\.history=kept$/m.test(check.stdout)) ctx.historyKept.add(step.id);
   if (/^state=in-place$/m.test(check.stdout)) return false;
@@ -464,12 +500,7 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
   await ctx.recorder?.before(step.id, previousValues(check.stdout));
 
   if (scripts.preApply !== undefined) {
-    await runOk(
-      ctx,
-      wrap(ctx, step, scripts.preApply),
-      { timeoutMs: scripts.timeoutMs },
-      scripts.doing,
-    );
+    await runOk(ctx, wrap(ctx, step, scripts.preApply), scripts.timeoutMs, scripts.doing);
   }
   const input =
     scripts.runnerToken !== undefined
@@ -477,33 +508,19 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
       : scripts.secrets
         ? stdinOf(scripts.secrets.names, ctx.secrets)
         : undefined;
-  const options: RunOptions =
-    input === undefined
-      ? { timeoutMs: scripts.timeoutMs }
-      : { timeoutMs: scripts.timeoutMs, input };
   if (scripts.deadMan !== undefined) {
-    await guardedApply(ctx, step, scripts, scripts.deadMan, options);
+    await guardedApply(ctx, step, scripts, scripts.deadMan, input);
   } else {
-    const result = await runOk(ctx, own(scripts.apply), options, scripts.doing);
+    const result = await runOk(ctx, own(scripts.apply, input), scripts.timeoutMs, scripts.doing);
     // A runner's removal says whether GitHub unregistered it.
     if (scripts.runnerToken === "remove" && /^runner\.unregistered=false$/m.test(result.stdout)) {
       ctx.stillRegistered.push(String(step.params.app));
     }
   }
   if (scripts.postApply !== undefined) {
-    await runOk(
-      ctx,
-      wrap(ctx, step, scripts.postApply),
-      { timeoutMs: scripts.timeoutMs },
-      scripts.doing,
-    );
+    await runOk(ctx, wrap(ctx, step, scripts.postApply), scripts.timeoutMs, scripts.doing);
   }
-  await runOk(
-    ctx,
-    own(scripts.verify),
-    { timeoutMs: 120_000 },
-    `checking the result of ${scripts.doing}`,
-  );
+  await runOk(ctx, own(scripts.verify), 120_000, `checking the result of ${scripts.doing}`);
   if (ctx.plan.purpose === "undo") await ctx.recorder?.undone(step.id);
   return true;
 }
@@ -522,7 +539,7 @@ async function appsCheck(ctx: Context, listed: readonly string[]): Promise<void>
   const result = await runOk(
     ctx,
     wrapRoot(ctx, readAppsScript()),
-    { timeoutMs: 60_000 },
+    60_000,
     "checking the other OpsCrew apps on the server",
   );
   const apps = parseAppRecords(result.stdout);
@@ -614,6 +631,9 @@ function isRemoval(plan: HostPlan, step: HostStep): boolean {
  * Secrets go to the server only on stdin, into root-only files or (a runner token) straight to
  * the runner's `config.sh`; they never appear in commands, records or errors. `opts.runnerToken`
  * is called only when a `github-runner` step runs. Every change is recorded in `/etc/opscrew/host.json` before it is made.
+ * Root steps run as the login when it is root, through `sudo -n`, or, for a login that becomes
+ * root only through Docker (the servers OpsCrew creates), in a one-shot privileged container of
+ * `opts.rootImage` that reads the script and its secrets on its standard input.
  */
 export async function applyHostPlan(
   remote: RemoteExec,
@@ -639,6 +659,7 @@ export async function applyHostPlan(
   if (opts.version !== undefined && !/^[0-9A-Za-z.+-]{1,64}$/.test(opts.version)) {
     throw new OpsCrewError("INVALID_INPUT", "The OpsCrew version must be a version string.");
   }
+  if (opts.rootImage !== undefined) requireRootImage(opts.rootImage);
   if (valid.findings.length > 0) {
     throw refuse(
       `OpsCrew cannot change this server yet: ${valid.findings.map((finding) => finding.message).join(" ")}`,
@@ -702,6 +723,7 @@ export async function applyHostPlan(
     remote,
     plan: valid,
     privilege: null,
+    rootImage: opts.rootImage,
     redactor,
     secrets,
     runnerToken: opts.runnerToken,
@@ -725,6 +747,8 @@ export async function applyHostPlan(
           : ctx.findings.noRoot("");
       throw refuse(finding.message, finding.hint);
     }
+    // Root through Docker runs the caller's image: refused plainly without one.
+    if (privilege === "docker") requireRootImage(opts.rootImage);
     ctx.privilege = privilege;
     ctx.recorder = await Recorder.load(ctx);
     await appsCheck(ctx, ctx.recorder.apps);
@@ -736,6 +760,18 @@ export async function applyHostPlan(
       if (owner === undefined || owner === valid.app) continue;
       const gone = !ctx.recorder.apps.includes(owner);
       if (!gone || !isRemoval(valid, step)) throw addonTaken(step.id, owner, gone);
+    }
+    // Another app's private network is never changed by this app's plan.
+    for (const { step } of changes) {
+      if (step.id !== "network" || isRemoval(valid, step)) continue;
+      const iface = String(step.params.interface);
+      const owner = ctx.recorder.networkOwner(iface);
+      if (owner !== undefined && owner !== valid.app) {
+        throw refuse(
+          `The WireGuard interface ${iface} on this server is the private network of the OpsCrew app "${owner}", so OpsCrew does not change it for "${valid.app}".`,
+          `This app's network needs another UDP port on this server: make a fresh plan with ${opts.command}.`,
+        );
+      }
     }
   }
 
@@ -751,9 +787,12 @@ export async function applyHostPlan(
     // setup never leaves an add-on without an owner; a removal clears it only once it is done
     // (and never while a history really stays on the server: that is still the app's).
     const addon = isAddon(step.id) && runAsOf(step) === "root" ? step.id : undefined;
+    // The same for the app's private network: named before its setup, cleared once removed.
+    const network = step.id === "network" ? String(step.params.interface) : undefined;
     const removal = isRemoval(valid, step);
     try {
       if (addon !== undefined && !removal) await ctx.recorder?.setAddon(addon, valid.app);
+      if (network !== undefined && !removal) await ctx.recorder?.setNetwork(network, valid.app);
       if (await runStep(ctx, step, work.scripts)) applied.push(step.id);
       else skipped.push(step.id);
       // The host record lists the apps set up on the server.
@@ -763,6 +802,7 @@ export async function applyHostPlan(
       if (addon !== undefined && removal && !ctx.historyKept.has(step.id)) {
         await ctx.recorder?.setAddon(addon, null);
       }
+      if (network !== undefined && removal) await ctx.recorder?.setNetwork(network, null);
     } catch (error) {
       throw failure(error, applied);
     }

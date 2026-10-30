@@ -35,6 +35,8 @@ const MOVED = [
   "/var/log/opscrew",
   "/usr/local/sbin/opscrew-web-filter",
   "/etc/systemd/system",
+  "/etc/wireguard",
+  "/run/opscrew-",
   "/proc/",
 ];
 

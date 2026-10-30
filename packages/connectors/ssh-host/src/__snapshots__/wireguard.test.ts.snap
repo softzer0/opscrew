@@ -1,0 +1,39 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`readWireGuard > reads as root, through sudo, or through Docker with the script on the container's stdin 1`] = `
+"# opscrew-host: wireguard.read
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+command -v wg >/dev/null 2>&1 || fail 'WireGuard (wg) is not installed on the server.'
+dump=$(wg show "$IFACE" dump) || fail "OpsCrew's WireGuard interface $IFACE is not up on the server."
+# The first line is the interface's own, with its private key; a peer's second field is its
+# preshared key. Only each peer's public key, endpoint, allowed IPs and latest handshake leave.
+printf '%s\\n' "$dump" | sed 1d | cut -f 1,3,4,5
+"
+`;

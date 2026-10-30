@@ -159,7 +159,7 @@ describe("applyHostPlan on a fresh server", () => {
     expect(again.steps.every((step) => step.state === "in-place")).toBe(true);
     const second = await applyApproved(fake, again);
     expect(second.applied).toEqual([]);
-    expect(fake.names()).toEqual(["privilege", "inspect"]);
+    expect(fake.names()).toEqual(["privilege", "inspect", "network.inspect"]);
   });
 
   it("runs every step through sudo -n for a sudo login", async () => {

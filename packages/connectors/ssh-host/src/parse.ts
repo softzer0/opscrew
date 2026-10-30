@@ -19,6 +19,7 @@ import {
   type DirFact,
   type HostFacts,
   type Listener,
+  type NetworkFacts,
   type RunnerFact,
   type RuntimeFileFact,
   ServiceEnvFileSchema,
@@ -171,6 +172,86 @@ export function parseSs(text: string): Listener[] {
     listeners.push({ proto, address: local.slice(0, colon), port, process });
   }
   return listeners;
+}
+
+/** The UDP ports of `listeners`, sorted, each once. */
+export function udpPorts(listeners: readonly Listener[]): number[] {
+  const ports = listeners.filter((l) => l.proto === "udp").map((l) => l.port);
+  return [...new Set(ports)].sort((a, b) => a - b);
+}
+
+/** `ip -o link show type wireguard`: the interfaces' names. */
+export function parseWireguardLinks(text: string): string[] {
+  return linesOf(text).flatMap((line) => {
+    const name = /^\d+:\s+([^\s:@]+)(?:@\S+)?:/.exec(line)?.[1];
+    return name === undefined ? [] : [name];
+  });
+}
+
+/**
+ * The private networks' section (see `NETWORK_SNIPPET`): `dropin <sha256|->` and
+ * `iface <name> <config|key|enabled|active|address|peer> <value>` lines.
+ */
+export function parseNetworkState(text: string): NetworkFacts {
+  let dropIn: string | null = null;
+  const interfaces = new Map<string, NetworkFacts["interfaces"][number]>();
+  for (const line of linesOf(text)) {
+    const [kind, name = "", field, value = ""] = line.split(/\s+/);
+    if (kind === "dropin") {
+      dropIn = /^[0-9a-f]{64}$/.test(name) ? name : null;
+      continue;
+    }
+    if (kind !== "iface" || name === "") continue;
+    const item = interfaces.get(name) ?? {
+      name,
+      config: "",
+      publicKey: null,
+      enabled: false,
+      active: false,
+      addresses: [],
+      peers: [],
+    };
+    if (field === "config") item.config = value;
+    else if (field === "key") item.publicKey = value === "-" ? null : value;
+    else if (field === "enabled") item.enabled = value === "yes";
+    else if (field === "active") item.active = value === "yes";
+    else if (field === "address") item.addresses.push(value);
+    else if (field === "peer") item.peers.push(value);
+    interfaces.set(name, item);
+  }
+  return { dropIn, interfaces: [...interfaces.values()] };
+}
+
+/** Route types `ip route` may print before a route's destination. */
+const ROUTE_TYPES = new Set([
+  "unicast",
+  "local",
+  "broadcast",
+  "multicast",
+  "anycast",
+  "throw",
+  "unreachable",
+  "prohibit",
+  "blackhole",
+  "nat",
+]);
+
+/**
+ * `ip -4 route show` (the main table): each route other than the default one, as
+ * `<network> dev <interface>` (`<network>` alone without a device), the network as
+ * {@link canonicalIpv4Cidr} gives it. A multipath route's `nexthop` lines are skipped.
+ */
+export function parseIpv4Routes(text: string): string[] {
+  return text.split("\n").flatMap((line) => {
+    if (/^\s/.test(line)) return [];
+    const words = line.trim().split(/\s+/);
+    const destination = words[ROUTE_TYPES.has(words[0] ?? "") ? 1 : 0] ?? "";
+    const network = canonicalIpv4Cidr(destination);
+    if (network === null || network === "0.0.0.0/0") return [];
+    const dev = words.indexOf("dev");
+    const device = dev >= 0 ? words[dev + 1] : undefined;
+    return [device === undefined ? network : `${network} dev ${device}`];
+  });
 }
 
 /** True when a listening address is only reachable from the server itself. */

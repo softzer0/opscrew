@@ -39,6 +39,9 @@ import {
   TUNNEL_APP_PORT,
   tunnelDir,
   tunnelProject,
+  UFW_NETWORK_COMMENT,
+  UFW_NETWORK_LOCAL_COMMENT,
+  UFW_NETWORK_SSH_COMMENT,
   UFW_SSH_COMMENT,
   UFW_WEB_COMMENT,
   WEB_RULES,
@@ -65,6 +68,19 @@ import {
   hostFindings,
   privilegeFindings,
 } from "./findings";
+import {
+  clashingRoutes,
+  DOCKER_POOLS,
+  type NetworkStepParams,
+  NetworkStepParamsSchema,
+  networkConfig,
+  networkConfigPath,
+  networkDropIn,
+  networkKeyPath,
+  networkRange,
+  networkStepFields,
+  networkUnit,
+} from "./network";
 import {
   canonicalSshSource,
   isLoopback,
@@ -172,6 +188,7 @@ const APP_STEPS: ReadonlySet<HostStepId> = new Set([
   "app-record",
   "github-runner",
   "tunnel-connector",
+  "network",
 ]);
 
 function step(
@@ -209,7 +226,12 @@ const quoted = (apps: readonly AppRecord[]) => listText(apps.map((record) => `"$
 /** Plain findings that make the rest of the facts unreliable; every step is blocked. */
 function fatalFindings(facts: HostFacts, findings: HostFindings): HostFinding[] {
   const found = privilegeFindings(facts, findings);
-  if (found.length > 0) return found;
+  return found.length > 0 ? found : platformFindings(facts, findings);
+}
+
+/** An operating system, architecture or init OpsCrew does not support, or a damaged host record. */
+function platformFindings(facts: HostFacts, findings: HostFindings): HostFinding[] {
+  const found: HostFinding[] = [];
   const versions = SUPPORTED_OS[facts.os.id];
   if (!versions?.includes(facts.os.versionId)) {
     found.push(
@@ -1882,6 +1904,11 @@ export function planTeardown(
         : "Nothing of the app is left.",
     ),
   );
+  // The app's private network goes once its containers, which listen on it, are gone.
+  const networks = Object.entries(f.record?.networks ?? {})
+    .filter(([, owner]) => owner === app)
+    .map(([iface]) => iface);
+  steps.push(...networkRemovals(f, networks, "app"));
   const keys = keyList(others.map((record) => record.deployKey));
   if (!last && f.deployUser !== null && f.deployUser.keys.join("\n") !== keys.join("\n")) {
     steps.push(
@@ -2162,6 +2189,8 @@ export function planUndo(
       ),
     );
   }
+  // Each app's teardown removes its private network; one left behind goes here.
+  steps.push(...networkRemovals(f, Object.keys(record.networks ?? {}), "shared"));
   if (entry("web-filter") && webFilterPresent(f)) {
     steps.push(
       step(
@@ -2301,6 +2330,138 @@ export function planUndo(
     findings: found,
     otherApps: assumedApps(others),
   };
+}
+
+/**
+ * Steps that remove the private networks of the interfaces `ifaces` (named in the host record),
+ * each leaving Docker's drop-in for the recorded interfaces that stay.
+ */
+function networkRemovals(
+  facts: HostFacts,
+  ifaces: readonly string[],
+  scope: HostStep["scope"],
+): HostStep[] {
+  const staying = Object.keys(facts.record?.networks ?? {})
+    .filter((iface) => !ifaces.includes(iface))
+    .sort();
+  return [...ifaces]
+    .sort()
+    .map((iface) =>
+      step(
+        "network",
+        `Remove the private network's WireGuard interface ${iface}: its configuration, key and firewall rules`,
+        "change",
+        { interface: iface, remove: true, otherInterfaces: staying.join(" ") },
+        `${networkUnit(iface)} is stopped and disabled, and ${networkConfigPath(iface)}, ${networkKeyPath(iface)} and OpsCrew's ufw rules for it ("${UFW_NETWORK_COMMENT}", "${UFW_NETWORK_SSH_COMMENT}", "${UFW_NETWORK_LOCAL_COMMENT}") are removed. ${staying.length > 0 ? `Docker keeps starting after ${listText(staying)}.` : "Docker's drop-in for OpsCrew's interfaces goes too."}`,
+        scope,
+      ),
+    );
+}
+
+/**
+ * The network's state as inspection read it as root (`HostFacts.network`, with ufw's rules in
+ * `firewall.ufwRules`) is the plan's, as the step's check on the server compares them: false when
+ * it was not read.
+ */
+function networkInPlace(facts: HostFacts, p: NetworkStepParams): boolean {
+  const network = facts.network;
+  const found = network?.interfaces.find((item) => item.name === p.interface);
+  if (network === null || found === undefined) return false;
+  const rules = facts.firewall.ufwRules;
+  const allowed = (rule: string) => rules.some((item) => item.rule === `allow ${rule}`);
+  const ip = p.address.slice(0, p.address.indexOf("/"));
+  // The Docker networks' rules to this address: exactly the planned ports.
+  const localPorts = rules.flatMap((item) => {
+    const port = new RegExp(
+      `^allow from \\S+ to ${ip.replaceAll(".", "\\.")} port (\\d+) proto tcp$`,
+    ).exec(item.rule)?.[1];
+    return item.comment === UFW_NETWORK_LOCAL_COMMENT && port !== undefined ? [Number(port)] : [];
+  });
+  return (
+    found.config === sha256Hex(networkConfig(p)) &&
+    found.publicKey === p.publicKey &&
+    found.enabled &&
+    found.active &&
+    network.dropIn === sha256Hex(networkDropIn([p.interface, ...p.otherInterfaces])) &&
+    allowed(`${p.port}/udp`) &&
+    allowed(`in on ${p.interface} to any port ${p.sshPort} proto tcp`) &&
+    DOCKER_POOLS.every((pool) =>
+      p.localPorts.every((port) => allowed(`from ${pool} to ${ip} port ${port} proto tcp`)),
+    ) &&
+    localPorts.every((port) => p.localPorts.includes(port)) &&
+    found.addresses.includes(p.address) &&
+    sameList(
+      found.peers,
+      p.peers.map((peer) => peer.publicKey),
+    )
+  );
+}
+
+/**
+ * The host plan of the app's private network on one server (ADR 0022): the `network` step, from
+ * the parameters the agents derive from the plan (`NetworkStepParams`). It works with every way
+ * the login becomes root, Docker included (the servers OpsCrew creates). From the facts read
+ * without root it checks the routes (one overlapping the network's `/24` is a finding that says
+ * to change `network.range`) and the firewalls (another than ufw is a finding naming what the
+ * network needs). The step is in place when the network's state, read as root (`HostFacts.network`,
+ * through Docker when `inspectHost` had the image), is the plan's; without that state it is
+ * planned as a change, and its check on the server skips it when all is in place. The server's
+ * private key is never in the plan; apply passes it as the `wireguardKey` secret. Findings say to
+ * run `command` again once fixed.
+ */
+export function planNetwork(
+  facts: HostFacts,
+  input: { app: string; network: NetworkStepParams },
+  command: string,
+): HostPlan {
+  const f = parseFacts(facts);
+  if (!AppNameSchema.safeParse(input.app).success) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "The app name must be lower-case letters, digits and dashes.",
+    );
+  }
+  const p = parseInput(
+    NetworkStepParamsSchema,
+    input.network,
+    "The private network's settings for this server are not valid",
+    "Run opscrew design again to make the network's settings, then provision.",
+  );
+  const findings = hostFindings(command);
+  // The facts the network needs are read without root, so root through Docker is enough.
+  const found: HostFinding[] = f.privilege === "docker" ? [] : privilegeFindings(f, findings);
+  if (found.length === 0) found.push(...platformFindings(f, findings));
+  if (found.length === 0 && f.firewall.foreign.length > 0) {
+    found.push(findings.networkOtherFirewall(f.firewall.foreign, p));
+  }
+  const clashes = clashingRoutes(f.ipv4Routes, p);
+  if (found.length === 0 && clashes.length > 0) {
+    found.push(findings.networkRangeTaken(networkRange(p.address), clashes));
+  }
+  const peers = p.peers.map((peer) => peer.name).sort();
+  const title = `Join the private network as ${p.address} on WireGuard interface ${p.interface} (UDP port ${p.port})${peers.length > 0 ? `, linked to ${listText(peers)}` : ""}`;
+  const item =
+    found.length > 0
+      ? step("network", title, "blocked", networkStepFields(p), found[0]?.message)
+      : networkInPlace(f, p)
+        ? step("network", title, "in-place", networkStepFields(p), "Already set.")
+        : step(
+            "network",
+            title,
+            "change",
+            networkStepFields(p),
+            `Installs wireguard-tools when it is missing. The server's private key reaches it only while this plan is applied, on standard input (never in this plan), into ${networkKeyPath(p.interface)}, which only root can read; the configuration ${networkConfigPath(p.interface)} holds no key. ${networkUnit(p.interface)} starts at boot, and Docker starts after it (a drop-in that wants it without requiring it), so the services published on the private address come up after a reboot. Peers change without dropping the link. ufw opens UDP port ${p.port} to every address (WireGuard answers nothing without a valid key) and SSH (port ${p.sshPort}) on ${p.interface}${p.localPorts.length > 0 ? `, and lets this server's own Docker networks (${listText([...DOCKER_POOLS])}) reach the services published on the private address (TCP ${listText([...new Set(p.localPorts)].sort((a, b) => a - b).map(String))})` : ""}, marked "${UFW_NETWORK_COMMENT}", "${UFW_NETWORK_SSH_COMMENT}" and "${UFW_NETWORK_LOCAL_COMMENT}".`,
+          );
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app: input.app,
+    steps: [item],
+    findings: found,
+  };
+  // Validate now so bad parameters fail before anything is approved.
+  stepScripts(plan, item);
+  return plan;
 }
 
 /** The Cloudflare Tunnel connector of an add-on's subdomain (`planPortainer`, `planAddon`). */

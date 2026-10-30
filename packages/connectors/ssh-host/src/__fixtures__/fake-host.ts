@@ -4,6 +4,7 @@
  * their `# opscrew-host: <name>` header and quoted parameters. Every call is recorded so tests can
  * check which commands ran, what reached stdin, and that each script passes `sh -n`.
  */
+import { createPrivateKey, createPublicKey } from "node:crypto";
 import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contracts";
 import { sha256Hex as sha256 } from "@opscrew/core";
 import {
@@ -33,6 +34,7 @@ import {
   SYSCTL_FILE,
   TUNNELS_DIR,
 } from "../constants";
+import { NETWORK_DROP_IN, networkPort } from "../network";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
 import { runnerUnitText } from "../runner-unit";
 import { SSH_FIREWALL_RULES, SSH_FIREWALL_UNIT } from "../ssh-firewall";
@@ -167,6 +169,7 @@ function runnerUnitSha256(app: string, runner: FakeRunner): string {
 
 export interface FakeCall {
   command: string;
+  /** What reached the script's stdin (its secrets), with any root path. */
   input?: string;
   /** Script name from the header, or "" for commands that are not OpsCrew scripts. */
   name: string;
@@ -175,6 +178,33 @@ export interface FakeCall {
   sudo: boolean;
   /** The user a root shell ran the script as (`runuser -u deploy -- sh -c …`). */
   asUser?: string;
+  /** Root through Docker: the image, and the command's whole stdin (the script and its input). */
+  docker?: { image: string; stdin: string };
+}
+
+/** The `docker` privilege's command (see `dockerRootCommand`). */
+const DOCKER_ROOT_RE =
+  /^docker run --rm -i --privileged --pid=host --net=host --ipc=host --uts=host (\S+) nsenter -t 1 -m -u -i -n -p -- sh -s$/;
+
+/** The stdin of `sh -s` with its input piped into the script (see `pipedScript`). */
+const PIPED_RE = /^printf '%s' ('(?:[^']|'\\'')*') \| \{\n([\s\S]*)\n\} ; exit \$\?\n$/;
+
+/** The public key `wg pubkey` prints for a private key (both base64); "" for no key. */
+export function wgPublicKey(privateKey: string): string {
+  const raw = Buffer.from(privateKey.trim(), "base64");
+  if (raw.length !== 32) return "";
+  // X25519's PKCS #8 header, then the 32 bytes of the key.
+  const der = Buffer.concat([Buffer.from("302e020100300506032b656e04220420", "hex"), raw]);
+  const key = createPublicKey(createPrivateKey({ key: der, format: "der", type: "pkcs8" }));
+  return Buffer.from(key.export({ format: "jwk" }).x ?? "", "base64url").toString("base64");
+}
+
+/** One of OpsCrew's WireGuard interfaces: its unit, its address and its peers (public keys). */
+export interface FakeWireGuard {
+  enabled: boolean;
+  active: boolean;
+  address: string;
+  peers: string[];
 }
 
 export interface FakeHostOptions {
@@ -199,6 +229,13 @@ export function scriptParams(script: string): Record<string, string> {
     if (match?.[1] && match[2]) params[match[1]] = unquote(match[2]);
   }
   return params;
+}
+
+/** Sections as the inspection scripts print them: each under its mark, with its exit code. */
+function sectionsOutput(sections: readonly (readonly [string, string, number])[]): string {
+  return sections
+    .map(([name, text, exit]) => `\n${SECTION_MARK}${name}\n${text}\n${EXIT_MARK}${exit}`)
+    .join("\n");
 }
 
 function result(stdout = "", exitCode = 0, stderr = ""): CommandResult {
@@ -308,6 +345,21 @@ export class FakeHost implements RemoteExec {
   proxyServices = new Set<string>();
   /** `docker compose … up -d kamal-proxy` of the shared edge fails. */
   edgeUpFails = false;
+  /**
+   * The login is in the docker group with Docker running: without root or passwordless sudo, the
+   * privilege probe says `docker`, and Docker root commands run as root.
+   */
+  dockerAccess = false;
+  /** OpsCrew's WireGuard interfaces, by name. */
+  wireguard = new Map<string, FakeWireGuard>();
+  /** What the network steps did, in order (never a key). */
+  wireguardLog: string[] = [];
+  /** `ip -4 route show` lines besides the WireGuard interfaces' own routes. */
+  routes = [
+    "default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.20 metric 100",
+    "172.17.0.0/16 dev docker0 proto kernel scope link src 172.17.0.1 linkdown",
+    "192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.20 metric 100",
+  ];
   /** The `flags` of /proc/cpuinfo (x86 only; AVX by default). */
   cpuFlags = "fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov sse sse2 ssse3 sse4_1 sse4_2 avx avx2";
   portainerAdmin = false;
@@ -397,13 +449,30 @@ export class FakeHost implements RemoteExec {
 
   private async answer(command: string, options: RemoteRunOptions): Promise<CommandResult> {
     let sudo = false;
-    let rest = command;
-    if (rest.startsWith("sudo -n ")) {
-      sudo = true;
-      rest = rest.slice("sudo -n ".length);
+    let script: string;
+    let input = options.input;
+    let docker: FakeCall["docker"];
+    const dockerRoot = DOCKER_ROOT_RE.exec(command);
+    if (dockerRoot?.[1]) {
+      // The container's sh reads the script, with its input piped into it, on its stdin.
+      const stdin = options.input ?? "";
+      const piped = PIPED_RE.exec(stdin);
+      if (!piped?.[1] || piped[2] === undefined) {
+        throw new Error(`fake host: docker root without its piped script: ${stdin.slice(0, 80)}`);
+      }
+      docker = { image: dockerRoot[1], stdin };
+      script = piped[2];
+      const secrets = unquote(piped[1]);
+      input = secrets === "" ? undefined : secrets;
+    } else {
+      let rest = command;
+      if (rest.startsWith("sudo -n ")) {
+        sudo = true;
+        rest = rest.slice("sudo -n ".length);
+      }
+      if (!rest.startsWith("sh -c ")) throw new Error(`unexpected command: ${command}`);
+      script = unquote(rest.slice("sh -c ".length));
     }
-    if (!rest.startsWith("sh -c ")) throw new Error(`unexpected command: ${command}`);
-    let script = unquote(rest.slice("sh -c ".length));
     let asUser: string | undefined;
     const wrapped = /^runuser -u (\S+) -- sh -c ('[\s\S]*')$/.exec(script);
     if (wrapped?.[1] && wrapped[2]) {
@@ -412,8 +481,16 @@ export class FakeHost implements RemoteExec {
     }
     const name = /^# opscrew-host: (\S+)/.exec(script)?.[1] ?? "";
     const params = scriptParams(script);
-    const call: FakeCall = { command, name, script, params, sudo, ...(asUser ? { asUser } : {}) };
-    if (options.input !== undefined) call.input = options.input;
+    const call: FakeCall = {
+      command,
+      name,
+      script,
+      params,
+      sudo,
+      ...(asUser ? { asUser } : {}),
+      ...(docker ? { docker } : {}),
+    };
+    if (input !== undefined) call.input = input;
     this.calls.push(call);
 
     if (this.dropOn.has(name)) {
@@ -423,22 +500,25 @@ export class FakeHost implements RemoteExec {
     if (sudo && this.sudo !== "nopasswd") {
       return result("", 1, "sudo: a password is required\n");
     }
-    const root = sudo || this.login === "root";
+    if (docker !== undefined && !this.dockerAccess) {
+      return result("", 1, "permission denied while trying to connect to the Docker daemon socket\n");
+    }
+    const root = sudo || docker !== undefined || this.login === "root";
     if (asUser !== undefined && !root) throw new Error(`fake host: runuser without root: ${command}`);
     const failure = this.failScripts.get(name);
     if (failure !== undefined) return fail(failure);
-    if (this.echoStdinOn === name) return result("", 1, `got: ${options.input ?? ""}`);
+    if (this.echoStdinOn === name) return result("", 1, `got: ${input ?? ""}`);
     // The runner's own scripts run as deploy: through runuser from root, or as the deploy login.
     const deploy = asUser === "deploy" || (asUser === undefined && !root && this.login === "deploy");
     if (/^github-runner(\.remove)?\.(check|apply|verify)$/.test(name)) {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
-      return this.runnerScript(name, params, options.input ?? "");
+      return this.runnerScript(name, params, input ?? "");
     }
     if (/^check-key(\.remove)?\.(check|apply|verify)$/.test(name)) {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.checkKeyScript(name, params);
     }
-    return this.handle(name, params, root && asUser === undefined, options.input ?? "");
+    return this.handle(name, params, root && asUser === undefined, input ?? "");
   }
 
   // -------------------------------------------------------------------------------------------
@@ -677,12 +757,36 @@ export class FakeHost implements RemoteExec {
     add("dpkg-interrupted", this.dpkgInterrupted ? "0001" : "", this.dpkgInterrupted ? 0 : 0);
     add(
       "listeners",
-      this.listeners
-        .map(
+      [
+        ...this.listeners.map(
           (l) =>
             `${l.proto}   ${l.proto === "tcp" ? "LISTEN" : "UNCONN"} 0      4096   ${l.address}:${l.port}   0.0.0.0:*    users:(("${l.process}",pid=100,fd=3))`,
+        ),
+        // A WireGuard interface's socket is the kernel's: ss names no process.
+        ...[...this.wireguard]
+          .filter(([, wg]) => wg.active)
+          .map(([iface]) => `udp   UNCONN 0      0      0.0.0.0:${networkPort(iface)}   0.0.0.0:*`),
+      ].join("\n"),
+    );
+    const up = [...this.wireguard].filter(([, wg]) => wg.active);
+    add(
+      "wireguard",
+      up
+        .map(
+          ([iface], i) =>
+            `${7 + i}: ${iface}: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420 qdisc noqueue state UNKNOWN mode DEFAULT group default qlen 1000\\    link/none `,
         )
         .join("\n"),
+    );
+    add(
+      "routes",
+      [
+        ...this.routes,
+        ...up.map(([iface, wg]) => {
+          const [ip = ""] = wg.address.split("/");
+          return `${ip.replace(/\.\d+$/, ".0")}/24 dev ${iface} proto kernel scope link src ${ip}`;
+        }),
+      ].join("\n"),
     );
     const unit = (name: string, active: boolean) => `${name} ${active ? "active" : "inactive"}`;
     add(
@@ -887,9 +991,7 @@ export class FakeHost implements RemoteExec {
         `table ${this.sshFirewall.table ?? ""}`,
       ].join("\n"),
     );
-    return sections
-      .map(([name, text, exit]) => `\n${SECTION_MARK}${name}\n${text}\n${EXIT_MARK}${exit}`)
-      .join("\n");
+    return sectionsOutput(sections);
   }
 
   /** `iptables-save`: the given text plus Docker's DOCKER-USER and OpsCrew's chain. */
@@ -1040,6 +1142,7 @@ export class FakeHost implements RemoteExec {
       case "privilege":
         if (this.login === "root") return result("root\n");
         if (this.sudo === "nopasswd") return result("sudo\n");
+        if (this.dockerAccess) return result("docker\n");
         return result(this.sudo === "password" ? "sudo-password\n" : "none\n");
       case "inspect":
         return result(this.inspection(root));
@@ -1263,6 +1366,42 @@ export class FakeHost implements RemoteExec {
         this.files.delete(WEB_FILTER_SCRIPT);
         this.webFilterLog.push("remove");
         return result();
+
+      // network (the app's private WireGuard network)
+      case "network.inspect":
+        return result(
+          sectionsOutput([
+            ["network", this.networkStateText(), 0],
+            ["ufw-added", this.installed("ufw") ? this.ufwAdded() : "", this.installed("ufw") ? 0 : 127],
+          ]),
+        );
+      case "network.check":
+        return this.check(this.networkOk(p));
+      case "network.verify":
+        return this.verify(this.networkOk(p), p);
+      case "network.apply":
+        return this.networkApply(p, input);
+      case "network.remove.check":
+        return this.check(this.networkRemovedOk(p));
+      case "network.remove.verify":
+        return this.verify(this.networkRemovedOk(p), p);
+      case "network.remove.apply": {
+        const iface = p.IFACE ?? "";
+        this.wireguard.delete(iface);
+        this.files.delete(p.CONFIG ?? "");
+        this.files.delete(p.KEY_FILE ?? "");
+        const sshRule = new RegExp(`^allow in on ${iface} to any port \\d+ proto tcp$`);
+        this.ufwRules = this.ufwRules.filter(
+          (r) =>
+            !(r.rule === `allow ${p.PORT}/udp` && r.comment === p.UDP_COMMENT) &&
+            !(sshRule.test(r.rule) && r.comment === p.SSH_COMMENT) &&
+            !this.staleLocalRules(p).includes(r),
+        );
+        if (p.DROPIN_B64) this.files.set(p.DROP_IN ?? "", Buffer.from(p.DROPIN_B64, "base64").toString("utf8"));
+        else this.files.delete(p.DROP_IN ?? "");
+        this.wireguardLog.push(`remove ${iface}`);
+        return result();
+      }
 
       case "ufw.install.apply":
         if (!this.installed("ufw")) {
@@ -1719,6 +1858,149 @@ export class FakeHost implements RemoteExec {
         return this.verify(this.addonRemovedOk(p), p);
     }
     throw new Error(`fake host: unknown script ${name}`);
+  }
+
+  /** The `network` step's end state holds (see its `verify_state`). */
+  private networkOk(p: Record<string, string>): boolean {
+    const wg = this.wireguard.get(p.IFACE ?? "");
+    const is = (path: string | undefined, sum: string | undefined) => {
+      const content = this.files.get(path ?? "");
+      return content !== undefined && sha256(content) === sum;
+    };
+    return (
+      this.installed("wireguard-tools") &&
+      is(p.CONFIG, p.CONFIG_SHA256) &&
+      wgPublicKey(this.files.get(p.KEY_FILE ?? "") ?? "") === p.PUBLIC_KEY &&
+      wg?.enabled === true &&
+      is(p.DROP_IN, p.DROPIN_SHA256) &&
+      this.hasRule(`${p.PORT}/udp`) &&
+      this.hasRule(`in on ${p.IFACE} to any port ${p.SSH_PORT} proto tcp`) &&
+      this.localRules(p).every((rule) => this.hasRule(rule)) &&
+      this.staleOwnLocal(p).length === 0 &&
+      wg.active &&
+      wg.address === p.ADDRESS &&
+      wg.peers.map((key) => `${key} `).sort().join("") === p.PEER_KEYS
+    );
+  }
+
+  private networkApply(p: Record<string, string>, input: string): CommandResult {
+    if (!this.installed("ufw")) return fail("ufw is not installed, so OpsCrew cannot open the private network's port.");
+    const iface = p.IFACE ?? "";
+    if (!this.installed("wireguard-tools")) {
+      this.packages.set("wireguard-tools", "1.0.20210914-1ubuntu4");
+      this.wireguardLog.push("install wireguard-tools");
+    }
+    const key = input.split("\n")[0] ?? "";
+    if (key !== "") {
+      if (/[^A-Za-z0-9+/=]/.test(key)) return fail("The WireGuard key has unexpected characters, so it was not written.");
+      if (wgPublicKey(key) !== p.PUBLIC_KEY) {
+        return fail("The WireGuard key that arrived on standard input is not the one the plan names, so it was not written.");
+      }
+      this.files.set(p.KEY_FILE ?? "", `${key}\n`);
+      this.wireguardLog.push(`key ${iface}`);
+    }
+    const stored = this.files.get(p.KEY_FILE ?? "");
+    if (stored === undefined) return fail(`No WireGuard key arrived on standard input, and the server has none for ${iface} yet.`);
+    if (wgPublicKey(stored) !== p.PUBLIC_KEY) {
+      return fail(`The server's WireGuard key for ${iface} is not the one the plan names, and no key arrived on standard input.`);
+    }
+    const decode = (value: string | undefined) => Buffer.from(value ?? "", "base64").toString("utf8");
+    this.files.set(p.CONFIG ?? "", decode(p.CONFIG_B64));
+    this.files.set(p.DROP_IN ?? "", decode(p.DROPIN_B64));
+    const wg = this.wireguard.get(iface) ?? { enabled: false, active: false, address: "", peers: [] };
+    this.wireguardLog.push(!wg.active ? `start ${iface}` : wg.address !== p.ADDRESS ? `restart ${iface}` : `syncconf ${iface}`);
+    this.wireguard.set(iface, {
+      enabled: true,
+      active: true,
+      address: p.ADDRESS ?? "",
+      peers: (p.PEER_KEYS ?? "").split(" ").filter(Boolean),
+    });
+    const sshRule = `in on ${iface} to any port ${p.SSH_PORT} proto tcp`;
+    if (!this.hasRule(`${p.PORT}/udp`)) this.ufwRules.push({ rule: `allow ${p.PORT}/udp`, comment: p.UDP_COMMENT ?? null });
+    if (!this.hasRule(sshRule)) this.ufwRules.push({ rule: `allow ${sshRule}`, comment: p.SSH_COMMENT ?? null });
+    for (const rule of this.localRules(p)) {
+      if (!this.hasRule(rule)) this.ufwRules.push({ rule: `allow ${rule}`, comment: p.LOCAL_COMMENT ?? null });
+    }
+    const stale = this.staleOwnLocal(p);
+    this.ufwRules = this.ufwRules.filter((r) => !stale.includes(r));
+    return result();
+  }
+
+  /** The Docker networks' rules the `network` step plans, per pool and local port. */
+  private localRules(p: Record<string, string>): string[] {
+    const ports = (p.LOCAL_PORTS ?? "").split(" ").filter(Boolean);
+    return (p.POOLS ?? "")
+      .split(" ")
+      .flatMap((pool) => ports.map((port) => `from ${pool} to ${p.HOST_IP} port ${port} proto tcp`));
+  }
+
+  /** OpsCrew's Docker networks' rules to this step's address on a port it no longer names. */
+  private staleOwnLocal(p: Record<string, string>): UfwRule[] {
+    const ports = (p.LOCAL_PORTS ?? "").split(" ");
+    return this.ufwRules.filter((r) => {
+      const match = /^allow from \S+ to (\S+) port (\d+) proto tcp$/.exec(r.rule);
+      return (
+        r.comment === p.LOCAL_COMMENT &&
+        match !== null &&
+        match[1] === p.HOST_IP &&
+        !ports.includes(match[2] ?? "")
+      );
+    });
+  }
+
+  /** OpsCrew's Docker networks' rules to an address no interface that stays has (`OTHERS`). */
+  private staleLocalRules(p: Record<string, string>): UfwRule[] {
+    const kept = (p.OTHERS ?? "")
+      .split(" ")
+      .filter(Boolean)
+      .map((other) => /^Address = ([0-9.]+)\//m.exec(this.files.get(`${p.WG_DIR}/${other}.conf`) ?? "")?.[1]);
+    return this.ufwRules.filter((r) => {
+      const address = /^allow from \S+ to (\S+) port \d+ proto tcp$/.exec(r.rule)?.[1];
+      return r.comment === p.LOCAL_COMMENT && address !== undefined && !kept.includes(address);
+    });
+  }
+
+  /** The private networks' section as the inspection prints it as root (`NETWORK_SNIPPET`). */
+  private networkStateText(): string {
+    const dropIn = this.files.get(NETWORK_DROP_IN);
+    const configs = [...this.files.keys()]
+      .map((path) => /^\/etc\/wireguard\/(wg-opscrew\d+)\.conf$/.exec(path)?.[1])
+      .filter((name): name is string => name !== undefined)
+      .sort();
+    return [
+      `dropin ${dropIn === undefined ? "-" : sha256(dropIn)}`,
+      ...configs.flatMap((name) => {
+        const wg = this.wireguard.get(name);
+        const key = wgPublicKey(this.files.get(`/etc/wireguard/${name}.key`) ?? "");
+        return [
+          `iface ${name} config ${sha256(this.files.get(`/etc/wireguard/${name}.conf`) ?? "")}`,
+          `iface ${name} key ${key || "-"}`,
+          `iface ${name} enabled ${wg?.enabled ? "yes" : "no"}`,
+          `iface ${name} active ${wg?.active ? "yes" : "no"}`,
+          ...(wg?.active ? [`iface ${name} address ${wg.address}`] : []),
+          ...(wg?.active ? wg.peers.map((peer) => `iface ${name} peer ${peer}`) : []),
+        ];
+      }),
+    ].join("\n");
+  }
+
+  /** The `network` step's removal holds (see its `verify_state`). */
+  private networkRemovedOk(p: Record<string, string>): boolean {
+    const iface = p.IFACE ?? "";
+    const sshRule = new RegExp(`^allow in on ${iface} to any port \\d+ proto tcp$`);
+    const dropIn = this.files.get(p.DROP_IN ?? "");
+    return (
+      !this.wireguard.has(iface) &&
+      !this.files.has(p.CONFIG ?? "") &&
+      !this.files.has(p.KEY_FILE ?? "") &&
+      !this.ufwRules.some(
+        (r) =>
+          (r.rule === `allow ${p.PORT}/udp` && r.comment === p.UDP_COMMENT) ||
+          (sshRule.test(r.rule) && r.comment === p.SSH_COMMENT),
+      ) &&
+      this.staleLocalRules(p).length === 0 &&
+      (p.DROPIN_SHA256 ? dropIn !== undefined && sha256(dropIn) === p.DROPIN_SHA256 : dropIn === undefined)
+    );
   }
 
   /** An add-on's history: its `data/` folder is there. */

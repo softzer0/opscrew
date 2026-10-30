@@ -11,10 +11,14 @@
  * with `planUndo`. No plan replaces or removes another repository's runner.
  * `planAddon` (feature 017) adds the scheduled check's key, which can run only `df`, and runs the
  * Beszel and Grafana Alloy add-ons as the deploy user, one of each per server.
+ * `planNetwork` (feature 018) joins a server to the app's private WireGuard network, also on the
+ * servers OpsCrew creates, where the deploy user becomes root through Docker (the `docker`
+ * privilege); `readWireGuard` reads the network's peers.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md`,
- * `specs/015-environments-runners/contracts/runners.md` and
- * `specs/017-observability/contracts/observability.md`.
+ * `specs/015-environments-runners/contracts/runners.md`,
+ * `specs/017-observability/contracts/observability.md` and
+ * `specs/018-split-placement/contracts/split-placement.md`.
  */
 
 export { applyHostPlan, HostApplyError } from "./apply";
@@ -57,6 +61,7 @@ export {
 export { hostPlanHash } from "./hash";
 export { inspectHost, inspectRunners } from "./inspect";
 export { localExec } from "./local";
+export { type NetworkStepParams, NetworkStepParamsSchema } from "./network";
 export { canonicalSshSource, isPublicAddress } from "./parse";
 export {
   type AddonConnector,
@@ -64,12 +69,14 @@ export {
   type AddonPlanKind,
   planAddon,
   planHost,
+  planNetwork,
   planPortainer,
   planRunner,
   planRunnerHost,
   planTeardown,
   planUndo,
 } from "./plan";
+export type { HostPrivilege } from "./privilege";
 export {
   type ApplyOptions,
   type ApplyResult,
@@ -84,3 +91,4 @@ export {
   MAX_SSH_SOURCES,
 } from "./types";
 export { webFilterFileHashes } from "./web-filter";
+export { readWireGuard, type WireGuardPeer } from "./wireguard";

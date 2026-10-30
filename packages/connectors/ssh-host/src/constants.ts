@@ -294,6 +294,13 @@ export function sshdDropIn(p: {
 /** ufw rule comments that mark rules OpsCrew added. */
 export const UFW_SSH_COMMENT = "opscrew-ssh";
 export const UFW_WEB_COMMENT = "opscrew-web";
+/**
+ * The private network's rules: its WireGuard port, SSH on its interface, and the host's own Docker
+ * networks to its private address.
+ */
+export const UFW_NETWORK_COMMENT = "opscrew-network";
+export const UFW_NETWORK_SSH_COMMENT = "opscrew-network-ssh";
+export const UFW_NETWORK_LOCAL_COMMENT = "opscrew-network-local";
 
 /** Web rules OpsCrew opens in public mode (HTTP, HTTPS and HTTP/3). */
 export const WEB_RULES = ["80/tcp", "443/tcp", "443/udp"] as const;

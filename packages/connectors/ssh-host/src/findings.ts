@@ -8,6 +8,7 @@ import {
   TUNNEL_APP_PORT,
 } from "./constants";
 import { type HostFacts, otherActiveApps, readableRecords } from "./facts";
+import { DOCKER_POOLS } from "./network";
 import type { AccessMode, HostFinding } from "./types";
 
 /** How an app of each access mode is served, for findings. */
@@ -17,13 +18,18 @@ const SERVED: Readonly<Record<AccessMode, string>> = {
   tunnel: "through a Cloudflare Tunnel, with no web port open",
 };
 
-/** Why the login cannot change the server: it needs a password for sudo, or cannot become root. */
+/**
+ * Why the login cannot change the server: it needs a password for sudo, or cannot become root.
+ * A login that becomes root only through Docker is refused too: the server's state is inspected
+ * as root, so the facts these plans rely on are missing. Only `planNetwork` takes it.
+ */
 export function privilegeFindings(
   facts: Pick<HostFacts, "privilege" | "user">,
   findings: HostFindings,
 ): HostFinding[] {
   if (facts.privilege === "sudo-password") return [findings.sudoNeedsPassword(facts.user)];
   if (facts.privilege === "none") return [findings.noRoot(facts.user)];
+  if (facts.privilege === "docker") return [findings.rootOnlyThroughDocker(facts.user)];
   return [];
 }
 
@@ -101,6 +107,30 @@ export function hostFindings(command: string) {
       code: "no-root-access",
       message: `The login ${user || "OpsCrew used"} cannot become root: it is not root and cannot use sudo.`,
       hint: `Connect as root or as a user with passwordless sudo, ${rerun}.`,
+    }),
+    rootOnlyThroughDocker: (user: string): HostFinding => ({
+      code: "root-only-through-docker",
+      message: `The login ${user || "OpsCrew used"} becomes root only through Docker (it is in the docker group, without passwordless sudo), so OpsCrew could not read this server's settings: it reads them as root.`,
+      hint: `Connect as root or as a user with passwordless sudo, ${rerun}.`,
+    }),
+    networkOtherFirewall: (
+      what: readonly string[],
+      network: {
+        port: number;
+        sshPort: number;
+        interface: string;
+        address: string;
+        localPorts: readonly number[];
+      },
+    ): HostFinding => ({
+      code: "other-firewall",
+      message: `This server already uses another firewall: ${listText(what)}. OpsCrew does not add a second one, and the private network needs rules in it: UDP port ${network.port} open to every address, SSH (TCP port ${network.sshPort}) allowed in on ${network.interface}${network.localPorts.length > 0 ? `, and this server's Docker networks (${listText([...DOCKER_POOLS])}) allowed to ${network.address.slice(0, network.address.indexOf("/"))} on TCP ${network.localPorts.length === 1 ? "port" : "ports"} ${listText(network.localPorts.map(String))}` : ""}.`,
+      hint: `Either turn that firewall off and let OpsCrew manage ufw, or keep yours and do not join this server to the private network for now. ${upperFirst(rerun)} after the change.`,
+    }),
+    networkRangeTaken: (range: string, routes: readonly string[]): HostFinding => ({
+      code: "network-range-taken",
+      message: `The private network's range ${range} overlaps ${routes.length === 1 ? "a route" : "routes"} this server already has (${listText(routes)}), so traffic to the network's addresses could go elsewhere.`,
+      hint: `Change network.range in opscrew/plan.yaml to another /24 inside 10.200.0.0/13 that this server does not use, ${rerun}.`,
     }),
     unsupportedOs: (name: string): HostFinding => ({
       code: "unsupported-os",

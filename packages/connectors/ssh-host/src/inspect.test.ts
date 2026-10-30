@@ -9,6 +9,7 @@ import {
   dockerFirewall,
   inspectHost,
   inspectScript,
+  networkInspectScript,
   RUNTIME_FILES_SNIPPET,
   SYSCTL_SNIPPET,
 } from "./inspect";
@@ -74,16 +75,18 @@ describe("inspectHost", () => {
     }
   }
 
-  it("runs only read-only commands: the privilege probe and the inspection script", async () => {
+  it("runs only read-only commands: the privilege probe and the inspection scripts", async () => {
     const fake = new FakeHost({ login: "admin", sudo: "nopasswd" });
     await inspectHost(fake);
-    expect(fake.names()).toEqual(["privilege", "inspect"]);
-    // The inspection runs as root through sudo -n; the probe runs as the login.
-    expect(fake.calls.map((call) => call.sudo)).toEqual([false, true]);
+    expect(fake.names()).toEqual(["privilege", "inspect", "network.inspect"]);
+    // The inspections run as root through sudo -n; the probe runs as the login.
+    expect(fake.calls.map((call) => call.sudo)).toEqual([false, true, true]);
   });
 
-  it("uses no command that changes the server", () => {
-    const script = inspectScript();
+  it.each([
+    ["inspection", inspectScript()],
+    ["private networks' inspection", networkInspectScript()],
+  ])("the %s uses no command that changes the server", (_, script) => {
     const mutating = [
       /\bapt(-get)?\s+(install|remove|purge|update)/,
       /\b(useradd|usermod|userdel|groupadd|chown|chmod|mkdir|install\s+-|rm\s|mv\s|cp\s|tee\s|touch\s)/,

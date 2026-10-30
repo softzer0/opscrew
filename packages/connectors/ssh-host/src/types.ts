@@ -7,9 +7,10 @@ export const HOST_PLAN_SCHEMA_VERSION = 1;
 
 /**
  * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs`, `app-record`,
- * `github-runner` and `tunnel-connector` are the app's own; `edge` only appears in a teardown (the
- * edge goes with the last app). `check-key`, `beszel` and `alloy` are planned by `planAddon` (and
- * removed by a teardown).
+ * `github-runner`, `tunnel-connector` and `network` are the app's own; `edge` only appears in a
+ * teardown (the edge goes with the last app). `check-key`, `beszel` and `alloy` are planned by
+ * `planAddon` (and removed by a teardown), `network` by `planNetwork` (and removed by a teardown
+ * or an undo).
  */
 export const HOST_STEP_IDS = [
   "package-repair",
@@ -21,6 +22,7 @@ export const HOST_STEP_IDS = [
   "ufw",
   "ssh-firewall",
   "web-filter",
+  "network",
   "fail2ban",
   "unattended-upgrades",
   "sysctl",
@@ -382,6 +384,11 @@ export interface ApplySecrets {
   beszelHubKey?: string;
   /** The Grafana Cloud access policy token (`alloy`). */
   grafanaCloudToken?: string;
+  /**
+   * The server's WireGuard private key, base64 (`network`): written to its root-only key file.
+   * Pass it when the server lacks it or holds another; without it the key there stays.
+   */
+  wireguardKey?: string;
 }
 
 export type SecretName = keyof ApplySecrets;
@@ -401,6 +408,12 @@ export interface ApplyOptions {
   runnerToken?: (kind: "registration" | "remove") => Promise<string>;
   /** Opens NEW connections (deploy user, admin login); true when both work. */
   verifyLogin: () => Promise<boolean>;
+  /**
+   * The image, pinned by its digest, that root steps run in when the login becomes root only
+   * through Docker (the `docker` privilege; the agents pass `IMAGES.caddy.ref`). A plan with root
+   * steps for such a login is refused without it.
+   */
+  rootImage?: string;
   /** Seconds before the server undoes an sshd/ufw change on its own (default 180). */
   deadManSeconds?: number;
   /** OpsCrew version written to the host record (default: this package's version). */

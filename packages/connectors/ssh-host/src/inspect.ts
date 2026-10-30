@@ -38,6 +38,7 @@ import {
   type WebFilterFacts,
 } from "./facts";
 import { foreignFirewalls } from "./firewall";
+import { NETWORK_DROP_IN, WIREGUARD_DIR } from "./network";
 import {
   dockerdFlags,
   EXIT_MARK,
@@ -54,6 +55,8 @@ import {
   parseDockerUserChain,
   parseDpkg,
   parseFree,
+  parseIpv4Routes,
+  parseNetworkState,
   parseNsswitchPasswd,
   parseOpensshVersion,
   parseOsRelease,
@@ -67,10 +70,13 @@ import {
   parseUfwDefaults,
   parseUsers,
   parseWebFilterChain,
+  parseWireguardLinks,
   SECTION_MARK,
   type Section,
   splitSections,
+  udpPorts,
 } from "./parse";
+import { rootCall } from "./privilege";
 import { asLogin, asRoot, buildScript } from "./shell";
 import {
   SSH_FIREWALL_FUNCTIONS,
@@ -312,6 +318,27 @@ done
 echo "enabled $(systemctl is-enabled ${SSH_FIREWALL_SERVICE} 2>/dev/null)"
 echo "table $(nft_table)"`;
 
+/**
+ * OpsCrew's private networks, as the `network` step checks them (see `parseNetworkState`): the
+ * drop-in's SHA-256, and for each interface with a configuration its SHA-256, its key file's
+ * public key (never the key), its unit, addresses and peers. Root only.
+ */
+const NETWORK_SNIPPET = `if [ -f ${NETWORK_DROP_IN} ]; then echo "dropin $(sha256sum ${NETWORK_DROP_IN} | cut -d ' ' -f 1)"; else echo 'dropin -'; fi
+for conf in ${WIREGUARD_DIR}/wg-opscrew*.conf; do
+  [ -f "$conf" ] || continue
+  name=\${conf##*/}
+  name=\${name%.conf}
+  case "\${name#wg-opscrew}" in ''|*[!0-9]*) continue ;; esac
+  unit="wg-quick@$name.service"
+  echo "iface $name config $(sha256sum "$conf" | cut -d ' ' -f 1)"
+  pub=$(wg pubkey < "${WIREGUARD_DIR}/$name.key") || pub=''
+  echo "iface $name key \${pub:--}"
+  if [ "$(systemctl is-enabled "$unit")" = enabled ]; then echo "iface $name enabled yes"; else echo "iface $name enabled no"; fi
+  if systemctl is-active --quiet "$unit"; then echo "iface $name active yes"; else echo "iface $name active no"; fi
+  ip -4 -o addr show dev "$name" | awk -v name="$name" '{ print "iface " name " address " $4 }'
+  wg show "$name" peers | sed "s/^/iface $name peer /"
+done`;
+
 /** Directory services that log users in without local passwords or keys OpsCrew can see. */
 const DIRECTORY_PAM = "pam_(sss|ldap|krb5|winbind)";
 const PAM_FILES = [
@@ -350,6 +377,9 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ],
   ["dpkg-interrupted", "ls -A /var/lib/dpkg/updates"],
   ["listeners", "ss -H -ltnup"],
+  // The private network's facts, read without root: the WireGuard interfaces and the routes.
+  ["wireguard", "ip -o link show type wireguard"],
+  ["routes", "ip -4 route show"],
   [
     "units",
     `for u in firewalld nftables docker fail2ban; do printf '%s %s\\n' "$u" "$(systemctl is-active "$u" 2>/dev/null)"; done`,
@@ -448,38 +478,54 @@ export function inspectRunnersScript(): string {
   return sectionsScript("runners.inspect", RUNNER_SECTIONS);
 }
 
+/**
+ * The read-only script `inspectHost` runs as root (as the apply does: root, sudo or Docker) for
+ * the private networks' state and ufw's added rules.
+ */
+export function networkInspectScript(): string {
+  return sectionsScript("network.inspect", [
+    ["network", NETWORK_SNIPPET],
+    ...INSPECT_SECTIONS.filter(([name]) => name === "ufw-added"),
+  ]);
+}
+
 /** Read-only: the apps' records, as the inspection prints them (see {@link parseAppRecords}). */
 export function readAppsScript(): string {
   return buildScript("apps.read", {}, APPS_SNIPPET, { tolerant: true });
 }
 
-/** Read-only probe: how the admin login becomes root. Prints root, sudo, sudo-password or none. */
+/**
+ * Read-only probe: how the admin login becomes root. Prints root, sudo, docker (neither root nor
+ * passwordless sudo, but `docker info` works: the login is in the docker group), sudo-password or
+ * none. A stopped Docker is never started by the probe.
+ */
 export function privilegeProbeScript(): string {
   return buildScript(
     "privilege",
     {},
-    `if [ "$(id -u)" = 0 ]; then echo root
-elif command -v sudo >/dev/null 2>&1; then
+    `if [ "$(id -u)" = 0 ]; then echo root; exit 0; fi
+if command -v sudo >/dev/null 2>&1; then
   # stdout alone decides: sudo may warn on stderr ("unable to resolve host") and still work.
   out=$(sudo -n sh -c 'id -u' 2>/dev/null < /dev/null) || out=''
-  if [ "$(printf '%s\\n' "$out" | tail -n 1)" = 0 ]; then echo sudo
-  else
-    # stderr only tells a password prompt from a refusal. sudo says "a password is required";
-    # sudo-rs (Ubuntu 25.10+) says "interactive authentication is required".
-    err=$(sudo -n true 2>&1 >/dev/null < /dev/null) || true
-    case "$err" in
-      *password*|*authentication*) echo sudo-password ;;
-      *) echo none ;;
-    esac
-  fi
-else echo none; fi`,
+  if [ "$(printf '%s\\n' "$out" | tail -n 1)" = 0 ]; then echo sudo; exit 0; fi
+fi
+if systemctl is-active --quiet docker 2>/dev/null && docker info >/dev/null 2>&1; then echo docker; exit 0; fi
+if command -v sudo >/dev/null 2>&1; then
+  # stderr only tells a password prompt from a refusal. sudo says "a password is required";
+  # sudo-rs (Ubuntu 25.10+) says "interactive authentication is required".
+  err=$(sudo -n true 2>&1 >/dev/null < /dev/null) || true
+  case "$err" in
+    *password*|*authentication*) echo sudo-password; exit 0 ;;
+  esac
+fi
+echo none`,
     { tolerant: true },
   );
 }
 
-async function run(remote: RemoteExec, command: string, timeoutMs: number) {
+async function run(remote: RemoteExec, command: string, timeoutMs: number, input?: string) {
   try {
-    return await remote.run(command, { timeoutMs });
+    return await remote.run(command, input === undefined ? { timeoutMs } : { timeoutMs, input });
   } catch (error) {
     throw new OpsCrewError("COMMAND_FAILED", "OpsCrew could not run its checks on the server.", {
       hint: "Check that the server is reachable over SSH with your key, then try again.",
@@ -488,13 +534,12 @@ async function run(remote: RemoteExec, command: string, timeoutMs: number) {
   }
 }
 
-/** Runs the privilege probe; `root`, `sudo`, `sudo-password` or `none`. */
-export async function probePrivilege(
-  remote: RemoteExec,
-): Promise<"root" | "sudo" | "sudo-password" | "none"> {
+/** Runs the privilege probe; `root`, `sudo`, `docker`, `sudo-password` or `none`. */
+export async function probePrivilege(remote: RemoteExec): Promise<HostFacts["privilege"]> {
   const result = await run(remote, asLogin(privilegeProbeScript()), 60_000);
   const answer = linesOf(result.stdout).pop();
-  if (answer === "root" || answer === "sudo" || answer === "sudo-password") return answer;
+  if (answer === "root" || answer === "sudo" || answer === "docker") return answer;
+  if (answer === "sudo-password") return answer;
   return "none";
 }
 
@@ -597,10 +642,7 @@ function webFilterFiles(text: string): Pick<WebFilterFacts, "files" | "enabled" 
 }
 
 /** Builds `HostFacts` from the inspection output. Exported for tests. */
-export function factsFromOutput(
-  output: string,
-  privilege: "root" | "sudo" | "sudo-password" | "none",
-): HostFacts {
+export function factsFromOutput(output: string, privilege: HostFacts["privilege"]): HostFacts {
   const sections = splitSections(output);
   const os = parseOsRelease(ok(sections, "os-release"));
   const units = parsePairs(section(sections, "units").text);
@@ -667,6 +709,7 @@ export function factsFromOutput(
       : undefined;
   const pending = parsePairs(text("pending-undo"));
   const deploy = section(sections, "deploy");
+  const listeners = parseSs(text("listeners"));
 
   const facts = {
     user: ok(sections, "whoami").trim(),
@@ -682,7 +725,10 @@ export function factsFromOutput(
     flock: section(sections, "flock").exit === 0,
     addresses: parseAddresses(ok(sections, "addresses")),
     sshd,
-    listeners: parseSs(text("listeners")),
+    listeners,
+    wireguardInterfaces: parseWireguardLinks(ok(sections, "wireguard")),
+    udpPortsInUse: udpPorts(listeners),
+    ipv4Routes: parseIpv4Routes(ok(sections, "routes")),
     firewall: {
       ufw,
       ufwRules: parseUfwAdded(text("ufw-added")),
@@ -791,10 +837,17 @@ export function factsFromOutput(
 
 /**
  * Inspects the server with fixed, read-only commands (as root, through `sudo -n` when the login
- * is not root). Never changes the server. When the login cannot become root the facts are
- * partial and `privilege` says why; `planHost` then refuses with a plain finding.
+ * is not root). Never changes the server. When the login cannot become root that way (`docker`
+ * included: inspection never runs through Docker) the facts are partial and `privilege` says
+ * why; `planHost` then refuses with a plain finding. The private networks' state (`network`) is
+ * read as root the way the apply becomes root: as root, through `sudo -n`, or through Docker
+ * when `options.rootImage` (the `docker` privilege's image, as `ApplyOptions.rootImage`) is
+ * given, which then reads ufw's rules (`firewall.ufwRules`) too.
  */
-export async function inspectHost(remote: RemoteExec): Promise<HostFacts> {
+export async function inspectHost(
+  remote: RemoteExec,
+  options: { rootImage?: string } = {},
+): Promise<HostFacts> {
   const privilege = await probePrivilege(remote);
   const script = inspectScript();
   const command =
@@ -805,7 +858,32 @@ export async function inspectHost(remote: RemoteExec): Promise<HostFacts> {
       hint: "Check that the login has a POSIX shell (sh, bash or zsh) and try again.",
     });
   }
-  return factsFromOutput(result.stdout, privilege);
+  const facts = factsFromOutput(result.stdout, privilege);
+  if (
+    privilege === "sudo-password" ||
+    privilege === "none" ||
+    (privilege === "docker" && options.rootImage === undefined)
+  ) {
+    return facts;
+  }
+  // The private networks, read as root the way the apply becomes root.
+  const call = rootCall(privilege, networkInspectScript(), undefined, options.rootImage);
+  const read = await run(remote, call.command, 180_000, call.input);
+  if (!read.stdout.includes(SECTION_MARK)) {
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      "OpsCrew could not read the private network's state on the server.",
+      {
+        hint: "Check that the server is reachable, and that Docker runs on it when OpsCrew becomes root through Docker, then try again.",
+      },
+    );
+  }
+  const sections = splitSections(read.stdout);
+  const network = parseNetworkState(section(sections, "network").text);
+  // Through Docker, ufw's rules are read only here: the other facts are read as the login.
+  if (privilege !== "docker") return { ...facts, network };
+  const ufwRules = parseUfwAdded(section(sections, "ufw-added").text);
+  return { ...facts, network, firewall: { ...facts.firewall, ufwRules } };
 }
 
 /**
