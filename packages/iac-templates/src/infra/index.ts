@@ -1,4 +1,4 @@
-import type { CloudDeployTarget, DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type CloudDeployTarget, type DeployPlan } from "@opscrew/plan-schema";
 import { MODULE_FILES } from "../generated/modules";
 import { usesCloudflare, webOnlyFromCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText, type VariablePrefix } from "../providers";
@@ -6,10 +6,10 @@ import type { RenderContext, RenderedFile, ServerModule } from "../types";
 import { dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
   APP_NAME_VARIABLE,
-  alignedArguments,
   besideInfraDir,
   CLOUDFLARE_PROVIDER,
   CLOUDFLARE_PROVIDER_BLOCK,
+  moduleBlock,
   output,
   type RootFiles,
   rootHeader,
@@ -20,6 +20,19 @@ import {
 import { ownRoot } from "./own";
 import { portainerRoot } from "./portainer";
 import { pagesRoot, workersRoot } from "./serverless";
+import {
+  checkKeyArgument,
+  type ExtraServerCall,
+  extraServerCalls,
+  extraServerModules,
+  extraServersOutput,
+  keyTfvars,
+  keyVariables,
+  providerBlock,
+  serverTfvars,
+  serverVariables,
+  wireguardArgument,
+} from "./servers";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
 export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
@@ -68,6 +81,8 @@ interface RootShape {
   /** The server the DNS module and the `server_*` outputs follow. */
   live: ServerCall;
   moved?: { from: ServerModule; to: ServerModule };
+  /** The plan's extra cloud servers, `module "server_<name>"` each. */
+  extras: ExtraServerCall[];
   /** Providers whose requirement, provider block and module are rendered, in the given order. */
   providers: ProviderText[];
   /** True while a move is in progress (a layout was given). */
@@ -76,8 +91,9 @@ interface RootShape {
 
 /**
  * Resolves the root module's layout. Without `ctx.layout` this is `module "server"` for
- * `plan.target` and its provider only. Only servers OpsCrew creates have a cloud root: throws for
- * a plan for any other target, and for layouts the engines would reject.
+ * `plan.target` and its provider; the plan's extra cloud servers and their providers come after.
+ * Only servers OpsCrew creates have a cloud root: throws for a plan for any other target, and for
+ * layouts the engines would reject.
  */
 function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   const target = cloudTarget(plan.target);
@@ -111,7 +127,8 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
       `The infrastructure layout renders two ${layout.server.provider} servers; a move needs two different providers.`,
     );
   }
-  const providers = [...new Set(layout.providers)];
+  const extras = extraServerCalls(plan);
+  const providers = [...new Set([...layout.providers, ...extras.map((e) => e.target.provider)])];
   for (const { target: server } of servers) {
     if (!providers.includes(server.provider)) {
       throw new Error(
@@ -123,13 +140,11 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
     servers,
     live,
     moved,
+    extras,
     providers: providers.map((provider) => PROVIDER_TEXT[provider]),
     moving: ctx.layout !== undefined,
   };
 }
-
-/** The root variable and `module "server"` argument of the scheduled check's key line. */
-const CHECK_KEY_LINE = "check_key_line";
 
 function mainTf(
   plan: DeployPlan,
@@ -139,34 +154,29 @@ function mainTf(
 ): string {
   const lines = [rootHeader(plan), ""];
   if (shape.moving) lines.push(MOVE_NOTE, "");
-  for (const provider of shape.providers) {
-    lines.push(
-      `# Token from the ${provider.tokenVar} environment variable (never stored in files or state).`,
-      `provider "${provider.terraformProvider.name}" {}`,
-      "",
-    );
-  }
+  for (const provider of shape.providers) lines.push(...providerBlock(provider));
   if (usesCloudflare(plan)) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
   for (const server of shape.servers) {
-    if (server.module === "server_previous") {
-      lines.push(
-        `# The previous ${server.provider.serverNoun}, kept until the move is finished or aborted.`,
-      );
-    }
+    const previous = server.module === "server_previous";
     lines.push(
-      `module "${server.module}" {`,
-      `  source = "../modules/${server.provider.module}"`,
-      "",
-      ...alignedArguments([
-        ...server.provider.moduleArguments(server.prefix),
-        ...(checkKey && server.module === "server"
-          ? [[CHECK_KEY_LINE, `var.${CHECK_KEY_LINE}`] as const]
-          : []),
-      ]),
-      "}",
-      "",
+      ...moduleBlock({
+        comment: previous
+          ? [
+              `# The previous ${server.provider.serverNoun}, kept until the move is finished or aborted.`,
+            ]
+          : [],
+        name: server.module,
+        source: server.provider.module,
+        args: [
+          ...server.provider.moduleArguments({ prefix: server.prefix }),
+          ...wireguardArgument(plan, APP_SERVER),
+          ...checkKeyArgument(checkKey && !previous),
+        ],
+      }),
     );
   }
+  const app = shape.servers.find((server) => server.module === "server");
+  lines.push(...extraServerModules(plan, shape.extras, app?.target.provider, checkKey));
   if (shape.moved) {
     const { from, to } = shape.moved;
     lines.push(
@@ -186,37 +196,6 @@ function mainTf(
   return lines.join("\n");
 }
 
-/**
- * A server's own variables: `location`, `server_type`, `image`, `backups` and, for Hetzner,
- * `delete_protection`; prefixed with `previous_` for `module "server_previous"`.
- */
-function serverVariables({ prefix, provider }: ServerCall): VariableSpec[] {
-  const previous = prefix === "previous_";
-  const describe = (text: string) =>
-    previous ? `${text.replace(/\.$/, "")} of the previous ${provider.serverNoun}.` : text;
-  const specs: VariableSpec[] = [
-    { name: "location", type: "string", description: describe(provider.descriptions.location) },
-    {
-      name: "server_type",
-      type: "string",
-      description: describe(provider.descriptions.serverType),
-    },
-    { name: "image", type: "string", description: describe("Operating system image.") },
-    { name: "backups", type: "bool", description: describe(provider.descriptions.backups) },
-  ];
-  if (provider.deleteProtection) {
-    specs.push({
-      name: "delete_protection",
-      type: "bool",
-      description: previous
-        ? "Protect the previous server against accidental deletion and rebuilds; `opscrew retarget --finish` passes false."
-        : "Protect the server against accidental deletion and rebuilds; `opscrew destroy` passes false.",
-      default: "true",
-    });
-  }
-  return specs.map((spec) => ({ ...spec, name: `${prefix}${spec.name}` }));
-}
-
 function variables(
   plan: DeployPlan,
   shape: RootShape,
@@ -225,27 +204,11 @@ function variables(
 ): VariableSpec[] {
   const base: VariableSpec[] = [
     APP_NAME_VARIABLE,
-    ...shape.servers.flatMap(serverVariables),
-    {
-      name: "deploy_ssh_public_key",
-      type: "string",
-      description: "Public half of the deploy key.",
-    },
-    ...(checkKey
-      ? [
-          {
-            name: CHECK_KEY_LINE,
-            type: "string",
-            description:
-              "The scheduled check's line for the deploy user's authorized_keys (its key, restricted to df), written at a new server's first boot.",
-          },
-        ]
-      : []),
-    {
-      name: "ssh_allowed_cidrs",
-      type: "list(string)",
-      description: "Networks allowed to reach SSH.",
-    },
+    ...shape.servers.flatMap((server) =>
+      serverVariables(server, server.module === "server_previous" ? "previous" : undefined),
+    ),
+    ...shape.extras.flatMap((extra) => serverVariables(extra, extra.name)),
+    ...keyVariables(checkKey),
     {
       name: "http_allowed_cidrs",
       type: "list(string)",
@@ -292,6 +255,7 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
     ...output("server_name", `module.${live}.server_name`),
     ...output("url", url),
     ...serversOutput(shape),
+    ...extraServersOutput(shape.extras),
     ...(pieces?.outputs ?? []),
   ].join("\n");
 }
@@ -304,17 +268,12 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   const shape = rootShape(plan, ctx);
   const pieces = tunnelPieces(plan, ctx);
   const values: Record<string, unknown> = { app_name: plan.app.name };
-  for (const { prefix, target } of shape.servers) {
-    values[`${prefix}location`] = target.location;
-    values[`${prefix}server_type`] = target.serverType;
-    values[`${prefix}image`] = target.image;
-    values[`${prefix}backups`] = target.backups;
+  for (const { prefix, target } of [...shape.servers, ...shape.extras]) {
+    Object.assign(values, serverTfvars(prefix, target));
   }
-  values.deploy_ssh_public_key = ctx.deploySshPublicKey.trim();
-  const checkKey = ctx.checkKeyLine !== undefined;
-  if (checkKey) values[CHECK_KEY_LINE] = ctx.checkKeyLine;
-  values.ssh_allowed_cidrs = plan.security.sshAllowedCidrs;
+  Object.assign(values, keyTfvars(plan, ctx));
   values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
+  const checkKey = ctx.checkKeyLine !== undefined;
   return {
     versions: versionsTf(plan, [
       ...shape.providers.map((provider) => provider.terraformProvider),
@@ -372,6 +331,14 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  * under the sibling `modules/` directory. Deterministic; contains no secrets. The `server_*` and
  * `url` outputs follow the server that receives the traffic; `servers` lists every server by
  * provider.
+ *
+ * Each extra cloud server of the plan (`plan.servers`) is `module "server_<name>"`, named
+ * `<app>-<name>`, with no web ports and the private network's port. On the app server's provider
+ * it gets `module "server"`'s deploy key (and DigitalOcean app tag); on another provider the root
+ * creates them once for every extra server there. `extra_servers` maps each name to
+ * `{ ipv4, ipv6, id, name }`.
+ * With `plan.network`, the app's server module gets the network's port too. An app on a server
+ * the user owns gets the same extra server modules in its own root.
  *
  * With `ctx.layout` (a move to another provider) it renders the layout's server modules
  * (`module "server"`, `module "server_previous"`), its `moved` block, every listed provider's

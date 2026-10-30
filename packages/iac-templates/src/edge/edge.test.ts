@@ -446,7 +446,9 @@ describe("OpsCrew's cloud servers", () => {
     for (const module of ["hetzner-vps", "digitalocean-droplet"]) {
       expect(MODULE_FILES[`${module}/cloud-init.yaml.tftpl`]).toBe(template);
     }
-    const runcmd = (parse(template.replaceAll("$${", "${")) as { runcmd: string[][] }).runcmd;
+    // The template's whole-line directives (`%{ if web ~}`) are not YAML; the lines between stay.
+    const yaml = template.replaceAll("$${", "${").replace(/^%\{.*\n/gm, "");
+    const runcmd = (parse(yaml) as { runcmd: string[][] }).runcmd;
     expect(runcmd).toContainEqual([
       "install",
       "-d",

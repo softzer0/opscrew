@@ -15,6 +15,17 @@ import {
   variablesTf,
   versionsTf,
 } from "./hcl";
+import {
+  type ExtraServerCall,
+  extraServerCalls,
+  extraServerModules,
+  extraServersOutput,
+  keyTfvars,
+  keyVariables,
+  providerBlock,
+  serverTfvars,
+  serverVariables,
+} from "./servers";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
 const OWN_NOTE = [
@@ -22,12 +33,22 @@ const OWN_NOTE = [
   "# server resources, only what Cloudflare needs to send traffic to it.",
 ];
 
+const OWN_NOTE_WITH_EXTRAS = [
+  "# The app's server is one you already own: OpsCrew neither creates nor deletes it. The app's",
+  "# extra servers below are ones OpsCrew creates.",
+];
+
 const ADDRESS_NOTE = [
   "# The server's addresses are never committed: OpsCrew passes them from its local state",
   "# (.opscrew/server.json) as TF_VAR_server_ipv4 and TF_VAR_server_ipv6 when it runs the engine.",
 ];
 
-function variables(plan: DeployPlan, pieces: TunnelPieces | undefined): VariableSpec[] {
+function variables(
+  plan: DeployPlan,
+  pieces: TunnelPieces | undefined,
+  extras: readonly ExtraServerCall[],
+  checkKey: boolean,
+): VariableSpec[] {
   const specs: VariableSpec[] = [APP_NAME_VARIABLE];
   const tunnel = tunnelMode(plan);
   if (!tunnel) {
@@ -47,16 +68,31 @@ function variables(plan: DeployPlan, pieces: TunnelPieces | undefined): Variable
       },
     );
   }
+  if (extras.length > 0) {
+    specs.push(
+      ...extras.flatMap((extra) => serverVariables(extra, extra.name)),
+      ...keyVariables(checkKey),
+    );
+  }
   if (usesCloudflare(plan)) specs.push(...zoneVariables(tunnel ? "domain" : "records"));
   return [...specs, ...(pieces?.variables ?? [])];
 }
 
-function mainTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
+function mainTf(
+  plan: DeployPlan,
+  pieces: TunnelPieces | undefined,
+  extras: readonly ExtraServerCall[],
+  checkKey: boolean,
+): string {
   const lines = [rootHeader(plan), ""];
+  for (const provider of new Set(extras.map((extra) => extra.provider))) {
+    lines.push(...providerBlock(provider));
+  }
   if (usesCloudflare(plan)) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
-  lines.push(...OWN_NOTE);
+  lines.push(...(extras.length > 0 ? OWN_NOTE_WITH_EXTRAS : OWN_NOTE));
   if (!tunnelMode(plan)) lines.push("#", ...ADDRESS_NOTE);
   lines.push("");
+  lines.push(...extraServerModules(plan, extras, undefined, checkKey));
   if (usesCloudflare(plan) && !tunnelMode(plan)) {
     lines.push(
       ...dnsModule(
@@ -71,7 +107,11 @@ function mainTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
   return lines.join("\n");
 }
 
-function outputsTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
+function outputsTf(
+  plan: DeployPlan,
+  pieces: TunnelPieces | undefined,
+  extras: readonly ExtraServerCall[],
+): string {
   const lines = [rootHeader(plan), ""];
   if (tunnelMode(plan)) {
     lines.push(...output("url", '"https://${var.domain}"'));
@@ -92,31 +132,45 @@ function outputsTf(plan: DeployPlan, pieces: TunnelPieces | undefined): string {
       "",
     );
   }
+  lines.push(...extraServersOutput(extras));
   if (pieces) lines.push(...pieces.outputs);
   return lines.join("\n");
 }
 
 /**
- * The root module of a server the user owns: no server resources. Public mode points the DNS
- * module at the `server_ipv4`/`server_ipv6` variables, which the CLI supplies as `TF_VAR_*`
+ * The root module of a server the user owns: no resources for that server. Public mode points the
+ * DNS module at the `server_ipv4`/`server_ipv6` variables, which the CLI supplies as `TF_VAR_*`
  * and which never appear in `terraform.tfvars.json` (FR-902). Tunnel mode serves the app, SSH (and
  * Portainer when opted in) through a Cloudflare Tunnel behind Access instead of DNS records to an
- * address.
+ * address. The plan's extra cloud servers are `module "server_<name>"` each, with the
+ * `extra_servers` output.
  */
 export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   const pieces = tunnelPieces(plan, ctx);
   const cloudflare = usesCloudflare(plan);
   const tunnel = tunnelMode(plan);
+  const extras = extraServerCalls(plan);
+  const providers = [...new Set(extras.map((extra) => extra.provider))];
+  const checkKey = ctx.checkKeyLine !== undefined;
   return {
-    versions: versionsTf(plan, cloudflare ? [CLOUDFLARE_PROVIDER] : []),
-    main: mainTf(plan, pieces),
-    variables: variablesTf(plan, variables(plan, pieces)),
-    outputs: outputsTf(plan, pieces),
+    versions: versionsTf(plan, [
+      ...providers.map((provider) => provider.terraformProvider),
+      ...(cloudflare ? [CLOUDFLARE_PROVIDER] : []),
+    ]),
+    main: mainTf(plan, pieces, extras, checkKey),
+    variables: variablesTf(plan, variables(plan, pieces, extras, checkKey)),
+    outputs: outputsTf(plan, pieces, extras),
     tfvars: {
       app_name: plan.app.name,
+      ...Object.assign({}, ...extras.map((extra) => serverTfvars(extra.prefix, extra.target))),
+      ...(extras.length > 0 ? keyTfvars(plan, ctx) : {}),
       ...(cloudflare ? zoneTfvars(plan, ctx, tunnel ? "domain" : "records") : {}),
       ...(pieces?.tfvars ?? {}),
     },
-    modules: [...(cloudflare && !tunnel ? ["cloudflare-dns"] : []), ...(pieces?.modules ?? [])],
+    modules: [
+      ...providers.map((provider) => provider.module),
+      ...(cloudflare && !tunnel ? ["cloudflare-dns"] : []),
+      ...(pieces?.modules ?? []),
+    ],
   };
 }

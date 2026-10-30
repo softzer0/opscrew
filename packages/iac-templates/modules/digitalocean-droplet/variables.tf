@@ -49,12 +49,31 @@ variable "http_allowed_cidrs" {
 }
 
 variable "app_tag" {
-  description = "The app's own tag, for example opscrew-app:shop; created with the Droplet and deleted with it."
+  description = "The app's own tag, for example opscrew-app:shop; created with the Droplet and deleted with it. Null on the app's other Droplets, which get the tag in shared_tags."
   type        = string
+  default     = null
 }
 
 variable "shared_tags" {
-  description = "Tags shared with other apps, for example managed-by:opscrew; added to the Droplet by name and never deleted."
+  description = "Tags shared with other apps or Droplets, for example managed-by:opscrew; added to the Droplet by name and never deleted."
   type        = list(string)
   default     = []
+}
+
+variable "web" {
+  description = "Whether the Droplet serves the web: false leaves ports 80 and 443 closed, in the cloud firewall and in ufw."
+  type        = bool
+  default     = true
+}
+
+variable "wireguard_port" {
+  description = "UDP port of the app's private WireGuard network, open to everyone; null for none."
+  type        = number
+  default     = null
+}
+
+variable "ssh_key_id" {
+  description = "Id of the deploy key when another Droplet of the app already holds it (DigitalOcean refuses the same key twice); null creates the key here."
+  type        = string
+  default     = null
 }

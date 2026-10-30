@@ -17,3 +17,8 @@ output "server_name" {
   description = "Server name."
   value       = hcloud_server.this.name
 }
+
+output "ssh_key_id" {
+  description = "Id of the deploy key, for the app's other servers on Hetzner Cloud."
+  value       = local.ssh_key_id
+}

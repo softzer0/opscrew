@@ -59,3 +59,21 @@ variable "labels" {
   type        = map(string)
   default     = {}
 }
+
+variable "web" {
+  description = "Whether the server serves the web: false leaves ports 80 and 443 closed, in the cloud firewall and in ufw."
+  type        = bool
+  default     = true
+}
+
+variable "wireguard_port" {
+  description = "UDP port of the app's private WireGuard network, open to everyone; null for none."
+  type        = number
+  default     = null
+}
+
+variable "ssh_key_id" {
+  description = "Id of the deploy key when another server of the app already holds it (Hetzner refuses the same key twice); null creates the key here."
+  type        = string
+  default     = null
+}

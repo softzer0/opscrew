@@ -87,12 +87,17 @@ export interface ProviderText {
   /** Root variable descriptions that name the provider. */
   descriptions: { location: string; serverType: string; backups: string };
   /**
-   * Arguments of a server module call after `source`, in order (name, value). `prefix` selects
-   * the root variables of that server: `""` for `module "server"`, `"previous_"` for
-   * `module "server_previous"`. The shared variables (app name, deploy key, CIDRs) and the labels
-   * or tags are the same for both servers.
+   * Arguments of a server module call after `source`, in order (name, value). The shared
+   * variables (app name, deploy key, CIDRs) and the labels or tags are the same for every server.
    */
-  moduleArguments(prefix: VariablePrefix): readonly (readonly [string, string])[];
+  moduleArguments(call: ModuleCall): readonly (readonly [string, string])[];
+  /**
+   * What the root module creates once for the extra servers on this provider when the app's
+   * server is not there (both providers refuse the same key twice): the deploy key and, on
+   * DigitalOcean, the app's tag. `resources` are the HCL lines; `sshKeyId` and `appTag` the
+   * expressions each extra server's module gets.
+   */
+  extraShared: { resources: readonly string[]; sshKeyId: string; appTag?: string };
   /** Runbook texts. */
   runbook: {
     backupsOnDatabaseCell: string;
@@ -121,15 +126,38 @@ export interface ProviderText {
   };
 }
 
-/** Prefix of a server module's root variables: none for `module "server"`. */
-export type VariablePrefix = "" | "previous_";
+/**
+ * Prefix of a server module's root variables: none for `module "server"`, `previous_` for
+ * `module "server_previous"`, `<name>_` for an extra server's `module "server_<name>"`.
+ */
+export type VariablePrefix = "" | `${string}_`;
+
+/** The server module call {@link ProviderText.moduleArguments} renders. */
+export interface ModuleCall {
+  prefix: VariablePrefix;
+  /** An extra server's name: it is named `<app>-<name>` and serves no web traffic. */
+  extra?: string;
+  /**
+   * The app's tag (an HCL expression) this Droplet gets by name, managed elsewhere: absent, its
+   * own module manages the tag. DigitalOcean only.
+   */
+  appTag?: string;
+}
 
 const COMMON_ARGUMENTS = {
-  name: ["name", "var.app_name"],
   sshKey: ["ssh_public_key", "var.deploy_ssh_public_key"],
   sshCidrs: ["ssh_allowed_cidrs", "var.ssh_allowed_cidrs"],
-  httpCidrs: ["http_allowed_cidrs", "var.http_allowed_cidrs"],
 } as const;
+
+/** The server's name: the app's, or `<app>-<name>` for an extra server. */
+function nameArgument({ extra }: ModuleCall): readonly [string, string] {
+  return ["name", extra === undefined ? "var.app_name" : `"\${var.app_name}-${extra}"`];
+}
+
+/** The web's CIDRs, only on the server that serves the web (not on an extra server). */
+function httpArguments({ extra }: ModuleCall): (readonly [string, string])[] {
+  return extra === undefined ? [["http_allowed_cidrs", "var.http_allowed_cidrs"]] : [];
+}
 
 /** Wording and HCL pieces of each provider OpsCrew creates servers on. */
 export const PROVIDER_TEXT: Record<CloudProvider, ProviderText> = {
@@ -147,18 +175,33 @@ export const PROVIDER_TEXT: Record<CloudProvider, ProviderText> = {
       serverType: "Hetzner Cloud server type.",
       backups: "Hetzner automated backups.",
     },
-    moduleArguments: (prefix) => [
-      COMMON_ARGUMENTS.name,
-      ["location", `var.${prefix}location`],
-      ["server_type", `var.${prefix}server_type`],
-      ["image", `var.${prefix}image`],
-      ["backups", `var.${prefix}backups`],
-      ["delete_protection", `var.${prefix}delete_protection`],
+    moduleArguments: (call) => [
+      nameArgument(call),
+      ["location", `var.${call.prefix}location`],
+      ["server_type", `var.${call.prefix}server_type`],
+      ["image", `var.${call.prefix}image`],
+      ["backups", `var.${call.prefix}backups`],
+      ["delete_protection", `var.${call.prefix}delete_protection`],
       COMMON_ARGUMENTS.sshKey,
       COMMON_ARGUMENTS.sshCidrs,
-      COMMON_ARGUMENTS.httpCidrs,
+      ...httpArguments(call),
       ["labels", '{ "managed-by" = "opscrew", app = var.app_name }'],
     ],
+    extraShared: {
+      resources: [
+        "# The deploy key of the app's servers on Hetzner Cloud, kept here so that removing a server",
+        "# never deletes it (Hetzner refuses the same key twice). The servers get its id through",
+        "# coalesce, whose result is known not to be null before apply, so their own key's count is known.",
+        'resource "hcloud_ssh_key" "deploy" {',
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
+        '  name       = "${var.app_name}-deploy"',
+        "  public_key = var.deploy_ssh_public_key",
+        '  labels     = { "managed-by" = "opscrew", app = var.app_name }',
+        "}",
+        "",
+      ],
+      sshKeyId: "coalesce(hcloud_ssh_key.deploy.id)",
+    },
     runbook: {
       backupsOnDatabaseCell: "Hetzner automated backups are on",
       backupsOn:
@@ -204,19 +247,45 @@ export const PROVIDER_TEXT: Record<CloudProvider, ProviderText> = {
       serverType: "DigitalOcean Droplet size.",
       backups: "DigitalOcean daily backups.",
     },
-    moduleArguments: (prefix) => [
-      COMMON_ARGUMENTS.name,
-      ["region", `var.${prefix}location`],
-      ["size", `var.${prefix}server_type`],
-      ["image", `var.${prefix}image`],
-      ["backups", `var.${prefix}backups`],
+    moduleArguments: (call) => [
+      nameArgument(call),
+      ["region", `var.${call.prefix}location`],
+      ["size", `var.${call.prefix}server_type`],
+      ["image", `var.${call.prefix}image`],
+      ["backups", `var.${call.prefix}backups`],
       COMMON_ARGUMENTS.sshKey,
       COMMON_ARGUMENTS.sshCidrs,
-      COMMON_ARGUMENTS.httpCidrs,
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
-      ["app_tag", '"opscrew-app:${var.app_name}"'],
-      ["shared_tags", '["managed-by:opscrew"]'],
+      ...httpArguments(call),
+      // One place manages the app's tag; the app's other Droplets get it by name from there.
+      ...(call.appTag === undefined
+        ? ([
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
+            ["app_tag", '"opscrew-app:${var.app_name}"'],
+            ["shared_tags", '["managed-by:opscrew"]'],
+          ] as const)
+        : ([["shared_tags", `[${call.appTag}, "managed-by:opscrew"]`]] as const)),
     ],
+    extraShared: {
+      resources: [
+        "# The deploy key and the app's tag of the app's Droplets, kept here so that removing a Droplet",
+        "# never deletes them (DigitalOcean refuses the same key twice). The Droplets get the key's id",
+        "# through coalesce, whose result is known not to be null before apply, so their own key's count",
+        "# is known.",
+        'resource "digitalocean_ssh_key" "deploy" {',
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
+        '  name       = "${var.app_name}-deploy"',
+        "  public_key = var.deploy_ssh_public_key",
+        "}",
+        "",
+        'resource "digitalocean_tag" "app" {',
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript.
+        '  name = "opscrew-app:${var.app_name}"',
+        "}",
+        "",
+      ],
+      sshKeyId: "coalesce(digitalocean_ssh_key.deploy.id)",
+      appTag: "digitalocean_tag.app.name",
+    },
     runbook: {
       backupsOnDatabaseCell: "DigitalOcean daily backups are on",
       backupsOn:

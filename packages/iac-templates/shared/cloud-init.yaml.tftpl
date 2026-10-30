@@ -127,9 +127,11 @@ runcmd:
   - [install, -d, -m, "0750", -o, deploy, -g, deploy, /srv/edge, /srv/apps, /srv/data, /srv/runners]
   - [ufw, default, deny, incoming]
   - [ufw, allow, 22/tcp]
+%{ if web ~}
   - [ufw, allow, 80/tcp]
   - [ufw, allow, 443/tcp]
   - [ufw, allow, 443/udp]
+%{ endif ~}
   - [ufw, --force, enable]
   - [systemctl, enable, --now, docker, fail2ban, unattended-upgrades]
   # SSH: a copy of the moduli with only the groups of 3072 bits and more (ModuliFile; the conffile

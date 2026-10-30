@@ -17,3 +17,13 @@ output "server_name" {
   description = "Droplet name."
   value       = digitalocean_droplet.this.name
 }
+
+output "ssh_key_id" {
+  description = "Id of the deploy key, for the app's other Droplets."
+  value       = local.ssh_key_id
+}
+
+output "app_tag_name" {
+  description = "The app's own tag, for the app's other Droplets; null when this module does not manage it."
+  value       = one(digitalocean_tag.app[*].name)
+}

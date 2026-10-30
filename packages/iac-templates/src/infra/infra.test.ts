@@ -16,6 +16,7 @@ import {
 } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
+import { splitPlan } from "./__fixtures__/servers";
 import { MOVE_LAYOUTS, moveLayout, renderInfra, tfvars } from "./index";
 
 describe("renderInfra on a Portainer target", () => {
@@ -289,6 +290,27 @@ const validatedPlans = {
     }),
   "own server (tunnel)": () =>
     testPlan({ provider: "own", access: "tunnel", domain: "shop.example.com" }),
+  "hetzner plus a hetzner db": () =>
+    splitPlan({
+      app: { domain: "example.com", www: true },
+      servers: [{ name: "db", provider: "hetzner" }],
+    }),
+  "hetzner plus a digitalocean db": () =>
+    splitPlan({
+      app: { domain: "example.com", www: true },
+      servers: [{ name: "db", provider: "digitalocean" }],
+    }),
+  "digitalocean plus two digitalocean servers": () =>
+    splitPlan({
+      app: { provider: "digitalocean" },
+      servers: [
+        { name: "db", provider: "digitalocean" },
+        { name: "cache", provider: "digitalocean" },
+      ],
+    }),
+  "hetzner with a network and no extra server": () => splitPlan({ device: true }),
+  "own server plus a hetzner db": () =>
+    splitPlan({ app: { provider: "own" }, servers: [{ name: "db-1", provider: "hetzner" }] }),
 };
 /** Context for the validated plans, with the account's one-time PIN login method. */
 const validatedContext = () =>
@@ -364,6 +386,63 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
             bin,
             root,
             renderInfra(validatedPlans[provider](), context),
+          );
+        },
+        300_000,
+      );
+    }
+
+    // An extra server counts its own deploy key from the id it gets, which must be known before
+    // apply: an offline plan (no refresh, placeholder tokens) shows it is, with one key per provider.
+    const reusing = {
+      "hetzner plus a hetzner db": () =>
+        splitPlan({ servers: [{ name: "db", provider: "hetzner" }] }),
+      "digitalocean plus two digitalocean servers":
+        validatedPlans["digitalocean plus two digitalocean servers"],
+      "hetzner plus two digitalocean servers": () =>
+        splitPlan({
+          servers: [
+            { name: "db", provider: "digitalocean" },
+            { name: "cache", provider: "digitalocean" },
+          ],
+        }),
+      "own server plus a hetzner db": validatedPlans["own server plus a hetzner db"],
+    };
+    for (const [label, planFor] of Object.entries(reusing)) {
+      const plan = planFor();
+      const providers = new Set(
+        [plan.target, ...(plan.servers ?? []).map((s) => s.target)]
+          .map((t) => t.provider)
+          .filter((p) => p !== "own"),
+      );
+      it.skipIf(!engine)(
+        `plans the ${label} root offline with one deploy key per provider with ${name}`,
+        async (test) => {
+          const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-reuse-`));
+          await initAndValidate(test, name, bin, root, renderInfra(plan, validatedContext()));
+          const runner = new NodeCommandRunner();
+          const cwd = join(root, "opscrew/infra/prod");
+          const init = await runner.run(bin, ["init", "-input=false", "-no-color"], { cwd });
+          expect(init.exitCode, init.stdout + init.stderr).toBe(0);
+          const token = "x".repeat(64);
+          const planned = await runner.run(
+            bin,
+            ["plan", "-refresh=false", "-input=false", "-lock=false", "-no-color"],
+            {
+              cwd,
+              // An own server's address comes from the environment, as the CLI passes it.
+              env: {
+                ...process.env,
+                HCLOUD_TOKEN: token,
+                DIGITALOCEAN_TOKEN: token,
+                TF_VAR_server_ipv4: "203.0.113.10",
+              },
+            },
+          );
+          expect(planned.exitCode, planned.stdout + planned.stderr).toBe(0);
+          expect(planned.stdout).toMatch(/Plan: \d+ to add, 0 to change, 0 to destroy/);
+          expect(planned.stdout.match(/_ssh_key\.deploy(\[0\])? will be created/g)).toHaveLength(
+            providers.size,
           );
         },
         300_000,

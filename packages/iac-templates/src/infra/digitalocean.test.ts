@@ -143,12 +143,11 @@ describe("digitalocean-droplet module", () => {
   it("manages only the app's own tag and never the shared managed-by:opscrew tag", () => {
     // Deleting a DigitalOcean tag untags every resource in the account, other apps included.
     const tagBlocks = [...main.matchAll(/resource "digitalocean_tag" "([^"]+)" \{([^}]*)\}/g)];
-    expect(tagBlocks.map((m) => [m[1], (m[2] ?? "").trim()])).toEqual([
-      ["app", "name = var.app_tag"],
+    expect(tagBlocks.map((m) => [m[1], (m[2] ?? "").replace(/\s+/g, " ").trim()])).toEqual([
+      ["app", "count = var.app_tag == null ? 0 : 1 name = var.app_tag"],
     ]);
-    expect(main).toMatch(
-      /^ {2}tags +=\s*concat\(\[digitalocean_tag\.app\.name\], var\.shared_tags\)$/m,
-    );
+    expect(main).toMatch(/^ {2}app_tags += digitalocean_tag\.app\[\*\]\.name$/m);
+    expect(main).toMatch(/^ {2}tags +=\s*concat\(local\.app_tags, var\.shared_tags\)$/m);
     for (const file of renderInfra(doPlan(), testContext())) {
       for (const block of file.content.matchAll(/resource "digitalocean_tag"[^{]*\{[^}]*\}/g)) {
         expect(block[0]).not.toContain("managed-by");
@@ -166,7 +165,10 @@ describe("digitalocean-droplet module", () => {
     expect(main).toMatch(/hour = 4/);
     expect(main).toMatch(/^ {2}ipv6 +=\s*true$/m);
     expect(main).toMatch(/^ {2}monitoring +=\s*true$/m);
-    expect(main).toMatch(/^ {2}ssh_keys +=\s*\[digitalocean_ssh_key\.deploy\.fingerprint\]$/m);
+    expect(main).toMatch(/^ {2}ssh_keys +=\s*\[local\.ssh_key_id\]$/m);
+    expect(main).toMatch(
+      /^ {2}ssh_key_id = coalesce\(var\.ssh_key_id, one\(digitalocean_ssh_key\.deploy\[\*\]\.id\)\)$/m,
+    );
     expect(main).toContain("ignore_changes = [user_data, image, ssh_keys]");
   });
 
@@ -177,11 +179,26 @@ describe("digitalocean-droplet module", () => {
     );
     expect(inbound).toEqual([
       'protocol = "tcp" port_range = "22" source_addresses = var.ssh_allowed_cidrs',
-      'protocol = "tcp" port_range = "80" source_addresses = var.http_allowed_cidrs',
-      'protocol = "tcp" port_range = "443" source_addresses = var.http_allowed_cidrs',
-      'protocol = "udp" port_range = "443" source_addresses = var.http_allowed_cidrs',
       'protocol = "icmp" source_addresses = ["0.0.0.0/0", "::/0"]',
     ]);
+    // The web's rules, only with `web`, and WireGuard's, only with a port.
+    const dynamic = [
+      ...main.matchAll(/dynamic "inbound_rule" \{\s*for_each = ([^\n]*)\s*content \{([^}]*)\}/g),
+    ].map((m) => [m[1], (m[2] ?? "").replace(/\s+/g, " ").trim()]);
+    expect(dynamic).toEqual([
+      [
+        "var.web ? local.web_rules : []",
+        "protocol = inbound_rule.value.protocol port_range = inbound_rule.value.port source_addresses = var.http_allowed_cidrs",
+      ],
+      [
+        "var.wireguard_port == null ? [] : [var.wireguard_port]",
+        'protocol = "udp" port_range = tostring(inbound_rule.value) source_addresses = ["0.0.0.0/0", "::/0"]',
+      ],
+    ]);
+    const webRules = /web_rules = \[([^\]]*)\]/.exec(main)?.[1]?.replace(/\s+/g, " ").trim();
+    expect(webRules).toBe(
+      '{ protocol = "tcp", port = "80" }, { protocol = "tcp", port = "443" }, { protocol = "udp", port = "443" },',
+    );
     const outbound = [...main.matchAll(/outbound_rule \{([^}]*)\}/g)].map((m) =>
       (m[1] ?? "").replace(/\s+/g, " ").trim(),
     );
@@ -192,10 +209,13 @@ describe("digitalocean-droplet module", () => {
     ]);
   });
 
-  it("exposes the same outputs as the Hetzner module, with the id as a string", () => {
+  it("exposes the Hetzner module's outputs, with the id as a string, and the app's tag", () => {
     const names = (file: string) =>
       [...(MODULE_FILES[file] ?? "").matchAll(/^output "([^"]+)"/gm)].map((m) => m[1]);
-    expect(names("digitalocean-droplet/outputs.tf")).toEqual(names("hetzner-vps/outputs.tf"));
+    expect(names("digitalocean-droplet/outputs.tf")).toEqual([
+      ...names("hetzner-vps/outputs.tf"),
+      "app_tag_name",
+    ]);
     expect(MODULE_FILES["digitalocean-droplet/outputs.tf"]).toContain(
       "tostring(digitalocean_droplet.this.id)",
     );

@@ -3,6 +3,8 @@ import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NodeCommandRunner } from "@opscrew/core";
+import { detectEngines } from "@opscrew/iac-engine";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -11,17 +13,43 @@ import { MODULE_FILES } from "../generated/modules";
 import { renderInfra } from "./index";
 
 const MODULES = ["hetzner-vps", "digitalocean-droplet"] as const;
+
+/**
+ * The engines that render the template for real, with OPSCREW_IT=1 as the package's other engine
+ * tests; each check skips without its binary.
+ */
+const runIt = process.env.OPSCREW_IT === "1";
+const engines = runIt ? await detectEngines() : [];
+if (!runIt) {
+  console.warn("[iac-templates] skipping the cloud-init check with the engines: set OPSCREW_IT=1.");
+}
+for (const name of runIt ? ["tofu", "terraform"] : []) {
+  if (!engines.some((d) => d.name === name && d.supported)) {
+    console.warn(
+      `[iac-templates] skipping the cloud-init check with ${name}: no usable ${name} binary (set OPSCREW_${name.toUpperCase()}_BIN or add it to PATH).`,
+    );
+  }
+}
 const template = MODULE_FILES["hetzner-vps/cloud-init.yaml.tftpl"] ?? "";
 
 /**
- * Renders the template the way Terraform's `templatefile` does for this file: substitutes the
- * one variable and unescapes `$${` / `%%{`. Throws on any other interpolation or directive.
+ * Renders the template the way Terraform's `templatefile` does for this file: keeps or drops the
+ * lines of each whole-line `%{ if <bool> ~}` … `%{ endif ~}`, substitutes the string variables
+ * and unescapes `$${` / `%%{`. Throws on any other interpolation or directive.
  */
-function renderTemplate(source: string, vars: Record<string, string>): string {
-  return source.replace(/(\$\$\{|%%\{|\$\{([^}]*)\}|%\{[^}]*\})/g, (match, _all, name) => {
+function renderTemplate(source: string, vars: Record<string, string | boolean>): string {
+  const kept = source.replace(
+    /^%\{ if (\w+) ~\}\n([\s\S]*?)^%\{ endif ~\}\n/gm,
+    (_match, name: string, body: string) => {
+      if (typeof vars[name] !== "boolean") throw new Error(`no boolean ${name}`);
+      return vars[name] ? body : "";
+    },
+  );
+  return kept.replace(/(\$\$\{|%%\{|\$\{([^}]*)\}|%\{[^}]*\})/g, (match, _all, name) => {
     if (match === "$${") return "${";
     if (match === "%%{") return "%{";
-    if (typeof name === "string" && name.trim() in vars) return vars[name.trim()] ?? "";
+    const value = typeof name === "string" ? vars[name.trim()] : undefined;
+    if (typeof value === "string") return value;
     throw new Error(`unexpected template expression ${match}`);
   });
 }
@@ -102,8 +130,10 @@ echo "host keys: $(ssh-keyscan -p 2222 127.0.0.1 2>/dev/null | awk '{ print $2 }
 `;
 }
 
-const rendered = renderTemplate(template, { ssh_public_key: PUBLIC_KEY, check_key_entry: "" });
+const VARS = { ssh_public_key: PUBLIC_KEY, check_key_entry: "", web: true };
+const rendered = renderTemplate(template, VARS);
 const config = parse(rendered) as CloudConfig;
+const WEB_RULES = ["ufw allow 80/tcp", "ufw allow 443/tcp", "ufw allow 443/udp"];
 const file = (path: string) => config.write_files.find((f) => f.path === path);
 const installer = file("/usr/local/sbin/opscrew-install-docker");
 const script = installer?.content ?? "";
@@ -118,10 +148,7 @@ describe("cloud-init template", () => {
     const line = `restrict,command="df -P -B1 /" ${PUBLIC_KEY.split(" ").slice(0, 2).join(" ")} opscrew-check:acme/shop`;
     // As main.tf builds it: a second list item, quoted by jsonencode.
     const entry = `\n      - ${JSON.stringify(line)}`;
-    const withCheck = renderTemplate(template, {
-      ssh_public_key: PUBLIC_KEY,
-      check_key_entry: entry,
-    });
+    const withCheck = renderTemplate(template, { ...VARS, check_key_entry: entry });
     expect((parse(withCheck) as CloudConfig).users[0]?.ssh_authorized_keys).toEqual([
       PUBLIC_KEY,
       line,
@@ -138,6 +165,50 @@ describe("cloud-init template", () => {
       );
     }
   });
+
+  it("allows the web's ports in ufw only on a server that serves the web", () => {
+    const commands = (text: string) =>
+      (parse(text) as CloudConfig).runcmd.map((c) => (Array.isArray(c) ? c.join(" ") : c));
+    expect(commands(rendered)).toEqual(expect.arrayContaining(WEB_RULES));
+    const withoutWeb = renderTemplate(template, { ...VARS, web: false });
+    const rest = commands(withoutWeb);
+    for (const rule of WEB_RULES) expect(rest).not.toContain(rule);
+    // Only those lines differ: SSH stays allowed and ufw is still enabled.
+    expect(rest).toEqual(commands(rendered).filter((c) => !WEB_RULES.includes(c)));
+    for (const module of MODULES) {
+      expect(MODULE_FILES[`${module}/main.tf`]).toMatch(/^ {4}web {13}= var\.web$/m);
+      expect(MODULE_FILES[`${module}/variables.tf`]).toMatch(
+        /variable "web" \{[^}]*type {8}= bool\n {2}default {5}= true/,
+      );
+    }
+  });
+
+  for (const name of ["tofu", "terraform"] as const) {
+    const engine = engines.find((d) => d.name === name && d.supported);
+    it.skipIf(!engine)(
+      `renders as ${name}'s templatefile does, with and without the web`,
+      async () => {
+        const dir = mkdtempSync(join(tmpdir(), `opscrew-cloud-init-${name}-`));
+        try {
+          writeFileSync(join(dir, "t.tftpl"), template);
+          for (const web of [true, false]) {
+            const result = await new NodeCommandRunner().run(engine?.binary ?? name, ["console"], {
+              cwd: dir,
+              input: `base64encode(templatefile("t.tftpl", { ssh_public_key = ${JSON.stringify(PUBLIC_KEY)}, check_key_entry = "", web = ${web} }))\n`,
+            });
+            expect(result.exitCode, result.stderr).toBe(0);
+            const base64 = /"([A-Za-z0-9+/=]+)"/.exec(result.stdout)?.[1] ?? "";
+            expect(Buffer.from(base64, "base64").toString("utf8")).toBe(
+              renderTemplate(template, { ...VARS, web }),
+            );
+          }
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      },
+      60_000,
+    );
+  }
 
   it("never installs the distribution's Docker packages", () => {
     expect(config.packages).not.toContain("docker.io");
