@@ -204,7 +204,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T1807 [P] [US2] [US4] Workflow and check: extra servers before the switch, the published-port repair, the check's server list, in `packages/iac-templates/src/{workflow,check}/**`
+- [X] T1807 [P] [US2] [US4] Workflow and check: extra servers before the switch, the published-port repair, the check's server list, in `packages/iac-templates/src/{workflow,check}/**`
   - Owns: those paths (+ tests and snapshots). In `src/index.ts`, only the new export lines.
   - Reads: plan.md "6."; research.md R5a (the unpublished port); contracts/split-placement.md "iac-templates"; `workflow/index.ts`, `switch.ts`, `shared.ts`
   - Depends: T1801a
