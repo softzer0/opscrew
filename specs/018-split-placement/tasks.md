@@ -285,8 +285,10 @@ Effort`.
     - **`network-filter`:**
       - a script per interface (`/usr/local/sbin/opscrew-network-filter-<if>`) that rebuilds
         chain `OPSCREW-<if>` jumped to from `DOCKER-USER`, with, per rule, an `ACCEPT` per
-        source and a `DROP`, all on `-i <if>`, `--ctstate NEW`, `--ctorigdst <address>` and
-        `--ctorigdstport <port>`;
+        source and a `DROP`, all on `--ctstate NEW`, `--ctorigdst <address>` and
+        `--ctorigdstport <port>`, on any input interface (traffic to the private address arriving
+        on another interface, such as a LAN that routes the range through the server, is dropped
+        too);
       - a templated unit `opscrew-network-filter@.service` before Docker, and Docker's
         `opscrew-network.conf` drop-in `Requires=` it (fail-closed);
       - the web filter's nftables-backend refusal reused;
@@ -392,7 +394,9 @@ Effort`.
     - **An extra own server** gets the own-server setup host plan, as an own app server does
       (`provision/own.ts`'s path, per server).
     - **Wiring:** `networkSteps`' `published` comes from iac-templates' `publishedOnNetwork`, and
-      the workflow's render context gets each extra own server's SSH port from the server record, and
+      the `network` step's `localPorts` are the TCP ports of that server's services published on its
+      private address (from `publishedOnNetwork`), and the workflow's render context gets each extra
+      own server's SSH port from the server record, and
       `dashboardsOnNetwork` is set only when the app's server hosts this app alone (always on cloud
       servers) and the network has devices.
     - **Inspection on cloud servers** passes `rootImage` (`IMAGES.caddy.ref`) to `inspectHost`, so an

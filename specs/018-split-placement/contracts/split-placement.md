@@ -82,6 +82,7 @@ interface NetworkStepParams {
   peers: { name: string; publicKey: string; endpoint?: string; allowedIp: string; keepalive?: number }[];
   otherInterfaces: string[];      // the host's other OpsCrew interfaces, for Docker's drop-in
   sshPort: number;                // the login's SSH port, opened on the interface (22 on cloud servers)
+  localPorts: number[];           // TCP ports published on the private address that the host's own containers may reach
 }
 // secret on stdin when the agents pass one: the private key (base64)
 
