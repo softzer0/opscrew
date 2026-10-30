@@ -354,6 +354,8 @@ Effort`.
   - Reads: plan.md "11."; spec US2, FR-1811, FR-1817; data-model.md
   - Depends: T1803, T1805, T1808
   - Accept:
+    - **Wiring:** `readNetwork` gets ssh-host's real `readWireGuard`, with each server's privilege
+      from ssh-host's probe (cloud servers' `deploy` is `docker`), not guessed from the login.
     - **`status`:**
       - each server by name, with 017's figures and its containers;
       - a "Private network" section with each link (state, last handshake, measured round trip),
@@ -389,6 +391,8 @@ Effort`.
         app's.
     - **An extra own server** gets the own-server setup host plan, as an own app server does
       (`provision/own.ts`'s path, per server).
+    - **Wiring:** `networkSteps`' `published` comes from iac-templates' `publishedOnNetwork`, and
+      the workflow's render context gets each extra own server's SSH port from the server record.
     - **For each server, in order (`app` first):**
       - a host plan with `network` and `network-filter` from `networkSteps`, shown with the
         server's name and approved by its own hash;
