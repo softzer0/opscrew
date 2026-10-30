@@ -60,7 +60,7 @@ export function networkInterface(member: { port: number }): string; // `wg-opscr
 Cross-field rules, each with a plain message that says what would work:
 - `servers` and `network` only on the cloud and own targets.
 - Unique server names; every `services[].server` names a server; every server runs at least one
-  enabled service.
+  enabled service or is `move.from`.
 - `network.members` holds `app` and every server, each once. Addresses are inside `range`,
   unique, and not the network or broadcast address.
 - Device names and addresses are unique, and each grant names a device and an enabled service of a

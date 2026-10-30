@@ -15,8 +15,9 @@ Rules (plan-schema's `superRefine`, each refusal with what would work):
   localhost, Cloudflare's hosting or GitHub Pages (FR-1819).
 - An `own` extra server with `access: tunnel` doesn't exist: an extra own server is reached at its
   public address.
-- Every extra server runs at least one service; a server with none is refused (destroy removes it,
-  US1 #5).
+- Every extra server runs at least one service, or holds the old copy of a move (`move.from`).
+  Removing a server from `servers` deletes it at the next provision, after the same `allowDestroy`
+  approval and typed name as destroy (US1 #5).
 - `retarget` and `servers` never together (FR-1820).
 
 **Placement (`services[].server`)**, optional: the name of an extra server, or absent for the app's
