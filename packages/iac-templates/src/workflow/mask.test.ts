@@ -27,11 +27,11 @@ function maskScript(content: string): string {
 /** Runs the masking script with `appEnv` as the app's env file, and returns the pattern it built. */
 async function maskFor(appEnv: string): Promise<string> {
   const script = maskScript(renderWorkflow(grafana(), testContext()).content);
-  const run = await new NodeCommandRunner().run(
-    "bash",
-    ["-c", `set -euo pipefail\n${script}\nprintf '%s' "$mask"`],
-    { env: { ...process.env, OPSCREW_APP_ENV: appEnv } },
-  );
+  // On standard input: Git Bash on Windows splits a multi-line `-c` argument with quotes wrongly.
+  const run = await new NodeCommandRunner().run("bash", ["-s"], {
+    env: { ...process.env, OPSCREW_APP_ENV: appEnv },
+    input: `set -euo pipefail\n${script}\nprintf '%s' "$mask"`,
+  });
   expect(run.exitCode, run.stderr).toBe(0);
   return run.stdout;
 }
