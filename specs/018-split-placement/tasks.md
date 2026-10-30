@@ -541,6 +541,8 @@ Effort`.
       - re-renders the workflow and the check, delivered in the deploy-setup pull request.
     - **A network's removal** (vpn, destroy) never runs while public SSH is closed: it reopens it
       first.
+    - **Own servers with public SSH closed:** OpsCrew's own-server connections (inspection, destroy)
+      go to the private address too, so destroy no longer reopens SSH just to connect.
     - **Opening:** reverses it, with the allow-list the plan held before (kept in the plan's
       history field or asked again).
     - **Tests:** each refusal, the order of the plans, and a connection that then goes to the
@@ -585,6 +587,8 @@ Effort`.
       - `opscrew vpn add|remove|list|grant|revoke`;
       - `secure --close-public-ssh|--open-public-ssh`;
       - `provision --finish-move`;
+      - `destroy` asks and checks each extra cloud server's typed name (`<app>-<server>`), and
+        `--confirm` takes several values, one per server, each checked;
       - each with `--app`, `--env` and `--approve` as the other commands, and help text;
       - `--qr` draws the configuration with `uqr` in the terminal;
       - `status` prints its network section.
