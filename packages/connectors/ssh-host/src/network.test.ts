@@ -979,9 +979,10 @@ describe("the network on a server the user owns", () => {
       scope: "app",
       params: { interface: "wg-opscrew0", remove: true, otherInterfaces: "wg-opscrew1" },
     });
-    // After the app's containers, which listen on the network, are gone.
+    // After the app's containers, which listen on the network, are gone: its filter, then it.
     const ids = teardown.steps.map((step) => step.id);
-    expect(ids.indexOf("network")).toBe(ids.indexOf("app-dirs") + 1);
+    expect(ids.indexOf("network-filter")).toBe(ids.indexOf("app-dirs") + 1);
+    expect(ids.indexOf("network")).toBe(ids.indexOf("app-dirs") + 2);
     await applyApproved(fake, teardown, { command: "opscrew destroy" });
     expect(fake.wireguard.has("wg-opscrew0")).toBe(false);
     expect(fake.files.get(NETWORK_DROP_IN)).toBe(networkDropIn(["wg-opscrew1"]));

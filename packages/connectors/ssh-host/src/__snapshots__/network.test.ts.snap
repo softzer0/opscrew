@@ -28,6 +28,20 @@ for conf in /etc/wireguard/wg-opscrew*.conf; do
   ip -4 -o addr show dev "$name" | awk -v name="$name" '{ print "iface " name " address " $4 }'
   wg show "$name" peers | sed "s/^/iface $name peer /"
 done
+if [ -f /etc/systemd/system/opscrew-network-filter@.service ]; then echo "filterunit $(sha256sum /etc/systemd/system/opscrew-network-filter@.service | cut -d ' ' -f 1)"; else echo 'filterunit -'; fi
+for script in /usr/local/sbin/opscrew-network-filter-wg-opscrew*; do
+  [ -f "$script" ] || continue
+  name=\${script#/usr/local/sbin/opscrew-network-filter-}
+  case "\${name#wg-opscrew}" in ''|*[!0-9]*) continue ;; esac
+  echo "filter $name script $(sha256sum "$script" | cut -d ' ' -f 1)"
+  dropin="/etc/systemd/system/docker.service.d/opscrew-network-filter-$name.conf"
+  if [ -f "$dropin" ]; then echo "filter $name dropin $(sha256sum "$dropin" | cut -d ' ' -f 1)"; else echo "filter $name dropin -"; fi
+  unit="opscrew-network-filter@$name.service"
+  if [ "$(systemctl is-enabled "$unit")" = enabled ]; then echo "filter $name enabled yes"; else echo "filter $name enabled no"; fi
+  if systemctl is-active --quiet "$unit"; then echo "filter $name active yes"; else echo "filter $name active no"; fi
+  if iptables -w -C DOCKER-USER -j "OPSCREW-$name" 2>/dev/null; then echo "filter $name jump yes"; else echo "filter $name jump no"; fi
+  iptables -w -S "OPSCREW-$name" 2>/dev/null | sed "s/^/filter $name rule /"
+done
 } 2>/dev/null
 printf '\\n@@opscrew-exit %s\\n' "$?"
 printf '\\n@@opscrew-section %s\\n' 'ufw-added'

@@ -64,6 +64,7 @@ import {
   WEB_RULES,
 } from "./constants";
 import type { AppRecord } from "./facts";
+import { GrantParamsSchema, grantEngine } from "./grant";
 import {
   DOCKER_POOLS,
   NETWORK_DROP_IN,
@@ -79,7 +80,20 @@ import {
   networkUnit,
   WIREGUARD_DIR,
 } from "./network";
+import {
+  NETWORK_FILTER_SCRIPT_PREFIX,
+  NETWORK_FILTER_UNIT,
+  NETWORK_FILTER_UNIT_TEXT,
+  NetworkFilterFieldsSchema,
+  networkFilterChain,
+  networkFilterDropIn,
+  networkFilterDropInPath,
+  networkFilterScript,
+  networkFilterScriptPath,
+  networkFilterService,
+} from "./network-filter";
 import { canonicalIpv4Cidr, canonicalSshSource } from "./parse";
+import { networkSshRule, PublicSshFieldsSchema, publicSshRules } from "./public-ssh";
 import { runnerUnitText } from "./runner-unit";
 import { APT_FUNCTIONS, buildScript, type ScriptParams, shellQuote } from "./shell";
 import {
@@ -111,6 +125,7 @@ import {
   TunnelIdSchema,
 } from "./types";
 import {
+  dockerBackendCheck,
   sortedNetworks,
   WEB_FILTER_BACKEND_CHECK,
   WEB_FILTER_CHAIN,
@@ -866,8 +881,11 @@ const SshFirewallParams = z.union([
   }),
 ]);
 
+/** `file_is <path> <sha256>`: the file exists and has that SHA-256. */
+const FILE_IS = `file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }`;
+
 const SSH_FIREWALL_HELPERS = `${SSH_FIREWALL_FUNCTIONS}
-file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }`;
+${FILE_IS}`;
 
 const SSH_FIREWALL_UNDO_TIMER = "! systemctl is-active --quiet opscrew-undo-ssh-firewall.timer";
 
@@ -985,7 +1003,7 @@ const WebFilterParams = z.union([
 ]);
 
 const WEB_FILTER_HELPERS = `${WEB_FILTER_FUNCTIONS}
-file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+${FILE_IS}
 # Removes OpsCrew's jumps from DOCKER-USER and its chain.
 remove_rules() {
   command -v iptables >/dev/null 2>&1 || return 0
@@ -1082,7 +1100,7 @@ systemctl start "$SERVICE"`,
 // network: the app's private network, a WireGuard interface (see network.ts)
 
 const NETWORK_HELPERS = `${UFW_HELPERS}
-file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }`;
+${FILE_IS}`;
 
 /** The removal's parameters: the interface, and the host's OpsCrew interfaces that stay. */
 const NetworkRemoveParams = z.strictObject({
@@ -1318,6 +1336,288 @@ fi
 systemctl daemon-reload`,
     failed: "The private network's interface is still on the server.",
     doing: "removing the private network from the server",
+    timeoutMs: 2 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// network-filter: who reaches what Docker publishes on the private address (see network-filter.ts)
+
+const NetworkFilterRemoveParams = z.strictObject({
+  interface: NetworkInterfaceSchema,
+  remove: z.literal(true),
+});
+
+/**
+ * `network-filter`: the interface's script, the templated unit and Docker's drop-in for the
+ * instance. The script installs the rules right away (an atomic change of OpsCrew's chain; Docker
+ * keeps running); only once that worked does Docker start to require the unit, so a failure never
+ * leaves a Docker that cannot start. An empty rule list, a teardown and an undo remove it.
+ */
+function networkFilterScripts(plan: HostPlan, step: HostStep): StepScripts {
+  if (plan.purpose !== "setup" || step.params.remove === true) {
+    return networkFilterRemoveScripts(params(step, NetworkFilterRemoveParams).interface);
+  }
+  const p = params(step, NetworkFilterFieldsSchema);
+  if (p.rules.length === 0) return networkFilterRemoveScripts(p.interface);
+  const script = networkFilterScript(p);
+  const dropIn = networkFilterDropIn(p.interface);
+  return scripts({
+    name: "network-filter",
+    params: {
+      IFACE: p.interface,
+      SCRIPT: networkFilterScriptPath(p.interface),
+      UNIT_FILE: NETWORK_FILTER_UNIT,
+      DROP_IN: networkFilterDropInPath(p.interface),
+      SERVICE: networkFilterService(p.interface),
+      SCRIPT_B64: base64(script),
+      UNIT_B64: base64(NETWORK_FILTER_UNIT_TEXT),
+      DROPIN_B64: base64(dropIn),
+      SCRIPT_SHA256: sha256Hex(script),
+      UNIT_SHA256: sha256Hex(NETWORK_FILTER_UNIT_TEXT),
+      DROPIN_SHA256: sha256Hex(dropIn),
+    },
+    helpers: FILE_IS,
+    // The script on the server is the plan's (its hash), so its own check compares the chain.
+    verify: `  file_is "$SCRIPT" "$SCRIPT_SHA256" || return 1
+  file_is "$UNIT_FILE" "$UNIT_SHA256" || return 1
+  file_is "$DROP_IN" "$DROPIN_SHA256" || return 1
+  [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" = enabled ] || return 1
+  systemctl is-active --quiet "$SERVICE" || return 1
+  "$SCRIPT" --check`,
+    apply: `${dockerBackendCheck("OpsCrew's network filter")}
+if systemctl is-active --quiet docker && ! iptables -w -n -L DOCKER-USER >/dev/null 2>&1; then
+  fail "Docker is running but has no DOCKER-USER chain in iptables, so OpsCrew's network filter cannot work. Nothing was changed."
+fi
+install -d -m 0755 "$(dirname "$SCRIPT")" "$(dirname "$UNIT_FILE")"
+printf '%s' "$SCRIPT_B64" | base64 -d | write_file "$SCRIPT" 0755
+printf '%s' "$UNIT_B64" | base64 -d | write_file "$UNIT_FILE" 0644
+"$SCRIPT" || fail "OpsCrew could not install its network filter on $IFACE (see the message above); Docker was not changed."
+install -d -m 0755 "$(dirname "$DROP_IN")"
+printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROP_IN" 0644
+systemctl daemon-reload
+systemctl enable "$SERVICE" >/dev/null 2>&1
+# Starting the unit runs the script once more (no change); Docker is not restarted.
+systemctl start "$SERVICE"`,
+    failed: "OpsCrew's network filter is not in effect.",
+    doing: "setting up the private network's filter",
+    timeoutMs: 2 * MINUTE,
+  });
+}
+
+/**
+ * The interface's filter removed: Docker first stops requiring it (it keeps running), then the
+ * jump, the chain, the unit instance and the script go, and the templated unit with the last one.
+ */
+function networkFilterRemoveScripts(iface: string): StepScripts {
+  return scripts({
+    name: "network-filter.remove",
+    params: {
+      IFACE: iface,
+      SCRIPT: networkFilterScriptPath(iface),
+      SCRIPT_PREFIX: NETWORK_FILTER_SCRIPT_PREFIX,
+      UNIT_FILE: NETWORK_FILTER_UNIT,
+      DROP_IN: networkFilterDropInPath(iface),
+      SERVICE: networkFilterService(iface),
+      CHAIN: networkFilterChain(iface),
+    },
+    helpers: `# Another interface's filter still uses the templated unit.
+other_filters() {
+  for other in "$SCRIPT_PREFIX"wg-opscrew*; do
+    if [ -e "$other" ] && [ "$other" != "$SCRIPT" ]; then return 0; fi
+  done
+  return 1
+}`,
+    verify: `  [ ! -e "$SCRIPT" ] && [ ! -e "$DROP_IN" ] || return 1
+  [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" != enabled ] || return 1
+  other_filters || [ ! -e "$UNIT_FILE" ] || return 1
+  if command -v iptables >/dev/null 2>&1; then
+    ! iptables -w -C DOCKER-USER -j "$CHAIN" 2>/dev/null || return 1
+    ! iptables -w -n -L "$CHAIN" >/dev/null 2>&1 || return 1
+  fi`,
+    apply: `rm -f "$DROP_IN"
+systemctl daemon-reload
+systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+if command -v iptables >/dev/null 2>&1; then
+  while iptables -w -C DOCKER-USER -j "$CHAIN" 2>/dev/null; do iptables -w -D DOCKER-USER -j "$CHAIN"; done
+  if iptables -w -n -L "$CHAIN" >/dev/null 2>&1; then
+    iptables -w -F "$CHAIN"
+    iptables -w -X "$CHAIN" || fail "Another rule still jumps to OpsCrew's chain $CHAIN; remove that rule, then run the command again."
+  fi
+fi
+rm -f "$SCRIPT"
+if ! other_filters; then rm -f "$UNIT_FILE"; fi
+systemctl daemon-reload`,
+    failed: "OpsCrew's network filter is still on the server.",
+    doing: "removing the private network's filter",
+    timeoutMs: 2 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// public-ssh: SSH from the public internet, or on the private network only (see public-ssh.ts)
+
+/**
+ * Shell functions of the `public-ssh` step and its dead-man capture (with `ufw_added`'s rules in
+ * `$ADDED`): `public_lines` (the public rules for the SSH port that are OpsCrew's, as `ufw show
+ * added` lists them), `missing` (the wanted rules ufw lacks) and `extra` (OpsCrew's public rules
+ * that are not wanted), one rule per line as `ufw allow` takes it.
+ */
+const PUBLIC_SSH_FUNCTIONS = `public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}`;
+
+/**
+ * `public-ssh`: opening adds the wanted rules before it takes away OpsCrew's others, so SSH never
+ * closes in between; closing needs ufw on and SSH open on the interface first. The dead-man
+ * switch puts the rules back as they were when the connection is lost.
+ */
+function publicSshScripts(step: HostStep): StepScripts {
+  const p = params(step, PublicSshFieldsSchema);
+  const sp = {
+    OPEN: p.open,
+    IFACE: p.interface,
+    PORT: p.sshPort,
+    CLOUD: p.cloudServer,
+    WANT: publicSshRules(p).join(";"),
+    NETWORK_RULE: networkSshRule(p),
+    SSH_COMMENT: UFW_SSH_COMMENT,
+  };
+  const capture = `ADDED=$(ufw_added)
+${PUBLIC_SSH_FUNCTIONS}
+{
+  cat <<'OPSCREW_UNDO'
+${undoPreamble("ufw", "puts the SSH rules back as they were.")}
+OPSCREW_UNDO
+  public_lines | while IFS= read -r line; do echo "$line >/dev/null 2>&1 || true"; done
+  if [ "$OPEN" = true ]; then
+    missing | while IFS= read -r rule; do echo "ufw --force delete allow $rule >/dev/null 2>&1 || true"; done
+  fi
+} > ${DEAD_MAN_DIR}/ufw.undo.sh`;
+  return scripts({
+    name: "public-ssh",
+    params: sp,
+    helpers: `${UFW_HELPERS}
+${PUBLIC_SSH_FUNCTIONS}`,
+    verify: `  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  [ -z "$(extra)" ] || return 1
+  if [ "$OPEN" = true ]; then
+    [ -z "$(missing)" ] || return 1
+  else
+    ufw_active || return 1
+    has_rule "$NETWORK_RULE" || return 1
+  fi
+  ${UFW_UNDO_TIMER}`,
+    apply: `command -v ufw >/dev/null 2>&1 || fail 'ufw is not installed, so OpsCrew cannot change who reaches SSH.'
+ADDED=$(ufw_added)
+if [ "$OPEN" = true ]; then
+  # The rule's words are split on purpose.
+  missing | while IFS= read -r rule; do ufw allow $rule comment "$SSH_COMMENT" >/dev/null; done
+else
+  ufw_active || fail 'ufw is off on this server, so closing public SSH in it would change nothing.'
+  has_rule "$NETWORK_RULE" || fail "SSH is not open on the private network's interface $IFACE, so OpsCrew does not close public SSH. Run opscrew provision to set the network up first."
+fi
+# Only OpsCrew's public rules for the SSH port go; the rule on the interface and yours stay.
+extra | while IFS= read -r rule; do ufw --force delete allow $rule >/dev/null; done`,
+    failed: "SSH is not reachable as planned.",
+    deadMan: { step: "ufw", capture, params: sp },
+    doing: p.open ? "opening SSH to the public internet again" : "closing public SSH",
+    timeoutMs: 5 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// grant: a device's own login to a database (see grant.ts)
+
+/**
+ * `grant`: makes, updates or removes a device's login with research R6a's statements, through
+ * `docker compose exec` as the deploy user. The login's password is the first line of standard
+ * input; only builtins see it on the way to the client's standard input. The check asks the
+ * engine whether the login exists with the planned access.
+ */
+function grantScripts(plan: HostPlan, step: HostStep): StepScripts {
+  const p = params(step, GrantParamsSchema);
+  if (!AppNameSchema.safeParse(plan.app).success) throw invalid(step, "the plan names no app");
+  const engine = grantEngine(p);
+  return scripts({
+    name: "grant",
+    params: {
+      PROJECT: plan.app,
+      SERVICE: p.service,
+      LOGIN: p.login,
+      TITLE: engine.title,
+      REMOVE: p.remove,
+      WANT: engine.want,
+      ROOT_CLIENT: engine.rootClient ?? "",
+      PRELUDE: engine.prelude,
+      STATE_QUERY: engine.state,
+      NEW_PRE: engine.create[0],
+      NEW_POST: engine.create[1],
+      SET_PRE: engine.update[0],
+      SET_POST: engine.update[1],
+      ACCESS: engine.access,
+      DROP: engine.drop,
+    },
+    helpers: `client() { docker compose -p "$PROJECT" exec -T "$SERVICE" ${engine.client}; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}`,
+    verify: `  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi`,
+    apply: `pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''`,
+    failed: p.remove
+      ? "The device's login is still in the database."
+      : "The device's login does not have the planned access.",
+    secrets: p.remove ? undefined : { names: ["grantPassword"], required: true },
+    asDeploy: true,
+    doing: p.remove
+      ? `removing the device's login from ${p.service}`
+      : `giving the device's login access to ${p.service}`,
     timeoutMs: 2 * MINUTE,
   });
 }
@@ -2904,6 +3204,12 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return webFilterScripts(step);
     case "network":
       return networkScripts(plan, step);
+    case "network-filter":
+      return networkFilterScripts(plan, step);
+    case "public-ssh":
+      return publicSshScripts(step);
+    case "grant":
+      return grantScripts(plan, step);
     case "unattended-upgrades":
       return upgradesScripts(plan.purpose, step);
     case "sysctl":

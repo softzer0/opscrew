@@ -7,10 +7,11 @@ export const HOST_PLAN_SCHEMA_VERSION = 1;
 
 /**
  * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs`, `app-record`,
- * `github-runner`, `tunnel-connector` and `network` are the app's own; `edge` only appears in a
- * teardown (the edge goes with the last app). `check-key`, `beszel` and `alloy` are planned by
- * `planAddon` (and removed by a teardown), `network` by `planNetwork` (and removed by a teardown
- * or an undo).
+ * `github-runner`, `tunnel-connector`, `network`, `network-filter` and `grant` are the app's own;
+ * `edge` only appears in a teardown (the edge goes with the last app). `check-key`, `beszel` and
+ * `alloy` are planned by `planAddon` (and removed by a teardown), `network` and `network-filter`
+ * by `planNetwork` (and removed by a teardown or an undo), `public-ssh` by `planPublicSsh` and
+ * `grant` by `planGrant`.
  */
 export const HOST_STEP_IDS = [
   "package-repair",
@@ -23,6 +24,8 @@ export const HOST_STEP_IDS = [
   "ssh-firewall",
   "web-filter",
   "network",
+  "network-filter",
+  "public-ssh",
   "fail2ban",
   "unattended-upgrades",
   "sysctl",
@@ -36,6 +39,7 @@ export const HOST_STEP_IDS = [
   "check-key",
   "beszel",
   "alloy",
+  "grant",
 ] as const;
 
 export type HostStepId = (typeof HOST_STEP_IDS)[number];
@@ -389,6 +393,11 @@ export interface ApplySecrets {
    * Pass it when the server lacks it or holds another; without it the key there stays.
    */
   wireguardKey?: string;
+  /**
+   * The password of a device's database login (`grant`): 16 to 128 letters and digits. It
+   * reaches the database only on standard input, inside the login's statements.
+   */
+  grantPassword?: string;
 }
 
 export type SecretName = keyof ApplySecrets;

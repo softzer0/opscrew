@@ -1,0 +1,463 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the network filter's scripts > match their snapshot (the script on the server, the unit, the drop-in, setup and removal) 1`] = `
+{
+  "Docker's drop-in": "# Managed by OpsCrew: Docker starts only after OpsCrew's network filter on wg-opscrew0 is in place,
+# and not at all when it fails (fail closed). \`opscrew destroy\` removes this file.
+[Unit]
+Requires=opscrew-network-filter@wg-opscrew0.service
+After=opscrew-network-filter@wg-opscrew0.service
+",
+  "readNetworkFilter's read": "# opscrew-host: network-filter.read
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+CHAIN='OPSCREW-wg-opscrew0'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+command -v iptables >/dev/null 2>&1 || fail 'iptables is not installed on the server.'
+if iptables -w -C DOCKER-USER -j "$CHAIN" 2>/dev/null; then echo 'jump yes'; else echo 'jump no'; fi
+if iptables -w -n -L "$CHAIN" >/dev/null 2>&1; then iptables -w -S "$CHAIN"; fi
+",
+  "removal apply": "# opscrew-host: network-filter.remove.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+SCRIPT='/usr/local/sbin/opscrew-network-filter-wg-opscrew0'
+SCRIPT_PREFIX='/usr/local/sbin/opscrew-network-filter-'
+UNIT_FILE='/etc/systemd/system/opscrew-network-filter@.service'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network-filter-wg-opscrew0.conf'
+SERVICE='opscrew-network-filter@wg-opscrew0.service'
+CHAIN='OPSCREW-wg-opscrew0'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+# Another interface's filter still uses the templated unit.
+other_filters() {
+  for other in "$SCRIPT_PREFIX"wg-opscrew*; do
+    if [ -e "$other" ] && [ "$other" != "$SCRIPT" ]; then return 0; fi
+  done
+  return 1
+}
+rm -f "$DROP_IN"
+systemctl daemon-reload
+systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+if command -v iptables >/dev/null 2>&1; then
+  while iptables -w -C DOCKER-USER -j "$CHAIN" 2>/dev/null; do iptables -w -D DOCKER-USER -j "$CHAIN"; done
+  if iptables -w -n -L "$CHAIN" >/dev/null 2>&1; then
+    iptables -w -F "$CHAIN"
+    iptables -w -X "$CHAIN" || fail "Another rule still jumps to OpsCrew's chain $CHAIN; remove that rule, then run the command again."
+  fi
+fi
+rm -f "$SCRIPT"
+if ! other_filters; then rm -f "$UNIT_FILE"; fi
+systemctl daemon-reload
+",
+  "removal check": "# opscrew-host: network-filter.remove.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+SCRIPT='/usr/local/sbin/opscrew-network-filter-wg-opscrew0'
+SCRIPT_PREFIX='/usr/local/sbin/opscrew-network-filter-'
+UNIT_FILE='/etc/systemd/system/opscrew-network-filter@.service'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network-filter-wg-opscrew0.conf'
+SERVICE='opscrew-network-filter@wg-opscrew0.service'
+CHAIN='OPSCREW-wg-opscrew0'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+# Another interface's filter still uses the templated unit.
+other_filters() {
+  for other in "$SCRIPT_PREFIX"wg-opscrew*; do
+    if [ -e "$other" ] && [ "$other" != "$SCRIPT" ]; then return 0; fi
+  done
+  return 1
+}
+verify_state() {
+  [ ! -e "$SCRIPT" ] && [ ! -e "$DROP_IN" ] || return 1
+  [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" != enabled ] || return 1
+  other_filters || [ ! -e "$UNIT_FILE" ] || return 1
+  if command -v iptables >/dev/null 2>&1; then
+    ! iptables -w -C DOCKER-USER -j "$CHAIN" 2>/dev/null || return 1
+    ! iptables -w -n -L "$CHAIN" >/dev/null 2>&1 || return 1
+  fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "removal verify": "# opscrew-host: network-filter.remove.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+SCRIPT='/usr/local/sbin/opscrew-network-filter-wg-opscrew0'
+SCRIPT_PREFIX='/usr/local/sbin/opscrew-network-filter-'
+UNIT_FILE='/etc/systemd/system/opscrew-network-filter@.service'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network-filter-wg-opscrew0.conf'
+SERVICE='opscrew-network-filter@wg-opscrew0.service'
+CHAIN='OPSCREW-wg-opscrew0'
+VERIFY_FAILED='OpsCrew'\\''s network filter is still on the server.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+# Another interface's filter still uses the templated unit.
+other_filters() {
+  for other in "$SCRIPT_PREFIX"wg-opscrew*; do
+    if [ -e "$other" ] && [ "$other" != "$SCRIPT" ]; then return 0; fi
+  done
+  return 1
+}
+verify_state() {
+  [ ! -e "$SCRIPT" ] && [ ! -e "$DROP_IN" ] || return 1
+  [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" != enabled ] || return 1
+  other_filters || [ ! -e "$UNIT_FILE" ] || return 1
+  if command -v iptables >/dev/null 2>&1; then
+    ! iptables -w -C DOCKER-USER -j "$CHAIN" 2>/dev/null || return 1
+    ! iptables -w -n -L "$CHAIN" >/dev/null 2>&1 || return 1
+  fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "server script": "#!/bin/sh
+# Managed by OpsCrew: on the private network wg-opscrew0, only the app's servers and the devices
+# granted access reach what Docker publishes on 10.200.4.2. opscrew-network-filter@wg-opscrew0.service
+# runs this before Docker, and Docker requires that service: when the filter cannot be installed,
+# Docker does not start. \`opscrew provision\` rewrites it; \`opscrew destroy\` removes it.
+set -eu
+# PATH comes from systemd (or from OpsCrew's step, which runs it once right away).
+CHAIN='OPSCREW-wg-opscrew0'
+fail() {
+  echo "opscrew-network-filter: $1" >&2
+  exit 1
+}
+# The chain's rules, one per line: per port, the addresses that may open it, then a drop.
+rules() {
+  cat <<'OPSCREW_RULES'
+-s 10.200.4.1/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+-s 10.200.4.100/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+-p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j DROP
+-s 10.200.4.1/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 6379 --ctdir ORIGINAL -j ACCEPT
+-p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 6379 --ctdir ORIGINAL -j DROP
+OPSCREW_RULES
+}
+# The chain holds exactly these rules, and DOCKER-USER jumps to it.
+in_place() {
+  iptables -w -C DOCKER-USER -j "$CHAIN" 2>/dev/null || return 1
+  [ "$(iptables -w -S "$CHAIN" 2>/dev/null | grep -c '^-A ')" -eq "$(rules | grep -c .)" ] || return 1
+  rules | while read -r spec; do
+    # The rule's words are split on purpose.
+    iptables -w -C "$CHAIN" $spec 2>/dev/null || exit 1
+  done
+}
+if [ "\${1:-}" = --check ]; then
+  if in_place; then exit 0; fi
+  exit 1
+fi
+if [ -f /etc/docker/daemon.json ] && grep -Eq '"firewall-backend"[[:space:]]*:[[:space:]]*"nftables"' /etc/docker/daemon.json; then
+  fail "Docker is set to its nftables firewall backend (/etc/docker/daemon.json), which has no DOCKER-USER chain, so OpsCrew's network filter cannot work."
+fi
+if [ -f /etc/docker/daemon.json ] && grep -Eq '"iptables"[[:space:]]*:[[:space:]]*false' /etc/docker/daemon.json; then
+  fail "Docker does not manage iptables (\\"iptables\\": false in /etc/docker/daemon.json), so OpsCrew's network filter cannot work."
+fi
+docker_unit=$(systemctl show docker -p ExecStart -p Environment 2>/dev/null) || docker_unit=''
+case "$docker_unit" in
+  *firewall-backend=nftables* | *"firewall-backend nftables"* | *DOCKER_FIREWALL_BACKEND=nftables*)
+    fail "Docker's service is set to its nftables firewall backend, which has no DOCKER-USER chain, so OpsCrew's network filter cannot work." ;;
+  *--iptables=false*)
+    fail "Docker's service does not manage iptables (--iptables=false), so OpsCrew's network filter cannot work." ;;
+esac
+command -v iptables >/dev/null 2>&1 || fail "iptables is not installed."
+command -v iptables-restore >/dev/null 2>&1 || fail "iptables-restore is not installed."
+# OpsCrew's chain in one atomic change.
+{
+  echo '*filter'
+  echo ":$CHAIN - [0:0]"
+  rules | sed "s/^/-A $CHAIN /"
+  echo 'COMMIT'
+} | iptables-restore -w --noflush
+# Before Docker starts DOCKER-USER may not exist yet; Docker keeps it and its rules.
+iptables -w -n -L DOCKER-USER >/dev/null 2>&1 || iptables -w -N DOCKER-USER
+if ! iptables -w -C DOCKER-USER -j "$CHAIN" 2>/dev/null; then
+  # Right after OpsCrew's web filter's jumps, which stay the first rules of DOCKER-USER.
+  n=$(iptables -w -S DOCKER-USER | grep '^-A ' | awk '!/ -j OPSCREW-WEB$/ { exit } { n = NR } END { print n + 1 }')
+  iptables -w -I DOCKER-USER "$n" -j "$CHAIN"
+fi
+",
+  "setup apply": "# opscrew-host: network-filter.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+SCRIPT='/usr/local/sbin/opscrew-network-filter-wg-opscrew0'
+UNIT_FILE='/etc/systemd/system/opscrew-network-filter@.service'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network-filter-wg-opscrew0.conf'
+SERVICE='opscrew-network-filter@wg-opscrew0.service'
+SCRIPT_B64='IyEvYmluL3NoCiMgTWFuYWdlZCBieSBPcHNDcmV3OiBvbiB0aGUgcHJpdmF0ZSBuZXR3b3JrIHdnLW9wc2NyZXcwLCBvbmx5IHRoZSBhcHAncyBzZXJ2ZXJzIGFuZCB0aGUgZGV2aWNlcwojIGdyYW50ZWQgYWNjZXNzIHJlYWNoIHdoYXQgRG9ja2VyIHB1Ymxpc2hlcyBvbiAxMC4yMDAuNC4yLiBvcHNjcmV3LW5ldHdvcmstZmlsdGVyQHdnLW9wc2NyZXcwLnNlcnZpY2UKIyBydW5zIHRoaXMgYmVmb3JlIERvY2tlciwgYW5kIERvY2tlciByZXF1aXJlcyB0aGF0IHNlcnZpY2U6IHdoZW4gdGhlIGZpbHRlciBjYW5ub3QgYmUgaW5zdGFsbGVkLAojIERvY2tlciBkb2VzIG5vdCBzdGFydC4gYG9wc2NyZXcgcHJvdmlzaW9uYCByZXdyaXRlcyBpdDsgYG9wc2NyZXcgZGVzdHJveWAgcmVtb3ZlcyBpdC4Kc2V0IC1ldQojIFBBVEggY29tZXMgZnJvbSBzeXN0ZW1kIChvciBmcm9tIE9wc0NyZXcncyBzdGVwLCB3aGljaCBydW5zIGl0IG9uY2UgcmlnaHQgYXdheSkuCkNIQUlOPSdPUFNDUkVXLXdnLW9wc2NyZXcwJwpmYWlsKCkgewogIGVjaG8gIm9wc2NyZXctbmV0d29yay1maWx0ZXI6ICQxIiA+JjIKICBleGl0IDEKfQojIFRoZSBjaGFpbidzIHJ1bGVzLCBvbmUgcGVyIGxpbmU6IHBlciBwb3J0LCB0aGUgYWRkcmVzc2VzIHRoYXQgbWF5IG9wZW4gaXQsIHRoZW4gYSBkcm9wLgpydWxlcygpIHsKICBjYXQgPDwnT1BTQ1JFV19SVUxFUycKLXMgMTAuMjAwLjQuMS8zMiAtcCB0Y3AgLW0gY29ubnRyYWNrIC0tY3RzdGF0ZSBORVcgLS1jdG9yaWdkc3QgMTAuMjAwLjQuMiAtLWN0b3JpZ2RzdHBvcnQgNTQzMiAtLWN0ZGlyIE9SSUdJTkFMIC1qIEFDQ0VQVAotcyAxMC4yMDAuNC4xMDAvMzIgLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDU0MzIgLS1jdGRpciBPUklHSU5BTCAtaiBBQ0NFUFQKLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDU0MzIgLS1jdGRpciBPUklHSU5BTCAtaiBEUk9QCi1zIDEwLjIwMC40LjEvMzIgLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDYzNzkgLS1jdGRpciBPUklHSU5BTCAtaiBBQ0NFUFQKLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDYzNzkgLS1jdGRpciBPUklHSU5BTCAtaiBEUk9QCk9QU0NSRVdfUlVMRVMKfQojIFRoZSBjaGFpbiBob2xkcyBleGFjdGx5IHRoZXNlIHJ1bGVzLCBhbmQgRE9DS0VSLVVTRVIganVtcHMgdG8gaXQuCmluX3BsYWNlKCkgewogIGlwdGFibGVzIC13IC1DIERPQ0tFUi1VU0VSIC1qICIkQ0hBSU4iIDI+L2Rldi9udWxsIHx8IHJldHVybiAxCiAgWyAiJChpcHRhYmxlcyAtdyAtUyAiJENIQUlOIiAyPi9kZXYvbnVsbCB8IGdyZXAgLWMgJ14tQSAnKSIgLWVxICIkKHJ1bGVzIHwgZ3JlcCAtYyAuKSIgXSB8fCByZXR1cm4gMQogIHJ1bGVzIHwgd2hpbGUgcmVhZCAtciBzcGVjOyBkbwogICAgIyBUaGUgcnVsZSdzIHdvcmRzIGFyZSBzcGxpdCBvbiBwdXJwb3NlLgogICAgaXB0YWJsZXMgLXcgLUMgIiRDSEFJTiIgJHNwZWMgMj4vZGV2L251bGwgfHwgZXhpdCAxCiAgZG9uZQp9CmlmIFsgIiR7MTotfSIgPSAtLWNoZWNrIF07IHRoZW4KICBpZiBpbl9wbGFjZTsgdGhlbiBleGl0IDA7IGZpCiAgZXhpdCAxCmZpCmlmIFsgLWYgL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb24gXSAmJiBncmVwIC1FcSAnImZpcmV3YWxsLWJhY2tlbmQiW1s6c3BhY2U6XV0qOltbOnNwYWNlOl1dKiJuZnRhYmxlcyInIC9ldGMvZG9ja2VyL2RhZW1vbi5qc29uOyB0aGVuCiAgZmFpbCAiRG9ja2VyIGlzIHNldCB0byBpdHMgbmZ0YWJsZXMgZmlyZXdhbGwgYmFja2VuZCAoL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb24pLCB3aGljaCBoYXMgbm8gRE9DS0VSLVVTRVIgY2hhaW4sIHNvIE9wc0NyZXcncyBuZXR3b3JrIGZpbHRlciBjYW5ub3Qgd29yay4iCmZpCmlmIFsgLWYgL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb24gXSAmJiBncmVwIC1FcSAnImlwdGFibGVzIltbOnNwYWNlOl1dKjpbWzpzcGFjZTpdXSpmYWxzZScgL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb247IHRoZW4KICBmYWlsICJEb2NrZXIgZG9lcyBub3QgbWFuYWdlIGlwdGFibGVzIChcImlwdGFibGVzXCI6IGZhbHNlIGluIC9ldGMvZG9ja2VyL2RhZW1vbi5qc29uKSwgc28gT3BzQ3JldydzIG5ldHdvcmsgZmlsdGVyIGNhbm5vdCB3b3JrLiIKZmkKZG9ja2VyX3VuaXQ9JChzeXN0ZW1jdGwgc2hvdyBkb2NrZXIgLXAgRXhlY1N0YXJ0IC1wIEVudmlyb25tZW50IDI+L2Rldi9udWxsKSB8fCBkb2NrZXJfdW5pdD0nJwpjYXNlICIkZG9ja2VyX3VuaXQiIGluCiAgKmZpcmV3YWxsLWJhY2tlbmQ9bmZ0YWJsZXMqIHwgKiJmaXJld2FsbC1iYWNrZW5kIG5mdGFibGVzIiogfCAqRE9DS0VSX0ZJUkVXQUxMX0JBQ0tFTkQ9bmZ0YWJsZXMqKQogICAgZmFpbCAiRG9ja2VyJ3Mgc2VydmljZSBpcyBzZXQgdG8gaXRzIG5mdGFibGVzIGZpcmV3YWxsIGJhY2tlbmQsIHdoaWNoIGhhcyBubyBET0NLRVItVVNFUiBjaGFpbiwgc28gT3BzQ3JldydzIG5ldHdvcmsgZmlsdGVyIGNhbm5vdCB3b3JrLiIgOzsKICAqLS1pcHRhYmxlcz1mYWxzZSopCiAgICBmYWlsICJEb2NrZXIncyBzZXJ2aWNlIGRvZXMgbm90IG1hbmFnZSBpcHRhYmxlcyAoLS1pcHRhYmxlcz1mYWxzZSksIHNvIE9wc0NyZXcncyBuZXR3b3JrIGZpbHRlciBjYW5ub3Qgd29yay4iIDs7CmVzYWMKY29tbWFuZCAtdiBpcHRhYmxlcyA+L2Rldi9udWxsIDI+JjEgfHwgZmFpbCAiaXB0YWJsZXMgaXMgbm90IGluc3RhbGxlZC4iCmNvbW1hbmQgLXYgaXB0YWJsZXMtcmVzdG9yZSA+L2Rldi9udWxsIDI+JjEgfHwgZmFpbCAiaXB0YWJsZXMtcmVzdG9yZSBpcyBub3QgaW5zdGFsbGVkLiIKIyBPcHNDcmV3J3MgY2hhaW4gaW4gb25lIGF0b21pYyBjaGFuZ2UuCnsKICBlY2hvICcqZmlsdGVyJwogIGVjaG8gIjokQ0hBSU4gLSBbMDowXSIKICBydWxlcyB8IHNlZCAicy9eLy1BICRDSEFJTiAvIgogIGVjaG8gJ0NPTU1JVCcKfSB8IGlwdGFibGVzLXJlc3RvcmUgLXcgLS1ub2ZsdXNoCiMgQmVmb3JlIERvY2tlciBzdGFydHMgRE9DS0VSLVVTRVIgbWF5IG5vdCBleGlzdCB5ZXQ7IERvY2tlciBrZWVwcyBpdCBhbmQgaXRzIHJ1bGVzLgppcHRhYmxlcyAtdyAtbiAtTCBET0NLRVItVVNFUiA+L2Rldi9udWxsIDI+JjEgfHwgaXB0YWJsZXMgLXcgLU4gRE9DS0VSLVVTRVIKaWYgISBpcHRhYmxlcyAtdyAtQyBET0NLRVItVVNFUiAtaiAiJENIQUlOIiAyPi9kZXYvbnVsbDsgdGhlbgogICMgUmlnaHQgYWZ0ZXIgT3BzQ3JldydzIHdlYiBmaWx0ZXIncyBqdW1wcywgd2hpY2ggc3RheSB0aGUgZmlyc3QgcnVsZXMgb2YgRE9DS0VSLVVTRVIuCiAgbj0kKGlwdGFibGVzIC13IC1TIERPQ0tFUi1VU0VSIHwgZ3JlcCAnXi1BICcgfCBhd2sgJyEvIC1qIE9QU0NSRVctV0VCJC8geyBleGl0IH0geyBuID0gTlIgfSBFTkQgeyBwcmludCBuICsgMSB9JykKICBpcHRhYmxlcyAtdyAtSSBET0NLRVItVVNFUiAiJG4iIC1qICIkQ0hBSU4iCmZpCg=='
+UNIT_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IG9uIGFuIGFwcCdzIHByaXZhdGUgbmV0d29yaywgb25seSB0aGUgYXBwJ3Mgc2VydmVycyBhbmQgdGhlIGdyYW50ZWQgZGV2aWNlcwojIHJlYWNoIHdoYXQgRG9ja2VyIHB1Ymxpc2hlcyBvbiB0aGUgc2VydmVyJ3MgcHJpdmF0ZSBhZGRyZXNzLiBEb2NrZXIgcmVxdWlyZXMgZWFjaCBpbnN0YW5jZQojIChkb2NrZXIuc2VydmljZS5kL29wc2NyZXctbmV0d29yay1maWx0ZXItPGludGVyZmFjZT4uY29uZiksIHNvIGl0IGRvZXMgbm90IHN0YXJ0IHdpdGhvdXQgdGhlCiMgZmlsdGVyLiBgb3BzY3JldyBkZXN0cm95YCByZW1vdmVzIGl0LgpbVW5pdF0KRGVzY3JpcHRpb249T3BzQ3JldyBuZXR3b3JrIGZpbHRlciBvbiAlaTogb25seSB0aGUgYXBwJ3Mgc2VydmVycyBhbmQgZ3JhbnRlZCBkZXZpY2VzIHJlYWNoIGl0cyBwcml2YXRlIGFkZHJlc3MKQWZ0ZXI9bG9jYWwtZnMudGFyZ2V0IHVmdy5zZXJ2aWNlIGZpcmV3YWxsZC5zZXJ2aWNlIG5mdGFibGVzLnNlcnZpY2UgbmV0ZmlsdGVyLXBlcnNpc3RlbnQuc2VydmljZSBpcHRhYmxlcy5zZXJ2aWNlIGlwNnRhYmxlcy5zZXJ2aWNlCkJlZm9yZT1kb2NrZXIuc2VydmljZQoKW1NlcnZpY2VdClR5cGU9b25lc2hvdApSZW1haW5BZnRlckV4aXQ9eWVzCkV4ZWNTdGFydD0vdXNyL2xvY2FsL3NiaW4vb3BzY3Jldy1uZXR3b3JrLWZpbHRlci0laQoKW0luc3RhbGxdCldhbnRlZEJ5PW11bHRpLXVzZXIudGFyZ2V0Cg=='
+DROPIN_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IERvY2tlciBzdGFydHMgb25seSBhZnRlciBPcHNDcmV3J3MgbmV0d29yayBmaWx0ZXIgb24gd2ctb3BzY3JldzAgaXMgaW4gcGxhY2UsCiMgYW5kIG5vdCBhdCBhbGwgd2hlbiBpdCBmYWlscyAoZmFpbCBjbG9zZWQpLiBgb3BzY3JldyBkZXN0cm95YCByZW1vdmVzIHRoaXMgZmlsZS4KW1VuaXRdClJlcXVpcmVzPW9wc2NyZXctbmV0d29yay1maWx0ZXJAd2ctb3BzY3JldzAuc2VydmljZQpBZnRlcj1vcHNjcmV3LW5ldHdvcmstZmlsdGVyQHdnLW9wc2NyZXcwLnNlcnZpY2UK'
+SCRIPT_SHA256='584f83a3f82e097876173bdf8de9bf11a228fa6bfa2369f27698f7bc4c275068'
+UNIT_SHA256='9f1de8772ffec24ef9becab5b12db63eda4ff2d1ef411f1b78193daa88c0f702'
+DROPIN_SHA256='d3f8392536ebb5f8133717764e4c9172220eb42cec32b73f33715fa62e36431c'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+if [ -f /etc/docker/daemon.json ] && grep -Eq '"firewall-backend"[[:space:]]*:[[:space:]]*"nftables"' /etc/docker/daemon.json; then
+  fail "Docker is set to its nftables firewall backend (/etc/docker/daemon.json), which has no DOCKER-USER chain, so OpsCrew's network filter cannot work."
+fi
+if [ -f /etc/docker/daemon.json ] && grep -Eq '"iptables"[[:space:]]*:[[:space:]]*false' /etc/docker/daemon.json; then
+  fail "Docker does not manage iptables (\\"iptables\\": false in /etc/docker/daemon.json), so OpsCrew's network filter cannot work."
+fi
+docker_unit=$(systemctl show docker -p ExecStart -p Environment 2>/dev/null) || docker_unit=''
+case "$docker_unit" in
+  *firewall-backend=nftables* | *"firewall-backend nftables"* | *DOCKER_FIREWALL_BACKEND=nftables*)
+    fail "Docker's service is set to its nftables firewall backend, which has no DOCKER-USER chain, so OpsCrew's network filter cannot work." ;;
+  *--iptables=false*)
+    fail "Docker's service does not manage iptables (--iptables=false), so OpsCrew's network filter cannot work." ;;
+esac
+if systemctl is-active --quiet docker && ! iptables -w -n -L DOCKER-USER >/dev/null 2>&1; then
+  fail "Docker is running but has no DOCKER-USER chain in iptables, so OpsCrew's network filter cannot work. Nothing was changed."
+fi
+install -d -m 0755 "$(dirname "$SCRIPT")" "$(dirname "$UNIT_FILE")"
+printf '%s' "$SCRIPT_B64" | base64 -d | write_file "$SCRIPT" 0755
+printf '%s' "$UNIT_B64" | base64 -d | write_file "$UNIT_FILE" 0644
+"$SCRIPT" || fail "OpsCrew could not install its network filter on $IFACE (see the message above); Docker was not changed."
+install -d -m 0755 "$(dirname "$DROP_IN")"
+printf '%s' "$DROPIN_B64" | base64 -d | write_file "$DROP_IN" 0644
+systemctl daemon-reload
+systemctl enable "$SERVICE" >/dev/null 2>&1
+# Starting the unit runs the script once more (no change); Docker is not restarted.
+systemctl start "$SERVICE"
+",
+  "setup check": "# opscrew-host: network-filter.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+SCRIPT='/usr/local/sbin/opscrew-network-filter-wg-opscrew0'
+UNIT_FILE='/etc/systemd/system/opscrew-network-filter@.service'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network-filter-wg-opscrew0.conf'
+SERVICE='opscrew-network-filter@wg-opscrew0.service'
+SCRIPT_B64='IyEvYmluL3NoCiMgTWFuYWdlZCBieSBPcHNDcmV3OiBvbiB0aGUgcHJpdmF0ZSBuZXR3b3JrIHdnLW9wc2NyZXcwLCBvbmx5IHRoZSBhcHAncyBzZXJ2ZXJzIGFuZCB0aGUgZGV2aWNlcwojIGdyYW50ZWQgYWNjZXNzIHJlYWNoIHdoYXQgRG9ja2VyIHB1Ymxpc2hlcyBvbiAxMC4yMDAuNC4yLiBvcHNjcmV3LW5ldHdvcmstZmlsdGVyQHdnLW9wc2NyZXcwLnNlcnZpY2UKIyBydW5zIHRoaXMgYmVmb3JlIERvY2tlciwgYW5kIERvY2tlciByZXF1aXJlcyB0aGF0IHNlcnZpY2U6IHdoZW4gdGhlIGZpbHRlciBjYW5ub3QgYmUgaW5zdGFsbGVkLAojIERvY2tlciBkb2VzIG5vdCBzdGFydC4gYG9wc2NyZXcgcHJvdmlzaW9uYCByZXdyaXRlcyBpdDsgYG9wc2NyZXcgZGVzdHJveWAgcmVtb3ZlcyBpdC4Kc2V0IC1ldQojIFBBVEggY29tZXMgZnJvbSBzeXN0ZW1kIChvciBmcm9tIE9wc0NyZXcncyBzdGVwLCB3aGljaCBydW5zIGl0IG9uY2UgcmlnaHQgYXdheSkuCkNIQUlOPSdPUFNDUkVXLXdnLW9wc2NyZXcwJwpmYWlsKCkgewogIGVjaG8gIm9wc2NyZXctbmV0d29yay1maWx0ZXI6ICQxIiA+JjIKICBleGl0IDEKfQojIFRoZSBjaGFpbidzIHJ1bGVzLCBvbmUgcGVyIGxpbmU6IHBlciBwb3J0LCB0aGUgYWRkcmVzc2VzIHRoYXQgbWF5IG9wZW4gaXQsIHRoZW4gYSBkcm9wLgpydWxlcygpIHsKICBjYXQgPDwnT1BTQ1JFV19SVUxFUycKLXMgMTAuMjAwLjQuMS8zMiAtcCB0Y3AgLW0gY29ubnRyYWNrIC0tY3RzdGF0ZSBORVcgLS1jdG9yaWdkc3QgMTAuMjAwLjQuMiAtLWN0b3JpZ2RzdHBvcnQgNTQzMiAtLWN0ZGlyIE9SSUdJTkFMIC1qIEFDQ0VQVAotcyAxMC4yMDAuNC4xMDAvMzIgLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDU0MzIgLS1jdGRpciBPUklHSU5BTCAtaiBBQ0NFUFQKLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDU0MzIgLS1jdGRpciBPUklHSU5BTCAtaiBEUk9QCi1zIDEwLjIwMC40LjEvMzIgLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDYzNzkgLS1jdGRpciBPUklHSU5BTCAtaiBBQ0NFUFQKLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDYzNzkgLS1jdGRpciBPUklHSU5BTCAtaiBEUk9QCk9QU0NSRVdfUlVMRVMKfQojIFRoZSBjaGFpbiBob2xkcyBleGFjdGx5IHRoZXNlIHJ1bGVzLCBhbmQgRE9DS0VSLVVTRVIganVtcHMgdG8gaXQuCmluX3BsYWNlKCkgewogIGlwdGFibGVzIC13IC1DIERPQ0tFUi1VU0VSIC1qICIkQ0hBSU4iIDI+L2Rldi9udWxsIHx8IHJldHVybiAxCiAgWyAiJChpcHRhYmxlcyAtdyAtUyAiJENIQUlOIiAyPi9kZXYvbnVsbCB8IGdyZXAgLWMgJ14tQSAnKSIgLWVxICIkKHJ1bGVzIHwgZ3JlcCAtYyAuKSIgXSB8fCByZXR1cm4gMQogIHJ1bGVzIHwgd2hpbGUgcmVhZCAtciBzcGVjOyBkbwogICAgIyBUaGUgcnVsZSdzIHdvcmRzIGFyZSBzcGxpdCBvbiBwdXJwb3NlLgogICAgaXB0YWJsZXMgLXcgLUMgIiRDSEFJTiIgJHNwZWMgMj4vZGV2L251bGwgfHwgZXhpdCAxCiAgZG9uZQp9CmlmIFsgIiR7MTotfSIgPSAtLWNoZWNrIF07IHRoZW4KICBpZiBpbl9wbGFjZTsgdGhlbiBleGl0IDA7IGZpCiAgZXhpdCAxCmZpCmlmIFsgLWYgL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb24gXSAmJiBncmVwIC1FcSAnImZpcmV3YWxsLWJhY2tlbmQiW1s6c3BhY2U6XV0qOltbOnNwYWNlOl1dKiJuZnRhYmxlcyInIC9ldGMvZG9ja2VyL2RhZW1vbi5qc29uOyB0aGVuCiAgZmFpbCAiRG9ja2VyIGlzIHNldCB0byBpdHMgbmZ0YWJsZXMgZmlyZXdhbGwgYmFja2VuZCAoL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb24pLCB3aGljaCBoYXMgbm8gRE9DS0VSLVVTRVIgY2hhaW4sIHNvIE9wc0NyZXcncyBuZXR3b3JrIGZpbHRlciBjYW5ub3Qgd29yay4iCmZpCmlmIFsgLWYgL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb24gXSAmJiBncmVwIC1FcSAnImlwdGFibGVzIltbOnNwYWNlOl1dKjpbWzpzcGFjZTpdXSpmYWxzZScgL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb247IHRoZW4KICBmYWlsICJEb2NrZXIgZG9lcyBub3QgbWFuYWdlIGlwdGFibGVzIChcImlwdGFibGVzXCI6IGZhbHNlIGluIC9ldGMvZG9ja2VyL2RhZW1vbi5qc29uKSwgc28gT3BzQ3JldydzIG5ldHdvcmsgZmlsdGVyIGNhbm5vdCB3b3JrLiIKZmkKZG9ja2VyX3VuaXQ9JChzeXN0ZW1jdGwgc2hvdyBkb2NrZXIgLXAgRXhlY1N0YXJ0IC1wIEVudmlyb25tZW50IDI+L2Rldi9udWxsKSB8fCBkb2NrZXJfdW5pdD0nJwpjYXNlICIkZG9ja2VyX3VuaXQiIGluCiAgKmZpcmV3YWxsLWJhY2tlbmQ9bmZ0YWJsZXMqIHwgKiJmaXJld2FsbC1iYWNrZW5kIG5mdGFibGVzIiogfCAqRE9DS0VSX0ZJUkVXQUxMX0JBQ0tFTkQ9bmZ0YWJsZXMqKQogICAgZmFpbCAiRG9ja2VyJ3Mgc2VydmljZSBpcyBzZXQgdG8gaXRzIG5mdGFibGVzIGZpcmV3YWxsIGJhY2tlbmQsIHdoaWNoIGhhcyBubyBET0NLRVItVVNFUiBjaGFpbiwgc28gT3BzQ3JldydzIG5ldHdvcmsgZmlsdGVyIGNhbm5vdCB3b3JrLiIgOzsKICAqLS1pcHRhYmxlcz1mYWxzZSopCiAgICBmYWlsICJEb2NrZXIncyBzZXJ2aWNlIGRvZXMgbm90IG1hbmFnZSBpcHRhYmxlcyAoLS1pcHRhYmxlcz1mYWxzZSksIHNvIE9wc0NyZXcncyBuZXR3b3JrIGZpbHRlciBjYW5ub3Qgd29yay4iIDs7CmVzYWMKY29tbWFuZCAtdiBpcHRhYmxlcyA+L2Rldi9udWxsIDI+JjEgfHwgZmFpbCAiaXB0YWJsZXMgaXMgbm90IGluc3RhbGxlZC4iCmNvbW1hbmQgLXYgaXB0YWJsZXMtcmVzdG9yZSA+L2Rldi9udWxsIDI+JjEgfHwgZmFpbCAiaXB0YWJsZXMtcmVzdG9yZSBpcyBub3QgaW5zdGFsbGVkLiIKIyBPcHNDcmV3J3MgY2hhaW4gaW4gb25lIGF0b21pYyBjaGFuZ2UuCnsKICBlY2hvICcqZmlsdGVyJwogIGVjaG8gIjokQ0hBSU4gLSBbMDowXSIKICBydWxlcyB8IHNlZCAicy9eLy1BICRDSEFJTiAvIgogIGVjaG8gJ0NPTU1JVCcKfSB8IGlwdGFibGVzLXJlc3RvcmUgLXcgLS1ub2ZsdXNoCiMgQmVmb3JlIERvY2tlciBzdGFydHMgRE9DS0VSLVVTRVIgbWF5IG5vdCBleGlzdCB5ZXQ7IERvY2tlciBrZWVwcyBpdCBhbmQgaXRzIHJ1bGVzLgppcHRhYmxlcyAtdyAtbiAtTCBET0NLRVItVVNFUiA+L2Rldi9udWxsIDI+JjEgfHwgaXB0YWJsZXMgLXcgLU4gRE9DS0VSLVVTRVIKaWYgISBpcHRhYmxlcyAtdyAtQyBET0NLRVItVVNFUiAtaiAiJENIQUlOIiAyPi9kZXYvbnVsbDsgdGhlbgogICMgUmlnaHQgYWZ0ZXIgT3BzQ3JldydzIHdlYiBmaWx0ZXIncyBqdW1wcywgd2hpY2ggc3RheSB0aGUgZmlyc3QgcnVsZXMgb2YgRE9DS0VSLVVTRVIuCiAgbj0kKGlwdGFibGVzIC13IC1TIERPQ0tFUi1VU0VSIHwgZ3JlcCAnXi1BICcgfCBhd2sgJyEvIC1qIE9QU0NSRVctV0VCJC8geyBleGl0IH0geyBuID0gTlIgfSBFTkQgeyBwcmludCBuICsgMSB9JykKICBpcHRhYmxlcyAtdyAtSSBET0NLRVItVVNFUiAiJG4iIC1qICIkQ0hBSU4iCmZpCg=='
+UNIT_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IG9uIGFuIGFwcCdzIHByaXZhdGUgbmV0d29yaywgb25seSB0aGUgYXBwJ3Mgc2VydmVycyBhbmQgdGhlIGdyYW50ZWQgZGV2aWNlcwojIHJlYWNoIHdoYXQgRG9ja2VyIHB1Ymxpc2hlcyBvbiB0aGUgc2VydmVyJ3MgcHJpdmF0ZSBhZGRyZXNzLiBEb2NrZXIgcmVxdWlyZXMgZWFjaCBpbnN0YW5jZQojIChkb2NrZXIuc2VydmljZS5kL29wc2NyZXctbmV0d29yay1maWx0ZXItPGludGVyZmFjZT4uY29uZiksIHNvIGl0IGRvZXMgbm90IHN0YXJ0IHdpdGhvdXQgdGhlCiMgZmlsdGVyLiBgb3BzY3JldyBkZXN0cm95YCByZW1vdmVzIGl0LgpbVW5pdF0KRGVzY3JpcHRpb249T3BzQ3JldyBuZXR3b3JrIGZpbHRlciBvbiAlaTogb25seSB0aGUgYXBwJ3Mgc2VydmVycyBhbmQgZ3JhbnRlZCBkZXZpY2VzIHJlYWNoIGl0cyBwcml2YXRlIGFkZHJlc3MKQWZ0ZXI9bG9jYWwtZnMudGFyZ2V0IHVmdy5zZXJ2aWNlIGZpcmV3YWxsZC5zZXJ2aWNlIG5mdGFibGVzLnNlcnZpY2UgbmV0ZmlsdGVyLXBlcnNpc3RlbnQuc2VydmljZSBpcHRhYmxlcy5zZXJ2aWNlIGlwNnRhYmxlcy5zZXJ2aWNlCkJlZm9yZT1kb2NrZXIuc2VydmljZQoKW1NlcnZpY2VdClR5cGU9b25lc2hvdApSZW1haW5BZnRlckV4aXQ9eWVzCkV4ZWNTdGFydD0vdXNyL2xvY2FsL3NiaW4vb3BzY3Jldy1uZXR3b3JrLWZpbHRlci0laQoKW0luc3RhbGxdCldhbnRlZEJ5PW11bHRpLXVzZXIudGFyZ2V0Cg=='
+DROPIN_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IERvY2tlciBzdGFydHMgb25seSBhZnRlciBPcHNDcmV3J3MgbmV0d29yayBmaWx0ZXIgb24gd2ctb3BzY3JldzAgaXMgaW4gcGxhY2UsCiMgYW5kIG5vdCBhdCBhbGwgd2hlbiBpdCBmYWlscyAoZmFpbCBjbG9zZWQpLiBgb3BzY3JldyBkZXN0cm95YCByZW1vdmVzIHRoaXMgZmlsZS4KW1VuaXRdClJlcXVpcmVzPW9wc2NyZXctbmV0d29yay1maWx0ZXJAd2ctb3BzY3JldzAuc2VydmljZQpBZnRlcj1vcHNjcmV3LW5ldHdvcmstZmlsdGVyQHdnLW9wc2NyZXcwLnNlcnZpY2UK'
+SCRIPT_SHA256='584f83a3f82e097876173bdf8de9bf11a228fa6bfa2369f27698f7bc4c275068'
+UNIT_SHA256='9f1de8772ffec24ef9becab5b12db63eda4ff2d1ef411f1b78193daa88c0f702'
+DROPIN_SHA256='d3f8392536ebb5f8133717764e4c9172220eb42cec32b73f33715fa62e36431c'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+verify_state() {
+  file_is "$SCRIPT" "$SCRIPT_SHA256" || return 1
+  file_is "$UNIT_FILE" "$UNIT_SHA256" || return 1
+  file_is "$DROP_IN" "$DROPIN_SHA256" || return 1
+  [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" = enabled ] || return 1
+  systemctl is-active --quiet "$SERVICE" || return 1
+  "$SCRIPT" --check
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "setup verify": "# opscrew-host: network-filter.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+IFACE='wg-opscrew0'
+SCRIPT='/usr/local/sbin/opscrew-network-filter-wg-opscrew0'
+UNIT_FILE='/etc/systemd/system/opscrew-network-filter@.service'
+DROP_IN='/etc/systemd/system/docker.service.d/opscrew-network-filter-wg-opscrew0.conf'
+SERVICE='opscrew-network-filter@wg-opscrew0.service'
+SCRIPT_B64='IyEvYmluL3NoCiMgTWFuYWdlZCBieSBPcHNDcmV3OiBvbiB0aGUgcHJpdmF0ZSBuZXR3b3JrIHdnLW9wc2NyZXcwLCBvbmx5IHRoZSBhcHAncyBzZXJ2ZXJzIGFuZCB0aGUgZGV2aWNlcwojIGdyYW50ZWQgYWNjZXNzIHJlYWNoIHdoYXQgRG9ja2VyIHB1Ymxpc2hlcyBvbiAxMC4yMDAuNC4yLiBvcHNjcmV3LW5ldHdvcmstZmlsdGVyQHdnLW9wc2NyZXcwLnNlcnZpY2UKIyBydW5zIHRoaXMgYmVmb3JlIERvY2tlciwgYW5kIERvY2tlciByZXF1aXJlcyB0aGF0IHNlcnZpY2U6IHdoZW4gdGhlIGZpbHRlciBjYW5ub3QgYmUgaW5zdGFsbGVkLAojIERvY2tlciBkb2VzIG5vdCBzdGFydC4gYG9wc2NyZXcgcHJvdmlzaW9uYCByZXdyaXRlcyBpdDsgYG9wc2NyZXcgZGVzdHJveWAgcmVtb3ZlcyBpdC4Kc2V0IC1ldQojIFBBVEggY29tZXMgZnJvbSBzeXN0ZW1kIChvciBmcm9tIE9wc0NyZXcncyBzdGVwLCB3aGljaCBydW5zIGl0IG9uY2UgcmlnaHQgYXdheSkuCkNIQUlOPSdPUFNDUkVXLXdnLW9wc2NyZXcwJwpmYWlsKCkgewogIGVjaG8gIm9wc2NyZXctbmV0d29yay1maWx0ZXI6ICQxIiA+JjIKICBleGl0IDEKfQojIFRoZSBjaGFpbidzIHJ1bGVzLCBvbmUgcGVyIGxpbmU6IHBlciBwb3J0LCB0aGUgYWRkcmVzc2VzIHRoYXQgbWF5IG9wZW4gaXQsIHRoZW4gYSBkcm9wLgpydWxlcygpIHsKICBjYXQgPDwnT1BTQ1JFV19SVUxFUycKLXMgMTAuMjAwLjQuMS8zMiAtcCB0Y3AgLW0gY29ubnRyYWNrIC0tY3RzdGF0ZSBORVcgLS1jdG9yaWdkc3QgMTAuMjAwLjQuMiAtLWN0b3JpZ2RzdHBvcnQgNTQzMiAtLWN0ZGlyIE9SSUdJTkFMIC1qIEFDQ0VQVAotcyAxMC4yMDAuNC4xMDAvMzIgLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDU0MzIgLS1jdGRpciBPUklHSU5BTCAtaiBBQ0NFUFQKLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDU0MzIgLS1jdGRpciBPUklHSU5BTCAtaiBEUk9QCi1zIDEwLjIwMC40LjEvMzIgLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDYzNzkgLS1jdGRpciBPUklHSU5BTCAtaiBBQ0NFUFQKLXAgdGNwIC1tIGNvbm50cmFjayAtLWN0c3RhdGUgTkVXIC0tY3RvcmlnZHN0IDEwLjIwMC40LjIgLS1jdG9yaWdkc3Rwb3J0IDYzNzkgLS1jdGRpciBPUklHSU5BTCAtaiBEUk9QCk9QU0NSRVdfUlVMRVMKfQojIFRoZSBjaGFpbiBob2xkcyBleGFjdGx5IHRoZXNlIHJ1bGVzLCBhbmQgRE9DS0VSLVVTRVIganVtcHMgdG8gaXQuCmluX3BsYWNlKCkgewogIGlwdGFibGVzIC13IC1DIERPQ0tFUi1VU0VSIC1qICIkQ0hBSU4iIDI+L2Rldi9udWxsIHx8IHJldHVybiAxCiAgWyAiJChpcHRhYmxlcyAtdyAtUyAiJENIQUlOIiAyPi9kZXYvbnVsbCB8IGdyZXAgLWMgJ14tQSAnKSIgLWVxICIkKHJ1bGVzIHwgZ3JlcCAtYyAuKSIgXSB8fCByZXR1cm4gMQogIHJ1bGVzIHwgd2hpbGUgcmVhZCAtciBzcGVjOyBkbwogICAgIyBUaGUgcnVsZSdzIHdvcmRzIGFyZSBzcGxpdCBvbiBwdXJwb3NlLgogICAgaXB0YWJsZXMgLXcgLUMgIiRDSEFJTiIgJHNwZWMgMj4vZGV2L251bGwgfHwgZXhpdCAxCiAgZG9uZQp9CmlmIFsgIiR7MTotfSIgPSAtLWNoZWNrIF07IHRoZW4KICBpZiBpbl9wbGFjZTsgdGhlbiBleGl0IDA7IGZpCiAgZXhpdCAxCmZpCmlmIFsgLWYgL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb24gXSAmJiBncmVwIC1FcSAnImZpcmV3YWxsLWJhY2tlbmQiW1s6c3BhY2U6XV0qOltbOnNwYWNlOl1dKiJuZnRhYmxlcyInIC9ldGMvZG9ja2VyL2RhZW1vbi5qc29uOyB0aGVuCiAgZmFpbCAiRG9ja2VyIGlzIHNldCB0byBpdHMgbmZ0YWJsZXMgZmlyZXdhbGwgYmFja2VuZCAoL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb24pLCB3aGljaCBoYXMgbm8gRE9DS0VSLVVTRVIgY2hhaW4sIHNvIE9wc0NyZXcncyBuZXR3b3JrIGZpbHRlciBjYW5ub3Qgd29yay4iCmZpCmlmIFsgLWYgL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb24gXSAmJiBncmVwIC1FcSAnImlwdGFibGVzIltbOnNwYWNlOl1dKjpbWzpzcGFjZTpdXSpmYWxzZScgL2V0Yy9kb2NrZXIvZGFlbW9uLmpzb247IHRoZW4KICBmYWlsICJEb2NrZXIgZG9lcyBub3QgbWFuYWdlIGlwdGFibGVzIChcImlwdGFibGVzXCI6IGZhbHNlIGluIC9ldGMvZG9ja2VyL2RhZW1vbi5qc29uKSwgc28gT3BzQ3JldydzIG5ldHdvcmsgZmlsdGVyIGNhbm5vdCB3b3JrLiIKZmkKZG9ja2VyX3VuaXQ9JChzeXN0ZW1jdGwgc2hvdyBkb2NrZXIgLXAgRXhlY1N0YXJ0IC1wIEVudmlyb25tZW50IDI+L2Rldi9udWxsKSB8fCBkb2NrZXJfdW5pdD0nJwpjYXNlICIkZG9ja2VyX3VuaXQiIGluCiAgKmZpcmV3YWxsLWJhY2tlbmQ9bmZ0YWJsZXMqIHwgKiJmaXJld2FsbC1iYWNrZW5kIG5mdGFibGVzIiogfCAqRE9DS0VSX0ZJUkVXQUxMX0JBQ0tFTkQ9bmZ0YWJsZXMqKQogICAgZmFpbCAiRG9ja2VyJ3Mgc2VydmljZSBpcyBzZXQgdG8gaXRzIG5mdGFibGVzIGZpcmV3YWxsIGJhY2tlbmQsIHdoaWNoIGhhcyBubyBET0NLRVItVVNFUiBjaGFpbiwgc28gT3BzQ3JldydzIG5ldHdvcmsgZmlsdGVyIGNhbm5vdCB3b3JrLiIgOzsKICAqLS1pcHRhYmxlcz1mYWxzZSopCiAgICBmYWlsICJEb2NrZXIncyBzZXJ2aWNlIGRvZXMgbm90IG1hbmFnZSBpcHRhYmxlcyAoLS1pcHRhYmxlcz1mYWxzZSksIHNvIE9wc0NyZXcncyBuZXR3b3JrIGZpbHRlciBjYW5ub3Qgd29yay4iIDs7CmVzYWMKY29tbWFuZCAtdiBpcHRhYmxlcyA+L2Rldi9udWxsIDI+JjEgfHwgZmFpbCAiaXB0YWJsZXMgaXMgbm90IGluc3RhbGxlZC4iCmNvbW1hbmQgLXYgaXB0YWJsZXMtcmVzdG9yZSA+L2Rldi9udWxsIDI+JjEgfHwgZmFpbCAiaXB0YWJsZXMtcmVzdG9yZSBpcyBub3QgaW5zdGFsbGVkLiIKIyBPcHNDcmV3J3MgY2hhaW4gaW4gb25lIGF0b21pYyBjaGFuZ2UuCnsKICBlY2hvICcqZmlsdGVyJwogIGVjaG8gIjokQ0hBSU4gLSBbMDowXSIKICBydWxlcyB8IHNlZCAicy9eLy1BICRDSEFJTiAvIgogIGVjaG8gJ0NPTU1JVCcKfSB8IGlwdGFibGVzLXJlc3RvcmUgLXcgLS1ub2ZsdXNoCiMgQmVmb3JlIERvY2tlciBzdGFydHMgRE9DS0VSLVVTRVIgbWF5IG5vdCBleGlzdCB5ZXQ7IERvY2tlciBrZWVwcyBpdCBhbmQgaXRzIHJ1bGVzLgppcHRhYmxlcyAtdyAtbiAtTCBET0NLRVItVVNFUiA+L2Rldi9udWxsIDI+JjEgfHwgaXB0YWJsZXMgLXcgLU4gRE9DS0VSLVVTRVIKaWYgISBpcHRhYmxlcyAtdyAtQyBET0NLRVItVVNFUiAtaiAiJENIQUlOIiAyPi9kZXYvbnVsbDsgdGhlbgogICMgUmlnaHQgYWZ0ZXIgT3BzQ3JldydzIHdlYiBmaWx0ZXIncyBqdW1wcywgd2hpY2ggc3RheSB0aGUgZmlyc3QgcnVsZXMgb2YgRE9DS0VSLVVTRVIuCiAgbj0kKGlwdGFibGVzIC13IC1TIERPQ0tFUi1VU0VSIHwgZ3JlcCAnXi1BICcgfCBhd2sgJyEvIC1qIE9QU0NSRVctV0VCJC8geyBleGl0IH0geyBuID0gTlIgfSBFTkQgeyBwcmludCBuICsgMSB9JykKICBpcHRhYmxlcyAtdyAtSSBET0NLRVItVVNFUiAiJG4iIC1qICIkQ0hBSU4iCmZpCg=='
+UNIT_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IG9uIGFuIGFwcCdzIHByaXZhdGUgbmV0d29yaywgb25seSB0aGUgYXBwJ3Mgc2VydmVycyBhbmQgdGhlIGdyYW50ZWQgZGV2aWNlcwojIHJlYWNoIHdoYXQgRG9ja2VyIHB1Ymxpc2hlcyBvbiB0aGUgc2VydmVyJ3MgcHJpdmF0ZSBhZGRyZXNzLiBEb2NrZXIgcmVxdWlyZXMgZWFjaCBpbnN0YW5jZQojIChkb2NrZXIuc2VydmljZS5kL29wc2NyZXctbmV0d29yay1maWx0ZXItPGludGVyZmFjZT4uY29uZiksIHNvIGl0IGRvZXMgbm90IHN0YXJ0IHdpdGhvdXQgdGhlCiMgZmlsdGVyLiBgb3BzY3JldyBkZXN0cm95YCByZW1vdmVzIGl0LgpbVW5pdF0KRGVzY3JpcHRpb249T3BzQ3JldyBuZXR3b3JrIGZpbHRlciBvbiAlaTogb25seSB0aGUgYXBwJ3Mgc2VydmVycyBhbmQgZ3JhbnRlZCBkZXZpY2VzIHJlYWNoIGl0cyBwcml2YXRlIGFkZHJlc3MKQWZ0ZXI9bG9jYWwtZnMudGFyZ2V0IHVmdy5zZXJ2aWNlIGZpcmV3YWxsZC5zZXJ2aWNlIG5mdGFibGVzLnNlcnZpY2UgbmV0ZmlsdGVyLXBlcnNpc3RlbnQuc2VydmljZSBpcHRhYmxlcy5zZXJ2aWNlIGlwNnRhYmxlcy5zZXJ2aWNlCkJlZm9yZT1kb2NrZXIuc2VydmljZQoKW1NlcnZpY2VdClR5cGU9b25lc2hvdApSZW1haW5BZnRlckV4aXQ9eWVzCkV4ZWNTdGFydD0vdXNyL2xvY2FsL3NiaW4vb3BzY3Jldy1uZXR3b3JrLWZpbHRlci0laQoKW0luc3RhbGxdCldhbnRlZEJ5PW11bHRpLXVzZXIudGFyZ2V0Cg=='
+DROPIN_B64='IyBNYW5hZ2VkIGJ5IE9wc0NyZXc6IERvY2tlciBzdGFydHMgb25seSBhZnRlciBPcHNDcmV3J3MgbmV0d29yayBmaWx0ZXIgb24gd2ctb3BzY3JldzAgaXMgaW4gcGxhY2UsCiMgYW5kIG5vdCBhdCBhbGwgd2hlbiBpdCBmYWlscyAoZmFpbCBjbG9zZWQpLiBgb3BzY3JldyBkZXN0cm95YCByZW1vdmVzIHRoaXMgZmlsZS4KW1VuaXRdClJlcXVpcmVzPW9wc2NyZXctbmV0d29yay1maWx0ZXJAd2ctb3BzY3JldzAuc2VydmljZQpBZnRlcj1vcHNjcmV3LW5ldHdvcmstZmlsdGVyQHdnLW9wc2NyZXcwLnNlcnZpY2UK'
+SCRIPT_SHA256='584f83a3f82e097876173bdf8de9bf11a228fa6bfa2369f27698f7bc4c275068'
+UNIT_SHA256='9f1de8772ffec24ef9becab5b12db63eda4ff2d1ef411f1b78193daa88c0f702'
+DROPIN_SHA256='d3f8392536ebb5f8133717764e4c9172220eb42cec32b73f33715fa62e36431c'
+VERIFY_FAILED='OpsCrew'\\''s network filter is not in effect.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+file_is() { [ -f "$1" ] && [ "$(sha256sum "$1" | cut -d ' ' -f 1)" = "$2" ]; }
+verify_state() {
+  file_is "$SCRIPT" "$SCRIPT_SHA256" || return 1
+  file_is "$UNIT_FILE" "$UNIT_SHA256" || return 1
+  file_is "$DROP_IN" "$DROPIN_SHA256" || return 1
+  [ "$(systemctl is-enabled "$SERVICE" 2>/dev/null)" = enabled ] || return 1
+  systemctl is-active --quiet "$SERVICE" || return 1
+  "$SCRIPT" --check
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "templated unit": "# Managed by OpsCrew: on an app's private network, only the app's servers and the granted devices
+# reach what Docker publishes on the server's private address. Docker requires each instance
+# (docker.service.d/opscrew-network-filter-<interface>.conf), so it does not start without the
+# filter. \`opscrew destroy\` removes it.
+[Unit]
+Description=OpsCrew network filter on %i: only the app's servers and granted devices reach its private address
+After=local-fs.target ufw.service firewalld.service nftables.service netfilter-persistent.service iptables.service ip6tables.service
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/opscrew-network-filter-%i
+
+[Install]
+WantedBy=multi-user.target
+",
+}
+`;

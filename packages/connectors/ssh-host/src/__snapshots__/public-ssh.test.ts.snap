@@ -1,0 +1,1050 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the public SSH step's scripts > match their snapshot (closing, closing on a cloud server, opening) and run under the dead-man switch 1`] = `
+{
+  "close apply": "# opscrew-host: public-ssh.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='false'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='false'
+WANT=''
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+command -v ufw >/dev/null 2>&1 || fail 'ufw is not installed, so OpsCrew cannot change who reaches SSH.'
+ADDED=$(ufw_added)
+if [ "$OPEN" = true ]; then
+  # The rule's words are split on purpose.
+  missing | while IFS= read -r rule; do ufw allow $rule comment "$SSH_COMMENT" >/dev/null; done
+else
+  ufw_active || fail 'ufw is off on this server, so closing public SSH in it would change nothing.'
+  has_rule "$NETWORK_RULE" || fail "SSH is not open on the private network's interface $IFACE, so OpsCrew does not close public SSH. Run opscrew provision to set the network up first."
+fi
+# Only OpsCrew's public rules for the SSH port go; the rule on the interface and yours stay.
+extra | while IFS= read -r rule; do ufw --force delete allow $rule >/dev/null; done
+",
+  "close arm": "# opscrew-host: deadman.arm.ufw
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='false'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='false'
+WANT=''
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+STEP='ufw'
+UNIT='opscrew-undo-ufw'
+DELAY='180'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+install -d -m 0700 /etc/opscrew /etc/opscrew/deadman
+if systemctl is-active --quiet "$UNIT.timer"; then
+  # An interrupted run left its undo waiting: put that state back before changing anything.
+  sh "/etc/opscrew/deadman/$STEP.undo.sh" >/dev/null 2>&1 || true
+  systemctl stop "$UNIT.timer" >/dev/null 2>&1 || true
+fi
+systemctl stop "$UNIT.service" >/dev/null 2>&1 || true
+systemctl reset-failed "$UNIT.timer" "$UNIT.service" >/dev/null 2>&1 || true
+ADDED=$(ufw_added)
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+{
+  cat <<'OPSCREW_UNDO'
+#!/bin/sh
+# Written by OpsCrew: puts the SSH rules back as they were.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+# Takes turns with a cancel: whoever holds the lock first decides; a cancelled undo does nothing.
+exec 9>/etc/opscrew/deadman/ufw.lock
+flock 9
+if [ -e /etc/opscrew/deadman/ufw.cancelled ]; then exit 0; fi
+touch /etc/opscrew/deadman/ufw.fired
+OPSCREW_UNDO
+  public_lines | while IFS= read -r line; do echo "$line >/dev/null 2>&1 || true"; done
+  if [ "$OPEN" = true ]; then
+    missing | while IFS= read -r rule; do echo "ufw --force delete allow $rule >/dev/null 2>&1 || true"; done
+  fi
+} > /etc/opscrew/deadman/ufw.undo.sh
+chmod 0700 "/etc/opscrew/deadman/$STEP.undo.sh"
+# The undo and a cancel take turns with flock on $STEP.lock: the undo marks $STEP.fired, the
+# cancel marks $STEP.cancelled. Both marks start out absent.
+rm -f "/etc/opscrew/deadman/$STEP.fired" "/etc/opscrew/deadman/$STEP.cancelled"
+systemd-run --quiet --unit="$UNIT" --on-active="\${DELAY}s" --timer-property=AccuracySec=1s /bin/sh "/etc/opscrew/deadman/$STEP.undo.sh"
+systemctl is-active --quiet "$UNIT.timer" || fail 'OpsCrew could not schedule the automatic undo, so it changed nothing.'
+echo armed
+",
+  "close check": "# opscrew-host: public-ssh.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='false'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='false'
+WANT=''
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+verify_state() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  [ -z "$(extra)" ] || return 1
+  if [ "$OPEN" = true ]; then
+    [ -z "$(missing)" ] || return 1
+  else
+    ufw_active || return 1
+    has_rule "$NETWORK_RULE" || return 1
+  fi
+  ! systemctl is-active --quiet opscrew-undo-ufw.timer
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "close on a cloud server apply": "# opscrew-host: public-ssh.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='false'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='true'
+WANT=''
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+command -v ufw >/dev/null 2>&1 || fail 'ufw is not installed, so OpsCrew cannot change who reaches SSH.'
+ADDED=$(ufw_added)
+if [ "$OPEN" = true ]; then
+  # The rule's words are split on purpose.
+  missing | while IFS= read -r rule; do ufw allow $rule comment "$SSH_COMMENT" >/dev/null; done
+else
+  ufw_active || fail 'ufw is off on this server, so closing public SSH in it would change nothing.'
+  has_rule "$NETWORK_RULE" || fail "SSH is not open on the private network's interface $IFACE, so OpsCrew does not close public SSH. Run opscrew provision to set the network up first."
+fi
+# Only OpsCrew's public rules for the SSH port go; the rule on the interface and yours stay.
+extra | while IFS= read -r rule; do ufw --force delete allow $rule >/dev/null; done
+",
+  "close on a cloud server arm": "# opscrew-host: deadman.arm.ufw
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='false'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='true'
+WANT=''
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+STEP='ufw'
+UNIT='opscrew-undo-ufw'
+DELAY='180'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+install -d -m 0700 /etc/opscrew /etc/opscrew/deadman
+if systemctl is-active --quiet "$UNIT.timer"; then
+  # An interrupted run left its undo waiting: put that state back before changing anything.
+  sh "/etc/opscrew/deadman/$STEP.undo.sh" >/dev/null 2>&1 || true
+  systemctl stop "$UNIT.timer" >/dev/null 2>&1 || true
+fi
+systemctl stop "$UNIT.service" >/dev/null 2>&1 || true
+systemctl reset-failed "$UNIT.timer" "$UNIT.service" >/dev/null 2>&1 || true
+ADDED=$(ufw_added)
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+{
+  cat <<'OPSCREW_UNDO'
+#!/bin/sh
+# Written by OpsCrew: puts the SSH rules back as they were.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+# Takes turns with a cancel: whoever holds the lock first decides; a cancelled undo does nothing.
+exec 9>/etc/opscrew/deadman/ufw.lock
+flock 9
+if [ -e /etc/opscrew/deadman/ufw.cancelled ]; then exit 0; fi
+touch /etc/opscrew/deadman/ufw.fired
+OPSCREW_UNDO
+  public_lines | while IFS= read -r line; do echo "$line >/dev/null 2>&1 || true"; done
+  if [ "$OPEN" = true ]; then
+    missing | while IFS= read -r rule; do echo "ufw --force delete allow $rule >/dev/null 2>&1 || true"; done
+  fi
+} > /etc/opscrew/deadman/ufw.undo.sh
+chmod 0700 "/etc/opscrew/deadman/$STEP.undo.sh"
+# The undo and a cancel take turns with flock on $STEP.lock: the undo marks $STEP.fired, the
+# cancel marks $STEP.cancelled. Both marks start out absent.
+rm -f "/etc/opscrew/deadman/$STEP.fired" "/etc/opscrew/deadman/$STEP.cancelled"
+systemd-run --quiet --unit="$UNIT" --on-active="\${DELAY}s" --timer-property=AccuracySec=1s /bin/sh "/etc/opscrew/deadman/$STEP.undo.sh"
+systemctl is-active --quiet "$UNIT.timer" || fail 'OpsCrew could not schedule the automatic undo, so it changed nothing.'
+echo armed
+",
+  "close on a cloud server check": "# opscrew-host: public-ssh.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='false'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='true'
+WANT=''
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+verify_state() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  [ -z "$(extra)" ] || return 1
+  if [ "$OPEN" = true ]; then
+    [ -z "$(missing)" ] || return 1
+  else
+    ufw_active || return 1
+    has_rule "$NETWORK_RULE" || return 1
+  fi
+  ! systemctl is-active --quiet opscrew-undo-ufw.timer
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "close on a cloud server verify": "# opscrew-host: public-ssh.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='false'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='true'
+WANT=''
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+VERIFY_FAILED='SSH is not reachable as planned.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+verify_state() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  [ -z "$(extra)" ] || return 1
+  if [ "$OPEN" = true ]; then
+    [ -z "$(missing)" ] || return 1
+  else
+    ufw_active || return 1
+    has_rule "$NETWORK_RULE" || return 1
+  fi
+  ! systemctl is-active --quiet opscrew-undo-ufw.timer
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "close verify": "# opscrew-host: public-ssh.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='false'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='false'
+WANT=''
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+VERIFY_FAILED='SSH is not reachable as planned.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+verify_state() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  [ -z "$(extra)" ] || return 1
+  if [ "$OPEN" = true ]; then
+    [ -z "$(missing)" ] || return 1
+  else
+    ufw_active || return 1
+    has_rule "$NETWORK_RULE" || return 1
+  fi
+  ! systemctl is-active --quiet opscrew-undo-ufw.timer
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "open apply": "# opscrew-host: public-ssh.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='true'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='false'
+WANT='from 2001:db8::/32 to any port 22 proto tcp;from 203.0.113.0/24 to any port 22 proto tcp'
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+command -v ufw >/dev/null 2>&1 || fail 'ufw is not installed, so OpsCrew cannot change who reaches SSH.'
+ADDED=$(ufw_added)
+if [ "$OPEN" = true ]; then
+  # The rule's words are split on purpose.
+  missing | while IFS= read -r rule; do ufw allow $rule comment "$SSH_COMMENT" >/dev/null; done
+else
+  ufw_active || fail 'ufw is off on this server, so closing public SSH in it would change nothing.'
+  has_rule "$NETWORK_RULE" || fail "SSH is not open on the private network's interface $IFACE, so OpsCrew does not close public SSH. Run opscrew provision to set the network up first."
+fi
+# Only OpsCrew's public rules for the SSH port go; the rule on the interface and yours stay.
+extra | while IFS= read -r rule; do ufw --force delete allow $rule >/dev/null; done
+",
+  "open arm": "# opscrew-host: deadman.arm.ufw
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='true'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='false'
+WANT='from 2001:db8::/32 to any port 22 proto tcp;from 203.0.113.0/24 to any port 22 proto tcp'
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+STEP='ufw'
+UNIT='opscrew-undo-ufw'
+DELAY='180'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+install -d -m 0700 /etc/opscrew /etc/opscrew/deadman
+if systemctl is-active --quiet "$UNIT.timer"; then
+  # An interrupted run left its undo waiting: put that state back before changing anything.
+  sh "/etc/opscrew/deadman/$STEP.undo.sh" >/dev/null 2>&1 || true
+  systemctl stop "$UNIT.timer" >/dev/null 2>&1 || true
+fi
+systemctl stop "$UNIT.service" >/dev/null 2>&1 || true
+systemctl reset-failed "$UNIT.timer" "$UNIT.service" >/dev/null 2>&1 || true
+ADDED=$(ufw_added)
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+{
+  cat <<'OPSCREW_UNDO'
+#!/bin/sh
+# Written by OpsCrew: puts the SSH rules back as they were.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+# Takes turns with a cancel: whoever holds the lock first decides; a cancelled undo does nothing.
+exec 9>/etc/opscrew/deadman/ufw.lock
+flock 9
+if [ -e /etc/opscrew/deadman/ufw.cancelled ]; then exit 0; fi
+touch /etc/opscrew/deadman/ufw.fired
+OPSCREW_UNDO
+  public_lines | while IFS= read -r line; do echo "$line >/dev/null 2>&1 || true"; done
+  if [ "$OPEN" = true ]; then
+    missing | while IFS= read -r rule; do echo "ufw --force delete allow $rule >/dev/null 2>&1 || true"; done
+  fi
+} > /etc/opscrew/deadman/ufw.undo.sh
+chmod 0700 "/etc/opscrew/deadman/$STEP.undo.sh"
+# The undo and a cancel take turns with flock on $STEP.lock: the undo marks $STEP.fired, the
+# cancel marks $STEP.cancelled. Both marks start out absent.
+rm -f "/etc/opscrew/deadman/$STEP.fired" "/etc/opscrew/deadman/$STEP.cancelled"
+systemd-run --quiet --unit="$UNIT" --on-active="\${DELAY}s" --timer-property=AccuracySec=1s /bin/sh "/etc/opscrew/deadman/$STEP.undo.sh"
+systemctl is-active --quiet "$UNIT.timer" || fail 'OpsCrew could not schedule the automatic undo, so it changed nothing.'
+echo armed
+",
+  "open check": "# opscrew-host: public-ssh.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='true'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='false'
+WANT='from 2001:db8::/32 to any port 22 proto tcp;from 203.0.113.0/24 to any port 22 proto tcp'
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+verify_state() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  [ -z "$(extra)" ] || return 1
+  if [ "$OPEN" = true ]; then
+    [ -z "$(missing)" ] || return 1
+  else
+    ufw_active || return 1
+    has_rule "$NETWORK_RULE" || return 1
+  fi
+  ! systemctl is-active --quiet opscrew-undo-ufw.timer
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "open verify": "# opscrew-host: public-ssh.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+OPEN='true'
+IFACE='wg-opscrew0'
+PORT='22'
+CLOUD='false'
+WANT='from 2001:db8::/32 to any port 22 proto tcp;from 203.0.113.0/24 to any port 22 proto tcp'
+NETWORK_RULE='in on wg-opscrew0 to any port 22 proto tcp'
+SSH_COMMENT='opscrew-ssh'
+VERIFY_FAILED='SSH is not reachable as planned.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+ufw_added() { ufw show added 2>/dev/null || true; }
+has_rule() { printf '%s\\n' "$ADDED" | grep -Eq "^ufw allow $1( comment .*)?\\$"; }
+has_own_rule() { printf '%s\\n' "$ADDED" | grep -qxF "ufw allow $1 comment '$2'"; }
+# The default policy ufw keeps in /etc/default/ufw, as a ufw word (allow, deny, reject).
+ufw_policy() {
+  sed -n "s/^DEFAULT_$1_POLICY=\\"\\{0,1\\}\\([A-Z]*\\)\\"\\{0,1\\}\\$/\\1/p" /etc/default/ufw 2>/dev/null | head -n 1 |
+    sed -e 's/^ACCEPT$/allow/' -e 's/^DROP$/deny/' -e 's/^REJECT$/reject/'
+}
+# Lines for an undo script that put today's default policies back.
+policy_lines() {
+  for pair in INPUT:incoming OUTPUT:outgoing FORWARD:routed; do
+    policy=$(ufw_policy "\${pair%%:*}")
+    case "$policy" in allow|deny|reject) echo "ufw default $policy \${pair#*:} >/dev/null 2>&1 || true" ;; esac
+  done
+}
+public_lines() {
+  printf '%s\\n' "$ADDED" | grep -E "^ufw allow ($PORT/tcp|from [0-9a-f.:/]+ to any port $PORT proto tcp) comment '$SSH_COMMENT'\\$" || true
+  # On a server OpsCrew created, cloud-init's rule (it has no comment) is OpsCrew's too.
+  if [ "$CLOUD" = true ]; then printf '%s\\n' "$ADDED" | grep -xF "ufw allow $PORT/tcp" || true; fi
+}
+wanted() { case ";$WANT;" in *";$1;"*) return 0 ;; esac; return 1; }
+missing() {
+  printf '%s\\n' "$WANT" | tr ';' '\\n' | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! has_rule "$rule"; then echo "$rule"; fi
+  done
+}
+extra() {
+  public_lines | sed -e 's/^ufw allow //' -e "s/ comment '.*'\\$//" | while IFS= read -r rule; do
+    if [ -n "$rule" ] && ! wanted "$rule"; then echo "$rule"; fi
+  done
+}
+verify_state() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  ADDED=$(ufw_added)
+  [ -z "$(extra)" ] || return 1
+  if [ "$OPEN" = true ]; then
+    [ -z "$(missing)" ] || return 1
+  else
+    ufw_active || return 1
+    has_rule "$NETWORK_RULE" || return 1
+  fi
+  ! systemctl is-active --quiet opscrew-undo-ufw.timer
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+}
+`;

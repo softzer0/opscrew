@@ -40,6 +40,13 @@ import {
 import { foreignFirewalls } from "./firewall";
 import { NETWORK_DROP_IN, WIREGUARD_DIR } from "./network";
 import {
+  NETWORK_FILTER_SCRIPT_PREFIX,
+  NETWORK_FILTER_UNIT,
+  networkFilterChain,
+  networkFilterDropInPath,
+  networkFilterService,
+} from "./network-filter";
+import {
   dockerdFlags,
   EXIT_MARK,
   engineVersion,
@@ -337,6 +344,20 @@ for conf in ${WIREGUARD_DIR}/wg-opscrew*.conf; do
   if systemctl is-active --quiet "$unit"; then echo "iface $name active yes"; else echo "iface $name active no"; fi
   ip -4 -o addr show dev "$name" | awk -v name="$name" '{ print "iface " name " address " $4 }'
   wg show "$name" peers | sed "s/^/iface $name peer /"
+done
+if [ -f ${NETWORK_FILTER_UNIT} ]; then echo "filterunit $(sha256sum ${NETWORK_FILTER_UNIT} | cut -d ' ' -f 1)"; else echo 'filterunit -'; fi
+for script in ${NETWORK_FILTER_SCRIPT_PREFIX}wg-opscrew*; do
+  [ -f "$script" ] || continue
+  name=\${script#${NETWORK_FILTER_SCRIPT_PREFIX}}
+  case "\${name#wg-opscrew}" in ''|*[!0-9]*) continue ;; esac
+  echo "filter $name script $(sha256sum "$script" | cut -d ' ' -f 1)"
+  dropin="${networkFilterDropInPath("$name")}"
+  if [ -f "$dropin" ]; then echo "filter $name dropin $(sha256sum "$dropin" | cut -d ' ' -f 1)"; else echo "filter $name dropin -"; fi
+  unit="${networkFilterService("$name")}"
+  if [ "$(systemctl is-enabled "$unit")" = enabled ]; then echo "filter $name enabled yes"; else echo "filter $name enabled no"; fi
+  if systemctl is-active --quiet "$unit"; then echo "filter $name active yes"; else echo "filter $name active no"; fi
+  if iptables -w -C DOCKER-USER -j "${networkFilterChain("$name")}" 2>/dev/null; then echo "filter $name jump yes"; else echo "filter $name jump no"; fi
+  iptables -w -S "${networkFilterChain("$name")}" 2>/dev/null | sed "s/^/filter $name rule /"
 done`;
 
 /** Directory services that log users in without local passwords or keys OpsCrew can see. */

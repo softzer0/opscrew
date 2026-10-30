@@ -49,21 +49,26 @@ export function sortedNetworks(list: readonly string[]): string[] {
 /**
  * Lines that refuse a Docker that does not filter its ports through iptables: its daemon.json, or
  * its unit's command line and environment (`systemctl show docker`), name the nftables backend or
- * turn iptables off.
+ * turn iptables off. `filter` names the filter that cannot work then ("OpsCrew's web filter").
  */
-export const WEB_FILTER_BACKEND_CHECK = `if [ -f /etc/docker/daemon.json ] && grep -Eq '"firewall-backend"[[:space:]]*:[[:space:]]*"nftables"' /etc/docker/daemon.json; then
-  fail "Docker is set to its nftables firewall backend (/etc/docker/daemon.json), which has no DOCKER-USER chain, so OpsCrew's web filter cannot work."
+export function dockerBackendCheck(filter: string): string {
+  return `if [ -f /etc/docker/daemon.json ] && grep -Eq '"firewall-backend"[[:space:]]*:[[:space:]]*"nftables"' /etc/docker/daemon.json; then
+  fail "Docker is set to its nftables firewall backend (/etc/docker/daemon.json), which has no DOCKER-USER chain, so ${filter} cannot work."
 fi
 if [ -f /etc/docker/daemon.json ] && grep -Eq '"iptables"[[:space:]]*:[[:space:]]*false' /etc/docker/daemon.json; then
-  fail "Docker does not manage iptables (\\"iptables\\": false in /etc/docker/daemon.json), so OpsCrew's web filter cannot work."
+  fail "Docker does not manage iptables (\\"iptables\\": false in /etc/docker/daemon.json), so ${filter} cannot work."
 fi
 docker_unit=$(systemctl show docker -p ExecStart -p Environment 2>/dev/null) || docker_unit=''
 case "$docker_unit" in
   *firewall-backend=nftables* | *"firewall-backend nftables"* | *DOCKER_FIREWALL_BACKEND=nftables*)
-    fail "Docker's service is set to its nftables firewall backend, which has no DOCKER-USER chain, so OpsCrew's web filter cannot work." ;;
+    fail "Docker's service is set to its nftables firewall backend, which has no DOCKER-USER chain, so ${filter} cannot work." ;;
   *--iptables=false*)
-    fail "Docker's service does not manage iptables (--iptables=false), so OpsCrew's web filter cannot work." ;;
+    fail "Docker's service does not manage iptables (--iptables=false), so ${filter} cannot work." ;;
 esac`;
+}
+
+/** {@link dockerBackendCheck} for the web filter. */
+export const WEB_FILTER_BACKEND_CHECK = dockerBackendCheck("OpsCrew's web filter");
 
 /**
  * Shell functions for the filter's rules, shared by the script on the server and the step's

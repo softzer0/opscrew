@@ -191,9 +191,9 @@ export const WebFilterFactsSchema = z.object({
 export type WebFilterFacts = z.infer<typeof WebFilterFactsSchema>;
 
 /**
- * OpsCrew's private networks on the server (the `network` step), read as root: Docker's drop-in,
- * and each OpsCrew interface with a configuration in /etc/wireguard. Their ufw rules are in
- * `firewall.ufwRules`.
+ * OpsCrew's private networks on the server (the `network` and `network-filter` steps), read as
+ * root: Docker's drop-in, each OpsCrew interface with a configuration in /etc/wireguard, and each
+ * interface's filter with a script. Their ufw rules are in `firewall.ufwRules`.
  */
 export const NetworkFactsSchema = z.object({
   /** SHA-256 of Docker's drop-in for OpsCrew's interfaces, null when absent. */
@@ -214,6 +214,26 @@ export const NetworkFactsSchema = z.object({
       peers: z.array(z.string()),
     }),
   ),
+  /** SHA-256 of the network filter's templated unit, null when absent. */
+  filterUnit: z.string().nullable().default(null),
+  filters: z
+    .array(
+      z.object({
+        /** The interface the filter is for. */
+        name: z.string(),
+        /** SHA-256 of its script and of Docker's drop-in for it, null when absent. */
+        script: z.string().nullable(),
+        dropIn: z.string().nullable(),
+        /** Its unit instance is enabled, and active. */
+        enabled: z.boolean(),
+        active: z.boolean(),
+        /** `DOCKER-USER` jumps to its chain. */
+        jump: z.boolean(),
+        /** Its chain's rules: each filtered port with the sources it accepts. */
+        rules: z.array(z.object({ port: z.number(), sources: z.array(z.string()) })),
+      }),
+    )
+    .default([]),
 });
 export type NetworkFacts = z.infer<typeof NetworkFactsSchema>;
 

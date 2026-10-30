@@ -121,6 +121,12 @@ const SECRET_CHECKS: Record<
     invalid:
       "The WireGuard private key must be the base64 of 32 bytes (44 characters ending in =).",
   },
+  grantPassword: {
+    label: "grant-password",
+    needs: "the password of the device's database login",
+    valid: (value) => /^[A-Za-z0-9]{16,128}$/.test(value),
+    invalid: "The database login's password must be 16 to 128 letters and digits.",
+  },
 };
 
 /**

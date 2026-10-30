@@ -98,6 +98,9 @@ const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "ssh-firewall": "SSH firewall (nftables table inet opscrew)",
   "web-filter": "Web filter (only Cloudflare reaches ports 80 and 443)",
   network: "The private network (WireGuard)",
+  "network-filter": "The private network's filter (only the app's servers and granted devices)",
+  "public-ssh": "Public SSH (open or closed)",
+  grant: "A device's login to a database or cache",
   fail2ban: "Brute-force protection (fail2ban)",
   "unattended-upgrades": "Automatic security updates",
   sysctl: "Kernel settings for the app's services (/etc/sysctl.d/90-opscrew.conf)",
@@ -656,8 +659,11 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
       return tunnelDetails(facts, step, app);
     case "portainer":
       return portainerDetails(facts, step);
-    // Planned by planNetwork, never in the setup plan drift compares with.
+    // Planned by planNetwork, planPublicSsh and planGrant, never in the setup plan drift compares with.
     case "network":
+    case "network-filter":
+    case "public-ssh":
+    case "grant":
       return [];
     // Planned by planAddon, never in the setup plan drift compares with.
     case "check-key":

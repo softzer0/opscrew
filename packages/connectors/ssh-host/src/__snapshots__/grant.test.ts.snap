@@ -1,0 +1,2358 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the grant step's statements (research R6a) > match their snapshot for every kind and access, and its removal 1`] = `
+{
+  "mariadb full apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MariaDB'
+REMOVE='false'
+WANT='YYYYYYYYYYYYYYYYYY'
+ROOT_CLIENT='mariadb --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MARIADB_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT ALL PRIVILEGES ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "mariadb full check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MariaDB'
+REMOVE='false'
+WANT='YYYYYYYYYYYYYYYYYY'
+ROOT_CLIENT='mariadb --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MARIADB_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT ALL PRIVILEGES ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "mariadb full verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MariaDB'
+REMOVE='false'
+WANT='YYYYYYYYYYYYYYYYYY'
+ROOT_CLIENT='mariadb --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MARIADB_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT ALL PRIVILEGES ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+VERIFY_FAILED='The device'\\''s login does not have the planned access.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "mariadb read-only apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MariaDB'
+REMOVE='false'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mariadb --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MARIADB_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "mariadb read-only check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MariaDB'
+REMOVE='false'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mariadb --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MARIADB_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "mariadb read-only verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MariaDB'
+REMOVE='false'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mariadb --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MARIADB_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+VERIFY_FAILED='The device'\\''s login does not have the planned access.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "mariadb removal apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MariaDB'
+REMOVE='true'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mariadb --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MARIADB_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "mariadb removal check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MariaDB'
+REMOVE='true'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mariadb --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MARIADB_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "mariadb removal verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MariaDB'
+REMOVE='true'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mariadb --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MARIADB_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+VERIFY_FAILED='The device'\\''s login is still in the database.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "mongodb full apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MongoDB'
+REMOVE='false'
+WANT='app.dbAdmin,app.readWrite'
+ROOT_CLIENT=''
+PRELUDE='const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);'
+STATE_QUERY='const u = a.getUser("laptop"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));'
+NEW_PRE='a.createUser({ user: "laptop", pwd: "'
+NEW_POST='", roles: [{ role: "readWrite", db: "app" }, { role: "dbAdmin", db: "app" }] });'
+SET_PRE='a.updateUser("laptop", { pwd: "'
+SET_POST='", roles: [{ role: "readWrite", db: "app" }, { role: "dbAdmin", db: "app" }] });'
+ACCESS=''
+DROP='a.dropUser("laptop");'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" mongosh --quiet --norc; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "mongodb full check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MongoDB'
+REMOVE='false'
+WANT='app.dbAdmin,app.readWrite'
+ROOT_CLIENT=''
+PRELUDE='const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);'
+STATE_QUERY='const u = a.getUser("laptop"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));'
+NEW_PRE='a.createUser({ user: "laptop", pwd: "'
+NEW_POST='", roles: [{ role: "readWrite", db: "app" }, { role: "dbAdmin", db: "app" }] });'
+SET_PRE='a.updateUser("laptop", { pwd: "'
+SET_POST='", roles: [{ role: "readWrite", db: "app" }, { role: "dbAdmin", db: "app" }] });'
+ACCESS=''
+DROP='a.dropUser("laptop");'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" mongosh --quiet --norc; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "mongodb full verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MongoDB'
+REMOVE='false'
+WANT='app.dbAdmin,app.readWrite'
+ROOT_CLIENT=''
+PRELUDE='const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);'
+STATE_QUERY='const u = a.getUser("laptop"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));'
+NEW_PRE='a.createUser({ user: "laptop", pwd: "'
+NEW_POST='", roles: [{ role: "readWrite", db: "app" }, { role: "dbAdmin", db: "app" }] });'
+SET_PRE='a.updateUser("laptop", { pwd: "'
+SET_POST='", roles: [{ role: "readWrite", db: "app" }, { role: "dbAdmin", db: "app" }] });'
+ACCESS=''
+DROP='a.dropUser("laptop");'
+VERIFY_FAILED='The device'\\''s login does not have the planned access.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" mongosh --quiet --norc; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "mongodb read-only apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MongoDB'
+REMOVE='false'
+WANT='app.read'
+ROOT_CLIENT=''
+PRELUDE='const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);'
+STATE_QUERY='const u = a.getUser("laptop"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));'
+NEW_PRE='a.createUser({ user: "laptop", pwd: "'
+NEW_POST='", roles: [{ role: "read", db: "app" }] });'
+SET_PRE='a.updateUser("laptop", { pwd: "'
+SET_POST='", roles: [{ role: "read", db: "app" }] });'
+ACCESS=''
+DROP='a.dropUser("laptop");'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" mongosh --quiet --norc; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "mongodb read-only check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MongoDB'
+REMOVE='false'
+WANT='app.read'
+ROOT_CLIENT=''
+PRELUDE='const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);'
+STATE_QUERY='const u = a.getUser("laptop"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));'
+NEW_PRE='a.createUser({ user: "laptop", pwd: "'
+NEW_POST='", roles: [{ role: "read", db: "app" }] });'
+SET_PRE='a.updateUser("laptop", { pwd: "'
+SET_POST='", roles: [{ role: "read", db: "app" }] });'
+ACCESS=''
+DROP='a.dropUser("laptop");'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" mongosh --quiet --norc; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "mongodb read-only verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MongoDB'
+REMOVE='false'
+WANT='app.read'
+ROOT_CLIENT=''
+PRELUDE='const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);'
+STATE_QUERY='const u = a.getUser("laptop"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));'
+NEW_PRE='a.createUser({ user: "laptop", pwd: "'
+NEW_POST='", roles: [{ role: "read", db: "app" }] });'
+SET_PRE='a.updateUser("laptop", { pwd: "'
+SET_POST='", roles: [{ role: "read", db: "app" }] });'
+ACCESS=''
+DROP='a.dropUser("laptop");'
+VERIFY_FAILED='The device'\\''s login does not have the planned access.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" mongosh --quiet --norc; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "mongodb removal apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MongoDB'
+REMOVE='true'
+WANT='app.read'
+ROOT_CLIENT=''
+PRELUDE='const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);'
+STATE_QUERY='const u = a.getUser("laptop"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));'
+NEW_PRE='a.createUser({ user: "laptop", pwd: "'
+NEW_POST='", roles: [{ role: "read", db: "app" }] });'
+SET_PRE='a.updateUser("laptop", { pwd: "'
+SET_POST='", roles: [{ role: "read", db: "app" }] });'
+ACCESS=''
+DROP='a.dropUser("laptop");'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" mongosh --quiet --norc; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "mongodb removal check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MongoDB'
+REMOVE='true'
+WANT='app.read'
+ROOT_CLIENT=''
+PRELUDE='const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);'
+STATE_QUERY='const u = a.getUser("laptop"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));'
+NEW_PRE='a.createUser({ user: "laptop", pwd: "'
+NEW_POST='", roles: [{ role: "read", db: "app" }] });'
+SET_PRE='a.updateUser("laptop", { pwd: "'
+SET_POST='", roles: [{ role: "read", db: "app" }] });'
+ACCESS=''
+DROP='a.dropUser("laptop");'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" mongosh --quiet --norc; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "mongodb removal verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MongoDB'
+REMOVE='true'
+WANT='app.read'
+ROOT_CLIENT=''
+PRELUDE='const a = db.getSiblingDB("admin"); a.auth(process.env.MONGO_INITDB_ROOT_USERNAME, process.env.MONGO_INITDB_ROOT_PASSWORD);'
+STATE_QUERY='const u = a.getUser("laptop"); print("opscrew-" + "read"); if (u !== null) print("opscrew-" + "login=" + (u.roles.map((r) => r.db + "." + r.role).sort().join(",") || "none"));'
+NEW_PRE='a.createUser({ user: "laptop", pwd: "'
+NEW_POST='", roles: [{ role: "read", db: "app" }] });'
+SET_PRE='a.updateUser("laptop", { pwd: "'
+SET_POST='", roles: [{ role: "read", db: "app" }] });'
+ACCESS=''
+DROP='a.dropUser("laptop");'
+VERIFY_FAILED='The device'\\''s login is still in the database.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" mongosh --quiet --norc; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "mysql full apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MySQL'
+REMOVE='false'
+WANT='YYYYYYYYYYYYYYYYYY'
+ROOT_CLIENT='mysql --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MYSQL_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT ALL PRIVILEGES ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "mysql full check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MySQL'
+REMOVE='false'
+WANT='YYYYYYYYYYYYYYYYYY'
+ROOT_CLIENT='mysql --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MYSQL_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT ALL PRIVILEGES ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "mysql full verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MySQL'
+REMOVE='false'
+WANT='YYYYYYYYYYYYYYYYYY'
+ROOT_CLIENT='mysql --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MYSQL_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT ALL PRIVILEGES ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+VERIFY_FAILED='The device'\\''s login does not have the planned access.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "mysql read-only apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MySQL'
+REMOVE='false'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mysql --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MYSQL_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "mysql read-only check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MySQL'
+REMOVE='false'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mysql --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MYSQL_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "mysql read-only verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MySQL'
+REMOVE='false'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mysql --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MYSQL_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+VERIFY_FAILED='The device'\\''s login does not have the planned access.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "mysql removal apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MySQL'
+REMOVE='true'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mysql --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MYSQL_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "mysql removal check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MySQL'
+REMOVE='true'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mysql --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MYSQL_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "mysql removal verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='MySQL'
+REMOVE='true'
+WANT='YNNNNNNNNNNNYNNNNN'
+ROOT_CLIENT='mysql --defaults-extra-file=<(printf '\\''[client]\\nuser=root\\npassword=%s\\n'\\'' "$MYSQL_ROOT_PASSWORD") -N -B'
+PRELUDE=''
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT CONCAT('\\''opscrew-login='\\'', IFNULL(CONCAT(d.Select_priv, d.Insert_priv, d.Update_priv, d.Delete_priv, d.Create_priv, d.Drop_priv, d.References_priv, d.Index_priv, d.Alter_priv, d.Create_tmp_table_priv, d.Lock_tables_priv, d.Create_view_priv, d.Show_view_priv, d.Create_routine_priv, d.Alter_routine_priv, d.Execute_priv, d.Event_priv, d.Trigger_priv), '\\''none'\\'')) FROM mysql.user u LEFT JOIN mysql.db d ON d.User = u.User AND d.Host = u.Host AND d.Db = '\\''app'\\'' WHERE u.User = '\\''laptop'\\'' AND u.Host = '\\''%'\\'';'
+NEW_PRE='CREATE USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER USER '\\''laptop'\\''@'\\''%'\\'' IDENTIFIED BY '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT SELECT ON app.* TO '\\''laptop'\\''@'\\''%'\\''; REVOKE ALL PRIVILEGES ON app.* FROM '\\''laptop'\\''@'\\''%'\\''; GRANT SELECT, SHOW VIEW ON app.* TO '\\''laptop'\\''@'\\''%'\\'';'
+DROP='DROP USER IF EXISTS '\\''laptop'\\''@'\\''%'\\'';'
+VERIFY_FAILED='The device'\\''s login is still in the database.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" bash -c "$ROOT_CLIENT"; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "postgres full apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='PostgreSQL'
+REMOVE='false'
+WANT='full'
+ROOT_CLIENT=''
+PRELUDE='SET client_min_messages = error;'
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT '\\''opscrew-login='\\'' || CASE WHEN NOT r.rolcanlogin OR r.rolsuper OR pg_has_role(r.oid, '\\''app'\\'', '\\''MEMBER'\\'') OR NOT pg_has_role(r.oid, '\\''pg_read_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''other'\\'' WHEN pg_has_role(r.oid, '\\''pg_write_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''full'\\'' ELSE '\\''read-only'\\'' END FROM pg_roles r WHERE r.rolname = '\\''laptop'\\'';'
+NEW_PRE='CREATE ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT pg_read_all_data, pg_write_all_data TO "laptop";'
+DROP='REASSIGN OWNED BY "laptop" TO app; DROP OWNED BY "laptop"; DROP ROLE "laptop";'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" psql -X -q -t -A -v ON_ERROR_STOP=1 -U app -d app; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "postgres full check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='PostgreSQL'
+REMOVE='false'
+WANT='full'
+ROOT_CLIENT=''
+PRELUDE='SET client_min_messages = error;'
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT '\\''opscrew-login='\\'' || CASE WHEN NOT r.rolcanlogin OR r.rolsuper OR pg_has_role(r.oid, '\\''app'\\'', '\\''MEMBER'\\'') OR NOT pg_has_role(r.oid, '\\''pg_read_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''other'\\'' WHEN pg_has_role(r.oid, '\\''pg_write_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''full'\\'' ELSE '\\''read-only'\\'' END FROM pg_roles r WHERE r.rolname = '\\''laptop'\\'';'
+NEW_PRE='CREATE ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT pg_read_all_data, pg_write_all_data TO "laptop";'
+DROP='REASSIGN OWNED BY "laptop" TO app; DROP OWNED BY "laptop"; DROP ROLE "laptop";'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" psql -X -q -t -A -v ON_ERROR_STOP=1 -U app -d app; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "postgres full verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='PostgreSQL'
+REMOVE='false'
+WANT='full'
+ROOT_CLIENT=''
+PRELUDE='SET client_min_messages = error;'
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT '\\''opscrew-login='\\'' || CASE WHEN NOT r.rolcanlogin OR r.rolsuper OR pg_has_role(r.oid, '\\''app'\\'', '\\''MEMBER'\\'') OR NOT pg_has_role(r.oid, '\\''pg_read_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''other'\\'' WHEN pg_has_role(r.oid, '\\''pg_write_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''full'\\'' ELSE '\\''read-only'\\'' END FROM pg_roles r WHERE r.rolname = '\\''laptop'\\'';'
+NEW_PRE='CREATE ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+SET_POST=''\\'';'
+ACCESS='GRANT pg_read_all_data, pg_write_all_data TO "laptop";'
+DROP='REASSIGN OWNED BY "laptop" TO app; DROP OWNED BY "laptop"; DROP ROLE "laptop";'
+VERIFY_FAILED='The device'\\''s login does not have the planned access.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" psql -X -q -t -A -v ON_ERROR_STOP=1 -U app -d app; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "postgres read-only apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='PostgreSQL'
+REMOVE='false'
+WANT='read-only'
+ROOT_CLIENT=''
+PRELUDE='SET client_min_messages = error;'
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT '\\''opscrew-login='\\'' || CASE WHEN NOT r.rolcanlogin OR r.rolsuper OR pg_has_role(r.oid, '\\''app'\\'', '\\''MEMBER'\\'') OR NOT pg_has_role(r.oid, '\\''pg_read_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''other'\\'' WHEN pg_has_role(r.oid, '\\''pg_write_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''full'\\'' ELSE '\\''read-only'\\'' END FROM pg_roles r WHERE r.rolname = '\\''laptop'\\'';'
+NEW_PRE='CREATE ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+SET_POST=''\\'';'
+ACCESS='REVOKE pg_write_all_data FROM "laptop"; GRANT pg_read_all_data TO "laptop";'
+DROP='REASSIGN OWNED BY "laptop" TO app; DROP OWNED BY "laptop"; DROP ROLE "laptop";'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" psql -X -q -t -A -v ON_ERROR_STOP=1 -U app -d app; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "postgres read-only check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='PostgreSQL'
+REMOVE='false'
+WANT='read-only'
+ROOT_CLIENT=''
+PRELUDE='SET client_min_messages = error;'
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT '\\''opscrew-login='\\'' || CASE WHEN NOT r.rolcanlogin OR r.rolsuper OR pg_has_role(r.oid, '\\''app'\\'', '\\''MEMBER'\\'') OR NOT pg_has_role(r.oid, '\\''pg_read_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''other'\\'' WHEN pg_has_role(r.oid, '\\''pg_write_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''full'\\'' ELSE '\\''read-only'\\'' END FROM pg_roles r WHERE r.rolname = '\\''laptop'\\'';'
+NEW_PRE='CREATE ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+SET_POST=''\\'';'
+ACCESS='REVOKE pg_write_all_data FROM "laptop"; GRANT pg_read_all_data TO "laptop";'
+DROP='REASSIGN OWNED BY "laptop" TO app; DROP OWNED BY "laptop"; DROP ROLE "laptop";'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" psql -X -q -t -A -v ON_ERROR_STOP=1 -U app -d app; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "postgres read-only verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='PostgreSQL'
+REMOVE='false'
+WANT='read-only'
+ROOT_CLIENT=''
+PRELUDE='SET client_min_messages = error;'
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT '\\''opscrew-login='\\'' || CASE WHEN NOT r.rolcanlogin OR r.rolsuper OR pg_has_role(r.oid, '\\''app'\\'', '\\''MEMBER'\\'') OR NOT pg_has_role(r.oid, '\\''pg_read_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''other'\\'' WHEN pg_has_role(r.oid, '\\''pg_write_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''full'\\'' ELSE '\\''read-only'\\'' END FROM pg_roles r WHERE r.rolname = '\\''laptop'\\'';'
+NEW_PRE='CREATE ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+SET_POST=''\\'';'
+ACCESS='REVOKE pg_write_all_data FROM "laptop"; GRANT pg_read_all_data TO "laptop";'
+DROP='REASSIGN OWNED BY "laptop" TO app; DROP OWNED BY "laptop"; DROP ROLE "laptop";'
+VERIFY_FAILED='The device'\\''s login does not have the planned access.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" psql -X -q -t -A -v ON_ERROR_STOP=1 -U app -d app; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+  "postgres removal apply": "# opscrew-host: grant.apply
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='PostgreSQL'
+REMOVE='true'
+WANT='read-only'
+ROOT_CLIENT=''
+PRELUDE='SET client_min_messages = error;'
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT '\\''opscrew-login='\\'' || CASE WHEN NOT r.rolcanlogin OR r.rolsuper OR pg_has_role(r.oid, '\\''app'\\'', '\\''MEMBER'\\'') OR NOT pg_has_role(r.oid, '\\''pg_read_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''other'\\'' WHEN pg_has_role(r.oid, '\\''pg_write_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''full'\\'' ELSE '\\''read-only'\\'' END FROM pg_roles r WHERE r.rolname = '\\''laptop'\\'';'
+NEW_PRE='CREATE ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+SET_POST=''\\'';'
+ACCESS='REVOKE pg_write_all_data FROM "laptop"; GRANT pg_read_all_data TO "laptop";'
+DROP='REASSIGN OWNED BY "laptop" TO app; DROP OWNED BY "laptop"; DROP ROLE "laptop";'
+trap '' HUP PIPE
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" psql -X -q -t -A -v ON_ERROR_STOP=1 -U app -d app; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+pw=''
+if [ "$REMOVE" != true ]; then
+  # The password, read before anything else can read the session's stdin. Only builtins see it.
+  IFS= read -r pw || true
+  case "$pw" in
+    ''|*[!A-Za-z0-9]*) pw=''; fail "The login's password did not arrive on standard input, so OpsCrew changed nothing." ;;
+  esac
+fi
+read_state || fail "OpsCrew could not read the logins of $SERVICE ($TITLE) with docker compose -p $PROJECT exec; check that the service is running, then try again."
+if [ "$REMOVE" = true ]; then
+  if [ "$state" != - ]; then
+    printf '%s\\n' "$PRELUDE" "$DROP" | client >/dev/null || fail "OpsCrew could not remove the login $LOGIN from $SERVICE ($TITLE)."
+  fi
+  exit 0
+fi
+if [ "$state" = - ]; then
+  pre=$NEW_PRE
+  post=$NEW_POST
+else
+  pre=$SET_PRE
+  post=$SET_POST
+fi
+if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then
+  pw=''
+  fail "OpsCrew could not set up the login $LOGIN in $SERVICE ($TITLE)."
+fi
+pw=''
+",
+  "postgres removal check": "# opscrew-host: grant.check
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='PostgreSQL'
+REMOVE='true'
+WANT='read-only'
+ROOT_CLIENT=''
+PRELUDE='SET client_min_messages = error;'
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT '\\''opscrew-login='\\'' || CASE WHEN NOT r.rolcanlogin OR r.rolsuper OR pg_has_role(r.oid, '\\''app'\\'', '\\''MEMBER'\\'') OR NOT pg_has_role(r.oid, '\\''pg_read_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''other'\\'' WHEN pg_has_role(r.oid, '\\''pg_write_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''full'\\'' ELSE '\\''read-only'\\'' END FROM pg_roles r WHERE r.rolname = '\\''laptop'\\'';'
+NEW_PRE='CREATE ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+SET_POST=''\\'';'
+ACCESS='REVOKE pg_write_all_data FROM "laptop"; GRANT pg_read_all_data TO "laptop";'
+DROP='REASSIGN OWNED BY "laptop" TO app; DROP OWNED BY "laptop"; DROP ROLE "laptop";'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" psql -X -q -t -A -v ON_ERROR_STOP=1 -U app -d app; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+
+if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi
+",
+  "postgres removal verify": "# opscrew-host: grant.verify
+set -eu
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LC_ALL=C
+LANG=C
+DEBIAN_FRONTEND=noninteractive
+export PATH LC_ALL LANG DEBIAN_FRONTEND
+umask 022
+PROJECT='shop'
+SERVICE='db'
+LOGIN='laptop'
+TITLE='PostgreSQL'
+REMOVE='true'
+WANT='read-only'
+ROOT_CLIENT=''
+PRELUDE='SET client_min_messages = error;'
+STATE_QUERY='SELECT '\\''opscrew-read'\\''; SELECT '\\''opscrew-login='\\'' || CASE WHEN NOT r.rolcanlogin OR r.rolsuper OR pg_has_role(r.oid, '\\''app'\\'', '\\''MEMBER'\\'') OR NOT pg_has_role(r.oid, '\\''pg_read_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''other'\\'' WHEN pg_has_role(r.oid, '\\''pg_write_all_data'\\'', '\\''MEMBER'\\'') THEN '\\''full'\\'' ELSE '\\''read-only'\\'' END FROM pg_roles r WHERE r.rolname = '\\''laptop'\\'';'
+NEW_PRE='CREATE ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+NEW_POST=''\\'';'
+SET_PRE='ALTER ROLE "laptop" WITH LOGIN PASSWORD '\\'''
+SET_POST=''\\'';'
+ACCESS='REVOKE pg_write_all_data FROM "laptop"; GRANT pg_read_all_data TO "laptop";'
+DROP='REASSIGN OWNED BY "laptop" TO app; DROP OWNED BY "laptop"; DROP ROLE "laptop";'
+VERIFY_FAILED='The device'\\''s login is still in the database.'
+apt_get() {
+  install -d -m 0700 "$(dirname '/var/log/opscrew/apt.log')"
+  if apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@" >>'/var/log/opscrew/apt.log' 2>&1; then return 0; fi
+  tail -n 5 '/var/log/opscrew/apt.log' >&2 2>/dev/null || true
+  return 1
+}
+is_installed() {
+  dpkg-query -W -f='\${Status}' "$1" 2>/dev/null | grep -q ' installed$'
+}
+fail() {
+  printf 'opscrew: %s\\n' "$1" >&2
+  exit "\${2:-3}"
+}
+write_file() {
+  tmp=$(mktemp "$(dirname "$1")/.opscrew.XXXXXX")
+  cat > "$tmp"
+  if [ -n "\${3:-}" ]; then chown "$3" "$tmp"; fi
+  chmod "$2" "$tmp"
+  mv -f "$tmp" "$1"
+}
+client() { docker compose -p "$PROJECT" exec -T "$SERVICE" psql -X -q -t -A -v ON_ERROR_STOP=1 -U app -d app; }
+# Sets $state to the login's state (- when it does not exist); fails when the engine was not read.
+read_state() {
+  out=$(printf '%s\\n' "$PRELUDE" "$STATE_QUERY" | client) || return 1
+  case "$out" in *opscrew-read*) ;; *) return 1 ;; esac
+  state=$(printf '%s\\n' "$out" | sed -n 's/^.*opscrew-login=//p' | head -n 1)
+  [ -n "$state" ] || state=-
+}
+verify_state() {
+  read_state || return 1
+  if [ "$REMOVE" = true ]; then [ "$state" = - ]; else [ "$state" = "$WANT" ]; fi
+}
+verify_state || fail "$VERIFY_FAILED" 5
+",
+}
+`;

@@ -13,7 +13,10 @@
  * Beszel and Grafana Alloy add-ons as the deploy user, one of each per server.
  * `planNetwork` (feature 018) joins a server to the app's private WireGuard network, also on the
  * servers OpsCrew creates, where the deploy user becomes root through Docker (the `docker`
- * privilege); `readWireGuard` reads the network's peers.
+ * privilege), and with it the network's filter, which lets only the app's servers and the granted
+ * devices reach what Docker publishes on the private address; `readWireGuard` reads the
+ * network's peers and `readNetworkFilter` its filter. `planPublicSsh` closes or opens public SSH
+ * on such a server, and `planGrant` gives a device its own login to one of the app's databases.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md`,
  * `specs/015-environments-runners/contracts/runners.md`,
@@ -58,25 +61,35 @@ export {
   runnerOf,
   tunnelOf,
 } from "./facts";
+export { type GrantParams, GrantParamsSchema } from "./grant";
 export { hostPlanHash } from "./hash";
 export { inspectHost, inspectRunners, probePrivilege } from "./inspect";
 export { localExec } from "./local";
 export { type NetworkStepParams, NetworkStepParamsSchema } from "./network";
+export {
+  type NetworkFilterParams,
+  NetworkFilterParamsSchema,
+  type NetworkFilterRule,
+  readNetworkFilter,
+} from "./network-filter";
 export { canonicalSshSource, isPublicAddress } from "./parse";
 export {
   type AddonConnector,
   type AddonEnable,
   type AddonPlanKind,
   planAddon,
+  planGrant,
   planHost,
   planNetwork,
   planPortainer,
+  planPublicSsh,
   planRunner,
   planRunnerHost,
   planTeardown,
   planUndo,
 } from "./plan";
 export type { HostPrivilege } from "./privilege";
+export { type PublicSshParams, PublicSshParamsSchema } from "./public-ssh";
 export {
   type ApplyOptions,
   type ApplyResult,

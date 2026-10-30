@@ -35,6 +35,7 @@ import {
   TUNNELS_DIR,
 } from "../constants";
 import { NETWORK_DROP_IN, networkPort } from "../network";
+import { NETWORK_FILTER_SCRIPT_PREFIX, NETWORK_FILTER_UNIT, networkFilterDropInPath } from "../network-filter";
 import { EXIT_MARK, SECTION_MARK } from "../parse";
 import { runnerUnitText } from "../runner-unit";
 import { SSH_FIREWALL_RULES, SSH_FIREWALL_UNIT } from "../ssh-firewall";
@@ -207,6 +208,21 @@ export interface FakeWireGuard {
   peers: string[];
 }
 
+/** One of OpsCrew's network filters: its unit instance, the jump to its chain and the chain's rules. */
+export interface FakeNetworkFilter {
+  enabled: boolean;
+  active: boolean;
+  jump: boolean;
+  /** The chain's rules as `iptables -S` prints them (`-A OPSCREW-<if> ...`). */
+  rules: string[];
+}
+
+/** The rules a network filter's script installs (the lines of its `rules` function). */
+function filterRules(script: string): string[] {
+  const match = /cat <<'OPSCREW_RULES'\n([\s\S]*?)\nOPSCREW_RULES/.exec(script);
+  return (match?.[1] ?? "").split("\n").filter(Boolean);
+}
+
 export interface FakeHostOptions {
   os?: OsPreset;
   arch?: "amd64" | "arm64" | "armhf";
@@ -354,6 +370,12 @@ export class FakeHost implements RemoteExec {
   wireguard = new Map<string, FakeWireGuard>();
   /** What the network steps did, in order (never a key). */
   wireguardLog: string[] = [];
+  /** OpsCrew's network filters, by interface: the unit instance, the jump and the chain's rules. */
+  networkFilters = new Map<string, FakeNetworkFilter>();
+  /** Device logins in the apps' databases, by `<project>/<service>/<login>`: their access state. */
+  databaseLogins = new Map<string, string>();
+  /** What the grant steps did, in order (never a password). */
+  grantLog: string[] = [];
   /** `ip -4 route show` lines besides the WireGuard interfaces' own routes. */
   routes = [
     "default via 192.168.1.1 dev eth0 proto dhcp src 192.168.1.20 metric 100",
@@ -513,6 +535,10 @@ export class FakeHost implements RemoteExec {
     if (/^github-runner(\.remove)?\.(check|apply|verify)$/.test(name)) {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.runnerScript(name, params, input ?? "");
+    }
+    if (/^grant\.(check|apply|verify)$/.test(name)) {
+      if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
+      return this.grantScript(name, params, input ?? "");
     }
     if (/^check-key(\.remove)?\.(check|apply|verify)$/.test(name)) {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
@@ -1381,6 +1407,64 @@ export class FakeHost implements RemoteExec {
         return this.verify(this.networkOk(p), p);
       case "network.apply":
         return this.networkApply(p, input);
+      case "network-filter.check":
+        return this.check(this.networkFilterOk(p));
+      case "network-filter.verify":
+        return this.verify(this.networkFilterOk(p), p);
+      case "network-filter.apply": {
+        if (this.dockerFirewall === "nftables") {
+          return fail("Docker is set to its nftables firewall backend (/etc/docker/daemon.json), which has no DOCKER-USER chain, so OpsCrew's network filter cannot work.");
+        }
+        const decode = (value: string | undefined) => Buffer.from(value ?? "", "base64").toString("utf8");
+        const script = decode(p.SCRIPT_B64);
+        this.files.set(p.SCRIPT ?? "", script);
+        this.files.set(p.UNIT_FILE ?? "", decode(p.UNIT_B64));
+        this.files.set(p.DROP_IN ?? "", decode(p.DROPIN_B64));
+        const chain = `OPSCREW-${p.IFACE}`;
+        this.networkFilters.set(p.IFACE ?? "", {
+          enabled: true,
+          active: true,
+          jump: true,
+          rules: filterRules(script).map((spec) => `-A ${chain} ${spec}`),
+        });
+        this.wireguardLog.push(`filter ${p.IFACE}`);
+        return result();
+      }
+      case "network-filter.remove.check":
+        return this.check(this.networkFilterRemovedOk(p));
+      case "network-filter.remove.verify":
+        return this.verify(this.networkFilterRemovedOk(p), p);
+      case "network-filter.remove.apply":
+        this.files.delete(p.DROP_IN ?? "");
+        this.files.delete(p.SCRIPT ?? "");
+        this.networkFilters.delete(p.IFACE ?? "");
+        if (!this.otherFilters(p)) this.files.delete(p.UNIT_FILE ?? "");
+        this.wireguardLog.push(`remove filter ${p.IFACE}`);
+        return result();
+
+      case "public-ssh.check":
+        return this.check(this.publicSshOk(p));
+      case "public-ssh.verify":
+        return this.verify(this.publicSshOk(p), p);
+      case "public-ssh.apply": {
+        if (!this.installed("ufw")) return fail("ufw is not installed, so OpsCrew cannot change who reaches SSH.");
+        const want = (p.WANT ?? "").split(";").filter(Boolean);
+        if (p.OPEN === "true") {
+          for (const rule of want) {
+            if (!this.hasRule(rule)) this.ufwRules.push({ rule: `allow ${rule}`, comment: p.SSH_COMMENT ?? null });
+          }
+        } else {
+          if (!this.ufwActive) return fail("ufw is off on this server, so closing public SSH in it would change nothing.");
+          if (!this.hasRule(p.NETWORK_RULE ?? "")) {
+            return fail(`SSH is not open on the private network's interface ${p.IFACE}, so OpsCrew does not close public SSH. Run opscrew provision to set the network up first.`);
+          }
+        }
+        const extra = this.publicSshExtra(p).map((rule) => rule.rule);
+        this.ufwRules = this.ufwRules.filter((rule) => !extra.includes(rule.rule));
+        this.ufwLog.push(p.OPEN === "true" ? "open public ssh" : "close public ssh");
+        return result();
+      }
+
       case "network.remove.check":
         return this.check(this.networkRemovedOk(p));
       case "network.remove.verify":
@@ -1860,6 +1944,87 @@ export class FakeHost implements RemoteExec {
     throw new Error(`fake host: unknown script ${name}`);
   }
 
+  /** The `network-filter` step's end state holds (see its `verify_state`). */
+  private networkFilterOk(p: Record<string, string>): boolean {
+    const filter = this.networkFilters.get(p.IFACE ?? "");
+    const is = (path: string | undefined, sum: string | undefined) => {
+      const content = this.files.get(path ?? "");
+      return content !== undefined && sha256(content) === sum;
+    };
+    const chain = `OPSCREW-${p.IFACE}`;
+    const planned = filterRules(this.files.get(p.SCRIPT ?? "") ?? "").map((spec) => `-A ${chain} ${spec}`);
+    return (
+      filter !== undefined &&
+      is(p.SCRIPT, p.SCRIPT_SHA256) &&
+      is(p.UNIT_FILE, p.UNIT_SHA256) &&
+      is(p.DROP_IN, p.DROPIN_SHA256) &&
+      filter.enabled &&
+      filter.active &&
+      filter.jump &&
+      filter.rules.join("\n") === planned.join("\n")
+    );
+  }
+
+  /** Another interface's filter script than the step's is on the fake. */
+  private otherFilters(p: Record<string, string>): boolean {
+    return [...this.files.keys()].some((path) => path.startsWith(`${p.SCRIPT_PREFIX}wg-opscrew`) && path !== p.SCRIPT);
+  }
+
+  /** The `network-filter` step's removal holds (see its `verify_state`). */
+  private networkFilterRemovedOk(p: Record<string, string>): boolean {
+    return (
+      !this.files.has(p.SCRIPT ?? "") &&
+      !this.files.has(p.DROP_IN ?? "") &&
+      !this.networkFilters.has(p.IFACE ?? "") &&
+      (this.otherFilters(p) || !this.files.has(p.UNIT_FILE ?? ""))
+    );
+  }
+
+  /** OpsCrew's public rules for the SSH port (and cloud-init's on a cloud server) that are not wanted. */
+  private publicSshExtra(p: Record<string, string>): UfwRule[] {
+    const want = (p.WANT ?? "").split(";").filter(Boolean);
+    const own = new RegExp(`^allow (${p.PORT}/tcp|from [0-9a-f.:/]+ to any port ${p.PORT} proto tcp)$`);
+    return this.ufwRules.filter(
+      (rule) =>
+        ((rule.comment === p.SSH_COMMENT && own.test(rule.rule)) ||
+          (p.CLOUD === "true" && rule.comment === null && rule.rule === `allow ${p.PORT}/tcp`)) &&
+        !want.includes(rule.rule.slice("allow ".length)),
+    );
+  }
+
+  /** The `public-ssh` step's end state holds (see its `verify_state`). */
+  private publicSshOk(p: Record<string, string>): boolean {
+    const want = (p.WANT ?? "").split(";").filter(Boolean);
+    return (
+      this.installed("ufw") &&
+      this.publicSshExtra(p).length === 0 &&
+      (p.OPEN === "true"
+        ? want.every((rule) => this.hasRule(rule))
+        : this.ufwActive && this.hasRule(p.NETWORK_RULE ?? "")) &&
+      !this.timers.has("ufw")
+    );
+  }
+
+  /** The `grant` step's scripts, run as deploy: the device's login in the fake's databases. */
+  private grantScript(name: string, p: Record<string, string>, input: string): CommandResult {
+    const key = `${p.PROJECT}/${p.SERVICE}/${p.LOGIN}`;
+    const state = this.databaseLogins.get(key);
+    const ok = p.REMOVE === "true" ? state === undefined : state === p.WANT;
+    if (name === "grant.check") return this.check(ok);
+    if (name === "grant.verify") return this.verify(ok, p);
+    if (p.REMOVE === "true") {
+      if (state !== undefined) this.grantLog.push(`drop ${key}`);
+      this.databaseLogins.delete(key);
+      return result();
+    }
+    if (!/^[A-Za-z0-9]+$/.test(input.split("\n")[0] ?? "")) {
+      return fail("The login's password did not arrive on standard input, so OpsCrew changed nothing.");
+    }
+    this.grantLog.push(`${state === undefined ? "create" : "update"} ${key}`);
+    this.databaseLogins.set(key, p.WANT ?? "");
+    return result();
+  }
+
   /** The `network` step's end state holds (see its `verify_state`). */
   private networkOk(p: Record<string, string>): boolean {
     const wg = this.wireguard.get(p.IFACE ?? "");
@@ -1967,6 +2132,11 @@ export class FakeHost implements RemoteExec {
       .map((path) => /^\/etc\/wireguard\/(wg-opscrew\d+)\.conf$/.exec(path)?.[1])
       .filter((name): name is string => name !== undefined)
       .sort();
+    const unit = this.files.get(NETWORK_FILTER_UNIT);
+    const scripts = [...this.files.keys()]
+      .filter((path) => path.startsWith(`${NETWORK_FILTER_SCRIPT_PREFIX}wg-opscrew`))
+      .map((path) => path.slice(NETWORK_FILTER_SCRIPT_PREFIX.length))
+      .sort();
     return [
       `dropin ${dropIn === undefined ? "-" : sha256(dropIn)}`,
       ...configs.flatMap((name) => {
@@ -1979,6 +2149,21 @@ export class FakeHost implements RemoteExec {
           `iface ${name} active ${wg?.active ? "yes" : "no"}`,
           ...(wg?.active ? [`iface ${name} address ${wg.address}`] : []),
           ...(wg?.active ? wg.peers.map((peer) => `iface ${name} peer ${peer}`) : []),
+        ];
+      }),
+      `filterunit ${unit === undefined ? "-" : sha256(unit)}`,
+      ...scripts.flatMap((name) => {
+        const filter = this.networkFilters.get(name);
+        const dropIn = this.files.get(networkFilterDropInPath(name));
+        return [
+          `filter ${name} script ${sha256(this.files.get(`${NETWORK_FILTER_SCRIPT_PREFIX}${name}`) ?? "")}`,
+          `filter ${name} dropin ${dropIn === undefined ? "-" : sha256(dropIn)}`,
+          `filter ${name} enabled ${filter?.enabled ? "yes" : "no"}`,
+          `filter ${name} active ${filter?.active ? "yes" : "no"}`,
+          `filter ${name} jump ${filter?.jump ? "yes" : "no"}`,
+          ...(filter === undefined
+            ? []
+            : [`-N OPSCREW-${name}`, ...filter.rules].map((rule) => `filter ${name} rule ${rule}`)),
         ];
       }),
     ].join("\n");

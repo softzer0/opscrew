@@ -217,6 +217,21 @@ export function hostFindings(command: string) {
         'Docker on this server does not manage iptables ("iptables": false), so there is no DOCKER-USER chain and its published ports cannot be limited to Cloudflare\'s addresses.',
       hint: `Serve the site through a Cloudflare Tunnel (recommended) or with DNS only (opscrew interview), or let Docker manage iptables again (remove "iptables": false from /etc/docker/daemon.json and restart Docker), ${rerun}.`,
     }),
+    /** Docker's firewall has no `DOCKER-USER` chain, so the private network's filter cannot work. */
+    networkFilterBackend: (backend: "nftables" | "off"): HostFinding =>
+      backend === "nftables"
+        ? {
+            code: "docker-nftables",
+            message:
+              "Docker on this server uses its nftables firewall backend, which has no DOCKER-USER chain, so OpsCrew cannot limit who reaches the services published on the private network there.",
+            hint: `Switch Docker back to iptables (remove "firewall-backend" from /etc/docker/daemon.json and restart Docker), ${rerun}.`,
+          }
+        : {
+            code: "docker-no-iptables",
+            message:
+              'Docker on this server does not manage iptables ("iptables": false), so there is no DOCKER-USER chain and OpsCrew cannot limit who reaches the services published on the private network there.',
+            hint: `Let Docker manage iptables again (remove "iptables": false from /etc/docker/daemon.json and restart Docker), ${rerun}.`,
+          },
     /** `lettingAllIn`: ufw is on but its default incoming policy is "allow" (OpsCrew sets deny). */
     ufwWouldBlock: (what: readonly string[], lettingAllIn = false): HostFinding =>
       lettingAllIn

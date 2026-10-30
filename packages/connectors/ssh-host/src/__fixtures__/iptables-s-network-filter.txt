@@ -1,0 +1,10 @@
+-N OPSCREW-wg-opscrew0
+-A OPSCREW-wg-opscrew0 -s 10.200.4.1/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+-A OPSCREW-wg-opscrew0 -s 10.200.4.100/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT
+-A OPSCREW-wg-opscrew0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j DROP
+-A OPSCREW-wg-opscrew0 -s 10.200.4.1/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 6379 --ctdir ORIGINAL -j ACCEPT
+-A OPSCREW-wg-opscrew0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 6379 --ctdir ORIGINAL -j DROP
+-A OPSCREW-wg-opscrew0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 9200 --ctdir ORIGINAL -j ACCEPT
+-A OPSCREW-wg-opscrew0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 9200 --ctdir ORIGINAL -j DROP
+-A OPSCREW-wg-opscrew0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 8090 --ctdir ORIGINAL -j DROP
+-A OPSCREW-wg-opscrew0 -s 10.200.4.101/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 8090 --ctdir ORIGINAL -j ACCEPT

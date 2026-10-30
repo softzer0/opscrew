@@ -34,6 +34,7 @@ const MOVED = [
   "/var/lib/systemd/linger",
   "/var/log/opscrew",
   "/usr/local/sbin/opscrew-web-filter",
+  "/usr/local/sbin/opscrew-network-filter",
   "/etc/systemd/system",
   "/etc/wireguard",
   "/run/opscrew-",

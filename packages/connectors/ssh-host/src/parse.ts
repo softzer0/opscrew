@@ -25,6 +25,7 @@ import {
   ServiceEnvFileSchema,
   type WebFilterRules,
 } from "./facts";
+import type { NetworkFilterRule } from "./network-filter";
 import { runnerUnitText } from "./runner-unit";
 
 /** Output of one inspection section: its text and the exit code of its command. */
@@ -189,16 +190,45 @@ export function parseWireguardLinks(text: string): string[] {
 }
 
 /**
- * The private networks' section (see `NETWORK_SNIPPET`): `dropin <sha256|->` and
- * `iface <name> <config|key|enabled|active|address|peer> <value>` lines.
+ * The private networks' section (see `NETWORK_SNIPPET`): `dropin <sha256|->`,
+ * `iface <name> <config|key|enabled|active|address|peer> <value>`, `filterunit <sha256|->` and
+ * `filter <name> <script|dropin|enabled|active|jump|rule> <value>` lines (a rule's value is an
+ * `iptables -S` line of its chain).
  */
 export function parseNetworkState(text: string): NetworkFacts {
   let dropIn: string | null = null;
+  let filterUnit: string | null = null;
   const interfaces = new Map<string, NetworkFacts["interfaces"][number]>();
+  const filters = new Map<string, NetworkFacts["filters"][number] & { lines: string[] }>();
+  const sha = (value: string) => (/^[0-9a-f]{64}$/.test(value) ? value : null);
   for (const line of linesOf(text)) {
     const [kind, name = "", field, value = ""] = line.split(/\s+/);
     if (kind === "dropin") {
-      dropIn = /^[0-9a-f]{64}$/.test(name) ? name : null;
+      dropIn = sha(name);
+      continue;
+    }
+    if (kind === "filterunit") {
+      filterUnit = sha(name);
+      continue;
+    }
+    if (kind === "filter" && name !== "") {
+      const item = filters.get(name) ?? {
+        name,
+        script: null,
+        dropIn: null,
+        enabled: false,
+        active: false,
+        jump: false,
+        rules: [],
+        lines: [],
+      };
+      if (field === "script") item.script = sha(value);
+      else if (field === "dropin") item.dropIn = sha(value);
+      else if (field === "enabled") item.enabled = value === "yes";
+      else if (field === "active") item.active = value === "yes";
+      else if (field === "jump") item.jump = value === "yes";
+      else if (field === "rule") item.lines.push(line.slice(line.indexOf(" rule ") + 6));
+      filters.set(name, item);
       continue;
     }
     if (kind !== "iface" || name === "") continue;
@@ -219,7 +249,15 @@ export function parseNetworkState(text: string): NetworkFacts {
     else if (field === "peer") item.peers.push(value);
     interfaces.set(name, item);
   }
-  return { dropIn, interfaces: [...interfaces.values()] };
+  return {
+    dropIn,
+    interfaces: [...interfaces.values()],
+    filterUnit,
+    filters: [...filters.values()].map(({ lines, ...item }) => ({
+      ...item,
+      rules: parseNetworkFilterRules(lines),
+    })),
+  };
 }
 
 /** Route types `ip route` may print before a route's destination. */
@@ -861,4 +899,33 @@ export function networkHolds(network: string, address: string): boolean {
   if (want === null || have === null) return false;
   const shift = BigInt(bits - (prefixText === undefined ? bits : Number(prefixText)));
   return have >> shift === want >> shift;
+}
+
+/**
+ * The ports `iptables -S OPSCREW-<if>` lines filter, each with the sources accepted before its
+ * drop, by port. A port without a drop, or that accepts every source, is not filtered and is left
+ * out.
+ */
+export function parseNetworkFilterRules(lines: readonly string[]): NetworkFilterRule[] {
+  const ports = new Map<number, { sources: string[]; dropped: boolean; open: boolean }>();
+  for (const line of lines) {
+    if (!line.startsWith("-A ") || !/\s--ctstate NEW(?:\s|$)/.test(line)) continue;
+    const port = /\s--ctorigdstport (\d{1,5})(?:\s|$)/.exec(line)?.[1];
+    const target = /\s-j (ACCEPT|DROP)$/.exec(line)?.[1];
+    if (port === undefined || target === undefined) continue;
+    const entry = ports.get(Number(port)) ?? { sources: [], dropped: false, open: false };
+    const source = /\s-s (\S+)/.exec(line)?.[1];
+    if (!entry.dropped) {
+      if (target === "DROP" && source === undefined) entry.dropped = true;
+      else if (target === "ACCEPT" && source === undefined) entry.open = true;
+      else if (target === "ACCEPT" && source !== undefined) {
+        entry.sources.push(source.replace(/\/32$/, ""));
+      }
+    }
+    ports.set(Number(port), entry);
+  }
+  return [...ports]
+    .filter(([, entry]) => entry.dropped && !entry.open)
+    .sort(([a], [b]) => a - b)
+    .map(([port, entry]) => ({ port, sources: [...new Set(entry.sources)].sort() }));
 }
