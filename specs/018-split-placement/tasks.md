@@ -484,6 +484,7 @@ Effort`.
         removed on `from` by a fixed command;
       - `move` cleared and `deployment.placement` updated;
       - refused while `move.step` isn't `switched`.
+    - `databaseSize` takes the service's name, and design (T1809) passes the moved service's.
     - **Tests** with fake servers: a successful move, a failure in each window step (the app back
       on the old copy), a resume after an interruption, and `--finish-move` refused without the
       typed name.
@@ -579,6 +580,8 @@ Effort`.
   - Depends: T1809, T1811, T1812, T1813, T1814, T1815, T1816
   - Accept:
     - **The CLI:**
+      - `design` passes `askServerLogin` (the interview's four server questions), so an extra own
+        server can be asked for in a terminal;
       - `opscrew vpn add|remove|list|grant|revoke`;
       - `secure --close-public-ssh|--open-public-ssh`;
       - `provision --finish-move`;
