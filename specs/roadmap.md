@@ -26,7 +26,10 @@ it runs on 018's private network and extra servers.
   the CLI); OpsCrew says so when the user turns it on.
 - **Research first:** memory sizes, retention and disk use.
 - **Loki rather than Elasticsearch** for logs (lead, 2026-10-30): Loki indexes only labels, so it
-  fits a small server; Elasticsearch indexes every word and needs gigabytes of JVM heap.
+  fits a small server; Elasticsearch indexes every word and needs gigabytes of JVM heap. No
+  Elasticsearch and Kibana stack on any provider (founder asked, 2026-10-30). Full-text search over
+  large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
+  opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
   the hosted control plane. On AWS (023), the light checks map to CloudWatch alarms.
 
