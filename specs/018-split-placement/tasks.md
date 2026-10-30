@@ -277,7 +277,7 @@ Effort`.
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T1806 [US3] [US4] [US5] The host adapter: the `network-filter`, `public-ssh` and `grant` steps, in `packages/connectors/ssh-host/**`
+- [X] T1806 [US3] [US4] [US5] The host adapter: the `network-filter`, `public-ssh` and `grant` steps, in `packages/connectors/ssh-host/**`
   - Owns: `packages/connectors/ssh-host/**` (+ tests, fixtures and snapshots)
   - Reads: plan.md "3." (the three steps); research.md R5a (the filter's rules), R5b, R6a (the statements); `web-filter.ts`; contracts/split-placement.md "ssh-host"
   - Depends: T1803
