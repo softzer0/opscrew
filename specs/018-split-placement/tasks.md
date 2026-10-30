@@ -166,7 +166,7 @@ Effort`.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T1805 [P] [US1] [US3] [US5] Runtime: Compose per server, service addresses, advertised listeners, the ACL wrapper and the dashboards on the private address, in `packages/iac-templates/src/{runtime,catalog,addons,portainer-host}/**`
+- [X] T1805 [P] [US1] [US3] [US5] Runtime: Compose per server, service addresses, advertised listeners, the ACL wrapper and the dashboards on the private address, in `packages/iac-templates/src/{runtime,catalog,addons,portainer-host}/**`
   - Owns: those paths (+ tests and snapshots). In `src/index.ts`, only the new export lines.
   - Reads: plan.md "5."; research.md R5a, R6a; contracts/split-placement.md "iac-templates"; data-model.md
   - Depends: T1801a
