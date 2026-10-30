@@ -190,15 +190,14 @@ export async function privateAddressChecks(
       }).filter.rules;
       const privilege = await probePrivilege(remote);
       const root = privilege === "root" || privilege === "sudo" || privilege === "docker";
-      const rules =
-        root
-          ? await options.readNetworkFilter(
-              remote,
-              networkInterface(member),
-              privilege,
-              IMAGES.caddy.ref,
-            )
-          : undefined;
+      const rules = root
+        ? await options.readNetworkFilter(
+            remote,
+            networkInterface(member),
+            privilege,
+            IMAGES.caddy.ref,
+          )
+        : undefined;
       return expected.map((entry) => {
         const what = `${serviceWords(plan, entry.service)} on server ${server}`;
         const where = `${entry.address}:${entry.port}`;
