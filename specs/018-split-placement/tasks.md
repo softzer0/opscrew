@@ -81,7 +81,7 @@ Effort`.
 
 ## Phase 2: Packages (wave 1, parallel)
 
-- [ ] T1803 [P] [US1] [US2] The host adapter: the `docker` privilege, the `network` step, the facts and `readWireGuard`, in `packages/connectors/ssh-host/**`
+- [X] T1803 [P] [US1] [US2] The host adapter: the `docker` privilege, the `network` step, the facts and `readWireGuard`, in `packages/connectors/ssh-host/**`
   - Owns: `packages/connectors/ssh-host/**` (+ tests, fixtures and snapshots)
   - Reads: plan.md "3." (the `docker` privilege, `network`, facts, `readWireGuard`); research.md R5a, R5b; contracts/split-placement.md "ssh-host"; data-model.md "On the servers"; `web-filter.ts` and `ssh-firewall.ts` as models
   - Depends: T1801a, T1802
