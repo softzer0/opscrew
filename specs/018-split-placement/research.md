@@ -420,6 +420,13 @@ MariaDB 12.3, MongoDB 8.0, Valkey 8.1, Redis 8.10.2 and Dragonfly 2.0.2. The app
 - Persistence is the same problem as Valkey's. Once an ACL file is saved, its default user's hash
   wins over `DFLY_requirepass`, so a rotated password wouldn't take effect.
 
+**Full access is all data, never server control** (lead, 2026-10-30, after T1806's review): Postgres's `app`
+is the superuser, so R6a's `GRANT app` would make a device superuser too, and superuser can run programs
+through `COPY … PROGRAM`. A device's full login is therefore `pg_read_all_data` plus
+`pg_write_all_data` (no schema changes). Valkey, Redis and Dragonfly drop the admin commands
+(`+@all -@admin`: no CONFIG, MODULE, SHUTDOWN, REPLICAOF or ACL). MySQL/MariaDB (`ALL ON app.*`) and
+MongoDB (`readWrite`, `dbAdmin` on `app`) already stop at the app's database.
+
 **Decisions:**
 - **Postgres, MySQL, MariaDB and MongoDB:** a device's login is made and removed by fixed
   statements in a host step, run through `docker compose exec` on the service's server, with the

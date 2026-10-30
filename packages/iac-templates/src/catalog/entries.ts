@@ -165,16 +165,19 @@ const DEFAULT_ACL = "~* &* +@all";
 /** The ACL rules of a device's login by its access (research R6a). */
 type AclRules = Record<"read-only" | "full", string>;
 
-/** Valkey's and Redis 8's rules: read-only adds what clients send on connecting. */
+/**
+ * Valkey's and Redis 8's rules: read-only adds what clients send on connecting; full is every
+ * data command but no server administration (`-@admin`: CONFIG, MODULE, SHUTDOWN, REPLICAOF, ACL).
+ */
 const REDIS_ACL: AclRules = {
   "read-only": "~* &* +@read +ping +hello +client|setname +client|setinfo -@write",
-  full: DEFAULT_ACL,
+  full: `${DEFAULT_ACL} -@admin`,
 };
 
-/** Dragonfly's rules: read-only keys need its `%R~*` pattern. */
+/** Dragonfly's rules: read-only keys need its `%R~*` pattern; full has no server administration. */
 const DRAGONFLY_ACL: AclRules = {
   "read-only": "resetkeys %R~* +@read +ping +hello -@write",
-  full: "%RW~* +@all",
+  full: "%RW~* +@all -@admin",
 };
 
 /**

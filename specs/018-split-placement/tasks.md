@@ -633,7 +633,10 @@ Effort`.
       - Kafka, Redpanda and a MongoDB replica set placed on the second server pass their own
         health checks, which connect back to their advertised private address;
       - the `grant` step's statements through `docker compose -p <app> exec -T` (no Compose file
-        argument), including `mongosh` reading its script from standard input.
+        argument), including `mongosh` reading its script from standard input;
+      - a full login on Valkey, Redis and Dragonfly writes but is refused `CONFIG`, `MODULE` and
+        `SHUTDOWN` (`-@admin`), and a full Postgres login writes rows but is refused
+        `COPY … PROGRAM` and DDL on the app's tables.
     - Cleanup by name; skipped with a message without Docker.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter opscrew exec vitest run test/e2e/network.test.ts`
   - Effort: high

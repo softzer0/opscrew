@@ -213,7 +213,7 @@ function aclFile(variable: string, rules: { readOnly: string; full: string }) {
 
 const REDIS_RULES = {
   readOnly: "~* &* +@read +ping +hello +client|setname +client|setinfo -@write",
-  full: "~* &* +@all",
+  full: "~* &* +@all -@admin",
 };
 
 describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () => {
@@ -271,7 +271,7 @@ describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () =>
         "umask 077",
         aclFile("DFLY_requirepass", {
           readOnly: "resetkeys %R~* +@read +ping +hello -@write",
-          full: "%RW~* +@all",
+          full: "%RW~* +@all -@admin",
         }),
         "chown dfly:dfly /tmp/opscrew-users.acl",
         "unset DFLY_requirepass",
