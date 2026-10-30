@@ -395,6 +395,8 @@ Effort`.
       the workflow's render context gets each extra own server's SSH port from the server record, and
       `dashboardsOnNetwork` is set only when the app's server hosts this app alone (always on cloud
       servers) and the network has devices.
+    - **Inspection on cloud servers** passes `rootImage` (`IMAGES.caddy.ref`) to `inspectHost`, so an
+      unchanged network plans in place there too.
     - **For each server, in order (`app` first):**
       - a host plan with `network` and `network-filter` from `networkSteps`, shown with the
         server's name and approved by its own hash;
