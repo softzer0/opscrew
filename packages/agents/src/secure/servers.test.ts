@@ -150,11 +150,12 @@ describe("secure across an app's servers", () => {
     });
 
     const u = await secureWorld();
-    const { readNetworkFilter: _r, ...withoutReader } = u.options();
-    const unchecked = await runSecure(u.deps, withoutReader);
+    const noRoot = u.servers[DATA_HOST];
+    if (noRoot !== undefined) noRoot.privilege = "none";
+    const unchecked = await runSecure(u.deps, u.options());
     expect(find(unchecked.hostChecks, "service-db-private")).toMatchObject({
       status: "warn",
-      message: `PostgreSQL (db) on server data is published only on ${u.prefix}.2:5432; the network's filter in front of it was not checked.`,
+      message: `PostgreSQL (db) on server data is published only on ${u.prefix}.2:5432, but OpsCrew can't read the network's filter on server data without root, so it was not checked.`,
     });
   });
 

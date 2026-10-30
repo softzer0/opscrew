@@ -49,8 +49,8 @@ export interface ServerSecurityOptions {
   hostChecks: boolean;
   /** The app's server's shell, when the app's checks reached it. */
   appRemote?: RemoteExec;
-  /** Reads the network's filter; without one, the filter is reported as not checked. */
-  readNetworkFilter?: NetworkFilterReader;
+  /** Reads the network's filter (ssh-host's `readNetworkFilter`, or a fake in tests). */
+  readNetworkFilter: NetworkFilterReader;
   connect: TcpConnect;
   timeoutMs: number;
 }
@@ -191,7 +191,7 @@ export async function privateAddressChecks(
       const privilege = await probePrivilege(remote);
       const root = privilege === "root" || privilege === "sudo" || privilege === "docker";
       const rules =
-        root && options.readNetworkFilter !== undefined
+        root
           ? await options.readNetworkFilter(
               remote,
               networkInterface(member),
@@ -237,12 +237,6 @@ export async function privateAddressChecks(
             "warn",
             `${what} is published only on ${where}, but OpsCrew can't read the network's filter on server ${server} without root, so it was not checked.`,
             `Give the login OpsCrew uses on server ${server} passwordless sudo, then run \`opscrew secure\` again.`,
-          );
-        }
-        if (options.readNetworkFilter === undefined) {
-          return check(
-            "warn",
-            `${what} is published only on ${where}; the network's filter in front of it was not checked.`,
           );
         }
         const filterFix = `Run \`opscrew provision\`: it shows the network-filter host plan for server ${server}.`;

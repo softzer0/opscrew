@@ -1,4 +1,5 @@
 import type { CloudflareClient } from "@opscrew/connector-cloudflare";
+import { readNetworkFilter } from "@opscrew/connector-ssh-host";
 import type {
   CheckResult,
   PolicyResult,
@@ -483,9 +484,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     const servers = {
       ...(options.serverRemote !== undefined ? { serverRemote: options.serverRemote } : {}),
       ...(remote !== undefined ? { appRemote: remote } : {}),
-      ...(options.readNetworkFilter !== undefined
-        ? { readNetworkFilter: options.readNetworkFilter }
-        : {}),
+      readNetworkFilter: options.readNetworkFilter ?? readNetworkFilter,
       hostChecks: hostChecksSkipped === undefined,
       connect: options.tcpConnect ?? defaultTcpConnect,
       timeoutMs: options.probeTimeoutMs ?? 3000,
