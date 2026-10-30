@@ -392,7 +392,9 @@ Effort`.
     - **An extra own server** gets the own-server setup host plan, as an own app server does
       (`provision/own.ts`'s path, per server).
     - **Wiring:** `networkSteps`' `published` comes from iac-templates' `publishedOnNetwork`, and
-      the workflow's render context gets each extra own server's SSH port from the server record.
+      the workflow's render context gets each extra own server's SSH port from the server record, and
+      `dashboardsOnNetwork` is set only when the app's server hosts this app alone (always on cloud
+      servers) and the network has devices.
     - **For each server, in order (`app` first):**
       - a host plan with `network` and `network-filter` from `networkSteps`, shown with the
         server's name and approved by its own hash;
