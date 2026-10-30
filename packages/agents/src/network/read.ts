@@ -1,8 +1,9 @@
+import { probePrivilege, readWireGuard as readServerWireGuard } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
 import { IMAGES } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, networkInterface } from "@opscrew/plan-schema";
 import type { EngineDeps } from "../shared/engine";
-import { serverLogin, serverRemote } from "../shared/server-address";
+import { serverRemote } from "../shared/server-address";
 import { hasPublicAddress } from "./endpoints";
 
 /** How the host adapter becomes root to read WireGuard: as root, through sudo, or through Docker. */
@@ -36,19 +37,28 @@ export interface NetworkLink {
   handshakeAgeSeconds?: number;
   /** The average round trip of three pings from the app's server, in milliseconds. */
   roundTripMs?: number;
-  /** Why the link is down when that is known: `unreachable`, `from` could not be reached or read. */
-  reason?: "unreachable";
+  /**
+   * Why the link is down when that is known: `unreachable`, `from` could not be reached or read;
+   * `no-root`, the login on `from` cannot become root (no passwordless sudo, no Docker), which
+   * reading WireGuard needs.
+   */
+  reason?: "unreachable" | "no-root";
 }
 
-/** The services {@link readNetwork} uses. */
+/** The services {@link readNetwork} uses; each defaults to the real one, fakes in tests. */
 export interface ReadNetworkServices {
-  readWireGuard: WireGuardReader;
-  /** The shell on a server (default `serverRemote`); fakes in tests. */
+  /** Reads a server's interface (default the host adapter's `readWireGuard`). */
+  readWireGuard?: WireGuardReader;
+  /** The shell on a server (default `serverRemote`). */
   remote?: (server: string) => Promise<RemoteExec>;
 }
 
 /** WireGuard drops a session whose last handshake is older than this (`REJECT_AFTER_TIME`). */
 const HANDSHAKE_FRESH_SECONDS = 180;
+
+/** The host adapter's `readWireGuard`, as a {@link WireGuardReader}. */
+const readWireGuard: WireGuardReader = (remote, iface, privilege, { rootImage }) =>
+  readServerWireGuard(remote, iface, privilege, rootImage);
 
 /** The average round trip `ping -c 3 -q` printed (iputils and busybox); none without a reply. */
 function roundTrip(stdout: string): number | undefined {
@@ -58,22 +68,39 @@ function roundTrip(stdout: string): number | undefined {
 }
 
 /**
+ * `remote`, throwing when ssh itself fails (exit code 255): the privilege probe would otherwise
+ * read a server it could not reach as one whose login cannot become root.
+ */
+function failingWhenUnreachable(remote: RemoteExec): RemoteExec {
+  return {
+    host: remote.host,
+    async run(command, options) {
+      const result = await remote.run(command, options);
+      if (result.exitCode === 255) throw new Error("ssh could not reach the server.");
+      return result;
+    },
+  };
+}
+
+/**
  * The state of the private network's links: each server's WireGuard interface read through its
  * shell, after the app's server pinged every other server's private address (`ping -c 3 -q`) for
  * the round trip. A link is up when its last handshake is under three minutes old: every link
- * between servers keeps itself alive every 25 seconds, and a device's does while it is on. Servers
- * OpsCrew created are read through Docker (as `deploy`); the user's own as root or through sudo.
- * A server that cannot be reached or read throws nothing: its links are down, with the reason
- * `unreachable`. Reads only.
+ * between servers keeps itself alive every 25 seconds, and a device's does while it is on. Each
+ * server is read as root the way the host adapter's probe says its login becomes root (`deploy` on
+ * a server OpsCrew created: through Docker, with the pinned Caddy image). A server that cannot be
+ * reached or read throws nothing: its links are down, with the reason `unreachable`, or `no-root`
+ * when its login cannot become root. Reads only.
  */
 export async function readNetwork(
   deps: EngineDeps,
   plan: DeployPlan,
-  services: ReadNetworkServices,
+  services: ReadNetworkServices = {},
 ): Promise<NetworkLink[]> {
   const network = plan.network;
   if (network === undefined) return [];
   const remoteOf = services.remote ?? ((server: string) => serverRemote(deps, plan, server));
+  const read = services.readWireGuard ?? readWireGuard;
   /** The pings' round trips by server; `undefined` when the app's server could not be reached. */
   const ping = async (app: RemoteExec) => {
     const pings = new Map<string, number | undefined>();
@@ -88,29 +115,29 @@ export async function readNetwork(
   };
   const app = await remoteOf(APP_SERVER).catch(() => undefined);
   const pings = app === undefined ? undefined : await ping(app).catch(() => undefined);
-  /** The server's WireGuard peers; `undefined` when the server could not be reached or read. */
-  const read = async (member: (typeof network.members)[number]) => {
-    if (member.name === APP_SERVER && (app === undefined || pings === undefined)) return undefined;
+  /** The server's WireGuard peers, or why they could not be read. */
+  const peersOf = async (
+    member: (typeof network.members)[number],
+  ): Promise<WireGuardPeerState[] | "unreachable" | "no-root"> => {
+    if (member.name === APP_SERVER && (app === undefined || pings === undefined)) {
+      return "unreachable";
+    }
     try {
-      const login = await serverLogin(deps, plan, member.name);
-      const privilege: WireGuardPrivilege = !login.own
-        ? "docker"
-        : login.user === "root"
-          ? "root"
-          : "sudo";
       const remote =
         member.name === APP_SERVER && app !== undefined ? app : await remoteOf(member.name);
-      return await services.readWireGuard(remote, networkInterface(member), privilege, {
+      const privilege = await probePrivilege(failingWhenUnreachable(remote));
+      if (privilege === "sudo-password" || privilege === "none") return "no-root";
+      return await read(remote, networkInterface(member), privilege, {
         rootImage: IMAGES.caddy.ref,
       });
     } catch {
-      return undefined;
+      return "unreachable";
     }
   };
   const now = deps.clock.now().getTime();
   const links: NetworkLink[] = [];
   for (const member of network.members) {
-    const peers = await read(member);
+    const peers = await peersOf(member);
     const expected = [
       ...network.members.filter((m) => m.name !== member.name).map((m) => ({ ...m, server: true })),
       ...(hasPublicAddress(plan, member.name) ? network.devices : []).map((d) => ({
@@ -119,8 +146,8 @@ export async function readNetwork(
       })),
     ];
     for (const peer of expected) {
-      if (peers === undefined) {
-        links.push({ from: member.name, to: peer.name, up: false, reason: "unreachable" });
+      if (typeof peers === "string") {
+        links.push({ from: member.name, to: peer.name, up: false, reason: peers });
         continue;
       }
       const handshake = peers.find((p) => p.publicKey === peer.publicKey)?.latestHandshake;

@@ -59,7 +59,7 @@ export {
   tunnelOf,
 } from "./facts";
 export { hostPlanHash } from "./hash";
-export { inspectHost, inspectRunners } from "./inspect";
+export { inspectHost, inspectRunners, probePrivilege } from "./inspect";
 export { localExec } from "./local";
 export { type NetworkStepParams, NetworkStepParamsSchema } from "./network";
 export { canonicalSshSource, isPublicAddress } from "./parse";

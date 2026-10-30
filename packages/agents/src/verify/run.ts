@@ -22,6 +22,7 @@ import { builderBranch, followsBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
 import type { LocalhostServices } from "../localhost/services";
 import { verifyLocalhost } from "../localhost/verify";
+import type { ReadNetworkServices } from "../network";
 import { readOwnServerRecord } from "../provision";
 import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
@@ -70,6 +71,7 @@ import {
   withoutRoute,
 } from "./portainer";
 import { verifySite } from "./serverless";
+import { serverChecks } from "./servers";
 
 /** Network functions for `opscrew verify`; each defaults to a Node built-in adapter. */
 export interface RunVerifyOptions {
@@ -106,6 +108,8 @@ export interface RunVerifyOptions {
    * certbot's last renewal when a DNS-only certificate is not renewed in time.
    */
   remote?: (host: string) => RemoteExec;
+  /** The private network's WireGuard read (default the host adapter's). */
+  network?: ReadNetworkServices;
   /** The localhost target: this computer's requests and Docker (fakes in tests). */
   localhost?: LocalhostServices;
 }
@@ -126,8 +130,9 @@ export interface VerifyResult {
 /**
  * The verify phase: checks DNS, HTTPS and the certificate, the HTTP→HTTPS redirect, the health
  * endpoint, security headers, that `.env`/`.git` are not served, that the origin cannot be reached
- * around Cloudflare, and the latest deploy run. The server's address comes from OpsCrew's local
- * state (`serverAddress`). Writes `opscrew/RUNBOOK.md` (without the address behind Cloudflare's
+ * around Cloudflare, and the latest deploy run; with a private network (feature 018), every server,
+ * every link and every published port (`serverChecks`). The server's address comes from
+ * OpsCrew's local state (`serverAddress`). Writes `opscrew/RUNBOOK.md` (without the address behind Cloudflare's
  * proxy); when nothing fails, records `deployment.firstDeployAt` (once) and, with a domain,
  * `deployment.url` in `opscrew/plan.yaml`, which stays as it is when neither changes. Marks
  * `verify`. A site on Cloudflare's hosting or GitHub Pages is checked by `verifySite`, which
@@ -291,6 +296,14 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
       ),
     );
   }
+  // An app with a private network (feature 018): every server, every link, every published port.
+  checked.push(
+    ...(await serverChecks(deps, plan, {
+      ...(options.remote !== undefined ? { remote: options.remote } : {}),
+      ...(options.network !== undefined ? { network: options.network } : {}),
+      flag,
+    })),
+  );
   // The route reads as "your route"; addresses a public resolver gave (and other registered
   // names) are masked.
   const checks = checked.map((check) =>

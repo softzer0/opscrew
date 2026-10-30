@@ -24,4 +24,5 @@ export {
   componentStatusReport,
   readComponentStatus,
   readServerContainers,
+  type ServerStatus,
 } from "./run";

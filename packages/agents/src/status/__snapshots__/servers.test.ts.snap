@@ -1,0 +1,14 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`status of a plan without servers or a network > shows exactly what it showed before split placement 1`] = `
+[
+  "Components:",
+  "  The web process (app): running",
+  "  PostgreSQL (db): running",
+  "",
+  "Resources (read now):",
+  "  Server: load 0.52, 0.40, 0.31 (1, 5 and 15 minutes) on 2 CPUs; memory 1.5 GB used of 3.7 GB; disk 18.6 GB used, 18.6 GB free of 37.3 GB (50% full)",
+  "  The web process (app): CPU 1.5%, memory 100 MB of 512 MB (20%), 0 restarts, started 2 hours ago",
+  "  PostgreSQL (db): CPU 1.5%, memory 100 MB of 512 MB (20%), 0 restarts, started 2 hours ago",
+]
+`;

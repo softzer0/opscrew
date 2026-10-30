@@ -12,11 +12,11 @@ import {
   localComposeProject,
   portainerStackName,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { registerAppSecrets } from "../shared/app-secrets";
-import { plannedComponents } from "../status/components";
+import { componentServer, hasExtraServers, plannedComponents } from "../status/components";
 import { cloudflareLogs } from "./cloudflare";
 import { parseSince } from "./commands";
 import { type LogLine, type LogRead, logRead } from "./lines";
@@ -57,6 +57,8 @@ const KEPT = "Each deploy starts new containers, and each keeps up to 30 MB of l
 interface LogPart extends ContainersOf {
   service: string;
   what: string;
+  /** The server that runs it: `app`, or an extra server for a service placed there. */
+  server: string;
   /** Said in the first line, after how far back the lines go. */
   note?: string;
 }
@@ -76,6 +78,7 @@ function logParts(plan: DeployPlan): LogPart[] {
   const components = plannedComponents(plan).map((component) => ({
     service: component.service,
     what: `${component.what} (${component.service})`,
+    server: componentServer(plan, component.service),
     project,
     composeService: component.service,
   }));
@@ -84,6 +87,7 @@ function logParts(plan: DeployPlan): LogPart[] {
     .map((job) => ({
       service: job.name,
       what: `the cron job ${job.name}`,
+      server: APP_SERVER,
       project,
       composeService: "cron",
       note: "The cron jobs run in one container (cron), so these are the lines of every cron job.",
@@ -94,6 +98,7 @@ function logParts(plan: DeployPlan): LogPart[] {
     const caddy: LogPart = {
       service: "edge",
       what: "the edge (Caddy in the app's stack)",
+      server: APP_SERVER,
       project,
       composeService: "caddy",
       note: "The edge is the Caddy in the app's stack, in front of the app.",
@@ -104,6 +109,7 @@ function logParts(plan: DeployPlan): LogPart[] {
   const edge: LogPart = {
     service: "edge",
     what: `the edge (${proxy})`,
+    server: APP_SERVER,
     project: EDGE_PROJECT,
     composeService: edgeProxy(plan),
     note:
@@ -148,7 +154,8 @@ function firstLine(oldest: string | undefined, since: string | undefined, note?:
  * The app's log lines on the plan's target (FR-1701), after registering the app's known values
  * with the redactor (FR-1702). Read-only (FR-1703):
  * - **Servers:** `docker logs` over the access `status` uses, as `deploy` on a server OpsCrew
- *   created and through the pinned admin login on the user's own; a follow ends with ssh.
+ *   created and through the pinned admin login on the user's own; a follow ends with ssh. A
+ *   service placed on an extra server (feature 018) is read there, and the lines name the server.
  * - **Portainer:** its Docker API; a follow asks again every 2 seconds.
  * - **This computer:** Docker through the runner.
  * - **A server-rendered app on Cloudflare:** the Worker's requests from Workers Logs, and its live
@@ -193,7 +200,7 @@ export async function readLogs(
   }
 
   const part = logPart(plan, options.service ?? "app");
-  const place = await dockerLogs(deps, plan, options);
+  const place = await dockerLogs(deps, plan, { ...options, server: part.server });
   deps.reporter.step(`Reading the lines of ${part.what} ${place.where} (read-only)`);
   await deps.audit.append({
     kind: "remote-exec",
@@ -229,7 +236,12 @@ export async function readLogs(
     text: deps.redactor.redact(raw.line),
   });
   const past = read.flat().sort(byTime).slice(-tail);
-  const first = deps.redactor.redact(firstLine(past[0]?.time, options.since, part.note));
+  // With extra servers, the first line says which server the lines are from.
+  const from = hasExtraServers(plan) ? [`These lines are from server ${part.server}.`] : [];
+  const note = [...from, ...(part.note === undefined ? [] : [part.note])].join(" ");
+  const first = deps.redactor.redact(
+    firstLine(past[0]?.time, options.since, note === "" ? undefined : note),
+  );
   if (options.follow !== true) return logRead(first, past.map(line));
   // Each container goes on after the last line read of it, so no line shows twice.
   const follow = async (push: (line: LogLine) => void, signal: AbortSignal) => {

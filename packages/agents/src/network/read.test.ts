@@ -27,6 +27,8 @@ async function world(options: {
   app?: "cloud" | "own";
   data?: "cloud" | "own";
   pingReplies?: number;
+  /** What the host adapter's privilege probe prints per server (default `docker`). */
+  privileges?: Record<string, string>;
   /** Servers whose ssh fails and whose WireGuard read throws. */
   offline?: string[];
   handshakes: Record<string, Record<string, number | undefined>>;
@@ -67,6 +69,11 @@ async function world(options: {
       commands.push({ server, command });
       if (options.offline?.includes(server)) {
         return { exitCode: 255, stdout: "", stderr: "ssh: connect to host: Connection timed out" };
+      }
+      if (!command.startsWith("ping ")) {
+        // The host adapter's privilege probe.
+        const privilege = options.privileges?.[server] ?? "docker";
+        return { exitCode: 0, stdout: `${privilege}\n`, stderr: "" };
       }
       const address = command.split(" ").at(-1) ?? "";
       const received = options.pingReplies ?? 3;
@@ -109,7 +116,14 @@ describe("readNetwork", () => {
       { from: "data", to: "app", up: true, handshakeAgeSeconds: 10 },
       { from: "data", to: "laptop", up: false, handshakeAgeSeconds: 400 },
     ]);
-    expect(w.commands).toEqual([{ server: "app", command: `ping -c 3 -q ${w.prefix}.2` }]);
+    expect(w.commands.filter((c) => c.command.startsWith("ping "))).toEqual([
+      { server: "app", command: `ping -c 3 -q ${w.prefix}.2` },
+    ]);
+    // Each server's privilege comes from the host adapter's probe, on its own shell.
+    expect(w.commands.filter((c) => !c.command.startsWith("ping ")).map((c) => c.server)).toEqual([
+      "app",
+      "data",
+    ]);
     // Servers OpsCrew created are read through Docker, with the pinned Caddy image.
     expect(w.reads).toEqual([
       { server: "app", iface: "wg-opscrew0", privilege: "docker", rootImage: IMAGES.caddy.ref },
@@ -167,13 +181,36 @@ describe("readNetwork", () => {
     ]);
   });
 
-  it("reads the user's own servers as root, or through sudo", async () => {
-    const w = await world({ app: "own", data: "own", handshakes: {} });
+  it("reads each server as root the way the probe says, never guessed from the login", async () => {
+    // The own server "data" logs in as admin, whose only way to root is Docker.
+    const w = await world({
+      app: "own",
+      data: "own",
+      privileges: { app: "root", data: "docker" },
+      handshakes: {},
+    });
     await readNetwork(w.deps, w.plan, w.services);
     expect(w.reads.map((r) => [r.server, r.privilege])).toEqual([
       ["app", "root"],
-      ["data", "sudo"],
+      ["data", "docker"],
     ]);
+
+    const sudo = await world({ privileges: { app: "sudo", data: "sudo" }, handshakes: {} });
+    await readNetwork(sudo.deps, sudo.plan, sudo.services);
+    expect(sudo.reads.map((r) => r.privilege)).toEqual(["sudo", "sudo"]);
+  });
+
+  it("reports the links of a server whose login cannot become root as down, with no-root", async () => {
+    const handshakes = { app: { data: 5, laptop: 60 }, data: { app: 10, laptop: 30 } };
+    for (const privilege of ["sudo-password", "none"]) {
+      const w = await world({ data: "own", privileges: { data: privilege }, handshakes });
+      const links = await readNetwork(w.deps, w.plan, w.services);
+      expect(links.filter((l) => l.from === "data")).toEqual([
+        { from: "data", to: "app", up: false, reason: "no-root" },
+        { from: "data", to: "laptop", up: false, reason: "no-root" },
+      ]);
+      expect(w.reads.map((r) => r.server)).toEqual(["app"]);
+    }
   });
 
   it("reads nothing without a network", async () => {

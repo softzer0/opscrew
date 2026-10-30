@@ -2,19 +2,22 @@
  * Where `logs` reads containers' lines, through the access `status` already uses (FR-1701,
  * FR-1703): a server OpsCrew created as `deploy` with the project's deploy key, the user's own
  * server through its pinned admin login, the user's Portainer through its API, and this computer's
- * Docker. Each lists a part's containers and reads or follows one container's lines, read-only.
+ * Docker; an extra server (feature 018) through its own shell. Each lists a part's containers and
+ * reads or follows one container's lines, read-only.
  */
 import { setTimeout as delay } from "node:timers/promises";
 import { type ContainerLogLine, sinceAfter } from "@opscrew/connector-portainer";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, type Redactor } from "@opscrew/core";
 import { portainerTarget } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
 import { portainerClientFor, SshRemoteExec, serverAddress } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
+import { hasExtraServers } from "../status/components";
+import { serverShell } from "../status/servers";
 import {
   dockerLogLine,
   isContainerName,
@@ -205,10 +208,33 @@ async function cloudServerLogs(
       // A quiet follow keeps its connection through NAT, and notices a server that went away.
       keepAliveSeconds: 15,
     });
+  const named = hasExtraServers(plan);
   return sshLogs(deps, remote, false, {
-    where: "on the server",
+    where: named ? `on server ${APP_SERVER}` : "on the server",
     audit: "server",
-    server: "The server",
+    server: named ? `Server ${APP_SERVER}` : "The server",
+  });
+}
+
+/**
+ * An extra server (feature 018): through its shell (`serverShell`), as `deploy` on a server
+ * OpsCrew created or through the recorded admin login on the user's own, reading Docker through
+ * passwordless sudo when `serverShell`'s probe says that login needs it.
+ */
+async function extraServerLogs(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  name: string,
+  services: LogServices,
+): Promise<DockerLogs> {
+  // A quiet follow keeps its connection through NAT, and notices a server that went away.
+  const { remote, sudo } = await serverShell(deps, plan, name, services, {
+    keepAliveSeconds: 15,
+  });
+  return sshLogs(deps, remote, sudo, {
+    where: `on server ${name}`,
+    audit: `server ${name}`,
+    server: `Server ${name}`,
   });
 }
 
@@ -219,6 +245,7 @@ async function cloudServerLogs(
  */
 async function ownServerLogs(
   deps: PhaseDeps,
+  plan: DeployPlan,
   services: LogServices,
   hostKey: string | undefined,
 ): Promise<DockerLogs> {
@@ -239,10 +266,11 @@ async function ownServerLogs(
     throw error;
   }
   const { session, facts } = connected;
+  const named = hasExtraServers(plan);
   return sshLogs(deps, session.remote, facts.privilege === "sudo", {
-    where: "on your server",
+    where: named ? `on server ${APP_SERVER}` : "on your server",
     audit: "own server",
-    server: "Your server",
+    server: named ? `Server ${APP_SERVER}` : "Your server",
   });
 }
 
@@ -322,20 +350,30 @@ function localLogs(deps: Pick<PhaseDeps, "runner" | "redactor">): DockerLogs {
   );
 }
 
-/** The containers' place of the plan's target, connected (an own server's host key checked). */
+/**
+ * The containers' place of the plan's target, connected (an own server's host key checked): the
+ * app's server, or the extra server `server` that runs the part.
+ */
 export async function dockerLogs(
   deps: PhaseDeps,
   plan: DeployPlan,
-  options: { services?: LogServices | undefined; hostKey?: string | undefined },
+  options: {
+    services?: LogServices | undefined;
+    hostKey?: string | undefined;
+    server?: string | undefined;
+  },
 ): Promise<DockerLogs> {
   const services = options.services ?? {};
+  if (options.server !== undefined && options.server !== APP_SERVER) {
+    return extraServerLogs(deps, plan, options.server, services);
+  }
   switch (plan.target.provider) {
     case "portainer":
       return portainerLogs(deps, plan, services);
     case "localhost":
       return localLogs(deps);
     case "own":
-      return ownServerLogs(deps, services, options.hostKey);
+      return ownServerLogs(deps, plan, services, options.hostKey);
     case "hetzner":
     case "digitalocean":
       return cloudServerLogs(deps, plan, services);

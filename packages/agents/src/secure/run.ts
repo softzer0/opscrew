@@ -9,6 +9,7 @@ import type {
 import { exists, plural, replaceNames, toPosixRelative, writeFileAtomic } from "@opscrew/core";
 import { IMAGES, TOOLS } from "@opscrew/iac-templates";
 import {
+  APP_SERVER,
   type DeployPlan,
   isServerlessProvider,
   readArtifact,
@@ -34,7 +35,6 @@ import {
   runScan,
   runSshAudit,
   runTestssl,
-  serviceHostChecks,
   skippedTool,
   type TcpConnect,
 } from "@opscrew/secops";
@@ -54,6 +54,7 @@ import {
   proxyRenewalAdvice,
   readRenewalFailure,
 } from "../status/certificates";
+import { hasExtraServers } from "../status/components";
 import { appDeployed } from "../status/run";
 import { verifyHosts } from "../verify/checks";
 import { siteHost } from "../verify/serverless";
@@ -72,7 +73,13 @@ import {
   securityProblems,
   UNKNOWN_SERVER_ADDRESS,
 } from "./report";
-import { serviceCheckInputs, servicePorts } from "./services";
+import {
+  extraServerChecks,
+  type NetworkFilterReader,
+  networkListing,
+  privateAddressChecks,
+} from "./servers";
+import { serverServiceChecks, servicePorts } from "./services";
 import { behindCloudflare, settingsChecks } from "./settings";
 import { siteProbesSkipped, siteSecureNotes, siteSecurityChecks } from "./site";
 
@@ -104,6 +111,10 @@ export interface RunSecureOptions {
   localhost?: LocalhostServices;
   /** GitHub's runner API for a self-hosted runner (default: the client of the user's token). */
   runnerGitHub?: RunnerGitHubApi;
+  /** The shell on an extra server, by its address (default: `serverRemote`). */
+  serverRemote?: (host: string) => RemoteExec;
+  /** Reads the private network's filter on a server (feature 018); none: not checked. */
+  readNetworkFilter?: NetworkFilterReader;
 }
 
 /** Outcome of {@link runSecure}. */
@@ -206,7 +217,7 @@ async function checkServer(
   let hostChecks: CheckResult[] = [];
   let skipped: string | undefined;
   // The app's services: no published port, their login set (FR-1328), Valkey's password (FR-1450).
-  const services = serviceHostChecks(plan.app.name, serviceCheckInputs(plan));
+  const services = serverServiceChecks(plan);
   if (remote === undefined) {
     skipped = `the deploy key is not on this machine (it is created by \`opscrew provision\`). Run the checks from the machine that ${own !== undefined ? "prepared your server" : "provisioned the server"}.`;
   } else if (own !== undefined) {
@@ -464,6 +475,38 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     hostChecksSkipped = checked.skipped;
     remote = checked.remote;
   }
+  // An app with a private network (feature 018): every extra server as the app's, each service on
+  // a private address held to it, named by server; their addresses never reach the report. When
+  // the app's server's checks were skipped (no deploy key here), only the outside probes run.
+  let extraHosts: { server: string; host: string }[] = [];
+  if (plan.network !== undefined && sshHost !== undefined) {
+    const servers = {
+      ...(options.serverRemote !== undefined ? { serverRemote: options.serverRemote } : {}),
+      ...(remote !== undefined ? { appRemote: remote } : {}),
+      ...(options.readNetworkFilter !== undefined
+        ? { readNetworkFilter: options.readNetworkFilter }
+        : {}),
+      hostChecks: hostChecksSkipped === undefined,
+      connect: options.tcpConnect ?? defaultTcpConnect,
+      timeoutMs: options.probeTimeoutMs ?? 3000,
+    };
+    const extra = await extraServerChecks(deps, plan, servers);
+    const onApp = (check: CheckResult): CheckResult =>
+      hasExtraServers(plan)
+        ? {
+            ...check,
+            title: `Server ${APP_SERVER}: ${check.title}`,
+            message: `On server ${APP_SERVER}: ${check.message}`,
+          }
+        : check;
+    hostChecks = [
+      ...hostChecks.map(onApp),
+      ...extra.hostChecks,
+      ...(servers.hostChecks ? await privateAddressChecks(deps, plan, servers) : []),
+    ];
+    probes = [...probes.map(onApp), ...extra.probes];
+    extraHosts = extra.hosts;
+  }
 
   const settings = [
     ...(await settingsChecks(
@@ -473,6 +516,8 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     )),
     // A self-hosted runner: online, current, and never open to outside contributors (FR-1530).
     ...(await runnerChecks(deps, plan, options.runnerGitHub)),
+    // The private network's grants and public SSH (feature 018).
+    ...networkListing(plan),
   ];
 
   const deep = !options.deep
@@ -530,15 +575,22 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   const hide = (text: string) => replaceNames(text, hidden, "your server");
   // The report is committed: behind Cloudflare's proxy it never names the server's address, and
   // for a server the user owns it never names its address or host name at all (FR-902).
+  const withoutExtraHosts = (text: string) =>
+    extraHosts.reduce(
+      (out, { server, host }) => replaceNames(out, [host], `server ${server}`),
+      text,
+    );
   const report = say(
-    plan.target.provider === "own"
-      ? hide(renderSecurityReport(privateReportInput(input, hidden)))
-      : hidesServerAddress(plan)
-        ? withoutServerAddress(
-            renderSecurityReport(privateReportInput(input, [address?.ipv4, address?.ipv6])),
-            [address],
-          )
-        : renderSecurityReport(input),
+    withoutExtraHosts(
+      plan.target.provider === "own"
+        ? hide(renderSecurityReport(privateReportInput(input, hidden)))
+        : hidesServerAddress(plan)
+          ? withoutServerAddress(
+              renderSecurityReport(privateReportInput(input, [address?.ipv4, address?.ipv6])),
+              [address],
+            )
+          : renderSecurityReport(input),
+    ),
   );
   await writeFileAtomic(paths.files.securityReport, report);
   const reportPath = toPosixRelative(paths.root, paths.files.securityReport);

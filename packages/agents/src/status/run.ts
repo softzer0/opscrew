@@ -1,8 +1,15 @@
 import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
-import { portainerStackName, portainerTarget } from "@opscrew/iac-templates";
-import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
+import { portainerStackName, portainerTarget, publishedOnNetwork } from "@opscrew/iac-templates";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  isServerlessProvider,
+  type Network,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
 import { localComponentStatus } from "../localhost/status";
+import type { NetworkLink, ReadNetworkServices } from "../network";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
 import { runnerStatusLines } from "../runners";
@@ -25,7 +32,21 @@ import {
   type ServiceContainer,
   serviceContainers,
 } from "./components";
-import { type ResourceReading, readResources, resourceLines } from "./resources";
+import { networkStatusLines, type UnpublishedPort } from "./network";
+import {
+  type ResourceReading,
+  readResources,
+  readServerResources,
+  resourceLines,
+} from "./resources";
+import {
+  appServers,
+  extraServers,
+  readLinks,
+  readPublishedPorts,
+  serverShell,
+  unpublishedOnNetwork,
+} from "./servers";
 import { siteStatusReport } from "./site";
 
 /** Options of {@link readServerContainers} and {@link readComponentStatus}. */
@@ -42,6 +63,8 @@ export interface ComponentStatusOptions {
     ProvisionServices,
     "remote" | "own" | "portainer" | "runnerGitHub" | "cloudflare" | "sharedCloudflare" | "github"
   >;
+  /** The private network's WireGuard read (tests; default the host adapter's). */
+  network?: ReadNetworkServices;
 }
 
 /**
@@ -159,6 +182,26 @@ export interface ComponentStatusReport {
   resources?: ResourceReading;
   /** The scheduled check's state, when the plan has it on and GitHub could be read. */
   check?: CheckState;
+  /** With a private network (feature 018): every server, `app` first, as it was read. */
+  servers?: ServerStatus[];
+  /** The private network's links, read now. */
+  links?: NetworkLink[];
+  /** The network's devices, by name and address only. */
+  devices?: { name: string; address: string }[];
+  /** Which device may reach which service, and how. */
+  grants?: Network["grants"];
+}
+
+/** One of the app's servers as `status` read it (feature 018). */
+export interface ServerStatus {
+  /** `app` or an extra server's name. */
+  name: string;
+  /** Its components and whether each runs; absent when it could not be read. */
+  status?: ComponentStatus;
+  /** Its figures; absent when they could not be read. */
+  resources?: ResourceReading;
+  /** What it should publish on its private address and does not. */
+  unpublished: Omit<UnpublishedPort, "server">[];
 }
 
 /** `blocks` joined with an empty line between them, empty ones left out. */
@@ -168,9 +211,16 @@ function joinBlocks(...blocks: string[][]): string[] {
     .flatMap((block, i) => (i === 0 ? block : ["", ...block]));
 }
 
-/** The status lines of `reading`, redacted. */
-function readingLines(deps: PhaseDeps, plan: DeployPlan, reading: ResourceReading): string[] {
-  return resourceLines(plan, reading, deps.clock.now()).map((line) => deps.redactor.redact(line));
+/** The status lines of `reading` (of `server`, default the app's), redacted. */
+function readingLines(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  reading: ResourceReading,
+  server = APP_SERVER,
+): string[] {
+  return resourceLines(plan, reading, deps.clock.now(), server).map((line) =>
+    deps.redactor.redact(line),
+  );
 }
 
 /**
@@ -178,7 +228,9 @@ function readingLines(deps: PhaseDeps, plan: DeployPlan, reading: ResourceReadin
  * list; then each one and whether it runs ({@link readComponentStatus}) and the resource figures
  * ({@link readResources}, FR-1704), with the list and a note (redacted) instead when the
  * deployment cannot be read. `check` runs first and may stop the read the same way (the MCP
- * server's host-key check). A self-hosted runner's state follows (FR-1530), then the scheduled
+ * server's host-key check). With extra servers (feature 018, FR-1811), each server's components
+ * and figures follow under its name, and with a private network its section
+ * (`networkStatusLines`). A self-hosted runner's state follows (FR-1530), then the scheduled
  * check's state and open alerts when the plan has it on (FR-1708). A site on Cloudflare's hosting
  * or GitHub Pages has no components: its running version, custom domains or Pages site instead
  * (`siteStatusReport`), and the figures it cannot give.
@@ -226,7 +278,141 @@ async function componentsReport(
   plan: DeployPlan,
   options: ComponentStatusOptions & { check?: () => Promise<void> },
 ): Promise<Omit<ComponentStatusReport, "check">> {
-  if (!appDeployed(plan)) return { lines: componentStatusLines(plan, undefined) };
+  if (!appDeployed(plan)) {
+    return {
+      lines: joinBlocks(
+        ...appServers(plan).map((server) => componentStatusLines(plan, undefined, server)),
+      ),
+    };
+  }
+  const app = await appServerReport(deps, plan, options);
+  const network = plan.network;
+  if (network === undefined) return app;
+  const extras: { reading: ServerStatus; lines: string[] }[] = [];
+  for (const name of extraServers(plan)) {
+    extras.push(await extraServerReport(deps, plan, name, options));
+  }
+  const ports = await appServerPorts(deps, plan, options);
+  const servers: ServerStatus[] = [
+    {
+      name: APP_SERVER,
+      ...(app.status !== undefined ? { status: app.status } : {}),
+      ...(app.resources !== undefined ? { resources: app.resources } : {}),
+      unpublished: ports.unpublished,
+    },
+    ...extras.map((extra) => extra.reading),
+  ];
+  const links = await readLinks(deps, plan, options.services, options.network);
+  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  const unpublished = servers.flatMap((server) =>
+    server.unpublished.map((port) => ({ server: server.name, ...port })),
+  );
+  const section = [...networkStatusLines(plan, links, unpublished, flag), ...ports.note];
+  return {
+    ...app,
+    lines: joinBlocks(
+      app.lines,
+      ...extras.map((extra) => extra.lines),
+      section.map((line) => deps.redactor.redact(line)),
+    ),
+    servers,
+    links,
+    devices: network.devices.map(({ name, address }) => ({ name, address })),
+    grants: network.grants,
+  };
+}
+
+/**
+ * The extra server `name`'s components and figures (FR-1811), and what it should publish on its
+ * private address and does not, read over its shell as `deploy` (or the admin login of a server
+ * the user owns), read-only; a note under its components when it cannot be read.
+ */
+async function extraServerReport(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  name: string,
+  options: ComponentStatusOptions,
+): Promise<{ reading: ServerStatus; lines: string[] }> {
+  const app = plan.app.name;
+  try {
+    const { remote, login, docker } = await serverShell(deps, plan, name, options.services);
+    deps.reporter.step(`Reading the app's containers on server ${name} (read-only)`);
+    const containers = await readAppContainers(docker, app);
+    const published = await readPublishedPorts(docker, app);
+    await deps.audit.append({
+      kind: "remote-exec",
+      actor: "opscrew",
+      action: "read the app's containers (read-only)",
+      target: `server ${name}`,
+      decision: "allow",
+    });
+    const status = componentStatus(plan, serviceContainers(app, containers), name);
+    const reading: ServerStatus = {
+      name,
+      status,
+      unpublished: unpublishedOnNetwork(plan, name, published),
+    };
+    const lines = componentStatusLines(plan, status, name);
+    try {
+      const resources = await readServerResources(deps, plan, name, remote, login.own);
+      return {
+        reading: { ...reading, resources },
+        lines: joinBlocks(lines, readingLines(deps, plan, resources, name)),
+      };
+    } catch (error) {
+      if (!isUserFacingError(error)) throw error;
+      const note = `OpsCrew could not read the resource figures of server ${name}. ${errorText(error)}`;
+      return { reading, lines: joinBlocks(lines, [deps.redactor.redact(note)]) };
+    }
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    // A command that failed on the server gets this server's next step; a missing login its own.
+    const why =
+      error.code === "COMMAND_FAILED"
+        ? `${error.message} Check that server ${name} is on and that this computer reaches it over SSH, then run \`opscrew status\` again.`
+        : errorText(error);
+    return {
+      reading: { name, unpublished: [] },
+      lines: [
+        ...componentStatusLines(plan, undefined, name),
+        deps.redactor.redact(`OpsCrew could not read server ${name}. ${why}`),
+      ],
+    };
+  }
+}
+
+/**
+ * What the app's server should publish on its private address (the services a device was granted)
+ * and does not, read over its shell; nothing to read without such a service, and a note when it
+ * cannot be read.
+ */
+async function appServerPorts(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: ComponentStatusOptions,
+): Promise<{ unpublished: ServerStatus["unpublished"]; note: string[] }> {
+  if (publishedOnNetwork(plan, APP_SERVER).length === 0) return { unpublished: [], note: [] };
+  try {
+    const { docker } = await serverShell(deps, plan, APP_SERVER, options.services);
+    const published = await readPublishedPorts(docker, plan.app.name);
+    return { unpublished: unpublishedOnNetwork(plan, APP_SERVER, published), note: [] };
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    return {
+      unpublished: [],
+      note: [
+        `  OpsCrew could not read the ports server ${APP_SERVER} publishes on the private network. ${errorText(error)}`,
+      ],
+    };
+  }
+}
+
+/** The app's server's components and figures, as `status` read them before extra servers. */
+async function appServerReport(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: ComponentStatusOptions & { check?: () => Promise<void> },
+): Promise<Omit<ComponentStatusReport, "check">> {
   const { check, ...read } = options;
   let status: ComponentStatus;
   try {

@@ -1,7 +1,7 @@
 import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, upperFirst } from "@opscrew/core";
 import { hostSettingsServices, serviceSpec } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 
 /** A component of the plan that runs as containers: its Compose service and what it is. */
 export interface PlannedComponent {
@@ -28,6 +28,32 @@ export function plannedComponents(plan: DeployPlan): PlannedComponent[] {
       .filter((service) => service.enabled)
       .map((service) => ({ service: service.name, what: serviceSpec(service.kind).title })),
   ];
+}
+
+/**
+ * The server a component runs on: a service's `server`, else the app's server (the web process,
+ * workers and cron jobs always run there).
+ */
+export function componentServer(plan: DeployPlan, service: string): string {
+  return plan.services.find((s) => s.name === service)?.server ?? APP_SERVER;
+}
+
+/** The planned components on `server`. */
+function componentsOn(plan: DeployPlan, server: string): PlannedComponent[] {
+  return plannedComponents(plan).filter((c) => componentServer(plan, c.service) === server);
+}
+
+/** True when the app has extra servers: then every line about a server names it. */
+export function hasExtraServers(plan: Pick<DeployPlan, "servers">): boolean {
+  return (plan.servers ?? []).length > 0;
+}
+
+/**
+ * How a block about `server` names it: ` on server <name>` when the app has extra servers, else
+ * nothing (one server needs no name).
+ */
+export function onServer(plan: Pick<DeployPlan, "servers">, server: string): string {
+  return hasExtraServers(plan) ? ` on server ${server}` : "";
 }
 
 /** One container of the app's Compose project: its name and whether it runs. */
@@ -83,10 +109,11 @@ export function serviceContainers(
   });
 }
 
-/** How each of the plan's components runs in the app's containers `containers`. */
+/** How each of the plan's components on `server` runs in its app's containers `containers`. */
 export function componentStatus(
   plan: DeployPlan,
   containers: readonly ServiceContainer[],
+  server = APP_SERVER,
 ): ComponentStatus {
   const counts = new Map<string, { containers: number; running: number }>();
   for (const { service, ...container } of containers) {
@@ -95,7 +122,7 @@ export function componentStatus(
     if (container.running) count.running += 1;
     counts.set(service, count);
   }
-  const components = plannedComponents(plan).map((component) => ({
+  const components = componentsOn(plan, server).map((component) => ({
     ...component,
     ...(counts.get(component.service) ?? { containers: 0, running: 0 }),
   }));
@@ -118,29 +145,32 @@ function stateText(state: ComponentState): string {
 }
 
 /**
- * The status lines of the plan's components (FR-1331): each with whether it runs when `status`
- * was read from the server, and the app's services the plan no longer has.
+ * The status lines of the plan's components on `server` (FR-1331): each with whether it runs when
+ * `status` was read from the server, and the app's services the plan no longer has there. With
+ * extra servers, the heading names the server.
  */
 export function componentStatusLines(
   plan: DeployPlan,
   status: ComponentStatus | undefined,
+  server = APP_SERVER,
 ): string[] {
+  const on = onServer(plan, server);
   if (status === undefined) {
     return [
-      "Components (from opscrew/plan.yaml):",
-      ...plannedComponents(plan).map(
+      `Components${on} (from opscrew/plan.yaml):`,
+      ...componentsOn(plan, server).map(
         (component) => `  ${upperFirst(component.what)} (${component.service})`,
       ),
     ];
   }
   return [
-    "Components:",
+    `Components${on}:`,
     ...status.components.map(
       (state) => `  ${upperFirst(state.what)} (${state.service}): ${stateText(state)}`,
     ),
     ...status.others.map(
       (service) =>
-        `  ${service}: on the server, but no component in opscrew/plan.yaml any more (the next deploy removes it)`,
+        `  ${service}: on ${on === "" ? "the server" : `server ${server}`}, but no component in opscrew/plan.yaml ${on === "" ? "" : "there "}any more (the next deploy removes it)`,
     ),
   ];
 }

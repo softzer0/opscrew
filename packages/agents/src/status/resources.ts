@@ -14,7 +14,7 @@ import {
   portainerTarget,
   shellQuote,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import { DISK_HIGH_PERCENT, DISK_WARN_PERCENT } from "@opscrew/secops";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -25,7 +25,12 @@ import { requirePortainerConnection, requirePortainerToken } from "../provision/
 import { portainerClientFor } from "../shared";
 import { connectOwnServer } from "../shared/own-server";
 import { deployShell } from "./certificates";
-import { containerService, oneShotServices, plannedComponents } from "./components";
+import {
+  containerService,
+  hasExtraServers,
+  oneShotServices,
+  plannedComponents,
+} from "./components";
 import type { ComponentStatusOptions } from "./run";
 
 /** One container's figures. */
@@ -315,21 +320,41 @@ async function figuresShell(
   return { remote, command };
 }
 
-/** The figures of a server OpsCrew created or the user's own, with one fixed command. */
+/** The figures of the app's server, OpsCrew's or the user's own, with one fixed command. */
 async function serverFigures(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions,
 ): Promise<Figures> {
-  const app = plan.app.name;
   const { remote, command } = await figuresShell(deps, plan, options);
-  deps.reporter.step("Reading the server's and the app's figures (read-only)");
+  return figuresOver(deps, plan, remote, command);
+}
+
+/**
+ * The figures `command` reads over `remote`: on the app's server, or on the extra server `extra`
+ * (named in the step, the audit entry and the error).
+ */
+async function figuresOver(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  remote: RemoteExec,
+  command: string,
+  extra?: string,
+): Promise<Figures> {
+  const app = plan.app.name;
+  const whose = extra === undefined ? "the server's" : `server ${extra}'s`;
+  deps.reporter.step(`Reading ${whose} and the app's figures (read-only)`);
   const result = await remote.run(command, { timeoutMs: 60_000 });
   await deps.audit.append({
     kind: "remote-exec",
     actor: "opscrew",
     action: "read the server's and the app's figures (read-only)",
-    target: plan.target.provider === "own" ? "own server" : "server",
+    target:
+      extra !== undefined
+        ? `server ${extra}`
+        : plan.target.provider === "own"
+          ? "own server"
+          : "server",
     decision: "allow",
   });
   // The command ends with `true`: only ssh's own failure (255) or a shell that ran none of it
@@ -337,7 +362,7 @@ async function serverFigures(
   if (result.exitCode === 255 || !result.stdout.includes(MARK)) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `OpsCrew could not read the server's figures over SSH (exit code ${result.exitCode}).`,
+      `OpsCrew could not read ${whose} figures over SSH (exit code ${result.exitCode}).`,
       {
         hint: "Check that the server is on and that this computer reaches it over SSH, then try again (`opscrew verify` checks the deployment).",
       },
@@ -552,18 +577,27 @@ function diskPercent(disk: NonNullable<NonNullable<ResourceReading["server"]>["d
   return size === 0 ? 0 : Math.ceil((disk.usedBytes * 100) / size);
 }
 
-/** The thresholds of US2: memory at 90% of a limit, the disk at 85% and 95%, any restart. */
-export function resourceFlags(plan: DeployPlan, figures: Figures, flag = ""): ResourceFlag[] {
+/**
+ * The thresholds of US2: memory at 90% of a limit, the disk at 85% and 95%, any restart. With
+ * extra servers, the disk's flag names its server (`server`, default the app's).
+ */
+export function resourceFlags(
+  plan: DeployPlan,
+  figures: Figures,
+  flag = "",
+  server = APP_SERVER,
+): ResourceFlag[] {
   const words = componentWords(plan);
   const flags: ResourceFlag[] = [];
   const disk = figures.server?.disk;
+  const named = hasExtraServers(plan) ? server : undefined;
   if (disk !== undefined) {
     const percent = diskPercent(disk);
     if (percent >= DISK_WARN_PERCENT) {
       flags.push({
-        figure: "the server's disk",
+        figure: named === undefined ? "the server's disk" : `server ${named}'s disk`,
         severity: percent >= DISK_HIGH_PERCENT ? "high" : "warning",
-        meaning: `The server's disk is ${percent}% full (${bytesText(disk.freeBytes)} free). When it is full, the database and the app can no longer write, and deploys fail.`,
+        meaning: `${named === undefined ? "The server's" : `Server ${named}'s`} disk is ${percent}% full (${bytesText(disk.freeBytes)} free). When it is full, the database and the app can no longer write, and deploys fail.`,
         fix: "Free space: old images (`docker image prune` as the deploy user) and logs usually fill it. Or give the server a bigger disk.",
       });
     }
@@ -625,6 +659,28 @@ export async function readResources(
   };
 }
 
+/**
+ * The figures of the extra server `server` (FR-1811) over its shell `remote`, with the same
+ * command and thresholds as the app's server: as root where the admin login of a server the user
+ * owns (`own`) can be, else as `deploy`.
+ */
+export async function readServerResources(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  server: string,
+  remote: RemoteExec,
+  own: boolean,
+): Promise<ResourceReading> {
+  const command = serverFiguresCommand(plan.app.name);
+  const figures = await figuresOver(deps, plan, remote, own ? asAdmin(command) : command, server);
+  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  return {
+    takenAt: deps.clock.now().toISOString(),
+    ...figures,
+    flags: resourceFlags(plan, figures, flag, server),
+  };
+}
+
 /** `2 days`, `3 hours`, `5 minutes` or `less than a minute` since `startedAt`. */
 function sinceText(startedAt: string, now: Date): string {
   const ms = now.getTime() - Date.parse(startedAt);
@@ -635,8 +691,11 @@ function sinceText(startedAt: string, now: Date): string {
   return "less than a minute ago";
 }
 
-/** The server's line: load against the CPUs, memory used of total, disk used and free. */
-function serverLine(server: NonNullable<ResourceReading["server"]>): string {
+/**
+ * The server's line: load against the CPUs, memory used of total, disk used and free; with extra
+ * servers it names the server (`named`).
+ */
+function serverLine(server: NonNullable<ResourceReading["server"]>, named?: string): string {
   const { cpus, load1, load5, load15, memory, disk } = server;
   const parts = [
     load1 === undefined || load5 === undefined || load15 === undefined
@@ -651,7 +710,7 @@ function serverLine(server: NonNullable<ResourceReading["server"]>): string {
       `disk ${bytesText(disk.usedBytes)} used, ${bytesText(disk.freeBytes)} free of ${bytesText(disk.totalBytes)} (${diskPercent(disk)}% full)`,
     );
   }
-  return `  Server: ${parts.join("; ")}`;
+  return `  Server${named === undefined ? "" : ` ${named}`}: ${parts.join("; ")}`;
 }
 
 /**
@@ -669,11 +728,20 @@ function workerLines(figures: NonNullable<ResourceReading["edgeRequests"]>): str
   ];
 }
 
-/** The status lines of a reading: the server, each container, what is not available, the flags. */
-export function resourceLines(plan: DeployPlan, reading: ResourceReading, now: Date): string[] {
+/**
+ * The status lines of a reading of `server` (default the app's): the server, each container, what
+ * is not available, the flags. With extra servers, the heading and the server's line name it.
+ */
+export function resourceLines(
+  plan: DeployPlan,
+  reading: ResourceReading,
+  now: Date,
+  server = APP_SERVER,
+): string[] {
   const words = componentWords(plan);
-  const lines = ["Resources (read now):"];
-  if (reading.server !== undefined) lines.push(serverLine(reading.server));
+  const named = hasExtraServers(plan) ? server : undefined;
+  const lines = [`Resources${named === undefined ? "" : ` on server ${named}`} (read now):`];
+  if (reading.server !== undefined) lines.push(serverLine(reading.server, named));
   if (reading.edgeRequests !== undefined) lines.push(...workerLines(reading.edgeRequests));
   for (const container of reading.containers) {
     const { usedBytes, limitBytes } = container.memory;
