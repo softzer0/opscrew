@@ -40,7 +40,9 @@ Derived, not stored:
   on a server.
 - **peers** of a server: every other member, with `Endpoint` its public address and port when it
   has one (taken from this computer's server record at plan time), `AllowedIPs` its `/32`, and
-  `PersistentKeepalive = 25` when this server has no public address.
+  `PersistentKeepalive = 25` toward every other server, so idle links keep a fresh handshake and
+  "up" means a handshake under 180 s for every link. Device peers on a server have none (the
+  device's own configuration keeps the link alive).
 - **the filter's sources** per published port: the app server's address, plus the addresses of
   the devices granted that service.
 

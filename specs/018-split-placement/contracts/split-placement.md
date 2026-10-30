@@ -81,6 +81,7 @@ interface NetworkStepParams {
   publicKey: string;              // this server's
   peers: { name: string; publicKey: string; endpoint?: string; allowedIp: string; keepalive?: number }[];
   otherInterfaces: string[];      // the host's other OpsCrew interfaces, for Docker's drop-in
+  sshPort: number;                // the login's SSH port, opened on the interface (22 on cloud servers)
 }
 // secret on stdin when the agents pass one: the private key (base64)
 
@@ -107,7 +108,8 @@ export function readWireGuard(remote: RemoteExec, iface: string, privilege: Host
 - **Runtime:**
   - `renderCompose(plan)` (the app's server, as today plus placement);
   - `renderServerCompose(plan, name)`;
-  - `publishedOnNetwork(plan, server): { service: string; port: number; address: string }[]`;
+  - `publishedOnNetwork(plan, server): { service: string; port: number; address: string; dashboard?: true }[]`
+    (dashboards admit every device; services the app's address and the granted devices);
   - the catalog context's `host` and `advertisedHost`;
   - `OPSCREW_ACL_USERS` in a Redis-protocol service's environment when it has grants.
 - **Workflow:**

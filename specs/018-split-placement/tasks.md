@@ -402,6 +402,8 @@ Effort`.
     - **A server removed from `servers`:** the IaC plan deletes it only after the same
       `allowDestroy` approval and typed server name as `destroy` (FR-1812). An extra own server
       gets its undo host plans instead.
+    - **The generated values:** provision's rewrite of `generated_values.json` keeps `network` and
+      `grants` (today it keeps only `originTls`), so no provision wipes a key or a password.
     - **After the deploy `verify` sees succeed:** `deployment.placement` is written. With `move`
       set, provision calls `runMove`.
     - A plan without servers and network provisions exactly as before (the existing provision
