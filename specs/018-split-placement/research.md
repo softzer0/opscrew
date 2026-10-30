@@ -274,6 +274,64 @@ app's own containers.
   - turning it off removes the access rule and the extra login.
   - Only the databases and caches: Postgres, MySQL, MariaDB, MongoDB, Valkey, Redis and Dragonfly.
 
+## R5a. Spike: WireGuard between two servers (2026-10-30, local Docker)
+
+Two privileged Ubuntu 24.04 containers stood in for the servers, each with its own Docker inside,
+ufw on (deny incoming, 22/tcp and 51820/udp allowed) and iptables-legacy. Docker Desktop's
+kernel has WireGuard. The real-server pass (R5b) covers what containers can't show.
+
+- **Keys from Node work:** `wg pubkey` printed exactly the public key that
+  `crypto.generateKeyPairSync("x25519")` gave (JWK `d` and `x`, base64url turned into base64).
+- **The private key outside the config works:** a config with no `PrivateKey`, plus
+  `PostUp = wg set %i private-key /etc/wireguard/%i.key` (0600), comes up and links.
+- **The link:** handshake and ping fine, and wg-quick chose MTU 1420.
+- **A container reaching the other server:** a client on a Compose bridge network on A reached
+  Postgres published on `10.77.0.2:5432` on B, with ufw on at both ends. Postgres saw the
+  connection from `10.77.0.1`, A's WireGuard address (Docker's masquerading). ufw's routed
+  default didn't block it: Docker's `FORWARD` rules come first.
+- **Binding before the interface exists fails, and recovers badly:**
+  - With the interface down, `docker compose up` fails with
+    `failed to bind host port 10.77.0.2:5432/tcp: cannot assign requested address`, and the
+    container stays `Created`. `restart: unless-stopped` doesn't recover it once the interface
+    is up.
+  - Worse, a later `docker start` or plain `docker compose up -d` starts it **with no published
+    port and no error**. Only `docker compose up -d --force-recreate` restores the port.
+- **Filtering by source in `DOCKER-USER` works**, matching the original destination (the packet
+  is already NATed to the container's address there):
+  ```
+  -A DOCKER-USER -i wg0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.77.0.2 --ctorigdstport 5432 --ctdir ORIGINAL -s 10.77.0.1 -j ACCEPT
+  -A DOCKER-USER -i wg0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.77.0.2 --ctorigdstport 5432 --ctdir ORIGINAL -j DROP
+  ```
+  A's container connected; a third peer (a device in a network namespace) could ping B but not
+  open 5432, and could open it once the DROP rule was gone.
+- **`wg syncconf` with a config that has no key wipes the private key:** the interface's key
+  became "(none)", and a ping between the servers lost 83% until the key was set again.
+  `wg addconf` with only the new peer lost nothing.
+- **ufw:** `ufw allow in on wg0 to any port 22 proto tcp` plus `ufw delete allow 22/tcp` left
+  port 22 answering on the WireGuard address only.
+- **Root through Docker:** as a `deploy` user in the `docker` group with no sudo,
+  `docker run --rm -i --privileged --pid=host --net=host --ipc=host --uts=host <the pinned Caddy alpine image> nsenter -t 1 -m -u -i -n -p -- sh -s`
+  ran a script from standard input as root in the host's namespaces: `apt-get install`, `ufw`
+  and `wg show` all worked. Busybox's `nsenter` takes those flags.
+
+**Decisions:**
+- **Peer changes:** the apply builds a full config in a root-only temporary file
+  (`/run/opscrew-<if>.conf`, 0600, removed afterwards), with `PrivateKey` read from the key file,
+  and runs `wg syncconf` on it. Peers are added and removed with no window without a key. The
+  config on disk stays keyless.
+- **Start order:** a drop-in makes Docker start after each OpsCrew interface (`Wants=` and
+  `After=wg-quick@<if>.service`). It doesn't use `Requires=`: a failed interface must not stop
+  the app's own containers on the app's server.
+- **A port that isn't published is repaired, not trusted:** the deploy, `status` and `verify`
+  check every service published on a WireGuard address with `docker compose port`. The deploy
+  recreates (`--force-recreate`) a service whose port is missing; `status` and `verify` report it
+  with that fix.
+- **The filter** matches `--ctorigdst` and `--ctorigdstport` in its own chain (`OPSCREW-NET`),
+  jumped to from `DOCKER-USER`.
+- **Root on cloud servers:** through that one-shot privileged container, as the host adapter's
+  third way to be root (`docker`), next to `root` and `sudo`. A login in the `docker` group is
+  already root-equivalent, so this grants nothing new. ADR 0022 records it.
+
 ## R6a. Spike: device logins on the pinned images (2026-10-30, local Docker)
 
 Run with OpsCrew's pinned images and its own start settings: Postgres 17 (alpine), MySQL 8.4,
