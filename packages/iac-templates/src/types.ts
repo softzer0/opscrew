@@ -65,6 +65,12 @@ export interface RenderContext {
    */
   sshPort?: number;
   /**
+   * The SSH port the deploy workflow connects to on each extra server the user owns, by its name
+   * in `plan.servers` (from the server record); absent or 22 means the default. Each must be an
+   * integer 1-65535, as {@link sshPort}.
+   */
+  serverSshPorts?: Readonly<Record<string, number>>;
+  /**
    * The server's addresses from OpsCrew's local state (they are never in the plan), for the
    * runbook. The runbook leaves them out when the domain is behind Cloudflare's proxy.
    */

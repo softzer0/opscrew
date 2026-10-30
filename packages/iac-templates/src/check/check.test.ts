@@ -9,7 +9,7 @@ import { CHECK_SCRIPT } from "../generated/check";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { ssrPlan } from "../serverless/__fixtures__/plans";
 import type { RenderedFile } from "../types";
-import { inEnvironment, ofApp } from "../workflow/__fixtures__/plans";
+import { inEnvironment, ofApp, splitPlan } from "../workflow/__fixtures__/plans";
 import {
   CHECK_LABEL,
   CHECK_WORKFLOW_FILE,
@@ -312,14 +312,75 @@ describe("renderCheck", () => {
     );
   });
 
-  it("writes a server secret as the JSON check.mjs reads", () => {
-    const reach = {
+  it("writes a server secret as the JSON list check.mjs reads, one entry per server", () => {
+    const app = {
+      id: "app",
       host: "203.0.113.10",
       port: 22,
       user: "deploy",
       knownHosts: "203.0.113.10 ssh-ed25519 AAAA",
     };
-    expect(JSON.parse(checkServerSecret(reach))).toEqual(reach);
+    const data = {
+      ...app,
+      id: "data",
+      host: "10.200.4.2",
+      knownHosts: "10.200.4.2 ssh-ed25519 BBBB",
+    };
+    expect(JSON.parse(checkServerSecret([app, data]))).toEqual([app, data]);
+  });
+});
+
+describe("renderCheck with extra servers", () => {
+  /** The split plan with the check on, deploying from `runner`. */
+  const split = (runner: "github" | "server", publicSsh?: boolean) =>
+    withCheck(inEnvironment(splitPlan(publicSsh === undefined ? {} : { publicSsh }), { runner }));
+
+  it("lists each extra server by id and name, read over SSH from GitHub's machines by the check job", () => {
+    const files = renderCheck({ plans: [split("github")], repo: PUBLIC });
+    const [environment] = configOf(files).environments;
+    expect(environment.server).toEqual({
+      id: "hetzner-shop",
+      secret: "OPSCREW_CHECK_SERVER",
+      via: "github",
+    });
+    expect(environment.extraServers).toEqual([
+      { id: "hetzner-shop-data", name: "data", secret: "OPSCREW_CHECK_SERVER", via: "github" },
+      { id: "own-shop-box-2", name: "box-2", secret: "OPSCREW_CHECK_SERVER", via: "github" },
+    ]);
+    const workflow = parse(workflowOf(files));
+    expect(Object.keys(workflow.jobs)).toEqual(["check"]);
+    expect(workflow.jobs.check.steps.at(-1).env).toMatchObject({
+      OPSCREW_CHECK_SSH_KEY: "${{ secrets.OPSCREW_CHECK_SSH_KEY }}",
+      OPSCREW_CHECK_SERVER: "${{ secrets.OPSCREW_CHECK_SERVER }}",
+    });
+  });
+
+  it("checks each server's disk by id on the server's runner, over the private addresses once public SSH is closed", () => {
+    const files = renderCheck({ plans: [split("server", false)], repo: PUBLIC });
+    const [environment] = configOf(files).environments;
+    expect(environment.server).toEqual({ id: "hetzner-shop", via: "own-runner" });
+    expect(environment.extraServers.map((s: { via: string }) => s.via)).toEqual([
+      "runner-host",
+      "runner-host",
+    ]);
+    const { jobs } = parse(workflowOf(files));
+    expect(Object.keys(jobs)).toEqual([
+      "check",
+      "disk-hetzner-shop",
+      "disk-hetzner-shop-data",
+      "disk-own-shop-box-2",
+    ]);
+    // Only the runner's jobs read the disks: the check job reaches no server.
+    expect(jobs.check.steps.at(-1).env).not.toHaveProperty("OPSCREW_CHECK_SERVER");
+    const data = jobs["disk-hetzner-shop-data"];
+    expect(data["runs-on"]).toEqual(["self-hosted", "opscrew-shop-prod"]);
+    expect(data.steps.at(-1).run).toBe(
+      "node opscrew/check/check.mjs --only disk:hetzner-shop-data",
+    );
+    expect(data.steps.at(-1).env).toMatchObject({
+      OPSCREW_CHECK_SSH_KEY: "${{ secrets.OPSCREW_CHECK_SSH_KEY }}",
+      OPSCREW_CHECK_SERVER: "${{ secrets.OPSCREW_CHECK_SERVER }}",
+    });
   });
 });
 

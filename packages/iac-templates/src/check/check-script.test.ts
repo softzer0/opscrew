@@ -9,6 +9,7 @@ import {
   type CheckEnvironment,
   type CheckIo,
   run,
+  type ServerEntry,
   type ServerReach,
   sshDf,
 } from "../../check/check.mjs";
@@ -33,6 +34,19 @@ const REACH: ServerReach = {
   port: 2222,
   user: "deploy",
   knownHosts: `[${SERVER_HOST}]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE`,
+};
+
+/** The app server's entry in the server secret's list. */
+const APP_ENTRY: ServerEntry = { id: "app", ...REACH };
+
+/** An extra server's entry, at its private address. */
+const DATA_ENTRY: ServerEntry = {
+  id: "data",
+  host: "10.200.4.2",
+  port: 22,
+  user: "deploy",
+  knownHosts:
+    "10.200.4.2 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDATADATADATADATADATADATADATADATADATADATADATA",
 };
 
 const PROD: CheckEnvironment = {
@@ -255,7 +269,7 @@ function env(o: Record<string, string | undefined> = {}): Record<string, string 
     GITHUB_REPOSITORY: REPOSITORY,
     OPSCREW_CHECK_PAUSED: "",
     OPSCREW_CHECK_SSH_KEY: SECRETS.sshKey,
-    OPSCREW_CHECK_SERVER: JSON.stringify(REACH),
+    OPSCREW_CHECK_SERVER: JSON.stringify([APP_ENTRY]),
     OPSCREW_CHECK_WEBHOOK: SECRETS.webhook,
     ...o,
   };
@@ -363,7 +377,7 @@ describe("check.mjs", () => {
     const world = new World();
     world.disks.set(SERVER_HOST, df(86));
     await run(env(), world.io());
-    expect(world.sshCalls).toEqual([{ server: REACH, key: SECRETS.sshKey }]);
+    expect(world.sshCalls).toEqual([{ server: APP_ENTRY, key: SECRETS.sshKey }]);
     const [issue] = world.open();
     expect(issue?.title).toBe(
       "OpsCrew check: example-app (prod) disk over 85% full on hetzner-example-app",
@@ -615,7 +629,7 @@ describe("check.mjs", () => {
     expect(masks).toContain(`::add-mask::${SECRETS.ntfyToken}`);
     expect(masks).toContain(`::add-mask::${SERVER_HOST}`);
     expect(masks).toContain(`::add-mask::${REACH.knownHosts}`);
-    expect(masks).toContain(`::add-mask::${JSON.stringify(REACH)}`);
+    expect(masks).toContain(`::add-mask::${JSON.stringify([APP_ENTRY])}`);
     for (const line of SECRETS.sshKey.split("\n").filter((l) => l.trim() !== "")) {
       expect(masks).toContain(`::add-mask::${line.trim()}`);
     }
@@ -663,8 +677,43 @@ describe("check.mjs", () => {
       });
       world.disks.set(SERVER_HOST, df(99));
       await run(env(), world.io(["--only", "disk:own-example-app"]));
-      expect(world.sshCalls).toEqual([{ server: REACH, key: SECRETS.sshKey }]);
+      expect(world.sshCalls).toEqual([{ server: APP_ENTRY, key: SECRETS.sshKey }]);
       expect(world.open()).toHaveLength(1);
+    });
+
+    it("reads an extra server's disk from the app server's runner, by its entry in the list", async () => {
+      const world = new World();
+      world.config = config({
+        environments: [
+          {
+            ...OWN,
+            extraServers: [
+              {
+                id: "hetzner-example-app-data",
+                name: "data",
+                secret: "OPSCREW_CHECK_SERVER",
+                via: "runner-host",
+              },
+            ],
+          },
+        ],
+      });
+      world.disks.set(DATA_ENTRY.host, df(96));
+      world.localDisk = df(10);
+      const secret = JSON.stringify([DATA_ENTRY]);
+      expect(
+        await run(
+          env({ OPSCREW_CHECK_SERVER: secret }),
+          world.io(["--only", "disk:hetzner-example-app-data"]),
+        ),
+      ).toBe(0);
+      expect(world.sshCalls).toEqual([{ server: DATA_ENTRY, key: SECRETS.sshKey }]);
+      expect(world.open().map((issue) => issue.title)).toEqual([
+        "OpsCrew check: example-app (prod) disk over 95% full on hetzner-example-app-data",
+      ]);
+      const masks = world.logs.filter((line) => line.startsWith("::add-mask::"));
+      expect(masks).toContain(`::add-mask::${DATA_ENTRY.host}`);
+      expect(masks).toContain(`::add-mask::${DATA_ENTRY.knownHosts}`);
     });
 
     it("refuses a server check.json doesn't list", async () => {
@@ -729,6 +778,19 @@ describe("check.mjs", () => {
     expect(world.logs).toContainEqual(
       expect.stringContaining("the secret OPSCREW_CHECK_SERVER is missing"),
     );
+  });
+
+  it("skips a server the secret's list has no entry for, and a secret that is no list", async () => {
+    for (const secret of [JSON.stringify([DATA_ENTRY]), JSON.stringify(REACH)]) {
+      const world = new World();
+      await run(env({ OPSCREW_CHECK_SERVER: secret }), world.io());
+      expect(world.sshCalls).toEqual([]);
+      expect(world.logs).toContainEqual(
+        expect.stringContaining(
+          "the secret OPSCREW_CHECK_SERVER is missing, has no entry for the server app or is not in the form OpsCrew writes",
+        ),
+      );
+    }
   });
 });
 

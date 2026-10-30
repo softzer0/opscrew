@@ -1226,12 +1226,15 @@ describe.skipIf(!findExecutable("git"))("the scheduled check on a server the use
         params: expect.objectContaining({ repository: "acme/shop", runAs: "root" }),
       }),
     ]);
-    expect(JSON.parse(s.github.secrets.get("OPSCREW_CHECK_SERVER") ?? "")).toEqual({
-      host: OWN_IPV4,
-      port: 22,
-      user: "deploy",
-      knownHosts: `${OWN_IPV4} ssh-ed25519 ${ED25519}\n`,
-    });
+    expect(JSON.parse(s.github.secrets.get("OPSCREW_CHECK_SERVER") ?? "")).toEqual([
+      {
+        id: "app",
+        host: OWN_IPV4,
+        port: 22,
+        user: "deploy",
+        knownHosts: `${OWN_IPV4} ssh-ed25519 ${ED25519}\n`,
+      },
+    ]);
     const config = JSON.parse(await readFile(join(s.root, "opscrew/check/check.json"), "utf8"));
     const id = `own-${ED25519_FINGERPRINT.slice(7).replace(/\+/g, "-").replace(/\//g, "_")}`;
     expect(config.environments[0].server).toEqual({

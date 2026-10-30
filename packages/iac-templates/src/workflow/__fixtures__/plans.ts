@@ -5,6 +5,7 @@ import {
   type RuntimeLanguage,
 } from "@opscrew/plan-schema";
 import { designProbe, testPlan } from "../../__fixtures__/plans";
+import { withServices } from "../../catalog/__fixtures__/plans";
 
 /**
  * `plan` with `app.build` set to `builder` for `language` (default Go 1.26, chosen by design, with
@@ -79,6 +80,60 @@ export function withProcesses(
       cron: o.cron ?? [],
     },
   });
+}
+
+/** A WireGuard public key for the plans' networks: 32 bytes of 1, not a key anyone holds. */
+const NETWORK_KEY = Buffer.alloc(32, 1).toString("base64");
+
+/**
+ * The shared test plan (Hetzner, `shop.example.com`) split over three servers: Postgres (`db`)
+ * and MongoDB (`docs`, a replica set) on the Hetzner server `data`, MySQL (`orders`) on the user's own server
+ * `box-2`, and Valkey (`cache`) on the app's server, where the device `laptop` was granted it. The
+ * network's public SSH is `publicSsh` (open by default).
+ */
+export function splitPlan(o: { publicSsh?: boolean } = {}): DeployPlan {
+  return withServices(
+    [
+      { kind: "postgres", name: "db", server: "data" },
+      { kind: "mongodb", name: "docs", server: "data", options: { replicaSet: true } },
+      { kind: "mysql", name: "orders", server: "box-2" },
+      { kind: "valkey", name: "cache" },
+    ],
+    {
+      servers: [
+        {
+          name: "data",
+          target: {
+            provider: "hetzner",
+            mode: "vps-compose",
+            location: "nbg1",
+            serverType: "cx23",
+            backups: true,
+          },
+        },
+        { name: "box-2", target: { provider: "own", mode: "vps-compose", arch: "amd64" } },
+      ],
+      network: {
+        range: "10.200.4.0/24",
+        members: [
+          { name: "app", address: "10.200.4.1", port: 51820, publicKey: NETWORK_KEY },
+          { name: "data", address: "10.200.4.2", port: 51820, publicKey: NETWORK_KEY },
+          { name: "box-2", address: "10.200.4.3", port: 51821, publicKey: NETWORK_KEY },
+        ],
+        devices: [
+          {
+            name: "laptop",
+            address: "10.200.4.100",
+            publicKey: NETWORK_KEY,
+            addedAt: "2026-10-30T12:00:00.000Z",
+          },
+        ],
+        grants: [{ device: "laptop", service: "cache", access: "read-only" }],
+        ...(o.publicSsh === undefined ? {} : { publicSsh: o.publicSsh }),
+      },
+    },
+    { domain: "shop.example.com" },
+  );
 }
 
 /** One nightly cron job, enabled. */

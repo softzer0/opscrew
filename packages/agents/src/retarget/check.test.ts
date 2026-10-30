@@ -23,10 +23,12 @@ const paused = (h: MoveHarness) => {
   return text === undefined ? undefined : JSON.parse(text);
 };
 
-/** The check's server secret as the move left it. */
+/** The app server's entry in the check's server secret, as the move left it. */
 const checkServer = (h: MoveHarness) => {
   const text = h.github.secrets.get("OPSCREW_CHECK_SERVER");
-  return text === undefined ? undefined : JSON.parse(text);
+  return text === undefined
+    ? undefined
+    : (JSON.parse(text) as { id: string; host: string }[]).find((entry) => entry.id === "app");
 };
 
 describe.skipIf(!findExecutable("git"))("the scheduled check during a move", () => {

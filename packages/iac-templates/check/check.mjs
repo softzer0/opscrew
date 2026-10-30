@@ -207,10 +207,12 @@ function maskSecrets(env, config, log) {
     env.OPSCREW_CHECK_WEBHOOK,
     env.OPSCREW_CHECK_NTFY_TOKEN,
   ];
-  for (const { server } of config.environments) {
-    if (server?.secret === undefined) continue;
-    const reach = parseReach(env[server.secret]);
-    values.push(env[server.secret], reach?.host, reach?.knownHosts);
+  const secrets = new Set(
+    config.environments.flatMap(serversOf).flatMap((server) => server.secret ?? []),
+  );
+  for (const secret of secrets) {
+    values.push(env[secret]);
+    for (const entry of parseEntries(env[secret])) values.push(entry.host, entry.knownHosts);
   }
   for (const value of values) {
     for (const line of (value ?? "").split("\n")) {
@@ -253,11 +255,18 @@ function checksOf(environment) {
       host,
     },
   ]);
-  const { server } = environment;
-  if (server !== undefined) {
+  for (const server of serversOf(environment)) {
     checks.push({ key: `${environment.key}/disk/${server.id}`, kind: "disk", environment, server });
   }
   return checks;
+}
+
+/** The servers of one environment of check.json whose disks are checked: the app's, then the others. */
+function serversOf(environment) {
+  return [
+    ...(environment.server === undefined ? [] : [environment.server]),
+    ...(environment.extraServers ?? []),
+  ];
 }
 
 /** `<app>/<env>` of a check's key. */
@@ -360,11 +369,12 @@ async function checkDisk(check, t, env, io) {
     if (server.via === "own-runner") {
       output = await io.df();
     } else {
-      const reach = parseReach(env[server.secret]);
+      const name = server.name ?? "app";
+      const reach = parseEntries(env[server.secret]).find((entry) => entry.id === name);
       const key = env.OPSCREW_CHECK_SSH_KEY;
       if (reach === undefined || !key) {
         io.log(
-          `::warning::The disk of ${server.id} was not checked: the secret ${reach === undefined ? server.secret : "OPSCREW_CHECK_SSH_KEY"} is missing or not in the form OpsCrew writes. Run \`npx opscrew provision\` for this environment.`,
+          `::warning::The disk of ${server.id} was not checked: ${reach === undefined ? `the secret ${server.secret} is missing, has no entry for the server ${name} or is not in the form OpsCrew writes` : "the secret OPSCREW_CHECK_SSH_KEY is missing"}. Run \`npx opscrew provision\` for this environment.`,
         );
         return undefined;
       }
@@ -399,25 +409,27 @@ function parseDf(output) {
 }
 
 /**
- * A server secret (`<prefix>CHECK_SERVER`): JSON with the host, SSH port, user and known-hosts
- * line(s). Undefined when absent or in another form.
+ * A server secret (`<prefix>CHECK_SERVER`): a JSON list with one entry per server of the
+ * environment, each its name in the plan (`id`), host, SSH port, user and known-hosts line(s).
+ * The entries in that form; none when the secret is absent or in another form.
  */
-function parseReach(text) {
-  if (!text) return undefined;
+function parseEntries(text) {
+  if (!text) return [];
+  let value;
   try {
-    const value = JSON.parse(text);
-    if (
-      typeof value?.host === "string" &&
-      Number.isInteger(value.port) &&
-      typeof value.user === "string" &&
-      typeof value.knownHosts === "string"
-    ) {
-      return value;
-    }
+    value = JSON.parse(text);
   } catch {
-    // Not JSON.
+    return [];
   }
-  return undefined;
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (entry) =>
+      typeof entry?.id === "string" &&
+      typeof entry.host === "string" &&
+      Number.isInteger(entry.port) &&
+      typeof entry.user === "string" &&
+      typeof entry.knownHosts === "string",
+  );
 }
 
 /**

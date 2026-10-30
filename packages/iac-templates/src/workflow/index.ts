@@ -1,11 +1,25 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash, Compose and GitHub Actions syntax, not JavaScript templates.
 
-import { type DeployPlan, isServerlessTarget } from "@opscrew/plan-schema";
+import { OpsCrewError } from "@opscrew/core";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  type ExtraServer,
+  isServerlessTarget,
+  type PlanService,
+  servicesOn,
+} from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
 import { additionsPath, appDir, EDGE_DIR, type LocalhostSite } from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
-import { certbotHosts, type RuntimeContext, renderRuntimeFiles } from "../runtime";
+import {
+  certbotHosts,
+  type RuntimeContext,
+  renderRuntimeFiles,
+  renderServerCompose,
+} from "../runtime";
+import { privateAddress } from "../runtime/network";
 import { runtimeDir } from "../runtime-dir";
 import { siteEnvSecret } from "../serverless/site";
 import { sshHostname, tunnelMode } from "../tunnel";
@@ -17,6 +31,7 @@ import { renderGithubPagesWorkflow } from "./github-pages";
 import { afterDeployJobs, imageSourceJob } from "./jobs";
 import { inFolder, pushPaths } from "./paths";
 import { PORTAINER_DEPLOY_SECRETS, renderPortainerWorkflow } from "./portainer";
+import { publicSshClosed, serverDeploySecrets } from "./servers";
 import {
   block,
   CHECK_IMAGE,
@@ -29,6 +44,7 @@ import {
   healthPath,
   imageOutput,
   onRunnerMachine,
+  planFilePath,
   promoted,
   promotedAbout,
   provisionCommand,
@@ -39,11 +55,18 @@ import {
   serviceEnvSecret,
   workflowStart,
 } from "./shared";
-import { dockerConfig, type EdgeFiles, rollbackCommands, switchCommands } from "./switch";
+import {
+  dockerConfig,
+  type EdgeFiles,
+  rollbackCommands,
+  serverCommands,
+  switchCommands,
+} from "./switch";
 
 export { CLOUDFLARE_DEPLOY_SECRETS, renderCloudflareWorkersWorkflow } from "./cloudflare-workers";
 export { renderGithubPagesWorkflow } from "./github-pages";
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
+export { serverDeploySecrets } from "./servers";
 export {
   buildRunner,
   DEPLOY_SECRETS,
@@ -81,6 +104,11 @@ function sshFile(machine: boolean, name: string): string {
   return machine ? `"$RUNNER_TEMP/opscrew-ssh/${name}"` : `~/.ssh/${name}`;
 }
 
+/** ` -o Port=<port>` for an SSH port other than 22; nothing for 22 or none. */
+function portOption(port: number | undefined): string {
+  return port === undefined || port === 22 ? "" : ` -o Port=${port}`;
+}
+
 /**
  * The bash `ssh_opts` array shared by every `ssh` and `scp` call. A server whose sshd listens on a
  * port other than 22 (public mode) gets `-o Port=<port>`, which both `ssh` and `scp` honour (and
@@ -90,7 +118,7 @@ function sshFile(machine: boolean, name: string): string {
  * name the job's own known hosts and SSH config ({@link sshFile}) too.
  */
 function sshOptsLine(port: number | undefined, tunnel: boolean, machine: boolean): string {
-  const portOpt = port === undefined || port === 22 || tunnel ? "" : ` -o Port=${port}`;
+  const portOpt = tunnel ? "" : portOption(port);
   const known = machine ? ` -o UserKnownHostsFile=${sshFile(machine, "known_hosts")}` : "";
   const config = machine ? ` -F ${sshFile(machine, "config")}` : "";
   return `ssh_opts=(-i ${sshFile(machine, "opscrew")}${known}${config} ${SSH_OPTS_BASE}${portOpt})`;
@@ -240,11 +268,24 @@ function installCloudflaredStep(machine: boolean): string[] {
   ];
 }
 
-/** The plan's services that read `<name>.env` on the server: those with secrets. */
-function envFileServices(plan: DeployPlan): string[] {
-  return enabledServices(plan)
+/** Of `services`, those that read `<name>.env` on their server: those with secrets. */
+function envFileServices(services: readonly PlanService[]): string[] {
+  return services
     .filter((service) => serviceSpec(service.kind).secrets.length > 0)
     .map((service) => service.name);
+}
+
+/** Each of `services`' env file ({@link envFileServices}) with its deploy secret. */
+function serviceEnvFiles(services: readonly PlanService[]): EnvFile[] {
+  return envFileServices(services).map((name) => ({
+    file: `${name}.env`,
+    secret: serviceEnvSecret(name),
+  }));
+}
+
+/** The `env:` lines that give a step each env file's secret under its own name. */
+function envFileEnv(plan: DeployPlan, envFiles: readonly EnvFile[]): string[] {
+  return envFiles.map((env) => `    ${env.secret}: ${secret(plan, env.secret)}`);
 }
 
 /**
@@ -570,6 +611,101 @@ function sshDeploy(
   };
 }
 
+/** The job's SSH files for the app's extra servers, in its temp folder (the key and known hosts). */
+function serversFile(name: string): string {
+  return `"$RUNNER_TEMP/opscrew-servers/${name}"`;
+}
+
+/**
+ * Where the deploy reaches the extra server `server`: its public address from its deploy secret
+ * ({@link serverDeploySecrets}), or with public SSH closed its private address, which the job's
+ * runner, inside the private network, reaches.
+ */
+function extraServerHost(plan: DeployPlan, server: ExtraServer): string {
+  return publicSshClosed(plan)
+    ? privateAddress(plan, server.name)
+    : secret(plan, serverDeploySecrets(server.name).host);
+}
+
+/**
+ * The deploy's steps for the app's extra servers (`plan.servers`), in plan order, before the app's
+ * own upload and switch, so a failure ends the job before the app changes; none without them:
+ * 1. the app's deploy key and every extra server's known hosts into the job's temp folder
+ *    ({@link serversFile}), with an SSH config of its own, which leaves the machine user's alone;
+ * 2. per server, over SSH as `deploy` ({@link extraServerHost}, on its port from
+ *    `ctx.serverSshPorts`): its Compose file ({@link renderServerCompose}'s) as `compose.yaml` in the
+ *    app's folder, its services' settings folders and env files, then {@link serverCommands}
+ *    (pull, start and wait, the published-port repair, the services' one-time setup).
+ */
+function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
+  const servers = plan.servers ?? [];
+  if (servers.length === 0) return [];
+  const knownHosts = servers.map((server) => serverDeploySecrets(server.name).knownHosts);
+  const sshOpts = (port: number | undefined) => {
+    checkSshPort(port);
+    return `    ssh_opts=(-i ${serversFile("key")} -o UserKnownHostsFile=${serversFile("known_hosts")} -F ${serversFile("config")} ${SSH_OPTS_BASE}${portOption(port)})`;
+  };
+  const dir = appDir(plan);
+  const rendered = renderRuntimeFiles(plan).map((file) => file.path);
+  return [
+    "- name: Configure SSH for the app's other servers",
+    "  env:",
+    `    SSH_KEY: ${secret(plan, DEPLOY_SECRETS.sshKey)}`,
+    ...knownHosts.map((name) => `    ${name}: ${secret(plan, name)}`),
+    "  run: |",
+    "    set -euo pipefail",
+    '    install -m 700 -d "$RUNNER_TEMP/opscrew-servers"',
+    `    printf '%s\\n' "$SSH_KEY" > ${serversFile("key")}`,
+    `    chmod 600 ${serversFile("key")}`,
+    `    printf '%s\\n' ${knownHosts.map((name) => `"$${name}"`).join(" ")} > ${serversFile("known_hosts")}`,
+    `    : > ${serversFile("config")}`,
+    ...servers.flatMap((server) => {
+      const services = servicesOn(plan, server.name);
+      const envFiles = serviceEnvFiles(services);
+      const folders = services
+        .map((service) => `${runtimeDir(plan)}/services/${service.name}`)
+        .filter((folder) => rendered.some((path) => path.startsWith(`${folder}/`)));
+      return [
+        `- name: Update the services on the server ${server.name}`,
+        "  env:",
+        `    HOST: ${extraServerHost(plan, server)}`,
+        ...envFileEnv(plan, envFiles),
+        "  run: |",
+        "    set -euo pipefail",
+        sshOpts(ctx.serverSshPorts?.[server.name]),
+        `    ${OVER_SSH(`mkdir -p ${folders.length === 0 ? dir : `${dir}/services`}`)}`,
+        `    scp "\${ssh_opts[@]}" ${renderServerCompose(plan, server.name).path} "deploy@\${HOST}:${dir}/compose.yaml"`,
+        ...(folders.length === 0
+          ? []
+          : [
+              `    scp -r "\${ssh_opts[@]}" ${folders.join(" ")} "deploy@\${HOST}:${dir}/services/"`,
+            ]),
+        ...envFileWrites(envFiles, dir, OVER_SSH),
+        `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'`,
+        ...remote(serverCommands(plan, server.name, initStepsFor(plan, server.name))),
+      ];
+    }),
+  ];
+}
+
+/**
+ * Refuses a deploy from outside the private network once public SSH is closed
+ * (`network.publicSsh: false`): only the server's runner (or the local runner) reaches the
+ * servers then.
+ * @throws OpsCrewError `INVALID_INPUT` for any other runner, with what to change.
+ */
+function checkRunnerReachesServers(plan: DeployPlan): void {
+  if (!publicSshClosed(plan) || deploysInPlace(plan)) return;
+  const from = onRunnerMachine(plan) ? "a runner machine" : "GitHub's machines";
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `Public SSH is closed on the app's servers (network.publicSsh: false in ${planFilePath(plan)}), so only a runner inside the private network reaches them, but this environment deploys from ${from}.`,
+    {
+      hint: `Deploy with the server's own runner (environment.runner: server in ${planFilePath(plan)}), or open public SSH again with \`opscrew secure --open-public-ssh\`, then run \`${provisionCommand(plan)}\` again.`,
+    },
+  );
+}
+
 /** The tries, 2 seconds apart, the local runner's deploy waits for the local deploy lock. */
 const LOCAL_LOCK_TRIES = 300;
 
@@ -671,7 +807,8 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
  * certificate (not behind a tunnel), plus, when the deploy runs over SSH (on GitHub's machines or
  * a runner machine), the connection: the host, the SSH key, the known hosts and in tunnel mode the
  * Access service token. The server's and the local runner deploy on their own machine, so they
- * need no connection secret.
+ * need no connection secret. With extra servers, each one's {@link serverDeploySecrets} (only its
+ * known hosts once public SSH is closed), and the SSH key also for a deploy in place.
  *
  * For a server-less target, the app's variables one by one ({@link siteEnvSecret}), which the
  * build reads (also for GitHub Pages) and, with `render: ssr` on Cloudflare, the deploy job gives
@@ -701,10 +838,20 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
         DEPLOY_SECRETS.knownHosts,
         ...(tunnel ? Object.values(TUNNEL_DEPLOY_SECRETS) : []),
       ];
+  const servers = plan.servers ?? [];
+  // The extra servers' known hosts, and their addresses unless public SSH is closed (then the
+  // deploy reaches their private addresses); the deploy key, which a deploy in place has no other
+  // use for.
+  const extra = servers.flatMap((server) => {
+    const names = serverDeploySecrets(server.name);
+    return publicSshClosed(plan) ? [names.knownHosts] : [names.host, names.knownHosts];
+  });
+  if (extra.length > 0 && deploysInPlace(plan)) extra.unshift(DEPLOY_SECRETS.sshKey);
   return [
     ...connection,
+    ...extra,
     DEPLOY_SECRETS.appEnv,
-    ...envFileServices(plan).map(serviceEnvSecret),
+    ...envFileServices(enabledServices(plan)).map(serviceEnvSecret),
     ...(tunnel ? [] : [DEPLOY_SECRETS.originTls]),
     ...build,
   ];
@@ -756,16 +903,16 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     localhost: ctx.localhost,
   };
 
+  checkRunnerReachesServers(plan);
+
+  // The services on the app's server; each extra server's get their env files in its own step.
   const envFiles = [
     { file: "app.env", secret: DEPLOY_SECRETS.appEnv },
-    ...envFileServices(plan).map((name) => ({
-      file: `${name}.env`,
-      secret: serviceEnvSecret(name),
-    })),
+    ...serviceEnvFiles(servicesOn(plan, APP_SERVER)),
   ];
   const upload: Upload = {
     env: [
-      ...envFiles.map((env) => `    ${env.secret}: ${secret(plan, env.secret)}`),
+      ...envFileEnv(plan, envFiles),
       ...(edgeFiles.originTls
         ? [`    ${DEPLOY_SECRETS.originTls}: ${secret(plan, DEPLOY_SECRETS.originTls)}`]
         : []),
@@ -797,6 +944,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     // A self-hosted runner keeps its workspace: the job's token stays out of its git settings.
     ...(selfHosted(plan) ? ["  with:", "    persist-credentials: false"] : []),
     ...edgeCheckStep(plan, edgeFiles),
+    ...extraServerSteps(plan, ctx),
     ...setup,
     ...startStep(plan, edgeFiles, reach),
     "- id: health",
@@ -832,7 +980,15 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
               "# Builds the app image, pushes it to GitHub Container Registry and deploys it to your server",
               "# over SSH. Secrets are set by `opscrew provision`; their values never appear in this file.",
             ],
-      pushPaths(plan, [...buildReads(plan), ...uploadReads(plan, upload.files)], ctx),
+      pushPaths(
+        plan,
+        [
+          ...buildReads(plan),
+          ...uploadReads(plan, upload.files),
+          ...(plan.servers ?? []).map((server) => renderServerCompose(plan, server.name).path),
+        ],
+        ctx,
+      ),
     ),
     ...imageSourceJob(plan, ctx),
     "",

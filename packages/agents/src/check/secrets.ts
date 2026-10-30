@@ -1,7 +1,7 @@
 import type { PhaseName } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { CHECK_SECRETS, checkServerSecret, deploySecretName } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { GitHubSetup } from "../provision/credentials";
 import type { ProvisionServices } from "../provision/types";
@@ -67,7 +67,7 @@ async function webhookSecrets(
 /**
  * Stores the scheduled check's repository secrets after one `github-secrets` approval that lists
  * their names: the check key (`OPSCREW_CHECK_SSH_KEY`), the environment's server
- * (`<prefix>CHECK_SERVER`, `checkServerSecret`'s JSON: host, port, user and known-hosts line),
+ * (`<prefix>CHECK_SERVER`, `checkServerSecret`'s JSON list, here only the app's entry (`id: app`)),
  * and the webhook's ({@link webhookSecrets}) when the repository's `settings` have one. Values are
  * registered with the redactor and sealed on this computer; only names are shown and audited.
  * Nothing to store asks nothing.
@@ -89,7 +89,11 @@ export async function storeCheckSecrets(
     ...(key === undefined ? {} : { [CHECK_SECRETS.sshKey]: key.privateKeyOpenSsh }),
     ...(server === undefined
       ? {}
-      : { [deploySecretName(plan, CHECK_SECRETS.server)]: checkServerSecret(server) }),
+      : {
+          [deploySecretName(plan, CHECK_SECRETS.server)]: checkServerSecret([
+            { id: APP_SERVER, ...server },
+          ]),
+        }),
     ...(await webhookSecrets(deps, github, input.settings, input.services)),
   };
   const names = Object.keys(secrets).sort();

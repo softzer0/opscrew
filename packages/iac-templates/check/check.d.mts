@@ -31,21 +31,40 @@ export interface CheckEnvironment {
   hosts: { hostname: string; healthPath: string }[];
   /** The server whose disk is checked; absent for Portainer, Cloudflare and GitHub Pages. */
   server?: CheckServer;
+  /** The app's extra servers (`plan.servers`), each with its `name`; absent without them. */
+  extraServers?: CheckServer[];
 }
 
 export interface CheckServer {
   /** Stable, never an address: two environments on one server have one disk check. */
   id: string;
-  /** The secret with the server's address, port, user and host keys; none for `own-runner`. */
+  /**
+   * The server's name in the plan, which its entry in the secret has as `id`: an extra server's;
+   * absent for the app's server (`app`).
+   */
+  name?: string;
+  /**
+   * The secret whose list ({@link ServerEntry}) has the server's address, port, user and host
+   * keys; none for `own-runner`.
+   */
   secret?: string;
   /**
-   * Where the disk is read: over SSH from GitHub's machines (`github`) or the environment's runner
-   * machine (`runner-host`), or on the server's own runner (`own-runner`).
+   * Where the disk is read: over SSH from GitHub's machines (`github`) or the environment's
+   * self-hosted runner (`runner-host`: its runner machine or, for an extra server, the app server's
+   * runner), or on the server's own runner (`own-runner`).
    */
   via: "github" | "runner-host" | "own-runner";
 }
 
-/** A server secret's content: how the check key reaches the server. */
+/**
+ * An entry of a server secret's list (one per server of the environment): the server's name in
+ * the plan (`app` or an extra server's) and how the check key reaches it.
+ */
+export interface ServerEntry extends ServerReach {
+  id: string;
+}
+
+/** How the check key reaches a server. */
 export interface ServerReach {
   host: string;
   port: number;

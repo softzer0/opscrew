@@ -179,12 +179,15 @@ describe.skipIf(!findExecutable("git"))("provision with the scheduled check", ()
 
     // The secrets: the key, the server's reach (never committed) and the webhook.
     expect(github.secrets.get("OPSCREW_CHECK_SSH_KEY")).toBe(key.privateKeyOpenSsh);
-    expect(JSON.parse(github.secrets.get("OPSCREW_CHECK_SERVER") ?? "")).toEqual({
-      host: SERVER_IPV4,
-      port: 22,
-      user: "deploy",
-      knownHosts: `${SERVER_IPV4} ${HOST_KEY}\n`,
-    });
+    expect(JSON.parse(github.secrets.get("OPSCREW_CHECK_SERVER") ?? "")).toEqual([
+      {
+        id: "app",
+        host: SERVER_IPV4,
+        port: 22,
+        user: "deploy",
+        knownHosts: `${SERVER_IPV4} ${HOST_KEY}\n`,
+      },
+    ]);
     expect(github.secrets.get("OPSCREW_CHECK_WEBHOOK")).toBe(WEBHOOK);
     expect(github.secrets.has("OPSCREW_CHECK_NTFY_TOKEN")).toBe(false);
 

@@ -1,5 +1,5 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, type ImageBuilder, servicesOn } from "@opscrew/plan-schema";
 import {
   APPS_DIR,
   additionsPath,
@@ -27,6 +27,7 @@ import {
 import { hostSettingsServices, siteHosts } from "../runtime";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
+import { portRepair } from "./servers";
 import { appFlag, hasCronJobs, healthPath, planFilePath, runbookFilePath } from "./shared";
 
 /**
@@ -129,13 +130,14 @@ function builderHint(plan: DeployPlan): string {
 
 /**
  * The services a deploy starts when they are not running, and never restarts unless their own
- * configuration changed: the plan's enabled services by name, after the one-shot containers that
- * set their host kernel settings (named here, since `--no-deps` starts no dependency).
+ * configuration changed: the plan's enabled services on the app's server by name, after the
+ * one-shot containers that set their host kernel settings (named here, since `--no-deps` starts no
+ * dependency).
  */
 function steadyServices(plan: DeployPlan): string[] {
   return [
     ...hostSettingsServices(plan),
-    ...plan.services.filter((service) => service.enabled).map((service) => service.name),
+    ...servicesOn(plan, APP_SERVER).map((service) => service.name),
   ];
 }
 
@@ -164,16 +166,28 @@ function exec(service: string, words: readonly string[]): string {
 }
 
 /** Shown when a setup step fails; names the service only. */
-function initFailed(plan: DeployPlan, service: string, log: string): string {
-  return `::error::The one-time setup of the ${service} service failed, so the new version was not started and the previous version keeps serving. The step's output stays on the server in ${log} (it can quote a key, so it is not printed here; ${runbookFilePath(plan)} has the SSH command): fix the cause and push again. The steps already done are skipped.`;
+function initFailed(plan: DeployPlan, service: string, log: string, server: string): string {
+  const where =
+    server === APP_SERVER
+      ? `on the server in ${log} (it can quote a key, so it is not printed here; ${runbookFilePath(plan)} has the SSH command)`
+      : `on the server ${server} in ${log} (it can quote a key, so it is not printed here)`;
+  return `::error::The one-time setup of the ${service} service failed, so the new version was not started and the previous version keeps serving. The step's output stays ${where}: fix the cause and push again. The steps already done are skipped.`;
 }
 
-/** The one-time setup steps in order, each run only when its check fails; a failure stops here. */
-function serviceInit(plan: DeployPlan, steps: readonly ServiceInitStep[], log: string): string[] {
+/**
+ * The one-time setup steps in order on `server` (the app's or an extra one, which the failure
+ * message names), each run only when its check fails; a failure stops here.
+ */
+function serviceInit(
+  plan: DeployPlan,
+  steps: readonly ServiceInitStep[],
+  log: string,
+  server: string = APP_SERVER,
+): string[] {
   return steps.flatMap(({ service, check, run }) => [
     `if ! ${exec(service, check)} > /dev/null 2>&1; then`,
     `  if ! (umask 077; ${exec(service, run)} > ${log} 2>&1); then`,
-    `    echo ${shellMessage(initFailed(plan, service, log))}`,
+    `    echo ${shellMessage(initFailed(plan, service, log, server))}`,
     "    exit 1",
     "  fi",
     "fi",
@@ -663,7 +677,8 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
  * 1. pull the app's images;
  * 2. the shared edge with the app's site and the `edgeFiles` the upload left ({@link edgeCommands});
  * 3. start the plan's services when they are not running (Compose recreates one only when its own
- *    configuration changed; nothing forces it);
+ *    configuration changed; nothing forces it), then recreate any of them published on the
+ *    server's private address that came up without its port ({@link portRepair});
  * 4. the services' one-time setup, `init` (the catalog's steps, see {@link ServiceInitStep});
  * 5. the release command in a one-off container of the new image;
  * 6. the switch to the new image by `deploy.strategy` (`recreate` for SQLite apps), after recording
@@ -705,12 +720,37 @@ export function switchCommands(
     "docker compose pull",
     ...edgeCommands(plan, edgeFiles),
     ...(steady.length === 0 ? [] : [`docker compose up -d --no-deps --wait ${steady.join(" ")}`]),
+    ...portRepair(plan, APP_SERVER),
     ...serviceInit(plan, init, initLog(plan)),
     ...release,
     // Before the switch: `recreate` writes `.env` first, and from then on the rollback acts.
     ...recordProcesses(processServices(plan)),
     ...switchApp(plan, proxyHosts(plan, edgeFiles.localhost), healthFailed(plan), [LOGOUT]),
     ...startProcesses(plan, processServices(plan)),
+  ];
+}
+
+/**
+ * The script that updates the services on the extra server `server` (POSIX sh, in the app's folder
+ * there, where the deploy uploaded the server's Compose file and its services' env files): pulls
+ * their images, starts them (Compose recreates only what changed and removes the containers of
+ * services that left the server) and waits until they are healthy, repairs a port that came up
+ * unpublished ({@link portRepair}), then runs their one-time setup steps (`init`). Any failure
+ * exits non-zero, before the app's switch.
+ */
+export function serverCommands(
+  plan: DeployPlan,
+  server: string,
+  init: readonly ServiceInitStep[],
+): string[] {
+  return [
+    ...SCRIPT_ROOTS,
+    "set -eu",
+    `cd ${appFolder(plan)}`,
+    "docker compose pull",
+    "docker compose up -d --wait --remove-orphans",
+    ...portRepair(plan, server),
+    ...serviceInit(plan, init, initLog(plan), server),
   ];
 }
 
