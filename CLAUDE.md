@@ -9,6 +9,10 @@ it is the source of truth and overrides this file.
 
 - `specs/NNN-name/` — Spec Kit feature artefacts: `spec.md`, `plan.md`, `research.md`,
   `data-model.md`, `contracts/`, `quickstart.md`, `tasks.md`.
+- `specs/roadmap.md` — the features after the current one, in order, with their scope and the
+  founder's decisions. Project knowledge (roadmap, research, decisions) lives in the repo, never
+  only in an agent's memory: a feature's research goes in its `research.md`, committed and pushed
+  as soon as it is written.
 - `packages/contracts` — shared TypeScript interfaces (`@opscrew/contracts`). One owner per
   contract; consumers import only from the package root.
 - `packages/plan-schema` — zod schemas for `opscrew/architecture.json`, `opscrew/requirements.yaml`,
