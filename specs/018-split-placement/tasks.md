@@ -43,7 +43,7 @@ Effort`.
 
 ## Phase 1: Foundation
 
-- [ ] T1801a Contracts: `servers`, `services[].server`, `network`, `deployment.placement` and `move` in `packages/plan-schema/**`
+- [X] T1801a Contracts: `servers`, `services[].server`, `network`, `deployment.placement` and `move` in `packages/plan-schema/**`
   - Owns: `packages/plan-schema/**` (+ the generated JSON schema in `schemas/`, tests and fixtures)
   - Reads: data-model.md "The plan"; contracts/split-placement.md "plan-schema"; plan.md "1."; ADR 0022
   - Depends: —
@@ -52,7 +52,7 @@ Effort`.
       from the package root: `APP_SERVER`, `ServerNameSchema`, `DeviceNameSchema`,
       `WireGuardKeySchema`, `ExtraServerSchema`, `NetworkSchema`, `MoveSchema`, `GRANTABLE_KINDS`,
       `serverOfService`, `servicesOn` and `networkInterface`.
-    - `DeployPlanSchema` gains `servers` (default `[]`), `network?` and `move?`, and
+    - `DeployPlanSchema` gains `servers?` (absent: none), `network?` and `move?`, and
       `deployment.placement?`. `ServiceEntrySchema` gains `server?` for every kind.
     - Every cross-field rule of the contract, each refusal with a plain message that names the
       field and what would work. Tests cover each rule's pass and fail.

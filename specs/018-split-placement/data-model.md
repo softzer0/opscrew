@@ -2,7 +2,7 @@
 
 ## The plan (`opscrew/plan.yaml`, per app and environment)
 
-**Extra servers (`servers`)**, default `[]`. The app's server stays `target`; it is called `app`
+**Extra servers (`servers`)**, optional (absent: none, so existing plans keep their bytes; read it as `plan.servers ?? []`). With extra servers, `network` is required. The app's server stays `target`; it is called `app`
 wherever the network or a placement names it.
 
 | Field | Type | Rule |

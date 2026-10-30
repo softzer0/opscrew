@@ -45,7 +45,7 @@ export const MoveSchema = z.strictObject({
 });
 
 // DeployPlan gains:
-servers: z.array(ExtraServerSchema).default(() => []),
+servers: z.array(ExtraServerSchema).optional(), // absent: none, so plans without it keep their bytes; read as `plan.servers ?? []`
 network: NetworkSchema.optional(),
 move: MoveSchema.optional(),
 // deployment gains:
