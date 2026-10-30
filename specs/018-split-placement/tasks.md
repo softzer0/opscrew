@@ -94,7 +94,9 @@ Effort`.
         `docker run --rm -i --privileged --pid=host --net=host --ipc=host --uts=host <IMAGES.caddy.ref> nsenter -t 1 -m -u -i -n -p -- sh -s`,
         with the script and its secrets on standard input, exactly as `sudo -n sh -s` gets them
         today.
-      - The image reference comes from `@opscrew/iac-templates`'s pins (no new pin).
+      - The image reference is passed in by the caller (`ApplyOptions.rootImage`, and the same
+        option for `readWireGuard`). Agents set it from `IMAGES.caddy.ref`, so ssh-host gains no
+        dependency and no new pin. A `docker` privilege without it is refused plainly.
       - A test with a recording fake shows the command line and that the secrets travel only on
         standard input.
     - **The `network` step**, with `NetworkStepParams` as the contract says:
