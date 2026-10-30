@@ -24,7 +24,7 @@ export const NetworkSchema = z.strictObject({
   members: z.array(z.strictObject({
     name: z.string(),               // "app" or a server's name
     address: z.ipv4(),
-    port: z.int().min(1024).max(65535),
+    port: z.int().min(51820).max(65535), // interface wg-opscrew<port - 51820>
     publicKey: WireGuardKeySchema,  // base64 of 32 bytes
   })),
   devices: z.array(z.strictObject({

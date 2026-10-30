@@ -30,7 +30,7 @@ device.
 | Field | Type | Rule |
 |---|---|---|
 | `range` | IPv4 `/24` inside `10.200.0.0/13` | Design picks it from a hash of the app's key and environment, so two apps in one repository differ. The user may change it before the first apply; afterwards a change re-addresses every member through new host plans. |
-| `members` | list, one per server | `name` (`app` or an extra server's), `address` (in `range`: the app's server `.1`, extra servers from `.2` in plan order), `port` (UDP, default 51820; on the user's own server the next free one, from inspection), `publicKey` (base64, 32 bytes). |
+| `members` | list, one per server | `name` (`app` or an extra server's), `address` (in `range`: the app's server `.1`, extra servers from `.2` in plan order), `port` (UDP, 51820 or higher: 51820 by default, on the user's own server the next free one from inspection), `publicKey` (base64, 32 bytes). |
 | `devices` | list | `name` (`[a-z][a-z0-9-]{0,31}`, unique), `address` (from `.100` up), `publicKey`, `addedAt`. Never a private key. |
 | `grants` | list | `device`, `service` (a service's name, of kind postgres, mysql, mariadb, mongodb, valkey, redis or dragonfly), `access` (`read-only` or `full`). |
 | `publicSsh` | boolean, default `true` | `false` after `secure --close-public-ssh`. Then `security.sshAllowedCidrs` is `[]` for every server, and SSH answers only on the network. |
