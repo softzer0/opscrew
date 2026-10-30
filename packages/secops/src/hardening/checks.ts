@@ -27,7 +27,16 @@ function check(
   };
 }
 
-/** Local listening TCP ports (`ss -H -tln`), excluding loopback addresses. */
+/** True for an address in 10.200.0.0/13, where OpsCrew's private networks live (ADR 0022). */
+function onPrivateNetwork(address: string): boolean {
+  const [first, second] = address.split(".").map(Number);
+  return first === 10 && second !== undefined && second >= 200 && second <= 207;
+}
+
+/**
+ * Local listening TCP ports (`ss -H -tln`), excluding loopback addresses and the addresses of
+ * OpsCrew's private networks, which only the network's members reach.
+ */
 export function publicListeningPorts(ssOutput: string): number[] {
   const ports = new Set<number>();
   for (const line of ssOutput.split(/\r?\n/)) {
@@ -39,6 +48,7 @@ export function publicListeningPorts(ssOutput: string): number[] {
     const port = Number(local.slice(separator + 1));
     if (!Number.isInteger(port)) continue;
     if (address.startsWith("127.") || address === "::1" || address.endsWith("%lo")) continue;
+    if (onPrivateNetwork(address)) continue;
     ports.add(port);
   }
   return [...ports].sort((a, b) => a - b);

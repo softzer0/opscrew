@@ -57,6 +57,16 @@ describe("publicListeningPorts", () => {
   it("ignores loopback addresses", () => {
     expect(publicListeningPorts(HEALTHY["ss -H -tln"]?.stdout ?? "")).toEqual([22, 80, 443]);
   });
+
+  it("ignores the addresses of OpsCrew's private networks (10.200.0.0/13)", () => {
+    const ss = [
+      "LISTEN 0 4096 10.200.4.2:5432 0.0.0.0:*",
+      "LISTEN 0 4096 10.207.255.1:6379 0.0.0.0:*",
+      "LISTEN 0 4096 10.208.0.1:9200 0.0.0.0:*",
+      "LISTEN 0 4096 10.199.0.1:27017 0.0.0.0:*",
+    ].join("\n");
+    expect(publicListeningPorts(ss)).toEqual([9200, 27017]);
+  });
 });
 
 describe("runHostChecks", () => {
