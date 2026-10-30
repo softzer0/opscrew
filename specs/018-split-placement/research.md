@@ -274,6 +274,72 @@ app's own containers.
   - turning it off removes the access rule and the extra login.
   - Only the databases and caches: Postgres, MySQL, MariaDB, MongoDB, Valkey, Redis and Dragonfly.
 
+## R6a. Spike: device logins on the pinned images (2026-10-30, local Docker)
+
+Run with OpsCrew's pinned images and its own start settings: Postgres 17 (alpine), MySQL 8.4,
+MariaDB 12.3, MongoDB 8.0, Valkey 8.1, Redis 8.10.2 and Dragonfly 2.0.2. The app's login is
+`app`, on the database `app`, everywhere.
+
+**Postgres:**
+- Read-only: `CREATE ROLE <u> LOGIN PASSWORD …; GRANT pg_read_all_data TO <u>;`. No `CONNECT`
+  grant is needed. It reads existing tables and tables made later. Writes fail with
+  `permission denied for table …`, and `CREATE TABLE` with `permission denied for schema public`.
+- Full: `CREATE ROLE <u> LOGIN PASSWORD …; GRANT app TO <u>; ALTER ROLE <u> SET role = app;`.
+  Plain `GRANT ALL` fails on `ALTER` (`must be owner`); role membership gives the app's rights,
+  and what it creates is owned by `app`.
+- Removal: `REASSIGN OWNED BY <u> TO app; DROP OWNED BY <u>; DROP ROLE <u>;`.
+- `app` is the superuser, so it creates the logins. Logins live in the data and survive a
+  restart.
+- The image trusts `127.0.0.1` inside the container, so tests must connect over a network to
+  check the password.
+
+**MySQL and MariaDB** (the same statements):
+- Read-only: `CREATE USER '<u>'@'%' IDENTIFIED BY …; GRANT SELECT, SHOW VIEW ON app.* TO '<u>'@'%';`.
+  Writes fail with `ERROR 1142 … command denied`.
+- Full: `GRANT ALL PRIVILEGES ON app.* TO '<u>'@'%'`, the same grants as `app`.
+- Removal: `DROP USER '<u>'@'%'`.
+- **`app` can't create users** (`ERROR 1227`): the statements run as root, with the generated
+  root password on standard input.
+
+**MongoDB:**
+- Read-only: `db.getSiblingDB("admin").createUser({user, pwd, roles: [{role: "read", db: "app"}]})`,
+  run as `app` (the root user). The login's URL needs `authSource=admin`. Writes fail with
+  `not authorized on app to execute command { insert … }`, and other databases are refused.
+- Full: roles `readWrite` and `dbAdmin` on `app`.
+- Removal: `dropUser`.
+- Logins survive a restart.
+
+**Valkey and Redis 8** (the same):
+- Read-only: `ACL SETUSER <u> on >… ~* &* +@read +ping +hello +client|setname +client|setinfo -@write`.
+  The four extra grants are needed because many clients send PING, HELLO and CLIENT SETNAME on
+  connect. Writes fail with `NOPERM`. CONFIG, FLUSHALL, INFO, EVAL, MONITOR and SHUTDOWN are
+  refused; KEYS and SCAN are allowed (they are in `@read`).
+- Full: `+@all` on `~* &*`.
+- **Persistence:** OpsCrew starts them with a generated `requirepass` and no ACL file, so a user
+  made with `ACL SETUSER` is lost at the next start. A naive `aclfile` is dangerous: a file
+  without the default user's line starts the server with `nopass`.
+
+**Dragonfly:**
+- Read-only: `ACL SETUSER <u> ON >… resetkeys %R~* +@read +ping +hello -@write`. The key pattern
+  must be `%R~*`. Writes and admin commands fail with `NOPERM … has no ACL permissions`.
+- Full: `%RW~* +@all`.
+- Persistence is the same problem as Valkey's. Once an ACL file is saved, its default user's hash
+  wins over `DFLY_requirepass`, so a rotated password wouldn't take effect.
+
+**Decisions:**
+- **Postgres, MySQL, MariaDB and MongoDB:** a device's login is made and removed by fixed
+  statements in a host step, run through `docker compose exec` on the service's server, with the
+  passwords on standard input. MySQL and MariaDB run them as root.
+- **Valkey, Redis and Dragonfly:** a device's login is declared, not made. The service's
+  environment (its GitHub secret) carries each extra login as `<name>` plus the SHA-256 of its
+  password. OpsCrew's start wrapper writes a fresh ACL file in `/tmp` on every start:
+  - the default user's line from the app's password;
+  - the extra users' lines, with the read-only or full rules above.
+
+  The server then starts on it. Nothing is saved, so a restart can't lose a login or revive an
+  old password, and turning a grant off is a deploy that drops its line. A service without
+  grants keeps today's start command.
+
 ## R7. Latency between servers
 
 No provider publishes latency figures between its locations, or to other providers. Design

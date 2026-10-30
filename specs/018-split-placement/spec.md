@@ -71,9 +71,9 @@ and not from any other address.
    unchanged; only the address it is given changes.
 3. **Given** a live app whose Postgres moves to a server of its own, **When** the user approves
    the move, **Then** design first shows the maintenance window it needs (from the database's
-   size). In the window, the app stops, the data is copied, the app starts against the new server,
-   and the old copy is removed only after the app answers. Any failure in the window starts the
-   app again against the old copy.
+   size). In the window, the app stops, the data is copied, and the app starts against the new
+   server. Any failure in the window starts the app again against the old copy. The old copy stays,
+   stopped, until the user removes it with a typed confirmation of its name.
 4. **Given** a service on another server that has no login of its own (Kafka, Redpanda,
    OpenSearch), **When** design shows it, **Then** design says that only the app's servers can
    reach it, through the private network, and that it has no login.
@@ -318,9 +318,9 @@ with the measured delay, and the design's estimate for a placement. No tool retu
   only its own server. A device's private key MUST be written only into the configuration the user
   asked for.
 - **FR-1809**: Moving a live service between the app's servers MUST copy Postgres's data in a
-  maintenance window whose length design shows first. It MUST keep the old copy until the app
-  answers against the new one, and MUST start the app again against the old copy when any step in
-  the window fails. Valkey, Redis and Dragonfly MUST start empty with a warning. Other services with
+  maintenance window whose length design shows first. It MUST start the app again against the old
+  copy when any step in the window fails, and MUST keep the old copy, stopped, until the user removes
+  it through an approval that allows destroying and a typed confirmation (constitution I). Valkey, Redis and Dragonfly MUST start empty with a warning. Other services with
   data on a live app MUST be refused until 022.
 - **FR-1810**: The deploy workflow MUST update the services on every server of the app, before the
   app's switch, and MUST stop the deploy when a server's update fails.
