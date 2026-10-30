@@ -1,10 +1,15 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { createTestPhaseDeps, testPlan } from "../testing";
+import { createTestPhaseDeps, testKeyMaker, testPlan } from "../testing";
 import { assembleAppEnv } from "./app-env";
-import { generatedValuesFile, registerAppSecrets } from "./app-secrets";
+import {
+  GeneratedValuesSchema,
+  generatedValuesFile,
+  recordGeneratedEntries,
+  registerAppSecrets,
+} from "./app-secrets";
 
 /**
  * A plan on a domain with a host list, fixed production settings, a generated key, a value the
@@ -124,5 +129,81 @@ describe("registerAppSecrets with the values this computer keeps", () => {
       code: "INVALID_INPUT",
       message: "OPSCREW_APP_ENV_FILE points to missing.env, which does not exist.",
     });
+  });
+});
+
+const STRIPE_LINE = `STRIPE_SECRET_KEY=${USER_VALUE}\n`;
+
+describe("the private network's keys and the device logins' passwords", () => {
+  it("are kept in the generated values, beside the other values, and removed by name", async () => {
+    const plan = laravelPlan();
+    const first = await assembleAppEnv({ plan, dotenvText: STRIPE_LINE });
+    const deps = await createTestPhaseDeps();
+    const file = generatedValuesFile(deps);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, `${JSON.stringify({ ...first.generated, originTls: { kept: true } })}\n`);
+    const keys = testKeyMaker();
+    const [app, data] = [keys(), keys()];
+    await recordGeneratedEntries(deps, "network", { app: app.privateKey });
+    await recordGeneratedEntries(deps, "network", { data: data.privateKey });
+    await recordGeneratedEntries(deps, "grants", { "laptop/db": "grant-password-0001" });
+    expect(JSON.parse(await readFile(file, "utf8"))).toEqual({
+      ...first.generated,
+      originTls: { kept: true },
+      network: { app: app.privateKey, data: data.privateKey },
+      grants: { "laptop/db": "grant-password-0001" },
+    });
+    await recordGeneratedEntries(deps, "network", { data: undefined });
+    await recordGeneratedEntries(deps, "grants", { "laptop/db": undefined });
+    const after = GeneratedValuesSchema.parse(JSON.parse(await readFile(file, "utf8")));
+    expect(after.network).toEqual({ app: app.privateKey });
+    expect(after.grants).toEqual({});
+  });
+
+  it("are registered with the redactor, with the app's values or with the kept ones", async () => {
+    const plan = laravelPlan();
+    const environment = await assembleAppEnv({ plan, dotenvText: STRIPE_LINE });
+    const keys = testKeyMaker();
+    const key = keys().privateKey;
+    const password = "grant-password-0002";
+    for (const assembled of [undefined, environment]) {
+      const deps = await createTestPhaseDeps();
+      await recordGeneratedEntries(deps, "network", { app: key });
+      await recordGeneratedEntries(deps, "grants", { "laptop/db": password });
+      await registerAppSecrets(deps, plan, assembled);
+      expect(deps.redactor.redact(`key ${key}`)).toBe("key [REDACTED:network-key]");
+      expect(masked(deps.redactor, password)).toBe(true);
+    }
+  });
+
+  it("are still registered, with every other value, after someone edited a key by hand", async () => {
+    const plan = laravelPlan();
+    const first = await assembleAppEnv({ plan, dotenvText: STRIPE_LINE });
+    const deps = await createTestPhaseDeps();
+    const file = generatedValuesFile(deps);
+    await mkdir(dirname(file), { recursive: true });
+    const key = testKeyMaker()().privateKey;
+    const edited = "edited-by-hand-0001";
+    const network = { app: key, data: edited };
+    await writeFile(file, `${JSON.stringify({ ...first.generated, network })}\n`);
+    await registerAppSecrets(deps, plan);
+    expect(masked(deps.redactor, key)).toBe(true);
+    expect(masked(deps.redactor, edited)).toBe(true);
+    expect(masked(deps.redactor, first.values.app.APP_KEY as string)).toBe(true);
+    // OpsCrew itself writes only WireGuard keys there, and never over a value it can't read.
+    await expect(recordGeneratedEntries(deps, "network", { box: key })).rejects.toMatchObject({
+      code: "ARTIFACT_INVALID",
+    });
+  });
+
+  it("are never written over a damaged file", async () => {
+    const deps = await createTestPhaseDeps();
+    const file = generatedValuesFile(deps);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, "{ not json");
+    await expect(
+      recordGeneratedEntries(deps, "network", { app: testKeyMaker()().privateKey }),
+    ).rejects.toMatchObject({ code: "ARTIFACT_INVALID" });
+    expect(await readFile(file, "utf8")).toBe("{ not json");
   });
 });

@@ -1,10 +1,18 @@
 import { BlockList, isIP } from "node:net";
-import type { VpsProviderId } from "@opscrew/contracts";
-import { normalizeHostName, type Redactor } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import type { RemoteExec, VpsProviderId } from "@opscrew/contracts";
+import { normalizeHostName, OpsCrewError, type Redactor, readTextIfExists } from "@opscrew/core";
+import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { type EngineDeps, infrastructureOutputs, type OutputsOptions } from "./engine";
-import { readServerAddresses, recordServerAddress, type ServerAddress } from "./server-record";
+import { ownServerKeyFile } from "./own-server";
+import { SshRemoteExec, type SshRemoteExecOptions } from "./remote";
+import {
+  readServerAddresses,
+  recordServerAddress,
+  type ServerAddress,
+  type SshLogin,
+} from "./server-record";
+import { keysFor, knownHostsName, writeKnownHost } from "./wait";
 
 /**
  * True when `a` and `b` are the same IP address, however each is written (`2001:DB8:0::1` is
@@ -61,18 +69,37 @@ export function hasDeployment(plan: Pick<DeployPlan, "deployment">): boolean {
 }
 
 /**
- * The address of the server that receives the app's traffic: from OpsCrew's local state
- * (`.opscrew/server.json`), else, for an applied deployment whose infrastructure state is on this
- * computer, from the OpenTofu/Terraform outputs (`server_ipv4`, `server_ipv6`), which are then
- * recorded in the local state. `undefined` when no server is known. Every command that needs the
- * address reads it here; it is never read from or written to `opscrew/plan.yaml`.
+ * The public address of one of the app's servers: `app` (the default) or an extra server by name.
+ *
+ * The app's server: from OpsCrew's local state (`.opscrew/server.json`), else, for an applied
+ * deployment whose infrastructure state is on this computer, from the OpenTofu/Terraform outputs
+ * (`server_ipv4`, `server_ipv6`), which are then recorded in the local state. An extra server: from
+ * the local state's `servers`. `undefined` when the server's address is not known here. Every
+ * command that needs an address reads it here; it is never read from or written to
+ * `opscrew/plan.yaml`.
  */
 export async function serverAddress(
   deps: EngineDeps,
   plan: DeployPlan,
-  options: OutputsOptions = {},
+  options?: OutputsOptions,
+): Promise<ServerAddress | undefined>;
+export async function serverAddress(
+  deps: EngineDeps,
+  plan: DeployPlan,
+  name: string,
+  options?: OutputsOptions,
+): Promise<ServerAddress | undefined>;
+export async function serverAddress(
+  deps: EngineDeps,
+  plan: DeployPlan,
+  nameOrOptions: string | OutputsOptions = APP_SERVER,
+  outputsOptions: OutputsOptions = {},
 ): Promise<ServerAddress | undefined> {
-  const local = (await readServerAddresses(deps.paths)).deployment;
+  const name = typeof nameOrOptions === "string" ? nameOrOptions : APP_SERVER;
+  const options = typeof nameOrOptions === "string" ? outputsOptions : nameOrOptions;
+  const record = await readServerAddresses(deps.paths);
+  if (name !== APP_SERVER) return record.servers?.[name];
+  const local = record.deployment;
   if (local !== undefined) return local;
   if (!hasDeployment(plan)) return undefined;
   const outputs = await infrastructureOutputs(deps, plan, options);
@@ -81,6 +108,188 @@ export async function serverAddress(
     await recordServerAddress(deps.paths, address).catch(() => undefined);
   }
   return address;
+}
+
+/** How OpsCrew logs in to one of the app's servers over SSH, at its public address. */
+export interface ServerLogin {
+  host: string;
+  port: number;
+  user: string;
+  /** Absent when the SSH agent holds the key. */
+  keyFile?: string;
+  /** True for a server the user owns (its admin login), false for one OpsCrew created (`deploy`). */
+  own: boolean;
+}
+
+const NOT_KNOWN_HERE =
+  "Run the command on the computer that ran `opscrew provision` (it keeps the servers' addresses in .opscrew/server.json).";
+
+/** The admin login of a server the user owns, with its key file. */
+function ownLogin(deps: Pick<EngineDeps, "env">, login: SshLogin): ServerLogin {
+  const keyFile = ownServerKeyFile(login, deps.env);
+  return {
+    host: login.host,
+    port: login.port,
+    user: login.user,
+    ...(keyFile !== undefined ? { keyFile } : {}),
+    own: true,
+  };
+}
+
+/**
+ * How OpsCrew logs in to the server `name` (`app` or an extra server) at its public address: a
+ * server the user owns with its recorded admin login, one OpsCrew created as `deploy` with the
+ * project's deploy key.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when the login or address is not on this computer, or
+ * the app's target has no server.
+ */
+export async function serverLogin(
+  deps: EngineDeps,
+  plan: DeployPlan,
+  name: string,
+): Promise<ServerLogin> {
+  const record = await readServerAddresses(deps.paths);
+  const deploy = (address: ServerAddress | undefined, where: string): ServerLogin => {
+    if (address === undefined) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `OpsCrew does not know the address of ${where} on this computer.`,
+        { hint: NOT_KNOWN_HERE },
+      );
+    }
+    return {
+      host: address.ipv4,
+      port: 22,
+      user: "deploy",
+      keyFile: deps.paths.files.deployKey,
+      own: false,
+    };
+  };
+  if (name === APP_SERVER) {
+    const provider = plan.target.provider;
+    if (provider === "own") {
+      if (record.own === undefined) {
+        throw new OpsCrewError(
+          "PHASE_PRECONDITION",
+          "OpsCrew does not know how to log in to your server (app) on this computer.",
+          { hint: "Run `opscrew interview` and answer the questions about your server." },
+        );
+      }
+      return ownLogin(deps, record.own);
+    }
+    if (provider !== "hetzner" && provider !== "digitalocean") {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `The app's target (${provider}) has no server for OpsCrew to log in to.`,
+      );
+    }
+    return deploy(await serverAddress(deps, plan), "the app's server (app)");
+  }
+  const server = (plan.servers ?? []).find((s) => s.name === name);
+  if (server === undefined) throw new Error(`The plan has no server named "${name}".`);
+  if (server.target.provider === "own") {
+    const login = record.ownServers?.[name];
+    if (login === undefined) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `OpsCrew does not know how to log in to server ${name} on this computer.`,
+        { hint: "Run `opscrew design` and give the server's address and SSH login." },
+      );
+    }
+    return ownLogin(deps, login);
+  }
+  return deploy(record.servers?.[name], `server ${name}`);
+}
+
+/** What ssh prints when it could not reach the server at all (exit code 255). */
+const SSH_UNREACHABLE =
+  /connect to host|connection timed out|operation timed out|no route to host|network is unreachable|connection refused/i;
+
+/** A connection over the private network that says when this computer's tunnel looks down. */
+function throughTunnel(
+  remote: RemoteExec,
+  server: string,
+  address: string,
+  device: string,
+): RemoteExec {
+  return {
+    host: remote.host,
+    async run(command, options) {
+      const result = await remote.run(command, options);
+      if (result.exitCode === 255 && SSH_UNREACHABLE.test(result.stderr)) {
+        throw new OpsCrewError(
+          "COMMAND_FAILED",
+          `OpsCrew could not reach server ${server} at its private address ${address}. Public SSH is closed, so OpsCrew connects over the app's private network, and this computer's tunnel (device ${device}) looks down.`,
+          {
+            hint: "Check that the WireGuard tunnel is on: your WireGuard app, or `sudo wg show` in a terminal, should list it with a recent handshake. Turn it on, then run the command again.",
+          },
+        );
+      }
+      return result;
+    },
+  };
+}
+
+/**
+ * Pins the host key pinned for `from` under `to` too, in the project's known_hosts: the server
+ * answers SSH on its private address with the same key.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when no key is pinned for `from`.
+ */
+async function pinPrivateName(file: string, from: string, to: string, server: string) {
+  const keys = keysFor((await readTextIfExists(file)) ?? "", from).map((pinned) => {
+    const [type = "", key = ""] = pinned.split(" ");
+    return { type, key };
+  });
+  if (keys.length === 0) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The SSH host key of server ${server} is not pinned on this computer, and public SSH is closed, so OpsCrew cannot check the server it connects to.`,
+      {
+        hint: "Run the command on the computer that set up the servers, or open public SSH there with `opscrew secure --open-public-ssh`.",
+      },
+    );
+  }
+  await writeKnownHost(file, to, keys);
+}
+
+/**
+ * A shell on the server `name` (`app` or an extra server), with its {@link serverLogin} and the
+ * host key pinned in the project's known_hosts. It connects to the public address, or, when
+ * `network.publicSsh` is `false`, to the server's private address with the same pinned host key.
+ * Then, when this computer is a device on the network (`thisDevice`), a connection that fails says
+ * this computer's tunnel looks down and how to check it. `options` are ssh's as other connections
+ * take them: a new connection every time (`fresh`), keep-alive probes for long commands.
+ */
+export async function serverRemote(
+  deps: EngineDeps,
+  plan: DeployPlan,
+  name: string,
+  options: Pick<SshRemoteExecOptions, "fresh" | "keepAliveSeconds"> = {},
+): Promise<RemoteExec> {
+  const login = await serverLogin(deps, plan, name);
+  const knownHostsFile = deps.paths.files.knownHosts;
+  const ssh = (host: string) =>
+    new SshRemoteExec({
+      host,
+      port: login.port,
+      user: login.user,
+      ...(login.keyFile !== undefined ? { keyFile: login.keyFile } : {}),
+      knownHostsFile,
+      runner: deps.runner,
+      ...options,
+    });
+  if (plan.network?.publicSsh !== false) return ssh(login.host);
+  const member = plan.network.members.find((m) => m.name === name);
+  if (member === undefined) throw new Error(`Server "${name}" is not on the private network.`);
+  await pinPrivateName(
+    knownHostsFile,
+    knownHostsName(login.host, login.port),
+    knownHostsName(member.address, login.port),
+    name,
+  );
+  const remote = ssh(member.address);
+  const device = (await readServerAddresses(deps.paths)).thisDevice;
+  return device === undefined ? remote : throughTunnel(remote, name, member.address, device);
 }
 
 /**

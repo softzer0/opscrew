@@ -5,7 +5,9 @@ import type { IacEngine, IacInitOptions, IacRunOptions } from "@opscrew/contract
 import { fakeSecret } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { createTestPhaseDeps, testPlan } from "../testing";
+import { allocateNetwork } from "../network";
+import { splitPlan, withNetwork } from "../network/__fixtures__/plans";
+import { createTestPhaseDeps, HOST_KEY, ScriptedRunner, testKeyMaker, testPlan } from "../testing";
 import {
   addressFromOutputs,
   addressNames,
@@ -27,9 +29,11 @@ import {
   serverAddress,
   serverAddressesFile,
   serverOfProvider,
+  serverRemote,
   setAsideServerAddresses,
   updateServerAddresses,
   withoutServerAddress,
+  writeKnownHost,
 } from "./index";
 
 const IPV4 = "203.0.113.10";
@@ -693,5 +697,202 @@ describe("helpers", () => {
     expect(hasDeployment(applied())).toBe(true);
     expect(formatServerAddress({ ipv4: IPV4 })).toBe(IPV4);
     expect(formatServerAddress({ ipv4: IPV4, ipv6: IPV6 })).toBe(`${IPV4} (IPv6 ${IPV6})`);
+  });
+});
+
+const DATA_IPV4 = "203.0.113.20";
+/** The pinned host key's type and key (a public key, not a secret). */
+const PINNED = HOST_KEY.split(" ").slice(0, 2).join(" ");
+
+/** A split plan on the network (Postgres on `data`) and a record of both servers' addresses. */
+async function splitWorld(
+  options: { data?: "cloud" | "own"; publicSsh?: boolean; thisDevice?: string; pin?: boolean } = {},
+) {
+  const base = splitPlan({ data: options.data ?? "cloud" });
+  const { network } = allocateNetwork(
+    base,
+    { data: { udpPortsInUse: [], wireguardInterfaces: [] } },
+    testKeyMaker(),
+  );
+  const plan = withNetwork(base, { ...network, publicSsh: options.publicSsh ?? true });
+  const prefix = network.range.split(".").slice(0, 3).join(".");
+  const runner = new ScriptedRunner();
+  const deps = await createTestPhaseDeps({ runner });
+  await updateServerAddresses(deps.paths, () => ({
+    schemaVersion: 1,
+    deployment: { ipv4: IPV4 },
+    servers: { data: { ipv4: DATA_IPV4 } },
+    ownServers: {
+      data: {
+        host: DATA_IPV4,
+        port: 2222,
+        user: "admin",
+        keyPath: "~/.ssh/id_ed25519",
+        agent: false,
+      },
+    },
+    ...(options.thisDevice !== undefined ? { thisDevice: options.thisDevice } : {}),
+  }));
+  if (options.pin !== false) {
+    const [type = "", key = ""] = PINNED.split(" ");
+    // Where provision pins them: the app's and a cloud server's on port 22, the own server's on 2222.
+    for (const name of [IPV4, DATA_IPV4, `[${DATA_IPV4}]:2222`]) {
+      await writeKnownHost(deps.paths.files.knownHosts, name, [{ type, key }]);
+    }
+  }
+  return { plan, prefix, runner, deps };
+}
+
+/** The `user@host`, port and key file of the last ssh call. */
+function lastLogin(runner: ScriptedRunner): { target: string; port: string; key?: string } {
+  const args = runner.calls.at(-1)?.args ?? [];
+  const at = args.findIndex((arg) => /^[^-][^ ]*@/.test(arg));
+  const key = args.includes("-i") ? args[args.indexOf("-i") + 1] : undefined;
+  return {
+    target: args[at] ?? "",
+    port: args[args.indexOf("-p") + 1] ?? "",
+    ...(key !== undefined ? { key } : {}),
+  };
+}
+
+describe("serverAddress and serverRemote for each of the app's servers", () => {
+  it("reads an extra server's public address by name, and the app's as before", async () => {
+    const { plan, deps } = await splitWorld();
+    expect(await serverAddress(deps, plan, "data")).toEqual({ ipv4: DATA_IPV4 });
+    expect(await serverAddress(deps, plan, "app")).toEqual({ ipv4: IPV4 });
+    expect(await serverAddress(deps, plan)).toEqual({ ipv4: IPV4 });
+    expect(await serverAddress(deps, plan, "other")).toBeUndefined();
+  });
+
+  it("connects to each server's public address with its login while public SSH is open", async () => {
+    const { plan, deps, runner } = await splitWorld();
+    await (await serverRemote(deps, plan, "app")).run("true");
+    expect(lastLogin(runner)).toEqual({
+      target: `deploy@${IPV4}`,
+      port: "22",
+      key: deps.paths.files.deployKey,
+    });
+    await (await serverRemote(deps, plan, "data")).run("true");
+    expect(lastLogin(runner)).toEqual({
+      target: `deploy@${DATA_IPV4}`,
+      port: "22",
+      key: deps.paths.files.deployKey,
+    });
+
+    const own = await splitWorld({ data: "own" });
+    const remote = await serverRemote(own.deps, own.plan, "data");
+    expect(remote.host).toBe(DATA_IPV4);
+    await remote.run("true");
+    expect(lastLogin(own.runner)).toMatchObject({ target: `admin@${DATA_IPV4}`, port: "2222" });
+    expect(lastLogin(own.runner).key).toMatch(/[\\/]\.ssh[\\/]id_ed25519$/);
+  });
+
+  it("connects to the private address once public SSH is closed, with the host key pinned there too", async () => {
+    const { plan, deps, runner, prefix } = await splitWorld({ publicSsh: false, data: "own" });
+    const remote = await serverRemote(deps, plan, "data");
+    expect(remote.host).toBe(`${prefix}.2`);
+    await remote.run("true");
+    expect(lastLogin(runner)).toMatchObject({ target: `admin@${prefix}.2`, port: "2222" });
+    const knownHosts = await readFile(deps.paths.files.knownHosts, "utf8");
+    expect(knownHosts).toContain(`[${prefix}.2]:2222 ${PINNED}`);
+    expect(knownHosts).toContain(`[${DATA_IPV4}]:2222 ${PINNED}`);
+    expect((await serverRemote(deps, plan, "app")).host).toBe(`${prefix}.1`);
+    expect(await readFile(deps.paths.files.knownHosts, "utf8")).toContain(`${prefix}.1 ${PINNED}`);
+  });
+
+  it("passes ssh's options on: a new connection every time, keep-alive probes", async () => {
+    const { plan, deps, runner } = await splitWorld();
+    await (await serverRemote(deps, plan, "data", { fresh: true, keepAliveSeconds: 15 })).run(
+      "true",
+    );
+    const args = runner.calls.at(-1)?.args ?? [];
+    expect(args).toEqual(
+      expect.arrayContaining(["ControlMaster=no", "ControlPath=none", "ServerAliveInterval=15"]),
+    );
+    await (await serverRemote(deps, plan, "data")).run("true");
+    expect(runner.calls.at(-1)?.args.join(" ")).not.toMatch(/ControlMaster|ServerAlive/);
+  });
+
+  it("refuses the private address when no host key is pinned for the server", async () => {
+    const { plan, deps } = await splitWorld({ publicSsh: false, pin: false });
+    await expect(serverRemote(deps, plan, "data")).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("The SSH host key of server data is not pinned"),
+    });
+  });
+
+  it("says this computer's tunnel looks down when a connection over it fails", async () => {
+    const { plan, deps, runner, prefix } = await splitWorld({
+      publicSsh: false,
+      thisDevice: "laptop",
+    });
+    const timedOut = {
+      exitCode: 255,
+      stdout: "",
+      stderr: `ssh: connect to host ${prefix}.2 port 22: Connection timed out\r\n`,
+    };
+    const offline = new ScriptedRunner(() => timedOut);
+    const remote = await serverRemote({ ...deps, runner: offline }, plan, "data");
+    const error = await remote.run("true").catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "COMMAND_FAILED",
+      message: `OpsCrew could not reach server data at its private address ${prefix}.2. Public SSH is closed, so OpsCrew connects over the app's private network, and this computer's tunnel (device laptop) looks down.`,
+    });
+    expect((error as { hint: string }).hint).toContain("`sudo wg show`");
+    // A command's own result passes through as it is.
+    const result = await (await serverRemote(deps, plan, "data")).run("false");
+    expect(result.exitCode).toBe(0);
+    expect(runner.calls).toHaveLength(1);
+
+    // Not a device here (for example the server's own runner): ssh's result as it is.
+    const other = await splitWorld({ publicSsh: false });
+    const plain = await serverRemote({ ...other.deps, runner: offline }, other.plan, "data");
+    expect(await plain.run("true")).toEqual(timedOut);
+  });
+
+  it("says plainly when a server's address or login is not on this computer", async () => {
+    const { plan } = await splitWorld();
+    const fresh = await createTestPhaseDeps();
+    await expect(serverRemote(fresh, plan, "data")).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: "OpsCrew does not know the address of server data on this computer.",
+    });
+    const own = await splitWorld({ data: "own" });
+    const empty = await createTestPhaseDeps();
+    await expect(serverRemote(empty, own.plan, "data")).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: "OpsCrew does not know how to log in to server data on this computer.",
+    });
+  });
+});
+
+describe("the server record's extra servers and this computer's device", () => {
+  it("keeps the extra servers' addresses and logins, and the device name", async () => {
+    const { deps } = await splitWorld({ thisDevice: "laptop" });
+    const record = await readServerAddresses(deps.paths);
+    expect(record.servers).toEqual({ data: { ipv4: DATA_IPV4 } });
+    expect(record.ownServers?.data).toMatchObject({ host: DATA_IPV4, port: 2222, user: "admin" });
+    expect(record.thisDevice).toBe("laptop");
+  });
+
+  it("stops on a damaged entry, never reading it as empty", async () => {
+    const login = { host: DATA_IPV4, user: "admin", agent: false };
+    for (const [entry, field] of [
+      [{ servers: { app: { ipv4: DATA_IPV4 } } }, "servers"],
+      [{ servers: { data: { ipv4: "not-an-address" } } }, "servers.data.ipv4"],
+      [{ ownServers: { data: login } }, "ownServers.data"],
+      [{ thisDevice: "Laptop!" }, "thisDevice"],
+    ] as const) {
+      const deps = await createTestPhaseDeps();
+      await mkdir(deps.paths.stateDir, { recursive: true });
+      await writeFile(
+        serverAddressesFile(deps.paths),
+        JSON.stringify({ schemaVersion: 1, ...entry }),
+      );
+      await expect(readServerAddresses(deps.paths)).rejects.toMatchObject({
+        code: "ARTIFACT_INVALID",
+        message: expect.stringContaining(`(${field}`),
+      });
+    }
   });
 });

@@ -12,6 +12,7 @@ export * from "./destroy";
 export * from "./domain";
 export * from "./logs";
 export * from "./move";
+export * from "./network";
 export * from "./own";
 export * from "./portainer";
 export * from "./registrars";

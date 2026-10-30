@@ -14,6 +14,7 @@ export * from "./init";
 export * from "./interview";
 export * from "./localhost";
 export * from "./logs";
+export * from "./network";
 export * from "./portainer";
 export * from "./promote";
 export * from "./providers";

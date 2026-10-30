@@ -79,7 +79,8 @@ export function parseKeyscan(output: string): string[] {
     .filter((line) => line.split(/\s+/).length >= 3);
 }
 
-function keysFor(knownHosts: string, host: string): string[] {
+/** The `type key` of each key known_hosts text pins for `host` (a {@link knownHostsName}). */
+export function keysFor(knownHosts: string, host: string): string[] {
   return parseKeyscan(knownHosts)
     .filter((line) => (line.split(/\s+/)[0] ?? "").split(",").includes(host))
     .map((line) => line.split(/\s+/).slice(1, 3).join(" "));

@@ -8,7 +8,7 @@ import {
   stripBom,
   writeFileAtomic,
 } from "@opscrew/core";
-import { PortainerWebSchema } from "@opscrew/plan-schema";
+import { DeviceNameSchema, PortainerWebSchema, ServerNameSchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 
 /** A server's public addresses. */
@@ -260,6 +260,15 @@ const ServerAddressesSchema = z.strictObject({
   own: OwnServerSchema.optional(),
   /** A Portainer the user runs (`target.provider: portainer`): how OpsCrew reaches it. */
   portainer: PortainerConnectionSchema.optional(),
+  /**
+   * The app's extra servers' public addresses by server name: from the root module's
+   * `extra_servers` output after apply, or entered at design for a server the user owns.
+   */
+  servers: z.record(ServerNameSchema, AddressSchema).optional(),
+  /** How OpsCrew logs in to each extra server the user owns, by server name. */
+  ownServers: z.record(ServerNameSchema, SshLoginSchema).optional(),
+  /** The device name this computer has on the app's private network (`vpn add --this-computer`). */
+  thisDevice: DeviceNameSchema.optional(),
 });
 
 /**
