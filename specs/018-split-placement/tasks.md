@@ -135,7 +135,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host`
   - Effort: xhigh
 
-- [ ] T1804 [P] [US1] Infrastructure code: extra cloud servers, the modules' `web`, `wireguard_port` and `ssh_key_id`, in `packages/iac-templates/modules/**`, `packages/iac-templates/shared/cloud-init.yaml.tftpl`, `packages/iac-templates/src/infra/**`, `packages/iac-templates/src/providers.ts`
+- [X] T1804 [P] [US1] Infrastructure code: extra cloud servers, the modules' `web`, `wireguard_port` and `ssh_key_id`, in `packages/iac-templates/modules/**`, `packages/iac-templates/shared/cloud-init.yaml.tftpl`, `packages/iac-templates/src/infra/**`, `packages/iac-templates/src/providers.ts`
   - Owns: those paths (+ tests and snapshots)
   - Reads: plan.md "4."; contracts/split-placement.md "iac-templates"; research.md R2 (provider firewalls), R5; `src/infra/index.ts` `rootShape`, `layouts.ts`
   - Depends: T1801a
@@ -413,7 +413,9 @@ Effort`.
       - all through `github-secrets`.
     - **The deploy-setup pull request** carries each extra server's Compose file and the workflow.
     - **A server removed from `servers`:** the IaC plan deletes it only after the same
-      `allowDestroy` approval and typed server name as `destroy` (FR-1812). An extra own server
+      `allowDestroy` approval and typed server name as `destroy` (FR-1812), passing
+      `-var <name>_delete_protection=false` for a Hetzner server. When it was a provider's last
+      extra server, that provider's root deploy key and tag go with it, under the same approval. An extra own server
       gets its undo host plans instead.
     - **The generated values:** provision's rewrite of `generated_values.json` keeps `network` and
       `grants` (today it keeps only `originTls`), so no provision wipes a key or a password.
@@ -435,7 +437,8 @@ Effort`.
     - **`drift`:** host steps (`network`, `network-filter`) and Compose files per server, each
       finding naming its server.
     - **`destroy`:**
-      - every extra cloud server is in the destroy plan and needs its typed name;
+      - every extra cloud server is in the destroy plan and needs its typed name; Hetzner's get
+        `-var <name>_delete_protection=false`;
       - on an extra own server, the undo host plans remove its services, `network` and
         `network-filter`, and leave what was there before;
       - on the app's server, `network` and `network-filter` are removed with the rest;
