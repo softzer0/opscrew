@@ -407,7 +407,8 @@ Effort`.
       - the private key passed only when the facts say the server lacks it or holds another;
       - `--approve` takes one hash per server, as the own target takes two today.
     - **Secrets:**
-      - `OPSCREW_SERVER_<NAME>_HOST` and `_KNOWN_HOSTS` per extra server;
+      - `OPSCREW_SERVER_<NAME>_HOST` and `_KNOWN_HOSTS` per extra server (known hosts as
+        `[host]:port` when the port isn't 22), and the render context's `serverSshPorts`;
       - the services' env secrets, with `OPSCREW_ACL_USERS` when grants exist;
       - all through `github-secrets`.
     - **The deploy-setup pull request** carries each extra server's Compose file and the workflow.
