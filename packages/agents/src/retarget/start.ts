@@ -54,6 +54,21 @@ function nothingLive(plan: DeployPlan): OpsCrewError {
 }
 
 /**
+ * An app with services on other servers (`plan.servers`) is not moved: moving several servers to
+ * another provider comes with retarget anywhere (feature 022). Said before any check or change.
+ */
+function splitAppNoMove(plan: DeployPlan): OpsCrewError {
+  const servers = (plan.servers ?? []).map((server) => server.name);
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${plan.app.name} runs services on other servers too (${listText(servers)}), and moving an app with several servers to another provider comes with retarget anywhere (feature 022). Nothing was changed.`,
+    {
+      hint: "Until then the app stays where it is. To move it now, place its services back on the app's server first: remove `server` from those services and the servers from `servers` in opscrew/plan.yaml, run `opscrew design` and `opscrew provision`, then run `opscrew retarget`.",
+    },
+  );
+}
+
+/**
  * Stops before any change when the app keeps data a move cannot copy yet (FR-1332): a running
  * service other than PostgreSQL and Valkey (MySQL, MongoDB, a broker, Garage, an engine), or a
  * SQLite database. Workers and cron move with the app, and a bucket at a provider stays where it
@@ -286,6 +301,8 @@ export async function startMove(
   if (plan.target.provider === "localhost") throw localhostTargetNoMove();
   if (isServerlessProvider(plan.target.provider))
     throw serverlessTargetNoMove(plan.target.provider);
+  // Nor, until retarget anywhere (feature 022), an app with services on other servers (FR-1820).
+  if ((plan.servers ?? []).length > 0) throw splitAppNoMove(plan);
   const address =
     plan.deployment.destroyedAt === undefined && (await hasState(deps.paths))
       ? await serverAddress(deps, plan, {

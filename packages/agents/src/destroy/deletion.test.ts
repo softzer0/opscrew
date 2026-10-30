@@ -503,7 +503,7 @@ describe("takeSnapshotBeforeDelete", () => {
 
 describe("liftProtection", () => {
   const lift = {
-    variable: "previous_delete_protection",
+    vars: { previous_delete_protection: "false" },
     serverInState: true,
     mismatchHint: "Check the old server.",
   };
@@ -568,9 +568,9 @@ describe("liftProtection", () => {
     expect(engine.applied).toEqual([]);
   });
 
-  it("does nothing on DigitalOcean, when protection is already off, or without the server", async () => {
+  it("does nothing without variables (DigitalOcean), when protection is already off, or without the server", async () => {
     const droplet = await setup({ provider: "digitalocean" });
-    expect(await liftProtection(droplet.session, lift)).toEqual({ off: false });
+    expect(await liftProtection(droplet.session, { ...lift, vars: {} })).toEqual({ off: false });
     expect(droplet.engine.planOptions).toEqual([]);
 
     const gone = await setup();

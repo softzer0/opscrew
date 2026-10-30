@@ -1,7 +1,12 @@
 import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { OpsCrewError, tfstateFile } from "@opscrew/core";
 import { usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  isServerlessProvider,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { localDrift } from "../localhost/drift";
 import { planProvider, providerProfile } from "../providers";
@@ -23,6 +28,7 @@ import {
   storageDrift,
 } from "./infra";
 import { portainerDrift } from "./portainer";
+import { serversDrift } from "./servers";
 import { siteDrift } from "./site";
 import type { DriftOptions, DriftReport } from "./types";
 
@@ -167,6 +173,17 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
       runner === undefined
         ? components
         : { differences: [...(components?.differences ?? []), ...runner] };
+  }
+
+  // 5b. The private network on every server, and the extra servers' files and containers (feature
+  // 018); with extra servers, each of the app server's differences names it too.
+  if (plan.network !== undefined) {
+    const servers = await serversDrift(deps, plan, notes, { services });
+    const named = (plan.servers ?? []).length > 0;
+    const app = (host?.differences ?? []).map((item) =>
+      named ? { ...item, title: `Server ${APP_SERVER}: ${item.title}` } : item,
+    );
+    host = { differences: [...app, ...servers] };
   }
 
   return finishDriftReport(deps, plan, {

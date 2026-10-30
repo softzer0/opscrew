@@ -15,6 +15,7 @@ import {
 import { ShellHarness } from "./__fixtures__/shell-harness";
 import { inspectHost } from "./inspect";
 import type { NetworkStepParams } from "./network";
+import { networkFileHashes, networkFilterFileHashes, networkUfwRules } from "./network-files";
 import {
   NETWORK_FILTER_UNIT,
   NETWORK_FILTER_UNIT_TEXT,
@@ -437,6 +438,25 @@ describe("planning the network filter", () => {
     await provision(fake);
     return fake;
   }
+
+  it("hashes the files the network and filter steps write as inspection reads them", async () => {
+    const fake = await dbServer();
+    const plan = planNetwork(
+      await inspectHost(fake),
+      { app: "shop", network: dbNetwork(), filter: dbFilter() },
+      COMMAND,
+    );
+    await applyApproved(fake, plan, { secrets: { wireguardKey: DB_KEY } });
+    const facts = await inspectHost(fake);
+    const network = facts.network;
+    expect(facts.firewall.ufwRules).toEqual(expect.arrayContaining(networkUfwRules(dbNetwork())));
+    const files = networkFileHashes(dbNetwork());
+    const filter = networkFilterFileHashes(dbFilter());
+    expect(network?.interfaces[0]?.config).toBe(files.config);
+    expect(network?.dropIn).toBe(files.dropIn);
+    expect(network?.filterUnit).toBe(filter.unit);
+    expect(network?.filters[0]).toMatchObject({ script: filter.script, dropIn: filter.dropIn });
+  });
 
   it("follows the network step, and an applied filter plans in place", async () => {
     const fake = await dbServer();

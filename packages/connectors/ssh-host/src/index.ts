@@ -66,6 +66,7 @@ export { hostPlanHash } from "./hash";
 export { inspectHost, inspectRunners, probePrivilege } from "./inspect";
 export { localExec } from "./local";
 export { type NetworkStepParams, NetworkStepParamsSchema } from "./network";
+export { networkFileHashes, networkFilterFileHashes, networkUfwRules } from "./network-files";
 export {
   type NetworkFilterParams,
   NetworkFilterParamsSchema,

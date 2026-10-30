@@ -11,6 +11,7 @@ export {
 } from "./allocate";
 export { deviceConfig } from "./device";
 export { hasPublicAddress, publicEndpoints } from "./endpoints";
+export { serverNetworkInputs } from "./inputs";
 export { type KeyMaker, type WireGuardKeyPair, x25519KeyPair } from "./keys";
 export {
   type NetworkLink,

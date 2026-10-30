@@ -28,6 +28,7 @@ async function store(
     {
       plan,
       settings: plan.observability?.check,
+      servers: [],
       services: {
         askCheckWebhook: async (question) => {
           asked.push(question);

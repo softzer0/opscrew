@@ -20,12 +20,13 @@ import { addCheckKey } from "./host";
 import { type CheckKey, ensureCheckKey, readCheckKey } from "./key";
 import { changeCheckPause } from "./pause";
 import { type CheckServerReach, storeCheckSecrets } from "./secrets";
+import { checkServerEntries } from "./servers";
 import { repositoryCheckSettings } from "./settings";
 
 /**
- * True when the check reads `plan`'s server's disk over SSH with the check key: a cloud or own
- * server deployed from GitHub's machines or a runner machine, never through a tunnel (the check's
- * `ssh` can't pass Cloudflare Access). The server's own runner reads it there, with no key.
+ * True when the check reads the disk of `plan`'s app server over SSH with the check key: a cloud or
+ * own server deployed from GitHub's machines or a runner machine, never through a tunnel (the
+ * check's `ssh` can't pass Cloudflare Access). The server's own runner reads it there, with no key.
  */
 export function checkReachesOverSsh(plan: DeployPlan): boolean {
   return (
@@ -67,19 +68,29 @@ export async function deploySetupCheck(
   return { files, removed };
 }
 
-/** The check key of `plan`'s environment, when the check is on and reads the disk over SSH. */
+/**
+ * True when the check reads a disk of `plan`'s environment over SSH with the check key: the app
+ * server's ({@link checkReachesOverSsh}) or an extra server's, which is always read over SSH (from
+ * the app server's runner when the environment deploys there).
+ */
+function checkUsesKey(plan: DeployPlan): boolean {
+  return checkReachesOverSsh(plan) || (plan.servers ?? []).length > 0;
+}
+
+/** The check key of `plan`'s environment, when the check is on and reads a disk over SSH. */
 export async function environmentCheckKey(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
   plan: DeployPlan,
 ): Promise<CheckKey | undefined> {
-  if (plan.observability?.check?.enabled !== true || !checkReachesOverSsh(plan)) return undefined;
+  if (plan.observability?.check?.enabled !== true || !checkUsesKey(plan)) return undefined;
   return ensureCheckKey(deps.paths, deps.redactor);
 }
 
 /**
  * The check key's authorized_keys line for rendering `plan`'s files, which a new cloud server
- * gets at its first boot: none on the user's own server or without the check over SSH. With
- * `create` false (a preview) a key this computer lacks is not made, and there is no line.
+ * gets at its first boot: none without a cloud server read over SSH (the user's own servers get
+ * the key from a host plan). With `create` false (a preview) a key this computer lacks is not
+ * made, and there is no line.
  */
 export async function renderedCheckKeyLine(
   deps: Pick<PhaseDeps, "paths" | "redactor">,
@@ -87,8 +98,9 @@ export async function renderedCheckKeyLine(
   repository: string,
   create = true,
 ): Promise<string | undefined> {
-  if (plan.target.provider === "own") return undefined;
-  if (plan.observability?.check?.enabled !== true || !checkReachesOverSsh(plan)) return undefined;
+  const cloudExtras = (plan.servers ?? []).some((server) => server.target.provider !== "own");
+  const cloudApp = plan.target.provider !== "own" && checkReachesOverSsh(plan);
+  if (plan.observability?.check?.enabled !== true || !(cloudApp || cloudExtras)) return undefined;
   const key = create
     ? await ensureCheckKey(deps.paths, deps.redactor)
     : await readCheckKey(deps.paths, deps.redactor);
@@ -108,8 +120,10 @@ export interface CheckServer {
 }
 
 /**
- * The `check-key` host plan (`addCheckKey`) when `server` lacks `key`; with `planOnly` it is only
- * shown and saved, and a line names its hash for scripts. `undefined` when the server has it.
+ * The `check-key` host plan (`addCheckKey`) when the app's `server` lacks `key`; with `planOnly` it
+ * is only shown and saved, and a line names its hash for scripts. `undefined` when the server has
+ * it, or the check does not read its disk over SSH ({@link checkReachesOverSsh}: the key is then
+ * only the extra servers').
  */
 export async function checkKeyStep(
   deps: PhaseDeps,
@@ -124,7 +138,7 @@ export async function checkKeyStep(
   },
 ): Promise<HostPlanOutcome | undefined> {
   const { server } = input;
-  if (await server.hasKey()) return undefined;
+  if (!checkReachesOverSsh(input.plan) || (await server.hasKey())) return undefined;
   const outcome = await addCheckKey(deps, {
     plan: input.plan,
     key: input.key,
@@ -147,9 +161,11 @@ export async function checkKeyStep(
 /**
  * Provision's part of the scheduled check, for an environment with it on, after the server is
  * ready: the check key (`key`, the repository's) added by the `check-key` host step when `server`
- * lacks it, then (with `storeSecrets`) the check's repository secrets. `key` and `server` are
- * given only where the check reads the disk over SSH ({@link checkReachesOverSsh}). Returns the
- * host step's outcome, when one was shown.
+ * lacks it, then (with `storeSecrets`) the check's repository secrets, whose server secret lists
+ * every server of the environment the check reads over SSH (`checkServerEntries`: the app's
+ * `server.reach` where its disk is read over SSH, and each extra server). `key` is given where the
+ * check reads a disk over SSH, `server` where it is the app's ({@link checkReachesOverSsh}).
+ * Returns the host step's outcome, when one was shown.
  */
 export async function provisionCheck(
   deps: PhaseDeps,
@@ -178,11 +194,12 @@ export async function provisionCheck(
           phase: input.phase,
         });
   if (input.storeSecrets) {
+    const app = checkReachesOverSsh(plan) ? server?.reach : undefined;
     await storeCheckSecrets(deps, github, {
       plan,
       settings: await repositoryCheckSettings(deps.paths, plan),
       ...(key === undefined ? {} : { key }),
-      ...(server === undefined ? {} : { server: server.reach }),
+      servers: await checkServerEntries(deps, plan, app),
       services: input.services,
       phase: input.phase,
     });
@@ -192,8 +209,8 @@ export async function provisionCheck(
 
 /**
  * The check's repository secrets a teardown of `plan`'s environment deletes, when it has the
- * check on: its server's (`<prefix>CHECK_SERVER`, which holds the address) where the check reads
- * the disk over SSH, and the check key (`OPSCREW_CHECK_SSH_KEY`) when no other environment of
+ * check on: its servers' (`<prefix>CHECK_SERVER`, which holds the addresses) where the check
+ * reads a disk over SSH, and the check key (`OPSCREW_CHECK_SSH_KEY`) when no other environment of
  * the repository still has the check on.
  */
 export async function teardownCheckSecretNames(
@@ -201,7 +218,7 @@ export async function teardownCheckSecretNames(
   plan: DeployPlan,
 ): Promise<string[]> {
   if (plan.observability?.check?.enabled !== true) return [];
-  const names = checkReachesOverSsh(plan) ? [deploySecretName(plan, CHECK_SECRETS.server)] : [];
+  const names = checkUsesKey(plan) ? [deploySecretName(plan, CHECK_SECRETS.server)] : [];
   const checked = (await otherPlans(paths, plan)).some(
     (other) =>
       other.plan.observability?.check?.enabled === true &&

@@ -36,7 +36,7 @@ import {
   serviceEnvSecret,
   serviceSpec,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { desiredHost, type OwnServerServices, ownTarget } from "../provision";
 import { type OwnWebSources, ownWebFromCloudflare, ownWebSources } from "../provision/own";
@@ -87,7 +87,8 @@ export interface HostDrift {
   differences: HostDifference[];
 }
 
-const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
+/** Each host step in plain English, as drift titles its differences. */
+export const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "package-repair": "Packages",
   docker: "Docker",
   "docker-daemon": "Docker daemon settings (/etc/docker/daemon.json)",
@@ -483,7 +484,7 @@ function runtimeFileRole(name: string, expected: ExpectedRuntimeFiles): string {
  * read. Missing files count only once the app was deployed (the deploy workflow writes them on
  * its first run). Other apps' files are never looked at.
  */
-function runtimeFileDetails(
+export function runtimeFileDetails(
   facts: HostFacts,
   app: string,
   expected: ExpectedRuntimeFiles,
@@ -680,12 +681,15 @@ const STARTS_COMPONENTS =
  * How the app's containers `containers` (its Compose project's) differ from the plan's components
  * (FR-1331): no container at all, a component with no container, a container of a component the
  * plan no longer runs (each once the app was deployed, except the last), and stopped containers
- * (one-shot ones left out). Shared by a server the user owns and the servers OpsCrew creates.
+ * (one-shot ones left out). Shared by a server the user owns and the servers OpsCrew creates;
+ * `server` is the app's server (`app`, the default) or an extra one, whose components are its
+ * services.
  */
 export function containerDifferences(
   plan: DeployPlan,
   containers: readonly AppContainer[],
   deployed: boolean,
+  server = APP_SERVER,
 ): HostDifference[] {
   const app = { area: "app" as const, restoredByProvision: false };
   const ofContainers = { ...app, title: "The app's containers" };
@@ -701,7 +705,7 @@ export function containerDifferences(
       : [];
   }
   const out: HostDifference[] = [];
-  const status = componentStatus(plan, serviceContainers(plan.app.name, containers));
+  const status = componentStatus(plan, serviceContainers(plan.app.name, containers), server);
   const ofComponents = { ...app, title: "The app's components" };
   if (deployed) {
     for (const { service, what, containers: count } of status.components) {

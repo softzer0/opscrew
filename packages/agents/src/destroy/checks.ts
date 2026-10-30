@@ -3,9 +3,11 @@ import { isRecord, listText } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
 import { cloudTarget, type ServerModule, serviceSpec } from "@opscrew/iac-templates";
 import {
+  APP_SERVER,
   type CloudDeployTarget,
   type DeployPlan,
   isServerlessProvider,
+  servicesOn,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { providerProfile } from "../providers";
@@ -66,6 +68,7 @@ const PlanServerIdsSchema = z.looseObject({
   resource_changes: z
     .array(
       z.looseObject({
+        address: z.string().optional(),
         type: z.string().optional(),
         change: z
           .looseObject({ actions: z.array(z.string()), before: z.unknown().optional() })
@@ -80,14 +83,21 @@ const BeforeIdSchema = z.looseObject({ id: ProviderIdSchema });
  * The provider ids (`change.before.id`) of the servers a destroy plan deletes, as the
  * infrastructure state knows them, without duplicates. Empty when the plan JSON does not say.
  * These ids, not the names (names need not be unique), say which server the teardown deletes.
+ * With `module` (an address prefix with its trailing dot, such as `module.server.` or
+ * `module.server_data.`), only the servers under that module.
  */
-export function serverIdsInPlan(planJson: unknown, provider: DeletionProvider): string[] {
+export function serverIdsInPlan(
+  planJson: unknown,
+  provider: DeletionProvider,
+  module?: string,
+): string[] {
   const parsed = PlanServerIdsSchema.safeParse(planJson);
   const type = serverType(provider);
   if (!parsed.success || type === undefined) return [];
   const ids = new Set<string>();
   for (const rc of parsed.data.resource_changes ?? []) {
     if (rc.type !== type || rc.change?.actions.includes("delete") !== true) continue;
+    if (module !== undefined && rc.address?.startsWith(module) !== true) continue;
     const before = BeforeIdSchema.safeParse(rc.change.before);
     if (before.success) ids.add(before.data.id);
   }
@@ -333,7 +343,8 @@ export function serverData(plan: Pick<DeployPlan, "services" | "storage">): stri
 }
 
 /**
- * Plain-English warning about data that exists only on the server, or `undefined` when the plan
+ * Plain-English warning about data that exists only on the app's server (its services: the extra
+ * servers' are said in their own lines), or `undefined` when the plan
  * does not delete the server. Automatic backups are lost with a Hetzner server but kept for a
  * while by DigitalOcean, and the warning says which. `target` is the deleted server's target
  * (default `plan.target`; during a move the old server's is `plan.retarget.from.target`).
@@ -345,7 +356,8 @@ export function dataWarning(
 ): string | undefined {
   if (!serverDeleted) return undefined;
   const texts = destroyTexts(target.provider);
-  const lost = serverData(plan);
+  // The services on the app's server only: the extra servers' are said in their own lines.
+  const lost = serverData({ services: servicesOn(plan, APP_SERVER), storage: plan.storage });
   lost.push(`any files the app stored on the ${texts.noun}`);
   if (target.backups && texts.deletedBackups) lost.push(texts.deletedBackups);
   const deleted = `Deleting the ${texts.noun} also deletes ${listText(lost)}.`;

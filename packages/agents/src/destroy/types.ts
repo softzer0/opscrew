@@ -33,7 +33,7 @@ export type DestroyCloudflareApi = Pick<CloudflareClient, "verifyToken">;
 export interface DestroyServices
   extends Pick<
     ProvisionServices,
-    "engine" | "provider" | "sharedCloudflare" | "runnerGitHub" | "runnerMachine"
+    "engine" | "provider" | "sharedCloudflare" | "runnerGitHub" | "runnerMachine" | "remote"
   > {
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: DestroyCloudflareApi | null;
@@ -107,8 +107,18 @@ export type DeletionProvider = VpsProviderId | "portainer" | ServerlessProvider;
 
 /** What the teardown would delete, shown before the user confirms. */
 export interface DestroyPreview {
-  /** The name the user types to confirm: the server's (the app's name) or, on their own server, the app's. */
+  /**
+   * The name the user types to confirm: the server's (the app's name) or, on their own server, the
+   * app's; for an extra cloud server (`server` set), its name at the provider, `<app>-<server>`.
+   */
   name: string;
+  /**
+   * Set when the confirmation is for an extra cloud server, asked after the app's (each one's name
+   * is typed): its name in the plan.
+   */
+  server?: string;
+  /** With extra servers, a line per server (`serverLines`): what happens to it. */
+  servers?: string[];
   /**
    * The question to ask before the user types {@link name} (`destroyConfirmPrompt`); set by
    * `opscrew destroy`. On a server the user owns it asks for the app's name and says the server stays.

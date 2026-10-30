@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import { parseGitHubRepo } from "@opscrew/connector-github";
 import {
   appDirs,
   applyHostPlan,
@@ -15,10 +14,11 @@ import {
   readableRecords,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
-import { listText, OpsCrewError, plural, replaceNames } from "@opscrew/core";
+import { listText, lowerFirst, OpsCrewError, plural, replaceNames } from "@opscrew/core";
 import { usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { providerProfile } from "../providers";
 import {
   checkProvider,
   type OwnServerSession,
@@ -33,14 +33,12 @@ import {
   type RunnerRepository,
   removeKeptRegistrations,
   removeMachineRunners,
-  repositoryUrl,
   runnerTokens,
 } from "../runners";
 import {
   adapterBlocked,
   approvalEntry,
   approveAndApplyHostPlan,
-  gitClient,
   type HostAdapterApi,
   type HostPlanOutcome,
   hasDeployment,
@@ -50,7 +48,7 @@ import {
   readValidJson,
 } from "../shared";
 import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
-import { serverData } from "./checks";
+import { deletesServer, serverData } from "./checks";
 import {
   applyCloudflareRemoval,
   approveCloudflareRemoval,
@@ -61,6 +59,7 @@ import {
   checkPauseNote,
   containerImagesLeft,
   type DeploymentFiles,
+  DRIFT_THEN_DESTROY,
   deploymentFiles,
   deploySecretsLeft,
   type GitHubTarget,
@@ -78,7 +77,29 @@ import {
   teardownStateNotHere,
   teardownSummary,
 } from "./common";
-import { confirmDeletion, type DeletionSession, deletionSession, discardPlan } from "./deletion";
+import {
+  confirmDeletion,
+  type DeletionSession,
+  deletionSession,
+  discardPlan,
+  liftProtection,
+  remainingAfterDeletion,
+  removeSnapshotRecord,
+} from "./deletion";
+import {
+  confirmExtraServers,
+  extraCloudServers,
+  extraOwnServers,
+  extraProtectionVars,
+  forgetExtraCloudServers,
+  project,
+  removeExtraOwnServers,
+  reopenPublicSsh,
+  type ServerSnapshot,
+  serverLines,
+  serverSnapshots,
+  snapshotServers,
+} from "./servers";
 import {
   applySharedRemoval,
   planSharedRemoval,
@@ -149,6 +170,23 @@ function requireNoHostBlockers(plan: HostPlan, what: string, command: string, al
     blocked,
     fallbackHint: `Fix what blocks these steps on the server, then run \`${command}\` again.`,
   });
+}
+
+/**
+ * A stop after this run lifted the delete protection of `servers` and before they were deleted:
+ * it says they are unprotected now, and that `opscrew provision` turns the protection back on.
+ * A host apply's error keeps its own words (the steps it applied).
+ */
+function stillUnprotected(error: unknown, servers: readonly string[]): unknown {
+  if (!(error instanceof OpsCrewError) || error instanceof HostApplyError) return error;
+  return new OpsCrewError(
+    error.code,
+    `${error.message} Delete protection on ${listText([...servers])} is already lifted, so ${servers.length === 1 ? "it is" : "they are"} not protected against deletion now.`,
+    {
+      hint: `Run \`opscrew provision\` to turn delete protection back on, or ${lowerFirst(error.hint ?? `run \`${COMMAND}\` again.`)}`,
+      cause: error,
+    },
+  );
 }
 
 /** Why the tunnel goes last, said in the approval and the summary. */
@@ -406,9 +444,10 @@ function remainingOnOwnServer(input: {
  */
 export async function destroyOwnServer(
   deps: PhaseDeps,
-  plan: DeployPlan,
+  given: DeployPlan,
   options: DestroyOptions,
 ): Promise<DestroyResult> {
+  let plan = given;
   const services = options.services ?? {};
   const own = services.own ?? {};
   const name = plan.app.name;
@@ -420,33 +459,59 @@ export async function destroyOwnServer(
   const removeApp = hasDeployment(plan) || (stateHere && plan.deployment.destroyedAt === undefined);
   if (!removeApp && options.undoHost !== true) throw nothingDeployed(plan);
   const scope = teardownScope(deps, plan, "own");
+  // The extra servers OpsCrew created are in the same root module: deleted with the rest, each
+  // after its own typed name, with Hetzner's delete protection lifted first.
+  const extras = extraCloudServers(given);
+  const vars = extraProtectionVars(given);
+  const extra = {
+    servers: extras.map((server) => server.module),
+    ...(Object.keys(vars).length > 0 ? { vars } : {}),
+  };
+  const cloudflareWhat = usesTunnel(given)
+    ? "Cloudflare Tunnel, its DNS records and Access"
+    : "DNS records on Cloudflare";
   const words: CloudflareRemovalWords = {
-    what: usesTunnel(plan)
-      ? "Cloudflare Tunnel, its DNS records and Access"
-      : "DNS records on Cloudflare",
+    what:
+      extras.length === 0
+        ? cloudflareWhat
+        : `${cloudflareWhat} and the ${extras.length === 1 ? "server" : "servers"} ${listText(extras.map((server) => server.resource))}`,
     place: "your server",
     tunnelAfter: TUNNEL_AFTER_SERVER,
     stays: SERVER_STAYS,
   };
 
-  // 1. Preconditions: the state of the Cloudflare resources (when the plan has any) and the
-  // infrastructure code that matches it. Without the state OpsCrew cannot remove the DNS records or
-  // the tunnel, so it changes nothing, not even on the server.
-  const managesCloudflare = plan.dns.provider === "cloudflare" || usesTunnel(plan);
-  if (removeApp && managesCloudflare && !stateHere)
+  // 1. Preconditions: the state of the cloud resources (Cloudflare's and the extra servers OpsCrew
+  // created, when the plan has any) and the infrastructure code that matches it. Without the state
+  // OpsCrew cannot remove the DNS records, the tunnel or those servers, so it changes nothing, not
+  // even on the server.
+  const managesCloudResources =
+    plan.dns.provider === "cloudflare" || usesTunnel(plan) || extras.length > 0;
+  if (removeApp && managesCloudResources && !stateHere)
     throw await teardownStateNotHere(deps.paths.root, plan);
   if (removeApp && stateHere) {
-    await requireInfraCode(deps, plan, "the removal of the app's Cloudflare resources");
+    await requireInfraCode(
+      deps,
+      plan,
+      `the removal of the app's ${extras.length > 0 ? "cloud" : "Cloudflare"} resources`,
+    );
   }
 
-  // 2. Credentials
+  // 2. Credentials: the extra servers' providers too, whose servers the teardown deletes
   const cloudflare = removeApp && stateHere && plan.dns.provider === "cloudflare";
+  const clouds =
+    removeApp && stateHere ? [...new Set(extras.map((server) => server.provider))] : [];
   deps.reporter.step(
-    `Checking the login to your server${cloudflare ? ", your Cloudflare access" : ""}${removeApp ? " and GitHub access" : ""}`,
+    `Checking the login to your server${clouds.map((cloud) => `, your ${providerProfile(cloud).displayName} access`).join("")}${cloudflare ? ", your Cloudflare access" : ""}${removeApp ? " and GitHub access" : ""}`,
   );
   await checkProvider(deps, "own", services);
+  for (const cloud of clouds) await checkProvider(deps, cloud, services);
   if (cloudflare) await checkCloudflare(deps, plan, services);
   const github: GitHubTarget = removeApp ? await resolveGitHub(deps, services) : {};
+
+  // 2b. With public SSH closed, it opens again first on the user's servers (each with a host plan
+  // of its own, reached over the private network): their networks go with the teardown, and with
+  // them the SSH rule on the network's interface.
+  plan = await reopenPublicSsh(deps, plan, [APP_SERVER, ...extraOwnServers(plan)], services);
 
   // 3. Connect (pinned host key) and inspect (read-only); never another app's server
   const inspected = await connectAndInspectOwnServer(deps, {
@@ -474,8 +539,7 @@ export async function destroyOwnServer(
   requireOwnApp(plan, deps.paths.projectId, facts);
   // The host plans never touch a runner another repository registered on the server. Without a
   // GitHub remote named origin the repository is unknown: they leave every runner, and say so.
-  const remote = parseGitHubRepo((await gitClient(deps).remoteUrl("origin")) ?? "");
-  const project = remote === undefined ? {} : { repositoryUrl: repositoryUrl(remote) };
+  const repository = await project(deps);
   // What a host plan leaves on the server, and why (a step that keeps it), said once each.
   const noted = new Set<string>();
   const noteKept = (hostPlan: HostPlan | undefined) => {
@@ -488,10 +552,12 @@ export async function destroyOwnServer(
   };
 
   // 4. What the teardown removes: checked before anything changes, shown, confirmed once
-  let iac: DeletionSession | undefined;
+  let iac: (DeletionSession & { provider: "own" }) | undefined;
   let resources: ResourceChange[] = [];
   let confirmed: ReadonlySet<string> = new Set();
   let engineSetup: ProjectEngine | undefined;
+  /** The extra servers OpsCrew created that the teardown deletes, each with or without a snapshot. */
+  let snapshots: ServerSnapshot[] = [];
   if (removeApp && stateHere) {
     const setup = await setupEngine(deps, plan, options);
     const dir = join(deps.paths.root, plan.infra.dir);
@@ -500,14 +566,20 @@ export async function destroyOwnServer(
       setup.engine.output(dir, { env: setup.env }).catch(() => undefined),
     );
     iac = deletionSession(scope, { ...setup, dir });
-    ({ resources, confirmed } = await previewCloudflareRemoval(iac, words));
+    const preview = await previewCloudflareRemoval(iac, words, extra);
+    ({ resources, confirmed } = preview);
+    snapshots = serverSnapshots(
+      plan,
+      { changes: resources, planJson: preview.planJson },
+      options.snapshot,
+    );
     engineSetup = setup;
   }
   // Without its record (deleted on the server) the plan names the app (T931).
   const teardown = removeApp
     ? planTeardown(
         facts,
-        { deleteData, app: name, projectId: deps.paths.projectId, ...project },
+        { deleteData, app: name, projectId: deps.paths.projectId, ...repository },
         command,
       )
     : undefined;
@@ -563,24 +635,27 @@ export async function destroyOwnServer(
     if (bucket !== undefined) deps.reporter.warn(bucketDeletionWarning(bucket));
     else if (keptBucket !== undefined) deps.reporter.info(bucketStays(keptBucket));
     for (const note of checkPauseNote(plan)) deps.reporter.info(note);
-    await confirmDeletion(
-      scope,
-      {
-        name,
-        confirmPrompt: destroyConfirmPrompt(name, "own"),
-        provider: "own",
-        deleteProtection: false,
-        resources: [...resources, ...(bucket?.summary.changes ?? [])],
-        snapshot: false,
-        ...(dataWarning !== undefined ? { dataWarning } : {}),
-        hostSteps: removed,
-        ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
-      },
-      options.confirm,
-    ).catch(async (error: unknown) => {
-      if (bucket !== undefined) await discardBucketDeletion(bucket);
-      throw error;
-    });
+    const servers = serverLines(plan, snapshots);
+    if (servers.length > 0) deps.reporter.info(["The app's servers:", ...servers].join("\n"));
+    const confirmation = {
+      name,
+      confirmPrompt: destroyConfirmPrompt(name, "own"),
+      provider: "own" as const,
+      deleteProtection: false,
+      resources: [...resources, ...(bucket?.summary.changes ?? [])],
+      snapshot: false,
+      ...(dataWarning !== undefined ? { dataWarning } : {}),
+      hostSteps: removed,
+      ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
+      ...(servers.length > 0 ? { servers } : {}),
+    };
+    // The app's name, then each extra cloud server's own name.
+    await confirmDeletion(scope, confirmation, options.confirm)
+      .then(() => confirmExtraServers(scope, plan, confirmation, options.confirm))
+      .catch(async (error: unknown) => {
+        if (bucket !== undefined) await discardBucketDeletion(bucket);
+        throw error;
+      });
   }
 
   // 4a. The environment's runner comes off its runner machine (`runner: host`) and any other
@@ -611,9 +686,38 @@ export async function destroyOwnServer(
   let removal: CloudflareRemoval | undefined;
   const hostPlans: { teardown?: string; undo?: string } = {};
   let teardownApproval: ApprovalRecord | undefined;
+  let protectionApproval: ApprovalRecord | undefined;
+  let extraApprovals: ApprovalRecord[] = [];
+  /** The servers whose delete protection this run lifted, said in every stop before they go. */
+  let lifted: string[] = [];
+  let snapshotIds: Record<string, string | undefined> = {};
   try {
+    // The extra servers' snapshots (their own records), before anything is deleted.
+    if (iac !== undefined && snapshots.length > 0) {
+      snapshotIds = await snapshotServers(iac, snapshots, {
+        choice: options.snapshot ?? "auto",
+        ...(services.servers ? { servers: services.servers } : {}),
+        ...(services.sleep ? { sleep: services.sleep } : {}),
+        ...(services.now ? { now: services.now } : {}),
+      });
+    }
+    // The extra Hetzner servers' delete protection, lifted with a plan of its own first.
+    if (iac !== undefined && Object.keys(vars).length > 0) {
+      const names = extras
+        .filter((server) => `${server.name}_delete_protection` in vars)
+        .map((server) => server.resource);
+      const protection = await liftProtection(iac, {
+        vars,
+        names,
+        serverInState: deletesServer(resources, "hetzner"),
+        mismatchHint: DRIFT_THEN_DESTROY,
+      });
+      protectionApproval = protection.approval;
+      if (protection.off) lifted = names;
+    }
     if (iac !== undefined && resources.length > 0) {
       removal = await approveCloudflareRemoval(iac, {
+        ...extra,
         confirmed,
         appChanges: hostSteps.length > 0,
         words,
@@ -667,11 +771,17 @@ export async function destroyOwnServer(
     if (iac !== undefined && removal?.tunnel === true) {
       destroyed = await applyCloudflareRemoval(iac, removal, services.sleep);
     }
+    // The user's own extra servers: OpsCrew's part removed from each, after the app.
+    if (removeApp) {
+      extraApprovals = await removeExtraOwnServers(deps, plan, { deleteData, services });
+    }
     if (bucket !== undefined && bucket.bucket.provider !== "r2") {
       bucketDeleted = await deleteBucket(bucket, {
         ...(services.sleep ? { sleep: services.sleep } : {}),
       });
     }
+  } catch (error) {
+    throw lifted.length > 0 && destroyed.length === 0 ? stillUnprotected(error, lifted) : error;
   } finally {
     // Never left behind for a later apply (applyCloudflareRemoval deletes it, too).
     if (removal !== undefined) await discardPlan(removal.summary);
@@ -692,11 +802,15 @@ export async function destroyOwnServer(
       reach: "your server",
     });
     // The address DNS pointed at goes; the login and the confirmed host key stay (the server stays).
+    // The extra servers OpsCrew deleted are forgotten.
+    await forgetExtraCloudServers(deps, plan);
     const approvals = [
       ...machines.map((outcome) => outcome.approval),
       bucketDeleted?.approval,
+      protectionApproval,
       removal?.approval,
       teardownApproval,
+      ...extraApprovals,
       sharedApproval,
     ];
     current = await recordTeardown(deps, plan, approvals, {
@@ -728,7 +842,7 @@ export async function destroyOwnServer(
           })
         : facts;
     requireOwnApp(plan, deps.paths.projectId, after);
-    const undo = planUndo(after, project, command);
+    const undo = planUndo(after, repository, command);
     requireNoHostBlockers(
       undo,
       "undo its changes to your server",
@@ -794,6 +908,18 @@ export async function destroyOwnServer(
     portainer: facts.portainer.installed,
     files: await deploymentFiles(deps, plan),
   });
+  // The extra servers OpsCrew deleted: their snapshots and kept backups, by their names.
+  for (const server of extras) {
+    remaining.push(
+      ...remainingAfterDeletion({
+        provider: server.provider,
+        app: server.resource,
+        snapshotId: snapshotIds[server.name],
+        backups: server.backups,
+      }),
+    );
+    if (removeApp) await removeSnapshotRecord(deps, "destroy", server.resource);
+  }
   remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
   failIfBucketListed(bucketDeleted);

@@ -13,6 +13,7 @@ import type {
 } from "@opscrew/contracts";
 import {
   isUserFacingError,
+  listText,
   OpsCrewError,
   plural,
   readTextIfExists,
@@ -173,6 +174,8 @@ export interface DeletionPreview {
   serverInState: boolean;
   /** That server's ids as the state records them (`serverIdsInPlan`); empty when not said. */
   serverIds: string[];
+  /** The preview plan's JSON (`show -json`), for the ids under one module. */
+  planJson: unknown;
 }
 
 /**
@@ -209,6 +212,7 @@ export async function previewDeletion(
     addresses: new Set(summary.changes.map((change) => change.address)),
     serverInState,
     serverIds: serverInState ? serverIdsInPlan(summary.planJson, session.provider) : [],
+    planJson: summary.planJson,
   };
 }
 
@@ -325,17 +329,26 @@ export async function confirmDeletion(
  */
 export type SnapshotPurpose = "destroy" | "retarget";
 
-/** Where a run of `purpose` remembers its snapshot so that a re-run reuses it. */
-export function snapshotRecordPath(deps: Pick<PhaseDeps, "paths">, purpose: SnapshotPurpose) {
-  return join(deps.paths.stateDir, `${purpose}-snapshot.json`);
+/**
+ * Where a run of `purpose` remembers its snapshot so that a re-run reuses it: the app's server's,
+ * or with `server` (an extra server's name at the provider) that server's.
+ */
+export function snapshotRecordPath(
+  deps: Pick<PhaseDeps, "paths">,
+  purpose: SnapshotPurpose,
+  server?: string,
+) {
+  const suffix = server === undefined ? "" : `-${server}`;
+  return join(deps.paths.stateDir, `${purpose}-snapshot${suffix}.json`);
 }
 
-/** Forgets the snapshot record of `purpose` (after the deletion completed). */
+/** Forgets the snapshot record of `purpose` (after the deletion completed): the app's or `server`'s. */
 export async function removeSnapshotRecord(
   deps: Pick<PhaseDeps, "paths">,
   purpose: SnapshotPurpose,
+  server?: string,
 ): Promise<void> {
-  await rm(snapshotRecordPath(deps, purpose), { force: true });
+  await rm(snapshotRecordPath(deps, purpose, server), { force: true });
 }
 
 /** The snapshot record, `{ provider, serverId, snapshotId, takenAt }`. */
@@ -349,8 +362,9 @@ const SnapshotRecordSchema = z.looseObject({
 function readSnapshotRecord(
   deps: PhaseDeps,
   purpose: SnapshotPurpose,
+  server: string | undefined,
 ): Promise<z.infer<typeof SnapshotRecordSchema> | undefined> {
-  return readValidJson(snapshotRecordPath(deps, purpose), SnapshotRecordSchema);
+  return readValidJson(snapshotRecordPath(deps, purpose, server), SnapshotRecordSchema);
 }
 
 /** Whether a snapshot is taken first (`auto`: when data lives only on the server). */
@@ -395,6 +409,12 @@ export interface SnapshotBeforeDeleteInput {
   data: { serverData: boolean; backups: boolean };
   /** Which record to reuse and write. */
   purpose: SnapshotPurpose;
+  /**
+   * An extra server's name at the provider (`<app>-<name>`): matched when the plan does not say
+   * its id, named in the snapshot and its texts, with a snapshot record of its own. Default the
+   * app's server.
+   */
+  name?: string;
   /** Server lookup and snapshots (default: the provider connector's `servers`). */
   servers?: ServerSnapshotApi;
   /** Delay between snapshot status polls (passed to the default connector). */
@@ -505,14 +525,16 @@ function serverToSnapshot(
  * any failure stops the run before anything is deleted. Returns the snapshot id.
  */
 export async function takeSnapshotBeforeDelete(
-  scope: ServerScope,
+  appScope: ServerScope,
   input: SnapshotBeforeDeleteInput,
 ): Promise<string | undefined> {
+  // The app's servers are looked up by the app (`appScope`); an extra server is named on its own.
+  const scope = input.name === undefined ? appScope : { ...appScope, app: input.name };
   const { deps, provider, app: name, what } = scope;
   const texts = destroyTexts(provider);
   const { noun, displayName } = texts;
   const target = input.server;
-  const recorded = await readSnapshotRecord(deps, input.purpose);
+  const recorded = await readSnapshotRecord(deps, input.purpose, input.name);
   const earlier = recorded?.provider === provider ? recorded : undefined;
 
   if (!target.inState && earlier) {
@@ -534,7 +556,7 @@ export async function takeSnapshotBeforeDelete(
   if (!target.inState) {
     // Nothing deletes it, and a snapshot that was not announced before the confirmation is not
     // taken. The lookup only words the note, so a failed one never blocks the cleanup of the rest.
-    const found = await findServers(scope, input).then(
+    const found = await findServers(appScope, input).then(
       (result) => result.found,
       () => undefined,
     );
@@ -556,7 +578,7 @@ export async function takeSnapshotBeforeDelete(
       },
     );
   }
-  const { api, found } = await findServers(scope, input);
+  const { api, found } = await findServers(appScope, input);
   const server = serverToSnapshot(scope, found, target.ids[0]);
 
   // A run that stopped after its snapshot (refused, failed apply) reuses it on the next try.
@@ -605,15 +627,24 @@ export async function takeSnapshotBeforeDelete(
   await audit("snapshot ready", `snapshot ${snapshotId} of ${name} (${request.name})`);
   deps.reporter.success(`The snapshot of ${name} is ready (${texts.snapshotRef(snapshotId)}).`);
   const record = { provider, serverId: server.id, snapshotId, takenAt: takenAt.toISOString() };
-  await writeFileAtomic(snapshotRecordPath(deps, input.purpose), `${JSON.stringify(record)}\n`);
+  await writeFileAtomic(
+    snapshotRecordPath(deps, input.purpose, input.name),
+    `${JSON.stringify(record)}\n`,
+  );
   return snapshotId;
 }
 
 /** Input of {@link liftProtection}. */
 export interface LiftProtectionInput {
-  /** Root module variable that turns the protection off when set to `false` (`delete_protection`). */
-  variable: string;
-  /** False when the server is no longer in the state: nothing to lift, no plan. */
+  /**
+   * The root module variables that turn the protection off, each `false`: `delete_protection` of
+   * the app's server and `<name>_delete_protection` of each extra Hetzner server. None: nothing to
+   * lift (DigitalOcean has no delete protection).
+   */
+  vars: Readonly<Record<string, string>>;
+  /** The servers it lifts the protection of, by their names at the provider (default the app's). */
+  names?: readonly string[];
+  /** False when no protected server is in the state any more: nothing to lift, no plan. */
   serverInState: boolean;
   /** The snapshot taken first, mentioned when the user refuses. */
   snapshotId?: string;
@@ -622,18 +653,19 @@ export interface LiftProtectionInput {
 }
 
 /**
- * Lifts delete protection with a normal plan that sets `<variable>=false` and may only turn off
+ * Lifts delete protection with a normal plan that sets `input.vars` and may only turn off
  * `delete_protection`/`rebuild_protection` of `hcloud_server` resources (values known only after
  * apply count as changes), after an `iac-apply` approval bound to its hash.
- * Returns whether protection is off now and the approval, when one was given. Providers without
- * delete protection (DigitalOcean) have nothing to lift: no plan, no approval.
+ * Returns whether protection is off now and the approval, when one was given. Without variables
+ * (DigitalOcean has no delete protection) there is nothing to lift: no plan, no approval.
  */
 export async function liftProtection(
   session: DeletionSession & ServerScope,
   input: LiftProtectionInput,
 ): Promise<{ off: boolean; approval?: ApprovalRecord }> {
-  const { deps, app: name, command } = session;
-  if (!providerProfile(session.provider).deleteProtection) return { off: false };
+  const { deps, command } = session;
+  const name = listText([...(input.names ?? [session.app])]);
+  if (Object.keys(input.vars).length === 0) return { off: false };
   if (!input.serverInState) {
     deps.reporter.info(
       "The server is no longer in the infrastructure state, so there is no delete protection to lift.",
@@ -641,7 +673,7 @@ export async function liftProtection(
     return { off: false };
   }
   deps.reporter.step(`Planning to lift delete protection on ${name}`);
-  const summary = await savePlan(session, "unprotect", { vars: { [input.variable]: "false" } });
+  const summary = await savePlan(session, "unprotect", { vars: input.vars });
   try {
     if (summary.changes.length === 0) {
       deps.reporter.info(`Delete protection on ${name} is already off.`);

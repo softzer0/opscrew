@@ -336,10 +336,18 @@ export interface CloudflareRemoval {
   words: CloudflareRemovalWords;
 }
 
-/** The Cloudflare resources are the only ones in such a root module: anything else stops. */
-function cloudflareOnly(changes: readonly ResourceChange[], note: string): void {
+/**
+ * The Cloudflare resources are the only ones in such a root module, besides the modules of the
+ * app's extra cloud servers (`servers`, `module.server_<name>.`): anything else stops.
+ */
+function cloudflareOnly(
+  changes: readonly ResourceChange[],
+  note: string,
+  servers: readonly string[] = [],
+): void {
   const others = changes
     .filter((change) => !change.type.startsWith("cloudflare_"))
+    .filter((change) => !servers.some((module) => change.address.startsWith(module)))
     .map((change) => change.address);
   if (others.length === 0) return;
   throw planStop(
@@ -351,18 +359,24 @@ function cloudflareOnly(changes: readonly ResourceChange[], note: string): void 
 
 /**
  * 4. What the Cloudflare part of the teardown deletes, from a preview plan that is discarded (it
- * may only delete Cloudflare resources): the changes and their addresses to confirm.
+ * may only delete Cloudflare resources, and the app's extra cloud servers' modules `servers`
+ * with the `vars` that lift their delete protection): the changes and their addresses to confirm.
  */
 export async function previewCloudflareRemoval(
   session: DeletionSession,
   words: Pick<CloudflareRemovalWords, "what">,
-): Promise<{ resources: ResourceChange[]; confirmed: ReadonlySet<string> }> {
+  extra: { servers?: readonly string[]; vars?: Readonly<Record<string, string>> } = {},
+): Promise<{ resources: ResourceChange[]; confirmed: ReadonlySet<string>; planJson: unknown }> {
   session.deps.reporter.step(
     `Planning the removal of the app's ${words.what} to see what it deletes`,
   );
-  const preview = await previewDeletion(session, { suffix: "destroy-preview", destroy: true });
-  cloudflareOnly(preview.changes, "Nothing was changed.");
-  return { resources: preview.changes, confirmed: preview.addresses };
+  const preview = await previewDeletion(session, {
+    suffix: "destroy-preview",
+    destroy: true,
+    ...(extra.vars !== undefined ? { vars: extra.vars } : {}),
+  });
+  cloudflareOnly(preview.changes, "Nothing was changed.", extra.servers);
+  return { resources: preview.changes, confirmed: preview.addresses, planJson: preview.planJson };
 }
 
 /**
@@ -422,12 +436,18 @@ export async function approveCloudflareRemoval(
     appChanges: boolean;
     words: CloudflareRemovalWords;
     notes?: readonly string[];
+    /** The app's extra cloud servers' modules the plan may delete too, and their `-var`s. */
+    servers?: readonly string[];
+    vars?: Readonly<Record<string, string>>;
   },
 ): Promise<CloudflareRemoval | undefined> {
   const { deps, app: name } = session;
   const { words } = input;
   deps.reporter.step(`Planning the removal of the app's ${words.what}`);
-  const summary = await savePlan(session, "destroy", { destroy: true });
+  const summary = await savePlan(session, "destroy", {
+    destroy: true,
+    ...(input.vars !== undefined ? { vars: input.vars } : {}),
+  });
   try {
     if (summary.changes.length === 0) {
       deps.reporter.info("Nothing is left to delete on Cloudflare.");
@@ -445,7 +465,7 @@ export async function approveCloudflareRemoval(
             hint: DRIFT_THEN_DESTROY,
           },
     );
-    cloudflareOnly(summary.changes, "Nothing was deleted.");
+    cloudflareOnly(summary.changes, "Nothing was deleted.", input.servers);
     const tunnel = tunnelChange(summary.changes, "delete");
     const count = summary.changes.length;
     const place = upperFirst(words.place);

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { exists, lowerFirst, OpsCrewError, plural, tfstateFile } from "@opscrew/core";
 import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { destroyLocalhost } from "../localhost/destroy";
 import { planProvider, providerProfile } from "../providers";
@@ -23,13 +23,7 @@ import {
   tunnelSafeEngine,
   waitForTunnelToClose,
 } from "../shared/tunnel-connections";
-import {
-  dataWarning,
-  deletesServer,
-  deletionPlanProblems,
-  planHeading,
-  serverData,
-} from "./checks";
+import { dataWarning, deletesServer, deletionPlanProblems, planHeading } from "./checks";
 import {
   COMMAND,
   CONTINUES_WITH_LEFT,
@@ -66,12 +60,22 @@ import {
   removeSnapshotRecord,
   savePlan,
   snapshotKeptNote,
-  snapshotWanted,
-  takeSnapshotBeforeDelete,
 } from "./deletion";
 import { destroyOwnServer } from "./own";
 import { destroyPortainer } from "./portainer";
 import { destroyCloudflareWorkers, destroyGithubPages } from "./serverless";
+import {
+  confirmExtraServers,
+  extraCloudServers,
+  extraOwnServers,
+  extraProtectionVars,
+  forgetExtraCloudServers,
+  removeExtraOwnServers,
+  reopenPublicSsh,
+  serverLines,
+  serverSnapshots,
+  snapshotServers,
+} from "./servers";
 import {
   applySharedRemoval,
   planSharedRemoval,
@@ -97,7 +101,6 @@ import type { DestroyOptions, DestroyResult } from "./types";
  * Providers without delete protection (DigitalOcean) have no such variable and get no `-var`.
  */
 const PROTECTION_VARIABLE = "delete_protection";
-
 /** Everything the plan and apply steps share. */
 interface DestroyContext {
   /** Engine, root module and wording shared with the move's deletion steps. */
@@ -110,6 +113,8 @@ interface DestroyContext {
   sleep?: (ms: number) => Promise<void>;
   /** Deletes the server's runner registration at GitHub, right before the server is deleted. */
   unregisterRunner?: () => Promise<void>;
+  /** With extra servers, a line per server (`serverLines`) in the destroy plan's approval. */
+  servers?: readonly string[];
 }
 
 /**
@@ -221,6 +226,7 @@ async function destroyInfrastructure(
       details: [
         planHeading(summary, "destroy plan"),
         ...describeChanges(summary.changes),
+        ...(ctx.servers ?? []),
         ...(warning ? [warning] : []),
         snapshotLine,
         ...(tunnelChange(summary.changes, "delete") && !serverDeleted
@@ -510,6 +516,11 @@ export async function runDestroy(
     `Checking your ${profile.displayName}${usesCloudflare ? ", Cloudflare" : ""} and GitHub access`,
   );
   await checkProvider(deps, provider, services);
+  // The extra servers at another provider are deleted too: that provider's token as well.
+  const extras = extraCloudServers(plan);
+  for (const cloud of new Set(extras.map((server) => server.provider))) {
+    if (cloud !== provider) await checkProvider(deps, cloud, services);
+  }
   await checkCloudflare(deps, plan, services);
   const github = await resolveGitHub(deps, services);
   // The server's runner: its registration is deleted through GitHub's API before the server, so
@@ -526,7 +537,12 @@ export async function runDestroy(
     ...setup,
     dir: join(deps.paths.root, plan.infra.dir),
   });
-  const vars = profile.deleteProtection ? { [PROTECTION_VARIABLE]: "false" } : undefined;
+  // Delete protection off for the app's server and each extra Hetzner server, where it exists.
+  const protectionVars = {
+    ...(profile.deleteProtection ? { [PROTECTION_VARIABLE]: "false" } : {}),
+    ...extraProtectionVars(plan),
+  };
+  const vars = Object.keys(protectionVars).length > 0 ? protectionVars : undefined;
   const ctx: DestroyContext = {
     session,
     plan,
@@ -571,14 +587,25 @@ export async function runDestroy(
   // infrastructure is deleted, so a run that stopped before that continues with them).
   const shared = await planSharedRemoval(deps, plan, services);
   const cloudflarePlan = removalDetails(shared);
-  if (preview.changes.length === 0 && address === undefined && cloudflarePlan === undefined) {
+  // The user's own extra servers go after the infrastructure, so a run that stopped between the two
+  // finishes them on the next run.
+  const ownLeft = extraOwnServers(plan).length > 0 && plan.deployment.destroyedAt === undefined;
+  if (
+    preview.changes.length === 0 &&
+    address === undefined &&
+    cloudflarePlan === undefined &&
+    !ownLeft
+  ) {
     throw nothingDeployed(plan);
   }
   // With --delete-data, the app's bucket too (its own root and plan); without, it stays.
   const bucket =
     options.deleteData === true ? await planBucketDeletion(session, plan, setup) : undefined;
-  // Which server that is, by the id the state records (names need not be unique).
-  const { serverInState, serverIds } = preview;
+  // Each server the teardown deletes, by the id the state records (names need not be unique),
+  // and whether it gets a snapshot first; the app's server is the one under module.server.
+  const { serverIds } = preview;
+  const snapshots = serverSnapshots(plan, preview, options.snapshot);
+  const serverInState = snapshots.some((s) => s.server === APP_SERVER && s.inState);
   if (preview.changes.length > 0) {
     deps.reporter.info(
       ["The teardown deletes these resources:", ...describeChanges(preview.changes)].join("\n"),
@@ -586,20 +613,25 @@ export async function runDestroy(
   } else {
     deps.reporter.info("The infrastructure is already deleted; OpsCrew finishes the cleanup.");
   }
+  const servers = serverLines(plan, snapshots);
+  ctx.servers = servers;
+  if (servers.length > 0) deps.reporter.info(["The app's servers:", ...servers].join("\n"));
   if (cloudflarePlan !== undefined) deps.reporter.info(cloudflarePlan);
   const warning = dataWarning(plan, serverInState);
   if (warning) deps.reporter.warn(warning);
   const kept = options.deleteData === true ? undefined : providerBucket(plan);
   if (bucket !== undefined) deps.reporter.warn(bucketDeletionWarning(bucket));
   else if (kept !== undefined) deps.reporter.info(bucketStays(kept));
-  const data = {
-    serverData: serverData(plan).length > 0,
-    backups: cloudTarget(plan.target).backups,
-  };
-  const snapshotFirst = serverInState && snapshotWanted(options.snapshot, data);
+  const snapshotFirst = snapshots.some((s) => s.server === APP_SERVER && s.wanted);
   if (snapshotFirst) {
     deps.reporter.info(
       `A snapshot of the ${texts.noun} is taken first, so its data can be restored later (${texts.snapshotBilling}; \`--no-snapshot\` skips it).`,
+    );
+  }
+  for (const snapshot of snapshots.filter((s) => s.server !== APP_SERVER && s.wanted)) {
+    const extra = destroyTexts(snapshot.provider);
+    deps.reporter.info(
+      `A snapshot of server ${snapshot.server} (${snapshot.name}) is taken first too (${extra.snapshotBilling}; \`--no-snapshot\` skips it).`,
     );
   }
   if (serverInState && !profile.deleteProtection) {
@@ -609,23 +641,24 @@ export async function runDestroy(
     );
   }
   for (const note of checkPauseNote(plan)) deps.reporter.info(note);
-  await confirmDeletion(
-    session,
-    {
-      name,
-      confirmPrompt: destroyConfirmPrompt(name, provider),
-      provider,
-      deleteProtection: profile.deleteProtection,
-      resources: [...preview.changes, ...(bucket?.summary.changes ?? [])],
-      snapshot: snapshotFirst,
-      ...(warning ? { dataWarning: warning } : {}),
-      ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
-    },
-    options.confirm,
-  ).catch(async (error: unknown) => {
-    if (bucket !== undefined) await discardBucketDeletion(bucket);
-    throw error;
-  });
+  const confirmation = {
+    name,
+    confirmPrompt: destroyConfirmPrompt(name, provider),
+    provider,
+    deleteProtection: profile.deleteProtection,
+    resources: [...preview.changes, ...(bucket?.summary.changes ?? [])],
+    snapshot: snapshotFirst,
+    ...(warning ? { dataWarning: warning } : {}),
+    ...(cloudflarePlan !== undefined ? { cloudflarePlan } : {}),
+    ...(servers.length > 0 ? { servers } : {}),
+  };
+  // The app's name, then each extra cloud server's own name.
+  await confirmDeletion(session, confirmation, options.confirm)
+    .then(() => confirmExtraServers(session, plan, confirmation, options.confirm))
+    .catch(async (error: unknown) => {
+      if (bucket !== undefined) await discardBucketDeletion(bucket);
+      throw error;
+    });
 
   // 4a. The environment's runner comes off its runner machine (`runner: host`) and any other
   // machine that has it, first and alone, with its own approval; a machine it cannot reach stops
@@ -645,26 +678,33 @@ export async function runDestroy(
   // Its planned deletion never outlives this run.
   let bucketDeleted: BucketDeleted | undefined;
   let deleted: Awaited<ReturnType<typeof destroyInfrastructure>>;
-  let snapshotId: string | undefined;
+  let snapshotIds: Record<string, string | undefined> = {};
   let protection: Awaited<ReturnType<typeof liftProtection>>;
+  let current = plan;
+  let ownApprovals: ApprovalRecord[] = [];
   try {
     if (bucket?.bucket.provider === "r2") bucketDeleted = await deleteBucket(bucket);
 
-    // 5. Snapshot (inside the confirmed flow: after the typed name, before anything is deleted)
-    snapshotId = await takeSnapshotBeforeDelete(session, {
-      server: { inState: serverInState, ids: serverIds },
+    // 5. Snapshots (inside the confirmed flow: after the typed names, before anything is deleted),
+    // of every server the teardown deletes that wants one
+    snapshotIds = await snapshotServers(session, snapshots, {
       choice: options.snapshot ?? "auto",
-      data,
-      purpose: "destroy",
       ...(services.servers ? { servers: services.servers } : {}),
       ...(services.sleep ? { sleep: services.sleep } : {}),
       ...(services.now ? { now: services.now } : {}),
     });
+    const snapshotId = snapshotIds[APP_SERVER];
 
-    // 6. Lift delete protection (only where the provider has it)
+    // 6. Lift delete protection (only where the provider has it), on every Hetzner server
     protection = await liftProtection(session, {
-      variable: PROTECTION_VARIABLE,
-      serverInState,
+      vars: protectionVars,
+      names: [
+        ...(profile.deleteProtection ? [name] : []),
+        ...extras
+          .filter((server) => providerProfile(server.provider).deleteProtection)
+          .map((server) => server.resource),
+      ],
+      serverInState: deletesServer(preview.changes, "hetzner"),
       ...(snapshotId !== undefined ? { snapshotId } : {}),
       mismatchHint:
         "The infrastructure was probably changed outside OpsCrew, or its files no longer match what was applied. Run `opscrew drift` to see the differences and `opscrew provision` to bring everything back in line, then run `opscrew destroy` again.",
@@ -680,10 +720,19 @@ export async function runDestroy(
         ...(services.sleep ? { sleep: services.sleep } : {}),
       });
     }
+
+    // 7a. The user's own extra servers: public SSH opened again first when it is closed (removing
+    // a private network deletes the SSH rule on it), then OpsCrew's part removed from each.
+    current = await reopenPublicSsh(deps, plan, extraOwnServers(plan), services);
+    ownApprovals = await removeExtraOwnServers(deps, current, {
+      deleteData: options.deleteData === true,
+      services,
+    });
   } finally {
     if (bucket !== undefined) await discardBucketDeletion(bucket);
   }
   const { destroyed, approval: destroyApproval, tunnelApproval } = deleted;
+  const snapshotId = snapshotIds[APP_SERVER];
 
   // 7c. This app's hostnames leave OpsCrew's shared Cloudflare rules (`cloudflare-apply`)
   const sharedApproval = await applySharedRemoval(deps, plan, shared);
@@ -698,19 +747,22 @@ export async function runDestroy(
   if ((await forgetHostKeys(deps, [address?.ipv4, address?.ipv6])) > 0) {
     deps.reporter.info(`Removed the ${texts.noun}'s SSH host key from OpsCrew's known_hosts.`);
   }
+  await forgetExtraCloudServers(deps, plan);
   const approvals = [
     ...machines.map((outcome) => outcome.approval),
+    ...ownApprovals,
     bucketDeleted?.approval,
     protection.approval,
     destroyApproval,
     tunnelApproval,
     sharedApproval,
   ];
-  await recordTeardown(deps, plan, approvals, {
+  await recordTeardown(deps, current, approvals, {
     summary: "infrastructure destroyed",
     forgetAddress: true,
   });
   await removeSnapshotRecord(deps, "destroy");
+  for (const server of extras) await removeSnapshotRecord(deps, "destroy", server.resource);
   await deps.audit.append({
     kind: "phase",
     actor: "opscrew",
@@ -731,6 +783,17 @@ export async function runDestroy(
     bucketDeleted: options.deleteData === true,
     files: await deploymentFiles(deps, plan),
   });
+  // The extra servers' snapshots and kept backups, each by its name at the provider.
+  for (const server of extras) {
+    remaining.push(
+      ...remainingAfterDeletion({
+        provider: server.provider,
+        app: server.resource,
+        snapshotId: snapshotIds[server.name],
+        backups: server.backups,
+      }),
+    );
+  }
   remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
   failIfBucketListed(bucketDeleted);
