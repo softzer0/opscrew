@@ -631,7 +631,9 @@ Effort`.
         Dragonfly, on the pinned images (read works, write refused);
       - a peer added while a ping runs, with no loss;
       - Kafka, Redpanda and a MongoDB replica set placed on the second server pass their own
-        health checks, which connect back to their advertised private address.
+        health checks, which connect back to their advertised private address;
+      - the `grant` step's statements through `docker compose -p <app> exec -T` (no Compose file
+        argument), including `mongosh` reading its script from standard input.
     - Cleanup by name; skipped with a message without Docker.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter opscrew exec vitest run test/e2e/network.test.ts`
   - Effort: high

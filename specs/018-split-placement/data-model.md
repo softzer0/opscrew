@@ -83,10 +83,10 @@ mode 0600, written once by `vpn add` (again with `--again`). OpsCrew never reads
 |---|---|---|
 | `/etc/wireguard/wg-opscrew<k>.conf` | root, 0600 | `Address`, `ListenPort`, `PostUp = wg set %i private-key …`, `[Peer]` blocks. No private key in it. |
 | `/etc/wireguard/wg-opscrew<k>.key` | root, 0600 | The server's private key, written from standard input. |
-| `/etc/systemd/system/docker.service.d/opscrew-network.conf` | root | `Wants=`/`After=wg-quick@wg-opscrew<k>.service` for each interface, and `Requires=opscrew-network-filter.service`. |
-| `/usr/local/sbin/opscrew-network-filter`, `opscrew-network-filter.service` | root | The `OPSCREW-NET` chain in `DOCKER-USER`, run before Docker (fail-closed), as 009's web filter is. |
+| `/etc/systemd/system/docker.service.d/opscrew-network.conf` | root | `Wants=`/`After=wg-quick@wg-opscrew<k>.service` for each interface (the `network` step's). |
+| `/usr/local/sbin/opscrew-network-filter-<if>`, `opscrew-network-filter@.service`, `docker.service.d/opscrew-network-filter-<if>.conf` | root | Per interface, chain `OPSCREW-<if>` jumped to from `DOCKER-USER`, run before Docker, which `Requires=` it (fail-closed), as 009's web filter is. |
 | `/etc/opscrew/host.json` | root | The host record gains `networks`: interface → app, so a second app's plan picks the next port and never touches the first app's interface. |
-| ufw | | `<port>/udp` allowed; SSH allowed on each interface; with `publicSsh: false`, `22/tcp` removed. |
+| ufw | | `<port>/udp` allowed; the login's SSH port allowed on each interface; the host's Docker networks allowed to the private address on the published ports (`opscrew-network-local`); with `publicSsh: false`, the public SSH rules removed (on a server OpsCrew created also cloud-init's `22/tcp`). |
 
 ## In GitHub (secrets, through the typed adapter)
 
