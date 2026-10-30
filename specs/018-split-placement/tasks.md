@@ -355,7 +355,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T1812 [P] [US2] [US5] Agents: `status`, `logs`, `verify` and `secure` across servers, in `packages/agents/src/{status,logs,verify,secure}/**`
+- [X] T1812 [P] [US2] [US5] Agents: `status`, `logs`, `verify` and `secure` across servers, in `packages/agents/src/{status,logs,verify,secure}/**`
   - Owns: those paths (+ tests), except `secure/public-ssh.ts` (T1815)
   - Reads: plan.md "11."; spec US2, FR-1811, FR-1817; data-model.md
   - Depends: T1803, T1805, T1808
