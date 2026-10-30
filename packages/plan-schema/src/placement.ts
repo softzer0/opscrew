@@ -8,9 +8,16 @@ import { APP_SERVER, ComponentNameSchema, type PlanService } from "./components"
 import { IsoDateTimeSchema, onOneServer, type SelfHostedServiceKind } from "./enums";
 
 /** A device's name on an app's network (`network.devices[].name`). */
-export const DeviceNameSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/, {
-  message: "must be 1-32 lower-case letters, digits or hyphens and start with a letter",
-});
+export const DeviceNameSchema = z
+  .string()
+  .regex(/^[a-z][a-z0-9-]{0,31}$/, {
+    message: "must be 1-32 lower-case letters, digits or hyphens and start with a letter",
+  })
+  // A device's login on Valkey, Redis or Dragonfly is named after it, and `default` is theirs.
+  .refine((name) => name !== "default", {
+    message:
+      'must not be "default": that is the app\'s own login on Valkey, Redis and Dragonfly; choose another name, such as "laptop"',
+  });
 
 /**
  * A WireGuard public key: the base64 of exactly 32 bytes, as `wg pubkey` prints it. The 43rd

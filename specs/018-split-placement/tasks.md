@@ -406,6 +406,9 @@ Effort`.
       `grants` (today it keeps only `originTls`), so no provision wipes a key or a password.
     - **After the deploy `verify` sees succeed:** `deployment.placement` is written. With `move`
       set, provision calls `runMove`.
+    - **Order:** each server's `network` host plan is applied before the deploy that publishes
+      anything on its private address. Portainer's web UI goes on the private address only from
+      the plan of the app that owns the Portainer add-on (the host record's owner).
     - A plan without servers and network provisions exactly as before (the existing provision
       tests unchanged).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
@@ -433,13 +436,15 @@ Effort`.
 ## Phase 5: Wave 4
 
 - [ ] T1811 [US1] Agents: moving a live service, and `--finish-move`, in `packages/agents/src/move/**` and `packages/agents/src/retarget/server-ops.ts`
-  - Owns: `packages/agents/src/move/**` (+ tests). In `retarget/server-ops.ts` (+ test), only generalizations its own callers keep passing (service name, project folder). In `provision/run.ts`, only the `--finish-move` entry.
+  - Owns: `packages/agents/src/move/**` (+ tests). In `retarget/server-ops.ts` (+ test), only generalizations its own callers keep passing (service name, project folder). In `provision/run.ts`, only the `--finish-move` entry. In `packages/iac-templates/src/{runtime,catalog}/**`, only the rendering during a move (+ tests).
   - Reads: plan.md "10."; spec US1 #3, #5, FR-1809; ADR 0007; `retarget/window.ts`, `server-ops.ts`
   - Depends: T1810
   - Accept:
     - **`runMove`,** resumable at each step:
       - **`started` → `deployed`:** the rendered files, during a move, run the service on both
-        servers. The next deploy brings the new copy up, empty, on `to`.
+        servers, and the app's address for it stays `from`'s until `switched` (T1805 makes the
+        host follow `services[].server` at once, so the move's rendering is this task's). The next
+        deploy brings the new copy up, empty, on `to`.
       - **The window:**
         - pause the scheduled check;
         - stop the app, workers and cron on the app's server;
@@ -528,6 +533,8 @@ Effort`.
       - adds the grant and generates the password (kept in the generated values' `grants`);
       - for the four databases, the `grant` host step on the service's server; for the
         Redis-protocol kinds, the env secret with `OPSCREW_ACL_USERS`;
+      - provision resolves T1805's `grant-sha256:<device>` secret reference (`grantHashSecret`)
+        in `OPSCREW_ACL_USERS` to the lower-case hex SHA-256 of that grant's password;
       - in both cases the filter's sources are updated, and the service is published on its
         server's private address when it wasn't (a deploy through the pull request);
       - prints once a client line and a URL (`psql`, `mysql`, `mongosh` with
@@ -593,7 +600,9 @@ Effort`.
         refused after revoke;
       - each database kind's `grant` statements, and the ACL wrapper on Valkey, Redis and
         Dragonfly, on the pinned images (read works, write refused);
-      - a peer added while a ping runs, with no loss.
+      - a peer added while a ping runs, with no loss;
+      - Kafka, Redpanda and a MongoDB replica set placed on the second server pass their own
+        health checks, which connect back to their advertised private address.
     - Cleanup by name; skipped with a message without Docker.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter opscrew exec vitest run test/e2e/network.test.ts`
   - Effort: high

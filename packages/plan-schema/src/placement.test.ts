@@ -151,11 +151,11 @@ describe("the names and keys", () => {
     );
   });
 
-  it("accepts a device name of 1-32 lower-case letters, digits or hyphens", () => {
+  it("accepts a device name of 1-32 lower-case letters, digits or hyphens, never default", () => {
     for (const name of ["laptop", "ci-runner-2", `a${"b".repeat(31)}`]) {
       expect(DeviceNameSchema.safeParse(name).success, name).toBe(true);
     }
-    for (const name of ["", "Laptop", "2laptop", "my laptop", `a${"b".repeat(32)}`]) {
+    for (const name of ["", "Laptop", "2laptop", "my laptop", `a${"b".repeat(32)}`, "default"]) {
       expect(DeviceNameSchema.safeParse(name).success, name).toBe(false);
     }
   });
