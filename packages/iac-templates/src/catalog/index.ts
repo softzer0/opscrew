@@ -1,12 +1,18 @@
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan, PlanService, SelfHostedServiceKind } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  type PlanService,
+  type SelfHostedServiceKind,
+  servicesOn,
+} from "@opscrew/plan-schema";
 import { IMAGES } from "../pins";
 import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
-import { DRAGONFLY_MIN_VCPUS, SERVICE_SPECS } from "./entries";
+import { DRAGONFLY_MIN_VCPUS, grantHashSecret, SERVICE_SPECS } from "./entries";
 import type { ServiceContext, ServiceSpec } from "./types";
 
-export { DRAGONFLY_MIN_VCPUS, SERVICE_SPECS };
+export { DRAGONFLY_MIN_VCPUS, grantHashSecret, SERVICE_SPECS };
 
 /** {@link SERVICE_SPECS} by kind: one entry for every kind (a test checks each is there). */
 export const CATALOG = Object.fromEntries(
@@ -19,13 +25,14 @@ export function serviceSpec(kind: SelfHostedServiceKind): ServiceSpec {
 }
 
 /**
- * The kernel settings the plan's enabled services need from the host, each a minimum
- * (`vm.max_map_count` for OpenSearch and Elasticsearch); empty when none does.
+ * The kernel settings the enabled services on `server` (the app's by default, or an extra server's
+ * name) need from its host, each a minimum (`vm.max_map_count` for OpenSearch and
+ * Elasticsearch); empty when none does.
  */
-export function hostSysctl(plan: DeployPlan): Record<string, string> {
+export function hostSysctl(plan: DeployPlan, server = APP_SERVER): Record<string, string> {
   return Object.assign(
     {},
-    ...enabledServices(plan).map((service) => serviceSpec(service.kind).hostSettings?.sysctl),
+    ...servicesOn(plan, server).map((service) => serviceSpec(service.kind).hostSettings?.sysctl),
   );
 }
 
@@ -104,11 +111,11 @@ export function appVariables(ctx: ServiceContext): Record<string, string> {
 }
 
 /**
- * The one-time setup steps of the plan's services, in the plan's order, for the deploy on a
- * server (MongoDB's replica set).
+ * The one-time setup steps of the services on `server` (the app's by default, or an extra
+ * server's name), in the plan's order, for the deploy there (MongoDB's replica set).
  */
-export function initStepsFor(plan: DeployPlan): ServiceInitStep[] {
-  return enabledServices(plan).flatMap(
+export function initStepsFor(plan: DeployPlan, server = APP_SERVER): ServiceInitStep[] {
+  return servicesOn(plan, server).flatMap(
     (service) => serviceSpec(service.kind).init?.(renderContext(plan, service)) ?? [],
   );
 }

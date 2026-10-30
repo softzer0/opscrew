@@ -7,6 +7,7 @@ import { type FakeSecretKind, fakeSecret } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { withPlacement } from "../catalog/__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { GRAFANA_CLOUD, HUB_KEY, observabilityPlan } from "./__fixtures__/plans";
 import { type AddonKind, BESZEL_TOKEN_PLACEHOLDER, renderAddon } from "./index";
@@ -237,6 +238,27 @@ describe("Beszel", () => {
     // TOKEN and KEY come from agent.env (the hub's key is OpsCrew's, generated with the token).
     expect(agent?.environment).not.toHaveProperty("KEY");
     expect(agent?.environment).not.toHaveProperty("TOKEN");
+  });
+
+  it("in hub mode also publishes the hub on the app's private address on a server for this app alone", () => {
+    const hubMode = plans["Beszel, hub mode"]();
+    const devices = withPlacement(hubMode, { devices: ["laptop"] });
+    const alone = { dashboardsOnNetwork: true };
+    const content = renderAddon(devices, "beszel", alone)[0]?.content ?? "";
+    expect(parse(content).services.hub.ports).toEqual([
+      "127.0.0.1:8090:8090",
+      "10.200.4.1:8090:8090",
+    ]);
+    expect(content).toContain(
+      "# Beszel's hub (its dashboard, on this server's loopback, and for your devices on its private address 10.200.4.1) and its agent, which reads Docker",
+    );
+    // By default (a server other apps may share) the files stay as they are, devices or not;
+    // the agent alone publishes nothing.
+    expect(files(devices, "beszel")).toEqual(files(hubMode, "beszel"));
+    const agentMode = plans["Beszel, agent mode"]();
+    expect(renderAddon(withPlacement(agentMode, { devices: ["laptop"] }), "beszel", alone)).toEqual(
+      renderAddon(agentMode, "beszel"),
+    );
   });
 
   it("in agent mode runs only the agent and the proxy, connected out to the user's hub", () => {

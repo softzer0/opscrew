@@ -1,4 +1,5 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
+import type { RenderContext } from "../types";
 import { renderAlloyCompose, renderAlloyConfig } from "./alloy";
 import { renderBeszelCompose, renderBeszelConfig } from "./beszel";
 import { renderProxyCaddyfile } from "./proxy";
@@ -18,17 +19,22 @@ export interface AddonFile {
  * The files of an add-on's folder on the server (`opscrew/addons/<name>`): `compose.yaml`, the
  * read-only Docker proxy's `Caddyfile`, and Beszel's `config.yml` or Alloy's `config.alloy`. None
  * holds a secret: the host step writes the secrets into files of their own beside them, and the
- * agent's token into `config.yml` in place of {@link BESZEL_TOKEN_PLACEHOLDER}.
+ * agent's token into `config.yml` in place of {@link BESZEL_TOKEN_PLACEHOLDER}. Beszel's hub is
+ * also published on the app's private address with `ctx.dashboardsOnNetwork`.
  * @throws Error when the plan doesn't turn the add-on on.
  */
-export function renderAddon(plan: DeployPlan, kind: AddonKind): AddonFile[] {
+export function renderAddon(
+  plan: DeployPlan,
+  kind: AddonKind,
+  ctx: Pick<RenderContext, "dashboardsOnNetwork"> = {},
+): AddonFile[] {
   if (kind === "beszel") {
     const beszel = plan.observability?.beszel;
     if (!beszel?.enabled) {
       throw new Error("The plan doesn't turn Beszel on (observability.beszel.enabled).");
     }
     return [
-      { path: "compose.yaml", content: renderBeszelCompose(plan, beszel) },
+      { path: "compose.yaml", content: renderBeszelCompose(plan, beszel, ctx) },
       { path: "Caddyfile", content: renderProxyCaddyfile(kind) },
       ...(beszel.mode === "hub" ? [{ path: "config.yml", content: renderBeszelConfig(plan) }] : []),
     ];

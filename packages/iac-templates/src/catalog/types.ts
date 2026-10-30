@@ -27,7 +27,10 @@ export interface GeneratedSecret {
  */
 export interface ServiceContext {
   plan: DeployPlan;
-  /** The plan's entry: its name (the host on the app's network), version, memory and options. */
+  /**
+   * The plan's entry: its name (the host on the app's network when it runs on the app's server),
+   * version, memory, options and the server it is placed on.
+   */
   service: PlanService;
   /** The reference to one of the entry's {@link ServiceSpec.secrets}, by its name. */
   secretRef: (name: string) => string;
@@ -61,7 +64,7 @@ export interface ServiceSpec {
   /** `note`: the plain sentence design shows when the licence is not permissive. */
   licence: { id: string; permissive: boolean; note?: string };
   memory: { defaultMb: number; minimumMb: number; smallestServerMb: number };
-  /** Internal only, never published. */
+  /** Its port, published only on a private address of the app's network (ADR 0022). */
   port: number;
   /**
    * Where the data is in the container: one folder, mounted from `/srv/data/<app>/<service>`

@@ -97,6 +97,13 @@ export interface RenderContext {
    * `module "server"`.
    */
   layout?: InfraLayout;
+  /**
+   * The app's server hosts this app alone (always so on a cloud server) and the app's private
+   * network has devices: Beszel's hub and Portainer's web UI, whose files every app on a server
+   * shares, are then also published on the app's server's private address. Default false, so the
+   * dashboards' files stay the same from every app's plan.
+   */
+  dashboardsOnNetwork?: boolean | undefined;
 }
 
 /**

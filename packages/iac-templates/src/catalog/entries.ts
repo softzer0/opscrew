@@ -9,7 +9,9 @@
  * comment at each entry). Design refuses a service on a server below its smallest one.
  */
 import { sha256Hex } from "@opscrew/core";
-import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
+import { privateAddress } from "../runtime/network";
+import { shellQuote } from "../runtime/services";
 import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
 import type { ServiceContext, ServiceSpec } from "./types";
@@ -17,6 +19,16 @@ import type { ServiceContext, ServiceSpec } from "./types";
 const BOTH_TARGETS: ServiceSpec["targets"] = ["server", "portainer"];
 const PASSWORD = { name: "password", format: "hex32" } as const;
 const ROOT_PASSWORD = { name: "root-password", format: "hex32" } as const;
+
+/**
+ * The service's host for the app (`host`), which is also the one it advertises to its clients
+ * (`advertisedHost`: Kafka's and Redpanda's listeners, MongoDB's replica set): its Compose name on
+ * the app's server, or the private address of the extra server it is placed on (ADR 0022).
+ */
+function serviceHost(ctx: ServiceContext): string {
+  const server = ctx.service.server ?? APP_SERVER;
+  return server === APP_SERVER ? ctx.service.name : privateAddress(ctx.plan, server);
+}
 
 /** The header of every settings file OpsCrew writes for a service, naming the plan's file. */
 function header(plan: DeployPlan, comment: string, ...lines: string[]): string[] {
@@ -33,7 +45,7 @@ function xmlHeader(plan: DeployPlan, ...lines: string[]): string[] {
 
 /** A URL the app logs in with: `<scheme>://<user>:<password>@<service>:<port><path>`. */
 function loginUrl(ctx: ServiceContext, scheme: string, port: number, path: string): string {
-  return `${scheme}://app:${ctx.secretRef(PASSWORD.name)}@${ctx.service.name}:${port}${path}`;
+  return `${scheme}://app:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:${port}${path}`;
 }
 
 /** True for a Valkey, Redis 8 or Dragonfly in queue mode. */
@@ -54,7 +66,7 @@ function redisVariables(ctx: ServiceContext, url: string): Record<string, string
 
 /** The URL of a Valkey, Redis 8 or Dragonfly, which require the password of their default user. */
 function passwordRedisUrl(ctx: ServiceContext): string {
-  return `redis://:${ctx.secretRef(PASSWORD.name)}@${ctx.service.name}:6379`;
+  return `redis://:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:6379`;
 }
 
 /** A health check that logs in with the password in `variable` and reads the reply. */
@@ -109,28 +121,109 @@ function redisModeArgs(service: PlanService): string[] {
 /** Where Valkey's and Redis 8's containers write the password, readable by the server only. */
 const REDIS_AUTH_FILE = "/tmp/opscrew-auth.conf";
 
+/** `arg` as one shell word: as it is, or quoted when the shell would split or expand it. */
+function shellWord(arg: string): string {
+  return /^[\w.,:/=@%+-]+$/.test(arg) ? arg : shellQuote(arg);
+}
+
+/**
+ * The variable of a Valkey, Redis or Dragonfly service's environment that declares the devices'
+ * logins: one `<device>:<access>:<sha256 of its password>` line per grant (research R6a).
+ */
+const ACL_USERS = "OPSCREW_ACL_USERS";
+
+/** Where the start wrapper writes the users of a Valkey, Redis or Dragonfly with device logins. */
+const ACL_FILE = "/tmp/opscrew-users.acl";
+
+/**
+ * The name of the secret a Valkey, Redis or Dragonfly service's context resolves to the SHA-256
+ * (lower-case hex) of `device`'s login password, for that device's line of `OPSCREW_ACL_USERS`:
+ * the service's environment carries the hash only, never the password.
+ */
+export function grantHashSecret(device: string): string {
+  return `grant-sha256:${device}`;
+}
+
+/** The plan's device grants on the service of `ctx`. */
+function grantsOn(ctx: ServiceContext) {
+  return ctx.plan.network?.grants.filter((grant) => grant.service === ctx.service.name) ?? [];
+}
+
+/** {@link ACL_USERS} when the service of `ctx` has device grants; else nothing. */
+function aclUsers(ctx: ServiceContext): Record<string, string> {
+  const grants = grantsOn(ctx);
+  if (grants.length === 0) return {};
+  const lines = grants.map(
+    (grant) => `${grant.device}:${grant.access}:${ctx.secretRef(grantHashSecret(grant.device))}`,
+  );
+  return { [ACL_USERS]: lines.join("\n") };
+}
+
+/** The ACL rules of the default user, the app's login, on Valkey, Redis 8 and Dragonfly. */
+const DEFAULT_ACL = "~* &* +@all";
+
+/** The ACL rules of a device's login by its access (research R6a). */
+type AclRules = Record<"read-only" | "full", string>;
+
+/** Valkey's and Redis 8's rules: read-only adds what clients send on connecting. */
+const REDIS_ACL: AclRules = {
+  "read-only": "~* &* +@read +ping +hello +client|setname +client|setinfo -@write",
+  full: DEFAULT_ACL,
+};
+
+/** Dragonfly's rules: read-only keys need its `%R~*` pattern. */
+const DRAGONFLY_ACL: AclRules = {
+  "read-only": "resetkeys %R~* +@read +ping +hello -@write",
+  full: "%RW~* +@all",
+};
+
+/**
+ * The start wrapper's first commands for a service with device logins (research R6a): a fresh
+ * {@link ACL_FILE} at every start, owned by the server's `user`, with the default user from the
+ * app's password in `variable` (as its SHA-256, with {@link DEFAULT_ACL}), then one user per line
+ * of {@link ACL_USERS} with its access's `rules` (a line with another access gets none). Nothing
+ * is saved, so a restart can't lose a login or revive an old password.
+ */
+function aclFileCommands(variable: string, rules: AclRules, user: string): string[] {
+  const users = [
+    `printf '%s\\n' "$${ACL_USERS}" | while IFS=: read -r name access hash; do`,
+    `case "$access" in read-only) rules='${rules["read-only"]}' ;; full) rules='${rules.full}' ;; *) continue ;; esac;`,
+    `printf 'user %s on #%s %s\\n' "$name" "$hash" "$rules"; done;`,
+  ].join(" ");
+  return [
+    "umask 077",
+    `{ h=$(printf %s "$${variable}" | sha256sum | cut -d ' ' -f 1); printf 'user %s on #%s %s\\n' default "$h" '${DEFAULT_ACL}'; ${users} } > ${ACL_FILE}`,
+    `chown ${user}:${user} ${ACL_FILE}`,
+  ];
+}
+
 /**
  * Valkey or Redis 8 (`server`) with its modes ({@link redisModeArgs}) and the password in
  * `variable`. The shell writes the password from the environment into a settings file inside the
  * container (never into a repository file, nor the server's command line) and owned by the user
  * of the same name, the one the image's entrypoint drops to; the entrypoint drops root (and Redis 8's loads its modules:
- * Search, JSON, Time Series, Bloom) only when the command is the server.
+ * Search, JSON, Time Series, Bloom) only when the command is the server. With device logins, the
+ * server starts on the wrapper's ACL file instead ({@link aclFileCommands}), without `requirepass`.
  */
 function passwordServerCommand(
   ctx: ServiceContext,
   server: "valkey" | "redis",
   variable: string,
 ): string[] {
-  const args = redisModeArgs(ctx.service).map((arg) => (arg === "" ? "''" : arg));
-  return [
-    "sh",
-    "-c",
-    [
-      `umask 077 && printf 'requirepass %s\\n' "$${variable}" > ${REDIS_AUTH_FILE}`,
-      `chown ${server}:${server} ${REDIS_AUTH_FILE}`,
-      [`exec docker-entrypoint.sh ${server}-server`, REDIS_AUTH_FILE, ...args].join(" "),
-    ].join(" && "),
-  ];
+  const args = redisModeArgs(ctx.service).map(shellWord);
+  const start = `exec docker-entrypoint.sh ${server}-server`;
+  const script =
+    grantsOn(ctx).length > 0
+      ? [
+          ...aclFileCommands(variable, REDIS_ACL, server),
+          [start, "--aclfile", ACL_FILE, ...args].join(" "),
+        ]
+      : [
+          `umask 077 && printf 'requirepass %s\\n' "$${variable}" > ${REDIS_AUTH_FILE}`,
+          `chown ${server}:${server} ${REDIS_AUTH_FILE}`,
+          [start, REDIS_AUTH_FILE, ...args].join(" "),
+        ];
+  return ["sh", "-c", script.join(" && ")];
 }
 
 const VALKEY: ServiceSpec = {
@@ -146,7 +239,7 @@ const VALKEY: ServiceSpec = {
   port: 6379,
   dataDir: "/data",
   command: (ctx) => passwordServerCommand(ctx, "valkey", "VALKEY_PASSWORD"),
-  environment: (ctx) => ({ VALKEY_PASSWORD: ctx.secretRef(PASSWORD.name) }),
+  environment: (ctx) => ({ VALKEY_PASSWORD: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
   healthcheck: redisCliCheck("VALKEY_PASSWORD", "valkey-cli"),
   secrets: [PASSWORD],
   auth: "password",
@@ -171,7 +264,7 @@ const REDIS: ServiceSpec = {
   port: 6379,
   dataDir: "/data",
   command: (ctx) => passwordServerCommand(ctx, "redis", "REDIS_PASSWORD"),
-  environment: (ctx) => ({ REDIS_PASSWORD: ctx.secretRef(PASSWORD.name) }),
+  environment: (ctx) => ({ REDIS_PASSWORD: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
   healthcheck: redisCliCheck("REDIS_PASSWORD"),
   secrets: [PASSWORD],
   auth: "password",
@@ -192,10 +285,24 @@ export const DRAGONFLY_MIN_VCPUS = 2;
  * server's vCPUs (`options.threads`; {@link DRAGONFLY_MIN_VCPUS} when design does not know them).
  * Its HTTP console on the same port is off. A queue never evicts and keeps a snapshot, saved
  * every minute and when it stops; a cache evicts and keeps nothing. BullMQ's scripts need locks
- * by hashtag (https://www.dragonflydb.io/docs/integrations/bullmq).
+ * by hashtag (https://www.dragonflydb.io/docs/integrations/bullmq). With device logins, the
+ * wrapper ({@link aclFileCommands}) starts it through the image's entrypoint on its ACL file, with
+ * `DFLY_requirepass` unset.
  */
 function dragonflyCommand(ctx: ServiceContext): string[] {
-  const { service } = ctx;
+  const flags = dragonflyFlags(ctx.service);
+  if (grantsOn(ctx).length === 0) return ["dragonfly", ...flags];
+  const start = ["exec entrypoint.sh dragonfly --aclfile", ACL_FILE, ...flags.map(shellWord)];
+  const script = [
+    ...aclFileCommands("DFLY_requirepass", DRAGONFLY_ACL, "dfly"),
+    "unset DFLY_requirepass",
+    start.join(" "),
+  ];
+  return ["sh", "-c", script.join(" && ")];
+}
+
+/** {@link dragonflyCommand}'s flags. */
+function dragonflyFlags(service: PlanService): string[] {
   const maxmemory = redisMaxmemoryMb(service);
   const options = service.kind === "dragonfly" ? service.options : undefined;
   const threads = Math.max(
@@ -203,7 +310,6 @@ function dragonflyCommand(ctx: ServiceContext): string[] {
     Math.min(Math.floor(maxmemory / DRAGONFLY_THREAD_MB), options?.threads ?? DRAGONFLY_MIN_VCPUS),
   );
   return [
-    "dragonfly",
     "--logtostderr",
     `--proactor_threads=${threads}`,
     `--maxmemory=${maxmemory}mb`,
@@ -232,7 +338,7 @@ const DRAGONFLY: ServiceSpec = {
   dataDir: "/data",
   command: dragonflyCommand,
   // Dragonfly reads each of its flags from `DFLY_<flag>` (an unknown one stops it).
-  environment: (ctx) => ({ DFLY_requirepass: ctx.secretRef(PASSWORD.name) }),
+  environment: (ctx) => ({ DFLY_requirepass: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
   // Its own health check sends PING without the password and counts any reply.
   healthcheck: redisCliCheck("DFLY_requirepass"),
   secrets: [PASSWORD],
@@ -382,7 +488,7 @@ function mongosh(script: string): string[] {
  */
 function mongoInit(ctx: ServiceContext): ServiceInitStep[] {
   if (!replicaSet(ctx)) return [];
-  const member = `${ctx.service.name}:27017`;
+  const member = `${serviceHost(ctx)}:27017`;
   return [
     {
       service: ctx.service.name,
@@ -529,14 +635,14 @@ const NATS: ServiceSpec = {
   healthcheck: { test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8222/healthz"] },
   secrets: [{ name: "token", format: "hex32" }],
   auth: "token",
-  address: (ctx) => `nats://${ctx.secretRef("token")}@${ctx.service.name}:4222`,
+  address: (ctx) => `nats://${ctx.secretRef("token")}@${serviceHost(ctx)}:4222`,
   conventionalVariables: (_ctx, url) => ({ NATS_URL: url }),
   targets: BOTH_TARGETS,
 };
 
 /** Kafka and Redpanda: where the app's Kafka clients connect, and the names they read it from. */
 const BROKER_VARIABLES: Pick<ServiceSpec, "address" | "conventionalVariables"> = {
-  address: (ctx) => `${ctx.service.name}:9092`,
+  address: (ctx) => `${serviceHost(ctx)}:9092`,
   conventionalVariables: (_ctx, brokers) => ({
     KAFKA_BROKERS: brokers,
     KAFKA_BOOTSTRAP_SERVERS: brokers,
@@ -563,7 +669,7 @@ function kafkaEnvironment(ctx: ServiceContext): Record<string, string> {
     KAFKA_NODE_ID: "1",
     KAFKA_PROCESS_ROLES: "broker,controller",
     KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://localhost:9093",
-    KAFKA_ADVERTISED_LISTENERS: `PLAINTEXT://${ctx.service.name}:9092`,
+    KAFKA_ADVERTISED_LISTENERS: `PLAINTEXT://${serviceHost(ctx)}:9092`,
     KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER",
     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
     KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093",
@@ -649,7 +755,7 @@ const REDPANDA: ServiceSpec = {
     "--kafka-addr",
     "0.0.0.0:9092",
     "--advertise-kafka-addr",
-    `${ctx.service.name}:9092`,
+    `${serviceHost(ctx)}:9092`,
   ],
   environment: () => ({}),
   healthcheck: {
@@ -735,7 +841,7 @@ const GARAGE: ServiceSpec = {
     { name: "secret-key", format: "hex32" },
   ],
   auth: "key",
-  address: (ctx) => `http://${ctx.service.name}:3900`,
+  address: (ctx) => `http://${serviceHost(ctx)}:3900`,
   conventionalVariables: (ctx, endpoint) => ({
     AWS_ACCESS_KEY_ID: ctx.secretRef("key-id"),
     AWS_SECRET_ACCESS_KEY: ctx.secretRef("secret-key"),
@@ -800,7 +906,7 @@ const OPENSEARCH: ServiceSpec = {
   },
   secrets: [],
   auth: "internal-only",
-  address: (ctx) => `http://${ctx.service.name}:9200`,
+  address: (ctx) => `http://${serviceHost(ctx)}:9200`,
   conventionalVariables: (_ctx, url) => ({ OPENSEARCH_URL: url }),
   ulimits: { nofile: 65536 },
   hostSettings: MAX_MAP_COUNT,
@@ -843,7 +949,7 @@ const ELASTICSEARCH: ServiceSpec = {
   },
   secrets: [PASSWORD],
   auth: "password",
-  address: (ctx) => `http://elastic:${ctx.secretRef(PASSWORD.name)}@${ctx.service.name}:9200`,
+  address: (ctx) => `http://elastic:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:9200`,
   conventionalVariables: (_ctx, url) => ({ ELASTICSEARCH_URL: url }),
   ulimits: { nofile: 65536 },
   hostSettings: MAX_MAP_COUNT,
@@ -876,7 +982,7 @@ const MEILISEARCH: ServiceSpec = {
   secrets: [{ name: "master-key", format: "hex32" }],
   auth: "key",
   // Laravel Scout's names, which the other clients' examples use too.
-  address: (ctx) => `http://${ctx.service.name}:7700`,
+  address: (ctx) => `http://${serviceHost(ctx)}:7700`,
   conventionalVariables: (ctx, url) => ({
     MEILISEARCH_HOST: url,
     MEILISEARCH_KEY: ctx.secretRef("master-key"),
@@ -907,9 +1013,9 @@ const TYPESENSE: ServiceSpec = {
   secrets: [{ name: "api-key", format: "hex32" }],
   auth: "key",
   // Its clients take the address in parts (Laravel Scout's names).
-  address: (ctx) => `http://${ctx.service.name}:8108`,
+  address: (ctx) => `http://${serviceHost(ctx)}:8108`,
   conventionalVariables: (ctx) => ({
-    TYPESENSE_HOST: ctx.service.name,
+    TYPESENSE_HOST: serviceHost(ctx),
     TYPESENSE_PORT: "8108",
     TYPESENSE_PROTOCOL: "http",
     TYPESENSE_API_KEY: ctx.secretRef("api-key"),
@@ -1040,7 +1146,7 @@ const NEO4J: ServiceSpec = {
   healthcheck: { test: bashHttpCheck(7474, "/"), startSeconds: 60 },
   secrets: [PASSWORD],
   auth: "password",
-  address: (ctx) => `bolt://${ctx.service.name}:7687`,
+  address: (ctx) => `bolt://${serviceHost(ctx)}:7687`,
   conventionalVariables: (ctx, url) => ({
     NEO4J_URI: url,
     NEO4J_USERNAME: "neo4j",

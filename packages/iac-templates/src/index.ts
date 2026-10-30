@@ -4,6 +4,7 @@ export {
   appVariables,
   CATALOG,
   DRAGONFLY_MIN_VCPUS,
+  grantHashSecret,
   hostSysctl,
   initStepsFor,
   pinnedVersion,

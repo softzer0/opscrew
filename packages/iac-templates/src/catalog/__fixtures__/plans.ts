@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -36,6 +37,71 @@ export function withServices(
         ...service,
       };
     }),
+  });
+}
+
+/** A WireGuard public key made at runtime from `seed` (the base64 of its SHA-256), never a literal. */
+function wireGuardKey(seed: string): string {
+  return createHash("sha256").update(seed).digest("base64");
+}
+
+/** Where {@link withPlacement} puts the app's services, its devices and their grants. */
+export interface Placement {
+  /** Extra servers by name: Hetzner in the app's location, or `own`. */
+  servers?: Record<string, "hetzner" | "own">;
+  /** Service name → the extra server it runs on. */
+  placed?: Record<string, string>;
+  /** Devices on the network, from `.100`. */
+  devices?: string[];
+  grants?: { device: string; service: string; access: "read-only" | "full" }[];
+}
+
+/**
+ * `plan` with extra servers, its services placed on them, and the private network `10.200.4.0/24`:
+ * the app's server `.1`, each extra server from `.2` in order, each device from `.100`.
+ */
+export function withPlacement(plan: DeployPlan, o: Placement): DeployPlan {
+  const servers = Object.entries(o.servers ?? {});
+  const members = ["app", ...servers.map(([name]) => name)];
+  return DeployPlanSchema.parse({
+    ...plan,
+    ...(servers.length > 0
+      ? {
+          servers: servers.map(([name, provider]) => ({
+            name,
+            target:
+              provider === "own"
+                ? { provider, mode: "vps-compose", arch: "amd64" }
+                : {
+                    provider,
+                    mode: "vps-compose",
+                    location: "nbg1",
+                    serverType: "cx33",
+                    backups: true,
+                  },
+          })),
+        }
+      : {}),
+    services: plan.services.map((service) => {
+      const server = o.placed?.[service.name];
+      return server === undefined ? service : { ...service, server };
+    }),
+    network: {
+      range: "10.200.4.0/24",
+      members: members.map((name, i) => ({
+        name,
+        address: `10.200.4.${i + 1}`,
+        port: 51820,
+        publicKey: wireGuardKey(name),
+      })),
+      devices: (o.devices ?? []).map((name, i) => ({
+        name,
+        address: `10.200.4.${100 + i}`,
+        publicKey: wireGuardKey(`device ${name}`),
+        addedAt: "2026-10-30T12:00:00.000Z",
+      })),
+      grants: o.grants ?? [],
+    },
   });
 }
 

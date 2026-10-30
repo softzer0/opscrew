@@ -4,23 +4,18 @@
  * catalog's services, the workers and the `cron` service with its crontab (contracts/components.md).
  */
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
-import type { DeployPlan, PlanService } from "@opscrew/plan-schema";
-import {
-  checkServiceVersion,
-  dataDirs,
-  enabledServices,
-  hostSysctl,
-  renderContext,
-  serviceSpec,
-} from "../catalog";
+import { APP_SERVER, type DeployPlan, type PlanService, servicesOn } from "@opscrew/plan-schema";
+import { checkServiceVersion, dataDirs, hostSysctl, renderContext, serviceSpec } from "../catalog";
 import type { ServiceSpec } from "../catalog/types";
 import { GENERATED_USERS } from "../docker/stacks";
 import { IMAGES } from "../pins";
 import { runtimeDir } from "../runtime-dir";
-import type { RenderedFile } from "../types";
+import { BESZEL_PORT, PORTAINER_PORT } from "../tunnel";
+import type { RenderContext, RenderedFile } from "../types";
 import { BUILDPACKS_RUN_USER, RAILPACK_USER } from "../workflow/build";
 import { planFilePath, sqliteFolder } from "../workflow/shared";
 import { RUBY_WITHOUT_RUBYOPT } from "./healthcheck";
+import { dashboardAddress, publishedAddress } from "./network";
 import { composeLiteral, hardened, scriptLiteral, shellQuote } from "./services";
 
 /** `mem_limit` and an equal `memswap_limit`: Docker's default lets a container swap as much again. */
@@ -128,18 +123,37 @@ const HOST_SYSCTL_FILE = "/etc/sysctl.d/90-opscrew.conf";
 const SYSCTL_MEMORY_MB = 16;
 
 /**
- * `["sysctl"]` when the plan's services need host kernel settings on a server OpsCrew created
- * ({@link sysctlService}), which the deploy starts with the services; else none. On a server the
- * user owns the host plan sets them (in `/etc/sysctl.d`, approved by its hash).
+ * `["sysctl"]` when the services on `server` (the app's by default, or an extra server's name)
+ * need host kernel settings on a server OpsCrew created ({@link sysctlService}), which the deploy
+ * starts with the services; else none. On a server the user owns the host plan sets them (in
+ * `/etc/sysctl.d`, approved by its hash).
  */
-export function hostSettingsServices(plan: DeployPlan): string[] {
-  return Object.keys(hostSysctl(plan)).length > 0 && plan.target.provider !== "own"
+export function hostSettingsServices(plan: DeployPlan, server = APP_SERVER): string[] {
+  return Object.keys(hostSysctl(plan, server)).length > 0 && serverProvider(plan, server) !== "own"
     ? [SYSCTL_SERVICE]
     : [];
 }
 
+/** The provider of `server`: the plan's target for the app's, else the extra server's. */
+function serverProvider(plan: DeployPlan, server: string): string {
+  return server === APP_SERVER ? plan.target.provider : extraServer(plan, server).target.provider;
+}
+
 /**
- * The container that raises the host kernel settings of all the plan's services
+ * The plan's extra server `name`.
+ * @throws Error when the plan has none of that name.
+ */
+export function extraServer(
+  plan: DeployPlan,
+  name: string,
+): NonNullable<DeployPlan["servers"]>[number] {
+  const server = plan.servers?.find((s) => s.name === name);
+  if (server === undefined) throw new Error(`The plan has no extra server named ${name}.`);
+  return server;
+}
+
+/**
+ * The container that raises the host kernel settings of all the services on `server`
  * ({@link hostSysctl}: `vm.max_map_count` for the search engines) once before they start on each
  * deploy; a value already at least as high stays. Privileged because these settings belong to the
  * host kernel, not the container: Docker's `sysctls` takes only the per-container ones. It runs
@@ -151,9 +165,9 @@ export function hostSettingsServices(plan: DeployPlan): string[] {
  * created, so it would not cover an engine added later. Each value is the higher of the wanted one
  * and the kernel's, as on a server the user owns.
  */
-function sysctlService(plan: DeployPlan): object {
+function sysctlService(plan: DeployPlan, server: string): object {
   const file = HOST_SYSCTL_FILE;
-  const raise = Object.entries(hostSysctl(plan)).map(
+  const raise = Object.entries(hostSysctl(plan, server)).map(
     ([key, value]) =>
       `v=$(sysctl -n ${key}); if [ "$v" -lt ${value} ]; then v=${value}; sysctl -w ${key}=$v; fi; echo "${key} = $v" >> ${file}.tmp`,
   );
@@ -177,13 +191,20 @@ function sysctlService(plan: DeployPlan): object {
 }
 
 /**
- * The plan's services in Compose: each with its pinned image, its environment, its data and
- * settings files, health check, memory limit, `restart: unless-stopped`, the app's internal
- * network and no published port. A changed settings file changes the service's label, so Compose
- * recreates only that service.
- * @throws OpsCrewError `INVALID_INPUT` for a version OpsCrew does not pin or a kind it cannot run.
+ * The plan's services on `server` (the app's by default, or an extra server's name) in Compose:
+ * each with its pinned image, its environment, its data and settings files, health check, memory
+ * limit, `restart: unless-stopped` and the app's internal network. A service is published only on
+ * a private address ({@link publishedAddress}): on an extra server always, on the app's server for
+ * a device's grant. A changed settings file changes the service's label, so Compose recreates only
+ * that service.
+ * @throws OpsCrewError `INVALID_INPUT` for a version OpsCrew does not pin, a kind it cannot run, or
+ * two services published on one address with the same port.
  */
-export function renderServices(plan: DeployPlan, target: ComponentTarget): RenderedServices {
+export function renderServices(
+  plan: DeployPlan,
+  target: ComponentTarget,
+  server = APP_SERVER,
+): RenderedServices {
   const rendered: RenderedServices = {
     services: {},
     dependsOn: {},
@@ -191,10 +212,20 @@ export function renderServices(plan: DeployPlan, target: ComponentTarget): Rende
     configs: {},
     files: [],
   };
-  const sysctl = target.kind === "server" && hostSettingsServices(plan).length > 0;
-  if (sysctl) rendered.services[SYSCTL_SERVICE] = sysctlService(plan);
-  for (const service of enabledServices(plan)) {
+  const sysctl = target.kind === "server" && hostSettingsServices(plan, server).length > 0;
+  if (sysctl) rendered.services[SYSCTL_SERVICE] = sysctlService(plan, server);
+  /** The service published on each port. */
+  const published = new Map<number, string>();
+  for (const service of servicesOn(plan, server)) {
     const spec = serviceSpec(service.kind);
+    const address = publishedAddress(plan, service);
+    if (address !== undefined) {
+      const other = published.get(spec.port);
+      if (other !== undefined) {
+        throw portTaken(plan, server, [other, service.name], spec.port, address);
+      }
+      published.set(spec.port, service.name);
+    }
     checkServiceVersion(plan, service, spec);
     const ctx = renderContext(plan, service);
     const data = dataMounts(plan, service, spec, target);
@@ -231,6 +262,7 @@ export function renderServices(plan: DeployPlan, target: ComponentTarget): Rende
       ...(files.length > 0
         ? configLabel(files.map((file) => `${file.name}\n${file.content}`).join("\n"))
         : {}),
+      ...(address === undefined ? {} : { ports: [`${address}:${spec.port}:${spec.port}`] }),
       healthcheck: healthcheck(spec),
       ...memoryLimit(service.memoryMb),
       ...(spec.ulimits === undefined
@@ -248,8 +280,68 @@ export function renderServices(plan: DeployPlan, target: ComponentTarget): Rende
     rendered.dependsOn[service.name] = { condition: "service_healthy" };
   }
   // Named from the plan alone, so destroy can list it even when the plan cannot be rendered.
-  if (plan.storage?.sqlite !== undefined) rendered.volumes.push(SQLITE_VOLUME);
+  if (plan.storage?.sqlite !== undefined && server === APP_SERVER) {
+    rendered.volumes.push(SQLITE_VOLUME);
+  }
   return rendered;
+}
+
+/** Refuses `services`, both listening on `port`, published at `address` on `server`. */
+function portTaken(
+  plan: DeployPlan,
+  server: string,
+  services: [string, string],
+  port: number,
+  address: string,
+): OpsCrewError {
+  const file = planFilePath(plan);
+  const elsewhere = `place one on another server (services[].server in ${file}), then run the command again.`;
+  return new OpsCrewError(
+    "INVALID_INPUT",
+    `The services ${services.join(" and ")} both listen on port ${port}, and both would be published at ${address} on ${server === APP_SERVER ? "the app's server" : `the server ${server}`}.`,
+    {
+      hint:
+        server === APP_SERVER
+          ? `Grant devices only one of them (opscrew vpn revoke <device> <service> for the other), or ${elsewhere}`
+          : `Place one of them on another server (services[].server in ${file}), then run the command again.`,
+    },
+  );
+}
+
+/**
+ * Each port published on `server`'s private address, with that address, in the plan's order:
+ * - the app's services in its Compose project there: on an extra server every service placed
+ *   there, on the app's server ({@link APP_SERVER}) those a device was granted;
+ * - then on the app's server, with `options.dashboardsOnNetwork`, the dashboards
+ *   (`dashboard: true`, `service` the add-on's name), which every device may reach: Beszel's hub
+ *   (`beszel`, in hub mode) and Portainer's web UI (`portainer`), each a Compose project of its
+ *   own.
+ */
+export function publishedOnNetwork(
+  plan: DeployPlan,
+  server: string,
+  options: Pick<RenderContext, "dashboardsOnNetwork"> = {},
+): { service: string; port: number; address: string; dashboard?: true }[] {
+  const services = servicesOn(plan, server).flatMap((service) => {
+    const address = publishedAddress(plan, service);
+    return address === undefined
+      ? []
+      : [{ service: service.name, port: serviceSpec(service.kind).port, address }];
+  });
+  const address = server === APP_SERVER ? dashboardAddress(plan, options) : undefined;
+  if (address === undefined) return services;
+  const beszel = plan.observability?.beszel;
+  const dashboard = (service: string, port: number) => ({
+    service,
+    port,
+    address,
+    dashboard: true as const,
+  });
+  return [
+    ...services,
+    ...(beszel?.enabled && beszel.mode === "hub" ? [dashboard("beszel", BESZEL_PORT)] : []),
+    ...(plan.portainer?.enabled ? [dashboard("portainer", PORTAINER_PORT)] : []),
+  ];
 }
 
 /** The volume of the app's Compose project that keeps a SQLite database's folder. */

@@ -2,6 +2,7 @@ import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testPlan } from "../__fixtures__/plans";
+import { withPlacement } from "../catalog/__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { inEnvironment, ofApp } from "../workflow/__fixtures__/plans";
 import { PORTAINER_PASSWORD_FILE, renderPortainerCompose } from "./index";
@@ -99,6 +100,29 @@ describe("renderPortainerCompose", () => {
     );
     const staging = ofApp(inEnvironment(plan, { name: "staging" }), "docs");
     expect(renderPortainerCompose(staging, { initialAdmin: false }).content).toBe(file);
+  });
+
+  it("is also published on the app's private address on a server for this app alone", () => {
+    const devices = withPlacement(plan, { devices: ["laptop"] });
+    const content = renderPortainerCompose(devices, {
+      initialAdmin: false,
+      dashboardsOnNetwork: true,
+    }).content;
+    expect(parse(content).services.portainer.ports).toEqual([
+      "127.0.0.1:9443:9443",
+      "10.200.4.1:9443:9443",
+    ]);
+    expect(content.split("\n").slice(1, 4)).toEqual([
+      "# Portainer CE listens on the server itself and, for your devices on the app's private network only,",
+      "# on its private address 10.200.4.1. It controls Docker through the socket, which is root on this",
+      "# server: never publish its port anywhere else.",
+    ]);
+    // By default (a server other apps may share) the file stays the same from every app's plan.
+    for (const initialAdmin of [true, false]) {
+      expect(renderPortainerCompose(devices, { initialAdmin })).toEqual(
+        renderPortainerCompose(plan, { initialAdmin }),
+      );
+    }
   });
 
   it("needs Portainer settings in the plan", () => {
