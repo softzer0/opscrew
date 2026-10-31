@@ -846,7 +846,7 @@ Effort`.
   - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T1833 [US4] Opening public SSH reaches the servers privately until the cloud firewalls open, in `packages/agents/src/{secure/public-ssh.ts,provision/**,runners/**,shared/**}` (+ tests)
+- [X] T1833 [US4] Opening public SSH reaches the servers privately until the cloud firewalls open, in `packages/agents/src/{secure/public-ssh.ts,provision/**,runners/**,shared/**}` (+ tests)
   - Owns: those paths
   - Reads: T1815, T1826, T1827 and T1832's blocks; `openPublicSsh`, `openingReach`, `provisionStep` (secure/public-ssh.ts); `checkCloudRunner` / `readCloudRunners` / `deployShell` (runners); `privateReach` and `networkReach` (shared/server-address.ts)
   - Found by: T1821's eighth live run, step 7.
