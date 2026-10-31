@@ -754,6 +754,33 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` (the live run is T1821)
   - Effort: high
 
+- [ ] T1828 [US1] Removing an extra Hetzner server in a script, in `packages/agents/src/provision/{servers.ts,run.ts}`, `packages/cli/src/{commands/provision.ts,approval.ts}` (+ tests), step 9 of `packages/cli/test/live/split.test.ts`, `docs/e2e.md` (step 9) and `docs/guide/split-placement.md`
+  - Owns: those paths
+  - Reads: `liftRemovedProtection` and `removalConfirmPhrase` (provision/servers.ts); `liftProtection` (destroy/deletion.ts); destroy's `TypedConfirmationHandler` (cli/commands/destroy.ts), whose typed name covers its own lift; `FlagConfirmation` (cli/approval.ts)
+  - Depends: T1820, T1822c
+  - Found by: T1820's review. Today a script cannot delete an extra Hetzner server:
+    - `--plan-only` refuses while the removed server's delete protection is on;
+    - a run without `--approve` refuses the lift, and no output shows the lift's hash;
+    - a run with `--approve <hash>` skips the lift.
+  - Accept:
+    - **The script path.** In a script, `opscrew provision --confirm <app>-<server>` (one `--confirm` per removed server, as the deletion asks), with neither `--plan-only` nor `--approve`:
+      - lifts those servers' delete protection, as destroy's typed name lifts its own;
+      - the lift is still one plan, shown with its hash, and `unprotectPlanProblems` still limits it to the protection;
+      - then renders and plans the deletion, and stops before applying it, printing the `--approve <hash> … --confirm …` command, as `--plan-only` prints it.
+    - A missing name refuses the lift and names the `--confirm` flags to add. The confirm names never approve the deletion plan without its hash.
+    - Terminal runs are unchanged.
+    - `--plan-only`'s refusal while protection is on names this script path in its hint.
+    - **Tests:**
+      - the scripted lift, then `--plan-only`, then the approved deletion;
+      - a missing name;
+      - `--approve` without the lift.
+    - **Live step 9 and the docs:**
+      - Step 9 of the split pass follows the script path at Hetzner.
+      - `docs/e2e.md` (step 9) describes it.
+      - The guide's section on removing a server says how to do it in a script.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
 - [ ] T1821 The live runs (lead): T1820's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 
 - [ ] T1822 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1826's review: one `removedOwnServers(plan, record)` for provision's refusal and removal; the redundant `edge = undefined` in origin-tls; the four `removed.length === 1` ternaries; the split-placement guide page mentions `--allow-downtime` for approving a move's window in a script.
