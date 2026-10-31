@@ -999,9 +999,11 @@ function realSshPorts(facts: HostFacts, desired: DesiredHost): number[] {
 
 function ufwStep({ facts, desired, found, findings }: SetupContext): HostStep {
   const sshPorts = realSshPorts(facts, desired);
+  // `web` keeps OpsCrew's web rules; `opens` adds them (never on a server with no web).
   const web = desired.access === "public";
+  const opens = web && desired.web !== false;
   const portText = sshPorts.join(", ");
-  const allowed = web ? `SSH (port ${portText}), HTTP and HTTPS` : `SSH (port ${portText})`;
+  const allowed = opens ? `SSH (port ${portText}), HTTP and HTTPS` : `SSH (port ${portText})`;
   const covering = (port: number, proto: "tcp" | "udp") =>
     facts.firewall.ufwRules
       .map((rule) => ({ rule: rule.rule, ...ufwRuleCovers(rule.rule, port, proto) }))
@@ -1026,7 +1028,7 @@ function ufwStep({ facts, desired, found, findings }: SetupContext): HostStep {
     }
     return open.length === 0;
   });
-  const webRules = web
+  const webRules = opens
     ? WEB_RULES.filter((rule) => {
         const [port, proto] = rule.split("/") as [string, "tcp" | "udp"];
         return !covering(Number(port), proto).some((coverage) => !coverage.limitedSource);
@@ -1063,7 +1065,7 @@ function ufwStep({ facts, desired, found, findings }: SetupContext): HostStep {
     // A service an existing rule lets in from every address is not cut off.
     const open = (port: number, proto: "tcp" | "udp") =>
       covering(port, proto).some((coverage) => !coverage.limitedSource);
-    const blocked = wouldBlock(facts, sshPorts, web, open);
+    const blocked = wouldBlock(facts, sshPorts, opens, open);
     if (blocked.length > 0) {
       found.push(findings.ufwWouldBlock(blocked, denyIncoming));
       return step("ufw", TITLES.ufw, "blocked", params, "Other services would be cut off.");
@@ -1074,9 +1076,11 @@ function ufwStep({ facts, desired, found, findings }: SetupContext): HostStep {
     : denyIncoming
       ? `Make the ufw firewall deny incoming traffic except ${allowed}`
       : `Add ufw rules for ${allowed}`;
-  const extra = web
+  const extra = opens
     ? ""
-    : " No web ports are opened: the app is served through the Cloudflare Tunnel.";
+    : web
+      ? " No web ports are opened: this server runs only the app's services."
+      : " No web ports are opened: the app is served through the Cloudflare Tunnel.";
   const lead = denyIncoming
     ? `ufw is on, but it lets everything in: its default policy for incoming traffic is "allow", so only connections a rule denies are stopped. OpsCrew makes sure the SSH rule for the port sshd really uses is there first (existing rules for it are kept and count), then sets the default to deny incoming; the server puts "allow" back on its own unless new logins work afterwards. The old default is recorded, so undoing OpsCrew's host changes (opscrew destroy --undo-host) puts it back too.`
     : `${params.install ? "ufw is installed first. " : ""}The SSH rule for the port sshd really uses is added before anything else (existing rules for it are kept and count); the server turns the firewall back off on its own unless new logins work afterwards.`;
@@ -1797,7 +1801,7 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
   ) {
     found.push(findings.composeProjectExists(d.app));
   }
-  if (d.access === "public") {
+  if (d.access === "public" && d.web !== false) {
     const users = webPortUsers(f, projects);
     if (users.length > 0) found.push(findings.portsInUse(users));
   }

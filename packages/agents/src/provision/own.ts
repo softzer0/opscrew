@@ -420,6 +420,7 @@ export async function desiredExtraHost(
     services: services.map((service) => service.name),
     memoryMb: services.reduce((sum, service) => sum + service.memoryMb, 0),
     access: "public",
+    web: false,
     ...(Object.keys(sysctl).length > 0 ? { sysctl } : {}),
   };
 }

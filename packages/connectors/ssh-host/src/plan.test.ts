@@ -123,6 +123,19 @@ describe("planHost: steps", () => {
     expect(paramsOf(tunnelPlan, "ufw")).toMatchObject({ sshPorts: "2222", web: false });
   });
 
+  it("opens no web ports for a server with no web, and a busy port 80 is no conflict", async () => {
+    const fake = new FakeHost();
+    fake.ufwActive = true;
+    fake.ufwRules = [{ rule: "allow 22/tcp", comment: null }];
+    fake.listeners.push({ proto: "tcp", address: "0.0.0.0", port: 80, process: "nginx" });
+    const plan = await planFor(fake, desiredFor(fake, { web: false }));
+    expect(codes(plan)).not.toContain("web-ports-in-use");
+    expect(plan.steps.filter((step) => step.state === "blocked")).toEqual([]);
+    expect(paramsOf(plan, "ufw")).toMatchObject({ webRules: "" });
+    expect(stateOf(plan, "ufw")).toBe("in-place");
+    expect(plan.steps.find((step) => step.id === "ufw")?.title).not.toContain("HTTP");
+  });
+
   it("also allows the port systemd's ssh.socket really listens on", async () => {
     const fake = new FakeHost();
     fake.listeners = [{ proto: "tcp", address: "0.0.0.0", port: 2200, process: "systemd" }];

@@ -568,6 +568,29 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
     expect(workflow).toContain("2222");
   });
 
+  it("opens no web ports on an extra server the user owns, and something on port 80 there is no conflict", async () => {
+    const { plan, privateKeys } = networkedPlan("own");
+    const s = await ownExtraSetup(plan, privateKeys, {
+      listeners: [
+        { proto: "tcp", address: "0.0.0.0", port: 2222, process: "sshd" },
+        { proto: "tcp", address: "0.0.0.0", port: 80, process: "nginx" },
+      ],
+      firewall: {
+        ufw: "active",
+        ufwRules: [{ rule: "allow 80/tcp", comment: null }],
+        ufwDefaults: { incoming: "deny", outgoing: "allow", routed: "disabled" },
+        foreign: [],
+      },
+    });
+
+    await runProvision(s.deps, { services: s.services });
+
+    const setupPlan = s.own.applies[0]?.plan as HostPlan;
+    expect(setupPlan.findings).toEqual([]);
+    expect(stepOf(setupPlan, "ufw")?.params).toMatchObject({ webRules: "" });
+    expect(stepOf(setupPlan, "ufw")?.title).not.toContain("HTTP");
+  });
+
   it("gives an extra server the user owns the scheduled check's key, as root, once", async () => {
     const { plan, privateKeys } = networkedPlan("own");
     const checked = DeployPlanSchema.parse({

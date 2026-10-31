@@ -294,6 +294,12 @@ export const DesiredHostSchema = z
     hostKeyType: HostKeyTypeSchema,
     access: z.enum(["public", "tunnel"]),
     /**
+     * `false`: the server serves no web (an extra own server that runs only services placed on
+     * it, never the edge). Its setup opens no web ports (80/443) in ufw, and something already
+     * listening on them is no conflict. Absent: as `access` says.
+     */
+    web: z.literal(false).optional(),
+    /**
      * Tunnel mode: the app's own connector's Compose file as rendered by `@opscrew/iac-templates`
      * (`renderTunnelConnectorCompose`), run as the project `<app>-tunnel` in
      * `/srv/opscrew/cloudflared/<app>`. It reads `TUNNEL_TOKEN` from `tunnel.env` beside it, which
