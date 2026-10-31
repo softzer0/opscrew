@@ -551,8 +551,8 @@ Effort`.
       first.
     - **SSH port on the private network:** the `network` step's `sshPort` and the connections to a
       private address use the port sshd listens on (from the host's facts), not the login's public
-      port, so a router forwarding another port (2222 to 22) still works over the network (drift's
-      and provision's `serverNetworkInputs` callers, and `serverRemote`).
+      port, so a router forwarding another port (2222 to 22) still works over the network (drift's,
+      provision's and `vpn/servers.ts`'s `sshPort`, and `serverRemote`).
     - **`secure` on an extra own server** reads its SSH ports and password setting from
       `lastServerSetup(deps, server)` instead of fixed values (`secure/servers.ts`, those lines).
     - **Own servers with public SSH closed:** OpsCrew's own-server connections (inspection, destroy)
