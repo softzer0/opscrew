@@ -386,7 +386,7 @@ Effort`.
 
 ## Phase 4: Wave 3
 
-- [ ] T1810 [US1] [US2] Agents' provision: extra servers, a host plan per server, the secrets, the files and the placement record, in `packages/agents/src/provision/**`
+- [X] T1810 [US1] [US2] Agents' provision: extra servers, a host plan per server, the secrets, the files and the placement record, in `packages/agents/src/provision/**`
   - Owns: `packages/agents/src/provision/**` (+ tests). In `packages/agents/src/move/index.ts`, only an exported stub `runMove` that T1811 fills (it throws "not available yet").
   - Reads: plan.md "9."; spec US1, FR-1804–1808, FR-1810; data-model.md "This computer's state" and "In GitHub"
   - Depends: T1804, T1805, T1806, T1807, T1808, T1809
@@ -549,6 +549,10 @@ Effort`.
       - re-renders the workflow and the check, delivered in the deploy-setup pull request.
     - **A network's removal** (vpn, destroy) never runs while public SSH is closed: it reopens it
       first.
+    - **SSH port on the private network:** the `network` step's `sshPort` and the connections to a
+      private address use the port sshd listens on (from the host's facts), not the login's public
+      port, so a router forwarding another port (2222 to 22) still works over the network (drift's
+      and provision's `serverNetworkInputs` callers, and `serverRemote`).
     - **`secure` on an extra own server** reads its SSH ports and password setting from
       `lastServerSetup(deps, server)` instead of fixed values (`secure/servers.ts`, those lines).
     - **Own servers with public SSH closed:** OpsCrew's own-server connections (inspection, destroy)
@@ -656,8 +660,8 @@ Effort`.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter opscrew exec vitest run test/e2e/network.test.ts`
   - Effort: high
 
-- [ ] T1824 [P] [US1] No web on an extra own server: the setup host plan for a server that only runs services, in `packages/connectors/ssh-host/**` and the one call in `packages/agents/src/provision/servers.ts`
-  - Owns: those paths (+ tests); in `provision/servers.ts` only the call that passes it
+- [ ] T1824 [P] [US1] No web on an extra own server: the setup host plan for a server that only runs services, in `packages/connectors/ssh-host/**` and the one call in `packages/agents/src/provision/own.ts`
+  - Owns: those paths (+ tests); in `provision/own.ts` only `desiredExtraHost`'s call that passes it
   - Reads: plan.md "3.", "9."; ssh-host's `planHost` and its ufw and port-conflict steps
   - Depends: T1810
   - Accept:
