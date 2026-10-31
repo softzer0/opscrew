@@ -438,6 +438,136 @@ describe("opscrew secure --open-public-ssh", () => {
     expect(w.events).toEqual(["provision"]);
   });
 
+  describe("after this computer's tunnel is lost", () => {
+    /** The plan with public SSH closed, the allow-list kept. */
+    function closedPlan() {
+      const { plan: open, prefix } = networked();
+      const closed = withNetwork(
+        { ...open, security: { ...open.security, sshAllowedCidrs: [] } },
+        { ...(open.network as Network), publicSsh: false, publicSshAllowedCidrs: ALLOWED },
+      );
+      return { closed, prefix };
+    }
+
+    /** ssh: the private addresses time out; the public ones answer `publicSsh`'s way. */
+    function lostTunnel(prefix: string, publicSsh: { exitCode: number; stderr: string }) {
+      return new ScriptedRunner((command, args) => {
+        const at = args.find((arg) => arg.includes("@")) ?? "";
+        if (command === "ssh" && at.includes(`@${prefix}.`)) {
+          return {
+            exitCode: 255,
+            stdout: "",
+            stderr: `ssh: connect to host ${at.split("@")[1]} port 22: Connection timed out`,
+          };
+        }
+        return command === "ssh"
+          ? { stdout: "", ...publicSsh }
+          : { exitCode: 0, stdout: "", stderr: "" };
+      });
+    }
+
+    /** The host keys pinned under the servers' public addresses in a known_hosts text. */
+    function publicPins(knownHosts: string): string[] {
+      return knownHosts
+        .split("\n")
+        .filter((line) => line.startsWith(`${APP_IPV4} `) || line.startsWith(`${DATA_IPV4} `));
+    }
+
+    /** The services without the fake shells: connections go where `serverRemote` connects. */
+    function withoutShells(services: Awaited<ReturnType<typeof world>>["services"]) {
+      const { remote: _, ...rest } = services;
+      return rest;
+    }
+
+    it("opens SSH over the public address the user opened by hand, with the pinned host key", async () => {
+      const { closed, prefix } = closedPlan();
+      const runner = lostTunnel(prefix, { exitCode: 0, stderr: "" });
+      const w = await world({ plan: closed, open: false, runner });
+      const knownHosts = await readFile(w.deps.paths.files.knownHosts, "utf8");
+
+      const result = await openPublicSsh(w.deps, { services: withoutShells(w.services) });
+
+      // The same host plans, approved by their hashes, reached at the public addresses; then the IaC.
+      expect(w.events).toEqual([
+        `inspect ${APP_IPV4}`,
+        `apply ${APP_IPV4}`,
+        `inspect ${DATA_IPV4}`,
+        `apply ${DATA_IPV4}`,
+        "provision",
+      ]);
+      for (const apply of w.applies) {
+        expect(paramsOf(apply.plan)).toMatchObject({ open: true, allowedCidrs: ALLOWED.join(" ") });
+      }
+      expect(w.provisioned[0]?.plan.security.sshAllowedCidrs).toEqual(ALLOWED);
+      const after = await w.plan();
+      expect(after.network?.publicSsh).toBe(true);
+      expect(after.security.sshAllowedCidrs).toEqual(ALLOWED);
+      expect(after.approvals.map((a) => a.planHash)).toEqual(result.hostPlanHashes);
+      // Every public login checked the key pinned before; none was added.
+      const publicLogins = runner.calls.filter(
+        (c) => c.command === "ssh" && !c.args.some((arg) => arg.includes(`@${prefix}.`)),
+      );
+      expect(publicLogins.length).toBeGreaterThan(0);
+      for (const login of publicLogins) {
+        expect(login.args).toContain("StrictHostKeyChecking=yes");
+        expect(login.args).toContain(`UserKnownHostsFile=${w.deps.paths.files.knownHosts}`);
+      }
+      expect(publicPins(await readFile(w.deps.paths.files.knownHosts, "utf8"))).toEqual(
+        publicPins(knownHosts),
+      );
+      expect(w.deps.reporter.lines.map((l) => l.message).join("\n")).toContain(
+        "over its public address",
+      );
+    });
+
+    it("refuses with both ways back in when neither address answers", async () => {
+      const { closed, prefix } = closedPlan();
+      const runner = lostTunnel(prefix, {
+        exitCode: 255,
+        stderr: `ssh: connect to host ${APP_IPV4} port 22: Connection refused`,
+      });
+      const w = await world({ plan: closed, open: false, runner });
+      const before = await readFile(w.deps.paths.files.plan, "utf8");
+
+      const error = await failure(openPublicSsh(w.deps, { services: withoutShells(w.services) }));
+
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain("server app and server data");
+      expect(error.message).toContain("Nothing was changed.");
+      expect(error.hint).toContain("another device on the network");
+      expect(error.hint).toContain("`opscrew vpn add laptop --again`");
+      expect(error.hint).toContain("provider's console");
+      expect(error.hint).toContain("`sudo ufw allow 22/tcp`");
+      expect(error.hint).toContain("`opscrew secure --open-public-ssh`");
+      expect(await readFile(w.deps.paths.files.plan, "utf8")).toBe(before);
+      expect(w.events).toEqual([]);
+    });
+
+    it("refuses a host key at the public address that is not the pinned one", async () => {
+      const { closed, prefix } = closedPlan();
+      const runner = lostTunnel(prefix, {
+        exitCode: 255,
+        stderr:
+          "@@@@@@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.",
+      });
+      const w = await world({ plan: closed, open: false, runner });
+      const before = await readFile(w.deps.paths.files.plan, "utf8");
+      const knownHosts = await readFile(w.deps.paths.files.knownHosts, "utf8");
+
+      const error = await failure(openPublicSsh(w.deps, { services: withoutShells(w.services) }));
+
+      expect(error.code).toBe("PHASE_PRECONDITION");
+      expect(error.message).toContain("SSH host key of server app");
+      expect(error.message).toContain("not the one pinned");
+      expect(error.message).toContain("Nothing was changed.");
+      expect(await readFile(w.deps.paths.files.plan, "utf8")).toBe(before);
+      expect(publicPins(await readFile(w.deps.paths.files.knownHosts, "utf8"))).toEqual(
+        publicPins(knownHosts),
+      );
+      expect(w.events).toEqual([]);
+    });
+  });
+
   it("opens to the kept allow-list, else the plan's, else everyone", () => {
     const { plan } = networked();
     const network = plan.network as Network;

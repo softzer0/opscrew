@@ -7,6 +7,7 @@
  * server, under the host adapter's automatic undo of SSH and firewall changes.
  */
 import { planPublicSsh } from "@opscrew/connector-ssh-host";
+import type { CommandResult } from "@opscrew/contracts";
 import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
 import { type DeployPlan, networkInterface, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -120,6 +121,19 @@ async function missingConditions(
 }
 
 /**
+ * A new login to the server `name` where `plan` reaches it, running `true` within 30 seconds;
+ * `undefined` when it failed before ssh returned (this computer's tunnel looks down).
+ */
+async function freshLogin(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  name: string,
+): Promise<CommandResult | undefined> {
+  const remote = await serverRemote(deps, plan, name, { fresh: true });
+  return remote.run("true", { timeoutMs: 30_000 }).catch(() => undefined);
+}
+
+/**
  * Proves, before anything changes, that SSH answers each server with a public address over the
  * private network (`closed`, the plan with public SSH closed): a new login running `true`, which
  * also pins each host key under the server's private address.
@@ -128,9 +142,7 @@ async function missingConditions(
 async function requireNetworkSsh(deps: PhaseDeps, closed: DeployPlan): Promise<void> {
   const silent: string[] = [];
   for (const name of deviceServers(closed)) {
-    const remote = await serverRemote(deps, closed, name, { fresh: true });
-    const result = await remote.run("true", { timeoutMs: 30_000 }).catch(() => undefined);
-    if (result?.exitCode !== 0) silent.push(`server ${name}`);
+    if ((await freshLogin(deps, closed, name))?.exitCode !== 0) silent.push(`server ${name}`);
   }
   if (silent.length === 0) return;
   throw new OpsCrewError(
@@ -191,15 +203,23 @@ async function provisionStep(
 async function publicSshPlans(
   deps: PhaseDeps,
   closed: DeployPlan,
-  input: { open: boolean; allowedCidrs: string[]; command: string; services: PublicSshServices },
+  input: {
+    open: boolean;
+    allowedCidrs: string[];
+    command: string;
+    services: PublicSshServices;
+    /** The plan each server is reached through, when not `closed` ({@link openingReach}). */
+    reach?: ReadonlyMap<string, DeployPlan>;
+  },
 ): Promise<HostPlanOutcome[]> {
   const network = closed.network as NonNullable<DeployPlan["network"]>;
   const outcomes: HostPlanOutcome[] = [];
   for (const name of deviceServers(closed)) {
     const member = network.members.find((m) => m.name === name);
     if (member === undefined) throw new Error(`Server "${name}" is not on the private network.`);
+    const at = input.reach?.get(name) ?? closed;
     const login = await serverLogin(deps, closed, name);
-    const server = await networkServer(deps, closed, name, input.services);
+    const server = await networkServer(deps, at, name, input.services);
     const hostPlan = planPublicSsh(
       server.facts,
       {
@@ -222,11 +242,7 @@ async function publicSshPlans(
         remote: server.remote,
         apply: (remote, p, options) =>
           server.apply(remote, p, rootImage === undefined ? options : { ...options, rootImage }),
-        verifyLogin: async () => {
-          const fresh = await serverRemote(deps, closed, name, { fresh: true });
-          const result = await fresh.run("true", { timeoutMs: 30_000 }).catch(() => undefined);
-          return result?.exitCode === 0;
-        },
+        verifyLogin: async () => (await freshLogin(deps, at, name))?.exitCode === 0,
         title: input.open
           ? `Open SSH on server ${name} again`
           : `Close public SSH on server ${name}`,
@@ -261,6 +277,59 @@ function withApprovals(plan: DeployPlan, outcomes: readonly HostPlanOutcome[]): 
 async function commandOf(deps: PhaseDeps, flag: "--close-public-ssh" | "--open-public-ssh") {
   const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   return `opscrew secure ${flag}${flags}`;
+}
+
+/** What ssh prints when the server's host key is not the one pinned on this computer. */
+const HOST_KEY_REFUSED = /host key verification failed|remote host identification has changed/i;
+
+/**
+ * Where OpsCrew reaches each server with a public address to open SSH again: over the private
+ * network (`closed`), else, when that fails (this computer lost its tunnel) and the user opened
+ * port 22 by hand from the provider's console, at its public address (`open`), with the host key
+ * pinned there before; ssh refuses any other key. Every server is probed before any change.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when a server's key at its public address is not the
+ * pinned one, or when neither address answers, with both ways back in.
+ */
+async function openingReach(
+  deps: PhaseDeps,
+  closed: DeployPlan,
+  open: DeployPlan,
+  command: string,
+): Promise<Map<string, DeployPlan>> {
+  const reach = new Map<string, DeployPlan>();
+  const lost: string[] = [];
+  for (const name of deviceServers(closed)) {
+    if ((await freshLogin(deps, closed, name))?.exitCode === 0) {
+      reach.set(name, closed);
+      continue;
+    }
+    const result = await freshLogin(deps, open, name);
+    if (result?.exitCode === 0) {
+      deps.reporter.info(
+        `Server ${name} did not answer over the app's private network; OpsCrew connects over its public address, where SSH answers with the host key pinned on this computer.`,
+      );
+      reach.set(name, open);
+    } else if (result !== undefined && HOST_KEY_REFUSED.test(result.stderr)) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `The SSH host key of server ${name} at its public address is not the one pinned on this computer, so OpsCrew did not connect: it never trusts a new key. Nothing was changed.`,
+        {
+          hint: `Compare the key from the provider's console (\`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub\`): a key that changed while the server was not rebuilt means someone may be intercepting the connection. Or get back in over the app's private network, then run \`${command}\` again.`,
+        },
+      );
+    } else {
+      lost.push(`server ${name}`);
+    }
+  }
+  if (lost.length === 0) return reach;
+  const device = (await readServerAddresses(deps.paths)).thisDevice ?? "<name>";
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `OpsCrew could not reach ${listText(lost)}: not over the app's private network (this computer's tunnel looks down), and not at the public address, where SSH is closed. Nothing was changed.`,
+    {
+      hint: `Get back in one of two ways: from another device on the network, run \`opscrew vpn add ${device} --again\` and import the new configuration into this computer's WireGuard app; or, from the provider's console, run \`sudo ufw allow 22/tcp\` on the server and allow port 22 in its cloud firewall. Then run \`${command}\` again.`,
+    },
+  );
 }
 
 /** True when the app has a server OpsCrew created, whose cloud firewall provision changes. */
@@ -360,11 +429,13 @@ export async function openPublicSsh(
   }
   const command = await commandOf(deps, "--open-public-ssh");
   const open = reopenedPlan(plan);
+  const reach = await openingReach(deps, plan, open, command);
   const outcomes = await publicSshPlans(deps, plan, {
     open: true,
     allowedCidrs: open.security.sshAllowedCidrs,
     command,
     services,
+    reach,
   });
   await writePlanIfChanged(deps, withApprovals(open, outcomes));
   const provision = await provisionStep(deps, options, finish);
