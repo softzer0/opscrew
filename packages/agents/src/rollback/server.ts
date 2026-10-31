@@ -73,7 +73,7 @@ function sourceOf(run: RollbackRun): string | undefined {
 }
 
 /** What the output says once the environment runs the earlier version: paused, and how to resume. */
-function pausedText(run: RollbackRun): string {
+export function pausedText(run: RollbackRun): string {
   const { environment, command, plan } = run;
   const source = sourceOf(run);
   if (source !== undefined) {
@@ -92,6 +92,89 @@ function movePaused(run: RollbackRun, since: string): OpsCrewError {
       hint: `Run \`opscrew provision${run.flags}\`: it ends the move's maintenance window. Then run \`${run.command}\` again.`,
     },
   );
+}
+
+/**
+ * Stops (`PHASE_PRECONDITION`, nothing changed) while a run of the environment's deploy workflow is
+ * queued or in progress (FR-1907, ADR 0023 D6), naming it.
+ */
+export async function requireNoDeployRunning(
+  run: RollbackRun,
+  github: RollbackRepository,
+): Promise<void> {
+  const running = await runningDeploy(github, run.plan);
+  if (running === undefined) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `A run of ${run.environment}'s deploy workflow is queued or in progress: ${running.url}. OpsCrew rolls back only between deploys, so the two never race. ${NOTHING}`,
+    { hint: `Let it end, then run \`${run.command}\` again.` },
+  );
+}
+
+/**
+ * Just after the pause is set: waits for the deploys created before it; when one still runs after
+ * 30 minutes, or the wait fails, puts back the pause entry `pauseBefore` and stops.
+ * @throws OpsCrewError `COMMAND_FAILED` from `waitForDeploys`, saying the pause is back.
+ */
+export async function waitAfterPause(
+  run: RollbackRun,
+  github: RollbackRepository,
+  pauseBefore: DeployPause | undefined,
+): Promise<void> {
+  const { deps, plan, environment, command, services } = run;
+  try {
+    await waitForDeploys(deps, github, plan, services, {
+      outcome: `the rollback did not start, and OpsCrew put ${environment}'s deploy pause back as it was. ${NOTHING}`,
+      hint: `Let it end (https://github.com/${github.owner}/${github.repo}/actions), then run \`${command}\` again.`,
+    });
+  } catch (error) {
+    await restoreDeployPause(deps, github, plan, pauseBefore);
+    throw error;
+  }
+}
+
+/** A pause entry's commit when OpsCrew cannot tell which commit the version was built from. */
+export const UNKNOWN_COMMIT = "unknown";
+
+/** What a rollback's pause entry names: the version it goes back to, and the commits. */
+export type PinnedVersion = Omit<Extract<DeployPause, { reason: "rollback" }>, "reason" | "since">;
+
+/**
+ * Runs `change`, which calls `beforeChange` once nothing can stop it but the change itself: that
+ * pauses the environment's deploys with `pinned`, then waits for the deploys created just before
+ * (`waitAfterPause`, which puts the pause back itself when one still runs). Any error after that
+ * puts back the entry the pause replaced, and says so.
+ */
+export async function pausedWhile<T>(
+  run: RollbackRun,
+  github: RollbackRepository,
+  pinned: PinnedVersion,
+  change: (beforeChange: () => Promise<void>) => Promise<T>,
+): Promise<T> {
+  const { deps, plan, environment } = run;
+  const pause: { set: boolean; replaced?: DeployPause } = { set: false };
+  try {
+    return await change(async () => {
+      deps.reporter.step(`Pausing ${environment}'s deploys`);
+      const replaced = await setDeployPause(deps, github, plan, {
+        reason: "rollback",
+        since: deps.clock.now().toISOString(),
+        ...pinned,
+      });
+      await waitAfterPause(run, github, replaced);
+      pause.set = true;
+      if (replaced !== undefined) pause.replaced = replaced;
+    });
+  } catch (error) {
+    if (!pause.set) throw error;
+    await restoreDeployPause(deps, github, plan, pause.replaced);
+    if (!(error instanceof OpsCrewError)) throw error;
+    throw new OpsCrewError(
+      error.code,
+      `${error.message} OpsCrew put ${environment}'s deploy pause back as it was.`,
+      error.hint !== undefined ? { hint: error.hint } : {},
+    );
+  }
 }
 
 /** A rollback run still waiting for its required reviewer, and what the next run does. */
@@ -242,18 +325,10 @@ async function dispatchRollback(
     pauseBefore: DeployPause | undefined;
   },
 ): Promise<{ status: "deployed" | "waiting"; runId: number; runUrl: string }> {
-  const { deps, plan, environment, command, flags, services } = run;
+  const { deps, plan, environment, command, flags } = run;
   const { workflowFile, branch, target } = input;
   const restore = () => restoreDeployPause(deps, github, plan, input.pauseBefore);
-  try {
-    await waitForDeploys(deps, github, plan, services, {
-      outcome: `the rollback did not start, and OpsCrew put ${environment}'s deploy pause back as it was. ${NOTHING}`,
-      hint: `Let it end (https://github.com/${github.owner}/${github.repo}/actions), then run \`${command}\` again.`,
-    });
-  } catch (error) {
-    await restore();
-    throw error;
-  }
+  await waitAfterPause(run, github, input.pauseBefore);
   // Which of `dispatchAndFollow`'s failures happened: whether GitHub accepted the dispatch, and the
   // run once it ended.
   let accepted = false;
@@ -366,14 +441,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     branch,
     what: "rollback",
   });
-  const running = await runningDeploy(github, plan);
-  if (running !== undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `A run of ${environment}'s deploy workflow is queued or in progress: ${running.url}. OpsCrew rolls back only between deploys, so the two never race. ${NOTHING}`,
-      { hint: `Let it end, then run \`${command}\` again.` },
-    );
-  }
+  await requireNoDeployRunning(run, github);
 
   // 5. The version, and what it ran with.
   deps.reporter.step(`Reading ${environment}'s versions in GitHub Container Registry`);

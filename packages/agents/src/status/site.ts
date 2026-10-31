@@ -78,6 +78,35 @@ export function runningVersions(deployments: readonly WorkerDeployment[]): {
   };
 }
 
+/**
+ * The version a rollback on Cloudflare's hosting goes back to by default (ADR 0023 D4): the newest
+ * one uploaded before the version `running` (Cloudflare lists them newest first), so a rollback of
+ * a rollback goes further back and never to the version it went back from.
+ */
+export function previousWorkerVersion<V extends { id: string }>(
+  versions: readonly V[],
+  running: string | undefined,
+): V | undefined {
+  const at = versions.findIndex((version) => version.id === running);
+  return at === -1 ? undefined : versions[at + 1];
+}
+
+/**
+ * The run a rollback on GitHub Pages re-runs by default (ADR 0023 D4): the newest run created
+ * before `runs[0]`, the latest started, which published the site now. A re-run keeps its run's
+ * id, so ids give the order the runs were created in.
+ */
+export function previousPagesRun<R extends { runId: number }>(runs: readonly R[]): R | undefined {
+  const [running] = runs;
+  if (running === undefined) return undefined;
+  return runs
+    .filter((run) => run.runId < running.runId)
+    .reduce<R | undefined>(
+      (newest, run) => (newest === undefined || run.runId > newest.runId ? run : newest),
+      undefined,
+    );
+}
+
 /** A workflow run's page at GitHub; just its id without the repository. */
 function runLink(repo: { owner: string; repo: string } | undefined, runId: number): string {
   return repo === undefined
@@ -155,8 +184,13 @@ async function cloudflareLines(
         : `  Before it: ${describe(before)}`,
     );
   }
-  if (before !== undefined) {
-    lines.push(`  Roll back to it: opscrew rollback${flag} --to ${before.versionId}`);
+  const back = previousWorkerVersion(versions, running?.versionId);
+  if (back !== undefined) {
+    lines.push(
+      back.id === before?.versionId
+        ? `  Roll back to it: opscrew rollback${flag} --to ${back.id}`
+        : `  Roll back: opscrew rollback${flag} --to ${back.id} (the newest version uploaded before the one running)`,
+    );
   }
   const listed = new Set(domains.map((d) => d.hostname.toLowerCase()));
   const states = verifyHosts(plan).map((hostname) =>
@@ -237,8 +271,13 @@ async function pagesLines(deps: PhaseDeps, plan: DeployPlan): Promise<SiteSectio
         : `  The one before: ${describe(previous)}`,
     );
   }
-  if (previous !== undefined) {
-    lines.push(`  Roll back to it: opscrew rollback${flag} --to ${previous.runId}`);
+  const target = previousPagesRun(runs);
+  if (target !== undefined) {
+    lines.push(
+      target === previous
+        ? `  Roll back to it: opscrew rollback${flag} --to ${target.runId}`
+        : `  Roll back: opscrew rollback${flag} --to ${target.runId} (the newest run created before the last one)`,
+    );
   }
   const view = (run: NonNullable<typeof last>): VersionView => ({
     version: String(run.runId),

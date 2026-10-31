@@ -134,9 +134,13 @@ async function writePause(
   });
 }
 
-/** "`opscrew rollback` pinned it to <short commit> (sha256:<12>)", as refusals and notes say it. */
+/**
+ * "`opscrew rollback` pinned it to <short commit> (sha256:<12>)", as refusals and notes say it; a
+ * site's version (a Worker version id, a GitHub Pages run id) is shown whole.
+ */
 export function pinnedText(pause: Extract<DeployPause, { reason: "rollback" }>): string {
-  return `\`opscrew rollback\` pinned it to ${pause.commit.slice(0, 7)} (${pause.image.slice(0, 19)})`;
+  const image = pause.image.startsWith("sha256:") ? pause.image.slice(0, 19) : pause.image;
+  return `\`opscrew rollback\` pinned it to ${pause.commit.slice(0, 7)} (${image})`;
 }
 
 /**

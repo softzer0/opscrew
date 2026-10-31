@@ -694,6 +694,20 @@ describe("the paused job", () => {
     );
   });
 
+  it.skipIf(!bash)(
+    "shows a site's pinned version whole: a Worker version id, a Pages run id",
+    () => {
+      for (const image of ["cccccccc-3333-4333-8333-333333333333", "12345678901"]) {
+        const entry = JSON.stringify({
+          "shop/prod": { reason: "rollback", since: SINCE, image, commit: COMMIT },
+        });
+        expect(say(prod, entry, jqFake).summary).toContain(
+          `\`opscrew rollback\` pinned it to ${COMMIT.slice(0, 7)} (${image}).`,
+        );
+      }
+    },
+  );
+
   it.skipIf(!bash)("says why a move's window skips the deploy", () => {
     const move = JSON.stringify({ "shop/prod": { reason: "move", since: SINCE } });
     const result = say(prod, move, jqFake);

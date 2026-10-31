@@ -7,6 +7,7 @@ import {
   clearDeployPause,
   type DeployPause,
   deployPauseOf,
+  pinnedText,
   restoreDeployPause,
   runningDeploy,
   setDeployPause,
@@ -175,6 +176,21 @@ describe("the deploy pause", () => {
       "reason",
       "since",
     ]);
+  });
+});
+
+describe("pinnedText", () => {
+  it("shortens an image digest, and shows a site's version whole", () => {
+    const pinned = { reason: "rollback", since: SINCE, commit: COMMIT } as const;
+    expect(pinnedText({ ...pinned, image: IMAGE })).toBe(
+      "`opscrew rollback` pinned it to c0ffeec (sha256:abababababab)",
+    );
+    expect(pinnedText({ ...pinned, image: "cccccccc-3333-4333-8333-333333333333" })).toBe(
+      "`opscrew rollback` pinned it to c0ffeec (cccccccc-3333-4333-8333-333333333333)",
+    );
+    expect(pinnedText({ ...pinned, image: "12345678901" })).toBe(
+      "`opscrew rollback` pinned it to c0ffeec (12345678901)",
+    );
   });
 });
 

@@ -155,6 +155,7 @@ import {
   deploySecretsStep,
   mergeDeploysNote,
   type ProvisionPhase,
+  pausedMergeNote,
   provisionEngine,
   publicOutputs,
   publishDeployment,
@@ -1288,11 +1289,8 @@ async function provisionFlow(
   plan = published.plan;
   const merge = mergeDeploysNote(plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
-  if (pinned !== undefined) {
-    deps.reporter.info(
-      `The deploys of ${checkEnvironmentKey(plan)} are paused since ${pinned.since}: ${pinnedText(pinned)}. The merged files deploy only after \`${resume} --deploy\`.`,
-    );
-  }
+  const pausedNote = await pausedMergeNote(deps, plan, pinned);
+  if (pausedNote !== undefined) deps.reporter.info(pausedNote);
   // The environment is set up again: a pause of its check (a move's window, a teardown) ends.
   await resumeCheck(deps, github, plan, { command, phase });
   if (renewed && secretsStored && ctx.originTls !== undefined) {

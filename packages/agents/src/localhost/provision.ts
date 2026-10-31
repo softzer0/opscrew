@@ -23,6 +23,7 @@ import {
   deploymentRecord,
   deploySecretsStep,
   mergeDeploysNote,
+  pausedMergeNote,
   publishDeployment,
 } from "../provision/steps";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
@@ -36,6 +37,7 @@ import {
   writePlanIfChanged,
 } from "../shared";
 import type { AppEnvironment } from "../shared/app-env";
+import { readableDeployPause } from "../shared/deploy-pause";
 import { applyLocal } from "./apply";
 import { caTrusted } from "./ca";
 import { githubRegistry, type LocalImage, type LocalRegistry, resolveLocalImage } from "./image";
@@ -256,6 +258,13 @@ export async function provisionLocalhost(
   });
   const merge = mergeDeploysNote(published.plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
+  // While a rollback pins the environment, what this run merges deploys only once it resumes.
+  const paused = await pausedMergeNote(
+    deps,
+    recorded,
+    await readableDeployPause(github.setup, recorded),
+  );
+  if (paused !== undefined) deps.reporter.info(paused);
   deps.reporter.info(
     `Once the deploy workflow ${plan.cicd.workflowPath} is on ${published.published.base}, \`opscrew runner start --env ${deps.paths.environment}\` runs its deploy job on this computer.`,
   );

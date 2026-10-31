@@ -20,6 +20,14 @@ export const NOTHING = "Nothing was deployed.";
  */
 export type CheckedFor = "promotion" | "rollback";
 
+/**
+ * What a refusal for `what` ends with: a promotion's "Nothing was deployed.", a rollback's
+ * "Nothing was changed.".
+ */
+export function nothingChanged(what: CheckedFor): string {
+  return what === "rollback" ? "Nothing was changed." : NOTHING;
+}
+
 /** How many pending changes a refusal names before it says how many more there are. */
 const LISTED = 5;
 
@@ -106,7 +114,7 @@ export async function requireApplied(
 ): Promise<string> {
   const { target, plan, github, command, branch } = input;
   const what = input.what ?? "promotion";
-  const nothing = what === "rollback" ? "Nothing was changed." : NOTHING;
+  const nothing = nothingChanged(what);
   const provisionFirst = `Run \`opscrew provision --env ${target}\` first, then \`${command}\` again.`;
   deps.reporter.step(`Checking ${target} for changes not applied yet (read-only)`);
   const report = await (input.services.drift ?? runDrift)({ ...deps, paths: input.paths });

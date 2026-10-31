@@ -25,6 +25,7 @@ import {
   deployBranchFor,
   deploymentRecord,
   mergeDeploysNote,
+  pausedMergeNote,
   provisionEngine,
   publicOutputs,
   publishDeployment,
@@ -38,6 +39,7 @@ import {
   type PlanApproval,
   writePlanIfChanged,
 } from "../../shared";
+import { readableDeployPause } from "../../shared/deploy-pause";
 import type { ServerlessProvisionInput } from "../index";
 import { storeSiteSecrets } from "../shared";
 import { requireFreeHostnames, requireOwnWorker, requireWorkersTokens } from "./checks";
@@ -259,6 +261,9 @@ export async function provisionCloudflareWorkers(
   });
   const merge = mergeDeploysNote(plan, published.published, storesSecrets);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
+  // While a rollback pins the environment, what this run merges deploys only once it resumes.
+  const paused = await pausedMergeNote(deps, plan, await readableDeployPause(github, plan));
+  if (paused !== undefined) deps.reporter.info(paused);
   // The site is set up again: a pause of its check (a teardown) ends.
   await resumeCheck(deps, github, plan, { command, phase: "provision" });
   return {

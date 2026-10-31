@@ -21,14 +21,12 @@ import {
 import { promotionFile, readPromotion, writePromotion } from "../promote/record";
 import {
   createTestPhaseDeps,
-  DEPLOYED_AT,
   movingPlan,
   portainerPlan,
   ScriptedApprovalHandler,
   ScriptedRunner,
   testPlan,
 } from "../testing";
-import { sitePlan } from "../testing/serverless";
 import { at, type Built, versionsWorld } from "./__fixtures__/versions";
 import { type RollbackOptions, type RollbackServices, rollback } from "./index";
 import {
@@ -1124,26 +1122,6 @@ describe("opscrew rollback --resume", () => {
     expect(error.code).toBe("PHASE_PRECONDITION");
     expect(error.hint).toContain("opscrew promote --to prod");
     expect(world.handler.requests).toEqual([]);
-    expect(world.events).toEqual([]);
-  });
-});
-
-describe("opscrew rollback on the other targets", () => {
-  it("goes to the site's rollback on Cloudflare's hosting, not available here yet", async () => {
-    const world = await rollbackWorld({ plan: sitePlan({ deployed: true, name: "shop" }) });
-    const error = await failure(world.run());
-    expect(error.message).toContain("not available yet");
-    expect(world.events).toEqual([]);
-  });
-
-  it("goes to this computer's rollback, not available here yet", async () => {
-    const plan = DeployPlanSchema.parse({
-      ...localPlan(),
-      deployment: { lastApplyAt: DEPLOYED_AT },
-    });
-    const world = await rollbackWorld({ plan });
-    const error = await failure(world.run());
-    expect(error.message).toContain("not available yet");
     expect(world.events).toEqual([]);
   });
 });

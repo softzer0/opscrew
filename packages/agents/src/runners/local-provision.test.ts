@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findExecutable, NodeCommandRunner, OpsCrewError } from "@opscrew/core";
+import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { FakeComputer, localPlan } from "../localhost/__fixtures__/computer";
@@ -72,6 +73,24 @@ describe.skipIf(!findExecutable("git"))("provision with the local runner", () =>
     expect(body).toContain("while `opscrew runner start --env prod` runs");
     expect(body).not.toContain(s.deps.paths.homeDir);
     expect(s.deps.reporter.text()).toContain("`opscrew runner start --env prod`");
+  });
+
+  it("says the merged files deploy only after resuming, while a rollback pins the environment", async () => {
+    const s = await project(onLocalRunner());
+    const pinned = JSON.stringify({
+      "shop/prod": {
+        reason: "rollback",
+        since: "2026-10-11T11:00:00.000Z",
+        image: `sha256:${"ab".repeat(32)}`,
+        commit: "c".repeat(40),
+      },
+    });
+    s.github.variables.set(DEPLOY_PAUSED_VARIABLE, pinned);
+    await s.run();
+    expect(s.deps.reporter.text()).toContain(
+      "The deploys of shop/prod are paused since 2026-10-11T11:00:00.000Z: `opscrew rollback` pinned it to ccccccc (sha256:abababababab). The merged files deploy only after `opscrew rollback --resume --deploy`.",
+    );
+    expect(s.github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(pinned);
   });
 
   it("refuses the local runner for an image built on this computer, before any change", async () => {

@@ -49,7 +49,9 @@ export function pausedJob(plan: DeployPlan, condition: string): string[] {
         'if [[ "$(field reason)" == rollback ]]; then',
         '  commit="$(field commit)"',
         '  image="$(field image)"',
-        `  text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). ${deploys}"`,
+        // A digest is shortened; a site's version (a Worker version id, a Pages run id) is not.
+        '  if [[ "$image" == sha256:* ]]; then image="${image:0:19}"; fi',
+        `  text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image}). ${deploys}"`,
         "else",
         `  text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`${provisionCommand(plan)}\\\` resumes them."`,
         "fi",

@@ -11,6 +11,7 @@ import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-clou
 import type { FetchLike } from "@opscrew/contracts";
 import { exists, findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -795,6 +796,48 @@ describe.skipIf(!findExecutable("git"))("provision on Cloudflare's hosting", () 
     const workflow = await readFile(join(s.root, ".github/workflows/opscrew-deploy.yml"), "utf8");
     expect(workflow).toContain('BUILD_WORKFLOW: ".github/workflows/opscrew-deploy-staging.yml"');
     expect(workflow).toContain('BUILD_BRANCH: "main"');
+  });
+
+  it("says the merged files deploy only after resuming, while a rollback pins the site", async () => {
+    const s = await setup();
+    const pinned = JSON.stringify({
+      "example-app/prod": {
+        reason: "rollback",
+        since: "2026-10-11T11:00:00.000Z",
+        image: `sha256:${"ab".repeat(32)}`,
+        commit: "c".repeat(40),
+      },
+    });
+    s.github.variables.set(DEPLOY_PAUSED_VARIABLE, pinned);
+    await runProvision(s.deps, { services: s.services });
+    expect(s.deps.reporter.text()).toContain(
+      "The deploys of example-app/prod are paused since 2026-10-11T11:00:00.000Z: `opscrew rollback` pinned it to ccccccc (sha256:abababababab). The merged files deploy only after `opscrew rollback --resume --deploy`.",
+    );
+    expect(s.github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(pinned);
+  });
+
+  it("names opscrew promote after resuming, for a promoted site a rollback pins", async () => {
+    const s = await setup({ plan: sitePlan({ promotedFrom: "staging" }) });
+    await writeArtifact(
+      "plan",
+      join(s.root, "opscrew", "environments", "staging", "plan.yaml"),
+      sitePlan({ environment: "staging", domain: "staging-docs.example.com" }),
+    );
+    s.github.variables.set(
+      DEPLOY_PAUSED_VARIABLE,
+      JSON.stringify({
+        "example-app/prod": {
+          reason: "rollback",
+          since: "2026-10-11T11:00:00.000Z",
+          image: `sha256:${"ab".repeat(32)}`,
+          commit: "c".repeat(40),
+        },
+      }),
+    );
+    await runProvision(s.deps, { services: s.services });
+    expect(s.deps.reporter.text()).toContain(
+      "The deploys of example-app/prod are paused since 2026-10-11T11:00:00.000Z: `opscrew rollback` pinned it to ccccccc (sha256:abababababab). The merged files deploy only after `opscrew rollback --env prod --resume`, then `opscrew promote --to prod`.",
+    );
   });
 
   it("with the scheduled check: its files (HTTPS and certificate only) and its webhook, no key", async () => {

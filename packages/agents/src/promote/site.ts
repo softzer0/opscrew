@@ -18,15 +18,18 @@ import {
   realSleep,
   sha256Hex,
   toPosixRelative,
+  upperFirst,
 } from "@opscrew/core";
 import {
   githubEnvironment,
   renderCloudflareWorkersWorkflow,
+  renderGithubPagesWorkflow,
   SITE_ARTIFACT,
 } from "@opscrew/iac-templates";
 import {
   type CloudflareWorkersDeployTarget,
   type DeployPlan,
+  otherAppDirs,
   readArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -40,13 +43,32 @@ import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { runningVersions, versionBuild } from "../status/site";
 import { buildPromotionHash, rollbackHash } from "./record";
 import {
+  type CheckedFor,
   githubRepository,
   NOTHING,
+  nothingChanged,
   type PromoteRepository,
   requireApplied,
   requireNotPaused,
 } from "./shared";
 import type { PromoteOptions, PromoteResult, PromoteServices } from "./types";
+
+/**
+ * The deploy workflow a site's plan generates, as provision renders it: with the branch and
+ * workflow that build a promoted environment's sites, and the repository's other apps' folders.
+ */
+export async function siteWorkflow(paths: ProjectPaths, plan: DeployPlan): Promise<string> {
+  const others = await otherAppDirs(paths);
+  const ctx = others.length > 0 ? { otherAppDirs: others } : {};
+  if (plan.target.provider === "github-pages") return renderGithubPagesWorkflow(plan, ctx).content;
+  const builder = await builderCicd(paths, plan);
+  return renderCloudflareWorkersWorkflow(
+    plan,
+    builder === undefined
+      ? ctx
+      : { ...ctx, builderBranch: builder.branch, builderWorkflowPath: builder.workflowPath },
+  ).content;
+}
 
 /** A run's page on GitHub. */
 function runUrl(github: Pick<PromoteRepository, "owner" | "repo">, run: number): string {
@@ -69,6 +91,11 @@ export interface SiteRun {
   allowOldSecrets?: string[];
   /** A rollback's step once it is approved, before it changes what runs. */
   beforeChange?: () => Promise<void>;
+  /**
+   * What the caller does, which the refusals and the approval name: `opscrew promote` (a
+   * promotion, its `--version` included) or `opscrew rollback` (a rollback).
+   */
+  what: CheckedFor;
 }
 
 /** Stops (nothing deployed) unless the environment is provisioned. */
@@ -76,7 +103,7 @@ function requireProvisioned(run: SiteRun, plan: DeployPlan, name: string): void 
   if (hasDeployment(plan)) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `The ${name} environment is not provisioned, so there is nothing to deploy to or from. ${NOTHING}`,
+    `The ${name} environment is not provisioned, so there is nothing to deploy to or from. ${nothingChanged(run.what)}`,
     {
       hint: `Run \`opscrew provision${name === "prod" ? "" : ` --env ${name}`}\` first, then \`${run.command}\` again.`,
     },
@@ -84,12 +111,12 @@ function requireProvisioned(run: SiteRun, plan: DeployPlan, name: string): void 
 }
 
 /** The Cloudflare account of an environment's Worker, as its committed infrastructure code names it. */
-async function accountOf(run: SiteRun, plan: DeployPlan, name: string): Promise<string> {
+export async function accountOf(run: SiteRun, plan: DeployPlan, name: string): Promise<string> {
   const account = (await committedTfvars(run.deps.paths.root, plan))?.cloudflare_account_id;
   if (typeof account === "string" && account !== "") return account;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `The infrastructure code of the ${name} environment (${plan.infra.dir}) names no Cloudflare account, so OpsCrew cannot find its Worker. ${NOTHING}`,
+    `The infrastructure code of the ${name} environment (${plan.infra.dir}) names no Cloudflare account, so OpsCrew cannot find its Worker. ${nothingChanged(run.what)}`,
     {
       hint: `Check out the branch that contains ${plan.infra.dir}, or run \`opscrew provision${name === "prod" ? "" : ` --env ${name}`}\`, then run \`${run.command}\` again.`,
     },
@@ -124,13 +151,18 @@ async function approve(
   run: SiteRun,
   input: { title: string; details: string; hash: string; later: string },
 ): Promise<void> {
-  const { deps } = run;
+  const { deps, what } = run;
+  const nothing = nothingChanged(what);
   deps.reporter.info(input.details);
   if (run.approveHash !== undefined && run.approveHash.toLowerCase() !== input.hash) {
     throw new OpsCrewError(
       "PLAN_NOT_APPROVED",
-      `The promotion you approved (${run.approveHash}) is not this one: what runs, an environment or ${run.target}'s plan changed since you reviewed it. ${NOTHING}`,
-      { hint: `Review the promotion above; to deploy it, run: ${input.later}` },
+      what === "rollback"
+        ? `The rollback you approved (${run.approveHash}) is not this one: what ${run.target} runs, the version to go back to or ${run.target}'s plan changed since you reviewed it. ${nothing}`
+        : `The promotion you approved (${run.approveHash}) is not this one: what runs, an environment or ${run.target}'s plan changed since you reviewed it. ${nothing}`,
+      {
+        hint: `Review the ${what} above; to ${what === "rollback" ? "apply" : "deploy"} it, run: ${input.later}`,
+      },
     );
   }
   const approval = await deps.approvals.request({
@@ -141,10 +173,10 @@ async function approve(
   });
   if (!approval.approved) {
     throw new PlanRefusedError({
-      plan: "promotion",
+      plan: what,
       ...(approval.reason ? { reason: approval.reason } : {}),
-      unchanged: NOTHING,
-      hint: `To deploy it later without prompts, run: ${input.later}`,
+      unchanged: nothing,
+      hint: `To ${what === "rollback" ? "roll back" : "deploy it"} later without prompts, run: ${input.later}`,
     });
   }
   await deps.approvals.assertApprovedPromotion(input.hash);
@@ -310,9 +342,7 @@ async function promoteBuild(run: SiteRun): Promise<PromoteResult> {
     );
   }
 
-  // 3. The target: applied, and its workflow on the default branch the one its plan generates
-  // now (rendered as provision renders it, with the branch and workflow that build its sites).
-  const builder = await builderCicd(run.paths, plan);
+  // 3. The target: applied, and its workflow on the default branch the one its plan generates now.
   const workflowFile = await requireApplied(deps, {
     target,
     plan,
@@ -321,12 +351,7 @@ async function promoteBuild(run: SiteRun): Promise<PromoteResult> {
     services: run.services,
     command,
     branch: github.defaultBranch,
-    workflow: renderCloudflareWorkersWorkflow(
-      plan,
-      builder === undefined
-        ? {}
-        : { builderBranch: builder.branch, builderWorkflowPath: builder.workflowPath },
-    ).content,
+    workflow: await siteWorkflow(run.paths, plan),
   });
 
   // 4. The approval, bound to the promotion's hash.
@@ -414,16 +439,17 @@ async function promoteBuild(run: SiteRun): Promise<PromoteResult> {
 }
 
 /**
- * `--allow-old-secrets`, trimmed, without empty names or repeats, and sorted.
+ * `--allow-old-secrets`, trimmed, without empty names or repeats, and sorted; `what` words the
+ * refusal.
  * @throws OpsCrewError `INVALID_INPUT` for an empty list or a name that is not a secret's.
  */
-function oldSecretNames(names: readonly string[]): string[] {
+export function oldSecretNames(names: readonly string[], what: CheckedFor): string[] {
   const trimmed = names.map((name) => name.trim()).filter(Boolean);
   const wrong = trimmed.find((name) => !WORKER_SECRET_NAME.test(name));
   if (trimmed.length === 0 || wrong !== undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `${wrong === undefined ? "--allow-old-secrets names no secret" : `"${wrong}" is not a secret's name`}. ${NOTHING}`,
+      `${wrong === undefined ? "--allow-old-secrets names no secret" : `"${wrong}" is not a secret's name`}. ${nothingChanged(what)}`,
       {
         hint: "Pass the names OpsCrew's refusal of the rollback listed, comma-separated: letters, digits and underscores, not starting with a digit.",
       },
@@ -443,7 +469,7 @@ function oldSecretsRefusal(
   const one = input.secrets.length === 1;
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `The version ${input.version} of the Worker ${input.worker} predates a change to the ${one ? "secret" : "secrets"} ${listText(input.secrets)}: activated again, it would run with ${one ? "its old value, the one" : "their old values, the ones"} it was uploaded with, not the current ${one ? "one" : "ones"}. ${NOTHING}`,
+    `The version ${input.version} of the Worker ${input.worker} predates a change to the ${one ? "secret" : "secrets"} ${listText(input.secrets)}: activated again, it would run with ${one ? "its old value, the one" : "their old values, the ones"} it was uploaded with, not the current ${one ? "one" : "ones"}. ${nothingChanged(run.what)}`,
     {
       hint: `Only if ${one ? "it was not changed because it leaked and its old value is" : "none of them was changed because it leaked and their old values are"} still safe, run \`${run.command} ${run.versionFlag} ${input.version} --allow-old-secrets ${input.secrets.join(",")}\`. Otherwise deploy a new version instead: it runs with the current ${one ? "value" : "values"}.`,
     },
@@ -471,14 +497,14 @@ export async function rollBackWorker(run: SiteRun, version: string): Promise<Pro
   if (chosen === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${version} is not a version of the Worker ${worker} of the ${target} environment. ${NOTHING}`,
+      `${version} is not a version of the Worker ${worker} of the ${target} environment. ${nothingChanged(run.what)}`,
       { hint: `${list}; run \`${command} ${versionFlag} <id>\` with it.` },
     );
   }
   if (chosen.id === state?.running) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The Worker ${worker} of the ${target} environment runs the version ${chosen.id} already. ${NOTHING}`,
+      `The Worker ${worker} of the ${target} environment runs the version ${chosen.id} already. ${nothingChanged(run.what)}`,
       { hint: `${list}; run \`${command} ${versionFlag} <id>\` with it.` },
     );
   }
@@ -504,7 +530,7 @@ export async function rollBackWorker(run: SiteRun, version: string): Promise<Pro
             `Old secrets (--allow-old-secrets): ${listText(allowed)}. If Cloudflare reports them changed since this version was active, OpsCrew activates it anyway and it runs with their old values, not the current ones; don't do this for a value rotated because it leaked`,
           ]
         : []),
-      `Promotion hash: ${hash}`,
+      `${upperFirst(run.what)} hash: ${hash}`,
     ].join("\n"),
     hash,
     later: `${command} ${versionFlag} ${chosen.id}${allowFlag} --approve ${hash}`,
@@ -531,7 +557,7 @@ export async function rollBackWorker(run: SiteRun, version: string): Promise<Pro
     action: "activate worker version",
     target: worker,
     decision: "approved",
-    detail: `version ${chosen.id} at 100%${forced !== undefined ? `, forced, with the old values of ${listText(forced)}` : ""} (promotion ${hash})`,
+    detail: `version ${chosen.id} at 100%${forced !== undefined ? `, forced, with the old values of ${listText(forced)}` : ""} (${run.what} ${hash})`,
   });
   deps.reporter.success(`${target} runs the version ${chosen.id} of its Worker again.`);
   return { status: "deployed", version: chosen.id };
@@ -577,9 +603,13 @@ async function waitForRerun(
 export async function rollBackPages(run: SiteRun, version: string): Promise<PromoteResult> {
   const { deps, target, plan, command, versionFlag } = run;
   if (!/^[1-9][0-9]*$/.test(version)) {
-    throw new OpsCrewError("INVALID_INPUT", `"${version}" is not a workflow run's id. ${NOTHING}`, {
-      hint: "Pass the id of an earlier GitHub Pages run, as `opscrew status` lists it.",
-    });
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `"${version}" is not a workflow run's id. ${nothingChanged(run.what)}`,
+      {
+        hint: "Pass the id of an earlier GitHub Pages run, as `opscrew status` lists it.",
+      },
+    );
   }
   requireProvisioned(run, plan, target);
   const github = await githubRepository(deps, run.services);
@@ -592,14 +622,14 @@ export async function rollBackPages(run: SiteRun, version: string): Promise<Prom
   if (chosen === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${version} is not a successful run of ${workflowFile}, the site's workflow. ${NOTHING}`,
+      `${version} is not a successful run of ${workflowFile}, the site's workflow. ${nothingChanged(run.what)}`,
       { hint: `${list}; run \`${command} ${versionFlag} <run id>\` with it.` },
     );
   }
   if (at === 0) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The run ${chosen.runId} published the site that GitHub Pages serves now. ${NOTHING}`,
+      `The run ${chosen.runId} published the site that GitHub Pages serves now. ${nothingChanged(run.what)}`,
       { hint: `${list}; run \`${command} ${versionFlag} <run id>\` with it.` },
     );
   }
@@ -612,7 +642,7 @@ export async function rollBackPages(run: SiteRun, version: string): Promise<Prom
       `Run: ${url}, of the commit ${chosen.headSha}, last started ${chosen.startedAt}`,
       `Target: ${target}${plan.deployment.url !== undefined ? ` (${plan.deployment.url})` : ""}, ${toPosixRelative(deps.paths.root, run.paths.files.plan)} with plan hash ${targetPlanHash}`,
       `Deploy: GitHub re-runs that run: it builds the site again from that commit and publishes it`,
-      `Promotion hash: ${hash}`,
+      `${upperFirst(run.what)} hash: ${hash}`,
       "",
       guardText(await reviewedEnvironment(run, github)),
     ].join("\n"),
@@ -627,7 +657,7 @@ export async function rollBackPages(run: SiteRun, version: string): Promise<Prom
     actor: "opscrew",
     action: "re-run workflow",
     target: `${owner}/${repo}`,
-    detail: `${workflowFile} run ${chosen.runId} (promotion ${hash})`,
+    detail: `${workflowFile} run ${chosen.runId} (${run.what} ${hash})`,
   });
   await waitForRerun(run, github, { runId: chosen.runId, attempt: chosen.attempt, url });
   const followed = await followRun(run, github, {
@@ -667,8 +697,9 @@ export async function promoteSite(
     versionFlag: "--version",
     approveHash: options.approveHash,
     ...(options.allowOldSecrets !== undefined
-      ? { allowOldSecrets: oldSecretNames(options.allowOldSecrets) }
+      ? { allowOldSecrets: oldSecretNames(options.allowOldSecrets, "promotion") }
       : {}),
+    what: "promotion",
   };
   if (options.digest !== undefined) {
     throw new OpsCrewError(

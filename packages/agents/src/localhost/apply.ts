@@ -35,13 +35,13 @@ import {
 import { localTarget, recordServedSite } from "./site";
 
 /** How long the start script and a local build may take (image pulls, builds). */
-const SCRIPT_TIMEOUT_MS = 30 * 60_000;
+export const SCRIPT_TIMEOUT_MS = 30 * 60_000;
 
 /** The health check's tries after the switch, 3 seconds apart. */
 const HEALTH_TRIES = 10;
 
 /** The last lines of a script's output, without GitHub Actions' `::error::` markers. */
-function outputTail(result: { stdout: string; stderr: string }): string {
+export function outputTail(result: { stdout: string; stderr: string }): string {
   const lines = `${result.stdout}\n${result.stderr}`
     .split(/\r?\n/)
     .map((line) => line.replace(/^::(?:error|warning|notice)::/, "").trimEnd())
@@ -99,7 +99,7 @@ async function buildImage(
  * afterwards whatever happened, so the token never stays on this computer's disk. Without a
  * registry (a local build) it runs `start` as it is.
  */
-async function withRegistryLogin<T>(
+export async function withRegistryLogin<T>(
   exec: RemoteExec,
   inShell: string,
   registry: LocalRegistry | undefined,
@@ -280,7 +280,7 @@ export async function applyLocal(
  * Whether the app answers over HTTPS at its hostname through 127.0.0.1, trusting only the local
  * CA: a status below 400 within {@link HEALTH_TRIES} tries, as `curl -f` counts it.
  */
-async function healthCheck(
+export async function healthCheck(
   deps: Pick<PhaseDeps, "paths">,
   local: ReturnType<typeof computer>,
   o: { site: { hostname: string }; port: number; path: string },

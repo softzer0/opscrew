@@ -107,6 +107,39 @@ describe("opscrew status on Cloudflare's hosting", () => {
     expect(lines.join("\n")).not.toMatch(/server|container/i);
   });
 
+  it("after a rollback names the version uploaded before the one running, never the one it went back from (D4)", async () => {
+    const zone = zoneWithWorker();
+    const worker = zone.workers.get("example-app");
+    if (worker === undefined) throw new Error("no Worker");
+    worker.versions.push({
+      id: "v-first",
+      created_on: "2026-10-21T10:00:00Z",
+      message: `opscrew 100 ${"c".repeat(64)}`,
+    });
+    // `opscrew rollback` went back from v-new to v-old.
+    worker.deployments.unshift({
+      id: "d-3",
+      created_on: "2026-10-24T10:01:00Z",
+      source: "api",
+      strategy: "percentage",
+      versions: [{ version_id: "v-old", percentage: 100 }],
+    });
+    const deps = await setup(sitePlan({ deployed: true }));
+    const { lines } = await componentStatusReport(deps, sitePlan({ deployed: true }), {
+      services: {
+        cloudflare: fakeCloudflare(),
+        sharedCloudflare: fakeSharedCloudflare(zone),
+        deploys: new FakePromoteGitHub(),
+      },
+    });
+    expect(lines[1]).toContain("Running: version v-old");
+    expect(lines[2]).toContain("Before it: version v-new");
+    expect(lines[3]).toBe(
+      "  Roll back: opscrew rollback --to v-first (the newest version uploaded before the one running)",
+    );
+    expect(lines.join("\n")).not.toContain("--to v-new");
+  });
+
   it("says when nothing is deployed yet, and when the Worker is gone", async () => {
     const zone = new FakeZone();
     zone.workers.set("example-app", { versions: [], deployments: [] });
@@ -123,28 +156,19 @@ describe("opscrew status on Cloudflare's hosting", () => {
 });
 
 describe("opscrew status on GitHub Pages", () => {
-  /** GitHub's Pages API, and the successful runs of the Pages workflow (latest started last). */
-  function github(pages: Omit<FakePagesOptions, "log">) {
+  /** The successful runs of the Pages workflow, latest started last. */
+  const RUNS = [
+    { id: 201, run_attempt: 1, run_started_at: "2026-10-22T09:00:00Z", head_sha: "1".repeat(40) },
+    { id: 202, run_attempt: 1, run_started_at: "2026-10-23T09:00:00Z", head_sha: "2".repeat(40) },
+  ];
+
+  /** GitHub's Pages API, and `runs`, the successful runs of the Pages workflow. */
+  function github(pages: Omit<FakePagesOptions, "log">, runs = RUNS) {
     const fake = fakeGithubPages(pages);
     const fetch: FetchLike = async (input, init) => {
       const url = new URL(String(input));
       if (url.pathname.endsWith("/actions/workflows/opscrew-deploy.yml/runs")) {
-        return Response.json({
-          workflow_runs: [
-            {
-              id: 201,
-              run_attempt: 1,
-              run_started_at: "2026-10-22T09:00:00Z",
-              head_sha: "1".repeat(40),
-            },
-            {
-              id: 202,
-              run_attempt: 1,
-              run_started_at: "2026-10-23T09:00:00Z",
-              head_sha: "2".repeat(40),
-            },
-          ],
-        });
+        return Response.json({ workflow_runs: runs });
       }
       return fake.fetch(input, init);
     };
@@ -196,6 +220,41 @@ describe("opscrew status on GitHub Pages", () => {
       paused: expect.objectContaining({ reason: "rollback", commit: "1".repeat(40) }),
     });
     expect(pages.log.every((line) => line.startsWith("pages GET"))).toBe(true);
+  });
+
+  it("after a rollback names the run created before the one serving, never the one it went back from (D4)", async () => {
+    // `opscrew rollback` re-ran run 201: it keeps its id and is now the latest started.
+    const pages = github(
+      {
+        site: { buildType: "workflow", cname: "docs.example.com", httpsEnforced: true },
+        health: "issued",
+      },
+      [
+        {
+          id: 200,
+          run_attempt: 1,
+          run_started_at: "2026-10-21T09:00:00Z",
+          head_sha: "0".repeat(40),
+        },
+        ...RUNS.slice(1),
+        {
+          id: 201,
+          run_attempt: 2,
+          run_started_at: "2026-10-24T09:00:00Z",
+          head_sha: "1".repeat(40),
+        },
+      ],
+    );
+    const deps = await setup(pagesTestPlan(), pages.fetch);
+    const { lines } = await componentStatusReport(deps, pagesTestPlan());
+    expect(lines[4]).toContain("/actions/runs/201,");
+    expect(lines[5]).toContain(
+      "The one before: https://github.com/example-org/example-app/actions/runs/202,",
+    );
+    expect(lines[6]).toBe(
+      "  Roll back: opscrew rollback --to 200 (the newest run created before the last one)",
+    );
+    expect(lines.join("\n")).not.toContain("--to 202");
   });
 
   it("says the certificate is pending and when to look again", async () => {

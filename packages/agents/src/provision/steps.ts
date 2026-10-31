@@ -3,15 +3,18 @@ import type { GitClient } from "@opscrew/connector-github";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { OpsCrewError, toPosixRelative } from "@opscrew/core";
 import { engineLabel } from "@opscrew/iac-engine";
+import { checkEnvironmentKey } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { workflowBranch } from "../environments/branches";
+import { commandFlags } from "../environments/choice";
 import {
   type PlanApproval,
   type ProjectEngine,
   projectEngine,
   writePlanIfChanged,
 } from "../shared";
+import { type DeployPause, pinnedText } from "../shared/deploy-pause";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
 import type { DependabotStep } from "./dependabot";
 import type { PlanAndApplyResult } from "./plan-apply";
@@ -264,4 +267,24 @@ export function mergeDeploysNote(
   return storedNow
     ? `OpsCrew stored the deploy secrets in GitHub Actions again. If you changed a value, the running app gets it on its next deploy: run ${posix.basename(plan.cicd.workflowPath)} on ${base} in GitHub Actions, or push a commit.`
     : undefined;
+}
+
+/**
+ * Said beside {@link mergeDeploysNote} while a rollback pins the environment (`pause`, ADR 0023):
+ * what this run merges deploys only once its deploys resume, with `--deploy`, or for a promoted
+ * environment with `opscrew promote` after resuming; `undefined` otherwise.
+ */
+export async function pausedMergeNote(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: DeployPlan,
+  pause: DeployPause | undefined,
+): Promise<string | undefined> {
+  if (pause?.reason !== "rollback") return undefined;
+  const environment = deps.paths.environment;
+  const resume = `opscrew rollback${await commandFlags(deps.paths.root, environment, plan.app.key)} --resume`;
+  const deploys =
+    plan.environment?.deploySource.from === "promote"
+      ? `\`${resume}\`, then \`opscrew promote --to ${environment}\``
+      : `\`${resume} --deploy\``;
+  return `The deploys of ${checkEnvironmentKey(plan)} are paused since ${pause.since}: ${pinnedText(pause)}. The merged files deploy only after ${deploys}.`;
 }

@@ -637,6 +637,7 @@ describe("a site's paused deploys and the rollbacks `opscrew rollback` reuses", 
       versionFlag: "--to",
       approveHash: undefined,
       beforeChange,
+      what: "rollback",
     };
   }
 

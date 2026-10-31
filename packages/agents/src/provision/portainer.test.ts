@@ -10,7 +10,12 @@ import {
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, fingerprintSha256, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { IMAGES, renderPortainerStack, serviceSpec } from "@opscrew/iac-templates";
+import {
+  DEPLOY_PAUSED_VARIABLE,
+  IMAGES,
+  renderPortainerStack,
+  serviceSpec,
+} from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -482,6 +487,24 @@ describe.skipIf(!findExecutable("git"))("opscrew provision for the user's Portai
       await readFile(stackPlanFile(s.deps.paths, result.stackPlanHash as string), "utf8"),
       webhookId,
     );
+  });
+
+  it("says the merged files deploy only after resuming, while a rollback pins the environment", async () => {
+    const s = await setup({ changes: APP_TUNNEL });
+    const pinned = JSON.stringify({
+      "shop/prod": {
+        reason: "rollback",
+        since: "2026-10-11T11:00:00.000Z",
+        image: `sha256:${"ab".repeat(32)}`,
+        commit: "c".repeat(40),
+      },
+    });
+    s.github.variables.set(DEPLOY_PAUSED_VARIABLE, pinned);
+    await s.run();
+    expect(s.deps.reporter.text()).toContain(
+      "The deploys of shop/prod are paused since 2026-10-11T11:00:00.000Z: `opscrew rollback` pinned it to ccccccc (sha256:abababababab). The merged files deploy only after `opscrew rollback --resume --deploy`.",
+    );
+    expect(s.github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(pinned);
   });
 
   it("builds with the plan's builder and stores the secret build values apart", async () => {

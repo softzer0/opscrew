@@ -61,7 +61,8 @@ jobs:
           if [[ "$(field reason)" == rollback ]]; then
             commit="$(field commit)"
             image="$(field image)"
-            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`opscrew rollback --resume --deploy\\\` deploys the branch's latest commit."
+            if [[ "$image" == sha256:* ]]; then image="\${image:0:19}"; fi
+            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image}). This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`opscrew rollback --resume --deploy\\\` deploys the branch's latest commit."
           else
             text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`opscrew provision\\\` resumes them."
           fi
@@ -818,7 +819,8 @@ jobs:
           if [[ "$(field reason)" == rollback ]]; then
             commit="$(field commit)"
             image="$(field image)"
-            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`opscrew rollback --resume --deploy\\\` deploys the branch's latest commit."
+            if [[ "$image" == sha256:* ]]; then image="\${image:0:19}"; fi
+            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image}). This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`opscrew rollback --resume --deploy\\\` deploys the branch's latest commit."
           else
             text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`opscrew provision\\\` resumes them."
           fi

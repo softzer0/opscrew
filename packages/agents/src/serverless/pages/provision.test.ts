@@ -4,7 +4,7 @@ import type { CloudflareDnsRecord } from "@opscrew/connector-cloudflare";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { pagesVerificationRootDir } from "@opscrew/iac-templates";
+import { DEPLOY_PAUSED_VARIABLE, pagesVerificationRootDir } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it, vi } from "vitest";
 import { runProvision } from "../../provision/run";
@@ -208,6 +208,25 @@ describe.skipIf(!findExecutable("git"))("provision on GitHub Pages", () => {
     expect(text).toContain("GitHub checks the DNS records of docs.example.com next");
     expect(`${text}\n${JSON.stringify(deps.audit.entries)}`).not.toContain(GITHUB_TOKEN);
     expect(`${text}\n${JSON.stringify(deps.audit.entries)}`).not.toContain(CLOUDFLARE_TOKEN);
+  });
+
+  it("says the merged files deploy only after resuming, while a rollback pins the site", async () => {
+    const { run, github } = await setup();
+    const pinned = JSON.stringify({
+      "example-app/prod": {
+        reason: "rollback",
+        since: "2026-10-11T11:00:00.000Z",
+        image: `sha256:${"ab".repeat(32)}`,
+        commit: "c".repeat(40),
+      },
+    });
+    github.variables.set(DEPLOY_PAUSED_VARIABLE, pinned);
+    const { deps, result } = await run({ pagesVerification: VERIFICATION });
+    await result;
+    expect(deps.reporter.text()).toContain(
+      "The deploys of example-app/prod are paused since 2026-10-11T11:00:00.000Z: `opscrew rollback` pinned it to ccccccc (sha256:abababababab). The merged files deploy only after `opscrew rollback --resume --deploy`.",
+    );
+    expect(github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(pinned);
   });
 
   it("sets up an apex with www: A and AAAA records, and the www CNAME", async () => {
