@@ -356,7 +356,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1911 [P] [US1] [US2] [US3] [US6] The CLI command and the plugin's skills, in `packages/cli/src/commands/rollback.ts` and `plugin/**`
+- [X] T1911 [P] [US1] [US2] [US3] [US6] The CLI command and the plugin's skills, in `packages/cli/src/commands/rollback.ts` and `plugin/**`
   - Owns:
     - `packages/cli/src/commands/{rollback,rollback.test}.ts`;
     - in `packages/cli/src/commands/index.ts`, the registration;
