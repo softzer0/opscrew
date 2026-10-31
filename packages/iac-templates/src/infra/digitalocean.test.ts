@@ -177,15 +177,17 @@ describe("digitalocean-droplet module", () => {
     const inbound = [...main.matchAll(/inbound_rule \{([^}]*)\}/g)].map((m) =>
       (m[1] ?? "").replace(/\s+/g, " ").trim(),
     );
-    expect(inbound).toEqual([
-      'protocol = "tcp" port_range = "22" source_addresses = var.ssh_allowed_cidrs',
-      'protocol = "icmp" source_addresses = ["0.0.0.0/0", "::/0"]',
-    ]);
-    // The web's rules, only with `web`, and WireGuard's, only with a port.
+    expect(inbound).toEqual(['protocol = "icmp" source_addresses = ["0.0.0.0/0", "::/0"]']);
+    // SSH's rule, only with allowed networks (none once public SSH is closed), the web's, only
+    // with `web`, and WireGuard's, only with a port.
     const dynamic = [
       ...main.matchAll(/dynamic "inbound_rule" \{\s*for_each = ([^\n]*)\s*content \{([^}]*)\}/g),
     ].map((m) => [m[1], (m[2] ?? "").replace(/\s+/g, " ").trim()]);
     expect(dynamic).toEqual([
+      [
+        "length(var.ssh_allowed_cidrs) == 0 ? [] : [var.ssh_allowed_cidrs]",
+        'protocol = "tcp" port_range = "22" source_addresses = inbound_rule.value',
+      ],
       [
         "var.web ? local.web_rules : []",
         "protocol = inbound_rule.value.protocol port_range = inbound_rule.value.port source_addresses = var.http_allowed_cidrs",

@@ -1,7 +1,7 @@
 import { OpsCrewError, readTextIfExists } from "@opscrew/core";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { EngineDeps } from "../shared/engine";
-import { serverLogin } from "../shared/server-address";
+import { privateReach, serverLogin } from "../shared/server-address";
 import { keysFor, knownHostsName } from "../shared/wait";
 import type { CheckServerReach } from "./secrets";
 
@@ -15,8 +15,9 @@ export interface CheckServerEntry extends CheckServerReach {
  * Every server of `plan`'s environment the scheduled check reads over SSH, as its server secret
  * lists them (feature 018, FR-1811): the app's (`app`, when it is read over SSH), then each extra
  * server in plan order as `deploy` with the host key pinned on this computer. With public SSH
- * closed (`network.publicSsh: false`) each entry is the server's private address, which the
- * environment's runner inside the private network reaches, with the same host key.
+ * closed (`network.publicSsh: false`) each entry is the server's private address on the port sshd
+ * listens on there (`privateReach`), which the environment's runner inside the private network
+ * reaches, with the same host key.
  * @throws OpsCrewError `PHASE_PRECONDITION` when an extra server's login or host key is not on
  * this computer.
  */
@@ -25,29 +26,37 @@ export async function checkServerEntries(
   plan: DeployPlan,
   app: CheckServerReach | undefined,
 ): Promise<CheckServerEntry[]> {
-  const network = plan.network?.publicSsh === false ? plan.network : undefined;
-  /** The address the check connects to: the private one once public SSH is closed. */
-  const hostOf = (id: string, publicHost: string) => {
-    if (network === undefined) return publicHost;
-    const member = network.members.find((m) => m.name === id);
-    if (member === undefined) throw new Error(`Server "${id}" is not on the private network.`);
-    return member.address;
-  };
-  /** The entry for `id` at its final address, with `keys` (`type key`) pinned under it. */
-  const entry = (id: string, reach: Omit<CheckServerReach, "knownHosts">, keys: string[]) => {
-    const host = hostOf(id, reach.host);
-    const name = knownHostsName(host, reach.port);
+  /**
+   * The entry for `id` (`own`: a server the user owns), with `keys` (`type key`) pinned under the
+   * address the check connects to: the private one once public SSH is closed.
+   */
+  const entry = async (
+    id: string,
+    own: boolean,
+    reach: Omit<CheckServerReach, "knownHosts">,
+    keys: string[],
+  ): Promise<CheckServerEntry> => {
+    const at = (await privateReach(deps, plan, id, { port: reach.port, own })) ?? reach;
+    const name = knownHostsName(at.host, at.port);
     return {
       id,
       ...reach,
-      host,
+      host: at.host,
+      port: at.port,
       knownHosts: `${keys.map((key) => `${name} ${key}`).join("\n")}\n`,
     };
   };
   const entries: CheckServerEntry[] =
     app === undefined
       ? []
-      : [entry(APP_SERVER, app, keysFor(app.knownHosts, knownHostsName(app.host, app.port)))];
+      : [
+          await entry(
+            APP_SERVER,
+            plan.target.provider === "own",
+            app,
+            keysFor(app.knownHosts, knownHostsName(app.host, app.port)),
+          ),
+        ];
   const pinned = (await readTextIfExists(deps.paths.files.knownHosts)) ?? "";
   for (const server of plan.servers ?? []) {
     const login = await serverLogin(deps, plan, server.name);
@@ -61,7 +70,14 @@ export async function checkServerEntries(
         },
       );
     }
-    entries.push(entry(server.name, { host: login.host, port: login.port, user: "deploy" }, keys));
+    entries.push(
+      await entry(
+        server.name,
+        login.own,
+        { host: login.host, port: login.port, user: "deploy" },
+        keys,
+      ),
+    );
   }
   return entries;
 }

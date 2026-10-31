@@ -37,7 +37,7 @@ variable "check_key_line" {
 }
 
 variable "ssh_allowed_cidrs" {
-  description = "Networks allowed to reach SSH (port 22)."
+  description = "Networks allowed to reach SSH (port 22); empty for no SSH rule (public SSH closed)."
   type        = list(string)
   default     = ["0.0.0.0/0", "::/0"]
 }

@@ -26,6 +26,7 @@ import {
   testKeyMaker,
   testKeyPair,
 } from "../testing";
+import { probeExpectedPorts } from "./probes";
 import { closePublicSsh, openPublicSsh } from "./public-ssh";
 
 const NOW = new Date("2026-10-31T12:00:00.000Z");
@@ -451,5 +452,26 @@ describe("opscrew secure --open-public-ssh", () => {
     expect(opened.network?.publicSshAllowedCidrs).toBeUndefined();
     expect(reopenedPlan(closed()).security.sshAllowedCidrs).toEqual(["0.0.0.0/0", "::/0"]);
     expect(reopenedPlan(plan).security.sshAllowedCidrs).toEqual(ALLOWED);
+  });
+});
+
+describe("the outside SSH probe with public SSH closed", () => {
+  it("passes when port 22 does not answer, and fails when it still does", async () => {
+    const { plan: open } = networked();
+    const closed = withNetwork(
+      { ...open, security: { ...open.security, sshAllowedCidrs: [] } },
+      { ...(open.network as Network), publicSsh: false, publicSshAllowedCidrs: ALLOWED },
+    );
+    const quiet = await probeExpectedPorts("203.0.113.10", closed, { connect: async () => false });
+    expect(quiet.find((c) => c.id === "port-22-open")).toMatchObject({
+      status: "pass",
+      title: "SSH (port 22) is closed to the internet",
+    });
+    const answers = await probeExpectedPorts("203.0.113.10", closed, {
+      connect: async (_host, port) => port === 22,
+    });
+    const check = answers.find((c) => c.id === "port-22-open");
+    expect(check).toMatchObject({ status: "fail", severity: "high" });
+    expect(check?.remediation).toContain("opscrew secure --close-public-ssh");
   });
 });

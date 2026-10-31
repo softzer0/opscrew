@@ -351,6 +351,34 @@ async function initAndValidate(
   );
 }
 
+/**
+ * Plans the validated root under `root` offline (no refresh, placeholder tokens, an own server's
+ * address from the environment as the CLI passes it) and returns the plan's text, all creates.
+ */
+async function planOffline(bin: string, root: string): Promise<string> {
+  const runner = new NodeCommandRunner();
+  const cwd = join(root, "opscrew/infra/prod");
+  const init = await runner.run(bin, ["init", "-input=false", "-no-color"], { cwd });
+  expect(init.exitCode, init.stdout + init.stderr).toBe(0);
+  const token = "x".repeat(64);
+  const planned = await runner.run(
+    bin,
+    ["plan", "-refresh=false", "-input=false", "-lock=false", "-no-color"],
+    {
+      cwd,
+      env: {
+        ...process.env,
+        HCLOUD_TOKEN: token,
+        DIGITALOCEAN_TOKEN: token,
+        TF_VAR_server_ipv4: "203.0.113.10",
+      },
+    },
+  );
+  expect(planned.exitCode, planned.stdout + planned.stderr).toBe(0);
+  expect(planned.stdout).toMatch(/Plan: \d+ to add, 0 to change, 0 to destroy/);
+  return planned.stdout;
+}
+
 describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
   for (const name of ["tofu", "terraform"] as const) {
     const engine = detected.find((d) => d.name === name && d.supported);
@@ -420,30 +448,40 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
         async (test) => {
           const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-reuse-`));
           await initAndValidate(test, name, bin, root, renderInfra(plan, validatedContext()));
-          const runner = new NodeCommandRunner();
-          const cwd = join(root, "opscrew/infra/prod");
-          const init = await runner.run(bin, ["init", "-input=false", "-no-color"], { cwd });
-          expect(init.exitCode, init.stdout + init.stderr).toBe(0);
-          const token = "x".repeat(64);
-          const planned = await runner.run(
-            bin,
-            ["plan", "-refresh=false", "-input=false", "-lock=false", "-no-color"],
-            {
-              cwd,
-              // An own server's address comes from the environment, as the CLI passes it.
-              env: {
-                ...process.env,
-                HCLOUD_TOKEN: token,
-                DIGITALOCEAN_TOKEN: token,
-                TF_VAR_server_ipv4: "203.0.113.10",
-              },
-            },
-          );
-          expect(planned.exitCode, planned.stdout + planned.stderr).toBe(0);
-          expect(planned.stdout).toMatch(/Plan: \d+ to add, 0 to change, 0 to destroy/);
-          expect(planned.stdout.match(/_ssh_key\.deploy(\[0\])? will be created/g)).toHaveLength(
+          const planned = await planOffline(bin, root);
+          expect(planned.match(/_ssh_key\.deploy(\[0\])? will be created/g)).toHaveLength(
             providers.size,
           );
+        },
+        300_000,
+      );
+    }
+
+    // Once public SSH is closed (an empty allow-list), neither cloud firewall has an SSH rule.
+    for (const [label, cidrs, rules] of [
+      ["open", undefined, 2],
+      ["closed", [], 0],
+    ] as const) {
+      it.skipIf(!engine)(
+        `plans the hetzner plus a digitalocean db root offline with public SSH ${label} (${rules} SSH rules) with ${name}`,
+        async (test) => {
+          const root = await mkdtemp(join(tmpdir(), `opscrew-infra-${name}-ssh-${label}-`));
+          const plan = splitPlan({ servers: [{ name: "db", provider: "digitalocean" }] });
+          const withCidrs =
+            cidrs === undefined
+              ? plan
+              : DeployPlanSchema.parse({
+                  ...plan,
+                  network: { ...plan.network, publicSsh: false },
+                  security: { ...plan.security, sshAllowedCidrs: cidrs },
+                });
+          await initAndValidate(test, name, bin, root, renderInfra(withCidrs, validatedContext()));
+          const planned = await planOffline(bin, root);
+          // Hetzner's rule is described "SSH"; DigitalOcean's has port_range "22".
+          expect(planned.match(/description\s+= "SSH"|port_range\s+= "22"/g) ?? []).toHaveLength(
+            rules,
+          );
+          expect(planned).toMatch(/description\s+= "Ping"/);
         },
         300_000,
       );

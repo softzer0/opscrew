@@ -123,6 +123,7 @@ import {
   removalNotes,
   removedCloudServers,
   requireDesignedPlacement,
+  requirePublicSshForRemoval,
   serverHostPlans,
   withPlacement,
 } from "./servers";
@@ -410,6 +411,8 @@ async function provisionFlow(
   }
   // A live service placed on another server moves only as design plans it, with its data.
   requireDesignedPlacement(plan, command);
+  // An extra own server is taken off only while public SSH reaches it.
+  await requirePublicSshForRemoval(deps, plan, command);
   const profile = providerProfile(planProvider(plan));
   // The providers of the extra servers OpsCrew creates, besides the app server's.
   const extraProviders = [...new Set(extraCloudServers(plan).map((s) => s.provider))].filter(

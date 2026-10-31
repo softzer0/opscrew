@@ -1010,11 +1010,13 @@ function ufwStep({ facts, desired, found, findings }: SetupContext): HostStep {
       .filter((coverage) => coverage.covers);
   const notes: string[] = [];
   // An existing allow/limit rule for the SSH port counts. In tunnel mode any covering rule is
-  // enough (the tunnel reaches SSH on localhost); in public mode GitHub Actions connects from
-  // changing addresses, so the port must be open to every address.
+  // enough (the tunnel reaches SSH on localhost), and so it is with public SSH closed (SSH answers
+  // on the private network's interface, whose rule counts); in public mode GitHub Actions connects
+  // from changing addresses, so the port must be open to every address.
+  const anyRule = !web || desired.publicSsh === false;
   const sshRulePorts = sshPorts.filter((port) => {
     const rules = covering(port, "tcp");
-    if (!web) return rules.length === 0;
+    if (anyRule) return rules.length === 0;
     const open = rules.filter((rule) => !rule.limitedSource);
     if (open.length === 0 && rules.length > 0) {
       notes.push(

@@ -31,6 +31,9 @@ function edit(s: OwnProject, change: (facts: OwnProject["host"]["facts"]) => voi
   s.host.facts = HostFactsSchema.parse(facts);
 }
 
+/** A WireGuard public key for the tests: 32 bytes of 1, in base64 (never a real key). */
+const WG_KEY = Buffer.alloc(32, 1).toString("base64");
+
 const details = (report: Awaited<ReturnType<typeof runDrift>>) =>
   (report.host?.differences ?? []).map((d) => `${d.area}: ${d.detail}`);
 
@@ -190,6 +193,42 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
     expect(`${text}\n${steps}`).not.toMatch(/Your own server|console/);
     expect(s.host.applies).toHaveLength(applied);
     expect(s.handler.requests).toEqual([]);
+  });
+
+  it("with public SSH closed, SSH's rule on the private network's interface is no ufw drift", async () => {
+    const s = await ownProject();
+    await provisionOwn(s);
+    // `secure --close-public-ssh` left SSH on the network's interface only.
+    edit(s, (f) => {
+      f.firewall.ufwRules = [
+        ...f.firewall.ufwRules.filter((rule) => rule.comment !== "opscrew-ssh"),
+        {
+          rule: "allow in on wg-opscrew0 to any port 22 proto tcp",
+          comment: "opscrew-network-ssh",
+        },
+      ];
+    });
+    const ufw = (report: DriftReport) =>
+      (report.host?.differences ?? []).filter((d) => d.area === "ufw");
+    // While the plan says public SSH is open, the missing public rule is drift.
+    expect(ufw(await runDrift(s.deps, { services: s.services }))).not.toEqual([]);
+
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    await writeArtifact(
+      "plan",
+      s.deps.paths.files.plan,
+      DeployPlanSchema.parse({
+        ...plan,
+        environment: { runner: "server" },
+        security: { ...plan.security, sshAllowedCidrs: [] },
+        network: {
+          range: "10.200.4.0/24",
+          members: [{ name: "app", address: "10.200.4.1", port: 51820, publicKey: WG_KEY }],
+          publicSsh: false,
+        },
+      }),
+    );
+    expect(ufw(await runDrift(s.deps, { services: s.services }))).toEqual([]);
   });
 
   it("stops without a report when the server cannot be reached or inspected", async () => {

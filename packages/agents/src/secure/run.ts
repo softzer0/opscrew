@@ -48,7 +48,7 @@ import { findSavedPlan } from "../provision/plan-apply";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { PortainerServices } from "../provision/types";
 import { type RunnerGitHubApi, runnerChecks } from "../runners";
-import { hidesServerAddress, SshRemoteExec, serverAddress, withoutServerAddress } from "../shared";
+import { appServerShell, hidesServerAddress, serverAddress, withoutServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import {
   proxyCertificateHosts,
@@ -88,7 +88,7 @@ import { siteProbesSkipped, siteSecureNotes, siteSecurityChecks } from "./site";
 export interface RunSecureOptions {
   /** The engine's plan JSON (`PlanSummary.planJson`) to evaluate the plan policies against. */
   planJson?: unknown;
-  /** Runs commands on the server (default: `SshRemoteExec` with the project's deploy key). */
+  /** Runs commands on the server (default: `appServerShell`, deploy with the project's key). */
   remote?: RemoteExec;
   /** TCP probe for the outside port checks (default `node:net`). */
   tcpConnect?: TcpConnect;
@@ -189,7 +189,9 @@ async function siteTlsChecks(
  * probes. On a server the user owns (`own`) they run on the recorded login's address and port with
  * what OpsCrew set up there (sshd's real ports, root's key-only login, a password choice), and the
  * probes expect SSH and, in public mode, the web ports, in tunnel mode no web port at all. On a
- * server OpsCrew created they run on `host` with the provider firewall's expectations.
+ * server OpsCrew created they run on `host` with the provider firewall's expectations. Once public
+ * SSH is closed the host checks connect to the server's private address (`appServerShell`), and a
+ * connection that fails there says this computer's tunnel looks down, in each check it stopped.
  */
 async function checkServer(
   deps: PhaseDeps,
@@ -207,13 +209,7 @@ async function checkServer(
   const remote =
     options.remote ??
     ((await exists(paths.files.deployKey))
-      ? new SshRemoteExec({
-          host,
-          ...(own !== undefined ? { port: own.sshPort } : {}),
-          keyFile: paths.files.deployKey,
-          knownHostsFile: paths.files.knownHosts,
-          runner: deps.runner,
-        })
+      ? await appServerShell(deps, plan, { host, port: own?.sshPort ?? 22 })
       : undefined);
   let hostChecks: CheckResult[] = [];
   let skipped: string | undefined;

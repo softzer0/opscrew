@@ -454,7 +454,10 @@ export async function deployLogin(
  * What the app's server runs, read over SSH as `deploy` (read-only, audited without the address):
  * the edge's proxy, and the origin certificate and client-certificate requirement of the app's
  * site. `undefined` when it cannot be read (no deployment yet, the server unreachable): the
- * clean-up that waits for the server then waits, and the run goes on.
+ * clean-up that waits for the server then waits, and the run goes on. Once public SSH is closed it
+ * connects to the server's private address (`appServerShell`).
+ * @throws OpsCrewError when the connection says what to do, such as this computer's tunnel being
+ * down while public SSH is closed.
  */
 export async function readServerEdge(
   deps: Pick<PhaseDeps, "paths" | "runner" | "audit">,
@@ -475,6 +478,8 @@ export async function readServerEdge(
 /**
  * What the server's edge runs for `app`, read with {@link edgeReadCommand} over `remote`
  * (read-only, audited without the address); `undefined` when it could not be read.
+ * @throws OpsCrewError that `remote` throws, which says what to do (once public SSH is closed: this
+ * computer's tunnel looks down), after the read is audited as not read.
  */
 export async function readEdgeOver(
   deps: Pick<PhaseDeps, "audit">,
@@ -482,10 +487,12 @@ export async function readEdgeOver(
   app: string,
 ): Promise<ServerEdge | undefined> {
   let edge: ServerEdge | undefined;
+  let failure: OpsCrewError | undefined;
   try {
     const result = await remote.run(edgeReadCommand(app), { timeoutMs: 30_000 });
     edge = result.exitCode === 0 ? parseServerEdge(result.stdout) : undefined;
-  } catch {
+  } catch (error) {
+    if (error instanceof OpsCrewError) failure = error;
     edge = undefined;
   }
   await deps.audit.append({
@@ -496,6 +503,7 @@ export async function readEdgeOver(
     decision: "allow",
     detail: edge === undefined ? "not read" : "read",
   });
+  if (failure !== undefined) throw failure;
   return edge;
 }
 

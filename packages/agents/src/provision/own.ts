@@ -345,7 +345,10 @@ export function portainerWaitsForNetwork(
   );
 }
 
-/** What every server the user owns gets in its desired state: the app, the logins and SSH. */
+/**
+ * What every server the user owns gets in its desired state: the app, the logins and SSH, which
+ * stays off the public firewall once public SSH is closed (`network.publicSsh: false`).
+ */
 async function hostLogin(
   deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
   run: Pick<OwnServerRun, "session" | "facts">,
@@ -361,6 +364,7 @@ async function hostLogin(
     | "sshPort"
     | "hostKeyType"
     | "disablePasswords"
+    | "publicSsh"
   >
 > {
   const { connection } = run.session;
@@ -379,6 +383,8 @@ async function hostLogin(
     ...(input.passwordLogins !== undefined
       ? { disablePasswords: input.passwordLogins === "off" }
       : {}),
+    // Public SSH closed: ufw keeps SSH on the private network's interface only.
+    ...(input.plan.network?.publicSsh === false ? { publicSsh: false as const } : {}),
   };
 }
 

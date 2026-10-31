@@ -300,6 +300,24 @@ describe("planHost: steps", () => {
     );
   });
 
+  it("counts SSH's rule on the private network's interface once public SSH is closed", async () => {
+    const closed = new FakeHost();
+    closed.ufwActive = true;
+    closed.ufwRules = [
+      { rule: "allow in on wg-opscrew0 to any port 22 proto tcp", comment: "opscrew-network-ssh" },
+      { rule: "allow 80/tcp", comment: "opscrew-web" },
+      { rule: "allow 443/tcp", comment: "opscrew-web" },
+      { rule: "allow 443/udp", comment: "opscrew-web" },
+    ];
+    // Public SSH open: the interface's rule does not open SSH to everyone, so a public rule is added.
+    expect(paramsOf(await planFor(closed), "ufw")).toMatchObject({ sshRulePorts: "22" });
+    // Closed: the interface's rule counts, and no public rule comes back.
+    const plan = await planFor(closed, { ...desiredFor(closed), publicSsh: false });
+    expect(paramsOf(plan, "ufw")).toMatchObject({ sshRulePorts: "", webRules: "" });
+    expect(stateOf(plan, "ufw")).toBe("in-place");
+    expect(plan.steps.find((step) => step.id === "ufw")?.reason).not.toMatch(/only from some/);
+  });
+
   it("keeps the user's Docker settings given as dockerd flags or with an active Swarm", async () => {
     const flags = new FakeHost();
     flags.packages.set("docker-ce", "5:28.5.1-1");

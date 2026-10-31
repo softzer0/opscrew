@@ -290,7 +290,7 @@ describe("the server modules", () => {
     });
   }
 
-  it("hetzner-vps opens 80 and 443 only with web, and WireGuard's port to everyone", () => {
+  it("hetzner-vps opens SSH only to allowed networks, 80 and 443 only with web, and WireGuard's port to everyone", () => {
     const main = MODULE_FILES["hetzner-vps/main.tf"] ?? "";
     const rules = /web_rules = \[([^\]]*)\]/.exec(main)?.[1]?.replace(/\s+/g, " ").trim();
     expect(rules).toBe(
@@ -301,6 +301,10 @@ describe("the server modules", () => {
     ].map((m) => [m[1], (m[2] ?? "").replace(/\s+/g, " ").trim()]);
     expect(dynamic).toEqual([
       [
+        "length(var.ssh_allowed_cidrs) == 0 ? [] : [var.ssh_allowed_cidrs]",
+        'description = "SSH" direction = "in" protocol = "tcp" port = "22" source_ips = rule.value',
+      ],
+      [
         "var.web ? local.web_rules : []",
         'description = rule.value.description direction = "in" protocol = rule.value.protocol port = rule.value.port source_ips = var.http_allowed_cidrs',
       ],
@@ -309,9 +313,9 @@ describe("the server modules", () => {
         'description = "WireGuard" direction = "in" protocol = "udp" port = tostring(rule.value) source_ips = ["0.0.0.0/0", "::/0"]',
       ],
     ]);
-    // SSH and ping stay fixed rules.
+    // Ping stays a fixed rule.
     expect(
       [...main.matchAll(/^ {2}rule \{\n {4}description = "([^"]+)"/gm)].map((m) => m[1]),
-    ).toEqual(["SSH", "Ping"]);
+    ).toEqual(["Ping"]);
   });
 });

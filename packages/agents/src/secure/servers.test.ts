@@ -5,8 +5,9 @@ import { writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
 import { hostPlanFile, keepServerSetup } from "../shared/host-plan";
+import { updateServerAddresses } from "../shared/server-record";
 import { APP_HOST, DATA_HOST, splitWorld } from "../status/__fixtures__/split";
-import { ScriptedRunner } from "../testing";
+import { HOST_KEY, ScriptedRunner } from "../testing";
 import { type RunSecureOptions, runSecure } from "./run";
 import type { NetworkFilterReader } from "./servers";
 
@@ -57,19 +58,30 @@ const outside: TcpConnect = async (host, port) =>
   host === DATA_HOST ? port === 22 : [22, 80, 443].includes(port);
 
 /** The split app ready for `secure`: its plan written, both servers hardened. */
-async function secureWorld(world: { grant?: boolean; data?: "cloud" | "own" } = {}) {
+async function secureWorld(
+  world: {
+    grant?: boolean;
+    data?: "cloud" | "own";
+    publicSsh?: boolean;
+    /** What this computer's other ssh logins answer (default exit 1). */
+    ssh?: CommandResult;
+  } = {},
+) {
   const runner = new ScriptedRunner((command, args) =>
     command === "ssh" && args.includes("PubkeyAuthentication=no")
       ? { exitCode: 255, stdout: "", stderr: "Permission denied (publickey)." }
-      : { exitCode: 1, stdout: "", stderr: "not a git repository" },
+      : command === "ssh" && world.ssh !== undefined
+        ? world.ssh
+        : { exitCode: 1, stdout: "", stderr: "not a git repository" },
   );
   const w = await splitWorld({
     runner,
     data: world.data ?? "cloud",
-    network: (network) =>
-      world.grant
-        ? { ...network, grants: [{ device: "laptop", service: "db", access: "full" }] }
-        : network,
+    network: (network) => ({
+      ...network,
+      ...(world.grant ? { grants: [{ device: "laptop", service: "db", access: "full" }] } : {}),
+      ...(world.publicSsh !== undefined ? { publicSsh: world.publicSsh } : {}),
+    }),
   });
   for (const server of Object.values(w.servers)) server.other = hardened;
   await writeArtifact("plan", w.deps.paths.files.plan, w.plan);
@@ -83,7 +95,7 @@ async function secureWorld(world: { grant?: boolean; data?: "cloud" | "own" } = 
     readNetworkFilter: filter,
     ...extra,
   });
-  return { ...w, options };
+  return { ...w, runner, options };
 }
 
 function find(checks: readonly CheckResult[], id: string): CheckResult {
@@ -257,6 +269,30 @@ describe("secure across an app's servers", () => {
     expect(result.hostChecks.filter((c) => c.target === "server data")).toEqual([]);
     expect(find(result.probes, "server-data-port-5432-closed").status).toBe("pass");
     expect(w.commands.filter((c) => c.host === DATA_HOST)).toEqual([]);
+  });
+
+  it("checks the app's server at its private address once public SSH is closed, saying when the tunnel looks down", async () => {
+    const w = await secureWorld({
+      publicSsh: false,
+      ssh: {
+        exitCode: 255,
+        stdout: "",
+        stderr: "ssh: connect to host port 22: Connection timed out",
+      },
+    });
+    await writeFile(w.deps.paths.files.knownHosts, `${APP_HOST} ${HOST_KEY}\n`);
+    await updateServerAddresses(w.deps.paths, (current) => ({ ...current, thisDevice: "laptop" }));
+    const { remote: _r, ...options } = w.options();
+    const result = await runSecure(w.deps, options);
+    const logins = w.runner.calls
+      .filter((call) => call.command === "ssh" && !call.args.includes("PubkeyAuthentication=no"))
+      .map((call) => call.args.at(-2));
+    expect(logins.length).toBeGreaterThan(0);
+    expect(new Set(logins)).toEqual(new Set([`deploy@${w.prefix}.1`]));
+    expect(find(result.hostChecks, "ufw")).toMatchObject({
+      status: "warn",
+      message: expect.stringContaining("this computer's tunnel (device laptop) looks down"),
+    });
   });
 
   it("names a server it cannot reach", async () => {

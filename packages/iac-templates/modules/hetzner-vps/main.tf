@@ -22,12 +22,17 @@ resource "hcloud_firewall" "this" {
   name   = "${var.name}-firewall"
   labels = var.labels
 
-  rule {
-    description = "SSH"
-    direction   = "in"
-    protocol    = "tcp"
-    port        = "22"
-    source_ips  = var.ssh_allowed_cidrs
+  # SSH from the allowed networks; no rule once public SSH is closed (an empty list), when SSH
+  # answers on the app's private network only.
+  dynamic "rule" {
+    for_each = length(var.ssh_allowed_cidrs) == 0 ? [] : [var.ssh_allowed_cidrs]
+    content {
+      description = "SSH"
+      direction   = "in"
+      protocol    = "tcp"
+      port        = "22"
+      source_ips  = rule.value
+    }
   }
 
   # Ports 80 and 443, only on a server that serves the web.

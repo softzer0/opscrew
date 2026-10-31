@@ -66,10 +66,15 @@ resource "digitalocean_firewall" "this" {
   name        = "${var.name}-firewall"
   droplet_ids = [digitalocean_droplet.this.id]
 
-  inbound_rule {
-    protocol         = "tcp"
-    port_range       = "22"
-    source_addresses = var.ssh_allowed_cidrs
+  # SSH from the allowed networks; no rule once public SSH is closed (an empty list), when SSH
+  # answers on the app's private network only.
+  dynamic "inbound_rule" {
+    for_each = length(var.ssh_allowed_cidrs) == 0 ? [] : [var.ssh_allowed_cidrs]
+    content {
+      protocol         = "tcp"
+      port_range       = "22"
+      source_addresses = inbound_rule.value
+    }
   }
 
   # Ports 80 and 443, only on a Droplet that serves the web.

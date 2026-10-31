@@ -300,6 +300,12 @@ export const DesiredHostSchema = z
      */
     web: z.literal(false).optional(),
     /**
+     * `false`: public SSH is closed (`network.publicSsh: false`, the `public-ssh` step): SSH answers
+     * on the private network's interface only, and the `ufw` step counts that interface's rule as
+     * SSH being allowed instead of adding a public one. Absent: public SSH is open.
+     */
+    publicSsh: z.literal(false).optional(),
+    /**
      * Tunnel mode: the app's own connector's Compose file as rendered by `@opscrew/iac-templates`
      * (`renderTunnelConnectorCompose`), run as the project `<app>-tunnel` in
      * `/srv/opscrew/cloudflared/<app>`. It reads `TUNNEL_TOKEN` from `tunnel.env` beside it, which

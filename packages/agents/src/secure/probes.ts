@@ -199,7 +199,25 @@ export async function probeExpectedPorts(
   const profile = providerProfile(planProvider(plan));
 
   const sshOpenToAll = plan.security.sshAllowedCidrs.some((cidr) => OPEN_TO_ALL.has(cidr));
-  if (ssh) {
+  if (plan.network?.publicSsh === false) {
+    // Closed on purpose (`opscrew secure --close-public-ssh`): port 22 must not answer from here.
+    out.push({
+      id: "port-22-open",
+      title: "SSH (port 22) is closed to the internet",
+      severity: ssh ? "high" : "info",
+      status: ssh ? "fail" : "pass",
+      message: ssh
+        ? "Port 22 answers from this machine, but public SSH should be closed: SSH is meant to answer only on the private network."
+        : "Port 22 does not answer from this machine: SSH answers only on the private network.",
+      ...(ssh
+        ? {
+            remediation:
+              "Run `opscrew secure --close-public-ssh` again: it closes port 22 in the cloud firewall and the server's firewall.",
+          }
+        : {}),
+      target: host,
+    });
+  } else if (ssh) {
     out.push({
       id: "port-22-open",
       title: "SSH (port 22) is reachable",

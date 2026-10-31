@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import type { SharedRecord } from "@opscrew/connector-cloudflare";
 import {
   fingerprintSha256,
@@ -10,7 +10,10 @@ import { renderEdgeSite, renderPortainerStack } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { generatedValuesFile } from "../shared/app-secrets";
-import { createTestPhaseDeps, ownPlan, portainerPlan, testPlan } from "../testing";
+import { TUNNEL_DOWN_HINT } from "../shared/server-address";
+import { updateServerAddresses } from "../shared/server-record";
+import { APP_HOST, splitWorld } from "../status/__fixtures__/split";
+import { createTestPhaseDeps, HOST_KEY, ownPlan, portainerPlan, testPlan } from "../testing";
 import type { GitHubSetup } from "./credentials";
 import {
   clientCertificateWarning,
@@ -27,6 +30,7 @@ import {
   planOriginTls,
   portainerOriginTls,
   readOriginTlsValues,
+  readServerEdge,
   requiringHostnames,
   stackServed,
   tlsWarnings,
@@ -474,5 +478,52 @@ describe("deployRenewedCertificate's warnings", () => {
     expect(text).toContain("https://github.com/acme/shop/actions");
     expect(text).not.toContain("could not start");
     expect(deps.audit.entries).toHaveLength(1);
+  });
+});
+
+describe("readServerEdge with public SSH closed (FR-1816)", () => {
+  const EDGE_OUTPUT = "opscrew-edge-read 1\nproxy=caddy\n--origin--\n--site--\n--end--\n";
+
+  /** The split app with the app server's host key pinned and this computer as device laptop. */
+  async function world(publicSsh: boolean) {
+    const split = await splitWorld({ network: (network) => ({ ...network, publicSsh }) });
+    await writeFile(split.deps.paths.files.knownHosts, `${APP_HOST} ${HOST_KEY}\n`);
+    await updateServerAddresses(split.deps.paths, (current) => ({
+      ...current,
+      thisDevice: "laptop",
+    }));
+    const app = split.servers[APP_HOST];
+    if (app === undefined) throw new Error("no app server");
+    app.other = (command) =>
+      command === edgeReadCommand(split.plan.app.name)
+        ? { exitCode: 0, stdout: EDGE_OUTPUT, stderr: "" }
+        : undefined;
+    split.servers[`${split.prefix}.1`] = app;
+    return split;
+  }
+
+  it("reads the edge at the public address while public SSH is open", async () => {
+    const w = await world(true);
+    const edge = await readServerEdge(w.deps, w.plan, { remote: w.remote });
+    expect(edge?.proxy).toBe("caddy");
+    expect(w.commands.map((c) => c.host)).toEqual([APP_HOST]);
+    // An unreachable server is not read, and the run goes on, as before.
+    w.offline.add(APP_HOST);
+    expect(await readServerEdge(w.deps, w.plan, { remote: w.remote })).toBeUndefined();
+  });
+
+  it("reads the edge at the private address, and says the tunnel looks down when it fails", async () => {
+    const w = await world(false);
+    const edge = await readServerEdge(w.deps, w.plan, { remote: w.remote });
+    expect(edge?.proxy).toBe("caddy");
+    expect(w.commands.map((c) => c.host)).toEqual([`${w.prefix}.1`]);
+
+    w.offline.add(`${w.prefix}.1`);
+    await expect(readServerEdge(w.deps, w.plan, { remote: w.remote })).rejects.toMatchObject({
+      code: "COMMAND_FAILED",
+      message: expect.stringContaining("this computer's tunnel (device laptop) looks down"),
+      hint: TUNNEL_DOWN_HINT,
+    });
+    expect(w.deps.audit.entries.at(-1)).toMatchObject({ detail: "not read" });
   });
 });

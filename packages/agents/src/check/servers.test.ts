@@ -1,6 +1,9 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { hostPlanFile, keepServerSetup } from "../shared/host-plan";
+import { updateServerAddresses } from "../shared/server-record";
 import { APP_HOST, DATA_HOST, splitWorld } from "../status/__fixtures__/split";
 import { FakeGitHub, HOST_KEY } from "../testing";
 import { environmentCheckKey, provisionCheck } from "./provision";
@@ -56,6 +59,59 @@ describe("checkServerEntries: the check's server list (FR-1811)", () => {
         port: 22,
         user: "deploy",
         knownHosts: `${prefix}.2 ${HOST_KEY}\n`,
+      },
+    ]);
+  });
+
+  it("gives sshd's own port at the private address of a server whose login port is forwarded", async () => {
+    const forwarded = async (publicSsh: boolean) => {
+      const split = await world({ data: "own", network: (n) => ({ ...n, publicSsh }) });
+      const { deps, plan } = split;
+      await updateServerAddresses(deps.paths, (current) => ({
+        ...current,
+        ownServers: { data: { host: DATA_HOST, port: 2222, user: "admin", agent: true } },
+      }));
+      await writeFile(deps.paths.files.knownHosts, `[${DATA_HOST}]:2222 ${HOST_KEY}\n`);
+      // Server data's last setup found sshd on 22, which the router forwards 2222 to.
+      const setup: HostPlan = {
+        schemaVersion: 1,
+        purpose: "setup",
+        app: plan.app.name,
+        steps: [
+          {
+            id: "ufw",
+            title: "Firewall",
+            state: "in-place",
+            scope: "shared",
+            params: { sshPorts: "22" },
+          },
+        ],
+        findings: [],
+      };
+      await mkdir(deps.paths.files.plansDir, { recursive: true });
+      await writeFile(hostPlanFile(deps.paths, hostPlanHash(setup)), JSON.stringify(setup));
+      await keepServerSetup(deps, "data", hostPlanHash(setup));
+      return { entries: await checkServerEntries(deps, plan, undefined), prefix: split.prefix };
+    };
+
+    const closed = await forwarded(false);
+    expect(closed.entries).toEqual([
+      {
+        id: "data",
+        host: `${closed.prefix}.2`,
+        port: 22,
+        user: "deploy",
+        knownHosts: `${closed.prefix}.2 ${HOST_KEY}\n`,
+      },
+    ]);
+    // With public SSH open, the check keeps the login's public address and port.
+    expect((await forwarded(true)).entries).toEqual([
+      {
+        id: "data",
+        host: DATA_HOST,
+        port: 2222,
+        user: "deploy",
+        knownHosts: `[${DATA_HOST}]:2222 ${HOST_KEY}\n`,
       },
     ]);
   });

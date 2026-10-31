@@ -908,6 +908,54 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
     expect(record.ownServers).toBeUndefined();
     expect(record.servers).toBeUndefined();
   });
+
+  it("refuses before any change to take the app off an extra own server while public SSH is closed", async () => {
+    const base = testPlan({ deployed: true });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      environment: { runner: "server" },
+      security: { ...base.security, sshAllowedCidrs: [] },
+      network: {
+        range: "10.200.4.0/24",
+        members: [
+          {
+            name: "app",
+            address: "10.200.4.1",
+            port: 51820,
+            publicKey: Buffer.alloc(32, 1).toString("base64"),
+          },
+        ],
+        publicSsh: false,
+      },
+    });
+    const own = new FakeHostServer();
+    const s = await setup({
+      plan,
+      privateKeys: {},
+      engine: new FakeEngine(),
+      services: { own: { host: own } },
+    });
+    await updateServerAddresses(s.deps.paths, (current) => ({
+      ...current,
+      servers: { old: { ipv4: OWN_IPV4 } },
+      ownServers: {
+        old: { host: OWN_IPV4, port: 22, user: "root", agent: true, hostKey: ED25519_FINGERPRINT },
+      },
+    }));
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "opscrew/plan.yaml no longer lists server old, but public SSH is closed, so OpsCrew could not reach it to take the app off. Nothing was changed.",
+      hint: expect.stringContaining(
+        "run `opscrew secure --open-public-ssh`, then remove it again and run `opscrew provision`",
+      ),
+    });
+    expect(s.engine.calls).toEqual([]);
+    expect(own.applies).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
+    expect((await readServerAddresses(s.deps.paths)).ownServers?.old).toBeDefined();
+  });
 });
 
 /**

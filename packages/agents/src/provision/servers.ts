@@ -284,6 +284,34 @@ export function requireDesignedPlacement(plan: DeployPlan, command: string): voi
   );
 }
 
+/**
+ * Stops before any change when the plan no longer lists an extra server the user owns (this
+ * computer still has its login) while public SSH is closed (`network.publicSsh: false`): OpsCrew
+ * reaches it only over the private network, at the address the plan no longer holds, and taking
+ * the app off it removes its private network, and with it SSH there. Opening public SSH first,
+ * with the server still in the plan, lets the removal reach it at its public address.
+ */
+export async function requirePublicSshForRemoval(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: DeployPlan,
+  command: string,
+): Promise<void> {
+  if (plan.network?.publicSsh !== false) return;
+  const logins = (await readServerAddresses(deps.paths)).ownServers ?? {};
+  const removed = Object.keys(logins).filter(
+    (name) => !(plan.servers ?? []).some((server) => server.name === name),
+  );
+  if (removed.length === 0) return;
+  const which = listText(removed.map((name) => `server ${name}`));
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `opscrew/plan.yaml no longer lists ${which}, but public SSH is closed, so OpsCrew could not reach ${removed.length === 1 ? "it" : "them"} to take the app off. Nothing was changed.`,
+    {
+      hint: `Put ${which} back in opscrew/plan.yaml as ${removed.length === 1 ? "it was" : "they were"} (with ${removed.length === 1 ? "its" : "their"} network members), run \`opscrew secure --open-public-ssh\`, then remove ${removed.length === 1 ? "it" : "them"} again and run \`${command}\`.`,
+    },
+  );
+}
+
 /** What {@link serverHostPlans} needs. */
 export interface ServerHostPlansInput {
   plan: DeployPlan;
