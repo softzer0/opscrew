@@ -372,6 +372,16 @@ const NODE_IMAGE = "node:22-bookworm-slim";
 /** Where the device container keeps the repository, the OpsCrew folder and the app's values. */
 const WORK = "/work";
 const CONTAINER_REPO = `${WORK}/repo`;
+/**
+ * The device's own provider folders (`.terraform`) between its runs, outside {@link WORK}: an
+ * approved plan is applied by a later run, which finds the providers its plan was made with.
+ */
+const KEPT_TERRAFORM = "/kept-terraform";
+
+/** Moves every `.terraform` folder under `from` to the same place under `to`. */
+function moveTerraformFolders(from: string, to: string): string {
+  return `if [ -d ${from} ]; then cd ${from} && find . -name .terraform -type d -prune | while read -r d; do mkdir -p "${to}/$(dirname "$d")" && mv "$d" "${to}/$d"; done; fi`;
+}
 
 /**
  * `rename`, tried again for a few seconds while Windows holds a file in the folder (a virus scanner
@@ -684,6 +694,10 @@ export class DeviceComputer {
       `mv ${WORK}/home/projects/${host} ${WORK}/home/projects/${container} && chmod -R u+rwX,go-rwx ${WORK}/home`,
       "Preparing the OpsCrew folder",
     );
+    await this.execOk(
+      `${moveTerraformFolders(KEPT_TERRAFORM, CONTAINER_REPO)} && rm -rf ${KEPT_TERRAFORM}`,
+      "Putting the device's provider folders back",
+    );
   }
 
   /** Copies the repository and the OpsCrew folder back, replacing this computer's only once whole. */
@@ -691,7 +705,7 @@ export class DeviceComputer {
     const { run } = this;
     const { host, container } = this.projectFolders();
     await this.execOk(
-      `mv ${WORK}/home/projects/${container} ${WORK}/home/projects/${host} && find ${CONTAINER_REPO} -name .terraform -type d -prune -exec rm -rf {} +`,
+      `mv ${WORK}/home/projects/${container} ${WORK}/home/projects/${host} && rm -rf ${KEPT_TERRAFORM} && mkdir -p ${KEPT_TERRAFORM} && ${moveTerraformFolders(CONTAINER_REPO, KEPT_TERRAFORM)}`,
       "Preparing the copy back",
     );
     const back = join(run.work, "device-copy");
