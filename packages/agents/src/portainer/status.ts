@@ -5,6 +5,7 @@ import type { PhaseDeps } from "../context";
 import { portainerPasswordFile } from "../provision/own";
 import { readServerAddresses } from "../shared";
 import { readOwnServerRecord } from "../shared/own-server";
+import { dashboardOnNetwork } from "../vpn/dashboards";
 import { PORTAINER_LOCAL_URL } from "./settings";
 
 /** What `opscrew portainer status` shows. Never the password itself. */
@@ -22,6 +23,13 @@ export interface PortainerStatus {
   localUrl: string;
   /** The SSH tunnel command; absent when this computer does not know the server's address. */
   tunnelCommand?: string;
+  /**
+   * Where Portainer answers on the app's private network when this computer is a device on it
+   * (`device`) and Portainer is published there; then no SSH tunnel is needed.
+   */
+  privateUrl?: string;
+  /** This computer's device on the app's private network, with `privateUrl`. */
+  device?: string;
   /** Where the admin password is kept on this computer (`~/.opscrew/projects/<id>/portainer_password`). */
   passwordFile: string;
   /** False when the password file is not on this computer (for example another machine enabled it). */
@@ -73,6 +81,7 @@ export async function portainerStatusOf(
   }
   const server = await serverEndpoint(deps, plan);
   const hostname = portainerHostname(plan);
+  const onNetwork = await dashboardOnNetwork(deps, plan, "portainer");
   return {
     enabled: true,
     version: portainer.version,
@@ -83,6 +92,9 @@ export async function portainerStatusOf(
       : {}),
     localUrl: PORTAINER_LOCAL_URL,
     ...(server !== undefined ? { tunnelCommand: portainerTunnelCommand(deps, server) } : {}),
+    ...(onNetwork !== undefined
+      ? { privateUrl: `https://${onNetwork.address}:${onNetwork.port}`, device: onNetwork.device }
+      : {}),
     passwordFile,
     passwordFileExists,
   };
@@ -93,15 +105,23 @@ export function describePortainerStatus(status: PortainerStatus): string {
   if (!status.enabled) {
     return "Portainer is off for this project. Turn it on with `opscrew portainer enable`.";
   }
-  const lines = [
-    `Portainer CE ${status.version} listens only on the server itself (127.0.0.1:${PORTAINER_PORT}).`,
-    "To open it, start this SSH tunnel and keep it running:",
-    `  ${status.tunnelCommand ?? "(the server's address is not known on this computer; run `opscrew provision` here first)"}`,
-    `Then open ${status.localUrl} (Portainer uses a self-signed certificate) and log in as admin.`,
+  const lines =
+    status.privateUrl !== undefined
+      ? [
+          `Portainer CE ${status.version} listens on the server itself and, for your devices, on the app's private network.`,
+          `This computer is device ${status.device}: with its WireGuard tunnel on, open ${status.privateUrl} (Portainer uses a self-signed certificate) and log in as admin. No SSH tunnel is needed.`,
+        ]
+      : [
+          `Portainer CE ${status.version} listens only on the server itself (127.0.0.1:${PORTAINER_PORT}).`,
+          "To open it, start this SSH tunnel and keep it running:",
+          `  ${status.tunnelCommand ?? "(the server's address is not known on this computer; run `opscrew provision` here first)"}`,
+          `Then open ${status.localUrl} (Portainer uses a self-signed certificate) and log in as admin.`,
+        ];
+  lines.push(
     status.passwordFileExists
       ? `The admin password is in ${status.passwordFile} (on this computer only).`
       : `The admin password would be in ${status.passwordFile}, which is not on this computer: copy it from the computer that turned Portainer on.`,
-  ];
+  );
   if (status.url !== undefined) {
     lines.push(
       `It is also served on ${status.url} behind Cloudflare Access, for ${(status.allowedEmails ?? []).join(", ")} (a one-time PIN goes to that address; Portainer's own login still applies).`,
@@ -112,7 +132,8 @@ export function describePortainerStatus(status: PortainerStatus): string {
 
 /**
  * `opscrew portainer status`: read-only. Prints the version, the access mode, the SSH tunnel
- * command (with the server's SSH port), the local URL and the password file's path, never the
+ * command (with the server's SSH port) and the local URL, or, when this computer is a device on
+ * the app's private network, Portainer's address there, and the password file's path, never the
  * password.
  */
 export async function portainerStatus(

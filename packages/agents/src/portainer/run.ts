@@ -12,7 +12,13 @@ import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/pl
 import type { PhaseDeps } from "../context";
 import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
-import { applyOwnHostPlan, portainerPasswordFile, portainerPasswordToSend } from "../provision/own";
+import {
+  applyOwnHostPlan,
+  dashboardsOnNetwork,
+  portainerPasswordFile,
+  portainerPasswordToSend,
+  portainerWaitsForNetwork,
+} from "../provision/own";
 import {
   approveAndApplyHostPlan,
   type HostPlanOutcome,
@@ -136,8 +142,13 @@ async function runChange(
     preflight: async ({ remote }) => {
       if (remote !== undefined && enabling) cloudFacts = await cloudPreflight(deps, remote);
     },
-    hostChange: ({ ownRun, remote, plan, outputs, deployPublicKey, planOnly, shown }) =>
-      ownRun
+    hostChange: ({ ownRun, remote, plan, outputs, deployPublicKey, planOnly, shown }) => {
+      if (ownRun !== undefined && enabling && portainerWaitsForNetwork(plan, ownRun.facts)) {
+        deps.reporter.info(
+          "Portainer's web UI goes on your server's private address for your devices at the next `opscrew provision`, which sets up the private network there: Docker can publish only on an address the server has.",
+        );
+      }
+      return ownRun
         ? applyOwnHostPlan(deps, ownRun, {
             plan,
             outputs,
@@ -159,7 +170,8 @@ async function runChange(
             planOnly,
             command,
             shown,
-          }),
+          });
+    },
     afterHost: async ({ ownRun, plan, planOnly }) =>
       ownRun && change.deleteData
         ? approveAndApplyHostPlan(deps, {
@@ -331,8 +343,14 @@ function cloudPortainerPlan(
           enable: {
             version: plan.portainer?.version ?? PORTAINER_VERSION,
             compose: {
-              initial: renderPortainerCompose(plan, { initialAdmin: true }).content,
-              final: renderPortainerCompose(plan, { initialAdmin: false }).content,
+              initial: renderPortainerCompose(plan, {
+                initialAdmin: true,
+                dashboardsOnNetwork: dashboardsOnNetwork(plan),
+              }).content,
+              final: renderPortainerCompose(plan, {
+                initialAdmin: false,
+                dashboardsOnNetwork: dashboardsOnNetwork(plan),
+              }).content,
             },
             needsPassword: portainer.needsPassword,
           },

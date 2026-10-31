@@ -27,10 +27,11 @@ import {
 import { CLOUD_TUNNEL_DIR } from "../portainer/settings";
 import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
-import { applyOwnHostPlan, type OwnServerRun } from "../provision/own";
+import { applyOwnHostPlan, dashboardsOnNetwork, type OwnServerRun } from "../provision/own";
 import { approveAndApplyHostPlan, hasDeployment } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import type { HostChangeResult } from "../shared/tunnel-connections";
+import { hasAppInterface } from "../vpn/dashboards";
 import { estimateText, grafanaEstimate, readServer, type ServerReading } from "./estimate";
 import {
   BESZEL_EMAIL,
@@ -442,6 +443,18 @@ async function addonHostChange(
     }
   }
   const hostPlan = addonPlan(change, plan, ownRun, connector);
+  if (
+    ownRun !== undefined &&
+    enabling &&
+    plan.observability?.beszel?.mode === "hub" &&
+    kind === "beszel" &&
+    dashboardsOnNetwork(plan, ownRun.facts) &&
+    !hasAppInterface(plan, ownRun.facts)
+  ) {
+    deps.reporter.info(
+      "Beszel's dashboard goes on your server's private address for your devices once the private network is set up there: run `opscrew provision`, then `opscrew addon enable beszel` again.",
+    );
+  }
   const name = ADDON_NAMES[kind];
   const server = ownRun ? "your server" : "the server";
   const what = kind === "beszel" ? "Beszel" : "Grafana Alloy";
@@ -481,6 +494,18 @@ async function addonHostChange(
   });
 }
 
+/**
+ * True when the dashboards go on the app's server's private address (`dashboardsOnNetwork`), and,
+ * on the user's own server, its WireGuard interface is there already: Docker never binds an address
+ * the server doesn't have.
+ */
+function dashboardsPublished(plan: DeployPlan, ownRun: OwnServerRun | undefined): boolean {
+  return (
+    dashboardsOnNetwork(plan, ownRun?.facts) &&
+    (ownRun === undefined || hasAppInterface(plan, ownRun.facts))
+  );
+}
+
 /** The add-on's host plan: on (the files `renderAddon` renders for `plan`) or off. */
 function addonPlan(
   change: AddonChange,
@@ -489,7 +514,11 @@ function addonPlan(
   connector?: AddonConnector,
 ): HostPlan {
   const files = change.enabling
-    ? Object.fromEntries(renderAddon(plan, change.kind).map((file) => [file.path, file.content]))
+    ? Object.fromEntries(
+        renderAddon(plan, change.kind, {
+          dashboardsOnNetwork: dashboardsPublished(plan, ownRun),
+        }).map((file) => [file.path, file.content]),
+      )
     : {};
   const enable = change.input?.step === undefined ? { files } : { ...change.input.step, files };
   return planAddon(stepKind(change.kind), {

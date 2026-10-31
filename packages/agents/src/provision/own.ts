@@ -30,7 +30,6 @@ import {
 import {
   APP_SERVER,
   type DeployPlan,
-  networkInterface,
   type OwnDeployTarget,
   servicesOn,
 } from "@opscrew/plan-schema";
@@ -85,6 +84,7 @@ import {
   type HostChangeResult,
   tunnelChange,
 } from "../shared/tunnel-connections";
+import { hasAppInterface } from "../vpn/dashboards";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
 import type { ServerReach } from "./secrets";
 import type { CloudflareApi, ProvisionOptions, ProvisionServices } from "./types";
@@ -337,16 +337,6 @@ export async function desiredHost(
 export function dashboardsOnNetwork(plan: DeployPlan, facts?: Pick<HostFacts, "apps">): boolean {
   const alone = facts === undefined || otherActiveApps(facts.apps, plan.app.name).length === 0;
   return serverNetworkInputs(plan, APP_SERVER, alone).dashboardsOnNetwork;
-}
-
-/** True when the server has the app's private network interface already (`facts.network`). */
-function hasAppInterface(
-  plan: Pick<DeployPlan, "network">,
-  facts: Pick<HostFacts, "network">,
-): boolean {
-  const member = plan.network?.members.find((m) => m.name === APP_SERVER);
-  if (member === undefined) return false;
-  return facts.network?.interfaces.some((i) => i.name === networkInterface(member)) ?? false;
 }
 
 /**

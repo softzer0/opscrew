@@ -13,12 +13,13 @@ import {
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { allocateNetwork } from "../network";
 import { portainerPasswordFile } from "../provision/own";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
-import { hostPlanFile, recordOwnServer } from "../shared";
+import { hostPlanFile, recordOwnServer, updateServerAddresses } from "../shared";
 import {
   createProject,
   createTestPhaseDeps,
@@ -39,6 +40,8 @@ import {
   ScriptedApprovalHandler,
   SERVER_IPV4,
   TUNNEL_ID,
+  testKeyMaker,
+  testKeyPair,
   testPlan,
 } from "../testing";
 import { pendingPortainerFile } from "./pending";
@@ -702,6 +705,41 @@ describe.skipIf(!hasGit)("Portainer on Hetzner and DigitalOcean (as the deploy u
     });
     expect(JSON.stringify(status)).not.toContain(password);
     expect(s.deps.reporter.text()).not.toContain(password);
+  });
+
+  it("with devices on the private network: also on the app's private address, and status sends this computer's device there", async () => {
+    const base = testPlan({ domain: "shop.example.com", deployed: true });
+    const { network } = allocateNetwork(base, {}, testKeyMaker());
+    const app = network.members[0]?.address;
+    const laptop = {
+      name: "laptop",
+      address: app?.replace(/\.1$/, ".100"),
+      publicKey: testKeyPair("laptop").publicKey,
+      addedAt: "2026-10-30T10:00:00.000Z",
+    };
+    const plan = DeployPlanSchema.parse({ ...base, network: { ...network, devices: [laptop] } });
+    const s = await cloudSetup({ plan });
+
+    await portainerEnable(s.deps, { services: s.services });
+
+    const params = s.host.calls[0]?.plan.steps[0]?.params ?? {};
+    for (const compose of [params.composeInitial, params.composeFinal]) {
+      expect(String(compose)).toContain(`- ${app}:9443:9443`);
+    }
+    // Without this computer on the network: the SSH tunnel, as before.
+    expect((await portainerStatus(s.deps)).privateUrl).toBeUndefined();
+    await updateServerAddresses(s.deps.paths, (current) => ({ ...current, thisDevice: "laptop" }));
+    const lines = s.deps.reporter.lines.length;
+    const status = await portainerStatus(s.deps);
+    expect(status).toMatchObject({ privateUrl: `https://${app}:9443`, device: "laptop" });
+    const said = s.deps.reporter.lines
+      .slice(lines)
+      .map((line) => line.message)
+      .join("\n");
+    expect(said).toContain(
+      `This computer is device laptop: with its WireGuard tunnel on, open https://${app}:9443`,
+    );
+    expect(said).not.toContain("ssh ");
   });
 });
 

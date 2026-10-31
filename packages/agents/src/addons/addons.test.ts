@@ -7,13 +7,24 @@ import { type ApplyOptions, type HostPlan, hostPlanHash } from "@opscrew/connect
 import type { ApprovalRequest, CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { allocateNetwork } from "../network";
 import { portainerDisable, portainerEnable } from "../portainer";
 import { inEnvironment } from "../promote/__fixtures__/world";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
-import { hostPlanFile, recordOwnServer, recordServerAddress } from "../shared";
+import {
+  hostPlanFile,
+  recordOwnServer,
+  recordServerAddress,
+  updateServerAddresses,
+} from "../shared";
 import {
   createProject,
   createTestPhaseDeps,
@@ -36,6 +47,8 @@ import {
   ScriptedApprovalHandler,
   SERVER_IPV4,
   TUNNEL_ID,
+  testKeyMaker,
+  testKeyPair,
   testPlan,
   withOtherApp,
 } from "../testing";
@@ -909,6 +922,35 @@ describe.skipIf(!hasGit)("status and open", () => {
     expect(s.deps.reporter.text()).toContain(s.deps.paths.files.beszelSecrets);
     const grafana = await failure(addonOpen(s.deps, await s.plan(), "grafana-cloud"));
     expect(grafana.message).toContain("Grafana Cloud stack");
+  });
+
+  it("with devices on the private network: the hub also on the app's private address, and open sends this computer's device there", async () => {
+    const base = testPlan({ domain: "shop.example.com", deployed: true });
+    const { network } = allocateNetwork(base, {}, testKeyMaker());
+    const app = network.members[0]?.address;
+    const laptop = {
+      name: "laptop",
+      address: app?.replace(/\.1$/, ".100"),
+      publicKey: testKeyPair("laptop").publicKey,
+      addedAt: "2026-10-30T10:00:00.000Z",
+    };
+    const plan = DeployPlanSchema.parse({ ...base, network: { ...network, devices: [laptop] } });
+    const s = await cloudSetup({ plan });
+    await addonEnable(s.deps, await s.plan(), "beszel", { services: s.services });
+    const compose = s.server.applies[0]?.plan.steps[0]?.params["file:compose.yaml"];
+    expect(String(compose)).toContain(`${app}:8090:8090`);
+
+    await updateServerAddresses(s.deps.paths, (current) => ({ ...current, thisDevice: "laptop" }));
+    const runner = s.deps.runner as ReturnType<typeof projectRunner>;
+    runner.calls.length = 0;
+    s.deps.reporter.lines.length = 0;
+    await addonOpen(s.deps, await s.plan(), "beszel");
+    expect(runner.calls.filter((call) => call.command === "ssh")).toEqual([]);
+    const text = s.deps.reporter.text();
+    expect(text).toContain(
+      `This computer is device laptop on the app's private network: with its WireGuard tunnel on, Beszel's dashboard is at http://${app}:8090`,
+    );
+    expect(text).toContain(s.deps.paths.files.beszelSecrets);
   });
 
   it("open: Ctrl+C ends it quietly, also when the runner rejects on the abort", async () => {

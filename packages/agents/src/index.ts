@@ -59,3 +59,4 @@ export * from "./shared/scan-phase";
 export * from "./shared/unpriced";
 export * from "./status";
 export * from "./verify";
+export * from "./vpn";

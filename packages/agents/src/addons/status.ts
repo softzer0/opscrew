@@ -7,6 +7,7 @@ import type { TunnelledChangeServices } from "../portainer/change";
 import { serverEndpoint } from "../portainer/status";
 import { appMemoryLimits } from "../shared/memory";
 import { SshRemoteExec } from "../shared/remote";
+import { dashboardOnNetwork } from "../vpn/dashboards";
 import { BESZEL_EMAIL } from "./secrets";
 import { ADDON_NAMES, ADDON_PHASE } from "./settings";
 
@@ -279,7 +280,9 @@ function tunnelArgs(
  * `opscrew addon open beszel`: runs the SSH tunnel to Beszel's dashboard
  * (`ssh -N -L 8090:127.0.0.1:8090 deploy@…`, with the deploy key and the pinned host key) until it
  * is stopped (`signal`), after saying the local address and where the password is. Only Beszel's
- * dashboard on the server opens this way.
+ * dashboard on the server opens this way. When this computer is a device on the app's private
+ * network and the dashboard is published there, it says that address and port instead, and opens
+ * no tunnel.
  */
 export async function addonOpen(
   deps: PhaseDeps,
@@ -307,6 +310,19 @@ export async function addonOpen(
       { hint: `Open ${beszel.hubUrl} in your browser.` },
     );
   }
+  const file = deps.paths.files.beszelSecrets;
+  const login = `Log in as ${BESZEL_EMAIL}; the password is the "password" in ${file} (on this computer only).`;
+  // This computer on the app's private network opens the dashboard there, with no SSH tunnel.
+  const onNetwork = await dashboardOnNetwork(deps, plan, "beszel");
+  if (onNetwork !== undefined) {
+    deps.reporter.info(
+      [
+        `This computer is device ${onNetwork.device} on the app's private network: with its WireGuard tunnel on, Beszel's dashboard is at http://${onNetwork.address}:${onNetwork.port}, with no SSH tunnel.`,
+        login,
+      ].join("\n"),
+    );
+    return;
+  }
   const server = await serverEndpoint(deps, plan);
   if (server === undefined) {
     throw new OpsCrewError(
@@ -317,11 +333,10 @@ export async function addonOpen(
       },
     );
   }
-  const file = deps.paths.files.beszelSecrets;
   deps.reporter.info(
     [
       `Beszel's dashboard is at ${BESZEL_LOCAL_URL} while this runs (stop it with Ctrl+C).`,
-      `Log in as ${BESZEL_EMAIL}; the password is the "password" in ${file} (on this computer only).`,
+      login,
     ].join("\n"),
   );
   // Stopped (Ctrl+C) ends it quietly, whether the runner then rejects or resolves.

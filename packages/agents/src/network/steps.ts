@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { APP_SERVER, type DeployPlan, networkInterface } from "@opscrew/plan-schema";
+import { hasPublicAddress } from "./endpoints";
 
 /** The keepalive (seconds) on every server-to-server link; never toward a device. */
 export const KEEPALIVE_SECONDS = 25;
@@ -70,11 +71,11 @@ const OPSCREW_INTERFACE = /^wg-opscrew\d+$/;
  * 25-second keepalive, so every link between servers stays up even when idle, and, when this server
  * has a public address, every device (whose own configuration keeps its link up). A service's
  * published port admits the app's server and the devices granted that service; a dashboard's,
- * every device.
+ * every device. On a server without a public address no device is admitted: none can reach it.
  * @throws Error when the plan has no network or the server is not on it.
  */
 export function networkSteps(
-  plan: Pick<DeployPlan, "network">,
+  plan: Pick<DeployPlan, "network" | "target">,
   server: string,
   facts: ServerNetworkFacts,
 ): { network: NetworkStepParams; filter: NetworkFilterParams } {
@@ -105,11 +106,17 @@ export function networkSteps(
       }))
     : [];
   const app = network.members.find((m) => m.name === APP_SERVER)?.address;
+  // Devices peer only with servers that have a public address: no other server admits them.
+  const admitted = hasPublicAddress(plan, server);
+  const deviceAddress = (name: string) =>
+    admitted ? network.devices.find((d) => d.name === name)?.address : undefined;
   const rules = facts.published.map(({ service, port, dashboard }) => {
-    if (dashboard === true) return { port, sources: network.devices.map((d) => d.address) };
+    if (dashboard === true) {
+      return { port, sources: admitted ? network.devices.map((d) => d.address) : [] };
+    }
     const granted = network.grants
       .filter((g) => g.service === service)
-      .map((g) => network.devices.find((d) => d.name === g.device)?.address);
+      .map((g) => deviceAddress(g.device));
     const sources = [...new Set([app, ...granted])].filter((a): a is string => a !== undefined);
     return { port, sources };
   });

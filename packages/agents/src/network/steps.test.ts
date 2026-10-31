@@ -123,6 +123,23 @@ describe("networkSteps", () => {
     ]);
   });
 
+  it("admits no device on a server without a public address: none can reach it", () => {
+    const { plan, prefix } = planWithDevices("own-tunnel");
+    const steps = networkSteps(plan, "app", {
+      endpoints: { data: DATA_IP },
+      wireguardInterfaces: [],
+      published: [
+        { service: "beszel", port: 8090, dashboard: true },
+        { service: "db", port: 5432 },
+      ],
+      sshPort: 22,
+    });
+    expect(steps.filter.rules).toEqual([
+      { port: 8090, sources: [] },
+      { port: 5432, sources: [`${prefix}.1`] },
+    ]);
+  });
+
   it("refuses a server that is not on the network", () => {
     const { plan } = planWithDevices();
     expect(() =>
