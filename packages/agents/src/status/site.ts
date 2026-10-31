@@ -14,14 +14,15 @@ import type { GitHubClient } from "@opscrew/connector-github";
 import { errorText, isUserFacingError } from "@opscrew/core";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
-import { appFlag } from "../apps/choice";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { setupCloudflare } from "../provision/credentials";
 import { sharedCloudflareClient } from "../provision/shared-cloudflare";
 import type { ProvisionServices } from "../provision/types";
+import type { VersionView } from "../rollback/types";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
 import { verifyHosts } from "../verify/checks";
+import type { DeployState } from "./deploys";
 
 /** Options of {@link siteStatusReport}. */
 export interface SiteStatusOptions {
@@ -89,10 +90,10 @@ async function repositoryOf(deps: PhaseDeps): Promise<{ owner: string; repo: str
   return githubCoordinates(gitClient(deps)).catch(() => undefined);
 }
 
-/** `opscrew promote --to <env> --version <id>`, the rollback of the environment to `id`. */
-async function rollbackCommand(deps: PhaseDeps, plan: DeployPlan, id: string): Promise<string> {
-  const app = await appFlag(deps.paths.root, deps.paths.app);
-  return `opscrew promote${app} --to ${plan.environment?.name ?? "prod"} --version ${id}`;
+/** The lines of a site's section, and its version running and the one before (`deploys`). */
+interface SiteSection {
+  lines: string[];
+  versions: Pick<DeployState, "running" | "previous">;
 }
 
 /** The lines of a site on Cloudflare's hosting: its versions and custom domains. */
@@ -101,7 +102,7 @@ async function cloudflareLines(
   plan: DeployPlan,
   target: CloudflareWorkersDeployTarget,
   options: SiteStatusOptions,
-): Promise<string[]> {
+): Promise<SiteSection> {
   const services = options.services ?? {};
   const { worker } = target;
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
@@ -116,10 +117,13 @@ async function cloudflareLines(
   const deployments = await client.listWorkerDeployments(accountId, worker);
   const head = `Cloudflare hosting, the Worker ${worker} (read from Cloudflare now):`;
   if (deployments === undefined) {
-    return [
-      head,
-      `  The Worker is not in the Cloudflare account: run \`opscrew provision${flag}\` to create it again (it shows the plan first).`,
-    ];
+    return {
+      lines: [
+        head,
+        `  The Worker is not in the Cloudflare account: run \`opscrew provision${flag}\` to create it again (it shows the plan first).`,
+      ],
+      versions: {},
+    };
   }
   const versions = (await client.listWorkerVersions(accountId, worker)) ?? [];
   const domains = await client.listWorkerCustomDomains(accountId, worker);
@@ -133,6 +137,10 @@ async function cloudflareLines(
         ? `not uploaded by OpsCrew's deploy workflow (by ${version?.source ?? "an unknown tool"})`
         : `built by ${runLink(repo, build.runId)}`;
     return `version ${entry.versionId}, deployed ${formatUtc(entry.deployedAt)}, ${from}`;
+  };
+  const view = (entry: { versionId: string }): VersionView => {
+    const createdOn = versions.find((v) => v.id === entry.versionId)?.createdOn;
+    return { version: entry.versionId, ...(createdOn !== undefined ? { builtAt: createdOn } : {}) };
   };
   const lines = [head];
   lines.push(
@@ -148,7 +156,7 @@ async function cloudflareLines(
     );
   }
   if (before !== undefined) {
-    lines.push(`  Roll back to it: ${await rollbackCommand(deps, plan, before.versionId)}`);
+    lines.push(`  Roll back to it: opscrew rollback${flag} --to ${before.versionId}`);
   }
   const listed = new Set(domains.map((d) => d.hostname.toLowerCase()));
   const states = verifyHosts(plan).map((hostname) =>
@@ -160,28 +168,40 @@ async function cloudflareLines(
       `  A missing custom domain does not answer: run \`opscrew provision${flag}\` to set it up again (it shows the plan first).`,
     );
   }
-  return lines;
+  return {
+    lines,
+    versions: {
+      ...(running !== undefined ? { running: view(running) } : {}),
+      ...(before !== undefined ? { previous: view(before) } : {}),
+    },
+  };
 }
 
 /** The lines of a site on GitHub Pages: the site, its certificate, HTTPS and its last runs. */
-async function pagesLines(deps: PhaseDeps, plan: DeployPlan): Promise<string[]> {
+async function pagesLines(deps: PhaseDeps, plan: DeployPlan): Promise<SiteSection> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const repo = await githubCoordinates(gitClient(deps));
   const head = `GitHub Pages, ${repo.owner}/${repo.repo} (read from GitHub now):`;
   const client: GitHubClient | undefined = await githubClientFromToken(deps);
   if (client === undefined) {
-    return [
-      head,
-      "  OpsCrew could not read the site: no GitHub token is available (set GITHUB_TOKEN or run `gh auth login`).",
-    ];
+    return {
+      lines: [
+        head,
+        "  OpsCrew could not read the site: no GitHub token is available (set GITHUB_TOKEN or run `gh auth login`).",
+      ],
+      versions: {},
+    };
   }
   deps.reporter.step("Reading the GitHub Pages site and its runs (read-only)");
   const site = await client.getPages(repo.owner, repo.repo);
   if (site === undefined) {
-    return [
-      head,
-      `  Site: GitHub Pages is off. Run \`opscrew provision${flag}\` to set it up again (it shows the Pages plan first).`,
-    ];
+    return {
+      lines: [
+        head,
+        `  Site: GitHub Pages is off. Run \`opscrew provision${flag}\` to set it up again (it shows the Pages plan first).`,
+      ],
+      versions: {},
+    };
   }
   const health =
     site.cname === undefined ? undefined : await client.pagesHealth(repo.owner, repo.repo);
@@ -218,27 +238,39 @@ async function pagesLines(deps: PhaseDeps, plan: DeployPlan): Promise<string[]> 
     );
   }
   if (previous !== undefined) {
-    lines.push(`  Roll back to it: ${await rollbackCommand(deps, plan, String(previous.runId))}`);
+    lines.push(`  Roll back to it: opscrew rollback${flag} --to ${previous.runId}`);
   }
-  return lines;
+  const view = (run: NonNullable<typeof last>): VersionView => ({
+    version: String(run.runId),
+    commit: run.headSha,
+    builtAt: run.startedAt,
+  });
+  return {
+    lines,
+    versions: {
+      ...(last !== undefined ? { running: view(last) } : {}),
+      ...(previous !== undefined ? { previous: view(previous) } : {}),
+    },
+  };
 }
 
 /**
  * The status lines of a site on Cloudflare's hosting or GitHub Pages (FR-1608), read-only and
- * redacted; when the provider cannot be read, a line that says why instead.
+ * redacted, with the version running and the one before (`deploys`, FR-1913); when the provider
+ * cannot be read, a line that says why instead.
  */
 export async function siteStatusReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: SiteStatusOptions = {},
-): Promise<{ lines: string[] }> {
+): Promise<SiteSection> {
   const { target } = plan;
   try {
-    const lines =
+    const section =
       target.provider === "cloudflare-workers"
         ? await cloudflareLines(deps, plan, target, options)
         : await pagesLines(deps, plan);
-    return { lines: lines.map((line) => deps.redactor.redact(line)) };
+    return { ...section, lines: section.lines.map((line) => deps.redactor.redact(line)) };
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     const where = target.provider === "cloudflare-workers" ? "Cloudflare" : "GitHub";
@@ -246,6 +278,7 @@ export async function siteStatusReport(
       lines: [
         deps.redactor.redact(`OpsCrew could not read the site at ${where}. ${errorText(error)}`),
       ],
+      versions: {},
     };
   }
 }

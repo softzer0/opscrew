@@ -27,6 +27,7 @@ import {
   testPlan,
 } from "../testing";
 import { sitePlan } from "../testing/serverless";
+import { withoutDeploys } from "./__fixtures__/deploys";
 import {
   INSPECT_FORMAT,
   type ResourceReading,
@@ -589,7 +590,7 @@ describe("readResources on the server-less targets", () => {
       services,
     });
     expect(report.resources).toBeUndefined();
-    expect(report.lines.at(-1)).toMatch(
+    expect(withoutDeploys(report.lines).at(-1)).toMatch(
       /^OpsCrew could not read the resource figures\. Cloudflare refused the request to read the figures of the Worker example-app: .*Workers Scripts → Edit/,
     );
   });
@@ -635,7 +636,7 @@ describe("componentStatusReport with the figures", () => {
           : { exitCode: 255, stdout: "", stderr: "" },
     });
     const report = await componentStatusReport(deps, withWorker(), { services: { remote } });
-    expect(report.lines.slice(-2)).toEqual([
+    expect(withoutDeploys(report.lines).slice(-2)).toEqual([
       "",
       expect.stringMatching(
         /^OpsCrew could not read the resource figures\. OpsCrew could not read the server's figures over SSH \(exit code 255\)\. Check that the server is on/,

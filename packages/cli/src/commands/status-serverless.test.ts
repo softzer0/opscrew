@@ -74,7 +74,7 @@ describe("opscrew status for a site on Cloudflare's hosting", () => {
     });
     expect(await run(ctx, "status"), ctx.errors).toBe(0);
     expect(ctx.output).toContain("Running: version v-new");
-    expect(ctx.output).toContain("Roll back to it: opscrew promote --to prod --version v-old");
+    expect(ctx.output).toContain("Roll back to it: opscrew rollback --to v-old");
     expect(ctx.output).not.toContain("Image signing");
     expect(ctx.output).not.toContain("Image builder");
   });
@@ -119,7 +119,7 @@ describe("opscrew status for a site on GitHub Pages", () => {
     const ctx = projectContext(project, { services: { runner: new RemoteOnlyRunner(), fetch } });
     expect(await run(ctx, "status"), ctx.errors).toBe(0);
     expect(ctx.output).toContain("GitHub Pages, example-org/example-app (read from GitHub now):");
-    expect(ctx.output).toContain("Roll back to it: opscrew promote --to prod --version 201");
+    expect(ctx.output).toContain("Roll back to it: opscrew rollback --to 201");
     expect(ctx.output).not.toContain("Image signing");
   });
 });

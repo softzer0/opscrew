@@ -10,6 +10,7 @@ import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { localComponentStatus } from "../localhost/status";
 import type { NetworkLink, ReadNetworkServices } from "../network";
+import type { PromoteGitHubApi } from "../promote/types";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
 import { runnerStatusLines } from "../runners";
@@ -33,6 +34,7 @@ import {
   type ServiceContainer,
   serviceContainers,
 } from "./components";
+import { type DeployState, deployStateReport } from "./deploys";
 import { networkStatusLines, type UnpublishedPort } from "./network";
 import {
   type ResourceReading,
@@ -56,7 +58,13 @@ export interface ComponentStatusOptions {
   services?: Pick<
     ProvisionServices,
     "remote" | "own" | "portainer" | "runnerGitHub" | "cloudflare" | "sharedCloudflare" | "github"
-  >;
+  > & {
+    /**
+     * GitHub's API and registry the deploys' section reads (default: the client of the user's
+     * token; `null`: no token).
+     */
+    deploys?: PromoteGitHubApi | null;
+  };
   /** The private network's WireGuard read (tests; default the host adapter's). */
   network?: ReadNetworkServices;
 }
@@ -169,6 +177,8 @@ export interface ComponentStatusReport {
   resources?: ResourceReading;
   /** The scheduled check's state, when the plan has it on and GitHub could be read. */
   check?: CheckState;
+  /** The version running, the one before and the pause, once the app was deployed (FR-1913). */
+  deploys?: DeployState;
   /** With a private network (feature 018): every server, `app` first, as it was read. */
   servers?: ServerStatus[];
   /** The private network's links, read now. */
@@ -217,8 +227,10 @@ function readingLines(
  * deployment cannot be read. `check` runs first and may stop the read the same way (the MCP
  * server's host-key check). With extra servers (feature 018, FR-1811), each server's components
  * and figures follow under its name, and with a private network its section
- * (`networkStatusLines`). A self-hosted runner's state follows (FR-1530), then the scheduled
- * check's state and open alerts when the plan has it on (FR-1708). A site on Cloudflare's hosting
+ * (`networkStatusLines`). A self-hosted runner's state follows (FR-1530), then the version
+ * running, the one before and whether deploys are paused once the app was deployed
+ * (`deployStateReport`, FR-1913), then the scheduled check's state and open alerts when the plan
+ * has it on (FR-1708). A site on Cloudflare's hosting
  * or GitHub Pages has no components: its running version, custom domains or Pages site instead
  * (`siteStatusReport`), and the figures it cannot give.
  */
@@ -227,13 +239,16 @@ export async function componentStatusReport(
   plan: DeployPlan,
   options: ComponentStatusOptions & { check?: () => Promise<void> } = {},
 ): Promise<ComponentStatusReport> {
-  let report: Omit<ComponentStatusReport, "check">;
-  if (isServerlessProvider(plan.target.provider)) {
+  let report: Omit<ComponentStatusReport, "check" | "deploys">;
+  let versions: Pick<DeployState, "running" | "previous"> = {};
+  const serverless = isServerlessProvider(plan.target.provider);
+  if (serverless) {
     const site = await siteStatusReport(
       deps,
       plan,
       options.services ? { services: options.services } : {},
     );
+    versions = site.versions;
     try {
       const resources = await readResources(
         deps,
@@ -251,10 +266,16 @@ export async function componentStatusReport(
     const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
     report = { ...components, lines: joinBlocks(components.lines, runner) };
   }
+  // Nothing runs on a server, in Portainer or on this computer before a deploy was seen.
+  const deploys =
+    serverless || appDeployed(plan)
+      ? await deployStateReport(deps, plan, options, report.status !== undefined)
+      : { lines: [], deploys: undefined };
   const state = await checkStateReport(deps, plan, options.services?.github);
   return {
     ...report,
-    lines: joinBlocks(report.lines, state.lines),
+    lines: joinBlocks(report.lines, deploys.lines, state.lines),
+    ...(deploys.deploys !== undefined ? { deploys: { ...versions, ...deploys.deploys } } : {}),
     ...(state.check !== undefined ? { check: state.check } : {}),
   };
 }

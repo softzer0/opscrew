@@ -8,6 +8,7 @@ import { renderDriftReport, runDrift } from "../drift";
 import { runProvision } from "../provision";
 import { runSecure } from "../secure";
 import { componentStatusReport, tlsStatusReport } from "../status";
+import { withoutDeploys } from "../status/__fixtures__/deploys";
 import { ScriptedApprovalHandler, testPlan } from "../testing";
 import { runVerify } from "../verify";
 import { DIGEST, FakeComputer, localPlan, localProject } from "./__fixtures__/computer";
@@ -112,7 +113,8 @@ describe("status on this computer", () => {
     await runVerify(deps, { localhost: computer.services() });
     const plan = await readArtifact("plan", deps.paths.files.plan);
     const components = await componentStatusReport(deps, plan);
-    expect(components.lines).toEqual([
+    expect(components.lines).toContain("Deploys (read from this computer and GitHub now):");
+    expect(withoutDeploys(components.lines)).toEqual([
       "Components:",
       "  The web process (app): running",
       "  PostgreSQL (db): running",

@@ -136,15 +136,15 @@ function asAdmin(command: string): string {
   return `if [ "$(id -u)" = 0 ]; then sh -c ${quoted}; elif sudo -n true 2>/dev/null </dev/null; then sudo -n sh -c ${quoted}; else sh -c ${quoted}; fi`;
 }
 
-/** The output's lines under each mark. */
-function sections(stdout: string): Map<string, string[]> {
+/** The output's non-empty lines under each mark (`==opscrew-figures:<part>`, or `mark`), by part. */
+export function sections(stdout: string, mark = MARK): Map<string, string[]> {
   const found = new Map<string, string[]>();
   let current: string[] | undefined;
   for (const raw of stdout.split(/\r?\n/)) {
     const line = raw.trim();
-    if (line.startsWith(MARK)) {
+    if (line.startsWith(mark)) {
       current = [];
-      found.set(line.slice(MARK.length), current);
+      found.set(line.slice(mark.length), current);
     } else if (line !== "") {
       current?.push(line);
     }
@@ -286,16 +286,19 @@ function parseContainers(
 type Figures = Pick<ResourceReading, "server" | "containers" | "unavailable" | "edgeRequests">;
 
 /**
- * The shell and command that read the figures: on the user's own server, the admin login
- * `connectOwnServer` checks (host key pinned) with the command as root where it can be; on a
- * server OpsCrew created, the deploy user's shell (`deployShell`).
+ * The shell and command of the fixed read-only `command` on the app's server: on the user's own
+ * server, the admin login `connectOwnServer` checks (host key pinned) with the command as root
+ * where it can be; on a server OpsCrew created, the deploy user's shell (`deployShell`). `what`
+ * names what it reads, for the error.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when this computer has no login to the server.
  */
-async function figuresShell(
+export async function appServerCommand(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions,
+  command: string,
+  what: string,
 ): Promise<{ remote: RemoteExec; command: string }> {
-  const command = serverFiguresCommand(plan.app.name);
   if (plan.target.provider === "own") {
     const { remote } = await connectOwnServer(deps, {
       hostKey: options.hostKey,
@@ -307,7 +310,7 @@ async function figuresShell(
   if (remote === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "OpsCrew has no SSH login to the server on this computer (its address or the project's deploy key is missing), so it could not read the server's figures.",
+      `OpsCrew has no SSH login to the server on this computer (its address or the project's deploy key is missing), so it could not read ${what}.`,
       {
         hint: "Run the command on the computer that ran `opscrew provision` (the address is kept there, in .opscrew/server.json, and the deploy key in ~/.opscrew).",
       },
@@ -322,7 +325,13 @@ async function serverFigures(
   plan: DeployPlan,
   options: ComponentStatusOptions,
 ): Promise<Figures> {
-  const { remote, command } = await figuresShell(deps, plan, options);
+  const { remote, command } = await appServerCommand(
+    deps,
+    plan,
+    options,
+    serverFiguresCommand(plan.app.name),
+    "the server's figures",
+  );
   return figuresOver(deps, plan, remote, command);
 }
 

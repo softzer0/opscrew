@@ -5,6 +5,7 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { recordServerAddress } from "../shared";
 import { createTestPhaseDeps, SERVER_IPV4, testPlan } from "../testing";
+import { withoutDeploys } from "./__fixtures__/deploys";
 import { APP_HOST, DATA_HOST, splitWorld } from "./__fixtures__/split";
 import { componentStatusReport } from "./run";
 
@@ -45,6 +46,8 @@ function figures(containers: { name: string; memoryMb: number }[]): string {
 interface FakeServer {
   ps: string;
   figures: string;
+  /** What the deploys' read prints (`deploysCommand`). */
+  deploys?: string;
 }
 
 /** Shells on fake servers by address, recording each command with its server's address. */
@@ -58,6 +61,9 @@ function fakeServers(servers: Record<string, FakeServer>) {
       if (server === undefined) return { exitCode: 255, stdout: "", stderr: "timed out" };
       if (command.includes("'{{.Names}}|{{.State}}'")) {
         return { exitCode: 0, stdout: server.ps, stderr: "" };
+      }
+      if (command.includes("==opscrew-deploys:")) {
+        return { exitCode: 0, stdout: server.deploys ?? "", stderr: "" };
       }
       return { exitCode: 0, stdout: server.figures, stderr: "" };
     },
@@ -91,13 +97,20 @@ describe("status of a plan without servers or a network", () => {
           { name: "shop-app-1", memoryMb: 512 },
           { name: "shop-db-1", memoryMb: 512 },
         ]),
+        deploys: [
+          "==opscrew-deploys:running",
+          `ghcr.io/acme/shop@sha256:${"1".repeat(64)}`,
+          "==opscrew-deploys:previous",
+          "==opscrew-deploys:since",
+          String(Date.UTC(2026, 9, 30, 10) / 1000),
+        ].join("\n"),
       },
     });
     const report = await componentStatusReport(deps, deployed(testPlan({ deployed: true })), {
       services: { remote: servers.remote },
     });
     expect(report.lines).toMatchSnapshot();
-    expect(Object.keys(report).sort()).toEqual(["lines", "resources", "status"]);
+    expect(Object.keys(report).sort()).toEqual(["deploys", "lines", "resources", "status"]);
   });
 });
 
@@ -114,7 +127,7 @@ describe("status of an app on two servers", () => {
       network: w.network,
     });
     const range = w.plan.network?.range;
-    expect(report.lines).toEqual([
+    expect(withoutDeploys(report.lines)).toEqual([
       "Components on server app:",
       "  The web process (app): running",
       "",
@@ -162,7 +175,7 @@ describe("status of an app on two servers", () => {
       services: { remote: w.remote },
       network: w.network,
     });
-    expect(report.lines.at(-1)).toBe(
+    expect(withoutDeploys(report.lines).at(-1)).toBe(
       `  Warning: PostgreSQL (db) on server data is not published on its private address ${w.prefix}.2:5432, so the app can't reach it. Run \`opscrew provision\` to fix it.`,
     );
     expect(report.servers?.[1]?.unpublished).toEqual([
@@ -262,7 +275,7 @@ describe("status of an app on two servers", () => {
       services: { remote: w.remote },
       network: w.network,
     });
-    expect(report.lines.slice(-4)).toEqual([
+    expect(withoutDeploys(report.lines).slice(-4)).toEqual([
       "  data to app: up, last handshake 10 seconds ago",
       "  Devices: none",
       "  Access to databases and caches: none",

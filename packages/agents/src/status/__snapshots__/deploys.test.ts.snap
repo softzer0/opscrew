@@ -1,0 +1,45 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the deploys on a server OpsCrew created > names the version running since the switch, the one before, and that deploys are on 1`] = `
+[
+  "Deploys (read from the server and GitHub now):",
+  "  Running: fba8ffc "Add invoices page" (sha256:d9e80323b9f1), since 2026-10-31 10:04 UTC",
+  "  Before it: 69c9409 "Fix checkout total" (sha256:f891f434ca5b)",
+  "  Deploys: on (each push to main deploys)",
+]
+`;
+
+exports[`the deploys on every target > Portainer: from GHCR's labels opscrew-<env> and opscrew-<env>-previous 1`] = `
+[
+  "Deploys (read from GitHub now):",
+  "  Running: fba8ffc "Add invoices page" (sha256:d9e80323b9f1)",
+  "  Before it: 69c9409 "Fix checkout total" (sha256:f891f434ca5b)",
+  "  Deploys: on (each push to main deploys)",
+]
+`;
+
+exports[`the deploys on every target > a server the user owns: through the pinned admin login, as root where it can 1`] = `
+[
+  "Deploys (read from your server and GitHub now):",
+  "  Running: fba8ffc "Add invoices page" (sha256:d9e80323b9f1), since 2026-10-31 10:04 UTC",
+  "  Before it: 69c9409 "Fix checkout total" (sha256:f891f434ca5b)",
+  "  Deploys: on (each push to main deploys)",
+]
+`;
+
+exports[`the deploys on every target > this computer: from the app's folder; the pause only with the local runner 1`] = `
+[
+  "Deploys (read from this computer and GitHub now):",
+  "  Running: fba8ffc "Add invoices page" (sha256:d9e80323b9f1), since 2026-10-31 10:04 UTC",
+  "  Before it: 69c9409 "Fix checkout total" (sha256:f891f434ca5b)",
+]
+`;
+
+exports[`the deploys on every target > this computer: from the app's folder; the pause only with the local runner 2`] = `
+[
+  "Deploys (read from this computer and GitHub now):",
+  "  Running: fba8ffc "Add invoices page" (sha256:d9e80323b9f1), since 2026-10-31 10:04 UTC",
+  "  Before it: 69c9409 "Fix checkout total" (sha256:f891f434ca5b)",
+  "  Paused since 2026-10-31 10:02 UTC: \`opscrew rollback\` pinned it to fba8ffc (sha256:d9e80323b9f1). Run \`opscrew rollback --resume\` when the fix is pushed (add --deploy to deploy main's latest commit now).",
+]
+`;

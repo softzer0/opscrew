@@ -8,6 +8,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   allocateNetwork,
   type OwnServerServices,
+  type PromoteGitHubApi,
   recordOwnServer,
   recordServerAddress,
 } from "@opscrew/agents";
@@ -175,14 +176,16 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
 
   /**
    * `opscrew_status` on `plan`, deployed at {@link SERVER_IPV4} with the project's deploy key: the
-   * deploy user's shell answers the figures command with {@link FIGURES} and anything else with
-   * `stdout`, both exiting with `exitCode`; `github` is the GitHub of `acme/shop`.
+   * deploy user's shell answers the figures command with {@link FIGURES}, the deploys' read with
+   * `deploys.server` and anything else with `stdout`, all exiting with `exitCode`; `github` is the
+   * GitHub of `acme/shop`, and `deploys.github` its GitHub and registry for the deploys.
    */
   async function call(
     plan: ReturnType<typeof deployedPlan>,
     stdout: string,
     exitCode = 0,
     github?: FakeGitHub,
+    deploys: { server?: string; github?: PromoteGitHubApi } = {},
   ) {
     const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-status-"));
     cleanups.push(() => rm(dir, { recursive: true, force: true }));
@@ -199,7 +202,11 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
         host,
         run: async (command) => ({
           exitCode,
-          stdout: command.startsWith("export LC_ALL=C") ? FIGURES : stdout,
+          stdout: command.startsWith("export LC_ALL=C")
+            ? FIGURES
+            : command.includes("==opscrew-deploys:")
+              ? (deploys.server ?? "")
+              : stdout,
           stderr: "",
         }),
       };
@@ -220,7 +227,11 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
     });
     const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
     registerStatusTool(server, deps, {
-      services: { remote, ...(github === undefined ? {} : { github }) },
+      services: {
+        remote,
+        ...(github === undefined ? {} : { github }),
+        ...(deploys.github === undefined ? {} : { deploys: deploys.github }),
+      },
     });
     const client = new Client({ name: "opscrew-test", version: "0.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -243,8 +254,8 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
       deployedPlan(),
       "shop-app-1|running\nshop-worker-1|exited\nshop-db-1|running\n",
     );
-    // The components, then the figures.
-    expect(hosts).toEqual([SERVER_IPV4, SERVER_IPV4]);
+    // The components, then the figures, then the deploys.
+    expect(hosts).toEqual([SERVER_IPV4, SERVER_IPV4, SERVER_IPV4]);
     expect(text).toContain(
       [
         "Components:",
@@ -313,6 +324,77 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
         alerts: [{ number: 12, url: "https://github.com/acme/shop/issues/12" }],
       },
     });
+  });
+
+  it("returns the version running, the one before and the pause as deploys (US6 #1)", async () => {
+    const running = `sha256:${"1".repeat(64)}`;
+    const before = `sha256:${"2".repeat(64)}`;
+    const builds = [
+      { digest: running, runId: 902, sha: "a".repeat(40), message: "Add invoices page" },
+      { digest: before, runId: 901, sha: "b".repeat(40), message: "Fix checkout total" },
+    ];
+    const github = {
+      getRepoVariable: async () =>
+        JSON.stringify({
+          "shop/prod": {
+            reason: "rollback",
+            since: "2026-10-11T10:02:11.000Z",
+            image: running,
+            commit: "a".repeat(40),
+          },
+        }),
+      imageFacts: async (_owner: string, _image: string, digest: string) => {
+        const build = builds.find((b) => b.digest === digest);
+        return {
+          provenance: {
+            builderId: `https://github.com/acme/shop/actions/runs/${build?.runId}/attempts/1`,
+            runId: build?.runId,
+            repository: "acme/shop",
+          },
+        };
+      },
+      workflowRun: async (_owner: string, _repo: string, runId: number) => {
+        const build = builds.find((b) => b.runId === runId);
+        return (
+          build && {
+            headSha: build.sha,
+            createdAt: "2026-10-11T09:58:00Z",
+            headCommit: { message: build.message, timestamp: "2026-10-11T09:57:00Z" },
+          }
+        );
+      },
+    } as unknown as PromoteGitHubApi;
+    const server = [
+      "==opscrew-deploys:running",
+      `ghcr.io/acme/shop@${running}`,
+      "==opscrew-deploys:previous",
+      `ghcr.io/acme/shop@${before}`,
+      "==opscrew-deploys:since",
+      String(Date.UTC(2026, 9, 11, 10, 4) / 1000),
+    ].join("\n");
+
+    const { text, data } = await call(deployedPlan(), "shop-app-1|running\n", 0, undefined, {
+      server,
+      github,
+    });
+
+    expect(text).toContain(
+      [
+        "Deploys (read from the server and GitHub now):",
+        '  Running: aaaaaaa "Add invoices page" (sha256:111111111111), since 2026-10-11 10:04 UTC',
+        '  Before it: bbbbbbb "Fix checkout total" (sha256:222222222222)',
+        "  Paused since 2026-10-11 10:02 UTC: `opscrew rollback` pinned it to aaaaaaa (sha256:111111111111). Run `opscrew rollback --resume` when the fix is pushed (add --deploy to deploy main's latest commit now).",
+      ].join("\n"),
+    );
+    expect(data).toMatchObject({
+      deploys: {
+        running: { digest: running, commit: "a".repeat(40), message: "Add invoices page" },
+        previous: { digest: before, commit: "b".repeat(40), message: "Fix checkout total" },
+        paused: { reason: "rollback", image: running, since: "2026-10-11T10:02:11.000Z" },
+      },
+    });
+    expect(text).not.toContain(SERVER_IPV4);
+    expect(JSON.stringify(data)).not.toContain(SERVER_IPV4);
   });
 
   it("a server it cannot read is a note; before a deploy was seen, nothing is read", async () => {

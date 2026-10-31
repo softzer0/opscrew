@@ -1,8 +1,10 @@
 import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
+import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { FakePromoteGitHub } from "../promote/__fixtures__/world";
 import {
   createTestPhaseDeps,
   fakeCloudflare,
@@ -69,22 +71,37 @@ describe("opscrew status on Cloudflare's hosting", () => {
   it("shows the version running and the one before, their runs, the custom domains and the rollback", async () => {
     const zone = zoneWithWorker();
     const deps = await setup(sitePlan({ www: true, deployed: true }));
-    const { lines } = await componentStatusReport(deps, sitePlan({ www: true, deployed: true }), {
-      services: { cloudflare: fakeCloudflare(), sharedCloudflare: fakeSharedCloudflare(zone) },
-    });
+    const { lines, deploys } = await componentStatusReport(
+      deps,
+      sitePlan({ www: true, deployed: true }),
+      {
+        services: {
+          cloudflare: fakeCloudflare(),
+          sharedCloudflare: fakeSharedCloudflare(zone),
+          deploys: new FakePromoteGitHub(),
+        },
+      },
+    );
 
     const runs = "https://github.com/example-org/example-app/actions/runs";
     expect(lines).toEqual([
       "Cloudflare hosting, the Worker example-app (read from Cloudflare now):",
       `  Running: version v-new, deployed 2026-10-23 10:01 UTC, built by ${runs}/102`,
       `  Before it: version v-old, deployed 2026-10-22 10:01 UTC, built by ${runs}/101`,
-      "  Roll back to it: opscrew promote --to prod --version v-old",
+      "  Roll back to it: opscrew rollback --to v-old",
       "  Custom domains: docs.example.com (set up), www.docs.example.com (missing)",
       "  A missing custom domain does not answer: run `opscrew provision` to set it up again (it shows the plan first).",
       "",
       "Resources (read now):",
       "  Not available: request figures (Cloudflare serves the site's files without running any code, so it counts no requests)",
+      "",
+      "Deploys (read from GitHub now):",
+      "  Deploys: on (each push to main deploys)",
     ]);
+    expect(deploys).toEqual({
+      running: { version: "v-new", builtAt: "2026-10-23T10:00:00Z" },
+      previous: { version: "v-old", builtAt: "2026-10-22T10:00:00Z" },
+    });
     // Read only, and nothing about a server.
     expect(zone.writes()).toEqual([]);
     expect(lines.join("\n")).not.toMatch(/server|container/i);
@@ -140,7 +157,22 @@ describe("opscrew status on GitHub Pages", () => {
       health: "issued",
     });
     const deps = await setup(pagesTestPlan(), pages.fetch);
-    const { lines } = await componentStatusReport(deps, pagesTestPlan());
+    // A rollback re-ran run 201 and paused prod's deploys.
+    const registry = new FakePromoteGitHub();
+    registry.variables.set(
+      DEPLOY_PAUSED_VARIABLE,
+      JSON.stringify({
+        "example-app/prod": {
+          reason: "rollback",
+          since: "2026-10-24T08:00:00.000Z",
+          image: `sha256:${"c".repeat(64)}`,
+          commit: "1".repeat(40),
+        },
+      }),
+    );
+    const { lines, deploys } = await componentStatusReport(deps, pagesTestPlan(), {
+      services: { deploys: registry },
+    });
 
     const runs = "https://github.com/example-org/example-app/actions/runs";
     expect(lines).toEqual([
@@ -150,11 +182,19 @@ describe("opscrew status on GitHub Pages", () => {
       "  HTTPS: enforced",
       `  Last Pages run: ${runs}/202, started 2026-10-23 09:00 UTC, commit 2222222`,
       `  The one before: ${runs}/201, started 2026-10-22 09:00 UTC, commit 1111111`,
-      "  Roll back to it: opscrew promote --to prod --version 201",
+      "  Roll back to it: opscrew rollback --to 201",
       "",
       "Resources (read now):",
       "  Not available: resource figures (GitHub Pages serves the site's files without running any code, so there are none)",
+      "",
+      "Deploys (read from GitHub now):",
+      `  Paused since 2026-10-24 08:00 UTC: \`opscrew rollback\` pinned it to 1111111 (sha256:cccccccccccc). Run \`opscrew rollback --resume\` when the fix is pushed (add --deploy to deploy main's latest commit now).`,
     ]);
+    expect(deploys).toEqual({
+      running: { version: "202", commit: "2".repeat(40), builtAt: "2026-10-23T09:00:00Z" },
+      previous: { version: "201", commit: "1".repeat(40), builtAt: "2026-10-22T09:00:00Z" },
+      paused: expect.objectContaining({ reason: "rollback", commit: "1".repeat(40) }),
+    });
     expect(pages.log.every((line) => line.startsWith("pages GET"))).toBe(true);
   });
 
