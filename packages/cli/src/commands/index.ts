@@ -19,6 +19,7 @@ import * as portainer from "./portainer";
 import * as promote from "./promote";
 import * as provision from "./provision";
 import * as retarget from "./retarget";
+import * as rollback from "./rollback";
 import * as runner from "./runner";
 import * as scan from "./scan";
 import * as secrets from "./secrets";
@@ -44,6 +45,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   adapt,
   provision,
   promote,
+  rollback,
   dns,
   domain,
   secure,

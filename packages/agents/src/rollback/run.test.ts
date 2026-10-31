@@ -1065,7 +1065,11 @@ describe("opscrew rollback --resume", () => {
     expect(result).toEqual({
       kind: "resumed",
       wasPaused: true,
-      deployed: { runUrl: DEPLOY_RUN_URL, commit: expect.stringMatching(/^[0-9a-f]{40}$/) },
+      deployed: {
+        status: "deployed",
+        runUrl: DEPLOY_RUN_URL,
+        commit: expect.stringMatching(/^[0-9a-f]{40}$/),
+      },
     });
   });
 
@@ -1079,6 +1083,16 @@ describe("opscrew rollback --resume", () => {
     });
     expect(world.handler.requests[0]?.kind).toBe("github-settings");
     expect(world.events).toEqual(["dispatch"]);
+  });
+
+  it("with --deploy says when its run waits for a required reviewer", async () => {
+    const { world } = await prodWorld();
+    world.github.reviewer = "pending";
+    const result = await world.run({ resume: true, deploy: true });
+    expect(result).toMatchObject({
+      kind: "resumed",
+      deployed: { status: "waiting", runUrl: DEPLOY_RUN_URL },
+    });
   });
 
   it("refuses --deploy on this computer without the local runner; --resume alone clears the entry", async () => {

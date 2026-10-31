@@ -287,7 +287,7 @@ export function registerEnvironmentTools(
     {
       title: "Promote an image to an environment",
       description:
-        "Deploy to an environment promoted from another (environment.deploySource) exactly the image its source runs, or with digest its previous image to roll back, without rebuilding. For a site on Cloudflare's hosting it deploys the exact build its source runs (by run id and SHA-256); with version it rolls a site on Cloudflare's hosting or GitHub Pages back to an earlier Worker version or Pages run (GitHub Pages refuses promotion: each environment builds its own site). OpsCrew checks the image's build provenance (a push of this repository to the branch the environment that built the image follows), that nothing is waiting for provision in the target, and that its workflow on the default branch is the one its plan generates; then the USER approves the promotion, bound to its hash, in a dialog (the coding agent cannot approve it); then OpsCrew starts the target's deploy workflow with the digest and waits for its run. Refuses when the client cannot show dialogs.",
+        "Deploy to an environment promoted from another (environment.deploySource) exactly the image its source runs, without rebuilding. For a site on Cloudflare's hosting it deploys the exact build its source runs (by run id and SHA-256); GitHub Pages refuses promotion: each environment builds its own site. To undo a release, ask the user to run `npx opscrew rollback` in their terminal instead (after saying that the data and the schema stay as they are): it goes back to the previous version and pauses the environment's deploys until `npx opscrew rollback --resume`, which a promotion does not. digest and version deploy an image or a site version the user names. OpsCrew checks the image's build provenance (a push of this repository to the branch the environment that built the image follows), that nothing is waiting for provision in the target, and that its workflow on the default branch is the one its plan generates; then the USER approves the promotion, bound to its hash, in a dialog (the coding agent cannot approve it); then OpsCrew starts the target's deploy workflow with the digest and waits for its run. Refuses when the client cannot show dialogs.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -296,13 +296,13 @@ export function registerEnvironmentTools(
           .string()
           .optional()
           .describe(
-            "Only for a rollback the user asked for: the image digest (sha256:…) of the target's previous image, or the one its source runs.",
+            "Only when the user names it: the image digest (sha256:…) of the target's previous image, or the one its source runs. To undo a release, the user runs `npx opscrew rollback` in their terminal instead, which also pauses the deploys.",
           ),
         version: z
           .string()
           .optional()
           .describe(
-            "Only for a rollback of a site on Cloudflare's hosting or GitHub Pages the user asked for: the earlier Worker version id or GitHub Pages run id, as opscrew_status names the one before.",
+            "Only when the user names it, on Cloudflare's hosting or GitHub Pages: the earlier Worker version id or GitHub Pages run id, as opscrew_status names the one before. To undo a release, the user runs `npx opscrew rollback` in their terminal instead, which also pauses the deploys.",
           ),
         allowOldSecrets: z
           .array(z.string().regex(WORKER_SECRET_NAME))

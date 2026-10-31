@@ -29,7 +29,7 @@ the Claude Agent SDK that the CLI's own AI steps install once, when you first ru
 | `/opscrew:opscrew-deploy` | The full flow: scan → analyze → interview → design → prepare code → provision → verify |
 | `/opscrew:opscrew-scan` | Free security scan and guided fixes |
 | `/opscrew:opscrew-adapt` | Prepare the code for container deployment |
-| `/opscrew:opscrew-troubleshoot` | Why the app is failing or slow, and what it uses: status, figures, alerts and logs, read-only |
+| `/opscrew:opscrew-troubleshoot` | Why the app is failing or slow, and what it uses: status, figures, alerts and logs, read-only; a rollback in the terminal when a release is the cause |
 
 Claude also uses these skills on its own when you ask things like "deploy my app", "is my app
 secure?" or "why is my app failing?".

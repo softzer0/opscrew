@@ -115,6 +115,9 @@ export type RollbackResult =
       kind: "resumed";
       /** False when its deploys were not paused. */
       wasPaused: boolean;
-      /** With `--deploy`: the run that deploys the branch, and its commit. */
-      deployed?: { runUrl: string; commit: string };
+      /**
+       * With `--deploy`: the run that deploys the branch, its commit, and whether it deployed or
+       * waits in GitHub for a required reviewer.
+       */
+      deployed?: { status: "deployed" | "waiting"; runUrl: string; commit: string };
     };

@@ -150,6 +150,6 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
   return {
     kind: "resumed",
     wasPaused: pause !== undefined,
-    deployed: { runUrl: started.runUrl, commit },
+    deployed: { status: started.status, runUrl: started.runUrl, commit },
   };
 }

@@ -15,6 +15,7 @@ import {
   type PromoteServices,
   type ProvisionServices,
   type RetargetServices,
+  type RollbackServices,
   type RunnerGitHubApi,
   type RunnerHostServices,
   type RunSecureOptions,
@@ -89,6 +90,11 @@ export interface CliServices {
   localRunner?: LocalRunnerServices;
   /** GitHub and the target's read-only check for `promote`. */
   promote?: PromoteServices;
+  /**
+   * GitHub, the target's read-only check, this computer (`localhost`) and the clock of the wait for
+   * running deploys (`now`) for `rollback`.
+   */
+  rollback?: RollbackServices;
   /** The runner machine's shell and host adapter, and GitHub's runner API, for `runner host`. */
   runnerHost?: { machine?: RunnerHostServices; github?: RunnerGitHubApi };
   /** The server's shell, own-server, Portainer and Cloudflare fakes for `logs`. */

@@ -1,6 +1,6 @@
 ---
 name: opscrew-troubleshoot
-description: Find out why an app OpsCrew deployed is failing, slow or using too much, from its status, resource figures, alerts and logs, all read-only with secrets masked. Use when the user asks "why is my app failing?", "why is it down?", "it's slow", "how much memory (or CPU, or disk) does it use?" or about an OpsCrew alert issue.
+description: Find out why an app OpsCrew deployed is failing, slow or using too much, from its status, resource figures, alerts and logs, all read-only with secrets masked, and when a recent release is the cause, how to roll it back in the terminal. Use when the user asks "why is my app failing?", "why is it down?", "it's slow", "how much memory (or CPU, or disk) does it use?", "undo the last release", "roll back", or about an OpsCrew alert issue.
 ---
 
 # Troubleshooting with OpsCrew
@@ -46,8 +46,34 @@ Cloudflare. Secrets in log lines arrive masked; never try to recover them.
    - **High load against the CPUs, or slow requests:** a bigger server type, or the slow code path the
      lines show.
    - **Errors in the lines:** point to the code, and offer a fix the user approves.
+   - **It started with the latest release:** see "A release that deploys fine but is wrong" below.
 4. If the server does not answer, say so and suggest `npx opscrew verify` in a terminal; it checks
    the app from the outside.
+
+## A release that deploys fine but is wrong
+
+A broken page or a new bug right after a deploy that passed its checks usually comes from that
+release. Read `deploys` in `opscrew_status`'s data: `running` (the version live now, with its
+commit, message and time), `previous` (the one before it) and `paused` (deploys paused by an
+earlier rollback, or by a move). When the problem started with the running version, or the user
+asks to undo a release:
+
+1. **First state the database caveat**, in these words or close to them:
+   - the data and the database schema stay as they are now;
+   - the release command (migrations) doesn't run;
+   - so the earlier version must work with the newer schema: a migration that removed or renamed
+     something it uses breaks it;
+   - restoring a backup is a separate step, which a rollback doesn't do.
+2. **Then ask the user to run it in their terminal:** `npx opscrew rollback` goes back to the
+   previous version (add `--env <name>` when the app has several environments). It shows the
+   version running and the one it goes back to, and asks for approval. `npx opscrew rollback --list`
+   shows the versions still available, and `npx opscrew rollback --to <one of them>` goes back
+   further. Never roll back through a tool: it stays in the terminal, because it asks for approval.
+3. **Afterwards** the environment's automatic deploys stay paused, so the next push doesn't bring
+   the bad release back. Once the fix is pushed, the user runs `npx opscrew rollback --resume` (add
+   `--deploy` to deploy the branch's latest commit now). Then call `opscrew_status` to confirm.
+
+When `paused` is a move's window, a rollback is refused until the move ends: say so instead.
 
 What each target gives: on a server or the user's own computer, every part's lines; in a Portainer,
 the same through its API; on Cloudflare's hosting (a server-rendered app), the requests with their

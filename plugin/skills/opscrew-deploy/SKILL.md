@@ -363,14 +363,25 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   `npx opscrew provision --env staging`. Removing one stays in the terminal:
   `npx opscrew destroy --env <name>`, then `opscrew_env_remove`.
 - **Promotion.** An environment promoted from another (for example prod from staging) gets no
-  build of its own: `opscrew_promote` with `to` deploys exactly the image its source runs, or with
-  `digest` its previous image for a rollback the user asks for. OpsCrew checks where the image was
+  build of its own: `opscrew_promote` with `to` deploys exactly the image its source runs. To roll
+  it back, the user runs `npx opscrew rollback --env <name>` in their terminal (see "Rolling back"
+  below), not a promotion. OpsCrew checks where the image was
   built and that nothing waits for provision, then the user approves the promotion's hash in a
   dialog; you never approve it, and a client without dialogs gets the terminal command
   (`npx opscrew promote --to <env>`). Its result names the hash and the deploy run; call
   `opscrew_verify` with that environment afterwards. Without image signing
   (`supplyChain.sign`) the provenance check is a consistency check, not a security gate: say so if
   the user relies on it.
+- **Rolling back.** When a release deploys fine but is wrong and the user asks to undo it, first
+  state the database caveat: the data and the schema stay as they are, the release command doesn't
+  run, the earlier version must work with the newer schema, and restoring a backup is a separate
+  step. Then the user runs `npx opscrew rollback` in their terminal (with `--env <name>` when there
+  are several environments; `--list` shows the versions, `--to <one of them>` goes back further); it
+  asks for approval, so it never goes through a tool. Afterwards that environment's automatic
+  deploys stay paused, so the next push doesn't redeploy the bad release (`opscrew_status` shows
+  the pause), and a promotion to it is refused. Once the fix is pushed, the user runs
+  `npx opscrew rollback --resume` (`--deploy` also deploys the branch's latest commit now). The
+  `opscrew-troubleshoot` skill finds whether a release is the cause.
 - **This computer.** An environment can run on the user's computer (`localhost`, in Docker, at
   `https://<app>.localhost`). Two steps stay in their terminal: `npx opscrew localhost trust`
   (shows the command that trusts OpsCrew's local certificate authority and asks first;
@@ -423,9 +434,10 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
     OpsCrew prints: clicking Verify on that page. HTTPS is enforced by a later
     `npx opscrew provision` once GitHub has issued the certificate (`opscrew_status` says when).
   - **Day 2.** `opscrew_status` shows the version running, the one before and the rollback
-    command. A rollback is `opscrew_promote` with `to` and `version` (the Worker version or the
-    GitHub Pages run `opscrew_status` names), approved by the user in a dialog. On Cloudflare a
-    promoted environment gets its source's exact build; GitHub Pages refuses promotion (each
+    command. A rollback is `npx opscrew rollback` in the user's terminal (see "Rolling back"
+    above): on Cloudflare's hosting an earlier Worker version with no build, on GitHub Pages a
+    re-run of an earlier run, which rebuilds that commit and which GitHub allows for 30 days. On
+    Cloudflare a promoted environment gets its source's exact build; GitHub Pages refuses promotion (each
     environment builds its own, and it has prod only). `opscrew_secure` says that GitHub Pages
     cannot set security headers and that Cloudflare can.
 - **Monorepos.** When the repository has several deployable folders, `opscrew_interview_questions`

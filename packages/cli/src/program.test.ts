@@ -42,6 +42,7 @@ describe("opscrew program", () => {
       "adapt",
       "provision",
       "promote",
+      "rollback",
       "dns",
       "domain",
       "secure",
@@ -61,7 +62,7 @@ describe("opscrew program", () => {
     ]) {
       expect(ctx.output).toMatch(new RegExp(`^\\s+${name}\\b`, "m"));
     }
-    expect(ALL_COMMANDS).toHaveLength(26);
+    expect(ALL_COMMANDS).toHaveLength(27);
   });
 
   it("exits 2 for an unknown command", async () => {
