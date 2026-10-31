@@ -40,6 +40,7 @@ an app yet.
 
 - [Your app's logs and resource figures](logs-and-status.md)
 - [Alerts: the scheduled check](alerts.md)
+- [When a deploy fails, and how to recover](when-a-deploy-fails.md)
 - [Beszel: charts and history for your server](beszel.md)
 - [Grafana Cloud: searchable logs and metrics, free](grafana-cloud.md)
 
