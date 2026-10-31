@@ -529,7 +529,7 @@ Effort`.
 
 ## Phase 6: Wave 5
 
-- [ ] T1815 [P] [US4] Agents: closing and opening public SSH, in `packages/agents/src/secure/public-ssh.ts`
+- [X] T1815 [P] [US4] Agents: closing and opening public SSH, in `packages/agents/src/secure/public-ssh.ts`
   - Owns: that file (+ test). In `secure/run.ts`, only the two flags' entry.
   - Reads: plan.md "12."; spec US4, FR-1815, FR-1816
   - Depends: T1812, T1813, T1814
