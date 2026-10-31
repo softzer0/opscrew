@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments";
@@ -25,7 +26,14 @@ import {
   WORKFLOWS,
 } from "./__fixtures__/world";
 import { promote, promotionHash } from "./index";
-import { promotionFile, readPendingPromotion } from "./record";
+import {
+  clearPendingPromotion,
+  PENDING_PROMOTION_FILE,
+  promotionFile,
+  readPendingPromotion,
+  writePendingPromotion,
+} from "./record";
+import { requireApplied } from "./shared";
 
 /** What promote says of prod's deploy run left waiting for its reviewer. */
 const STILL_WAITING = `prod's deploy run still waits in GitHub for a required reviewer: ${DEPLOY_RUN_URL}. Once they approve it, the run deploys the image. OpsCrew did not record the image as running. Run \`opscrew promote --to prod\` again once the run succeeded: it records the image without a new deploy.`;
@@ -399,7 +407,7 @@ describe("promote", () => {
         "The image was built from the branch main, not from develop, the branch whose pushes build the images this environment is promoted with. Nothing was deployed.",
       );
       expect(error.hint).toBe(
-        "OpsCrew promotes only images acme/shop's deploy workflow built from develop. Promote the image another environment runs, built by a push to develop.",
+        "OpsCrew promotes only images acme/shop's deploy workflow built from develop. Promote the image another environment runs, built by a push or a run started by hand on develop.",
       );
       expect(world.handler.requests).toEqual([]);
       expect(world.github.dispatches).toEqual([]);
@@ -890,7 +898,7 @@ describe("promote", () => {
       );
       expect(error.code).toBe("PHASE_PRECONDITION");
       expect(error.message).toContain(
-        "The image was built by a pull_request run, not by a push to main.",
+        "The image was built by a pull_request run, not by a push or a run started by hand on main.",
       );
       expect(world.handler.requests).toEqual([]);
     });
@@ -1200,7 +1208,7 @@ describe("promote", () => {
       expect(text).toContain(STILL_WAITING);
       expect(text).not.toMatch(/did not succeed|did not finish|timed out/);
       expect(await recordedPromotion(world.deps.paths)).toBeUndefined();
-      expect(await readPendingPromotion(world.deps.paths)).toEqual({
+      expect(await readPendingPromotion(world.deps.paths, PENDING_PROMOTION_FILE)).toEqual({
         digest: STAGING_IMAGE,
         source: "staging",
         runId: 777,
@@ -1236,7 +1244,7 @@ describe("promote", () => {
         source: "staging",
         runUrl: DEPLOY_RUN_URL,
       });
-      expect(await readPendingPromotion(world.deps.paths)).toBeUndefined();
+      expect(await readPendingPromotion(world.deps.paths, PENDING_PROMOTION_FILE)).toBeUndefined();
     });
 
     it("says again that the pending run waits, with its link and the command", async () => {
@@ -1247,7 +1255,9 @@ describe("promote", () => {
       expect(result).toEqual({ status: "waiting", digest: STAGING_IMAGE, runUrl: DEPLOY_RUN_URL });
       expect(world.deps.reporter.text()).toContain(STILL_WAITING);
       expect(world.github.dispatches).toHaveLength(1);
-      expect(await readPendingPromotion(world.deps.paths)).toMatchObject({ runId: 777 });
+      expect(await readPendingPromotion(world.deps.paths, PENDING_PROMOTION_FILE)).toMatchObject({
+        runId: 777,
+      });
     });
 
     it("forgets a pending run that was cancelled, and lets a new promotion go ahead", async () => {
@@ -1263,7 +1273,7 @@ describe("promote", () => {
       expect(world.handler.requests.map((r) => r.kind)).toEqual(["promote"]);
       expect(world.github.dispatches).toHaveLength(2);
       expect(result.status).toBe("deployed");
-      expect(await readPendingPromotion(world.deps.paths)).toBeUndefined();
+      expect(await readPendingPromotion(world.deps.paths, PENDING_PROMOTION_FILE)).toBeUndefined();
     });
   });
 
@@ -1345,5 +1355,142 @@ describe("promote", () => {
       expect(dispatchAudited(world)).toBe(true);
       expect(await recordedPromotion(world.deps.paths)).toBeUndefined();
     });
+  });
+});
+
+describe("promote while the target's deploys are paused", () => {
+  const SINCE = "2026-10-11T11:00:00.000Z";
+  function pause(world: PromoteWorld, entries: Record<string, unknown>) {
+    world.github.variables.set(DEPLOY_PAUSED_VARIABLE, JSON.stringify(entries));
+  }
+
+  it("refuses after a rollback, before the approval, naming the resume command", async () => {
+    const token = fakeSecret("github-token", "ghcr-read");
+    const world = await promoteWorld({ env: { OPSCREW_GHCR_READ_TOKEN: token } });
+    pause(world, {
+      "shop/prod": {
+        reason: "rollback",
+        since: SINCE,
+        image: PREVIOUS_IMAGE,
+        commit: PREVIOUS_COMMIT,
+      },
+    });
+    const error = await failure(promote(world.deps, { target: "prod", services: world.services }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `The deploys of prod are paused since ${SINCE}: \`opscrew rollback\` pinned it to ${PREVIOUS_COMMIT.slice(0, 7)} (${PREVIOUS_IMAGE.slice(0, 19)}), so a promotion's deploy run would skip its deploy job. Nothing was deployed.`,
+    );
+    expect(error.hint).toBe(
+      "Run `opscrew rollback --env prod --resume`, then `opscrew promote --to prod` again.",
+    );
+    expect(world.handler.requests).toEqual([]);
+    expect(world.github.dispatches).toEqual([]);
+    const shown = JSON.stringify([error.message, error.hint, world.deps.reporter.lines]);
+    expect(shown).not.toContain(token);
+  });
+
+  it("refuses during a move's maintenance window, naming provision", async () => {
+    const world = await promoteWorld();
+    pause(world, { "shop/prod": { reason: "move", since: SINCE } });
+    const error = await failure(promote(world.deps, { target: "prod", services: world.services }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `The deploys of prod are paused since ${SINCE} while a service moves between the app's servers, so a promotion's deploy run would skip its deploy job. Nothing was deployed.`,
+    );
+    expect(error.hint).toBe(
+      "Run `opscrew provision --env prod`: it ends the move's maintenance window. Then run `opscrew promote --to prod` again.",
+    );
+    expect(world.handler.requests).toEqual([]);
+  });
+
+  it("goes ahead as today when the token may not read the variable", async () => {
+    const world = await promoteWorld();
+    world.github.getRepoVariable = async () => {
+      throw new OpsCrewError("CREDENTIALS_INVALID", "GitHub refused to read the variable.");
+    };
+    const result = await promote(world.deps, { target: "prod", services: world.services });
+    expect(result.status).toBe("deployed");
+  });
+
+  it("goes ahead while only another environment is paused", async () => {
+    const world = await promoteWorld();
+    pause(world, { "shop/staging": { reason: "move", since: SINCE } });
+    const result = await promote(world.deps, { target: "prod", services: world.services });
+    expect(result.status).toBe("deployed");
+  });
+});
+
+describe("provenance from a run started by hand (ADR 0023 D1)", () => {
+  it("accepts a workflow_dispatch build of this repository on the builder branch", async () => {
+    const world = await promoteWorld();
+    world.github.build(STAGING_IMAGE, {
+      runId: STAGING_RUN,
+      commit: STAGING_COMMIT,
+      run: { event: "workflow_dispatch" },
+    });
+    const result = await promote(world.deps, { target: "prod", services: world.services });
+    expect(result).toMatchObject({ status: "deployed", digest: STAGING_IMAGE });
+  });
+
+  it("refuses a workflow_dispatch build of another branch", async () => {
+    const world = await promoteWorld();
+    world.github.build(STAGING_IMAGE, {
+      runId: STAGING_RUN,
+      commit: STAGING_COMMIT,
+      run: { event: "workflow_dispatch", headBranch: "feature" },
+    });
+    const error = await failure(promote(world.deps, { target: "prod", services: world.services }));
+    expect(error.message).toContain("The image was built from the branch feature, not from main");
+    expect(world.handler.requests).toEqual([]);
+  });
+
+  it("still refuses other events, such as a schedule", async () => {
+    const world = await promoteWorld();
+    world.github.build(STAGING_IMAGE, {
+      runId: STAGING_RUN,
+      commit: STAGING_COMMIT,
+      run: { event: "schedule" },
+    });
+    const error = await failure(promote(world.deps, { target: "prod", services: world.services }));
+    expect(error.message).toContain(
+      "The image was built by a schedule run, not by a push or a run started by hand on main.",
+    );
+    expect(world.handler.requests).toEqual([]);
+  });
+});
+
+describe("what rollback shares with promote", () => {
+  it("requireApplied checks the workflow on the branch it is given", async () => {
+    const world = await promoteWorld();
+    const input = {
+      target: "prod",
+      plan: world.prodPlan,
+      paths: world.deps.paths,
+      github: { api: world.github, owner: "acme", repo: "shop", defaultBranch: "main" },
+      services: world.services,
+      command: "opscrew rollback",
+    };
+    expect(await requireApplied(world.deps, { ...input, branch: "main" })).toBe(
+      "opscrew-deploy.yml",
+    );
+    const error = await failure(requireApplied(world.deps, { ...input, branch: "release" }));
+    expect(error.message).toBe(
+      `The branch release has no ${PROD_WORKFLOW}, the deploy workflow prod's plan generates, so GitHub cannot start it. Nothing was deployed.`,
+    );
+  });
+
+  it("keeps each pending file by the name it is given", async () => {
+    const { paths } = (await promoteWorld()).deps;
+    const pending = {
+      digest: PREVIOUS_IMAGE,
+      source: "prod",
+      runId: 9,
+      at: "2026-10-11T12:00:00.000Z",
+    };
+    await writePendingPromotion(paths, "pending-rollback.json", pending);
+    expect(await readPendingPromotion(paths, PENDING_PROMOTION_FILE)).toBeUndefined();
+    expect(await readPendingPromotion(paths, "pending-rollback.json")).toEqual(pending);
+    await clearPendingPromotion(paths, "pending-rollback.json");
+    expect(await readPendingPromotion(paths, "pending-rollback.json")).toBeUndefined();
   });
 });

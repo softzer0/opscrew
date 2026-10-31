@@ -153,8 +153,9 @@ export function checkPlatform(
 /**
  * Step 2: the image's SLSA v1 provenance (`provenance`, as GHCR shows it) names its build run
  * (`runDetails.builder.id`), which must
- * be this repository's; GitHub's record of the run must show a `push` of this repository's own
- * commits (a fork's pull request runs here too) to `branch`, the branch that builds the images the
+ * be this repository's; GitHub's record of the run must show a `push`, or a `workflow_dispatch`
+ * (ADR 0023 D1), of this repository's own commits (a fork's pull request runs here too) on
+ * `branch`, the branch that builds the images the
  * target is promoted with (`builderBranch`, as its workflow's verify job checks); and the image
  * tagged with the run's commit must be this digest. Each environment that builds tags its own form
  * of the commit ({@link environmentTag}), and the one that built the image may be the source's
@@ -173,7 +174,7 @@ export async function checkProvenance(
   const reference = imageReference(image, digest);
   const refuse = (why: string) =>
     new OpsCrewError("PHASE_PRECONDITION", `${why} ${nothing}`, {
-      hint: `OpsCrew promotes only images ${repository}'s deploy workflow built from ${branch}. Promote the image another environment runs, built by a push to ${branch}.`,
+      hint: `OpsCrew promotes only images ${repository}'s deploy workflow built from ${branch}. Promote the image another environment runs, built by a push or a run started by hand on ${branch}.`,
     });
   if (provenance === undefined) {
     throw refuse(
@@ -197,8 +198,12 @@ export async function checkProvenance(
       `GitHub shows no run ${provenance.runId} in ${repository}, which the image's provenance names as its build.`,
     );
   }
-  if (run.event !== "push") {
-    throw refuse(`The image was built by a ${run.event} run, not by a push to ${branch}.`);
+  // ADR 0023 D1: a run started by hand (`opscrew rollback --resume --deploy`, or GitHub's "Run
+  // workflow") builds on the branch as a push does.
+  if (run.event !== "push" && run.event !== "workflow_dispatch") {
+    throw refuse(
+      `The image was built by a ${run.event} run, not by a push or a run started by hand on ${branch}.`,
+    );
   }
   if (run.headRepository.toLowerCase() !== repository.toLowerCase()) {
     throw refuse(

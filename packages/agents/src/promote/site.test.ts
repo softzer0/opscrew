@@ -3,7 +3,11 @@ import { dirname, join } from "node:path";
 import { FAKE_ACCOUNT_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
-import { renderCloudflareWorkersWorkflow } from "@opscrew/iac-templates";
+import {
+  checkEnvironmentKey,
+  DEPLOY_PAUSED_VARIABLE,
+  renderCloudflareWorkersWorkflow,
+} from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments";
@@ -25,6 +29,7 @@ import {
 } from "./__fixtures__/world";
 import { promote } from "./index";
 import { buildPromotionHash, rollbackHash } from "./record";
+import { rollBackPages, rollBackWorker, type SiteRun } from "./site";
 import type { PromoteServices } from "./types";
 
 /** The build staging runs: run 501's, with this SHA-256 (a hash, not a secret). */
@@ -614,5 +619,88 @@ describe("promote on a server", () => {
       );
     }
     expect(world.handler.requests).toEqual([]);
+  });
+});
+
+describe("a site's paused deploys and the rollbacks `opscrew rollback` reuses", () => {
+  type World = Awaited<ReturnType<typeof siteWorld>>;
+
+  /** prod's rollback as `opscrew rollback` runs it: its command and flag, and a step before. */
+  function rollbackRun(world: World, beforeChange: () => Promise<void>): SiteRun {
+    return {
+      deps: world.deps,
+      target: "prod",
+      plan: world.prod,
+      paths: environmentPaths(world.deps.paths, "prod"),
+      services: world.services,
+      command: "opscrew rollback --env prod",
+      versionFlag: "--to",
+      approveHash: undefined,
+      beforeChange,
+    };
+  }
+
+  it("refuses a promotion on Cloudflare's hosting while the target's deploys are paused", async () => {
+    const world = await siteWorld();
+    world.github.variables.set(
+      DEPLOY_PAUSED_VARIABLE,
+      JSON.stringify({
+        [checkEnvironmentKey(world.prod)]: { reason: "move", since: "2026-10-23T11:00:00.000Z" },
+      }),
+    );
+    const error = await failure(promote(world.deps, { target: "prod", services: world.services }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("paused since 2026-10-23T11:00:00.000Z");
+    expect(error.hint).toContain("opscrew provision --env prod");
+    expect(world.handler.requests).toEqual([]);
+    expect(world.github.dispatches).toEqual([]);
+  });
+
+  it("rolls a Worker back with the caller's command and flag, its step after the approval and before the activation", async () => {
+    const world = await siteWorld();
+    const seen: unknown[] = [];
+    const before = async () => {
+      const serving = world.zone.workers.get("example-app")?.deployments[0]?.versions;
+      seen.push({ approvals: world.handler.requests.length, serving });
+    };
+
+    const running = await failure(rollBackWorker(rollbackRun(world, before), PROD_NOW));
+    expect(running.hint).toBe(
+      "`opscrew status` lists the version that ran before; run `opscrew rollback --env prod --to <id>` with it.",
+    );
+    const other = rollbackRun(world, before);
+    const mismatch = await failure(
+      rollBackWorker({ ...other, approveHash: "0".repeat(64) }, PROD_BEFORE),
+    );
+    expect(mismatch.code).toBe("PLAN_NOT_APPROVED");
+    expect(mismatch.hint).toContain(`opscrew rollback --env prod --to ${PROD_BEFORE} --approve `);
+    expect(seen).toEqual([]);
+
+    const result = await rollBackWorker(rollbackRun(world, before), PROD_BEFORE);
+    expect(result).toEqual({ status: "deployed", version: PROD_BEFORE });
+    expect(seen).toEqual([{ approvals: 1, serving: [{ version_id: PROD_NOW, percentage: 100 }] }]);
+  });
+
+  it("re-runs a Pages run with the caller's command and flag, its step after the approval and before the re-run", async () => {
+    const world = await siteWorld({ pages: true });
+    world.github.pages.set("opscrew-deploy.yml", [
+      { runId: 900, attempt: 1, startedAt: "2026-10-23T10:00:00Z", headSha: "f".repeat(40) },
+      { runId: 800, attempt: 1, startedAt: "2026-10-22T10:00:00Z", headSha: "e".repeat(40) },
+    ]);
+    const seen: unknown[] = [];
+    const before = async () => {
+      seen.push({ approvals: world.handler.requests.length, reruns: [...world.github.reruns] });
+    };
+
+    const now = await failure(rollBackPages(rollbackRun(world, before), "900"));
+    expect(now.hint).toBe(
+      "`opscrew status` lists the run that published the site before; run `opscrew rollback --env prod --to <run id>` with it.",
+    );
+    expect(seen).toEqual([]);
+
+    const result = await rollBackPages(rollbackRun(world, before), "800");
+    expect(result).toMatchObject({ status: "deployed", version: "800" });
+    expect(seen).toEqual([{ approvals: 1, reruns: [] }]);
+    expect(world.github.reruns).toEqual([800]);
   });
 });

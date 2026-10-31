@@ -39,7 +39,13 @@ import { hasDeployment, PlanRefusedError, serverlessName } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { runningVersions, versionBuild } from "../status/site";
 import { buildPromotionHash, rollbackHash } from "./record";
-import { githubRepository, NOTHING, type PromoteRepository, requireApplied } from "./shared";
+import {
+  githubRepository,
+  NOTHING,
+  type PromoteRepository,
+  requireApplied,
+  requireNotPaused,
+} from "./shared";
 import type { PromoteOptions, PromoteResult, PromoteServices } from "./types";
 
 /** A run's page on GitHub. */
@@ -48,16 +54,21 @@ function runUrl(github: Pick<PromoteRepository, "owner" | "repo">, run: number):
 }
 
 /** What a site's promotion and rollback share: the target, its plan, its paths and the command. */
-interface SiteRun {
+export interface SiteRun {
   deps: PhaseDeps;
   target: string;
   plan: DeployPlan;
   paths: ProjectPaths;
   services: PromoteServices;
+  /** The command the messages name (`opscrew promote --to <env>`). */
   command: string;
+  /** The flag that names a version in the messages' commands (promote's `--version`). */
+  versionFlag: string;
   approveHash: string | undefined;
   /** `--allow-old-secrets`, checked, trimmed, without repeats and sorted. */
   allowOldSecrets?: string[];
+  /** A rollback's step once it is approved, before it changes what runs. */
+  beforeChange?: () => Promise<void>;
 }
 
 /** Stops (nothing deployed) unless the environment is provisioned. */
@@ -279,6 +290,7 @@ async function promoteBuild(run: SiteRun): Promise<PromoteResult> {
   // 2. The build's artifact, which the target's workflow downloads: GitHub keeps it for the
   // repository's artifact retention only (90 days by default).
   const github = await githubRepository(deps, run.services);
+  await requireNotPaused(github, plan, target, command);
   const artifacts = await github.api.runArtifacts(
     github.owner,
     github.repo,
@@ -308,6 +320,7 @@ async function promoteBuild(run: SiteRun): Promise<PromoteResult> {
     github,
     services: run.services,
     command,
+    branch: github.defaultBranch,
     workflow: renderCloudflareWorkersWorkflow(
       plan,
       builder === undefined
@@ -432,7 +445,7 @@ function oldSecretsRefusal(
     "PHASE_PRECONDITION",
     `The version ${input.version} of the Worker ${input.worker} predates a change to the ${one ? "secret" : "secrets"} ${listText(input.secrets)}: activated again, it would run with ${one ? "its old value, the one" : "their old values, the ones"} it was uploaded with, not the current ${one ? "one" : "ones"}. ${NOTHING}`,
     {
-      hint: `Only if ${one ? "it was not changed because it leaked and its old value is" : "none of them was changed because it leaked and their old values are"} still safe, run \`${run.command} --version ${input.version} --allow-old-secrets ${input.secrets.join(",")}\`. Otherwise deploy a new version instead: it runs with the current ${one ? "value" : "values"}.`,
+      hint: `Only if ${one ? "it was not changed because it leaked and its old value is" : "none of them was changed because it leaked and their old values are"} still safe, run \`${run.command} ${run.versionFlag} ${input.version} --allow-old-secrets ${input.secrets.join(",")}\`. Otherwise deploy a new version instead: it runs with the current ${one ? "value" : "values"}.`,
     },
   );
 }
@@ -444,9 +457,10 @@ function oldSecretsRefusal(
  * hash and the secrets `--allow-old-secrets` names. No build and no workflow run. When Cloudflare
  * refuses the version because secrets changed since it was active, the rollback is forced only
  * when the approval named each of them; otherwise it is refused, with nothing changed.
+ * `run.beforeChange` runs once it is approved, before the activation.
  */
-async function rollBackWorker(run: SiteRun, version: string): Promise<PromoteResult> {
-  const { deps, target, plan, command } = run;
+export async function rollBackWorker(run: SiteRun, version: string): Promise<PromoteResult> {
+  const { deps, target, plan, command, versionFlag } = run;
   requireProvisioned(run, plan, target);
   const { worker } = plan.target as CloudflareWorkersDeployTarget;
   const client = sharedCloudflareClient(deps, run.services);
@@ -458,14 +472,14 @@ async function rollBackWorker(run: SiteRun, version: string): Promise<PromoteRes
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `${version} is not a version of the Worker ${worker} of the ${target} environment. ${NOTHING}`,
-      { hint: `${list}; run \`${command} --version <id>\` with it.` },
+      { hint: `${list}; run \`${command} ${versionFlag} <id>\` with it.` },
     );
   }
   if (chosen.id === state?.running) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The Worker ${worker} of the ${target} environment runs the version ${chosen.id} already. ${NOTHING}`,
-      { hint: `${list}; run \`${command} --version <id>\` with it.` },
+      { hint: `${list}; run \`${command} ${versionFlag} <id>\` with it.` },
     );
   }
   const targetPlanHash = sha256Hex(canonicalJson(plan));
@@ -493,8 +507,9 @@ async function rollBackWorker(run: SiteRun, version: string): Promise<PromoteRes
       `Promotion hash: ${hash}`,
     ].join("\n"),
     hash,
-    later: `${command} --version ${chosen.id}${allowFlag} --approve ${hash}`,
+    later: `${command} ${versionFlag} ${chosen.id}${allowFlag} --approve ${hash}`,
   });
+  await run.beforeChange?.();
   deps.reporter.step(`Activating the version ${chosen.id} of the Worker ${worker}`);
   const message = `opscrew rollback ${hash}`;
   let forced: string[] | undefined;
@@ -556,10 +571,11 @@ async function waitForRerun(
  * A rollback on GitHub Pages (`--version <run id>`): an earlier successful run of the site's
  * workflow, other than the one that published the site now, re-run after the `promote` approval,
  * bound to {@link rollbackHash} of the target, the run and its plan's hash, and followed to its
- * end. GitHub builds the site again from that run's commit and publishes it.
+ * end. GitHub builds the site again from that run's commit and publishes it. `run.beforeChange`
+ * runs once it is approved, before the re-run.
  */
-async function rollBackPages(run: SiteRun, version: string): Promise<PromoteResult> {
-  const { deps, target, plan, command } = run;
+export async function rollBackPages(run: SiteRun, version: string): Promise<PromoteResult> {
+  const { deps, target, plan, command, versionFlag } = run;
   if (!/^[1-9][0-9]*$/.test(version)) {
     throw new OpsCrewError("INVALID_INPUT", `"${version}" is not a workflow run's id. ${NOTHING}`, {
       hint: "Pass the id of an earlier GitHub Pages run, as `opscrew status` lists it.",
@@ -577,14 +593,14 @@ async function rollBackPages(run: SiteRun, version: string): Promise<PromoteResu
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `${version} is not a successful run of ${workflowFile}, the site's workflow. ${NOTHING}`,
-      { hint: `${list}; run \`${command} --version <run id>\` with it.` },
+      { hint: `${list}; run \`${command} ${versionFlag} <run id>\` with it.` },
     );
   }
   if (at === 0) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The run ${chosen.runId} published the site that GitHub Pages serves now. ${NOTHING}`,
-      { hint: `${list}; run \`${command} --version <run id>\` with it.` },
+      { hint: `${list}; run \`${command} ${versionFlag} <run id>\` with it.` },
     );
   }
   const targetPlanHash = sha256Hex(canonicalJson(plan));
@@ -601,8 +617,9 @@ async function rollBackPages(run: SiteRun, version: string): Promise<PromoteResu
       guardText(await reviewedEnvironment(run, github)),
     ].join("\n"),
     hash,
-    later: `${command} --version ${chosen.runId} --approve ${hash}`,
+    later: `${command} ${versionFlag} ${chosen.runId} --approve ${hash}`,
   });
+  await run.beforeChange?.();
   deps.reporter.step(`Re-running the GitHub Pages run ${chosen.runId}`);
   await github.api.rerunWorkflowRun(owner, repo, chosen.runId);
   await deps.audit.append({
@@ -647,6 +664,7 @@ export async function promoteSite(
     paths,
     services: options.services ?? {},
     command,
+    versionFlag: "--version",
     approveHash: options.approveHash,
     ...(options.allowOldSecrets !== undefined
       ? { allowOldSecrets: oldSecretNames(options.allowOldSecrets) }

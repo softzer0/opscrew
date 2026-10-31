@@ -20,7 +20,7 @@ import { builderBranch, followsBranch } from "../environments/branches";
 import { ghcrReadCredential } from "../localhost/image";
 import { secretsEnvironment } from "../provision/secrets";
 import { hasDeployment, PlanRefusedError } from "../shared";
-import { codeOf, hintOf, reasonOf } from "../shared/errors";
+import { dispatchAndFollow, NOT_RECORDED } from "../shared/deploy-run";
 import {
   type AppImage,
   type ChosenImage,
@@ -33,6 +33,7 @@ import {
 } from "./image";
 import {
   clearPendingPromotion,
+  PENDING_PROMOTION_FILE,
   type PromotionRecord,
   promotionHash,
   readPendingPromotion,
@@ -40,12 +41,11 @@ import {
   writePendingPromotion,
   writePromotion,
 } from "./record";
-import { githubRepository, NOTHING, requireApplied } from "./shared";
+import { githubRepository, NOTHING, requireApplied, requireNotPaused } from "./shared";
 import { promoteSite } from "./site";
-import type { PromoteGitHubApi, PromoteOptions, PromoteResult } from "./types";
+import type { PromoteOptions, PromoteResult } from "./types";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
-const NOT_RECORDED = "OpsCrew did not record the image as running.";
 
 /**
  * The target is ready for the image its source runs (FR-1539): it has every service of the
@@ -83,7 +83,7 @@ function serviceNames(plan: DeployPlan): string[] {
  * checked.
  * @throws OpsCrewError `PHASE_PRECONDITION` naming the services the plan no longer has.
  */
-function requireRollbackServices(
+export function requireRollbackServices(
   run: { target: string; source: string; digest: string },
   plan: DeployPlan,
   record: PromotionRecord | undefined,
@@ -121,7 +121,7 @@ async function checkPending(
   image: AppImage,
   run: { target: string; command: string; services: string[] },
 ): Promise<PromoteResult | undefined> {
-  const pending = await readPendingPromotion(paths);
+  const pending = await readPendingPromotion(paths, PENDING_PROMOTION_FILE);
   if (pending === undefined) return undefined;
   const { target, command, services } = run;
   const { digest, source } = pending;
@@ -144,7 +144,7 @@ async function checkPending(
     decision: ok ? "approved" : "refused",
     detail: `workflow run ${last.id} finished: ${last.conclusion ?? "no result"}`,
   });
-  await clearPendingPromotion(paths);
+  await clearPendingPromotion(paths, PENDING_PROMOTION_FILE);
   if (!ok) {
     deps.reporter.warn(
       `${target}'s deploy run that waited for a reviewer did not succeed (${last.conclusion ?? "no result"}): ${last.htmlUrl}. OpsCrew forgot it and goes on with a new promotion.`,
@@ -212,9 +212,11 @@ function promotionDetails(input: {
  * `opscrew promote --to <target>` (FR-1518–FR-1520): deploys to `target` the image its source
  * environment (`deploySource.source`) runs, or with `digest` the target's previous image for a
  * rollback, without rebuilding it.
+ * 0. The target's deploys are not paused (by a rollback or a move's window).
  * 1. The image: the source's `opscrew-<source>` label, or the requested digest, which must be that
  *    image or the target's `opscrew-<target>-previous`.
- * 2. Its provenance: the SLSA v1 build run is a push of this repository's own commits to the
+ * 2. Its provenance: the SLSA v1 build run is a push, or a run started by hand (ADR 0023 D1), of
+ *    this repository's own commits to the
  *    branch that builds the images the target is promoted with (`builderBranch`: the branch of the
  *    first environment along its sources that follows one, as its workflow's verify job checks), at
  *    the commit the image is tagged with (in the form of the environment that built it: `<commit>`
@@ -310,7 +312,6 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   // 1. The image, and 2. where and for which CPU it was built.
   const github = await githubRepository(deps, services);
   const { owner, repo, defaultBranch } = github;
-  const actions = `https://github.com/${owner}/${repo}/actions`;
   // OPSCREW_GHCR_READ_TOKEN when set (GHCR may refuse a fine-grained token), else the client's own.
   const credential = ghcrReadCredential(deps, owner);
   const image: AppImage = {
@@ -326,6 +327,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     services: serviceNames(plan),
   });
   if (followed !== undefined) return followed;
+  await requireNotPaused(github, plan, target, command);
   deps.reporter.step(`Finding the image to deploy to ${target}`);
   const chosen = await chooseImage(image, {
     source,
@@ -358,6 +360,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     github,
     services,
     command,
+    branch: defaultBranch,
   });
 
   // 4. The approval, bound to the promotion's hash. It says whether GitHub also asks a reviewer.
@@ -412,123 +415,34 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
 
   // 5. The target's workflow with the digest, its run, and the record.
   deps.reporter.step(`Starting ${workflowFile} on ${defaultBranch} with the image's digest`);
-  let dispatched: { runId: number; url: string };
-  let accepted = false;
-  try {
-    // Recorded as soon as GitHub accepts the dispatch, before any wait for its run.
-    dispatched = await github.api.dispatchWorkflow(
-      owner,
-      repo,
-      workflowFile,
-      defaultBranch,
-      { digest, tag: build.tag },
-      async () => {
-        accepted = true;
-        await deps.audit.append({
-          kind: "provider-call",
-          actor: "opscrew",
-          action: "dispatch workflow",
-          target: `${owner}/${repo}`,
-          detail: `${workflowFile} on ${defaultBranch} with ${digest} (promotion ${hash})`,
-        });
-      },
-    );
-  } catch (error) {
-    const code = codeOf(error);
-    // A definite refusal starts nothing: GitHub's 404 or 422 (the connector's precondition), or a
-    // token it refused. After a timeout or a dropped connection the run may have started.
-    if (!accepted && (code === "PHASE_PRECONDITION" || code.startsWith("CREDENTIALS_"))) {
-      throw new OpsCrewError(
-        code,
-        deps.redactor.redact(
-          `${target}'s deploy workflow did not start: ${reasonOf(error)}. ${NOTHING}`,
-        ),
-        {
-          hint:
-            code === "PHASE_PRECONDITION"
-              ? `GitHub starts it only from the default branch ${defaultBranch}, as \`opscrew provision --env ${target}\` writes it for a promoted environment: run it, merge its pull request, then run \`${command}\` again.`
-              : `${hintOf(error)}Then run \`${command}\` again.`,
-        },
-      );
-    }
-    throw new OpsCrewError(
-      code,
-      deps.redactor.redact(
-        `${accepted ? `GitHub accepted the start of ${target}'s deploy workflow ${workflowFile}, but OpsCrew could not follow it` : `OpsCrew cannot tell whether GitHub started ${target}'s deploy workflow ${workflowFile}`}: ${reasonOf(error)}. The run may have started and may deploy the image. ${NOT_RECORDED}`,
-      ),
-      {
-        hint: `Look for the run at ${actions}: follow it if it is there, else run \`${command}\` again.`,
-      },
-    );
-  }
-  deps.reporter.step(`Waiting for the deploy run (${dispatched.url})`);
-  let run: Awaited<ReturnType<PromoteGitHubApi["waitForWorkflowRun"]>>;
-  try {
-    run = await github.api.waitForWorkflowRun(owner, repo, {
-      workflowFile,
-      ref: defaultBranch,
-      runId: dispatched.runId,
-      onWaiting: (url) =>
-        deps.reporter.info(
-          `${target}'s deploy run waits in GitHub for a required reviewer: approve it at ${url}. OpsCrew follows the run and records the image once it succeeded.`,
-        ),
-    });
-  } catch (error) {
-    throw new OpsCrewError(
-      codeOf(error),
-      deps.redactor.redact(
-        `OpsCrew could not follow ${target}'s deploy run to its end: ${reasonOf(error)}. The run may still deploy the image. ${NOT_RECORDED}`,
-      ),
-      {
-        hint: `Follow the run at ${dispatched.url}; if it fails, fix what it says, then run \`${command}\` again.`,
-      },
-    );
-  }
+  const run = await dispatchAndFollow(deps, github, {
+    workflowFile,
+    ref: defaultBranch,
+    inputs: { digest, tag: build.tag },
+    target,
+    command,
+    detail: `${workflowFile} on ${defaultBranch} with ${digest} (promotion ${hash})`,
+    verifies: plan.supplyChain.sign
+      ? "the image's provenance and signature"
+      : "the image's provenance",
+  });
   if (run.status === "waiting") {
-    await deps.audit.append({
-      kind: "provider-call",
-      actor: "opscrew",
-      action: "deploy workflow",
-      target: run.htmlUrl,
-      detail: `workflow run ${run.id} waits for a required reviewer`,
-    });
-    await writePendingPromotion(targetPaths, {
+    await writePendingPromotion(targetPaths, PENDING_PROMOTION_FILE, {
       digest,
       source,
-      runId: run.id,
+      runId: run.runId,
       at: deps.clock.now().toISOString(),
     });
-    deps.reporter.warn(stillWaiting(target, run.htmlUrl, command));
-    return { status: "waiting", digest, runUrl: run.htmlUrl };
-  }
-  const ok = run.conclusion === "success";
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "deploy workflow",
-    target: run.htmlUrl,
-    decision: ok ? "approved" : "refused",
-    detail: `workflow run ${run.id} finished: ${run.conclusion ?? "no result"}`,
-  });
-  if (!ok) {
-    const checks = plan.supplyChain.sign
-      ? "the image's provenance and signature"
-      : "the image's provenance";
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      `${target}'s deploy run did not succeed (${run.conclusion ?? "no result"}): ${run.htmlUrl}. Its verify job checks ${checks} before the deploy job runs. ${NOT_RECORDED}`,
-      {
-        hint: `Open the run to see which job failed, fix what it says, then run \`${command}\` again.`,
-      },
-    );
+    deps.reporter.warn(stillWaiting(target, run.runUrl, command));
+    return { status: "waiting", digest, runUrl: run.runUrl };
   }
   await writePromotion(targetPaths, {
     digest,
     source,
-    runUrl: run.htmlUrl,
+    runUrl: run.runUrl,
     at: deps.clock.now().toISOString(),
     services: serviceNames(plan),
   });
-  deps.reporter.success(`${target} now runs ${imageReference(image, digest)} (${run.htmlUrl}).`);
-  return { status: "deployed", digest, runUrl: run.htmlUrl };
+  deps.reporter.success(`${target} now runs ${imageReference(image, digest)} (${run.runUrl}).`);
+  return { status: "deployed", digest, runUrl: run.runUrl };
 }

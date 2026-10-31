@@ -5,9 +5,10 @@ import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { renderDependabot, renderRunbook } from "@opscrew/iac-templates";
+import { DEPLOY_PAUSED_VARIABLE, renderDependabot, renderRunbook } from "@opscrew/iac-templates";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { environmentPaths } from "../environments";
 import { parseDotenv, readServerAddresses } from "../shared";
 import {
   createProject,
@@ -196,6 +197,73 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(
       deps.audit.entries.filter((e) => e.kind === "secret-set").map((e) => e.action),
     ).toContain("set secret OPSCREW_APP_ENV");
+    expect(deps.reporter.text()).not.toContain("opscrew rollback");
+  });
+
+  it("says the merged files deploy only after resuming, while a rollback pins the environment", async () => {
+    const { deps, github, services } = await setup();
+    const pinned = JSON.stringify({
+      "shop/prod": {
+        reason: "rollback",
+        since: "2026-10-11T11:00:00.000Z",
+        image: `sha256:${"ab".repeat(32)}`,
+        commit: "c".repeat(40),
+      },
+    });
+    github.variables.set(DEPLOY_PAUSED_VARIABLE, pinned);
+
+    await runProvision(deps, { services });
+
+    expect(deps.reporter.text()).toContain(
+      "The deploys of shop/prod are paused since 2026-10-11T11:00:00.000Z: `opscrew rollback` pinned it to ccccccc (sha256:abababababab). The merged files deploy only after `opscrew rollback --resume --deploy`.",
+    );
+    // Provision leaves the pause as it is.
+    expect(github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(pinned);
+  });
+
+  it("names prod in the resume command once the app has another environment", async () => {
+    const { deps, github, services } = await setup();
+    const prod = testPlan();
+    await writeArtifact(
+      "plan",
+      environmentPaths(deps.paths, "staging").files.plan,
+      DeployPlanSchema.parse({
+        ...prod,
+        environment: { name: "staging" },
+        app: { ...prod.app, name: "shop-staging" },
+        infra: { ...prod.infra, dir: "opscrew/infra/staging" },
+        cicd: { ...prod.cicd, workflowPath: ".github/workflows/opscrew-deploy-staging.yml" },
+      }),
+    );
+    github.variables.set(
+      DEPLOY_PAUSED_VARIABLE,
+      JSON.stringify({
+        "shop/prod": {
+          reason: "rollback",
+          since: "2026-10-11T11:00:00.000Z",
+          image: `sha256:${"ab".repeat(32)}`,
+          commit: "c".repeat(40),
+        },
+      }),
+    );
+
+    await runProvision(deps, { services });
+
+    expect(deps.reporter.text()).toContain(
+      "The merged files deploy only after `opscrew rollback --env prod --resume --deploy`.",
+    );
+  });
+
+  it("goes on as today when the token may not read the deploy pause", async () => {
+    const { deps, github, services } = await setup();
+    github.getRepoVariable = async () => {
+      throw new OpsCrewError("CREDENTIALS_INVALID", "GitHub refused to read the variable.");
+    };
+
+    const result = await runProvision(deps, { services });
+
+    expect(result.prUrl).toBe("https://github.com/acme/shop/pull/7");
+    expect(deps.reporter.text()).not.toContain("opscrew rollback");
   });
 
   it("stores each service's settings with its generated secrets as a GitHub secret of its own, and keeps them", async () => {

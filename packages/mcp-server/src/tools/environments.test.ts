@@ -118,6 +118,9 @@ class FakePromoteGitHub implements PromoteGitHubApi {
   async runArtifacts() {
     return [];
   }
+  async getRepoVariable() {
+    return undefined;
+  }
 }
 
 /** Nothing changed outside OpsCrew and nothing waits for provision. */

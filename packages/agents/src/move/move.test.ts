@@ -336,6 +336,25 @@ describe("runMove", () => {
     expect(w.deps.audit.entries.map((e) => e.action)).toContain("resume the deploys of shop/prod");
   });
 
+  it("never clears a rollback's pause of the environment", async () => {
+    const w = await moveWorld({ step: "switched" });
+    w.servers.app.env = w.env.after;
+    const pinned = JSON.stringify({
+      "shop/prod": {
+        reason: "rollback",
+        since: "2026-10-11T11:00:00.000Z",
+        image: `sha256:${"ab".repeat(32)}`,
+        commit: "c".repeat(40),
+      },
+    });
+    w.github.variables.set(DEPLOY_PAUSED_VARIABLE, pinned);
+    await runMove(w.deps, { plan: w.plan, services: w.services });
+    expect(w.github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(pinned);
+    expect(w.deps.audit.entries.map((e) => e.action)).not.toContain(
+      "resume the deploys of shop/prod",
+    );
+  });
+
   describe("a change that fails half way is undone too", () => {
     it("app.env written, then the connection lost", async () => {
       const w = await moveWorld({ step: "deployed" });

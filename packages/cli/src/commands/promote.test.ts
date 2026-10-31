@@ -78,6 +78,7 @@ function pagesGitHub(): PromoteGitHubApi & { reruns: number[] } {
     workflowRun: unused,
     dispatchWorkflow: unused,
     runArtifacts: unused,
+    getRepoVariable: unused,
   };
 }
 
@@ -253,6 +254,7 @@ describe("opscrew promote on Cloudflare's hosting", () => {
       getWorkflowRun: unused,
       pagesRuns: unused,
       rerunWorkflowRun: unused,
+      getRepoVariable: async () => undefined,
     };
     const drift = async (): Promise<DriftReport> => ({
       drift: [],

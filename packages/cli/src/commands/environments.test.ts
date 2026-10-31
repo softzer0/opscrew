@@ -263,6 +263,7 @@ describe("opscrew promote", () => {
       pagesRuns: async () => [],
       rerunWorkflowRun: async () => {},
       runArtifacts: async () => [],
+      getRepoVariable: async () => undefined,
     };
     const drift = async (): Promise<DriftReport> => ({
       drift: [],

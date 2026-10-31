@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { githubConnector } from "@opscrew/connector-github";
-import { listText, OpsCrewError, type ProjectPaths } from "@opscrew/core";
+import { listText, OpsCrewError, type ProjectPaths, upperFirst } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type DriftReport, runDrift } from "../drift";
 import { missing } from "../provision/credentials";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
+import { pinnedText, readableDeployPause } from "../shared/deploy-pause";
 import type { PromoteGitHubApi, PromoteServices } from "./types";
 
 /** What every refusal of a promotion ends with. */
@@ -74,11 +75,11 @@ function gitBlobSha(text: string): string {
 /**
  * Stops (`PHASE_PRECONDITION`, nothing deployed) unless the target environment `target` (its plan
  * and paths) has nothing `opscrew provision` would apply (read-only drift) and the deploy workflow
- * on the default branch is the one its plan generates (by git blob hash), so the approval names
- * what will run. On a server, drift compares the generated files, so the repository's copy is the
- * one the plan generates; a site's drift compares none, so its caller passes `workflow`, the
- * workflow rendered from the plan, which must be the default branch's. Returns the workflow's file
- * name, which the promotion starts.
+ * on `branch` (promote's: the default branch) is the one its plan generates (by git blob hash), so
+ * the approval names what will run. On a server, drift compares the generated files, so the
+ * repository's copy is the one the plan generates; a site's drift compares none, so its caller
+ * passes `workflow`, the workflow rendered from the plan, which must be the branch's. Returns the
+ * workflow's file name, which the caller starts.
  */
 export async function requireApplied(
   deps: PhaseDeps,
@@ -89,11 +90,13 @@ export async function requireApplied(
     github: PromoteRepository;
     services: PromoteServices;
     command: string;
+    /** The branch the workflow is started on. */
+    branch: string;
     /** A site: the workflow its plan generates (its text), as provision renders it. */
     workflow?: string;
   },
 ): Promise<string> {
-  const { target, plan, github, command } = input;
+  const { target, plan, github, command, branch } = input;
   const provisionFirst = `Run \`opscrew provision --env ${target}\` first, then \`${command}\` again.`;
   deps.reporter.step(`Checking ${target} for changes not applied yet (read-only)`);
   const report = await (input.services.drift ?? runDrift)({ ...deps, paths: input.paths });
@@ -106,31 +109,58 @@ export async function requireApplied(
     );
   }
   const { workflowPath } = plan.cicd;
-  const { defaultBranch } = github;
+  const where =
+    branch === github.defaultBranch ? `the default branch ${branch}` : `the branch ${branch}`;
   // A site's, rendered from its plan; a server's, the repository's copy, which drift found equal
   // to the rendered one. Its blob is with LF line endings, as provision writes and commits it.
   const rendered = (
     input.workflow ?? (await readFile(join(deps.paths.root, workflowPath), "utf8"))
   ).replace(/\r\n/g, "\n");
-  const onDefault = await github.api.fileSha(
-    github.owner,
-    github.repo,
-    workflowPath,
-    defaultBranch,
-  );
-  if (onDefault !== gitBlobSha(rendered)) {
+  const onBranch = await github.api.fileSha(github.owner, github.repo, workflowPath, branch);
+  if (onBranch !== gitBlobSha(rendered)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      onDefault === undefined
-        ? `The default branch ${defaultBranch} has no ${workflowPath}, the deploy workflow ${target}'s plan generates, so GitHub cannot start it. ${NOTHING}`
-        : `The deploy workflow on the default branch ${defaultBranch} (${workflowPath}) is not the one ${target}'s plan generates, so its run would not do what this promotion shows. ${NOTHING}`,
+      onBranch === undefined
+        ? `${upperFirst(where)} has no ${workflowPath}, the deploy workflow ${target}'s plan generates, so GitHub cannot start it. ${NOTHING}`
+        : `The deploy workflow on ${where} (${workflowPath}) is not the one ${target}'s plan generates, so its run would not do what this promotion shows. ${NOTHING}`,
       {
         hint:
-          input.workflow !== undefined && onDefault !== undefined
+          input.workflow !== undefined && onBranch !== undefined
             ? `Run \`opscrew provision --env ${target}\`: its pull request brings the workflow up to date with the plan. Merge it, then run \`${command}\` again.`
             : `Merge the deploy-setup pull request \`opscrew provision --env ${target}\` opened (or run it, if none is open), then run \`${command}\` again.`,
       },
     );
   }
   return posix.basename(workflowPath);
+}
+
+/**
+ * Stops (`PHASE_PRECONDITION`, nothing deployed) while the target's deploys are paused, by a
+ * rollback or a move's window: the promotion's deploy run would skip its deploy job, and the
+ * promotion would be recorded without ever running. A token that may not read the variable
+ * counts as not paused ({@link readableDeployPause}), so promote needs no new permission.
+ */
+export async function requireNotPaused(
+  github: PromoteRepository,
+  plan: DeployPlan,
+  target: string,
+  command: string,
+): Promise<void> {
+  const pause = await readableDeployPause(github, plan);
+  if (pause === undefined) return;
+  const skipped = `so a promotion's deploy run would skip its deploy job. ${NOTHING}`;
+  if (pause.reason === "rollback") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The deploys of ${target} are paused since ${pause.since}: ${pinnedText(pause)}, ${skipped}`,
+      { hint: `Run \`opscrew rollback --env ${target} --resume\`, then \`${command}\` again.` },
+    );
+  }
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The deploys of ${target} are paused since ${pause.since} while a service moves between the app's servers, ${skipped}`,
+    {
+      hint: `Run \`opscrew provision --env ${target}\`: it ends the move's maintenance window. Then run \`${command}\` again.`,
+    },
+  );
 }

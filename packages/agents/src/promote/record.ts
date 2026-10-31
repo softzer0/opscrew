@@ -110,29 +110,35 @@ const PendingPromotionSchema = z.object({
 
 export type PendingPromotion = z.infer<typeof PendingPromotionSchema>;
 
-/** `pending-promotion.json` in the environment's local state folder. */
-function pendingFile(paths: Pick<ProjectPaths, "stateDir">): string {
-  return join(paths.stateDir, "pending-promotion.json");
-}
+/** The pending promotion's file in the environment's local state folder. */
+export const PENDING_PROMOTION_FILE = "pending-promotion.json";
 
-/** The environment's pending promotion, if any. */
+/**
+ * The environment's pending run recorded in `file` of its local state folder
+ * ({@link PENDING_PROMOTION_FILE} for a promotion), if any.
+ */
 export async function readPendingPromotion(
   paths: Pick<ProjectPaths, "stateDir">,
+  file: string,
 ): Promise<PendingPromotion | undefined> {
-  return readValidJson(pendingFile(paths), PendingPromotionSchema);
+  return readValidJson(join(paths.stateDir, file), PendingPromotionSchema);
 }
 
-/** Records the environment's pending promotion, replacing the one before. */
+/** Records the environment's pending run in `file`, replacing the one before. */
 export async function writePendingPromotion(
   paths: Pick<ProjectPaths, "stateDir">,
+  file: string,
   pending: PendingPromotion,
 ): Promise<void> {
-  await writeFileAtomic(pendingFile(paths), `${JSON.stringify(pending, null, 2)}\n`);
+  await writeFileAtomic(join(paths.stateDir, file), `${JSON.stringify(pending, null, 2)}\n`);
 }
 
-/** Removes the environment's pending promotion. */
-export async function clearPendingPromotion(paths: Pick<ProjectPaths, "stateDir">): Promise<void> {
-  await rm(pendingFile(paths), { force: true });
+/** Removes the environment's pending run in `file`. */
+export async function clearPendingPromotion(
+  paths: Pick<ProjectPaths, "stateDir">,
+  file: string,
+): Promise<void> {
+  await rm(join(paths.stateDir, file), { force: true });
 }
 
 /**

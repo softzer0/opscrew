@@ -14,7 +14,7 @@ import {
 import type { IacEngine, PlanSummary, RemoteExec, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { IMAGES } from "@opscrew/iac-templates";
+import { DEPLOY_PAUSED_VARIABLE, IMAGES } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -623,6 +623,42 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
         : readyRemote(host);
     return { ...s, url };
   }
+
+  it("refuses to go on with a move while a rollback pins the app's deploys, before any change", async () => {
+    const s = await movingSetup("deployed", "app");
+    const pinned = JSON.stringify({
+      "shop/prod": {
+        reason: "rollback",
+        since: "2026-10-12T10:00:00.000Z",
+        image: `sha256:${"ab".repeat(32)}`,
+        commit: "c".repeat(40),
+      },
+    });
+    s.github.variables.set(DEPLOY_PAUSED_VARIABLE, pinned);
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "The deploys of shop/prod are paused since 2026-10-12T10:00:00.000Z: `opscrew rollback` pinned it to ccccccc (sha256:abababababab), and db's move needs the app's deploys. Nothing was changed.",
+      hint: "Run `opscrew rollback --resume` first, then `opscrew provision` again.",
+    });
+    expect(s.handler.requests).toEqual([]);
+    expect(s.engine.calls).toEqual([]);
+    expect(s.github.variables.get(DEPLOY_PAUSED_VARIABLE)).toBe(pinned);
+  });
+
+  it("stops a move, before any change, when the token may not read the deploy pause", async () => {
+    const s = await movingSetup("deployed", "app");
+    s.github.getRepoVariable = async () => {
+      throw new OpsCrewError("CREDENTIALS_INVALID", "GitHub refused to read the variable.");
+    };
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "CREDENTIALS_INVALID",
+    });
+    expect(s.handler.requests).toEqual([]);
+    expect(s.engine.calls).toEqual([]);
+  });
 
   it("hands a move over once everything else is set up", async () => {
     const s = await movingSetup("started", "app");

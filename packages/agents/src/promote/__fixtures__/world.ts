@@ -101,6 +101,12 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
     return ref === "main" ? this.onMain.get(path) : undefined;
   }
 
+  /** Repository variables, by name (`OPSCREW_DEPLOY_PAUSED`). */
+  readonly variables = new Map<string, string>();
+  async getRepoVariable(_owner: string, _repo: string, name: string) {
+    return this.variables.get(name);
+  }
+
   /** The image of every GHCR read, `<owner>/<image>`. */
   readonly images: string[] = [];
   async taggedDigest(owner: string, image: string, tag: string, credential?: RegistryCredential) {

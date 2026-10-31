@@ -18,6 +18,8 @@ export type PromoteGitHubApi = Pick<
   | "pagesRuns"
   | "rerunWorkflowRun"
   | "runArtifacts"
+  // Whether the target's deploys are paused (`OPSCREW_DEPLOY_PAUSED`).
+  | "getRepoVariable"
 >;
 
 /**

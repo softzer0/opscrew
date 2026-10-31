@@ -3,7 +3,12 @@ import type { GitClient } from "@opscrew/connector-github";
 import { applyHostPlan, otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine, ResourceChange } from "@opscrew/contracts";
 import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
-import { additionsPath, renderStorage, usesTunnel } from "@opscrew/iac-templates";
+import {
+  additionsPath,
+  checkEnvironmentKey,
+  renderStorage,
+  usesTunnel,
+} from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -24,6 +29,7 @@ import {
 import { requireCheckSettingsPlace } from "../check/settings";
 import type { PhaseDeps } from "../context";
 import { builderBranch, workflowBranch } from "../environments/branches";
+import { commandFlags } from "../environments/choice";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
 import { localPlanFile } from "../localhost/plan";
@@ -68,6 +74,7 @@ import {
   trackedFiles,
   writePlanIfChanged,
 } from "../shared";
+import { deployPauseOf, pinnedText, readableDeployPause } from "../shared/deploy-pause";
 import { hostPlanFile } from "../shared/host-plan";
 import { runPhase } from "../shared/phase-status";
 import { extraCloudProviders } from "../shared/servers";
@@ -451,6 +458,25 @@ async function provisionFlow(
   }
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
+  // A rollback pins the environment (ADR 0023): a move's deploy and window need its deploys, and
+  // what this run merges deploys only once the pin ends. Only a move needs the variable read; the
+  // note doesn't ask a token for a new permission.
+  const paused =
+    plan.move !== undefined
+      ? await deployPauseOf(github, plan)
+      : await readableDeployPause(github, plan);
+  const pinned = paused?.reason === "rollback" ? paused : undefined;
+  const resume =
+    pinned === undefined
+      ? ""
+      : `opscrew rollback${await commandFlags(deps.paths.root, plan.environment?.name ?? "prod", plan.app.key)} --resume`;
+  if (pinned !== undefined && plan.move !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The deploys of ${checkEnvironmentKey(plan)} are paused since ${pinned.since}: ${pinnedText(pinned)}, and ${plan.move.service}'s move needs the app's deploys. Nothing was changed.`,
+      { hint: `Run \`${resume}\` first, then \`${command}\` again.` },
+    );
+  }
   // The app's bucket at a provider: R2 needs the plan's Cloudflare account, and a Hetzner or
   // Spaces bucket is created with the user's key, so it is needed now (R2's comes after its bucket).
   requireR2Cloudflare(plan, cloudflare);
@@ -1262,6 +1288,11 @@ async function provisionFlow(
   plan = published.plan;
   const merge = mergeDeploysNote(plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
+  if (pinned !== undefined) {
+    deps.reporter.info(
+      `The deploys of ${checkEnvironmentKey(plan)} are paused since ${pinned.since}: ${pinnedText(pinned)}. The merged files deploy only after \`${resume} --deploy\`.`,
+    );
+  }
   // The environment is set up again: a pause of its check (a move's window, a teardown) ends.
   await resumeCheck(deps, github, plan, { command, phase });
   if (renewed && secretsStored && ctx.originTls !== undefined) {
