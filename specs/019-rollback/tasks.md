@@ -349,6 +349,8 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
       - default `pagesRuns[1]`, `--to <run id | commit>`;
       - says "rebuilds, 30 days" before the approval (US4 #4, FR-1909);
       - the pause is set before the re-run.
+    - **After `beforeChange`:** any error raised after the pause was set (for example `rollBackWorker` refusing because secrets changed) restores the pause entry it replaced.
+    - **Provision's paused note:** `provision/portainer-flow.ts` and the server-less provisions also say, through `mergeDeploysNote`, that their files deploy only after `opscrew rollback --resume --deploy` while a rollback pauses the environment, as T1904 made provision's server flow say. These files join this task's Owns for that note only.
     - **Tests:** each path, and each refusal.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
