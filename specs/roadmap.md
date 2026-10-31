@@ -28,6 +28,18 @@ The lead's sketch, to settle in the spec:
   until the user resumes them) is a spec question.
 - **Research first:** how long earlier images stay in GitHub Container Registry and on the
   servers, and what each target's own rollback offers.
+- **What exists to build on** (found while writing the failed-deploy guide page, 2026-10-31):
+  - a healthy deploy labels the image it replaced `opscrew-<env>-previous` and keeps it on the
+    server;
+  - `promote --digest` redeploys an image, but refuses an environment that deploys from a
+    branch, which is the default prod;
+  - sites on Cloudflare's hosting or GitHub Pages already have `promote --version`, branch or not.
+- **Also in scope, the rest of recovery:**
+  - keep a failed copy's last log lines: today `docker rm -f` removes the copy that failed its
+    health check together with its logs, so `opscrew logs` cannot show why;
+  - a worker's failure hint (`docker compose logs <service>`) shows the old version's lines
+    after the switch back;
+  - say what to do about a migration that was half-applied when the release command failed.
 
 ## 020 Self-hosted monitoring
 
@@ -222,6 +234,9 @@ never runs, they stay "not tested live" on the coverage page.
 
 ## Later, not yet placed
 
+- **Snapshots and restores as commands** (lead, 2026-10-31, from the failed-deploy guide page):
+  today a snapshot is taken only by `destroy`, and a restore is done by hand in the provider's
+  console or from a database dump.
 - **Azure, Google Cloud and Contabo** after AWS, as provider plugins, reusing Azure Verified
   Modules, terraform-google-modules and Infracost.
 - **Tailscale or Headscale as the private network** (lead proposal, 2026-10-18; the founder is
