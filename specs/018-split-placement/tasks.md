@@ -703,7 +703,7 @@ Effort`.
       `ufw` step doesn't re-add the public SSH rule (the interface rule counts as SSH being open).
     - **The check:** entries on private addresses use sshd's own port (`networkSshPort`).
     - **Private connections (FR-1816):** `provision/origin-tls.ts` `readServerEdge` and `secure/run.ts`
-      `checkServer` connect through `serverRemote` (private address and sshd's port when closed), and
+      `checkServer` (the deploy-key connections moved to T1815) connect through `serverRemote` (private address and sshd's port when closed), and
       a failure is shown, not hidden.
     - **Removing an extra own server** while public SSH is closed reopens it there first (the
       `public-ssh` step), as destroy does.
