@@ -4,6 +4,7 @@ exports[`the retention job > runs after a healthy deploy, with only packages: wr
 "  prune:
     name: Delete old images
     needs: [build, deploy]
+    if: \${{ !cancelled() && needs.build.result == 'success' && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -231,6 +232,7 @@ exports[`the retention job > when off, runs only to delete Buildpacks' and Railp
 "  prune:
     name: Delete old images
     needs: [build, deploy]
+    if: \${{ !cancelled() && needs.build.result == 'success' && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read

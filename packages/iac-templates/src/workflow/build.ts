@@ -17,6 +17,7 @@ import {
   hasCronJobs,
   imageSubpath,
   job,
+  ROLLING_BACK,
   run,
   secret,
   sqliteFolder,
@@ -630,7 +631,8 @@ export function buildReads(plan: DeployPlan): string[] {
  * cron jobs and makes the SQLite folder the app's user's ({@link sqliteSeal}). Every builder ends
  * in one `build-push-action` build with a mode=max provenance and an SBOM. Outputs: `image`, the final
  * index digest reference, and `tag`, `<name>:<commit tag>` (the commit for prod, `<commit>-<env>`
- * for another environment: {@link environmentTag}). Then the optional report-only scan.
+ * for another environment: {@link environmentTag}). Then the optional report-only scan. A rollback
+ * dispatch skips it: its image exists already.
  *
  * With `environment.build` `runner` it runs on the environment's own runner ({@link buildRunner}),
  * every step with bash, and with the same steps in forms macOS's bash 3.2 and Git Bash run; pack
@@ -650,6 +652,7 @@ export function buildJob(plan: DeployPlan): string[] {
   return job({
     id: "build",
     name: "Build the image",
+    if: `\${{ !${ROLLING_BACK} }}`,
     runsOn: buildRunner(plan),
     shell: own ? "bash" : undefined,
     permissions: ["contents: read", "packages: write"],

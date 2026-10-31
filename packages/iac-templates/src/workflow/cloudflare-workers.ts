@@ -20,10 +20,12 @@ import {
 import { wranglerConfigPath } from "../serverless/wrangler";
 import type { RenderContext, RenderedFile } from "../types";
 import { pushPaths, siteReads } from "./paths";
+import { pausedJob, pausedTest } from "./pause";
 import {
   appFlag,
   block,
   builderBranchOf,
+  DISPATCH_BY_HAND,
   deploySecretName,
   environmentName,
   githubEnvironment,
@@ -285,16 +287,18 @@ function builderWorkflowPathOf(
  * be a run id and a SHA-256, and GitHub's record of that run (read with the job's token,
  * `actions: read`) must show a successful run of the workflow that builds the sites this
  * environment is promoted with (`ctx.builderWorkflowPath`, the first of its sources that follows a
- * branch), started by a push of this repository's own commits to that environment's branch
- * (`ctx.builderBranch`). A fork's pull request runs in this repository too, and its artifact must
- * never reach this environment's secrets.
+ * branch), started by a push, or by hand (`workflow_dispatch`, which takes write access: ADR 0023
+ * D1), on this repository's own commits of that environment's branch (`ctx.builderBranch`). A
+ * fork's pull request runs in this repository too, and its artifact must never reach this
+ * environment's secrets.
  */
 function buildRunCheck(
   plan: DeployPlan,
   ctx: Pick<RenderContext, "builderBranch" | "builderWorkflowPath">,
 ): string[] {
   const promote = `\\\`${promoteCommand(plan)}\\\``;
-  const only = "OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW.";
+  const only =
+    "OpsCrew promotes only a site that a push to $BUILD_BRANCH, or a run started by hand there, built with $BUILD_WORKFLOW.";
   const refuse = (condition: string, message: string) => [
     `if [[ ${condition} ]]; then`,
     `  echo "::error::${message}"`,
@@ -322,7 +326,10 @@ function buildRunCheck(
       'read -r event conclusion head_repo branch workflow <<< "$record"',
       "# The run's path can end with @<ref>.",
       'workflow="${workflow%%@*}"',
-      ...refuse('"$event" != "push"', `Run $RUN was started by a $event, not by a push. ${only}`),
+      ...refuse(
+        '"$event" != "push" && "$event" != "workflow_dispatch"',
+        `Run $RUN was started by a $event, not by a push or by hand. ${only}`,
+      ),
       ...refuse(
         '"${head_repo,,}" != "${GITHUB_REPOSITORY,,}"',
         `Run $RUN built the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). ${only}`,
@@ -357,6 +364,9 @@ function buildRunCheck(
  *    find the version it just created ({@link activateStep}), then a check of the answer on the domain
  *    ({@link answerCheck}). When the activation or the check fails, the version that ran before
  *    (the latest deployment's, read before the upload) is activated again and the job fails.
+ *
+ * It is skipped while the environment's deploys are paused ({@link pausedTest}): `opscrew
+ * rollback` activates an earlier version itself, with no run.
  */
 function deployJob(
   plan: DeployPlan,
@@ -510,6 +520,7 @@ function deployJob(
     id: "deploy",
     name: "Deploy to Cloudflare",
     needs: fromRun ? undefined : "build",
+    if: `\${{ !${pausedTest(plan)} }}`,
     environment: githubEnvironment(plan),
     permissions: fromRun ? ["actions: read", "contents: read"] : ["contents: read"],
     steps,
@@ -522,8 +533,10 @@ function deployJob(
  * each push; a promoted environment builds nothing, and its dispatch (`run`, `sha256`, from
  * `opscrew promote`) names the build the source environment runs, which it deploys after checking
  * where it was built ({@link buildRunCheck}, from `ctx.builderBranch` and
- * `ctx.builderWorkflowPath`) and its SHA-256. The triggers, permissions and concurrency are as for
- * servers; the push filter ({@link pushPaths}) adds the repository root's files the build reads
+ * `ctx.builderWorkflowPath`) and its SHA-256. While the environment's deploys are paused, the
+ * `paused` job ({@link pausedJob}) says why the deploy is skipped. The triggers, permissions and
+ * concurrency are as for servers, but a run by hand of an environment that follows its branch takes
+ * no inputs; the push filter ({@link pushPaths}) adds the repository root's files the build reads
  * ({@link siteReads}) and the committed Wrangler config with, for server rendering, the headers
  * wrapper it names as `main`, with `ctx.otherAppDirs` for a site at the root.
  * @throws OpsCrewError `INTERNAL` for a promoted environment rendered without either.
@@ -551,8 +564,11 @@ export function renderCloudflareWorkersWorkflow(
     wranglerConfigPath(plan),
     ...(files.entry === undefined ? [] : [`${cloudflareDir(plan)}/${HEADERS_ENTRY}`]),
   ];
+  const dispatch = promoted(plan) ? DISPATCH_WITH_BUILD : DISPATCH_BY_HAND;
   const lines = [
-    ...workflowStart(plan, about, pushPaths(plan, reads, ctx), DISPATCH_WITH_BUILD),
+    ...workflowStart(plan, about, pushPaths(plan, reads, ctx), dispatch),
+    ...pausedJob(plan, `\${{ ${pausedTest(plan)} }}`),
+    "",
     ...(promoted(plan) ? [] : [...buildJob(plan, files), ""]),
     ...deployJob(plan, ctx, files),
     "",

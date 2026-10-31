@@ -90,6 +90,8 @@ function sh(script: string, env: Record<string, string> = {}, cwd = join(work, "
       GITHUB_OUTPUT: join(work, "output").replaceAll("\\", "/"),
       GITHUB_STEP_SUMMARY: join(work, "summary").replaceAll("\\", "/"),
       GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
+      // A push's, which the workflow gives the write step.
+      MODE: "deploy",
       ...env,
     },
     encoding: "utf8",
@@ -199,6 +201,45 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
       expect(outputs()).toEqual({ previous_image: NEW, changed: "false" });
       fetchBranch();
       expect(git("rev-list", "--count", "origin-deploy")).toBe("1");
+    },
+    timeout,
+  );
+
+  it(
+    "turns the release command on for a push, and off for a rollback, whose commit says so",
+    () => {
+      const withRelease = portainerTestPlan({
+        redeploy: "cloudflare",
+        postgres: true,
+        releaseCommand: "npm run migrate",
+      });
+      const releaseTemplate = renderPortainerStack(withRelease, ctx).content;
+      writeFileSync(join(work, "repo", "opscrew", "runtime", "compose.yaml"), releaseTemplate);
+      const deploy = sh(steps.write ?? "", { IMAGE: OLD });
+      expect(deploy.status, deploy.output).toBe(0);
+      fetchBranch();
+      expect(branchFile()).toBe(fillPortainerStack(releaseTemplate, OLD).trimEnd());
+      expect(branchFile()).toContain("OPSCREW_RELEASE: run\n");
+      expect(git("log", "-1", "--format=%s", "origin-deploy")).toBe(`Deploy ${OLD}`);
+
+      const rollback = sh(steps.write ?? "", { IMAGE: NEW, MODE: "rollback" });
+      expect(rollback.status, rollback.output).toBe(0);
+      fetchBranch();
+      expect(branchFile()).toBe(
+        fillPortainerStack(releaseTemplate, NEW)
+          .replace("OPSCREW_RELEASE: run\n", "OPSCREW_RELEASE: skip\n")
+          .trimEnd(),
+      );
+      expect(branchFile()).not.toContain("__OPSCREW_RELEASE__");
+      expect(git("log", "-1", "--format=%s%n%b", "origin-deploy").trim()).toBe(
+        `Roll back to ${NEW}\nWritten by opscrew rollback through the OpsCrew deploy workflow: no build, and no release command.`,
+      );
+      expect(outputs().previous_image).toBe(OLD);
+      // A deploy after it runs the release command again.
+      const forward = sh(steps.write ?? "", { IMAGE: OLD });
+      expect(forward.status, forward.output).toBe(0);
+      fetchBranch();
+      expect(branchFile()).toContain("OPSCREW_RELEASE: run\n");
     },
     timeout,
   );

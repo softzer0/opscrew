@@ -106,6 +106,13 @@ describe.skipIf(reason !== undefined)("docker compose config (OPSCREW_DOCKER_TES
           "value-of-opscrew_tunnel_token",
         );
       }
+      // The release's switch is a value of the file, which a deploy fills in with run.
+      expect(config.services.release.environment.OPSCREW_RELEASE).toBe("run");
+      expect(config.services.release.command).toEqual([
+        "sh",
+        "-c",
+        'if [ "$$OPSCREW_RELEASE" = skip ]; then exit 0; fi; npx prisma migrate deploy',
+      ]);
       // Compose prints `$$` as it read it: the stamp's shell gets the variable, never Compose.
       expect(config.services.stamp.environment.OPSCREW_APP_VERSION).toBe("abababababab");
       expect(config.services.stamp.entrypoint[2]).toBe(

@@ -19,6 +19,7 @@ import { portainerTestPlan, TEST_ENV } from "./__fixtures__/plans";
 import {
   fillPortainerStack,
   PORTAINER_IMAGE_PLACEHOLDER,
+  PORTAINER_RELEASE_PLACEHOLDER,
   PORTAINER_STACK_VARIABLES,
   PORTAINER_VERSION_PLACEHOLDER,
   portainerConnectorStackName,
@@ -138,7 +139,11 @@ describe("renderPortainerStack", () => {
     });
     // Build-time variables go to the image build, not the running stack (as on other targets).
     expect(fullFile.content).not.toContain("NEXT_PUBLIC_SITE_NAME");
-    expect(fullStack.services.release?.environment).toEqual(app?.environment);
+    // The release also reads its switch, which the deploy workflow fills in.
+    expect(fullStack.services.release?.environment).toEqual({
+      ...app?.environment,
+      OPSCREW_RELEASE: PORTAINER_RELEASE_PLACEHOLDER,
+    });
     // OpsCrew's own values carry the OPSCREW_ prefix in the stack's one environment.
     expect(fullStack.services.db?.environment).toEqual({
       POSTGRES_USER: "${OPSCREW_DB_USER}",
@@ -231,8 +236,18 @@ describe("renderPortainerStack", () => {
   it("runs the release command as a one-off service the app waits for", () => {
     const release = fullStack.services.release;
     expect(release?.image).toBe(PORTAINER_IMAGE_PLACEHOLDER);
-    // `$$` keeps Compose from substituting: the shell in the container sees `$HOME`.
-    expect(release?.command).toEqual(["sh", "-c", "npx prisma migrate deploy && echo $$HOME"]);
+    // `$$` keeps Compose from substituting: the shell in the container sees `$HOME`. A rollback's
+    // stack says skip, and it exits at once (research R6, S5).
+    expect(release?.command).toEqual([
+      "sh",
+      "-c",
+      'if [ "$$OPSCREW_RELEASE" = skip ]; then exit 0; fi; npx prisma migrate deploy && echo $$HOME',
+    ]);
+    expect(release?.environment?.OPSCREW_RELEASE).toBe("__OPSCREW_RELEASE__");
+    expect(fillPortainerStack(fullFile.content, IMAGE)).toContain("OPSCREW_RELEASE: run\n");
+    expect(fillPortainerStack(fullFile.content, IMAGE)).not.toContain(
+      PORTAINER_RELEASE_PLACEHOLDER,
+    );
     expect(release?.restart).toBeUndefined();
     expect(release?.depends_on).toEqual({
       db: { condition: "service_healthy" },

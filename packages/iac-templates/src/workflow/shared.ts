@@ -230,17 +230,33 @@ export function builderBranchOf(
 }
 
 /**
- * The job whose outputs `image` (`<name>@<digest>`) and `tag` (`<name>:<commit tag>`, see
- * {@link environmentTag}) the deploy takes: `verify` for a promoted environment, else `build`.
+ * The jobs whose outputs `image` (`<name>@<digest>`) and `tag` (`<name>:<commit tag>`, see
+ * {@link environmentTag}) the deploy takes, one of which runs: for an environment that follows a
+ * branch, `build` (a push, or a run started by hand) or `verify` (a rollback dispatch); for a
+ * promoted environment, `verify`.
  */
-export function imageJob(plan: DeployPlan): "build" | "verify" {
-  return promoted(plan) ? "verify" : "build";
+export function imageJobs(plan: DeployPlan): readonly ("build" | "verify")[] {
+  return promoted(plan) ? ["verify"] : ["build", "verify"];
 }
 
-/** `${{ needs.<imageJob>.outputs.<output> }}`. */
+/** `${{ needs.<job>.outputs.<output> || … }}` over {@link imageJobs}: a skipped job's is empty. */
 export function imageOutput(plan: DeployPlan, output: "image" | "tag"): string {
-  return `\${{ needs.${imageJob(plan)}.outputs.${output} }}`;
+  return `\${{ ${imageJobs(plan)
+    .map((id) => `needs.${id}.outputs.${output}`)
+    .join(" || ")} }}`;
 }
+
+/** The deploy workflow's `workflow_dispatch` inputs of a rollback, which `opscrew rollback` gives. */
+export const ROLLBACK_INPUTS = { digest: "digest", tag: "tag", rollback: "rollback" } as const;
+
+/**
+ * True in a rollback dispatch (an expression). A dispatch makes the input a boolean, and a push
+ * has `inputs` `{}` (research R6, S3), so it is never compared with `'true'`.
+ */
+export const ROLLING_BACK = `inputs.${ROLLBACK_INPUTS.rollback}`;
+
+/** A step's `MODE`: `rollback` in a rollback dispatch, otherwise `deploy`. */
+export const MODE_ENV = `    MODE: \${{ ${ROLLING_BACK} && 'rollback' || 'deploy' }}`;
 
 /**
  * The GitHub environment the deploy job runs in, the app's environment's own
@@ -344,23 +360,57 @@ export function promotedAbout(
   ];
 }
 
+/** The `rollback` input of a dispatch with a digest ({@link ROLLBACK_INPUTS}). */
+const ROLLBACK_INPUT = [
+  `      ${ROLLBACK_INPUTS.rollback}:`,
+  "        description: Deploy the image without running the release command, for a rollback; `opscrew rollback` sets it.",
+  "        required: false",
+  "        type: boolean",
+  "        default: false",
+];
+
 /**
- * A promoted environment's trigger: `opscrew promote` dispatches the workflow with the digest and
- * the image's commit tag ({@link environmentTag} of the environment that built it, which may be the
- * source's own source).
+ * A promoted environment's trigger: `opscrew promote` and `opscrew rollback` dispatch the workflow
+ * with the digest and the image's commit tag ({@link environmentTag} of the environment that built
+ * it, which may be the source's own source), and a rollback with `rollback` set.
  */
 const DISPATCH_WITH_DIGEST = [
   "  workflow_dispatch:",
   "    inputs:",
-  "      digest:",
-  "        description: The image to deploy, by its digest (sha256:…); `opscrew promote` fills it in.",
+  `      ${ROLLBACK_INPUTS.digest}:`,
+  "        description: The image to deploy, by its digest (sha256:…); `opscrew promote` or `opscrew rollback` fills it in.",
   "        required: true",
   "        type: string",
-  "      tag:",
-  "        description: The image's commit tag (<commit>, or <commit>-<env> when another environment than prod built it); `opscrew promote` fills it in.",
+  `      ${ROLLBACK_INPUTS.tag}:`,
+  "        description: The image's commit tag (<commit>, or <commit>-<env> when another environment than prod built it); `opscrew promote` or `opscrew rollback` fills it in.",
   "        required: true",
   "        type: string",
+  ...ROLLBACK_INPUT,
 ];
+
+/**
+ * The trigger by hand of a server or Portainer environment that follows a branch: without inputs
+ * it builds and deploys the branch, and `opscrew rollback` gives it an earlier image's digest and
+ * commit tag with `rollback` set, which deploys that image without a build.
+ */
+const DISPATCH_FOR_ROLLBACK = [
+  "  workflow_dispatch:",
+  "    inputs:",
+  `      ${ROLLBACK_INPUTS.digest}:`,
+  "        description: For a rollback, the image to deploy, by its digest (sha256:…); `opscrew rollback` fills it in.",
+  "        required: false",
+  "        type: string",
+  '        default: ""',
+  `      ${ROLLBACK_INPUTS.tag}:`,
+  "        description: For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod); `opscrew rollback` fills it in.",
+  "        required: false",
+  "        type: string",
+  '        default: ""',
+  ...ROLLBACK_INPUT,
+];
+
+/** The trigger by hand with no inputs, of a site that follows its branch. */
+export const DISPATCH_BY_HAND = ["  workflow_dispatch: {}"];
 
 /**
  * The deploy workflow's name in GitHub → Actions: `OpsCrew deploy`, then a further app's key, then
@@ -394,7 +444,9 @@ export function runbookFilePath(plan: AppEnvironment): string {
  * The workflow's header comment (`about`), triggers, default permissions and concurrency. An
  * environment that follows the branch deploys on each push to it that changes one of `paths`
  * (the filter `pushPaths` makes from what the run reads), and by hand; a promoted one only
- * through a dispatch with `dispatch`'s inputs (by default the image's digest and commit tag). Each
+ * through a dispatch. `dispatch` is the `workflow_dispatch` trigger: by default a server's or
+ * Portainer's, which takes an image's digest and commit tag, for a promotion or a rollback
+ * ({@link DISPATCH_WITH_DIGEST}, {@link DISPATCH_FOR_ROLLBACK}). Each
  * environment's runs queue in a group of their own (the first app's prod's `opscrew-deploy`, any
  * other's `opscrew-deploy-<app name>`, which is unique in the repository), so one environment never
  * deploys twice at once. A running deploy is never cancelled; of the runs waiting behind it, GitHub
@@ -404,7 +456,7 @@ export function workflowStart(
   plan: DeployPlan,
   about: readonly string[],
   paths: readonly string[],
-  dispatch: readonly string[] = DISPATCH_WITH_DIGEST,
+  dispatch: readonly string[] = promoted(plan) ? DISPATCH_WITH_DIGEST : DISPATCH_FOR_ROLLBACK,
 ): string[] {
   const first = plan.app.key === undefined && plan.environment?.name === undefined;
   return [
@@ -414,15 +466,15 @@ export function workflowStart(
     "",
     "on:",
     ...(promoted(plan)
-      ? dispatch
+      ? []
       : [
           "  push:",
           `    branches: [${JSON.stringify(plan.cicd.branch)}]`,
           "    # A push starts it only when it changes one of these paths, which the run reads.",
           "    paths:",
           ...paths.map((path) => `      - ${JSON.stringify(path)}`),
-          "  workflow_dispatch: {}",
         ]),
+    ...dispatch,
     "",
     "permissions:",
     "  contents: read",
@@ -439,10 +491,11 @@ export function workflowStart(
 export interface Job {
   id: string;
   name: string;
+  /** One job's id, or a list (a list of one is rendered as its id). */
   needs?: string | readonly string[];
   /** The job's condition (`if:`); it always runs when absent. */
   if?: string;
-  /** `contents: read`, …; nothing else is granted. */
+  /** `contents: read`, …; nothing else is granted, and none is `permissions: {}`. */
   permissions: readonly string[];
   /** `name: ${{ … }}` lines. */
   outputs?: readonly string[];
@@ -456,7 +509,11 @@ export interface Job {
 /** Renders `job` as YAML lines under `jobs:`. */
 export function job(j: Job): string[] {
   const needs =
-    typeof j.needs === "string" || j.needs === undefined ? j.needs : `[${j.needs.join(", ")}]`;
+    typeof j.needs === "string" || j.needs === undefined
+      ? j.needs
+      : j.needs.length === 1
+        ? j.needs[0]
+        : `[${j.needs.join(", ")}]`;
   return [
     `  ${j.id}:`,
     `    name: ${j.name}`,
@@ -465,42 +522,11 @@ export function job(j: Job): string[] {
     `    runs-on: ${j.runsOn ?? "ubuntu-latest"}`,
     ...(j.environment === undefined ? [] : [`    environment: ${j.environment}`]),
     ...(j.shell === undefined ? [] : ["    defaults:", "      run:", `        shell: ${j.shell}`]),
-    "    permissions:",
-    ...block(j.permissions, 6),
+    ...(j.permissions.length === 0
+      ? ["    permissions: {}"]
+      : ["    permissions:", ...block(j.permissions, 6)]),
     ...(j.outputs === undefined ? [] : ["    outputs:", ...block(j.outputs, 6)]),
     "    steps:",
     ...block(j.steps, 6),
   ];
-}
-
-/**
- * The `deploy` job (`name` shown in GitHub): after the job that gives it the image
- * ({@link imageJob}), in the {@link githubEnvironment}, with the token's `permissions`
- * (`contents: read`, …) and the `steps`. It runs on `ubuntu-latest`, or with `environment.runner`
- * `server`, `local` or `host` on the environment's self-hosted runner ({@link runnerLabel}), every
- * step with bash (Git for Windows' on a Windows computer). Its output `previous` is the image that
- * ran before this deploy (empty on the first one), which the image retention job never deletes and
- * the label job labels `opscrew-<env>-previous`. With `condition` it runs only when that holds.
- */
-export function deployJob(
-  plan: DeployPlan,
-  name: string,
-  permissions: readonly string[],
-  previous: string,
-  steps: readonly string[],
-  condition?: string,
-): string[] {
-  const own = selfHosted(plan);
-  return job({
-    id: "deploy",
-    name,
-    needs: imageJob(plan),
-    ...(condition !== undefined ? { if: condition } : {}),
-    environment: githubEnvironment(plan),
-    runsOn: own ? `[self-hosted, ${runnerLabel(plan)}]` : undefined,
-    shell: own ? "bash" : undefined,
-    permissions,
-    outputs: [`previous: ${previous}`],
-    steps,
-  });
 }

@@ -3,6 +3,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { ACTIONS } from "../pins";
 import {
   PORTAINER_IMAGE_PLACEHOLDER,
+  PORTAINER_RELEASE_PLACEHOLDER,
   PORTAINER_VERSION_PLACEHOLDER,
   portainerDeployBranch,
   portainerStackName,
@@ -12,13 +13,13 @@ import { portainerTarget } from "../providers";
 import { PORTAINER_VERSION_PATH } from "../runtime/services";
 import type { RenderContext, RenderedFile } from "../types";
 import { buildReads } from "./build";
-import { afterDeployJobs, imageSourceJob } from "./jobs";
+import { afterDeployJobs, deployJob, jobsBeforeDeploy } from "./jobs";
 import { pushPaths } from "./paths";
 import {
   DIGEST_REF_PATTERN,
-  deployJob,
   healthPath,
   imageOutput,
+  MODE_ENV,
   planFilePath,
   promoted,
   promotedAbout,
@@ -70,7 +71,9 @@ const GIT_IDENTITY = [
  * `branch` (an orphan history: each commit holds only `compose.yaml`, its parent the previous
  * version), and reports `previous`, `deployed` and `changed`, plus `previous_image`, the app image
  * the branch held before (empty for the placeholder), which image retention never deletes.
- * Nothing is written when the branch already holds this version.
+ * Nothing is written when the branch already holds this version. The `release` service's switch
+ * ({@link PORTAINER_RELEASE_PLACEHOLDER}) becomes `skip` in a rollback dispatch (`$MODE`
+ * `rollback`), whose commit says "Roll back to <image>", and `run` otherwise.
  */
 function writeScript(branch: string, template: string, provision: string): string[] {
   return [
@@ -87,6 +90,16 @@ function writeScript(branch: string, template: string, provision: string): strin
     'digest="${IMAGE##*@sha256:}"',
     `compose="\${template//${PORTAINER_IMAGE_PLACEHOLDER}/"$IMAGE"}"`,
     `compose="\${compose//${PORTAINER_VERSION_PLACEHOLDER}/"\${digest:0:12}"}"`,
+    'if [[ "$MODE" == rollback ]]; then',
+    "  release=skip",
+    '  subject="Roll back to $IMAGE"',
+    '  body="Written by opscrew rollback through the OpsCrew deploy workflow: no build, and no release command."',
+    "else",
+    "  release=run",
+    '  subject="Deploy $IMAGE"',
+    '  body="Built from $GITHUB_SHA by the OpsCrew deploy workflow."',
+    "fi",
+    `compose="\${compose//${PORTAINER_RELEASE_PLACEHOLDER}/"$release"}"`,
     'printf \'%s\\n\' "$compose" > "$RUNNER_TEMP/compose.yaml"',
     ...GIT_IDENTITY,
     'tree="$(printf \'100644 blob %s\\tcompose.yaml\\n\' "$(git hash-object -w "$RUNNER_TEMP/compose.yaml")" | git mktree)"',
@@ -106,7 +119,7 @@ function writeScript(branch: string, template: string, provision: string): strin
     '  echo "changed=false" >> "$GITHUB_OUTPUT"',
     "  exit 0",
     "fi",
-    'deployed="$(git commit-tree "$tree" "${parent[@]}" -m "Deploy $IMAGE" -m "Built from $GITHUB_SHA by the OpsCrew deploy workflow.")"',
+    'deployed="$(git commit-tree "$tree" "${parent[@]}" -m "$subject" -m "$body")"',
     `git push origin "$deployed:refs/heads/${branch}"`,
     "{",
     '  echo "previous=$previous"',
@@ -224,9 +237,9 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
 }
 
 /**
- * The deploy workflow of a Portainer target (`renderWorkflow` delegates here): the same build job
- * (or verify job, for a promoted environment), triggers and jobs after the deploy as other
- * targets, with a deploy job holding `contents: write` (only
+ * The deploy workflow of a Portainer target (`renderWorkflow` delegates here): the same triggers,
+ * jobs before the deploy ({@link jobsBeforeDeploy}: the pause, the build and the verify job) and
+ * jobs after it as a server's, with a deploy job holding `contents: write` (only
  * for the deploy branch) that writes the stack file with the new image to the environment's deploy
  * branch (`opscrew-deploy` for prod, `opscrew-deploy-<env>` for another), calls
  * Portainer's webhook through
@@ -267,6 +280,7 @@ export function renderPortainerWorkflow(
     `  name: Write the new version to the ${branch} branch`,
     "  env:",
     image,
+    MODE_ENV,
     ...run(writeScript(branch, portainerStackTemplatePath(plan), provisionCommand(plan))),
   ];
   if (cloudflare) {
@@ -341,7 +355,7 @@ export function renderPortainerWorkflow(
           ],
       pushPaths(plan, [...buildReads(plan), portainerStackTemplatePath(plan)], ctx),
     ),
-    ...imageSourceJob(plan, ctx),
+    ...jobsBeforeDeploy(plan, ctx),
     "",
     ...deployJob(
       plan,

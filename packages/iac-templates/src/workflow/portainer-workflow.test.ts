@@ -17,7 +17,7 @@ type Job = {
   name: string;
   "runs-on": string;
   permissions: Record<string, string>;
-  needs?: string;
+  needs?: string | string[];
   environment?: string;
   outputs?: Record<string, string>;
   steps: Step[];
@@ -58,7 +58,7 @@ describe("renderWorkflow for a Portainer target", () => {
   it("gives only the deploy job contents: write, for the deploy branch", () => {
     for (const doc of [updaterDoc, cloudflareDoc]) {
       expect(doc.jobs.deploy.name).toBe("Deploy to Portainer");
-      expect(doc.jobs.deploy.needs).toBe("build");
+      expect(doc.jobs.deploy.needs).toEqual(["build", "verify"]);
       expect(doc.jobs.deploy.environment).toBe("production");
       expect(doc.jobs.deploy.permissions).toEqual({ contents: "write" });
       expect(doc.jobs.build.permissions).toEqual({ contents: "read", packages: "write" });
@@ -68,12 +68,19 @@ describe("renderWorkflow for a Portainer target", () => {
   it("writes compose.yaml with the new digest to the orphan branch opscrew-deploy", () => {
     const write = step(updaterDoc, "write");
     expect(write.name).toBe("Write the new version to the opscrew-deploy branch");
-    expect(write.env).toEqual({ IMAGE: "${{ needs.build.outputs.image }}" });
+    expect(write.env).toEqual({
+      IMAGE: "${{ needs.build.outputs.image || needs.verify.outputs.image }}",
+      MODE: "${{ inputs.rollback && 'rollback' || 'deploy' }}",
+    });
     const script = write.run ?? "";
     expect(script).toContain("grep -qF __OPSCREW_APP_IMAGE__ opscrew/runtime/compose.yaml");
     expect(script).toContain('compose="${template//__OPSCREW_APP_IMAGE__/"$IMAGE"}"');
     expect(script).toContain("printf '100644 blob %s\\tcompose.yaml\\n'");
-    expect(script).toContain('git commit-tree "$tree" "${parent[@]}" -m "Deploy $IMAGE"');
+    // The release service's switch: skip in a rollback dispatch, run otherwise.
+    expect(script).toContain('compose="${compose//__OPSCREW_RELEASE__/"$release"}"');
+    expect(script).toContain('  subject="Deploy $IMAGE"');
+    expect(script).toContain('  subject="Roll back to $IMAGE"');
+    expect(script).toContain('git commit-tree "$tree" "${parent[@]}" -m "$subject" -m "$body"');
     expect(script).toContain('git push origin "$deployed:refs/heads/opscrew-deploy"');
     // A fast-forward on top of the branch's head: never a forced push.
     expect(script).not.toMatch(/git push[^\n]*(--force|\s-f\b|\s\+)/);
@@ -140,7 +147,7 @@ describe("renderWorkflow for a Portainer target", () => {
       expect(health.env).toEqual({
         URL: "https://shop.example.com/api/health",
         VERSION_URL: "https://shop.example.com/.well-known/opscrew-version",
-        IMAGE: "${{ needs.build.outputs.image }}",
+        IMAGE: "${{ needs.build.outputs.image || needs.verify.outputs.image }}",
       });
       expect(health.run).toContain(`for attempt in $(seq 1 ${attempts}); do`);
       expect(health.run).not.toContain("x-opscrew-image");

@@ -111,8 +111,9 @@ describe("the build job", () => {
     expect(final?.run).toContain("@sha256:[0-9a-f]{64}$");
     expect(final?.run).toContain('echo "ref=$ref" >> "$GITHUB_OUTPUT"');
     const deploy = parse(rendered(planFor(builder))).jobs.deploy.steps as Step[];
+    // The build's, or in a rollback dispatch, which skips the build, the verify job's.
     expect(deploy.find((s) => s.id === "start")?.env?.IMAGE).toBe(
-      "${{ needs.build.outputs.image }}",
+      "${{ needs.build.outputs.image || needs.verify.outputs.image }}",
     );
   });
 

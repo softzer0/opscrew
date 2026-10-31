@@ -3,6 +3,7 @@
 exports[`an own Dockerfile with cron jobs > matches the snapshot 1`] = `
 "  build:
     name: Build the image
+    if: \${{ !inputs.rollback }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -95,6 +96,7 @@ exports[`an own Dockerfile with cron jobs > matches the snapshot 1`] = `
 exports[`the build job > matches the snapshot for buildpacks 1`] = `
 "  build:
     name: Build the image
+    if: \${{ !inputs.rollback }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -220,6 +222,7 @@ exports[`the build job > matches the snapshot for buildpacks 1`] = `
 exports[`the build job > matches the snapshot for generated-dockerfile 1`] = `
 "  build:
     name: Build the image
+    if: \${{ !inputs.rollback }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -293,6 +296,7 @@ exports[`the build job > matches the snapshot for generated-dockerfile 1`] = `
 exports[`the build job > matches the snapshot for own-dockerfile 1`] = `
 "  build:
     name: Build the image
+    if: \${{ !inputs.rollback }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -366,6 +370,7 @@ exports[`the build job > matches the snapshot for own-dockerfile 1`] = `
 exports[`the build job > matches the snapshot for railpack 1`] = `
 "  build:
     name: Build the image
+    if: \${{ !inputs.rollback }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -71,6 +71,12 @@ export const PORTAINER_IMAGE_PLACEHOLDER = "__OPSCREW_APP_IMAGE__";
 /** Stands for {@link portainerImageVersion} of that image in the template. */
 export const PORTAINER_VERSION_PLACEHOLDER = "__OPSCREW_APP_VERSION__";
 
+/**
+ * Stands for the `release` service's switch (`OPSCREW_RELEASE`) in the template: the deploy
+ * workflow writes `run`, and `skip` for a rollback, whose release command never runs.
+ */
+export const PORTAINER_RELEASE_PLACEHOLDER = "__OPSCREW_RELEASE__";
+
 /** A GHCR image pinned by digest, `ghcr.io/<owner>/<repo>@sha256:<hex>`. */
 const GHCR_DIGEST_REF = new RegExp(DIGEST_REF_PATTERN);
 
@@ -344,15 +350,17 @@ function checkImage(image: string): string {
 }
 
 /**
- * The template with the image filled in, exactly as the deploy workflow writes it to the deploy
- * branch: every {@link PORTAINER_IMAGE_PLACEHOLDER} becomes `image`, every
- * {@link PORTAINER_VERSION_PLACEHOLDER} its {@link portainerImageVersion}.
+ * The template with the image filled in, exactly as the deploy workflow's deploy writes it to the
+ * deploy branch: every {@link PORTAINER_IMAGE_PLACEHOLDER} becomes `image`, every
+ * {@link PORTAINER_VERSION_PLACEHOLDER} its {@link portainerImageVersion}, and
+ * {@link PORTAINER_RELEASE_PLACEHOLDER} `run` (a rollback writes `skip`).
  */
 export function fillPortainerStack(template: string, image: string): string {
   const version = portainerImageVersion(image);
   return template
     .replaceAll(PORTAINER_IMAGE_PLACEHOLDER, image)
-    .replaceAll(PORTAINER_VERSION_PLACEHOLDER, version);
+    .replaceAll(PORTAINER_VERSION_PLACEHOLDER, version)
+    .replaceAll(PORTAINER_RELEASE_PLACEHOLDER, "run");
 }
 
 /**
@@ -563,13 +571,19 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
   const release = plan.app.releaseCommand;
   const appDependsOn: Record<string, { condition: string }> = { ...ready };
   if (release !== undefined) {
-    // A one-off container of the new image: Compose starts the app only after it succeeded.
+    // A one-off container of the new image: Compose starts the app only after it succeeded. A
+    // rollback's stack says `skip`, and it exits at once: Compose recreates it when only that
+    // value changes (research R6, S5).
     services.release = {
       image: PORTAINER_IMAGE_PLACEHOLDER,
-      environment: environment(),
+      environment: { ...environment(), OPSCREW_RELEASE: PORTAINER_RELEASE_PLACEHOLDER },
       ...appVolumes(plan),
       // `$$` keeps Compose from substituting variables: the shell in the container sees `$`.
-      command: ["sh", "-c", composeLiteral(release)],
+      command: [
+        "sh",
+        "-c",
+        composeLiteral(`if [ "$OPSCREW_RELEASE" = skip ]; then exit 0; fi; ${release}`),
+      ],
       ...memoryLimit(plan.app.memoryMb),
       ...(Object.keys(ready).length > 0 ? { depends_on: ready } : {}),
       ...hardened({ noCapabilities: true, internal: true }),

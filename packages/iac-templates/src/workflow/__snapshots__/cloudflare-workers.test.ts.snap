@@ -152,8 +152,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  paused:
+    name: Report the deploy pause
+    if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          KEY: "example-app/prod"
+          PAUSED: \${{ vars.OPSCREW_DEPLOY_PAUSED }}
+        run: |
+          set -euo pipefail
+          field() { jq -r --arg key "$KEY" --arg field "$1" '.[$key][$field] // empty' <<< "$PAUSED"; }
+          since="$(field since)"
+          if [[ "$(field reason)" == rollback ]]; then
+            commit="$(field commit)"
+            image="$(field image)"
+            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). This run didn't deploy. \\\`opscrew rollback --resume\\\` resumes them; then \\\`opscrew promote --to prod\\\` deploys."
+          else
+            text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`opscrew provision\\\` resumes them."
+          fi
+          echo "::notice::$text"
+          echo "$text" >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
     name: Deploy to Cloudflare
+    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -183,20 +208,20 @@ jobs:
           read -r event conclusion head_repo branch workflow <<< "$record"
           # The run's path can end with @<ref>.
           workflow="\${workflow%%@*}"
-          if [[ "$event" != "push" ]]; then
-            echo "::error::Run $RUN was started by a $event, not by a push. OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW."
+          if [[ "$event" != "push" && "$event" != "workflow_dispatch" ]]; then
+            echo "::error::Run $RUN was started by a $event, not by a push or by hand. OpsCrew promotes only a site that a push to $BUILD_BRANCH, or a run started by hand there, built with $BUILD_WORKFLOW."
             exit 1
           fi
           if [[ "\${head_repo,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
-            echo "::error::Run $RUN built the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW."
+            echo "::error::Run $RUN built the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only a site that a push to $BUILD_BRANCH, or a run started by hand there, built with $BUILD_WORKFLOW."
             exit 1
           fi
           if [[ "$branch" != "$BUILD_BRANCH" ]]; then
-            echo "::error::Run $RUN built the branch $branch. OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW."
+            echo "::error::Run $RUN built the branch $branch. OpsCrew promotes only a site that a push to $BUILD_BRANCH, or a run started by hand there, built with $BUILD_WORKFLOW."
             exit 1
           fi
           if [[ "$workflow" != "$BUILD_WORKFLOW" ]]; then
-            echo "::error::Run $RUN is of the workflow $workflow. OpsCrew promotes only a site a push to $BUILD_BRANCH built with $BUILD_WORKFLOW."
+            echo "::error::Run $RUN is of the workflow $workflow. OpsCrew promotes only a site that a push to $BUILD_BRANCH, or a run started by hand there, built with $BUILD_WORKFLOW."
             exit 1
           fi
           if [[ "$conclusion" != "success" ]]; then
@@ -438,6 +463,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  paused:
+    name: Report the deploy pause
+    if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          KEY: "example-app/prod"
+          PAUSED: \${{ vars.OPSCREW_DEPLOY_PAUSED }}
+        run: |
+          set -euo pipefail
+          field() { jq -r --arg key "$KEY" --arg field "$1" '.[$key][$field] // empty' <<< "$PAUSED"; }
+          since="$(field since)"
+          if [[ "$(field reason)" == rollback ]]; then
+            commit="$(field commit)"
+            image="$(field image)"
+            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`opscrew rollback --resume --deploy\\\` deploys the branch's latest commit."
+          else
+            text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`opscrew provision\\\` resumes them."
+          fi
+          echo "::notice::$text"
+          echo "$text" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build the site
     runs-on: ubuntu-latest
@@ -527,6 +576,7 @@ jobs:
   deploy:
     name: Deploy to Cloudflare
     needs: build
+    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -767,6 +817,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  paused:
+    name: Report the deploy pause
+    if: \${{ contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          KEY: "example-app/prod"
+          PAUSED: \${{ vars.OPSCREW_DEPLOY_PAUSED }}
+        run: |
+          set -euo pipefail
+          field() { jq -r --arg key "$KEY" --arg field "$1" '.[$key][$field] // empty' <<< "$PAUSED"; }
+          since="$(field since)"
+          if [[ "$(field reason)" == rollback ]]; then
+            commit="$(field commit)"
+            image="$(field image)"
+            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`opscrew rollback --resume --deploy\\\` deploys the branch's latest commit."
+          else
+            text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`opscrew provision\\\` resumes them."
+          fi
+          echo "::notice::$text"
+          echo "$text" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build the site
     runs-on: ubuntu-latest
@@ -827,6 +901,7 @@ jobs:
   deploy:
     name: Deploy to Cloudflare
     needs: build
+    if: \${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
     runs-on: ubuntu-latest
     environment: production
     permissions:

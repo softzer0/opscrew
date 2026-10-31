@@ -106,7 +106,7 @@ describe("the deploy job on a runner machine", () => {
       expect(remote(stepOf(deploy, name).run), name).toBe(remote(stepOf(hosted, name).run));
     }
     expect(stepOf(deploy, "start").run).toContain(
-      'ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" <<\'REMOTE\'',
+      'ssh "${ssh_opts[@]}" "deploy@${HOST}" sh -s -- "$IMAGE" "$MODE" <<\'REMOTE\'',
     );
     expect(content(machine)).toContain("deploys it to your server\n# over SSH.");
     expect(jobYaml(content(machine), "deploy")).toMatchSnapshot();

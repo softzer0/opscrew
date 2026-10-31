@@ -10,7 +10,6 @@ import {
   servicesOn,
 } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
-import { checkEnvironmentKey } from "../check";
 import { additionsPath, appDir, EDGE_DIR, type LocalhostSite } from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
@@ -30,7 +29,7 @@ import { buildReads } from "./build";
 import { CLOUDFLARE_DEPLOY_SECRETS, renderCloudflareWorkersWorkflow } from "./cloudflare-workers";
 import { edgeCheckStep } from "./edge-check";
 import { renderGithubPagesWorkflow } from "./github-pages";
-import { afterDeployJobs, imageSourceJob } from "./jobs";
+import { afterDeployJobs, deployJob, jobsBeforeDeploy } from "./jobs";
 import { inFolder, pushPaths } from "./paths";
 import { PORTAINER_DEPLOY_SECRETS, renderPortainerWorkflow } from "./portainer";
 import { publicSshClosed, serverDeploySecrets } from "./servers";
@@ -40,16 +39,17 @@ import {
   DEPLOY_SECRETS,
   DIGEST_REF_PATTERN,
   DOCKER_CONTEXT_HOST,
-  deployJob,
   deploySecretName,
   deploysInPlace,
   healthPath,
   imageOutput,
+  MODE_ENV,
   onRunnerMachine,
   planFilePath,
   promoted,
   promotedAbout,
   provisionCommand,
+  ROLLING_BACK,
   run,
   runnerStartCommand,
   secret,
@@ -67,6 +67,7 @@ import {
 
 export { CLOUDFLARE_DEPLOY_SECRETS, renderCloudflareWorkersWorkflow } from "./cloudflare-workers";
 export { renderGithubPagesWorkflow } from "./github-pages";
+export { DEPLOY_PAUSED_VARIABLE } from "./pause";
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
 export { serverDeploySecrets } from "./servers";
 export {
@@ -75,6 +76,7 @@ export {
   deploySecretName,
   environmentTag,
   githubEnvironment,
+  ROLLBACK_INPUTS,
   runnerLabel,
   serviceEnvSecret,
   sqliteFolder,
@@ -422,22 +424,6 @@ function maskFileWrite(plan: DeployPlan, dir: string, on: On): string[] {
 }
 
 /**
- * The repository variable that pauses deploys while a service moves between the app's servers:
- * JSON, `{ "<app>/<env>": { reason, since } }`, as the check's `OPSCREW_CHECK_PAUSED`.
- */
-export const DEPLOY_PAUSED_VARIABLE = "OPSCREW_DEPLOY_PAUSED";
-
-/**
- * While the plan has a move, the deploy job's condition: {@link DEPLOY_PAUSED_VARIABLE} doesn't
- * name the app's environment (`checkEnvironmentKey`), so a deploy started during the move's
- * maintenance window is skipped, not failed. None without a move.
- */
-function deployPausedCondition(plan: DeployPlan): string | undefined {
-  if (plan.move === undefined) return undefined;
-  return `\${{ !contains(vars.${DEPLOY_PAUSED_VARIABLE}, '"${checkEnvironmentKey(plan)}"') }}`;
-}
-
-/**
  * The deploy's masking script ({@link maskFileWrite}) as a bash script that runs on the app's
  * server, in its folder, from the `app.env` there: for a change of the app's settings outside the
  * deploy (a service's move between the app's servers). Empty without Grafana Cloud.
@@ -479,6 +465,7 @@ interface Reach {
  * the job's `previous` output), and the rollback only switches back when `.env` already names this
  * run's image, so a failure before the switch never restores an older version. The registry login
  * goes into the app's own Docker settings: another app's deploy logs out of the same registry.
+ * `MODE` is the switch script's `$2`: a rollback dispatch's `rollback` runs no release command.
  */
 function startStep(plan: DeployPlan, edgeFiles: EdgeFiles, reach: Reach): string[] {
   return [
@@ -488,6 +475,7 @@ function startStep(plan: DeployPlan, edgeFiles: EdgeFiles, reach: Reach): string
     ...reach.env,
     `    IMAGE: ${imageOutput(plan, "image")}`,
     `    TAG: ${imageOutput(plan, "tag")}`,
+    MODE_ENV,
     "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
     "  run: |",
     "    set -euo pipefail",
@@ -501,16 +489,38 @@ function startStep(plan: DeployPlan, edgeFiles: EdgeFiles, reach: Reach): string
     `    if [[ -n "$previous" && ! "$previous" =~ ${DIGEST_REF_PATTERN} ]]; then previous=unknown; fi`,
     '    echo "previous=$previous" >> "$GITHUB_OUTPUT"',
     ...reach.login,
-    `    ${reach.sh} -s -- "$IMAGE" <<'REMOTE'`,
+    `    ${reach.sh} -s -- "$IMAGE" "$MODE" <<'REMOTE'`,
     // The services' one-time setup steps come from the catalog; no entry has any yet.
     ...remote(switchCommands(plan, initStepsFor(plan), edgeFiles)),
   ];
 }
 
 /**
+ * In a rollback dispatch, once the switch and the check from outside passed: the run's summary
+ * says which image the environment went back to, and its commit. A failed rollback says nothing
+ * here; the rollback step reports it.
+ */
+function rolledBackStep(plan: DeployPlan): string[] {
+  return [
+    "- name: Say what the rollback went back to",
+    `  if: ${ROLLING_BACK}`,
+    "  env:",
+    `    IMAGE: ${imageOutput(plan, "image")}`,
+    `    TAG: ${imageOutput(plan, "tag")}`,
+    ...run([
+      "set -euo pipefail",
+      "# The commit tag is <commit>, or <commit>-<env> outside prod.",
+      'commit="${TAG##*:}"',
+      'echo "Rolled back to \\`$IMAGE\\` (built from \\`${commit%%-*}\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"',
+    ]),
+  ];
+}
+
+/**
  * The rollback step: runs only when starting or checking the new version failed (not for upload
  * or setup errors), and always fails the job. `localhost` is the app's hostname on the localhost
- * target, as the start script has it.
+ * target, as the start script has it. In a rollback dispatch (`MODE` `rollback`) its messages say
+ * that the rollback failed, and that the version restored is the one that ran before it.
  */
 function rollbackStep(
   plan: DeployPlan,
@@ -523,6 +533,7 @@ function rollbackStep(
     "  env:",
     ...reach.env,
     `    IMAGE: ${imageOutput(plan, "image")}`,
+    MODE_ENV,
     "  run: |",
     "    set -uo pipefail",
     ...reach.prelude,
@@ -532,12 +543,18 @@ function rollbackStep(
     `    if [[ "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} ]]; then`,
     `      outcome="$(${reach.sh} -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"`,
     "    fi",
-    '    case "$outcome" in',
-    "      restored)",
+    '    case "$MODE:$outcome" in',
+    "      rollback:restored)",
+    '        echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;',
+    "      rollback:unchanged)",
+    '        echo "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had." ;;',
+    "      rollback:*)",
+    `        echo "::error::The rollback failed and OpsCrew could not put back the version that ran before it. ${reach.stuck}" ;;`,
+    "      *:restored)",
     '        echo "::error::The deploy failed; OpsCrew restored the previous version." ;;',
-    "      unchanged)",
+    "      *:unchanged)",
     '        echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;',
-    "      no-previous)",
+    "      *:no-previous)",
     '        echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;',
     "      *)",
     `        echo "::error::The deploy failed and OpsCrew could not restore the previous version. ${reach.stuck}" ;;`,
@@ -900,8 +917,12 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
  * `opscrew-deploy-<env>.yml`): build → push to GHCR → deploy over SSH with rollback,
  * then the optional signing, deploy tag and image retention jobs, and the environment's image
  * labels. A promoted environment instead starts from the digest `opscrew promote` gives it, which
- * its verify job checks, and builds nothing. The deploy job's secrets, GitHub environment, runner
- * and concurrency group are the environment's own; on the server's or the local runner it deploys
+ * its verify job checks, and builds nothing. `opscrew rollback` dispatches either with an earlier
+ * image's digest and `rollback` set: the verify job checks it, nothing is built, and the start
+ * step runs no release command. While the environment's deploys are paused, only such a dispatch
+ * deploys ({@link jobsBeforeDeploy}, {@link deployJob}). The deploy job's secrets, GitHub
+ * environment, runner and concurrency group are the environment's own; on the server's or the
+ * local runner it deploys
  * on the runner's own machine, with no SSH ({@link localDeploy}), and on a runner machine over SSH
  * as from GitHub's machines. The image is built on an arm64 runner for arm64 servers, or with
  * `environment.build` `runner` on the environment's own runner; in tunnel mode SSH goes through
@@ -992,6 +1013,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     "  run: |",
     // With the origin certificate a failed handshake has nothing to do with Let's Encrypt.
     ...healthScript(plan, edgeServesTls(plan, sshHostname(plan)) && !edgeFiles.originTls, local),
+    ...rolledBackStep(plan),
     ...rollbackStep(plan, reach, edgeFiles.localhost),
   ];
 
@@ -1028,7 +1050,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
         ctx,
       ),
     ),
-    ...imageSourceJob(plan, ctx),
+    ...jobsBeforeDeploy(plan, ctx),
     "",
     ...deployJob(
       plan,
@@ -1036,7 +1058,6 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
       ["contents: read", "packages: read"],
       "${{ steps.start.outputs.previous }}",
       deploySteps,
-      deployPausedCondition(plan),
     ),
     ...afterDeployJobs(plan),
     "",

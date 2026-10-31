@@ -201,16 +201,15 @@ describe("an extra server a moving service leaves (T1811)", () => {
     const deploy = (plan: DeployPlan) =>
       (parse(content(plan)) as { jobs: { deploy: { if?: string } } }).jobs.deploy;
     for (const step of ["deployed", "switched"] as const) {
-      expect(deploy(moving(step)).if).toBe(
-        `\${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}`,
+      expect(deploy(moving(step)).if).toContain(
+        `(inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"'))`,
       );
     }
     expect(deploy(inEnvironment(moving("deployed"), { name: "staging" })).if).toContain(
       `'"shop/staging"'`,
     );
-    // Without a move the deploy job is as before.
-    expect(deploy(splitPlan()).if).toBeUndefined();
-    expect(content(splitPlan())).not.toContain("OPSCREW_DEPLOY_PAUSED");
+    // The condition is there with or without a move: a rollback pauses deploys too (019).
+    expect(deploy(splitPlan()).if).toBe(deploy(moving("deployed")).if);
   });
 
   it("skips it once it has nothing to run, instead of starting an empty project", () => {

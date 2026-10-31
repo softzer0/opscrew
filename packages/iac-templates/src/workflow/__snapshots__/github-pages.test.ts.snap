@@ -25,6 +25,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  paused:
+    name: Report the deploy pause
+    if: \${{ !(github.run_attempt > 1) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          KEY: "example-app/prod"
+          PAUSED: \${{ vars.OPSCREW_DEPLOY_PAUSED }}
+        run: |
+          set -euo pipefail
+          field() { jq -r --arg key "$KEY" --arg field "$1" '.[$key][$field] // empty' <<< "$PAUSED"; }
+          since="$(field since)"
+          if [[ "$(field reason)" == rollback ]]; then
+            commit="$(field commit)"
+            image="$(field image)"
+            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`opscrew rollback --resume --deploy\\\` deploys the branch's latest commit."
+          else
+            text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`opscrew provision\\\` resumes them."
+          fi
+          echo "::notice::$text"
+          echo "$text" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build the site
     runs-on: ubuntu-latest
@@ -72,6 +96,7 @@ jobs:
   deploy:
     name: Publish on GitHub Pages
     needs: build
+    if: \${{ github.run_attempt > 1 || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
     runs-on: ubuntu-latest
     environment: github-pages
     permissions:
@@ -181,6 +206,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  paused:
+    name: Report the deploy pause
+    if: \${{ !(github.run_attempt > 1) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          KEY: "example-app/prod"
+          PAUSED: \${{ vars.OPSCREW_DEPLOY_PAUSED }}
+        run: |
+          set -euo pipefail
+          field() { jq -r --arg key "$KEY" --arg field "$1" '.[$key][$field] // empty' <<< "$PAUSED"; }
+          since="$(field since)"
+          if [[ "$(field reason)" == rollback ]]; then
+            commit="$(field commit)"
+            image="$(field image)"
+            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`opscrew rollback --resume --deploy\\\` deploys the branch's latest commit."
+          else
+            text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`opscrew provision\\\` resumes them."
+          fi
+          echo "::notice::$text"
+          echo "$text" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build the site
     runs-on: ubuntu-latest
@@ -229,6 +278,7 @@ jobs:
   deploy:
     name: Publish on GitHub Pages
     needs: build
+    if: \${{ github.run_attempt > 1 || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"example-app/prod"') }}
     runs-on: ubuntu-latest
     environment: github-pages
     permissions:

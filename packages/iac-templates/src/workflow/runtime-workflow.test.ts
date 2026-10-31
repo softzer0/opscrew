@@ -85,7 +85,8 @@ type Step = {
 function serverScript(p: DeployPlan): string {
   const deploy = parse(renderWorkflow(p, ctx).content).jobs.deploy.steps as Step[];
   const start = deploy.find((s) => s.id === "start")?.run ?? "";
-  return start.slice(start.indexOf("<<'REMOTE'\n"));
+  const from = start.indexOf("<<'REMOTE'\n");
+  return start.slice(from, start.indexOf("\nREMOTE\n", from) + "\nREMOTE\n".length);
 }
 
 describe("renderWorkflow", () => {
@@ -97,10 +98,17 @@ describe("renderWorkflow", () => {
     expect(withDomain.path).toBe(".github/workflows/opscrew-deploy.yml");
     expect(doc.on.push.branches).toEqual(["main"]);
     expect(doc.permissions).toEqual({ contents: "read" });
-    expect(Object.keys(doc.jobs)).toEqual(["build", "deploy", "prune", "label"]);
+    expect(Object.keys(doc.jobs)).toEqual([
+      "paused",
+      "build",
+      "verify",
+      "deploy",
+      "prune",
+      "label",
+    ]);
     expect(doc.jobs.build.permissions).toEqual({ contents: "read", packages: "write" });
     expect(doc.jobs.deploy.permissions).toEqual({ contents: "read", packages: "read" });
-    expect(doc.jobs.deploy.needs).toBe("build");
+    expect(doc.jobs.deploy.needs).toEqual(["build", "verify"]);
     expect(doc.jobs.deploy.outputs).toEqual({ previous: "${{ steps.start.outputs.previous }}" });
     expect(doc.concurrency).toEqual({ group: "opscrew-deploy", "cancel-in-progress": false });
     expect(withDomain.content).toMatchSnapshot();
@@ -194,7 +202,7 @@ describe("renderWorkflow", () => {
     expect(remote[0]).toContain("cp .env .env.previous");
     expect(remote[0]).toMatch(/^previous="\$\(ssh /);
     expect(remote[1]).toContain("docker login ghcr.io");
-    expect(remote[2]).toContain(`sh -s -- "$IMAGE" <<'REMOTE'`);
+    expect(remote[2]).toContain(`sh -s -- "$IMAGE" "$MODE" <<'REMOTE'`);
     expect(serverScript(plan())).toContain("docker compose pull");
   });
 
@@ -216,7 +224,9 @@ describe("renderWorkflow", () => {
       tag: "${{ steps.image.outputs.image }}",
     });
     const start = steps("deploy").find((s) => s.id === "start");
-    expect(start?.env?.IMAGE).toBe("${{ needs.build.outputs.image }}");
+    expect(start?.env?.IMAGE).toBe(
+      "${{ needs.build.outputs.image || needs.verify.outputs.image }}",
+    );
     expect(start?.run).toContain("@sha256:[0-9a-f]{64}");
   });
 
@@ -237,7 +247,8 @@ describe("renderWorkflow", () => {
   });
 
   it("runs no release step without a release command", () => {
-    expect(withDomain.content).not.toContain("release");
+    expect(serverScript(plan({ domain: "shop.example.com" }))).not.toContain("release");
+    expect(withDomain.content).not.toContain("-T release");
   });
 
   describe("with a release command", () => {

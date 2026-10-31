@@ -18,7 +18,23 @@ on:
       - "opscrew/environments/staging/runtime/compose.yaml"
       - "opscrew/environments/staging/runtime/edge/**"
       - ".github/workflows/opscrew-deploy-staging.yml"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      digest:
+        description: For a rollback, the image to deploy, by its digest (sha256:…); \`opscrew rollback\` fills it in.
+        required: false
+        type: string
+        default: ""
+      tag:
+        description: For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod); \`opscrew rollback\` fills it in.
+        required: false
+        type: string
+        default: ""
+      rollback:
+        description: Deploy the image without running the release command, for a rollback; \`opscrew rollback\` sets it.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -28,8 +44,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  paused:
+    name: Report the deploy pause
+    if: \${{ !inputs.rollback && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          KEY: "shop/staging"
+          PAUSED: \${{ vars.OPSCREW_DEPLOY_PAUSED }}
+        run: |
+          set -euo pipefail
+          field() { jq -r --arg key "$KEY" --arg field "$1" '.[$key][$field] // empty' <<< "$PAUSED"; }
+          since="$(field since)"
+          if [[ "$(field reason)" == rollback ]]; then
+            commit="$(field commit)"
+            image="$(field image)"
+            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`opscrew rollback --env staging --resume --deploy\\\` deploys the branch's latest commit."
+          else
+            text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`opscrew provision --env staging\\\` resumes them."
+          fi
+          echo "::notice::$text"
+          echo "$text" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build the image
+    if: \${{ !inputs.rollback }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -99,9 +140,95 @@ jobs:
             echo "::warning::The image scan (Trivy) could not run, so this build has no scan report. The deploy goes on: the scan only reports."
           fi
 
+  verify:
+    name: Check where the image was built
+    if: \${{ inputs.rollback }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      packages: read
+    outputs:
+      image: \${{ steps.provenance.outputs.image }}
+      tag: \${{ steps.provenance.outputs.tag }}
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: <pin:ACTIONS.login>
+        with:
+          registry: ghcr.io
+          username: \${{ github.actor }}
+          password: \${{ secrets.GITHUB_TOKEN }}
+      - id: provenance
+        name: Check the image's provenance
+        env:
+          DIGEST: \${{ inputs.digest }}
+          TAG: \${{ inputs.tag }}
+          BUILD_BRANCH: "main"
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::The digest input is not an image digest (sha256: and 64 hexadecimal digits). Start this workflow with \\\`opscrew promote\\\` or \\\`opscrew rollback\\\`, which fill it in."
+            exit 1
+          fi
+          name="ghcr.io/\${GITHUB_REPOSITORY,,}"
+          image="$name@$DIGEST"
+          if ! provenance="$(docker buildx imagetools inspect "$image" --format '{{json .Provenance}}')"; then
+            echo "::error::GitHub Container Registry has no image $image. Start this workflow with \\\`opscrew promote\\\` or \\\`opscrew rollback\\\`, which choose an image that is there."
+            exit 1
+          fi
+          # buildx names the run that built the image in runDetails.builder.id (per platform).
+          mapfile -t runs < <(jq -r '.. | .runDetails?.builder?.id? // empty' <<< "$provenance" | sort -u)
+          if [[ "\${#runs[@]}" -ne 1 || ! "\${runs[0]}" =~ ^https://github\\.com/([^/]+/[^/]+)/actions/runs/([0-9]+)/attempts/[0-9]+$ ]]; then
+            echo "::error::The image's build provenance does not name one GitHub Actions run, so OpsCrew cannot tell where it was built. OpsCrew deploys a digest only when this repository's deploy workflow built it."
+            exit 1
+          fi
+          built_in="\${BASH_REMATCH[1]}"
+          run_id="\${BASH_REMATCH[2]}"
+          if [[ "\${built_in,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
+            echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it."
+            exit 1
+          fi
+          if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '"\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"')"; then
+            echo "::error::GitHub shows no run $run_id in this repository, which the image's provenance names as its build. OpsCrew deploys a digest only when this repository built it."
+            exit 1
+          fi
+          read -r event head_repo branch commit workflow <<< "$record"
+          # The run's path can end with @<ref>, which the signing identity carries separately.
+          workflow="\${workflow%%@*}"
+          # A fork's pull request runs in this repository too, with its own branch name: only a push, or a
+          # run started by hand, which takes write access (ADR 0023 D1), counts.
+          if [[ "$event" != "push" && "$event" != "workflow_dispatch" ]]; then
+            echo "::error::The image was built by a $event run, not by a push or a run started by hand. OpsCrew deploys a digest only when a push to $BUILD_BRANCH, or a run started by hand there, built it."
+            exit 1
+          fi
+          if [[ "\${head_repo,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
+            echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it."
+            exit 1
+          fi
+          if [[ "$branch" != "$BUILD_BRANCH" ]]; then
+            echo "::error::The image was built from the branch $branch, not from $BUILD_BRANCH, the branch that builds this environment's images. OpsCrew deploys a digest only when a build on $BUILD_BRANCH made it."
+            exit 1
+          fi
+          # prod's build tags its commit, another environment's <commit>-<env>.
+          if [[ "$TAG" != "$commit" && ! "$TAG" =~ ^$commit-[a-z][a-z0-9-]*$ ]]; then
+            echo "::error::The tag input is not a commit tag of the image's build ($commit, or $commit-<environment>). Start this workflow with \\\`opscrew promote\\\` or \\\`opscrew rollback\\\`, which fill it in."
+            exit 1
+          fi
+          if [[ "$(docker buildx imagetools inspect "$name:$TAG" --format '{{.Manifest.Digest}}')" != "$DIGEST" ]]; then
+            echo "::error::The image is not the one tagged with its build's commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. \\\`opscrew rollback --list\\\` shows the versions to roll back to, and \\\`opscrew promote\\\` takes the image another environment runs."
+            exit 1
+          fi
+          {
+            echo "image=$image"
+            echo "tag=$name:$TAG"
+            echo "identity=https://github.com/$GITHUB_REPOSITORY/$workflow@refs/heads/$branch"
+          } >> "$GITHUB_OUTPUT"
+          echo "Deploying \\\`$image\\\`, built by run $run_id from \\\`$commit\\\` on \\\`$branch\\\`." >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
     name: Deploy to the server
-    needs: build
+    needs: [build, verify]
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"')) }}
     runs-on: ubuntu-latest
     environment: staging
     permissions:
@@ -154,8 +281,9 @@ jobs:
         name: Start the new version
         env:
           HOST: \${{ secrets.OPSCREW_STAGING_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
-          TAG: \${{ needs.build.outputs.tag }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -170,7 +298,7 @@ jobs:
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop-staging/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -280,11 +408,22 @@ jobs:
             echo "::error::The new version did not answer at $URL."
           fi
           exit 1
+      - name: Say what the rollback went back to
+        if: inputs.rollback
+        env:
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The commit tag is <commit>, or <commit>-<env> outside prod.
+          commit="\${TAG##*:}"
+          echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
         env:
           HOST: \${{ secrets.OPSCREW_STAGING_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
@@ -337,12 +476,18 @@ jobs:
           if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
             outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
-          case "$outcome" in
-            restored)
+          case "$MODE:$outcome" in
+            rollback:restored)
+              echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;
+            rollback:unchanged)
+              echo "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had." ;;
+            rollback:*)
+              echo "::error::The rollback failed and OpsCrew could not put back the version that ran before it. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop-staging." ;;
+            *:restored)
               echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
-            unchanged)
+            *:unchanged)
               echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
-            no-previous)
+            *:no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
               echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop-staging." ;;
@@ -352,6 +497,7 @@ jobs:
   prune:
     name: Delete old images
     needs: [build, deploy]
+    if: \${{ !cancelled() && needs.build.result == 'success' && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -576,7 +722,8 @@ jobs:
 
   label:
     name: Label the deployed image
-    needs: [build, deploy]
+    needs: [build, verify, deploy]
+    if: \${{ !cancelled() && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -589,7 +736,7 @@ jobs:
           password: \${{ secrets.GITHUB_TOKEN }}
       - name: Tag the image opscrew-staging, and the one before it opscrew-staging-previous
         env:
-          IMAGE: \${{ needs.build.outputs.image }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
           PREVIOUS: \${{ needs.deploy.outputs.previous }}
         run: |
           set -euo pipefail
@@ -620,13 +767,18 @@ on:
   workflow_dispatch:
     inputs:
       digest:
-        description: The image to deploy, by its digest (sha256:…); \`opscrew promote\` fills it in.
+        description: The image to deploy, by its digest (sha256:…); \`opscrew promote\` or \`opscrew rollback\` fills it in.
         required: true
         type: string
       tag:
-        description: The image's commit tag (<commit>, or <commit>-<env> when another environment than prod built it); \`opscrew promote\` fills it in.
+        description: The image's commit tag (<commit>, or <commit>-<env> when another environment than prod built it); \`opscrew promote\` or \`opscrew rollback\` fills it in.
         required: true
         type: string
+      rollback:
+        description: Deploy the image without running the release command, for a rollback; \`opscrew rollback\` sets it.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -636,6 +788,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  paused:
+    name: Report the deploy pause
+    if: \${{ !inputs.rollback && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Say why this run does not deploy
+        env:
+          KEY: "shop/prod"
+          PAUSED: \${{ vars.OPSCREW_DEPLOY_PAUSED }}
+        run: |
+          set -euo pipefail
+          field() { jq -r --arg key "$KEY" --arg field "$1" '.[$key][$field] // empty' <<< "$PAUSED"; }
+          since="$(field since)"
+          if [[ "$(field reason)" == rollback ]]; then
+            commit="$(field commit)"
+            image="$(field image)"
+            text="Deploys of $KEY are paused since $since: \\\`opscrew rollback\\\` pinned it to \${commit:0:7} (\${image:0:19}). This run didn't deploy. \\\`opscrew rollback --resume\\\` resumes them; then \\\`opscrew promote --to prod\\\` deploys."
+          else
+            text="Deploys of $KEY are paused since $since while a service moves between the app's servers; \\\`opscrew provision\\\` resumes them."
+          fi
+          echo "::notice::$text"
+          echo "$text" >> "$GITHUB_STEP_SUMMARY"
+
   verify:
     name: Check where the image was built
     runs-on: ubuntu-latest
@@ -662,54 +838,55 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::The digest input is not an image digest (sha256: and 64 hexadecimal digits). Start this workflow with \\\`opscrew promote\\\`, which fills it in."
+            echo "::error::The digest input is not an image digest (sha256: and 64 hexadecimal digits). Start this workflow with \\\`opscrew promote\\\` or \\\`opscrew rollback\\\`, which fill it in."
             exit 1
           fi
           name="ghcr.io/\${GITHUB_REPOSITORY,,}"
           image="$name@$DIGEST"
           if ! provenance="$(docker buildx imagetools inspect "$image" --format '{{json .Provenance}}')"; then
-            echo "::error::GitHub Container Registry has no image $image. Promote an image another environment runs: \\\`opscrew promote\\\` reads it from that environment's label."
+            echo "::error::GitHub Container Registry has no image $image. Start this workflow with \\\`opscrew promote\\\` or \\\`opscrew rollback\\\`, which choose an image that is there."
             exit 1
           fi
           # buildx names the run that built the image in runDetails.builder.id (per platform).
           mapfile -t runs < <(jq -r '.. | .runDetails?.builder?.id? // empty' <<< "$provenance" | sort -u)
           if [[ "\${#runs[@]}" -ne 1 || ! "\${runs[0]}" =~ ^https://github\\.com/([^/]+/[^/]+)/actions/runs/([0-9]+)/attempts/[0-9]+$ ]]; then
-            echo "::error::The image's build provenance does not name one GitHub Actions run, so OpsCrew cannot tell where it was built. Promote only an image this repository's deploy workflow built."
+            echo "::error::The image's build provenance does not name one GitHub Actions run, so OpsCrew cannot tell where it was built. OpsCrew deploys a digest only when this repository's deploy workflow built it."
             exit 1
           fi
           built_in="\${BASH_REMATCH[1]}"
           run_id="\${BASH_REMATCH[2]}"
           if [[ "\${built_in,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
-            echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."
+            echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it."
             exit 1
           fi
           if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '"\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"')"; then
-            echo "::error::GitHub shows no run $run_id in this repository, which the image's provenance names as its build. OpsCrew promotes only images this repository built."
+            echo "::error::GitHub shows no run $run_id in this repository, which the image's provenance names as its build. OpsCrew deploys a digest only when this repository built it."
             exit 1
           fi
           read -r event head_repo branch commit workflow <<< "$record"
           # The run's path can end with @<ref>, which the signing identity carries separately.
           workflow="\${workflow%%@*}"
-          # A fork's pull request runs in this repository too, with its own branch name: only a push counts.
-          if [[ "$event" != "push" ]]; then
-            echo "::error::The image was built by a $event run, not by a push. OpsCrew promotes only images a push to $BUILD_BRANCH built."
+          # A fork's pull request runs in this repository too, with its own branch name: only a push, or a
+          # run started by hand, which takes write access (ADR 0023 D1), counts.
+          if [[ "$event" != "push" && "$event" != "workflow_dispatch" ]]; then
+            echo "::error::The image was built by a $event run, not by a push or a run started by hand. OpsCrew deploys a digest only when a push to $BUILD_BRANCH, or a run started by hand there, built it."
             exit 1
           fi
           if [[ "\${head_repo,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
-            echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."
+            echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it."
             exit 1
           fi
           if [[ "$branch" != "$BUILD_BRANCH" ]]; then
-            echo "::error::The image was built from the branch $branch, not from $BUILD_BRANCH, the branch whose pushes build the images this environment is promoted with. OpsCrew promotes only images a push to $BUILD_BRANCH built."
+            echo "::error::The image was built from the branch $branch, not from $BUILD_BRANCH, the branch that builds this environment's images. OpsCrew deploys a digest only when a build on $BUILD_BRANCH made it."
             exit 1
           fi
           # prod's build tags its commit, another environment's <commit>-<env>.
           if [[ "$TAG" != "$commit" && ! "$TAG" =~ ^$commit-[a-z][a-z0-9-]*$ ]]; then
-            echo "::error::The tag input is not a commit tag of the image's build ($commit, or $commit-<environment>). Start this workflow with \\\`opscrew promote\\\`, which fills it in."
+            echo "::error::The tag input is not a commit tag of the image's build ($commit, or $commit-<environment>). Start this workflow with \\\`opscrew promote\\\` or \\\`opscrew rollback\\\`, which fill it in."
             exit 1
           fi
           if [[ "$(docker buildx imagetools inspect "$name:$TAG" --format '{{.Manifest.Digest}}')" != "$DIGEST" ]]; then
-            echo "::error::The image is not the one tagged with its build's commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. Promote the image another environment runs."
+            echo "::error::The image is not the one tagged with its build's commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. \\\`opscrew rollback --list\\\` shows the versions to roll back to, and \\\`opscrew promote\\\` takes the image another environment runs."
             exit 1
           fi
           {
@@ -722,6 +899,7 @@ jobs:
   deploy:
     name: Deploy to the server
     needs: verify
+    if: \${{ inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -776,6 +954,7 @@ jobs:
           HOST: \${{ secrets.OPSCREW_HOST }}
           IMAGE: \${{ needs.verify.outputs.image }}
           TAG: \${{ needs.verify.outputs.tag }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -790,7 +969,7 @@ jobs:
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -900,11 +1079,22 @@ jobs:
             echo "::error::The new version did not answer at $URL."
           fi
           exit 1
+      - name: Say what the rollback went back to
+        if: inputs.rollback
+        env:
+          IMAGE: \${{ needs.verify.outputs.image }}
+          TAG: \${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The commit tag is <commit>, or <commit>-<env> outside prod.
+          commit="\${TAG##*:}"
+          echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
           IMAGE: \${{ needs.verify.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
@@ -957,12 +1147,18 @@ jobs:
           if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
             outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
-          case "$outcome" in
-            restored)
+          case "$MODE:$outcome" in
+            rollback:restored)
+              echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;
+            rollback:unchanged)
+              echo "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had." ;;
+            rollback:*)
+              echo "::error::The rollback failed and OpsCrew could not put back the version that ran before it. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
+            *:restored)
               echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
-            unchanged)
+            *:unchanged)
               echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
-            no-previous)
+            *:no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
               echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
@@ -1006,7 +1202,8 @@ jobs:
 exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed secrets, and today's names for prod 1`] = `
 "  deploy:
     name: Deploy to the server
-    needs: build
+    needs: [build, verify]
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/eu-staging"')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1058,8 +1255,9 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
         name: Start the new version
         env:
           HOST: \${{ secrets.OPSCREW_EU_STAGING_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
-          TAG: \${{ needs.build.outputs.tag }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -1074,7 +1272,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop-eu-staging/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -1184,11 +1382,22 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
             echo "::error::The new version did not answer at $URL."
           fi
           exit 1
+      - name: Say what the rollback went back to
+        if: inputs.rollback
+        env:
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The commit tag is <commit>, or <commit>-<env> outside prod.
+          commit="\${TAG##*:}"
+          echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
         env:
           HOST: \${{ secrets.OPSCREW_EU_STAGING_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
@@ -1241,12 +1450,18 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
             outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
-          case "$outcome" in
-            restored)
+          case "$MODE:$outcome" in
+            rollback:restored)
+              echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;
+            rollback:unchanged)
+              echo "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had." ;;
+            rollback:*)
+              echo "::error::The rollback failed and OpsCrew could not put back the version that ran before it. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop-eu-staging." ;;
+            *:restored)
               echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
-            unchanged)
+            *:unchanged)
               echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
-            no-previous)
+            *:no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
               echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop-eu-staging." ;;
@@ -1257,7 +1472,8 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
 exports[`the deploy job on a self-hosted runner > deploys on the runner's own machine: no SSH, no host, key or known hosts 1`] = `
 "  deploy:
     name: Deploy to the server
-    needs: build
+    needs: [build, verify]
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"')) }}
     runs-on: [self-hosted, opscrew-shop-staging]
     defaults:
       run:
@@ -1302,8 +1518,9 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
       - id: start
         name: Start the new version
         env:
-          IMAGE: \${{ needs.build.outputs.image }}
-          TAG: \${{ needs.build.outputs.tag }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -1319,7 +1536,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$dir"/.docker docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           unset REGISTRY_TOKEN
-          sh -s -- "$IMAGE" <<'REMOTE'
+          sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -1429,10 +1646,21 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             echo "::error::The new version did not answer at $URL."
           fi
           exit 1
+      - name: Say what the rollback went back to
+        if: inputs.rollback
+        env:
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The commit tag is <commit>, or <commit>-<env> outside prod.
+          commit="\${TAG##*:}"
+          echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
         env:
-          IMAGE: \${{ needs.build.outputs.image }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -uo pipefail
           dir=/srv/apps/shop-staging
@@ -1485,12 +1713,18 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
             outcome="$(sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
-          case "$outcome" in
-            restored)
+          case "$MODE:$outcome" in
+            rollback:restored)
+              echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;
+            rollback:unchanged)
+              echo "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had." ;;
+            rollback:*)
+              echo "::error::The rollback failed and OpsCrew could not put back the version that ran before it. Run \\\`docker compose ps\\\` in $dir, on the machine this runner runs on." ;;
+            *:restored)
               echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
-            unchanged)
+            *:unchanged)
               echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
-            no-previous)
+            *:no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
               echo "::error::The deploy failed and OpsCrew could not restore the previous version. Run \\\`docker compose ps\\\` in $dir, on the machine this runner runs on." ;;
@@ -1501,7 +1735,8 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
 exports[`the deploy job on a self-hosted runner > deploys on the runner's own machine: no SSH, no host, key or known hosts 2`] = `
 "  deploy:
     name: Deploy to the server
-    needs: build
+    needs: [build, verify]
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/dev"')) }}
     runs-on: [self-hosted, opscrew-shop-dev]
     defaults:
       run:
@@ -1561,8 +1796,9 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
       - id: start
         name: Start the new version
         env:
-          IMAGE: \${{ needs.build.outputs.image }}
-          TAG: \${{ needs.build.outputs.tag }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -1598,7 +1834,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           fi
           printf '%s\\n' "$REGISTRY_TOKEN" | DOCKER_CONFIG="$dir"/.docker docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           unset REGISTRY_TOKEN
-          sh -s -- "$IMAGE" <<'REMOTE'
+          sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -1705,10 +1941,21 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           done
           echo "::error::The new version did not answer at $URL."
           exit 1
+      - name: Say what the rollback went back to
+        if: inputs.rollback
+        env:
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The commit tag is <commit>, or <commit>-<env> outside prod.
+          commit="\${TAG##*:}"
+          echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
         env:
-          IMAGE: \${{ needs.build.outputs.image }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -uo pipefail
           if [[ -z "\${OPSCREW_LOCAL_LOCK:-}" ]]; then
@@ -1777,12 +2024,18 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
             outcome="$(sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
-          case "$outcome" in
-            restored)
+          case "$MODE:$outcome" in
+            rollback:restored)
+              echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;
+            rollback:unchanged)
+              echo "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had." ;;
+            rollback:*)
+              echo "::error::The rollback failed and OpsCrew could not put back the version that ran before it. Run \\\`docker compose ps\\\` in $dir, on the machine this runner runs on." ;;
+            *:restored)
               echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
-            unchanged)
+            *:unchanged)
               echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
-            no-previous)
+            *:no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
               echo "::error::The deploy failed and OpsCrew could not restore the previous version. Run \\\`docker compose ps\\\` in $dir, on the machine this runner runs on." ;;
@@ -1793,7 +2046,8 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
 exports[`the label job > runs after a healthy deploy, with only packages: write 1`] = `
 "  label:
     name: Label the deployed image
-    needs: [build, deploy]
+    needs: [build, verify, deploy]
+    if: \${{ !cancelled() && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -1806,7 +2060,7 @@ exports[`the label job > runs after a healthy deploy, with only packages: write 
           password: \${{ secrets.GITHUB_TOKEN }}
       - name: Tag the image opscrew-staging, and the one before it opscrew-staging-previous
         env:
-          IMAGE: \${{ needs.build.outputs.image }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
           PREVIOUS: \${{ needs.deploy.outputs.previous }}
         run: |
           set -euo pipefail
@@ -1851,54 +2105,55 @@ exports[`the verify job > runs the provenance check with the job's token and the
         run: |
           set -euo pipefail
           if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-            echo "::error::The digest input is not an image digest (sha256: and 64 hexadecimal digits). Start this workflow with \\\`opscrew promote\\\`, which fills it in."
+            echo "::error::The digest input is not an image digest (sha256: and 64 hexadecimal digits). Start this workflow with \\\`opscrew promote\\\` or \\\`opscrew rollback\\\`, which fill it in."
             exit 1
           fi
           name="ghcr.io/\${GITHUB_REPOSITORY,,}"
           image="$name@$DIGEST"
           if ! provenance="$(docker buildx imagetools inspect "$image" --format '{{json .Provenance}}')"; then
-            echo "::error::GitHub Container Registry has no image $image. Promote an image another environment runs: \\\`opscrew promote\\\` reads it from that environment's label."
+            echo "::error::GitHub Container Registry has no image $image. Start this workflow with \\\`opscrew promote\\\` or \\\`opscrew rollback\\\`, which choose an image that is there."
             exit 1
           fi
           # buildx names the run that built the image in runDetails.builder.id (per platform).
           mapfile -t runs < <(jq -r '.. | .runDetails?.builder?.id? // empty' <<< "$provenance" | sort -u)
           if [[ "\${#runs[@]}" -ne 1 || ! "\${runs[0]}" =~ ^https://github\\.com/([^/]+/[^/]+)/actions/runs/([0-9]+)/attempts/[0-9]+$ ]]; then
-            echo "::error::The image's build provenance does not name one GitHub Actions run, so OpsCrew cannot tell where it was built. Promote only an image this repository's deploy workflow built."
+            echo "::error::The image's build provenance does not name one GitHub Actions run, so OpsCrew cannot tell where it was built. OpsCrew deploys a digest only when this repository's deploy workflow built it."
             exit 1
           fi
           built_in="\${BASH_REMATCH[1]}"
           run_id="\${BASH_REMATCH[2]}"
           if [[ "\${built_in,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
-            echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."
+            echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it."
             exit 1
           fi
           if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '"\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"')"; then
-            echo "::error::GitHub shows no run $run_id in this repository, which the image's provenance names as its build. OpsCrew promotes only images this repository built."
+            echo "::error::GitHub shows no run $run_id in this repository, which the image's provenance names as its build. OpsCrew deploys a digest only when this repository built it."
             exit 1
           fi
           read -r event head_repo branch commit workflow <<< "$record"
           # The run's path can end with @<ref>, which the signing identity carries separately.
           workflow="\${workflow%%@*}"
-          # A fork's pull request runs in this repository too, with its own branch name: only a push counts.
-          if [[ "$event" != "push" ]]; then
-            echo "::error::The image was built by a $event run, not by a push. OpsCrew promotes only images a push to $BUILD_BRANCH built."
+          # A fork's pull request runs in this repository too, with its own branch name: only a push, or a
+          # run started by hand, which takes write access (ADR 0023 D1), counts.
+          if [[ "$event" != "push" && "$event" != "workflow_dispatch" ]]; then
+            echo "::error::The image was built by a $event run, not by a push or a run started by hand. OpsCrew deploys a digest only when a push to $BUILD_BRANCH, or a run started by hand there, built it."
             exit 1
           fi
           if [[ "\${head_repo,,}" != "\${GITHUB_REPOSITORY,,}" ]]; then
-            echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew promotes only images this repository built."
+            echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it."
             exit 1
           fi
           if [[ "$branch" != "$BUILD_BRANCH" ]]; then
-            echo "::error::The image was built from the branch $branch, not from $BUILD_BRANCH, the branch whose pushes build the images this environment is promoted with. OpsCrew promotes only images a push to $BUILD_BRANCH built."
+            echo "::error::The image was built from the branch $branch, not from $BUILD_BRANCH, the branch that builds this environment's images. OpsCrew deploys a digest only when a build on $BUILD_BRANCH made it."
             exit 1
           fi
           # prod's build tags its commit, another environment's <commit>-<env>.
           if [[ "$TAG" != "$commit" && ! "$TAG" =~ ^$commit-[a-z][a-z0-9-]*$ ]]; then
-            echo "::error::The tag input is not a commit tag of the image's build ($commit, or $commit-<environment>). Start this workflow with \\\`opscrew promote\\\`, which fills it in."
+            echo "::error::The tag input is not a commit tag of the image's build ($commit, or $commit-<environment>). Start this workflow with \\\`opscrew promote\\\` or \\\`opscrew rollback\\\`, which fill it in."
             exit 1
           fi
           if [[ "$(docker buildx imagetools inspect "$name:$TAG" --format '{{.Manifest.Digest}}')" != "$DIGEST" ]]; then
-            echo "::error::The image is not the one tagged with its build's commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. Promote the image another environment runs."
+            echo "::error::The image is not the one tagged with its build's commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. \\\`opscrew rollback --list\\\` shows the versions to roll back to, and \\\`opscrew promote\\\` takes the image another environment runs."
             exit 1
           fi
           {

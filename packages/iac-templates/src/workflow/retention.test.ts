@@ -798,7 +798,9 @@ describe("the retention job", () => {
     const off = withPlan(serverPlan(), { imageRetention: { enabled: false } });
     expect(jobs(off).prune).toBeUndefined();
     expect(Object.keys(jobs(withBuild(off, "own-dockerfile")))).toEqual([
+      "paused",
       "build",
+      "verify",
       "deploy",
       "label",
     ]);

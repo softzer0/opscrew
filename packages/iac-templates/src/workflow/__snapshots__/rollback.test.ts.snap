@@ -3,7 +3,8 @@
 exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
 "  deploy:
     name: Deploy to the server
-    needs: build
+    needs: [build, verify]
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -56,8 +57,9 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
         name: Start the new version
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
-          TAG: \${{ needs.build.outputs.tag }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -72,7 +74,7 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -169,11 +171,22 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           done
           echo "::error::The new version did not answer at $URL."
           exit 1
+      - name: Say what the rollback went back to
+        if: inputs.rollback
+        env:
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The commit tag is <commit>, or <commit>-<env> outside prod.
+          commit="\${TAG##*:}"
+          echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
@@ -221,12 +234,18 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
           if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
             outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
-          case "$outcome" in
-            restored)
+          case "$MODE:$outcome" in
+            rollback:restored)
+              echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;
+            rollback:unchanged)
+              echo "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had." ;;
+            rollback:*)
+              echo "::error::The rollback failed and OpsCrew could not put back the version that ran before it. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
+            *:restored)
               echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
-            unchanged)
+            *:unchanged)
               echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
-            no-previous)
+            *:no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
               echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
@@ -237,7 +256,8 @@ exports[`the deploy job per strategy > matches the snapshot for recreate 1`] = `
 exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
 "  deploy:
     name: Deploy to the server
-    needs: build
+    needs: [build, verify]
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -290,8 +310,9 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
         name: Start the new version
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
-          TAG: \${{ needs.build.outputs.tag }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -306,7 +327,7 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -408,11 +429,22 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
           done
           echo "::error::The new version did not answer at $URL."
           exit 1
+      - name: Say what the rollback went back to
+        if: inputs.rollback
+        env:
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The commit tag is <commit>, or <commit>-<env> outside prod.
+          commit="\${TAG##*:}"
+          echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
@@ -465,12 +497,18 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
           if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
             outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
-          case "$outcome" in
-            restored)
+          case "$MODE:$outcome" in
+            rollback:restored)
+              echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;
+            rollback:unchanged)
+              echo "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had." ;;
+            rollback:*)
+              echo "::error::The rollback failed and OpsCrew could not put back the version that ran before it. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
+            *:restored)
               echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
-            unchanged)
+            *:unchanged)
               echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
-            no-previous)
+            *:no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
               echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
@@ -481,7 +519,8 @@ exports[`the deploy job per strategy > matches the snapshot for rolling 1`] = `
 exports[`the deploy job per strategy > matches the snapshot with services, workers and cron 1`] = `
 "  deploy:
     name: Deploy to the server
-    needs: build
+    needs: [build, verify]
+    if: \${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -536,8 +575,9 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
         name: Start the new version
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
-          TAG: \${{ needs.build.outputs.tag }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
           REGISTRY_TOKEN: \${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -552,7 +592,7 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
           printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=/srv/apps/shop/.docker docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"
-          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" <<'REMOTE'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" <<'REMOTE'
           APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
@@ -683,11 +723,22 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           done
           echo "::error::The new version did not answer at $URL."
           exit 1
+      - name: Say what the rollback went back to
+        if: inputs.rollback
+        env:
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          TAG: \${{ needs.build.outputs.tag || needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # The commit tag is <commit>, or <commit>-<env> outside prod.
+          commit="\${TAG##*:}"
+          echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
         if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
-          IMAGE: \${{ needs.build.outputs.image }}
+          IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}
+          MODE: \${{ inputs.rollback && 'rollback' || 'deploy' }}
         run: |
           set -uo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
@@ -747,12 +798,18 @@ exports[`the deploy job per strategy > matches the snapshot with services, worke
           if [[ "\${IMAGE:-}" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then
             outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
-          case "$outcome" in
-            restored)
+          case "$MODE:$outcome" in
+            rollback:restored)
+              echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;
+            rollback:unchanged)
+              echo "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had." ;;
+            rollback:*)
+              echo "::error::The rollback failed and OpsCrew could not put back the version that ran before it. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;
+            *:restored)
               echo "::error::The deploy failed; OpsCrew restored the previous version." ;;
-            unchanged)
+            *:unchanged)
               echo "::error::The deploy failed before the new version took traffic; the server still runs the version it had." ;;
-            no-previous)
+            *:no-previous)
               echo "::error::The deploy failed and there is no earlier version to restore (first deploy, or the same image was already running). Fix the problem and push again." ;;
             *)
               echo "::error::The deploy failed and OpsCrew could not restore the previous version. Connect to the server and run \\\`docker compose ps\\\` in /srv/apps/shop." ;;

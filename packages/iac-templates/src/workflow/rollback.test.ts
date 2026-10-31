@@ -90,6 +90,7 @@ function scripts(p: DeployPlan) {
     upload: steps.find((s) => s.name?.startsWith("Upload"))?.run ?? "",
     start: steps.find((s) => s.id === "start")?.run ?? "",
     rollback: steps.find((s) => s.name?.startsWith("Roll back"))?.run ?? "",
+    rolledBack: steps.find((s) => s.name === "Say what the rollback went back to")?.run ?? "",
   };
 }
 /**
@@ -348,9 +349,12 @@ function run(script: string, env: Record<string, string> = {}, app = "shop") {
       IMAGE: NEW,
       GITHUB_ACTOR: "octocat",
       GITHUB_OUTPUT: `${work}/output`,
+      GITHUB_STEP_SUMMARY: `${work}/summary`,
       RUNNER_TEMP: `${work}/tmp`,
       REGISTRY_TOKEN: "registry-token-placeholder",
       PROCESSES: "worker beat cron",
+      // A push's, which the workflow gives every start and rollback step.
+      MODE: "deploy",
       ...env,
     },
     encoding: "utf8",
@@ -456,9 +460,12 @@ function setUp(): void {
   uploaded(plan);
 }
 
-/** The start step with `mode` as the server script's `$2`, as a dispatch passes it. */
-function withMode(start: string, mode: "deploy" | "rollback"): string {
-  const script = start.replace(' -s -- "$IMAGE" <<', ` -s -- "$IMAGE" ${mode} <<`);
+/**
+ * The start step without the server script's `$2`, as provision's first deploy and this
+ * computer's `applyLocal` run the switch.
+ */
+function withoutMode(start: string): string {
+  const script = start.replace(' -s -- "$IMAGE" "$MODE" <<', ' -s -- "$IMAGE" <<');
   expect(script).not.toBe(start);
   return script;
 }
@@ -1817,9 +1824,19 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       writeFileSync(appFile("release.log"), "the last release's output\n");
     };
 
-    it("makes a deploy's calls without $2 and with deploy", () => {
+    /** A rollback dispatch's step environment: verify's commit tag, and the mode. */
+    const COMMIT = "e".repeat(40);
+    const DISPATCH = { MODE: "rollback", TAG: `ghcr.io/acme/shop:${COMMIT}` };
+    const summary = () => file("summary");
+    /** No server address and no registry token reaches the run's log. */
+    const noLeak = (output: string) => {
+      expect(output).not.toContain("203.0.113.10");
+      expect(output).not.toContain("registry-token-placeholder");
+    };
+
+    it("makes a push's calls as a start without $2, the switch's default", () => {
       deployed();
-      const plain = run(withWorkers.start);
+      const plain = run(withoutMode(withWorkers.start));
       expect(plain.status, plain.output).toBe(0);
       const before = calls();
       expect(before).toContain("docker compose run --rm --no-deps -T release");
@@ -1827,20 +1844,21 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
 
       setUp();
       deployed();
-      const deploy = run(withMode(withWorkers.start, "deploy"));
-      expect(deploy.status, deploy.output).toBe(0);
+      const push = run(withWorkers.start);
+      expect(push.status, push.output).toBe(0);
       expect(calls()).toEqual(before);
-      expect(deploy.output).not.toContain(NO_RELEASE);
+      expect(push.output).not.toContain(NO_RELEASE);
+      expect(summary()).toBe("");
     });
 
-    it("runs no release command and says so; the rest is a deploy's", () => {
+    it("runs no release command in a rollback dispatch and says so; the rest is a push's", () => {
       deployed();
       expect(run(withWorkers.start).status).toBe(0);
       const deploy = calls();
 
       setUp();
       deployed();
-      const rollback = run(withMode(withWorkers.start, "rollback"));
+      const rollback = run(withWorkers.start, DISPATCH);
       expect(rollback.status, rollback.output).toBe(0);
       expect(rollback.output).toContain(NO_RELEASE);
       expect(dockerCalls()).not.toContain("compose run");
@@ -1852,13 +1870,30 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       expect(read(".env")).toBe(`APP_IMAGE=${NEW}`);
       expect(read(".env.previous")).toBe(`APP_IMAGE=${OLD}`);
       expect(processImages()).toEqual({ worker: NEW, beat: NEW, cron: NEW });
+      noLeak(rollback.output);
+      // The summary waits for the check from outside: its own step, after the health step.
+      expect(summary()).toBe("");
+      const said = run(withWorkers.rolledBack, DISPATCH);
+      expect(said.status, said.output).toBe(0);
+      expect(summary()).toBe(
+        `Rolled back to \`${NEW}\` (built from \`${COMMIT}\`): no build, no release command.`,
+      );
+      noLeak(said.output);
     });
 
-    it("removes a copy that fails its health check, as a deploy does", () => {
+    it("names the commit of another environment's commit tag in the summary", () => {
+      const tag = `ghcr.io/acme/shop:${COMMIT}-staging`;
+      expect(run(rolling.rolledBack, { ...DISPATCH, TAG: tag }).status).toBe(0);
+      expect(summary()).toBe(
+        `Rolled back to \`${NEW}\` (built from \`${COMMIT}\`): no build, no release command.`,
+      );
+    });
+
+    it("removes a copy that fails its health check, as a deploy does, and says the rollback failed", () => {
       server({ ".env": OLD }, [OLD]);
       mkdirSync(join(work, "routes"));
       writeFileSync(join(work, "routes", "shop"), "shop-app-90:3000\n");
-      const start = run(withMode(release.start, "rollback"), { UNHEALTHY: NEW });
+      const start = run(release.start, { ...DISPATCH, UNHEALTHY: NEW });
       expect(start.status).toBe(1);
       expect(start.output).toContain(NO_RELEASE);
       expect(start.output).toContain("::error::The new version did not pass its health check");
@@ -1868,24 +1903,58 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       expect(routed()).toBe(OLD);
       expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
       expect(read(".failed-deploy/about")).toContain("failed=health");
+      expect(summary()).toBe("");
+
+      const back = run(release.rollback, DISPATCH);
+      expect(back.status).toBe(1);
+      expect(back.output.trim()).toBe(
+        "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had.",
+      );
+      noLeak(`${start.output}${back.output}`);
     });
 
-    it("is switched back when the check from outside fails, as a deploy is", () => {
+    it("is switched back when the check from outside fails, as a deploy is, and says so", () => {
       for (const scripts of [rolling, recreate]) {
         setUp();
         server({ ".env": OLD, ".env.previous": OLDER }, [OLD]);
-        const start = run(withMode(scripts.start, "rollback"));
+        const start = run(scripts.start, DISPATCH);
         expect(start.status, start.output).toBe(0);
         expect(routed()).toBe(NEW);
 
         resetCalls();
-        const back = run(scripts.rollback);
+        const back = run(scripts.rollback, DISPATCH);
         expect(back.status).toBe(1);
-        expect(back.output).toContain("restored the previous version");
+        expect(back.output.trim()).toBe(
+          "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback.",
+        );
         expect(containers()).toEqual([OLD]);
         expect(routed()).toBe(OLD);
         expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+        noLeak(back.output);
+        // A rollback that failed its check from outside never says it rolled back.
+        expect(summary()).not.toContain("Rolled back");
       }
+    });
+
+    it("says a push's failure as before", () => {
+      server({ ".env": OLD, ".env.previous": OLDER }, [OLD]);
+      expect(run(rolling.start).status).toBe(0);
+      resetCalls();
+      const back = run(rolling.rollback);
+      expect(back.status).toBe(1);
+      expect(back.output.trim()).toBe(
+        "::error::The deploy failed; OpsCrew restored the previous version.",
+      );
+    });
+
+    it("says what to do when the server cannot be reached for a rollback's switch back", () => {
+      server({ ".env": NEW, ".env.previous": OLD }, [NEW]);
+      const back = run(rolling.rollback, { ...DISPATCH, SSH_FAIL_AT: "1" });
+      expect(back.status).toBe(1);
+      expect(back.output).toContain(
+        "::error::The rollback failed and OpsCrew could not put back the version that ran before it. Connect to the server and run `docker compose ps` in /srv/apps/shop.",
+      );
+      noLeak(back.output);
     });
   });
 

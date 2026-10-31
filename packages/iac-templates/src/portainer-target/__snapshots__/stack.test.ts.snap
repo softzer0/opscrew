@@ -336,10 +336,11 @@ services:
       REDIS_URL: \${REDIS_URL}
       SESSION_SECRET: \${SESSION_SECRET}
       STRIPE_KEY: \${STRIPE_KEY}
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
     command:
       - sh
       - -c
-      - npx prisma migrate deploy && echo $$HOME
+      - if [ "$$OPSCREW_RELEASE" = skip ]; then exit 0; fi; npx prisma migrate deploy && echo $$HOME
     mem_limit: 512m
     memswap_limit: 512m
     depends_on:
@@ -635,12 +636,13 @@ services:
       RABBITMQ_URL: \${RABBITMQ_URL}
       SESSION_SECRET: \${SESSION_SECRET}
       STRIPE_KEY: \${STRIPE_KEY}
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
     volumes:
       - sqlite:/app/data
     command:
       - sh
       - -c
-      - npm run migrate
+      - if [ "$$OPSCREW_RELEASE" = skip ]; then exit 0; fi; npm run migrate
     mem_limit: 768m
     memswap_limit: 768m
     depends_on:
@@ -1075,10 +1077,11 @@ services:
       RABBITMQ_URL: \${RABBITMQ_URL}
       SESSION_SECRET: \${SESSION_SECRET}
       STRIPE_KEY: \${STRIPE_KEY}
+      OPSCREW_RELEASE: __OPSCREW_RELEASE__
     command:
       - sh
       - -c
-      - npm run migrate
+      - if [ "$$OPSCREW_RELEASE" = skip ]; then exit 0; fi; npm run migrate
     mem_limit: 768m
     memswap_limit: 768m
     depends_on:

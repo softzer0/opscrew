@@ -7,7 +7,16 @@ import { shellQuote } from "../runtime/services";
 import { answerCheck, siteBuildSteps, siteExists, siteFiles, siteUrl } from "../serverless/site";
 import type { RenderContext, RenderedFile } from "../types";
 import { pushPaths, siteReads } from "./paths";
-import { appFlag, job, promoted, provisionCommand, run, workflowStart } from "./shared";
+import { pausedJob, pausedTest } from "./pause";
+import {
+  appFlag,
+  DISPATCH_BY_HAND,
+  job,
+  promoted,
+  provisionCommand,
+  run,
+  workflowStart,
+} from "./shared";
 
 /** The largest site GitHub Pages publishes: 1 GB. */
 const PAGES_SITE_BYTES = 1024 ** 3;
@@ -19,9 +28,11 @@ const PAGES_SITE_BYTES = 1024 ** 3;
  * `.well-known` kept), holding `contents: read` and `pages: read` only. The deploy job publishes it
  * with `deploy-pages` in the `github-pages` environment, the only job with `pages: write` and
  * `id-token: write`, then checks the site's answer on its domain; while GitHub has not issued the
- * certificate yet, that is a warning ({@link answerCheck}). The triggers, permissions and
- * concurrency are as for servers; the push filter ({@link pushPaths}) adds the repository root's
- * files the build reads ({@link siteReads}), with `ctx.otherAppDirs` for a site at the root.
+ * certificate yet, that is a warning ({@link answerCheck}). While the environment's deploys are
+ * paused the deploy job is skipped and the `paused` job ({@link pausedJob}) says why, except in a
+ * re-run, which is how `opscrew rollback` goes back. The triggers, permissions and concurrency are
+ * as for servers, with no inputs by hand; the push filter ({@link pushPaths}) adds the repository
+ * root's files the build reads ({@link siteReads}), with `ctx.otherAppDirs` for a site at the root.
  * @throws OpsCrewError `INVALID_INPUT` for a promoted environment: GitHub Pages publishes from a
  * build, so each environment builds its own.
  */
@@ -67,10 +78,14 @@ export function renderGithubPagesWorkflow(
       "    include-hidden-files: true",
     ],
   });
+  // A re-run deploys while paused: it is how `opscrew rollback` goes back, and a re-run reads
+  // `vars` again (research R6, S4).
+  const rerun = "github.run_attempt > 1";
   const deploy = job({
     id: "deploy",
     name: "Publish on GitHub Pages",
     needs: "build",
+    if: `\${{ ${rerun} || !${pausedTest(plan)} }}`,
     environment: "github-pages",
     permissions: ["pages: write", "id-token: write"],
     steps: [
@@ -94,7 +109,10 @@ export function renderGithubPagesWorkflow(
         "# values never appear in this file, but whatever the build puts into the site is public.",
       ],
       pushPaths(plan, siteReads(plan), ctx),
+      DISPATCH_BY_HAND,
     ),
+    ...pausedJob(plan, `\${{ !(${rerun}) && ${pausedTest(plan)} }}`),
+    "",
     ...build,
     "",
     ...deploy,

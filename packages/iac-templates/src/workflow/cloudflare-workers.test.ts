@@ -712,6 +712,20 @@ describe.skipIf(!bash)("the promoted environment's check of the build's run (nee
     }
   });
 
+  it("passes a run started by hand on the builder's branch, as a push (ADR 0023 D1)", async () => {
+    const byHand = await check(prod, {
+      RUN_RECORD:
+        "workflow_dispatch success Acme/Shop develop .github/workflows/opscrew-deploy-dev.yml",
+    });
+    expect(byHand.status, byHand.stdout + byHand.stderr).toBe(0);
+    const elsewhere = await check(prod, {
+      RUN_RECORD:
+        "workflow_dispatch success Acme/Shop main .github/workflows/opscrew-deploy-dev.yml",
+    });
+    expect(elsewhere.status).toBe(1);
+    expect(elsewhere.stdout).toContain("::error::Run 4242 built the branch main.");
+  });
+
   it("refuses each other run with a plain message, before anything is downloaded", async () => {
     const refusals: [Partial<typeof good>, string][] = [
       [{ RUN: "4242; rm -rf /" }, "The run input must be a workflow run's id"],
@@ -722,7 +736,13 @@ describe.skipIf(!bash)("the promoted environment's check of the build's run (nee
           RUN_RECORD:
             "pull_request success Acme/Shop develop .github/workflows/opscrew-deploy-dev.yml",
         },
-        "Run 4242 was started by a pull_request, not by a push.",
+        "Run 4242 was started by a pull_request, not by a push or by hand.",
+      ],
+      [
+        {
+          RUN_RECORD: "schedule success Acme/Shop develop .github/workflows/opscrew-deploy-dev.yml",
+        },
+        "Run 4242 was started by a schedule, not by a push or by hand.",
       ],
       [
         { RUN_RECORD: "push success evil/fork develop .github/workflows/opscrew-deploy-dev.yml" },
@@ -753,7 +773,7 @@ describe.skipIf(!bash)("the promoted environment's check of the build's run (nee
       expect(refused.stdout).toContain(`::error::${message}`);
     }
     expect((await check(prod, { RUN_RECORD: "push success Acme/Shop main x" })).stdout).toContain(
-      "OpsCrew promotes only a site a push to develop built with .github/workflows/opscrew-deploy-dev.yml.",
+      "OpsCrew promotes only a site that a push to develop, or a run started by hand there, built with .github/workflows/opscrew-deploy-dev.yml.",
     );
   });
 });
