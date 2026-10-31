@@ -8,12 +8,7 @@ import {
   REDIS_PROTOCOL_KINDS,
 } from "@opscrew/plan-schema";
 import { downtimeMinutes, sizeText } from "../retarget/texts";
-import { hasDeployment } from "../shared/server-address";
-
-/** `server db` or `the app's server`. */
-function serverWords(server: string): string {
-  return server === APP_SERVER ? "the app's server" : `server ${server}`;
-}
+import { hasDeployment, serverWords } from "../shared/server-address";
 
 /** `db (PostgreSQL)`. */
 function serviceWords(service: Pick<PlanService, "name" | "kind">): string {

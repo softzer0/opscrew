@@ -182,6 +182,47 @@ describe("the deploy job with extra servers", () => {
   });
 });
 
+describe("an extra server a moving service leaves (T1811)", () => {
+  /** `orders` moving from box-2, where it ran alone, to the app's server, at `step`. */
+  const moving = (step: "deployed" | "switched") =>
+    DeployPlanSchema.parse({
+      ...splitPlan(),
+      services: splitPlan().services.map(({ server, ...service }) =>
+        service.name === "orders" ? service : { ...service, server },
+      ),
+      move: { service: "orders", from: "box-2", to: "app", step, copy: "dump" },
+    });
+
+  it("updates it while its old copy runs there, until the switch", () => {
+    expect(steps(moving("deployed")).map((s) => s.name)).toContain(BOX);
+  });
+
+  it("skips the deploy job while the move's window pauses the app's deploys", () => {
+    const deploy = (plan: DeployPlan) =>
+      (parse(content(plan)) as { jobs: { deploy: { if?: string } } }).jobs.deploy;
+    for (const step of ["deployed", "switched"] as const) {
+      expect(deploy(moving(step)).if).toBe(
+        `\${{ !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}`,
+      );
+    }
+    expect(deploy(inEnvironment(moving("deployed"), { name: "staging" })).if).toContain(
+      `'"shop/staging"'`,
+    );
+    // Without a move the deploy job is as before.
+    expect(deploy(splitPlan()).if).toBeUndefined();
+    expect(content(splitPlan())).not.toContain("OPSCREW_DEPLOY_PAUSED");
+  });
+
+  it("skips it once it has nothing to run, instead of starting an empty project", () => {
+    const plan = moving("switched");
+    expect(steps(plan).map((s) => s.name)).not.toContain(BOX);
+    expect(steps(plan).map((s) => s.name)).toContain(DATA);
+    expect(Object.keys(stepOf(plan, CONFIGURE).env ?? {})).not.toContain(
+      "OPSCREW_SERVER_BOX_2_KNOWN_HOSTS",
+    );
+  });
+});
+
 describe("with public SSH closed", () => {
   it("refuses to render for GitHub's machines and a runner machine, with the reason", () => {
     for (const runner of ["github", "host"] as const) {

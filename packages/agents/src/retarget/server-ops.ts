@@ -11,7 +11,8 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { pollUntil, sshArgs } from "../shared";
 
 /**
- * Typed server operations for moving a deployment between servers (feature 005). Every command is
+ * Typed server operations for moving a deployment between servers (feature 005), and a service
+ * between the app's servers (feature 018, `move/`). Every command is
  * fixed here; callers choose an operation and pass validated values, never shell text. Commands
  * run as the `deploy` user in the app's folder (`/srv/apps/<app>`), where the deploy workflow keeps
  * `compose.yaml` and the `.env` file that names `APP_IMAGE`; the proxy (Caddy or nginx) is the shared
@@ -41,6 +42,20 @@ export interface ServerOpOptions {
    * with cron jobs, `cron`. They stop and start with `app`.
    */
   processes?: readonly string[];
+  /** The Postgres service's Compose name (default `db`), such as a moving service's own. */
+  database?: string;
+  /** The command the hints say to run again after a fix (default `opscrew retarget`). */
+  command?: string;
+}
+
+/** {@link ServerOpOptions.database} with its default. */
+function databaseOf(options: Pick<ServerOpOptions, "database">): string {
+  return options.database ?? "db";
+}
+
+/** {@link ServerOpOptions.command} with its default. */
+function commandOf(options: Pick<ServerOpOptions, "command">): string {
+  return options.command ?? "opscrew retarget";
 }
 
 /** {@link ServerOpOptions} for `plan`'s app, its text redacted by `redactor`. */
@@ -149,8 +164,8 @@ async function runStep(
   return check(result, full, timeoutMs, redact);
 }
 
-const composePsHint = (host: string, folder: string) =>
-  `Connect to the server (\`ssh deploy@${host}\`), run \`docker compose ps\` in ${folder} to see what is running, then run \`opscrew retarget\` again.`;
+const composePsHint = (host: string, options: Pick<ServerOpOptions, "folder" | "command">) =>
+  `Connect to the server (\`ssh deploy@${host}\`), run \`docker compose ps\` in ${options.folder} to see what is running, then run \`${commandOf(options)}\` again.`;
 
 /** The workers and cron that stop and start with `app` ({@link ServerOpOptions.processes}). */
 function processesOf(service: MoveService, options: ServerOpOptions): readonly string[] {
@@ -167,7 +182,7 @@ export async function stopService(
   options: ServerOpOptions,
 ): Promise<void> {
   const folder = projectFolder(service, options);
-  const hint = composePsHint(remote.host, folder);
+  const hint = composePsHint(remote.host, { ...options, folder });
   await runStep(
     remote,
     `cd ${folder} && docker compose stop ${service}`,
@@ -193,7 +208,7 @@ export async function startService(
   options: ServerOpOptions,
 ): Promise<void> {
   const folder = projectFolder(service, options);
-  const hint = composePsHint(remote.host, folder);
+  const hint = composePsHint(remote.host, { ...options, folder });
   await runStep(
     remote,
     `cd ${folder} && docker compose up -d ${service}`,
@@ -305,15 +320,17 @@ export async function waitAppHealthy(
   );
 }
 
-const dbHint = (host: string, folder: string) =>
-  `Connect to the server (\`ssh deploy@${host}\`) and check the database with \`cd ${folder} && docker compose ps db\` and \`docker compose logs --tail 100 db\`.`;
+const dbHint = (host: string, options: Pick<ServerOpOptions, "folder" | "database">) => {
+  const db = databaseOf(options);
+  return `Connect to the server (\`ssh deploy@${host}\`) and check the database with \`cd ${options.folder} && docker compose ps ${db}\` and \`docker compose logs --tail 100 ${db}\`.`;
+};
 
-/** Size of the `app` Postgres database in bytes. */
+/** Size of the `app` Postgres database in bytes, in the service {@link ServerOpOptions.database}. */
 export async function databaseSize(remote: RemoteExec, options: ServerOpOptions): Promise<number> {
-  const step = { what: "read the database size", hint: dbHint(remote.host, options.folder) };
+  const step = { what: "read the database size", hint: dbHint(remote.host, options) };
   const result = await runStep(
     remote,
-    `cd ${options.folder} && docker compose exec -T db psql -U app -d app -tAc "select pg_database_size('app')"`,
+    `cd ${options.folder} && docker compose exec -T ${databaseOf(options)} psql -U app -d app -tAc "select pg_database_size('app')"`,
     MINUTE,
     step,
     options.redact,
@@ -342,9 +359,9 @@ export async function dumpDatabase(
   const dump = dumpPath(folder);
   await runStep(
     remote,
-    `cd ${folder} && umask 077 && rm -f ${dump} && docker compose exec -T db pg_dump -U app -Fc app > ${dump}`,
+    `cd ${folder} && umask 077 && rm -f ${dump} && docker compose exec -T ${databaseOf(options)} pg_dump -U app -Fc app > ${dump}`,
     moveTimeoutMs(sizeBytes),
-    { what: "dump the database", hint: dbHint(remote.host, folder), filter: withoutData },
+    { what: "dump the database", hint: dbHint(remote.host, options), filter: withoutData },
     options.redact,
   );
 }
@@ -361,9 +378,9 @@ export async function recreateDatabase(
 ): Promise<void> {
   await runStep(
     remote,
-    `cd ${options.folder} && docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'`,
+    `cd ${options.folder} && docker compose exec -T ${databaseOf(options)} psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'`,
     2 * MINUTE,
-    { what: "empty the database", hint: dbHint(remote.host, options.folder), filter: withoutData },
+    { what: "empty the database", hint: dbHint(remote.host, options), filter: withoutData },
     options.redact,
   );
 }
@@ -382,9 +399,9 @@ export async function restoreDatabase(
   const dump = dumpPath(folder);
   await runStep(
     remote,
-    `cd ${folder} && chmod 600 ${dump} && docker compose exec -T db pg_restore -U app -d app --no-owner --single-transaction < ${dump}`,
+    `cd ${folder} && chmod 600 ${dump} && docker compose exec -T ${databaseOf(options)} pg_restore -U app -d app --no-owner --single-transaction < ${dump}`,
     moveTimeoutMs(sizeBytes),
-    { what: "restore the database", hint: dbHint(remote.host, folder), filter: withoutData },
+    { what: "restore the database", hint: dbHint(remote.host, options), filter: withoutData },
     options.redact,
   );
 }
@@ -405,7 +422,7 @@ export async function hasReleaseService(
     remote,
     `cd ${options.folder} && docker compose --profile ${RELEASE_SERVICE} config --services`,
     MINUTE,
-    { what: "read the Compose services", hint: composePsHint(remote.host, options.folder) },
+    { what: "read the Compose services", hint: composePsHint(remote.host, options) },
     options.redact,
   );
   return result.stdout.split(/\r?\n/).some((line) => line.trim() === RELEASE_SERVICE);
@@ -458,12 +475,12 @@ export async function verifyDump(
   const dump = dumpPath(folder);
   const step = {
     what: "read the database dump",
-    hint: `The dump is incomplete or damaged; OpsCrew makes a new one when you run \`opscrew retarget\` again. If it fails again, check the free disk space on both servers (\`ssh deploy@${remote.host} df -h ${folder}\`).`,
+    hint: `The dump is incomplete or damaged; OpsCrew makes a new one when you run \`${commandOf(options)}\` again. If it fails again, check the free disk space on both servers (\`ssh deploy@${remote.host} df -h ${folder}\`).`,
     filter: withoutData,
   };
   const result = await runStep(
     remote,
-    `cd ${folder} && docker compose exec -T db pg_restore --list < ${dump} > /dev/null && sha256sum ${dump}`,
+    `cd ${folder} && docker compose exec -T ${databaseOf(options)} pg_restore --list < ${dump} > /dev/null && sha256sum ${dump}`,
     moveTimeoutMs(sizeBytes),
     step,
     options.redact,
@@ -508,6 +525,8 @@ export interface CopyDumpOptions extends ServerOpOptions {
   /** OpsCrew's known_hosts file with both servers' pinned host keys. */
   knownHostsFile: string;
   sizeBytes: number;
+  /** Both servers' SSH port (default 22). */
+  port?: number;
 }
 
 function scpTarget(host: string, folder: string): string {
@@ -528,6 +547,7 @@ export async function copyDump(runner: CommandRunner, options: CopyDumpOptions):
     host: options.from,
     keyFile: options.keyFile,
     knownHostsFile: options.knownHostsFile,
+    ...(options.port !== undefined ? { port: options.port } : {}),
   });
   // sshArgs ends with `-p <port> user@host`; scp takes the port as `-P` and the hosts in paths.
   const portAt = ssh.indexOf("-p");
@@ -536,7 +556,7 @@ export async function copyDump(runner: CommandRunner, options: CopyDumpOptions):
   const step: Step = {
     what: "copy the database dump",
     where: `from ${options.from} to ${options.to}`,
-    hint: "Check that this computer can reach both servers over SSH, then run `opscrew retarget` again.",
+    hint: `Check that this computer can reach both servers over SSH, then run \`${commandOf(options)}\` again.`,
   };
   let result: CommandResult;
   try {

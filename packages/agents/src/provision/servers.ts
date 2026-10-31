@@ -25,6 +25,7 @@ import {
   type ServerAddress,
   serverLogin,
   serverRemote,
+  serverWords,
   updateServerAddresses,
 } from "../shared";
 import { inspectOwnHost } from "../shared/own-server";
@@ -262,11 +263,6 @@ export async function liftRemovedProtection(
     serverInState: true,
     mismatchHint: `Run \`${input.command}\` again once the infrastructure matches its files, or put the server back in servers.`,
   });
-}
-
-/** `server db` or `the app's server`. */
-function serverWords(server: string): string {
-  return server === APP_SERVER ? "the app's server" : `server ${server}`;
 }
 
 /**

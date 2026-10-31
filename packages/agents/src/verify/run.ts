@@ -25,6 +25,7 @@ import { verifyLocalhost } from "../localhost/verify";
 import type { ReadNetworkServices } from "../network";
 import { readOwnServerRecord } from "../provision";
 import { committedTfvars, ownRenderFromTfvars } from "../provision/render";
+import { withPlacement } from "../provision/servers";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import {
   checkResult,
@@ -133,10 +134,11 @@ export interface VerifyResult {
  * around Cloudflare, and the latest deploy run; with a private network (feature 018), every server,
  * every link and every published port (`serverChecks`). The server's address comes from
  * OpsCrew's local state (`serverAddress`). Writes `opscrew/RUNBOOK.md` (without the address behind Cloudflare's
- * proxy); when nothing fails, records `deployment.firstDeployAt` (once) and, with a domain,
- * `deployment.url` in `opscrew/plan.yaml`, which stays as it is when neither changes. Marks
- * `verify`. A site on Cloudflare's hosting or GitHub Pages is checked by `verifySite`, which
- * changes nothing and writes only its runbook.
+ * proxy); when nothing fails, records `deployment.firstDeployAt` (once), with a domain
+ * `deployment.url`, and with extra servers where each service runs (`deployment.placement`, when
+ * none is recorded and no move is under way) in `opscrew/plan.yaml`, which stays as it is when
+ * none changes. Marks `verify`. A site on Cloudflare's hosting or GitHub Pages is checked by
+ * `verifySite`, which changes nothing and writes only its runbook.
  */
 export async function runVerify(
   deps: PhaseDeps,
@@ -337,6 +339,9 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
         ...(firstDeployAt !== undefined ? { firstDeployAt } : {}),
       },
     };
+    // Where each service runs, when none is recorded yet and no move is under way: a recorded one
+    // changes only with a move, so a placement edited by hand never reads as done.
+    if (deployment.placement === undefined) current = withPlacement(current);
     await writePlanIfChanged(deps, current);
   }
 

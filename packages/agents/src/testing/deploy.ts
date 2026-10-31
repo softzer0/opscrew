@@ -682,6 +682,11 @@ export class FakeGitHub implements GitHubApi {
     this.pulls.push(input);
     return { number: 7, url: "https://github.com/acme/shop/pull/7" };
   }
+  /** The runs `listWorkflowRuns` returns, newest first (none by default). */
+  workflowRuns: Awaited<ReturnType<GitHubApi["listWorkflowRuns"]>> = [];
+  async listWorkflowRuns() {
+    return this.workflowRuns;
+  }
   /** Workflow runs started with `dispatchWorkflow`: the workflow file and the branch. */
   readonly dispatches: { workflowFile: string; ref: string }[] = [];
   async dispatchWorkflow(

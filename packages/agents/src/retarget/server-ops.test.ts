@@ -595,3 +595,54 @@ describe("verifyDump", () => {
     expect(garbled.message).toContain("did not report a checksum");
   });
 });
+
+describe("a service moving between the app's servers (feature 018)", () => {
+  const options = {
+    redact: identity,
+    folder: FOLDER,
+    database: "orders",
+    command: "opscrew provision",
+  };
+
+  it("runs the database's commands in the moving service, and its hints name the command", async () => {
+    const remote = new FakeRemote("h", (command) =>
+      command.includes("sha256sum") ? ok(`${"b".repeat(64)}  x\n`) : ok("42\n"),
+    );
+    expect(await databaseSize(remote, options)).toBe(42);
+    await dumpDatabase(remote, 0, options);
+    await verifyDump(remote, 0, options);
+    await recreateDatabase(remote, options);
+    await restoreDatabase(remote, 0, options);
+    const execs = remote.calls.map(
+      (call) => /docker compose exec -T (\S+)/.exec(call.command)?.[1],
+    );
+    expect(execs).toEqual(["orders", "orders", "orders", "orders", "orders"]);
+
+    const failing = new FakeRemote("h", () => fail("no such service"));
+    expect((await caught(databaseSize(failing, options))).hint).toContain(
+      "docker compose logs --tail 100 orders",
+    );
+    expect((await caught(verifyDump(failing, 0, options))).hint).toContain("`opscrew provision`");
+    expect((await caught(stopService(failing, "app", options))).hint).toContain(
+      "then run `opscrew provision` again",
+    );
+  });
+
+  it("copies the dump over the servers' own SSH port", async () => {
+    const runner = new ScriptedRunner(() => fail("Connection refused"));
+    const error = await caught(
+      copyDump(runner, {
+        ...options,
+        from: "203.0.113.10",
+        to: "198.51.100.7",
+        keyFile: "k",
+        knownHostsFile: "kh",
+        sizeBytes: 0,
+        port: 2222,
+      }),
+    );
+    const args = runner.calls[0]?.args ?? [];
+    expect(args[args.indexOf("-P") + 1]).toBe("2222");
+    expect(error.hint).toContain("then run `opscrew provision` again");
+  });
+});

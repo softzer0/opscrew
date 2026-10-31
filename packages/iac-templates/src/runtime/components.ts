@@ -4,7 +4,7 @@
  * catalog's services, the workers and the `cron` service with its crontab (contracts/components.md).
  */
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
-import { APP_SERVER, type DeployPlan, type PlanService, servicesOn } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
 import { checkServiceVersion, dataDirs, hostSysctl, renderContext, serviceSpec } from "../catalog";
 import type { ServiceSpec } from "../catalog/types";
 import { GENERATED_USERS } from "../docker/stacks";
@@ -15,6 +15,7 @@ import type { RenderContext, RenderedFile } from "../types";
 import { BUILDPACKS_RUN_USER, RAILPACK_USER } from "../workflow/build";
 import { planFilePath, sqliteFolder } from "../workflow/shared";
 import { RUBY_WITHOUT_RUBYOPT } from "./healthcheck";
+import { servicesRunningOn } from "./move";
 import { dashboardAddress, publishedAddress } from "./network";
 import { composeLiteral, hardened, scriptLiteral, shellQuote } from "./services";
 
@@ -191,12 +192,13 @@ function sysctlService(plan: DeployPlan, server: string): object {
 }
 
 /**
- * The plan's services on `server` (the app's by default, or an extra server's name) in Compose:
- * each with its pinned image, its environment, its data and settings files, health check, memory
- * limit, `restart: unless-stopped` and the app's internal network. A service is published only on
- * a private address ({@link publishedAddress}): on an extra server always, on the app's server for
- * a device's grant. A changed settings file changes the service's label, so Compose recreates only
- * that service.
+ * The plan's services on `server` (the app's by default, or an extra server's name) in Compose,
+ * during a move until its switch with the moved service's old copy on `move.from`
+ * ({@link servicesRunningOn}): each with its pinned image, its environment, its data and settings
+ * files, health check, memory limit, `restart: unless-stopped` and the app's internal network. A
+ * service is published only on a private address ({@link publishedAddress}): on an extra server
+ * always, on the app's server for a device's grant. A changed settings file changes the service's
+ * label, so Compose recreates only that service.
  * @throws OpsCrewError `INVALID_INPUT` for a version OpsCrew does not pin, a kind it cannot run, or
  * two services published on one address with the same port.
  */
@@ -216,7 +218,7 @@ export function renderServices(
   if (sysctl) rendered.services[SYSCTL_SERVICE] = sysctlService(plan, server);
   /** The service published on each port. */
   const published = new Map<number, string>();
-  for (const service of servicesOn(plan, server)) {
+  for (const service of servicesRunningOn(plan, server)) {
     const spec = serviceSpec(service.kind);
     const address = publishedAddress(plan, service);
     if (address !== undefined) {
@@ -310,8 +312,9 @@ function portTaken(
 
 /**
  * Each port published on `server`'s private address, with that address, in the plan's order:
- * - the app's services in its Compose project there: on an extra server every service placed
- *   there, on the app's server ({@link APP_SERVER}) those a device was granted;
+ * - the app's services in its Compose project there ({@link servicesRunningOn}, so a moving
+ *   service's old copy too): on an extra server every one, on the app's server
+ *   ({@link APP_SERVER}) those a device was granted;
  * - then on the app's server, with `options.dashboardsOnNetwork`, the dashboards
  *   (`dashboard: true`, `service` the add-on's name), which every device may reach: Beszel's hub
  *   (`beszel`, in hub mode) and Portainer's web UI (`portainer`), each a Compose project of its
@@ -322,7 +325,7 @@ export function publishedOnNetwork(
   server: string,
   options: Pick<RenderContext, "dashboardsOnNetwork"> = {},
 ): { service: string; port: number; address: string; dashboard?: true }[] {
-  const services = servicesOn(plan, server).flatMap((service) => {
+  const services = servicesRunningOn(plan, server).flatMap((service) => {
     const address = publishedAddress(plan, service);
     return address === undefined
       ? []

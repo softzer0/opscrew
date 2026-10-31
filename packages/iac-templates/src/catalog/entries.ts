@@ -10,6 +10,7 @@
  */
 import { sha256Hex } from "@opscrew/core";
 import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
+import { appServerOf } from "../runtime/move";
 import { privateAddress } from "../runtime/network";
 import { shellQuote } from "../runtime/services";
 import { planFilePath } from "../workflow/shared";
@@ -23,10 +24,12 @@ const ROOT_PASSWORD = { name: "root-password", format: "hex32" } as const;
 /**
  * The service's host for the app (`host`), which is also the one it advertises to its clients
  * (`advertisedHost`: Kafka's and Redpanda's listeners, MongoDB's replica set): its Compose name on
- * the app's server, or the private address of the extra server it is placed on (ADR 0022).
+ * the app's server, or the private address of the extra server it is placed on (ADR 0022). During a
+ * move until its switch, the old copy's (`appServerOf`); the kinds that advertise their host never
+ * move on a live app.
  */
 function serviceHost(ctx: ServiceContext): string {
-  const server = ctx.service.server ?? APP_SERVER;
+  const server = appServerOf(ctx.plan, ctx.service);
   return server === APP_SERVER ? ctx.service.name : privateAddress(ctx.plan, server);
 }
 

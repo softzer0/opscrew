@@ -60,6 +60,8 @@ export type GitHubApi = Pick<
   | "findOpenPullRequest"
   | "createPullRequest"
   | "dispatchWorkflow"
+  // A move's maintenance window waits for the app's deploys that run.
+  | "listWorkflowRuns"
   // Where an environment's deploy secrets live, once the app has several (`checkSecretsPlacement`).
   | "environmentCapability"
   | "getEnvironment"

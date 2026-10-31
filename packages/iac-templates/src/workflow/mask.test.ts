@@ -1,4 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: bash in expected workflow lines, not JavaScript templates.
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { hostListKind } from "@opscrew/plan-schema";
@@ -6,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { GRAFANA_CLOUD, observabilityPlan } from "../addons/__fixtures__/plans";
 import { inEnvironment } from "./__fixtures__/plans";
-import { renderWorkflow } from "./index";
+import { maskFileScript, renderWorkflow } from "./index";
 
 const grafana = (o: Parameters<typeof testPlan>[0] = {}) =>
   observabilityPlan({ grafanaCloud: GRAFANA_CLOUD }, o);
@@ -133,5 +136,32 @@ describe("the masking file in the deploy job (Grafana Cloud)", () => {
       expect(mask).toBe("[^\\s\\S]");
       expect(new RegExp(mask).test("anything at all\n")).toBe(false);
     }
+  });
+});
+
+describe("the masking script outside the deploy (a service's move, T1811)", () => {
+  it("writes the deploy's mask.re from app.env in the app's folder", async () => {
+    const appEnv = [
+      `DATABASE_URL=postgresql://app:${fakeSecret("github-token")}@10.200.4.2:5432/app`,
+      "SPACED='a value with (parens) and a.dot'",
+      "PORT=3000",
+    ].join("\n");
+    const dir = await mkdtemp(join(tmpdir(), "opscrew-mask-"));
+    try {
+      await writeFile(join(dir, "app.env"), `${appEnv}\n\n`);
+      const script = maskFileScript(grafana()).replaceAll(
+        "/srv/apps/shop",
+        dir.replace(/\\/g, "/"),
+      );
+      const run = await new NodeCommandRunner().run("bash", ["-s"], { input: script });
+      expect(run.exitCode, run.stderr).toBe(0);
+      expect(await readFile(join(dir, "mask.re"), "utf8")).toBe(await maskFor(appEnv));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is empty without Grafana Cloud", () => {
+    expect(maskFileScript(testPlan())).toBe("");
   });
 });

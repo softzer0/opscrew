@@ -345,7 +345,12 @@ async function moveLines(
     const from = move.from === APP_SERVER ? "the app's server" : `server ${move.from}`;
     deps.reporter.step(`Measuring ${move.service}'s database on ${from}`);
     const remote = await serverRemote(deps, plan, move.from);
-    size = { bytes: await databaseSize(remote, serverOps(plan, deps.redactor)) };
+    size = {
+      bytes: await databaseSize(remote, {
+        ...serverOps(plan, deps.redactor),
+        database: move.service,
+      }),
+    };
   } catch (error) {
     size = { unknown: deps.redactor.redact(reasonOf(error)) };
   }

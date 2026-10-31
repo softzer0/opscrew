@@ -23,7 +23,7 @@ import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
 import { localPlanFile } from "../localhost/plan";
 import { provisionLocalhost } from "../localhost/provision";
-import { runMove } from "../move";
+import { finishMove, recordSwitchedMove, runMove } from "../move";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import {
@@ -1121,6 +1121,12 @@ async function provisionFlow(
   for (const run of extraOwn) ownReach.push(await extraOwnReach(deps, run));
   const serverReach = [...cloudReach, ...ownReach];
 
+  // The app's settings on its server say where a moving service is: a window that already switched
+  // them drives the secrets below (never the old copy's address again), and `switched` is saved
+  // only once the secret holds the new one.
+  const unrecorded = plan;
+  if (options.secrets !== false) plan = await recordSwitchedMove(deps, plan, services);
+
   // 8–9. Production environment and GitHub Actions secrets
   const secretsStored = await deploySecretsStep(deps, {
     store: options.secrets !== false,
@@ -1164,6 +1170,7 @@ async function provisionFlow(
     where: { host: secretsTarget.host, owner: github.owner, repo: github.repo },
     noun: "server",
   });
+  if (plan !== unrecorded) await writePlanIfChanged(deps, persisted(plan));
 
   // 9b. The scheduled check: its key on the server (a host plan of its own, approved by its hash)
   // where it reads the disk over SSH, then its secrets.
@@ -1228,7 +1235,14 @@ async function provisionFlow(
   // The environment is set up again: a pause of its check (a move's window, a teardown) ends.
   await resumeCheck(deps, github, plan, { command, phase });
   if (renewed && secretsStored && ctx.originTls !== undefined) {
-    await deployRenewedCertificate(deps, github, plan, phase);
+    // No deploy starts while a service moves: its window decides when the app's server changes.
+    if (plan.move !== undefined && plan.move.step !== "switched") {
+      deps.reporter.info(
+        `The renewed origin certificate goes to the server with the next deploy: OpsCrew starts none while ${plan.move.service} moves to another server.`,
+      );
+    } else {
+      await deployRenewedCertificate(deps, github, plan, phase);
+    }
   }
   if (tls !== undefined && tls.leaving.length > 0) {
     deps.reporter.info(
@@ -1274,6 +1288,15 @@ export async function runPhaseFlow(
   });
 }
 
+/** {@link runProvision}'s options. */
+export interface RunProvisionOptions extends ProvisionOptions {
+  /**
+   * `--finish-move`: deletes the old copy of the service a move switched to another server
+   * (`finishMove`), and nothing else.
+   */
+  finishMove?: boolean;
+}
+
 /**
  * `opscrew provision`: creates the hardened server on the plan's provider (Hetzner Cloud or
  * DigitalOcean, and Cloudflare DNS when planned) through
@@ -1294,11 +1317,17 @@ export async function runPhaseFlow(
  * applies each only after an approval bound to its hash (`--yes` never grants a `stack-apply`),
  * records what it created in `.opscrew/server.json`, then stores the deploy secrets and opens the
  * pull request (see `provisionPortainer`).
+ *
+ * With `finishMove` it only deletes a moved service's old copy (`finishMove`).
  */
 export async function runProvision(
   deps: PhaseDeps,
-  options: ProvisionOptions = {},
+  options: RunProvisionOptions = {},
 ): Promise<ProvisionResult> {
+  if (options.finishMove === true) {
+    await finishMove(deps, options.services ?? {});
+    return { applied: false, outputs: {} };
+  }
   // An unreadable plan is reported by the flow itself (and recorded as a failed phase).
   const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
   if (plan !== undefined) requireNoMoveInProgress(plan);

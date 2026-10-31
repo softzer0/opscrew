@@ -205,7 +205,8 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
 
 /**
  * `<runtimeDir>/servers/<name>/compose.yaml`, the app's Compose project (`<app>`) on its extra
- * server `name`: only the services placed there ({@link renderServices}), each published on that
+ * server `name`: only the services placed there, and a moving service's old copy until its switch
+ * ({@link renderServices}), each published on that
  * server's private address only, on the project's internal network, with the one-shot `sysctl`
  * container when an engine there needs a host kernel setting on a server OpsCrew created. No edge,
  * app, workers or cron: they stay on the app's server. The deploy copies it to `/srv/apps/<app>`

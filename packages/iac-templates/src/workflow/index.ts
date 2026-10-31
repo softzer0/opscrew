@@ -10,6 +10,7 @@ import {
   servicesOn,
 } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
+import { checkEnvironmentKey } from "../check";
 import { additionsPath, appDir, EDGE_DIR, type LocalhostSite } from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
@@ -19,6 +20,7 @@ import {
   renderRuntimeFiles,
   renderServerCompose,
 } from "../runtime";
+import { servicesRunningOn } from "../runtime/move";
 import { privateAddress } from "../runtime/network";
 import { runtimeDir } from "../runtime-dir";
 import { siteEnvSecret } from "../serverless/site";
@@ -419,6 +421,39 @@ function maskFileWrite(plan: DeployPlan, dir: string, on: On): string[] {
   ];
 }
 
+/**
+ * The repository variable that pauses deploys while a service moves between the app's servers:
+ * JSON, `{ "<app>/<env>": { reason, since } }`, as the check's `OPSCREW_CHECK_PAUSED`.
+ */
+export const DEPLOY_PAUSED_VARIABLE = "OPSCREW_DEPLOY_PAUSED";
+
+/**
+ * While the plan has a move, the deploy job's condition: {@link DEPLOY_PAUSED_VARIABLE} doesn't
+ * name the app's environment (`checkEnvironmentKey`), so a deploy started during the move's
+ * maintenance window is skipped, not failed. None without a move.
+ */
+function deployPausedCondition(plan: DeployPlan): string | undefined {
+  if (plan.move === undefined) return undefined;
+  return `\${{ !contains(vars.${DEPLOY_PAUSED_VARIABLE}, '"${checkEnvironmentKey(plan)}"') }}`;
+}
+
+/**
+ * The deploy's masking script ({@link maskFileWrite}) as a bash script that runs on the app's
+ * server, in its folder, from the `app.env` there: for a change of the app's settings outside the
+ * deploy (a service's move between the app's servers). Empty without Grafana Cloud.
+ */
+export function maskFileScript(plan: DeployPlan): string {
+  const dir = appDir(plan);
+  const lines = maskFileWrite(plan, dir, HERE);
+  if (lines.length === 0) return "";
+  const script = [
+    "set -euo pipefail",
+    `${DEPLOY_SECRETS.appEnv}="$(cat ${dir}/app.env)"`,
+    ...lines.map((line) => line.replace(/^ {4}/, "")),
+  ];
+  return `${script.join("\n")}\n`;
+}
+
 /** Saves the running version as `.env.previous` and prints its image, in the app's folder. */
 const SAVE_PREVIOUS =
   'rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi';
@@ -628,9 +663,12 @@ function extraServerHost(plan: DeployPlan, server: ExtraServer): string {
 }
 
 /**
- * The deploy's steps for the app's extra servers (`plan.servers`), in plan order, before the app's
- * own upload and switch, so a failure ends the job before the app changes; none without them:
- * 1. the app's deploy key and every extra server's known hosts into the job's temp folder
+ * The deploy's steps for the app's extra servers (`plan.servers`) that have something to run (a
+ * service placed there, or a moving service's old copy until its switch), in plan order, before
+ * the app's own upload and switch, so a failure ends the job before the app changes; none without
+ * them. A server left with nothing to run is skipped: its stopped old copy goes with
+ * `opscrew provision --finish-move`.
+ * 1. the app's deploy key and those servers' known hosts into the job's temp folder
  *    ({@link serversFile}), with an SSH config of its own, which leaves the machine user's alone;
  * 2. per server, over SSH as `deploy` ({@link extraServerHost}, on its port from
  *    `ctx.serverSshPorts`): its Compose file ({@link renderServerCompose}'s) as `compose.yaml` in the
@@ -638,7 +676,9 @@ function extraServerHost(plan: DeployPlan, server: ExtraServer): string {
  *    (pull, start and wait, the published-port repair, the services' one-time setup).
  */
 function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
-  const servers = plan.servers ?? [];
+  const servers = (plan.servers ?? []).filter(
+    (server) => servicesRunningOn(plan, server.name).length > 0,
+  );
   if (servers.length === 0) return [];
   const knownHosts = servers.map((server) => serverDeploySecrets(server.name).knownHosts);
   const sshOpts = (port: number | undefined) => {
@@ -998,6 +1038,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
       ["contents: read", "packages: read"],
       "${{ steps.start.outputs.previous }}",
       deploySteps,
+      deployPausedCondition(plan),
     ),
     ...afterDeployJobs(plan),
     "",

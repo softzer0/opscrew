@@ -440,6 +440,8 @@ export interface Job {
   id: string;
   name: string;
   needs?: string | readonly string[];
+  /** The job's condition (`if:`); it always runs when absent. */
+  if?: string;
   /** `contents: read`, …; nothing else is granted. */
   permissions: readonly string[];
   /** `name: ${{ … }}` lines. */
@@ -459,6 +461,7 @@ export function job(j: Job): string[] {
     `  ${j.id}:`,
     `    name: ${j.name}`,
     ...(needs === undefined ? [] : [`    needs: ${needs}`]),
+    ...(j.if === undefined ? [] : [`    if: ${j.if}`]),
     `    runs-on: ${j.runsOn ?? "ubuntu-latest"}`,
     ...(j.environment === undefined ? [] : [`    environment: ${j.environment}`]),
     ...(j.shell === undefined ? [] : ["    defaults:", "      run:", `        shell: ${j.shell}`]),
@@ -477,7 +480,7 @@ export function job(j: Job): string[] {
  * `server`, `local` or `host` on the environment's self-hosted runner ({@link runnerLabel}), every
  * step with bash (Git for Windows' on a Windows computer). Its output `previous` is the image that
  * ran before this deploy (empty on the first one), which the image retention job never deletes and
- * the label job labels `opscrew-<env>-previous`.
+ * the label job labels `opscrew-<env>-previous`. With `condition` it runs only when that holds.
  */
 export function deployJob(
   plan: DeployPlan,
@@ -485,12 +488,14 @@ export function deployJob(
   permissions: readonly string[],
   previous: string,
   steps: readonly string[],
+  condition?: string,
 ): string[] {
   const own = selfHosted(plan);
   return job({
     id: "deploy",
     name,
     needs: imageJob(plan),
+    ...(condition !== undefined ? { if: condition } : {}),
     environment: githubEnvironment(plan),
     runsOn: own ? `[self-hosted, ${runnerLabel(plan)}]` : undefined,
     shell: own ? "bash" : undefined,

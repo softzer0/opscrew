@@ -11,7 +11,7 @@ import {
   hostPlanHash,
 } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PlanSummary, RemoteExec, ResourceChange } from "@opscrew/contracts";
-import { findExecutable } from "@opscrew/core";
+import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { IMAGES } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
@@ -511,7 +511,12 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
     expect(s.engine.calls).toEqual([]);
   });
 
-  it("hands a move over once everything else is set up", async () => {
+  /**
+   * db moving to data at `step`, with its password on this computer, and the app's settings on the
+   * app's server using db's copy on `uses` (`data` when an earlier window switched them and was
+   * interrupted): `url` is db's address on data.
+   */
+  async function movingSetup(step: "started" | "deployed", uses: "app" | "data") {
     const { plan, privateKeys } = networkedPlan();
     const moving = DeployPlanSchema.parse({
       ...plan,
@@ -520,17 +525,72 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
         firstDeployAt: "2026-10-12T09:00:00.000Z",
         placement: { db: "app" },
       },
-      move: { service: "db", from: "app", to: "data", step: "started", copy: "dump" },
+      move: { service: "db", from: "app", to: "data", step, copy: "dump" },
     });
     const s = await setup({ plan: moving, privateKeys });
+    const password = randomBytes(16).toString("hex");
+    const file = generatedValuesFile(s.deps);
+    const kept = JSON.parse(await readFile(file, "utf8"));
+    await writeFile(file, JSON.stringify({ ...kept, dbPassword: password }));
+    const data = moving.network?.members.find((m) => m.name === "data")?.address;
+    const url = `postgresql://app:${password}@${data}:5432/app`;
+    const used = uses === "data" ? url : `postgresql://app:${password}@db:5432/app`;
+    s.services.remote = (host) =>
+      host === SERVER_IPV4
+        ? {
+            host,
+            run: async (command, options) =>
+              command === "cat /srv/apps/shop/app.env"
+                ? { exitCode: 0, stdout: `DATABASE_URL=${used}\n\n`, stderr: "" }
+                : readyRemote(host).run(command, options),
+          }
+        : readyRemote(host);
+    return { ...s, url };
+  }
 
-    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow(
-      /Moving db to another server is not available yet/,
+  it("hands a move over once everything else is set up", async () => {
+    const s = await movingSetup("started", "app");
+
+    await runProvision(s.deps, { services: s.services });
+    // The move waits for the deploy of these files to start db's new copy on data.
+    expect(s.deps.reporter.text()).toContain(
+      "db moves to server data once the deploy has started its new copy there",
     );
     // Everything before the move is done, and the placement waits for the move.
     expect(s.github.pulls).toHaveLength(1);
     const after = await readArtifact("plan", s.deps.paths.files.plan);
     expect(after.deployment.placement).toEqual({ db: "app" });
+    expect(after.move?.step).toBe("started");
+  });
+
+  it("records a switch the app's server already made before it stores the settings, even when publishing then fails", async () => {
+    const s = await movingSetup("deployed", "data");
+    s.github.createPullRequest = async () => {
+      throw new Error("GitHub is down");
+    };
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow();
+    expect(s.github.secrets.get("OPSCREW_APP_ENV")).toContain(`DATABASE_URL=${s.url}`);
+    const after = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(after.move?.step).toBe("switched");
+  });
+
+  it("records the switch from a plan that still says started, as committed", async () => {
+    const s = await movingSetup("started", "data");
+    await runProvision(s.deps, { services: s.services });
+    expect(s.github.secrets.get("OPSCREW_APP_ENV")).toContain(`DATABASE_URL=${s.url}`);
+    const after = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(after.move?.step).toBe("switched");
+  });
+
+  it("doesn't record the switch when the new settings can't be stored in GitHub", async () => {
+    const s = await movingSetup("deployed", "data");
+    s.github.setActionsSecret = async () => {
+      throw new OpsCrewError("COMMAND_FAILED", "GitHub is down.");
+    };
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow(/GitHub is down/);
+    const after = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(after.move?.step).toBe("deployed");
   });
 
   it("sets up an extra server the user owns with its own host plan, kept as that server's setup", async () => {

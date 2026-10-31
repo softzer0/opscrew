@@ -67,6 +67,11 @@ export function serverOfProvider(
   return entry === undefined ? undefined : addressOf(entry.ipv4, entry.ipv6);
 }
 
+/** `the app's server` or `server <name>`: one of the app's servers in a message. */
+export function serverWords(name: string): string {
+  return name === APP_SERVER ? "the app's server" : `server ${name}`;
+}
+
 /** True when the plan records an applied deployment that was not destroyed since. */
 export function hasDeployment(plan: Pick<DeployPlan, "deployment">): boolean {
   return plan.deployment.lastApplyAt !== undefined && plan.deployment.destroyedAt === undefined;
