@@ -20,6 +20,7 @@ export * from "./promote";
 export * from "./providers";
 export * from "./provision";
 export * from "./retarget";
+export * from "./rollback";
 export {
   type AddRunnerHostInput,
   addRunnerHost,

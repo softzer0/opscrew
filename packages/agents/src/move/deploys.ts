@@ -32,7 +32,10 @@ export async function withDeploysPaused<T>(
     since: deps.clock.now().toISOString(),
   });
   try {
-    await waitForDeploys(deps, github, plan, services);
+    await waitForDeploys(deps, github, plan, services, {
+      outcome: "the maintenance window did not start. Nothing was changed on the servers.",
+      hint: `Let it end (https://github.com/${github.owner}/${github.repo}/actions), then run \`opscrew provision\` again.`,
+    });
     return await window();
   } finally {
     await resumeDeploys(deps, github, plan);

@@ -209,6 +209,33 @@ describe.skipIf(!findExecutable("git"))("opscrew drift for the user's Portainer"
     ]);
   });
 
+  it("accepts a rollback's stack on the deploy branch, whose release switch says skip", async () => {
+    const base = portainerPlan();
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      app: { ...base.app, releaseCommand: "npm run migrate" },
+    });
+    const s = await deployed({ plan });
+    const content = await deployImage(s);
+    expect(content).toContain(`OPSCREW_RELEASE: run`);
+    // `opscrew rollback`'s dispatch writes the same stack with the release command switched off.
+    const rolledBack = content.replace("OPSCREW_RELEASE: run", "OPSCREW_RELEASE: skip");
+    await writeBranch(s.bare, "opscrew-deploy", rolledBack);
+    let report = await drift(s);
+    expect(report.portainer?.differences).toEqual([]);
+
+    // Anything else in it still differs.
+    await writeBranch(
+      s.bare,
+      "opscrew-deploy",
+      rolledBack.replace("restart:", "# hand edit\n    restart:"),
+    );
+    report = await drift(s);
+    expect(titles(report)).toEqual([
+      `compose.yaml on the opscrew-deploy branch of acme/shop differs from OpsCrew's template with the image ${APP_IMAGE}`,
+    ]);
+  });
+
   it("follows a staging environment's own deploy branch, opscrew-deploy-staging", async () => {
     const base = portainerPlan();
     const plan = DeployPlanSchema.parse({

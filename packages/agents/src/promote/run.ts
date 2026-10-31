@@ -41,7 +41,13 @@ import {
   writePendingPromotion,
   writePromotion,
 } from "./record";
-import { githubRepository, NOTHING, requireApplied, requireNotPaused } from "./shared";
+import {
+  type CheckedFor,
+  githubRepository,
+  NOTHING,
+  requireApplied,
+  requireNotPaused,
+} from "./shared";
 import { promoteSite } from "./site";
 import type { PromoteOptions, PromoteResult } from "./types";
 
@@ -80,27 +86,36 @@ function serviceNames(plan: DeployPlan): string[] {
  * recorded, so the target's plan must still have each of them. Its promotion is the `previous` of
  * the target's record, or the record itself when another computer promoted the target since.
  * Returns false when this computer has no record of that image's promotion, so nothing could be
- * checked.
+ * checked. The refusal names `what` the caller checks for (default a promotion) and its
+ * `command`.
  * @throws OpsCrewError `PHASE_PRECONDITION` naming the services the plan no longer has.
  */
 export function requireRollbackServices(
-  run: { target: string; source: string; digest: string },
+  run: { target: string; source: string; digest: string; command: string; what?: CheckedFor },
   plan: DeployPlan,
   record: PromotionRecord | undefined,
 ): boolean {
-  const { target, source } = run;
+  const { target, source, command } = run;
   const before = [record?.previous, record].find((promotion) => promotion?.digest === run.digest);
   if (before === undefined) return false;
   const have = new Set(serviceNames(plan));
   const gone = before.services.filter((name) => !have.has(name));
   if (gone.length === 0) return true;
   const one = gone.length === 1;
+  const services = `${one ? "service" : "services"} ${listText(gone)}, which ${target}'s plan no longer has, so rolling back would run that image without ${one ? "it" : "them"}`;
+  if (run.what === "rollback") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${target}'s image ${run.digest.slice(0, 19)} ran with the ${services}. Nothing was changed.`,
+      {
+        hint: `Roll back to a version that ran without ${one ? "it" : "them"} (\`${command} --list\` shows the versions), or deploy a fix: once ${source} runs it, \`opscrew promote --to ${target}\` deploys it.`,
+      },
+    );
+  }
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${target}'s previous image ran with the ${one ? "service" : "services"} ${listText(gone)}, which ${target}'s plan no longer has, so rolling back would run that image without ${one ? "it" : "them"}. ${NOTHING}`,
-    {
-      hint: `Promote forward instead: once ${source} runs a fixed image, run \`opscrew promote --to ${target}\`.`,
-    },
+    `${target}'s previous image ran with the ${services}. ${NOTHING}`,
+    { hint: `Promote forward instead: once ${source} runs a fixed image, run \`${command}\`.` },
   );
 }
 
@@ -349,7 +364,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   let unchecked = false;
   if (chosen.rollback) {
     const record = await readPromotion(targetPaths);
-    unchecked = !requireRollbackServices({ target, source, digest }, plan, record);
+    unchecked = !requireRollbackServices({ target, source, digest, command }, plan, record);
   } else {
     requireReady(target, source, sourcePlan, plan);
   }

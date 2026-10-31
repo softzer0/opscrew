@@ -229,15 +229,26 @@ export async function runningDeploy(
 }
 
 /**
+ * What a caller of {@link waitForDeploys} says when a deploy still runs after 30 minutes: what did
+ * not happen, following "…still runs after 30 minutes, so", and the next step.
+ */
+export interface DeploysStillRun {
+  outcome: string;
+  hint: string;
+}
+
+/**
  * Waits until no run of the app's deploy workflow is queued or in progress, looking first one
  * poll interval after the pause was set.
- * @throws OpsCrewError `COMMAND_FAILED` when one still runs after 30 minutes.
+ * @throws OpsCrewError `COMMAND_FAILED` with `stillRun`'s words when one still runs after 30
+ * minutes.
  */
 export async function waitForDeploys(
   deps: Pick<PhaseDeps, "reporter">,
   github: Repo<"listWorkflowRuns">,
   plan: DeployPlan,
   services: Pick<ProvisionServices, "sleep" | "now">,
+  stillRun: DeploysStillRun,
 ): Promise<void> {
   const workflowFile = posix.basename(plan.cicd.workflowPath);
   // A run that started just before the pause may not be listed yet.
@@ -264,9 +275,7 @@ export async function waitForDeploys(
   if (idle) return;
   throw new OpsCrewError(
     "COMMAND_FAILED",
-    `A deploy of ${plan.app.name} (${workflowFile}) still runs after 30 minutes, so the maintenance window did not start. Nothing was changed on the servers.`,
-    {
-      hint: `Let it end (https://github.com/${github.owner}/${github.repo}/actions), then run \`opscrew provision\` again.`,
-    },
+    `A deploy of ${plan.app.name} (${workflowFile}) still runs after 30 minutes, so ${stillRun.outcome}`,
+    { hint: stillRun.hint },
   );
 }

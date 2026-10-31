@@ -41,7 +41,7 @@ function messageOf(
 }
 
 /** `sha256:` and the digest's first 12 digits. */
-function shortDigest(digest: string): string {
+export function shortDigest(digest: string): string {
   return digest.slice(0, 19);
 }
 

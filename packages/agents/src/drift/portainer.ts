@@ -14,6 +14,7 @@ import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { exists, OpsCrewError, readTextIfExists, tfstateFile } from "@opscrew/core";
 import {
   fillPortainerStack,
+  PORTAINER_RELEASE_PLACEHOLDER,
   PORTAINER_STACK_VARIABLES,
   portainerSecretVariables,
   portainerStackEnvKeys,
@@ -395,7 +396,8 @@ async function deployBranchFile(
 /**
  * How the deploy branch differs from what the deploy workflow writes from OpsCrew's template: the
  * branch is gone while the app's stack deploys from it, it still holds the placeholder, it names
- * an image that is not the app's, or its file is not the template with that image filled in.
+ * an image that is not the app's, or its file is not the template with that image filled in (the
+ * release switch `run`, or `skip` as a rollback writes it).
  */
 async function deployBranchDifferences(
   deps: PhaseDeps,
@@ -465,7 +467,12 @@ async function deployBranchDifferences(
     ];
   }
   if (input.template === undefined) return [];
-  if (fillPortainerStack(input.template.trimEnd(), image) !== text) {
+  // A rollback's dispatch writes the release switch `skip`, every other deploy `run`.
+  const template = input.template.trimEnd();
+  const written = [template, template.replaceAll(PORTAINER_RELEASE_PLACEHOLDER, "skip")].map(
+    (form) => fillPortainerStack(form, image),
+  );
+  if (!written.includes(text)) {
     return [
       {
         area: "deploy-branch",

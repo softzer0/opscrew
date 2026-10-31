@@ -14,6 +14,12 @@ import type { PromoteGitHubApi, PromoteServices } from "./types";
 /** What every refusal of a promotion ends with. */
 export const NOTHING = "Nothing was deployed.";
 
+/**
+ * What a shared check refuses for, which its refusals name: `opscrew promote` (a promotion, the
+ * default) or `opscrew rollback` (a rollback, whose refusals end "Nothing was changed.").
+ */
+export type CheckedFor = "promotion" | "rollback";
+
 /** How many pending changes a refusal names before it says how many more there are. */
 const LISTED = 5;
 
@@ -78,8 +84,9 @@ function gitBlobSha(text: string): string {
  * on `branch` (promote's: the default branch) is the one its plan generates (by git blob hash), so
  * the approval names what will run. On a server, drift compares the generated files, so the
  * repository's copy is the one the plan generates; a site's drift compares none, so its caller
- * passes `workflow`, the workflow rendered from the plan, which must be the branch's. Returns the
- * workflow's file name, which the caller starts.
+ * passes `workflow`, the workflow rendered from the plan, which must be the branch's. The
+ * refusals name `what` the caller checks for (default a promotion) and its `command`. Returns
+ * the workflow's file name, which the caller starts.
  */
 export async function requireApplied(
   deps: PhaseDeps,
@@ -94,9 +101,12 @@ export async function requireApplied(
     branch: string;
     /** A site: the workflow its plan generates (its text), as provision renders it. */
     workflow?: string;
+    what?: CheckedFor;
   },
 ): Promise<string> {
   const { target, plan, github, command, branch } = input;
+  const what = input.what ?? "promotion";
+  const nothing = what === "rollback" ? "Nothing was changed." : NOTHING;
   const provisionFirst = `Run \`opscrew provision --env ${target}\` first, then \`${command}\` again.`;
   deps.reporter.step(`Checking ${target} for changes not applied yet (read-only)`);
   const report = await (input.services.drift ?? runDrift)({ ...deps, paths: input.paths });
@@ -104,7 +114,7 @@ export async function requireApplied(
   if (pending.length > 0) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The ${target} environment has changes that are not applied yet: ${shortList(pending)}. OpsCrew promotes only to an environment whose plan is applied, so the approval names what will run. ${NOTHING}`,
+      `The ${target} environment has changes that are not applied yet: ${shortList(pending)}. ${what === "rollback" ? "OpsCrew rolls back only an environment" : "OpsCrew promotes only to an environment"} whose plan is applied, so the approval names what will run. ${nothing}`,
       { hint: provisionFirst },
     );
   }
@@ -121,8 +131,8 @@ export async function requireApplied(
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       onBranch === undefined
-        ? `${upperFirst(where)} has no ${workflowPath}, the deploy workflow ${target}'s plan generates, so GitHub cannot start it. ${NOTHING}`
-        : `The deploy workflow on ${where} (${workflowPath}) is not the one ${target}'s plan generates, so its run would not do what this promotion shows. ${NOTHING}`,
+        ? `${upperFirst(where)} has no ${workflowPath}, the deploy workflow ${target}'s plan generates, so GitHub cannot start it. ${nothing}`
+        : `The deploy workflow on ${where} (${workflowPath}) is not the one ${target}'s plan generates, so its run would not do what this ${what} shows. ${nothing}`,
       {
         hint:
           input.workflow !== undefined && onBranch !== undefined
