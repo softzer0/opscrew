@@ -25,11 +25,12 @@ if (start === -1) {
 }
 const rest = lines.slice(start + 1);
 const end = rest.findIndex((line) => line.startsWith("## [") || /^\[[^\]]+\]: /.test(line));
-// GitHub shows each line break of a release's notes, so the changelog's wrapped lines are joined.
+// GitHub shows each line break of a release's notes, so the changelog's wrapped lines are joined;
+// a nested list item (indented `- `) starts a line of its own.
 const unwrapped = [];
 for (const line of end === -1 ? rest : rest.slice(0, end)) {
   const previous = unwrapped.length - 1;
-  if (line.trim() && unwrapped[previous]?.trim() && !/^(- |#)/.test(line)) {
+  if (line.trim() && unwrapped[previous]?.trim() && !/^(\s*- |#)/.test(line)) {
     unwrapped[previous] += ` ${line.trim()}`;
   } else {
     unwrapped.push(line);
