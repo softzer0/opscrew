@@ -77,9 +77,55 @@ export function dockerConfig(plan: DeployPlan): string {
   return `${appDir(plan)}/.docker`;
 }
 
-/** Shown when the release command fails; names neither the server nor any secret. */
+/**
+ * Shown when the release command fails (FR-1912): where its output is, what a migration that
+ * stopped partway means, and the ways forward; names neither the server nor any secret.
+ */
 function releaseFailed(plan: DeployPlan): string {
-  return `::error::The release command (app.releaseCommand in ${planFilePath(plan)}) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in ${releaseLog(plan)} (it can quote data from the database, so it is not printed here; ${runbookFilePath(plan)} has the SSH command): fix the command or the app and push again.`;
+  return `::error::The release command (app.releaseCommand in ${planFilePath(plan)}) failed, so the new version was not started and the previous version keeps serving. Its output stays on the server in ${releaseLog(plan)} (it can quote data from the database, so it is not printed here; ${runbookFilePath(plan)} has the SSH command). A migration that stopped partway may have applied some of its changes, and the previous version now runs with them: read release.log to see how far it got, then fix the migration and push again to deploy forward, or restore a backup taken before this deploy.`;
+}
+
+/** Printed by a rollback's start script instead of running the release command. */
+const NO_RELEASE = "A rollback runs no release command: the data and the schema stay as they are.";
+
+/**
+ * The folder in the app's folder where the deploy keeps the last failed copy's lines: `about`
+ * (`image=`, `time=` in UTC, `failed=` `health`, `process <name>` or `check`) and `<service>.log`.
+ */
+export const FAILED_DEPLOY_DIR = ".failed-deploy";
+
+/** How many of a failed container's last lines the deploy keeps. */
+const FAILED_LINES = 500;
+
+/**
+ * `keep_failed <service> <container> <why>`: writes the container's last lines (both streams, with
+ * Docker's timestamps) to `<service>.log` in {@link FAILED_DEPLOY_DIR}, then `about` for this run's
+ * image (`$RUN_IMAGE`), readable by the deploy user only (umask 077, as `release.log`). A failure of
+ * another image is cleared first. It never fails the script: keeping the lines changes nothing in
+ * what the deploy or the rollback does.
+ */
+function keepFailed(plan: DeployPlan): string[] {
+  const dir = `${appFolder(plan)}/${FAILED_DEPLOY_DIR}`;
+  return [
+    "keep_failed() {",
+    "  (",
+    "    umask 077",
+    `    grep -qxF "image=$RUN_IMAGE" ${dir}/about 2> /dev/null || rm -rf ${dir}`,
+    `    mkdir -p ${dir}`,
+    `    docker logs --timestamps --tail ${FAILED_LINES} "$2" > ${dir}/"$1".log 2>&1`,
+    `    printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > ${dir}/about`,
+    "  ) || true",
+    "}",
+  ];
+}
+
+/**
+ * `opscrew logs --failed` for the plan's app and environment (`--service <service>` when given),
+ * with the `--app` and `--env` flags as `provisionCommand` builds them.
+ */
+function failedLogs(plan: DeployPlan, service?: string): string {
+  const env = plan.environment?.name;
+  return `opscrew logs --failed${service === undefined ? "" : ` --service ${service}`}${appFlag(plan)}${env === undefined ? "" : ` --env ${env}`}`;
 }
 
 /** How long kamal-proxy waits for the new copy to pass its health check. */
@@ -205,9 +251,12 @@ export function processServices(plan: DeployPlan): string[] {
 /** How long every worker and cron container must keep running after the deploy starts it. */
 const PROCESS_CHECK_SECONDS = 30;
 
-/** printf's format for a worker that stopped: `%s` is its Compose service, twice. */
+/**
+ * printf's format for a worker that stopped: `%s` is its Compose service, twice. It points to the
+ * worker's kept lines, since after the switch back its Compose logs are the previous version's.
+ */
 function processFailed(plan: DeployPlan): string {
-  return `::error::The %s container did not keep running for ${PROCESS_CHECK_SECONDS} seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with \`docker compose logs %s\` in ${appFolder(plan)} (${runbookFilePath(plan)} has the SSH command), fix its command (processes in ${planFilePath(plan)}) or the app, and push again.\\n`;
+  return `::error::The %s container did not keep running for ${PROCESS_CHECK_SECONDS} seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its last lines, from before OpsCrew put the previous version back, with \`${failedLogs(plan, "%s")}\`, then fix its command (processes in ${planFilePath(plan)}) or the app, and push again.\\n`;
 }
 
 /**
@@ -247,7 +296,7 @@ function restoreProcesses(services: readonly string[]): string[] {
  * Starts `services` (the workers and cron) on `$APP_IMAGE`; Compose recreates only those whose
  * image or settings changed. Then each container must stay running, with the restart count it
  * started with, for {@link PROCESS_CHECK_SECONDS}; otherwise the script names the first that did
- * not and exits 1.
+ * not, keeps its container's lines (`keep_failed`) and exits 1.
  */
 function startProcesses(plan: DeployPlan, services: readonly string[]): string[] {
   if (services.length === 0) return [];
@@ -267,6 +316,7 @@ function startProcesses(plan: DeployPlan, services: readonly string[]): string[]
     `    now="$id=$(docker inspect --format '{{.State.Status}}:{{.RestartCount}}' "$id")"`,
     '    case " $started " in *" $now "*) continue ;; esac',
     `    printf ${shellMessage(processFailed(plan))} "$service" "$service"`,
+    '    keep_failed "$service" "$id" "process $service"',
     "    exit 1",
     "  done",
     "done",
@@ -314,13 +364,13 @@ const LOGOUT = "docker logout ghcr.io > /dev/null 2>&1";
  * keeps a pause even across its restarts. The first deploy registers the first target the same
  * way (its pause fails, as kamal-proxy has no service yet, and the deploy goes on). Containers of
  * services the Compose file no longer has go with the new copy's start. When the new copy never
- * becomes healthy it is removed, `failed` is printed and the script exits 1. `hosts` are
- * kamal-proxy's for the service ({@link proxyHosts}).
+ * becomes healthy, the `failed` lines run (they print why), the copy is removed and the script
+ * exits 1. `hosts` are kamal-proxy's for the service ({@link proxyHosts}).
  */
 function switchApp(
   plan: DeployPlan,
   hosts: string,
-  failed: string,
+  failed: readonly string[],
   onExit: readonly string[] = [],
 ): string[] {
   const { strategy, drainSeconds } = plan.deploy;
@@ -328,8 +378,8 @@ function switchApp(
   const kamal = [
     'name="$(docker inspect --format \'{{.Name}}\' "$new")"',
     `if ! ${kamalProxy(`deploy ${app} --target "\${name#/}:${plan.app.port}"${hosts} --health-check-path ${shellQuote(healthPath(plan))} --deploy-timeout ${DEPLOY_TIMEOUT_SECONDS}s --drain-timeout ${drainSeconds}s --target-timeout ${TARGET_TIMEOUT_SECONDS}s`)}; then`,
+    ...failed.map((line) => `  ${line}`),
     '  docker rm -f "$new" > /dev/null',
-    `  echo ${shellQuote(failed)}`,
     "  exit 1",
     "fi",
   ];
@@ -364,14 +414,17 @@ function switchApp(
   ];
 }
 
-/** Why a new copy failed: it got no traffic (rolling), what to check, and the builder hint. */
+/**
+ * Why a new copy failed: it got no traffic (rolling), where its lines are, what to check, and the
+ * builder hint.
+ */
 function healthFailed(plan: DeployPlan): string {
   const path = healthPath(plan);
   const traffic =
     plan.deploy.strategy === "rolling"
       ? " It received no traffic: the previous version keeps serving."
       : "";
-  return `::error::The new version did not pass its health check (GET ${path} on port ${plan.app.port}) within ${DEPLOY_TIMEOUT_SECONDS} seconds, so OpsCrew removed it.${traffic} Check that the app listens on port ${plan.app.port} (app.port in ${planFilePath(plan)}, passed to the app as PORT) and answers ${path}. ${builderHint(plan)}`;
+  return `::error::The new version did not pass its health check (GET ${path} on port ${plan.app.port}) within ${DEPLOY_TIMEOUT_SECONDS} seconds, so OpsCrew removed it.${traffic} Its last lines are kept on the server: \`${failedLogs(plan)}\`. Check that the app listens on port ${plan.app.port} (app.port in ${planFilePath(plan)}, passed to the app as PORT) and answers ${path}. ${builderHint(plan)}`;
 }
 
 /** The app's site as the server had it before this deploy, while the edge takes the new one. */
@@ -673,19 +726,23 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
 
 /**
  * The server script of the start step (POSIX sh, in the app's folder `/srv/apps/<app>`; the image
- * is `$1`, already checked to be a GHCR digest reference), in this order:
+ * is `$1`, already checked to be a GHCR digest reference, and `$2` the mode, `deploy` (the default)
+ * or `rollback`), in this order:
  * 1. pull the app's images;
  * 2. the shared edge with the app's site and the `edgeFiles` the upload left ({@link edgeCommands});
  * 3. start the plan's services when they are not running (Compose recreates one only when its own
  *    configuration changed; nothing forces it), then recreate any of them published on the
  *    server's private address that came up without its port ({@link portRepair});
  * 4. the services' one-time setup, `init` (the catalog's steps, see {@link ServiceInitStep});
- * 5. the release command in a one-off container of the new image;
+ * 5. the release command in a one-off container of the new image, never in mode `rollback`: an
+ *    earlier version's migrations must not run against a newer schema;
  * 6. the switch to the new image by `deploy.strategy` (`recreate` for SQLite apps), after recording
  *    which workers and cron run ({@link PREVIOUS_PROCESSES});
  * 7. the workers and cron on the new image;
  * 8. a check that every worker and cron container keeps running for 30 seconds.
- * A failure before the switch leaves the running version untouched; after it, the workflow's
+ * A copy that fails its health check, or a worker that stops, leaves its last lines in
+ * {@link FAILED_DEPLOY_DIR} ({@link keepFailed}) before it goes. A failure before the switch leaves
+ * the running version untouched; after it, the workflow's
  * rollback ({@link rollbackCommands}) puts the web and the workers back. The services are never
  * named after the setup, and no Compose command names another app's folder or project. The script
  * reaches `sh` on its stdin, so the commands that read stdin (`docker compose exec` and `run`) get
@@ -702,11 +759,15 @@ export function switchCommands(
     plan.app.releaseCommand === undefined
       ? []
       : [
-          `if ! (umask 077; docker compose run --rm --no-deps -T release < /dev/null > ${releaseLog(plan)} 2>&1); then`,
-          `  echo ${shellMessage(releaseFailed(plan))}`,
-          "  exit 1",
+          'if [ "$MODE" = rollback ]; then',
+          `  echo ${shellQuote(NO_RELEASE)}`,
+          "else",
+          `  if ! (umask 077; docker compose run --rm --no-deps -T release < /dev/null > ${releaseLog(plan)} 2>&1); then`,
+          `    echo ${shellMessage(releaseFailed(plan))}`,
+          "    exit 1",
+          "  fi",
+          `  echo ${shellMessage(`The release command finished; its output is in ${releaseLog(plan)} on the server.`)}`,
           "fi",
-          `echo ${shellMessage(`The release command finished; its output is in ${releaseLog(plan)} on the server.`)}`,
         ];
   return [
     ...SCRIPT_ROOTS,
@@ -716,6 +777,9 @@ export function switchCommands(
     `trap '${LOGOUT}' EXIT`,
     `cd ${appFolder(plan)}`,
     'export APP_IMAGE="$1"',
+    'RUN_IMAGE="$1"',
+    'MODE="${2:-deploy}"',
+    ...keepFailed(plan),
     EDGE_FUNCTION,
     "docker compose pull",
     ...edgeCommands(plan, edgeFiles),
@@ -725,7 +789,12 @@ export function switchCommands(
     ...release,
     // Before the switch: `recreate` writes `.env` first, and from then on the rollback acts.
     ...recordProcesses(processServices(plan)),
-    ...switchApp(plan, proxyHosts(plan, edgeFiles.localhost), healthFailed(plan), [LOGOUT]),
+    ...switchApp(
+      plan,
+      proxyHosts(plan, edgeFiles.localhost),
+      ['keep_failed app "$new" health', `echo ${shellQuote(healthFailed(plan))}`],
+      [LOGOUT],
+    ),
     ...startProcesses(plan, processServices(plan)),
   ];
 }
@@ -759,26 +828,32 @@ export function serverCommands(
  * `.env.previous` holds another image, switches the web back to that one the same way as the
  * deploy, starts on it the workers and cron that ran before the deploy and stops the others, and
  * prints `restored`; prints `unchanged` when this run never switched, `no-previous` when there is
- * nothing to go back to, and nothing when the switch back failed. On this computer `localhost` is
- * the app's hostname there, as the start script had it.
+ * nothing to go back to, and nothing when the switch back failed. Before the switch back it keeps
+ * the lines of the app containers it replaces (`failed=check`), unless the start script already
+ * kept this image's failure (a health check or a worker). On this computer `localhost` is the
+ * app's hostname there, as the start script had it.
  */
 export function rollbackCommands(plan: DeployPlan, localhost?: LocalhostSite): string[] {
   return [
     ...SCRIPT_ROOTS,
     "set -eu",
     `cd ${appFolder(plan)}`,
+    'RUN_IMAGE="$1"',
+    ...keepFailed(plan),
     EDGE_FUNCTION,
     'if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi',
     "if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi",
+    // Unless the start script kept this image's failure, the check from outside failed.
+    `if ! grep -qxF "image=$RUN_IMAGE" ${appFolder(plan)}/${FAILED_DEPLOY_DIR}/about 2> /dev/null; then`,
+    '  for id in $(docker compose ps -aq app); do keep_failed app "$id" check; done',
+    "fi",
     "APP_IMAGE=\"$(sed -n 's/^APP_IMAGE=//p' .env.previous)\"",
     "export APP_IMAGE",
     "{",
     ...[
-      ...switchApp(
-        plan,
-        proxyHosts(plan, localhost),
-        "::error::The previous version did not pass its health check either.",
-      ),
+      ...switchApp(plan, proxyHosts(plan, localhost), [
+        `echo ${shellQuote("::error::The previous version did not pass its health check either.")}`,
+      ]),
       ...restoreProcesses(processServices(plan)),
     ].map((line) => `  ${line}`),
     "} >&2",

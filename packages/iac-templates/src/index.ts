@@ -45,3 +45,4 @@ export * from "./serverless";
 export * from "./tunnel";
 export * from "./types";
 export * from "./workflow";
+export { FAILED_DEPLOY_DIR } from "./workflow/switch";

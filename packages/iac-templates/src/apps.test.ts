@@ -427,7 +427,7 @@ describe("the plan an environment's and a further app's files name", () => {
         releaseCommand: "npm run migrate",
       });
       const messages = renderWorkflow(released, ctx).content;
-      expect(messages.split(`${runbook} has the SSH command`).length - 1).toBe(2);
+      expect(messages.split(`${runbook} has the SSH command`).length - 1).toBe(1);
       expect(messages).not.toContain("opscrew/RUNBOOK.md");
       expect(renderRunbook(plan, ctx).path).toBe(runbook);
     });

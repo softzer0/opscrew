@@ -173,6 +173,17 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop-staging
           export APP_IMAGE="$1"
+          RUN_IMAGE="$1"
+          MODE="\${2:-deploy}"
+          keep_failed() {
+            (
+              umask 077
+              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-staging/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
+              mkdir -p "$APPS_DIR"/shop-staging/.failed-deploy
+              docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-staging/.failed-deploy/"$1".log 2>&1
+              printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-staging/.failed-deploy/about
+            ) || true
+          }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           docker compose pull
           mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
@@ -230,8 +241,9 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
           done
           name="$(docker inspect --format '{{.Name}}' "$new")"
           if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+            keep_failed app "$new" health
+            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --env staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             docker rm -f "$new" > /dev/null
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
             exit 1
           fi
           printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
@@ -276,9 +288,22 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
           cd "$APPS_DIR"/shop-staging
+          RUN_IMAGE="$1"
+          keep_failed() {
+            (
+              umask 077
+              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-staging/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
+              mkdir -p "$APPS_DIR"/shop-staging/.failed-deploy
+              docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-staging/.failed-deploy/"$1".log 2>&1
+              printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-staging/.failed-deploy/about
+            ) || true
+          }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
+          if ! grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-staging/.failed-deploy/about 2> /dev/null; then
+            for id in $(docker compose ps -aq app); do keep_failed app "$id" check; done
+          fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE
           {
@@ -290,8 +315,8 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
             done
             name="$(docker inspect --format '{{.Name}}' "$new")"
             if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
-              docker rm -f "$new" > /dev/null
               echo '::error::The previous version did not pass its health check either.'
+              docker rm -f "$new" > /dev/null
               exit 1
             fi
             printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env

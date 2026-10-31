@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { localhostHostname, localhostTlsUpload, renderEdgeCompose } from "../edge";
 import { localhostPlan } from "../edge/__fixtures__/localhost";
+import { FAILED_DEPLOY_DIR } from "../index";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import { NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
@@ -81,6 +82,12 @@ describe("the scripts' root folders", () => {
   });
 });
 
+describe("the failed copy's folder", () => {
+  it("is exported from the package, for opscrew logs --failed", () => {
+    expect(FAILED_DEPLOY_DIR).toBe(".failed-deploy");
+  });
+});
+
 describe("the start script on this computer", () => {
   it("has no origin TLS and no certbot, whatever the edge files say", () => {
     const site = { hostname: "shop.localhost" };
@@ -125,7 +132,7 @@ const OLD = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
  * The fake `docker`: logs every call and refuses any argument under `/srv/`. An app project's
  * containers live in $WORK/containers-<folder>; the edge's `up` fails with EDGE_UP_FAIL, a one-off
  * container (certbot) always fails, and kamal-proxy's `deploy <service>` writes its target and
- * host to $WORK/routes/<service>.
+ * host to $WORK/routes/<service>, or fails with UNHEALTHY. `logs` prints a line naming the container.
  */
 const FAKE_DOCKER = [
   "#!/bin/sh",
@@ -157,6 +164,7 @@ const FAKE_DOCKER = [
   '  "compose run") echo "a one-off container ran: $*" >&2; exit 1 ;;',
   '  "compose exec")',
   '    if [ "$5 $6" = "kamal-proxy deploy" ]; then',
+  '      if [ -n "${UNHEALTHY:-}" ]; then exit 1; fi',
   '      target=""; host=""; prev=""',
   '      for arg in "$@"; do',
   '        if [ "$prev" = --target ]; then target="$arg"; fi',
@@ -167,6 +175,7 @@ const FAKE_DOCKER = [
   '      echo "$target $host" > "$WORK/routes/$7"',
   "    fi ;;",
   `  "inspect --format") cat "$WORK"/containers-* | awk -v id="$last" '$1 == id { print "/" $2 }' ;;`,
+  '  "logs --timestamps") echo "copy-line of $last" ;;',
   '  "rm "*) for f in "$WORK"/containers-*; do grep -v "^$last " "$f" > "$f.tmp" || true; mv "$f.tmp" "$f"; done ;;',
   "esac",
 ].join("\n");
@@ -370,6 +379,21 @@ describe.skipIf(!shWorks())(
       expect(failed.status).toBe(1);
       expect(read(`${edgeDir()}/tls/shop/local.pem`)).toBe("certificate for the first\n");
       expect(read(`${edgeDir()}/tls/shop/local.key`)).toBe("key for the first\n");
+    });
+
+    it("keeps a failed copy's lines in the app's folder under the apps' root", () => {
+      const plan = localhostPlan();
+      upload(plan, "shop.localhost");
+      const start = run(switchCommands(plan, [], localFiles("shop.localhost")), {
+        UNHEALTHY: "1",
+      });
+      expect(start.status).toBe(1);
+      const kept = `${appsDir()}/shop/.failed-deploy`;
+      expect(read(`${kept}/about`)).toMatch(
+        new RegExp(`^image=${IMAGE.replace(/\./g, "\\.")}\ntime=\\S+Z\nfailed=health\n$`),
+      );
+      expect(read(`${kept}/app.log`)).toBe("copy-line of c1\n");
+      expect(start.output).not.toContain("copy-line");
     });
 
     it("rolls back to the previous image with the app's hostname", () => {

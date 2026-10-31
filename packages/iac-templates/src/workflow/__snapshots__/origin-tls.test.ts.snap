@@ -22,6 +22,17 @@ export DOCKER_CONFIG="$APPS_DIR"/shop/.docker
 trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
 cd "$APPS_DIR"/shop
 export APP_IMAGE="$1"
+RUN_IMAGE="$1"
+MODE="\${2:-deploy}"
+keep_failed() {
+  (
+    umask 077
+    grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
+    mkdir -p "$APPS_DIR"/shop/.failed-deploy
+    docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop/.failed-deploy/"$1".log 2>&1
+    printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop/.failed-deploy/about
+  ) || true
+}
 edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
 docker compose pull
 mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
@@ -81,8 +92,9 @@ for id in $(docker compose ps -aq app); do
 done
 name="$(docker inspect --format '{{.Name}}' "$new")"
 if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+  keep_failed app "$new" health
+  echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed\`. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
   docker rm -f "$new" > /dev/null
-  echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
   exit 1
 fi
 printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env

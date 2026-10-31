@@ -29,8 +29,10 @@ import {
 } from "../runtime";
 import type { RenderContext } from "../types";
 import {
+  inEnvironment,
   jobYaml,
   NIGHTLY,
+  ofApp,
   withBuild,
   withPlan,
   withProcesses,
@@ -160,7 +162,8 @@ const PRELUDE = [
  * its `pause` and `resume` fail for a service without a route, and mark it paused in
  * $WORK/paused/<service>. The edge's one-off certbot containers act on $WORK/letsencrypt: `test`
  * looks for a file, `certbot` gets the certificate (fails with CERTBOT_FAIL, and the first time
- * with another certbot's lock with CERTBOT_LOCKED), `sh` runs its script there.
+ * with another certbot's lock with CERTBOT_LOCKED), `sh` runs its script there. `logs` prints a
+ * `copy-line` naming the container on each stream.
  */
 const FAKE_DOCKER = [
   "#!/usr/bin/env bash",
@@ -280,6 +283,10 @@ const FAKE_DOCKER = [
   '    if [[ "${@: -1}" == p* ]]; then',
   '      cat "$WORK"/processes-* | awk -v id="${@: -1}" -v f="$3" \'$1 == id { print (f == "{{.RestartCount}}" ? $5 : $4 ":" $5) }\'',
   '    else cat "$WORK"/containers-* | awk -v id="${@: -1}" \'$1 == id { print "/" $2 }\' | grep .; fi ;;',
+  // A container's last lines: one on stdout and one on stderr, which name it.
+  '  "logs --timestamps")',
+  '    echo "2026-10-31T10:00:00.000000000Z copy-line out of ${@: -1}"',
+  '    echo "2026-10-31T10:00:01.000000000Z copy-line err of ${@: -1}" >&2 ;;',
   "  *)",
   '    if [[ "$1" == rm ]]; then grep -v "^${@: -1} " "$state" > "$state.tmp" || true; mv "$state.tmp" "$state"; fi ;;',
   "esac",
@@ -435,19 +442,33 @@ const runningProcesses = (image: string, services = ["worker", "beat", "cron"]) 
 
 // Each test runs bash several times; on Windows (Git Bash) under a parallel `pnpm check` that
 // can take longer than the default 5 seconds.
+/** A new fake server and runner in a new `work` folder; the previous one is removed. */
+function setUp(): void {
+  if (work !== "") rmSync(work, { recursive: true, force: true });
+  work = mkdtempSync(join(tmpdir(), "opscrew-rollback-")).replaceAll("\\", "/");
+  for (const dir of ["repos/shop", "srv/edge", "tmp", "bin"]) {
+    mkdirSync(join(work, dir), { recursive: true });
+  }
+  writeFileSync(join(work, "bin", "docker"), `${FAKE_DOCKER}\n`, { mode: 0o755 });
+  writeFileSync(join(work, "bin", "sleep"), `${FAKE_SLEEP}\n`, { mode: 0o755 });
+  writeFileSync(join(work, "bin", "flock"), `${FAKE_FLOCK}\n`, { mode: 0o755 });
+  // The server after an upload: the app's folder with its runtime files and the edge's.
+  uploaded(plan);
+}
+
+/** The start step with `mode` as the server script's `$2`, as a dispatch passes it. */
+function withMode(start: string, mode: "deploy" | "rollback"): string {
+  const script = start.replace(' -s -- "$IMAGE" <<', ` -s -- "$IMAGE" ${mode} <<`);
+  expect(script).not.toBe(start);
+  return script;
+}
+
 describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000 }, () => {
-  beforeEach(() => {
-    work = mkdtempSync(join(tmpdir(), "opscrew-rollback-")).replaceAll("\\", "/");
-    for (const dir of ["repos/shop", "srv/edge", "tmp", "bin"]) {
-      mkdirSync(join(work, dir), { recursive: true });
-    }
-    writeFileSync(join(work, "bin", "docker"), `${FAKE_DOCKER}\n`, { mode: 0o755 });
-    writeFileSync(join(work, "bin", "sleep"), `${FAKE_SLEEP}\n`, { mode: 0o755 });
-    writeFileSync(join(work, "bin", "flock"), `${FAKE_FLOCK}\n`, { mode: 0o755 });
-    // The server after an upload: the app's folder with its runtime files and the edge's.
-    uploaded(plan);
+  beforeEach(setUp);
+  afterEach(() => {
+    rmSync(work, { recursive: true, force: true });
+    work = "";
   });
-  afterEach(() => rmSync(work, { recursive: true, force: true }));
 
   describe("rolling", () => {
     it("starts a second copy, routes to it once healthy, then removes the old one", () => {
@@ -698,7 +719,9 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       server({ ".env": OLD }, [OLD]);
       const start = run(recreate.start, { UNHEALTHY: NEW });
       expect(start.status).toBe(1);
-      expect(start.output).toContain("within 60 seconds, so OpsCrew removed it. Check that");
+      expect(start.output).toContain(
+        "within 60 seconds, so OpsCrew removed it. Its last lines are kept on the server: `opscrew logs --failed`. Check that",
+      );
       expect(start.output).toContain("It was built with Railpack (app.build.builder: railpack");
       expect(containers()).toEqual([]);
 
@@ -812,6 +835,10 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
     expect(start.output).not.toContain("no such table");
     expect(read("release.log")).toContain("no such table");
     expect(start.output).toContain("::error::The release command");
+    // What a migration that stopped partway means, and the two ways forward (FR-1912).
+    expect(start.output).toContain(
+      "/release.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). A migration that stopped partway may have applied some of its changes, and the previous version now runs with them: read release.log to see how far it got, then fix the migration and push again to deploy forward, or restore a backup taken before this deploy.",
+    );
     expect(start.output).not.toContain("203.0.113.10");
     expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
     expect(dockerCalls()).not.toContain("--scale");
@@ -864,11 +891,10 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       expect(start.status).toBe(1);
       // The fake ssh maps /srv to the test's folder.
       expect(start.output).toContain(
-        "::error::The worker container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with `docker compose logs worker` in ",
+        "::error::The worker container did not keep running for 30 seconds after it started with the new version, so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its last lines, from before OpsCrew put the previous version back, with `opscrew logs --failed --service worker`, then fix its command (processes in opscrew/plan.yaml) or the app, and push again.\n",
       );
-      expect(start.output).toContain(
-        "(opscrew/RUNBOOK.md has the SSH command), fix its command (processes in opscrew/plan.yaml) or the app, and push again.\n",
-      );
+      // The restarted previous version's lines are not the failed worker's.
+      expect(start.output).not.toContain("docker compose logs");
       expect(start.output).not.toContain("203.0.113.10");
       expect(processImages()).toEqual({ worker: NEW, beat: NEW, cron: NEW });
 
@@ -910,7 +936,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       const start = run(withWorkers.start, { CRASH: "beat" });
       expect(start.status).toBe(1);
       expect(start.output).toContain(
-        "so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its log on the server with `docker compose logs beat`",
+        "so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if there is one. Read its last lines, from before OpsCrew put the previous version back, with `opscrew logs --failed --service beat`",
       );
 
       resetCalls();
@@ -943,7 +969,7 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       const start = run(withWorkers.start, { STOP: "beat" });
       expect(start.status).toBe(1);
       expect(start.output).toContain("::error::The beat container did not keep running");
-      expect(start.output).toContain("`docker compose logs beat`");
+      expect(start.output).toContain("`opscrew logs --failed --service beat`");
     });
 
     it("never restarts the steady services, and never forces Compose to recreate anything", () => {
@@ -1776,6 +1802,228 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
     });
   });
 
+  describe("a rollback's start: rollback as the server script's $2", () => {
+    const NO_RELEASE =
+      "A rollback runs no release command: the data and the schema stay as they are.";
+    /** The calls only the release command makes: the one-off container and its image. */
+    const releaseCall = (call: string) =>
+      call === "docker compose run --rm --no-deps -T release" || call.startsWith("run image=");
+    /** The fake's calls with the test's folder, which each setUp makes anew, as `WORK`. */
+    const calls = () => dockerCalls().replaceAll(work, "WORK").split("\n");
+    /** OLD running with its workers and cron, and an earlier release's output on the server. */
+    const deployed = () => {
+      server({ ".env": OLD, ".env.previous": OLDER }, [OLD]);
+      runningProcesses(OLD);
+      writeFileSync(appFile("release.log"), "the last release's output\n");
+    };
+
+    it("makes a deploy's calls without $2 and with deploy", () => {
+      deployed();
+      const plain = run(withWorkers.start);
+      expect(plain.status, plain.output).toBe(0);
+      const before = calls();
+      expect(before).toContain("docker compose run --rm --no-deps -T release");
+      expect(plain.output).not.toContain(NO_RELEASE);
+
+      setUp();
+      deployed();
+      const deploy = run(withMode(withWorkers.start, "deploy"));
+      expect(deploy.status, deploy.output).toBe(0);
+      expect(calls()).toEqual(before);
+      expect(deploy.output).not.toContain(NO_RELEASE);
+    });
+
+    it("runs no release command and says so; the rest is a deploy's", () => {
+      deployed();
+      expect(run(withWorkers.start).status).toBe(0);
+      const deploy = calls();
+
+      setUp();
+      deployed();
+      const rollback = run(withMode(withWorkers.start, "rollback"));
+      expect(rollback.status, rollback.output).toBe(0);
+      expect(rollback.output).toContain(NO_RELEASE);
+      expect(dockerCalls()).not.toContain("compose run");
+      expect(read("release.log")).toBe("the last release's output");
+      // The switch, the workers and their 30-second check, exactly as a deploy.
+      expect(calls()).toEqual(deploy.filter((call) => !releaseCall(call)));
+      expect(dockerCalls()).toContain("sleep 30");
+      expect(routed()).toBe(NEW);
+      expect(read(".env")).toBe(`APP_IMAGE=${NEW}`);
+      expect(read(".env.previous")).toBe(`APP_IMAGE=${OLD}`);
+      expect(processImages()).toEqual({ worker: NEW, beat: NEW, cron: NEW });
+    });
+
+    it("removes a copy that fails its health check, as a deploy does", () => {
+      server({ ".env": OLD }, [OLD]);
+      mkdirSync(join(work, "routes"));
+      writeFileSync(join(work, "routes", "shop"), "shop-app-90:3000\n");
+      const start = run(withMode(release.start, "rollback"), { UNHEALTHY: NEW });
+      expect(start.status).toBe(1);
+      expect(start.output).toContain(NO_RELEASE);
+      expect(start.output).toContain("::error::The new version did not pass its health check");
+      expect(dockerCalls()).toContain("docker rm -f c1");
+      expect(dockerCalls()).not.toContain("compose run");
+      expect(containers()).toEqual([OLD]);
+      expect(routed()).toBe(OLD);
+      expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+      expect(read(".failed-deploy/about")).toContain("failed=health");
+    });
+
+    it("is switched back when the check from outside fails, as a deploy is", () => {
+      for (const scripts of [rolling, recreate]) {
+        setUp();
+        server({ ".env": OLD, ".env.previous": OLDER }, [OLD]);
+        const start = run(withMode(scripts.start, "rollback"));
+        expect(start.status, start.output).toBe(0);
+        expect(routed()).toBe(NEW);
+
+        resetCalls();
+        const back = run(scripts.rollback);
+        expect(back.status).toBe(1);
+        expect(back.output).toContain("restored the previous version");
+        expect(containers()).toEqual([OLD]);
+        expect(routed()).toBe(OLD);
+        expect(read(".env")).toBe(`APP_IMAGE=${OLD}`);
+      }
+    });
+  });
+
+  describe("the failed copy's last lines", () => {
+    const kept = (name: string) => read(`.failed-deploy/${name}`);
+    /** `about`'s lines for this run's image and `why`. */
+    const about = (why: string) => [
+      `image=${NEW}`,
+      expect.stringMatching(/^time=\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/),
+      `failed=${why}`,
+    ];
+    /** The fake's last lines of `id`, both streams. */
+    const lines = (id: string) =>
+      `2026-10-31T10:00:00.000000000Z copy-line out of ${id}\n2026-10-31T10:00:01.000000000Z copy-line err of ${id}`;
+    /** The call that keeps `id`'s lines comes before `then`. */
+    const keptBefore = (id: string, then: string) => {
+      const calls = dockerCalls().split("\n");
+      const at = calls.indexOf(`docker logs --timestamps --tail 500 ${id}`);
+      expect(at, `docker logs ${id}`).toBeGreaterThan(-1);
+      expect(at).toBeLessThan(calls.indexOf(then));
+    };
+    /** No kept line and no server address reaches the workflow's log. */
+    const noLeak = (output: string) => {
+      expect(output).not.toContain("copy-line");
+      expect(output).not.toContain("203.0.113.10");
+    };
+
+    it("keeps a copy's lines that failed its health check, before removing it (rolling)", () => {
+      server({ ".env": OLD }, [OLD]);
+      const start = run(rolling.start, { UNHEALTHY: NEW });
+      expect(start.status).toBe(1);
+      expect(kept("about")?.split("\n")).toEqual(about("health"));
+      expect(kept("app.log")).toBe(lines("c1"));
+      keptBefore("c1", "docker rm -f c1");
+      expect(start.output).toContain(
+        "Its last lines are kept on the server: `opscrew logs --failed`.",
+      );
+      noLeak(start.output);
+
+      // The rollback step changes nothing: the copy never took traffic.
+      resetCalls();
+      noLeak(run(rolling.rollback).output);
+      expect(kept("about")?.split("\n")).toEqual(about("health"));
+    });
+
+    it("keeps a copy's lines that failed its health check, and the switch back keeps them (recreate)", () => {
+      server({ ".env": OLD }, [OLD]);
+      const start = run(recreate.start, { UNHEALTHY: NEW });
+      expect(start.status).toBe(1);
+      expect(kept("about")?.split("\n")).toEqual(about("health"));
+      expect(kept("app.log")).toBe(lines("c1"));
+      keptBefore("c1", "docker rm -f c1");
+      noLeak(start.output);
+
+      resetCalls();
+      const rollback = run(recreate.rollback);
+      expect(rollback.output).toContain("restored the previous version");
+      expect(kept("about")?.split("\n")).toEqual(about("health"));
+      expect(kept("app.log")).toBe(lines("c1"));
+      noLeak(rollback.output);
+    });
+
+    it("keeps a stopped worker's lines and names it, before the start script exits", () => {
+      server({ ".env": OLD }, [OLD]);
+      runningProcesses(OLD);
+      const start = run(withWorkers.start, { STOP: "beat" });
+      expect(start.status).toBe(1);
+      const beat = file("processes-shop")
+        .split("\n")
+        .find((line) => line.split(" ")[1] === "beat")
+        ?.split(" ")[0];
+      expect(beat).toMatch(/^p\d+$/);
+      expect(kept("about")?.split("\n")).toEqual(about("process beat"));
+      expect(kept("beat.log")).toBe(lines(beat ?? ""));
+      expect(kept("app.log")).toBeUndefined();
+      keptBefore(beat ?? "", "docker logout ghcr.io");
+      noLeak(start.output);
+
+      // The switch back restarts the previous version and keeps the worker's lines.
+      resetCalls();
+      const rollback = run(withWorkers.rollback);
+      expect(rollback.output).toContain("restored the previous version");
+      expect(kept("about")?.split("\n")).toEqual(about("process beat"));
+      expect(kept("beat.log")).toBe(lines(beat ?? ""));
+      expect(kept("app.log")).toBeUndefined();
+      noLeak(rollback.output);
+    });
+
+    it("keeps the replaced app container's lines when the check from outside failed", () => {
+      for (const scripts of [rolling, recreate]) {
+        setUp();
+        server({ ".env": OLD }, [OLD]);
+        expect(run(scripts.start).status).toBe(0);
+        expect(kept("about")).toBeUndefined();
+
+        resetCalls();
+        const rollback = run(scripts.rollback);
+        expect(rollback.output).toContain("restored the previous version");
+        expect(kept("about")?.split("\n")).toEqual(about("check"));
+        expect(kept("app.log")).toBe(lines("c1"));
+        // Before the switch back replaces it.
+        keptBefore(
+          "c1",
+          scripts === rolling
+            ? "docker stop c1"
+            : "docker compose up -d --no-deps --remove-orphans app",
+        );
+        noLeak(rollback.output);
+      }
+    });
+
+    it("clears another image's failure first", () => {
+      server({ ".env": OLD }, [OLD]);
+      mkdirSync(appFile(".failed-deploy"));
+      writeFileSync(
+        appFile(".failed-deploy/about"),
+        `image=${OLDER}\ntime=x\nfailed=process beat\n`,
+      );
+      writeFileSync(appFile(".failed-deploy/beat.log"), "older lines\n");
+      expect(run(rolling.start, { UNHEALTHY: NEW }).status).toBe(1);
+      expect(readdirSync(appFile(".failed-deploy")).sort()).toEqual(["about", "app.log"]);
+      expect(kept("about")?.split("\n")).toEqual(about("health"));
+    });
+
+    it.skipIf(process.platform === "win32")(
+      "keeps them for the deploy user only: the folder 0700, the files 0600",
+      () => {
+        server({ ".env": OLD }, [OLD]);
+        runningProcesses(OLD);
+        expect(run(withWorkers.start, { STOP: "beat" }).status).toBe(1);
+        expect(statSync(appFile(".failed-deploy")).mode & 0o777).toBe(0o700);
+        for (const name of ["about", "beat.log"]) {
+          expect(statSync(appFile(`.failed-deploy/${name}`)).mode & 0o777, name).toBe(0o600);
+        }
+      },
+    );
+  });
+
   it("refuses an image that is not pinned by digest before touching the server", () => {
     server({ ".env": OLD }, [OLD]);
     const start = run(rolling.start, { IMAGE: "ghcr.io/acme/shop:latest" });
@@ -1858,7 +2106,7 @@ describe("the deploy job per strategy", () => {
 
   it("names app.port in opscrew/plan.yaml for the port the health check uses", () => {
     expect(deploy(plan)).toContain(
-      "within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health.",
+      "within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: `opscrew logs --failed`. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health.",
     );
   });
 });
@@ -1873,6 +2121,26 @@ describe("the services' host settings in the deploy", () => {
     // On a server the user owns, the host plan sets them.
     expect(steady(withServices([{ kind: "opensearch" }], {}, { provider: "own" }))).toBe(
       "docker compose up -d --no-deps --wait opensearch",
+    );
+  });
+});
+
+describe("the failure messages", () => {
+  it("point to the kept lines with the app's and the environment's flags, never to docker compose logs", () => {
+    const workers = withProcesses(plan, {
+      workers: [{ name: "worker", command: "node worker.js" }],
+    });
+    const other = ofApp(inEnvironment(workers, { name: "staging" }), "api");
+    const script = switchCommands(other, []).join("\n");
+    expect(script).toContain(
+      "with `opscrew logs --failed --service %s --app api --env staging`, then fix its command",
+    );
+    expect(script).toContain(
+      "Its last lines are kept on the server: `opscrew logs --failed --app api --env staging`.",
+    );
+    expect(script).not.toContain("docker compose logs");
+    expect(switchCommands(workers, []).join("\n")).toContain(
+      "with `opscrew logs --failed --service %s`, then fix its command",
     );
   });
 });
