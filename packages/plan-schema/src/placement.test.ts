@@ -140,7 +140,7 @@ describe("the names and keys", () => {
     expect(APP_SERVER).toBe("app");
   });
 
-  it("accepts a server name of 1-15 lower-case letters, digits or hyphens, never app", () => {
+  it("accepts a server name of 1-15 lower-case letters, digits or hyphens, never app or previous", () => {
     for (const name of ["d", "data", "db-1", "a23456789012345"]) {
       expect(ServerNameSchema.safeParse(name).success, name).toBe(true);
     }
@@ -149,6 +149,10 @@ describe("the names and keys", () => {
     }
     expect(ServerNameSchema.safeParse("app").error?.issues[0]?.message).toBe(
       'must not be "app": that names the app\'s own server (target); give the extra server another name, such as "data"',
+    );
+    // `module "server_previous"` is the app's old server during a retarget.
+    expect(ServerNameSchema.safeParse("previous").error?.issues[0]?.message).toMatch(
+      /^must not be "previous"/,
     );
   });
 

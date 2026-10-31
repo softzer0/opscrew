@@ -51,6 +51,10 @@ export const ServerNameSchema = z
   .refine((name) => name !== APP_SERVER, {
     message:
       'must not be "app": that names the app\'s own server (target); give the extra server another name, such as "data"',
+  })
+  .refine((name) => name !== "previous", {
+    message:
+      'must not be "previous": OpsCrew names the app\'s old server that while `opscrew retarget` moves the app; give the extra server another name, such as "data"',
   });
 
 /** A process that runs from the app's image next to the web process, for example a job queue. */
