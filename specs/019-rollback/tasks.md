@@ -154,7 +154,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T1905 [US1] [US2] [US4] The workflows: the rollback dispatch, the job graph, the pause on every target, Portainer's release switch, in `packages/iac-templates/src/{workflow,portainer-target}/**`
+- [X] T1905 [US1] [US2] [US4] The workflows: the rollback dispatch, the job graph, the pause on every target, Portainer's release switch, in `packages/iac-templates/src/{workflow,portainer-target}/**`
   - Owns:
     - `packages/iac-templates/src/workflow/**` except `switch.ts` (+ tests, snapshots, fixtures);
     - `packages/iac-templates/src/portainer-target/**` (+ tests, snapshots);
