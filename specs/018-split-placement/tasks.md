@@ -781,6 +781,26 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
+- [ ] T1829 [US1] Design never shrinks a deployed server's disk, in `packages/agents/src/design/**` (+ tests), plus the live harness's cleanup destroy in `packages/cli/test/live/{environment-checks.ts,harness.ts}` (+ support tests)
+  - Owns: those paths
+  - Reads: `design/server-changes.ts` (`appServerChange`, `extraServerChanges`), `design/sizing.ts`, the catalogue's `diskGb` (`@opscrew/contracts` connector types)
+  - Found by: T1821's second live run.
+    - **The resize:** after Postgres moved to server `data`, design chose a smaller type for the app's server. Provision's apply then failed at Hetzner with "cannot change type because the selected server_type has not sufficient disk space". Neither Hetzner nor DigitalOcean can make a server's disk smaller.
+    - **The cleanup:** the cleanup's `opscrew destroy` passed only `--confirm <app>`, so it refused to delete the `data` server it had created.
+  - Accept:
+    - **Design never shrinks a disk.** When design would give a deployed cloud server a type whose disk is smaller than its current type's, it keeps the current type. This holds for the app's server (`appServerChange`) and for each extra server (`extraServerChanges`).
+      - Its cost and the option's total follow the kept type.
+      - It says why in one plain sentence, naming the smaller type it could have used.
+      - A larger type is still a resize, as today.
+    - **Destroy confirms every server.** The live harness's destroy (the steps and the cleanup) adds `--confirm <app>-<server>` for each extra cloud server in the run's `opscrew/plan.yaml`.
+    - **Tests:**
+      - the app's server kept after a move away;
+      - an extra server kept;
+      - a larger type resized;
+      - the harness's destroy arguments.
+  - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
 - [ ] T1821 The live runs (lead): T1820's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 
 - [X] T1822 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1826's review: one `removedOwnServers(plan, record)` for provision's refusal and removal; the redundant `edge = undefined` in origin-tls; the four `removed.length === 1` ternaries; the split-placement guide page mentions `--allow-downtime` for approving a move's window in a script.
