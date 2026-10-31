@@ -192,7 +192,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm turbo run typecheck --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T1906 [P] [US1] [US3] The versions: the list, the marks, the default, `--to`, and the old plan's check, in `packages/agents/src/rollback/{versions,types}.ts`
+- [X] T1906 [P] [US1] [US3] The versions: the list, the marks, the default, `--to`, and the old plan's check, in `packages/agents/src/rollback/{versions,types}.ts`
   - Owns: `packages/agents/src/rollback/{versions,types}.ts` (+ tests, `rollback/__fixtures__/**`)
   - Reads: plan.md "3.", "2." (step 5); data-model.md "A version"; contracts/rollback.md "agents"; `promote/image.ts`, `environments/branches.ts` (`builderCicd`)
   - Depends: T1903, T1904
