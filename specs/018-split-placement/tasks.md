@@ -673,7 +673,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: medium
 
-- [ ] T1825 [P] [US5] [US3] A default deny on the private address: the filter drops every new connection to a server's private address that no rule admits, in `packages/connectors/ssh-host/src/{network-filter,steps,plan}.ts` (+ tests) and `packages/agents/src/network/steps.ts`
+- [X] T1825 [P] [US5] [US3] A default deny on the private address: the filter drops every new connection to a server's private address that no rule admits, in `packages/connectors/ssh-host/src/{network-filter,steps,plan}.ts` (+ tests) and `packages/agents/src/network/steps.ts`
   - Owns: those paths (+ tests and snapshots); `readNetworkFilter`'s parsing follows
   - Reads: plan.md "3."; research.md R5a/R5b (the filter's rules); T1806's `network-filter.ts`
   - Depends: T1815, T1816
