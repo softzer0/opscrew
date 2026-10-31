@@ -4,7 +4,12 @@ import { applyHostPlan, otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine, ResourceChange } from "@opscrew/contracts";
 import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
 import { additionsPath, renderStorage, usesTunnel } from "@opscrew/iac-templates";
-import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  isServerlessProvider,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import { hasCheckKey } from "../check/host";
 import type { CheckKey } from "../check/key";
 import {
@@ -48,6 +53,7 @@ import {
   hidesServerAddress,
   infrastructureOutputs,
   localhostNotSupported,
+  networkReach,
   type PlanApproval,
   readServerAddresses,
   readyNewServer,
@@ -1054,7 +1060,9 @@ async function provisionFlow(
     secretsTarget = ownDeployTarget(deps, ownRun, { plan, outputs });
   } else {
     const ipv4 = (address as ServerAddress).ipv4;
-    // 7. Wait for the server and pin its SSH host key
+    // 7. Wait for the server and pin its SSH host key (over the private network once public SSH
+    // is closed, where the deploy reaches it then).
+    const network = await networkReach(deps, plan, APP_SERVER, ipv4, services.remote);
     const pinned = await readyNewServer(deps, {
       host: ipv4,
       server: "server",
@@ -1062,8 +1070,9 @@ async function provisionFlow(
       keyFile: deployKey.privateKeyFile,
       again: continuesHint(command),
       services,
+      ...(network !== undefined ? { network } : {}),
     });
-    secretsTarget = { host: ipv4, knownHosts: pinned.knownHostsLines };
+    secretsTarget = { host: network?.host ?? ipv4, knownHosts: pinned.knownHostsLines };
     // 7b. The server's runner (or its removal): its own host plan, as deploy.
     host = await applyCloudRunner(deps, {
       plan,

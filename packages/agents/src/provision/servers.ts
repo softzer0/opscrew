@@ -19,6 +19,7 @@ import {
   continuesHint,
   type HostPlanOutcome,
   hasDeployment,
+  networkReach,
   readServerAddresses,
   readyNewServer,
   type ServerAddress,
@@ -97,8 +98,9 @@ export async function recordExtraServers(
 
 /**
  * Waits for each extra cloud server to accept SSH and finish its first boot, and pins its host
- * key, as provision does for the app's server (`readyNewServer`). Returns how the deploy reaches
- * each: its address and its known hosts lines.
+ * key, as provision does for the app's server (`readyNewServer`), over the private network once
+ * public SSH is closed (`networkReach`). Returns how the deploy reaches each: its address (the
+ * private one then) and its known hosts lines there.
  * @throws OpsCrewError `PHASE_PRECONDITION` when a server's address is not on this computer.
  */
 export async function readyExtraServers(
@@ -116,6 +118,7 @@ export async function readyExtraServers(
         { hint: `Run \`${input.command}\` again; it plans what is missing.` },
       );
     }
+    const network = await networkReach(deps, input.plan, name, address.ipv4, input.services.remote);
     const pinned = await readyNewServer(deps, {
       host: address.ipv4,
       server: `server ${name}`,
@@ -123,8 +126,9 @@ export async function readyExtraServers(
       keyFile: input.keyFile,
       again: continuesHint(input.command),
       services: input.services,
+      ...(network !== undefined ? { network } : {}),
     });
-    reach.push({ name, host: address.ipv4, knownHosts: pinned.knownHostsLines });
+    reach.push({ name, host: network?.host ?? address.ipv4, knownHosts: pinned.knownHostsLines });
   }
   return reach;
 }

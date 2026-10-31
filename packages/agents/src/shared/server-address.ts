@@ -200,6 +200,15 @@ const SSH_UNREACHABLE =
 export const TUNNEL_DOWN_HINT =
   "Check that the WireGuard tunnel is on: your WireGuard app, or `sudo wg show` in a terminal, should list it with a recent handshake. Turn it on, then run the command again.";
 
+/** Server `server` did not answer at its private `address`: this computer's tunnel looks down. */
+function tunnelDown(server: string, address: string, device: string): OpsCrewError {
+  return new OpsCrewError(
+    "COMMAND_FAILED",
+    `OpsCrew could not reach server ${server} at its private address ${address}. Public SSH is closed, so OpsCrew connects over the app's private network, and this computer's tunnel (device ${device}) looks down.`,
+    { hint: TUNNEL_DOWN_HINT },
+  );
+}
+
 /** A connection over the private network that says when this computer's tunnel looks down. */
 function throughTunnel(
   remote: RemoteExec,
@@ -212,11 +221,7 @@ function throughTunnel(
     async run(command, options) {
       const result = await remote.run(command, options);
       if (result.exitCode === 255 && SSH_UNREACHABLE.test(result.stderr)) {
-        throw new OpsCrewError(
-          "COMMAND_FAILED",
-          `OpsCrew could not reach server ${server} at its private address ${address}. Public SSH is closed, so OpsCrew connects over the app's private network, and this computer's tunnel (device ${device}) looks down.`,
-          { hint: TUNNEL_DOWN_HINT },
-        );
+        throw tunnelDown(server, address, device);
       }
       return result;
     },
@@ -422,6 +427,51 @@ export async function appServerShell(
           : {}),
       }),
   );
+}
+
+/**
+ * Where provision waits for a server OpsCrew created once public SSH is closed
+ * ({@link networkReach}).
+ */
+export interface NetworkReach extends SshReach {
+  /** The deploy user's shell there, the host key pinned under this address too. */
+  remote: RemoteExec;
+  /** Thrown when SSH does not answer there in time and this computer is a device on the network. */
+  unreachable?: OpsCrewError;
+}
+
+/**
+ * Where provision waits for the server `name` OpsCrew created (public address `ipv4`) and reaches
+ * it, once public SSH is closed: its {@link privateReach}, with the deploy user's shell there as
+ * {@link appServerShell} opens it (the host key pinned under the private address too, the tunnel's
+ * hint when it fails). `undefined` while public SSH is open, and for a server whose host key is not
+ * pinned yet (OpsCrew is creating it), which provision waits for at its public address.
+ */
+export async function networkReach(
+  deps: Pick<EngineDeps, "paths" | "runner">,
+  plan: DeployPlan,
+  name: string,
+  ipv4: string,
+  remote?: (host: string) => RemoteExec,
+): Promise<NetworkReach | undefined> {
+  const login = { host: ipv4, port: 22 };
+  const reach = await privateReach(deps, plan, name, { ...login, own: false });
+  if (reach === undefined) return undefined;
+  const pinned = (await readTextIfExists(deps.paths.files.knownHosts)) ?? "";
+  if (keysFor(pinned, knownHostsName(ipv4)).length === 0) return undefined;
+  const shell = await appServerShell(
+    deps,
+    plan,
+    login,
+    remote !== undefined ? { remote } : {},
+    name,
+  );
+  const device = (await readServerAddresses(deps.paths)).thisDevice;
+  return {
+    ...reach,
+    remote: shell,
+    ...(device !== undefined ? { unreachable: tunnelDown(name, reach.host, device) } : {}),
+  };
 }
 
 /**

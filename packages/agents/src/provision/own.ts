@@ -1111,14 +1111,21 @@ export async function addExtraServerCheckKey(
 /**
  * How the deploy reaches the extra server `run.name` the user owns: its public address (as design
  * recorded it in `.opscrew/server.json` → `servers`) on the login's SSH port, with the pinned host
- * key under that name (`[host]:port` when the port is not 22).
+ * key under that name (`[host]:port` when the port is not 22); once public SSH is closed, where
+ * this run connected to it instead (`session.reach`: its private address, sshd's port there).
  * @throws OpsCrewError `PHASE_PRECONDITION` when its public address is not known.
  */
 export async function extraOwnReach(
   deps: Pick<PhaseDeps, "paths">,
   run: Pick<ExtraOwnServerRun, "name" | "session" | "facts">,
 ): Promise<ServerReach> {
-  const { connection, hostKey } = run.session;
+  const { connection, hostKey, reach } = run.session;
+  const at = (host: string, port: number): ServerReach => ({
+    name: run.name,
+    host,
+    knownHosts: `${knownHostsName(host, port)} ${hostKey.type} ${hostKey.key}\n`,
+  });
+  if (reach !== undefined) return at(reach.host, reach.port);
   const address =
     (await readServerAddresses(deps.paths)).servers?.[run.name] ??
     ownServerPublicAddress(connection, run.facts);
@@ -1131,12 +1138,7 @@ export async function extraOwnReach(
       },
     );
   }
-  const name = knownHostsName(address.ipv4, connection.port);
-  return {
-    name: run.name,
-    host: address.ipv4,
-    knownHosts: `${name} ${hostKey.type} ${hostKey.key}\n`,
-  };
+  return at(address.ipv4, connection.port);
 }
 
 /**

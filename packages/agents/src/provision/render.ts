@@ -30,6 +30,7 @@ import {
   ensureDeployKey,
   githubCoordinates,
   hidesServerAddress,
+  privateReach,
   readDeployPublicKey,
   readServerAddresses,
   readValidJson,
@@ -158,7 +159,9 @@ export async function deploymentRenderContext(
 
 /**
  * The SSH port the deploy reaches each extra server the user owns on, by its name, from the
- * logins this computer keeps (`.opscrew/server.json` → `ownServers`); none without such a server.
+ * logins this computer keeps (`.opscrew/server.json` → `ownServers`): the login's, or once public
+ * SSH is closed the port sshd listens on at its private address (`privateReach`); none without
+ * such a server.
  */
 async function ownServerSshPorts(
   deps: Pick<PhaseDeps, "paths">,
@@ -167,12 +170,14 @@ async function ownServerSshPorts(
   const own = (plan.servers ?? []).filter((server) => server.target.provider === "own");
   if (own.length === 0) return {};
   const logins = (await readServerAddresses(deps.paths)).ownServers ?? {};
-  return Object.fromEntries(
-    own.flatMap((server) => {
-      const login = logins[server.name];
-      return login === undefined ? [] : [[server.name, login.port]];
-    }),
-  );
+  const ports: [string, number][] = [];
+  for (const { name } of own) {
+    const login = logins[name];
+    if (login === undefined) continue;
+    const reach = await privateReach(deps, plan, name, { port: login.port, own: true });
+    ports.push([name, (reach ?? login).port]);
+  }
+  return Object.fromEntries(ports);
 }
 
 /**

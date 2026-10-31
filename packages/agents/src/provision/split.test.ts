@@ -19,6 +19,7 @@ import { describe, expect, it } from "vitest";
 import { allocateNetwork, type NetworkHostFacts } from "../network";
 import { splitPlan, withNetwork } from "../network/__fixtures__/plans";
 import { providerProfile } from "../providers";
+import { FakeCloudRunnerHost } from "../runners/__fixtures__/cloud-host";
 import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
 import { lastServerSetup } from "../shared/host-plan";
 import {
@@ -26,6 +27,7 @@ import {
   recordOwnServer,
   updateServerAddresses,
 } from "../shared/server-record";
+import { writeKnownHost } from "../shared/wait";
 import {
   createProject,
   createTestPhaseDeps,
@@ -34,6 +36,7 @@ import {
   FakeEngine,
   FakeGitHub,
   FakeHostServer,
+  FakeRunnerGitHub,
   fakeSharedCloudflare,
   freshFacts,
   OWN_IPV4,
@@ -42,6 +45,7 @@ import {
   ownPlan,
   ownRunner,
   PUBLIC_CHANGES,
+  planJsonFor,
   preparedServerFacts,
   publicOutputs,
   readyRemote,
@@ -189,6 +193,17 @@ async function setup(o: SplitSetup) {
 
 type Setup = Awaited<ReturnType<typeof setup>>;
 
+/** The user's own server `data`: a fresh Ubuntu at {@link OWN_IPV4} answering SSH on 2222. */
+function ownDataFacts(facts: Partial<HostFacts> = {}): HostFacts {
+  return HostFactsSchema.parse({
+    ...freshFacts({
+      sshPorts: [2222],
+      addresses: [{ interface: "eth0", family: "ipv4", address: OWN_IPV4, public: true }],
+    }),
+    ...facts,
+  });
+}
+
 /**
  * {@link setup} with `data` the user's own server (a fresh Ubuntu answering SSH on 2222, with
  * `facts` over it): its address and login on this computer, its host key pinned at design.
@@ -198,15 +213,7 @@ async function ownExtraSetup(
   privateKeys: Record<string, string>,
   facts: Partial<HostFacts> = {},
 ) {
-  const own = new FakeHostServer(
-    HostFactsSchema.parse({
-      ...freshFacts({
-        sshPorts: [2222],
-        addresses: [{ interface: "eth0", family: "ipv4", address: OWN_IPV4, public: true }],
-      }),
-      ...facts,
-    }),
-  );
+  const own = new FakeHostServer(ownDataFacts(facts));
   const s = await setup({
     plan,
     privateKeys,
@@ -308,12 +315,25 @@ const stepOf = (plan: HostPlan, id: string) => plan.steps.find((step) => step.id
 describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () => {
   it("creates the extra cloud server, links each server by its own host plan and stores each server's secrets", async () => {
     const { plan, privateKeys } = networkedPlan();
-    const s = await setup({ plan, privateKeys });
+    const tried: string[] = [];
+    const s = await setup({
+      plan,
+      privateKeys,
+      services: {
+        tcpConnect: async (host) => {
+          tried.push(host);
+          return true;
+        },
+      },
+    });
     // A grant's password the device logins keep with the generated values.
     const grant = randomBytes(16).toString("hex");
     await recordGeneratedEntries(s.deps, "grants", { "laptop/db": grant });
 
     const result = await runProvision(s.deps, { services: s.services });
+
+    // With public SSH open, each new server is awaited at its public address.
+    expect(tried).toEqual([SERVER_IPV4, DATA_IPV4]);
 
     // The network's host plans after the infrastructure, one per server, `app` first, each
     // approved by its own hash, before the secrets and the pull request.
@@ -1011,6 +1031,161 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
     const record = await readServerAddresses(s.deps.paths);
     expect(record.ownServers).toBeUndefined();
     expect(record.servers).toBeUndefined();
+  });
+
+  describe("with public SSH closed", () => {
+    /**
+     * {@link setup} for the split plan with public SSH closed, deploys on the server's runner and
+     * this computer the device `laptop`, after earlier runs pinned the host keys at the public
+     * addresses. `tcpConnect` answers only on the private addresses (or nowhere: `offline`), and
+     * lists the addresses it was asked for. With `data: "own"`, `data` is the user's own server (a
+     * fresh Ubuntu answering SSH on 2222), its login and host key on this computer.
+     */
+    async function closedSetup(o: { offline?: boolean; data?: "cloud" | "own" } = {}) {
+      const own = o.data === "own";
+      const {
+        plan: open,
+        privateKeys,
+        prefix,
+      } = withLaptop(splitPlan({ data: o.data ?? "cloud" }), own ? ["data"] : []);
+      const plan = DeployPlanSchema.parse({
+        ...open,
+        environment: { ...open.environment, runner: "server" },
+        security: { ...open.security, sshAllowedCidrs: [] },
+        network: { ...open.network, publicSsh: false },
+      });
+      // The cloud firewalls lose their SSH rule: the plan's only change.
+      const planJson = planJsonFor();
+      for (const resource of planJson.planned_values.root_module.child_modules[0]?.resources ??
+        []) {
+        const values = resource.values as { rule?: { port: string }[] };
+        values.rule = values.rule?.filter((rule) => rule.port !== "22");
+      }
+      const firewall: ResourceChange = {
+        address: "module.server.hcloud_firewall.this",
+        type: "hcloud_firewall",
+        name: "this",
+        provider: "hcloud",
+        action: "update",
+      };
+      const { extra_servers: _data, ...appOnly } = splitOutputs();
+      const tried: string[] = [];
+      // Every address the first-boot (cloud-init) check ran at.
+      const firstBoot: string[] = [];
+      let clock = 0;
+      const s = await setup({
+        plan,
+        privateKeys,
+        engine: new FakeEngine({
+          outputs: own ? appOnly : splitOutputs(),
+          changes: [firewall],
+          planJson,
+        }),
+        services: {
+          tcpConnect: async (host) => {
+            tried.push(host);
+            return o.offline !== true && host !== SERVER_IPV4 && host !== DATA_IPV4;
+          },
+          sleep: async (ms) => {
+            clock += ms;
+          },
+          now: () => clock,
+          runnerHost: new FakeCloudRunnerHost(),
+          runnerGitHub: new FakeRunnerGitHub(),
+          remote: (host) => {
+            const shell = readyRemote(host);
+            return {
+              host,
+              run: async (command, options) => {
+                if (command.includes("/var/lib/opscrew-ready")) firstBoot.push(host);
+                return shell.run(command, options);
+              },
+            };
+          },
+          ...(own ? { own: { host: new FakeHostServer(ownDataFacts()) } } : {}),
+        },
+      });
+      const ownData = {
+        servers: { data: { ipv4: OWN_IPV4 } },
+        ownServers: {
+          data: {
+            host: OWN_IPV4,
+            port: 2222,
+            user: "root",
+            agent: true,
+            hostKey: ED25519_FINGERPRINT,
+          },
+        },
+      };
+      await updateServerAddresses(s.deps.paths, (current) => ({
+        ...current,
+        deployment: { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 },
+        thisDevice: "laptop",
+        ...(own ? ownData : { servers: { data: { ipv4: DATA_IPV4, ipv6: DATA_IPV6 } } }),
+      }));
+      for (const host of own ? [SERVER_IPV4] : [SERVER_IPV4, DATA_IPV4]) {
+        await writeKnownHost(s.deps.paths.files.knownHosts, host, [
+          { type: "ssh-ed25519", key: ED25519 },
+        ]);
+      }
+      return { ...s, prefix, tried, firstBoot, elapsed: () => clock };
+    }
+
+    it("waits for and pins each server on its private address, where the deploy reaches it", async () => {
+      const s = await closedSetup();
+
+      await runProvision(s.deps, { services: s.services });
+
+      // Each server is awaited on the network only: the public addresses no longer answer SSH.
+      expect(s.tried).toEqual([`${s.prefix}.1`, `${s.prefix}.2`]);
+      // Their first-boot checks go there too.
+      expect(s.firstBoot).toEqual([`${s.prefix}.1`, `${s.prefix}.2`]);
+      expect(s.firstBoot).not.toContain(SERVER_IPV4);
+      expect(s.firstBoot).not.toContain(DATA_IPV4);
+      const text = s.deps.reporter.text();
+      expect(text).toContain(
+        `Waiting for the server at ${s.prefix}.1 to accept SSH over the app's private network`,
+      );
+      expect(text).toContain(
+        `Waiting for the server data at ${s.prefix}.2 to accept SSH over the app's private network`,
+      );
+      // The keys pinned earlier, under the private addresses too; none read again publicly.
+      const pinned = await readFile(s.deps.paths.files.knownHosts, "utf8");
+      expect(pinned).toContain(`${s.prefix}.1 ssh-ed25519 ${ED25519}`);
+      expect(pinned).toContain(`${s.prefix}.2 ssh-ed25519 ${ED25519}`);
+      const { calls } = s.deps.runner as ScriptedRunner;
+      expect(calls.filter((call) => call.command === "ssh-keyscan")).toEqual([]);
+      // The deploy reaches the extra server at its private address, with the key named there.
+      expect(s.github.secrets.get("OPSCREW_SERVER_DATA_KNOWN_HOSTS")).toBe(
+        `${s.prefix}.2 ssh-ed25519 ${ED25519}\n`,
+      );
+      expect(s.github.secrets.has("OPSCREW_SERVER_DATA_HOST")).toBe(false);
+    });
+
+    it("gives the deploy an extra server the user owns at its private address, as this run reached it", async () => {
+      const s = await closedSetup({ data: "own" });
+
+      await runProvision(s.deps, { services: s.services });
+
+      expect(s.github.secrets.get("OPSCREW_SERVER_DATA_KNOWN_HOSTS")).toBe(
+        `[${s.prefix}.2]:2222 ssh-ed25519 ${ED25519}\n`,
+      );
+    });
+
+    it("says this computer's tunnel looks down when a server doesn't answer on the network", async () => {
+      const s = await closedSetup({ offline: true });
+
+      const error = await runProvision(s.deps, { services: s.services }).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({
+        code: "COMMAND_FAILED",
+        message: `OpsCrew could not reach server app at its private address ${s.prefix}.1. Public SSH is closed, so OpsCrew connects over the app's private network, and this computer's tunnel (device laptop) looks down.`,
+      });
+      expect((error as OpsCrewError).hint).toContain("`sudo wg show`");
+      expect(s.tried.every((host) => host === `${s.prefix}.1`)).toBe(true);
+      // The server exists, so the wait over the network is short: 30 seconds, not 5 minutes.
+      expect(s.elapsed()).toBe(30_000);
+    });
   });
 
   it("refuses before any change to take the app off an extra own server while public SSH is closed", async () => {

@@ -9,6 +9,7 @@ import type { ProviderProfile } from "../providers";
 import type { ProvisionServices } from "../provision/types";
 import { providerConsole } from "./provider-text";
 import { SshRemoteExec } from "./remote";
+import type { NetworkReach } from "./server-address";
 
 type Sleep = (ms: number) => Promise<void>;
 
@@ -187,6 +188,8 @@ export function confirmChangedHostKey(
 
 /** How long a server OpsCrew created may take to accept SSH, and how often it is tried. */
 const SSH_WAIT_MS = 5 * 60_000;
+/** How long a server that already exists may take to answer SSH over the private network. */
+const NETWORK_SSH_WAIT_MS = 30_000;
 const SSH_INTERVAL_MS = 5_000;
 /** How long its first-boot setup (cloud-init) may take, and how often it is checked. */
 const CLOUD_INIT_WAIT_MS = 8 * 60_000;
@@ -211,8 +214,10 @@ function quotePath(path: string): string {
  * Makes a server OpsCrew just created ready to use: waits until `host` accepts SSH, pins its SSH
  * host key (a changed key only after {@link confirmChangedHostKey}) and waits until its first-boot
  * setup (cloud-init) is done, through the deploy user's shell (`services.remote`, else SSH with
- * `keyFile`). `server` names it in the messages (`server`, `new Droplet`); a stop says what to
- * check and then `again` ({@link continuesHint}). Returns the pinned key.
+ * `keyFile`). Once public SSH is closed (`network`, see `networkReach`) it does so at the server's
+ * private address, through `network.remote`, with the key pinned there. `server` names it in the
+ * messages (`server`, `new Droplet`); a stop says what to check and then `again`
+ * ({@link continuesHint}). Returns the key pinned where it was reached.
  */
 export async function readyNewServer(
   deps: Pick<PhaseDeps, "reporter" | "approvals" | "paths" | "runner">,
@@ -223,38 +228,48 @@ export async function readyNewServer(
     keyFile: string;
     again: string;
     services: Pick<ProvisionServices, "tcpConnect" | "remote" | "sleep" | "now">;
+    network?: NetworkReach;
   },
 ): Promise<PinnedHostKey> {
-  const { host, server, profile, services } = input;
+  const { server, profile, services, network } = input;
+  const host = network?.host ?? input.host;
+  const port = network?.port ?? 22;
   const knownHostsFile = deps.paths.files.knownHosts;
   const waits = {
     ...(services.sleep ? { sleep: services.sleep } : {}),
     ...(services.now ? { now: services.now } : {}),
   };
-  deps.reporter.step(`Waiting for the ${server} at ${host} to accept SSH`);
-  const open = await waitForPort(host, 22, {
-    timeoutMs: SSH_WAIT_MS,
+  deps.reporter.step(
+    `Waiting for the ${server} at ${host} to accept SSH${network ? " over the app's private network" : ""}`,
+  );
+  const waitMs = network ? NETWORK_SSH_WAIT_MS : SSH_WAIT_MS;
+  const open = await waitForPort(host, port, {
+    timeoutMs: waitMs,
     intervalMs: SSH_INTERVAL_MS,
     connect: services.tcpConnect ?? defaultTcpConnect,
     ...waits,
   });
   if (!open) {
+    if (network?.unreachable !== undefined) throw network.unreachable;
     throw new OpsCrewError(
       "PROVIDER_ERROR",
-      `The ${server} at ${host} did not open SSH within ${durationText(SSH_WAIT_MS)}.`,
+      `The ${server} at ${host} did not open SSH within ${durationText(waitMs)}.`,
       {
         hint: `Check the ${profile.serverNoun} in the ${providerConsole(profile)}, then ${input.again}`,
       },
     );
   }
-  const pinned = await pinHostKey({
-    host,
-    console: providerConsole(profile),
-    knownHostsFile,
-    runner: deps.runner,
-    confirmChangedKey: confirmChangedHostKey(deps),
-  });
+  const pinned = network
+    ? await pinnedLines(knownHostsFile, knownHostsName(host, port))
+    : await pinHostKey({
+        host,
+        console: providerConsole(profile),
+        knownHostsFile,
+        runner: deps.runner,
+        confirmChangedKey: confirmChangedHostKey(deps),
+      });
   const remote =
+    network?.remote ??
     services.remote?.(host) ??
     new SshRemoteExec({ host, keyFile: input.keyFile, knownHostsFile, runner: deps.runner });
   deps.reporter.step(
@@ -275,6 +290,16 @@ export async function readyNewServer(
   }
   deps.reporter.success(`The ${server} at ${host} is ready.`);
   return pinned;
+}
+
+/** The key pinned for `name` (a {@link knownHostsName}) in a known_hosts file, unchanged. */
+async function pinnedLines(knownHostsFile: string, name: string): Promise<PinnedHostKey> {
+  const keys = keysFor((await readTextIfExists(knownHostsFile)) ?? "", name);
+  return {
+    knownHostsLines: `${keys.map((key) => `${name} ${key}`).join("\n")}\n`,
+    changed: false,
+    created: false,
+  };
 }
 
 /** A host key the server presented: its type (`ssh-ed25519`), base64 key and fingerprint. */

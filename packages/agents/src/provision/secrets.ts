@@ -561,7 +561,10 @@ async function setEnvironmentRules(
   deps.reporter.success(`Set the rules of the GitHub environment ${env}: ${changes.join(" ")}`);
 }
 
-/** How the deploy reaches an extra server: its public address and its known hosts lines. */
+/**
+ * How the deploy reaches an extra server: its address (the private one once public SSH is closed)
+ * and its known hosts lines there.
+ */
 export interface ServerReach {
   /** The server's name in the plan. */
   name: string;
