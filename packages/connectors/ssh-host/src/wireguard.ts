@@ -7,11 +7,10 @@
  * latest handshake, so no key but public ones ever leaves the server.
  */
 import type { RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
-import { NetworkInterfaceSchema, WireGuardKeySchema } from "./network";
+import { requireNetworkInterface, WireGuardKeySchema } from "./network";
 import { linesOf } from "./parse";
-import { type HostPrivilege, rootCall } from "./privilege";
+import { type HostPrivilege, readAsRoot, readFailure } from "./privilege";
 import { APT_FUNCTIONS, buildScript } from "./shell";
 
 /** A peer of the interface, as the server last saw it. */
@@ -76,35 +75,19 @@ export async function readWireGuard(
   privilege: HostPrivilege,
   rootImage?: string,
 ): Promise<WireGuardPeer[]> {
-  if (!NetworkInterfaceSchema.safeParse(iface).success) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "That is not one of OpsCrew's WireGuard interfaces (wg-opscrew followed by a number).",
-    );
-  }
-  const call = rootCall(privilege, readWireGuardScript(iface), undefined, rootImage);
-  const options = { timeoutMs: 60_000, ...(call.input === undefined ? {} : { input: call.input }) };
-  let result: Awaited<ReturnType<RemoteExec["run"]>>;
-  try {
-    result = await remote.run(call.command, options);
-  } catch (error) {
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      "OpsCrew could not read the private network on the server.",
-      {
-        hint: "Check that the server is reachable over SSH, then try again.",
-        cause: error,
-      },
-    );
-  }
+  requireNetworkInterface(iface);
+  const result = await readAsRoot(
+    remote,
+    privilege,
+    rootImage,
+    readWireGuardScript(iface),
+    "OpsCrew could not read the private network on the server.",
+  );
   if (result.exitCode !== 0) {
-    const own = linesOf(result.stderr)
-      .filter((line) => line.startsWith("opscrew: "))
-      .map((line) => line.slice("opscrew: ".length));
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      own.length > 0 ? own.join(" ") : `OpsCrew could not read ${iface} on the server.`,
-      { hint: "Run opscrew provision to set the private network up again." },
+    throw readFailure(
+      result,
+      `OpsCrew could not read ${iface} on the server.`,
+      "Run opscrew provision to set the private network up again.",
     );
   }
   return parseWireGuardPeers(result.stdout);

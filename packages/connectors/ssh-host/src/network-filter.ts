@@ -20,12 +20,12 @@
  * the private address without the filter (fail closed).
  */
 import type { RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
-import { NetworkInterfaceSchema } from "./network";
-import { canonicalIpv4Cidr, linesOf, parseNetworkFilterRules } from "./parse";
-import { type HostPrivilege, rootCall } from "./privilege";
+import { Ipv4AddressSchema, NetworkInterfaceSchema, requireNetworkInterface } from "./network";
+import { linesOf, parseNetworkFilterRules } from "./parse";
+import { type HostPrivilege, readAsRoot, readFailure } from "./privilege";
 import { APT_FUNCTIONS, buildScript } from "./shell";
+import { spaceList } from "./types";
 import { dockerBackendCheck } from "./web-filter";
 
 /** The templated unit every interface's filter runs from. */
@@ -52,13 +52,6 @@ export function networkFilterDropInPath(iface: string): string {
 export function networkFilterChain(iface: string): string {
   return `OPSCREW-${iface}`;
 }
-
-/** A dotted IPv4 address in canonical form, such as `10.200.4.2`. */
-const Ipv4AddressSchema = z
-  .string()
-  .refine((text) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(text) && canonicalIpv4Cidr(text) === text, {
-    message: "must be an IPv4 address such as 10.200.4.2",
-  });
 
 /** Who may open one port published on the private address. */
 export interface NetworkFilterRule {
@@ -92,7 +85,7 @@ export const NetworkFilterParamsSchema = z
 export type NetworkFilterParams = z.infer<typeof NetworkFilterParamsSchema>;
 
 /** The rules by port, each with its sources sorted and without duplicates. */
-function sortedRules(rules: readonly NetworkFilterRule[]): NetworkFilterRule[] {
+export function sortedRules(rules: readonly NetworkFilterRule[]): NetworkFilterRule[] {
   return [...rules]
     .sort((a, b) => a.port - b.port)
     .map((rule) => ({ port: rule.port, sources: [...new Set(rule.sources)].sort() }));
@@ -117,9 +110,8 @@ export const NetworkFilterFieldsSchema = z
   .strictObject({
     interface: z.string(),
     address: z.string(),
-    rules: z.string().transform((text, ctx): unknown => {
-      const rules = text.split(" ").filter((item) => item !== "");
-      return rules.map((item) => {
+    rules: spaceList.transform((rules, ctx): unknown =>
+      rules.map((item) => {
         const match = /^(\d{1,5})=(.*)$/.exec(item);
         if (match === null) {
           ctx.addIssue({ code: "custom", message: "must be <port>=<source>,... per port" });
@@ -127,8 +119,8 @@ export const NetworkFilterFieldsSchema = z
         }
         const sources = (match[2] ?? "").split(",").filter((source) => source !== "");
         return { port: Number(match[1]), sources };
-      });
-    }),
+      }),
+    ),
   })
   .pipe(NetworkFilterParamsSchema);
 
@@ -265,35 +257,20 @@ export async function readNetworkFilter(
   privilege: HostPrivilege,
   rootImage?: string,
 ): Promise<NetworkFilterRule[] | undefined> {
-  if (!NetworkInterfaceSchema.safeParse(iface).success) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "That is not one of OpsCrew's WireGuard interfaces (wg-opscrew followed by a number).",
-    );
-  }
-  const call = rootCall(privilege, readNetworkFilterScript(iface), undefined, rootImage);
-  const options = { timeoutMs: 60_000, ...(call.input === undefined ? {} : { input: call.input }) };
-  let result: Awaited<ReturnType<RemoteExec["run"]>>;
-  try {
-    result = await remote.run(call.command, options);
-  } catch (error) {
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      "OpsCrew could not read the private network's filter on the server.",
-      { hint: "Check that the server is reachable over SSH, then try again.", cause: error },
-    );
-  }
+  requireNetworkInterface(iface);
+  const result = await readAsRoot(
+    remote,
+    privilege,
+    rootImage,
+    readNetworkFilterScript(iface),
+    "OpsCrew could not read the private network's filter on the server.",
+  );
   const lines = linesOf(result.stdout);
   if (result.exitCode !== 0 || !lines.some((line) => line.startsWith("jump "))) {
-    const own = linesOf(result.stderr)
-      .filter((line) => line.startsWith("opscrew: "))
-      .map((line) => line.slice("opscrew: ".length));
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      own.length > 0
-        ? own.join(" ")
-        : `OpsCrew could not read the filter of ${iface} on the server.`,
-      { hint: "Check that the server is reachable over SSH, then try again." },
+    throw readFailure(
+      result,
+      `OpsCrew could not read the filter of ${iface} on the server.`,
+      "Check that the server is reachable over SSH, then try again.",
     );
   }
   const chain = networkFilterChain(iface);

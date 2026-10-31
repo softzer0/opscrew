@@ -20,7 +20,13 @@ import { hostPlanHash } from "./hash";
 import { probePrivilege, readAppsScript } from "./inspect";
 import { WireGuardKeySchema } from "./network";
 import { linesOf, parseAppRecords } from "./parse";
-import { type HostPrivilege, type RemoteCall, requireRootImage, rootCall } from "./privilege";
+import {
+  callOptions,
+  type HostPrivilege,
+  type RemoteCall,
+  requireRootImage,
+  rootCall,
+} from "./privilege";
 import { asDeployUser, asLogin } from "./shell";
 import {
   armScript,
@@ -43,6 +49,7 @@ import {
   type HostStep,
   type HostStepId,
   type SecretName,
+  spaceList,
 } from "./types";
 
 /**
@@ -184,8 +191,7 @@ function detail(result: CommandResult, redactor: Redactor): string {
 
 /** Sends `call` to the server. */
 function send(ctx: Context, call: Call, timeoutMs: number): Promise<CommandResult> {
-  const { command, input } = call;
-  return ctx.remote.run(command, input === undefined ? { timeoutMs } : { timeoutMs, input });
+  return ctx.remote.run(call.command, callOptions(call, timeoutMs));
 }
 
 async function run(
@@ -572,7 +578,7 @@ const ClaimSchema = z.object({
   app: z.string(),
   projectId: z.string(),
   access: AccessModeSchema,
-  hostnames: z.string().transform((text) => text.split(" ").filter((name) => name !== "")),
+  hostnames: spaceList,
 });
 
 /**
@@ -753,8 +759,6 @@ export async function applyHostPlan(
           : ctx.findings.noRoot("");
       throw refuse(finding.message, finding.hint);
     }
-    // Root through Docker runs the caller's image: refused plainly without one.
-    if (privilege === "docker") requireRootImage(opts.rootImage);
     ctx.privilege = privilege;
     ctx.recorder = await Recorder.load(ctx);
     await appsCheck(ctx, ctx.recorder.apps);

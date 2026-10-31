@@ -8,7 +8,7 @@ import {
   TUNNEL_APP_PORT,
 } from "./constants";
 import { type HostFacts, otherActiveApps, readableRecords } from "./facts";
-import { DOCKER_POOLS } from "./network";
+import { DOCKER_POOLS, hostAddress } from "./network";
 import type { AccessMode, HostFinding } from "./types";
 
 /** How an app of each access mode is served, for findings. */
@@ -21,7 +21,8 @@ const SERVED: Readonly<Record<AccessMode, string>> = {
 /**
  * Why the login cannot change the server: it needs a password for sudo, or cannot become root.
  * A login that becomes root only through Docker is refused too: the server's state is inspected
- * as root, so the facts these plans rely on are missing. Only `planNetwork` takes it.
+ * as root, so the facts these plans rely on are missing. Only `planNetwork`, `planPublicSsh` and
+ * `planGrant` take it.
  */
 export function privilegeFindings(
   facts: Pick<HostFacts, "privilege" | "user">,
@@ -124,7 +125,7 @@ export function hostFindings(command: string) {
       },
     ): HostFinding => ({
       code: "other-firewall",
-      message: `This server already uses another firewall: ${listText(what)}. OpsCrew does not add a second one, and the private network needs rules in it: UDP port ${network.port} open to every address, SSH (TCP port ${network.sshPort}) allowed in on ${network.interface}${network.localPorts.length > 0 ? `, and this server's Docker networks (${listText([...DOCKER_POOLS])}) allowed to ${network.address.slice(0, network.address.indexOf("/"))} on TCP ${network.localPorts.length === 1 ? "port" : "ports"} ${listText(network.localPorts.map(String))}` : ""}.`,
+      message: `This server already uses another firewall: ${listText(what)}. OpsCrew does not add a second one, and the private network needs rules in it: UDP port ${network.port} open to every address, SSH (TCP port ${network.sshPort}) allowed in on ${network.interface}${network.localPorts.length > 0 ? `, and this server's Docker networks (${listText([...DOCKER_POOLS])}) allowed to ${hostAddress(network.address)} on TCP ${network.localPorts.length === 1 ? "port" : "ports"} ${listText(network.localPorts.map(String))}` : ""}.`,
       hint: `Either turn that firewall off and let OpsCrew manage ufw, or keep yours and do not join this server to the private network for now. ${upperFirst(rerun)} after the change.`,
     }),
     networkRangeTaken: (range: string, routes: readonly string[]): HostFinding => ({

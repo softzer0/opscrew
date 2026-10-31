@@ -72,26 +72,24 @@ import { type GrantParams, GrantParamsSchema, grantEngine } from "./grant";
 import {
   clashingRoutes,
   DOCKER_POOLS,
+  hostAddress,
   type NetworkStepParams,
   NetworkStepParamsSchema,
-  networkConfig,
   networkConfigPath,
-  networkDropIn,
   networkKeyPath,
   networkRange,
   networkStepFields,
   networkUnit,
 } from "./network";
+import { networkFileHashes, networkFilterFileHashes, networkUfwRules } from "./network-files";
 import {
-  NETWORK_FILTER_UNIT_TEXT,
   type NetworkFilterParams,
   NetworkFilterParamsSchema,
   networkFilterChain,
-  networkFilterDropIn,
   networkFilterFields,
-  networkFilterScript,
   networkFilterScriptPath,
   networkFilterService,
+  sortedRules,
 } from "./network-filter";
 import {
   canonicalSshSource,
@@ -2404,8 +2402,7 @@ function networkInPlace(facts: HostFacts, p: NetworkStepParams): boolean {
   const found = network?.interfaces.find((item) => item.name === p.interface);
   if (network === null || found === undefined) return false;
   const rules = facts.firewall.ufwRules;
-  const allowed = (rule: string) => rules.some((item) => item.rule === `allow ${rule}`);
-  const ip = p.address.slice(0, p.address.indexOf("/"));
+  const ip = hostAddress(p.address);
   // The Docker networks' rules to this address: exactly the planned ports.
   const localPorts = rules.flatMap((item) => {
     const port = new RegExp(
@@ -2413,17 +2410,14 @@ function networkInPlace(facts: HostFacts, p: NetworkStepParams): boolean {
     ).exec(item.rule)?.[1];
     return item.comment === UFW_NETWORK_LOCAL_COMMENT && port !== undefined ? [Number(port)] : [];
   });
+  const hashes = networkFileHashes(p);
   return (
-    found.config === sha256Hex(networkConfig(p)) &&
+    found.config === hashes.config &&
     found.publicKey === p.publicKey &&
     found.enabled &&
     found.active &&
-    network.dropIn === sha256Hex(networkDropIn([p.interface, ...p.otherInterfaces])) &&
-    allowed(`${p.port}/udp`) &&
-    allowed(`in on ${p.interface} to any port ${p.sshPort} proto tcp`) &&
-    DOCKER_POOLS.every((pool) =>
-      p.localPorts.every((port) => allowed(`from ${pool} to ${ip} port ${port} proto tcp`)),
-    ) &&
+    network.dropIn === hashes.dropIn &&
+    networkUfwRules(p).every(({ rule }) => rules.some((item) => item.rule === rule)) &&
     localPorts.every((port) => p.localPorts.includes(port)) &&
     found.addresses.includes(p.address) &&
     sameList(
@@ -2441,16 +2435,77 @@ function networkFilterInPlace(facts: HostFacts, p: NetworkFilterParams): boolean
   const network = facts.network;
   const found = network?.filters.find((item) => item.name === p.interface);
   if (network === null || found === undefined) return false;
-  const rules = found.rules.map((rule) => `${rule.port}=${rule.sources.join(",")}`).join(" ");
+  const hashes = networkFilterFileHashes(p);
   return (
-    found.script === sha256Hex(networkFilterScript(p)) &&
-    found.dropIn === sha256Hex(networkFilterDropIn(p.interface)) &&
-    network.filterUnit === sha256Hex(NETWORK_FILTER_UNIT_TEXT) &&
+    found.script === hashes.script &&
+    found.dropIn === hashes.dropIn &&
+    network.filterUnit === hashes.unit &&
     found.enabled &&
     found.active &&
     found.jump &&
-    rules === networkFilterFields(p).rules
+    networkFilterFields({ ...p, rules: found.rules }).rules === networkFilterFields(p).rules
   );
+}
+
+/** Throws INVALID_INPUT unless `app` is an OpsCrew app name. */
+function requireAppName(app: string): void {
+  if (!AppNameSchema.safeParse(app).success) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "The app name must be lower-case letters, digits and dashes.",
+    );
+  }
+}
+
+/**
+ * The opening of the private network's plans (`planNetwork`, `planPublicSsh`, `planGrant`) for
+ * `app`: the facts, checked, the findings that name `command`, and those that block the plan
+ * already. The facts these plans need are read without root, or as root the way the apply becomes
+ * root, so root through Docker is enough.
+ */
+function networkPlanStart(
+  facts: HostFacts,
+  app: string,
+  command: string,
+): { f: HostFacts; findings: HostFindings; found: HostFinding[] } {
+  const f = parseFacts(facts);
+  requireAppName(app);
+  const findings = hostFindings(command);
+  const found = f.privilege === "docker" ? [] : privilegeFindings(f, findings);
+  return { f, findings, found };
+}
+
+/**
+ * The setup plan of the private network's `steps` for `app`, blocked by `found`. Each step's
+ * scripts are made now, so bad parameters fail before anything is approved.
+ */
+function networkPlan(app: string, steps: HostStep[], found: HostFinding[]): HostPlan {
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app,
+    steps,
+    findings: found,
+  };
+  for (const planned of steps) stepScripts(plan, planned);
+  return plan;
+}
+
+/**
+ * The step `id` of a plan of the private network: blocked by `blocker`, in place, or a change for
+ * `reason`.
+ */
+function networkStep(
+  id: HostStepId,
+  title: string,
+  params: HostStep["params"],
+  blocker: HostFinding | undefined,
+  inPlace: boolean,
+  reason: string,
+): HostStep {
+  if (blocker !== undefined) return step(id, title, "blocked", params, blocker.message);
+  if (inPlace) return step(id, title, "in-place", params, "Already set.");
+  return step(id, title, "change", params, reason);
 }
 
 /** The `network-filter` step of `planNetwork`: per-port rules, then the default deny. */
@@ -2459,29 +2514,23 @@ function networkFilterStep(
   p: NetworkFilterParams,
   blocker: HostFinding | undefined,
 ): HostStep {
-  const fields = networkFilterFields(p);
-  const ports = [...p.rules].sort((a, b) => a.port - b.port).map((rule) => String(rule.port));
+  const rules = sortedRules(p.rules);
+  const ports = rules.map((rule) => String(rule.port));
   const title =
     ports.length === 0
       ? `Drop every new connection to ${p.address} on the private network: nothing is published there`
       : `Let only the app's servers and the devices granted access reach TCP ${ports.length === 1 ? "port" : "ports"} ${listText(ports)} on ${p.address}`;
-  if (blocker !== undefined)
-    return step("network-filter", title, "blocked", fields, blocker.message);
-  if (networkFilterInPlace(facts, p)) {
-    return step("network-filter", title, "in-place", fields, "Already set.");
-  }
-  const who = [...p.rules]
-    .sort((a, b) => a.port - b.port)
+  const who = rules
     .map(
-      (rule) =>
-        `${rule.port} from ${rule.sources.length > 0 ? listText([...new Set(rule.sources)].sort()) : "no one"}`,
+      (rule) => `${rule.port} from ${rule.sources.length > 0 ? listText(rule.sources) : "no one"}`,
     )
     .join("; ");
-  return step(
+  return networkStep(
     "network-filter",
     title,
-    "change",
-    fields,
+    networkFilterFields(p),
+    blocker,
+    networkFilterInPlace(facts, p),
     `OpsCrew's chain ${networkFilterChain(p.interface)}, jumped to from Docker's DOCKER-USER, ${ports.length === 0 ? "drops every" : `admits new connections to ${p.address} only from the addresses listed per port (${who}) and drops every other`} new connection to ${p.address}, on any port, whichever interface it arrives on. ${networkFilterScriptPath(p.interface)} rebuilds it in one change; ${networkFilterService(p.interface)} runs it at boot before Docker, and Docker requires that unit, so Docker never publishes a port on the private address without the filter.`,
   );
 }
@@ -2506,13 +2555,7 @@ export function planNetwork(
   input: { app: string; network: NetworkStepParams; filter?: NetworkFilterParams },
   command: string,
 ): HostPlan {
-  const f = parseFacts(facts);
-  if (!AppNameSchema.safeParse(input.app).success) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "The app name must be lower-case letters, digits and dashes.",
-    );
-  }
+  const { f, findings, found } = networkPlanStart(facts, input.app, command);
   const p = parseInput(
     NetworkStepParamsSchema,
     input.network,
@@ -2528,17 +2571,16 @@ export function planNetwork(
           "The private network's filter for this server is not valid",
           "Run opscrew design again to make the network's settings, then provision.",
         );
-  const ip = p.address.slice(0, p.address.indexOf("/"));
-  if (filter !== undefined && (filter.interface !== p.interface || filter.address !== ip)) {
+  if (
+    filter !== undefined &&
+    (filter.interface !== p.interface || filter.address !== hostAddress(p.address))
+  ) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       "The private network's filter must be for this server's interface and private address.",
       { hint: "Run opscrew design again to make the network's settings, then provision." },
     );
   }
-  const findings = hostFindings(command);
-  // The facts the network needs are read without root, so root through Docker is enough.
-  const found: HostFinding[] = f.privilege === "docker" ? [] : privilegeFindings(f, findings);
   if (found.length === 0) found.push(...platformFindings(f, findings));
   if (found.length === 0 && f.firewall.foreign.length > 0) {
     found.push(findings.networkOtherFirewall(f.firewall.foreign, p));
@@ -2553,29 +2595,16 @@ export function planNetwork(
   }
   const peers = p.peers.map((peer) => peer.name).sort();
   const title = `Join the private network as ${p.address} on WireGuard interface ${p.interface} (UDP port ${p.port})${peers.length > 0 ? `, linked to ${listText(peers)}` : ""}`;
-  const item =
-    found.length > 0
-      ? step("network", title, "blocked", networkStepFields(p), found[0]?.message)
-      : networkInPlace(f, p)
-        ? step("network", title, "in-place", networkStepFields(p), "Already set.")
-        : step(
-            "network",
-            title,
-            "change",
-            networkStepFields(p),
-            `Installs wireguard-tools when it is missing. The server's private key reaches it only while this plan is applied, on standard input (never in this plan), into ${networkKeyPath(p.interface)}, which only root can read; the configuration ${networkConfigPath(p.interface)} holds no key. ${networkUnit(p.interface)} starts at boot, and Docker starts after it (a drop-in that wants it without requiring it), so the services published on the private address come up after a reboot. Peers change without dropping the link. ufw opens UDP port ${p.port} to every address (WireGuard answers nothing without a valid key) and SSH (port ${p.sshPort}) on ${p.interface}${p.localPorts.length > 0 ? `, and lets this server's own Docker networks (${listText([...DOCKER_POOLS])}) reach the services published on the private address (TCP ${listText([...new Set(p.localPorts)].sort((a, b) => a - b).map(String))})` : ""}, marked "${UFW_NETWORK_COMMENT}", "${UFW_NETWORK_SSH_COMMENT}" and "${UFW_NETWORK_LOCAL_COMMENT}".`,
-          );
+  const item = networkStep(
+    "network",
+    title,
+    networkStepFields(p),
+    found[0],
+    networkInPlace(f, p),
+    `Installs wireguard-tools when it is missing. The server's private key reaches it only while this plan is applied, on standard input (never in this plan), into ${networkKeyPath(p.interface)}, which only root can read; the configuration ${networkConfigPath(p.interface)} holds no key. ${networkUnit(p.interface)} starts at boot, and Docker starts after it (a drop-in that wants it without requiring it), so the services published on the private address come up after a reboot. Peers change without dropping the link. ufw opens UDP port ${p.port} to every address (WireGuard answers nothing without a valid key) and SSH (port ${p.sshPort}) on ${p.interface}${p.localPorts.length > 0 ? `, and lets this server's own Docker networks (${listText([...DOCKER_POOLS])}) reach the services published on the private address (TCP ${listText([...new Set(p.localPorts)].sort((a, b) => a - b).map(String))})` : ""}, marked "${UFW_NETWORK_COMMENT}", "${UFW_NETWORK_SSH_COMMENT}" and "${UFW_NETWORK_LOCAL_COMMENT}".`,
+  );
   const steps = filter === undefined ? [item] : [item, networkFilterStep(f, filter, found[0])];
-  const plan: HostPlan = {
-    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
-    purpose: "setup",
-    app: input.app,
-    steps,
-    findings: found,
-  };
-  // Validate now so bad parameters fail before anything is approved.
-  for (const planned of steps) stepScripts(plan, planned);
-  return plan;
+  return networkPlan(input.app, steps, found);
 }
 
 /**
@@ -2607,21 +2636,13 @@ export function planPublicSsh(
   input: { app: string; publicSsh: PublicSshParams },
   command: string,
 ): HostPlan {
-  const f = parseFacts(facts);
-  if (!AppNameSchema.safeParse(input.app).success) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "The app name must be lower-case letters, digits and dashes.",
-    );
-  }
+  const { f, found } = networkPlanStart(facts, input.app, command);
   const p = parseInput(
     PublicSshParamsSchema,
     input.publicSsh,
     "The public SSH settings for this server are not valid",
     "This is a problem in OpsCrew; please report it.",
   );
-  const findings = hostFindings(command);
-  const found: HostFinding[] = f.privilege === "docker" ? [] : privilegeFindings(f, findings);
   // Through Docker, ufw's rules are read only with the root image (with the network's state).
   const rulesRead = f.privilege !== "docker" || f.network !== null;
   const want = publicSshRules(p);
@@ -2638,27 +2659,15 @@ export function planPublicSsh(
   const reason = p.open
     ? `ufw allows SSH from ${sources} again, marked "${UFW_SSH_COMMENT}", before it removes OpsCrew's other public rules for the port. The SSH rule on ${p.interface} stays.`
     : `ufw's public rules for port ${p.sshPort} that OpsCrew added ("${UFW_SSH_COMMENT}"${p.cloudServer ? ", and cloud-init's" : ""}) are removed; the rule on ${p.interface} stays, so SSH answers on the private network only. Your own rules stay.`;
-  const item =
-    found.length > 0
-      ? step("public-ssh", title, "blocked", publicSshFields(p), found[0]?.message)
-      : inPlace
-        ? step("public-ssh", title, "in-place", publicSshFields(p), "Already set.")
-        : step(
-            "public-ssh",
-            title,
-            "change",
-            publicSshFields(p),
-            `${reason} The change runs under the automatic undo: when new SSH logins fail, the server puts the previous rules back on its own.`,
-          );
-  const plan: HostPlan = {
-    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
-    purpose: "setup",
-    app: input.app,
-    steps: [item],
-    findings: found,
-  };
-  stepScripts(plan, item);
-  return plan;
+  const item = networkStep(
+    "public-ssh",
+    title,
+    publicSshFields(p),
+    found[0],
+    inPlace,
+    `${reason} The change runs under the automatic undo: when new SSH logins fail, the server puts the previous rules back on its own.`,
+  );
+  return networkPlan(input.app, [item], found);
 }
 
 /**
@@ -2675,21 +2684,13 @@ export function planGrant(
   input: { app: string; grant: GrantParams },
   command: string,
 ): HostPlan {
-  const f = parseFacts(facts);
-  if (!AppNameSchema.safeParse(input.app).success) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "The app name must be lower-case letters, digits and dashes.",
-    );
-  }
+  const { found } = networkPlanStart(facts, input.app, command);
   const p = parseInput(
     GrantParamsSchema,
     input.grant,
     "The device's database login is not valid",
     "This is a problem in OpsCrew; please report it.",
   );
-  const findings = hostFindings(command);
-  const found: HostFinding[] = f.privilege === "docker" ? [] : privilegeFindings(f, findings);
   const engine = grantEngine(p);
   const title = p.remove
     ? `Remove the login "${p.login}" from ${p.service} (${engine.title})`
@@ -2697,19 +2698,8 @@ export function planGrant(
   const reason = p.remove
     ? `The login and what it owns are removed with fixed statements, through docker compose -p ${input.app} exec as the deploy user. The app's own login is not touched.`
     : `The login is made or updated with fixed statements, through docker compose -p ${input.app} exec as the deploy user, ${p.access === "read-only" ? "with read-only access" : "with read and write access to all the app's data, never control of the database server"}. Its password reaches the database only while this plan is applied, on standard input (never in this plan or on a command line). The app's own login is not touched.`;
-  const item =
-    found.length > 0
-      ? step("grant", title, "blocked", { ...p }, found[0]?.message)
-      : step("grant", title, "change", { ...p }, reason);
-  const plan: HostPlan = {
-    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
-    purpose: "setup",
-    app: input.app,
-    steps: [item],
-    findings: found,
-  };
-  stepScripts(plan, item);
-  return plan;
+  const item = networkStep("grant", title, { ...p }, found[0], false, reason);
+  return networkPlan(input.app, [item], found);
 }
 
 /** The Cloudflare Tunnel connector of an add-on's subdomain (`planPortainer`, `planAddon`). */
@@ -2936,12 +2926,7 @@ export function planAddon<K extends AddonPlanKind>(
           "Check that the project's origin remote is its GitHub repository, then try again.",
         )
       : "";
-  if (!AppNameSchema.safeParse(app).success) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      "The app name must be lower-case letters, digits and dashes.",
-    );
-  }
+  requireAppName(app);
   if (kind !== "check-key" && runAs === "root") {
     if (options.facts === undefined) {
       throw new OpsCrewError(

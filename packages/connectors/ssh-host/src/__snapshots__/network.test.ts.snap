@@ -13,32 +13,34 @@ umask 022
 docker_up() { systemctl is-active --quiet docker 2>/dev/null; }
 printf '\\n@@opscrew-section %s\\n' 'network'
 {
-if [ -f /etc/systemd/system/docker.service.d/opscrew-network.conf ]; then echo "dropin $(sha256sum /etc/systemd/system/docker.service.d/opscrew-network.conf | cut -d ' ' -f 1)"; else echo 'dropin -'; fi
+# The file's SHA-256, or - when it is missing.
+sum_or_dash() { if [ -f "$1" ]; then sha256sum "$1" | cut -d ' ' -f 1; else echo -; fi; }
+# Whether the unit $2 is enabled and active: "$1 enabled yes|no", then "$1 active yes|no".
+unit_state() {
+  if [ "$(systemctl is-enabled "$2")" = enabled ]; then echo "$1 enabled yes"; else echo "$1 enabled no"; fi
+  if systemctl is-active --quiet "$2"; then echo "$1 active yes"; else echo "$1 active no"; fi
+}
+echo "dropin $(sum_or_dash /etc/systemd/system/docker.service.d/opscrew-network.conf)"
 for conf in /etc/wireguard/wg-opscrew*.conf; do
   [ -f "$conf" ] || continue
   name=\${conf##*/}
   name=\${name%.conf}
   case "\${name#wg-opscrew}" in ''|*[!0-9]*) continue ;; esac
-  unit="wg-quick@$name.service"
-  echo "iface $name config $(sha256sum "$conf" | cut -d ' ' -f 1)"
+  echo "iface $name config $(sum_or_dash "$conf")"
   pub=$(wg pubkey < "/etc/wireguard/$name.key") || pub=''
   echo "iface $name key \${pub:--}"
-  if [ "$(systemctl is-enabled "$unit")" = enabled ]; then echo "iface $name enabled yes"; else echo "iface $name enabled no"; fi
-  if systemctl is-active --quiet "$unit"; then echo "iface $name active yes"; else echo "iface $name active no"; fi
+  unit_state "iface $name" "wg-quick@$name.service"
   ip -4 -o addr show dev "$name" | awk -v name="$name" '{ print "iface " name " address " $4 }'
   wg show "$name" peers | sed "s/^/iface $name peer /"
 done
-if [ -f /etc/systemd/system/opscrew-network-filter@.service ]; then echo "filterunit $(sha256sum /etc/systemd/system/opscrew-network-filter@.service | cut -d ' ' -f 1)"; else echo 'filterunit -'; fi
+echo "filterunit $(sum_or_dash /etc/systemd/system/opscrew-network-filter@.service)"
 for script in /usr/local/sbin/opscrew-network-filter-wg-opscrew*; do
   [ -f "$script" ] || continue
   name=\${script#/usr/local/sbin/opscrew-network-filter-}
   case "\${name#wg-opscrew}" in ''|*[!0-9]*) continue ;; esac
-  echo "filter $name script $(sha256sum "$script" | cut -d ' ' -f 1)"
-  dropin="/etc/systemd/system/docker.service.d/opscrew-network-filter-$name.conf"
-  if [ -f "$dropin" ]; then echo "filter $name dropin $(sha256sum "$dropin" | cut -d ' ' -f 1)"; else echo "filter $name dropin -"; fi
-  unit="opscrew-network-filter@$name.service"
-  if [ "$(systemctl is-enabled "$unit")" = enabled ]; then echo "filter $name enabled yes"; else echo "filter $name enabled no"; fi
-  if systemctl is-active --quiet "$unit"; then echo "filter $name active yes"; else echo "filter $name active no"; fi
+  echo "filter $name script $(sum_or_dash "$script")"
+  echo "filter $name dropin $(sum_or_dash "/etc/systemd/system/docker.service.d/opscrew-network-filter-$name.conf")"
+  unit_state "filter $name" "opscrew-network-filter@$name.service"
   if iptables -w -C DOCKER-USER -j "OPSCREW-$name" 2>/dev/null; then echo "filter $name jump yes"; else echo "filter $name jump no"; fi
   iptables -w -S "OPSCREW-$name" 2>/dev/null | sed "s/^/filter $name rule /"
 done

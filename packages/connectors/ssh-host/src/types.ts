@@ -46,6 +46,11 @@ export type HostStepId = (typeof HOST_STEP_IDS)[number];
 
 export const HostStepIdSchema = z.enum(HOST_STEP_IDS);
 
+/** A host plan's space-separated parameter read back as its words. */
+export const spaceList = z
+  .string()
+  .transform((text) => text.split(" ").filter((item) => item !== ""));
+
 /** An OpsCrew app name, as plan-schema allows it. */
 export const AppNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,40}$/, {
   message: "must be lower-case letters, digits and dashes",

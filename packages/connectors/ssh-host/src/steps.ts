@@ -67,6 +67,7 @@ import type { AppRecord } from "./facts";
 import { GrantParamsSchema, grantEngine } from "./grant";
 import {
   DOCKER_POOLS,
+  hostAddress,
   NETWORK_DROP_IN,
   NetworkInterfaceSchema,
   NetworkStepFieldsSchema,
@@ -122,6 +123,7 @@ import {
   RepositoryNameSchema,
   type SecretName,
   ServiceNameSchema,
+  spaceList,
   TunnelIdSchema,
 } from "./types";
 import {
@@ -199,11 +201,7 @@ const PortsSchema = z.string().regex(/^\d{1,5}( \d{1,5})*$/);
 const RulesSchema = z.string().regex(/^(\d{1,5}\/(tcp|udp)( \d{1,5}\/(tcp|udp))*)?$/);
 
 /** Words of a space-separated parameter, each checked by `schema`. */
-const words = <T extends z.ZodString>(schema: T) =>
-  z
-    .string()
-    .transform((text) => text.split(" ").filter((word) => word !== ""))
-    .pipe(z.array(schema));
+const words = <T extends z.ZodString>(schema: T) => spaceList.pipe(z.array(schema));
 
 /** What a step's check, apply and verify are made of, and the rest of its {@link StepScripts}. */
 type StepSpec = Omit<StepScripts, "check" | "apply" | "verify"> & {
@@ -1144,7 +1142,7 @@ function networkScripts(plan: HostPlan, step: HostStep): StepScripts {
       DROPIN_B64: base64(dropIn),
       DROPIN_SHA256: sha256Hex(dropIn),
       SSH_PORT: p.sshPort,
-      HOST_IP: p.address.slice(0, p.address.indexOf("/")),
+      HOST_IP: hostAddress(p.address),
       POOLS: DOCKER_POOLS.join(" "),
       LOCAL_PORTS: [...new Set(p.localPorts)].sort((a, b) => a - b).join(" "),
       UDP_COMMENT: UFW_NETWORK_COMMENT,

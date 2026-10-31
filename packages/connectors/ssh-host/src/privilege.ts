@@ -6,7 +6,9 @@
  * `nsenter` and runs the host's own `sh` on its standard input (research R5a, R5b). The image is
  * the caller's (the Caddy image OpsCrew already pins), so this package adds no image pin.
  */
+import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
+import { linesOf } from "./parse";
 import { asRoot, pipedScript } from "./shell";
 
 /** How the login becomes root: it is root, uses passwordless `sudo -n`, or runs Docker. */
@@ -69,4 +71,40 @@ export function rootCall(
   }
   const command = asRoot(privilege, script);
   return input === undefined ? { command } : { command, input };
+}
+
+/** `RemoteExec.run`'s options for `call`: `timeoutMs`, and its standard input when it has one. */
+export function callOptions(call: RemoteCall, timeoutMs: number): RemoteRunOptions {
+  return call.input === undefined ? { timeoutMs } : { timeoutMs, input: call.input };
+}
+
+/**
+ * Runs the read-only `script` as root the way `privilege` says (`rootImage`: the `docker`
+ * privilege's image), for at most a minute. Throws COMMAND_FAILED saying `unreachable` when the
+ * server cannot be reached; the caller judges the result (see {@link readFailure}).
+ */
+export async function readAsRoot(
+  remote: RemoteExec,
+  privilege: HostPrivilege,
+  rootImage: string | undefined,
+  script: string,
+  unreachable: string,
+): Promise<CommandResult> {
+  const call = rootCall(privilege, script, undefined, rootImage);
+  try {
+    return await remote.run(call.command, callOptions(call, 60_000));
+  } catch (error) {
+    throw new OpsCrewError("COMMAND_FAILED", unreachable, {
+      hint: "Check that the server is reachable over SSH, then try again.",
+      cause: error,
+    });
+  }
+}
+
+/** A failed root read's error: its script's own `opscrew: ` lines, else `fallback`. */
+export function readFailure(result: CommandResult, fallback: string, hint: string): OpsCrewError {
+  const own = linesOf(result.stderr)
+    .filter((line) => line.startsWith("opscrew: "))
+    .map((line) => line.slice("opscrew: ".length));
+  return new OpsCrewError("COMMAND_FAILED", own.length > 0 ? own.join(" ") : fallback, { hint });
 }

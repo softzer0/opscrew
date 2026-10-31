@@ -1,4 +1,5 @@
 import type { CheckResult, CommandResult, RemoteExec, Severity } from "@opscrew/contracts";
+import { inPrivateNetworks } from "@opscrew/plan-schema";
 
 /** A check run on the server as the unprivileged `deploy` user (no sudo). */
 export interface HostCheck {
@@ -27,12 +28,6 @@ function check(
   };
 }
 
-/** True for an address in 10.200.0.0/13, where OpsCrew's private networks live (ADR 0022). */
-function onPrivateNetwork(address: string): boolean {
-  const [first, second] = address.split(".").map(Number);
-  return first === 10 && second !== undefined && second >= 200 && second <= 207;
-}
-
 /**
  * Local listening TCP ports (`ss -H -tln`), excluding loopback addresses and the addresses of
  * OpsCrew's private networks, which only the network's members reach.
@@ -48,7 +43,8 @@ export function publicListeningPorts(ssOutput: string): number[] {
     const port = Number(local.slice(separator + 1));
     if (!Number.isInteger(port)) continue;
     if (address.startsWith("127.") || address === "::1" || address.endsWith("%lo")) continue;
-    if (onPrivateNetwork(address)) continue;
+    // A socket bound to one interface prints its name after the address (10.200.4.2%wg-opscrew0).
+    if (inPrivateNetworks(address.replace(/%.*$/, ""))) continue;
     ports.add(port);
   }
   return [...ports].sort((a, b) => a - b);

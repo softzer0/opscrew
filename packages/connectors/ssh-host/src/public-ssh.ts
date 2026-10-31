@@ -9,6 +9,7 @@
 import { z } from "zod";
 import { NetworkInterfaceSchema } from "./network";
 import { canonicalSshSource } from "./parse";
+import { spaceList } from "./types";
 
 /** Every IPv4 address, and every IPv6 address: together they are "from anywhere". */
 const ANY_IPV4 = "0.0.0.0/0";
@@ -59,7 +60,7 @@ export const PublicSshFieldsSchema = z
   .strictObject({
     open: z.boolean(),
     interface: z.string(),
-    allowedCidrs: z.string().transform((text) => text.split(" ").filter((item) => item !== "")),
+    allowedCidrs: spaceList,
     sshPort: z.number(),
     cloudServer: z.boolean(),
   })

@@ -83,7 +83,7 @@ import {
   splitSections,
   udpPorts,
 } from "./parse";
-import { rootCall } from "./privilege";
+import { callOptions, type RemoteCall, rootCall } from "./privilege";
 import { asLogin, asRoot, buildScript } from "./shell";
 import {
   SSH_FIREWALL_FUNCTIONS,
@@ -330,32 +330,34 @@ echo "table $(nft_table)"`;
  * drop-in's SHA-256, and for each interface with a configuration its SHA-256, its key file's
  * public key (never the key), its unit, addresses and peers. Root only.
  */
-const NETWORK_SNIPPET = `if [ -f ${NETWORK_DROP_IN} ]; then echo "dropin $(sha256sum ${NETWORK_DROP_IN} | cut -d ' ' -f 1)"; else echo 'dropin -'; fi
+const NETWORK_SNIPPET = `# The file's SHA-256, or - when it is missing.
+sum_or_dash() { if [ -f "$1" ]; then sha256sum "$1" | cut -d ' ' -f 1; else echo -; fi; }
+# Whether the unit $2 is enabled and active: "$1 enabled yes|no", then "$1 active yes|no".
+unit_state() {
+  if [ "$(systemctl is-enabled "$2")" = enabled ]; then echo "$1 enabled yes"; else echo "$1 enabled no"; fi
+  if systemctl is-active --quiet "$2"; then echo "$1 active yes"; else echo "$1 active no"; fi
+}
+echo "dropin $(sum_or_dash ${NETWORK_DROP_IN})"
 for conf in ${WIREGUARD_DIR}/wg-opscrew*.conf; do
   [ -f "$conf" ] || continue
   name=\${conf##*/}
   name=\${name%.conf}
   case "\${name#wg-opscrew}" in ''|*[!0-9]*) continue ;; esac
-  unit="wg-quick@$name.service"
-  echo "iface $name config $(sha256sum "$conf" | cut -d ' ' -f 1)"
+  echo "iface $name config $(sum_or_dash "$conf")"
   pub=$(wg pubkey < "${WIREGUARD_DIR}/$name.key") || pub=''
   echo "iface $name key \${pub:--}"
-  if [ "$(systemctl is-enabled "$unit")" = enabled ]; then echo "iface $name enabled yes"; else echo "iface $name enabled no"; fi
-  if systemctl is-active --quiet "$unit"; then echo "iface $name active yes"; else echo "iface $name active no"; fi
+  unit_state "iface $name" "wg-quick@$name.service"
   ip -4 -o addr show dev "$name" | awk -v name="$name" '{ print "iface " name " address " $4 }'
   wg show "$name" peers | sed "s/^/iface $name peer /"
 done
-if [ -f ${NETWORK_FILTER_UNIT} ]; then echo "filterunit $(sha256sum ${NETWORK_FILTER_UNIT} | cut -d ' ' -f 1)"; else echo 'filterunit -'; fi
+echo "filterunit $(sum_or_dash ${NETWORK_FILTER_UNIT})"
 for script in ${NETWORK_FILTER_SCRIPT_PREFIX}wg-opscrew*; do
   [ -f "$script" ] || continue
   name=\${script#${NETWORK_FILTER_SCRIPT_PREFIX}}
   case "\${name#wg-opscrew}" in ''|*[!0-9]*) continue ;; esac
-  echo "filter $name script $(sha256sum "$script" | cut -d ' ' -f 1)"
-  dropin="${networkFilterDropInPath("$name")}"
-  if [ -f "$dropin" ]; then echo "filter $name dropin $(sha256sum "$dropin" | cut -d ' ' -f 1)"; else echo "filter $name dropin -"; fi
-  unit="${networkFilterService("$name")}"
-  if [ "$(systemctl is-enabled "$unit")" = enabled ]; then echo "filter $name enabled yes"; else echo "filter $name enabled no"; fi
-  if systemctl is-active --quiet "$unit"; then echo "filter $name active yes"; else echo "filter $name active no"; fi
+  echo "filter $name script $(sum_or_dash "$script")"
+  echo "filter $name dropin $(sum_or_dash "${networkFilterDropInPath("$name")}")"
+  unit_state "filter $name" "${networkFilterService("$name")}"
   if iptables -w -C DOCKER-USER -j "${networkFilterChain("$name")}" 2>/dev/null; then echo "filter $name jump yes"; else echo "filter $name jump no"; fi
   iptables -w -S "${networkFilterChain("$name")}" 2>/dev/null | sed "s/^/filter $name rule /"
 done`;
@@ -544,9 +546,9 @@ echo none`,
   );
 }
 
-async function run(remote: RemoteExec, command: string, timeoutMs: number, input?: string) {
+async function run(remote: RemoteExec, call: RemoteCall, timeoutMs: number) {
   try {
-    return await remote.run(command, input === undefined ? { timeoutMs } : { timeoutMs, input });
+    return await remote.run(call.command, callOptions(call, timeoutMs));
   } catch (error) {
     throw new OpsCrewError("COMMAND_FAILED", "OpsCrew could not run its checks on the server.", {
       hint: "Check that the server is reachable over SSH with your key, then try again.",
@@ -557,11 +559,11 @@ async function run(remote: RemoteExec, command: string, timeoutMs: number, input
 
 /** Runs the privilege probe; `root`, `sudo`, `docker`, `sudo-password` or `none`. */
 export async function probePrivilege(remote: RemoteExec): Promise<HostFacts["privilege"]> {
-  const result = await run(remote, asLogin(privilegeProbeScript()), 60_000);
+  const result = await run(remote, { command: asLogin(privilegeProbeScript()) }, 60_000);
   const answer = linesOf(result.stdout).pop();
-  if (answer === "root" || answer === "sudo" || answer === "docker") return answer;
-  if (answer === "sudo-password") return answer;
-  return "none";
+  return answer === "root" || answer === "sudo" || answer === "docker" || answer === "sudo-password"
+    ? answer
+    : "none";
 }
 
 function section(sections: Map<string, Section>, name: string): Section {
@@ -873,7 +875,7 @@ export async function inspectHost(
   const script = inspectScript();
   const command =
     privilege === "root" || privilege === "sudo" ? asRoot(privilege, script) : asLogin(script);
-  const result = await run(remote, command, 180_000);
+  const result = await run(remote, { command }, 180_000);
   if (!result.stdout.includes(SECTION_MARK)) {
     throw new OpsCrewError("COMMAND_FAILED", "OpsCrew could not read the server's state.", {
       hint: "Check that the login has a POSIX shell (sh, bash or zsh) and try again.",
@@ -889,7 +891,7 @@ export async function inspectHost(
   }
   // The private networks, read as root the way the apply becomes root.
   const call = rootCall(privilege, networkInspectScript(), undefined, options.rootImage);
-  const read = await run(remote, call.command, 180_000, call.input);
+  const read = await run(remote, call, 180_000);
   if (!read.stdout.includes(SECTION_MARK)) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
@@ -913,7 +915,7 @@ export async function inspectHost(
  * server OpsCrew created (Hetzner, DigitalOcean), for `planRunner`. Read-only.
  */
 export async function inspectRunners(remote: RemoteExec): Promise<RunnerFacts> {
-  const result = await run(remote, asLogin(inspectRunnersScript()), 120_000);
+  const result = await run(remote, { command: asLogin(inspectRunnersScript()) }, 120_000);
   if (!result.stdout.includes(SECTION_MARK)) {
     throw new OpsCrewError("COMMAND_FAILED", "OpsCrew could not read the runner on the server.", {
       hint: "Check that the server is reachable over SSH as deploy, then try again.",

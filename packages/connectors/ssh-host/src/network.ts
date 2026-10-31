@@ -9,9 +9,10 @@
  * `Requires=`: a failed interface must not stop the app's own containers), so the services
  * published on a private address come up after a reboot.
  */
+import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
 import { canonicalIpv4Cidr, networkHolds } from "./parse";
-import { HostnameSchema, type HostStep } from "./types";
+import { HostnameSchema, type HostStep, spaceList } from "./types";
 
 /** The interfaces' configurations and key files (root only). */
 export const WIREGUARD_DIR = "/etc/wireguard";
@@ -65,9 +66,29 @@ export const NetworkInterfaceSchema = z.string().regex(/^wg-opscrew\d{1,5}$/, {
   message: "must be wg-opscrew followed by a number, such as wg-opscrew0",
 });
 
-/** The dotted IPv4 address `text` is, in canonical form; null otherwise. */
-function ipv4(text: string): string | null {
-  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(text) && canonicalIpv4Cidr(text) === text ? text : null;
+/** Throws INVALID_INPUT unless `iface` is one of OpsCrew's WireGuard interfaces. */
+export function requireNetworkInterface(iface: string): void {
+  if (!NetworkInterfaceSchema.safeParse(iface).success) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "That is not one of OpsCrew's WireGuard interfaces (wg-opscrew followed by a number).",
+    );
+  }
+}
+
+/** True for a dotted IPv4 address in canonical form, such as `10.200.4.2`. */
+function isIpv4(text: string): boolean {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(text) && canonicalIpv4Cidr(text) === text;
+}
+
+/** A dotted IPv4 address in canonical form, such as `10.200.4.2`. */
+export const Ipv4AddressSchema = z.string().refine(isIpv4, {
+  message: "must be an IPv4 address such as 10.200.4.2",
+});
+
+/** The address of a private address with its prefix: `10.200.4.2` for `10.200.4.2/24`. */
+export function hostAddress(address: string): string {
+  return address.slice(0, address.indexOf("/"));
 }
 
 /** The last number of an IPv4 address: 0 is a `/24`'s network, 255 its broadcast address. */
@@ -84,8 +105,7 @@ export function networkRange(address: string): string {
 /** `10.200.4.2/24`: a host's address in a `/24`. */
 function isHostAddress(text: string): boolean {
   const [ip = "", prefix] = text.split("/");
-  const host = ipv4(ip);
-  return prefix === "24" && host !== null && hostPart(host) >= 1 && hostPart(host) <= 254;
+  return prefix === "24" && isIpv4(ip) && hostPart(ip) >= 1 && hostPart(ip) <= 254;
 }
 
 /** `host:port`: an IPv4 address, an IPv6 address in brackets, or a domain name, then a port. */
@@ -95,7 +115,7 @@ function isEndpoint(text: string): boolean {
   const port = Number(match?.[2]);
   if (port < 1 || port > 65535) return false;
   if (/^\[[0-9a-f:]+\]$/i.test(host)) return host.includes(":");
-  return ipv4(host) !== null || HostnameSchema.safeParse(host).success;
+  return isIpv4(host) || HostnameSchema.safeParse(host).success;
 }
 
 /** One peer of the interface: another server of the app, or a device. */
@@ -154,8 +174,7 @@ export const NetworkStepParamsSchema = z
     const range = networkRange(params.address);
     for (const [i, peer] of params.peers.entries()) {
       const [ip = ""] = peer.allowedIp.split("/");
-      const host = ipv4(ip);
-      if (host === null || !networkHolds(range, host) || [0, 255].includes(hostPart(host))) {
+      if (!isIpv4(ip) || !networkHolds(range, ip) || [0, 255].includes(hostPart(ip))) {
         ctx.addIssue({
           code: "custom",
           path: ["peers", i, "allowedIp"],
@@ -218,14 +237,9 @@ export const NetworkStepFieldsSchema = z
         return z.NEVER;
       }
     }),
-    otherInterfaces: z.string().transform((text) => text.split(" ").filter((name) => name !== "")),
+    otherInterfaces: spaceList,
     sshPort: z.number(),
-    localPorts: z.string().transform((text) =>
-      text
-        .split(" ")
-        .filter((port) => port !== "")
-        .map(Number),
-    ),
+    localPorts: spaceList.transform((ports) => ports.map(Number)),
   })
   .pipe(NetworkStepParamsSchema);
 

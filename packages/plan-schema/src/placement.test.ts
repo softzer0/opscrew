@@ -10,6 +10,7 @@ import {
   DeviceNameSchema,
   ExtraServerSchema,
   GRANTABLE_KINDS,
+  inPrivateNetworks,
   MoveSchema,
   NetworkSchema,
   networkInterface,
@@ -196,6 +197,17 @@ describe("the names and keys", () => {
       "redis",
       "dragonfly",
     ]);
+  });
+});
+
+describe("the private networks' addresses", () => {
+  it("are the addresses inside 10.200.0.0/13", () => {
+    for (const address of ["10.200.0.0", "10.200.4.2", "10.207.255.255"]) {
+      expect(inPrivateNetworks(address), address).toBe(true);
+    }
+    for (const address of ["10.199.255.255", "10.208.0.0", "192.168.1.20", "::1"]) {
+      expect(inPrivateNetworks(address), address).toBe(false);
+    }
   });
 });
 

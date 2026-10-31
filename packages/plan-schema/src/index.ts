@@ -32,6 +32,7 @@ export {
 export {
   DeviceNameSchema,
   GRANTABLE_KINDS,
+  inPrivateNetworks,
   type Move,
   MoveSchema,
   type Network,

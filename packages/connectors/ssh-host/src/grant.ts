@@ -15,8 +15,6 @@ import { ServiceNameSchema } from "./types";
 
 /** The databases whose device logins a host step makes (the Redis-protocol kinds declare theirs). */
 export const GRANT_KINDS = ["postgres", "mysql", "mariadb", "mongodb"] as const;
-export type GrantKind = (typeof GRANT_KINDS)[number];
-export type GrantAccess = "read-only" | "full";
 
 /** Logins the engines or OpsCrew already use, never a device's: removing one would break the app. */
 const RESERVED_LOGINS = new Set(["app", "root", "postgres", "admin", "healthcheck", "mysql"]);
@@ -43,7 +41,7 @@ export const GrantParamsSchema = z.strictObject({
 export type GrantParams = z.infer<typeof GrantParamsSchema>;
 
 /** What the step sends each kind's client: fixed statements around the login's name. */
-export interface GrantEngine {
+interface GrantEngine {
   title: string;
   /** The client, after `docker compose -p "$PROJECT" exec -T "$SERVICE"`; it reads stdin. */
   client: string;
@@ -87,7 +85,7 @@ const MYSQL_PRIVILEGES = [
   "Trigger",
 ] as const;
 
-function postgres(login: string, access: GrantAccess): GrantEngine {
+function postgres(login: string, access: GrantParams["access"]): GrantEngine {
   const role = `"${login}"`;
   const name = `'${login}'`;
   const member = (of: string) => `pg_has_role(r.oid, '${of}', 'MEMBER')`;
@@ -109,7 +107,11 @@ function postgres(login: string, access: GrantAccess): GrantEngine {
   };
 }
 
-function mysql(kind: "mysql" | "mariadb", login: string, access: GrantAccess): GrantEngine {
+function mysql(
+  kind: "mysql" | "mariadb",
+  login: string,
+  access: GrantParams["access"],
+): GrantEngine {
   const user = `'${login}'@'%'`;
   const binary = kind === "mysql" ? "mysql" : "mariadb";
   const rootPassword = kind === "mysql" ? "MYSQL_ROOT_PASSWORD" : "MARIADB_ROOT_PASSWORD";
@@ -136,7 +138,7 @@ function mysql(kind: "mysql" | "mariadb", login: string, access: GrantAccess): G
   };
 }
 
-function mongodb(login: string, access: GrantAccess): GrantEngine {
+function mongodb(login: string, access: GrantParams["access"]): GrantEngine {
   const roles =
     access === "read-only"
       ? '[{ role: "read", db: "app" }]'

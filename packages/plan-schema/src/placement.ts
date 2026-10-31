@@ -40,11 +40,18 @@ function ipv4Number(address: string): number {
   return address.split(".").reduce((n, part) => n * 256 + Number(part), 0);
 }
 
+/**
+ * True for an IPv4 address inside 10.200.0.0/13, where OpsCrew's private networks live (ADR 0022).
+ */
+export function inPrivateNetworks(address: string): boolean {
+  const value = ipv4Number(address);
+  return value >= NETWORKS_START && value <= NETWORKS_END;
+}
+
 /** True for a `/24` network address inside 10.200.0.0/13 (an input `z.cidrv4()` accepted). */
 function isNetworkRange(range: string): boolean {
   const [base = "", size] = range.split("/");
-  const start = ipv4Number(base);
-  return size === "24" && start % 256 === 0 && start >= NETWORKS_START && start <= NETWORKS_END;
+  return size === "24" && ipv4Number(base) % 256 === 0 && inPrivateNetworks(base);
 }
 
 /**

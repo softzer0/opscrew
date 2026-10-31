@@ -4,13 +4,20 @@ import {
   UFW_NETWORK_LOCAL_COMMENT,
   UFW_NETWORK_SSH_COMMENT,
 } from "./constants";
-import { DOCKER_POOLS, type NetworkStepParams, networkConfig, networkDropIn } from "./network";
+import {
+  DOCKER_POOLS,
+  hostAddress,
+  type NetworkStepParams,
+  networkConfig,
+  networkDropIn,
+} from "./network";
 import {
   NETWORK_FILTER_UNIT_TEXT,
   type NetworkFilterParams,
   networkFilterDropIn,
   networkFilterScript,
 } from "./network-filter";
+import { networkSshRule } from "./public-ssh";
 
 /**
  * SHA-256 of the files the `network` step writes for these parameters: the interface's
@@ -30,11 +37,11 @@ export function networkFileHashes(params: NetworkStepParams): { config: string; 
  * Docker networks to each local port on the private address.
  */
 export function networkUfwRules(params: NetworkStepParams): { rule: string; comment: string }[] {
-  const ip = params.address.slice(0, params.address.indexOf("/"));
+  const ip = hostAddress(params.address);
   return [
     { rule: `allow ${params.port}/udp`, comment: UFW_NETWORK_COMMENT },
     {
-      rule: `allow in on ${params.interface} to any port ${params.sshPort} proto tcp`,
+      rule: `allow ${networkSshRule(params)}`,
       comment: UFW_NETWORK_SSH_COMMENT,
     },
     ...DOCKER_POOLS.flatMap((pool) =>
