@@ -728,7 +728,7 @@ Effort`.
 
 ## Phase 8: Live
 
-- [ ] T1820 The live tests (gated on `OPSCREW_E2E_SPLIT=1` and the Hetzner token), in `packages/cli/test/live/split.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
+- [X] T1820 The live tests (gated on `OPSCREW_E2E_SPLIT=1` and the Hetzner token), in `packages/cli/test/live/split.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: plan.md "14."; quickstart.md; spec SC-1801–SC-1808
   - Depends: T1817
