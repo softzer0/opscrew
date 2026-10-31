@@ -563,7 +563,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1816 [P] [US5] Agents: device logins (`vpn grant`, `vpn revoke`), in `packages/agents/src/vpn/grants.ts`
+- [X] T1816 [P] [US5] Agents: device logins (`vpn grant`, `vpn revoke`), in `packages/agents/src/vpn/grants.ts`
   - Owns: that file (+ test). In `provision/secrets.ts`, only the `OPSCREW_ACL_USERS` lines.
   - Reads: plan.md "12."; spec US5, FR-1817, FR-1818; research.md R6a
   - Depends: T1806, T1814
