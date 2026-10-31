@@ -730,6 +730,9 @@ Effort`.
       - Postgres moved back and `--finish-move`;
       - destroy, leaving nothing.
     - With `OPSCREW_E2E_DIGITALOCEAN_TOKEN`, the second server at DigitalOcean.
+    - A deploy job created just before `OPSCREW_DEPLOY_PAUSED` is set: record whether GitHub reads
+      `vars` in a job-level `if:` when the run is created or when the job starts (the move's pause
+      relies on it; the window's checks cover either answer).
     - Every step tears down what it created, also on failure.
     - **Docs:** `docs/e2e.md` explains how to run it; `docs/e2e-coverage.md` gets the pass's
       row ("Not run yet") and "Not tested live" items.

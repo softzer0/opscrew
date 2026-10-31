@@ -72,7 +72,9 @@ and not from any other address.
 3. **Given** a live app whose Postgres moves to a server of its own, **When** the user approves
    the move, **Then** design first shows the maintenance window it needs (from the database's
    size). In the window, the app stops, the data is copied, and the app starts against the new
-   server. Any failure in the window starts the app again against the old copy. The old copy stays,
+   server. A failure before the app starts on the new server starts it again against the old copy;
+   once it has started there, OpsCrew only goes forward, so writes made on the new copy are never
+   lost. The old copy stays,
    stopped, until the user removes it with a typed confirmation of its name.
 4. **Given** a service on another server that has no login of its own (Kafka, Redpanda,
    OpenSearch), **When** design shows it, **Then** design says that only the app's servers can
@@ -319,7 +321,8 @@ with the measured delay, and the design's estimate for a placement. No tool retu
   asked for.
 - **FR-1809**: Moving a live service between the app's servers MUST copy Postgres's data in a
   maintenance window whose length design shows first. It MUST start the app again against the old
-  copy when any step in the window fails, and MUST keep the old copy, stopped, until the user removes
+  copy when a step fails before the app starts on the new copy, MUST only go forward once it has
+  (writes on the new copy are never discarded), MUST keep deploys from running during the window, and MUST keep the old copy, stopped, until the user removes
   it through an approval that allows destroying and a typed confirmation (constitution I). Valkey, Redis and Dragonfly MUST start empty with a warning. Other services with
   data on a live app MUST be refused until 022.
 - **FR-1810**: The deploy workflow MUST update the services on every server of the app, before the
