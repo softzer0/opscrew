@@ -9,12 +9,14 @@ Done: 000–017. In progress: [018 split placement and the private network](018-
 
 ## 019 Rollback
 
-`opscrew rollback` puts an app's environment back on a version it ran before (founder,
-2026-10-31). It became a feature of its own, right after 018, when the first outside feedback asked
+`opscrew rollback` puts an app's environment back on its previous deployment with one command,
+or on an earlier version the user picks (founder, 2026-10-31). It became a feature of its own, right after 018, when the first outside feedback asked
 how a failed deploy is recovered before pointing OpsCrew at a real app. Today OpsCrew has no
 command that undoes a release which deployed fine but is wrong.
 
 The lead's sketch, to settle in the spec:
+- **The main case:** `opscrew rollback` with no arguments goes back to the deployment before the
+  current one, whether the current one failed later or simply turned out wrong.
 - **What it deploys:** an image the environment ran before, with no build. `promote` already
   deploys an image that exists, so rollback reuses that path, through the same switch, health
   check and check from outside as any deploy. It lists the recent versions and defaults to the one
