@@ -30,37 +30,38 @@ describe("the delay estimate", () => {
     }
   });
 
-  it("is 2 ms plus 1 ms per 50 km of great-circle distance, as calibrated on fsn1 to hel1", () => {
-    expect(estimateHop(fsn1, fsn1)).toEqual({ roundTripMs: 2, distanceKm: 0 });
+  it("is 1 ms plus 1 ms per 50 km of great-circle distance, as calibrated on fsn1 to hel1 and within fsn1", () => {
+    // One location: 1 ms estimated; the live run measured 0.8 ms.
+    expect(estimateHop(fsn1, fsn1)).toEqual({ roundTripMs: 1, distanceKm: 0 });
     const hel1 = estimateHop(fsn1, { provider: "hetzner", location: "hel1" });
     expect(hel1?.distanceKm).toBeGreaterThan(1300);
     expect(hel1?.distanceKm).toBeLessThan(1360);
-    // About 28 ms estimated; the real-server pass measured 36 ms (within a factor of two).
-    expect(hel1?.roundTripMs).toBeGreaterThan(28);
-    expect(hel1?.roundTripMs).toBeLessThan(30);
+    // About 27 ms estimated; the real-server pass measured 36 ms (within a factor of two).
+    expect(hel1?.roundTripMs).toBeGreaterThan(27);
+    expect(hel1?.roundTripMs).toBeLessThan(29);
     const nbg1 = estimateHop(fsn1, { provider: "hetzner", location: "nbg1" });
-    expect(nbg1?.roundTripMs).toBeGreaterThan(4.5);
-    expect(nbg1?.roundTripMs).toBeLessThan(5);
+    expect(nbg1?.roundTripMs).toBeGreaterThan(3.5);
+    expect(nbg1?.roundTripMs).toBeLessThan(4);
   });
 
   it("labels the same location's hop as an estimate, with what it adds to a page, and no warning", () => {
     const delay = hopDelay(fsn1, "db", fsn1, ["db"]);
     expect(delay.text).toBe(
-      `Each query from the app to db on server db waits about 2 ms (an estimate: 2 ms plus 1 ms per 50 km between fsn1 and fsn1, 0 km apart), so a page that makes ${PAGE_QUERIES} queries in a row takes about 40 ms longer.`,
+      `Each query from the app to db on server db waits about 1 ms (an estimate: 1 ms plus 1 ms per 50 km between fsn1 and fsn1, 0 km apart), so a page that makes ${PAGE_QUERIES} queries in a row takes about 20 ms longer.`,
     );
-    expect(delay.pageMs).toBe(40);
+    expect(delay.pageMs).toBe(20);
     expect(delay.warning).toBeUndefined();
   });
 
   it(`warns above ${DELAY_WARNING_MS} ms, saying what would shorten it`, () => {
     const far = hopDelay(fsn1, "db", { provider: "hetzner", location: "hel1" }, ["db", "cache"]);
     expect(far.text).toContain(
-      "Each query from the app to db and cache on server db waits about 29 ms",
+      "Each query from the app to db and cache on server db waits about 28 ms",
     );
     expect(far.text).toContain("1,334 km apart");
-    expect(far.pageMs).toBe(574);
+    expect(far.pageMs).toBe(554);
     expect(far.warning).toBe(
-      "Each query from the app to db and cache on server db waits about 29 ms, so a page that makes 20 queries in a row takes about 574 ms longer, which users notice. To shorten it, put server db in fsn1 with the app's server (about 2 ms a query), or keep db and cache on the app's server.",
+      "Each query from the app to db and cache on server db waits about 28 ms, so a page that makes 20 queries in a row takes about 554 ms longer, which users notice. To shorten it, put server db in fsn1 with the app's server (about 1 ms a query), or keep db and cache on the app's server.",
     );
     // Another provider in another city: Frankfurt is about 265 km from Falkenstein.
     const other = hopDelay(fsn1, "db", { provider: "digitalocean", location: "fra1" }, ["db"]);

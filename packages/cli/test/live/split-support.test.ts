@@ -77,8 +77,8 @@ describe("the split placement live test's helpers", () => {
 
   it("reads design's estimated delay and the maintenance window's minutes", () => {
     const design =
-      "Each query from the app to server data waits about 2 ms (an estimate: 2 ms plus 1 ms per 50 km between Nuremberg and Nuremberg, 0 km apart), so a page that makes 20 queries in a row takes about 40 ms longer.\nMoving db (PostgreSQL) from the app's server to server data needs a maintenance window of about 3 minutes for the database's 7.6 MB: …";
-    expect(estimatedRoundTrip(design)).toBe(2);
+      "Each query from the app to server data waits about 1 ms (an estimate: 1 ms plus 1 ms per 50 km between Nuremberg and Nuremberg, 0 km apart), so a page that makes 20 queries in a row takes about 20 ms longer.\nMoving db (PostgreSQL) from the app's server to server data needs a maintenance window of about 3 minutes for the database's 7.6 MB: …";
+    expect(estimatedRoundTrip(design)).toBe(1);
     expect(windowMinutes(design)).toBe(3);
     expect(windowMinutes("Maintenance window: stop shop … (about 4 minutes of downtime)")).toBe(4);
     expect(estimatedRoundTrip("nothing")).toBeUndefined();

@@ -48,8 +48,11 @@ export const DELAY_WARNING_MS = 5;
 /** The queries in a row of the page the estimate describes. */
 export const PAGE_QUERIES = 20;
 
-/** The base of every hop (ms): WireGuard and the two servers' network stacks (research R5b). */
-const BASE_MS = 2;
+/**
+ * The base of every hop (ms): WireGuard and the two servers' network stacks. Two servers in one
+ * Hetzner location measured 0.8 ms (T1821's live run).
+ */
+const BASE_MS = 1;
 /** Real routes run about twice the straight line: 1 ms of round trip per 50 km of it (R5b). */
 const KM_PER_MS = 50;
 const EARTH_RADIUS_KM = 6371;
@@ -70,15 +73,15 @@ function distanceKm(a: readonly [number, number], b: readonly [number, number]):
 
 /** A hop's estimated round trip, from the two places' great-circle distance. */
 export interface HopEstimate {
-  /** `2 ms + distance / 50 km` (research R5b), unrounded. */
+  /** `1 ms + distance / 50 km` (research R5b, T1821), unrounded. */
   roundTripMs: number;
   distanceKm: number;
 }
 
 /**
- * The estimated round trip of a query between two places: 2 ms plus 1 ms per 50 km of their
- * great-circle distance, calibrated on two Hetzner servers (fsn1 to hel1: about 28 ms estimated,
- * 36 ms measured). `undefined` when either place is unknown: a server the user owns, or a location
+ * The estimated round trip of a query between two places: 1 ms plus 1 ms per 50 km of their
+ * great-circle distance, calibrated on Hetzner servers (fsn1 to hel1: about 27 ms estimated, 36 ms
+ * measured; one location: 1 ms estimated, 0.8 ms measured). `undefined` when either place is unknown: a server the user owns, or a location
  * the table lacks.
  */
 export function estimateHop(a: ServerPlace, b: ServerPlace): HopEstimate | undefined {
@@ -132,7 +135,7 @@ export function hopDelay(
   const ms = Math.round(estimate.roundTripMs);
   const pageMs = Math.round(estimate.roundTripMs * PAGE_QUERIES);
   const km = Math.round(estimate.distanceKm).toLocaleString("en-US");
-  const text = `Each query from the app to ${to} waits about ${ms} ms (an estimate: 2 ms plus 1 ms per 50 km between ${placeName(app)} and ${placeName(place)}, ${km} km apart), so a page that makes ${PAGE_QUERIES} queries in a row takes about ${pageMs} ms longer.`;
+  const text = `Each query from the app to ${to} waits about ${ms} ms (an estimate: ${BASE_MS} ms plus 1 ms per 50 km between ${placeName(app)} and ${placeName(place)}, ${km} km apart), so a page that makes ${PAGE_QUERIES} queries in a row takes about ${pageMs} ms longer.`;
   if (estimate.roundTripMs <= DELAY_WARNING_MS) return { estimate, pageMs, text };
   return {
     estimate,

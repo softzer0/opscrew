@@ -362,7 +362,7 @@ cloud-init: Docker CE, `wireguard-tools`, ufw (deny incoming, 22/tcp and 51820/u
   reopening restored it.
 
 **Decisions:**
-- **The delay estimate** is `2 ms + distance/50 km`: about 28 ms for fsn1 to hel1 (measured 36),
+- **The delay estimate** was `2 ms + distance/50 km` (T1821's live run measured 0.8 ms between two servers in one location, so the base became 1 ms: about 27 ms for fsn1 to hel1): about 28 ms for fsn1 to hel1 (measured 36),
   and about 6 ms for fsn1 to nbg1. Real routes are about twice the great-circle distance.
 - **Design's default** places an extra server in the app server's location, and warns when the
   hop crosses locations.

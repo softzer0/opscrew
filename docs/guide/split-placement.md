@@ -64,12 +64,13 @@ Every query the app sends to a service on another server crosses the network and
 answer. Design estimates that wait for each server:
 
 ```text
-Each query from the app to db on server db waits about 2 ms (an estimate: 2 ms plus 1 ms per 50 km between nbg1 and nbg1, 0 km apart), so a page that makes 20 queries in a row takes about 40 ms longer.
+Each query from the app to db on server db waits about 1 ms (an estimate: 1 ms plus 1 ms per 50 km between nbg1 and nbg1, 0 km apart), so a page that makes 20 queries in a row takes about 20 ms longer.
 ```
 
-- **It is an estimate,** from the distance between the two locations: about 2 ms, plus 1 ms for
-  every 50 km. In the same location that is about 2 ms a query; between Falkenstein and Nuremberg
-  about 6 ms; between Falkenstein and Helsinki about 28 ms (36 ms measured in OpsCrew's tests).
+- **It is an estimate,** from the distance between the two locations: about 1 ms, plus 1 ms for
+  every 50 km. In the same location that is about 1 ms a query (0.8 ms measured in OpsCrew's
+  tests); between Falkenstein and Nuremberg about 4 ms; between Falkenstein and Helsinki about 27 ms
+  (36 ms measured).
 - **Design warns above 5 ms a query,** because a page that makes many queries one after another
   then slows down noticeably. It says what would shorten it: the extra server in the app's server's
   location, or the service back on the app's server.

@@ -168,7 +168,7 @@ describe("design with a service on a server of its own", () => {
         "Server db: Hetzner cx13 in Falkenstein (fsn1), 2 vCPU and 4 GB memory, €4.69/month (estimate as of 2026-09-01).",
         "Memory limits on server db: db 512 MB (€0.59/month); the system 384 MB; 3.1 GB of 4.0 GB free.",
         "Monthly total for the app's 2 servers: €9.38 (estimate as of 2026-09-01).",
-        "Each query from the app to db on server db waits about 2 ms (an estimate: 2 ms plus 1 ms per 50 km between fsn1 and fsn1, 0 km apart), so a page that makes 20 queries in a row takes about 40 ms longer.",
+        "Each query from the app to db on server db waits about 1 ms (an estimate: 1 ms plus 1 ms per 50 km between fsn1 and fsn1, 0 km apart), so a page that makes 20 queries in a row takes about 20 ms longer.",
       ]),
     );
     expect(result.lines.filter((line) => line.startsWith("Memory limits"))).toHaveLength(2);
@@ -192,7 +192,7 @@ describe("design with a service on a server of its own", () => {
     });
     expect(result.warnings).toContainEqual(
       expect.stringContaining(
-        "Each query from the app to db on server db waits about 29 ms, so a page that makes 20 queries in a row takes about 574 ms longer",
+        "Each query from the app to db on server db waits about 28 ms, so a page that makes 20 queries in a row takes about 554 ms longer",
       ),
     );
     // A type the provider does not offer there is refused, naming one that is.
@@ -226,7 +226,7 @@ describe("design with a service on a server of its own", () => {
     );
     // Falkenstein to Frankfurt is past the threshold.
     expect(result.warnings).toContainEqual(
-      expect.stringContaining("Each query from the app to db on server db waits about 7 ms"),
+      expect.stringContaining("Each query from the app to db on server db waits about 6 ms"),
     );
     expect(result.lines).toContainEqual(
       expect.stringContaining("Converted at a fixed approximate rate"),
@@ -993,7 +993,7 @@ describe("placementEstimate", () => {
       amount: Math.round((plan.cost.monthly.amount + 1.5) * 100) / 100,
       currency: "EUR",
     });
-    expect(estimate.delay.estimate?.roundTripMs).toBeGreaterThan(28);
+    expect(estimate.delay.estimate?.roundTripMs).toBeGreaterThan(27);
     expect(estimate.delay.warning).toBeDefined();
 
     const own = await placementEstimate({ plan, service: "db", server: { provider: "own" } });
