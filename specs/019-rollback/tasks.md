@@ -43,7 +43,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
 ## Phase 1: Foundation
 
-- [ ] T1901 The spikes and the ADR (lead): research.md R6, plus `docs/adr/0023-rollback-and-deploy-pause.md`.
+- [X] T1901 The spikes and the ADR (lead): research.md R6, plus `docs/adr/0023-rollback-and-deploy-pause.md`.
   - **The spikes** (plan.md Technical Context), on the throwaway repository:
     - S3 first;
     - then S1, S2, S4;

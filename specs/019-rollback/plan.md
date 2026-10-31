@@ -42,7 +42,7 @@
 
 - **Stack:** the same as 000–018. **No new dependency.**
 - **GitHub and GHCR:**
-  - **The registry's tag list:** the OCI distribution API `GET /v2/<name>/tags/list`, through `GhcrReader`, with the credential `promote` already uses (`OPSCREW_GHCR_READ_TOKEN`, else the user's token).
+  - **The registry's tag list:** the OCI distribution API `GET /v2/<name>/tags/list`, through `GhcrReader`, with a classic `read:packages` token (`OPSCREW_GHCR_READ_TOKEN`): S2 found that a fine-grained token and gh's login token get 403, so a refusal without it names that variable. Paging follows GHCR's relative `Link` header (S2).
   - **Fields GitHub already returns:** on workflow runs, `event`, `head_branch`, `head_commit`, `created_at` and `conclusion`. The contents API's file text gives the plan at a commit.
   - **Not the Packages REST API**, which retention uses inside the workflow. GitHub documents it for classic tokens. Whether a fine-grained token can read it, or GHCR's tag list, is unconfirmed (S2).
   - **The Variables permission** is now needed for every rollback, not only for the check and a move. The token permission text changes.
@@ -59,7 +59,7 @@
     - a push while paused;
     - a dispatch with `rollback: "true"`;
     - a dispatch with no inputs;
-    - whether `inputs.rollback` is null in a job-level `if:` on a push (fallback: `github.event.inputs.rollback == 'true'`);
+    - whether `inputs.rollback` is usable in a job-level `if:` on a push (S3: yes, `inputs` is `{}`; never compare it with 'true', since a dispatch makes it a boolean);
     - `!cancelled()` with a skipped need.
   - **S4:** GitHub Pages: `github.run_attempt > 1` in a re-run's job `if:`, and whether a re-run reads `vars` again.
   - **S5:** whether `docker compose up -d` recreates the Portainer stack's `release` service when only its environment changes. This needs local Docker only.
@@ -148,7 +148,8 @@ docs/adr/0023-rollback-and-deploy-pause.md                    (lead)
 | `build` | `!inputs.rollback` | — | none |
 | `verify` | `inputs.rollback` | — | always, as today |
 | `deploy` | `!cancelled() && (needs.build.result == 'success' \|\| needs.verify.result == 'success') && (inputs.rollback \|\| !PAUSED)` | `[build, verify]` | `inputs.rollback \|\| !PAUSED`, needs `verify` |
-| `sign`, `tag`, `prune` | unchanged | `build` (+ `deploy`): skipped on a rollback, since `build` is | none |
+| `sign` | unchanged | `build`: skipped on a rollback, since `build` is | none |
+| `tag`, `prune` | `!cancelled() && needs.build.result == 'success' && needs.deploy.result == 'success'` (S3: without it they are skipped on every push, since `deploy` now needs the skipped `verify`) | `build`, `deploy` | none |
 | `label` | `!cancelled() && needs.deploy.result == 'success'` | `[build, verify, deploy]` | unchanged |
 
 - **Image outputs:** `imageJob` and `imageOutput` (shared.ts) become `imageJobs(plan)`. For a branch-following environment the output is `${{ needs.build.outputs.image || needs.verify.outputs.image }}`, and the same for `tag`.
@@ -563,7 +564,7 @@ A push after step 2 skips its deploy job.
 
 ### 10. Risks, and the spikes first
 
-**Spikes, in order** (T1901): S3 first (the job graph everything rests on), then S1, S2, S4 and S5. S1's failure would make environments that follow a non-default branch unable to roll back. Their fallback is a refusal: "merge <branch> into <default> once, so GitHub can start its workflow".
+**Spikes, in order** (T1901): S3 first (the job graph everything rests on), then S1, S2, S4 and S5. Done 2026-10-31 (research R6). S1: a dispatch works on any branch where the workflow has run once; an environment with a version to roll back to always has, and a 404 means it never ran there, so the refusal says "push to <branch> once".
 
 **Risks:**
 - **Every deploy workflow changes once.** Until `opscrew provision` runs and its pull request is merged, `rollback` refuses: `requireApplied` names it. The changelog and the guide say "run provision once after upgrading".

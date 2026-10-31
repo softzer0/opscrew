@@ -195,3 +195,94 @@ What they say:
    - make the release command's failure message say what to do about a migration that stopped
      halfway.
 7. **`status` shows the running version** on servers: commit, short digest and time.
+
+## R6. Spikes (T1901, 2026-10-31)
+
+On the private throwaway repository, then local Docker. Everything created was removed afterwards.
+
+### S3. The job graph on real runs
+
+A workflow with plan.md 1.'s jobs, the three inputs, `on: push`, and the pause `contains(vars.SPIKE_DEPLOY_PAUSED, '"app/prod"')`. It added `sign` (`needs: build`), `prune` (`needs: [build, deploy]`, no `if:`) and a job printing each expression.
+
+| Case | paused | build, sign | verify | deploy | prune | label |
+|---|---|---|---|---|---|---|
+| 1. push | skip | ran | skip | ran (build's image) | **skip** | ran |
+| 2. push, paused | ran | ran | skip | skip | skip | skip |
+| 3. dispatch `rollback=true` + digest | skip | skip | ran | ran (verify's image) | skip | ran |
+| 4. dispatch, no inputs | skip | ran | skip | ran | **skip** | ran |
+| 5. as 3., paused | skip | skip | ran | ran | skip | ran |
+
+Nothing was cancelled, and every run concluded `success`.
+
+**What the expressions saw:**
+- **On a push:** `inputs` is `{}`, so `!inputs.rollback` is true. No fallback is needed.
+- **A boolean from the API:** `gh workflow run -f rollback=true`, REST `"true"` and REST JSON `true` all gave `inputs.rollback` the boolean `true`, and `github.event.inputs.rollback` the string `"true"`. Without inputs: `false` and `"false"`.
+  - So `inputs.rollback == 'true'` is false on a rollback.
+  - `!github.event.inputs.rollback` is false on every dispatch.
+- **One need skipped:** `deploy`'s condition worked with either need skipped.
+
+**Finding:** the implicit `success()` skips a job when any job upstream was skipped, even indirectly. `prune` was skipped on every push, because `deploy` needs `verify`. With `${{ !cancelled() && needs.build.result == 'success' && needs.deploy.result == 'success' }}` it ran in cases 1 and 4 only.
+
+**Working `if:` texts:**
+- **paused:** `${{ !inputs.rollback && contains(vars.X, '"app/prod"') }}`
+- **build:** `${{ !inputs.rollback }}`
+- **verify:** `${{ inputs.rollback }}`
+- **deploy:** `${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (inputs.rollback || !contains(vars.X, '"app/prod"')) }}`
+- **label:** `${{ !cancelled() && needs.deploy.result == 'success' }}`
+
+The image output `needs.build.outputs.image || needs.verify.outputs.image` was right, and so was the mode `inputs.rollback && 'rollback' || 'deploy'`.
+
+### S1. A dispatch on a branch that isn't the default
+
+- **S3's workflow,** only on its branch, after its first push run: a dispatch with `--ref` got 204 and ran.
+- **A dispatch-only file** on a second branch, never run: `HTTP 404: Not Found (https://api.github.com/repos/<owner>/<repo>/actions/workflows/spike-019-s1.yml)`. The REST dispatch got 404 too.
+- **The same with a push trigger** whose branch filter didn't match: also 404. GitHub knows a workflow once it has run on that branch, or once its file is on the default branch.
+- **The file on both branches:** one commit on `main`, reverted by a second. The dispatch got 204 and used the branch's version of the file.
+- **After the revert:** a dispatch on the branch still worked.
+
+### S2. GHCR's tag list
+
+`GITHUB_TOKEN` (`packages: write`) pushed three private versions, `spike-1` to `spike-3`.
+
+**The pull token** came back 200 for every token; anonymous got 401.
+
+**`tags/list`:**
+- **Classic `read:packages` token:** 200.
+- **Fine-grained token,** and **`gh auth token`** (`repo`, `workflow`, no `read:packages`): 403 `DENIED`, "The token provided does not match expected scopes."
+- **`GITHUB_TOKEN`:** 200.
+
+**Paging:**
+- `?n=1` gave one tag and `Link: </v2/<owner>/<repo>/spike-019/tags/list?last=spike-1&n=1>; rel="next"`, a relative path.
+- The last page had no `Link`. Without `n`, all came back with no `Link`.
+- The order was lexical.
+- A deleted package gave 404 `NAME_UNKNOWN`.
+
+**The Packages REST API** (`…/versions`) answered the same way: 200 for the classic token (9 versions, since each push added two untagged manifests) and `GITHUB_TOKEN`, 403 for the other two.
+
+### S4. Re-runs
+
+The first run had `vars.SPIKE_S4` = `A`. It was then set to `B`, and the run re-run with `gh run rerun`.
+- **Attempt 2** printed `B`, and the jobs gated on `${{ github.run_attempt > 1 }}` and `${{ vars.SPIKE_S4 == 'B' }}` ran.
+- **`${{ github.run_attempt > 1 || vars.SPIKE_S4 != 'B' }}`** ran on both.
+
+A re-run reads `vars` again, so a paused environment blocks re-runs. The Pages exemption is needed, and it works.
+
+### S5. Compose's `release` service
+
+Docker 29.9.2, Compose 5.6.1:
+- **Nothing changed:** `up -d` restarted the exited `release`, which printed `ran` again.
+- **Only its environment changed:** `release` was recreated and ran. `app` was untouched.
+- **The wrapper with `skip`:** `release` exited 0 silently, and `app` started after it.
+- **Back to `run`,** with `app` changed: `release` ran, then `app` started.
+
+### Corrections for plan.md
+
+1. **1.:** `tag` and `prune` need the `if:` from S3's finding, or they skip on every push. The same holds for any job that needs `deploy` without its own `if:`.
+2. **Technical Context:** drop the `github.event.inputs` fallback. Never compare `inputs.rollback` with `'true'`.
+3. **3.:**
+   - Only a classic `read:packages` token reads the tag list from this computer. "Else the user's token" usually gets 403, so the hint should name `OPSCREW_GHCR_READ_TOKEN`.
+   - Paging follows the relative `Link`.
+4. **10., S1:** an environment with a version to roll back to has already run its workflow on its branch, so the dispatch works. A 404 means it never ran there, and "push to <branch> once" is the fix, not a merge into the default branch.
+5. **5., Portainer:**
+   - The switch works.
+   - Every `up -d` restarts `release`, with the value written in the stack file, even when nothing changed. That predates 019.
