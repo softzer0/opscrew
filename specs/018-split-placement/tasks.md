@@ -485,6 +485,10 @@ Effort`.
       - `move` cleared and `deployment.placement` updated;
       - refused while `move.step` isn't `switched`.
     - `databaseSize` takes the service's name, and design (T1809) passes the moved service's.
+    - `runMove(deps, { plan, services })` is called by provision (T1810).
+    - `verify` writes `deployment.placement` from `services[].server` when it records a healthy
+      deploy and no move is in progress (one line in `verify/`), so a plan with servers that was
+      deployed but not provisioned again is never read as "everything on app".
     - **Tests** with fake servers: a successful move, a failure in each window step (the app back
       on the old copy), a resume after an interruption, and `--finish-move` refused without the
       typed name.
@@ -513,6 +517,10 @@ Effort`.
       plan (and `thisDevice` cleared if it was this computer).
     - **`vpn list`:** each device with its address and last handshake on each server
       (`readNetwork`). It also lists devices whose configuration lacks a server added later.
+    - **Dashboards on the private address:** `addons/run.ts` and `portainer/run.ts` pass
+      `dashboardsOnNetwork` (the network has devices and the app's server hosts this app alone) to
+      `renderAddon` / `renderPortainerCompose`, so Beszel and Portainer are published there (only
+      those lines in those files).
     - **`addon open beszel` and `opscrew portainer`:** with `thisDevice` set, they print the
       private address and port instead of opening an SSH tunnel.
     - The device's private key appears only in the written file and the returned QR text; a
@@ -541,6 +549,8 @@ Effort`.
       - re-renders the workflow and the check, delivered in the deploy-setup pull request.
     - **A network's removal** (vpn, destroy) never runs while public SSH is closed: it reopens it
       first.
+    - **`secure` on an extra own server** reads its SSH ports and password setting from
+      `lastServerSetup(deps, server)` instead of fixed values (`secure/servers.ts`, those lines).
     - **Own servers with public SSH closed:** OpsCrew's own-server connections (inspection, destroy)
       go to the private address too, so destroy no longer reopens SSH just to connect.
     - **Opening:** reverses it, with the allow-list the plan held before (kept in the plan's
@@ -591,6 +601,7 @@ Effort`.
         `--confirm` takes several values, one per server, each checked;
       - each with `--app`, `--env` and `--approve` as the other commands, and help text;
       - `--qr` draws the configuration with `uqr` in the terminal;
+      - `provision` prints `ProvisionResult.serverHostPlanHashes` (one per server) for scripts;
       - `status` prints its network section.
     - **MCP:** `status` returns the new data. `placement_estimate` returns prices and the delay
       for one service on one server, read-only. No tool makes or returns a key.
@@ -644,6 +655,19 @@ Effort`.
     - Cleanup by name; skipped with a message without Docker.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter opscrew exec vitest run test/e2e/network.test.ts`
   - Effort: high
+
+- [ ] T1824 [P] [US1] No web on an extra own server: the setup host plan for a server that only runs services, in `packages/connectors/ssh-host/**` and the one call in `packages/agents/src/provision/servers.ts`
+  - Owns: those paths (+ tests); in `provision/servers.ts` only the call that passes it
+  - Reads: plan.md "3.", "9."; ssh-host's `planHost` and its ufw and port-conflict steps
+  - Depends: T1810
+  - Accept:
+    - `DesiredHost` gains a no-web mode: the setup opens no 80/443 in ufw, and something already
+      listening on 80/443 is no conflict (no edge runs there).
+    - Provision uses it for every extra own server.
+    - Tests: the extra server's setup plan has no web rules and isn't refused for a busy port 80;
+      the app's own server is unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
+  - Effort: medium
 
 ## Phase 8: Live
 
