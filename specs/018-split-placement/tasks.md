@@ -711,7 +711,7 @@ Effort`.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1827 [US4] Getting back in after the tunnel is lost: `--open-public-ssh` over the public address once the user reopened port 22 in the provider's console, in `packages/agents/src/secure/public-ssh.ts` (+ test)
+- [X] T1827 [US4] Getting back in after the tunnel is lost: `--open-public-ssh` over the public address once the user reopened port 22 in the provider's console, in `packages/agents/src/secure/public-ssh.ts` (+ test)
   - Owns: that file and its test
   - Reads: spec US4 ("Losing this computer's configuration while public SSH is closed"); `docs/guide/public-ssh.md`
   - Depends: T1815, T1826
