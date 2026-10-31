@@ -13,6 +13,7 @@ import {
   REPOSITORY_TOKEN_VAR,
   type ReplaceableToken,
   readSavedPlanChanges,
+  removalConfirmPhrase,
   runProvision,
   type SavedPlanKind,
   SOPS_CONFIG_PATH,
@@ -21,9 +22,19 @@ import {
   stringOutput,
 } from "@opscrew/agents";
 import { exists, isPlanHash, OpsCrewError, toPosixRelative } from "@opscrew/core";
-import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  isServerlessProvider,
+  readArtifact,
+  ServerNameSchema,
+} from "@opscrew/plan-schema";
 import { type Command, InvalidArgumentError, Option } from "commander";
-import { APPROVE_BY_HASH_KINDS, checkConfirmName, FlagConfirmation } from "../approval";
+import {
+  APPROVE_BY_HASH_KINDS,
+  checkConfirmName,
+  FlagConfirmation,
+  MaintenanceWindowApproval,
+} from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import {
@@ -53,8 +64,12 @@ export interface InfraFlags {
   hostKey?: string;
   /** `--password-logins off|keep` (`provision` only): the choice a server with password users needs. */
   passwordLogins?: "off" | "keep";
-  /** `--confirm <app>` (`provision` only): the app's name, for a plan that removes something. */
-  confirm?: string;
+  /**
+   * Every `--confirm <name>` (`provision` only), for a plan that removes something: the app's
+   * name, and each extra server it deletes by its name at the provider (`<app>-<server>`); with
+   * `--finish-move`, the moved service's name.
+   */
+  confirm?: string[];
   /** `--public-image` (`provision` only): the user's Portainer pulls a public image, no registry entry. */
   publicImage?: boolean;
   /** `--private-image` (`provision` only): switch a remembered public image back to private. */
@@ -65,6 +80,10 @@ export interface InfraFlags {
   keyOut?: string;
   /** `--pages-verification <value>` (`provision` only): GitHub's domain verification value. */
   pagesVerification?: string;
+  /** `--allow-downtime` (`provision` only): a script approves a move's maintenance window. */
+  allowDowntime?: boolean;
+  /** `--finish-move` (`provision` only): delete a moved service's old copy, and nothing else. */
+  finishMove?: boolean;
   /** `--app <key>`: the repository's app. */
   app?: string;
   /** `--env <name>`: the app's environment. */
@@ -237,6 +256,13 @@ export async function planChanges(
   return (await readSavedPlanChanges(deps.paths, kind, hash, DAMAGED_PLAN_HINT[kind])) === true;
 }
 
+/** True when `name` is the name at its provider of an extra server of the app `app`: `<app>-<server>`. */
+function extraServerName(app: string, name: string): boolean {
+  return (
+    name.startsWith(`${app}-`) && ServerNameSchema.safeParse(name.slice(app.length + 1)).success
+  );
+}
+
 /** `opscrew dns` for an environment on this computer, which has no DNS to set. */
 function localhostHasNoDns(environment: ChosenEnvironment): OpsCrewError {
   return new OpsCrewError(
@@ -272,7 +298,7 @@ export async function runInfraCommand(
       const hashes = checkApproveFlags(command, flags);
       const publicImage = imageChoice(flags);
       const hostKey = flags.hostKey?.trim();
-      const confirm = flags.confirm?.trim();
+      const confirms = (flags.confirm ?? []).map((value) => value.trim());
       const environment = await chooseEnvironment(ctx, flags, command);
       flag = environment.flag;
       const planFile = createPhaseDeps(ctx, {
@@ -290,17 +316,19 @@ export async function runInfraCommand(
           ? await readArtifact("plan", planFile)
               .then((plan) => plan.app.name)
               .catch((error: unknown) => {
-                if (confirm !== undefined) throw error;
+                if (confirms.length > 0) throw error;
                 return undefined;
               })
           : undefined;
       if (app !== undefined) {
-        wrongName = confirm !== undefined && confirm !== app;
+        // The app's name, or the name at the provider of an extra server the plan deletes.
+        const wrong = confirms.find((value) => value !== app && !extraServerName(app, value));
+        wrongName = wrong !== undefined;
         checkConfirmName(
-          confirm,
+          wrong,
           app,
           "the app's name",
-          `To apply a plan that deletes or replaces resources in a script, run \`opscrew ${command}${flag} --approve <hash> … --confirm ${app}\`.`,
+          `To apply a plan that deletes or replaces resources in a script, run \`opscrew ${command}${flag} --approve <hash> … --confirm ${app}\`, with \`--confirm ${app}-<server>\` for each extra server it deletes, as the --plan-only run prints.`,
         );
       }
       const deps = createPhaseDeps(ctx, {
@@ -309,21 +337,27 @@ export async function runInfraCommand(
         environment: environment.name,
         approveHashes: hashes,
         ...(flags.yes === true ? { assumeYes: true } : {}),
-        ...(app === undefined
-          ? {}
-          : {
-              wrapApprovals: (base, clock) =>
-                new FlagConfirmation(base, {
+        wrapApprovals: (base, clock) => {
+          const typedNames =
+            app === undefined
+              ? base
+              : new FlagConfirmation(base, {
                   kinds: APPROVE_BY_HASH_KINDS,
                   what: "a plan that deletes or replaces resources",
-                  app,
-                  confirmed: confirm !== undefined,
+                  names: confirms,
                   hashes,
                   interactive: ctx.isInteractive,
                   print: ctx.stdout,
                   clock,
-                }),
-            }),
+                });
+          return flags.allowDowntime === true
+            ? new MaintenanceWindowApproval(typedNames, {
+                interactive: ctx.isInteractive,
+                print: ctx.stdout,
+                clock,
+              })
+            : typedNames;
+        },
       });
       const result = await run(deps, {
         ...(planOnly ? { planOnly: true } : {}),
@@ -355,7 +389,9 @@ export async function runInfraCommand(
       // Cloudflare's hosting or GitHub Pages: no server.
       const site = plan !== undefined && isServerlessProvider(plan.target.provider);
       const planned: PlannedHash[] = [];
-      let removes = false;
+      // The names a plan that deletes needs typed: the app's, and each extra server it deletes.
+      const confirmNames = new Set<string>();
+      const named = app ?? plan?.app.name;
       // Why the stack plan comes in a later run, when it does.
       let stackFollows: string | undefined;
       if (planOnly) {
@@ -363,7 +399,7 @@ export async function runInfraCommand(
         if (result.cloudflarePlanHash !== undefined) {
           planned.push({ label: "Cloudflare plan", hash: result.cloudflarePlanHash });
           // Deleting OpsCrew's rule needs the app's name, like an infrastructure plan that deletes.
-          removes = result.cloudflarePlanDeletes === true;
+          if (result.cloudflarePlanDeletes === true && named !== undefined) confirmNames.add(named);
         }
         // The app's bucket at a provider has a plan of its own.
         if (result.storagePlanHash !== undefined) {
@@ -374,7 +410,11 @@ export async function runInfraCommand(
             ? undefined
             : await findSavedPlan(deps.paths.files.plansDir, result.planHash);
         if (result.planHash !== undefined && saved !== undefined) {
-          removes ||= saved.hasDestroy;
+          if (saved.hasDestroy && named !== undefined) {
+            // The extra servers the plan deletes by their names at the provider (`<app>-<server>`).
+            const phrase = plan === undefined ? named : removalConfirmPhrase(plan, saved);
+            for (const name of phrase.split(" ")) confirmNames.add(name);
+          }
           planned.push({
             label: own || portainer || site ? "infrastructure (Cloudflare)" : "infrastructure",
             hash: result.planHash,
@@ -415,6 +455,12 @@ export async function runInfraCommand(
             planned.push({ label: "host plan for a runner machine", hash });
           }
         }
+        // The app's servers (feature 018): each extra server's setup and each private network.
+        for (const hash of result.serverHostPlanHashes ?? []) {
+          if (await planChanges(deps, "host", hash)) {
+            planned.push({ label: "host plan for one of the app's servers", hash });
+          }
+        }
         if (portainer) stackFollows = stackFollowsReason(result, saved !== undefined);
         // This computer: the local plan, approved by its hash like a host plan.
         if (
@@ -439,7 +485,8 @@ export async function runInfraCommand(
         securityReport: toPosixRelative(deps.paths.root, deps.paths.files.securityReport),
         stackFollows,
         publicImage,
-        confirmApp: removes ? app : undefined,
+        confirmNames:
+          command === "provision" && confirmNames.size > 0 ? [...confirmNames] : undefined,
         // No `opscrew/.sops.yaml` yet: the apply makes the recovery copy's first key.
         keyWanted:
           planOnly &&
@@ -447,7 +494,7 @@ export async function runInfraCommand(
           flags.keyOut === undefined &&
           !(await exists(path.join(deps.paths.root, SOPS_CONFIG_PATH))),
         // `opscrew dns` has no --confirm: a deleting plan is approved in a terminal or by provision.
-        dnsDeletes: removes && command === "dns" ? plan?.app.name : undefined,
+        dnsDeletes: confirmNames.size > 0 && command === "dns" ? plan?.app.name : undefined,
       };
     },
     (error) => (wrongName ? undefined : yesHint(error)),
@@ -461,10 +508,12 @@ export async function runInfraCommand(
         const hashes = result.planned.map((plan) => plan.hash).join(" ");
         ctx.stdout(`\n${approveLaterHint(`opscrew dns${flag}`, hashes, result.dnsDeletes)}\n`);
       } else {
+        const names = result.confirmNames ?? [];
+        const confirmFlags = names.map((name) => ` --confirm ${name}`).join("");
         printPlanHashes(
           ctx,
           result.planned,
-          applyCommand(
+          `${applyCommand(
             `${command}${flag}`,
             result.planned.map((plan) => plan.hash),
             {
@@ -478,19 +527,19 @@ export async function runInfraCommand(
               ...(flags.replaceToken === undefined ? {} : { replaceTokens: flags.replaceToken }),
               ...(flags.push === false ? { push: false } : {}),
               ...(flags.yes === true ? { yes: true } : {}),
-              ...(result.confirmApp === undefined ? {} : { confirm: result.confirmApp }),
               ...(flags.keyOut === undefined ? {} : { keyOut: userPath(ctx, flags.keyOut) }),
             },
-          ),
+          )}${confirmFlags}`,
         );
         if (result.keyWanted) {
           ctx.stdout(
             "The first encrypted recovery copy of this app's secrets needs a file for your new age key: in a script, add --key-out <file outside the repository> to the command above (a terminal asks for it).\n",
           );
         }
-        if (result.confirmApp !== undefined) {
+        if (names.length > 0) {
+          // The app's name, and each extra server it deletes by its name at the provider.
           ctx.stdout(
-            `This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm ${result.confirmApp} in the command above in a script.\n`,
+            `This plan deletes or replaces resources, so applying it also needs "${names.join(" ")}" typed: type it when the command asks in a terminal, or keep${confirmFlags} in the command above in a script.\n`,
           );
         }
         if (result.stackFollows !== undefined) {
@@ -565,6 +614,65 @@ export async function runInfraCommand(
   ]);
 }
 
+/**
+ * `opscrew provision --finish-move`: deletes the old copy of the service a move switched to
+ * another server (`runProvision` with `finishMove`), after the service's name is typed, or given
+ * with `--confirm <service>` in a script, and nothing else.
+ */
+async function finishMoveCommand(ctx: CliContext, flags: InfraFlags): Promise<void> {
+  await runPhaseCommand(ctx, async () => {
+    const problems = [
+      ...(flags.planOnly === true ? ["--plan-only"] : []),
+      ...((flags.approve ?? []).length > 0 ? ["--approve"] : []),
+      ...(flags.allowDowntime === true ? ["--allow-downtime"] : []),
+    ];
+    if (problems.length > 0) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `--finish-move only deletes a moved service's old copy, after you type the service's name, so it does not go with ${problems.join(" or ")}.`,
+        {
+          hint: "Run `opscrew provision --finish-move` in a terminal, or `opscrew provision --finish-move --confirm <service>` in a script.",
+        },
+      );
+    }
+    const { app, name, flag } = await chooseEnvironment(ctx, flags, "provision");
+    const planFile = createPhaseDeps(ctx, { ai: false, app, environment: name }).paths.files.plan;
+    // Without a move the phase says there is nothing to delete, before any approval.
+    const service = (await readArtifact("plan", planFile)).move?.service;
+    const confirms = (flags.confirm ?? []).map((value) => value.trim());
+    const confirm = confirms.find((value) => value !== service) ?? confirms[0];
+    if (service !== undefined) {
+      checkConfirmName(
+        confirm,
+        service,
+        "the moved service's name",
+        `To delete its old copy in a script, run \`opscrew provision${flag} --finish-move --confirm ${service}\`.`,
+      );
+    }
+    const deps = createPhaseDeps(ctx, {
+      ai: false,
+      app,
+      environment: name,
+      ...(service === undefined
+        ? {}
+        : {
+            wrapApprovals: (base, clock) =>
+              new FlagConfirmation(base, {
+                kinds: ["remote-exec"],
+                what: "deleting the moved service's old copy",
+                names: confirms,
+                hashes: [],
+                interactive: ctx.isInteractive,
+                print: ctx.stdout,
+                clock,
+              }),
+          }),
+    });
+    const services = servicesOf(ctx).provision;
+    await runProvision(deps, { finishMove: true, ...(services === undefined ? {} : { services }) });
+  });
+}
+
 /** What a run did in the user's Portainer: the stack plan's hash and whether it was applied. */
 function printPortainerOutcome(ctx: CliContext, result: ProvisionResult): void {
   const lines: string[] = [];
@@ -614,7 +722,10 @@ function portainerNextSteps(
  * (one `--approve <hash>` per plan in scripts; `--yes` never approves either). In the user's
  * existing Portainer it shows the Cloudflare plan and the stack plan, each approved by its hash
  * (`--yes` never approves either); `--public-image`/`--private-image` and `--replace-token` change
- * what the stack plan sends. Exit codes: 0 done, 1 refused or a policy failed, 2 error.
+ * what the stack plan sends. With servers of their own for some services (feature 018), each
+ * server's host plan is approved by its own hash, a moving service's maintenance window by
+ * `--allow-downtime` in scripts, and `--finish-move` deletes the moved service's old copy. Exit
+ * codes: 0 done, 1 refused or a policy failed, 2 error.
  */
 export function register(program: Command, ctx: CliContext): void {
   const command = program
@@ -639,7 +750,16 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--yes", YES_DESCRIPTION)
     .option(
       "--confirm <name>",
-      "The app's name, to apply a plan that deletes or replaces resources without a prompt (for scripts; with --approve and that plan's hash)",
+      "The app's name, to apply a plan that deletes or replaces resources without a prompt (for scripts; with --approve and that plan's hash); again for each extra server the plan deletes (<app>-<server>); with --finish-move, the moved service's name",
+      collect,
+    )
+    .option(
+      "--allow-downtime",
+      "In a script: approve the maintenance window of a service moving to another of the app's servers (a terminal asks)",
+    )
+    .option(
+      "--finish-move",
+      "Once a moved service runs on its new server: delete its old copy and its data on the server it left (asks for the service's name), and nothing else",
     )
     .option(
       "--public-image",
@@ -662,5 +782,9 @@ export function register(program: Command, ctx: CliContext): void {
       "--pages-verification <value>",
       "GitHub Pages: the value of GitHub's domain verification record, which GitHub shows in your account's Pages settings once you add the domain there (a terminal asks for it; it replaces a recorded one)",
     )
-    .action((flags: InfraFlags) => runInfraCommand(ctx, "provision", flags, runProvision));
+    .action((flags: InfraFlags) =>
+      flags.finishMove === true
+        ? finishMoveCommand(ctx, flags)
+        : runInfraCommand(ctx, "provision", flags, runProvision),
+    );
 }

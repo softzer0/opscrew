@@ -63,7 +63,9 @@ async function addressLines(deps: PhaseDeps, plan: DeployPlan | undefined): Prom
 
 /**
  * The plan's components and, once the app was deployed, whether each runs (FR-1331): a server
- * the user owns is read with its pinned host key, or `--host-key` on the first connection.
+ * the user owns is read with its pinned host key, or `--host-key` on the first connection. With a
+ * private network (feature 018), each server's own, then the network's links, devices, grants and
+ * public SSH.
  */
 async function componentLines(
   ctx: CliContext,
@@ -71,9 +73,11 @@ async function componentLines(
   plan: DeployPlan,
   hostKey: string | undefined,
 ): Promise<string[]> {
+  const { provision, vpn } = servicesOf(ctx);
   const { lines } = await componentStatusReport(deps, plan, {
     ...(hostKey === undefined ? {} : { hostKey }),
-    services: servicesOf(ctx).provision ?? {},
+    services: provision ?? {},
+    ...(vpn === undefined ? {} : { network: vpn }),
   });
   return ["", ...lines];
 }
@@ -105,7 +109,7 @@ export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("status")
     .description(
-      "Show which OpsCrew phases have run, the app's components and whether they run, and where a move between providers stands",
+      "Show which OpsCrew phases have run, the app's components and whether they run on each server, the private network, and where a move between providers stands",
     )
     .option(
       "--ip",

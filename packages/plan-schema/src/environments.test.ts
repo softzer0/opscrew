@@ -86,7 +86,17 @@ describe("environmentsOf", () => {
     expect(await environmentsOf(root)).toEqual(["staging"]);
   });
 
-  it("validates each plan when reading it", async () => {
+  it("reads only what places a plan, so a placement design has not completed yet is listed", async () => {
+    await addEnvironment("staging");
+    // A service placed by hand on a new server: no network yet, which design adds.
+    const file = path.join(root, "opscrew", "plan.yaml");
+    const text = `${await fixture("plan.yaml")}servers:\n  - name: db\n    target: { provider: hetzner, mode: vps-compose, location: nbg1, serverType: cx23, backups: true }\n`;
+    await writeFile(file, text);
+    expect(() => parseArtifact("plan", text, file)).toThrow(/network/);
+    expect(await environmentsOf(root)).toEqual(["prod", "staging"]);
+  });
+
+  it("checks the fields that place each plan when reading it", async () => {
     await addEnvironment("prod");
     const file = path.join(root, "opscrew", "environments", "staging", "plan.yaml");
     await mkdir(path.dirname(file), { recursive: true });

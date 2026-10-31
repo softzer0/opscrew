@@ -10,6 +10,7 @@ import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { addEnvOption, chooseEnvironment } from "../ui/environment";
 import { chooseOption } from "../ui/options";
+import { askQuestions } from "../ui/questions";
 import { addHostKeyOption, checkApproveFlags } from "./provision";
 
 interface DesignFlags {
@@ -28,7 +29,8 @@ interface DesignFlags {
  * server the user already owns it first connects (the host key confirmed in the terminal, or
  * `--host-key`, and pinned) and inspects the server read-only, then offers it as the one option,
  * without a price (FR-913). `--env` designs another environment again, from its own answers over
- * prod's.
+ * prod's. A service placed on an extra server of the user's that this computer has no login for
+ * asks for that server's address and SSH login once in a terminal (feature 018).
  */
 export function register(program: Command, ctx: CliContext): void {
   const command = program
@@ -57,9 +59,21 @@ export function register(program: Command, ctx: CliContext): void {
       });
     }
     const prompts = promptsOf(ctx);
+    const extraServers = servicesOf(ctx).provision?.own;
     const result = await runDesign(deps, {
       ...(optionId === undefined ? {} : { optionId }),
       ...(ownServer === undefined ? {} : { ownServer }),
+      // An extra server of the user's that this computer has no login for: asked once.
+      ...(ctx.isInteractive
+        ? {
+            askServerLogin: (_server, questions) =>
+              askQuestions(questions, {
+                prompts,
+                cancel: { what: "the design", rerun: `opscrew design${flag}` },
+              }),
+          }
+        : {}),
+      ...(extraServers === undefined ? {} : { extraServers }),
       ...(interactive
         ? {
             choose: (options) =>

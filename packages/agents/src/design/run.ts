@@ -1789,7 +1789,8 @@ async function pick(
   return chosen;
 }
 
-interface ResolvedCatalog {
+/** A provider's catalogue as {@link resolveCatalog} found it. */
+export interface ResolvedCatalog {
   catalog: ComputeCatalog;
   /** True for the dated static price list. */
   isStatic: boolean;
@@ -1800,7 +1801,7 @@ interface ResolvedCatalog {
  * The provider's live catalogue when its token is set and verifies; otherwise its dated static
  * price list with a warning that names the date and the token variable to set.
  */
-async function resolveCatalog(
+export async function resolveCatalog(
   deps: PhaseDeps,
   provider: VpsProviderId,
   location: string,

@@ -321,7 +321,7 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
     expect(ctx.errors).toContain("Nothing was written and nothing was created.");
     expect(ctx.errors).toContain("add --yes");
     expect(ctx.errors).toContain(
-      "a plan that deletes or replaces resources also needs --confirm <app name> (opscrew provision --approve <hash> --confirm <app name>), other destroys and changed host keys need an interactive terminal.",
+      "a plan that deletes or replaces resources also needs --confirm <app name> (opscrew provision --approve <hash> --confirm <app name>), a move's maintenance window --allow-downtime, other destroys and changed host keys need an interactive terminal.",
     );
     expect(engine.calls).toEqual([]);
   });
@@ -488,7 +488,7 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
         `    opscrew provision --approve ${hash} --yes --confirm shop\n`,
       );
       expect(first.ctx.output).toContain(
-        "This plan deletes or replaces resources, so applying it also needs the app's name: type it when the command asks in a terminal, or keep --confirm shop in the command above in a script.",
+        'This plan deletes or replaces resources, so applying it also needs "shop" typed: type it when the command asks in a terminal, or keep --confirm shop in the command above in a script.',
       );
       return hash;
     }
@@ -562,6 +562,69 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
       expect(confirmed).toEqual([
         expect.objectContaining({ decidedAt: "2030-01-02T03:04:05.000Z" }),
       ]);
+    });
+
+    it("takes one --confirm per extra server the plan deletes, and the app's name for the rest", async () => {
+      /** Server `db` left `servers`: its module is deleted, and the app's server is replaced. */
+      const dropped = () =>
+        new FakeEngine({
+          changes: [
+            ...["hcloud_server", "hcloud_firewall"].map((type) => ({
+              address: `module.server_db.${type}.this`,
+              type,
+              name: "this",
+              provider: "registry.opentofu.org/hetznercloud/hcloud",
+              action: "delete" as const,
+            })),
+            {
+              address: "module.server.hcloud_server.this",
+              type: "hcloud_server",
+              name: "this",
+              provider: "registry.opentofu.org/hetznercloud/hcloud",
+              action: "replace",
+            },
+          ],
+        });
+      project = await deployProject();
+      const first = context(project, { engine: dropped() });
+      expect(await run(first.ctx, "provision", "--plan-only", "--yes"), first.ctx.errors).toBe(0);
+      const hash = printedHash(first.ctx.output);
+      expect(first.ctx.output).toContain(
+        `    opscrew provision --approve ${hash} --yes --confirm shop --confirm shop-db\n`,
+      );
+      expect(first.ctx.output).toContain(
+        'applying it also needs "shop shop-db" typed: type it when the command asks in a terminal, or keep --confirm shop --confirm shop-db in the command above in a script.',
+      );
+
+      // Without --confirm, the refusal names every flag to add.
+      const approve = ["provision", "--approve", hash, "--yes"];
+      const bare = context(project, { engine: dropped() });
+      expect(await run(bare.ctx, ...approve)).toBe(1);
+      expect(bare.ctx.errors).toContain(
+        `To apply it later without prompts, run: opscrew provision --approve ${hash} --confirm shop --confirm shop-db`,
+      );
+
+      // The server's own name alone is not enough: the app's server is replaced too.
+      const partial = context(project, { engine: dropped() });
+      expect(await run(partial.ctx, ...approve, "--confirm", "shop-db")).toBe(1);
+      expect(partial.ctx.errors).toContain(
+        "needs shop shop-db typed to confirm: add --confirm shop",
+      );
+      expect(partial.engine.calls).not.toContain("apply");
+
+      // A value that names neither the app nor an extra server stops before anything runs.
+      const wrong = context(project, { engine: dropped() });
+      expect(await run(wrong.ctx, ...approve, "--confirm", "shop", "--confirm", "db")).toBe(1);
+      expect(wrong.ctx.errors).toContain("--confirm db does not match the app's name");
+      expect(wrong.engine.calls).toEqual([]);
+
+      const second = context(project, { engine: dropped() });
+      expect(
+        await run(second.ctx, ...approve, "--confirm", "shop", "--confirm", "shop-db"),
+        second.ctx.errors,
+      ).toBe(0);
+      expect(second.engine.calls).toEqual(["apply"]);
+      expect(second.ctx.output).toContain("(confirmed with --confirm shop --confirm shop-db)");
     });
 
     it("stops before anything runs when --confirm is not the app's name", async () => {

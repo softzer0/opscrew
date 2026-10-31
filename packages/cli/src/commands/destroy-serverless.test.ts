@@ -149,7 +149,7 @@ describe.each([
     const p = await siteProject(provider);
     const ctx = projectContext(p);
     const fake = fakeDestroy(provider);
-    expect(await destroy(ctx, { confirm: "example-app" }, fake), ctx.errors).toBe(0);
+    expect(await destroy(ctx, { confirm: ["example-app"] }, fake), ctx.errors).toBe(0);
     expect(fake.decisions[0]).toMatchObject({ approved: true });
     expect(fake.options[0]).not.toHaveProperty("deleteVerification");
     expect(ctx.output).toContain("(confirmed with the app's name)");
@@ -171,7 +171,7 @@ describe.each([
     const fake = fakeDestroy(provider);
     for (const flags of [{ undoHost: true }, { deleteData: true }, { snapshot: true }]) {
       const ctx = projectContext(p);
-      expect(await destroy(ctx, { confirm: "example-app", ...flags }, fake)).toBe(2);
+      expect(await destroy(ctx, { confirm: ["example-app"], ...flags }, fake)).toBe(2);
       expect(ctx.errors).toContain(`do not apply to a site on ${name}`);
       expect(ctx.errors).not.toMatch(/server/i);
     }
@@ -194,7 +194,7 @@ describe("opscrew destroy --delete-verification", () => {
     const p = await siteProject("github-pages");
     const ctx = projectContext(p);
     const fake = fakeDestroy("github-pages");
-    const flags = { confirm: "example-app", deleteVerification: true };
+    const flags = { confirm: ["example-app"], deleteVerification: true };
     expect(await destroy(ctx, flags, fake), ctx.errors).toBe(0);
     expect(fake.options[0]).toMatchObject({ deleteVerification: true });
   });

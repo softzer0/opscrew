@@ -80,6 +80,7 @@ export {
   serviceEnvSecrets,
   setDeploySecrets,
 } from "./secrets";
+export { removalConfirmPhrase } from "./servers";
 export { describeStackPlan, ROUTE_CHANGE_NOTE } from "./stack-plan";
 export {
   applyStorage,

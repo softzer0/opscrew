@@ -10,9 +10,27 @@ import {
   type ResolveProjectPathsOptions,
   resolveProjectPaths,
 } from "@opscrew/core";
-import type { AppRecord } from "./apps";
-import { ArtifactError, readOptionalArtifact } from "./io";
-import { cleanRepoPath, type DeployPlan } from "./plan";
+import { z } from "zod";
+import { AppKeySchema, type AppRecord } from "./apps";
+import { ArtifactError, readArtifactFields, readOptionalArtifact } from "./io";
+import { cleanRepoPath, EnvironmentSchema } from "./plan";
+
+/**
+ * The fields of a plan that place it, all {@link environmentsOf} reads: its app's key and its
+ * environment. The rest of the plan is the readers' own to check, so a plan the user is editing
+ * (a service placed on a new server before design adds the network) still names its environment.
+ */
+const PlanPlaceSchema = z.looseObject({
+  app: z.looseObject({ key: AppKeySchema.optional() }),
+  environment: z
+    .looseObject({
+      name: EnvironmentSchema.shape.name,
+      deploySource: EnvironmentSchema.shape.deploySource,
+    })
+    .optional(),
+});
+
+type PlanPlace = z.output<typeof PlanPlaceSchema>;
 
 /** An app of the repository: a further app's key (none for the first app) and its folder. */
 export interface RepositoryApp {
@@ -93,7 +111,8 @@ async function furtherApps(root: string): Promise<{ key: string; record: AppReco
  * The environments of the repository's first app, or of the further app `app`: `prod` when its
  * `plan.yaml` exists, then each `environments/<name>/plan.yaml` in its folder (`opscrew/`, or
  * `opscrew/apps/<key>/`), every one after the environment it is promoted from (prod first,
- * otherwise by name). Each plan is validated when read.
+ * otherwise by name). Of each plan only the fields that place it are read and checked (its app's
+ * key and its environment): the rest is left to the commands that read the plan.
  * @throws ArtifactError for an invalid plan, a prod plan that names itself, a plan whose name is
  * not its folder's, or a plan whose `app.key` is not its app's.
  * @throws OpsCrewError `INVALID_INPUT` for an app the repository does not have (listing its apps),
@@ -106,7 +125,7 @@ export async function environmentsOf(root: string, app?: string): Promise<string
   const folder = app === undefined ? "opscrew" : `opscrew/apps/${app}`;
   const appFlag = app === undefined ? "" : ` --app ${app}`;
   const sources = new Map<string, string | undefined>();
-  const prod = await readOptionalArtifact("plan", paths.files.plan);
+  const prod = await readArtifactFields("plan", paths.files.plan, PlanPlaceSchema);
   if (prod?.environment?.name !== undefined) {
     throw new ArtifactError({
       code: "ARTIFACT_INVALID",
@@ -134,7 +153,7 @@ export async function environmentsOf(root: string, app?: string): Promise<string
       );
     }
     const file = path.join(paths.artefactsDir, "environments", name, "plan.yaml");
-    const plan = await readOptionalArtifact("plan", file);
+    const plan = await readArtifactFields("plan", file, PlanPlaceSchema);
     if (plan === undefined) continue;
     if (plan.environment?.name !== name) {
       throw new ArtifactError({
@@ -203,7 +222,7 @@ async function requireApp(root: string, app: string): Promise<void> {
 }
 
 /** Refuses a plan whose `app.key` is not the key of the app whose folder holds it. */
-function checkKey(plan: DeployPlan, file: string, app: string | undefined): void {
+function checkKey(plan: PlanPlace, file: string, app: string | undefined): void {
   if (plan.app.key === app) return;
   throw new ArtifactError({
     code: "ARTIFACT_INVALID",

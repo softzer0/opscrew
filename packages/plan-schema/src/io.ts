@@ -246,6 +246,24 @@ export async function readOptionalArtifact<K extends ArtifactKind>(
 }
 
 /**
+ * Reads only the fields `fields` checks of an artefact that may not exist yet (`undefined` when
+ * the file is missing), leaving the rest of the file unchecked: for a reader that needs a few
+ * fields of a file the user may be editing, such as the environment of a plan design completes.
+ * @throws ArtifactError with code `ARTIFACT_INVALID` when it cannot be parsed or those fields fail.
+ */
+export async function readArtifactFields<T>(
+  kind: ArtifactKind,
+  file: string,
+  fields: z.ZodType<T>,
+): Promise<T | undefined> {
+  const text = await readTextIfExists(file);
+  if (text === undefined) return undefined;
+  const result = fields.safeParse(decode(kind, normalizeText(text), file), { error: errorMap });
+  if (!result.success) throw invalid(kind, file, toIssues(result.error));
+  return result.data;
+}
+
+/**
  * Validates, serialises and writes an artefact atomically (temp file in the same directory, then
  * rename). Creates parent directories.
  * @throws ArtifactError with code `ARTIFACT_INVALID`; nothing is written in that case.

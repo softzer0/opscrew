@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { SERVER_IPV4, testPlan } from "@opscrew/agents/testing";
+import { allocateNetwork } from "@opscrew/agents";
+import { SERVER_IPV4, testKeyMaker, testPlan } from "@opscrew/agents/testing";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { afterEach, describe, expect, it } from "vitest";
 import { type CliServices, withServices } from "../deps";
@@ -76,6 +77,28 @@ describe("opscrew secure", () => {
     expect(await run(ctx, "secure")).toBe(0);
     const plain = await readFile(path.join(root, "opscrew", "SECURITY_REPORT.md"), "utf8");
     expect(plain).not.toContain("## Deeper checks");
+  });
+
+  it("refuses to close public SSH, before any change, while a condition is missing", async () => {
+    const plan = deployed();
+    const { network } = allocateNetwork(plan, {}, testKeyMaker());
+    const { ctx, root } = await setup(DeployPlanSchema.parse({ ...plan, network }));
+    const planFile = path.join(root, "opscrew", "plan.yaml");
+    const before = await readFile(planFile, "utf8");
+    expect(await run(ctx, "secure", "--close-public-ssh")).toBe(1);
+    expect(ctx.errors).toContain("OpsCrew can't close public SSH yet");
+    expect(ctx.errors).toContain("--runner server");
+    expect(ctx.errors).toContain("opscrew vpn add <name> --this-computer");
+    expect(await readFile(planFile, "utf8")).toBe(before);
+  });
+
+  it("takes one of --close-public-ssh and --open-public-ssh, without --deep", async () => {
+    const { ctx } = await setup(deployed());
+    expect(await run(ctx, "secure", "--close-public-ssh", "--open-public-ssh")).toBe(2);
+    expect(ctx.errors).toContain("Use either --close-public-ssh or --open-public-ssh.");
+    expect(await run(ctx, "secure", "--close-public-ssh", "--deep")).toBe(2);
+    expect(await run(ctx, "secure", "--approve", "a".repeat(64))).toBe(2);
+    expect(ctx.errors).toContain("--approve and --yes go with --close-public-ssh");
   });
 
   it("exits 1 when there is no plan yet (an earlier step has not run)", async () => {

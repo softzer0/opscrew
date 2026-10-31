@@ -1,6 +1,6 @@
 import { userInfo } from "node:os";
 import { confirm, isCancel, text } from "@clack/prompts";
-import { approvalRequestLines } from "@opscrew/agents";
+import { approvalRequestLines, isMaintenanceWindowRequest } from "@opscrew/agents";
 import type {
   ApprovalDecision,
   ApprovalHandler,
@@ -296,16 +296,43 @@ export function checkConfirmName(
   );
 }
 
+/**
+ * Approves a move's maintenance window (`isMaintenanceWindowRequest`) in a run nobody can answer
+ * when `--allow-downtime` was given, and nothing else; every other request, and every request in a
+ * terminal, goes to `base`.
+ */
+export class MaintenanceWindowApproval implements ApprovalHandler {
+  constructor(
+    private readonly base: ApprovalHandler,
+    private readonly options: {
+      interactive: boolean;
+      /** Where the approved window is shown (`ctx.stdout`, which redacts). */
+      print: (text: string) => void;
+      clock: Clock;
+    },
+  ) {}
+
+  async request(request: ApprovalRequest): Promise<ApprovalDecision> {
+    if (this.options.interactive || !isMaintenanceWindowRequest(request)) {
+      return this.base.request(request);
+    }
+    this.options.print(`  ✓ ${request.title} (allowed with --allow-downtime)\n`);
+    return approvalDecision(this.options.clock, "--allow-downtime flag", true);
+  }
+}
+
 /** Which requests a {@link FlagConfirmation} answers, and what it knows of the run. */
 export interface FlagConfirmationOptions {
   /** The kinds of the deleting requests it answers. */
   kinds: readonly ApprovalKind[];
   /** What those requests do, for its refusals: `a plan that deletes or replaces resources`. */
   what: string;
-  /** The name the deleting requests ask to have typed: the app's, or a runner machine's. */
-  app: string;
-  /** `--confirm <app>` was given (and matched {@link FlagConfirmationOptions.app}). */
-  confirmed: boolean;
+  /**
+   * Every `--confirm` value, each checked before the run (none without `--confirm`): the app's
+   * name, a runner machine's or a moved service's; provision's also each extra server it deletes
+   * (`<app>-<server>`), one per word of a request's phrase.
+   */
+  names: readonly string[];
   /** Every `--approve` value. */
   hashes: readonly string[];
   /** A person can answer the prompt that asks for the name (a terminal). */
@@ -317,9 +344,11 @@ export interface FlagConfirmationOptions {
 
 /**
  * The typed name for a request of `kinds` that deletes something (`allowDestroy` and the app's
- * name as `confirmPhrase`): in a script `--confirm <app>` approves it only when one of the
- * `--approve` values is its plan's hash. A typed confirmation bound to no plan (no `planHash`,
- * no `allowDestroy`: forgetting a runner machine OpsCrew cannot reach) takes `--confirm` alone.
+ * name as `confirmPhrase`, or several names separated by spaces): in a script `--confirm`, given
+ * once per name of the phrase, approves it only when one of the `--approve` values is its plan's
+ * hash. A typed confirmation bound to no plan (no `planHash`:
+ * forgetting a runner machine OpsCrew cannot reach, deleting a moved service's old copy) takes
+ * `--confirm` alone.
  * Without `--confirm`, a run nobody can answer is refused with the flag to add, and in a terminal
  * `base` asks for the name. `--yes` never approves it; every other request goes to `base`.
  */
@@ -330,27 +359,37 @@ export class FlagConfirmation implements ApprovalHandler {
   ) {}
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
-    const { kinds, what, app, confirmed, hashes, interactive, print, clock } = this.options;
-    const unbound = request.allowDestroy !== true && request.planHash === undefined;
+    const { kinds, what, names, hashes, interactive, print, clock } = this.options;
+    const unbound = request.planHash === undefined;
+    const phrase = request.confirmPhrase;
     const deletion =
       kinds.includes(request.kind) &&
-      request.confirmPhrase !== undefined &&
+      phrase !== undefined &&
       (request.allowDestroy === true || unbound);
     if (!deletion) return this.base.request(request);
     const decide = (approved: boolean, extra: Pick<ApprovalDecision, "confirmation" | "reason">) =>
       approvalDecision(clock, "--approve and --confirm flags", approved, extra);
-    if (confirmed) {
-      if (request.confirmPhrase === app && (unbound || hashListed(hashes, request.planHash))) {
-        print(`  ✓ ${request.title} (confirmed with --confirm ${app})\n`);
-        return decide(true, { confirmation: app });
+    // One `--confirm` per name of the phrase.
+    const words = phrase.split(" ");
+    const flags = (list: readonly string[]) => list.map((word) => `--confirm ${word}`).join(" ");
+    if (names.length > 0) {
+      const missing = words.filter((word) => !names.includes(word));
+      if (missing.length > 0) {
+        return decide(false, {
+          reason: `${what} needs ${phrase} typed to confirm: add ${flags(missing)}`,
+        });
+      }
+      if (unbound || hashListed(hashes, request.planHash)) {
+        print(`  ✓ ${request.title} (confirmed with ${flags(words)})\n`);
+        return decide(true, { confirmation: phrase });
       }
       return decide(false, {
-        reason: `--confirm ${app} approves ${what} only together with --approve and that plan's hash ${request.planHash ?? ""}`,
+        reason: `${flags(words)} approves ${what} only together with --approve and that plan's hash ${request.planHash ?? ""}`,
       });
     }
     if (!interactive) {
       return decide(false, {
-        reason: `${what} needs ${request.confirmPhrase} typed to confirm: add --confirm ${request.confirmPhrase}${unbound ? "" : " (with --approve and the plan's hash)"}, or run the command in a terminal`,
+        reason: `${what} needs ${phrase} typed to confirm: add ${flags(words)}${unbound ? "" : " (with --approve and the plan's hash)"}, or run the command in a terminal`,
       });
     }
     return this.base.request(request);

@@ -25,6 +25,8 @@ export function createTestContext(options: Partial<CliContext> = {}): TestContex
     isInteractive: false,
     stdout,
     stderr,
+    // Recorded unredacted, as the terminal shows it.
+    showOnce: (text: string) => out.push(text),
     reporter: new TerminalReporter({ stdout, stderr, redactor, color: false }),
     redactor,
     ...options,

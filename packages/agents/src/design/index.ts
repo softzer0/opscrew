@@ -19,7 +19,9 @@ export {
   type OwnServerDesignInput,
   type PreviewDesignOptions,
   previewDesignOptions,
+  type ResolvedCatalog,
   type RunDesignOptions,
+  resolveCatalog,
   runDesign,
 } from "./run";
 export { serverlessTargetsFor } from "./serverless";

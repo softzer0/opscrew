@@ -2,7 +2,9 @@ import type { ApprovalRequest, CommandRunner } from "@opscrew/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
   type ApprovalPrompts,
+  FlagConfirmation,
   InteractiveApprovalHandler,
+  MaintenanceWindowApproval,
   NonInteractiveApprovalHandler,
 } from "./approval";
 
@@ -459,5 +461,72 @@ describe("InteractiveApprovalHandler", () => {
     };
     const missing = await setup({}, noGit).handler.request(apply());
     expect(missing.approver).toBe("os-user");
+  });
+});
+
+/** A base handler that refuses everything, as `base`. */
+const base = {
+  request: async () => ({ approved: false, approver: "base", decidedAt: "" }),
+};
+
+describe("FlagConfirmation for a deletion bound to no plan (a moved service's old copy)", () => {
+  const deletion: ApprovalRequest = {
+    kind: "remote-exec",
+    title: "Delete the old copy of db and its data on the app's server",
+    details: "docker run … rm -rf /d/db",
+    allowDestroy: true,
+    confirmPhrase: "db",
+  };
+  const handler = (confirmed: boolean, interactive = false) =>
+    new FlagConfirmation(base, {
+      kinds: ["remote-exec"],
+      what: "deleting the moved service's old copy",
+      names: confirmed ? ["db"] : [],
+      hashes: [],
+      interactive,
+      print: () => undefined,
+      clock,
+    });
+
+  it("approves it with --confirm <service> alone", async () => {
+    const decision = await handler(true).request(deletion);
+    expect(decision).toMatchObject({ approved: true, confirmation: "db" });
+  });
+
+  it("refuses it in a script without --confirm, naming the flag", async () => {
+    const decision = await handler(false).request(deletion);
+    expect(decision.approved).toBe(false);
+    expect(decision.reason).toContain("add --confirm db, or run the command in a terminal");
+  });
+
+  it("refuses another name, and leaves a terminal's question to the base handler", async () => {
+    const other = await handler(true).request({ ...deletion, confirmPhrase: "cache" });
+    expect(other.approved).toBe(false);
+    expect((await handler(false, true).request(deletion)).approver).toBe("base");
+  });
+});
+
+describe("MaintenanceWindowApproval (--allow-downtime)", () => {
+  const window: ApprovalRequest = {
+    kind: "remote-exec",
+    title: "Maintenance window: stop shop and move db from the app's server to server data",
+    details: "…",
+  };
+  const handler = (interactive: boolean) =>
+    new MaintenanceWindowApproval(base, { interactive, print: () => undefined, clock });
+
+  it("approves only the window in a script", async () => {
+    expect(await handler(false).request(window)).toMatchObject({
+      approved: true,
+      approver: "--allow-downtime flag",
+    });
+    const hostKey = await handler(false).request({ ...window, title: "Trust the new host key" });
+    expect(hostKey.approver).toBe("base");
+    const plan = await handler(false).request({ ...apply(), title: window.title });
+    expect(plan.approver).toBe("base");
+  });
+
+  it("leaves the window to the terminal's question", async () => {
+    expect((await handler(true).request(window)).approver).toBe("base");
   });
 });

@@ -16,6 +16,11 @@ export interface CliContext {
   stdout(text: string): void;
   /** Writes redacted text to standard error (no newline added). */
   stderr(text: string): void;
+  /**
+   * Writes `text` to standard output without redaction (no newline added): only for a secret the
+   * user asked to be shown once, such as a device's database password from `opscrew vpn grant`.
+   */
+  showOnce(text: string): void;
   reporter: Reporter;
   redactor: Redactor;
 }
@@ -39,6 +44,9 @@ export function createDefaultContext(): CliContext {
       process.stdin.isTTY === true && process.stdout.isTTY === true && !isTruthy(env.CI),
     stdout,
     stderr,
+    showOnce: (text) => {
+      process.stdout.write(text);
+    },
     reporter: new TerminalReporter({
       stdout,
       stderr,

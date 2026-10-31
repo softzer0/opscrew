@@ -245,8 +245,7 @@ async function remove(ctx: CliContext, name: string, flags: RemoveFlags): Promis
       new FlagConfirmation(base, {
         kinds: ["host-apply", "github-settings"],
         what: `removing the runner machine ${name}`,
-        app: name,
-        confirmed: confirm !== undefined,
+        names: confirm === undefined ? [] : [confirm],
         hashes,
         interactive: ctx.isInteractive,
         print: ctx.stdout,

@@ -186,7 +186,7 @@ describe("opscrew destroy for the user's Portainer", () => {
     const p = await portainerProject();
     const ctx = projectContext(p);
     const fake = fakeDestroy();
-    expect(await destroy(ctx, { confirm: "shop", deleteData: true }, fake), ctx.errors).toBe(0);
+    expect(await destroy(ctx, { confirm: ["shop"], deleteData: true }, fake), ctx.errors).toBe(0);
     expect(fake.options[0]).toMatchObject({ deleteData: true });
     expect(fake.decisions[0]).toMatchObject({ approved: true });
     expect(ctx.output).toContain(
@@ -216,7 +216,7 @@ describe("opscrew destroy for the user's Portainer", () => {
     const p = await portainerProject();
     const undo = projectContext(p);
     const fake = fakeDestroy();
-    expect(await destroy(undo, { confirm: "shop", undoHost: true }, fake)).toBe(2);
+    expect(await destroy(undo, { confirm: ["shop"], undoHost: true }, fake)).toBe(2);
     expect(undo.errors).toContain("--undo-host applies only to a server you already own");
     const script = projectContext(p);
     expect(await destroy(script, { deleteData: true }, fake)).toBe(1);

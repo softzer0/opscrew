@@ -25,6 +25,7 @@ import * as secrets from "./secrets";
 import * as secure from "./secure";
 import * as status from "./status";
 import * as verify from "./verify";
+import * as vpn from "./vpn";
 
 /** A command module: adds one subcommand to the program. */
 export interface CommandModule {
@@ -50,6 +51,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   drift,
   portainer,
   addon,
+  vpn,
   retarget,
   destroy,
   status,

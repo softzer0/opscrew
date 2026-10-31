@@ -5,6 +5,8 @@ import { cancelled, clackPrompts, type UiPrompts } from "./prompts";
 export interface AskQuestionsOptions {
   /** Prompts to ask with (default clack). */
   prompts?: UiPrompts;
+  /** What a cancel stops and the command to run again (default the interview's). */
+  cancel?: { what: string; rerun: string };
 }
 
 const moneyText = (money: Money) => `${money.amount} ${money.currency}`;
@@ -30,8 +32,9 @@ export async function askQuestions(
 ): Promise<InterviewAnswers> {
   const prompts = options.prompts ?? clackPrompts;
   const answers: InterviewAnswers = {};
+  const { what, rerun } = options.cancel ?? { what: "the interview", rerun: "opscrew interview" };
   const check = <T>(value: T | symbol): T => {
-    if (prompts.isCancel(value)) throw cancelled("the interview", "opscrew interview");
+    if (prompts.isCancel(value)) throw cancelled(what, rerun);
     return value as T;
   };
 

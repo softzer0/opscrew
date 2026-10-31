@@ -1,12 +1,14 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { recordServerAddress, serverAddressesFile } from "@opscrew/agents";
+import { allocateNetwork, recordServerAddress, serverAddressesFile } from "@opscrew/agents";
 import {
   FakeGitHub,
   ScriptedRunner,
   SERVER_IPV4,
   SERVER_IPV6,
+  testKeyMaker,
+  testKeyPair,
   testPlan,
 } from "@opscrew/agents/testing";
 import type { RemoteExec } from "@opscrew/contracts";
@@ -182,6 +184,67 @@ describe("opscrew status and the server's address", () => {
       };
       return { remote, hosts };
     }
+
+    it("shows the private network: each device's last handshake, the grants and public SSH", async () => {
+      const paths = resolveProjectPaths(dir, { env: {} });
+      const base = testPlan({ deployed: true, userSecret: false });
+      const plan = DeployPlanSchema.parse({
+        ...base,
+        deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
+      });
+      const { network } = allocateNetwork(plan, {}, testKeyMaker());
+      const prefix = network.range.split(".").slice(0, 3).join(".");
+      const laptop = testKeyPair("laptop");
+      await writeArtifact(
+        "plan",
+        paths.files.plan,
+        DeployPlanSchema.parse({
+          ...plan,
+          network: {
+            ...network,
+            devices: [
+              {
+                name: "laptop",
+                address: `${prefix}.100`,
+                publicKey: laptop.publicKey,
+                addedAt: "2026-10-12T10:00:00.000Z",
+              },
+            ],
+            grants: [{ device: "laptop", service: "db", access: "read-only" }],
+          },
+        }),
+      );
+      await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
+      const now = new Date("2026-10-12T12:00:00.000Z");
+      const ctx = withServices(createTestContext({ cwd: dir }), {
+        clock: { now: () => now },
+        provision: { remote: shell("shop-app-1|running\nshop-db-1|running\n").remote },
+        // The login becomes root through Docker; the laptop's last handshake was a minute ago.
+        vpn: {
+          remote: async (host) => ({
+            host,
+            run: async () => ({ exitCode: 0, stdout: "docker\n", stderr: "" }),
+          }),
+          readWireGuard: async () => [
+            {
+              publicKey: laptop.publicKey,
+              latestHandshake: new Date(now.getTime() - 60_000),
+              allowedIps: [`${prefix}.100/32`],
+            },
+          ],
+        },
+      });
+      expect(await main(argv("status"), ctx), ctx.errors).toBe(0);
+      expect(ctx.output).toContain(
+        [
+          `Private network (${network.range}):`,
+          `  Device laptop (${prefix}.100): last handshake with server app 1 minute ago`,
+          "  Access: device laptop to PostgreSQL (db), read-only",
+          "  Public SSH: open on every server",
+        ].join("\n"),
+      );
+      expect(ctx.output).not.toContain(laptop.privateKey);
+    });
 
     it("lists each component and whether it runs, read over SSH as the deploy user", async () => {
       await deployedWithComponents();

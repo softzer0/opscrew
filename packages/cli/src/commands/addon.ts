@@ -158,8 +158,7 @@ async function runChange(
                 new FlagConfirmation(base, {
                   kinds: ["host-apply"],
                   what: "deleting Beszel's history",
-                  app,
-                  confirmed: confirm !== undefined,
+                  names: confirm === undefined ? [] : [confirm],
                   hashes,
                   interactive: ctx.isInteractive,
                   print: ctx.stdout,

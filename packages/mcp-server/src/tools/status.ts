@@ -75,6 +75,8 @@ export interface StatusToolOptions {
   services?: ComponentStatusOptions["services"];
   /** Reads the certificate a DNS-only hostname presents (production: `node:tls`). */
   tlsConnect?: TlsStatusOptions["tlsConnect"];
+  /** The private network's WireGuard read (production: over SSH, as root through the login). */
+  network?: ComponentStatusOptions["network"];
 }
 
 /**
@@ -96,6 +98,7 @@ function tlsOf(phase: PhaseDeps, plan: DeployPlan, options: StatusToolOptions) {
 function componentsOf(phase: PhaseDeps, plan: DeployPlan, options: StatusToolOptions) {
   return componentStatusReport(phase, plan, {
     ...(options.services === undefined ? {} : { services: options.services }),
+    ...(options.network === undefined ? {} : { network: options.network }),
     // The model cannot confirm a host key: an own server never confirmed is left to the terminal.
     check: async () => {
       if (plan.target.provider !== "own") return;
@@ -125,7 +128,7 @@ export function registerStatusTool(
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) or, for a site on Cloudflare's hosting or GitHub Pages, the version running, the one before with the rollback command (`npx opscrew promote --to <env> --version <id>`) and its custom domains or certificate, and, once the app was deployed, whether each component runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer) and the resource figures read now (the server's load, memory and disk; each container's CPU, memory against its limit, restarts and uptime; on Cloudflare's hosting the last day's requests, errors and CPU time), each flag past a threshold with what it means and what to do, and the figures the target cannot give, the scheduled check's state (on, or turned off by GitHub with how to turn it on again) and its open alerts, the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) or, for a site on Cloudflare's hosting or GitHub Pages, the version running, the one before with the rollback command (`npx opscrew promote --to <env> --version <id>`) and its custom domains or certificate, and, once the app was deployed, whether each component runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer) and the resource figures read now (the server's load, memory and disk; each container's CPU, memory against its limit, restarts and uptime; on Cloudflare's hosting the last day's requests, errors and CPU time), each flag past a threshold with what it means and what to do, and the figures the target cannot give, the scheduled check's state (on, or turned off by GitHub with how to turn it on again) and its open alerts, the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), for an app with a private network each server's components and figures, each link between the servers (up or down, its last handshake and measured round trip), the user's devices (names and addresses, never a key) with their last handshake, each device's database access and whether public SSH is open (`servers`, `links`, `devices` and `grants` in the data; adding a device or access stays in the user's terminal, `npx opscrew vpn add <name>` and `npx opscrew vpn grant <device> <service>`, because it makes a private key or a password that must not pass through the chat), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -221,6 +224,12 @@ export function registerStatusTool(
             ...(components?.status === undefined ? {} : { components: components.status }),
             ...(components?.resources === undefined ? {} : { resources: components.resources }),
             ...(components?.check === undefined ? {} : { check: components.check }),
+            // With a private network: each server, each link, the devices (names and addresses
+            // only, never a key) and the grants.
+            ...(components?.servers === undefined ? {} : { servers: components.servers }),
+            ...(components?.links === undefined ? {} : { links: components.links }),
+            ...(components?.devices === undefined ? {} : { devices: components.devices }),
+            ...(components?.grants === undefined ? {} : { grants: components.grants }),
             ...(tls === undefined ? {} : { tls: tls.lines }),
           },
         };

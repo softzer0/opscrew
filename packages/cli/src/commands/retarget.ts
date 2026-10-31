@@ -1,7 +1,6 @@
 import {
   abortRetarget,
   finishRetarget,
-  isMaintenanceWindowRequest,
   type RetargetResult,
   type RetargetServices,
   readEnvironmentRequirements,
@@ -23,7 +22,13 @@ import {
 } from "@opscrew/core";
 import { CloudProviderSchema, type Money, readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
-import { askTypedName, checkConfirmName, formatRequest, hashListed } from "../approval";
+import {
+  askTypedName,
+  checkConfirmName,
+  formatRequest,
+  hashListed,
+  MaintenanceWindowApproval,
+} from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
@@ -62,8 +67,6 @@ export interface RetargetApprovalOptions {
   appName?: string;
   /** `--approve <hash>`. */
   approve?: string;
-  /** `--allow-downtime`. */
-  allowDowntime?: boolean;
   /** The app name typed at the prompt or given with `--confirm`, once known. */
   typed: () => string | undefined;
   /** Where approved requests are shown (`ctx.stdout`, which redacts). */
@@ -73,10 +76,8 @@ export interface RetargetApprovalOptions {
 }
 
 /**
- * The approvals of `opscrew retarget` on top of the normal handler (`base`):
- * - non-interactive runs approve the maintenance window's `remote-exec` request, and nothing else,
- *   with `--allow-downtime` (a changed host key also arrives as `remote-exec` and goes to `base`,
- *   which refuses it);
+ * The approvals of `opscrew retarget` on top of the normal handler (`base`); the maintenance
+ * window's `--allow-downtime` is `MaintenanceWindowApproval`'s, around this handler:
  * - a deletion plan (`allowDestroy` with the app name as `confirmPhrase`) is approved in a script
  *   only when `--approve` names its hash and `--confirm` is the app name, and in a terminal once
  *   the app name was typed at the confirmation prompt;
@@ -90,12 +91,8 @@ export class RetargetApprovalHandler implements ApprovalHandler {
   ) {}
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
-    const { interactive, appName, approve, allowDowntime, typed, print } = this.options;
+    const { interactive, appName, approve, typed, print } = this.options;
     const clock = this.options.clock ?? systemClock;
-    if (!interactive && allowDowntime === true && isMaintenanceWindowRequest(request)) {
-      print(`  ✓ ${request.title} (allowed with --allow-downtime)\n`);
-      return approvalDecision(clock, "--allow-downtime flag", true);
-    }
     const deletion =
       request.kind === "iac-apply" &&
       request.allowDestroy === true &&
@@ -221,15 +218,22 @@ async function runCommand(
       ai: false,
       approveHashes: approve === undefined ? [] : [approve],
       ...(flags.yes === true ? { assumeYes: true } : {}),
-      wrapApprovals: (base, clock) =>
-        new RetargetApprovalHandler(base, {
+      wrapApprovals: (base, clock) => {
+        const handler = new RetargetApprovalHandler(base, {
           interactive: ctx.isInteractive,
           ...(approve !== undefined ? { approve } : {}),
-          ...(flags.allowDowntime === true ? { allowDowntime: true } : {}),
           typed: () => undefined,
           print: ctx.stdout,
           clock,
-        }),
+        });
+        return flags.allowDowntime === true
+          ? new MaintenanceWindowApproval(handler, {
+              interactive: ctx.isInteractive,
+              print: ctx.stdout,
+              clock,
+            })
+          : handler;
+      },
     });
     const option = flags.option?.trim() || undefined;
     let budget: Money | undefined;

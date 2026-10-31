@@ -281,11 +281,18 @@ async function hiddenNames(deps: ResolvedMcpDeps, projectDir: string): Promise<H
   const names: HiddenNames = { server: [], portainer: [], runner: [], sources: [] };
   for (const place of places) {
     try {
-      const { own, portainer } = await readServerAddresses(
+      const { own, ownServers, servers, portainer } = await readServerAddresses(
         resolveProjectPaths(projectDir, { env: deps.env, ...place }),
       );
+      // The app's server and each extra server the user owns (feature 018): its login's host and
+      // the public address recorded for its private network.
+      const extras = Object.entries(ownServers ?? {}).flatMap(([name, login]) => [
+        login.host,
+        servers?.[name]?.ipv4,
+        servers?.[name]?.ipv6,
+      ]);
       names.server.push(
-        ...[own?.host, own?.publicIpv4, own?.publicIpv6].filter(
+        ...[own?.host, own?.publicIpv4, own?.publicIpv6, ...extras].filter(
           (name): name is string => typeof name === "string" && name.trim() !== "",
         ),
       );

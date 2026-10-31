@@ -474,6 +474,36 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   `opscrew_portainer_disable` removes it and always keeps its data (users and settings). Deleting
   that data stays in the terminal: the user runs `npx opscrew portainer disable --delete-data`
   and types the app's name; the tool refuses to do it.
+- **A service on a server of its own.** On a cloud server or the user's own server, any of the
+  app's services (a database, a cache, a broker) can run on a server of its own, at the same or
+  another provider (Hetzner, DigitalOcean) or on another server the user owns with a public
+  address; the web process, workers, cron jobs and add-ons stay on the app's server. Before the
+  user decides, call `opscrew_placement_estimate` with the service, the provider, the location and
+  optionally the server type: pass on the new server's price, the app's new monthly total and the
+  delay each query gets (with what it adds to a page making 20 queries; say so when it warns). The
+  user then adds the server under `servers` in `opscrew/plan.yaml` and sets `server` on the
+  service; `opscrew_select_design` (or `npx opscrew design`) checks it, sizes and prices the server
+  and refuses what cannot be linked, saying what would work. A server of the user's needs its SSH
+  login once: `npx opscrew design` in a terminal asks for it. The servers are joined by a private
+  WireGuard network, and the service answers only there, only to the app's servers. Moving a
+  live service copies Postgres in a short maintenance window that design shows first (Valkey,
+  Redis and Dragonfly start empty); it runs in the user's terminal with `npx opscrew provision`
+  (scripts add `--allow-downtime`), and once the app runs on the new copy,
+  `npx opscrew provision --finish-move` deletes the old one after they type the service's name.
+  Kafka, Redpanda and OpenSearch have no login: say that only the app's servers reach them.
+- **Devices on the private network.** The user's laptop or phone can join the app's private
+  network, to reach each server's SSH, Beszel and Portainer on its private address without a
+  public port or an SSH tunnel. Adding a device is terminal-only, with no tool on purpose: tell
+  the user to run `npx opscrew vpn add <name>` in their own terminal (`--this-computer` for the
+  computer they work on, `--qr` to scan it with the WireGuard app on a phone), because it makes the
+  device's private key on their computer and writes it only into the device's configuration
+  file: a private key must never pass through this chat, a model or a log. The same goes for
+  `npx opscrew vpn grant <device> <service>` (the device's own login to a database or cache,
+  read-only unless `--full`; it prints the password once in the terminal), `vpn revoke`,
+  `vpn remove` and `npx opscrew secure --close-public-ssh` (once deploys run on the server's own
+  runner and this computer is a device, SSH answers only on the private network;
+  `--open-public-ssh` opens it again). `opscrew_status` lists the devices by name and address with
+  their last handshake, and the grants; never ask for or read a device's configuration file.
 - **Moving to another provider.** Moving a live app to another cloud provider is terminal-only
   on purpose; there is no tool for it, and you must not try to perform its steps yourself. Tell
   the user to run `npx opscrew retarget --to <provider>` (`npx opscrew retarget --help` lists the

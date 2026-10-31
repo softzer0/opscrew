@@ -24,7 +24,11 @@ import { addHostKeyOption, checkApproveFlags, deployAgainStep, engineOption } fr
 /** The flags of `opscrew destroy`. */
 export interface DestroyFlags {
   snapshot?: boolean;
-  confirm?: string;
+  /**
+   * Every `--confirm <name>`: the server name (the app's on the user's own server, in a Portainer,
+   * on this computer or a site), then each extra cloud server's name at its provider.
+   */
+  confirm?: string[];
   engine?: "tofu" | "terraform";
   /** Your own server: also reverse OpsCrew's host changes (a separate host plan and approval). */
   undoHost?: boolean;
@@ -146,6 +150,8 @@ export class TypedConfirmationHandler implements ApprovalHandler {
  * anything changes, takes a snapshot when data lives only on the server, lifts delete protection
  * (on providers that have it) and applies the destroy plan (each plan approved by hash), then removes the GitHub deploy
  * secrets after its own approval (FR-301). Non-interactive runs need `--confirm <server name>`.
+ * Each extra server OpsCrew created (feature 018) needs its own name typed after it, or one more
+ * `--confirm <app>-<server>` in a script.
  * On a server the user owns (FR-912) it removes only the app (Cloudflare resources and a teardown
  * host plan; the app's data only with `--delete-data`) after the app's name is typed, never the
  * server, and `--undo-host` adds the undo host plan as its own approval: it deletes the deploy user
@@ -170,7 +176,8 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--no-snapshot", "Do not take a snapshot of the server first")
     .option(
       "--confirm <name>",
-      "The server name (on your own server, in your Portainer, on this computer, Cloudflare's hosting or GitHub Pages, the app's name), to run without prompts (for scripts and CI)",
+      "The server name (on your own server, in your Portainer, on this computer, Cloudflare's hosting or GitHub Pages, the app's name), to run without prompts (for scripts and CI); with extra servers OpsCrew created, give it again for each one's name (<app>-<server>)",
+      collect,
     )
     .option(
       "--delete-verification",
@@ -215,10 +222,17 @@ export async function runDestroyCommand(
   flags: DestroyFlags,
   destroy: (deps: PhaseDeps, options: DestroyOptions) => Promise<DestroyResult> = runDestroy,
 ): Promise<void> {
+  // The deployment's name, typed or given; each extra server's name is checked on its own.
   let typed: string | undefined;
+  // An extra server whose name a script did not give.
+  let unconfirmed: string | undefined;
   let provider = "hetzner" as DeployPlan["target"]["provider"];
   let flag = "";
-  const result = await runPhaseCommand(ctx, async () => {
+  const scriptHint = () =>
+    unconfirmed === undefined
+      ? undefined
+      : `In a script, add --confirm ${unconfirmed}: each server OpsCrew created is deleted only with its own name.`;
+  const teardown = async (): Promise<DestroyResult> => {
     const hashes = checkApproveFlags("destroy", flags);
     const hostKey = flags.hostKey?.trim();
     const environment = await chooseEnvironment(ctx, flags, "destroy");
@@ -237,14 +251,29 @@ export async function runDestroyCommand(
     const site = isServerlessProvider(provider);
     const app = own || portainer || local || site;
     const what = app ? "the app's name" : "the server name";
-    const scripted = flags.confirm !== undefined;
+    const confirms = (flags.confirm ?? []).map((value) => value.trim());
+    const scripted = confirms.length > 0;
     const again = `opscrew destroy${flag}`;
-    checkConfirmName(
-      flags.confirm,
-      name,
-      what,
-      `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : local ? "remove the app from this computer" : site ? "remove the site" : "delete the deployment"}, run \`${again} --confirm ${name}\`.`,
+    // Each extra server OpsCrew created is deleted only with its own name at its provider.
+    const extras = (plan.servers ?? []).flatMap((server) =>
+      server.target.provider === "own" ? [] : [`${name}-${server.name}`],
     );
+    const confirmFlags = [name, ...extras].map((value) => ` --confirm ${value}`).join("");
+    const howTo = `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : local ? "remove the app from this computer" : site ? "remove the site" : "delete the deployment"}, run \`${again}${confirmFlags}\`.`;
+    // A value that names no server stops; so does a script without the deployment's own name.
+    checkConfirmName(
+      confirms.find((value) => value !== name && !extras.includes(value)),
+      name,
+      extras.length === 0 ? what : `${what} or an extra server's name (${extras.join(", ")})`,
+      howTo,
+    );
+    if (scripted && !confirms.includes(name)) {
+      throw new OpsCrewError(
+        "APPROVAL_REFUSED",
+        `Add --confirm ${name}: the deployment is deleted only with its own name, as each extra server is with its own. Nothing was changed.`,
+        { hint: howTo },
+      );
+    }
     if (flags.deleteVerification === true && provider !== "github-pages") {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -289,7 +318,7 @@ export async function runDestroyCommand(
         "APPROVAL_REFUSED",
         `${app ? "Removing the app" : "Deleting the deployment"} needs ${what} typed by a person, and this run is not interactive. Nothing was changed.`,
         {
-          hint: `Run \`${again}\` in a terminal, or \`${again} --confirm ${name}\` in a script.`,
+          hint: `Run \`${again}\` in a terminal, or \`${again}${confirmFlags}\` in a script.`,
         },
       );
     }
@@ -327,12 +356,20 @@ export async function runDestroyCommand(
       ...(flags.deleteVerification === true ? { deleteVerification: true } : {}),
       ...(hostKey === undefined ? {} : { hostKey }),
       confirm: async (preview) => {
-        if (scripted) return true;
-        typed = await askTypedName(promptsOf(ctx), confirmMessage(preview), preview.name);
-        return typed === preview.name;
+        // An extra cloud server, asked after the deployment's name: its own name.
+        const extra = preview.server !== undefined;
+        if (scripted) {
+          if (!extra || confirms.includes(preview.name)) return true;
+          unconfirmed = preview.name;
+          return false;
+        }
+        const answer = await askTypedName(promptsOf(ctx), confirmMessage(preview), preview.name);
+        if (!extra) typed = answer;
+        return answer === preview.name;
       },
     });
-  });
+  };
+  const result = await runPhaseCommand(ctx, teardown, scriptHint);
   if (provider === "portainer") {
     if (result.stackPlan !== undefined) {
       ctx.stdout(`\nApplied the stack teardown plan ${result.stackPlan} to your Portainer.\n`);

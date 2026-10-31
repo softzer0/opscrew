@@ -8,7 +8,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
-import { NonInteractiveApprovalHandler } from "../approval";
+import { MaintenanceWindowApproval, NonInteractiveApprovalHandler } from "../approval";
 import { CANCEL, GIT, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
 import { type MoveProject, moveProject } from "../ui/__fixtures__/retarget";
 import { retargetStatusLine } from "../ui/retarget";
@@ -60,14 +60,21 @@ function scripted(
     assumeYes: true,
     approver: "--yes flag",
   });
-  const handler = new RetargetApprovalHandler(base, {
+  const retarget = new RetargetApprovalHandler(base, {
     interactive: false,
     ...(options.appName !== undefined ? { appName: options.appName } : {}),
     ...(options.approve !== undefined ? { approve: options.approve } : {}),
-    ...(options.allowDowntime ? { allowDowntime: true } : {}),
     typed: () => options.confirm,
     print: (text) => printed.push(text),
   });
+  // As `opscrew retarget` wraps it with `--allow-downtime`.
+  const handler = options.allowDowntime
+    ? new MaintenanceWindowApproval(retarget, {
+        interactive: false,
+        print: (text) => printed.push(text),
+        clock: { now: () => new Date("2026-10-13T12:00:00.000Z") },
+      })
+    : retarget;
   return { handler, printed };
 }
 
@@ -133,7 +140,6 @@ describe("RetargetApprovalHandler in a terminal", () => {
     const handler = new RetargetApprovalHandler(base, {
       interactive: true,
       appName: APP,
-      allowDowntime: true,
       typed: () => typed,
       print: (text) => printed.push(text),
     });

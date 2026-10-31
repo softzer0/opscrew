@@ -166,7 +166,7 @@ describe("the localhost target in the CLI", () => {
       return { destroyed: [], secretsRemoved: [], remaining: ["The data volumes."] };
     };
     const ctx = projectContext(project);
-    await runDestroyCommand(ctx, { env: "dev", confirm: "shop-dev" }, destroy);
+    await runDestroyCommand(ctx, { env: "dev", confirm: ["shop-dev"] }, destroy);
     expect(decisions).toEqual([
       { purpose: "teardown", approved: true },
       { purpose: "setup", approved: false },

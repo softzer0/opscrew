@@ -39,7 +39,7 @@ async function destroyWith(
     return { destroyed: [], secretsRemoved: [], remaining: [] };
   };
   try {
-    await runDestroyCommand(ctx, { confirm: "shop", deleteData: true }, destroy);
+    await runDestroyCommand(ctx, { confirm: ["shop"], deleteData: true }, destroy);
     return { code: 0, options, errors: ctx.errors };
   } catch (error) {
     if (error instanceof CliExit) return { code: error.exitCode, options, errors: ctx.errors };

@@ -120,8 +120,7 @@ async function runChange(
                 new FlagConfirmation(base, {
                   kinds: ["host-apply"],
                   what: "deleting Portainer's data",
-                  app,
-                  confirmed: confirm !== undefined,
+                  names: confirm === undefined ? [] : [confirm],
                   hashes,
                   interactive: ctx.isInteractive,
                   print: ctx.stdout,

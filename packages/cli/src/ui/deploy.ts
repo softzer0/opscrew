@@ -32,7 +32,7 @@ export function assumeYesHint(
 ): (error: unknown) => string | undefined {
   const deletions =
     command === "provision"
-      ? "a plan that deletes or replaces resources also needs --confirm <app name> (opscrew provision --approve <hash> --confirm <app name>), other destroys and changed host keys need an interactive terminal."
+      ? "a plan that deletes or replaces resources also needs --confirm <app name> (opscrew provision --approve <hash> --confirm <app name>), a move's maintenance window --allow-downtime, other destroys and changed host keys need an interactive terminal."
       : "destroys and changed host keys need an interactive terminal.";
   return (error) =>
     !ctx.isInteractive &&

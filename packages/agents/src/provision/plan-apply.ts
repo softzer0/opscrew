@@ -559,9 +559,12 @@ export function approveLaterHint(
     return `To apply it later without prompts, run: ${command} --approve ${planHash}`;
   }
   if (CONFIRM_COMMANDS.some((name) => command === name || command.startsWith(`${name} `))) {
-    // Several servers' names are one phrase, quoted for the shell.
-    const phrase = confirmPhrase.includes(" ") ? `"${confirmPhrase}"` : confirmPhrase;
-    return `To apply it later without prompts, run: ${command} --approve ${planHash} --confirm ${phrase}`;
+    // Several names (the app's and the extra servers' it deletes): one `--confirm` each.
+    const flags = confirmPhrase
+      .split(" ")
+      .map((name) => `--confirm ${name}`)
+      .join(" ");
+    return `To apply it later without prompts, run: ${command} --approve ${planHash} ${flags}`;
   }
   const script =
     command === "opscrew dns"

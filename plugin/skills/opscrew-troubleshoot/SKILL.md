@@ -22,6 +22,16 @@ Cloudflare. Secrets in log lines arrive masked; never try to recover them.
      on GitHub Pages). Say so; don't guess them.
    - **Scheduled check:** whether GitHub turned it off (it says how to turn it on again) and its open
      alerts, each a GitHub issue with a link.
+   - **Several servers:** an app whose services run on servers of their own shows each server by
+     name with its components and figures, then the private network: each link between the servers
+     (`links` in the data: up or down, the last handshake, the round trip measured from the app's
+     server), each device's last handshake, the grants and whether public SSH is open. A link
+     down, or a line saying a service is not published on its server's private address, explains a
+     database or cache the app can't reach: pass on the command the line names
+     (`npx opscrew provision`). A long round trip explains slow pages that make many queries in a
+     row. A device that never connects to a server added later needs a new configuration, which
+     the user makes in their terminal (`npx opscrew vpn add <name> --again`): it holds a private
+     key, so it never goes through this chat.
 2. **Then the logs of the failing part.** Call `opscrew_logs` with `service` set to that part and a
    short `since` (`15m`, `1h`; `2h` at most at first). Without `service` it reads the web process
    (`app`); `edge` is the proxy in front of the app. Keep `tail` at 200 or less, and never ask for

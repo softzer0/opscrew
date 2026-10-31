@@ -5,7 +5,12 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { type OwnServerServices, recordOwnServer, recordServerAddress } from "@opscrew/agents";
+import {
+  allocateNetwork,
+  type OwnServerServices,
+  recordOwnServer,
+  recordServerAddress,
+} from "@opscrew/agents";
 import {
   FakeGitHub,
   forbiddenFetch,
@@ -13,6 +18,8 @@ import {
   ownPlan,
   ScriptedRunner,
   SERVER_IPV4,
+  testKeyMaker,
+  testKeyPair,
   testPlan,
 } from "@opscrew/agents/testing";
 import type { RemoteExec } from "@opscrew/contracts";
@@ -485,5 +492,96 @@ describe("opscrew_status: the proxy, the certificates and the recovery copy (FR-
     expect(result.structuredContent).toMatchObject({
       tls: expect.arrayContaining(["Proxy: Caddy"]),
     });
+  });
+});
+
+describe("opscrew_status: the private network (FR-1821)", () => {
+  it("returns each server, each link, the devices by name and address, and the grants; never a key", async () => {
+    const base = testPlan({ deployed: true, userSecret: false });
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      deployment: { ...base.deployment, firstDeployAt: "2026-10-12T09:00:00.000Z" },
+    });
+    const keys = testKeyMaker();
+    const { network } = allocateNetwork(plan, {}, keys);
+    const prefix = network.range.split(".").slice(0, 3).join(".");
+    const laptop = testKeyPair("laptop");
+    const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-status-"));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    await writeArtifact(
+      "plan",
+      path.join(dir, "opscrew", "plan.yaml"),
+      DeployPlanSchema.parse({
+        ...plan,
+        network: {
+          ...network,
+          devices: [
+            {
+              name: "laptop",
+              address: `${prefix}.100`,
+              publicKey: laptop.publicKey,
+              addedAt: "2026-10-12T10:00:00.000Z",
+            },
+          ],
+          grants: [{ device: "laptop", service: "db", access: "read-only" }],
+        },
+      }),
+    );
+    const env = { OPSCREW_HOME: path.join(dir, "home") };
+    await recordServerAddress(resolveProjectPaths(dir, { env }), { ipv4: SERVER_IPV4 });
+    const now = new Date("2026-10-12T12:00:00.000Z");
+    const shell =
+      (stdout: string) =>
+      (host: string): RemoteExec => ({
+        host,
+        run: async () => ({ exitCode: 0, stdout, stderr: "" }),
+      });
+    const deps = resolveMcpDeps({
+      version: "0.0.0-test",
+      env,
+      fetch: forbiddenFetch,
+      runner: new ScriptedRunner(),
+      cwd: dir,
+      clock: { now: () => now },
+    });
+    const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
+    registerStatusTool(server, deps, {
+      services: { remote: shell("shop-app-1|running\nshop-db-1|running\n") },
+      // The login becomes root through Docker; the laptop's last handshake was a minute ago.
+      network: {
+        remote: async (host) => shell("docker\n")(host),
+        readWireGuard: async () => [
+          {
+            publicKey: laptop.publicKey,
+            latestHandshake: new Date(now.getTime() - 60_000),
+            allowedIps: [`${prefix}.100/32`],
+          },
+        ],
+      },
+    });
+    const client = new Client({ name: "opscrew-test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+    cleanups.push(async () => {
+      await client.close();
+      await server.close();
+    });
+    const result = (await client.callTool({
+      name: "opscrew_status",
+      arguments: {},
+    })) as CallToolResult;
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      servers: [expect.objectContaining({ name: "app" })],
+      links: [expect.objectContaining({ from: "app", to: "laptop", kind: "device", up: true })],
+      devices: [{ name: "laptop", address: `${prefix}.100` }],
+      grants: [{ device: "laptop", service: "db", access: "read-only" }],
+    });
+    const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? "";
+    expect(text).toContain(`Private network (${network.range}):`);
+    const everything = JSON.stringify(result);
+    for (const key of [laptop.privateKey, ...keys.made.map((pair) => pair.privateKey)]) {
+      expect(everything).not.toContain(key);
+    }
   });
 });

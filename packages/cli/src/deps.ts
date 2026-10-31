@@ -19,6 +19,7 @@ import {
   type RunnerHostServices,
   type RunSecureOptions,
   type RunVerifyOptions,
+  type VpnServices,
 } from "@opscrew/agents";
 import type {
   AgentRuntime,
@@ -94,6 +95,11 @@ export interface CliServices {
   logs?: LogServices;
   /** The deploy user's shell, host adapter, engine, Cloudflare and own-server fakes for `addon`. */
   addon?: AddonServices;
+  /**
+   * The servers' shells, the host adapter, the key maker and the WireGuard read for `vpn`, for
+   * `secure --close-public-ssh|--open-public-ssh`, and for the private network in `status`.
+   */
+  vpn?: VpnServices;
   /**
    * Calls `stop` when the user stops `logs --follow` or `addon open` (default: Ctrl-C and SIGTERM
    * of this process); returns what unsubscribes it.
