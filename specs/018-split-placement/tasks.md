@@ -673,6 +673,25 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: medium
 
+- [ ] T1825 [P] [US5] [US3] A default deny on the private address: the filter drops every new connection to a server's private address that no rule admits, in `packages/connectors/ssh-host/src/{network-filter,steps,plan}.ts` (+ tests) and `packages/agents/src/network/steps.ts`
+  - Owns: those paths (+ tests and snapshots); `readNetworkFilter`'s parsing follows
+  - Reads: plan.md "3."; research.md R5a/R5b (the filter's rules); T1806's `network-filter.ts`
+  - Depends: T1815, T1816
+  - Accept:
+    - After the per-port rules, chain `OPSCREW-<if>` ends with a DROP of every new connection
+      (`--ctstate NEW --ctorigdst <address>`, any port and protocol) to the server's private address,
+      so a port Docker still publishes after its last grant is revoked (until the next deploy) is
+      closed at once, and nothing published on the private address without a rule is reachable.
+    - Every server in the network has its filter (the chain with only the default deny when it
+      has no rules); an empty rule list no longer removes the filter, only the network's removal does.
+    - `networkSteps` always plans the filter for a server in the network; `readNetworkFilter` and
+      `secure` keep working (the default deny is no port rule).
+    - The host's own containers reaching their private address through `localPorts` (INPUT path)
+      still work; a test shows the DNAT path from another bridge is dropped unless a rule admits it.
+    - Snapshots updated; a plan without a network is unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
+  - Effort: medium
+
 ## Phase 8: Live
 
 - [ ] T1820 The live tests (gated on `OPSCREW_E2E_SPLIT=1` and the Hetzner token), in `packages/cli/test/live/split.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
