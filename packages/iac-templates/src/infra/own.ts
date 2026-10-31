@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
+import type { ProviderText } from "../providers";
 import { tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderContext } from "../types";
 import { dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
@@ -82,12 +83,11 @@ function mainTf(
   plan: DeployPlan,
   pieces: TunnelPieces | undefined,
   extras: readonly ExtraServerCall[],
+  providers: readonly ProviderText[],
   checkKey: boolean,
 ): string {
   const lines = [rootHeader(plan), ""];
-  for (const provider of new Set(extras.map((extra) => extra.provider))) {
-    lines.push(...providerBlock(provider));
-  }
+  for (const provider of providers) lines.push(...providerBlock(provider));
   if (usesCloudflare(plan)) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
   lines.push(...(extras.length > 0 ? OWN_NOTE_WITH_EXTRAS : OWN_NOTE));
   if (!tunnelMode(plan)) lines.push("#", ...ADDRESS_NOTE);
@@ -157,7 +157,7 @@ export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
       ...providers.map((provider) => provider.terraformProvider),
       ...(cloudflare ? [CLOUDFLARE_PROVIDER] : []),
     ]),
-    main: mainTf(plan, pieces, extras, checkKey),
+    main: mainTf(plan, pieces, extras, providers, checkKey),
     variables: variablesTf(plan, variables(plan, pieces, extras, checkKey)),
     outputs: outputsTf(plan, pieces, extras),
     tfvars: {

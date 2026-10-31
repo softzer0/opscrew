@@ -297,15 +297,15 @@ function portTaken(
   address: string,
 ): OpsCrewError {
   const file = planFilePath(plan);
-  const elsewhere = `place one on another server (services[].server in ${file}), then run the command again.`;
+  const elsewhere = `on another server (services[].server in ${file}), then run the command again.`;
   return new OpsCrewError(
     "INVALID_INPUT",
     `The services ${services.join(" and ")} both listen on port ${port}, and both would be published at ${address} on ${server === APP_SERVER ? "the app's server" : `the server ${server}`}.`,
     {
       hint:
         server === APP_SERVER
-          ? `Grant devices only one of them (opscrew vpn revoke <device> <service> for the other), or ${elsewhere}`
-          : `Place one of them on another server (services[].server in ${file}), then run the command again.`,
+          ? `Grant devices only one of them (opscrew vpn revoke <device> <service> for the other), or place one ${elsewhere}`
+          : `Place one of them ${elsewhere}`,
     },
   );
 }

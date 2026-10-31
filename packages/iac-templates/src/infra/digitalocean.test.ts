@@ -146,8 +146,9 @@ describe("digitalocean-droplet module", () => {
     expect(tagBlocks.map((m) => [m[1], (m[2] ?? "").replace(/\s+/g, " ").trim()])).toEqual([
       ["app", "count = var.app_tag == null ? 0 : 1 name = var.app_tag"],
     ]);
-    expect(main).toMatch(/^ {2}app_tags += digitalocean_tag\.app\[\*\]\.name$/m);
-    expect(main).toMatch(/^ {2}tags +=\s*concat\(local\.app_tags, var\.shared_tags\)$/m);
+    expect(main).toMatch(
+      /^ {2}tags += concat\(digitalocean_tag\.app\[\*\]\.name, var\.shared_tags\)$/m,
+    );
     for (const file of renderInfra(doPlan(), testContext())) {
       for (const block of file.content.matchAll(/resource "digitalocean_tag"[^{]*\{[^}]*\}/g)) {
         expect(block[0]).not.toContain("managed-by");
@@ -193,7 +194,7 @@ describe("digitalocean-droplet module", () => {
         "protocol = inbound_rule.value.protocol port_range = inbound_rule.value.port source_addresses = var.http_allowed_cidrs",
       ],
       [
-        "var.wireguard_port == null ? [] : [var.wireguard_port]",
+        "var.wireguard_port[*]",
         'protocol = "udp" port_range = tostring(inbound_rule.value) source_addresses = ["0.0.0.0/0", "::/0"]',
       ],
     ]);

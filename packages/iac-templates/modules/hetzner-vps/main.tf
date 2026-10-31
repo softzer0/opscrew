@@ -56,7 +56,7 @@ resource "hcloud_firewall" "this" {
 
   # WireGuard answers nothing without a valid key, and devices roam, so it is open to all.
   dynamic "rule" {
-    for_each = var.wireguard_port == null ? [] : [var.wireguard_port]
+    for_each = var.wireguard_port[*]
     content {
       description = "WireGuard"
       direction   = "in"

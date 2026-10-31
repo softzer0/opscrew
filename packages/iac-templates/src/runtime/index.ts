@@ -203,6 +203,11 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
   };
 }
 
+/** Where {@link renderServerCompose} writes the Compose file of the extra server `name`. */
+export function serverComposePath(plan: DeployPlan, name: string): string {
+  return `${runtimeDir(plan)}/servers/${name}/compose.yaml`;
+}
+
 /**
  * `<runtimeDir>/servers/<name>/compose.yaml`, the app's Compose project (`<app>`) on its extra
  * server `name`: only the services placed there, and a moving service's old copy until its switch
@@ -233,7 +238,7 @@ export function renderServerCompose(plan: DeployPlan, name: string): RenderedFil
       : {}),
   };
   return {
-    path: `${runtimeDir(plan)}/servers/${name}/compose.yaml`,
+    path: serverComposePath(plan, name),
     content: `${header}\n${stringify(document, { lineWidth: 0 })}`,
     kind: "runtime",
   };

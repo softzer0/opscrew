@@ -26,17 +26,12 @@ function extraServerPrefix(name: string): VariablePrefix {
   return `${name}_`;
 }
 
-/** The names of a server's location and server type variables under `prefix`. */
-function locationAndType(prefix: VariablePrefix): { location: string; serverType: string } {
-  return { location: `${prefix}location`, serverType: `${prefix}server_type` };
-}
-
 /**
  * The root module's variables that hold the extra server `name`'s location and server type, as
  * `terraform.tfvars.json` holds them once provision rendered the server.
  */
 export function extraServerVariables(name: string): { location: string; serverType: string } {
-  return locationAndType(extraServerPrefix(name));
+  return { location: `${name}_location`, serverType: `${name}_server_type` };
 }
 
 /** The plan's extra servers OpsCrew creates, in plan order; servers the user owns have none. */
@@ -66,7 +61,7 @@ export function providerBlock(provider: ProviderText): string[] {
 }
 
 /** The root variable and module argument of the scheduled check's key line. */
-export const CHECK_KEY_LINE = "check_key_line";
+const CHECK_KEY_LINE = "check_key_line";
 
 /** `check_key_line = var.check_key_line` when the root has the scheduled check's key. */
 export function checkKeyArgument(checkKey: boolean): (readonly [string, string])[] {
@@ -121,10 +116,9 @@ export function serverTfvars(
   prefix: VariablePrefix,
   target: ServerSettings,
 ): Record<string, unknown> {
-  const names = locationAndType(prefix);
   return {
-    [names.location]: target.location,
-    [names.serverType]: target.serverType,
+    [`${prefix}location`]: target.location,
+    [`${prefix}server_type`]: target.serverType,
     [`${prefix}image`]: target.image,
     [`${prefix}backups`]: target.backups,
   };

@@ -2,7 +2,6 @@ locals {
   # coalesce's result is known not to be null before apply, so another Droplet's count (below) is
   # known when it gets this id.
   ssh_key_id = coalesce(var.ssh_key_id, one(digitalocean_ssh_key.deploy[*].id))
-  app_tags   = digitalocean_tag.app[*].name
   web_rules = [
     { protocol = "tcp", port = "80" },
     { protocol = "tcp", port = "443" },
@@ -36,7 +35,7 @@ resource "digitalocean_droplet" "this" {
   ipv6       = true
   monitoring = true
   ssh_keys   = [local.ssh_key_id]
-  tags       = concat(local.app_tags, var.shared_tags)
+  tags       = concat(digitalocean_tag.app[*].name, var.shared_tags)
 
   # The scheduled check's key goes in as a second authorized key (YAML-quoted); none without it.
   user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
@@ -94,7 +93,7 @@ resource "digitalocean_firewall" "this" {
 
   # WireGuard answers nothing without a valid key, and devices roam, so it is open to all.
   dynamic "inbound_rule" {
-    for_each = var.wireguard_port == null ? [] : [var.wireguard_port]
+    for_each = var.wireguard_port[*]
     content {
       protocol         = "udp"
       port_range       = tostring(inbound_rule.value)

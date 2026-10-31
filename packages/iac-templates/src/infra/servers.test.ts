@@ -284,9 +284,7 @@ describe("the server modules", () => {
         /moved \{\n {2}from = \w+_ssh_key\.deploy\n {2}to {3}= \w+_ssh_key\.deploy\[0\]/,
       );
       expect(main).toMatch(/for_each = var\.web \? local\.web_rules : \[\]/);
-      expect(main).toMatch(
-        /for_each = var\.wireguard_port == null \? \[\] : \[var\.wireguard_port\]/,
-      );
+      expect(main).toMatch(/for_each = var\.wireguard_port\[\*\]/);
     });
   }
 
@@ -309,7 +307,7 @@ describe("the server modules", () => {
         'description = rule.value.description direction = "in" protocol = rule.value.protocol port = rule.value.port source_ips = var.http_allowed_cidrs',
       ],
       [
-        "var.wireguard_port == null ? [] : [var.wireguard_port]",
+        "var.wireguard_port[*]",
         'description = "WireGuard" direction = "in" protocol = "udp" port = tostring(rule.value) source_ips = ["0.0.0.0/0", "::/0"]',
       ],
     ]);

@@ -6,7 +6,7 @@ import {
   servicesOn,
 } from "@opscrew/plan-schema";
 import { serviceSpec } from "../catalog";
-import { PROVIDER_TEXT } from "../providers";
+import { cloudTarget, PROVIDER_TEXT } from "../providers";
 import { cell, opscrew, runbookFolders } from "./shared";
 
 /** `PostgreSQL (db)`. */
@@ -19,10 +19,8 @@ function place(
   target: DeployPlan["target"] | NonNullable<DeployPlan["servers"]>[number]["target"],
 ) {
   if (target.provider === "own") return "your own server";
-  if (target.provider !== "hetzner" && target.provider !== "digitalocean") {
-    throw new Error(`A server of the private network can't be on ${target.provider}.`);
-  }
-  return PROVIDER_TEXT[target.provider].serverLabel(target.serverType, target.location);
+  const cloud = cloudTarget(target);
+  return PROVIDER_TEXT[cloud.provider].serverLabel(cloud.serverType, cloud.location);
 }
 
 /**

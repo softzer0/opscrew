@@ -18,7 +18,7 @@ import {
   certbotHosts,
   type RuntimeContext,
   renderRuntimeFiles,
-  renderServerCompose,
+  serverComposePath,
 } from "../runtime";
 import { servicesRunningOn } from "../runtime/move";
 import { privateAddress } from "../runtime/network";
@@ -393,31 +393,31 @@ const HOST_LIST_NAMES =
 function maskFileWrite(plan: DeployPlan, dir: string, on: On): string[] {
   if (plan.observability?.grafanaCloud?.enabled !== true) return [];
   return [
-    "    # Grafana Alloy's masking file: app.env's values as one RE2 alternation, longest first.",
-    "    parts=",
-    "    while IFS= read -r line; do",
-    '      [[ "$line" == [A-Za-z_]*=* ]] || continue',
-    `      case "\${line%%=*}" in ${HOST_LIST_NAMES}) continue ;; esac`,
-    '      value="${line#*=}"',
-    '      case "$value" in',
-    "        \\'*\\') value=\"${value:1:-1}\" ;;",
-    '        \\"*\\")',
+    "# Grafana Alloy's masking file: app.env's values as one RE2 alternation, longest first.",
+    "parts=",
+    "while IFS= read -r line; do",
+    '  [[ "$line" == [A-Za-z_]*=* ]] || continue',
+    `  case "\${line%%=*}" in ${HOST_LIST_NAMES}) continue ;; esac`,
+    '  value="${line#*=}"',
+    '  case "$value" in',
+    "    \\'*\\') value=\"${value:1:-1}\" ;;",
+    '    \\"*\\")',
     // Undoes the env file's double quotes: \\ (kept apart first), \", \n and $$.
-    '          value="${value:1:-1}"',
-    "          value=\"${value//\\\\\\\\/$'\\x01'}\"",
-    '          value="${value//\\\\\\"/\\"}"',
-    "          value=\"${value//\\\\n/$'\\n'}\"",
-    '          value="${value//\\$\\$/\\$}"',
-    "          value=\"${value//$'\\x01'/\\\\}\"",
-    "          ;;",
-    "      esac",
-    "      while IFS= read -r part; do",
-    "        if (( ${#part} >= 8 )); then parts+=\"${#part}\"$'\\t'\"$part\"$'\\n'; fi",
-    '      done <<< "$value"',
-    `    done <<< "\${${DEPLOY_SECRETS.appEnv}:-}"`,
-    "    mask=\"$(printf '%s' \"$parts\" | sort -rn | cut -f2- | sed 's/[][\\.*+?(){}|^$]/\\\\&/g' | paste -sd '|' -)\"",
-    '    if [[ -n "$mask" ]]; then mask="($mask)"; else mask=\'[^\\s\\S]\'; fi',
-    `    printf '%s' "$mask" | ${on(`umask 077 && cat > ${dir}/mask.re`)}`,
+    '      value="${value:1:-1}"',
+    "      value=\"${value//\\\\\\\\/$'\\x01'}\"",
+    '      value="${value//\\\\\\"/\\"}"',
+    "      value=\"${value//\\\\n/$'\\n'}\"",
+    '      value="${value//\\$\\$/\\$}"',
+    "      value=\"${value//$'\\x01'/\\\\}\"",
+    "      ;;",
+    "  esac",
+    "  while IFS= read -r part; do",
+    "    if (( ${#part} >= 8 )); then parts+=\"${#part}\"$'\\t'\"$part\"$'\\n'; fi",
+    '  done <<< "$value"',
+    `done <<< "\${${DEPLOY_SECRETS.appEnv}:-}"`,
+    "mask=\"$(printf '%s' \"$parts\" | sort -rn | cut -f2- | sed 's/[][\\.*+?(){}|^$]/\\\\&/g' | paste -sd '|' -)\"",
+    'if [[ -n "$mask" ]]; then mask="($mask)"; else mask=\'[^\\s\\S]\'; fi',
+    `printf '%s' "$mask" | ${on(`umask 077 && cat > ${dir}/mask.re`)}`,
   ];
 }
 
@@ -449,7 +449,7 @@ export function maskFileScript(plan: DeployPlan): string {
   const script = [
     "set -euo pipefail",
     `${DEPLOY_SECRETS.appEnv}="$(cat ${dir}/app.env)"`,
-    ...lines.map((line) => line.replace(/^ {4}/, "")),
+    ...lines,
   ];
   return `${script.join("\n")}\n`;
 }
@@ -626,7 +626,7 @@ function sshDeploy(
     `    ${OVER_SSH(`mkdir -p ${dir}`)}`,
     `    scp -r "\${ssh_opts[@]}" ${upload.files.join(" ")} "deploy@\${HOST}:${dir}/"`,
     ...envFileWrites(upload.envFiles, dir, OVER_SSH),
-    ...maskFileWrite(plan, dir, OVER_SSH),
+    ...maskFileWrite(plan, dir, OVER_SSH).map((line) => `    ${line}`),
     ...(upload.edgeFiles.originTls
       ? originTlsUpload(plan, `${EDGE_DIR}/tls/${plan.app.name}`, OVER_SSH)
       : []),
@@ -681,10 +681,6 @@ function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
   );
   if (servers.length === 0) return [];
   const knownHosts = servers.map((server) => serverDeploySecrets(server.name).knownHosts);
-  const sshOpts = (port: number | undefined) => {
-    checkSshPort(port);
-    return `    ssh_opts=(-i ${serversFile("key")} -o UserKnownHostsFile=${serversFile("known_hosts")} -F ${serversFile("config")} ${SSH_OPTS_BASE}${portOption(port)})`;
-  };
   const dir = appDir(plan);
   const rendered = renderRuntimeFiles(plan).map((file) => file.path);
   return [
@@ -700,6 +696,8 @@ function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
     `    printf '%s\\n' ${knownHosts.map((name) => `"$${name}"`).join(" ")} > ${serversFile("known_hosts")}`,
     `    : > ${serversFile("config")}`,
     ...servers.flatMap((server) => {
+      const port = ctx.serverSshPorts?.[server.name];
+      checkSshPort(port);
       const services = servicesOn(plan, server.name);
       const envFiles = serviceEnvFiles(services);
       const folders = services
@@ -712,9 +710,9 @@ function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
         ...envFileEnv(plan, envFiles),
         "  run: |",
         "    set -euo pipefail",
-        sshOpts(ctx.serverSshPorts?.[server.name]),
+        `    ssh_opts=(-i ${serversFile("key")} -o UserKnownHostsFile=${serversFile("known_hosts")} -F ${serversFile("config")} ${SSH_OPTS_BASE}${portOption(port)})`,
         `    ${OVER_SSH(`mkdir -p ${folders.length === 0 ? dir : `${dir}/services`}`)}`,
-        `    scp "\${ssh_opts[@]}" ${renderServerCompose(plan, server.name).path} "deploy@\${HOST}:${dir}/compose.yaml"`,
+        `    scp "\${ssh_opts[@]}" ${serverComposePath(plan, server.name)} "deploy@\${HOST}:${dir}/compose.yaml"`,
         ...(folders.length === 0
           ? []
           : [
@@ -809,7 +807,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
     '    mkdir -p "$dir"',
     `    cp -r ${upload.files.join(" ")} "$dir"/`,
     ...envFileWrites(upload.envFiles, '"$dir"', HERE),
-    ...maskFileWrite(plan, '"$dir"', HERE),
+    ...maskFileWrite(plan, '"$dir"', HERE).map((line) => `    ${line}`),
     ...(upload.edgeFiles.originTls ? [tls, ...originTlsUpload(plan, '"$tls"', HERE)] : []),
   ];
   return {
@@ -1025,7 +1023,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
         [
           ...buildReads(plan),
           ...uploadReads(plan, upload.files),
-          ...(plan.servers ?? []).map((server) => renderServerCompose(plan, server.name).path),
+          ...(plan.servers ?? []).map((server) => serverComposePath(plan, server.name)),
         ],
         ctx,
       ),
