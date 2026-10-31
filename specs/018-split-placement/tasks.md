@@ -615,7 +615,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs`
   - Effort: high
 
-- [ ] T1818 [P] The guide and the runbook, in `docs/guide/**` and `packages/iac-templates/src/runbook/**`
+- [X] T1818 [P] The guide and the runbook, in `docs/guide/**` and `packages/iac-templates/src/runbook/**`
   - Owns: those paths (+ runbook tests and snapshots)
   - Reads: spec (all); quickstart.md; plan.md "13."
   - Depends: T1809, T1811, T1814, T1815, T1816
