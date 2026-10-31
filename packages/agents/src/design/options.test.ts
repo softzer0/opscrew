@@ -332,6 +332,67 @@ describe("buildDesignOptions", () => {
       expect(kept.kept.get("hetzner-single-cx33-fsn1")).toBe(kept13);
     });
 
+    it("stays where it runs, never a replace for a cheaper type available only elsewhere", async () => {
+      const set = await buildDesignOptionSet({
+        facts: staticSpaFacts(),
+        requirements: makeRequirements({ budgetMonthly: { amount: 10, currency: "EUR" } }),
+        catalog: new MemoryCatalog([
+          offer({ id: "cx23", vcpus: 2, memoryGb: 4, diskGb: 80, price: 3.49, location: "nbg1" }),
+          offer({ id: "cx23", vcpus: 2, memoryGb: 4, diskGb: 80, price: 3.49, location: "fsn1" }),
+          offer({ id: "cpx32", vcpus: 4, memoryGb: 8, diskGb: 160, price: 13, location: "nbg1" }),
+          offer({ id: "cpx32", vcpus: 4, memoryGb: 8, diskGb: 160, price: 13, location: "fsn1" }),
+          ...[{ location: "fsn1", available: false }, { location: "nbg1" }].map((where) =>
+            offer({ id: "cx22", vcpus: 2, memoryGb: 4, diskGb: 80, price: 2.99, ...where }),
+          ),
+        ]),
+        deployed: { location: "fsn1", serverType: "cx23" },
+      });
+      expect(set.options.map((o) => [o.id, o.recommended])).toEqual([
+        ["hetzner-single-cx23-fsn1", true],
+        ["hetzner-single-cpx32-fsn1", false],
+      ]);
+      expect(set.options.flatMap((o) => o.tradeoffs).join("\n")).not.toContain("replaces");
+    });
+
+    it("moves only when no type where it runs meets the need, saying it replaces the server", async () => {
+      const set = await buildDesignOptionSet({
+        facts: staticSpaFacts(),
+        requirements: makeRequirements({ budgetMonthly: { amount: 10, currency: "EUR" } }),
+        catalog: new MemoryCatalog([
+          offer({ id: "cx11", vcpus: 1, memoryGb: 2, diskGb: 20, price: 2, location: "fsn1" }),
+          offer({ id: "cx13", vcpus: 2, memoryGb: 4, diskGb: 40, price: 4.19, location: "nbg1" }),
+          offer({ id: "cx33", vcpus: 4, memoryGb: 8, diskGb: 80, price: 8.49, location: "nbg1" }),
+        ]),
+        deployed: { location: "fsn1", serverType: "cx11" },
+      });
+      expect(set.options.map((o) => [o.id, o.recommended])).toEqual([
+        ["hetzner-single-cx13-nbg1", true],
+        ["hetzner-single-cx33-nbg1", false],
+      ]);
+      for (const option of set.options) {
+        expect(option.tradeoffs[0]).toBe(
+          "No server type in Falkenstein (fsn1), where your server runs, meets the need, so this option replaces it: the next `opscrew provision` creates a new server and deletes the old one together with the data on it.",
+        );
+      }
+    });
+
+    it("offers the requested region's locations as before when the server runs outside it", async () => {
+      const set = await buildDesignOptionSet({
+        facts: staticSpaFacts(),
+        requirements: makeRequirements({ budgetMonthly: { amount: 10, currency: "EUR" } }),
+        catalog: new MemoryCatalog([
+          offer({ id: "cx23", vcpus: 2, memoryGb: 4, diskGb: 40, price: 3.49, location: "fsn1" }),
+          offer({ id: "cx33", vcpus: 4, memoryGb: 8, diskGb: 80, price: 8.49, location: "nbg1" }),
+        ]),
+        deployed: { location: "hel1", serverType: "cx33" },
+      });
+      expect(set.options.map((o) => [o.id, o.recommended])).toEqual([
+        ["hetzner-single-cx23-fsn1", true],
+        ["hetzner-single-cx33-nbg1", false],
+      ]);
+      expect(set.options.flatMap((o) => o.tradeoffs).join("\n")).not.toContain("replaces");
+    });
+
     it("never offers its type for a tier it does not meet", async () => {
       // A dedicated type with more memory than the shared cx43, but a smaller disk.
       const ccx = {

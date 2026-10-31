@@ -712,22 +712,51 @@ describe("runDesign", () => {
     });
 
     it("warns that a deployed server will be replaced when the location changes", async () => {
-      // cx13 is available only in fsn1, so choosing it moves the server out of nbg1.
+      // Nothing is available in nbg1 any more, so design offers fsn1, which moves the server.
       const deps = await existingPlan("hetzner-single-cx33-nbg1", deployed);
       const result = await runDesign(deps, {
-        catalog: euCatalog(),
+        catalog: new MemoryCatalog(euCatalog().offers.filter((o) => o.location === "fsn1")),
         optionId: "hetzner-single-cx13-fsn1",
       });
-      const warning = result.warnings.join("\n");
-      expect(warning).toMatch(/fsn1/);
-      expect(warning).toMatch(/nbg1/);
-      expect(warning).toMatch(/replace the server/);
-      expect(warning).toMatch(/opscrew provision/);
+      expect(result.warnings).toContain(
+        "Your server already runs in nbg1 (cx33). The chosen option uses fsn1 (cx13), so the next `opscrew provision` will replace the server: it creates a new one and deletes the old one together with the data on it. No server type in nbg1 meets the need now. Back up your data first, or lower the memory limits in opscrew/plan.yaml (or the expected number of users in `opscrew interview`) and run `opscrew design` again to keep the server.",
+      );
       expect(deps.reporter.lines.some((l) => l.level === "warn" && /replace/.test(l.message))).toBe(
         true,
       );
       // The new plan still keeps the user's settings.
       expect(result.plan.security.sshAllowedCidrs).toEqual(["203.0.113.7/32"]);
+    });
+
+    it("tells a server that was only planned to choose an option where it runs", async () => {
+      const deps = await existingPlan("hetzner-single-cx33-nbg1", (plan) => ({
+        ...deployed(plan),
+        deployment: { lastPlanHash: HASH },
+      }));
+      const result = await runDesign(deps, {
+        catalog: euCatalog(),
+        optionId: "hetzner-single-cx13-fsn1",
+      });
+      expect(result.warnings).toContain(
+        "Your server already runs in nbg1 (cx33). The chosen option uses fsn1 (cx13), so the next `opscrew provision` will replace the server: it creates a new one and deletes the old one together with the data on it. Back up your data first, or choose an option in nbg1 to keep the server.",
+      );
+    });
+
+    it("warns that a region change replaces a deployed server, saying how to keep it", async () => {
+      const deps = await existingPlan("hetzner-single-cx33-nbg1", deployed);
+      await writeArtifact(
+        "requirements",
+        deps.paths.files.requirements,
+        makeRequirements({ region: "eu-north" }),
+      );
+      const result = await runDesign(deps, {
+        catalog: new MemoryCatalog([
+          offer({ id: "cx33", vcpus: 4, memoryGb: 8, diskGb: 80, price: 8.49, location: "hel1" }),
+        ]),
+      });
+      expect(result.warnings).toContain(
+        "Your server already runs in nbg1 (cx33). The chosen option uses hel1 (cx33), so the next `opscrew provision` will replace the server: it creates a new one and deletes the old one together with the data on it. Back up your data first, or run `opscrew interview` again and choose the eu-central region to keep the server.",
+      );
     });
 
     it("warns that a deployed server will be resized when only the server type changes", async () => {

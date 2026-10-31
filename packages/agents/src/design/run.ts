@@ -139,7 +139,7 @@ import {
 } from "./portainer";
 import { releaseCommandNote } from "./release";
 import { resolveRuntime } from "./runtime-version";
-import { appServerChange, deployedAppServer } from "./server-changes";
+import { applied, appServerChange, deployedAppServer } from "./server-changes";
 import {
   buildServerlessOption,
   pagesAllowedFor,
@@ -1051,7 +1051,12 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   // A value the user set where design follows analysis is kept, and said with what it found.
   for (const line of keptLines) reporter.info(say(line));
   if (previous) {
-    for (const warning of serverChangeWarnings(previous, plan, preview.kept?.get(chosen.id))) {
+    for (const warning of serverChangeWarnings(
+      previous,
+      plan,
+      requirements,
+      preview.kept?.get(chosen.id),
+    )) {
       warn(warning);
     }
     const owner = sqliteOwnerWarning(previous, plan);
@@ -1778,6 +1783,7 @@ function isCloudServer(target: DeployTarget): target is CloudDeployTarget {
 function serverChangeWarnings(
   previous: DeployPlan,
   plan: DeployPlan,
+  requirements: Requirements,
   kept: string | undefined,
 ): string[] {
   // Only a server OpsCrew creates is moved or resized: never a server the user owns, a Portainer,
@@ -1785,10 +1791,24 @@ function serverChangeWarnings(
   const change = appServerChange(previous, plan);
   if (change === undefined) return kept === undefined ? [] : [kept];
   const { before, after } = change;
-  const server = providerProfile(planProvider(plan)).serverNoun;
+  const profile = providerProfile(planProvider(plan));
+  const server = profile.serverNoun;
   if (change.kind === "replace") {
+    // Design keeps an applied server in the requested region where it runs unless no type there
+    // fits, so a replace means either that or a region the user changed.
+    const region = requestedRegion(requirements);
+    const formerRegions = Object.entries(profile.regionLocations)
+      .filter(([, locations]) => locations.includes(before.location))
+      .map(([name]) => name);
+    const instead = !formerRegions.some((name) => name === region)
+      ? formerRegions[0] === undefined
+        ? "Back up your data first."
+        : `Back up your data first, or run \`opscrew interview\` again and choose the ${formerRegions[0]} region to keep the ${server}.`
+      : applied(previous)
+        ? `No ${server} type in ${before.location} meets the need now. Back up your data first, or lower the memory limits in opscrew/plan.yaml (or the expected number of users in \`opscrew interview\`) and run \`opscrew design\` again to keep the ${server}.`
+        : `Back up your data first, or choose an option in ${before.location} to keep the ${server}.`;
     return [
-      `Your ${server} already runs in ${before.location} (${before.serverType}). The chosen option uses ${after.location} (${after.serverType}), so the next \`opscrew provision\` will replace the ${server}: it creates a new one and deletes the old one together with the data on it. Back up your data first, or choose an option in ${before.location} to keep the ${server}.`,
+      `Your ${server} already runs in ${before.location} (${before.serverType}). The chosen option uses ${after.location} (${after.serverType}), so the next \`opscrew provision\` will replace the ${server}: it creates a new one and deletes the old one together with the data on it. ${instead}`,
     ];
   }
   return [

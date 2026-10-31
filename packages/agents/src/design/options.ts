@@ -57,6 +57,8 @@ interface Candidate {
   rates: NonLiveRates;
   /** Why it is the deployed server's type, standing in for one with a smaller disk. */
   kept?: string;
+  /** Why it replaces the deployed server: no type where that runs meets the need. */
+  moved?: string;
 }
 
 /**
@@ -66,7 +68,9 @@ interface Candidate {
  * memory, bigger than Lean) and **Dedicated** (cheapest dedicated-vCPU server, only for `high`
  * uptime or 10k+ users). ARM, deprecated and unavailable server types are excluded; each server
  * type is offered in the first location of the region (from the provider profile) where it is
- * available, the deployed server's (`deployed`) first: another location replaces it. Where it
+ * available. A deployed server (`deployed`) in the region gets only types where it runs, and other
+ * locations only when none there meets the need, each such option saying it replaces the server
+ * (a region the user changed replaces it anyway). Where it
  * runs, no type with a smaller disk than its own is offered (neither provider can make a disk
  * smaller), and its own type is when it meets the need, saying why when a cheaper type was left
  * out for its disk. Prices stay in the catalogue's currency; the budget is compared at the fixed
@@ -118,10 +122,10 @@ export async function buildDesignOptionSet(
   // One offer per server type: the first location (in region order) where it is available, the
   // deployed server's first, since another location replaces the server with its data.
   const { deployed } = input;
+  const home =
+    deployed !== undefined && locations.includes(deployed.location) ? deployed.location : undefined;
   const order =
-    deployed !== undefined && locations.includes(deployed.location)
-      ? [deployed.location, ...locations.filter((location) => location !== deployed.location)]
-      : locations;
+    home === undefined ? locations : [home, ...locations.filter((location) => location !== home)];
   const byType = new Map<string, ComputeOffer>();
   for (const location of order) {
     for (const offer of offers) {
@@ -142,14 +146,14 @@ export async function buildDesignOptionSet(
   // The deployed server's type, when it runs in the region: no type with a smaller disk is offered
   // where it runs (neither provider can make a disk smaller), and it is offered itself.
   const current =
-    deployed === undefined || !locations.includes(deployed.location)
+    home === undefined
       ? undefined
-      : (await catalog.listOffers(deployed.location)).find(
-          (offer) => offer.id === deployed.serverType && offer.location === deployed.location,
+      : (await catalog.listOffers(home)).find(
+          (offer) => offer.id === deployed?.serverType && offer.location === home,
         );
   const isCurrent = (offer: ComputeOffer) =>
     offer.id === current?.id && offer.location === current.location;
-  const candidates: Candidate[] = [];
+  let candidates: Candidate[] = [];
   const shrinking: Candidate[] = [];
   const offered = [...byType.values()];
   if (current !== undefined && !offered.some(isCurrent)) offered.push(current);
@@ -160,6 +164,16 @@ export async function buildDesignOptionSet(
     const shrinks =
       current !== undefined && offer.location === current.location && offer.diskGb < current.diskGb;
     (shrinks ? shrinking : candidates).push(candidate);
+  }
+  // A deployed server stays where it runs; another location only when no type there meets the need.
+  if (home !== undefined) {
+    const there = candidates.filter((c) => c.offer.location === home);
+    if (there.length > 0) candidates = there;
+    else {
+      const noun = profile.serverNoun;
+      const moved = `No ${noun} type in ${profile.locationNames[home] ?? home} (${home}), where your ${noun} runs, meets the need, so this option replaces it: the next \`opscrew provision\` creates a new ${noun} and deletes the old one together with the data on it.`;
+      for (const candidate of candidates) candidate.moved = moved;
+    }
   }
   candidates.sort(cheapestFirst);
   // The deployed type, the cheapest of its CPU kind left, names the cheapest of that kind left out
@@ -292,7 +306,7 @@ const TIER_TRADEOFFS: Record<DesignTier, string[]> = {
 
 function toOption(
   tier: DesignTier,
-  { offer, cost, rates, kept }: Candidate,
+  { offer, cost, rates, kept, moved }: Candidate,
   context: {
     provider: VpsProviderId;
     wording: DesignWording;
@@ -328,7 +342,11 @@ function toOption(
     memoryText(sizing.components, serverMb, sizing.edgeMb, cost.monthly),
   ].join(" ");
 
-  const tradeoffs = [...(kept === undefined ? [] : [kept]), ...TIER_TRADEOFFS[tier]];
+  const tradeoffs = [
+    ...(moved === undefined ? [] : [moved]),
+    ...(kept === undefined ? [] : [kept]),
+    ...TIER_TRADEOFFS[tier],
+  ];
   const headroom = memoryHeadroom(serverMb, sizing.limitsMb, sizing.edgeMb);
   if (headroom.low) tradeoffs.push(lowHeadroomText(offer.id, headroom.free));
   if (context.regionNote !== undefined) tradeoffs.push(context.regionNote);

@@ -843,23 +843,22 @@ describe("a deployed extra server that changes", () => {
       hint: expect.stringContaining("servers[].target.location as it was"),
     });
 
-    // The app's server: taking Postgres off it makes the cheapest option another location.
+    // The app's server: when nothing is available where it runs, the options replace it.
     const app = await setup();
     await runDesign(app, { catalog: euCatalog() });
     await deployed(app, { db: "app" });
     await editPlan(app, place("db", "db"));
-    const moved = await runDesign(app, { catalog: euCatalog() }).catch((e: unknown) => e);
+    const elsewhere = new MemoryCatalog(euCatalog().offers.filter((o) => o.location === "fsn1"));
+    const moved = await runDesign(app, { catalog: elsewhere }).catch((e: unknown) => e);
     expect(moved).toMatchObject({
       code: "PHASE_PRECONDITION",
       message: expect.stringContaining("would also replace the app's server"),
       hint: expect.stringContaining("`opscrew design --option <id>`"),
     });
-    // An option in the server's location keeps it, and the move goes ahead.
-    const kept = await runDesign(app, {
-      catalog: euCatalog(),
-      optionId: "hetzner-single-cx33-nbg1",
-      keys: testKeyMaker(),
-    });
+    // Design keeps the server where it runs, though a cheaper type is available only in fsn1,
+    // and the move goes ahead.
+    const kept = await runDesign(app, { catalog: euCatalog(), keys: testKeyMaker() });
+    expect(kept.plan.target).toMatchObject({ location: "nbg1" });
     expect(kept.plan.move).toMatchObject({ service: "db", from: "app", to: "db" });
   });
 });
