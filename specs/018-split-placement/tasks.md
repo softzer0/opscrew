@@ -846,6 +846,40 @@ Effort`.
   - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
+- [ ] T1833 [US4] Opening public SSH reaches the servers privately until the cloud firewalls open, in `packages/agents/src/{secure/public-ssh.ts,provision/**,runners/**,shared/**}` (+ tests)
+  - Owns: those paths
+  - Reads: T1815, T1826, T1827 and T1832's blocks; `openPublicSsh`, `openingReach`, `provisionStep` (secure/public-ssh.ts); `checkCloudRunner` / `readCloudRunners` / `deployShell` (runners); `privateReach` and `networkReach` (shared/server-address.ts)
+  - Found by: T1821's eighth live run, step 7.
+    - `secure --open-public-ssh` opened ufw on both servers over the private network, then wrote the reopened plan and ran provision.
+    - Provision's runner check (`checkCloudRunner`, before the infrastructure apply) then connected to the public address, which the cloud firewall still closed: "OpsCrew could not read the runner on the server."
+    - A rerun after a stop between the two hits the same.
+  - Accept:
+    - **Private until the firewall opens.** When `--open-public-ssh` reached the servers over the private network, every server connection the provision it runs makes before its infrastructure apply uses the private reach, as with public SSH closed. After the apply, public as the plan says.
+    - **The rerun branch** ("Public SSH is open on the servers as opscrew/plan.yaml says; provision checks the cloud firewalls follow it") does the same when this computer is on the network.
+    - **When `openingReach` fell back to the public address** (T1827), nothing changes.
+    - **A plain `opscrew provision`** is unchanged.
+    - **Tests** (a `tcpConnect`/remote fake that refuses the public addresses until the apply):
+      - the opening run;
+      - the rerun;
+      - T1827's public fallback unchanged.
+  - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
+- [ ] T1834 `destroy` refuses before any change while the server's runner runs a job, in `packages/agents/src/{destroy,runners}/**` (+ tests)
+  - Owns: those paths
+  - Found by: T1821's eighth live run.
+    - The cleanup's `opscrew destroy` lifted the servers' delete protection, then stopped: "GitHub could not remove the self-hosted runner 47: Bad request - Runner … is currently running a job and cannot be deleted."
+    - It gave no hint what to do.
+  - Accept:
+    - **Refuse first.** With `runner: server`, destroy lists the environment's runner registrations before any change (before the snapshot and the protection lift). When one is busy (GitHub's `busy`), it refuses: PHASE_PRECONDITION, nothing changed. The message names the runner. The hint says to wait for the job to finish or cancel it in GitHub Actions (the repository's Actions page), then run destroy again.
+    - **A runner that turns busy later**, between that check and the deletion, gets the same hint instead of GitHub's bare error.
+    - **Tests:**
+      - a busy runner refused before any change;
+      - a busy runner at the deletion;
+      - an idle runner unchanged.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: medium
+
 - [ ] T1821 The live runs (lead): T1820's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 
 - [X] T1822 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1826's review: one `removedOwnServers(plan, record)` for provision's refusal and removal; the redundant `edge = undefined` in origin-tls; the four `removed.length === 1` ternaries; the split-placement guide page mentions `--allow-downtime` for approving a move's window in a script.
