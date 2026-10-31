@@ -326,7 +326,7 @@ wave 2. A result that changes the design goes into this plan first.
 - **Moves:**
   - `deployment.placement` against `services[].server` gives a move, set in `move` with `copy`
     (`dump` for Postgres, `empty` for the three Redis-protocol kinds).
-  - Any other kind with data on a live app is refused, until 022.
+  - Any other kind with data on a live app is refused, until 023.
   - One move at a time.
   - The window is estimated from the database's size, read over SSH as retarget reads it.
 - **Kafka, Redpanda and OpenSearch elsewhere:** the line says they have no login and only the

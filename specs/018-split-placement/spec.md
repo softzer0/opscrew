@@ -20,7 +20,7 @@ founder moved here on 2026-10-30:
   and status per server.
 
 The founder gave the go-ahead for research, spec, plan, tasks and implementation on 2026-10-30.
-The self-hosted monitoring stack is feature 019 ([roadmap](../roadmap.md)).
+The self-hosted monitoring stack is feature 020 ([roadmap](../roadmap.md)).
 
 ## Why
 
@@ -268,7 +268,7 @@ with the measured delay, and the design's estimate for a placement. No tool retu
   prod.
 - **Other data on the move:** Postgres's data is copied. Valkey, Redis and Dragonfly start empty on
   their new server, and design says that queued jobs would be lost, as `retarget` does today. Any
-  other service that holds data on a live app is refused until retarget anywhere (022) brings its
+  other service that holds data on a live app is refused until retarget anywhere (023) brings its
   copy; on an app that was never deployed, every service can be placed anywhere.
 - **The private network fails** (a provider blocks the UDP port, a key mismatch): `status` shows the
   link down with the time of its last handshake, `verify` and `secure` report it, and the app's
@@ -277,13 +277,13 @@ with the measured delay, and the design's estimate for a placement. No tool retu
   lack the new server; `vpn add <name> --again` writes a new configuration for that device.
 - **The user's own server already runs WireGuard:** OpsCrew adds its own interface and leaves the
   existing one alone; a clashing range or port is handled as above.
-- **Retarget:** an app with services on other servers can't be moved by `retarget` until 022; it
+- **Retarget:** an app with services on other servers can't be moved by `retarget` until 023; it
   refuses plainly, before any change.
 - **Portainer, the user's computer, Cloudflare's hosting and GitHub Pages:** placement and the
   private network apply to servers only (cloud and own). Design refuses a placement on those
   targets and says why.
 - **Add-ons (Beszel, Grafana Alloy):** they stay on the app's server in this version; the other
-  servers' figures come from `status`. Monitoring every server is 019's.
+  servers' figures come from `status`. Monitoring every server is 020's.
 - **Losing this computer's configuration while public SSH is closed:** the user adds this computer
   again from another device on the network, or opens SSH from the provider's console. The guide
   says both.
@@ -324,7 +324,7 @@ with the measured delay, and the design's estimate for a placement. No tool retu
   copy when a step fails before the app starts on the new copy, MUST only go forward once it has
   (writes on the new copy are never discarded), MUST keep deploys from running during the window, and MUST keep the old copy, stopped, until the user removes
   it through an approval that allows destroying and a typed confirmation (constitution I). Valkey, Redis and Dragonfly MUST start empty with a warning. Other services with
-  data on a live app MUST be refused until 022.
+  data on a live app MUST be refused until 023.
 - **FR-1810**: The deploy workflow MUST update the services on every server of the app, before the
   app's switch, and MUST stop the deploy when a server's update fails.
 - **FR-1811**: `status`, `logs`, `drift`, `secure`, `verify`, `destroy` and the scheduled check's
@@ -355,7 +355,7 @@ with the measured delay, and the design's estimate for a placement. No tool retu
   public address between two servers), a placement on a target that isn't a server, and a service
   on a server without a public address. Every refusal MUST say what would work.
 - **FR-1820**: `retarget` MUST refuse an app with services on other servers, before any change,
-  until 022.
+  until 023.
 - **FR-1821**: The MCP server MUST return the servers, links, devices (names and addresses only) and
   grants as read-only data, and design's estimate for a placement. The plugin's skills MUST explain
   placement and devices, and send the user to the CLI to add a device.
@@ -440,7 +440,7 @@ Defaults the lead chose on 2026-10-30. The founder can change any of them.
   - placement on Portainer, the user's computer and server-less targets;
   - a service on a server without a public address;
   - workers and cron on other servers;
-  - add-ons on the extra servers (019 watches every server);
-  - the self-hosted monitoring stack (019);
-  - moving the data of services other than Postgres (022);
-  - retarget for apps with extra servers (022).
+  - add-ons on the extra servers (020 watches every server);
+  - the self-hosted monitoring stack (020);
+  - moving the data of services other than Postgres (023);
+  - retarget for apps with extra servers (023).

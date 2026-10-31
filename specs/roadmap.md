@@ -7,11 +7,33 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 
 Done: 000–017. In progress: [018 split placement and the private network](018-split-placement/).
 
-## 019 Self-hosted monitoring
+## 019 Rollback
+
+`opscrew rollback` puts an app's environment back on a version it ran before (founder,
+2026-10-31). It became a feature of its own, right after 018, when the first outside feedback asked
+how a failed deploy is recovered before pointing OpsCrew at a real app. Today OpsCrew has no
+command that undoes a release which deployed fine but is wrong.
+
+The lead's sketch, to settle in the spec:
+- **What it deploys:** an image the environment ran before, with no build. `promote` already
+  deploys an image that exists, so rollback reuses that path, through the same switch, health
+  check and check from outside as any deploy. It lists the recent versions and defaults to the one
+  before the current.
+- **Data is never rolled back:** migrations stay applied, so the earlier version must work with
+  the newer schema (the guide's rule: add in one release, remove in a later one). OpsCrew says so
+  before it switches.
+- **Every target:** servers OpsCrew creates, the user's own server, Portainer and this computer.
+  Cloudflare Workers and GitHub Pages through their own version history, where they keep one.
+- **After a rollback:** what the next merge does (deploys forward again, or deploys stay paused
+  until the user resumes them) is a spec question.
+- **Research first:** how long earlier images stay in GitHub Container Registry and on the
+  servers, and what each target's own rollback offers.
+
+## 020 Self-hosted monitoring
 
 A private, self-hosted monitoring stack, opt-in (founder, 2026-10-18). Feature 017 left it out
 by oversight, and on 2026-10-30 the founder made it a feature of its own, right after 018, since
-it runs on 018's private network and extra servers.
+it runs on 018's private network and extra servers. On 2026-10-31 rollback went in before it.
 
 - **The stack:** Prometheus, Loki and Grafana, with node-exporter and cAdvisor (or Alloy), plus
   ready-made dashboards for the server, the containers, the app's HTTP traffic, Postgres and Caddy.
@@ -31,13 +53,13 @@ it runs on 018's private network and extra servers.
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (023), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (024), the light checks map to CloudWatch alarms.
 
-## 020 Advise
+## 021 Advise
 
 `opscrew advise` (founder, 2026-10-18: "analyze the current setup and then propose what to change
 and how to scale"). It reads the live deployment (017's resource figures, and their history when
-Beszel, Grafana Cloud or 019's stack is on), `plan.yaml`, the interview's expected traffic and
+Beszel, Grafana Cloud or 020's stack is on), `plan.yaml`, the interview's expected traffic and
 budget, and live provider prices. It proposes concrete changes, each explained, backed by the
 figures and priced:
 - **Size:** resize up or down; a disk that is filling.
@@ -47,7 +69,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (022), or to AWS (023) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (024) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -55,7 +77,7 @@ hash-bound approval). Deterministic first (thresholds on the figures); a model o
 judgment it adds. Placed by the lead after the figures exist and before AWS, so AWS's
 managed-service choices reuse the same advice; the founder can move it.
 
-## 021 Preview environments per pull request
+## 022 Preview environments per pull request
 
 Founder agreed, 2026-10-23. A short-lived environment per pull request: created when it opens,
 updated on each push, destroyed on close or merge, at `pr-<n>.<domain>`.
@@ -70,7 +92,7 @@ updated on each push, destroyed on close or merge, at `pr-<n>.<domain>`.
 Placed after advise (its spend figures and budget checks cap previews) and before retarget and
 AWS, so both support previews from the start. More relevant to teams than to solo users.
 
-## 022 Retarget anywhere
+## 023 Retarget anywhere
 
 `opscrew retarget` from any target to any target: cloud ↔ own server ↔ Portainer (and AWS once it
 exists), with all the app's data. Founder agreed, 2026-10-20 ("moving from every to every provider
@@ -93,7 +115,7 @@ own servers, Portainer, and stateful services other than Postgres and Valkey. Th
 
 Placed before AWS so AWS joins as just another target.
 
-## 023 AWS
+## 024 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps
@@ -141,7 +163,7 @@ with it unchanged; the app's code is never rewritten for a cloud service:
 - A container on EC2 with EBS stays a cheaper choice the user can pick; Fargate is not used for
   databases.
 
-**Observability on AWS (founder, 2026-10-30):** the same layers as 017 and 019, with AWS's own
+**Observability on AWS (founder, 2026-10-30):** the same layers as 017 and 020, with AWS's own
 services, each one explained, priced at design and changeable:
 - **Logs:** CloudWatch Logs (ECS and App Runner send container logs there; EC2 through the
   CloudWatch agent), queried with Logs Insights. `opscrew logs` reads them through AWS's API.

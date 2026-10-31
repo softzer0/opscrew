@@ -35,4 +35,4 @@ Every OpsCrew target ran the app on a server: one OpsCrew creates, the user's ow
 - Three new pins in the user's workflows: Cloudflare's action with Wrangler's version, and GitHub's three Pages actions. Hugo is pinned with its checksum.
 - GitHub Pages sites have no security headers, and GitHub's terms forbid commercial use. Design and `secure` say so.
 - GitHub's domain verification needs one click in the user's settings, which has no API. OpsCrew creates the record and names the page.
-- Out of scope: Cloudflare Pages, Netlify, Vercel, Cloudflare's storage and queue services, API-only back ends on Workers, and per-pull-request previews (feature 020).
+- Out of scope: Cloudflare Pages, Netlify, Vercel, Cloudflare's storage and queue services, API-only back ends on Workers, and per-pull-request previews (a later feature).

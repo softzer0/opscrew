@@ -344,7 +344,7 @@ Effort`.
       - with `deployment.placement` set, a service whose `server` changed becomes `move`
         (`copy: dump` for Postgres, `empty` for Valkey, Redis and Dragonfly, with the warning
         about queued jobs);
-      - any other kind with data on a live app is refused until 022;
+      - any other kind with data on a live app is refused until 023;
       - a second move while one is in `move` is refused;
       - the window is estimated from the database's size, read over SSH as retarget's
         `databaseSize` does.
@@ -451,7 +451,7 @@ Effort`.
       - with `network.publicSsh: false`, public SSH is reopened (the `public-ssh` step) before any
         network is removed, since removing it deletes the SSH rule on its interface;
       - the confirmation lists every server.
-    - **`retarget`:** refuses a plan with `servers` before any change, naming 022.
+    - **`retarget`:** refuses a plan with `servers` before any change, naming 023.
     - **The check:** provision passes every server of the environment (id, address, port, user,
       known host); with public SSH closed, the private addresses for the runner job.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
