@@ -169,14 +169,52 @@ export async function allowRunnerOn(
 }
 
 /**
+ * The stop for a runner GitHub does not delete because it is running a job: `PHASE_PRECONDITION`,
+ * saying how to free it and run `command` again. `after` follows the message (what changed).
+ */
+function runnerBusy(
+  repository: Pick<RunnerRepository, "owner" | "repo">,
+  name: string,
+  command: string,
+  after?: string,
+): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The self-hosted runner ${name} is running a job, and GitHub does not delete a runner while it runs one.${after === undefined ? "" : ` ${after}`}`,
+    {
+      hint: `Wait for the job to finish, or cancel it in GitHub Actions (${repositoryUrl(repository)}/actions), then run \`${command}\` again.`,
+    },
+  );
+}
+
+/**
+ * Stops before any change while one of the environment's runner registrations (its label,
+ * `opscrew-<app>-<env>`) is running a job, which GitHub would refuse to delete later.
+ * @throws OpsCrewError `PHASE_PRECONDITION` naming the busy runner.
+ */
+export async function requireIdleRunners(
+  repository: RunnerRepository,
+  plan: DeployPlan,
+  command: string,
+): Promise<void> {
+  const { api, owner, repo } = repository;
+  const label = runnerLabel(plan);
+  const busy = (await api.listRunners(owner, repo)).find(
+    (runner) => runner.labels.includes(label) && runner.busy === true,
+  );
+  if (busy !== undefined) throw runnerBusy(repository, busy.name, command, "Nothing was changed.");
+}
+
+/**
  * Deletes the environment's runner registrations through GitHub's API (those with its label,
  * `opscrew-<app>-<env>`, and with `name`, only that one); audited. Returns how many it deleted.
+ * A runner that is running a job stops it with how to free it and run `command` again.
  */
 export async function deleteRegistrations(
   deps: Pick<PhaseDeps, "audit">,
   repository: RunnerRepository,
   plan: DeployPlan,
-  run: { phase?: PhaseName; name?: string },
+  run: { phase?: PhaseName; name?: string; command?: string },
 ): Promise<number> {
   const { api, owner, repo } = repository;
   const label = runnerLabel(plan);
@@ -185,7 +223,13 @@ export async function deleteRegistrations(
       runner.labels.includes(label) && (run.name === undefined || runner.name === run.name),
   );
   for (const runner of registered) {
-    await api.deleteRunner(owner, repo, runner.id);
+    await api.deleteRunner(owner, repo, runner.id).catch((error: unknown) => {
+      // GitHub's 422 (or 400): "Runner … is currently running a job and cannot be deleted."
+      if (error instanceof Error && /currently running a job/i.test(error.message)) {
+        throw runnerBusy(repository, runner.name, run.command ?? "the command");
+      }
+      throw error;
+    });
     await deps.audit.append({
       kind: "provider-call",
       actor: "opscrew",

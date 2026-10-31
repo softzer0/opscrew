@@ -79,7 +79,7 @@ describe("runner tokens", () => {
 });
 
 describe("listRunners and deleteRunner", () => {
-  it("lists the repository's runners with their labels", async () => {
+  it("lists the repository's runners with their labels and whether each runs a job", async () => {
     const { fetch, calls } = fakeFetch({
       [`GET ${RUNNERS}`]: {
         body: {
@@ -90,7 +90,7 @@ describe("listRunners and deleteRunner", () => {
               name: "web-1-shop-staging",
               os: "Linux",
               status: "online",
-              busy: false,
+              busy: true,
               labels: [
                 { id: 1, name: "self-hosted", type: "read-only" },
                 { id: 9, name: "opscrew-shop-staging", type: "custom" },
@@ -101,7 +101,6 @@ describe("listRunners and deleteRunner", () => {
               name: "laptop-shop-dev",
               os: "Windows",
               status: "offline",
-              busy: false,
               labels: [],
               version: "2.338.0",
             },
@@ -115,8 +114,17 @@ describe("listRunners and deleteRunner", () => {
         name: "web-1-shop-staging",
         status: "online",
         labels: ["self-hosted", "opscrew-shop-staging"],
+        busy: true,
       },
-      { id: 24, name: "laptop-shop-dev", status: "offline", labels: [], version: "2.338.0" },
+      // GitHub omits busy: idle.
+      {
+        id: 24,
+        name: "laptop-shop-dev",
+        status: "offline",
+        labels: [],
+        version: "2.338.0",
+        busy: false,
+      },
     ]);
     expect(new URL(calls[0]?.url ?? "").searchParams.get("per_page")).toBe("100");
   });

@@ -11,6 +11,7 @@ import {
   deleteRegistrations,
   planWhere,
   removeMachineRunners,
+  requireIdleRunners,
   runnerRepository,
   serverRunnerName,
 } from "../runners";
@@ -526,11 +527,14 @@ export async function runDestroy(
   await checkCloudflare(deps, plan, services);
   const github = await resolveGitHub(deps, services);
   // The server's runner: its registration is deleted through GitHub's API before the server, so
-  // a missing token stops here, before anything is deleted.
+  // a missing token, or a runner GitHub would not delete because it runs a job, stops here, before
+  // anything changes.
+  const command = `opscrew destroy${(await planWhere(deps.paths.root, plan)).flag}`;
   const runnerRepo =
     plan.environment?.runner === "server"
       ? await runnerRepository(deps, services.runnerGitHub)
       : undefined;
+  if (runnerRepo !== undefined) await requireIdleRunners(runnerRepo, plan, command);
 
   // 3. Engine, state encryption, init
   const setup = await setupEngine(deps, plan, options);
@@ -577,6 +581,7 @@ export async function runDestroy(
       const deleted = await deleteRegistrations(deps, runnerRepo, plan, {
         phase: "provision",
         name: serverRunnerName(plan, address.ipv4),
+        command,
       });
       if (deleted > 0) {
         deps.reporter.info(
@@ -669,7 +674,7 @@ export async function runDestroy(
     plan,
     services,
     phase: "provision",
-    command: `opscrew destroy${(await planWhere(deps.paths.root, plan)).flag}`,
+    command,
   }).catch(async (error: unknown) => {
     if (bucket !== undefined) await discardBucketDeletion(bucket);
     throw error;

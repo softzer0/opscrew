@@ -376,7 +376,9 @@ describe.skipIf(!findExecutable("git"))("the server's runner on a server OpsCrew
    * (7) and another server's of the environment (9), and the destroy's services, whose engine,
    * servers, secrets and runner deletions all go to `events`.
    */
-  async function destroyable(o: { answer?: (r: ApprovalRequest) => boolean } = {}) {
+  async function destroyable(
+    o: { answer?: (r: ApprovalRequest) => boolean; busyAtDeletion?: boolean } = {},
+  ) {
     const s = await cloudProject(o);
     await provision(s);
     await writeFakeState(s.deps.paths);
@@ -385,6 +387,13 @@ describe.skipIf(!findExecutable("git"))("the server's runner on a server OpsCrew
     const runnerGitHub = new (class extends FakeRunnerGitHub {
       override async deleteRunner(owner: string, repo: string, id: number) {
         events.push(`runner:delete ${id}`);
+        if (o.busyAtDeletion === true) {
+          // GitHub's 422, as the connector reports it.
+          throw new OpsCrewError(
+            "PROVIDER_ERROR",
+            `GitHub could not remove the self-hosted runner ${id}: Bad request - Runner ${NAME} is currently running a job and cannot be deleted..`,
+          );
+        }
         return super.deleteRunner(owner, repo, id);
       }
     })();
@@ -412,6 +421,38 @@ describe.skipIf(!findExecutable("git"))("the server's runner on a server OpsCrew
     expect(deps.audit.entries.map((e) => e.action)).toContain(
       `delete the self-hosted runner ${NAME}`,
     );
+  });
+
+  it("refuses before any change while the server's runner runs a job", async () => {
+    const s = await destroyable();
+    s.runnerGitHub.runners = [
+      { ...listedRunner(7, NAME, "opscrew-shop-prod"), busy: true },
+      s.other,
+    ];
+    const error = await s.destroy().catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect((error as OpsCrewError).message).toBe(
+      `The self-hosted runner ${NAME} is running a job, and GitHub does not delete a runner while it runs one. Nothing was changed.`,
+    );
+    expect((error as OpsCrewError).hint).toBe(
+      "Wait for the job to finish, or cancel it in GitHub Actions (https://github.com/acme/shop/actions), then run `opscrew destroy` again.",
+    );
+    // No snapshot, no protection lift, no plan applied, no registration deleted.
+    expect(s.events).toEqual([]);
+    expect(s.runnerGitHub.runners.map((r) => r.id)).toEqual([7, 9]);
+  });
+
+  it("gives the same hint when the runner starts a job before its deletion", async () => {
+    const s = await destroyable({ busyAtDeletion: true });
+    const error = await s.destroy().catch((e: unknown) => e);
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect((error as OpsCrewError).message).toBe(
+      `The self-hosted runner ${NAME} is running a job, and GitHub does not delete a runner while it runs one.`,
+    );
+    expect((error as OpsCrewError).hint).toBe(
+      "Wait for the job to finish, or cancel it in GitHub Actions (https://github.com/acme/shop/actions), then run `opscrew destroy` again.",
+    );
+    expect(s.events).not.toContain("apply:destroy");
   });
 
   it("deletes no registration when the destroy is not approved", async () => {

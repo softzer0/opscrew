@@ -108,6 +108,8 @@ export interface RunnerInfo {
   status: "online" | "offline";
   labels: string[];
   version?: string;
+  /** Whether it is running a job now (GitHub refuses to delete it then); false when unsaid. */
+  busy?: boolean;
 }
 
 const FORK_PR_APPROVAL_POLICIES = [
@@ -304,6 +306,7 @@ const RunnersSchema = z.looseObject({
       status: z.enum(["online", "offline"]),
       labels: z.array(z.looseObject({ name: z.string() })),
       version: z.string().optional(),
+      busy: z.boolean().optional(),
     }),
   ),
 });
@@ -1382,6 +1385,7 @@ export class GitHubClient {
       status: runner.status,
       labels: runner.labels.map((label) => label.name),
       ...(runner.version === undefined ? {} : { version: runner.version }),
+      busy: runner.busy ?? false,
     }));
   }
 

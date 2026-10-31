@@ -351,6 +351,29 @@ describe.skipIf(!findExecutable("git"))("the server's runner in provision and de
     expect(await everywhere(s)).not.toContain(s.runnerHost.tokens.at(-1) as string);
   });
 
+  it("destroy refuses before any change while the server's runner runs a job", async () => {
+    const s = await runnerProject();
+    await provision(s);
+    const applies = s.runnerHost.applies.length;
+    s.runnerGitHub.runners = [{ ...listedRunner(7, PROD_NAME, "opscrew-shop-prod"), busy: true }];
+    const error = await expectError(
+      runDestroy(s.deps, {
+        services: {
+          engine: s.services.engine,
+          github: s.github,
+          cloudflare: { verifyToken: async () => ({ ok: true, message: "ok" }) },
+          ...(s.services.own !== undefined ? { own: s.services.own } : {}),
+          runnerGitHub: s.runnerGitHub,
+        },
+      }),
+      "PHASE_PRECONDITION",
+    );
+    expect(error.message).toContain(`The self-hosted runner ${PROD_NAME} is running a job`);
+    expect(error.hint).toContain("https://github.com/acme/shop/actions");
+    expect(s.runnerHost.applies).toHaveLength(applies);
+    expect(s.runnerGitHub.calls).not.toContain("remove-token acme/shop");
+  });
+
   it("destroy unregisters and removes the runner, deleting a kept registration through the API", async () => {
     const s = await runnerProject();
     await provision(s);

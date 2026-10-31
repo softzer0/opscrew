@@ -20,6 +20,7 @@ export {
   type RunnerGitHubApi,
   type RunnerRepository,
   repositoryUrl,
+  requireIdleRunners,
   runnerRepository,
   SAFE_FORK_PR_POLICY,
 } from "./github";

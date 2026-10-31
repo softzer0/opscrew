@@ -33,6 +33,7 @@ import {
   type RunnerRepository,
   removeKeptRegistrations,
   removeMachineRunners,
+  requireIdleRunners,
   runnerTokens,
 } from "../runners";
 import {
@@ -507,6 +508,19 @@ export async function destroyOwnServer(
   for (const cloud of clouds) await checkProvider(deps, cloud, services);
   if (cloudflare) await checkCloudflare(deps, plan, services);
   const github: GitHubTarget = removeApp ? await resolveGitHub(deps, services) : {};
+  // The host plans never touch a runner another repository registered on the server. Without a
+  // GitHub remote named origin the repository is unknown: they leave every runner, and say so.
+  const repository = await project(deps);
+  const runnerRepo = lazyRepository(deps, services.runnerGitHub);
+  // The server's runner, which GitHub does not delete while it runs a job: checked before anything
+  // changes.
+  if (
+    removeApp &&
+    plan.environment?.runner === "server" &&
+    repository.repositoryUrl !== undefined
+  ) {
+    await requireIdleRunners(await runnerRepo(), plan, command);
+  }
 
   // 2b. With public SSH closed, it opens again first on the user's servers (each with a host plan
   // of its own, reached over the private network): their networks go with the teardown, and with
@@ -533,13 +547,10 @@ export async function destroyOwnServer(
         deployKeyFile: deps.paths.files.deployKey,
         ...(own.homeDir !== undefined ? { homeDir: own.homeDir } : {}),
       }),
-    repository: lazyRepository(deps, services.runnerGitHub),
+    repository: runnerRepo,
   };
   const facts = inspected.facts;
   requireOwnApp(plan, deps.paths.projectId, facts);
-  // The host plans never touch a runner another repository registered on the server. Without a
-  // GitHub remote named origin the repository is unknown: they leave every runner, and say so.
-  const repository = await project(deps);
   // What a host plan leaves on the server, and why (a step that keeps it), said once each.
   const noted = new Set<string>();
   const noteKept = (hostPlan: HostPlan | undefined) => {
