@@ -722,6 +722,42 @@ describe("promote", () => {
       expect(world.github.dispatches).toEqual([]);
     });
 
+    it("a target deployed from another branch, naming that branch", async () => {
+      const world = await promoteWorld({
+        staging: (plan) =>
+          DeployPlanSchema.parse({ ...plan, cicd: { ...plan.cicd, branch: "develop" } }),
+      });
+      const error = await failure(
+        promote(world.deps, { target: "staging", services: world.services }),
+      );
+      expect(error.message).toContain(
+        "The staging environment is deployed from develop on each push, not by promotion",
+      );
+    });
+
+    it("--version on a promoted server environment, pointing to --digest", async () => {
+      const world = await promoteWorld();
+      const error = await failure(
+        promote(world.deps, { target: "prod", version: "800", services: world.services }),
+      );
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.hint).toBe(
+        "To roll prod back to its previous image, run `opscrew promote --to prod --digest <digest>` with that image's digest (labelled opscrew-prod-previous).",
+      );
+    });
+
+    it("--version on a server environment that follows a branch, without --digest", async () => {
+      const world = await promoteWorld();
+      const error = await failure(
+        promote(world.deps, { target: "staging", version: "800", services: world.services }),
+      );
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.hint).toBe(
+        "staging deploys each push to main, so to go back to an earlier version, revert the change on main, or re-run that version's deploy run in GitHub Actions: it builds that commit again.",
+      );
+      expect(error.hint).not.toContain("--digest");
+    });
+
     it("an unknown environment, with the list", async () => {
       const world = await promoteWorld();
       const error = await failure(promote(world.deps, { target: "qa", services: world.services }));

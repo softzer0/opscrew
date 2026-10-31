@@ -190,7 +190,7 @@ const rebootRequired: HostCheck = {
           this,
           "warn",
           "Security updates were installed that need a reboot.",
-          "Reboot the server during a quiet moment (`sudo reboot`, or from your cloud provider's console); the app containers start again automatically.",
+          "Reboot the server during a quiet moment: from your cloud provider's console for a server OpsCrew created, or with `sudo reboot` from your own login on a server you already had. The app's containers start again on their own.",
         )
       : check(this, "pass", "No reboot is pending.");
   },

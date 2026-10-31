@@ -16,7 +16,7 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { environmentPaths, sharedPartsDiffer } from "../environments";
-import { builderBranch } from "../environments/branches";
+import { builderBranch, followsBranch } from "../environments/branches";
 import { ghcrReadCredential } from "../localhost/image";
 import { secretsEnvironment } from "../provision/secrets";
 import { hasDeployment, PlanRefusedError } from "../shared";
@@ -273,7 +273,9 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
       "INVALID_INPUT",
       `--version names a version of a site on Cloudflare's hosting or GitHub Pages, and the ${target} environment runs on a server, which deploys images. ${NOTHING}`,
       {
-        hint: `To roll ${target} back to its previous image, run \`${command} --digest <digest>\` with that image's digest (labelled opscrew-${target}-previous).`,
+        hint: followsBranch(plan)
+          ? `${target} deploys each push to ${plan.cicd.branch}, so to go back to an earlier version, revert the change on ${plan.cicd.branch}, or re-run that version's deploy run in GitHub Actions: it builds that commit again.`
+          : `To roll ${target} back to its previous image, run \`${command} --digest <digest>\` with that image's digest (labelled opscrew-${target}-previous).`,
       },
     );
   }
@@ -286,7 +288,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   if (deploySource?.from !== "promote") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The ${target} environment is deployed from main on each push, not by promotion, so there is nothing to promote to it. ${NOTHING}`,
+      `The ${target} environment is deployed from ${plan.cicd.branch} on each push, not by promotion, so there is nothing to promote to it. ${NOTHING}`,
       {
         hint: `To deploy ${target} only with releases another environment ran, run \`opscrew env set ${target} --from <environment>\`, then \`opscrew provision --env ${target}\`.`,
       },

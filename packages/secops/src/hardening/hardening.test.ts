@@ -118,7 +118,12 @@ describe("runHostChecks", () => {
     const reboot = await runHostChecks(
       remote({ "test -f /var/run/reboot-required && echo yes || echo no": ok("yes\n") }),
     );
-    expect(reboot.find((r) => r.id === "reboot-required")?.status).toBe("warn");
+    const pending = reboot.find((r) => r.id === "reboot-required");
+    expect(pending?.status).toBe("warn");
+    // The deploy user that runs the checks has no sudo on servers OpsCrew creates.
+    expect(pending?.remediation).toBe(
+      "Reboot the server during a quiet moment: from your cloud provider's console for a server OpsCrew created, or with `sudo reboot` from your own login on a server you already had. The app's containers start again on their own.",
+    );
   });
 
   it("keeps going when a command cannot run", async () => {
