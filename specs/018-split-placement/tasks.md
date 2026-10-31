@@ -599,7 +599,8 @@ Effort`.
         server can be asked for in a terminal;
       - `opscrew vpn add|remove|list|grant|revoke`;
       - `secure --close-public-ssh|--open-public-ssh`;
-      - `provision --finish-move`;
+      - `provision --finish-move` wired to `runProvision(deps, { finishMove: true })`, with its typed
+        service name; a move's window approved in scripts (`isMaintenanceWindowRequest`);
       - `destroy` asks and checks each extra cloud server's typed name (`<app>-<server>`), and
         `--confirm` takes several values, one per server, each checked;
       - each with `--app`, `--env` and `--approve` as the other commands, and help text;
