@@ -828,7 +828,7 @@ Effort`.
   - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: medium
 
-- [ ] T1832 [US4] With public SSH closed, provision waits for and pins each server through the private network, in `packages/agents/src/{provision,shared}/**` (+ tests)
+- [X] T1832 [US4] With public SSH closed, provision waits for and pins each server through the private network, in `packages/agents/src/{provision,shared}/**` (+ tests)
   - Owns: those paths
   - Reads: T1826 and T1827's blocks; `readyNewServer` (shared/wait.ts) and its callers (`provision/run.ts` step 7, `readyExtraServers` in provision/servers.ts); `privateReach`, `remoteAt`, `throughTunnel` and `pinPrivateName` (shared/server-address.ts)
   - Found by: T1821's sixth live run, step 7.
