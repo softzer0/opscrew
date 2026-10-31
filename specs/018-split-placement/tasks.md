@@ -660,7 +660,7 @@ Effort`.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter opscrew exec vitest run test/e2e/network.test.ts`
   - Effort: high
 
-- [ ] T1824 [P] [US1] No web on an extra own server: the setup host plan for a server that only runs services, in `packages/connectors/ssh-host/**` and the one call in `packages/agents/src/provision/own.ts`
+- [X] T1824 [P] [US1] No web on an extra own server: the setup host plan for a server that only runs services, in `packages/connectors/ssh-host/**` and the one call in `packages/agents/src/provision/own.ts`
   - Owns: those paths (+ tests); in `provision/own.ts` only `desiredExtraHost`'s call that passes it
   - Reads: plan.md "3.", "9."; ssh-host's `planHost` and its ufw and port-conflict steps
   - Depends: T1810
