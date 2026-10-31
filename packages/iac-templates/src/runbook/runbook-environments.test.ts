@@ -57,6 +57,8 @@ describe("renderRunbook per environment", () => {
     for (const command of acting) expect(command).toContain("--env staging");
     // The SSH commands' address lookups too.
     expect(file.content).toContain("deploy@$(opscrew status --ip --env staging)");
+    // The rollback by hand pauses this environment's deploys only.
+    expect(file.content).toContain('`{"shop/staging":{"reason":"rollback",');
   });
 
   it("says which environment it is and where its deploy secrets live", () => {
@@ -117,9 +119,16 @@ describe("renderRunbook per environment", () => {
     expect(content).toContain("`--yes` never approves a promotion.");
     expect(content).toContain("checks the image's build again. Nothing is rebuilt.");
     expect(content).toContain(
-      "- **The previous image:** `opscrew promote --to prod --digest <digest>`, with the digest of the image tagged",
+      "- **The version before:** `opscrew rollback` deploys the image that ran before, by its digest",
     );
-    expect(content).toContain("`opscrew-prod-previous` in GitHub Container Registry.");
+    expect(content).toContain(
+      "- **Then its deploys pause:** `opscrew promote --to prod` refuses until `opscrew rollback --resume`.",
+    );
+    expect(content).toContain("choose **Run workflow** on the default branch");
+    expect(content).toContain(
+      "- **A fix:** push it to `main`, let the `staging` environment deploy it, then promote it.",
+    );
+    expect(content).not.toContain("--digest");
     expect(content).not.toContain("builds the Docker image");
     expect(content).not.toContain("Re-run all jobs");
     // Prod's own commands and files stay prod's.

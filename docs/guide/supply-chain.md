@@ -26,6 +26,13 @@ example `<commit>-staging`), so two environments that build the same commit each
 image. The deploy run's summary shows the image's tag and its digest; you can use the digest
 instead of the tag (`ghcr.io/<owner>/<repo>@sha256:…`).
 
+OpsCrew reads the provenance before it deploys an image it didn't just build:
+[a promotion](environments.md#promotion) and [a rollback](rollback.md). Both deploy an image only
+when this repository's deploy workflow built it, from a push to the branch that builds the
+environment's images or from a run started by hand there (such as
+`opscrew rollback --resume --deploy`), at the commit the image is tagged with. The deploy
+workflow's verify job checks it again on GitHub's machines before its deploy job runs.
+
 The provenance never holds a secret value or GitHub's event data, such as commit messages or email
 addresses. Build values that are not secret can appear in it (see
 [Values the build needs](builders.md#values-the-build-needs)).
@@ -125,7 +132,9 @@ Each healthy deploy also labels the image its [environment](environments.md) now
 `opscrew-<env>` (`opscrew-prod` for prod) and the one before it `opscrew-<env>-previous`.
 These tags only label the images; deploys always name the digest. Cleanup never deletes an image
 with such a label, so every environment keeps what it runs and what it ran before, which
-[promotion and rollback](environments.md#promotion) use. Cleanup finds the app's environments by
+[promotion](environments.md#promotion) and [rollback](rollback.md) use. After a rollback,
+`opscrew-<env>` names the version rolled back to and `opscrew-<env>-previous` the one rolled back
+from. A rollback deletes no image, since nothing is built. Cleanup finds the app's environments by
 their deploy workflows in the repository: once an environment is removed and its workflow is gone,
 its labels keep nothing, and neither does any other `opscrew-` tag that names no environment.
 

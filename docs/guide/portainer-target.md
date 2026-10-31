@@ -197,7 +197,13 @@ Behind your own reverse proxy, GitHub Actions can check the site only when it ca
 internet. When the app has no domain, or its domain answers only on your own network, the run skips
 the health check and the rollback: it records the new image and finishes. Check such a site
 yourself after a merge, for example with `npx opscrew verify --url <address>`. When a new version
-fails, revert the change: merging the revert deploys the previous version.
+fails, roll back.
+
+To go back to an earlier version, run `npx opscrew rollback`. The deploy workflow writes the stack
+with the earlier image to the `opscrew-deploy` branch, in a commit "Roll back to <image>", and
+Portainer redeploys it. The stack's `release` service skips the release command for it, so the
+database stays as it is. Afterwards the app's deploys pause until `npx opscrew rollback --resume`.
+See [Rolling back a release](rollback.md).
 
 - **`updater`** (recommended): the updater stack asks Portainer once a minute, over your local
   network and with Portainer's certificate pinned, to redeploy when the branch changed. Nothing is

@@ -29,6 +29,7 @@ back they go.
 | `--service <name>` | Another part of the app: a worker, a cron job or a service by its name in `opscrew/plan.yaml` (such as `db`), `cron` for the cron jobs, or `edge` for the reverse proxy in front of the app. Without it, the web process (`app`) |
 | `--since <duration>` | Only the lines of the last `30s`, `15m`, `2h` or `3d` |
 | `--tail <lines>` | How many of the latest lines (200 without it); on Cloudflare's hosting, requests |
+| `--failed` | The lines OpsCrew kept of the last copy that failed its checks in a deploy (see [below](#a-failed-deploys-lines)); not with `--follow` or `--since` |
 | `--app <key>`, `--env <name>` | Another [app](several-apps.md) or [environment](environments.md), as every command takes them |
 
 A name `--service` doesn't know is refused, and the refusal lists the names the app has.
@@ -38,6 +39,27 @@ A name `--service` doesn't know is refused, and the refusal lists the names the 
 - **The edge** on a server is the reverse proxy every OpsCrew app on that server shares, so its lines
   are of all of them. In [a Portainer](portainer-target.md), `edge` exists only when the stack's web
   mode is `caddy`: it is then the Caddy in the app's own stack.
+
+### A failed deploy's lines
+
+When a new version fails its health check, a worker or cron job doesn't stay up after the switch,
+or the check from outside fails, OpsCrew removes that copy and the previous version keeps serving.
+Before it removes the copy, it keeps its last 500 lines on the server, in `.failed-deploy/` in the
+app's folder, readable by the deploy user only:
+
+```bash
+npx opscrew logs --failed                    # the part that failed
+npx opscrew logs --failed --service worker   # a worker's kept lines
+```
+
+The first line says which copy it was, what it failed and when, for example "Lines of the copy of
+sha256:ab12cd34ef56 that failed its health check at 2026-10-31 10:04 UTC; OpsCrew removed it."
+The lines are masked as every line is. OpsCrew keeps only the last failed deploy's lines, and a
+successful deploy leaves them, so check the time. When none are kept, `logs --failed` says so.
+
+[A Portainer](portainer-target.md), [Cloudflare's hosting](cloudflare-hosting.md) and
+[GitHub Pages](github-pages.md) keep none: OpsCrew has no shell in a Portainer, and a site's
+deploy starts no copy that could fail a health check.
 
 ### Where the lines come from
 
@@ -157,6 +179,29 @@ On Cloudflare:
 - **Requests for the site's static files** run no code and aren't counted.
 - **The figures** lag about a minute.
 
+### Deploys: what runs, and whether deploys are paused
+
+`status` also shows the version that runs, the one before it, and whether the environment's
+automatic deploys are on:
+
+```text
+Deploys (read from the server and GitHub now):
+  Running: 9e8d7c6 "Add invoices page" (sha256:12ab34cd56ef), since 2026-10-31 10:04 UTC
+  Before it: 3f2a1c9 "Fix checkout total" (sha256:ab12cd34ef56)
+  Deploys: on (each push to main deploys)
+```
+
+On a server and on your computer it reads the app's `.env` and `.env.previous`, which the switch
+writes; in a Portainer, the images labelled `opscrew-<env>` and `opscrew-<env>-previous` in GitHub
+Container Registry. The commit, its message and the build time come from the image's provenance;
+when OpsCrew can't read them from GitHub, it shows the short digest and says why. A site shows its
+versions in its own section.
+
+After [a rollback](rollback.md) the last line says since when the deploys are paused, which version
+`opscrew rollback` pinned, and how to resume. While the rollback's run hasn't finished, it also says
+that the environment runs another image than the pinned one. When GitHub can't be read, `status`
+shows the last rollback this computer recorded instead.
+
 ### The scheduled check
 
 When the [scheduled check](alerts.md) is on, `status` also reads its state from GitHub:
@@ -180,4 +225,6 @@ When the [scheduled check](alerts.md) is on, `status` also reads its state from 
 The [OpsCrew plugin](claude-code-plugin.md) reads the same logs and figures through read-only tools
 when you ask "why is my app failing?" or "how much memory does it use?". It returns at most 500
 lines, masked as in the terminal, and never follows. For more lines or `--follow`, run
-`npx opscrew logs` in your terminal.
+`npx opscrew logs` in your terminal. It can also read a failed deploy's kept lines, and shows the
+version running, the one before it and whether deploys are paused; a rollback itself stays in your
+terminal, since it asks for your approval.

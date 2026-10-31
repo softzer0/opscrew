@@ -4,6 +4,11 @@ Each deploy workflow OpsCrew writes runs on a push to the branch its environment
 when the push changes a path the run reads. A push that changes only your README, another app's
 folder or OpsCrew's reports deploys nothing.
 
+A push doesn't deploy either while the environment's deploys are paused: after
+[a rollback](rollback.md#deploys-pause-after-a-rollback), until `npx opscrew rollback --resume`,
+and while a service [moves between your servers](split-placement.md). The run still builds the
+image, skips its deploy job, and says why in its summary.
+
 ## The paths a deploy reads
 
 A push deploys the app when it changes any of these:

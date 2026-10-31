@@ -141,15 +141,25 @@ The versions before stay at Cloudflare, so a rollback needs no build.
 ## Rolling back
 
 ```bash
-npx opscrew status                                  # the version running, the one before, and the rollback command
-npx opscrew promote --to prod --version <id>        # activates that version again
+npx opscrew status                    # the version running, the one before, and the rollback command
+npx opscrew rollback                  # activates the version before the running one
+npx opscrew rollback --to <id>        # or another version, by its id
 ```
 
 `status` reads the Worker's deployments from Cloudflare each time: the version running and the one
 before, when each was deployed, the run that built each, and the custom domains' state.
-`promote --version` shows the version with the approval's hash and activates it only after your
-approval. Cloudflare then serves it for all traffic within a minute, with no build. In scripts, add
-`--approve <hash>`; `--yes` never approves a rollback.
+`opscrew rollback` says first that Cloudflare serves that Worker version and that nothing is
+rebuilt, shows the version with the approval's hash, and activates it only after your approval.
+Cloudflare then serves it for all traffic within a minute. In scripts, add `--approve <hash>`;
+`--yes` never approves a rollback.
+
+Without `--to`, it goes to the newest version uploaded before the one running, so a second
+rollback goes further back. `npx opscrew rollback --list` shows the Worker's versions. It refuses
+while a deploy run is queued or running, and when the site's workflow on its branch is not the one
+its plan generates (run `npx opscrew provision` and merge its pull request).
+
+Afterwards the site's deploys pause, so the next push builds but does not deploy, until
+`npx opscrew rollback --resume`. See [Rolling back a release](rollback.md).
 
 ### After a secret changed
 
@@ -161,7 +171,7 @@ don't go back to that version: deploy a new one, which gets the current values.
 If the old values are still safe, roll back with the secrets the refusal named:
 
 ```bash
-npx opscrew promote --to prod --version <id> --allow-old-secrets STRIPE_SECRET_KEY
+npx opscrew rollback --to <id> --allow-old-secrets STRIPE_SECRET_KEY
 ```
 
 The approval then names those secrets and says the version runs with their old values, and its

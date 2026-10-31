@@ -328,10 +328,11 @@ npx opscrew promote --to prod
 
 1. OpsCrew finds the image staging runs, by its digest.
 2. It checks the image's [build provenance](supply-chain.md#what-is-in-an-image-and-where-it-came-from):
-   the image must come from a push to the branch the environment that built it follows, built by
-   this repository's own workflow run, at the commit the image is tagged with (`<commit>`, or
-   `<commit>-<env>` for the environment that built it). In a chain dev → staging → prod, dev built
-   the image, so it must come from a push to dev's branch. A pull request from a fork never passes.
+   the image must come from a push to the branch the environment that built it follows, or from a
+   run started by hand there, built by this repository's own workflow run, at the commit the image
+   is tagged with (`<commit>`, or `<commit>-<env>` for the environment that built it). In a chain
+   dev → staging → prod, dev built the image, so it must come from dev's branch. A pull request
+   from a fork never passes.
    It also refuses an image built for another CPU than prod's, for example one a dev on Apple
    silicon built, promoted to an x86 server.
 3. It checks that prod is ready for staging's image: every service of staging's plan, with the same
@@ -381,24 +382,23 @@ one verifies.
 
 ### Rolling back
 
-Promote the previous image. Its digest is the one labelled `opscrew-prod-previous`:
+Every environment, promoted or following a branch, rolls back with the same command:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/<owner>/<repo>:opscrew-prod-previous   # shows its digest
-npx opscrew promote --to prod --digest sha256:<that digest>
+npx opscrew rollback --env prod
 ```
 
-A rollback runs the same checks and asks for the same approval. Instead of comparing prod with
-staging's plan, it checks that prod's plan still has every service the previous image ran with,
-which OpsCrew records on this computer at each promotion. When one is gone, it stops before asking:
-promote a fixed image forward instead. Without that record, for example on another computer, the
-approval says OpsCrew could not check the previous image, and a component removed since that image
-ran is not brought back. `promote` accepts only the image
-the source environment runs or the target's previous one, and it names both digests when you give
-it another.
+It deploys the image the environment ran before, by its digest, with no build and no release
+command, after your approval, then pauses the environment's deploys until
+`npx opscrew rollback --env prod --resume`. See [Rolling back a release](rollback.md).
 
-An environment that follows a branch rolls back this way: re-run its last good deploy run, or
-revert the commit and push.
+For a promoted environment, the rollback starts its deploy workflow on the default branch, as a
+promotion does. Instead of comparing prod with staging's plan, it checks that prod's plan still has
+every service the earlier image ran with, which OpsCrew records on this computer at each promotion
+and rollback. When one is gone, it stops before asking: promote a fixed image forward instead.
+Without that record, for example on another computer, the approval says OpsCrew could not check
+the earlier image, and a component removed since that image ran is not brought back. While prod's
+deploys are paused, `promote --to prod` refuses: run `opscrew rollback --env prod --resume` first.
 
 Image cleanup never deletes an image that an environment runs or ran just before (see
 [Old images are cleaned up](supply-chain.md#old-images-are-cleaned-up)).

@@ -66,9 +66,9 @@ The image builds, but the new version crashes on start, or `/api/health` answers
 
 ```text
 The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds,
-so OpsCrew removed it. It received no traffic: the previous version keeps serving. Check that the
-app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers
-/api/health. It was built with …
+so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines
+are kept on the server: `opscrew logs --failed`. Check that the app listens on port 3000 (app.port
+in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built with …
 ```
 
 The message ends with the builder that made the image (see
@@ -80,10 +80,18 @@ version it had."
 and never received a request, and the running one never stopped. The release command had already
 run, so its migrations stay applied, and the previous version runs against the new schema.
 
-**Finding out why.** OpsCrew removes the failed copy's container, and its log lines go with it, so
-`npx opscrew logs` shows the version that still runs. Check the two things the message names: that
-the app listens on the port in its `PORT` variable, and that it answers `/api/health`. To watch the
-new version start, run it where you can see it, for example in
+**Finding out why.** Before it removes the failed copy, OpsCrew keeps its last 500 log lines on the
+server. Read them with:
+
+```bash
+npx opscrew logs --failed
+```
+
+The first line names the copy's image, what it failed and when (see
+[A failed deploy's lines](logs-and-status.md#a-failed-deploys-lines)); `npx opscrew logs` shows the
+version that still runs. Check the two things the message names: that the app listens on the port
+in its `PORT` variable, and that it answers `/api/health`. To watch the new version start, run it
+where you can see it, for example in
 [your app's production stack on your own computer](localhost.md).
 Fix the cause and push again.
 
@@ -105,13 +113,17 @@ meets duplicate rows.
 The release command (app.releaseCommand in opscrew/plan.yaml) failed, so the new version was not
 started and the previous version keeps serving. Its output stays on the server in
 /srv/apps/shop/release.log (it can quote data from the database, so it is not printed here;
-opscrew/RUNBOOK.md has the SSH command): fix the command or the app and push again.
+opscrew/RUNBOOK.md has the SSH command). A migration that stopped partway may have applied some of
+its changes, and the previous version now runs with them: read release.log to see how far it got,
+then fix the migration and push again to deploy forward, or restore a backup taken before this
+deploy.
 ```
 
 **The state of the app.** Visitors are served by the previous version all along: the release
 command runs in a one-off container of the new image, before the switch. OpsCrew doesn't undo
-anything the release command did: if the migration stopped half-way, what it already changed stays
-changed, unless your migration tool or database rolled it back.
+anything the release command did: if the migration stopped halfway, what it already changed stays
+changed, unless your migration tool or database rolled it back. The previous version runs against
+the database as the migration left it.
 
 **Finding out why.** The output isn't in the run's log, which is public in a public repository.
 Log in with the SSH command in `opscrew/RUNBOOK.md` and read it:
@@ -120,15 +132,25 @@ Log in with the SSH command in `opscrew/RUNBOOK.md` and read it:
 cat /srv/apps/shop/release.log
 ```
 
-**Recovering.** Fix the migration, or the data it tripped over, and push again. Each deploy runs
-the release command again.
+**Recovering.** `release.log` shows how far the migration got. Then either:
+
+- **Deploy forward:** fix the migration, or the data it tripped over, and push again. Each deploy
+  runs the release command again, so a migration that stopped halfway must cope with the changes it
+  already made, or you undo them by hand first.
+- **Restore a backup** taken before this deploy, when the half-applied changes can't stay (see
+  [Backups and snapshots](#backups-and-snapshots)).
+
+`opscrew rollback` doesn't help here: the previous version already runs, and a rollback never
+changes the database.
 
 ## Migrations and the previous version
 
 Every migration runs while the previous version still serves, and stays applied when a later step
 fails and OpsCrew switches back. So the previous version must work with the new schema: add
 columns and tables in one release, and remove the old ones in a later release, after nothing uses
-them (see [Deploys without downtime](zero-downtime.md#limits)).
+them (see [Deploys without downtime](zero-downtime.md#limits)). The same rule keeps
+[a rollback](rollback.md#the-database-stays-as-it-is) working: the earlier version runs against
+today's schema, since a rollback runs no migration.
 
 ## A worker or cron job doesn't stay up
 
@@ -138,16 +160,18 @@ keep running for 30 seconds. When one doesn't, the step fails with:
 ```text
 The worker container did not keep running for 30 seconds after it started with the new version,
 so the deploy failed and OpsCrew puts the web and the workers back on the previous version, if
-there is one. …
+there is one. Read its last lines, from before OpsCrew put the previous version back, with
+`opscrew logs --failed --service worker`, then fix its command (processes in opscrew/plan.yaml) or
+the app, and push again.
 ```
 
 The rollback step then reports "The deploy failed; OpsCrew restored the previous version." For
 those 30 seconds and the switch back, visitors were served by the new version. Its migrations stay
 applied, and the previous version runs against the new schema.
 
-The message points to `docker compose logs <name>` on the server. For a worker that ran before,
-the switch back replaces its container, and the failed version's lines go with it. Fix its command
-(`processes` in `opscrew/plan.yaml`) or the app, and push again.
+The switch back replaces the worker's container, so `npx opscrew logs --service worker` shows the
+previous version's lines. The command in the message shows the failed one's, which OpsCrew kept
+before it removed it.
 
 ## The last check, through your domain, fails
 
@@ -165,7 +189,9 @@ version's migrations stay applied, and the previous version runs against the new
 **Finding out why.** The new version had passed its health check on the server, so the cause is
 often between your visitors and the app: DNS, Cloudflare's settings, the certificate, or an app
 that crashed right after it started. `npx opscrew verify` checks DNS, HTTPS, the certificate and
-the health route one by one. `npx opscrew status` shows whether a container restarted. Fix the
+the health route one by one. `npx opscrew status` shows whether a container restarted, and
+`npx opscrew logs --failed` the new version's last lines, which OpsCrew kept before it switched
+back. Fix the
 cause and push again, or re-run the workflow when the cause was outside the app.
 
 ## Other stops before the switch
@@ -192,26 +218,24 @@ failed and OpsCrew could not restore the previous version. Connect to the server
 
 The new version passes every check, but it has a bug, and you want the previous version back.
 
-**What OpsCrew offers depends on how the environment gets new versions.** There is no
-`opscrew rollback` command.
+Roll back to the version that ran before:
 
-- **An environment that deploys from its branch** (prod in this walkthrough, and every environment
-  you haven't set to be promoted): run the last good deploy again, or revert.
-  - **Run the last good deploy again:** in GitHub → **Actions** → **OpsCrew deploy**, open the last
-    run that succeeded and choose **Re-run all jobs**. It builds that commit's image again and
-    deploys it the same way, with its release command and all the checks above. GitHub re-runs a
-    run for up to 30 days. The next push to `main` deploys `main` again, so follow it with a fix
-    or a revert.
-  - **Revert:** `git revert` the bad commit and push to `main`. The workflow deploys the reverted
-    code. This is the lasting fix.
-- **An environment promoted from another one** (for example prod promoted from staging): roll back
-  to the image it ran before, without a build, with
-  `npx opscrew promote --to prod --digest <digest>`. The digest is the image labelled
-  `opscrew-prod-previous`, and the rollback asks for the same approval as a promotion. See
-  [Rolling back](environments.md#rolling-back).
+```bash
+npx opscrew rollback
+```
 
-`promote` refuses an environment that deploys from its branch, so you can't use it to go back to
-`opscrew-prod-previous` there.
+OpsCrew shows the version running and the one before it, says that the data and the schema stay as
+they are, and asks for your approval. Then it deploys the earlier image by its digest, with the
+same switch and checks as a deploy: nothing is rebuilt, and the release command does not run.
+Afterwards a push to `main` builds but does not deploy, so the bad commit can't come back by
+accident. When the fix is pushed, `npx opscrew rollback --resume --deploy` deploys `main` again.
+
+`--list` shows the earlier versions, and `--to <commit>` goes further back. The same command works
+for an environment promoted from another, and on every target. See
+[Rolling back a release](rollback.md).
+
+To fix forward instead, `git revert` the bad commit and push to `main`: the workflow deploys the
+reverted code.
 
 **What a rollback doesn't undo.** It changes which image runs, never the data. Rows written by the
 new version stay, and so do its migrations (see
@@ -294,20 +318,22 @@ set up.
 
 ## Other targets
 
-In [a Portainer](portainer-target.md) a failed deploy writes the previous version back, and on
-[Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md)
-`npx opscrew promote --to prod --version <id>` rolls back to an earlier version after your
-approval.
+- **[A Portainer](portainer-target.md):** a failed deploy writes the previous version back.
+  OpsCrew has no shell there, so it keeps no failed copy's lines for `logs --failed`.
+- **[Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md):** a deploy
+  starts no copy that could fail a health check, so `logs --failed` has nothing to show.
+- **Everywhere,** `npx opscrew rollback` goes back to an earlier version after your approval, by
+  the target's own means (see [Each target](rollback.md#each-target)).
 
 ## At a glance
 
 | What failed | Visitors get | What runs afterwards | What you do |
 |---|---|---|---|
 | The build | The version that ran | The version that ran | Fix and push |
-| The health check (rolling) | The version that ran, without a break | The version that ran, with the new migrations applied | Fix and push |
-| The health check (recreate) | Errors until the switch back | The version that ran, with the new migrations applied | Fix and push |
-| The migration | The version that ran | The version that ran; the database as the migration left it | Read `release.log`, fix and push |
-| A worker or cron job | The new version for a short while | The version that ran, with the new migrations applied | Fix and push |
+| The health check (rolling) | The version that ran, without a break | The version that ran, with the new migrations applied | `logs --failed`, fix and push |
+| The health check (recreate) | Errors until the switch back | The version that ran, with the new migrations applied | `logs --failed`, fix and push |
+| The migration | The version that ran | The version that ran; the database as the migration left it | Read `release.log`, then fix and push, or restore a backup |
+| A worker or cron job | The new version for a short while | The version that ran, with the new migrations applied | `logs --failed --service <name>`, fix and push |
 | The check through your domain | The new version for a few minutes | The version that ran, with the new migrations applied | Check DNS, Cloudflare and `verify` |
-| Nothing, but the release is wrong | The new version | The new version | Re-run the last good deploy, revert, or promote the previous image |
+| Nothing, but the release is wrong | The new version, until you roll back | The earlier version, with today's data and schema | `opscrew rollback`, then `--resume` once the fix is pushed |
 | `opscrew provision` | What the plan changed, as far as the apply got | What was created stays | Run `provision` again, or `destroy` |

@@ -27,8 +27,15 @@ describe("renderSiteRunbook on Cloudflare's hosting", () => {
     expect(text).toContain("activates the version that ran before again and the run fails");
     // Status and the rollback by version id, with no build.
     expect(text).toContain("`opscrew status` reads the Worker's deployments from Cloudflare");
-    expect(text).toContain("`opscrew promote --to prod --version <id>`");
+    expect(text).toContain(
+      "`opscrew rollback` activates the newest Worker version uploaded before the one running",
+    );
+    expect(text).toContain("`opscrew rollback --list`");
     expect(text).toContain("within a minute, with no build");
+    expect(text).toContain(
+      "a push to `main` builds but does not deploy until `opscrew rollback --resume`",
+    );
+    expect(text).not.toContain("--version");
     expect(text).toContain("`--yes` never approves it");
     // Destroy, in its order, and what remains.
     expect(text).toContain("`opscrew destroy`");
@@ -90,7 +97,10 @@ describe("renderSiteRunbook on Cloudflare's hosting", () => {
     );
     // Beside other environments, every command names prod.
     expect(text).toContain("`opscrew destroy --env prod`");
-    expect(text).toContain("`opscrew promote --to prod --version <id>`");
+    expect(text).toContain("`opscrew rollback --env prod` activates the newest Worker version");
+    expect(text).toContain(
+      "**Then its deploys pause:** `opscrew promote --to prod` refuses until `opscrew rollback --env prod --resume`.",
+    );
   });
 
   it("is the environment's own runbook, with its own commands", () => {
@@ -100,7 +110,9 @@ describe("renderSiteRunbook on Cloudflare's hosting", () => {
     });
     expect(file.path).toBe("opscrew/environments/staging/RUNBOOK.md");
     expect(file.content).toContain("`opscrew status --env staging`");
-    expect(file.content).toContain("`opscrew promote --to staging --version <id>`");
+    expect(file.content).toContain(
+      "`opscrew rollback --env staging` activates the newest Worker version",
+    );
     expect(file.content).toContain("`opscrew/environments/staging/cloudflare/wrangler.jsonc`");
   });
 });
@@ -118,12 +130,19 @@ describe("renderSiteRunbook on GitHub Pages", () => {
     expect(text).toContain("anyone can read");
     // Status and the rollback by re-run.
     expect(text).toContain("`opscrew status` reads the GitHub Pages site");
-    expect(text).toContain("`opscrew promote --to prod --version <run id>`");
+    expect(text).toContain(
+      "`opscrew rollback` re-runs the newest successful Pages run created before the one that published",
+    );
+    expect(text).toContain("`--to <run id or commit>`");
     expect(text).toContain("builds the site again from that run's commit");
     expect(text).toContain("last 30 days");
+    expect(text).toContain("open that run and choose **Re-run all jobs**");
+    expect(text).toContain("A re-run publishes even while the\n  deploys are paused.");
+    // The pause entry comes first, as on a server.
     expect(text).toContain(
-      "is refused: GitHub Pages has only prod, which builds its own site;\n  roll back with `--version <run id>`.",
+      '"reason":"rollback","since":"<now, UTC>","image":"<run id>","commit":"<commit>"}}`\n  Then, in GitHub → Actions, open that run',
     );
+    expect(text).not.toContain("--version");
     // The manual step and HTTPS.
     expect(text).toContain("https://github.com/settings/pages");
     expect(text).toContain("https://github.com/organizations/Example-Org/settings/pages");

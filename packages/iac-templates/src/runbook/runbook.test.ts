@@ -76,6 +76,25 @@ describe("renderRunbook", () => {
     );
     expect(file.content).toContain("## Roll back");
     expect(file.content).toContain("Cloudflare's IP ranges");
+    // The rollback by digest, its pause, and the same by hand in GitHub.
+    expect(file.content).toContain(
+      "`opscrew rollback` deploys the image that ran before, by its digest",
+    );
+    expect(file.content).toContain("Nothing is rebuilt and the release command does not run");
+    expect(file.content).toContain("`opscrew rollback --list`");
+    expect(file.content).toContain("`--yes`\n  never approves it.");
+    expect(file.content).toContain(
+      "a push to `main` builds but does not deploy until `opscrew rollback --resume`",
+    );
+    expect(file.content).toContain(
+      '`{"shop/prod":{"reason":"rollback","since":"<now, UTC>","image":"<digest>","commit":"<commit>"}}`',
+    );
+    expect(file.content).toContain("`OPSCREW_DEPLOY_PAUSED`");
+    expect(file.content).toContain(
+      'GitHub → Actions → "OpsCrew deploy", choose **Run workflow** on `main`',
+    );
+    expect(file.content).toContain("and tick `rollback`");
+    expect(file.content).not.toContain("Re-run all jobs");
     expect(file.content).toContain("ghcr.io/acme/shop");
     expect(file.content).toContain(
       "€7.09 per month (excl. VAT, estimate from Hetzner's price list of 2026-06-15)",

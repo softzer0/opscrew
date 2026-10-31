@@ -210,6 +210,10 @@ outside.
 - The stack comes back whenever Docker starts. It is not meant to run unattended: on Windows,
   Docker Desktop starts only after you log in.
 - The runbook (`opscrew/RUNBOOK.md`, or the environment's own) lists the everyday Docker commands.
+- `npx opscrew rollback` goes back to the image the stack ran before, while Docker still has it,
+  with the same switch and checks as a deploy. This computer keeps only that one version, so
+  `--to` is refused, and after a rollback the version before is the one you rolled back from: to go
+  forward again, run `npx opscrew provision`. See [Rolling back a release](rollback.md).
 - `npx opscrew destroy` removes OpsCrew's containers, networks and folders for the app. The data
   volumes stay unless you add `--delete-data`. The shared proxy goes with the last app.
 - OpsCrew does not back up the data volumes on this computer.

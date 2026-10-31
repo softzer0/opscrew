@@ -1,7 +1,9 @@
 import { type DeployPlan, ghcrImageFor } from "@opscrew/plan-schema";
+import { checkEnvironmentKey } from "../check";
 import { appDir } from "../edge";
 import { appFolder, artefactsFolder, runtimeDir } from "../runtime-dir";
 import type { RenderContext } from "../types";
+import { DEPLOY_PAUSED_VARIABLE } from "../workflow/pause";
 import {
   appFlag,
   builderBranchOf,
@@ -9,6 +11,7 @@ import {
   environmentName,
   githubEnvironment,
   promoteCommand,
+  promoted,
   runnerLabel,
   selfHosted,
   workflowName,
@@ -221,18 +224,75 @@ export function deploySections(
     `4. It checks \`${plan.app.healthPath}\`. If the app does not answer within three minutes, it restores the previous`,
     "   version automatically and the run fails.",
     "",
+    ...rollbackSection(plan, environments),
+  ];
+}
+
+/**
+ * What follows a rollback: the environment's deploys pause until `opscrew rollback --resume`. A
+ * push still builds, or for a promoted environment `opscrew promote` refuses.
+ */
+export function pauseAfterRollback(plan: DeployPlan, rollback: string): string[] {
+  const branch = plan.cicd.branch;
+  return promoted(plan)
+    ? [
+        `- **Then its deploys pause:** \`${promoteCommand(plan)}\` refuses until \`${rollback} --resume\`.`,
+      ]
+    : [
+        `- **Then its deploys pause:** a push to \`${branch}\` builds but does not deploy until \`${rollback} --resume\``,
+        `  (add \`--deploy\` to deploy \`${branch}\`'s latest commit now).`,
+      ];
+}
+
+/**
+ * The by-hand pause of a rollback: the environment's entry in `OPSCREW_DEPLOY_PAUSED`, pinned to
+ * `image` (a digest, or a site's version), added before the change.
+ */
+export function pauseByHand(plan: DeployPlan, image: string): string[] {
+  const entry = JSON.stringify({
+    [checkEnvironmentKey(plan)]: {
+      reason: "rollback",
+      since: "<now, UTC>",
+      image,
+      commit: "<commit>",
+    },
+  });
+  return [
+    "  First add this entry to the repository variable",
+    `  \`${DEPLOY_PAUSED_VARIABLE}\` (Settings → Secrets and variables → Actions → Variables; a JSON object with one entry`,
+    "  per environment), so that no push deploys over the rollback:",
+    `  \`${entry}\``,
+  ];
+}
+
+/**
+ * "Roll back" of an environment on a server: `opscrew rollback` and its pause, the same by hand in
+ * GitHub (the pause entry, then the deploy workflow run with `digest`, `tag` and `rollback`), and
+ * a fix forward.
+ */
+function rollbackSection(plan: DeployPlan, environments: readonly string[] | undefined): string[] {
+  const rollback = opscrew(plan, "rollback", environments);
+  const branch = plan.cicd.branch;
+  const source = plan.environment?.deploySource;
+  return [
     "## Roll back",
     "",
-    ...(source?.from === "promote"
-      ? [
-          `- **The previous image:** \`${promoteCommand(plan)} --digest <digest>\`, with the digest of the image tagged`,
-          `  \`opscrew-${name}-previous\` in GitHub Container Registry. It runs the same checks and asks for the same approval.`,
-          `- **A fix:** push it to \`${branch}\`, let the \`${source.source}\` environment deploy it, then promote it.`,
-        ]
-      : [
-          `- **Fastest:** in GitHub → Actions, open the last successful "${workflowName(plan)}" run and choose **Re-run all jobs**.`,
-          `- **With git:** revert the bad commit and push to \`${branch}\`; the workflow deploys the reverted code.`,
-        ]),
+    `- **The version before:** \`${rollback}\` deploys the image that ran before, by its digest, with the same switch and`,
+    "  checks as a deploy. Nothing is rebuilt and the release command does not run: the data, the database schema and the",
+    "  app's settings and secrets stay as they are now, so the earlier version must work with them.",
+    `  \`${rollback} --list\` shows the versions still in GitHub Container Registry, and \`--to <commit or digest>\` goes to`,
+    "  one of them. OpsCrew shows both versions with the rollback's hash first; in scripts, add `--approve <hash>`. `--yes`",
+    "  never approves it.",
+    ...pauseAfterRollback(plan, rollback),
+    "- **By hand in GitHub:** the summary of the run that built the version to go back to says",
+    '  "Pushed `<image>:<tag>` as `<image>@<digest>`".',
+    ...pauseByHand(plan, "<digest>"),
+    `  Then, in GitHub → Actions → "${workflowName(plan)}", choose **Run workflow** on ${source?.from === "promote" ? "the default branch" : `\`${branch}\``},`,
+    "  enter the digest as `digest` and the tag as `tag`, and tick `rollback`. The run checks where the image was built",
+    `  and deploys it without a build or the release command. \`${rollback} --resume\` removes the entry later.`,
+    source?.from === "promote"
+      ? `- **A fix:** push it to \`${branch}\`, let the \`${source.source}\` environment deploy it, then promote it.`
+      : `- **With git:** revert the bad commit and push to \`${branch}\`; the workflow deploys the reverted code.`,
     "",
   ];
 }

@@ -47,7 +47,9 @@ and names any that is missing.
 
 - Issues: Read, for the open alerts in `status`;
 - Actions: Read and write, which OpsCrew already asks for, for the check's state in `status`;
-- Variables: Read and write, for pausing the check while OpsCrew moves or removes an app.
+- Variables: Read and write, for pausing the check while OpsCrew moves or removes an app. The
+  token needs it without the check too: for moving an app to another target, and for
+  [`opscrew rollback`](rollback.md), which pauses an environment's deploys.
 
 The workflow itself runs with GitHub's own token, limited to reading the repository's contents and
 writing issues.

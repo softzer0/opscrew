@@ -140,16 +140,24 @@ and GitHub redirects `http://` to `https://`. `verify` never changes anything it
 
 ```bash
 npx opscrew status                                  # the last Pages run, the one before, and the rollback command
-npx opscrew promote --to prod --version <run id>    # re-runs that earlier run
+npx opscrew rollback                                # re-runs the run before the one that published the site
+npx opscrew rollback --to <run id or commit>        # or an earlier one
 ```
 
-`promote --version` shows the run with the approval's hash and re-runs it only after your approval.
-GitHub builds the site again from that run's commit and publishes it, and OpsCrew follows the run
-to its end. GitHub re-runs only runs from the last 30 days; for an older version, revert the commit
-and push. In scripts, add `--approve <hash>`; `--yes` never approves a rollback.
+`opscrew rollback` says first that GitHub builds the site again from that run's commit (a
+dependency may have changed since), shows the run with the approval's hash, and re-runs it only
+after your approval. GitHub then publishes it. GitHub re-runs only runs from the last 30 days; for
+an older version, revert the commit and push. In scripts, add `--approve <hash>`; `--yes` never
+approves a rollback.
 
-`promote` without `--version` is refused: GitHub Pages has only prod, which builds its own site;
-roll back with `--version <run id>`.
+Without `--to`, it re-runs the newest successful run created before the one that published the
+site now, so a second rollback goes further back. `npx opscrew rollback --list` shows the
+successful runs. It refuses while a deploy run is queued or running, and when the site's workflow
+is not the one its plan generates (run `npx opscrew provision` and merge its pull request).
+
+Afterwards the site's deploys pause: a push builds but does not publish, until
+`npx opscrew rollback --resume`. A re-run still publishes, also one you start yourself in GitHub
+(**Re-run all jobs**). See [Rolling back a release](rollback.md).
 
 ## Day 2
 

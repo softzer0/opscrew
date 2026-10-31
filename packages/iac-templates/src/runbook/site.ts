@@ -27,6 +27,8 @@ import {
   deployAgain,
   environmentRows,
   opscrew,
+  pauseAfterRollback,
+  pauseByHand,
   type RunbookContext,
   runbookFolders,
   runbookTitle,
@@ -54,6 +56,7 @@ export function renderSiteRunbook(plan: DeployPlan, ctx: SiteRunbookContext): Re
   const cloudflare = target.provider === "cloudflare-workers";
   const { environments } = ctx;
   const command = (text: string) => `\`${opscrew(plan, text, environments)}\``;
+  const rollback = opscrew(plan, "rollback", environments);
   // The schema gives every server-less plan a domain on Cloudflare.
   const domain = plan.dns.domain as string;
   const url = `https://${domain}`;
@@ -120,25 +123,30 @@ export function renderSiteRunbook(plan: DeployPlan, ctx: SiteRunbookContext): Re
     "",
     ...(cloudflare
       ? [
-          `- **The version before:** \`${promoteCommand(plan)} --version <id>\`, with the id \`${opscrew(plan, "status", environments)}\` lists. Cloudflare`,
-          "  serves that version of the Worker for all traffic again within a minute, with no build. OpsCrew shows the version",
-          "  with the approval's hash first; in scripts, add `--approve <hash>`. `--yes` never approves it.",
+          `- **The version before:** \`${rollback}\` activates the newest Worker version uploaded before the one running, so a`,
+          `  second rollback goes further back; \`--to <id>\` names another that \`${rollback} --list\` shows. Cloudflare serves`,
+          "  it for all traffic again within a minute, with no build. OpsCrew shows the version with the approval's hash first;",
+          "  in scripts, add `--approve <hash>`. `--yes` never approves it.",
         ]
       : [
-          `- **An earlier run:** \`${promoteCommand(plan)} --version <run id>\`, with a run \`${opscrew(plan, "status", environments)}\` lists. GitHub`,
-          "  re-runs it: it builds the site again from that run's commit and publishes it. OpsCrew shows the run with the",
-          "  approval's hash first; in scripts, add `--approve <hash>`. `--yes` never approves it. GitHub re-runs only runs",
-          "  from the last 30 days; for an older one, revert the commit instead.",
+          `- **The run before:** \`${rollback}\` re-runs the newest successful Pages run created before the one that published`,
+          `  the site now, so a second rollback goes further back; \`--to <run id or commit>\` names another that`,
+          `  \`${rollback} --list\` shows. GitHub builds the site again from that run's commit and publishes it. OpsCrew shows`,
+          "  the run with the approval's hash first; in scripts, add `--approve <hash>`. `--yes` never approves it. GitHub",
+          "  re-runs only runs from the last 30 days; for an older one, revert the commit instead.",
+        ]),
+    ...pauseAfterRollback(plan, rollback),
+    ...(cloudflare
+      ? []
+      : [
+          "- **By hand in GitHub:** pick the earlier Pages run to go back to, by its run id and commit.",
+          ...pauseByHand(plan, "<run id>"),
+          "  Then, in GitHub → Actions, open that run and choose **Re-run all jobs**. A re-run publishes even while the",
+          "  deploys are paused.",
         ]),
     from !== undefined
       ? `- **A fix:** push it to \`${branch}\`, let the \`${from}\` environment deploy it, then promote it.`
       : `- **With git:** revert the bad commit and push to \`${branch}\`; the workflow deploys the reverted code.`,
-    ...(cloudflare
-      ? []
-      : [
-          `- \`${promoteCommand(plan)}\` without \`--version\` is refused: GitHub Pages has only prod, which builds its own site;`,
-          "  roll back with `--version <run id>`.",
-        ]),
     "",
     ...(cloudflare ? [] : pagesDomain(plan, ctx.owner, command)),
     ...secretsSection(plan, { cloudflare, ssr, command }),
