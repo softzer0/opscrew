@@ -688,12 +688,19 @@ export class AppEnvironments {
    * resources of each environment's app beside prod's (the harness removes prod's), and then the
    * GitHub Pages site the Pages pass made, once no record of the run points at GitHub. `others` are the
    * run's other apps (a further app of the repository, or the run's second app), cleaned up the
-   * same way, before this one.
+   * same way, before this one. `last` runs after the Cloudflare cleanup (what the test made itself).
    */
-  registerCleanup(options: { first?: () => void; others?: readonly AppEnvironments[] } = {}): void {
+  registerCleanup(
+    options: {
+      first?: () => void;
+      others?: readonly AppEnvironments[];
+      last?: (attempt: CleanupAttempt) => Promise<void>;
+    } = {},
+  ): void {
     const all = [...(options.others ?? []), this];
     this.run.registerCleanup({
       ...(options.first === undefined ? {} : { first: options.first }),
+      ...(options.last === undefined ? {} : { last: options.last }),
       teardown: async (attempt) => {
         for (const envs of all) await envs.teardown(attempt);
       },

@@ -1771,6 +1771,178 @@ is less than both):
 | Retarget's pause | about 5 minutes more in the move (not measured) | nothing more |
 | Each other target's step | under a minute (9 s on the local runner with its `verify`, 11 s in your existing Portainer, 24 s on Cloudflare's hosting, 30 s on your own server) | nothing more |
 
+## Split placement and the private network
+
+`packages/cli/test/live/split.test.ts`, with `OPSCREW_E2E_SPLIT=1`, runs feature 018's quickstart
+"1."–"6." on `examples/nextjs-postgres` (always this example: its Postgres service and the page
+that reads it are what the test checks, so `OPSCREW_E2E_APP` is ignored). The app runs at Hetzner
+behind Cloudflare, with its deploys on the server's own runner, in the private throwaway
+repository `OPSCREW_E2E_GITHUB_REPO`. Postgres gets a second server named `data`: at Hetzner in
+the app server's location (design's default for a new server), or at DigitalOcean in Frankfurt
+(`fra1`) when `OPSCREW_E2E_DIGITALOCEAN_TOKEN` is set.
+
+**The device.** Devices and closing public SSH need a computer on the app's private network. The
+test's device is a privileged Linux container on this computer (Docker Desktop's WSL 2 kernel has
+WireGuard). Its image is built at the start, before any server exists, from
+`node:22-bookworm-slim` with:
+- WireGuard's tools, ssh, git and psql;
+- the same OpenTofu (or Terraform) version as this computer, copied from its official image
+  (`ghcr.io/opentofu/opentofu:<version>-minimal` or `hashicorp/terraform:<version>`);
+- the built CLI (`packages/cli/dist`) with its npm packages.
+
+The device imports the configuration `opscrew vpn add` wrote into the project's OpsCrew folder and
+turns it on with `wg-quick`, as the WireGuard app does. While public SSH is closed only the device
+reaches the servers, so the commands that need "this computer" on the network run the built CLI
+inside it:
+- the run's repository, its OpsCrew folder and the app's values are copied in before each command
+  (the project's folder renamed to the id the CLI gives the container's path);
+- the tokens reach the CLI by name (`docker exec -e NAME`), never on a command line;
+- everything is copied back after the command, replacing this computer's copy only once it arrived
+  whole, so the next command here sees what it changed. The engine's provider folders
+  (`.terraform`) stay on each side.
+
+The steps:
+
+1. **One server:** the example goes to `main`. The test stops there unless the repository is
+   private: closing public SSH needs the deploys on the server's own runner, which OpsCrew refuses
+   for a public repository. The device's image is built, and a privileged container must be able
+   to make a WireGuard interface. Prod's design follows (as for environments), then, as a user edits
+   `opscrew/plan.yaml`, `environment.runner: server`. `adapt`, `provision` until done, GitHub
+   listing the runner online, the first deploy, and the site through Cloudflare. The page `/` must
+   answer with the database's time (it reads it from Postgres on every request). Then 5,000 rows
+   go into a table of the app's Postgres, and their count and checksum (an MD5 of every row in
+   order) are kept.
+2. **The move to `data`** (SC-1801, SC-1802):
+   - As a user does, `servers: [{ name: data }]` (with its DigitalOcean target when set) and
+     `server: data` on Postgres go into `opscrew/plan.yaml`, then `design`. Design must plan the
+     move, and the test reads its delay estimate ("waits about N ms") and the window it shows.
+   - `provision` until done creates the server, the private network and the deployment files, and
+     the merged pull request's deploy starts the new, empty copy on `data`.
+   - The deploy pause's experiment (below).
+   - `provision --allow-downtime` runs the maintenance window, while the test asks the page every 3
+     seconds. The longest time it did not answer must not exceed the window shown (else a finding).
+     The move must then be `switched`, and the rows' count and checksum on `data` must match.
+   - `provision --finish-move --confirm db` deletes the old copy, `provision` publishes the plan
+     without it, and its deploy runs.
+   - Postgres's port must not answer from the internet on either server. `data`'s cloud firewall
+     must allow exactly SSH, ping and WireGuard's UDP port, and `verify` must pass.
+3. **Every command:** `status` must show the link from `app` to `data` up with its round trip
+   within 3 minutes. Design's estimate must be within a factor of two of it (SC-1808; else a
+   finding). `logs --service db` must say its lines are from server `data`, `drift` must be
+   clean, and `secure` must write its report.
+4. **A deploy across both:** Postgres's memory limit is lowered by 64 MB in `opscrew/plan.yaml`,
+   then `design`, `provision` and the deploy. The database's container on `data` must then run
+   with the new limit.
+5. **Reboots** (SC-1803): each server is rebooted through its provider's API. Its boot id must
+   change, and the page must answer with the database's time within 5 minutes of the reboot. Then
+   `verify` must pass within 3 minutes.
+6. **A device** (SC-1804): `vpn add laptop`, each server's host plan approved by its hash. The
+   device imports its configuration, and `deploy` must log in over SSH on both servers' private
+   addresses within a minute, the host key checked against the one OpsCrew pinned. `vpn list` must
+   show it. After `vpn remove laptop`, its tunnel must reach neither server within a minute.
+7. **Public SSH closed** (SC-1805):
+   - `vpn add workstation --this-computer`, its tunnel turned on in the device, and SSH reached
+     on both servers again. `vpn list` on the device must say "this computer".
+   - On the device: `secure --close-public-ssh --yes`, each plan approved by its hash.
+   - Its pull request is merged and deployed. Port 22 must then be refused from this computer on
+     both servers (within 3 minutes), and neither cloud firewall may allow it.
+   - A merged change must still deploy (the deploy job on the server's runner reaches `data` over
+     the network), and the page must answer.
+   - On the device, `status` (which must say public SSH is closed), `logs --service db` and
+     `drift` must succeed.
+   - On the device: `secure --open-public-ssh --yes`, its pull request deployed. Port 22 must
+     answer again on both servers, and `status` here must say public SSH is open.
+8. **A read-only grant** (SC-1806): `vpn grant workstation db`. The device's psql must read the
+   rows' count with the printed URL, and a write must be refused with "permission denied".
+   `vpn revoke workstation db`: the device can no longer connect, and Postgres on `data` must have
+   no role of the grant's login. Then `vpn remove workstation`, and the tunnel goes off.
+9. **The move back:** `server: data` comes out of Postgres's entry in `opscrew/plan.yaml`, then
+   `design`, and the move runs as in step 2, without the experiment: the rows must match on the
+   app's server. After `--finish-move`, `servers` must be gone from the plan. `provision` until
+   done then deletes the server: its `--plan-only` run prints the command with the hashes and
+   `--confirm <app>-data` (and `--confirm <app>` when the plan deletes or replaces anything else),
+   each name the app's or one of its servers', and the test runs that command. The app must answer
+   from its one server, and the provider must no longer list `data`.
+10. **Destroy:** `destroy --confirm <app> --no-snapshot`. GitHub must list no runner with the
+    app's label, and nothing of the app may be left at Hetzner (by its labels), at DigitalOcean
+    (its Droplets by the tag `opscrew-app:<app>`, the firewall `<app>-data-firewall`, the SSH key
+    `<app>-deploy` and the tag) or in Cloudflare.
+11. **Nothing leaked** (SC-1807), as for environments, with these too:
+    - each server's WireGuard key and the grant's password (from the generated values);
+    - the device's private key (from its configuration);
+    - the second server's addresses;
+    - the device's runs' outputs.
+
+    `vpn grant` prints the grant's password and URL once, on purpose: they are cut out of that
+    output before the search. The device configurations are the one place a device's key belongs,
+    and are not searched.
+
+**The deploy pause's experiment** (in step 2, before the window). While a move is in progress, the
+deploy job's `if:` reads the repository variable `OPSCREW_DEPLOY_PAUSED`, so a deploy started
+during the window is skipped. Whether GitHub reads `vars` when the run is created or when the job
+starts was not documented clearly enough to rely on, and the window waits for running deploys
+either way. The test finds out:
+- it dispatches the deploy workflow on `main`;
+- while the run's build job runs, and its deploy job has not started, it sets the variable to
+  pause the app (`{"<app>/prod": …}`, as OpsCrew writes it);
+- once the run ends, the deploy job's conclusion says when GitHub read the variable: skipped, when
+  the job started; run, when the run was created.
+
+It logs the answer as an `observed:` line (or why it is inconclusive) and clears the variable
+before the window. Record the answer in
+[the coverage page](e2e-coverage.md#the-deploy-pause-during-a-move-feature-018).
+
+**Cleanup.** The cleanup is the one for environments: `opscrew destroy` if needed (within its 10
+minutes), then always Hetzner's API (by the app's labels, which the `data` server has too),
+GitHub's runners with the app's label, the deploy secrets, and `main` put back to the example's
+commit. After the Cloudflare cleanup, each step on its own, so that one failing never skips the
+others:
+- the device's container and its image are removed. Docker keeps the image build's cache (the
+  base images' layers and the installed packages, under 1 GB; `docker builder du` shows it),
+  which the next run reuses;
+- the run's entry in `OPSCREW_DEPLOY_PAUSED` is removed (and the variable, when nothing else is in
+  it);
+- with DigitalOcean, whatever is left of the app there is deleted through its API, and nothing
+  may be left.
+
+While public SSH is closed, a failed run's `opscrew destroy` from this computer may fail to reach
+the servers; the API deletes them anyway.
+
+**If a run was interrupted**, delete by hand, besides what the environments test lists:
+- the `data` server, which carries the app's labels at Hetzner, or, at DigitalOcean, the Droplet,
+  firewall, SSH key and tag above;
+- the variable `OPSCREW_DEPLOY_PAUSED` under the repository's Settings → Secrets and variables →
+  Actions → Variables;
+- the container `opscrew-e2e-device-<run id>` and the image `opscrew-e2e-device:<run id>`
+  (`docker rm -f`, `docker image rm`).
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_SPLIT` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for environments. The repository must be private, and the GitHub token needs Variables (read and write) for the experiment, as in [Setup](#setup). |
+| `OPSCREW_E2E_DIGITALOCEAN_TOKEN` | Optional: the `data` server at DigitalOcean (Frankfurt) instead of Hetzner. Its scopes as in [Setup](#setup). |
+
+Requirements as for your own server, and Docker running here with privileged containers (Docker
+Desktop on Windows or macOS, or Docker on Linux) whose kernel has WireGuard. The device pulls
+`node:22-bookworm-slim` and the engine's image, and reaches the servers' WireGuard port (UDP 51820)
+from this computer's network.
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_SPLIT=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/split.test.ts
+# The data server at DigitalOcean: the same, with OPSCREW_E2E_DIGITALOCEAN_TOKEN=… set.
+```
+
+Run only this file: with `OPSCREW_E2E_DIGITALOCEAN_TOKEN` set, `live.test.ts` would also run its
+DigitalOcean passes.
+
+Not measured yet: about 3 hours, with two of the smallest servers for that time (a few cents),
+and about 12 deploys' builds on GitHub's machines (about 30 to 40 Actions minutes in a private
+repository). The deploy jobs run on the server.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still

@@ -1043,9 +1043,10 @@ export class LiveRun {
    * `provision --plan-only`, then `provision --approve <each printed hash> --yes`, until a run
    * finishes; when an apply stops at another plan (the stack plan, or the new setup after a
    * removal), the hash it printed is approved next. A plan that deletes something (the first apply
-   * of a switch to or from the tunnel) also needs the app's name: `--confirm <app>`, taken from
-   * the printed command, which must name this app; it is planned only once. `args` go to every run
-   * (`--env <name>`), `overrides` into its environment. Returns every run's output.
+   * of a switch to or from the tunnel, an extra server removed) also needs names typed: each
+   * `--confirm <name>` of the printed command, each this app's name or an extra server's at the
+   * provider (`<app>-<server>`, alone when only extra servers go); it is planned only once. `args`
+   * go to every run (`--env <name>`), `overrides` into its environment. Returns every run's output.
    */
   async provisionUntilDone(
     label: string,
@@ -1066,8 +1067,14 @@ export class LiveRun {
       all.push(planned.output);
       const removal = removalApproval(planned.output);
       if (removal !== undefined) {
-        if (removal.app !== this.appName) {
-          throw new Error(`The printed command confirms "${removal.app}", not the app's name.`);
+        const app = this.appName;
+        if (
+          app === undefined ||
+          !removal.names.every((name) => name === app || name.startsWith(`${app}-`))
+        ) {
+          throw new Error(
+            `The printed command confirms "${removal.names.join(" ")}", not the app's names.`,
+          );
         }
         if (removed) {
           throw new Error(`${label}: the removal of the old setup was planned again.`);
@@ -1080,7 +1087,7 @@ export class LiveRun {
         all.push((await this.opscrewOkWith(overrides, "provision", ...flags, "--yes")).output);
         return all.join("\n");
       }
-      const confirm = removal === undefined ? [] : ["--confirm", removal.app];
+      const confirm = (removal?.names ?? []).flatMap((name) => ["--confirm", name]);
       for (let follow = 1; follow <= 3; follow++) {
         const applied = await this.opscrewWith(
           overrides,
@@ -1279,14 +1286,16 @@ export class LiveRun {
 
   /**
    * The cleanup of docs/e2e.md for both apps, after every step and always, with `first` before it,
-   * then `teardown` (what OpsCrew created itself), and `cloudflare` after the zone's rules;
-   * problems are collected and fail it at the end.
+   * then `teardown` (what OpsCrew created itself), `cloudflare` after the zone's rules, and `last`
+   * after the Cloudflare cleanup (what the test made itself); problems are collected and fail it
+   * at the end.
    */
   registerCleanup(
     options: {
       first?: () => void;
       teardown?: (attempt: CleanupAttempt) => Promise<void>;
       cloudflare?: (attempt: CleanupAttempt) => Promise<void>;
+      last?: (attempt: CleanupAttempt) => Promise<void>;
     } = {},
   ): void {
     afterAll(
@@ -1368,6 +1377,8 @@ export class LiveRun {
           );
           await options.cloudflare?.(attempt);
         }
+        const { last } = options;
+        if (last !== undefined) await attempt("the test's own cleanup", () => last(attempt));
         for (const app of apps) {
           if (app.repoReady) {
             await attempt(`reset the throwaway repository ${app.github.name}`, () =>
@@ -1386,7 +1397,9 @@ export class LiveRun {
         if (this.hetznerTouched)
           this.log("the throwaway servers and everything with them are deleted");
       },
-      minutes(25) + (options.teardown === undefined ? 0 : TEARDOWN_TIMEOUT_MS),
+      minutes(25) +
+        (options.teardown === undefined ? 0 : TEARDOWN_TIMEOUT_MS) +
+        (options.last === undefined ? 0 : minutes(10)),
     );
   }
 

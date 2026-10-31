@@ -55,6 +55,8 @@ of the pass passed; otherwise the status says how many of its steps did.
 | Retarget's pause of the scheduled check (feature 017, FR-1709) | the retarget move, + `OPSCREW_E2E_OBSERVABILITY=1`, a Cloudflare domain | **Not run yet** | — | Both provider tokens (a DigitalOcean API token) |
 | Logs and figures on the other targets (feature 017, SC-1701): your own server (step 2b), your existing Portainer (step 3c), the local runner (step 4b), the SSR app on Cloudflare's hosting (step S2b) ([the step](e2e.md#the-other-targets)) | each pass's own gate | Passed on all four: own server (run 3), Portainer, the local runner (run 3), Cloudflare's hosting | 2026-10-29 | — |
 | Ctrl+C on `logs --follow` over SSH and on `addon open beszel` on Windows (feature 017) | by hand ([how](e2e.md#windows-by-hand)) | **Not run yet** | — | A Windows computer |
+| Split placement and the private network (`split.test.ts`, feature 018, quickstart "1."–"6."): Postgres with seeded rows moved to a second Hetzner server and back through its maintenance windows, rows and checksum kept (SC-1802), its port closed to the internet (SC-1801), `status`' link against design's estimate (SC-1808), a deploy across both, a reboot of each (SC-1803), a device reaching SSH (SC-1804), public SSH closed and opened from the device (SC-1805), a read-only grant (SC-1806), the deploy pause's experiment, the second server deleted, destroy and the leak search (SC-1807) ([its steps](e2e.md#split-placement-and-the-private-network)) | `OPSCREW_E2E_SPLIT=1`, a Cloudflare domain, a private repository, Docker here | **Not run yet** | — | The live run (T1821) |
+| Split placement with the second server at DigitalOcean (the same pass) | + `OPSCREW_E2E_DIGITALOCEAN_TOKEN` | **Not run yet** | — | A DigitalOcean API token |
 
 Run in development, not tracked by date:
 
@@ -189,6 +191,35 @@ Run in development, not tracked by date:
   and files; the images it pulled stay on the server, as for every Compose project OpsCrew
   removes, and no test checks them.
 
+### Split placement and the private network (feature 018)
+
+- **The official WireGuard apps** (Windows, macOS, Android, iOS) and `vpn add --qr`: the live
+  device is a Linux container that imports the same configuration file with `wg-quick`; the QR
+  code has unit tests only.
+- **This computer with a tunnel of its own:** while public SSH is closed, the commands that need
+  "this computer" on the network run the built CLI in the device container, on a copy of the
+  run's repository and OpsCrew folder. No live run has a computer with its own tunnel run them.
+- **Beszel's and Portainer's dashboards on the private address** (US3 scenario 2), and
+  `addon open` and `portainer` pointing there: no add-on runs in the pass.
+- **Grants other than Postgres read-only** (MySQL, MariaDB, MongoDB, Valkey, Redis and Dragonfly,
+  and full access), and a device without a grant refused: the Docker pass
+  (`test/e2e/network.test.ts`) runs them on two container servers. Live, only Postgres
+  read-only, while SC-1806 asks for all seven kinds.
+- **Moves that start empty** (Valkey, Redis, Dragonfly), the refusal of other kinds, a window
+  that fails and starts the app on the old copy again, and a window resumed after an
+  interruption: unit tests only.
+- **An extra server you own, a server without a public address, two apps or environments with
+  their own networks on one server, `vpn add --again` after a server joined, and retarget's
+  refusal:** unit tests (and the Docker pass for the networks); no live pass.
+- **Getting back in after losing this computer's configuration** while public SSH is closed
+  (from another device, or the provider's console): the guide's steps, to try by hand.
+- **Closing public SSH with the local runner** (`runner: local`): the pass uses the server's
+  runner.
+- **The scheduled check's disk check on every server**, also with public SSH closed: the pass
+  does not dispatch the check.
+- **The app's server at DigitalOcean:** it is always at Hetzner; with the DigitalOcean token only
+  the second server goes there.
+
 ## Confirmed live behaviour
 
 What OpsCrew's adapters and tests assumed about other services, and what the live runs found.
@@ -228,6 +259,17 @@ The test's own Cloudflare calls and checks assumed these; the live runs of 2026-
 | After a failed destroy, the Hetzner pass's fallback removes the app's hostnames from OpsCrew's shared rules (`removeRulesOfRun`) | Hetzner with a Cloudflare domain and `OPSCREW_E2E_SKIP_DESTROY=1` (which skips destroy, so the fallback runs), or when destroy fails | [x] 2026-10-19 (both of OpsCrew's rules held only the run's hostname, so they and the run's two rulesets were deleted) |
 | The Zero Trust organization and one-time PIN login stay after both apps' destroys | own server step 7b, Portainer step 9b | [x] 2026-10-18 (own server and Portainer) |
 | The leak search finds no token in the Cloudflare plans (CLI output; MCP in Portainer) or any version of `.opscrew/cloudflare.json` | own server step 8, Portainer step 12 | [x] 2026-10-18 (own server and Portainer) |
+
+### The deploy pause during a move (feature 018)
+
+A move's maintenance window pauses the app's deploys with the repository variable
+`OPSCREW_DEPLOY_PAUSED`, which the deploy job's `if:` reads. The window also waits until no deploy
+of the app runs, so either answer is safe; the split placement pass records which one GitHub
+gives as an `observed:` line ([the experiment](e2e.md#split-placement-and-the-private-network)).
+
+| Assumption | Checked in | Confirmed |
+|---|---|---|
+| GitHub reads `vars` in a job-level `if:` when the job starts, not when the run is created: a run created before the variable named the app skips its deploy job | split placement, step 2 | [ ] Not run yet |
 
 ## Live results
 

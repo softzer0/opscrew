@@ -43,6 +43,7 @@ import {
   missingBuildSteps,
   newRunId,
   provenanceProblems,
+  removalApproval,
   requestFailure,
   restartedServices,
   rulesCleanup,
@@ -644,6 +645,50 @@ describe("OPSCREW_E2E_PORTAINER_STEPS", () => {
     for (const value of ["all", "13", "2b", "8b", "11,x", "11,"]) {
       expect(portainerSteps(value), value).toBeUndefined();
     }
+  });
+});
+
+describe("removalApproval", () => {
+  const hash = "a".repeat(64);
+  const other = "b".repeat(64);
+
+  it("takes the hashes and every --confirm name from provision's printed command", () => {
+    const output = [
+      "Plan hashes (SHA-256), one approval each:",
+      "",
+      `    Infrastructure:  ${hash}`,
+      `    Server app:      ${other}`,
+      "",
+      "Review the plans above. To apply exactly these plans, run:",
+      "",
+      `    opscrew provision --approve ${hash} --approve ${other} --yes --confirm shop --confirm shop-data`,
+      "",
+      'This plan deletes or replaces resources, so applying it also needs "shop shop-data" typed: type it when the command asks in a terminal, or keep --confirm shop --confirm shop-data in the command above in a script.',
+    ].join("\n");
+    expect(removalApproval(output)).toEqual({
+      hashes: [hash, other],
+      names: ["shop", "shop-data"],
+    });
+  });
+
+  it("takes an extra server's name alone when only extra servers go", () => {
+    const output = [
+      "Review the plan above. To apply exactly this plan, run:",
+      "",
+      `    opscrew provision --approve ${hash} --yes --confirm shop-data`,
+      "",
+      'This plan deletes or replaces resources, so applying it also needs "shop-data" typed: type it when the command asks in a terminal, or keep --confirm shop-data in the command above in a script.',
+    ].join("\n");
+    expect(removalApproval(output)).toEqual({ hashes: [hash], names: ["shop-data"] });
+  });
+
+  it("finds nothing to confirm without the sentence, and stops without a command", () => {
+    expect(removalApproval(`    opscrew provision --approve ${hash} --yes`)).toBeUndefined();
+    expect(() =>
+      removalApproval(
+        'This plan deletes or replaces resources, so applying it also needs "shop" typed: …',
+      ),
+    ).toThrow(/no printed command/);
   });
 });
 

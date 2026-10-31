@@ -299,24 +299,28 @@ export function printedHash(output: string, label: string): string | undefined {
   return [...output.matchAll(new RegExp(`${label}: ([0-9a-f]{64})\\b`, "g"))].at(-1)?.[1];
 }
 
-/** The sentence `--plan-only` prints under a plan that also needs the app's name. */
-const REMOVAL_SENTENCE =
-  "This plan deletes or replaces resources, so applying it also needs the app's name";
+/**
+ * The start of the sentence `--plan-only` prints under a plan that also needs names typed (the
+ * app's, and each extra server's it deletes).
+ */
+const REMOVAL_SENTENCE = "This plan deletes or replaces resources, so applying it also needs";
 
 /**
  * The approval a `provision --plan-only` output asks for when its plan deletes something (the
- * first apply of a switch to or from the tunnel): the hashes and app name from the printed
- * command (`opscrew provision --approve <hash> [--yes] --confirm <app>`). `undefined` when the
- * output has no such plan; throws when it has the sentence but no command to take them from.
+ * first apply of a switch to or from the tunnel, an extra server removed): the hashes and every
+ * `--confirm` name from the printed command (`opscrew provision --approve <hash> [--yes]
+ * --confirm <app> [--confirm <app>-<server> …]`). `undefined` when the output has no such plan;
+ * throws when it has the sentence but no command to take them from.
  */
-export function removalApproval(output: string): { hashes: string[]; app: string } | undefined {
+export function removalApproval(output: string): { hashes: string[]; names: string[] } | undefined {
   if (!output.includes(REMOVAL_SENTENCE)) return undefined;
   for (const line of output.split(/\r?\n/)) {
-    const command = /^\s*opscrew provision (.*--confirm (\S+).*)$/.exec(line);
+    if (!/^\s*opscrew provision /.test(line)) continue;
+    const names = [...line.matchAll(/--confirm (\S+)/g)].map((match) => match[1] as string);
     const hashes = approveHashes(line);
-    if (command?.[2] !== undefined && hashes.length > 0) return { hashes, app: command[2] };
+    if (names.length > 0 && hashes.length > 0) return { hashes, names };
   }
-  throw new Error(`The plan needs the app's name, but there is no printed command with --confirm.`);
+  throw new Error(`The plan needs names typed, but there is no printed command with --confirm.`);
 }
 
 /** The Ed25519 key in `ssh-keyscan` output (`host ssh-ed25519 <base64>`), if the server sent one. */
