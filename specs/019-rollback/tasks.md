@@ -219,7 +219,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1907 [P] [US5] `opscrew logs --failed`, in `packages/agents/src/logs/**`, the CLI flag and MCP's `failed`
+- [X] T1907 [P] [US5] `opscrew logs --failed`, in `packages/agents/src/logs/**`, the CLI flag and MCP's `failed`
   - Owns:
     - `packages/agents/src/logs/**` (+ tests);
     - `packages/cli/src/commands/logs.ts` (+ test);
