@@ -153,6 +153,90 @@ describe("dispatchWorkflow", () => {
   });
 });
 
+describe("listWorkflowRuns", () => {
+  const ROUTE = "GET /repos/acme/shop/actions/workflows/opscrew-deploy.yml/runs";
+  const MESSAGE = "Fix checkout totals\n\nThe long description";
+
+  it("lists runs with their event, branch and head commit, filtered by branch and event", async () => {
+    const { fetch, calls } = fakeFetch({
+      [ROUTE]: [
+        {
+          body: {
+            total_count: 2,
+            workflow_runs: [
+              {
+                ...run(9, "completed", "success", "2026-10-30T09:00:00Z"),
+                event: "push",
+                head_branch: "main",
+                head_commit: { id: "abc", message: MESSAGE, timestamp: "2026-10-30T08:59:00Z" },
+              },
+              {
+                ...run(8, "completed", "failure", "2026-10-29T09:00:00Z"),
+                event: "push",
+                head_branch: null,
+                head_commit: null,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(
+      await client(fetch).listWorkflowRuns("acme", "shop", {
+        workflowFile: FILE,
+        branch: "main",
+        event: "push",
+        perPage: 100,
+      }),
+    ).toEqual([
+      {
+        id: 9,
+        status: "completed",
+        conclusion: "success",
+        htmlUrl: "https://github.com/acme/shop/actions/runs/9",
+        headSha: "abc",
+        createdAt: "2026-10-30T09:00:00Z",
+        event: "push",
+        headBranch: "main",
+        headCommit: { message: MESSAGE, timestamp: "2026-10-30T08:59:00Z" },
+      },
+      {
+        id: 8,
+        status: "completed",
+        conclusion: "failure",
+        htmlUrl: "https://github.com/acme/shop/actions/runs/8",
+        headSha: "abc",
+        createdAt: "2026-10-29T09:00:00Z",
+        event: "push",
+      },
+    ]);
+    const query = new URL(calls[0]?.url ?? "").searchParams;
+    expect(Object.fromEntries(query)).toEqual({ per_page: "100", branch: "main", event: "push" });
+  });
+
+  it("refuses a run it cannot read without putting its commit message in the error", async () => {
+    const { id: _id, ...noId } = run(9, "completed", "success", "2026-10-30T09:00:00Z");
+    const { fetch } = fakeFetch({
+      [ROUTE]: [
+        {
+          body: {
+            workflow_runs: [
+              { ...noId, head_commit: { message: MESSAGE, timestamp: "2026-10-30T08:59:00Z" } },
+            ],
+          },
+        },
+      ],
+    });
+    const error = await client(fetch)
+      .listWorkflowRuns("acme", "shop", { workflowFile: FILE })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(OpsCrewError);
+    const text = `${(error as OpsCrewError).message} ${(error as OpsCrewError).hint}`;
+    expect(text).not.toContain("checkout totals");
+    expect(text).not.toContain(TOKEN);
+  });
+});
+
 describe("getWorkflowRun", () => {
   it("reads one run", async () => {
     const { fetch, calls } = fakeFetch({

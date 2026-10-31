@@ -28,8 +28,9 @@ export const GITHUB_API = "https://api.github.com";
  * `opscrew promote` reads GitHub's container registry with `OPSCREW_GHCR_READ_TOKEN` (a classic
  * token with `read:packages`) when it is set, since the registry may not accept a fine-grained
  * token.
- * Issues (the check's open alerts) and Variables (pausing the check) are needed only with the
- * scheduled check; Actions above covers reading the check workflow's state.
+ * Issues (the check's open alerts) are needed only with the scheduled check; Actions above covers
+ * reading the check workflow's state. Variables pause the check, and pause deploys while an app
+ * moves to another target or is rolled back.
  */
 export const GITHUB_TOKEN_PERMISSIONS = [
   "Contents: Read and write",
@@ -43,7 +44,7 @@ export const GITHUB_TOKEN_PERMISSIONS = [
   "Pages: Read and write (only for GitHub Pages)",
   "Plan: Read (optional, for GitHub Pages on a private repository: an account permission, or an organization permission when an organization owns the repository)",
   "Issues: Read (only with the scheduled check)",
-  "Variables: Read and write (only with the scheduled check)",
+  "Variables: Read and write (for the scheduled check, for moving an app to another target, and for `opscrew rollback`)",
 ] as const;
 
 export interface GitHubClientOptions {
@@ -134,6 +135,19 @@ export interface WorkflowRunSource {
   headBranch: string;
   headSha: string;
   path: string;
+  /** When the run was created (ISO 8601). */
+  createdAt: string;
+  status: string;
+  /** `null` until the run completes. */
+  conclusion: string | null;
+  /** The head commit's message and time, when GitHub gives them. */
+  headCommit?: HeadCommit;
+}
+
+/** A run's head commit: its full message and its time (ISO 8601). */
+export interface HeadCommit {
+  message: string;
+  timestamp: string;
 }
 
 /** A repository's GitHub Pages site as GitHub reports it. */
@@ -225,6 +239,12 @@ export interface WorkflowRun {
   createdAt: string;
   /** 1 for the first attempt, then one more for each re-run (when GitHub says, as it does). */
   attempt?: number;
+  /** What started the run (`push`, `workflow_dispatch`…), when GitHub says. */
+  event?: string;
+  /** Its branch, when GitHub names one. */
+  headBranch?: string;
+  /** The head commit's message and time, when GitHub gives them. */
+  headCommit?: HeadCommit;
 }
 
 /** A file's entry in the contents API: just its git blob SHA. */
@@ -249,6 +269,10 @@ const IssueSchema = z.looseObject({
 const VariableSchema = z.looseObject({ value: z.string() });
 const PullSchema = z.looseObject({ number: z.number(), html_url: z.string() });
 const PublicKeySchema = z.looseObject({ key_id: z.string(), key: z.string() });
+const HeadCommitSchema = z
+  .looseObject({ message: z.string(), timestamp: z.string() })
+  .nullable()
+  .optional();
 const RunSchema = z.looseObject({
   id: z.number(),
   status: z.string(),
@@ -257,15 +281,31 @@ const RunSchema = z.looseObject({
   head_sha: z.string(),
   created_at: z.string(),
   run_attempt: z.number().int().positive().optional(),
+  event: z.string().optional(),
+  head_branch: z.string().nullable().optional(),
+  head_commit: HeadCommitSchema,
 });
 const RunSourceSchema = z.looseObject({
   event: z.string(),
   head_repository: z.looseObject({ full_name: z.string() }),
   head_branch: z.string(),
   head_sha: z.string(),
+  head_commit: HeadCommitSchema,
   path: z.string(),
   repository: z.looseObject({ full_name: z.string() }),
+  created_at: z.string(),
+  status: z.string(),
+  conclusion: z.string().nullable(),
 });
+/** A file's text from the contents API: base64, or `none` for a file over 1 MB. */
+const FileSchema = z.looseObject({
+  type: z.literal("file"),
+  size: z.number(),
+  encoding: z.string(),
+  content: z.string(),
+});
+/** The largest file whose text the contents API sends. */
+const FILE_TEXT_LIMIT = 1024 * 1024;
 const UserSchema = z.looseObject({ login: z.string(), id: z.number() });
 const AccountSchema = z.looseObject({ id: z.number(), type: z.string() });
 const BranchPoliciesSchema = z.looseObject({
@@ -560,7 +600,15 @@ function toWorkflowRun(run: z.infer<typeof RunSchema>): WorkflowRun {
     headSha: run.head_sha,
     createdAt: run.created_at,
     ...(run.run_attempt !== undefined ? { attempt: run.run_attempt } : {}),
+    ...(run.event !== undefined ? { event: run.event } : {}),
+    ...(typeof run.head_branch === "string" ? { headBranch: run.head_branch } : {}),
+    ...headCommitOf(run.head_commit),
   };
+}
+
+/** `{ headCommit }` when GitHub gave the run's head commit, else nothing. */
+function headCommitOf(commit: z.infer<typeof HeadCommitSchema>): { headCommit?: HeadCommit } {
+  return commit ? { headCommit: { message: commit.message, timestamp: commit.timestamp } } : {};
 }
 
 /** The workflow file name GitHub accepts as a workflow id (`.github/workflows/x.yml` → `x.yml`). */
@@ -807,16 +855,67 @@ export class GitHubClient {
     ref: string,
   ): Promise<string | undefined> {
     const what = `read ${path} on ${ref}`;
-    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    const json = await this.#contents(owner, repo, path, ref, what);
+    return json === undefined ? undefined : this.#parse(ContentSchema, json, what).sha;
+  }
+
+  /**
+   * The UTF-8 text of `path` (repository-relative, `/`-separated) at `ref`, from the contents API;
+   * `undefined` when GitHub answers 404. A file over 1 MB, whose text GitHub does not send, is
+   * refused.
+   */
+  async fileText(
+    owner: string,
+    repo: string,
+    path: string,
+    ref: string,
+  ): Promise<string | undefined> {
+    const what = `read ${path} at ${ref}`;
+    const json = await this.#contents(owner, repo, path, ref, what);
+    if (json === undefined) return undefined;
+    const file = this.#parse(FileSchema, json, what);
+    if (file.size > FILE_TEXT_LIMIT) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `${path} at ${ref} is larger than 1 MB, more than OpsCrew reads from GitHub.`,
+      );
+    }
+    if (file.encoding !== "base64") {
+      throw new OpsCrewError(
+        "PROVIDER_ERROR",
+        `GitHub sent ${path} at ${ref} in an answer OpsCrew can't read.`,
+        { hint: "The GitHub API may have changed; please report this to OpsCrew." },
+      );
+    }
+    return Buffer.from(file.content, "base64").toString("utf8");
+  }
+
+  /**
+   * `GET /repos/{owner}/{repo}/contents/{path}?ref={ref}`; `undefined` when GitHub answers 404.
+   * A path that is not a repository-relative file path is refused before any request.
+   */
+  async #contents(
+    owner: string,
+    repo: string,
+    path: string,
+    ref: string,
+    what: string,
+  ): Promise<unknown> {
+    const segments = path.split("/");
+    if (segments.some((segment) => segment === "" || segment === "." || segment === "..")) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `"${path}" is not a file path inside the repository (like opscrew/plan.yaml).`,
+      );
+    }
     const query = new URLSearchParams({ ref });
     const { status, json } = await this.#request(
       "GET",
-      `/repos/${owner}/${repo}/contents/${encoded}?${query}`,
+      `/repos/${owner}/${repo}/contents/${segments.map(encodeURIComponent).join("/")}?${query}`,
       what,
       { ok: [404] },
     );
-    if (status === 404) return undefined;
-    return this.#parse(ContentSchema, json, what).sha;
+    return status === 404 ? undefined : json;
   }
 
   /** Refuses input that is not a repository, a branch, one root file and a message. */
@@ -1434,11 +1533,11 @@ export class GitHubClient {
     );
   }
 
-  /** Lists recent runs of a workflow, newest first. */
+  /** Lists recent runs of a workflow, newest first, of one branch and event when given. */
   async listWorkflowRuns(
     owner: string,
     repo: string,
-    options: { workflowFile: string; branch?: string; perPage?: number },
+    options: { workflowFile: string; branch?: string; event?: string; perPage?: number },
   ): Promise<WorkflowRun[]> {
     return (await this.#workflowRuns(owner, repo, options, RunSchema)).map(toWorkflowRun);
   }
@@ -1447,12 +1546,19 @@ export class GitHubClient {
   async #workflowRuns<T>(
     owner: string,
     repo: string,
-    options: { workflowFile: string; branch?: string; status?: string; perPage?: number },
+    options: {
+      workflowFile: string;
+      branch?: string;
+      event?: string;
+      status?: string;
+      perPage?: number;
+    },
     schema: z.ZodType<T>,
   ): Promise<T[]> {
     const what = "list workflow runs";
     const query = new URLSearchParams({ per_page: String(options.perPage ?? 5) });
     if (options.branch) query.set("branch", options.branch);
+    if (options.event) query.set("event", options.event);
     if (options.status) query.set("status", options.status);
     const { json } = await this.#request(
       "GET",
@@ -1495,6 +1601,10 @@ export class GitHubClient {
       headBranch: run.head_branch,
       headSha: run.head_sha,
       path: run.path,
+      createdAt: run.created_at,
+      status: run.status,
+      conclusion: run.conclusion,
+      ...headCommitOf(run.head_commit),
     };
   }
 
@@ -1853,6 +1963,32 @@ export class GitHubClient {
     credential?: RegistryCredential,
   ): Promise<string | undefined> {
     return this.#ghcr.taggedDigest(owner, image, tag, credential);
+  }
+
+  /**
+   * Every tag of `ghcr.io/<owner>/<image>`, alphabetically, read with `credential`, else the
+   * client's token; `undefined` when GHCR has no such image. GHCR lists tags only for a classic
+   * token with `read:packages` (or Actions' `GITHUB_TOKEN`).
+   */
+  async imageTags(
+    owner: string,
+    image: string,
+    credential?: RegistryCredential,
+  ): Promise<string[] | undefined> {
+    return this.#ghcr.tags(owner, image, credential);
+  }
+
+  /**
+   * Each tag's digest and what GHCR shows of that image (see {@link imageFacts}), read with one
+   * pull token for `credential`, else the client's token. A tag GHCR does not have has no digest.
+   */
+  async describeTags(
+    owner: string,
+    image: string,
+    tags: string[],
+    credential?: RegistryCredential,
+  ): Promise<{ tag: string; digest?: string; facts?: ImageFacts }[]> {
+    return this.#ghcr.describeTags(owner, image, tags, credential);
   }
 
   /**

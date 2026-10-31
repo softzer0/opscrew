@@ -256,10 +256,12 @@ describe("getRepo", () => {
 });
 
 describe("GITHUB_TOKEN_PERMISSIONS", () => {
-  it("lists Issues and Variables, only with the scheduled check", () => {
+  it("lists Issues only with the scheduled check, and Variables for the check, a move and a rollback", () => {
     expect(GITHUB_TOKEN_PERMISSIONS).toContain("Issues: Read (only with the scheduled check)");
-    expect(GITHUB_TOKEN_PERMISSIONS).toContain(
-      "Variables: Read and write (only with the scheduled check)",
-    );
+    const variables = GITHUB_TOKEN_PERMISSIONS.find((line) => line.startsWith("Variables:"));
+    expect(variables).toContain("Read and write");
+    expect(variables).toContain("scheduled check");
+    expect(variables).toContain("moving an app");
+    expect(variables).toContain("`opscrew rollback`");
   });
 });

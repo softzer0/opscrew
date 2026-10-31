@@ -252,6 +252,9 @@ describe("opscrew promote", () => {
         headBranch: "main",
         headSha: commit,
         path: ".github/workflows/opscrew-deploy-staging.yml",
+        createdAt: "2026-10-11T12:00:00Z",
+        status: "completed",
+        conclusion: "success",
       }),
       getWorkflowRun: async () => ({
         ...waiting,

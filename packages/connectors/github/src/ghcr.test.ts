@@ -434,20 +434,278 @@ describe("imageFacts", () => {
   });
 });
 
-describe("workflowRun", () => {
-  it("reads the run's repository, event, head repository, branch, commit and workflow file", async () => {
+describe("imageTags", () => {
+  const TAGS = `${V2}/tags/list`;
+  const next = (last: string) => ({
+    link: `</v2/acme/shop/tags/list?last=${last}&n=100>; rel="next"`,
+  });
+
+  it("lists every tag, following GHCR's relative Link pages, with one pull token", async () => {
     const { fetch, calls } = fakeFetch({
-      "GET /repos/acme/shop/actions/runs/123456": {
-        body: {
-          id: 123456,
-          event: "pull_request",
-          head_branch: "main",
-          head_sha: "b".repeat(40),
-          path: ".github/workflows/opscrew-deploy.yml",
-          repository: { id: 1, full_name: "acme/shop" },
-          head_repository: { id: 2, full_name: "mallory/shop" },
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [`${TAGS}?n=`]: { body: { name: "acme/shop", tags: ["a1", "b2"] }, headers: next("b2") },
+      [`${TAGS}?last=b2`]: { body: { name: "acme/shop", tags: ["c3"] }, headers: next("c3") },
+      [`${TAGS}?last=c3`]: { body: { name: "acme/shop", tags: ["opscrew-prod"] } },
+    });
+    const client = new GitHubClient({ token: TOKEN, fetch });
+    expect(await client.imageTags("acme", "shop")).toEqual(["a1", "b2", "c3", "opscrew-prod"]);
+
+    expect(calls.filter((c) => c.url.startsWith("https://ghcr.io/token"))).toHaveLength(1);
+    const lists = calls.filter((c) => c.url.includes("/tags/list"));
+    expect(lists.map((c) => c.url)).toEqual([
+      "https://ghcr.io/v2/acme/shop/tags/list?n=100",
+      "https://ghcr.io/v2/acme/shop/tags/list?last=b2&n=100",
+      "https://ghcr.io/v2/acme/shop/tags/list?last=c3&n=100",
+    ]);
+    for (const call of lists) expect(call.headers.Authorization).toBe(`Bearer ${PULL_TOKEN}`);
+  });
+
+  it("stops when GHCR names the same next page again", async () => {
+    const { fetch, calls } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [TAGS]: { body: { name: "acme/shop", tags: ["a1"] }, headers: next("a1") },
+    });
+    const error = await failure(
+      new GitHubClient({ token: TOKEN, fetch }).imageTags("acme", "shop"),
+    );
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toBe(
+      "GHCR kept sending more pages of the tags of ghcr.io/acme/shop; run the command again, and report it to OpsCrew if it keeps happening.",
+    );
+    expect(calls.filter((c) => c.url.includes("/tags/list"))).toHaveLength(2);
+  });
+
+  it("stops after 100 pages", async () => {
+    const pages = Array.from({ length: 150 }, (_, i) => ({
+      body: { name: "acme/shop", tags: [`t${i}`] },
+      headers: next(`t${i}`),
+    }));
+    const { fetch, calls } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [TAGS]: pages,
+    });
+    const error = await failure(
+      new GitHubClient({ token: TOKEN, fetch }).imageTags("acme", "shop"),
+    );
+    expect(error.message).toContain("GHCR kept sending more pages");
+    expect(calls.filter((c) => c.url.includes("/tags/list"))).toHaveLength(100);
+  });
+
+  it("refuses a next page that is not this image's tag list", async () => {
+    const { fetch, calls } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [TAGS]: {
+        body: { name: "acme/shop", tags: ["a1"] },
+        headers: { link: '</v2/acme/other/tags/list?last=a1&n=100>; rel="next"' },
+      },
+    });
+    const error = await failure(
+      new GitHubClient({ token: TOKEN, fetch }).imageTags("acme", "shop"),
+    );
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(calls.filter((c) => c.url.includes("/tags/list"))).toHaveLength(1);
+  });
+
+  it("reads an empty package's null tag list as no tags", async () => {
+    const { fetch } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [TAGS]: { body: { name: "acme/shop", tags: null } },
+    });
+    expect(await new GitHubClient({ token: TOKEN, fetch }).imageTags("acme", "shop")).toEqual([]);
+  });
+
+  it("is undefined for a package GHCR does not have (404)", async () => {
+    const { fetch } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [TAGS]: { status: 404, body: { errors: [{ code: "NAME_UNKNOWN" }] } },
+    });
+    expect(
+      await new GitHubClient({ token: TOKEN, fetch }).imageTags("acme", "shop"),
+    ).toBeUndefined();
+  });
+
+  it("names OPSCREW_GHCR_READ_TOKEN when GHCR refuses the list, without printing a token", async () => {
+    for (const status of [401, 403]) {
+      const { fetch } = fakeFetch({
+        "GET /user": { body: ME },
+        [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+        [TAGS]: {
+          status,
+          body: {
+            errors: [
+              { code: "DENIED", message: "The token provided does not match expected scopes." },
+            ],
+          },
+        },
+      });
+      const error = await failure(
+        new GitHubClient({ token: TOKEN, fetch }).imageTags("acme", "shop"),
+      );
+      expect(error.code).toBe("CREDENTIALS_INVALID");
+      expect(error.message).toContain("ghcr.io/acme/shop");
+      expect(error.hint).toContain("OPSCREW_GHCR_READ_TOKEN");
+      expect(error.hint).toContain("read:packages");
+    }
+  });
+
+  it("registers the read token and the pull token with the redactor before any read", async () => {
+    const readToken = fakeSecret("github-token", "ghcr-read");
+    const redactor = new Redactor();
+    const masked = (value: string) => !redactor.redact(value).includes(value);
+    const seen: boolean[][] = [];
+    const routes = fakeFetch({
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [TAGS]: { body: { name: "acme/shop", tags: ["a1"] } },
+    });
+    const fetch: typeof routes.fetch = async (input, init) => {
+      seen.push([masked(readToken), masked(PULL_TOKEN)]);
+      return routes.fetch(input, init);
+    };
+    const client = new GitHubClient({ token: TOKEN, fetch, redactor });
+    expect(
+      await client.imageTags("acme", "shop", { username: "deployer", token: readToken }),
+    ).toEqual(["a1"]);
+    // The read token before it is sent for a pull token; the pull token before the list.
+    expect(seen).toEqual([
+      [true, false],
+      [true, true],
+    ]);
+  });
+
+  it("refuses an image name that is not one before calling GHCR", async () => {
+    const { fetch, calls } = fakeFetch({});
+    const error = await failure(
+      new GitHubClient({ token: TOKEN, fetch }).imageTags("acme", "../shop"),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("describeTags", () => {
+  it("gives each tag's digest and facts with one pull token, and no digest for a missing tag", async () => {
+    const { digest, index, routes } = image();
+    const { fetch, calls } = fakeFetch({
+      ...routes,
+      [`${V2}/manifests/abc1234-staging`]: {
+        text: index,
+        headers: { "content-type": INDEX_TYPE, "docker-content-digest": digest },
+      },
+      [`${V2}/manifests/def5678-staging`]: {
+        status: 404,
+        body: { errors: [{ code: "MANIFEST_UNKNOWN" }] },
+      },
+    });
+    const client = new GitHubClient({ token: TOKEN, fetch });
+    expect(
+      await client.describeTags("acme", "shop", ["abc1234-staging", "def5678-staging"]),
+    ).toEqual([
+      {
+        tag: "abc1234-staging",
+        digest,
+        facts: {
+          provenance: { builderId: BUILDER, runId: 123456, repository: "acme/shop" },
+          platforms: [{ architecture: "amd64", os: "linux" }],
         },
       },
+      { tag: "def5678-staging" },
+    ]);
+    expect(calls.filter((c) => c.url.startsWith("https://ghcr.io/token"))).toHaveLength(1);
+    // The index read by tag is not read again by digest.
+    expect(calls.filter((c) => c.url.endsWith(`/manifests/${digest}`))).toHaveLength(0);
+  });
+
+  it("gives a digest without facts when GHCR no longer has its manifest", async () => {
+    const digest = digestOf("gone");
+    const { fetch } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [`${V2}/manifests/abc1234-staging`]: {
+        body: { schemaVersion: 2, manifests: [] },
+        headers: { "docker-content-digest": digest },
+      },
+      [`${V2}/manifests/${digest}`]: { status: 404 },
+    });
+    expect(
+      await new GitHubClient({ token: TOKEN, fetch }).describeTags("acme", "shop", [
+        "abc1234-staging",
+      ]),
+    ).toEqual([{ tag: "abc1234-staging", digest }]);
+  });
+
+  it("reads with an explicit registry credential, and masks it and the pull token", async () => {
+    const readToken = fakeSecret("github-token", "ghcr-read");
+    const { digest, index, routes } = image();
+    const { "GET /user": _user, ...registry } = routes;
+    const { fetch, calls } = fakeFetch({
+      ...registry,
+      [`${V2}/manifests/abc1234-staging`]: {
+        text: index,
+        headers: { "docker-content-digest": digest },
+      },
+    });
+    const redactor = new Redactor();
+    const client = new GitHubClient({ token: TOKEN, fetch, redactor });
+    const described = await client.describeTags("acme", "shop", ["abc1234-staging"], {
+      username: "deployer",
+      token: readToken,
+    });
+    expect(described[0]?.digest).toBe(digest);
+    expect(JSON.stringify(calls)).not.toContain(TOKEN);
+    const text = redactor.redact(`${readToken} ${PULL_TOKEN}`);
+    expect(text).not.toContain(readToken);
+    expect(text).not.toContain(PULL_TOKEN);
+  });
+
+  it("refuses a tag that is not one before calling GHCR", async () => {
+    const { fetch, calls } = fakeFetch({});
+    const error = await failure(
+      new GitHubClient({ token: TOKEN, fetch }).describeTags("acme", "shop", ["ok", "../x"]),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("explains a refused read without printing a token", async () => {
+    const { fetch } = fakeFetch({
+      "GET /user": { body: ME },
+      [TOKEN_ROUTE]: { body: { token: PULL_TOKEN } },
+      [`${V2}/manifests/abc1234-staging`]: { status: 403, body: { errors: [{ code: "DENIED" }] } },
+    });
+    const error = await failure(
+      new GitHubClient({ token: TOKEN, fetch }).describeTags("acme", "shop", ["abc1234-staging"]),
+    );
+    expect(error.code).toBe("CREDENTIALS_INVALID");
+    expect(error.hint).toContain("OPSCREW_GHCR_READ_TOKEN");
+  });
+});
+
+describe("workflowRun", () => {
+  const MESSAGE = "Fix checkout totals\n\nThe long description";
+  const record = (extra: Record<string, unknown> = {}) => ({
+    id: 123456,
+    event: "pull_request",
+    status: "completed",
+    conclusion: "success",
+    created_at: "2026-10-30T09:00:00Z",
+    head_branch: "main",
+    head_sha: "b".repeat(40),
+    head_commit: { id: "b".repeat(40), message: MESSAGE, timestamp: "2026-10-30T08:59:00Z" },
+    path: ".github/workflows/opscrew-deploy.yml",
+    repository: { id: 1, full_name: "acme/shop" },
+    head_repository: { id: 2, full_name: "mallory/shop" },
+    ...extra,
+  });
+
+  it("reads the run's source, state, time and head commit", async () => {
+    const { fetch, calls } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/123456": { body: record() },
     });
     expect(
       await new GitHubClient({ token: TOKEN, fetch }).workflowRun("acme", "shop", 123456),
@@ -458,26 +716,37 @@ describe("workflowRun", () => {
       headBranch: "main",
       headSha: "b".repeat(40),
       path: ".github/workflows/opscrew-deploy.yml",
+      createdAt: "2026-10-30T09:00:00Z",
+      status: "completed",
+      conclusion: "success",
+      headCommit: { message: MESSAGE, timestamp: "2026-10-30T08:59:00Z" },
     });
     expect(calls[0]?.path).toBe("/repos/acme/shop/actions/runs/123456");
   });
 
-  it("refuses a run record without its event or head repository", async () => {
+  it("has no head commit when GitHub gives none, and a run in progress has no conclusion", async () => {
     const { fetch } = fakeFetch({
-      "GET /repos/acme/shop/actions/runs/7": {
-        body: {
-          id: 7,
-          head_branch: "main",
-          head_sha: "b".repeat(40),
-          path: ".github/workflows/opscrew-deploy.yml",
-          repository: { id: 1, full_name: "acme/shop" },
-        },
+      "GET /repos/acme/shop/actions/runs/123456": {
+        body: record({ head_commit: null, status: "in_progress", conclusion: null }),
       },
+    });
+    const run = await new GitHubClient({ token: TOKEN, fetch }).workflowRun("acme", "shop", 123456);
+    expect(run).toMatchObject({ status: "in_progress", conclusion: null });
+    expect(run).not.toHaveProperty("headCommit");
+  });
+
+  it("refuses a run record without its event or head repository, without its commit message", async () => {
+    const { event: _event, head_repository: _head, ...partial } = record();
+    const { fetch } = fakeFetch({
+      "GET /repos/acme/shop/actions/runs/7": { body: partial },
     });
     const error = await new GitHubClient({ token: TOKEN, fetch })
       .workflowRun("acme", "shop", 7)
       .catch((e: unknown) => e);
     expect(error).toMatchObject({ code: "PROVIDER_ERROR" });
+    expect(`${(error as OpsCrewError).message} ${(error as OpsCrewError).hint}`).not.toContain(
+      "checkout totals",
+    );
   });
 
   it("is undefined for a run GitHub does not have (404)", async () => {

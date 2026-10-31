@@ -250,6 +250,9 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
       headBranch: "main",
       headSha: build.commit,
       path: `.github/workflows/opscrew-deploy${environment === "prod" ? "" : `-${environment}`}.yml`,
+      createdAt: "2026-10-11T12:00:00Z",
+      status: "completed",
+      conclusion: "success",
       ...build.run,
     });
     this.tags.set(environmentTag(build.commit, environment), digest);

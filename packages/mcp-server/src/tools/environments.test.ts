@@ -82,6 +82,9 @@ class FakePromoteGitHub implements PromoteGitHubApi {
       headBranch: "main",
       headSha: STAGING_COMMIT,
       path: ".github/workflows/opscrew-deploy-staging.yml",
+      createdAt: "2026-10-11T12:00:00Z",
+      status: "completed",
+      conclusion: "success",
     };
   }
   async dispatchWorkflow(_owner: string, _repo: string, workflowFile: string) {

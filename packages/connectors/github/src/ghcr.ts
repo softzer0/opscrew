@@ -67,6 +67,15 @@ const SlsaV1Schema = z.looseObject({
   }),
 });
 const PullTokenSchema = z.looseObject({ token: z.string().min(1) });
+/** A page of `tags/list`; an image without tags may give `null`. */
+const TagListSchema = z.looseObject({ tags: z.array(z.string()).nullable() });
+
+/** Tags asked for per page of `tags/list`. */
+const TAGS_PAGE = 100;
+/** The most pages of `tags/list` read before OpsCrew stops following GHCR's `Link`. */
+const MAX_TAG_PAGES = 100;
+/** GHCR's next page: `Link: </v2/<name>/tags/list?last=<tag>&n=<count>>; rel="next"`. */
+const NEXT_PAGE = /^<\/v2\/([^>]+)>;\s*rel="next"/;
 
 const DENIED_HINT =
   "GitHub's container registry needs a classic token with read:packages, since it may not accept fine-grained tokens. Set OPSCREW_GHCR_READ_TOKEN to one (or use the GitHub CLI's login after `gh auth refresh -s read:packages`), then run the command again.";
@@ -123,6 +132,12 @@ function imageName(owner: string, image: string): string {
   return name;
 }
 
+function requireTag(tag: string): void {
+  if (!TAG.test(tag)) {
+    throw new OpsCrewError("INVALID_INPUT", `"${tag}" is not an image tag.`);
+  }
+}
+
 function requireDigest(digest: string): void {
   if (!DIGEST.test(digest)) {
     throw new OpsCrewError("INVALID_INPUT", `"${digest}" is not an image digest (sha256:…).`);
@@ -160,15 +175,70 @@ export class GhcrReader {
     credential?: RegistryCredential,
   ): Promise<string | undefined> {
     const name = imageName(owner, image);
-    if (!TAG.test(tag)) {
-      throw new OpsCrewError("INVALID_INPUT", `"${tag}" is not an image tag.`);
-    }
-    const what = `read ghcr.io/${name}:${tag}`;
+    requireTag(tag);
+    const token = await this.#pullToken(name, `read ghcr.io/${name}:${tag}`, credential);
+    return (await this.#tagged(token, name, tag))?.digest;
+  }
+
+  /**
+   * Every tag of the image, read page by page (`?n=`, then GHCR's relative `Link` header) with
+   * one pull token, in GHCR's (alphabetical) order; `undefined` when GHCR has no such image.
+   */
+  async tags(
+    owner: string,
+    image: string,
+    credential?: RegistryCredential,
+  ): Promise<string[] | undefined> {
+    const name = imageName(owner, image);
+    const what = `list the tags of ghcr.io/${name}`;
     const token = await this.#pullToken(name, what, credential);
-    const found = await this.#get(token, `${name}/manifests/${tag}`, what);
-    if (found === undefined) return undefined;
-    const header = found.headers.get("docker-content-digest");
-    return header !== null && DIGEST.test(header) ? header : `sha256:${sha256Hex(found.bytes)}`;
+    const tags: string[] = [];
+    let path = `${name}/tags/list?n=${TAGS_PAGE}`;
+    for (let page = 0; page < MAX_TAG_PAGES; page++) {
+      const found = await this.#get(token, path, what);
+      if (found === undefined) return undefined;
+      tags.push(...(parseJson(TagListSchema, found.bytes, what).tags ?? []));
+      const next = NEXT_PAGE.exec(found.headers.get("link") ?? "")?.[1];
+      if (next === undefined) return tags;
+      if (!next.startsWith(`${name}/tags/list?`)) {
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          `GHCR named a next page of the tags of ghcr.io/${name} that is not one; run the command again, and report it to OpsCrew if it keeps happening.`,
+        );
+      }
+      if (next === path) break;
+      path = next;
+    }
+    throw new OpsCrewError(
+      "PROVIDER_ERROR",
+      `GHCR kept sending more pages of the tags of ghcr.io/${name}; run the command again, and report it to OpsCrew if it keeps happening.`,
+    );
+  }
+
+  /**
+   * Each tag's digest and the facts of that image, read with one pull token. A tag GHCR does not
+   * have has no digest; an image GHCR no longer has has no facts.
+   */
+  async describeTags(
+    owner: string,
+    image: string,
+    tags: string[],
+    credential?: RegistryCredential,
+  ): Promise<{ tag: string; digest?: string; facts?: ImageFacts }[]> {
+    const name = imageName(owner, image);
+    for (const tag of tags) requireTag(tag);
+    const token = await this.#pullToken(name, `read the tags of ghcr.io/${name}`, credential);
+    const described: { tag: string; digest?: string; facts?: ImageFacts }[] = [];
+    for (const tag of tags) {
+      const tagged = await this.#tagged(token, name, tag);
+      if (tagged === undefined) {
+        described.push({ tag });
+        continue;
+      }
+      const facts = await this.#facts(token, name, tagged.digest, tagged.bytes);
+      described.push({ tag, digest: tagged.digest, ...(facts === undefined ? {} : { facts }) });
+    }
+    return described;
   }
 
   /**
@@ -183,9 +253,39 @@ export class GhcrReader {
   ): Promise<ImageFacts | undefined> {
     const name = imageName(owner, image);
     requireDigest(digest);
+    const token = await this.#pullToken(name, `read ghcr.io/${name}@${digest}`, credential);
+    return this.#facts(token, name, digest);
+  }
+
+  /** The digest `tag` points to and the manifest GHCR sent for it; `undefined` on 404. */
+  async #tagged(
+    token: string,
+    name: string,
+    tag: string,
+  ): Promise<{ digest: string; bytes: Buffer } | undefined> {
+    const found = await this.#get(token, `${name}/manifests/${tag}`, `read ghcr.io/${name}:${tag}`);
+    if (found === undefined) return undefined;
+    const header = found.headers.get("docker-content-digest");
+    const digest =
+      header !== null && DIGEST.test(header) ? header : `sha256:${sha256Hex(found.bytes)}`;
+    return { digest, bytes: found.bytes };
+  }
+
+  /**
+   * The facts of the image `digest`, from `read` when it is that digest's manifest (already read
+   * by tag), else from a read by digest.
+   */
+  async #facts(
+    token: string,
+    name: string,
+    digest: string,
+    read?: Buffer,
+  ): Promise<ImageFacts | undefined> {
     const what = `read ghcr.io/${name}@${digest}`;
-    const token = await this.#pullToken(name, what, credential);
-    const found = await this.#getByDigest(token, name, "manifests", digest, what);
+    const found =
+      read !== undefined && `sha256:${sha256Hex(read)}` === digest
+        ? read
+        : await this.#getByDigest(token, name, "manifests", digest, what);
     if (found === undefined) return undefined;
     const manifest = parseJson(ImageSchema, found, what);
     if (!("manifests" in manifest)) {
