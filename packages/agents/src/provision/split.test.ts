@@ -1,0 +1,906 @@
+import { randomBytes } from "node:crypto";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import {
+  type ApplyOptions,
+  type ApplyResult,
+  type HostFacts,
+  HostFactsSchema,
+  type HostPlan,
+  hostPlanHash,
+} from "@opscrew/connector-ssh-host";
+import type { IacEngine, PlanSummary, RemoteExec, ResourceChange } from "@opscrew/contracts";
+import { findExecutable } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
+import { IMAGES } from "@opscrew/iac-templates";
+import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
+import { describe, expect, it } from "vitest";
+import { allocateNetwork, type NetworkHostFacts } from "../network";
+import { splitPlan, withNetwork } from "../network/__fixtures__/plans";
+import { providerProfile } from "../providers";
+import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
+import {
+  readServerAddresses,
+  recordOwnServer,
+  updateServerAddresses,
+} from "../shared/server-record";
+import {
+  createProject,
+  createTestPhaseDeps,
+  ED25519,
+  ED25519_FINGERPRINT,
+  FakeEngine,
+  FakeGitHub,
+  FakeHostServer,
+  fakeSharedCloudflare,
+  freshFacts,
+  OWN_IPV4,
+  OwnEngine,
+  ownCloudflare,
+  ownPlan,
+  ownRunner,
+  PUBLIC_CHANGES,
+  preparedServerFacts,
+  publicOutputs,
+  readyRemote,
+  ScriptedApprovalHandler,
+  ScriptedRunner,
+  SERVER_IPV4,
+  SERVER_IPV6,
+  testKeyMaker,
+  testPlan,
+  writeFakeState,
+} from "../testing";
+import { lastServerSetup } from "./own";
+import { runProvision } from "./run";
+import type { ProvisionServices } from "./types";
+
+const DATA_IPV4 = "203.0.113.30";
+const DATA_IPV6 = "2001:db8::30";
+/** The pull request the first run opened, while it is still open. */
+const OPEN_PULL = { number: 7, url: "https://github.com/acme/shop/pull/7" };
+const HCLOUD = fakeSecret("hcloud-token");
+const STRIPE = fakeSecret("stripe-live-key");
+
+/** The state's outputs after an apply: the app's server and the extra server `data`. */
+function splitOutputs(extra: Record<string, unknown> = {}) {
+  return {
+    server_ipv4: SERVER_IPV4,
+    server_ipv6: SERVER_IPV6,
+    server_id: "4711",
+    server_name: "shop",
+    url: `http://${SERVER_IPV4}`,
+    extra_servers: {
+      data: { ipv4: DATA_IPV4, ipv6: DATA_IPV6, id: "4712", name: "shop-data" },
+      ...extra,
+    },
+  };
+}
+
+/** What deploy reads on a server OpsCrew created: a fresh Ubuntu, root only through Docker. */
+function cloudFacts(network: HostFacts["network"] = null): HostFacts {
+  return HostFactsSchema.parse({
+    ...freshFacts({ user: "deploy", privilege: "docker" }),
+    network,
+  });
+}
+
+/** One host apply on a server OpsCrew created. */
+interface CloudApply {
+  host: string;
+  plan: HostPlan;
+  options: ApplyOptions;
+}
+
+/** The deploy user's host adapter on the servers OpsCrew created, by address. */
+function cloudHosts(facts: Record<string, HostFacts>) {
+  const inspected: { host: string; rootImage: string }[] = [];
+  const applies: CloudApply[] = [];
+  return {
+    inspected,
+    applies,
+    adapter: {
+      async inspect(remote: RemoteExec, options: { rootImage: string }) {
+        inspected.push({ host: remote.host, rootImage: options.rootImage });
+        return facts[remote.host] ?? cloudFacts();
+      },
+      async apply(remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult> {
+        if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");
+        applies.push({ host: remote.host, plan, options });
+        return {
+          applied: plan.steps.filter((s) => s.state === "change").map((s) => s.id),
+          skipped: plan.steps.filter((s) => s.state !== "change").map((s) => s.id),
+        };
+      },
+    },
+  };
+}
+
+/**
+ * Real git, `ssh` that works, and `ssh-keyscan` answering with {@link ED25519}: on port 22 as
+ * a server OpsCrew created presents it, elsewhere named `[host]:port` as for the user's own.
+ */
+function keyscanRunner(): ScriptedRunner {
+  const own = ownRunner();
+  return new ScriptedRunner(async (command, args, options) => {
+    if (command === "ssh-keyscan" && !args.includes("-p")) {
+      const stdout = `${args[args.length - 1]} ssh-ed25519 ${ED25519}\n`;
+      return { exitCode: 0, stdout, stderr: "" };
+    }
+    return own.run(command, args, options);
+  });
+}
+
+/** The split plan (`db` on server `data`) on its private network, with the keys design made. */
+function networkedPlan(data: "cloud" | "own" = "cloud") {
+  const base = splitPlan({ data });
+  const facts: Record<string, NetworkHostFacts> =
+    data === "own" ? { data: { udpPortsInUse: [], wireguardInterfaces: [] } } : {};
+  const { network, privateKeys } = allocateNetwork(base, facts, testKeyMaker(data));
+  return { plan: withNetwork(base, network), privateKeys };
+}
+
+interface SplitSetup {
+  plan: DeployPlan;
+  privateKeys: Record<string, string>;
+  /** The engine fake (default {@link FakeEngine} with {@link splitOutputs}); it lists its calls. */
+  engine?: IacEngine & { readonly calls: string[] };
+  facts?: Record<string, HostFacts>;
+  services?: ProvisionServices;
+}
+
+async function setup(o: SplitSetup) {
+  const project = await createProject(o.plan);
+  await writeFile(join(project.root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
+  const engine = o.engine ?? new FakeEngine({ outputs: splitOutputs() });
+  const github = new FakeGitHub();
+  const handler = new ScriptedApprovalHandler(() => true);
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    OPSCREW_HOME: join(project.root, ".home-opscrew"),
+    HCLOUD_TOKEN: HCLOUD,
+    OPSCREW_APP_ENV_FILE: "production.env",
+  };
+  const deps = await createTestPhaseDeps({
+    root: project.root,
+    env,
+    runner: keyscanRunner(),
+    approvalHandler: handler,
+  });
+  deps.redactor.addLiteral(HCLOUD, "HCLOUD_TOKEN");
+  // Design keeps the network's private keys with the generated values.
+  await recordGeneratedEntries(deps, "network", o.privateKeys);
+  const hosts = cloudHosts(o.facts ?? {});
+  const services: ProvisionServices = {
+    engine: async () => engine,
+    provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+    github,
+    tcpConnect: async () => true,
+    remote: readyRemote,
+    sleep: async () => undefined,
+    sharedCloudflare: fakeSharedCloudflare(new FakeZone()),
+    serverHost: hosts.adapter,
+    ...o.services,
+  };
+  return { ...project, deps, engine, github, handler, services, hosts };
+}
+
+type Setup = Awaited<ReturnType<typeof setup>>;
+
+/**
+ * {@link setup} with `data` the user's own server (a fresh Ubuntu answering SSH on 2222, with
+ * `facts` over it): its address and login on this computer, its host key pinned at design.
+ */
+async function ownExtraSetup(
+  plan: DeployPlan,
+  privateKeys: Record<string, string>,
+  facts: Partial<HostFacts> = {},
+) {
+  const own = new FakeHostServer(
+    HostFactsSchema.parse({
+      ...freshFacts({
+        sshPorts: [2222],
+        addresses: [{ interface: "eth0", family: "ipv4", address: OWN_IPV4, public: true }],
+      }),
+      ...facts,
+    }),
+  );
+  const s = await setup({
+    plan,
+    privateKeys,
+    engine: new FakeEngine(),
+    services: { own: { host: own } },
+  });
+  await updateServerAddresses(s.deps.paths, (current) => ({
+    ...current,
+    servers: { data: { ipv4: OWN_IPV4 } },
+    ownServers: {
+      data: { host: OWN_IPV4, port: 2222, user: "root", agent: true, hostKey: ED25519_FINGERPRINT },
+    },
+  }));
+  return { ...s, own };
+}
+
+/**
+ * {@link setup} with the app on the user's own server (public mode on Cloudflare, a fresh Ubuntu),
+ * whose engine has `outputs` after its apply; run it with the host key `ED25519_FINGERPRINT`.
+ */
+async function ownAppSetup(
+  plan: DeployPlan,
+  privateKeys: Record<string, string>,
+  outputs: Record<string, unknown> = publicOutputs(),
+) {
+  const own = new FakeHostServer();
+  const engine = new OwnEngine(PUBLIC_CHANGES, outputs);
+  const s = await setup({
+    plan,
+    privateKeys,
+    engine,
+    services: {
+      own: { host: own },
+      cloudflare: ownCloudflare(),
+      providers: {
+        hetzner: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+      },
+    },
+  });
+  delete s.deps.env.TF_VAR_server_ipv4;
+  delete s.deps.env.TF_VAR_server_ipv6;
+  await recordOwnServer(s.deps.paths, {
+    host: OWN_IPV4,
+    port: 22,
+    user: "root",
+    agent: true,
+    reachable: true,
+  });
+  return { ...s, own, ownEngine: engine };
+}
+
+/** `plan` with Portainer on, reached only from the server (and its private address). */
+function withPortainer<P extends Omit<DeployPlan, "network">>(plan: P): P {
+  return { ...plan, portainer: { enabled: true, version: "2.45.2", access: "local" } };
+}
+
+/** `plan` on its private network with the device `laptop`; `own` names the user's own servers. */
+function withLaptop(plan: Omit<DeployPlan, "network">, own: readonly string[]) {
+  const keys = testKeyMaker("laptop");
+  const facts = Object.fromEntries(
+    own.map((name) => [name, { udpPortsInUse: [], wireguardInterfaces: [] }]),
+  );
+  const { network, privateKeys } = allocateNetwork(plan, facts, keys);
+  const prefix = network.range.split(".").slice(0, 3).join(".");
+  const laptop = {
+    name: "laptop",
+    address: `${prefix}.100`,
+    publicKey: keys().publicKey,
+    addedAt: "2026-10-30T10:00:00.000Z",
+  };
+  return {
+    plan: withNetwork(plan, { ...network, devices: [laptop] }),
+    privateKeys,
+    prefix,
+  };
+}
+
+/** Every user-visible or persisted text of the run, the saved plans and the committed files. */
+async function everything(s: Setup): Promise<string> {
+  const plans = s.deps.paths.files.plansDir;
+  const saved = await Promise.all(
+    (await readdir(plans)).map((name) => readFile(join(plans, name), "utf8")),
+  );
+  const committed = await s.git(s.root, "show", "HEAD");
+  return [
+    s.deps.reporter.text(),
+    JSON.stringify(s.deps.audit.entries),
+    JSON.stringify(s.handler.requests),
+    ...saved,
+    committed,
+  ].join("\n");
+}
+
+const titles = (s: Setup, kind: string) =>
+  s.handler.requests.filter((r) => r.kind === kind).map((r) => r.title);
+
+const stepOf = (plan: HostPlan, id: string) => plan.steps.find((step) => step.id === id);
+
+describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () => {
+  it("creates the extra cloud server, links each server by its own host plan and stores each server's secrets", async () => {
+    const { plan, privateKeys } = networkedPlan();
+    const s = await setup({ plan, privateKeys });
+    // A grant's password the device logins keep with the generated values.
+    const grant = randomBytes(16).toString("hex");
+    await recordGeneratedEntries(s.deps, "grants", { "laptop/db": grant });
+
+    const result = await runProvision(s.deps, { services: s.services });
+
+    // The network's host plans after the infrastructure, one per server, `app` first, each
+    // approved by its own hash, before the secrets and the pull request.
+    expect(s.handler.requests.map((r) => r.kind)).toEqual([
+      "repo-write",
+      "iac-apply",
+      "host-apply",
+      "host-apply",
+      "github-secrets",
+      "git-push",
+      "pull-request",
+    ]);
+    const network = titles(s, "host-apply");
+    expect(network[0]).toMatch(/^Apply the private network's host plan to server app /);
+    expect(network[1]).toMatch(/^Apply the private network's host plan to server data /);
+    expect(s.handler.requests.find((r) => r.kind === "host-apply")?.details).toContain(
+      "Host plan for server app",
+    );
+
+    // The extra server's address is on this computer only, and its host key is pinned.
+    expect((await readServerAddresses(s.deps.paths)).servers).toEqual({
+      data: { ipv4: DATA_IPV4, ipv6: DATA_IPV6 },
+    });
+    await expect(readFile(s.deps.paths.files.knownHosts, "utf8")).resolves.toContain(
+      `${DATA_IPV4} ssh-ed25519 ${ED25519}`,
+    );
+
+    // Each server inspected and changed as deploy, root through Docker in the pinned image.
+    expect(s.hosts.inspected).toEqual([
+      { host: SERVER_IPV4, rootImage: IMAGES.caddy.ref },
+      { host: DATA_IPV4, rootImage: IMAGES.caddy.ref },
+    ]);
+    expect(s.hosts.applies.map((a) => [a.host, a.options.rootImage])).toEqual([
+      [SERVER_IPV4, IMAGES.caddy.ref],
+      [DATA_IPV4, IMAGES.caddy.ref],
+    ]);
+    // Neither server holds its key yet, so each gets its own, and only its own.
+    expect(s.hosts.applies.map((a) => a.options.secrets?.wireguardKey)).toEqual([
+      privateKeys.app,
+      privateKeys.data,
+    ]);
+    // Postgres is published on data's private address: its host's own containers may reach it,
+    // and its filter lets the app's server in.
+    const [app, data] = s.hosts.applies.map((a) => a.plan);
+    expect(stepOf(app as HostPlan, "network")?.params.localPorts).toBe("");
+    expect(stepOf(data as HostPlan, "network")?.params).toMatchObject({
+      localPorts: "5432",
+      sshPort: 22,
+    });
+    expect(stepOf(data as HostPlan, "network-filter")?.title).toContain("TCP port 5432");
+
+    // The deploy reaches the extra server with its own secrets.
+    expect(s.github.secrets.get("OPSCREW_SERVER_DATA_HOST")).toBe(DATA_IPV4);
+    expect(s.github.secrets.get("OPSCREW_SERVER_DATA_KNOWN_HOSTS")).toBe(
+      `${DATA_IPV4} ssh-ed25519 ${ED25519}\n`,
+    );
+    // The pull request carries the extra server's Compose file and the workflow.
+    const committed = await s.git(s.root, "show", "--name-only", "--format=", "HEAD");
+    expect(committed).toContain("opscrew/runtime/servers/data/compose.yaml");
+    expect(committed).toContain(".github/workflows/opscrew-deploy.yml");
+    expect(result.serverHostPlanHashes).toHaveLength(2);
+
+    // The approvals are on record, and where each service runs from now on, also in the commit.
+    const after = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(after.approvals.filter((a) => a.kind === "host-apply")).toHaveLength(2);
+    expect(after.deployment.placement).toEqual({ db: "data" });
+    expect(await s.git(s.root, "show", "HEAD:opscrew/plan.yaml")).toContain("placement:");
+
+    // Provision's rewrite of the generated values keeps the network's keys and the grants.
+    const generated = JSON.parse(await readFile(generatedValuesFile(s.deps), "utf8"));
+    expect(generated.network).toEqual(privateKeys);
+    expect(generated.grants).toEqual({ "laptop/db": grant });
+
+    // No private key reaches a plan, the output, the audit log or the repository.
+    const text = await everything(s);
+    for (const key of Object.values(privateKeys)) expect(text).not.toContain(key);
+    expect(text).not.toContain(grant);
+    expect(text).not.toContain(STRIPE);
+  });
+
+  it("passes a server's private key only when it lacks it or holds another", async () => {
+    const { plan, privateKeys } = networkedPlan();
+    const data = plan.network?.members.find((m) => m.name === "data");
+    const holds = (publicKey: string): HostFacts["network"] => ({
+      dropIn: null,
+      interfaces: [
+        {
+          name: "wg-opscrew0",
+          config: "0".repeat(64),
+          publicKey,
+          enabled: true,
+          active: true,
+          addresses: [],
+          peers: [],
+        },
+      ],
+      filterUnit: null,
+      filters: [],
+    });
+    const s = await setup({
+      plan,
+      privateKeys,
+      // The app's server holds another key; data holds its own.
+      facts: {
+        [SERVER_IPV4]: cloudFacts(holds(testKeyMaker("other")().publicKey)),
+        [DATA_IPV4]: cloudFacts(holds(data?.publicKey ?? "")),
+      },
+    });
+
+    await runProvision(s.deps, { services: s.services });
+
+    expect(s.hosts.applies.map((a) => a.options.secrets)).toEqual([
+      { wireguardKey: privateKeys.app },
+      {},
+    ]);
+  });
+
+  it("stops before a server's plan when it needs its key and this computer has none", async () => {
+    const { plan, privateKeys } = networkedPlan();
+    const s = await setup({ plan, privateKeys: { app: privateKeys.app as string } });
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow(
+      /Server data needs its private network key, and this computer does not have it/,
+    );
+    expect(s.hosts.applies.map((a) => a.host)).toEqual([SERVER_IPV4]);
+  });
+
+  it("with --plan-only, leaves the network's host plans for when the servers exist", async () => {
+    const { plan, privateKeys } = networkedPlan();
+    const s = await setup({ plan, privateKeys });
+
+    const result = await runProvision(s.deps, { services: s.services, planOnly: true });
+
+    expect(s.handler.requests.map((r) => r.kind)).toEqual(["repo-write"]);
+    expect(s.deps.reporter.text()).toContain(
+      "The private network's host plans follow once every server exists and is set up",
+    );
+    expect(result.serverHostPlanHashes).toBeUndefined();
+  });
+
+  it("with --plan-only on servers that exist, shows each server's plan, and --approve takes one hash per server", async () => {
+    const { plan, privateKeys } = networkedPlan();
+    const deployed = DeployPlanSchema.parse({
+      ...plan,
+      deployment: { lastApplyAt: "2026-10-12T08:00:00.000Z", placement: { db: "data" } },
+    });
+    const s = await setup({ plan: deployed, privateKeys });
+    await updateServerAddresses(s.deps.paths, (current) => ({
+      ...current,
+      servers: { data: { ipv4: DATA_IPV4, ipv6: DATA_IPV6 } },
+    }));
+
+    const planned = await runProvision(s.deps, { services: s.services, planOnly: true });
+
+    expect(planned.serverHostPlanHashes).toHaveLength(2);
+    expect(s.hosts.applies).toEqual([]);
+    // In scripts every plan is approved by its own hash, and nothing else is.
+    const hashes = [planned.planHash as string, ...(planned.serverHostPlanHashes ?? [])];
+    const byHash = new ScriptedApprovalHandler((request) =>
+      request.kind === "iac-apply" || request.kind === "host-apply"
+        ? hashes.includes(request.planHash ?? "")
+        : true,
+    );
+    const deps = await createTestPhaseDeps({
+      root: s.root,
+      env: s.deps.env,
+      runner: keyscanRunner(),
+      approvalHandler: byHash,
+    });
+    await runProvision(deps, { services: s.services, approveHashes: hashes });
+
+    expect(s.hosts.applies.map((a) => a.host)).toEqual([SERVER_IPV4, DATA_IPV4]);
+    expect(byHash.requests.filter((r) => r.kind === "host-apply").map((r) => r.planHash)).toEqual(
+      planned.serverHostPlanHashes,
+    );
+  });
+
+  it("refuses a live service placed on another server by hand, before anything changes", async () => {
+    const { plan, privateKeys } = networkedPlan();
+    // db runs on the app's server; plan.yaml was edited to place it on data, without design's move.
+    const edited = DeployPlanSchema.parse({
+      ...plan,
+      deployment: {
+        lastApplyAt: "2026-10-12T08:00:00.000Z",
+        firstDeployAt: "2026-10-12T09:00:00.000Z",
+        placement: { db: "app" },
+      },
+    });
+    const s = await setup({ plan: edited, privateKeys });
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+      message: expect.stringMatching(/places db on server data, but it runs on the app's server/),
+      hint: expect.stringContaining("Run `opscrew design`"),
+    });
+    expect(s.handler.requests).toEqual([]);
+    expect(s.engine.calls).toEqual([]);
+  });
+
+  it("hands a move over once everything else is set up", async () => {
+    const { plan, privateKeys } = networkedPlan();
+    const moving = DeployPlanSchema.parse({
+      ...plan,
+      deployment: {
+        lastApplyAt: "2026-10-12T08:00:00.000Z",
+        firstDeployAt: "2026-10-12T09:00:00.000Z",
+        placement: { db: "app" },
+      },
+      move: { service: "db", from: "app", to: "data", step: "started", copy: "dump" },
+    });
+    const s = await setup({ plan: moving, privateKeys });
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow(
+      /Moving db to another server is not available yet/,
+    );
+    // Everything before the move is done, and the placement waits for the move.
+    expect(s.github.pulls).toHaveLength(1);
+    const after = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(after.deployment.placement).toEqual({ db: "app" });
+  });
+
+  it("sets up an extra server the user owns with its own host plan, kept as that server's setup", async () => {
+    const { plan, privateKeys } = networkedPlan("own");
+    const s = await ownExtraSetup(plan, privateKeys);
+    const { own } = s;
+
+    await runProvision(s.deps, { services: s.services });
+
+    expect(titles(s, "host-apply")).toEqual([
+      expect.stringMatching(/^Apply the host plan to server data \(\d+ changes\)$/),
+      expect.stringMatching(/^Apply the private network's host plan to server app /),
+      expect.stringMatching(/^Apply the private network's host plan to server data /),
+    ]);
+    // The own-server setup, as root over the admin login; then its network with sshd's own port.
+    const [setupPlan, networkPlan] = own.applies.map((a) => a.plan);
+    expect(stepOf(setupPlan as HostPlan, "sshd")).toBeDefined();
+    expect(stepOf(networkPlan as HostPlan, "network")?.params.sshPort).toBe(2222);
+    expect(own.applies[1]?.options.rootImage).toBeUndefined();
+
+    // Its last setup plan is kept per server, never as the app's server's approval.
+    const kept = await lastServerSetup(s.deps, "data");
+    expect(kept && hostPlanHash(kept)).toBe(hostPlanHash(setupPlan as HostPlan));
+    const after = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(after.approvals.map((a) => a.planHash)).not.toContain(
+      hostPlanHash(setupPlan as HostPlan),
+    );
+
+    // The deploy reaches it on its login's port, its host key under `[host]:port`.
+    expect(s.github.secrets.get("OPSCREW_SERVER_DATA_HOST")).toBe(OWN_IPV4);
+    expect(s.github.secrets.get("OPSCREW_SERVER_DATA_KNOWN_HOSTS")).toBe(
+      `[${OWN_IPV4}]:2222 ssh-ed25519 ${ED25519}\n`,
+    );
+    const workflow = await readFile(join(s.root, ".github/workflows/opscrew-deploy.yml"), "utf8");
+    expect(workflow).toContain("2222");
+  });
+
+  it("gives an extra server the user owns the scheduled check's key, as root, once", async () => {
+    const { plan, privateKeys } = networkedPlan("own");
+    const checked = DeployPlanSchema.parse({
+      ...plan,
+      observability: { check: { enabled: true } },
+    });
+    const s = await ownExtraSetup(checked, privateKeys);
+
+    await runProvision(s.deps, { services: s.services });
+
+    expect(titles(s, "host-apply")).toContain(
+      "Let the scheduled check of acme/shop read the disk of server data with its own key",
+    );
+    const step = s.own.applies.flatMap((a) => a.plan.steps).find((st) => st.id === "check-key");
+    expect(step?.params).toMatchObject({ repository: "acme/shop", runAs: "root" });
+
+    // Once the server lists the repository's check key, no step is planned for it.
+    s.own.facts = {
+      ...s.own.facts,
+      deployUser: {
+        groups: ["deploy", "docker"],
+        keys: s.own.facts.deployUser?.keys ?? [],
+        checkKeys: ["acme/shop"],
+      },
+    };
+    s.github.openPull = OPEN_PULL;
+    s.handler.requests.length = 0;
+    await runProvision(s.deps, { services: s.services });
+    expect(titles(s, "host-apply").some((t) => t.includes("scheduled check"))).toBe(false);
+  });
+
+  it("puts Portainer on the own app server's private address once the network is up there", async () => {
+    const { plan, privateKeys, prefix } = withLaptop(withPortainer(ownPlan()), ["app"]);
+    const s = await ownAppSetup(plan, privateKeys);
+    const privatePort = `${prefix}.1:9443:9443`;
+    const portainerCompose = (hostPlan: HostPlan | undefined) =>
+      String(hostPlan && stepOf(hostPlan, "portainer")?.params.composeFinal);
+
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+
+    // The setup comes first, without the private address the network plan after it brings up.
+    const [setupPlan, networkPlan] = s.own.applies.map((a) => a.plan);
+    expect(portainerCompose(setupPlan)).not.toContain(privatePort);
+    expect(stepOf(networkPlan as HostPlan, "network")).toBeDefined();
+    expect(s.deps.reporter.text()).toContain(
+      "Portainer's web UI goes on your server's private address at the next `opscrew provision`",
+    );
+
+    // Once the server has the network's interface, the next run publishes it there.
+    const member = plan.network?.members.find((m) => m.name === "app");
+    s.own.facts = HostFactsSchema.parse({
+      ...s.own.facts,
+      network: {
+        dropIn: null,
+        interfaces: [
+          {
+            name: "wg-opscrew0",
+            config: "0".repeat(64),
+            publicKey: member?.publicKey ?? "",
+            enabled: true,
+            active: true,
+            addresses: [`${prefix}.1/24`],
+            peers: [],
+          },
+        ],
+        filterUnit: null,
+        filters: [],
+      },
+    });
+    s.ownEngine.changes = [];
+    s.github.openPull = OPEN_PULL;
+    await runProvision(s.deps, { services: s.services });
+    const last = s.own.applies.filter((a) => stepOf(a.plan, "portainer") !== undefined).at(-1);
+    expect(portainerCompose(last?.plan)).toContain(privatePort);
+  });
+
+  it("lets the devices reach the app server's dashboards on its private address, through the filter", async () => {
+    const { plan, privateKeys, prefix } = withLaptop(withPortainer(splitPlan()), []);
+    const s = await setup({ plan, privateKeys });
+
+    await runProvision(s.deps, { services: s.services });
+
+    const [app] = s.hosts.applies.map((a) => a.plan);
+    const filter = stepOf(app as HostPlan, "network-filter");
+    expect(filter?.title).toContain("TCP port 9443");
+    expect(filter?.reason).toContain(`9443 from ${prefix}.100`);
+  });
+
+  it("gives an extra cloud server the check's key at its first boot under the user's own app server", async () => {
+    const { plan: networked, privateKeys } = withLaptop(splitPlan({ app: "own" }), ["app"]);
+    const plan = DeployPlanSchema.parse({
+      ...networked,
+      observability: { check: { enabled: true } },
+    });
+    const s = await ownAppSetup(plan, privateKeys, {
+      ...publicOutputs(),
+      extra_servers: { data: { ipv4: DATA_IPV4, ipv6: DATA_IPV6, id: "4712", name: "shop-data" } },
+    });
+
+    await runProvision(s.deps, { services: s.services, hostKey: ED25519_FINGERPRINT });
+
+    const infra = join(s.root, plan.infra.dir);
+    const main = await readFile(join(infra, "main.tf"), "utf8");
+    const module = main.slice(main.indexOf('module "server_data"'));
+    expect(module.slice(0, module.indexOf("\n}\n"))).toContain("check_key_line");
+    const tfvars = JSON.parse(await readFile(join(infra, "terraform.tfvars.json"), "utf8"));
+    expect(tfvars.check_key_line).toContain("acme/shop");
+    expect(s.github.secrets.get("OPSCREW_SERVER_DATA_HOST")).toBe(DATA_IPV4);
+  });
+
+  it("refuses before any change when the token of an extra server's provider is missing", async () => {
+    const split = splitPlan();
+    const { plan, privateKeys } = withLaptop(
+      {
+        ...split,
+        servers: [
+          {
+            name: "data",
+            target: {
+              provider: "digitalocean",
+              mode: "vps-compose",
+              location: "fra1",
+              serverType: "s-1vcpu-2gb",
+              image: "ubuntu-24-04-x64",
+              backups: false,
+            },
+          },
+        ],
+      },
+      [],
+    );
+    const s = await setup({ plan, privateKeys });
+    for (const name of providerProfile("digitalocean").tokenVars) delete s.deps.env[name];
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow(/DigitalOcean/);
+    expect(s.handler.requests).toEqual([]);
+    expect(s.engine.calls).toEqual([]);
+  });
+
+  it("stops before any change when MongoDB goes on an extra server whose CPU lacks AVX", async () => {
+    const base = splitPlan({ data: "own" });
+    const mongo = {
+      ...base,
+      services: [
+        ...base.services,
+        {
+          kind: "mongodb",
+          version: "8.0",
+          memoryMb: 512,
+          reason: "The app uses mongoose.",
+          licence: "SSPL-1.0",
+          server: "data",
+        },
+      ],
+    } as Omit<DeployPlan, "network">;
+    const facts = { data: { udpPortsInUse: [], wireguardInterfaces: [] } };
+    const { network, privateKeys } = allocateNetwork(mongo, facts, testKeyMaker("mongo"));
+    const s = await ownExtraSetup(withNetwork(mongo, network), privateKeys, { avx: false });
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toThrow(
+      "Server data's CPU lacks AVX, which MongoDB needs on x86 since version 5, so the service mongodb could not start there. Nothing was changed.",
+    );
+    expect(s.handler.requests).toEqual([]);
+    expect(s.own.applies).toEqual([]);
+  });
+
+  it("deletes an extra cloud server the plan no longer lists only with its name typed, its protection lifted first", async () => {
+    const { plan: split, privateKeys } = networkedPlan();
+    const { servers: _servers, network: _network, ...rest } = split;
+    const plan = DeployPlanSchema.parse({
+      ...rest,
+      services: split.services.map(({ server: _server, ...service }) => service),
+      deployment: { lastApplyAt: "2026-10-12T08:00:00.000Z" },
+    });
+    const engine = new RemovalEngine();
+    const s = await setup({ plan, privateKeys, engine });
+    await writeFakeState(s.deps.paths);
+    await updateServerAddresses(s.deps.paths, (current) => ({
+      ...current,
+      servers: { data: { ipv4: DATA_IPV4 } },
+    }));
+    // The last run stored the server's deploy secrets.
+    await mkdir(dirname(s.deps.paths.files.deploySecrets), { recursive: true });
+    const names = ["OPSCREW_SERVER_DATA_HOST", "OPSCREW_SERVER_DATA_KNOWN_HOSTS"];
+    await writeFile(
+      s.deps.paths.files.deploySecrets,
+      JSON.stringify({ host: SERVER_IPV4, repo: "acme/shop", names }),
+    );
+    for (const name of names) s.github.secrets.set(name, DATA_IPV4);
+    // The root as the last run left it still declares the server's protection.
+    const dir = join(s.root, plan.infra.dir);
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      join(dir, "variables.tf"),
+      'variable "data_delete_protection" {\n  type    = bool\n  default = true\n}\n',
+    );
+
+    // A run that applies nothing cannot lift the protection its deletion needs: it stops first.
+    await expect(runProvision(s.deps, { services: s.services, planOnly: true })).rejects.toThrow(
+      /Server data is no longer in servers, so the next plan deletes it/,
+    );
+    expect(s.handler.requests).toEqual([]);
+
+    await runProvision(s.deps, { services: s.services });
+
+    const iac = s.handler.requests.filter((r) => r.kind === "iac-apply");
+    expect(iac.map((r) => r.title)).toEqual([
+      "Lift delete protection on shop-data",
+      expect.stringContaining("Apply the infrastructure plan"),
+    ]);
+    // The protection is lifted before any file is written, with the server's variable.
+    expect(s.handler.requests.map((r) => r.kind).indexOf("repo-write")).toBe(1);
+    expect(engine.vars[0]).toEqual({ data_delete_protection: "false" });
+    expect(iac[1]).toMatchObject({ allowDestroy: true, confirmPhrase: "shop-data" });
+    expect(iac[1]?.details).toContain(
+      "Server data is no longer in servers in opscrew/plan.yaml, so this plan deletes it (shop-data)",
+    );
+    // Gone from the state, it is forgotten on this computer too, and so are its deploy secrets.
+    expect((await readServerAddresses(s.deps.paths)).servers).toBeUndefined();
+    expect(s.handler.requests.find((r) => r.kind === "github-secrets")?.details).toContain(
+      "Deleted, since their services no longer run or their servers are gone (names only):\n  OPSCREW_SERVER_DATA_HOST\n  OPSCREW_SERVER_DATA_KNOWN_HOSTS",
+    );
+    expect(s.github.secrets.has("OPSCREW_SERVER_DATA_HOST")).toBe(false);
+  });
+
+  it("takes the app off an extra server the user owns that the plan no longer lists, with its name typed", async () => {
+    const own = new FakeHostServer();
+    const s = await setup({
+      plan: testPlan({ deployed: true }),
+      privateKeys: {},
+      engine: new FakeEngine(),
+      services: { own: { host: own } },
+    });
+    own.facts = preparedServerFacts(s.deps.paths.projectId);
+    await updateServerAddresses(s.deps.paths, (current) => ({
+      ...current,
+      servers: { old: { ipv4: OWN_IPV4 } },
+      ownServers: {
+        old: { host: OWN_IPV4, port: 22, user: "root", agent: true, hostKey: ED25519_FINGERPRINT },
+      },
+    }));
+
+    await runProvision(s.deps, { services: s.services });
+
+    const removal = s.handler.requests.filter((r) => r.kind === "host-apply");
+    expect(removal.map((r) => r.title)).toEqual([
+      "Remove shop from server old (its data stays)",
+      "Undo OpsCrew's settings on server old",
+    ]);
+    for (const request of removal) {
+      expect(request).toMatchObject({ allowDestroy: true, confirmPhrase: "old" });
+    }
+    expect(own.applies.map((a) => a.plan.purpose)).toEqual(["teardown", "undo"]);
+    const record = await readServerAddresses(s.deps.paths);
+    expect(record.ownServers).toBeUndefined();
+    expect(record.servers).toBeUndefined();
+  });
+});
+
+/**
+ * The engine of a deployment whose extra server `data` was removed from the plan: the state lists
+ * it until the deletion is applied; the first plan lifts its delete protection, the next deletes it.
+ */
+class RemovalEngine extends FakeEngine {
+  readonly vars: (Record<string, string> | undefined)[] = [];
+  #deleted = false;
+
+  constructor() {
+    super({ outputs: splitOutputs() });
+  }
+
+  override get outputs(): Record<string, unknown> {
+    const { extra_servers: _extra, ...rest } = splitOutputs();
+    return this.#deleted ? rest : splitOutputs();
+  }
+
+  override async plan(
+    dir: string,
+    planFile: string,
+    options?: { vars?: Record<string, string> },
+  ): Promise<PlanSummary> {
+    this.vars.push(options?.vars);
+    const lift = options?.vars !== undefined;
+    const server = "module.server_data.hcloud_server.this";
+    const changes: ResourceChange[] = lift
+      ? [
+          {
+            address: server,
+            type: "hcloud_server",
+            name: "this",
+            provider: "hcloud",
+            action: "update",
+          },
+        ]
+      : [
+          {
+            address: server,
+            type: "hcloud_server",
+            name: "this",
+            provider: "hcloud",
+            action: "delete",
+          },
+          {
+            address: "module.server_data.hcloud_firewall.this",
+            type: "hcloud_firewall",
+            name: "this",
+            provider: "hcloud",
+            action: "delete",
+          },
+        ];
+    const protection = (on: boolean) => ({ delete_protection: on, rebuild_protection: on });
+    this.scenario.changes = changes;
+    this.scenario.planJson = lift
+      ? {
+          resource_changes: [
+            {
+              address: server,
+              change: { actions: ["update"], before: protection(true), after: protection(false) },
+            },
+          ],
+        }
+      : undefined;
+    return super.plan(dir, planFile);
+  }
+
+  override async apply(...args: Parameters<FakeEngine["apply"]>) {
+    const result = await super.apply(...args);
+    if (this.scenario.changes?.some((c) => c.action === "delete")) this.#deleted = true;
+    return { ...result, outputs: this.outputs };
+  }
+
+  override async output(): Promise<Record<string, unknown>> {
+    this.calls.push("output");
+    return this.outputs;
+  }
+}

@@ -6,11 +6,17 @@ import {
   type DesiredRunner,
   type HostFacts,
   type HostPlan,
+  HostPlanSchema,
+  hostPlanHash,
   inspectHost,
+  otherActiveApps,
+  planAddon,
   planHost,
+  planTeardown,
+  planUndo,
 } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
-import { OpsCrewError, type ProjectPaths, plural } from "@opscrew/core";
+import { OpsCrewError, type ProjectPaths, plural, writeFileAtomic } from "@opscrew/core";
 import {
   hostSysctl,
   keepNewerPins,
@@ -21,8 +27,17 @@ import {
   usesTunnel,
   wrongTarget,
 } from "@opscrew/iac-templates";
-import { type DeployPlan, type OwnDeployTarget, serviceOf } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  networkInterface,
+  type OwnDeployTarget,
+  servicesOn,
+} from "@opscrew/plan-schema";
+import { z } from "zod";
+import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
+import { serverNetworkInputs } from "../network";
 import {
   applyRunnerSettings,
   lazyRepository,
@@ -47,13 +62,19 @@ import {
   randomPassword,
   readSecretFile,
   readServerAddresses,
+  readValidJson,
   requireNoBlockers,
   type SecretFile,
   type ServerAddress,
   stringOutput,
+  updateServerAddresses,
 } from "../shared";
+import { hostPlanFile } from "../shared/host-plan";
 import {
   connectAndInspectOwnServer,
+  connectPinnedLogin,
+  inspectOwnHost,
+  type LoginWords,
   type OwnServerSession,
   ownServerLoginCheck,
   ownServerPublicAddress,
@@ -65,6 +86,7 @@ import {
   tunnelChange,
 } from "../shared/tunnel-connections";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
+import type { ServerReach } from "./secrets";
 import type { CloudflareApi, ProvisionOptions, ProvisionServices } from "./types";
 
 /** Cloudflare's IP ranges, the only sources of web traffic when the site is served directly behind the proxy. */
@@ -98,6 +120,17 @@ export interface OwnServerRun {
   runner?: DesiredRunner;
   /** The project's GitHub repository, for the runner's tokens and registrations (read when needed). */
   repository: () => Promise<RunnerRepository>;
+}
+
+/** An extra server the user owns (`plan.servers[]`), once provision connected and inspected it. */
+export interface ExtraOwnServerRun {
+  /** Its name in the plan. */
+  name: string;
+  session: OwnServerSession;
+  facts: HostFacts;
+  host: HostAdapterApi;
+  /** Opens new SSH connections as the deploy user and the admin login (see `ownServerLoginCheck`). */
+  verifyLogin: () => Promise<boolean>;
 }
 
 /** Placeholder tunnel id for the check before anything changes (the real one comes from the apply). */
@@ -249,7 +282,6 @@ export async function desiredHost(
   if (filtered && run.webSources === undefined) {
     throw new Error("The web filter needs Cloudflare's IP ranges (read them with ownWebSources).");
   }
-  const { connection } = run.session;
   const connector = renderTunnelConnectorCompose(plan);
   const tunnel =
     usesTunnel(plan) && input.withoutTunnel !== true
@@ -261,24 +293,101 @@ export async function desiredHost(
           tunnelId: input.tunnelId ?? PENDING_TUNNEL_ID,
         }
       : undefined;
+  // Portainer's web UI is also on the private address only while the server hosts this app alone,
+  // and once that address is on the server: Docker never binds an address that isn't there.
+  const dashboards = dashboardsOnNetwork(plan, run.facts) && hasAppInterface(plan, run.facts);
   const portainer = plan.portainer?.enabled
     ? {
         version: plan.portainer.version,
         compose: {
-          initial: renderPortainerCompose(plan, { initialAdmin: true }).content,
-          final: renderPortainerCompose(plan, { initialAdmin: false }).content,
+          initial: renderPortainerCompose(plan, {
+            initialAdmin: true,
+            dashboardsOnNetwork: dashboards,
+          }).content,
+          final: renderPortainerCompose(plan, {
+            initialAdmin: false,
+            dashboardsOnNetwork: dashboards,
+          }).content,
         },
       }
     : undefined;
   // Kernel settings the services need (vm.max_map_count for the search engines).
   const sysctl = hostSysctl(plan);
   return {
-    app: plan.app.name,
-    projectId: deps.paths.projectId,
-    repositoryUrl: repositoryUrl(await githubCoordinates(gitClient(deps))),
+    ...(await hostLogin(deps, run, input)),
     hostnames: siteHosts(plan),
     services: plan.services.filter((service) => service.enabled).map((service) => service.name),
     memoryMb: appMemoryMb(plan),
+    access: run.target.access,
+    ...(tunnel !== undefined ? { tunnel } : {}),
+    ...(portainer !== undefined ? { portainer } : {}),
+    ...(Object.keys(sysctl).length > 0 ? { sysctl } : {}),
+    ...(run.runner !== undefined ? { runner: run.runner } : {}),
+    ...(filtered && run.webSources !== undefined ? { webFilter: run.webSources } : {}),
+  };
+}
+
+/**
+ * True when the dashboards (Beszel's hub, Portainer's web UI) are also published on the app's
+ * server's private address, as the network's host plans and drift say (`serverNetworkInputs`):
+ * the network has devices, and the app's server hosts this app alone (always so on a server
+ * OpsCrew created, which has no `facts` here; on the user's own, no other OpsCrew app is active
+ * there), so its dashboards are this app's.
+ */
+export function dashboardsOnNetwork(plan: DeployPlan, facts?: Pick<HostFacts, "apps">): boolean {
+  const alone = facts === undefined || otherActiveApps(facts.apps, plan.app.name).length === 0;
+  return serverNetworkInputs(plan, APP_SERVER, alone).dashboardsOnNetwork;
+}
+
+/** True when the server has the app's private network interface already (`facts.network`). */
+function hasAppInterface(
+  plan: Pick<DeployPlan, "network">,
+  facts: Pick<HostFacts, "network">,
+): boolean {
+  const member = plan.network?.members.find((m) => m.name === APP_SERVER);
+  if (member === undefined) return false;
+  return facts.network?.interfaces.some((i) => i.name === networkInterface(member)) ?? false;
+}
+
+/**
+ * True when Portainer's web UI should also be on the app's server's private address
+ * ({@link dashboardsOnNetwork}) but waits for the next provision: the server does not have the
+ * private network's interface yet, which this run's network host plan sets up.
+ */
+export function portainerWaitsForNetwork(
+  plan: DeployPlan,
+  facts: Pick<HostFacts, "apps" | "network">,
+): boolean {
+  return (
+    plan.portainer?.enabled === true &&
+    dashboardsOnNetwork(plan, facts) &&
+    !hasAppInterface(plan, facts)
+  );
+}
+
+/** What every server the user owns gets in its desired state: the app, the logins and SSH. */
+async function hostLogin(
+  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
+  run: Pick<OwnServerRun, "session" | "facts">,
+  input: { plan: DeployPlan; deployPublicKey: string; passwordLogins?: "off" | "keep" },
+): Promise<
+  Pick<
+    DesiredHost,
+    | "app"
+    | "projectId"
+    | "repositoryUrl"
+    | "admin"
+    | "deploy"
+    | "sshPort"
+    | "hostKeyType"
+    | "disablePasswords"
+  >
+> {
+  const { connection } = run.session;
+  return {
+    app: input.plan.app.name,
+    projectId: deps.paths.projectId,
+    repositoryUrl: repositoryUrl(await githubCoordinates(gitClient(deps))),
     admin: {
       user: run.facts.user || connection.user,
       isRoot: run.facts.privilege === "root",
@@ -287,12 +396,6 @@ export async function desiredHost(
     sshPort: connection.port,
     // The pinned key's ssh-keyscan type; planHost refuses any other.
     hostKeyType: run.session.hostKey.type as DesiredHost["hostKeyType"],
-    access: run.target.access,
-    ...(tunnel !== undefined ? { tunnel } : {}),
-    ...(portainer !== undefined ? { portainer } : {}),
-    ...(Object.keys(sysctl).length > 0 ? { sysctl } : {}),
-    ...(run.runner !== undefined ? { runner: run.runner } : {}),
-    ...(filtered && run.webSources !== undefined ? { webFilter: run.webSources } : {}),
     ...(input.passwordLogins !== undefined
       ? { disablePasswords: input.passwordLogins === "off" }
       : {}),
@@ -300,15 +403,42 @@ export async function desiredHost(
 }
 
 /**
- * Stops before any change when the plan runs MongoDB on an x86 server whose CPU lacks AVX, which
- * MongoDB 5 and later need (FR-1312): the inspected CPU flags say so.
+ * The desired state of an extra server the user owns (`plan.servers`, ADR 0022): the own-server
+ * setup an app's server gets (Docker, the deploy user and key, SSH and ufw), for the services
+ * placed there only. It serves no site, so it has no hostnames, tunnel, Portainer or runner.
  */
-function requireMongoAvx(plan: DeployPlan, facts: Pick<HostFacts, "arch" | "avx">): void {
-  const mongo = serviceOf(plan, "mongodb");
+export async function desiredExtraHost(
+  deps: Pick<PhaseDeps, "paths" | "runner" | "env" | "redactor">,
+  run: Pick<ExtraOwnServerRun, "name" | "session" | "facts">,
+  input: { plan: DeployPlan; deployPublicKey: string; passwordLogins?: "off" | "keep" },
+): Promise<DesiredHost> {
+  const services = servicesOn(input.plan, run.name);
+  const sysctl = hostSysctl(input.plan, run.name);
+  return {
+    ...(await hostLogin(deps, run, input)),
+    hostnames: [],
+    services: services.map((service) => service.name),
+    memoryMb: services.reduce((sum, service) => sum + service.memoryMb, 0),
+    access: "public",
+    ...(Object.keys(sysctl).length > 0 ? { sysctl } : {}),
+  };
+}
+
+/**
+ * Stops before any change when the plan runs MongoDB on `server` (the app's, or an extra one the
+ * user owns), an x86 server whose CPU lacks AVX, which MongoDB 5 and later need (FR-1312): the
+ * inspected CPU flags say so.
+ */
+function requireMongoAvx(
+  plan: DeployPlan,
+  facts: Pick<HostFacts, "arch" | "avx">,
+  server = APP_SERVER,
+): void {
+  const mongo = servicesOn(plan, server).find((service) => service.kind === "mongodb");
   if (mongo === undefined || facts.arch !== "amd64" || facts.avx) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `Your server's CPU lacks AVX, which MongoDB needs on x86 since version 5, so the service ${mongo.name} could not start there. Nothing was changed.`,
+    `${server === APP_SERVER ? "Your server's" : `Server ${server}'s`} CPU lacks AVX, which MongoDB needs on x86 since version 5, so the service ${mongo.name} could not start there. Nothing was changed.`,
     {
       hint: "Run the app on a server with a newer CPU (most x86 CPUs since 2011 have AVX), or use a hosted MongoDB such as MongoDB Atlas: put its mongodb+srv:// address in the app's settings, then run `opscrew analyze`, `opscrew design` and `opscrew provision` again (OpsCrew keeps a hosted MongoDB as it is).",
     },
@@ -810,4 +940,358 @@ export function ownDeployTarget(
   // not 22), so ssh looks the key up as `[ip]:port` there.
   const name = knownHostsName(address.ipv4, run.sshPort);
   return { host: address.ipv4, knownHosts: `${name} ${key.type} ${key.key}\n` };
+}
+
+/** The login words of the extra server `name` the user owns, whose login design records. */
+function extraServerWords(name: string): LoginWords {
+  return {
+    noun: `server ${name}`,
+    fix: `\`opscrew design\` (remove ownServers.${name} from .opscrew/server.json first, so it asks again)`,
+    missingKey: `Remove ownServers.${name} from .opscrew/server.json and run \`opscrew design\` again, giving the path of your private key (or \`agent\`).`,
+  };
+}
+
+/**
+ * Connects to the extra server `name` the user owns with the login design recorded
+ * (`.opscrew/server.json` → `ownServers`, its host key pinned there) and inspects it read-only
+ * through the host adapter of `services.own` (default `inspectHost` and `applyHostPlan`).
+ * @throws OpsCrewError `PHASE_PRECONDITION` when this computer has no login for it.
+ */
+async function connectExtraOwnServer(
+  deps: PhaseDeps,
+  input: { name: string; services: ProvisionServices; deployKeyFile: string; phase: PhaseName },
+): Promise<ExtraOwnServerRun> {
+  const { name } = input;
+  const own = input.services.own ?? {};
+  const adapter = own.host ?? { inspect: inspectHost, apply: applyHostPlan };
+  const host: HostAdapterApi = {
+    inspect: (remote) => adapter.inspect(remote),
+    apply: (remote, plan, options) => adapter.apply(remote, plan, options),
+  };
+  const login = (await readServerAddresses(deps.paths)).ownServers?.[name];
+  if (login === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `OpsCrew does not know how to log in to server ${name} on this computer. Nothing was changed.`,
+      {
+        hint: "Run `opscrew design` in a terminal: it asks for the server's address and SSH login once and keeps them on this computer.",
+      },
+    );
+  }
+  deps.reporter.step(`Connecting to server ${name}`);
+  const session = await connectPinnedLogin(
+    deps,
+    {
+      connection: login,
+      knownHostsFile: deps.paths.files.knownHosts,
+      pin: async (hostKey) => {
+        await updateServerAddresses(deps.paths, (current) => ({
+          ...current,
+          ownServers: { ...current.ownServers, [name]: { ...login, hostKey } },
+        }));
+      },
+      words: extraServerWords(name),
+    },
+    { services: own },
+  );
+  const facts = await inspectOwnHost(deps, session, {
+    services: { host },
+    phase: input.phase,
+    machine: { noun: `server ${name}`, target: `own server ${name}` },
+  });
+  return {
+    name,
+    session,
+    facts,
+    host,
+    verifyLogin:
+      own.verifyLogin ??
+      ownServerLoginCheck(deps, session, {
+        deployKeyFile: input.deployKeyFile,
+        ...(own.homeDir !== undefined ? { homeDir: own.homeDir } : {}),
+      }),
+  };
+}
+
+/**
+ * Connects to the extra server `name` the user owns and inspects it ({@link
+ * connectExtraOwnServer}), then stops before any change, as {@link prepareOwnServer} does for the
+ * app's server, when its architecture is not the plan's or its setup host plan would be blocked.
+ */
+export async function prepareExtraOwnServer(
+  deps: PhaseDeps,
+  input: {
+    plan: DeployPlan;
+    name: string;
+    services: ProvisionServices;
+    deployPublicKey: string;
+    deployKeyFile: string;
+    passwordLogins?: ProvisionOptions["passwordLogins"];
+    phase: OwnHostPhase;
+    command: string;
+  },
+): Promise<ExtraOwnServerRun> {
+  const { plan, name } = input;
+  const run = await connectExtraOwnServer(deps, input);
+  const target = plan.servers?.find((server) => server.name === name)?.target;
+  const arch = run.facts.arch;
+  if (
+    target?.provider === "own" &&
+    (arch === "amd64" || arch === "arm64") &&
+    arch !== target.arch
+  ) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `opscrew/plan.yaml says server ${name} is ${target.arch}, but it is ${arch}. Nothing was changed.`,
+      {
+        hint: "Run `opscrew design` again so OpsCrew reads the server again, then run `opscrew provision` again.",
+      },
+    );
+  }
+  requireMongoAvx(plan, run.facts, name);
+  // A server that only holds a moving service's old copy has nothing new to set up.
+  if (servicesOn(plan, name).length > 0) {
+    requireNoBlockers(
+      planHost(run.facts, await desiredExtraHost(deps, run, input), input.command),
+      {
+        server: `server ${name}`,
+        command: input.command,
+      },
+    );
+  }
+  return run;
+}
+
+/**
+ * The own-server setup host plan of the extra server `run.name` ({@link desiredExtraHost}),
+ * through {@link approveAndApplyHostPlan}: saved, shown with the server's name, approved by its
+ * hash and applied, the host adapter checking new logins after an SSH or firewall change. Once the
+ * server is as the plan says (applied, or nothing to change), it is kept as the server's last setup
+ * ({@link lastServerSetup}). `undefined` for a server with no service placed on it.
+ */
+export async function applyExtraOwnHostPlan(
+  deps: PhaseDeps,
+  run: ExtraOwnServerRun,
+  input: {
+    plan: DeployPlan;
+    deployPublicKey: string;
+    passwordLogins?: ProvisionOptions["passwordLogins"];
+    planOnly?: boolean;
+    phase: OwnHostPhase;
+    command: string;
+  },
+): Promise<HostPlanOutcome | undefined> {
+  if (servicesOn(input.plan, run.name).length === 0) return undefined;
+  const plan = planHost(run.facts, await desiredExtraHost(deps, run, input), input.command);
+  const pending = plan.steps.filter((step) => step.state === "change").length;
+  const changes = plural(pending, "change");
+  const outcome = await approveAndApplyHostPlan(deps, {
+    plan,
+    remote: run.session.remote,
+    apply: run.host.apply,
+    verifyLogin: run.verifyLogin,
+    title: `Apply the host plan to server ${run.name} (${changes})`,
+    server: `server ${run.name}`,
+    planOf: `server ${run.name}`,
+    upToDate: `Server ${run.name} is already prepared; nothing on it changes.`,
+    command: input.command,
+    phase: input.phase,
+    ...(input.planOnly === true ? { planOnly: true } : {}),
+    secrets: async () => ({}),
+    applying: `Preparing server ${run.name} (${changes}; installing Docker can take a few minutes)`,
+  });
+  if (outcome.applied || pending === 0) await keepServerSetup(deps, run.name, outcome.hash);
+  if (outcome.applied) {
+    deps.reporter.success(
+      `Prepared server ${run.name} (${plural(outcome.steps.length, "change")} applied).`,
+    );
+  }
+  return outcome;
+}
+
+/**
+ * The scheduled check's key (`key`, the repository's) on the extra server `run.name` the user
+ * owns, as the app's server the user owns gets it: the `check-key` host step as root, shown with
+ * the server's name and approved by its hash. `undefined` when its inspection found the key there.
+ */
+export async function addExtraServerCheckKey(
+  deps: PhaseDeps,
+  run: ExtraOwnServerRun,
+  input: {
+    plan: DeployPlan;
+    key: CheckKey;
+    repository: string;
+    planOnly?: boolean;
+    phase: OwnHostPhase;
+    command: string;
+  },
+): Promise<HostPlanOutcome | undefined> {
+  const { repository } = input;
+  const known = run.facts.deployUser?.checkKeys ?? [];
+  if (known.some((name) => name.toLowerCase() === repository.toLowerCase())) return undefined;
+  const server = `server ${run.name}`;
+  return approveAndApplyHostPlan(deps, {
+    plan: planAddon("check-key", {
+      app: input.plan.app.name,
+      runAs: "root",
+      repository,
+      enable: { publicKey: input.key.publicKeyOpenSsh },
+    }),
+    remote: run.session.remote,
+    apply: run.host.apply,
+    // The step changes no SSH or firewall setting.
+    verifyLogin: async () => true,
+    title: `Let the scheduled check of ${repository} read the disk of ${server} with its own key`,
+    server,
+    planOf: server,
+    upToDate: `The scheduled check's key is on ${server}; nothing on it changes.`,
+    command: input.command,
+    phase: input.phase,
+    ...(input.planOnly === true ? { planOnly: true } : {}),
+    secrets: async () => ({}),
+    applying: `Adding the scheduled check's key to ${server}`,
+  });
+}
+
+/** `.opscrew/plans/host-setup-<server>.json`: which saved host plan is the server's last setup. */
+function serverSetupFile(paths: Pick<ProjectPaths, "files">, server: string): string {
+  return join(paths.files.plansDir, `host-setup-${server}.json`);
+}
+
+/** Records that the saved host plan `hash` is the extra server's last setup (local state only). */
+async function keepServerSetup(
+  deps: Pick<PhaseDeps, "paths">,
+  server: string,
+  hash: string,
+): Promise<void> {
+  await writeFileAtomic(serverSetupFile(deps.paths, server), `${JSON.stringify({ hash })}\n`);
+}
+
+/**
+ * The last setup host plan of the extra server `server` the user owns that is in place on it (one
+ * provision applied there, or found already in place), as `.opscrew/plans/host-<hash>.json` keeps
+ * it; `undefined` when this computer has none. `secure` reads its SSH ports and password setting
+ * from it, as `lastHostSetup` gives the app's server's.
+ */
+export async function lastServerSetup(
+  deps: Pick<PhaseDeps, "paths">,
+  server: string,
+): Promise<HostPlan | undefined> {
+  const pointer = await readValidJson(
+    serverSetupFile(deps.paths, server),
+    z.strictObject({ hash: z.string().regex(/^[0-9a-f]{64}$/) }),
+  );
+  if (pointer === undefined) return undefined;
+  const saved = await readValidJson(hostPlanFile(deps.paths, pointer.hash), HostPlanSchema);
+  return saved !== undefined && hostPlanHash(saved) === pointer.hash ? saved : undefined;
+}
+
+/**
+ * How the deploy reaches the extra server `run.name` the user owns: its public address (as design
+ * recorded it in `.opscrew/server.json` → `servers`) on the login's SSH port, with the pinned host
+ * key under that name (`[host]:port` when the port is not 22).
+ * @throws OpsCrewError `PHASE_PRECONDITION` when its public address is not known.
+ */
+export async function extraOwnReach(
+  deps: Pick<PhaseDeps, "paths">,
+  run: Pick<ExtraOwnServerRun, "name" | "session" | "facts">,
+): Promise<ServerReach> {
+  const { connection, hostKey } = run.session;
+  const address =
+    (await readServerAddresses(deps.paths)).servers?.[run.name] ??
+    ownServerPublicAddress(connection, run.facts);
+  if (address === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `OpsCrew could not find the public IPv4 address of server ${run.name}, which the deploys reach it at.`,
+      {
+        hint: "Run `opscrew design` again: it reads the server's addresses and keeps them on this computer.",
+      },
+    );
+  }
+  const name = knownHostsName(address.ipv4, connection.port);
+  return {
+    name: run.name,
+    host: address.ipv4,
+    knownHosts: `${name} ${hostKey.type} ${hostKey.key}\n`,
+  };
+}
+
+/**
+ * Takes the app off the extra server `name` the user owns, which `servers` no longer lists, and
+ * leaves what was there before: the teardown host plan (the app's containers, its folder, its
+ * private network and its record; its data stays), then, when no other OpsCrew app is on the
+ * server, the undo host plan (OpsCrew's own host settings). Each is shown with the server's name
+ * and needs an approval that allows destroying, with the server's name typed. Then this computer
+ * forgets the server. With `planOnly` the teardown is only shown and saved.
+ */
+export async function removeExtraOwnServer(
+  deps: PhaseDeps,
+  input: {
+    plan: DeployPlan;
+    name: string;
+    services: ProvisionServices;
+    deployKeyFile: string;
+    planOnly?: boolean;
+    phase: OwnHostPhase;
+    command: string;
+  },
+): Promise<HostPlanOutcome[]> {
+  const { plan, name, command } = input;
+  const run = await connectExtraOwnServer(deps, input);
+  const repository = repositoryUrl(await githubCoordinates(gitClient(deps)));
+  const apply = (hostPlan: HostPlan, title: string) =>
+    approveAndApplyHostPlan(deps, {
+      plan: hostPlan,
+      remote: run.session.remote,
+      apply: run.host.apply,
+      verifyLogin: run.verifyLogin,
+      title,
+      server: `server ${name}`,
+      planOf: `server ${name}`,
+      upToDate: `Nothing on server ${name} needs to change.`,
+      command,
+      phase: input.phase,
+      allowDestroy: true,
+      confirmPhrase: name,
+      intro: [`Server ${name} is no longer in servers in opscrew/plan.yaml.`],
+      auditAs: `host ${hostPlan.purpose}`,
+      ...(input.planOnly === true ? { planOnly: true } : {}),
+      secrets: async () => ({}),
+    });
+  const teardown = await apply(
+    planTeardown(
+      run.facts,
+      {
+        deleteData: false,
+        app: plan.app.name,
+        projectId: deps.paths.projectId,
+        repositoryUrl: repository,
+      },
+      command,
+    ),
+    `Remove ${plan.app.name} from server ${name} (its data stays)`,
+  );
+  if (input.planOnly === true) return [teardown];
+  const outcomes = [teardown];
+  const facts = await run.host.inspect(run.session.remote);
+  if (otherActiveApps(facts.apps, plan.app.name).length === 0) {
+    outcomes.push(
+      await apply(
+        planUndo(facts, { repositoryUrl: repository }, command),
+        `Undo OpsCrew's settings on server ${name}`,
+      ),
+    );
+  }
+  await updateServerAddresses(deps.paths, ({ servers, ownServers, ...rest }) => {
+    const { [name]: _address, ...otherServers } = servers ?? {};
+    const { [name]: _login, ...otherLogins } = ownServers ?? {};
+    return {
+      ...rest,
+      ...(Object.keys(otherServers).length > 0 ? { servers: otherServers } : {}),
+      ...(Object.keys(otherLogins).length > 0 ? { ownServers: otherLogins } : {}),
+    };
+  });
+  deps.reporter.success(`Took the app off server ${name}; OpsCrew no longer reaches it.`);
+  return outcomes;
 }

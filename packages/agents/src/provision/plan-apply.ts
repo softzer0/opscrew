@@ -99,6 +99,11 @@ export interface PlanAndApplyOptions {
   /** Title of the approval instead of the default "Apply the infrastructure plan on …". */
   approvalTitle?: string;
   /**
+   * The name typed to approve a plan that deletes or replaces anything, from the plan shown
+   * (default: the app's name).
+   */
+  confirmPhrase?: (plan: SavedPlan) => string;
+  /**
    * The next step when the provider cannot create the server's size in its location, instead of
    * "Run `opscrew design` to pick another …, then run the command again" (a move picks another
    * option by starting again).
@@ -554,7 +559,9 @@ export function approveLaterHint(
     return `To apply it later without prompts, run: ${command} --approve ${planHash}`;
   }
   if (CONFIRM_COMMANDS.some((name) => command === name || command.startsWith(`${name} `))) {
-    return `To apply it later without prompts, run: ${command} --approve ${planHash} --confirm ${confirmPhrase}`;
+    // Several servers' names are one phrase, quoted for the shell.
+    const phrase = confirmPhrase.includes(" ") ? `"${confirmPhrase}"` : confirmPhrase;
+    return `To apply it later without prompts, run: ${command} --approve ${planHash} --confirm ${phrase}`;
   }
   const script =
     command === "opscrew dns"
@@ -671,6 +678,9 @@ export async function planAndApply(
     ? `Rename ${plural(saved.moves?.length ?? 0, "resource")} in the infrastructure state (nothing changes in the cloud)`
     : (options.approvalTitle ??
       `Apply the infrastructure plan on ${providers} (${create} to create, ${update} to update, ${del} to delete, ${replace} to replace)`);
+  const confirmPhrase = saved.hasDestroy
+    ? (options.confirmPhrase?.(saved) ?? deployPlan.app.name)
+    : undefined;
   const approval = await deps.approvals.request({
     kind: "iac-apply",
     title,
@@ -678,18 +688,14 @@ export async function planAndApply(
     planHash: saved.planHash,
     ...(costDelta !== null ? { costDelta } : {}),
     policy: saved.policy,
-    ...(saved.hasDestroy ? { allowDestroy: true, confirmPhrase: deployPlan.app.name } : {}),
+    ...(confirmPhrase !== undefined ? { allowDestroy: true, confirmPhrase } : {}),
   });
   if (!approval.approved) {
     throw new PlanRefusedError({
       plan: options.planNoun ?? "infrastructure plan",
       ...(approval.reason ? { reason: approval.reason } : {}),
       unchanged: "Nothing was changed.",
-      hint: approveLaterHint(
-        command,
-        saved.planHash,
-        saved.hasDestroy ? deployPlan.app.name : undefined,
-      ),
+      hint: approveLaterHint(command, saved.planHash, confirmPhrase),
     });
   }
   await deps.approvals.assertApprovedPlan(saved.planHash, { allowDestroy: saved.hasDestroy });

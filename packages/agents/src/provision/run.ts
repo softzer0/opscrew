@@ -1,6 +1,6 @@
 import { join, posix } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
-import { applyHostPlan, checkKeyLine, otherActiveApps } from "@opscrew/connector-ssh-host";
+import { applyHostPlan, otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine, ResourceChange } from "@opscrew/contracts";
 import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opscrew/core";
 import { additionsPath, renderStorage, usesTunnel } from "@opscrew/iac-templates";
@@ -13,6 +13,7 @@ import {
   deploySetupCheck,
   environmentCheckKey,
   provisionCheck,
+  renderedCheckKeyLine,
   resumeCheck,
 } from "../check/provision";
 import { requireCheckSettingsPlace } from "../check/settings";
@@ -22,6 +23,7 @@ import { requireOwnHostnames } from "../environments/hostnames";
 import { requireSharedParts } from "../environments/shared-parts";
 import { localPlanFile } from "../localhost/plan";
 import { provisionLocalhost } from "../localhost/provision";
+import { runMove } from "../move";
 import { cloudConnectorRemoval } from "../portainer/run";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import {
@@ -47,6 +49,7 @@ import {
   infrastructureOutputs,
   localhostNotSupported,
   type PlanApproval,
+  readServerAddresses,
   readyNewServer,
   recordOwnServer,
   recordServerAddress,
@@ -82,10 +85,15 @@ import {
 } from "./origin-tls";
 import {
   applyOwnHostPlan,
+  dashboardsOnNetwork,
+  type ExtraOwnServerRun,
+  extraOwnReach,
   type OwnServerRun,
   ownConnectorFirst,
   ownDeployTarget,
   ownEngineEnv,
+  portainerWaitsForNetwork,
+  prepareExtraOwnServer,
   prepareOwnServer,
   removeOldAccessMode,
 } from "./own";
@@ -103,8 +111,21 @@ import {
   buildAppEnvironment,
   checkSecretsPlacement,
   deploySecrets,
+  type ServerReach,
   setDeploySecrets,
 } from "./secrets";
+import {
+  extraCloudServers,
+  liftRemovedProtection,
+  readyExtraServers,
+  recordExtraServers,
+  removalConfirmPhrase,
+  removalNotes,
+  removedCloudServers,
+  requireDesignedPlacement,
+  serverHostPlans,
+  withPlacement,
+} from "./servers";
 import {
   applySharedCloudflare,
   cloudflarePlanHashes,
@@ -387,13 +408,24 @@ async function provisionFlow(
     const saved = await savedInfrastructureHashes(deps, options, plan);
     return provisionPortainer(deps, options, { plan, requirements, git, phase, saved, extras });
   }
+  // A live service placed on another server moves only as design plans it, with its data.
+  requireDesignedPlacement(plan, command);
   const profile = providerProfile(planProvider(plan));
+  // The providers of the extra servers OpsCrew creates, besides the app server's.
+  const extraProviders = [...new Set(extraCloudServers(plan).map((s) => s.provider))].filter(
+    (provider) => provider !== profile.id,
+  );
+  const others = extraProviders.map((provider) => `${providerProfile(provider).displayName}, `);
   deps.reporter.step(
     ownServer
-      ? "Checking the login to your server, Cloudflare and GitHub access"
-      : `Checking your ${profile.displayName}, Cloudflare and GitHub access`,
+      ? `Checking the login to your server, ${others.join("")}Cloudflare and GitHub access`
+      : `Checking your ${profile.displayName}, ${others.join("")}Cloudflare and GitHub access`,
   );
   await checkProvider(deps, profile.id, services);
+  for (const provider of extraProviders) {
+    const check = services.providers?.[provider];
+    await checkProvider(deps, provider, check !== undefined ? { provider: check } : {});
+  }
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
   // The app's bucket at a provider: R2 needs the plan's Cloudflare account, and a Hetzner or
@@ -516,6 +548,24 @@ async function provisionFlow(
   let earlyHost: HostChangeResult | undefined;
   /** A server OpsCrew creates with the server's runner: the repository, checked before any change. */
   let runnerRepository: RunnerRepository | undefined;
+  // The extra servers the user owns, before anything is applied: connected (their host keys pinned
+  // at design), inspected read-only, and stopped on blocking findings, as the app's server is.
+  const extraOwn: ExtraOwnServerRun[] = [];
+  for (const server of plan.servers ?? []) {
+    if (server.target.provider !== "own") continue;
+    extraOwn.push(
+      await prepareExtraOwnServer(deps, {
+        plan,
+        name: server.name,
+        services,
+        deployPublicKey: deployKey.publicKeyOpenSsh,
+        deployKeyFile: deployKey.privateKeyFile,
+        ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
+        phase,
+        command,
+      }),
+    );
+  }
   if (ownServer) {
     ownRun = await prepareOwnServer(deps, {
       plan,
@@ -630,7 +680,33 @@ async function provisionFlow(
     shared?.main !== undefined &&
     renewsOriginCertificate(shared.main.plan);
 
+  // 3d. Extra servers no longer in the plan: a cloud server goes in the infrastructure plan (its
+  // delete protection lifted first, while the files still declare it), one the user owns gets its
+  // undo host plans after the infrastructure apply.
+  const serverRecord = await readServerAddresses(deps.paths);
+  const removedOwn = Object.keys(serverRecord.ownServers ?? {}).filter(
+    (name) => !(plan.servers ?? []).some((server) => server.name === name),
+  );
+  const hadServers = (plan.servers ?? []).length > 0 || serverRecord.servers !== undefined;
+  if (hadServers && approveHash === undefined) {
+    const stateOutputs = await infrastructureOutputs(deps, plan, {
+      engine: async () => engine,
+      engineEnv,
+    });
+    await liftRemovedProtection(deps, {
+      engine,
+      env: engineEnv,
+      dir,
+      plan,
+      removed: removedCloudServers(plan, stateOutputs),
+      planOnly: options.planOnly === true,
+      command,
+      phase,
+    });
+  }
+
   // 4. Render
+  const keyLine = await renderedCheckKeyLine(deps, plan, repository);
   const knownServer =
     hidesServerAddress(plan) || ownServer
       ? undefined
@@ -648,10 +724,10 @@ async function provisionFlow(
     server: knownServer,
     ...(ownRender !== undefined ? { own: ownRender } : {}),
     edge: site.edge,
-    // A new cloud server gets the check's key at its first boot, inside the infrastructure plan.
-    ...(checkKey !== undefined && !ownServer
-      ? { checkKeyLine: checkKeyLine(checkKey.publicKeyOpenSsh, repository) }
-      : {}),
+    // A new cloud server (the app's or an extra one) gets the check's key at its first boot,
+    // inside the infrastructure plan, as drift's preview renders it.
+    ...(keyLine !== undefined ? { checkKeyLine: keyLine } : {}),
+    dashboardsOnNetwork: dashboardsOnNetwork(plan, ownRun?.facts),
   });
   // Dependabot's configuration comes with the workflow and runtime files it watches (FR-1221).
   const dependabot = await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
@@ -760,6 +836,9 @@ async function provisionFlow(
       command,
       phase,
       ...first.hooks,
+      // An extra server no longer in the plan is deleted only with its name typed, as destroy asks.
+      approvalNotes: (saved) => [...first.hooks.approvalNotes(saved), ...removalNotes(plan, saved)],
+      confirmPhrase: (saved) => removalConfirmPhrase(plan, saved),
       ...(approveHash !== undefined ? { approvePlanHash: approveHash } : {}),
       ...(options.planOnly ? { planOnly: true } : {}),
     });
@@ -774,8 +853,24 @@ async function provisionFlow(
     earlyHost ??= first.host;
     if (first.host.approval) approvals.push(approvalEntry(first.host.approval));
   }
+  /** What the app's servers' own host plans need (`serverHostPlans`). */
+  const serverPlansInput = {
+    services,
+    ownRun,
+    extraOwn,
+    removedOwn,
+    deployPublicKey: deployKey.publicKeyOpenSsh,
+    deployKeyFile: deployKey.privateKeyFile,
+    ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
+    checkKey,
+    repository,
+    command,
+    phase,
+  };
   if (options.planOnly && approveHash === undefined) {
     let hostPlanHash: string | undefined;
+    /** The app's server the user owns has setup changes to apply first. */
+    let appPending = false;
     const pending = (applied.plan?.changes.length ?? 0) > 0;
     if (!ownRun && pending && tunnelChange(applied.plan?.changes ?? [], "delete")) {
       // The connector's removal goes before this plan: show it now, so both can be approved.
@@ -804,7 +899,9 @@ async function provisionFlow(
           command,
         });
         hostPlanHash = host.hash;
+        appPending = host.plan.steps.some((step) => step.state === "change");
       } else {
+        appPending = true;
         deps.reporter.info(
           "The host plan for your server follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's id. Applying it shows the host plan and asks for its approval separately (in scripts: run with `--approve` and this hash, then again with `--approve` and the host plan's hash).",
         );
@@ -858,6 +955,13 @@ async function provisionFlow(
       planOnly: true,
       repository: machineRepository,
     });
+    // The app's servers' own host plans (feature 018), shown and saved where the servers exist.
+    const serverPlans = await serverHostPlans(deps, {
+      ...serverPlansInput,
+      plan,
+      appPending,
+      planOnly: true,
+    });
     if (learned.zoneLearned) await writePlanIfChanged(deps, persisted(plan));
     return {
       ...(applied.planHash ? { planHash: applied.planHash } : {}),
@@ -866,6 +970,7 @@ async function provisionFlow(
       ...(hostPlanHash !== undefined ? { hostPlanHash } : {}),
       ...(checkKeyPlanHash !== undefined ? { checkKeyPlanHash } : {}),
       ...(machines.length > 0 ? { runnerHostPlanHashes: machines.map((m) => m.hash) } : {}),
+      ...(serverPlans.length > 0 ? { serverHostPlanHashes: serverPlans.map((p) => p.hash) } : {}),
       applied: false,
       outputs: {},
     };
@@ -902,6 +1007,8 @@ async function provisionFlow(
     }
     await recordServerAddress(deps.paths, address);
   }
+  // The extra cloud servers' addresses, local only as the app server's.
+  await recordExtraServers(deps, plan, applied.outputs);
   // Without a domain the output is `http://<server IP>`, which is not committed.
   const outputUrl = stringOutput(applied.outputs, "url");
   const record = deploymentRecord(deps, {
@@ -980,6 +1087,40 @@ async function provisionFlow(
     await writePlanIfChanged(deps, persisted(plan));
   }
 
+  // 7d. The extra servers OpsCrew created: ready, their host keys pinned, as the app's server. Then
+  // the servers' own host plans, each approved by its own hash: an extra own server's removal or
+  // setup, and each server's private network before any deploy publishes a port on it.
+  const cloudReach = await readyExtraServers(deps, {
+    plan,
+    keyFile: deployKey.privateKeyFile,
+    command,
+    services,
+  });
+  const serverPlans = await serverHostPlans(deps, {
+    ...serverPlansInput,
+    plan,
+    appPending: false,
+    planOnly: false,
+  });
+  if (ownRun !== undefined && portainerWaitsForNetwork(plan, ownRun.facts)) {
+    deps.reporter.info(
+      `Portainer's web UI goes on your server's private address at the next \`${command}\`: this run sets up the private network, and Docker can publish only on an address the server has.`,
+    );
+  }
+  if (serverPlans.some((outcome) => outcome.approval !== undefined)) {
+    for (const outcome of serverPlans) {
+      // An extra server's setup is kept as that server's (`lastServerSetup`), never among the
+      // plan's approvals, where it would read as the app's server's last setup.
+      const setup = outcome.plan.steps.some((step) => step.id === "sshd");
+      if (outcome.approval && !setup) approvals.push(approvalEntry(outcome.approval));
+    }
+    plan = record(serverPlans.some((outcome) => outcome.applied) || host?.applied === true);
+    await writePlanIfChanged(deps, persisted(plan));
+  }
+  const ownReach: ServerReach[] = [];
+  for (const run of extraOwn) ownReach.push(await extraOwnReach(deps, run));
+  const serverReach = [...cloudReach, ...ownReach];
+
   // 8–9. Production environment and GitHub Actions secrets
   const secretsStored = await deploySecretsStep(deps, {
     store: options.secrets !== false,
@@ -1014,6 +1155,7 @@ async function provisionFlow(
           environment,
           ...(secretsTarget.tunnel !== undefined ? { tunnel: secretsTarget.tunnel } : {}),
           ...(ctx.originTls !== undefined ? { originTls: originTlsSecret(site.values) } : {}),
+          ...(serverReach.length > 0 ? { servers: serverReach } : {}),
         }),
         environment.names,
         phase,
@@ -1059,6 +1201,9 @@ async function provisionFlow(
     await writePlanIfChanged(deps, persisted(plan));
   }
 
+  // Where each service runs, once verify saw a deploy succeed and no move is under way.
+  plan = withPlacement(plan);
+
   // 10. Commit, push and open the pull request (with the user's additions, which the deploy
   // uploads, and the recovery copy when this computer's files changed).
   const published = await publishDeployment(deps, {
@@ -1090,6 +1235,8 @@ async function provisionFlow(
       `${listText(tls.leaving)} left Cloudflare's proxy. Once the deploy has given the server ${tls.leaving.length === 1 ? "its" : "their"} public certificate, run \`${command}\` again: it turns Cloudflare's client certificate off for ${tls.leaving.length === 1 ? "it" : "them"}${tls.holdsProxy ? " and switches the DNS records to DNS only" : ""}.`,
     );
   }
+  // A service moving between the app's servers continues once everything else is set up.
+  if (plan.move !== undefined) await runMove(deps, { plan, services });
   return {
     ...(applied.planHash ? { planHash: applied.planHash } : {}),
     ...storageHash,
@@ -1097,6 +1244,7 @@ async function provisionFlow(
     applied: applied.applied,
     ...(host !== undefined ? { hostPlanHash: host.hash, hostApplied: host.applied } : {}),
     ...(machines.length > 0 ? { runnerHostPlanHashes: machines.map((m) => m.hash) } : {}),
+    ...(serverPlans.length > 0 ? { serverHostPlanHashes: serverPlans.map((p) => p.hash) } : {}),
     outputs: publicOutputs(applied.outputs),
     branch: published.published.branch,
     base: published.published.base,

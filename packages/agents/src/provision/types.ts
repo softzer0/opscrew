@@ -9,6 +9,7 @@ import type {
   PortainerEndpoint,
 } from "@opscrew/connector-portainer";
 
+import type { HostFacts } from "@opscrew/connector-ssh-host";
 import type {
   CredentialCheck,
   IacEngine,
@@ -18,6 +19,7 @@ import type {
   ResourceMove,
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
+import type { CloudProvider } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import type { LocalhostServices } from "../localhost/services";
 import type { CloudRunnerHost } from "../runners/cloud";
@@ -96,6 +98,13 @@ export interface ProvisionServices {
   engine?: (preference: EnginePreference) => Promise<IacEngine>;
   /** Credential check for the plan's provider (default: `vpsConnector` over its token). */
   provider?: { configured: boolean; verify(): Promise<CredentialCheck> };
+  /**
+   * Credential checks of the providers of the extra servers OpsCrew creates, other than the app
+   * server's, by provider (default: `vpsConnector` over each one's token).
+   */
+  providers?: Partial<
+    Record<CloudProvider, { configured: boolean; verify(): Promise<CredentialCheck> }>
+  >;
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: CloudflareApi | null;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */
@@ -153,6 +162,15 @@ export interface ProvisionServices {
    * (default: `applyHostPlan`; a fake in tests).
    */
   checkHost?: Pick<HostAdapterApi, "apply">;
+  /**
+   * The private network's host plans on the servers OpsCrew created, as deploy, who becomes root
+   * through Docker in the image `rootImage` names (default: `inspectHost` and `applyHostPlan`; a
+   * fake in tests).
+   */
+  serverHost?: {
+    inspect(remote: RemoteExec, options: { rootImage: string }): Promise<HostFacts>;
+    apply: HostAdapterApi["apply"];
+  };
   /**
    * The runner machine of `runner: host`: its admin login's shell and the host adapter (default:
    * SSH with its recorded login, `inspectHost` and `applyHostPlan`; fakes in tests).
@@ -289,6 +307,12 @@ export interface ProvisionResult {
    * its machine. With `--plan-only` they are the hashes to approve.
    */
   runnerHostPlanHashes?: string[];
+  /**
+   * The host plans of the app's servers in the plan's order (feature 018; each file is
+   * `.opscrew/plans/host-<hash>.json`): each extra server's own-server setup, and each server's
+   * private network. With `--plan-only` they are the hashes to approve, one per plan.
+   */
+  serverHostPlanHashes?: string[];
   /**
    * The user's Portainer: the stack plan's SHA-256 hash (its file is
    * `.opscrew/plans/stack-<hash>.json`). With `--plan-only` it is the hash to approve.

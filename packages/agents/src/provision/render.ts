@@ -6,6 +6,7 @@ import {
   type RenderedFileKind,
   type RuntimeContext,
   renderDeployment,
+  renderServerCompose,
   renderStorage,
   renderTunnelConnectorCompose,
   tunnelMode,
@@ -113,12 +114,19 @@ export async function deploymentRenderContext(
     builderBranch?: string | undefined;
     /** The scheduled check's authorized_keys line, which a new cloud server gets at first boot. */
     checkKeyLine?: string;
+    /**
+     * The dashboards are also published on the app's server's private address
+     * (`RenderContext.dashboardsOnNetwork`): the server hosts this app alone and the network has
+     * devices.
+     */
+    dashboardsOnNetwork?: boolean;
   },
 ): Promise<RuntimeContext> {
   const { requirements, cloudflare, own, edge } = input;
   const ownServer = input.plan.target.provider === "own";
   const server = hidesServerAddress(input.plan) || ownServer ? undefined : input.server;
   const others = await otherAppDirs(deps.paths);
+  const serverSshPorts = await ownServerSshPorts(deps, input.plan);
   return {
     ...siteContext(edge, cloudflare?.ipRanges),
     opscrewVersion: deps.version,
@@ -132,6 +140,8 @@ export async function deploymentRenderContext(
     ...(input.builderBranch !== undefined ? { builderBranch: input.builderBranch } : {}),
     ...(input.checkKeyLine !== undefined ? { checkKeyLine: input.checkKeyLine } : {}),
     ...(others.length > 0 ? { otherAppDirs: others } : {}),
+    ...(Object.keys(serverSshPorts).length > 0 ? { serverSshPorts } : {}),
+    ...(input.dashboardsOnNetwork === true ? { dashboardsOnNetwork: true } : {}),
     ...(cloudflare
       ? {
           cloudflare: {
@@ -147,18 +157,42 @@ export async function deploymentRenderContext(
 }
 
 /**
- * Every file provision writes for the plan: the deployment (`renderDeployment`), the
- * `storage` root of the app's bucket at a provider (`renderStorage`), whenever the plan has a
- * Cloudflare Tunnel (an own server in tunnel mode, or a Portainer subdomain), the tunnel
- * connector's Compose file (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server)
- * and, with origin TLS on a server, `pull.pem`, the client certificate (`values`) the site trusts.
+ * The SSH port the deploy reaches each extra server the user owns on, by its name, from the
+ * logins this computer keeps (`.opscrew/server.json` → `ownServers`); none without such a server.
+ */
+async function ownServerSshPorts(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: DeployPlan,
+): Promise<Record<string, number>> {
+  const own = (plan.servers ?? []).filter((server) => server.target.provider === "own");
+  if (own.length === 0) return {};
+  const logins = (await readServerAddresses(deps.paths)).ownServers ?? {};
+  return Object.fromEntries(
+    own.flatMap((server) => {
+      const login = logins[server.name];
+      return login === undefined ? [] : [[server.name, login.port]];
+    }),
+  );
+}
+
+/**
+ * Every file provision writes for the plan: the deployment (`renderDeployment`), each extra
+ * server's Compose file (`renderServerCompose`), the `storage` root of the app's bucket at a
+ * provider (`renderStorage`), whenever the plan has a Cloudflare Tunnel (an own server in tunnel
+ * mode, or a Portainer subdomain), the tunnel connector's Compose file
+ * (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server) and, with origin TLS on a
+ * server, `pull.pem`, the client certificate (`values`) the site trusts.
  */
 export function deploymentFiles(
   plan: DeployPlan,
   ctx: RuntimeContext,
   values: OriginTlsValues = {},
 ): RenderedFile[] {
-  const files = [...renderDeployment(plan, ctx), ...renderStorage(plan, ctx)];
+  const files = [
+    ...renderDeployment(plan, ctx),
+    ...(plan.servers ?? []).map((server) => renderServerCompose(plan, server.name)),
+    ...renderStorage(plan, ctx),
+  ];
   if (usesTunnel(plan)) files.push(renderTunnelConnectorCompose(plan));
   if (ctx.originTls !== undefined && plan.target.provider !== "portainer") {
     files.push(pullPemFile(plan, values));

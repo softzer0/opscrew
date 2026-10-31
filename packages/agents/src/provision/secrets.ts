@@ -15,6 +15,7 @@ import {
   deploySecretNamesFor,
   githubEnvironment,
   PORTAINER_DEPLOY_SECRETS,
+  serverDeploySecrets,
   serviceEnvSecret,
   serviceSpec,
   TUNNEL_DEPLOY_SECRETS,
@@ -42,16 +43,20 @@ import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
 
 /**
- * The generated values of earlier runs, with the app's origin TLS values (`originTls`, kept by
- * `./origin-tls`) as they are.
+ * What the generated values hold besides the app's environment, which provision's rewrite keeps as
+ * it is: the origin TLS values (`./origin-tls`), the private network's keys and the device logins'
+ * passwords.
  */
+const KEPT_VALUES = ["originTls", "network", "grants"] as const;
+
+/** The generated values of earlier runs, with {@link KEPT_VALUES} as they are. */
 async function readGenerated(
   deps: PhaseDeps,
-): Promise<(GeneratedValues & { originTls?: unknown }) | undefined> {
+): Promise<(GeneratedValues & Partial<Record<(typeof KEPT_VALUES)[number], unknown>>) | undefined> {
   const text = await readTextIfExists(generatedValuesFile(deps));
   if (text === undefined) return undefined;
   try {
-    return JSON.parse(text) as GeneratedValues & { originTls?: unknown };
+    return JSON.parse(text) as GeneratedValues;
   } catch {
     return undefined;
   }
@@ -112,8 +117,11 @@ export async function buildAppEnvironment(
     ...(previous ? { previous } : {}),
     ...(options.storage !== undefined ? { storage: options.storage } : {}),
   });
-  // The origin TLS values stay as provision's Cloudflare step left them.
-  const kept = previous?.originTls === undefined ? {} : { originTls: previous.originTls };
+  // The origin TLS values stay as provision's Cloudflare step left them, and the network's keys
+  // and the device logins' passwords as design and `vpn` made them.
+  const kept = Object.fromEntries(
+    KEPT_VALUES.flatMap((name) => (previous?.[name] === undefined ? [] : [[name, previous[name]]])),
+  );
   await writeFileAtomic(
     generatedValuesFile(deps),
     `${JSON.stringify({ ...environment.generated, ...kept })}\n`,
@@ -196,8 +204,9 @@ export function serviceEnvSecrets(
 /**
  * Every GitHub Actions secret provision may have set for the plan's environment, by its name there
  * (`deploySecretName`: `OPSCREW_<ENV>_…` outside prod). On a server: the deploy secrets, one per
- * service with secrets (enabled or not, an earlier run may have set it) and, on a server the user
- * owns, the tunnel's service token. In the user's Portainer: the build values and the webhook's.
+ * service with secrets (enabled or not, an earlier run may have set it), each extra server's
+ * address and known hosts and, on a server the user owns, the tunnel's service token. In the user's
+ * Portainer: the build values and the webhook's.
  * On a server-less target: those its workflow reads (`deploySecretNamesFor`: on Cloudflare the
  * deploy token and the account id, and the app's values). Destroy deletes them all.
  */
@@ -213,6 +222,9 @@ export function deploySecretNames(plan: DeployPlan): string[] {
       : [
           ...Object.values(DEPLOY_SECRETS),
           ...servicesWithSecrets(plan).map((service) => serviceEnvSecret(service.name)),
+          ...(plan.servers ?? []).flatMap((server) =>
+            Object.values(serverDeploySecrets(server.name)),
+          ),
           ...(plan.target.provider === "own" ? Object.values(TUNNEL_DEPLOY_SECRETS) : []),
         ];
   return [...new Set(names.map((name) => deploySecretName(plan, name)))];
@@ -521,13 +533,23 @@ async function setEnvironmentRules(
   deps.reporter.success(`Set the rules of the GitHub environment ${env}: ${changes.join(" ")}`);
 }
 
+/** How the deploy reaches an extra server: its public address and its known hosts lines. */
+export interface ServerReach {
+  /** The server's name in the plan. */
+  name: string;
+  host: string;
+  /** `[host]:port` when its SSH port is not 22, as ssh looks the key up. */
+  knownHosts: string;
+}
+
 /**
  * The GitHub Actions secrets the deploy workflow reads, with one per service with secrets
  * ({@link serviceEnvSecrets}). In tunnel mode (a server the user owns without a public address)
  * `tunnel` adds the Cloudflare Access service token the workflow reaches SSH through; `host` is
  * then the tunnel's SSH hostname and `knownHosts` holds the server's host key under that name.
  * With origin TLS, `originTls` is the origin certificate's PEM, then its key's
- * (`OPSCREW_ORIGIN_TLS`).
+ * (`OPSCREW_ORIGIN_TLS`). Each of `servers`, the app's extra servers, gets its address and its
+ * known hosts lines (`serverDeploySecrets`), which the deploy reaches it with.
  */
 export function deploySecrets(input: {
   plan: DeployPlan;
@@ -537,11 +559,21 @@ export function deploySecrets(input: {
   environment: AppEnvironment;
   tunnel?: { serviceTokenId: string; serviceTokenSecret: string };
   originTls?: string;
+  servers?: readonly ServerReach[];
 }): Record<string, string> {
   return {
     [DEPLOY_SECRETS.host]: input.host,
     [DEPLOY_SECRETS.sshKey]: input.privateKey,
     [DEPLOY_SECRETS.knownHosts]: input.knownHosts,
+    ...Object.fromEntries(
+      (input.servers ?? []).flatMap(({ name, host, knownHosts }) => {
+        const secret = serverDeploySecrets(name);
+        return [
+          [secret.host, host],
+          [secret.knownHosts, knownHosts],
+        ];
+      }),
+    ),
     [DEPLOY_SECRETS.appEnv]: input.environment.appEnv,
     ...serviceEnvSecrets(input.plan, input.environment),
     [DEPLOY_SECRETS.buildEnv]: input.environment.buildEnv,
@@ -685,7 +717,8 @@ export async function readSecretsRecord(
 /**
  * What to delete of the secrets OpsCrew stored last time (`previous`, the record for this
  * repository), each where it is. `stale`: the env file secrets of this environment's services that
- * no longer run (`names` no longer holds them; only names of that form, never another secret).
+ * no longer run, and the address and known hosts of its extra servers that are gone (`names` no
+ * longer holds them; only names of those forms, never another secret).
  * `moved`: on a move between a GitHub environment and repository secrets (`environment` is where
  * they go now), the old copies: into a GitHub environment, the repository secrets of the same
  * names (GitHub would read them instead of a missing environment secret, also without a record of
@@ -702,8 +735,12 @@ function secretsToDelete(
     where === undefined ? { name } : { name, environment: where };
   // `OPSCREW_SERVICE_<NAME>_ENV` (`serviceEnvSecret`), `OPSCREW_<ENV>_SERVICE_<NAME>_ENV` outside prod.
   const service = new RegExp(`^${deploySecretName(plan, "OPSCREW_SERVICE_")}[A-Z0-9_]+_ENV$`);
+  // `OPSCREW_SERVER_<NAME>_HOST` and `_KNOWN_HOSTS` (`serverDeploySecrets`).
+  const server = new RegExp(
+    `^${deploySecretName(plan, "OPSCREW_SERVER_")}[A-Z0-9_]+_(?:HOST|KNOWN_HOSTS)$`,
+  );
   const stale = (previous?.names ?? [])
-    .filter((name) => service.test(name) && !names.includes(name))
+    .filter((name) => (service.test(name) || server.test(name)) && !names.includes(name))
     .sort()
     .map((name) => at(name, was));
   if (environment === was) return { stale, moved: [] };
@@ -801,7 +838,12 @@ export async function setDeploySecrets(
           ]),
       `The app environment contains: ${variableNames.length > 0 ? variableNames.join(", ") : "no variables"}.`,
       ...(stale.length > 0
-        ? ["Deleted, since their services no longer run (names only):", ...list(stale)]
+        ? [
+            stale.some((place) => !place.name.endsWith("_ENV"))
+              ? "Deleted, since their services no longer run or their servers are gone (names only):"
+              : "Deleted, since their services no longer run (names only):",
+            ...list(stale),
+          ]
         : []),
       ...(moved.length > 0
         ? [
