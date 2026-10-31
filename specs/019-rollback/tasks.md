@@ -391,6 +391,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
     - **The other pages** plan.md 8. names.
     - **The runbook's "Roll back"** for servers, promoted environments and sites, including by hand in GitHub. Runbook snapshots updated.
     - **The upgrade note:** "run `opscrew provision` once per environment after upgrading".
+    - **The token's Variables permission:** `security.md` and `alerts.md` name the permission as the connector's `GITHUB_TOKEN_PERMISSIONS` now words it (the scheduled check, a move, and `opscrew rollback`).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: medium
 
