@@ -801,6 +801,16 @@ Effort`.
   - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
+- [ ] T1830 Two wrong hints found while writing the failed-deploy guide page, in `packages/agents/src/promote/run.ts` and `packages/secops/src/hardening/checks.ts` (+ tests)
+  - Owns: those files and their tests
+  - Accept:
+    - **`promote`'s refusal for an environment that deploys from a branch** names that environment's real branch, not a hard-coded "main".
+    - **The hint for `--version` on a server environment** suggests `--digest` only when the environment is deployed by promotion. For an environment that deploys from a branch, it says how that environment goes back to an earlier version today: revert the change on its branch, or re-run that version's deploy run in GitHub Actions.
+    - **The "reboot pending" finding** no longer tells the user to run `sudo reboot` as the deploy user, which has no sudo on servers OpsCrew creates. It says to reboot from the cloud provider's console for a server OpsCrew created, or with `sudo reboot` from the user's own login on a server they already had. The app's containers start again on their own.
+    - Tests for each.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops`
+  - Effort: medium
+
 - [ ] T1821 The live runs (lead): T1820's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 
 - [X] T1822 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1826's review: one `removedOwnServers(plan, record)` for provision's refusal and removal; the redundant `edge = undefined` in origin-tls; the four `removed.length === 1` ternaries; the split-placement guide page mentions `--allow-downtime` for approving a move's window in a script.
