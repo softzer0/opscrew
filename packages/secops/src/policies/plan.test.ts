@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { PolicyResult } from "@opscrew/contracts";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -6,9 +7,12 @@ import { blockingPolicyFailures, evaluatePlanPolicies, plannedResources } from "
 const CF_V4 = ["173.245.48.0/20", "103.21.244.0/22"];
 const CF_V6 = ["2400:cb00::/32"];
 
-function deployPlan(overrides: { proxied?: boolean; backups?: boolean; dns?: boolean } = {}) {
+function deployPlan(
+  overrides: { proxied?: boolean; backups?: boolean; dns?: boolean; network?: unknown } = {},
+) {
   const dns = overrides.dns ?? true;
   return DeployPlanSchema.parse({
+    ...(overrides.network === undefined ? {} : { network: overrides.network }),
     schemaVersion: 1,
     createdAt: "2026-10-11T12:00:00.000Z",
     updatedAt: "2026-10-11T12:00:00.000Z",
@@ -231,6 +235,37 @@ describe("evaluatePlanPolicies", () => {
     const open = results.find((r) => r.policyId === "no-open-admin-ports");
     expect(open).toMatchObject({ passed: false, severity: "critical" });
     expect(open?.message).toContain("tcp/5432");
+  });
+
+  it("allows the private network's WireGuard ports over UDP, and only those", () => {
+    const network = {
+      range: "10.200.4.0/24",
+      members: [
+        {
+          name: "app",
+          address: "10.200.4.1",
+          port: 51820,
+          publicKey: randomBytes(32).toString("base64"),
+        },
+      ],
+    };
+    const open = (port: string, protocol = "udp") =>
+      evaluatePlanPolicies(
+        planJson({ extraRules: [{ direction: "in", protocol, port, source_ips: ["0.0.0.0/0"] }] }),
+        deployPlan({ network }),
+      ).find((r) => r.policyId === "no-open-admin-ports");
+    expect(open("51820")).toMatchObject({ passed: true });
+    expect(open("51820")?.message).toContain("UDP 51820");
+    expect(open("51821")?.message).toContain("udp/51821");
+    expect(open("51820", "tcp")?.message).toContain("tcp/51820");
+    // Without a network, the port is like any other.
+    const without = evaluatePlanPolicies(
+      planJson({
+        extraRules: [{ direction: "in", protocol: "udp", port: "51820", source_ips: ["::/0"] }],
+      }),
+      deployPlan(),
+    );
+    expect(failed(without)).toEqual(["no-open-admin-ports"]);
   });
 
   it("flags port ranges and any-port rules", () => {

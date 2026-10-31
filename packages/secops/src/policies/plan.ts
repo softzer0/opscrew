@@ -152,10 +152,17 @@ function digitalOceanInboundRules(resource: PlannedResource): FirewallRule[] {
   });
 }
 
-/** Ports open to the whole internet: ones that must never be public, web ports and SSH. */
-function openPorts(rules: FirewallRule[]): { admin: string[]; web: string[]; ssh: boolean } {
+/**
+ * Ports open to the whole internet: ones that must never be public, web ports, SSH and the private
+ * network's WireGuard ports (`wireguard`, the UDP ports the plan's network members listen on).
+ */
+function openPorts(
+  rules: FirewallRule[],
+  wireguard: ReadonlySet<string> = new Set(),
+): { admin: string[]; web: string[]; ssh: boolean; wireguard: string[] } {
   const admin: string[] = [];
   const web: string[] = [];
+  const network: string[] = [];
   let ssh = false;
   for (const rule of rules) {
     if ((rule.direction ?? "in") !== "in") continue;
@@ -170,11 +177,12 @@ function openPorts(rules: FirewallRule[]): { admin: string[]; web: string[]; ssh
         : protocol === "udp"
           ? PUBLIC_UDP_PORTS
           : new Set<string>();
-    if (!allowed.has(port)) admin.push(`${protocol}/${port || "any"}`);
+    if (protocol === "udp" && wireguard.has(port)) network.push(port);
+    else if (!allowed.has(port)) admin.push(`${protocol}/${port || "any"}`);
     else if (port === "80" || port === "443") web.push(`${protocol}/${port}`);
     else ssh = true;
   }
-  return { admin, web, ssh };
+  return { admin, web, ssh, wireguard: network };
 }
 
 /** SSH (port 22) may be open to the whole internet only when the plan allows it. */
@@ -204,8 +212,16 @@ function openPortResults(
   firewall: PlannedResource,
   rules: FirewallRule[],
   proxiedBehindCloudflare: boolean,
+  deployPlan: DeployPlan,
 ): PolicyResult[] {
-  const { admin: openAdminPorts, web: openWebPorts } = openPorts(rules);
+  const networkPorts = new Set((deployPlan.network?.members ?? []).map((m) => String(m.port)));
+  const open = openPorts(rules, networkPorts);
+  const { admin: openAdminPorts, web: openWebPorts } = open;
+  const wireguard = [...new Set(open.wireguard)];
+  const tunnel =
+    wireguard.length === 0
+      ? ""
+      : `, and the private network's WireGuard ${wireguard.length === 1 ? "port" : "ports"} (UDP ${wireguard.join(", ")}),`;
   const out = [
     result(
       "no-open-admin-ports",
@@ -213,7 +229,7 @@ function openPortResults(
       "critical",
       openAdminPorts.length === 0,
       openAdminPorts.length === 0
-        ? "Only ports 22, 80 and 443 accept traffic from anywhere."
+        ? `Only ports 22, 80 and 443${tunnel} accept traffic from anywhere.`
         : `These ports are open to the whole internet: ${openAdminPorts.join(", ")}. Databases, caches and admin panels must never be public; remove those rules.`,
       firewall.address,
     ),
@@ -368,7 +384,7 @@ function providerPolicies(
 
   for (const firewall of firewalls) {
     const rules = provider.rules(firewall);
-    results.push(...openPortResults(firewall, rules, proxiedBehindCloudflare));
+    results.push(...openPortResults(firewall, rules, proxiedBehindCloudflare, deployPlan));
     results.push(sshPolicyResult(firewall, rules, deployPlan));
   }
 
