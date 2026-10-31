@@ -119,7 +119,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github && pnpm turbo run typecheck --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1904 [P] [US1] [US2] The shared pause and deploy run, and promote and the move on them, in `packages/agents/src/{shared,promote,move}/**`
+- [X] T1904 [P] [US1] [US2] The shared pause and deploy run, and promote and the move on them, in `packages/agents/src/{shared,promote,move}/**`
   - Owns:
     - `packages/agents/src/shared/{deploy-pause,deploy-run}.ts` (+ tests);
     - `packages/agents/src/promote/**` (+ tests, fixtures);
