@@ -1858,7 +1858,11 @@ The steps:
    no role of the grant's login. Then `vpn remove workstation`, and the tunnel goes off.
 9. **The move back:** `server: data` comes out of Postgres's entry in `opscrew/plan.yaml`, then
    `design`, and the move runs as in step 2, without the experiment: the rows must match on the
-   app's server. After `--finish-move`, `servers` must be gone from the plan. `provision` until
+   app's server. After `--finish-move`, `servers` must be gone from the plan. At Hetzner the
+   server's delete protection is lifted first, as a script does it: `provision --confirm
+   <app>-data --yes`, without `--plan-only` or `--approve`, must show the lift confirmed by that
+   flag, then plan the deletion and print its `--approve <hash> … --confirm <app>-data` command
+   (DigitalOcean has no delete protection, so this run is skipped there). `provision` until
    done then deletes the server: its `--plan-only` run prints the command with the hashes and
    `--confirm <app>-data` (and `--confirm <app>` when the plan deletes or replaces anything else),
    each name the app's or one of its servers', and the test runs that command. The app must answer

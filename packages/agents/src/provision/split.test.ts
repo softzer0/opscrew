@@ -54,6 +54,7 @@ import {
   writeFakeState,
 } from "../testing";
 import { runProvision } from "./run";
+import { isRemovalLiftRequest } from "./servers";
 import type { ProvisionServices } from "./types";
 
 const DATA_IPV4 = "203.0.113.30";
@@ -817,7 +818,11 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
     expect(s.own.applies).toEqual([]);
   });
 
-  it("deletes an extra cloud server the plan no longer lists only with its name typed, its protection lifted first", async () => {
+  /**
+   * The deployed split plan without server `data`, whose state, address, deploy secrets and
+   * protection the last run left (`RemovalEngine`).
+   */
+  async function removalSetup(engine = new RemovalEngine()) {
     const { plan: split, privateKeys } = networkedPlan();
     const { servers: _servers, network: _network, ...rest } = split;
     const plan = DeployPlanSchema.parse({
@@ -825,7 +830,6 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
       services: split.services.map(({ server: _server, ...service }) => service),
       deployment: { lastApplyAt: "2026-10-12T08:00:00.000Z" },
     });
-    const engine = new RemovalEngine();
     const s = await setup({ plan, privateKeys, engine });
     await writeFakeState(s.deps.paths);
     await updateServerAddresses(s.deps.paths, (current) => ({
@@ -847,11 +851,24 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
       join(dir, "variables.tf"),
       'variable "data_delete_protection" {\n  type    = bool\n  default = true\n}\n',
     );
+    return { ...s, engine };
+  }
 
-    // A run that applies nothing cannot lift the protection its deletion needs: it stops first.
-    await expect(runProvision(s.deps, { services: s.services, planOnly: true })).rejects.toThrow(
+  it("deletes an extra cloud server the plan no longer lists only with its name typed, its protection lifted first", async () => {
+    const s = await removalSetup();
+    const { engine } = s;
+
+    // A run that applies nothing cannot lift the protection its deletion needs: it stops first,
+    // and names the script's way.
+    const refusal = runProvision(s.deps, { services: s.services, planOnly: true });
+    await expect(refusal).rejects.toThrow(
       /Server data is no longer in servers, so the next plan deletes it/,
     );
+    await expect(refusal).rejects.toMatchObject({
+      hint: expect.stringContaining(
+        "In a script, run `opscrew provision --confirm shop-data --yes`: it lifts the protection, then plans the deletion",
+      ),
+    });
     expect(s.handler.requests).toEqual([]);
 
     await runProvision(s.deps, { services: s.services });
@@ -868,12 +885,99 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
     expect(iac[1]?.details).toContain(
       "Server data is no longer in servers in opscrew/plan.yaml, so this plan deletes it (shop-data)",
     );
+    // Both approvals are on record in the plan, the lift's too.
+    const recorded = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(recorded.approvals.map((a) => a.planHash)).toEqual(
+      expect.arrayContaining([iac[0]?.planHash, iac[1]?.planHash]),
+    );
     // Gone from the state, it is forgotten on this computer too, and so are its deploy secrets.
     expect((await readServerAddresses(s.deps.paths)).servers).toBeUndefined();
     expect(s.handler.requests.find((r) => r.kind === "github-secrets")?.details).toContain(
       "Deleted, since their services no longer run or their servers are gone (names only):\n  OPSCREW_SERVER_DATA_HOST\n  OPSCREW_SERVER_DATA_KNOWN_HOSTS",
     );
     expect(s.github.secrets.has("OPSCREW_SERVER_DATA_HOST")).toBe(false);
+  });
+
+  it("in a script, lifts the protection its --confirm names cover, then only plans the deletion that --approve applies", async () => {
+    const s = await removalSetup();
+    const { engine } = s;
+
+    // The script's --confirm run: the lift, approved by its hash, then the deletion planned only.
+    const planned = await runProvision(s.deps, {
+      services: s.services,
+      planOnly: true,
+      liftConfirmedBy: ["shop-data"],
+    });
+    expect(titles(s, "iac-apply")).toEqual(["Lift delete protection on shop-data"]);
+    const lift = s.handler.requests.find((r) => r.kind === "iac-apply");
+    expect(lift?.planHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(lift !== undefined && isRemovalLiftRequest(lift)).toBe(true);
+    expect(engine.vars).toEqual([{ data_delete_protection: "false" }, undefined]);
+    expect(planned.applied).toBe(false);
+    expect(planned.planHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(planned.planHash).not.toBe(lift?.planHash);
+    expect(s.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        action: "iac-apply",
+        target: lift?.planHash,
+        decision: "approved",
+      }),
+    );
+    const recorded = await readArtifact("plan", s.deps.paths.files.plan);
+    expect(recorded.approvals.map((a) => a.planHash)).toContain(lift?.planHash);
+
+    // The protection is off, so --plan-only plans the deletion again, and lifts nothing.
+    const again = await runProvision(s.deps, { services: s.services, planOnly: true });
+    expect(again.planHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(titles(s, "iac-apply")).toEqual(["Lift delete protection on shop-data"]);
+
+    // --approve applies the deletion, typed by name, and lifts nothing.
+    const before = s.handler.requests.length;
+    await runProvision(s.deps, { services: s.services, approveHashes: [again.planHash ?? ""] });
+    const iac = s.handler.requests.slice(before).filter((r) => r.kind === "iac-apply");
+    expect(iac).toEqual([
+      expect.objectContaining({
+        planHash: again.planHash,
+        allowDestroy: true,
+        confirmPhrase: "shop-data",
+      }),
+    ]);
+    expect(engine.vars.slice(2).every((vars) => vars === undefined)).toBe(true);
+    expect((await readServerAddresses(s.deps.paths)).servers).toBeUndefined();
+  });
+
+  it("refuses a lift plan that also turns off the app's server's protection", async () => {
+    const s = await removalSetup(new RemovalEngine(["module.server.hcloud_server.this"]));
+    const refusal = runProvision(s.deps, {
+      services: s.services,
+      planOnly: true,
+      liftConfirmedBy: ["shop-data"],
+    });
+    await expect(refusal).rejects.toThrow(
+      "Lifting the delete protection on shop-data would also change other things",
+    );
+    await expect(refusal).rejects.toMatchObject({
+      message: expect.stringContaining("update module.server.hcloud_server.this"),
+    });
+    expect(s.handler.requests).toEqual([]);
+    expect(s.engine.calls).not.toContain("apply");
+  });
+
+  it("in a script, refuses before any plan when --confirm misses a server the lift covers", async () => {
+    const s = await removalSetup();
+    const refusal = runProvision(s.deps, {
+      services: s.services,
+      planOnly: true,
+      liftConfirmedBy: ["shop"],
+    });
+    await expect(refusal).rejects.toThrow(
+      "Lifting the delete protection on shop-data needs its name confirmed, so nothing was changed.",
+    );
+    await expect(refusal).rejects.toMatchObject({
+      hint: expect.stringContaining("with --confirm shop-data added"),
+    });
+    expect(s.engine.vars).toEqual([]);
+    expect(s.handler.requests).toEqual([]);
   });
 
   it("takes the app off an extra server the user owns that the plan no longer lists, with its name typed", async () => {
@@ -966,7 +1070,8 @@ class RemovalEngine extends FakeEngine {
   readonly vars: (Record<string, string> | undefined)[] = [];
   #deleted = false;
 
-  constructor() {
+  /** `liftsAlso`: other servers whose protection the lift plan turns off too. */
+  constructor(private readonly liftsAlso: readonly string[] = []) {
     super({ outputs: splitOutputs() });
   }
 
@@ -983,16 +1088,15 @@ class RemovalEngine extends FakeEngine {
     this.vars.push(options?.vars);
     const lift = options?.vars !== undefined;
     const server = "module.server_data.hcloud_server.this";
+    const lifted = [server, ...this.liftsAlso];
     const changes: ResourceChange[] = lift
-      ? [
-          {
-            address: server,
-            type: "hcloud_server",
-            name: "this",
-            provider: "hcloud",
-            action: "update",
-          },
-        ]
+      ? lifted.map((address) => ({
+          address,
+          type: "hcloud_server",
+          name: "this",
+          provider: "hcloud",
+          action: "update",
+        }))
       : [
           {
             address: server,
@@ -1013,12 +1117,10 @@ class RemovalEngine extends FakeEngine {
     this.scenario.changes = changes;
     this.scenario.planJson = lift
       ? {
-          resource_changes: [
-            {
-              address: server,
-              change: { actions: ["update"], before: protection(true), after: protection(false) },
-            },
-          ],
+          resource_changes: lifted.map((address) => ({
+            address,
+            change: { actions: ["update"], before: protection(true), after: protection(false) },
+          })),
         }
       : undefined;
     return super.plan(dir, planFile);

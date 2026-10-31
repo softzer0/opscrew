@@ -271,6 +271,8 @@ export interface PhaseFlowExtras {
    * Cloudflare's proxy). Default: judged from the committed `terraform.tfvars.json`.
    */
   addressWasPublic?: boolean;
+  /** {@link RunProvisionOptions.liftConfirmedBy}. */
+  liftConfirmedBy?: readonly string[];
 }
 
 /**
@@ -693,16 +695,18 @@ async function provisionFlow(
       engine: async () => engine,
       engineEnv,
     });
-    await liftRemovedProtection(deps, {
+    const lift = await liftRemovedProtection(deps, {
       engine,
       env: engineEnv,
       dir,
       plan,
       removed: removedCloudServers(plan, stateOutputs),
       planOnly: options.planOnly === true,
+      confirmedBy: extras.liftConfirmedBy,
       command,
       phase,
     });
+    if (lift !== undefined) approvals.push(approvalEntry(lift));
   }
 
   // 4. Render
@@ -962,7 +966,11 @@ async function provisionFlow(
       appPending,
       planOnly: true,
     });
-    if (learned.zoneLearned) await writePlanIfChanged(deps, persisted(plan));
+    // The only change such a run applies, a script's lift of delete protection, keeps its approval.
+    if (approvals.length > 0) plan = { ...plan, approvals: [...plan.approvals, ...approvals] };
+    if (learned.zoneLearned || approvals.length > 0) {
+      await writePlanIfChanged(deps, persisted(plan));
+    }
     return {
       ...(applied.planHash ? { planHash: applied.planHash } : {}),
       ...storageHash,
@@ -1295,6 +1303,12 @@ export interface RunProvisionOptions extends ProvisionOptions {
    * (`finishMove`), and nothing else.
    */
   finishMove?: boolean;
+  /**
+   * A script's `--confirm` names in a `planOnly` run: they approve lifting the delete protection
+   * of the removed extra servers they name (`<app>-<server>`), every one the lift covers, before
+   * the run plans their deletion. The deletion plan still needs `--approve` with its hash.
+   */
+  liftConfirmedBy?: readonly string[];
 }
 
 /**
@@ -1331,5 +1345,11 @@ export async function runProvision(
   // An unreadable plan is reported by the flow itself (and recorded as a failed phase).
   const plan = await readArtifact("plan", deps.paths.files.plan).catch(() => undefined);
   if (plan !== undefined) requireNoMoveInProgress(plan);
-  return runPhaseFlow(deps, "provision", options);
+  const { liftConfirmedBy, ...flow } = options;
+  return runPhaseFlow(
+    deps,
+    "provision",
+    flow,
+    liftConfirmedBy === undefined ? {} : { liftConfirmedBy },
+  );
 }

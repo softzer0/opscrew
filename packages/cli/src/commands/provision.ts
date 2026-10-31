@@ -4,6 +4,7 @@ import {
   approveLaterHint,
   findSavedPlan,
   HOST_KEY_FINGERPRINT,
+  isRemovalLiftRequest,
   type PhaseDeps,
   type ProvisionOptions,
   type ProvisionResult,
@@ -12,6 +13,7 @@ import {
   REPLACEABLE_TOKENS,
   REPOSITORY_TOKEN_VAR,
   type ReplaceableToken,
+  type RunProvisionOptions,
   readSavedPlanChanges,
   removalConfirmPhrase,
   runProvision,
@@ -21,7 +23,8 @@ import {
   stackFollowsReason,
   stringOutput,
 } from "@opscrew/agents";
-import { exists, isPlanHash, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import type { ApprovalHandler, Clock } from "@opscrew/contracts";
+import { approvalDecision, exists, isPlanHash, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import {
   type DeployPlan,
   isServerlessProvider,
@@ -33,6 +36,7 @@ import {
   APPROVE_BY_HASH_KINDS,
   checkConfirmName,
   FlagConfirmation,
+  formatRequest,
   withAllowDowntime,
 } from "../approval";
 import type { CliContext } from "../context";
@@ -275,19 +279,51 @@ function localhostHasNoDns(environment: ChosenEnvironment): OpsCrewError {
 }
 
 /**
+ * In a script's `--confirm` run that lifts, then only plans: approves the delete protection lift
+ * (`isRemovalLiftRequest`, whose servers provision checked against `names` before planning it), the
+ * only infrastructure change such a run applies; every other request goes to `base`.
+ */
+function removalLiftApproval(
+  base: ApprovalHandler,
+  names: readonly string[],
+  print: (text: string) => void,
+  clock: Clock,
+): ApprovalHandler {
+  const flags = names.map((name) => `--confirm ${name}`).join(" ");
+  return {
+    request: async (request) => {
+      if (!isRemovalLiftRequest(request)) return base.request(request);
+      print(formatRequest(request));
+      print(`  ✓ ${request.title} (confirmed with ${flags})\n`);
+      return approvalDecision(clock, "--confirm flags", true);
+    },
+  };
+}
+
+/**
  * Runs `provision` or `dns` from the command line: checks the flags, builds the phase deps (with
  * the `--approve <hash>` / `--yes` approval handler when no human is present and the terminal
  * prompt for production values when one is), runs the phase, maps errors to exit codes 1/2 and
  * prints the plan hashes or the next steps. On a server the user owns there are two plans (the
  * infrastructure and the host plan), each with its own hash and approval.
+ *
+ * In a script, `provision --confirm …` with neither `--plan-only` nor `--approve` lifts the delete
+ * protection of the removed extra servers the names cover (`liftConfirmedBy`), then runs as
+ * `--plan-only`: it plans their deletion and prints the `--approve <hash> … --confirm …` command.
  */
 export async function runInfraCommand(
   ctx: CliContext,
   command: "provision" | "dns",
   flags: InfraFlags,
-  run: (deps: PhaseDeps, options: ProvisionOptions) => Promise<ProvisionResult>,
+  run: (deps: PhaseDeps, options: RunProvisionOptions) => Promise<ProvisionResult>,
 ): Promise<void> {
-  const planOnly = flags.planOnly === true;
+  const liftRun =
+    command === "provision" &&
+    !ctx.isInteractive &&
+    flags.planOnly !== true &&
+    (flags.confirm ?? []).length > 0 &&
+    (flags.approve ?? []).length === 0;
+  const planOnly = flags.planOnly === true || liftRun;
   // A wrong `--confirm` name is its own error, not a missing `--yes`.
   let wrongName = false;
   const yesHint = assumeYesHint(ctx, flags.yes, command);
@@ -350,11 +386,15 @@ export async function runInfraCommand(
                   print: ctx.stdout,
                   clock,
                 });
-          return withAllowDowntime(ctx, flags.allowDowntime, typedNames, clock);
+          const lift = liftRun
+            ? removalLiftApproval(typedNames, confirms, ctx.stdout, clock)
+            : typedNames;
+          return withAllowDowntime(ctx, flags.allowDowntime, lift, clock);
         },
       });
       const result = await run(deps, {
         ...(planOnly ? { planOnly: true } : {}),
+        ...(liftRun ? { liftConfirmedBy: confirms } : {}),
         ...(hashes.length === 0 ? {} : { approveHashes: hashes }),
         ...(flags.engine === undefined ? {} : { engine: flags.engine }),
         ...(flags.push === false ? { push: false } : {}),
@@ -744,7 +784,7 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--yes", YES_DESCRIPTION)
     .option(
       "--confirm <name>",
-      "The app's name, to apply a plan that deletes or replaces resources without a prompt (for scripts; with --approve and that plan's hash); again for each extra server the plan deletes (<app>-<server>); with --finish-move, the moved service's name",
+      "The app's name, to apply a plan that deletes or replaces resources without a prompt (for scripts; with --approve and that plan's hash); again for each extra server the plan deletes (<app>-<server>); in a script without --approve, lifts the delete protection of the extra servers it names and only plans their deletion; with --finish-move, the moved service's name",
       collect,
     )
     .option(

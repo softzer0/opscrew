@@ -162,14 +162,15 @@ function changedAttributes(
  * Checks the protection-lifting plan (a normal plan with `delete_protection=false`, or
  * `previous_delete_protection=false` during a move). It may only update `hcloud_server`
  * resources, and only their delete and rebuild protection, turning delete protection off; with
- * `prefix` (for example `module.server_previous.`) only resources whose address starts with it.
+ * `prefix` (for example `module.server_previous.`) only resources whose address starts with it,
+ * and with `within` only those of these extra servers' modules.
  * Returns one plain-English line per violation (attribute names, never values); an empty list
  * means the plan is safe to offer for approval.
  */
 export function unprotectPlanProblems(
   changes: readonly ResourceChange[],
   planJson: unknown,
-  options: { prefix?: ModulePrefix } = {},
+  options: { prefix?: ModulePrefix; within?: readonly ExtraServerPrefix[] } = {},
 ): string[] {
   const parsed = PlanChangesSchema.safeParse(planJson);
   const details = new Map(
@@ -180,7 +181,9 @@ export function unprotectPlanProblems(
     if (
       change.type !== PROTECTED_SERVER_TYPE ||
       change.action !== "update" ||
-      !underPrefix(change.address, options.prefix)
+      !underPrefix(change.address, options.prefix) ||
+      (options.within !== undefined &&
+        !options.within.some((module) => change.address.startsWith(module)))
     ) {
       problems.push(`${change.action} ${change.address}`);
       continue;
@@ -217,6 +220,9 @@ export function destroyPlanProblems(changes: readonly ResourceChange[]): string[
  * string is one.
  */
 export type ModulePrefix = `module.${ServerModule}.`;
+
+/** The address prefix of an extra server's module, with its trailing dot: `module.server_<name>.`. */
+export type ExtraServerPrefix = `module.server_${string}.`;
 
 /** True when `address` starts with `prefix`, or there is no prefix. */
 function underPrefix(address: string, prefix: ModulePrefix | undefined): boolean {

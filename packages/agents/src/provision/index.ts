@@ -71,7 +71,7 @@ export {
   readRequirements,
   withCloudflareZone,
 } from "./render";
-export { type PhaseFlowExtras, runPhaseFlow, runProvision } from "./run";
+export { type PhaseFlowExtras, type RunProvisionOptions, runPhaseFlow, runProvision } from "./run";
 export {
   buildAppEnvironment,
   deploySecretNames,
@@ -80,7 +80,7 @@ export {
   serviceEnvSecrets,
   setDeploySecrets,
 } from "./secrets";
-export { removalConfirmPhrase } from "./servers";
+export { isRemovalLiftRequest, removalConfirmPhrase } from "./servers";
 export { describeStackPlan, ROUTE_CHANGE_NOTE } from "./stack-plan";
 export {
   applyStorage,

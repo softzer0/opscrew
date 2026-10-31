@@ -165,6 +165,25 @@ reconnects, with no action from you.
 a server OpsCrew created. On a server you already have, it removes only what OpsCrew installed: the
 app's services, the private network's interface, its firewall rules and its records.
 
+To remove one extra server and keep the app, take it out of `servers` in `opscrew/plan.yaml` once
+no service runs on it, then run `npx opscrew provision`. It asks you to type the server's name at
+the provider (`<app>-<server>`, such as `shop-data`) before it deletes the server. At Hetzner it
+first lifts the server's delete protection, in a plan you approve on its own.
+
+In a script, where nobody can answer, it takes two runs:
+
+1. `npx opscrew provision --confirm shop-data --yes` (one `--confirm` for each server you remove),
+   with neither `--plan-only` nor `--approve`. It shows the lift's plan and its hash, lifts the
+   delete protection of exactly those servers, then plans their deletion and stops before applying
+   it. `--yes` lets it write the generated files the deletion plan is made from. It prints the
+   command that applies the deletion. A server you didn't name stops the run before anything
+   changes, and the error names the `--confirm` to add.
+2. That printed command: `npx opscrew provision --approve <hash> --confirm shop-data --yes`. The names
+   alone never approve the deletion: it also needs the plan's hash.
+
+`--plan-only` can't lift the protection, so while it is on, `--plan-only` stops and points to the
+first step.
+
 ## What can go wrong
 
 - **Design refuses the placement:** two servers without a public address (a server of yours behind

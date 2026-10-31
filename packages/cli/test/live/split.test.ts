@@ -483,7 +483,24 @@ describe.skipIf(MISSING.length > 0)(
         await move("app", windowMinutes(design));
         expect((await run.readPlan()).servers, "servers after the last move").toBeUndefined();
         // The plan deletes the server: its printed command confirms `<app>-data` (and the app's
-        // name when the plan deletes or replaces anything else).
+        // name when the plan deletes or replaces anything else). At Hetzner the server's delete
+        // protection goes first: in a script, `--confirm <app>-data` without `--approve` lifts it
+        // and plans the deletion, which the runs after it approve by its hash (DigitalOcean has
+        // no delete protection).
+        const server = `${app}-${EXTRA_SERVER}`;
+        if (SECOND.provider === "hetzner") {
+          const flags = [...envs.appArgs, "--env", "prod", ...run.provisionFlags];
+          const lifted = await run.opscrewOk("provision", ...flags, "--confirm", server, "--yes");
+          // The lift's plan and hash are shown before the flag grants it.
+          expect(lifted.output, "the scripted lift").toMatch(
+            new RegExp(
+              `Plan hash: [0-9a-f]{64}[\\s\\S]*Lift delete protection on ${server} \\(confirmed with --confirm ${server}\\)`,
+            ),
+          );
+          expect(lifted.output, "the deletion's printed command").toMatch(
+            new RegExp(`--approve [0-9a-f]{64}.* --confirm ${server}`),
+          );
+        }
         await envs.provision("prod", `the deletion of server ${EXTRA_SERVER}`);
         await run.deploy("the app back on one server");
         await waitForDatabasePage(run);

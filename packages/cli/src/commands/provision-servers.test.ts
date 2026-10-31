@@ -1,16 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { allocateNetwork } from "@opscrew/agents";
+import { allocateNetwork, type RunProvisionOptions } from "@opscrew/agents";
 import { testKeyMaker, testPlan } from "@opscrew/agents/testing";
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import type { CliContext } from "../context";
 import { withServices } from "../deps";
 import { writeProjectPlan } from "../ui/__fixtures__/deploy";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
-import { runInfraCommand } from "./provision";
+import { type InfraFlags, runInfraCommand } from "./provision";
 
 let project: TempProject | undefined;
 afterEach(async () => {
@@ -193,6 +194,119 @@ describe("opscrew provision --finish-move", () => {
     expect(await run(ctx, "provision", "--help")).toBe(0);
     expect(ctx.output).toContain("--finish-move");
     expect(ctx.output).toContain("--allow-downtime");
+  });
+});
+
+describe("opscrew provision --confirm in a script, without --approve", () => {
+  const LIFT = "1".repeat(64);
+  const DELETION = "2".repeat(64);
+  const lift: ApprovalRequest = {
+    kind: "iac-apply",
+    title: "Lift delete protection on shop-data",
+    details: `update module.server_data.hcloud_server.this\nPlan hash: ${LIFT}`,
+    planHash: LIFT,
+  };
+  const deletion: ApprovalRequest = {
+    kind: "iac-apply",
+    title: "Apply the infrastructure plan",
+    details: "…",
+    planHash: DELETION,
+    allowDestroy: true,
+    confirmPhrase: "shop-data",
+  };
+
+  /** The app without its extra server `data`, and the saved plan that deletes it. */
+  async function removal() {
+    const s = await setup(testPlan({ deployed: true, userSecret: false }));
+    const paths = resolveProjectPaths(s.root, { env: s.ctx.env });
+    await mkdir(paths.files.plansDir, { recursive: true });
+    const deletes = (address: string, type: string) => ({
+      address,
+      type,
+      name: "this",
+      provider: "hcloud",
+      action: "delete",
+    });
+    await writeFile(
+      path.join(paths.files.plansDir, "2026-10-31T08-00-00-000Z.tfplan.json"),
+      JSON.stringify({
+        planHash: DELETION,
+        planFile: path.join(paths.files.plansDir, "2026-10-31T08-00-00-000Z.tfplan"),
+        dir: "infra",
+        engine: { name: "tofu", version: "1.10.0", binary: "tofu" },
+        createdAt: "2026-10-31T08:00:00.000Z",
+        changes: [
+          deletes("module.server_data.hcloud_server.this", "hcloud_server"),
+          deletes("module.server_data.hcloud_firewall.this", "hcloud_firewall"),
+        ],
+        counts: { create: 0, update: 0, delete: 2, replace: 0 },
+        hasDestroy: true,
+        policy: [],
+        planJson: {},
+      }),
+    );
+    return { ...s, paths };
+  }
+
+  /** Runs provision with `flags` on a phase that asks for the lift and the deletion. */
+  async function provision(ctx: CliContext, flags: InfraFlags) {
+    const decisions: Record<string, boolean> = {};
+    let options: RunProvisionOptions = {};
+    await runInfraCommand(ctx, "provision", flags, async (deps, given) => {
+      options = given;
+      decisions.lift = (await deps.approvals.request(lift)).approved;
+      decisions.deletion = (await deps.approvals.request(deletion)).approved;
+      return { applied: false, outputs: {}, planHash: DELETION };
+    });
+    return { decisions, options };
+  }
+
+  it("lifts the protection its names cover, then only plans and prints the --approve command", async () => {
+    const { ctx, paths } = await removal();
+    const { decisions, options } = await provision(ctx, { confirm: ["shop-data"] });
+    expect(options).toMatchObject({ planOnly: true, liftConfirmedBy: ["shop-data"] });
+    // The names approve the lift; the deletion still needs its hash.
+    expect(decisions).toEqual({ lift: true, deletion: false });
+    // The lift is shown, its hash too, before it is granted.
+    const shown = ctx.output.indexOf(`Plan hash: ${LIFT}`);
+    expect(shown).toBeGreaterThan(-1);
+    expect(ctx.output.indexOf("update module.server_data.hcloud_server.this")).toBeLessThan(shown);
+    expect(
+      ctx.output.indexOf(
+        "Lift delete protection on shop-data (confirmed with --confirm shop-data)",
+      ),
+    ).toBeGreaterThan(shown);
+    expect(ctx.output).toContain(`opscrew provision --approve ${DELETION} --confirm shop-data`);
+    const approvals = (await readFile(paths.files.approvals, "utf8")).trim().split("\n");
+    expect(approvals.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({ planHash: LIFT, approved: true, approver: "--confirm flags" }),
+    );
+  });
+
+  it("refuses the lift outside that run: with --approve, which runs without it, or with --plan-only", async () => {
+    for (const flags of [
+      { confirm: ["shop-data"], approve: [DELETION] },
+      { confirm: ["shop-data"], planOnly: true },
+    ]) {
+      const { ctx } = await removal();
+      const { decisions, options } = await provision(ctx, flags);
+      expect(options.liftConfirmedBy).toBeUndefined();
+      expect(decisions.lift).toBe(false);
+      await project?.cleanup();
+    }
+  });
+
+  it("leaves the lift to the prompt in a terminal", async () => {
+    project = await tempProject();
+    await writeProjectPlan(project, testPlan({ deployed: true, userSecret: false }));
+    const ctx = projectContext(project, { interactive: true });
+    let options: RunProvisionOptions = {};
+    await runInfraCommand(ctx, "provision", { confirm: ["shop-data"] }, async (_deps, given) => {
+      options = given;
+      return { applied: false, outputs: {} };
+    });
+    expect(options.planOnly).toBeUndefined();
+    expect(options.liftConfirmedBy).toBeUndefined();
   });
 });
 

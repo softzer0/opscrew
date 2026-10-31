@@ -651,11 +651,11 @@ describe.skipIf(GIT === undefined)("opscrew provision", () => {
       expect(second.engine.calls).not.toContain("apply");
     });
 
-    it("refuses --confirm when the plan's hash is not listed in --approve", async () => {
+    it("only plans with --confirm and no --approve in a script, and prints the command that applies", async () => {
       project = await deployProject();
       const { ctx, engine } = context(project, { engine: removal() });
-      expect(await run(ctx, "provision", "--confirm", "shop", "--yes")).toBe(1);
-      expect(ctx.errors).toContain("only together with --approve and that plan's hash");
+      expect(await run(ctx, "provision", "--confirm", "shop", "--yes"), ctx.errors).toBe(0);
+      expect(ctx.output).toMatch(/opscrew provision --approve [0-9a-f]{64}.* --confirm shop/);
       expect(engine.calls).not.toContain("apply");
     });
 

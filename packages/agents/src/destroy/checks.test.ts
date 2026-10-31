@@ -118,6 +118,20 @@ describe("unprotectPlanProblems", () => {
     ]);
   });
 
+  it("with `within`, refuses a server outside the named extra servers' modules", () => {
+    const { changes, planJson } = unprotectPlan();
+    // The app's server (`module.server.`) is not extra server `data`'s, nor `data-old`'s.
+    expect(unprotectPlanProblems(changes, planJson, { within: ["module.server_data."] })).toEqual([
+      `update ${SERVER_ADDRESS}`,
+    ]);
+    const data = { ...changes[0], address: "module.server_data_old.hcloud_server.this" };
+    expect(
+      unprotectPlanProblems([data as ResourceChange], planJson, {
+        within: ["module.server_data."],
+      }),
+    ).toEqual(["update module.server_data_old.hcloud_server.this"]);
+  });
+
   it("fails closed when the plan JSON does not say what changes", () => {
     const { changes } = unprotectPlan();
     expect(unprotectPlanProblems(changes, { resource_changes: [] })).toEqual([

@@ -6,14 +6,14 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { otherActiveApps } from "@opscrew/connector-ssh-host";
-import type { IacEngine, PhaseName } from "@opscrew/contracts";
+import type { ApprovalRecord, ApprovalRequest, IacEngine, PhaseName } from "@opscrew/contracts";
 import { listText, OpsCrewError, readTextIfExists, tfstateFile } from "@opscrew/core";
 import { APP_SERVER, type DeployPlan, serverOfService } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
 import { designMove } from "../design/moves";
-import { deletionSession, liftProtection } from "../destroy/deletion";
+import { deletionSession, LIFT_PROTECTION_TITLE, liftProtection } from "../destroy/deletion";
 import { providerProfile } from "../providers";
 import {
   continuesHint,
@@ -200,13 +200,34 @@ export function removalNotes(plan: DeployPlan, saved: Pick<SavedPlan, "changes">
 }
 
 /**
+ * True for the approval request of a delete protection lift (an `iac-apply` whose title starts
+ * with `LIFT_PROTECTION_TITLE`, which deletes nothing and asks for no typed name). A script's
+ * `--confirm` run of provision, which applies nothing else, approves exactly this request: the
+ * names were checked against the servers before the lift was planned (`liftRemovedProtection`).
+ */
+export function isRemovalLiftRequest(
+  request: Pick<ApprovalRequest, "kind" | "title" | "allowDestroy" | "confirmPhrase">,
+): boolean {
+  return (
+    request.kind === "iac-apply" &&
+    request.title.startsWith(LIFT_PROTECTION_TITLE) &&
+    request.allowDestroy !== true &&
+    request.confirmPhrase === undefined
+  );
+}
+
+/**
  * Before the infrastructure plan that deletes the removed extra Hetzner servers (`removed`), their
  * delete protection is lifted as `destroy` lifts it: a plan of the root as the last run left it
  * (it still declares `<name>_delete_protection`), with `-var <name>_delete_protection=false`,
  * which may change nothing but that protection, shown and approved by its hash. A server whose
  * variable is gone from the root (lifted by an earlier run) or that has no delete protection
  * (DigitalOcean) needs none. A run that applies nothing (`planOnly`) stops instead, since the
- * deletion plan it saved could not be applied while the protection is on.
+ * deletion plan it saved could not be applied while the protection is on, unless it is a script's
+ * `--confirm` run (`confirmedBy`): there the lift goes ahead only when the names cover every
+ * protected server's name at the provider (`<app>-<server>`), and stops before any plan otherwise.
+ * The lift may change nothing outside those servers' modules. Returns the lift's approval, when
+ * one was given.
  */
 export async function liftRemovedProtection(
   deps: PhaseDeps,
@@ -217,22 +238,35 @@ export async function liftRemovedProtection(
     plan: DeployPlan;
     removed: readonly string[];
     planOnly: boolean;
+    /** The `--confirm` names of a script's run that lifts, then only plans (`liftConfirmedBy`). */
+    confirmedBy?: readonly string[] | undefined;
     command: string;
     phase: PhaseName;
   },
-): Promise<void> {
+): Promise<ApprovalRecord | undefined> {
   const variables = (await readTextIfExists(join(input.dir, "variables.tf"))) ?? "";
   const protectedServers = input.removed.filter((server) =>
     variables.includes(`variable "${server}_delete_protection"`),
   );
-  if (protectedServers.length === 0) return;
-  if (input.planOnly) {
-    const one = protectedServers.length === 1;
+  if (protectedServers.length === 0) return undefined;
+  const names = protectedServers.map((server) => cloudServerName(input.plan, server));
+  const flags = (list: readonly string[]) => list.map((name) => `--confirm ${name}`).join(" ");
+  const one = protectedServers.length === 1;
+  if (input.confirmedBy !== undefined) {
+    const missing = names.filter((name) => !input.confirmedBy?.includes(name));
+    if (missing.length > 0) {
+      throw new OpsCrewError(
+        "APPROVAL_REFUSED",
+        `Lifting the delete protection on ${listText(names)} needs ${one ? "its name" : "their names"} confirmed, so nothing was changed.`,
+        { hint: `Run \`${input.command}\` again with ${flags(missing)} added.` },
+      );
+    }
+  } else if (input.planOnly) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `${one ? "Server" : "Servers"} ${listText(protectedServers)} ${one ? "is" : "are"} no longer in servers, so the next plan deletes ${one ? "it" : "them"}, and ${one ? "its" : "their"} delete protection is lifted first, which a --plan-only run cannot do. Nothing was changed.`,
       {
-        hint: `Run \`${input.command}\` without --plan-only: it shows each plan and asks for its approval.`,
+        hint: `Run \`${input.command}\` without --plan-only: it shows each plan and asks for its approval. In a script, run \`${input.command} ${flags(names)} --yes\`: it lifts the protection, then plans the deletion and prints the command that approves it.`,
       },
     );
   }
@@ -250,12 +284,14 @@ export async function liftRemovedProtection(
     },
     { engine, env, dir },
   );
-  await liftProtection(session, {
+  const { approval } = await liftProtection(session, {
     vars: Object.fromEntries(protectedServers.map((s) => [`${s}_delete_protection`, "false"])),
-    names: protectedServers.map((server) => cloudServerName(input.plan, server)),
+    names,
     serverInState: true,
+    within: protectedServers.map((server) => `module.server_${server}.` as const),
     mismatchHint: `Run \`${input.command}\` again once the infrastructure matches its files, or put the server back in servers.`,
   });
+  return approval;
 }
 
 /**

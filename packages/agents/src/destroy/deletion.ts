@@ -36,6 +36,7 @@ import {
   deletesServer,
   deletesUnconfirmedServer,
   deletionPlanProblems,
+  type ExtraServerPrefix,
   type ModulePrefix,
   onServer,
   planHeading,
@@ -634,6 +635,9 @@ export async function takeSnapshotBeforeDelete(
   return snapshotId;
 }
 
+/** How the approval request of {@link liftProtection} is titled, before the servers' names. */
+export const LIFT_PROTECTION_TITLE = "Lift delete protection on ";
+
 /** Input of {@link liftProtection}. */
 export interface LiftProtectionInput {
   /**
@@ -646,6 +650,8 @@ export interface LiftProtectionInput {
   names?: readonly string[];
   /** False when no protected server is in the state any more: nothing to lift, no plan. */
   serverInState: boolean;
+  /** The modules of the extra servers it lifts: the plan may change nothing outside them. */
+  within?: readonly ExtraServerPrefix[];
   /** The snapshot taken first, mentioned when the user refuses. */
   snapshotId?: string;
   /** Hint when the plan would change more than the protection. */
@@ -679,7 +685,11 @@ export async function liftProtection(
       deps.reporter.info(`Delete protection on ${name} is already off.`);
       return { off: true };
     }
-    const problems = unprotectPlanProblems(summary.changes, summary.planJson);
+    const problems = unprotectPlanProblems(
+      summary.changes,
+      summary.planJson,
+      input.within !== undefined ? { within: input.within } : {},
+    );
     if (problems.length > 0) {
       throw planStop(
         `Lifting the delete protection on ${name} would also change other things, so OpsCrew stopped. Nothing was changed.`,
@@ -689,7 +699,7 @@ export async function liftProtection(
     }
     const approval = await deps.approvals.request({
       kind: "iac-apply",
-      title: `Lift delete protection on ${name}`,
+      title: `${LIFT_PROTECTION_TITLE}${name}`,
       details: [
         planHeading(summary),
         ...describeChanges(summary.changes),
