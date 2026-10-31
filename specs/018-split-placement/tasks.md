@@ -459,7 +459,7 @@ Effort`.
 
 ## Phase 5: Wave 4
 
-- [ ] T1811 [US1] Agents: moving a live service, and `--finish-move`, in `packages/agents/src/move/**` and `packages/agents/src/retarget/server-ops.ts`
+- [X] T1811 [US1] Agents: moving a live service, and `--finish-move`, in `packages/agents/src/move/**` and `packages/agents/src/retarget/server-ops.ts`
   - Owns: `packages/agents/src/move/**` (+ tests). In `retarget/server-ops.ts` (+ test), only generalizations its own callers keep passing (service name, project folder). In `provision/run.ts`, only the `--finish-move` entry. In `packages/iac-templates/src/{runtime,catalog}/**`, only the rendering during a move (+ tests).
   - Reads: plan.md "10."; spec US1 #3, #5, FR-1809; ADR 0007; `retarget/window.ts`, `server-ops.ts`
   - Depends: T1810
