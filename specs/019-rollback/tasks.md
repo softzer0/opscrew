@@ -61,7 +61,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T1902 [P] [US1] [US5] The switch: the release skipped on a rollback, the failed copy's lines, and the three messages, in `packages/iac-templates/src/workflow/switch.ts`
+- [X] T1902 [P] [US1] [US5] The switch: the release skipped on a rollback, the failed copy's lines, and the three messages, in `packages/iac-templates/src/workflow/switch.ts`
   - Owns:
     - `packages/iac-templates/src/workflow/{switch.ts,switch.test.ts,rollback.test.ts}`;
     - `packages/iac-templates/src/workflow/__snapshots__/**`, updated by the test run only;
@@ -420,7 +420,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
 - [ ] T1914 The live runs (lead): T1913's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 
-- [ ] T1915 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks.
+- [ ] T1915 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1902's review: one `appEnvFlags(plan)` in `workflow/shared.ts` for `switch.ts`'s `failedLogs` and `provisionCommand`; a re-run of the same image may show the earlier run's kept lines (the `check` keep is skipped when `about` names the image), and a start-script failure after the switch that is neither the health check nor a worker is kept as `failed=check`.
 
 - [ ] T1916 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync.
   - The changelog says every deploy workflow changes. Before the first rollback, each environment needs `opscrew provision` and its merged pull request.
