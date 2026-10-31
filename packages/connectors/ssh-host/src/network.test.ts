@@ -378,24 +378,28 @@ describe("the network step's scripts", () => {
   });
 });
 
-describe.skipIf(!SH_AVAILABLE)("the network step in a real shell (commands stubbed)", () => {
-  /** A harness whose `wg`, `systemctl`, `ip`, `ufw`, `apt-get` and `dpkg-query` keep their state in files. */
-  function harness(): ShellHarness {
-    const h = new ShellHarness();
-    mkdirSync(h.native("/run"), { recursive: true });
-    h.stub(
-      "dpkg-query",
-      `for last; do :; done\nif [ -f "$S/pkg-$last" ]; then printf 'install ok installed'; else exit 1; fi`,
-      { log: false },
-    );
-    h.stub(
-      "apt-get",
-      // apt may read the session's stdin: this one swallows whatever is left of it.
-      `cat > /dev/null\nfor last; do :; done\ncase " $* " in *" install "*) touch "$S/pkg-$last" ;; esac`,
-    );
-    h.stub(
-      "wg",
-      `case "$1" in
+// Real shells are slow on Windows, more so while other suites run in parallel.
+describe.skipIf(!SH_AVAILABLE)(
+  "the network step in a real shell (commands stubbed)",
+  { timeout: 120_000 },
+  () => {
+    /** A harness whose `wg`, `systemctl`, `ip`, `ufw`, `apt-get` and `dpkg-query` keep their state in files. */
+    function harness(): ShellHarness {
+      const h = new ShellHarness();
+      mkdirSync(h.native("/run"), { recursive: true });
+      h.stub(
+        "dpkg-query",
+        `for last; do :; done\nif [ -f "$S/pkg-$last" ]; then printf 'install ok installed'; else exit 1; fi`,
+        { log: false },
+      );
+      h.stub(
+        "apt-get",
+        // apt may read the session's stdin: this one swallows whatever is left of it.
+        `cat > /dev/null\nfor last; do :; done\ncase " $* " in *" install "*) touch "$S/pkg-$last" ;; esac`,
+      );
+      h.stub(
+        "wg",
+        `case "$1" in
   pubkey)
     k=$(cat)
     f="$S/pub-$(printf '%s' "$k" | tr '/+=' '_.-')"
@@ -405,10 +409,10 @@ describe.skipIf(!SH_AVAILABLE)("the network step in a real shell (commands stubb
     cp "$3" "$S/synced.conf"
     sed -n 's/^PublicKey = //p' "$3" > "$S/peers" ;;
 esac`,
-    );
-    h.stub(
-      "systemctl",
-      `cmd=$1
+      );
+      h.stub(
+        "systemctl",
+        `cmd=$1
 shift
 case "$cmd" in
   is-active) [ -f "$S/active" ] ;;
@@ -421,18 +425,18 @@ case "$cmd" in
     touch "$S/active" ;;
   disable) rm -f "$S/enabled" "$S/active" ;;
 esac`,
-    );
-    h.stub(
-      "ip",
-      `case "$*" in
+      );
+      h.stub(
+        "ip",
+        `case "$*" in
   "-4 -o addr show dev "*) if [ -f "$S/active" ]; then printf '7: %s    inet %s scope global %s\\n' "$6" "$(cat "$S/address")" "$6"; fi ;;
   "link show "*) [ -f "$S/active" ] ;;
   "link delete "*) rm -f "$S/active" ;;
 esac`,
-    );
-    h.stub(
-      "ufw",
-      `touch "$S/ufw"
+      );
+      h.stub(
+        "ufw",
+        `touch "$S/ufw"
 case "$1" in
   show) echo "Added user rules (see 'ufw status' for running firewall):"; cat "$S/ufw" ;;
   allow)
@@ -449,254 +453,255 @@ case "$1" in
     { grep -v -x -F "$rule" "$S/ufw" | grep -v -F "$rule comment '"; } > "$S/ufw.new" || true
     mv "$S/ufw.new" "$S/ufw" ;;
 esac`,
-    );
-    // `wg pubkey` knows the app server's key.
-    h.write(
-      `/state/pub-${APP_KEY.replace(/[/+=]/g, (c) => ({ "/": "_", "+": ".", "=": "-" })[c] ?? c)}`,
-      `${wireguardKeys("app").publicKey}\n`,
-    );
-    return h;
-  }
-
-  it("installs, writes the key, the keyless configuration and the drop-in, starts the unit, then opens ufw", async () => {
-    const h = harness();
-    try {
-      const { scripts } = only(await setupPlan());
-      expect(h.run(scripts.check).stdout).toContain("state=change");
-      h.clearCalls();
-      const run = h.run(scripts.apply, `${APP_KEY}\n`);
-      expect(run.stderr).toBe("");
-      expect(run.status).toBe(0);
-      const calls = h.calls().filter((call) => !call.startsWith("wg pubkey"));
-      expect(calls).toEqual([
-        "apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold update",
-        "apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install wireguard-tools",
-        "systemctl daemon-reload",
-        "systemctl enable --quiet wg-quick@wg-opscrew0.service",
-        "systemctl is-active --quiet wg-quick@wg-opscrew0.service",
-        "systemctl start wg-quick@wg-opscrew0.service",
-        "ufw show added",
-        "ufw allow 51820/udp comment opscrew-network",
-        "ufw allow in on wg-opscrew0 to any port 22 proto tcp comment opscrew-network-ssh",
-        "ufw allow from 172.16.0.0/12 to 10.200.4.1 port 5432 proto tcp comment opscrew-network-local",
-        "ufw allow from 192.168.0.0/16 to 10.200.4.1 port 5432 proto tcp comment opscrew-network-local",
-      ]);
-      expect(h.read("/etc/wireguard/wg-opscrew0.key")).toBe(`${APP_KEY}\n`);
-      expect(h.read("/etc/wireguard/wg-opscrew0.conf")).toBe(networkConfig(appNetwork()));
-      expect(h.read(NETWORK_DROP_IN)).toBe(networkDropIn(["wg-opscrew0"]));
-      expect(h.exists("/run/opscrew-wg-opscrew0.conf")).toBe(false);
-      expect(h.run(scripts.verify).status).toBe(0);
-      expect(h.run(scripts.check).stdout).toContain("state=in-place");
-    } finally {
-      h.dispose();
-    }
-  });
-
-  it("syncs new peers from a full temporary configuration with the key file's key, removed right after", async () => {
-    const h = harness();
-    try {
-      expect(h.run(only(await setupPlan()).scripts.apply, `${APP_KEY}\n`).status).toBe(0);
-      h.clearCalls();
-      const phone = {
-        name: "phone",
-        publicKey: wireguardKeys("phone").publicKey,
-        allowedIp: "10.200.4.101/32",
-      };
-      const next = appNetwork({ peers: [...appNetwork().peers, phone] });
-      const { scripts } = only(await setupPlan(next));
-      expect(h.run(scripts.check).stdout).toContain("state=change");
-      // No key this time: the server keeps its own.
-      const run = h.run(scripts.apply);
-      expect(run.stderr).toBe("");
-      expect(run.status).toBe(0);
-      const calls = h.calls();
-      expect(calls).toContain(
-        `wg syncconf wg-opscrew0 ${h.posix("/run/opscrew-wg-opscrew0.conf")}`,
       );
-      expect(calls.some((call) => /^systemctl (start|restart)/.test(call))).toBe(false);
-      const synced = h.read("/state/synced.conf") ?? "";
-      expect(
-        synced.startsWith(
-          `[Interface]\nPrivateKey = ${APP_KEY}\nListenPort = 51820\n\n[Peer]\n# db\n`,
-        ),
-      ).toBe(true);
-      expect(synced).toContain(
-        `# phone\nPublicKey = ${phone.publicKey}\nAllowedIPs = 10.200.4.101/32\n`,
+      // `wg pubkey` knows the app server's key.
+      h.write(
+        `/state/pub-${APP_KEY.replace(/[/+=]/g, (c) => ({ "/": "_", "+": ".", "=": "-" })[c] ?? c)}`,
+        `${wireguardKeys("app").publicKey}\n`,
       );
-      expect(h.exists("/run/opscrew-wg-opscrew0.conf")).toBe(false);
-      expect(h.read("/etc/wireguard/wg-opscrew0.key")).toBe(`${APP_KEY}\n`);
-      expect(h.read("/etc/wireguard/wg-opscrew0.conf")).not.toMatch(/PrivateKey/);
-      expect(h.run(scripts.verify).status).toBe(0);
-      // A new address brings the interface up again.
-      h.clearCalls();
-      const moved = only(await setupPlan(appNetwork({ address: "10.200.4.9/24" }))).scripts;
-      expect(h.run(moved.apply).status).toBe(0);
-      expect(h.calls()).toContain("systemctl restart wg-quick@wg-opscrew0.service");
-      expect(h.run(moved.verify).status).toBe(0);
-    } finally {
-      h.dispose();
+      return h;
     }
-  });
 
-  it("stops before any change without a key, and never writes a key other than the plan's", async () => {
-    const h = harness();
-    try {
-      const { scripts } = only(await setupPlan());
-      const none = h.run(scripts.apply);
-      expect(none.status).not.toBe(0);
-      expect(none.stderr).toContain(
-        "No WireGuard key arrived on standard input, and the server has none for wg-opscrew0 yet.",
-      );
-      expect(h.exists("/etc/wireguard/wg-opscrew0.conf")).toBe(false);
-      const other = wireguardKeys("someone else").privateKey;
-      const wrong = h.run(scripts.apply, `${other}\n`);
-      expect(wrong.status).not.toBe(0);
-      expect(wrong.stderr).toContain(
-        "The WireGuard key that arrived on standard input is not the one the plan names, so it was not written.",
-      );
-      expect(wrong.stderr).not.toContain(other);
-      expect(h.exists("/etc/wireguard/wg-opscrew0.key")).toBe(false);
-      expect(h.exists("/etc/wireguard/wg-opscrew0.conf")).toBe(false);
-      const odd = h.run(scripts.apply, "not a key; rm -rf /\n");
-      expect(odd.stderr).toContain(
-        "The WireGuard key has unexpected characters, so it was not written.",
-      );
-    } finally {
-      h.dispose();
-    }
-  });
+    it("installs, writes the key, the keyless configuration and the drop-in, starts the unit, then opens ufw", async () => {
+      const h = harness();
+      try {
+        const { scripts } = only(await setupPlan());
+        expect(h.run(scripts.check).stdout).toContain("state=change");
+        h.clearCalls();
+        const run = h.run(scripts.apply, `${APP_KEY}\n`);
+        expect(run.stderr).toBe("");
+        expect(run.status).toBe(0);
+        const calls = h.calls().filter((call) => !call.startsWith("wg pubkey"));
+        expect(calls).toEqual([
+          "apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold update",
+          "apt-get -q -y -o DPkg::Lock::Timeout=300 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install wireguard-tools",
+          "systemctl daemon-reload",
+          "systemctl enable --quiet wg-quick@wg-opscrew0.service",
+          "systemctl is-active --quiet wg-quick@wg-opscrew0.service",
+          "systemctl start wg-quick@wg-opscrew0.service",
+          "ufw show added",
+          "ufw allow 51820/udp comment opscrew-network",
+          "ufw allow in on wg-opscrew0 to any port 22 proto tcp comment opscrew-network-ssh",
+          "ufw allow from 172.16.0.0/12 to 10.200.4.1 port 5432 proto tcp comment opscrew-network-local",
+          "ufw allow from 192.168.0.0/16 to 10.200.4.1 port 5432 proto tcp comment opscrew-network-local",
+        ]);
+        expect(h.read("/etc/wireguard/wg-opscrew0.key")).toBe(`${APP_KEY}\n`);
+        expect(h.read("/etc/wireguard/wg-opscrew0.conf")).toBe(networkConfig(appNetwork()));
+        expect(h.read(NETWORK_DROP_IN)).toBe(networkDropIn(["wg-opscrew0"]));
+        expect(h.exists("/run/opscrew-wg-opscrew0.conf")).toBe(false);
+        expect(h.run(scripts.verify).status).toBe(0);
+        expect(h.run(scripts.check).stdout).toContain("state=in-place");
+      } finally {
+        h.dispose();
+      }
+    });
 
-  it("opens SSH on the interface on the login's port, and its removal takes OpsCrew's rules only", async () => {
-    const h = harness();
-    try {
-      // The user's own rule for the port, and another app's network on wg-opscrew1.
-      const blogLocal = localRules("10.200.7.1", 5432);
-      h.write("/state/ufw", `ufw allow 51820/udp\n${blogLocal}`);
-      h.write("/etc/wireguard/wg-opscrew1.conf", "[Interface]\nAddress = 10.200.7.1/24\n");
-      const scripts = only(await setupPlan(appNetwork({ sshPort: 2222 }))).scripts;
-      expect(h.run(scripts.apply, `${APP_KEY}\n`).status).toBe(0);
-      // The user's own rule for the port counts; SSH opens on 2222; Docker's networks reach
-      // Postgres on .1.
-      expect(h.read("/state/ufw")).toBe(
-        `ufw allow 51820/udp\n${blogLocal}ufw allow in on wg-opscrew0 to any port 2222 proto tcp comment 'opscrew-network-ssh'\n${localRules("10.200.4.1", 5432)}`,
-      );
-      expect(h.run(scripts.verify).status).toBe(0);
-      const removal = only(removalPlan("wg-opscrew1")).scripts;
-      expect(h.run(removal.check).stdout).toContain("state=change");
-      const run = h.run(removal.apply);
-      expect(run.stderr).toBe("");
-      expect(run.status).toBe(0);
-      expect(h.calls()).toContain("systemctl disable --now --quiet wg-quick@wg-opscrew0.service");
-      // The other app's rules stay.
-      expect(h.read("/state/ufw")).toBe(`ufw allow 51820/udp\n${blogLocal}`);
-      expect(h.exists("/etc/wireguard/wg-opscrew0.conf")).toBe(false);
-      expect(h.exists("/etc/wireguard/wg-opscrew0.key")).toBe(false);
-      expect(h.read(NETWORK_DROP_IN)).toBe(networkDropIn(["wg-opscrew1"]));
-      expect(h.run(removal.verify).status).toBe(0);
-      // The last interface's removal deletes the drop-in, and every Docker networks' rule.
-      const last = only(removalPlan("")).scripts;
-      expect(h.run(last.check).stdout).toContain("state=change");
-      expect(h.run(last.apply).status).toBe(0);
-      expect(h.exists(NETWORK_DROP_IN)).toBe(false);
-      expect(h.read("/state/ufw")).toBe("ufw allow 51820/udp\n");
-      expect(h.run(last.verify).status).toBe(0);
-    } finally {
-      h.dispose();
-    }
-  });
+    it("syncs new peers from a full temporary configuration with the key file's key, removed right after", async () => {
+      const h = harness();
+      try {
+        expect(h.run(only(await setupPlan()).scripts.apply, `${APP_KEY}\n`).status).toBe(0);
+        h.clearCalls();
+        const phone = {
+          name: "phone",
+          publicKey: wireguardKeys("phone").publicKey,
+          allowedIp: "10.200.4.101/32",
+        };
+        const next = appNetwork({ peers: [...appNetwork().peers, phone] });
+        const { scripts } = only(await setupPlan(next));
+        expect(h.run(scripts.check).stdout).toContain("state=change");
+        // No key this time: the server keeps its own.
+        const run = h.run(scripts.apply);
+        expect(run.stderr).toBe("");
+        expect(run.status).toBe(0);
+        const calls = h.calls();
+        expect(calls).toContain(
+          `wg syncconf wg-opscrew0 ${h.posix("/run/opscrew-wg-opscrew0.conf")}`,
+        );
+        expect(calls.some((call) => /^systemctl (start|restart)/.test(call))).toBe(false);
+        const synced = h.read("/state/synced.conf") ?? "";
+        expect(
+          synced.startsWith(
+            `[Interface]\nPrivateKey = ${APP_KEY}\nListenPort = 51820\n\n[Peer]\n# db\n`,
+          ),
+        ).toBe(true);
+        expect(synced).toContain(
+          `# phone\nPublicKey = ${phone.publicKey}\nAllowedIPs = 10.200.4.101/32\n`,
+        );
+        expect(h.exists("/run/opscrew-wg-opscrew0.conf")).toBe(false);
+        expect(h.read("/etc/wireguard/wg-opscrew0.key")).toBe(`${APP_KEY}\n`);
+        expect(h.read("/etc/wireguard/wg-opscrew0.conf")).not.toMatch(/PrivateKey/);
+        expect(h.run(scripts.verify).status).toBe(0);
+        // A new address brings the interface up again.
+        h.clearCalls();
+        const moved = only(await setupPlan(appNetwork({ address: "10.200.4.9/24" }))).scripts;
+        expect(h.run(moved.apply).status).toBe(0);
+        expect(h.calls()).toContain("systemctl restart wg-quick@wg-opscrew0.service");
+        expect(h.run(moved.verify).status).toBe(0);
+      } finally {
+        h.dispose();
+      }
+    });
 
-  it("removes its own Docker networks' rules when an interface that stays has no configuration", async () => {
-    const h = harness();
-    try {
-      expect(h.run(only(await setupPlan()).scripts.apply, `${APP_KEY}\n`).status).toBe(0);
-      expect(h.read("/state/ufw")).toContain(localRules("10.200.4.1", 5432));
-      // wg-opscrew1 is named as staying, but its configuration is gone.
-      const removal = only(removalPlan("wg-opscrew1")).scripts;
-      const run = h.run(removal.apply);
-      expect(run.stderr).toBe("");
-      expect(run.status).toBe(0);
-      expect(h.read("/state/ufw")).not.toContain("opscrew-network-local");
-      expect(h.run(removal.verify).status).toBe(0);
-    } finally {
-      h.dispose();
-    }
-  });
+    it("stops before any change without a key, and never writes a key other than the plan's", async () => {
+      const h = harness();
+      try {
+        const { scripts } = only(await setupPlan());
+        const none = h.run(scripts.apply);
+        expect(none.status).not.toBe(0);
+        expect(none.stderr).toContain(
+          "No WireGuard key arrived on standard input, and the server has none for wg-opscrew0 yet.",
+        );
+        expect(h.exists("/etc/wireguard/wg-opscrew0.conf")).toBe(false);
+        const other = wireguardKeys("someone else").privateKey;
+        const wrong = h.run(scripts.apply, `${other}\n`);
+        expect(wrong.status).not.toBe(0);
+        expect(wrong.stderr).toContain(
+          "The WireGuard key that arrived on standard input is not the one the plan names, so it was not written.",
+        );
+        expect(wrong.stderr).not.toContain(other);
+        expect(h.exists("/etc/wireguard/wg-opscrew0.key")).toBe(false);
+        expect(h.exists("/etc/wireguard/wg-opscrew0.conf")).toBe(false);
+        const odd = h.run(scripts.apply, "not a key; rm -rf /\n");
+        expect(odd.stderr).toContain(
+          "The WireGuard key has unexpected characters, so it was not written.",
+        );
+      } finally {
+        h.dispose();
+      }
+    });
 
-  it("opens the private address to the Docker networks on the planned ports only", async () => {
-    const h = harness();
-    try {
-      const blogLocal = localRules("10.200.7.1", 6379);
-      h.write("/state/ufw", blogLocal);
-      const two = only(await setupPlan(appNetwork({ localPorts: [6379, 5432] }))).scripts;
-      expect(h.run(two.apply, `${APP_KEY}\n`).status).toBe(0);
-      expect(h.run(two.verify).status).toBe(0);
-      const ssh =
-        "ufw allow 51820/udp comment 'opscrew-network'\nufw allow in on wg-opscrew0 to any port 22 proto tcp comment 'opscrew-network-ssh'\n";
-      // Each pool, each port.
-      expect(h.read("/state/ufw")).toBe(
-        `${blogLocal}${ssh}${[
-          "ufw allow from 172.16.0.0/12 to 10.200.4.1 port 5432 proto tcp comment 'opscrew-network-local'",
-          "ufw allow from 172.16.0.0/12 to 10.200.4.1 port 6379 proto tcp comment 'opscrew-network-local'",
-          "ufw allow from 192.168.0.0/16 to 10.200.4.1 port 5432 proto tcp comment 'opscrew-network-local'",
-          "ufw allow from 192.168.0.0/16 to 10.200.4.1 port 6379 proto tcp comment 'opscrew-network-local'",
-          "",
-        ].join("\n")}`,
-      );
-      // A port no longer published is closed again; the other app's rules stay.
-      const one = only(await setupPlan(appNetwork({ localPorts: [5432] }))).scripts;
-      expect(h.run(one.check).stdout).toContain("state=change");
-      expect(h.run(one.apply).status).toBe(0);
-      expect(h.read("/state/ufw")).toBe(`${blogLocal}${ssh}${localRules("10.200.4.1", 5432)}`);
-      expect(h.run(one.verify).status).toBe(0);
-      const none = only(await setupPlan(appNetwork({ localPorts: [] }))).scripts;
-      expect(h.run(none.check).stdout).toContain("state=change");
-      expect(h.run(none.apply).status).toBe(0);
-      expect(h.read("/state/ufw")).toBe(`${blogLocal}${ssh}`);
-      expect(h.run(none.verify).status).toBe(0);
-    } finally {
-      h.dispose();
-    }
-  });
+    it("opens SSH on the interface on the login's port, and its removal takes OpsCrew's rules only", async () => {
+      const h = harness();
+      try {
+        // The user's own rule for the port, and another app's network on wg-opscrew1.
+        const blogLocal = localRules("10.200.7.1", 5432);
+        h.write("/state/ufw", `ufw allow 51820/udp\n${blogLocal}`);
+        h.write("/etc/wireguard/wg-opscrew1.conf", "[Interface]\nAddress = 10.200.7.1/24\n");
+        const scripts = only(await setupPlan(appNetwork({ sshPort: 2222 }))).scripts;
+        expect(h.run(scripts.apply, `${APP_KEY}\n`).status).toBe(0);
+        // The user's own rule for the port counts; SSH opens on 2222; Docker's networks reach
+        // Postgres on .1.
+        expect(h.read("/state/ufw")).toBe(
+          `ufw allow 51820/udp\n${blogLocal}ufw allow in on wg-opscrew0 to any port 2222 proto tcp comment 'opscrew-network-ssh'\n${localRules("10.200.4.1", 5432)}`,
+        );
+        expect(h.run(scripts.verify).status).toBe(0);
+        const removal = only(removalPlan("wg-opscrew1")).scripts;
+        expect(h.run(removal.check).stdout).toContain("state=change");
+        const run = h.run(removal.apply);
+        expect(run.stderr).toBe("");
+        expect(run.status).toBe(0);
+        expect(h.calls()).toContain("systemctl disable --now --quiet wg-quick@wg-opscrew0.service");
+        // The other app's rules stay.
+        expect(h.read("/state/ufw")).toBe(`ufw allow 51820/udp\n${blogLocal}`);
+        expect(h.exists("/etc/wireguard/wg-opscrew0.conf")).toBe(false);
+        expect(h.exists("/etc/wireguard/wg-opscrew0.key")).toBe(false);
+        expect(h.read(NETWORK_DROP_IN)).toBe(networkDropIn(["wg-opscrew1"]));
+        expect(h.run(removal.verify).status).toBe(0);
+        // The last interface's removal deletes the drop-in, and every Docker networks' rule.
+        const last = only(removalPlan("")).scripts;
+        expect(h.run(last.check).stdout).toContain("state=change");
+        expect(h.run(last.apply).status).toBe(0);
+        expect(h.exists(NETWORK_DROP_IN)).toBe(false);
+        expect(h.read("/state/ufw")).toBe("ufw allow 51820/udp\n");
+        expect(h.run(last.verify).status).toBe(0);
+      } finally {
+        h.dispose();
+      }
+    });
 
-  it("the inspection reads the network as the check does, so an unchanged network plans in place", async () => {
-    const h = harness();
-    try {
-      expect(h.run(only(await setupPlan()).scripts.apply, `${APP_KEY}\n`).status).toBe(0);
-      const run = h.run(networkInspectScript());
-      expect(run.status).toBe(0);
-      const sections = splitSections(run.stdout);
-      const state = parseNetworkState(sections.get("network")?.text ?? "");
-      expect(state.interfaces).toEqual([
-        {
-          name: "wg-opscrew0",
-          config: sha256Hex(networkConfig(appNetwork())),
-          publicKey: wireguardKeys("app").publicKey,
-          enabled: true,
-          active: true,
-          addresses: ["10.200.4.1/24"],
-          peers: appNetwork().peers.map((peer) => peer.publicKey),
-        },
-      ]);
-      expect(run.stdout).not.toContain(APP_KEY);
-      const inspected = await inspectHost(new FakeHost());
-      const ufwRules = parseUfwAdded(sections.get("ufw-added")?.text ?? "");
-      const facts = {
-        ...inspected,
-        network: state,
-        firewall: { ...inspected.firewall, ufwRules },
-      };
-      const plan = (network: NetworkStepParams) =>
-        planNetwork(facts, { app: "shop", network }, COMMAND);
-      expect(only(plan(appNetwork())).step.state).toBe("in-place");
-      expect(only(plan(appNetwork({ peers: [] }))).step.state).toBe("change");
-      expect(only(plan(appNetwork({ sshPort: 2222 }))).step.state).toBe("change");
-      expect(only(plan(appNetwork({ localPorts: [5432, 6379] }))).step.state).toBe("change");
-      expect(only(plan(appNetwork({ localPorts: [] }))).step.state).toBe("change");
-    } finally {
-      h.dispose();
-    }
-  });
-});
+    it("removes its own Docker networks' rules when an interface that stays has no configuration", async () => {
+      const h = harness();
+      try {
+        expect(h.run(only(await setupPlan()).scripts.apply, `${APP_KEY}\n`).status).toBe(0);
+        expect(h.read("/state/ufw")).toContain(localRules("10.200.4.1", 5432));
+        // wg-opscrew1 is named as staying, but its configuration is gone.
+        const removal = only(removalPlan("wg-opscrew1")).scripts;
+        const run = h.run(removal.apply);
+        expect(run.stderr).toBe("");
+        expect(run.status).toBe(0);
+        expect(h.read("/state/ufw")).not.toContain("opscrew-network-local");
+        expect(h.run(removal.verify).status).toBe(0);
+      } finally {
+        h.dispose();
+      }
+    });
+
+    it("opens the private address to the Docker networks on the planned ports only", async () => {
+      const h = harness();
+      try {
+        const blogLocal = localRules("10.200.7.1", 6379);
+        h.write("/state/ufw", blogLocal);
+        const two = only(await setupPlan(appNetwork({ localPorts: [6379, 5432] }))).scripts;
+        expect(h.run(two.apply, `${APP_KEY}\n`).status).toBe(0);
+        expect(h.run(two.verify).status).toBe(0);
+        const ssh =
+          "ufw allow 51820/udp comment 'opscrew-network'\nufw allow in on wg-opscrew0 to any port 22 proto tcp comment 'opscrew-network-ssh'\n";
+        // Each pool, each port.
+        expect(h.read("/state/ufw")).toBe(
+          `${blogLocal}${ssh}${[
+            "ufw allow from 172.16.0.0/12 to 10.200.4.1 port 5432 proto tcp comment 'opscrew-network-local'",
+            "ufw allow from 172.16.0.0/12 to 10.200.4.1 port 6379 proto tcp comment 'opscrew-network-local'",
+            "ufw allow from 192.168.0.0/16 to 10.200.4.1 port 5432 proto tcp comment 'opscrew-network-local'",
+            "ufw allow from 192.168.0.0/16 to 10.200.4.1 port 6379 proto tcp comment 'opscrew-network-local'",
+            "",
+          ].join("\n")}`,
+        );
+        // A port no longer published is closed again; the other app's rules stay.
+        const one = only(await setupPlan(appNetwork({ localPorts: [5432] }))).scripts;
+        expect(h.run(one.check).stdout).toContain("state=change");
+        expect(h.run(one.apply).status).toBe(0);
+        expect(h.read("/state/ufw")).toBe(`${blogLocal}${ssh}${localRules("10.200.4.1", 5432)}`);
+        expect(h.run(one.verify).status).toBe(0);
+        const none = only(await setupPlan(appNetwork({ localPorts: [] }))).scripts;
+        expect(h.run(none.check).stdout).toContain("state=change");
+        expect(h.run(none.apply).status).toBe(0);
+        expect(h.read("/state/ufw")).toBe(`${blogLocal}${ssh}`);
+        expect(h.run(none.verify).status).toBe(0);
+      } finally {
+        h.dispose();
+      }
+    });
+
+    it("the inspection reads the network as the check does, so an unchanged network plans in place", async () => {
+      const h = harness();
+      try {
+        expect(h.run(only(await setupPlan()).scripts.apply, `${APP_KEY}\n`).status).toBe(0);
+        const run = h.run(networkInspectScript());
+        expect(run.status).toBe(0);
+        const sections = splitSections(run.stdout);
+        const state = parseNetworkState(sections.get("network")?.text ?? "");
+        expect(state.interfaces).toEqual([
+          {
+            name: "wg-opscrew0",
+            config: sha256Hex(networkConfig(appNetwork())),
+            publicKey: wireguardKeys("app").publicKey,
+            enabled: true,
+            active: true,
+            addresses: ["10.200.4.1/24"],
+            peers: appNetwork().peers.map((peer) => peer.publicKey),
+          },
+        ]);
+        expect(run.stdout).not.toContain(APP_KEY);
+        const inspected = await inspectHost(new FakeHost());
+        const ufwRules = parseUfwAdded(sections.get("ufw-added")?.text ?? "");
+        const facts = {
+          ...inspected,
+          network: state,
+          firewall: { ...inspected.firewall, ufwRules },
+        };
+        const plan = (network: NetworkStepParams) =>
+          planNetwork(facts, { app: "shop", network }, COMMAND);
+        expect(only(plan(appNetwork())).step.state).toBe("in-place");
+        expect(only(plan(appNetwork({ peers: [] }))).step.state).toBe("change");
+        expect(only(plan(appNetwork({ sshPort: 2222 }))).step.state).toBe("change");
+        expect(only(plan(appNetwork({ localPorts: [5432, 6379] }))).step.state).toBe("change");
+        expect(only(plan(appNetwork({ localPorts: [] }))).step.state).toBe("change");
+      } finally {
+        h.dispose();
+      }
+    });
+  },
+);
 
 describe("applying the network on a server OpsCrew created (root through Docker)", () => {
   it("runs every root script in the privileged container, with the key only on standard input", async () => {

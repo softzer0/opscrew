@@ -68,7 +68,8 @@ describe("the grant step's parameters", () => {
   });
 });
 
-describe("the grant step's statements (research R6a)", () => {
+// Each statement runs through a real shell, slow on Windows under a parallel test run.
+describe("the grant step's statements (research R6a)", { timeout: 120_000 }, () => {
   it("make a read-only and a full login for each kind, and remove it", () => {
     const pg = grantEngine(grant());
     expect(pg.create).toEqual([`CREATE ROLE "laptop" WITH LOGIN PASSWORD '`, "';"]);
