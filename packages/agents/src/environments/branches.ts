@@ -171,24 +171,24 @@ export async function builderBranch(
 }
 
 /**
- * The branch and workflow of the environment that builds what the promoted environment of `plan`
- * (the one `paths` belong to) is promoted with: the `cicd.branch` and `cicd.workflowPath` of the
- * first environment along its sources that follows a branch. `undefined` when `plan` follows a
- * branch itself.
+ * The environment that builds what the promoted environment of `plan` (the one `paths` belong to)
+ * is promoted with, by its name, `cicd.branch` and `cicd.workflowPath`: the first environment
+ * along its sources that follows a branch. `undefined` when `plan` follows a branch itself.
  * @throws OpsCrewError `PHASE_PRECONDITION` naming the sources when one of them has no plan, or
  * they lead back to an environment already on the way.
  */
 export async function builderCicd(
   paths: ProjectPaths,
   plan: DeployPlan,
-): Promise<Pick<DeployPlan["cicd"], "branch" | "workflowPath"> | undefined> {
+): Promise<({ name: string } & Pick<DeployPlan["cicd"], "branch" | "workflowPath">) | undefined> {
   const chain = [paths.environment];
   let current = plan;
   for (;;) {
     const source = current.environment?.deploySource;
     if (source?.from !== "promote") {
       if (chain.length === 1) return undefined;
-      return { branch: current.cicd.branch, workflowPath: current.cicd.workflowPath };
+      const name = chain.at(-1) as string;
+      return { name, branch: current.cicd.branch, workflowPath: current.cicd.workflowPath };
     }
     const name = source.source;
     const looped = chain.includes(name);

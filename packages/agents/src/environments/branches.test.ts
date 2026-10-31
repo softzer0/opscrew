@@ -297,7 +297,11 @@ describe("builderBranch", () => {
     expect(await builderBranch(deps.paths, prod)).toBe("develop");
     expect(await builderBranch(environmentPaths(deps.paths, "staging"), staging)).toBe("develop");
     // The workflow a promoted site's run is checked against comes from the same environment.
-    const dev = { branch: "develop", workflowPath: ".github/workflows/opscrew-deploy-dev.yml" };
+    const dev = {
+      name: "dev",
+      branch: "develop",
+      workflowPath: ".github/workflows/opscrew-deploy-dev.yml",
+    };
     expect(await builderCicd(deps.paths, prod)).toEqual(dev);
     expect(await builderCicd(environmentPaths(deps.paths, "staging"), staging)).toEqual(dev);
   });

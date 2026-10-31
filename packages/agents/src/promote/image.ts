@@ -159,8 +159,9 @@ export function checkPlatform(
  * target is promoted with (`builderBranch`, as its workflow's verify job checks); and the image
  * tagged with the run's commit must be this digest. Each environment that builds tags its own form
  * of the commit ({@link environmentTag}), and the one that built the image may be the source's
- * own source, so the tag is looked up in the forms of the app's `environments`, in their order. A
- * builder id that is no run URL is never printed.
+ * own source, so the tag is looked up in the forms of the app's `environments`, in their order:
+ * in `tagged` (tag → digest, as `describeTags` read them with one pull token) when given, else in
+ * GHCR. A builder id that is no run URL is never printed.
  * @throws OpsCrewError `PHASE_PRECONDITION` saying which check failed.
  */
 export async function checkProvenance(
@@ -169,6 +170,7 @@ export async function checkProvenance(
   provenance: ImageFacts["provenance"],
   branch: string,
   environments: readonly string[],
+  tagged?: ReadonlyMap<string, string | undefined>,
 ): Promise<ImageBuild> {
   const repository = `${image.owner}/${image.repo}`;
   const reference = imageReference(image, digest);
@@ -217,7 +219,8 @@ export async function checkProvenance(
   }
   for (const environment of environments) {
     const tag = environmentTag(run.headSha, environment);
-    if ((await digestOfTag(image, tag)) === digest) {
+    const found = tagged !== undefined ? tagged.get(tag) : await digestOfTag(image, tag);
+    if (found === digest) {
       return { runUrl: provenance.builderId, branch: run.headBranch, commit: run.headSha, tag };
     }
   }
