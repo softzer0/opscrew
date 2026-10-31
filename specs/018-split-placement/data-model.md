@@ -74,8 +74,9 @@ deploy: service name → server name (`app` or an extra server). Design compares
 
 Both are in the encrypted recovery copy (014) with the other generated values.
 
-**Device configurations:** `<OpsCrew's user folder>/vpn/<app>-<environment>-<device>.conf`,
-mode 0600, written once by `vpn add` (again with `--again`). OpsCrew never reads them back.
+**Device configurations:** `<this project's OpsCrew folder>/vpn/<environment>-<device>.conf`
+(beside the generated values, so two repositories never share a file), mode 0600, written once by
+`vpn add` (again with `--again`). OpsCrew never reads them back.
 
 ## On the servers
 

@@ -506,8 +506,7 @@ Effort`.
       - a single-server app without a network gets one (range, `app` member, its key);
       - host plans for every server with a public address, each approved by its hash, adding the
         peer;
-      - writes `<OpsCrew's user folder>/vpn/<app>-<env>-<name>.conf` (0600) with
-        `deviceConfig`;
+      - writes `<project home>/vpn/<env>-<name>.conf` (0600) with `deviceConfig`;
       - returns the configuration's text for the QR code only with `--qr`;
       - with `--this-computer`, sets `thisDevice`;
       - `--again` writes a new key and configuration for an existing device.
