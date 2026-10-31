@@ -294,7 +294,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T1909 [P] [US5] [US6] `status` and `opscrew_status`: the running version, the one before, the pause, in `packages/agents/src/status/**` and the MCP tool
+- [X] T1909 [P] [US5] [US6] `status` and `opscrew_status`: the running version, the one before, the pause, in `packages/agents/src/status/**` and the MCP tool
   - Owns:
     - `packages/agents/src/status/**` (+ tests, snapshots);
     - `packages/mcp-server/src/tools/status.ts` (+ test);
