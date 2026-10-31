@@ -8,9 +8,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fakeSecret } from "@opscrew/core/testing";
 import { TOOLS } from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { builderSettings } from "./builder-checks";
 import { GitHubRepo, ghcrMissingBlobs } from "./cloud";
+import { destroyConfirmArgs } from "./harness";
 import {
   CORE_STEPS,
   envNames,
@@ -1026,5 +1028,23 @@ describe("ghcrMissingBlobs", () => {
     await expect(ghcrMissingBlobs("ghcr.io/owner/repo:latest", "owner", token)).rejects.toThrow(
       /digest reference/,
     );
+  });
+});
+
+describe("destroyConfirmArgs", () => {
+  const plan = (servers?: unknown[]) =>
+    ({ app: { name: "shop" }, servers }) as unknown as Pick<DeployPlan, "app" | "servers">;
+
+  it("confirms the app's name, then each extra server OpsCrew created at its provider", () => {
+    expect(destroyConfirmArgs(plan())).toEqual(["--confirm", "shop"]);
+    expect(
+      destroyConfirmArgs(
+        plan([
+          { name: "data", target: { provider: "hetzner", backups: false } },
+          { name: "home", target: { provider: "own" } },
+          { name: "cache", target: { provider: "digitalocean", backups: true } },
+        ]),
+      ),
+    ).toEqual(["--confirm", "shop", "--confirm", "shop-data", "--confirm", "shop-cache"]);
   });
 });

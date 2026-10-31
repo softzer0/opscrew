@@ -1,7 +1,13 @@
 import { type CostEstimate, type PlanService, PlanServiceSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { euCatalog, MemoryCatalog, offer } from "../testing";
-import { designCloudServer, extraServerNeed, sizeExtraServer, totalCost } from "./servers";
+import {
+  type CloudServerInput,
+  designCloudServer,
+  extraServerNeed,
+  sizeExtraServer,
+  totalCost,
+} from "./servers";
 import { selfHostedServices } from "./sizing";
 
 const [db, cache] = selfHostedServices({ postgres: true, redis: true }) as [
@@ -65,6 +71,69 @@ describe("an extra server's size", () => {
       code: "INVALID_INPUT",
       message:
         "No available x86 Hetzner server in fsn1 has the 2 GB of memory and 2 vCPUs server cache needs for cache and the system. plan.yaml was not changed.",
+    });
+  });
+});
+
+describe("a deployed extra server's type", () => {
+  const input: CloudServerInput = {
+    name: "data",
+    target: undefined,
+    services: [db],
+    app,
+    region: "eu-central",
+    backups: false,
+    catalogFor: async () => euCatalog(),
+  };
+
+  it("is kept rather than one with a smaller disk there, priced as it is", async () => {
+    const kept = await designCloudServer({
+      ...input,
+      deployed: { location: "fsn1", serverType: "cx33" },
+    });
+    const named = await designCloudServer({ ...input, target: { serverType: "cx33" } });
+    expect(kept.server.target.serverType).toBe("cx33");
+    expect(kept.cost).toEqual(named.cost);
+    expect(kept.warnings).toEqual([
+      "Server data could use cx13 now, but OpsCrew keeps cx33: Hetzner Cloud can't make a server's disk smaller.",
+    ]);
+    // Elsewhere it would be a new server, so it is sized as usual.
+    const elsewhere = await designCloudServer({
+      ...input,
+      deployed: { location: "nbg1", serverType: "cx33" },
+    });
+    expect(elsewhere.server.target.serverType).toBe("cx13");
+  });
+
+  it("grows to a type with a larger disk", async () => {
+    const grown = await designCloudServer({
+      ...input,
+      services: [{ ...db, memoryMb: 6 * 1024 }],
+      deployed: { location: "fsn1", serverType: "cx13" },
+    });
+    expect(grown.server.target.serverType).toBe("cx33");
+    expect(grown.warnings.join("\n")).not.toContain("OpsCrew keeps");
+  });
+
+  it("refuses a kept type too small for its services, naming one with as much disk", async () => {
+    const catalog = new MemoryCatalog(
+      [
+        { id: "cx13", vcpus: 2, memoryGb: 4, diskGb: 40, price: 4.19 },
+        { id: "big", vcpus: 1, memoryGb: 1, diskGb: 160, price: 3 },
+        { id: "cx43", vcpus: 8, memoryGb: 16, diskGb: 160, price: 15.99 },
+      ].map((init) => offer({ ...init, location: "fsn1" })),
+    );
+    const error = await designCloudServer({
+      ...input,
+      services: [{ ...db, memoryMb: 2048 }],
+      catalogFor: async () => catalog,
+      deployed: { location: "fsn1", serverType: "big" },
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        "Server data is a big (1 vCPU, 1 GB memory, 160 GB disk), but db on it need 2.4 GB of memory with the system's share, and it can't become a cx13: Hetzner Cloud can't make a server's disk smaller. plan.yaml was not changed.",
+      hint: "Choose a type with at least 160 GB of disk for server data, such as cx43, in servers[].target.serverType, then run `opscrew design` again.",
     });
   });
 });

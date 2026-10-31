@@ -21,6 +21,7 @@ import {
   USD_PER_EUR,
 } from "./cost";
 import type { EditedServer } from "./placement-edits";
+import { keptTypeText, type ServerSize } from "./server-changes";
 import { regionLocations } from "./sizing";
 import { designWording } from "./wording";
 
@@ -79,13 +80,15 @@ function cheapestFirst(a: ComputeOffer, b: ComputeOffer): number {
 
 /**
  * The smallest server type of `catalog` in `location` for a server that runs only `services`: the
- * cheapest available x86 type that is not deprecated and whose memory holds what
- * {@link extraServerNeed} asks for; `undefined` when none does.
+ * cheapest available x86 type that is not deprecated, whose memory holds what
+ * {@link extraServerNeed} asks for and whose disk has at least `minDiskGb`; `undefined` when none
+ * does.
  */
 export async function sizeExtraServer(
   catalog: ComputeCatalog,
   location: string,
   services: readonly PlanService[],
+  minDiskGb = 0,
 ): Promise<ComputeOffer | undefined> {
   const need = extraServerNeed(services);
   return (await catalog.listOffers(location))
@@ -96,7 +99,8 @@ export async function sizeExtraServer(
         !offer.deprecated &&
         offer.available &&
         offer.memoryGb * 1024 >= need.memoryMb &&
-        offer.vcpus >= need.vcpus,
+        offer.vcpus >= need.vcpus &&
+        offer.diskGb >= minDiskGb,
     )
     .sort(cheapestFirst)[0];
 }
@@ -116,15 +120,20 @@ export interface CloudServerInput {
   backups: boolean;
   /** The provider's catalogue, read for the server's location. */
   catalogFor: (provider: CloudProvider, location: string) => Promise<ComputeCatalog>;
+  /** Where it runs now and its type, when it is deployed (`deployedExtraServers`). */
+  deployed?: ServerSize;
 }
 
 /**
  * An extra server OpsCrew creates, completed from what the user wrote: the app server's provider,
  * and its location (another provider's: its first location in the region), sized by
  * {@link sizeExtraServer} unless the user set a type, with its monthly price, and a warning when
- * its services leave little of its memory free, as for the app's server.
+ * its services leave little of its memory free, as for the app's server. A deployed server
+ * (`deployed`) keeps its type rather than take one with a smaller disk in its location, with a
+ * warning saying why (neither provider can make a disk smaller).
  * @throws OpsCrewError `INVALID_INPUT` when its provider or location cannot be defaulted (the app
- * runs on the user's own server), or its type is not offered there or cannot hold its services.
+ * runs on the user's own server), or its type is not offered there or cannot hold its services
+ * (a kept type naming one with a disk at least as large that does).
  */
 export async function designCloudServer(input: CloudServerInput): Promise<DesignedCloudServer> {
   const { name, target = {}, services, app } = input;
@@ -166,13 +175,12 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
     );
   }
   // A type the user set is kept whatever its availability, as long as it is offered there.
-  const offer =
+  const offers = await catalog.listOffers(location);
+  const planned =
     serverType === undefined
       ? sized
-      : (await catalog.listOffers(location)).find(
-          (o) => o.id === serverType && o.location === location,
-        );
-  if (offer === undefined) {
+      : offers.find((o) => o.id === serverType && o.location === location);
+  if (planned === undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       `${wording.name} offers no ${wording.profile.serverNoun} type ${serverType} in ${location}, which server ${name} names (servers[].target.serverType). plan.yaml was not changed.`,
@@ -181,9 +189,28 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
       },
     );
   }
+  // A deployed server keeps its type rather than get a smaller disk, which neither provider can do.
+  const { deployed } = input;
+  const current =
+    deployed?.location === location
+      ? offers.find((o) => o.id === deployed.serverType && o.location === location)
+      : undefined;
+  const kept = current !== undefined && planned.diskGb < current.diskGb ? current : undefined;
+  const offer = kept ?? planned;
   // The smallest type that holds them, when it is another.
   const instead = sized === undefined || sized.id === offer.id ? "" : `, such as ${sized.id},`;
   if (offer.memoryGb * 1024 < need.memoryMb || offer.vcpus < need.vcpus) {
+    if (kept !== undefined) {
+      const larger = await sizeExtraServer(catalog, location, services, kept.diskGb);
+      const { profile } = wording;
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `Server ${name} is a ${kept.id} (${kept.vcpus} vCPU, ${kept.memoryGb} GB memory, ${kept.diskGb} GB disk), but ${placed} on it need ${needs} with the system's share, and it can't become a ${planned.id}: ${profile.displayName} can't make a ${profile.serverNoun}'s disk smaller. plan.yaml was not changed.`,
+        {
+          hint: `Choose a type with at least ${kept.diskGb} GB of disk for server ${name}${larger === undefined ? "" : `, such as ${larger.id},`} in servers[].target.serverType, then run \`opscrew design\` again.`,
+        },
+      );
+    }
     throw new OpsCrewError(
       "INVALID_INPUT",
       `Server ${name} is a ${offer.id} (${offer.vcpus} vCPU, ${offer.memoryGb} GB memory), but ${placed} on it need ${needs} with the system's share. plan.yaml was not changed.`,
@@ -194,11 +221,14 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
   }
   const limitsMb = services.reduce((sum, service) => sum + service.memoryMb, 0);
   const headroom = memoryHeadroom(offer.memoryGb * 1024, limitsMb, 0);
-  const warnings = headroom.low
-    ? [
-        `Server ${name} (${offer.id}) keeps only ${Math.max(0, Math.round(headroom.free * 100))}% of its memory free after its services' memory limits and the system, so a service that grows can make the server run out of memory. Choose a bigger type for it${instead} or lower a memory limit in opscrew/plan.yaml.`,
-      ]
-    : [];
+  const warnings = [
+    ...(kept === undefined ? [] : [keptTypeText(name, provider, planned.id, kept.id)]),
+    ...(headroom.low
+      ? [
+          `Server ${name} (${offer.id}) keeps only ${Math.max(0, Math.round(headroom.free * 100))}% of its memory free after its services' memory limits and the system, so a service that grows can make the server run out of memory. Choose a bigger type for it${instead} or lower a memory limit in opscrew/plan.yaml.`,
+        ]
+      : []),
+  ];
   const backups = target.backups ?? input.backups;
   const extras = await catalog.extras(location);
   const { cost } = pricedOffer(offer, extras, {

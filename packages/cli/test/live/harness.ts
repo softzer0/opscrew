@@ -4,7 +4,12 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostKeyFingerprint, parseDotenv, providerProfile } from "@opscrew/agents";
+import {
+  extraCloudServers,
+  hostKeyFingerprint,
+  parseDotenv,
+  providerProfile,
+} from "@opscrew/agents";
 import { NodeCommandRunner, resolveProjectPaths } from "@opscrew/core";
 import { materializeFixture } from "@opscrew/core/testing";
 import { selectEngine, tofuEncryptionEnv } from "@opscrew/iac-engine";
@@ -151,6 +156,17 @@ export const CLEANUP_DESTROY_BUDGET_MS = minutes(10);
 export const CLEANUP_DESTROY_RUN_MS = minutes(4);
 /** What a cleanup's `teardown` may take: the destroy budget, then the API deletions after it. */
 const TEARDOWN_TIMEOUT_MS = CLEANUP_DESTROY_BUDGET_MS + minutes(15);
+
+/**
+ * The `--confirm` names `opscrew destroy` deletes `plan`'s servers with in a script: the app's,
+ * then each extra server's OpsCrew created (`<app>-<server>`). Destroy never asks about a server it
+ * has nothing to delete for, so a name of one never created is harmless.
+ */
+export function destroyConfirmArgs(plan: Pick<DeployPlan, "app" | "servers">): string[] {
+  return [plan.app.name, ...extraCloudServers(plan).map((server) => server.resource)].flatMap(
+    (name) => ["--confirm", name],
+  );
+}
 
 /** The file a merged change adds or rewrites, so that its deploy builds a new image. */
 export const CHANGE_FILE = "opscrew-e2e-change.txt";

@@ -864,6 +864,60 @@ describe("a deployed extra server that changes", () => {
   });
 });
 
+describe("a deployed server's disk", () => {
+  it("keeps the app server's type when a move away leaves it a smaller one, priced as it is", async () => {
+    const deps = await setup(nextPostgresFacts(), makeRequirements(), {
+      runner: sizedRunner(50 * 1024 * 1024),
+    });
+    const first = await runDesign(deps, { catalog: fsn1Catalog() });
+    expect(first.plan.target).toMatchObject({ location: "fsn1", serverType: "cx33" });
+    await deployed(deps, { db: "app" });
+    await recordServerAddress(deps.paths, { ipv4: "203.0.113.10" });
+    await editPlan(deps, place("db", "data"));
+    const result = await runDesign(deps, { catalog: fsn1Catalog(), keys: testKeyMaker() });
+
+    // Without Postgres a cx13 would do, but its disk is smaller than the cx33's.
+    expect(result.plan.target).toMatchObject({ location: "fsn1", serverType: "cx33" });
+    expect(result.chosen).toMatchObject({
+      id: "hetzner-single-cx33-fsn1",
+      target: { serverType: "cx33", diskGb: 80 },
+    });
+    expect(result.chosen.cost).toEqual(first.chosen.cost);
+    expect(result.plan.cost.breakdown[0]).toEqual(first.plan.cost.breakdown[0]);
+    const kept =
+      "Server app could use cx13 now, but OpsCrew keeps cx33: Hetzner Cloud can't make a server's disk smaller.";
+    expect(result.chosen.tradeoffs).toContain(kept);
+    expect(result.warnings).toContain(kept);
+    expect(result.warnings.join("\n")).not.toMatch(/resize/);
+    // The new server is sized for Postgres alone.
+    expect(result.plan.servers?.[0]?.target).toMatchObject({ serverType: "cx13" });
+    expect(result.plan.move).toMatchObject({ service: "db", from: "app", to: "data" });
+  });
+
+  it("keeps an extra server's type when design would size it smaller", async () => {
+    const deps = await dbAndCache(fsn1Catalog);
+    await editPlan(deps, place("cache", "data", { location: "fsn1", serverType: "cx33" }));
+    await runDesign(deps, { catalog: fsn1Catalog(), keys: testKeyMaker() });
+    await deployed(deps, { db: "app", cache: "data" });
+    await renderedTfvars(deps, { data_location: "fsn1", data_server_type: "cx33" });
+    // The user leaves its type out, so design sizes it for cache alone.
+    await editPlan(deps, (raw) => {
+      const [server] = raw.servers as { target: Record<string, unknown> }[];
+      if (server !== undefined) delete server.target.serverType;
+    });
+    const result = await runDesign(deps, { catalog: fsn1Catalog() });
+    expect(result.plan.servers?.[0]?.target).toMatchObject({
+      location: "fsn1",
+      serverType: "cx33",
+    });
+    expect(result.warnings).toContain(
+      "Server data could use cx13 now, but OpsCrew keeps cx33: Hetzner Cloud can't make a server's disk smaller.",
+    );
+    expect(result.warnings.join("\n")).not.toMatch(/resize/);
+    expect(result.plan.cost.breakdown.at(-1)?.item).toMatch(/^Server data \(cx33 in fsn1\)/);
+  });
+});
+
 describe("the network follows the servers", () => {
   it("drops a server's member when the server leaves the plan, and keeps the others' keys", async () => {
     const facts = nextPostgresFacts({

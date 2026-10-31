@@ -106,7 +106,12 @@ import {
 } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE, priceLabel } from "./cost";
 import { keptEdits } from "./kept-edits";
-import { buildDesignOptions, lowHeadroomText, minimumMonthlyCost } from "./options";
+import {
+  buildDesignOptionSet,
+  type DesignOptionSet,
+  lowHeadroomText,
+  minimumMonthlyCost,
+} from "./options";
 import {
   buildOwnServerOption,
   mayHavePublicIpv4,
@@ -134,7 +139,7 @@ import {
 } from "./portainer";
 import { releaseCommandNote } from "./release";
 import { resolveRuntime } from "./runtime-version";
-import { appServerChange } from "./server-changes";
+import { appServerChange, deployedAppServer } from "./server-changes";
 import {
   buildServerlessOption,
   pagesAllowedFor,
@@ -575,7 +580,11 @@ interface PlanBasis {
 }
 
 /** A preview, with the catalogue a server OpsCrew creates was priced from. */
-type PricedPreview = DesignPreview & { catalog?: ComputeCatalog };
+type PricedPreview = DesignPreview & {
+  catalog?: ComputeCatalog;
+  /** Why an option keeps the deployed server's type, by option id (`buildDesignOptionSet`). */
+  kept?: ReadonlyMap<string, string>;
+};
 
 /**
  * The single option on this computer: no price, the computer's CPU and the edge's ports
@@ -761,15 +770,18 @@ async function priceOptions(
     isStatic = resolved.isStatic;
     if (resolved.warning !== undefined) warn(resolved.warning);
   }
-  let designOptions: DesignOption[];
+  // The app's deployed server keeps its disk.
+  const deployed = deployedAppServer(previous, provider);
+  let set: DesignOptionSet;
   try {
-    designOptions = await buildDesignOptions({
+    set = await buildDesignOptionSet({
       facts,
       requirements,
       catalog,
       now,
       components,
       edge,
+      deployed,
     });
   } catch (error) {
     // A live catalogue that fails half-way falls back to the static table; sizing errors do not.
@@ -781,15 +793,17 @@ async function priceOptions(
     warn(
       `Could not read live prices from ${wording.name} (${reason}). Using the price list dated ${fallback.date} instead; prices are estimates.`,
     );
-    designOptions = await buildDesignOptions({
+    set = await buildDesignOptionSet({
       facts,
       requirements,
       catalog,
       now,
       components,
       edge,
+      deployed,
     });
   }
+  const designOptions = set.options;
   const priceSource = designOptions.every((option) => option.cost.source === "live")
     ? "live"
     : "static";
@@ -821,6 +835,7 @@ async function priceOptions(
     requirements,
     ...designed,
     catalog,
+    kept: set.kept,
   };
 }
 
@@ -1036,7 +1051,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   // A value the user set where design follows analysis is kept, and said with what it found.
   for (const line of keptLines) reporter.info(say(line));
   if (previous) {
-    for (const warning of serverChangeWarnings(previous, plan)) warn(warning);
+    for (const warning of serverChangeWarnings(previous, plan, preview.kept?.get(chosen.id))) {
+      warn(warning);
+    }
     const owner = sqliteOwnerWarning(previous, plan);
     if (owner !== undefined) warn(owner);
   }
@@ -1754,15 +1771,19 @@ function isCloudServer(target: DeployTarget): target is CloudDeployTarget {
 }
 
 /**
- * Plain-English warnings when the new plan moves or resizes a server that already exists. A
- * destroyed deployment, or one on another provider (only possible once destroyed), has no server
- * to move.
+ * Plain-English warnings when the new plan moves or resizes a server that already exists, or keeps
+ * its type rather than shrink its disk (`kept`, why the chosen option does). A destroyed
+ * deployment, or one on another provider (only possible once destroyed), has no server to move.
  */
-function serverChangeWarnings(previous: DeployPlan, plan: DeployPlan): string[] {
+function serverChangeWarnings(
+  previous: DeployPlan,
+  plan: DeployPlan,
+  kept: string | undefined,
+): string[] {
   // Only a server OpsCrew creates is moved or resized: never a server the user owns, a Portainer,
   // this computer or a server-less target.
   const change = appServerChange(previous, plan);
-  if (change === undefined) return [];
+  if (change === undefined) return kept === undefined ? [] : [kept];
   const { before, after } = change;
   const server = providerProfile(planProvider(plan)).serverNoun;
   if (change.kind === "replace") {

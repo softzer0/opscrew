@@ -33,7 +33,9 @@ import { designOwnServer, type OwnServersOptions } from "./own-servers";
 import { hasPlacement, type PlacementEdits } from "./placement-edits";
 import { withServerThreads } from "./plan";
 import {
+  applied,
   appServerChange,
+  deployedExtraServers,
   extraServerChanges,
   extraServerChangeWarning,
   replacedServers,
@@ -103,8 +105,8 @@ export function onAppServer<T extends Pick<DeployPlan, "services">>(plan: T): T 
  * The plan's placement, as design completes it from the user's edits (feature 018, FR-1801–1803,
  * FR-1809, FR-1818):
  * - each extra server kept from the edits: one OpsCrew creates gets the app server's provider and
- *   location and the smallest type that holds its services, unless the user set them, and its
- *   price; one the user owns is reached and inspected as an own app server is;
+ *   location and the smallest type that holds its services, unless the user set them (a deployed
+ *   one keeps its type rather than get a smaller disk), and its price; one the user owns is reached and inspected as an own app server is;
  * - the move a changed `services[].server` asks for on a deployed app;
  * - the private network, allocated or kept, its members following the servers;
  * - the cost: one line per server, and the total, with a warning over the budget;
@@ -139,6 +141,12 @@ export async function designPlacement(
   const facts: Record<string, NetworkHostFacts> = {};
   if (input.appNetwork !== undefined) facts[APP_SERVER] = input.appNetwork;
   const appPublic = hasPublicAddress(base, APP_SERVER);
+  const current = await deployedExtraServers(
+    deps.paths.root,
+    input.previous,
+    base,
+    edits.servers.map((server) => server.name),
+  );
   for (const edited of edits.servers) {
     const placed = on(edited.name);
     if (edited.target?.provider === "own") {
@@ -160,6 +168,8 @@ export async function designPlacement(
         region: input.requirements.region,
         backups: input.requirements.dataCriticality !== "none",
         catalogFor: input.catalogFor,
+        // Only a server that exists keeps its disk.
+        deployed: applied(input.previous) ? current.get(edited.name) : undefined,
       }),
     );
   }
@@ -169,10 +179,7 @@ export async function designPlacement(
   warnings.push(...moved.warnings);
   // What the next provision replaces or resizes: said for an extra server, as for the app's, and
   // never in the same provision as a move between them.
-  const changes = await extraServerChanges(deps.paths.root, input.previous, {
-    servers,
-    infra: base.infra,
-  });
+  const changes = extraServerChanges(current, servers);
   for (const [name, change] of changes) warnings.push(extraServerChangeWarning(name, change));
   if (moved.move !== undefined) {
     const replaced = replacedServers(appServerChange(input.previous, base), changes);

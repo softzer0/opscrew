@@ -13,7 +13,7 @@ import {
   staticSpaFacts,
 } from "../testing";
 import { convertMoney, costFor, EXCHANGE_RATE_NOTE } from "./cost";
-import { buildDesignOptions, minimumMonthlyCost } from "./options";
+import { buildDesignOptionSet, buildDesignOptions, minimumMonthlyCost } from "./options";
 
 const extras: ProviderExtras = {
   ipv4Monthly: { amount: 0.5, currency: "EUR" },
@@ -246,6 +246,130 @@ describe("buildDesignOptions", () => {
       expect(options.length).toBeLessThanOrEqual(3);
     },
   );
+
+  describe("for a deployed server", () => {
+    const fsn1 = (...more: Parameters<typeof offer>[0][]) =>
+      new MemoryCatalog(
+        [
+          { id: "cx11", vcpus: 1, memoryGb: 2, diskGb: 20, price: 2 },
+          { id: "cx13", vcpus: 2, memoryGb: 4, diskGb: 40, price: 4.19 },
+          { id: "cx33", vcpus: 4, memoryGb: 8, diskGb: 80, price: 8.49 },
+          { id: "cx43", vcpus: 8, memoryGb: 16, diskGb: 160, price: 15.99 },
+          ...more,
+        ].map((init) => offer({ ...init, location: "fsn1" })),
+      );
+    const kept13 =
+      "Server app could use cx13 now, but OpsCrew keeps cx33: Hetzner Cloud can't make a server's disk smaller.";
+
+    it("keeps its type rather than one with a smaller disk there, priced as it is", async () => {
+      const set = await buildDesignOptionSet({
+        facts: staticSpaFacts(),
+        requirements: makeRequirements({ budgetMonthly: { amount: 5, currency: "EUR" } }),
+        catalog: fsn1(),
+        deployed: { location: "fsn1", serverType: "cx33" },
+      });
+      expect(DesignOptionListSchema.safeParse(set.options).success).toBe(true);
+      const [lean, comfortable, ...rest] = set.options;
+      expect(rest).toEqual([]);
+      // Lean would be a cx13 (40 GB disk), but the server is a cx33 (80 GB).
+      expect(lean).toMatchObject({
+        id: "hetzner-single-cx33-fsn1",
+        title: "Lean: cx33 in Falkenstein",
+        target: { serverType: "cx33", location: "fsn1", diskGb: 80 },
+        fitsBudget: false,
+        recommended: true,
+      });
+      expect(lean?.cost.monthly).toEqual({ amount: 8.99, currency: "EUR" });
+      expect(lean?.tradeoffs[0]).toBe(kept13);
+      expect(set.kept).toEqual(new Map([["hetzner-single-cx33-fsn1", kept13]]));
+      expect(comfortable?.id).toBe("hetzner-single-cx43-fsn1");
+      expect(comfortable?.tradeoffs.join("\n")).not.toContain("OpsCrew keeps");
+    });
+
+    it("still grows to a type with a larger disk", async () => {
+      const set = await buildDesignOptionSet({
+        facts: staticSpaFacts(),
+        requirements: makeRequirements({ budgetMonthly: { amount: 10, currency: "EUR" } }),
+        catalog: fsn1(),
+        deployed: { location: "fsn1", serverType: "cx11" },
+      });
+      expect(set.options.map((o) => o.id)).toEqual([
+        "hetzner-single-cx13-fsn1",
+        "hetzner-single-cx33-fsn1",
+      ]);
+      expect(set.kept.size).toBe(0);
+    });
+
+    it("offers each type where the server runs first, never a replace for a smaller one", async () => {
+      const both = (init: Parameters<typeof offer>[0]) => [
+        offer({ ...init, location: "nbg1" }),
+        offer({ ...init, location: "fsn1" }),
+      ];
+      const input = {
+        facts: staticSpaFacts(),
+        requirements: makeRequirements({ budgetMonthly: { amount: 10, currency: "EUR" } }),
+        deployed: { location: "fsn1", serverType: "cx33" },
+      };
+      // A type with the cx33's disk, cheaper: a resize where it runs, not a replace in nbg1.
+      const resized = await buildDesignOptionSet({
+        ...input,
+        catalog: new MemoryCatalog([
+          ...both({ id: "cx23", vcpus: 2, memoryGb: 4, diskGb: 40, price: 5.49 }),
+          ...both({ id: "cx32", vcpus: 2, memoryGb: 4, diskGb: 80, price: 7.49 }),
+          ...both({ id: "cx33", vcpus: 4, memoryGb: 8, diskGb: 80, price: 8.49 }),
+        ]),
+      });
+      expect(resized.options.map((o) => [o.id, o.recommended])).toEqual([
+        ["hetzner-single-cx32-fsn1", true],
+        ["hetzner-single-cx33-fsn1", false],
+      ]);
+      expect(resized.kept.size).toBe(0);
+
+      // The shared catalogue: every cheaper type has a smaller disk, so the cx33 stays in fsn1.
+      const kept = await buildDesignOptionSet({ ...input, catalog: euCatalog() });
+      expect(kept.options[0]).toMatchObject({ id: "hetzner-single-cx33-fsn1", recommended: true });
+      expect(kept.options.every((o) => o.target.location === "fsn1")).toBe(true);
+      expect(kept.kept.get("hetzner-single-cx33-fsn1")).toBe(kept13);
+    });
+
+    it("never offers its type for a tier it does not meet", async () => {
+      // A dedicated type with more memory than the shared cx43, but a smaller disk.
+      const ccx = {
+        id: "ccx33",
+        vcpus: 8,
+        memoryGb: 32,
+        diskGb: 120,
+        price: 60,
+        cpuType: "dedicated" as const,
+      };
+      const high = makeRequirements({
+        uptime: "high",
+        budgetMonthly: { amount: 100, currency: "EUR" },
+      });
+      const shared = await buildDesignOptionSet({
+        facts: staticSpaFacts(),
+        requirements: high,
+        catalog: fsn1(ccx),
+        deployed: { location: "fsn1", serverType: "cx43" },
+      });
+      expect(shared.options.map((o) => [o.title, o.recommended])).toEqual([
+        ["Lean: cx43 in Falkenstein", true],
+      ]);
+      expect(shared.kept.get("hetzner-single-cx43-fsn1")).toBe(
+        "Server app could use cx13 now, but OpsCrew keeps cx43: Hetzner Cloud can't make a server's disk smaller.",
+      );
+
+      // A type too small for the app is not offered: the cheapest with as much disk is.
+      const tiny = await buildDesignOptionSet({
+        facts: staticSpaFacts(),
+        requirements: high,
+        catalog: fsn1(ccx, { id: "big", vcpus: 1, memoryGb: 0.5, diskGb: 160, price: 3 }),
+        deployed: { location: "fsn1", serverType: "big" },
+      });
+      expect(tiny.options.map((o) => o.id)).toEqual(["hetzner-single-cx43-fsn1"]);
+      expect(tiny.kept.size).toBe(0);
+    });
+  });
 
   it("recommends Comfortable for high uptime when it fits, otherwise Lean", async () => {
     const high = await buildDesignOptions({

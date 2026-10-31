@@ -8,6 +8,7 @@ import type {
 import { formatMoney, OpsCrewError } from "@opscrew/core";
 import { EDGE_PROXIES, type EdgeProxy } from "@opscrew/iac-templates";
 import {
+  APP_SERVER,
   type CostEstimate,
   type DesignOption,
   DesignOptionListSchema,
@@ -25,6 +26,7 @@ import {
   pricedOffer,
   priceLabel,
 } from "./cost";
+import { keptTypeText, type ServerSize } from "./server-changes";
 import { containersText, regionLocations, type Sizing, sizeFor } from "./sizing";
 import { type DesignWording, designWording } from "./wording";
 
@@ -38,6 +40,8 @@ export interface BuildDesignOptionsInput {
   components?: Components;
   /** The server's proxy (`target.edge`), whose memory the sizing counts; Caddy by default. */
   edge?: EdgeProxy;
+  /** The app's server as deployed on this provider (`deployedAppServer`), which keeps its disk. */
+  deployed?: ServerSize;
 }
 
 /** Option tiers, in display order. */
@@ -51,6 +55,8 @@ interface Candidate {
   cost: CostEstimate;
   /** Rates in the estimate of a live offer that were not read from the API. */
   rates: NonLiveRates;
+  /** Why it is the deployed server's type, standing in for one with a smaller disk. */
+  kept?: string;
 }
 
 /**
@@ -60,14 +66,33 @@ interface Candidate {
  * memory, bigger than Lean) and **Dedicated** (cheapest dedicated-vCPU server, only for `high`
  * uptime or 10k+ users). ARM, deprecated and unavailable server types are excluded; each server
  * type is offered in the first location of the region (from the provider profile) where it is
- * available. Prices stay in the catalogue's currency; the budget is compared at the fixed
- * approximate exchange rate. Exactly one option is recommended. Validated with
- * `DesignOptionListSchema`. A server the user owns has its own single option
- * (`buildOwnServerOption`).
+ * available, the deployed server's (`deployed`) first: another location replaces it. Where it
+ * runs, no type with a smaller disk than its own is offered (neither provider can make a disk
+ * smaller), and its own type is when it meets the need, saying why when a cheaper type was left
+ * out for its disk. Prices stay in the catalogue's currency; the budget is compared at the fixed
+ * approximate exchange rate. Exactly one option is recommended. Validated with `DesignOptionListSchema`. A server the user owns has its
+ * own single option (`buildOwnServerOption`).
  * @throws OpsCrewError `INVALID_INPUT` when no server in the region meets the need.
  * @throws Error when the catalogue belongs to another provider (a bug, never user input).
  */
 export async function buildDesignOptions(input: BuildDesignOptionsInput): Promise<DesignOption[]> {
+  return (await buildDesignOptionSet(input)).options;
+}
+
+/** {@link buildDesignOptionSet}'s result. */
+export interface DesignOptionSet {
+  options: DesignOption[];
+  /** Why an option keeps the deployed server's type (`keptTypeText`), by option id. */
+  kept: Map<string, string>;
+}
+
+/**
+ * {@link buildDesignOptions}, with why each option that keeps the deployed server's type does, for
+ * design to say once that option is chosen.
+ */
+export async function buildDesignOptionSet(
+  input: BuildDesignOptionsInput,
+): Promise<DesignOptionSet> {
   const { facts, requirements, catalog } = input;
   const provider = requestedProvider(requirements);
   if (catalog.provider !== provider) {
@@ -90,14 +115,21 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
         offer.available &&
         locations.includes(offer.location),
     );
-  // One offer per server type: the first location (in region order) where it is available.
+  // One offer per server type: the first location (in region order) where it is available, the
+  // deployed server's first, since another location replaces the server with its data.
+  const { deployed } = input;
+  const order =
+    deployed !== undefined && locations.includes(deployed.location)
+      ? [deployed.location, ...locations.filter((location) => location !== deployed.location)]
+      : locations;
   const byType = new Map<string, ComputeOffer>();
-  for (const location of locations) {
+  for (const location of order) {
     for (const offer of offers) {
       if (offer.location === location && !byType.has(offer.id)) byType.set(offer.id, offer);
     }
   }
 
+  const pricing = { backups, backupPercent: profile.backupPercent };
   const extrasCache = new Map<string, Promise<ProviderExtras>>();
   const extrasFor = (location: string) => {
     let extras = extrasCache.get(location);
@@ -107,14 +139,43 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
     }
     return extras;
   };
+  // The deployed server's type, when it runs in the region: no type with a smaller disk is offered
+  // where it runs (neither provider can make a disk smaller), and it is offered itself.
+  const current =
+    deployed === undefined || !locations.includes(deployed.location)
+      ? undefined
+      : (await catalog.listOffers(deployed.location)).find(
+          (offer) => offer.id === deployed.serverType && offer.location === deployed.location,
+        );
+  const isCurrent = (offer: ComputeOffer) =>
+    offer.id === current?.id && offer.location === current.location;
   const candidates: Candidate[] = [];
-  for (const offer of byType.values()) {
+  const shrinking: Candidate[] = [];
+  const offered = [...byType.values()];
+  if (current !== undefined && !offered.some(isCurrent)) offered.push(current);
+  for (const offer of offered) {
     if (!meets(offer, sizing)) continue;
     const extras = await extrasFor(offer.location);
-    const priced = pricedOffer(offer, extras, { backups, backupPercent: profile.backupPercent });
-    candidates.push({ offer, ...priced });
+    const candidate = { offer, ...pricedOffer(offer, extras, pricing) };
+    const shrinks =
+      current !== undefined && offer.location === current.location && offer.diskGb < current.diskGb;
+    (shrinks ? shrinking : candidates).push(candidate);
   }
   candidates.sort(cheapestFirst);
+  // The deployed type, the cheapest of its CPU kind left, names the cheapest of that kind left out
+  // for its smaller disk.
+  const cheapestOf = (list: Candidate[], cpu: string | undefined) =>
+    list.filter((c) => c.offer.cpuType === cpu).sort(cheapestFirst)[0];
+  const own = cheapestOf(candidates, current?.cpuType);
+  const smaller = cheapestOf(shrinking, current?.cpuType);
+  if (
+    own !== undefined &&
+    isCurrent(own.offer) &&
+    smaller !== undefined &&
+    cheapestFirst(smaller, own) < 0
+  ) {
+    own.kept = keptTypeText(APP_SERVER, provider, smaller.offer.id, own.offer.id);
+  }
 
   const shared = candidates.filter((c) => c.offer.cpuType === "shared");
   const lean = shared[0];
@@ -165,7 +226,13 @@ export async function buildDesignOptions(input: BuildDesignOptionsInput): Promis
       now: input.now,
     }),
   );
-  return DesignOptionListSchema.parse(options);
+  const parsed = DesignOptionListSchema.parse(options);
+  const kept = new Map<string, string>();
+  parsed.forEach((option, i) => {
+    const why = picked[i]?.[1].kept;
+    if (why !== undefined) kept.set(option.id, why);
+  });
+  return { options: parsed, kept };
 }
 
 function meets(offer: ComputeOffer, sizing: Sizing): boolean {
@@ -225,7 +292,7 @@ const TIER_TRADEOFFS: Record<DesignTier, string[]> = {
 
 function toOption(
   tier: DesignTier,
-  { offer, cost, rates }: Candidate,
+  { offer, cost, rates, kept }: Candidate,
   context: {
     provider: VpsProviderId;
     wording: DesignWording;
@@ -261,7 +328,7 @@ function toOption(
     memoryText(sizing.components, serverMb, sizing.edgeMb, cost.monthly),
   ].join(" ");
 
-  const tradeoffs = [...TIER_TRADEOFFS[tier]];
+  const tradeoffs = [...(kept === undefined ? [] : [kept]), ...TIER_TRADEOFFS[tier]];
   const headroom = memoryHeadroom(serverMb, sizing.limitsMb, sizing.edgeMb);
   if (headroom.low) tradeoffs.push(lowHeadroomText(offer.id, headroom.free));
   if (context.regionNote !== undefined) tradeoffs.push(context.regionNote);

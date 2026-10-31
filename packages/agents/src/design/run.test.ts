@@ -712,10 +712,11 @@ describe("runDesign", () => {
     });
 
     it("warns that a deployed server will be replaced when the location changes", async () => {
-      const deps = await existingPlan("hetzner-single-cx13-fsn1", deployed);
+      // cx13 is available only in fsn1, so choosing it moves the server out of nbg1.
+      const deps = await existingPlan("hetzner-single-cx33-nbg1", deployed);
       const result = await runDesign(deps, {
         catalog: euCatalog(),
-        optionId: "hetzner-single-cx33-nbg1",
+        optionId: "hetzner-single-cx13-fsn1",
       });
       const warning = result.warnings.join("\n");
       expect(warning).toMatch(/fsn1/);
@@ -1668,10 +1669,11 @@ describe("runDesign: components", () => {
     expect(rerun.reporter.text()).toContain(
       "Kept your changes in opscrew/plan.yaml: the app's memory (2048 MB) and the service mysql (memory 2048 MB).",
     );
-    // 2048 + 2048 MB, plus the edge and the system, no longer fit 4 GB: the next server has 8.
-    expect(result.plan.target).toMatchObject({ serverType: "cx33" });
+    // 2048 + 2048 MB, plus the edge and the system, no longer fit 4 GB: the next server has 8,
+    // where the server runs.
+    expect(result.plan.target).toMatchObject({ serverType: "cx33", location: "fsn1" });
     expect(result.warnings.join("\n")).toContain(
-      "Your server already runs in fsn1 (cx13). The chosen option uses nbg1 (cx33)",
+      "The chosen option changes the server type from cx13 to cx33",
     );
   });
 

@@ -41,6 +41,7 @@ import {
   CLEANUP_DESTROY_RUN_MS,
   type CleanupAttempt,
   type CliRun,
+  destroyConfirmArgs,
   type LiveRun,
   localLeakSources,
 } from "./harness";
@@ -520,8 +521,9 @@ export class AppEnvironments {
   }
 
   /**
-   * `opscrew destroy --env <environment> --confirm <app> --no-snapshot` (`--no-snapshot` only on
-   * a server; `--app <key>` for a further app; `args` added), each plan it stops at approved by
+   * `opscrew destroy --env <environment> --confirm <app> --no-snapshot` (a `--confirm` for each
+   * extra cloud server too, {@link destroyConfirmArgs}; `--no-snapshot` only on a server;
+   * `--app <key>` for a further app; `args` added), each plan it stops at approved by
    * its hash (a runner machine's host plan, a site's plans). With `timeLeft` (the cleanup's
    * budget), each run stops after {@link CLEANUP_DESTROY_RUN_MS} or the time left, whichever is
    * shorter.
@@ -532,7 +534,8 @@ export class AppEnvironments {
     args: readonly string[] = [],
   ): Promise<void> {
     const { run } = this;
-    const { provider } = (await this.readPlan(environment)).target;
+    const plan = await this.readPlan(environment);
+    const { provider } = plan.target;
     const site = provider === "cloudflare-workers" || provider === "github-pages";
     const cli =
       timeLeft === undefined
@@ -549,8 +552,7 @@ export class AppEnvironments {
         ...this.appArgs,
         "--env",
         environment,
-        "--confirm",
-        this.app(environment),
+        ...destroyConfirmArgs(plan),
         ...(site ? [] : ["--no-snapshot"]),
         ...args,
       ],
