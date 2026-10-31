@@ -811,7 +811,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops`
   - Effort: medium
 
-- [ ] T1831 [US1] Design keeps a deployed server where it runs, in `packages/agents/src/design/options.ts` (+ tests)
+- [X] T1831 [US1] Design keeps a deployed server where it runs, in `packages/agents/src/design/options.ts` (+ tests)
   - Owns: that file and its tests (and `design/run.test.ts` where it encodes the old behaviour)
   - Found by: T1821's fifth live run.
     - Step 1 put the app's server in one Hetzner location, because the cheapest type was sold out in another.
