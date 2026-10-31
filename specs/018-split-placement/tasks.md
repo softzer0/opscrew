@@ -589,7 +589,7 @@ Effort`.
 
 ## Phase 7: Wave 6 (parallel)
 
-- [ ] T1817 [P] [US1]–[US6] Surfaces: the CLI's `vpn` and new flags, MCP's network data and `placement_estimate`, and the plugin's skills, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`
+- [X] T1817 [P] [US1]–[US6] Surfaces: the CLI's `vpn` and new flags, MCP's network data and `placement_estimate`, and the plugin's skills, in `packages/cli/src/**`, `packages/mcp-server/src/**`, `plugin/**`
   - Owns: those paths (+ tests)
   - Reads: plan.md "13."; spec US6, FR-1821; contracts/split-placement.md "Agents and surfaces"
   - Depends: T1809, T1811, T1812, T1813, T1814, T1815, T1816
@@ -756,6 +756,6 @@ Effort`.
 
 - [ ] T1821 The live runs (lead): T1820's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 
-- [ ] T1822 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1826's review: one `removedOwnServers(plan, record)` for provision's refusal and removal; the redundant `edge = undefined` in origin-tls; the four `removed.length === 1` ternaries.
+- [ ] T1822 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1826's review: one `removedOwnServers(plan, record)` for provision's refusal and removal; the redundant `edge = undefined` in origin-tls; the four `removed.length === 1` ternaries; the split-placement guide page mentions `--allow-downtime` for approving a move's window in a script.
 
 - [ ] T1823 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync.
