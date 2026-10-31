@@ -213,15 +213,76 @@ describe("the network filter's scripts", () => {
     );
   });
 
-  it("remove the filter for an empty rule list", () => {
+  it("end with a default deny of every new connection to the private address, any port and protocol", () => {
+    const deny =
+      "-m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctdir ORIGINAL -j DROP\nOPSCREW_RULES";
+    expect(networkFilterScript(dbFilter())).toContain(
+      `--ctorigdstport 6379 --ctdir ORIGINAL -j DROP\n${deny}`,
+    );
+    // An empty rule list keeps the filter, with only the default deny.
     const empty = scriptsOf(networkFilterFields(dbFilter({ rules: [] })));
-    expect(empty.apply).toBe(removalScripts().apply);
+    expect(empty.apply).not.toBe(removalScripts().apply);
+    expect(networkFilterScript(dbFilter({ rules: [] }))).toContain(
+      `cat <<'OPSCREW_RULES'\n${deny}`,
+    );
+  });
+
+  /**
+   * The first verdict of the chain's rules for a new connection whose original destination is
+   * `dst:port` (`proto`) from `src`, as iptables decides it in DOCKER-USER: `RETURN` when no rule
+   * matches. It reads only the matches the filter uses.
+   */
+  function verdict(
+    specs: readonly string[],
+    packet: { src: string; dst: string; port: number; proto: "tcp" | "udp" },
+  ): string {
+    for (const spec of specs) {
+      const word = (flag: string) => new RegExp(`(?:^|\\s)${flag} (\\S+)`).exec(spec)?.[1];
+      const source = word("-s");
+      if (source !== undefined && source !== `${packet.src}/32`) continue;
+      const proto = word("-p");
+      if (proto !== undefined && proto !== packet.proto) continue;
+      if (word("--ctorigdst") !== packet.dst) continue;
+      const port = word("--ctorigdstport");
+      if (port !== undefined && Number(port) !== packet.port) continue;
+      return word("-j") ?? "";
+    }
+    return "RETURN";
+  }
+
+  it("drop the DNAT path from another Docker network unless a rule admits it", () => {
+    const script = networkFilterScript(dbFilter());
+    const specs = (
+      /cat <<'OPSCREW_RULES'\n([\s\S]*?)\nOPSCREW_RULES/.exec(script)?.[1] ?? ""
+    ).split("\n");
+    const to = (src: string, port: number, proto: "tcp" | "udp" = "tcp") =>
+      verdict(specs, { src, dst: "10.200.4.2", port, proto });
+    // A container on another bridge, masqueraded or not, reaching a published port or one
+    // still published after its last grant was revoked: dropped.
+    expect(to("172.18.0.5", 5432)).toBe("DROP");
+    expect(to("172.18.0.5", 8080)).toBe("DROP");
+    expect(to("172.18.0.5", 53, "udp")).toBe("DROP");
+    // A device whose grant is gone (8080 has no rule any more), and one granted Postgres.
+    expect(to("10.200.4.100", 8080)).toBe("DROP");
+    expect(to("10.200.4.100", 5432)).toBe("ACCEPT");
+    expect(to("10.200.4.1", 6379)).toBe("ACCEPT");
+    // Another address is not this filter's.
+    expect(verdict(specs, { src: "172.18.0.5", dst: "10.0.0.9", port: 80, proto: "tcp" })).toBe(
+      "RETURN",
+    );
+    // The host's own containers reach the private address through INPUT (ufw's localPorts
+    // rules); the filter only ever sits in DOCKER-USER (FORWARD).
+    expect(script).not.toMatch(/\bINPUT\b/);
   });
 });
 
-describe.skipIf(!SH_AVAILABLE)("the network filter in a real shell (commands stubbed)", () => {
-  /** iptables over files: `$S/iptables/<chain>` holds the chain's rules; `-I` honours its position. */
-  const IPTABLES = `d="$S/iptables"
+// Real shells are slow on Windows, more so while other suites run in parallel.
+describe.skipIf(!SH_AVAILABLE)(
+  "the network filter in a real shell (commands stubbed)",
+  { timeout: 120_000 },
+  () => {
+    /** iptables over files: `$S/iptables/<chain>` holds the chain's rules; `-I` honours its position. */
+    const IPTABLES = `d="$S/iptables"
 mkdir -p "$d"
 if [ "$1" = -w ]; then shift; fi
 if [ "$1" = -n ]; then shift; fi
@@ -245,7 +306,7 @@ case "$op" in
   -X) if [ -s "$f" ] || grep -rqs -- "-j $chain\\$" "$d"; then exit 1; fi; rm -f "$f" ;;
   *) exit 2 ;;
 esac`;
-  const RESTORE = `d="$S/iptables"
+    const RESTORE = `d="$S/iptables"
 mkdir -p "$d"
 while IFS= read -r line; do
   case "$line" in
@@ -253,7 +314,7 @@ while IFS= read -r line; do
     "-A "*) chain=$(printf '%s\\n' "$line" | cut -d ' ' -f 2); printf '%s\\n' "$line" >> "$d/$chain" ;;
   esac
 done`;
-  const SYSTEMCTL = `cmd=$1
+    const SYSTEMCTL = `cmd=$1
 shift
 for unit; do :; done
 case "$cmd" in
@@ -265,172 +326,194 @@ case "$cmd" in
   stop) rm -f "$S/active.$unit" ;;
   *) exit 0 ;;
 esac`;
-  const WEB_JUMPS = [80, 443].map(
-    (port) =>
-      `-A DOCKER-USER -p tcp -m conntrack --ctstate DNAT --ctorigdstport ${port} --ctdir ORIGINAL -j OPSCREW-WEB`,
-  );
-  const USER_RULE = "-A DOCKER-USER -s 10.0.0.0/8 -j ACCEPT";
+    const WEB_JUMPS = [80, 443].map(
+      (port) =>
+        `-A DOCKER-USER -p tcp -m conntrack --ctstate DNAT --ctorigdstport ${port} --ctdir ORIGINAL -j OPSCREW-WEB`,
+    );
+    const USER_RULE = "-A DOCKER-USER -s 10.0.0.0/8 -j ACCEPT";
 
-  /** A server whose Docker runs, with the web filter's jumps and a rule of the user's. */
-  function harness(): ShellHarness {
-    const h = new ShellHarness();
-    h.stub("iptables", IPTABLES);
-    h.stub("iptables-restore", RESTORE);
-    h.stub("systemctl", SYSTEMCTL);
-    h.write("/state/active.docker", "");
-    h.write("/state/iptables/DOCKER-USER", `${[...WEB_JUMPS, USER_RULE].join("\n")}\n`);
-    return h;
-  }
-  const lines = (h: ShellHarness, path: string) =>
-    (h.read(path) ?? "").split("\n").filter((line) => line !== "");
-
-  it("installs the chain, jumps to it right after the web filter's jumps, then makes Docker require the unit", () => {
-    const h = harness();
-    try {
-      const scripts = scriptsOf(networkFilterFields(dbFilter()));
-      expect(h.run(scripts.check).stdout).toContain("state=change");
-      const run = h.run(scripts.apply);
-      expect(run.stderr).toBe("");
-      expect(run.status).toBe(0);
-      expect(lines(h, "/state/iptables/OPSCREW-wg-opscrew0")).toEqual([
-        "-A OPSCREW-wg-opscrew0 -s 10.200.4.1/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT",
-        "-A OPSCREW-wg-opscrew0 -s 10.200.4.100/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT",
-        "-A OPSCREW-wg-opscrew0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j DROP",
-        "-A OPSCREW-wg-opscrew0 -s 10.200.4.1/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 6379 --ctdir ORIGINAL -j ACCEPT",
-        "-A OPSCREW-wg-opscrew0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 6379 --ctdir ORIGINAL -j DROP",
-      ]);
-      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
-        ...WEB_JUMPS,
-        "-A DOCKER-USER -j OPSCREW-wg-opscrew0",
-        USER_RULE,
-      ]);
-      expect(h.read(networkFilterScriptPath("wg-opscrew0"))).toBe(networkFilterScript(dbFilter()));
-      expect(h.read(NETWORK_FILTER_UNIT)).toBe(NETWORK_FILTER_UNIT_TEXT);
-      expect(h.read(networkFilterDropInPath("wg-opscrew0"))).toBe(
-        networkFilterDropIn("wg-opscrew0"),
-      );
-      expect(h.calls().filter((call) => /^systemctl (enable|start) /.test(call))).toEqual([
-        "systemctl enable opscrew-network-filter@wg-opscrew0.service",
-        "systemctl start opscrew-network-filter@wg-opscrew0.service",
-      ]);
-      expect(h.run(scripts.verify).status).toBe(0);
-      expect(h.run(scripts.check).stdout).toContain("state=in-place");
-
-      // Applied again (new sources): the chain is rebuilt and the jump is not added twice.
-      const changed = scriptsOf(
-        networkFilterFields(dbFilter({ rules: [{ port: 5432, sources: ["10.200.4.1"] }] })),
-      );
-      expect(h.run(changed.check).stdout).toContain("state=change");
-      expect(h.run(changed.apply).status).toBe(0);
-      expect(lines(h, "/state/iptables/OPSCREW-wg-opscrew0")).toHaveLength(2);
-      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
-        ...WEB_JUMPS,
-        "-A DOCKER-USER -j OPSCREW-wg-opscrew0",
-        USER_RULE,
-      ]);
-      expect(h.run(changed.verify).status).toBe(0);
-    } finally {
-      h.dispose();
+    /** A server whose Docker runs, with the web filter's jumps and a rule of the user's. */
+    function harness(): ShellHarness {
+      const h = new ShellHarness();
+      h.stub("iptables", IPTABLES);
+      h.stub("iptables-restore", RESTORE);
+      h.stub("systemctl", SYSTEMCTL);
+      h.write("/state/active.docker", "");
+      h.write("/state/iptables/DOCKER-USER", `${[...WEB_JUMPS, USER_RULE].join("\n")}\n`);
+      return h;
     }
-  });
+    const lines = (h: ShellHarness, path: string) =>
+      (h.read(path) ?? "").split("\n").filter((line) => line !== "");
 
-  it("is not in place when a rule of the chain is missing or the jump is gone", () => {
-    const h = harness();
-    try {
-      const scripts = scriptsOf(networkFilterFields(dbFilter()));
-      expect(h.run(scripts.apply).status).toBe(0);
-      const chain = lines(h, "/state/iptables/OPSCREW-wg-opscrew0");
-      h.write("/state/iptables/OPSCREW-wg-opscrew0", `${chain.slice(1).join("\n")}\n`);
-      expect(h.run(scripts.check).stdout).toContain("state=change");
-      expect(h.run(scripts.verify).status).not.toBe(0);
-      expect(h.run(scripts.apply).status).toBe(0);
-      expect(h.run(scripts.verify).status).toBe(0);
-      h.write("/state/iptables/DOCKER-USER", `${USER_RULE}\n`);
-      expect(h.run(scripts.check).stdout).toContain("state=change");
-    } finally {
-      h.dispose();
-    }
-  });
+    it("installs the chain, jumps to it right after the web filter's jumps, then makes Docker require the unit", () => {
+      const h = harness();
+      try {
+        const scripts = scriptsOf(networkFilterFields(dbFilter()));
+        expect(h.run(scripts.check).stdout).toContain("state=change");
+        const run = h.run(scripts.apply);
+        expect(run.stderr).toBe("");
+        expect(run.status).toBe(0);
+        expect(lines(h, "/state/iptables/OPSCREW-wg-opscrew0")).toEqual([
+          "-A OPSCREW-wg-opscrew0 -s 10.200.4.1/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT",
+          "-A OPSCREW-wg-opscrew0 -s 10.200.4.100/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j ACCEPT",
+          "-A OPSCREW-wg-opscrew0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 5432 --ctdir ORIGINAL -j DROP",
+          "-A OPSCREW-wg-opscrew0 -s 10.200.4.1/32 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 6379 --ctdir ORIGINAL -j ACCEPT",
+          "-A OPSCREW-wg-opscrew0 -p tcp -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctorigdstport 6379 --ctdir ORIGINAL -j DROP",
+          "-A OPSCREW-wg-opscrew0 -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctdir ORIGINAL -j DROP",
+        ]);
+        expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
+          ...WEB_JUMPS,
+          "-A DOCKER-USER -j OPSCREW-wg-opscrew0",
+          USER_RULE,
+        ]);
+        expect(h.read(networkFilterScriptPath("wg-opscrew0"))).toBe(
+          networkFilterScript(dbFilter()),
+        );
+        expect(h.read(NETWORK_FILTER_UNIT)).toBe(NETWORK_FILTER_UNIT_TEXT);
+        expect(h.read(networkFilterDropInPath("wg-opscrew0"))).toBe(
+          networkFilterDropIn("wg-opscrew0"),
+        );
+        expect(h.calls().filter((call) => /^systemctl (enable|start) /.test(call))).toEqual([
+          "systemctl enable opscrew-network-filter@wg-opscrew0.service",
+          "systemctl start opscrew-network-filter@wg-opscrew0.service",
+        ]);
+        expect(h.run(scripts.verify).status).toBe(0);
+        expect(h.run(scripts.check).stdout).toContain("state=in-place");
 
-  it("refuses Docker's nftables backend and a running Docker without DOCKER-USER, changing nothing", () => {
-    const h = harness();
-    try {
-      const scripts = scriptsOf(networkFilterFields(dbFilter()));
-      h.write("/etc/docker/daemon.json", '{ "firewall-backend": "nftables" }\n');
-      const run = h.run(scripts.apply);
-      expect(run.status).not.toBe(0);
-      expect(run.stderr).toContain("nftables firewall backend");
-      expect(run.stderr).toContain("OpsCrew's network filter cannot work");
-      expect(h.exists(networkFilterScriptPath("wg-opscrew0"))).toBe(false);
-      expect(h.exists(networkFilterDropInPath("wg-opscrew0"))).toBe(false);
+        // Applied again (new sources): the chain is rebuilt and the jump is not added twice.
+        const changed = scriptsOf(
+          networkFilterFields(dbFilter({ rules: [{ port: 5432, sources: ["10.200.4.1"] }] })),
+        );
+        expect(h.run(changed.check).stdout).toContain("state=change");
+        expect(h.run(changed.apply).status).toBe(0);
+        expect(lines(h, "/state/iptables/OPSCREW-wg-opscrew0")).toHaveLength(3);
+        expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
+          ...WEB_JUMPS,
+          "-A DOCKER-USER -j OPSCREW-wg-opscrew0",
+          USER_RULE,
+        ]);
+        expect(h.run(changed.verify).status).toBe(0);
+      } finally {
+        h.dispose();
+      }
+    });
 
-      h.write("/etc/docker/daemon.json", "{}\n");
-      h.run(`rm -f '${h.root}/state/iptables/DOCKER-USER'`);
-      const missing = h.run(scripts.apply);
-      expect(missing.status).not.toBe(0);
-      expect(missing.stderr).toContain("no DOCKER-USER chain");
-      expect(h.exists(networkFilterDropInPath("wg-opscrew0"))).toBe(false);
-    } finally {
-      h.dispose();
-    }
-  });
+    it("keeps only the default deny, and the jump, once the last grant is revoked", () => {
+      const h = harness();
+      try {
+        expect(h.run(scriptsOf(networkFilterFields(dbFilter())).apply).status).toBe(0);
+        const none = scriptsOf(networkFilterFields(dbFilter({ rules: [] })));
+        expect(h.run(none.apply).status).toBe(0);
+        expect(lines(h, "/state/iptables/OPSCREW-wg-opscrew0")).toEqual([
+          "-A OPSCREW-wg-opscrew0 -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctdir ORIGINAL -j DROP",
+        ]);
+        expect(lines(h, "/state/iptables/DOCKER-USER")).toContain(
+          "-A DOCKER-USER -j OPSCREW-wg-opscrew0",
+        );
+        expect(h.run(none.verify).status).toBe(0);
+      } finally {
+        h.dispose();
+      }
+    });
 
-  it("makes DOCKER-USER itself at boot, before Docker", () => {
-    const h = harness();
-    try {
-      const scripts = scriptsOf(networkFilterFields(dbFilter()));
-      expect(h.run(scripts.apply).status).toBe(0);
-      // A reboot: the rules are gone and Docker has not started yet.
-      h.run(`rm -rf '${h.root}/state/iptables' '${h.root}/state/active.docker'`);
-      const boot = h.run(
-        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nexport PATH\nsh /usr/local/sbin/opscrew-network-filter-wg-opscrew0",
-      );
-      expect(boot.stderr).toBe("");
-      expect(boot.status).toBe(0);
-      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
-        "-A DOCKER-USER -j OPSCREW-wg-opscrew0",
-      ]);
-      expect(lines(h, "/state/iptables/OPSCREW-wg-opscrew0")).toHaveLength(5);
-    } finally {
-      h.dispose();
-    }
-  });
+    it("is not in place when a rule of the chain is missing or the jump is gone", () => {
+      const h = harness();
+      try {
+        const scripts = scriptsOf(networkFilterFields(dbFilter()));
+        expect(h.run(scripts.apply).status).toBe(0);
+        const chain = lines(h, "/state/iptables/OPSCREW-wg-opscrew0");
+        h.write("/state/iptables/OPSCREW-wg-opscrew0", `${chain.slice(1).join("\n")}\n`);
+        expect(h.run(scripts.check).stdout).toContain("state=change");
+        expect(h.run(scripts.verify).status).not.toBe(0);
+        expect(h.run(scripts.apply).status).toBe(0);
+        expect(h.run(scripts.verify).status).toBe(0);
+        h.write("/state/iptables/DOCKER-USER", `${USER_RULE}\n`);
+        expect(h.run(scripts.check).stdout).toContain("state=change");
+      } finally {
+        h.dispose();
+      }
+    });
 
-  it("is removed with its jump, chain, unit instance and drop-in; the templated unit goes with the last filter", () => {
-    const h = harness();
-    try {
-      const other = dbFilter({ interface: "wg-opscrew1", address: "10.200.9.2" });
-      expect(h.run(scriptsOf(networkFilterFields(dbFilter())).apply).status).toBe(0);
-      expect(h.run(scriptsOf(networkFilterFields(other)).apply).status).toBe(0);
+    it("refuses Docker's nftables backend and a running Docker without DOCKER-USER, changing nothing", () => {
+      const h = harness();
+      try {
+        const scripts = scriptsOf(networkFilterFields(dbFilter()));
+        h.write("/etc/docker/daemon.json", '{ "firewall-backend": "nftables" }\n');
+        const run = h.run(scripts.apply);
+        expect(run.status).not.toBe(0);
+        expect(run.stderr).toContain("nftables firewall backend");
+        expect(run.stderr).toContain("OpsCrew's network filter cannot work");
+        expect(h.exists(networkFilterScriptPath("wg-opscrew0"))).toBe(false);
+        expect(h.exists(networkFilterDropInPath("wg-opscrew0"))).toBe(false);
 
-      const removal = removalScripts("wg-opscrew0");
-      expect(h.run(removal.check).stdout).toContain("state=change");
-      const run = h.run(removal.apply);
-      expect(run.stderr).toBe("");
-      expect(run.status).toBe(0);
-      expect(h.exists("/state/iptables/OPSCREW-wg-opscrew0")).toBe(false);
-      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
-        ...WEB_JUMPS,
-        "-A DOCKER-USER -j OPSCREW-wg-opscrew1",
-        USER_RULE,
-      ]);
-      expect(h.exists(networkFilterScriptPath("wg-opscrew0"))).toBe(false);
-      expect(h.exists(networkFilterDropInPath("wg-opscrew0"))).toBe(false);
-      expect(h.exists("/state/enabled.opscrew-network-filter@wg-opscrew0.service")).toBe(false);
-      // Another interface still uses the templated unit.
-      expect(h.exists(NETWORK_FILTER_UNIT)).toBe(true);
-      expect(h.run(removal.verify).status).toBe(0);
-      expect(h.run(removal.check).stdout).toContain("state=in-place");
+        h.write("/etc/docker/daemon.json", "{}\n");
+        h.run(`rm -f '${h.root}/state/iptables/DOCKER-USER'`);
+        const missing = h.run(scripts.apply);
+        expect(missing.status).not.toBe(0);
+        expect(missing.stderr).toContain("no DOCKER-USER chain");
+        expect(h.exists(networkFilterDropInPath("wg-opscrew0"))).toBe(false);
+      } finally {
+        h.dispose();
+      }
+    });
 
-      expect(h.run(removalScripts("wg-opscrew1").apply).status).toBe(0);
-      expect(h.exists(NETWORK_FILTER_UNIT)).toBe(false);
-      expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([...WEB_JUMPS, USER_RULE]);
-      expect(h.run(removalScripts("wg-opscrew1").verify).status).toBe(0);
-    } finally {
-      h.dispose();
-    }
-  });
-});
+    it("makes DOCKER-USER itself at boot, before Docker", () => {
+      const h = harness();
+      try {
+        const scripts = scriptsOf(networkFilterFields(dbFilter()));
+        expect(h.run(scripts.apply).status).toBe(0);
+        // A reboot: the rules are gone and Docker has not started yet.
+        h.run(`rm -rf '${h.root}/state/iptables' '${h.root}/state/active.docker'`);
+        const boot = h.run(
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nexport PATH\nsh /usr/local/sbin/opscrew-network-filter-wg-opscrew0",
+        );
+        expect(boot.stderr).toBe("");
+        expect(boot.status).toBe(0);
+        expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
+          "-A DOCKER-USER -j OPSCREW-wg-opscrew0",
+        ]);
+        expect(lines(h, "/state/iptables/OPSCREW-wg-opscrew0")).toHaveLength(6);
+      } finally {
+        h.dispose();
+      }
+    });
+
+    it("is removed with its jump, chain, unit instance and drop-in; the templated unit goes with the last filter", () => {
+      const h = harness();
+      try {
+        const other = dbFilter({ interface: "wg-opscrew1", address: "10.200.9.2" });
+        expect(h.run(scriptsOf(networkFilterFields(dbFilter())).apply).status).toBe(0);
+        expect(h.run(scriptsOf(networkFilterFields(other)).apply).status).toBe(0);
+
+        const removal = removalScripts("wg-opscrew0");
+        expect(h.run(removal.check).stdout).toContain("state=change");
+        const run = h.run(removal.apply);
+        expect(run.stderr).toBe("");
+        expect(run.status).toBe(0);
+        expect(h.exists("/state/iptables/OPSCREW-wg-opscrew0")).toBe(false);
+        expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([
+          ...WEB_JUMPS,
+          "-A DOCKER-USER -j OPSCREW-wg-opscrew1",
+          USER_RULE,
+        ]);
+        expect(h.exists(networkFilterScriptPath("wg-opscrew0"))).toBe(false);
+        expect(h.exists(networkFilterDropInPath("wg-opscrew0"))).toBe(false);
+        expect(h.exists("/state/enabled.opscrew-network-filter@wg-opscrew0.service")).toBe(false);
+        // Another interface still uses the templated unit.
+        expect(h.exists(NETWORK_FILTER_UNIT)).toBe(true);
+        expect(h.run(removal.verify).status).toBe(0);
+        expect(h.run(removal.check).stdout).toContain("state=in-place");
+
+        expect(h.run(removalScripts("wg-opscrew1").apply).status).toBe(0);
+        expect(h.exists(NETWORK_FILTER_UNIT)).toBe(false);
+        expect(lines(h, "/state/iptables/DOCKER-USER")).toEqual([...WEB_JUMPS, USER_RULE]);
+        expect(h.run(removalScripts("wg-opscrew1").verify).status).toBe(0);
+      } finally {
+        h.dispose();
+      }
+    });
+  },
+);
 
 describe("planning the network filter", () => {
   async function dbServer(): Promise<FakeHost> {
@@ -476,7 +559,7 @@ describe("planning the network filter", () => {
       params: networkFilterFields(dbFilter()),
     });
     await applyApproved(fake, plan, { secrets: { wireguardKey: DB_KEY } });
-    expect(fake.networkFilters.get("wg-opscrew0")?.rules).toHaveLength(5);
+    expect(fake.networkFilters.get("wg-opscrew0")?.rules).toHaveLength(6);
 
     const again = planNetwork(
       await inspectHost(fake),
@@ -499,8 +582,27 @@ describe("planning the network filter", () => {
     expect(changed.steps.map((step) => step.state)).toEqual(["in-place", "change"]);
   });
 
-  it("removes the filter for an empty rule list, and plans nothing to remove when there is none", async () => {
+  it("keeps the filter with only its default deny for an empty rule list", async () => {
     const fake = await dbServer();
+    const empty = dbFilter({ rules: [] });
+    // A server with nothing published on the private address still gets its filter.
+    const first = planNetwork(
+      await inspectHost(fake),
+      { app: "shop", network: dbNetwork({ localPorts: [] }), filter: empty },
+      COMMAND,
+    );
+    expect(first.steps[1]).toMatchObject({
+      id: "network-filter",
+      state: "change",
+      title:
+        "Drop every new connection to 10.200.4.2 on the private network: nothing is published there",
+    });
+    await applyApproved(fake, first, { secrets: { wireguardKey: DB_KEY } });
+    expect(fake.networkFilters.get("wg-opscrew0")?.rules).toEqual([
+      "-A OPSCREW-wg-opscrew0 -m conntrack --ctstate NEW --ctorigdst 10.200.4.2 --ctdir ORIGINAL -j DROP",
+    ]);
+
+    // Grants come, then the last one is revoked: the filter stays, with only the default deny.
     await applyApproved(
       fake,
       planNetwork(
@@ -508,9 +610,7 @@ describe("planning the network filter", () => {
         { app: "shop", network: dbNetwork(), filter: dbFilter() },
         COMMAND,
       ),
-      { secrets: { wireguardKey: DB_KEY } },
     );
-    const empty = dbFilter({ rules: [] });
     const plan = planNetwork(
       await inspectHost(fake),
       { app: "shop", network: dbNetwork({ localPorts: [] }), filter: empty },
@@ -518,8 +618,8 @@ describe("planning the network filter", () => {
     );
     expect(plan.steps[1]).toMatchObject({ id: "network-filter", state: "change" });
     await applyApproved(fake, plan);
-    expect(fake.networkFilters.size).toBe(0);
-    expect(fake.files.has(networkFilterScriptPath("wg-opscrew0"))).toBe(false);
+    expect(fake.networkFilters.get("wg-opscrew0")?.rules).toHaveLength(1);
+    expect(fake.files.has(networkFilterScriptPath("wg-opscrew0"))).toBe(true);
     const after = planNetwork(
       await inspectHost(fake),
       { app: "shop", network: dbNetwork({ localPorts: [] }), filter: empty },

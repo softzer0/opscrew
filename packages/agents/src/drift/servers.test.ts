@@ -197,20 +197,17 @@ describe("serversDrift: every server of a split app (US2 #4)", () => {
             },
           ],
           filterUnit: filter.unit,
-          filters:
-            steps.filter.rules.length === 0
-              ? []
-              : [
-                  {
-                    name: network.interface,
-                    script: filter.script,
-                    dropIn: filter.dropIn,
-                    enabled: true,
-                    active: true,
-                    jump: true,
-                    rules: steps.filter.rules,
-                  },
-                ],
+          filters: [
+            {
+              name: network.interface,
+              script: filter.script,
+              dropIn: filter.dropIn,
+              enabled: true,
+              active: true,
+              jump: true,
+              rules: steps.filter.rules,
+            },
+          ],
         },
       };
     };

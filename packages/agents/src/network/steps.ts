@@ -44,6 +44,7 @@ export interface NetworkFilterParams {
   interface: string;
   /** The server's private address. */
   address: string;
+  /** Per published port, who may open it; every other new connection is dropped. */
   rules: { port: number; sources: string[] }[];
 }
 
@@ -72,6 +73,8 @@ const OPSCREW_INTERFACE = /^wg-opscrew\d+$/;
  * has a public address, every device (whose own configuration keeps its link up). A service's
  * published port admits the app's server and the devices granted that service; a dashboard's,
  * every device. On a server without a public address no device is admitted: none can reach it.
+ * The filter is planned for every server on the network, even with no rules: after the per-port
+ * rules it drops every other new connection to the private address (the default deny).
  * @throws Error when the plan has no network or the server is not on it.
  */
 export function networkSteps(

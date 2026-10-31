@@ -2451,29 +2451,18 @@ function networkFilterInPlace(facts: HostFacts, p: NetworkFilterParams): boolean
   );
 }
 
-/** The `network-filter` step of `planNetwork`, or its removal for an empty rule list. */
+/** The `network-filter` step of `planNetwork`: per-port rules, then the default deny. */
 function networkFilterStep(
   facts: HostFacts,
   p: NetworkFilterParams,
   blocker: HostFinding | undefined,
 ): HostStep {
   const fields = networkFilterFields(p);
-  if (p.rules.length === 0) {
-    const absent =
-      facts.network !== null && !facts.network.filters.some((item) => item.name === p.interface);
-    return step(
-      "network-filter",
-      `Remove the private network's filter on ${p.interface}: nothing is published on ${p.address}`,
-      blocker !== undefined ? "blocked" : absent ? "in-place" : "change",
-      fields,
-      blocker?.message ??
-        (absent
-          ? "Nothing to remove."
-          : `Docker stops requiring ${networkFilterService(p.interface)}, then OpsCrew's chain ${networkFilterChain(p.interface)}, its jump from DOCKER-USER, the unit and ${networkFilterScriptPath(p.interface)} are removed.`),
-    );
-  }
   const ports = [...p.rules].sort((a, b) => a.port - b.port).map((rule) => String(rule.port));
-  const title = `Let only the app's servers and the devices granted access reach TCP ${ports.length === 1 ? "port" : "ports"} ${listText(ports)} on ${p.address}`;
+  const title =
+    ports.length === 0
+      ? `Drop every new connection to ${p.address} on the private network: nothing is published there`
+      : `Let only the app's servers and the devices granted access reach TCP ${ports.length === 1 ? "port" : "ports"} ${listText(ports)} on ${p.address}`;
   if (blocker !== undefined)
     return step("network-filter", title, "blocked", fields, blocker.message);
   if (networkFilterInPlace(facts, p)) {
@@ -2491,7 +2480,7 @@ function networkFilterStep(
     title,
     "change",
     fields,
-    `OpsCrew's chain ${networkFilterChain(p.interface)}, jumped to from Docker's DOCKER-USER, admits new connections to ${p.address} only from the addresses listed per port (${who}) and drops the rest, whichever interface they arrive on. ${networkFilterScriptPath(p.interface)} rebuilds it in one change; ${networkFilterService(p.interface)} runs it at boot before Docker, and Docker requires that unit, so Docker never publishes a port on the private address without the filter.`,
+    `OpsCrew's chain ${networkFilterChain(p.interface)}, jumped to from Docker's DOCKER-USER, ${ports.length === 0 ? "drops every" : `admits new connections to ${p.address} only from the addresses listed per port (${who}) and drops every other`} new connection to ${p.address}, on any port, whichever interface it arrives on. ${networkFilterScriptPath(p.interface)} rebuilds it in one change; ${networkFilterService(p.interface)} runs it at boot before Docker, and Docker requires that unit, so Docker never publishes a port on the private address without the filter.`,
   );
 }
 
@@ -2499,7 +2488,8 @@ function networkFilterStep(
  * The host plan of the app's private network on one server (ADR 0022): the `network` step, from
  * the parameters the agents derive from the plan (`NetworkStepParams`), then, with `filter`, the
  * `network-filter` step that lets only the app's servers and the granted devices reach what Docker
- * publishes on the private address (an empty rule list removes it). It works with every way the
+ * publishes on the private address and drops every other new connection to it (with an empty rule
+ * list, only that default deny). It works with every way the
  * login becomes root, Docker included (the servers OpsCrew creates). From the facts read without
  * root it checks the routes (one overlapping the network's `/24` is a finding that says to change
  * `network.range`), the firewalls (another than ufw is a finding naming what the network needs)
@@ -2556,7 +2546,7 @@ export function planNetwork(
     found.push(findings.networkRangeTaken(networkRange(p.address), clashes));
   }
   const backend = f.webFilter.backend;
-  if (found.length === 0 && (filter?.rules.length ?? 0) > 0 && backend !== "iptables") {
+  if (found.length === 0 && filter !== undefined && backend !== "iptables") {
     found.push(findings.networkFilterBackend(backend));
   }
   const peers = p.peers.map((peer) => peer.name).sort();

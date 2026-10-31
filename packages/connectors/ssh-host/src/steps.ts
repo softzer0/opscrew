@@ -1352,14 +1352,14 @@ const NetworkFilterRemoveParams = z.strictObject({
  * `network-filter`: the interface's script, the templated unit and Docker's drop-in for the
  * instance. The script installs the rules right away (an atomic change of OpsCrew's chain; Docker
  * keeps running); only once that worked does Docker start to require the unit, so a failure never
- * leaves a Docker that cannot start. An empty rule list, a teardown and an undo remove it.
+ * leaves a Docker that cannot start. An empty rule list keeps the filter with only its default
+ * deny; the network's removal (`remove`), a teardown and an undo remove it.
  */
 function networkFilterScripts(plan: HostPlan, step: HostStep): StepScripts {
   if (plan.purpose !== "setup" || step.params.remove === true) {
     return networkFilterRemoveScripts(params(step, NetworkFilterRemoveParams).interface);
   }
   const p = params(step, NetworkFilterFieldsSchema);
-  if (p.rules.length === 0) return networkFilterRemoveScripts(p.interface);
   const script = networkFilterScript(p);
   const dropIn = networkFilterDropIn(p.interface);
   return scripts({

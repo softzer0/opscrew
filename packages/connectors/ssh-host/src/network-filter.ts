@@ -4,9 +4,15 @@
  * server's private address. Docker routes published ports in the nat table, before ufw, so the
  * filter sits in Docker's own `DOCKER-USER` chain, as the web filter does: chain `OPSCREW-<if>`,
  * jumped to from `DOCKER-USER`, with an `ACCEPT` per source and a `DROP` per port, all on new
- * connections whose original destination is the private address and port (research R5a, R5b).
- * It matches on any input interface, so traffic to the private address that arrives another way
- * (a LAN that routes the range through the server) is dropped too.
+ * connections whose original destination is the private address and port (research R5a, R5b),
+ * then a default deny: a `DROP` of every other new connection to the private address, any port and
+ * protocol. So a port Docker still publishes after its last grant is revoked (until the next
+ * deploy), or one published there without a rule, is closed at once. Every server on the network
+ * has its filter (only the default deny when nothing is published); only the network's removal
+ * removes it. It matches on any input interface, so traffic to the private address that arrives
+ * another way (a LAN that routes the range through the server, another Docker network's DNAT) is
+ * dropped too. It sits in `FORWARD`, so the host's own containers reaching the private address
+ * through `INPUT` (ufw's `localPorts` rules) are not affected.
  *
  * One script per interface (`/usr/local/sbin/opscrew-network-filter-<if>`) rebuilds the chain in
  * one atomic change. The templated unit `opscrew-network-filter@<if>.service` runs it before
@@ -63,8 +69,8 @@ export interface NetworkFilterRule {
 
 /**
  * The `network-filter` step's parameters (contracts/split-placement.md "ssh-host"): the interface,
- * this server's private address, and per published port the addresses that may open it. An empty
- * rule list removes the interface's filter.
+ * this server's private address, and per published port the addresses that may open it (none:
+ * only the default deny).
  */
 export const NetworkFilterParamsSchema = z
   .strictObject({
@@ -126,15 +132,23 @@ export const NetworkFilterFieldsSchema = z
   })
   .pipe(NetworkFilterParamsSchema);
 
-/** The chain's rules, in the form `iptables-restore` takes after `-A <chain>`, in order. */
+/**
+ * The chain's rules, in the form `iptables-restore` takes after `-A <chain>`, in order: per port
+ * its sources' `ACCEPT`s and a `DROP`, then the default deny of every other new connection to the
+ * private address.
+ */
 export function networkFilterRuleSpecs(params: NetworkFilterParams): string[] {
-  return sortedRules(params.rules).flatMap((rule) => {
+  const ports = sortedRules(params.rules).flatMap((rule) => {
     const match = `-p tcp -m conntrack --ctstate NEW --ctorigdst ${params.address} --ctorigdstport ${rule.port} --ctdir ORIGINAL`;
     return [
       ...rule.sources.map((source) => `-s ${source}/32 ${match} -j ACCEPT`),
       `${match} -j DROP`,
     ];
   });
+  return [
+    ...ports,
+    `-m conntrack --ctstate NEW --ctorigdst ${params.address} --ctdir ORIGINAL -j DROP`,
+  ];
 }
 
 /**
@@ -145,7 +159,8 @@ export function networkFilterScript(params: NetworkFilterParams): string {
   const iface = params.interface;
   return `#!/bin/sh
 # Managed by OpsCrew: on the private network ${iface}, only the app's servers and the devices
-# granted access reach what Docker publishes on ${params.address}. ${networkFilterService(iface)}
+# granted access reach what Docker publishes on ${params.address}, and nothing else is reachable
+# there. ${networkFilterService(iface)}
 # runs this before Docker, and Docker requires that service: when the filter cannot be installed,
 # Docker does not start. \`opscrew provision\` rewrites it; \`opscrew destroy\` removes it.
 set -eu
@@ -155,7 +170,8 @@ fail() {
   echo "opscrew-network-filter: $1" >&2
   exit 1
 }
-# The chain's rules, one per line: per port, the addresses that may open it, then a drop.
+# The chain's rules, one per line: per port, the addresses that may open it, then a drop; last,
+# a drop of every other new connection to ${params.address}.
 rules() {
   cat <<'OPSCREW_RULES'
 ${networkFilterRuleSpecs(params).join("\n")}
