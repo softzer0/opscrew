@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import type {
   BranchPolicy,
@@ -14,6 +14,7 @@ import {
   deploySecretName,
   deploySecretNamesFor,
   githubEnvironment,
+  grantHashSecret,
   PORTAINER_DEPLOY_SECRETS,
   serverDeploySecrets,
   serviceEnvSecret,
@@ -37,7 +38,11 @@ import {
   readValidJson,
   type StorageLogin,
 } from "../shared";
-import { generatedValuesFile, registerAppSecrets } from "../shared/app-secrets";
+import {
+  GeneratedValuesSchema,
+  generatedValuesFile,
+  registerAppSecrets,
+} from "../shared/app-secrets";
 import { codeOf, hintOf } from "../shared/errors";
 import type { GitHubSetup } from "./credentials";
 import type { ProvisionServices } from "./types";
@@ -122,6 +127,17 @@ export async function buildAppEnvironment(
   const kept = Object.fromEntries(
     KEPT_VALUES.flatMap((name) => (previous?.[name] === undefined ? [] : [[name, previous[name]]])),
   );
+  // A device's login declares only its password's SHA-256 (lower-case hex) in the service's
+  // OPSCREW_ACL_USERS, by the secret `grantHashSecret(device)`, never the password.
+  const passwords = GeneratedValuesSchema.shape.grants.safeParse(previous?.grants).data ?? {};
+  for (const grant of plan.network?.grants ?? []) {
+    const password = passwords[`${grant.device}/${grant.service}`];
+    if (password === undefined) continue;
+    environment.values.services[grant.service] = {
+      ...environment.values.services[grant.service],
+      [grantHashSecret(grant.device)]: createHash("sha256").update(password).digest("hex"),
+    };
+  }
   await writeFileAtomic(
     generatedValuesFile(deps),
     `${JSON.stringify({ ...environment.generated, ...kept })}\n`,
@@ -191,8 +207,20 @@ export function serviceEnvSecrets(
       service,
       secretRef: (name) => {
         const value = values[name];
-        if (value === undefined) throw new Error(`${service.name} has no secret ${name}.`);
-        return value;
+        if (value !== undefined) return value;
+        const grant = plan.network?.grants.find(
+          (g) => g.service === service.name && grantHashSecret(g.device) === name,
+        );
+        if (grant !== undefined) {
+          throw new OpsCrewError(
+            "PHASE_PRECONDITION",
+            `Device ${grant.device}'s login to ${service.name} needs its password, and this computer does not have it, so OpsCrew can't store ${service.name}'s settings.`,
+            {
+              hint: `Put OpsCrew's generated values back from your recovery copy (\`opscrew secrets restore\`) or from the computer that ran \`opscrew vpn grant\`, or run \`opscrew vpn revoke ${grant.device} ${service.name}\` and grant it again.`,
+            },
+          );
+        }
+        throw new Error(`${service.name} has no secret ${name}.`);
       },
     });
     const lines = Object.entries(env).map(([name, value]) => dotenvLine(name, value));

@@ -165,7 +165,7 @@ async function reachableServers(
 }
 
 /** `plan` with the approvals of the host plans the user approved this run. */
-function withApprovals(plan: DeployPlan, outcomes: Iterable<HostPlanOutcome>): DeployPlan {
+export function withApprovals(plan: DeployPlan, outcomes: Iterable<HostPlanOutcome>): DeployPlan {
   const approvals = [...outcomes].flatMap((o) => (o.approval ? [approvalEntry(o.approval)] : []));
   return approvals.length === 0 ? plan : { ...plan, approvals: [...plan.approvals, ...approvals] };
 }

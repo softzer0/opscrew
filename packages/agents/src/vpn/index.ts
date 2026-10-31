@@ -9,6 +9,15 @@ export {
   vpnRemove,
 } from "./devices";
 export {
+  type VpnConnection,
+  type VpnGrantOptions,
+  type VpnGrantResult,
+  type VpnRevokeOptions,
+  type VpnRevokeResult,
+  vpnGrant,
+  vpnRevoke,
+} from "./grants";
+export {
   type VpnDevice,
   type VpnDeviceLink,
   type VpnListResult,

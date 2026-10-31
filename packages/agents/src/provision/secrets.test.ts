@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DEPLOY_SECRETS } from "@opscrew/iac-templates";
+import { DEPLOY_SECRETS, serviceEnvSecret } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -12,6 +13,8 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments";
+import { allocateNetwork } from "../network";
+import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
 import {
   createProject,
   createTestPhaseDeps,
@@ -22,12 +25,14 @@ import {
   readyRemote,
   ScriptedApprovalHandler,
   type TestPhaseDeps,
+  testKeyMaker,
+  testKeyPair,
   testPlan,
 } from "../testing";
 import { pagesTestPlan } from "../testing/pages";
 import { sitePlan } from "../testing/serverless";
 import { runProvision } from "./run";
-import { buildAppEnvironment, deploySecretNames } from "./secrets";
+import { buildAppEnvironment, deploySecretNames, serviceEnvSecrets } from "./secrets";
 import type { ProvisionServices } from "./types";
 
 const HCLOUD = "hcloud-test-token-not-a-real-value";
@@ -767,6 +772,66 @@ describe("each environment's own app values (FR-1538)", () => {
     const environment = await buildAppEnvironment(deps, testPlan(), {});
     expect(environment.values.app.STRIPE_SECRET_KEY).toBe(STAGING_KEY);
     expect(deps.reporter.text()).not.toContain("There is no");
+  });
+});
+
+describe("device logins in a Valkey service's environment (OPSCREW_ACL_USERS)", () => {
+  /** testPlan with Valkey (`cache`) on the app's server, granted to laptop read-only. */
+  function grantedPlan(): DeployPlan {
+    const { network: _none, ...base } = testPlan({ userSecret: false, deployed: true });
+    const cache = {
+      name: "cache",
+      kind: "valkey",
+      version: "8",
+      memoryMb: 128,
+      enabled: true,
+      options: { mode: "cache" },
+      reason: "The app uses Redis.",
+      licence: "BSD-3-Clause",
+    } as const;
+    const plan = { ...base, services: [...base.services, cache] };
+    const { network } = allocateNetwork(plan, {}, testKeyMaker("server"));
+    const laptop = {
+      name: "laptop",
+      address: network.range.replace(/\.0\/24$/, ".100"),
+      publicKey: testKeyPair("laptop").publicKey,
+      addedAt: "2026-10-30T10:00:00.000Z",
+    };
+    return DeployPlanSchema.parse({
+      ...plan,
+      network: {
+        ...network,
+        devices: [laptop],
+        grants: [{ device: "laptop", service: "cache", access: "read-only" }],
+      },
+    });
+  }
+
+  it("declares the grant's login by the lower-case hex SHA-256 of its password, never the password", async () => {
+    const deps = await createTestPhaseDeps();
+    const plan = grantedPlan();
+    const password = fakeSecret("generic-password", "laptop-cache");
+    await recordGeneratedEntries(deps, "grants", { "laptop/cache": password });
+
+    const environment = await buildAppEnvironment(deps, plan, {});
+    const env = serviceEnvSecrets(plan, environment)[serviceEnvSecret("cache")] ?? "";
+
+    const sha256 = createHash("sha256").update(password).digest("hex");
+    expect(env).toContain(`OPSCREW_ACL_USERS=laptop:read-only:${sha256}`);
+    expect(env).not.toContain(password);
+    // Provision's rewrite of the generated values keeps the password, and only there.
+    const generated = JSON.parse(await readFile(generatedValuesFile(deps), "utf8"));
+    expect(generated.grants).toEqual({ "laptop/cache": password });
+    expect(JSON.stringify(generated.services ?? {})).not.toContain(sha256);
+  });
+
+  it("stops in plain words when this computer lacks the grant's password", async () => {
+    const deps = await createTestPhaseDeps();
+    const plan = grantedPlan();
+    const environment = await buildAppEnvironment(deps, plan, {});
+    expect(() => serviceEnvSecrets(plan, environment)).toThrow(
+      /Device laptop's login to cache needs its password, and this computer does not have it/,
+    );
   });
 });
 
