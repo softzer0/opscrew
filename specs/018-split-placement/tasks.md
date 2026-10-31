@@ -496,7 +496,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T1814 [P] [US3] Agents: devices (`vpn add`, `remove`, `list`), and the dashboards' private address, in `packages/agents/src/vpn/**`, `packages/agents/src/addons/status.ts`, `packages/agents/src/portainer/status.ts`
+- [X] T1814 [P] [US3] Agents: devices (`vpn add`, `remove`, `list`), and the dashboards' private address, in `packages/agents/src/vpn/**`, `packages/agents/src/addons/status.ts`, `packages/agents/src/portainer/status.ts`
   - Owns: those paths (+ tests), except `vpn/grants.ts` (T1816)
   - Reads: plan.md "12."; spec US3, FR-1813, FR-1814; data-model.md "Device configurations"
   - Depends: T1810
