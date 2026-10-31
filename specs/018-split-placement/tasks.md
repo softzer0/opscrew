@@ -435,7 +435,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T1813 [P] [US2] Agents: `drift`, `destroy`, the retarget refusal and the check's server list, in `packages/agents/src/{drift,destroy,check}/**` and `packages/agents/src/retarget/start.ts`
+- [X] T1813 [P] [US2] Agents: `drift`, `destroy`, the retarget refusal and the check's server list, in `packages/agents/src/{drift,destroy,check}/**` and `packages/agents/src/retarget/start.ts`
   - Owns: those paths (+ tests)
   - Reads: plan.md "11."; spec US2 #4, #6, #7, FR-1811, FR-1812, FR-1820
   - Depends: T1804, T1806, T1807, T1808
