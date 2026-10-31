@@ -31,7 +31,7 @@ import { clientCertificateWarning, deployLogin } from "../provision/origin-tls";
 import { readCloudflareRecord } from "../provision/shared-cloudflare";
 import type { ProvisionServices } from "../provision/types";
 import { recoveryStatus } from "../secrets";
-import { checkResult, SshRemoteExec } from "../shared";
+import { appServerShell, checkResult } from "../shared";
 import { defaultTlsConnect, type TlsConnect } from "../verify/net";
 
 /**
@@ -120,8 +120,9 @@ export function recordCertificateCheck(
 
 /**
  * A shell on the app's server as `deploy` (the project's deploy key, the pinned host key), where
- * the deploy logs in (`deployLogin`). `undefined` in the user's Portainer, behind a tunnel, or when
- * this computer knows no address or has no deploy key.
+ * the deploy logs in (`deployLogin`), or its private address once public SSH is closed
+ * (`appServerShell`). `undefined` in the user's Portainer, behind a tunnel, or when this computer
+ * knows no address or has no deploy key.
  */
 export async function deployShell(
   deps: Pick<PhaseDeps, "paths" | "runner">,
@@ -131,15 +132,11 @@ export async function deployShell(
   if (plan.target.provider === "portainer") return undefined;
   const login = await deployLogin(deps, plan);
   if (login === undefined) return undefined;
-  return (
-    services.remote?.(login.host) ??
-    new SshRemoteExec({
-      host: login.host,
-      port: login.port,
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-    })
+  return appServerShell(
+    deps,
+    plan,
+    login,
+    services.remote !== undefined ? { remote: services.remote } : {},
   );
 }
 

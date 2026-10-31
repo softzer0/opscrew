@@ -12,6 +12,7 @@ import { IMAGES, publishedOnNetwork } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, networkInterface } from "@opscrew/plan-schema";
 import {
   HOST_CHECKS,
+  type OwnServerHardening,
   ownServerHostChecks,
   probePorts,
   probeSshPasswordAuth,
@@ -21,10 +22,13 @@ import {
 import type { PhaseDeps } from "../context";
 import { networkSteps } from "../network";
 import { providerProfile } from "../providers";
+
 import { checkResult } from "../shared";
+import { lastServerSetup } from "../shared/host-plan";
 import { type ServerLogin, serverLogin } from "../shared/server-address";
 import { serviceWords } from "../status/network";
 import { extraServers, readPublishedPorts, serverShell } from "../status/servers";
+import { ownServerHardening } from "./own";
 import { serverServiceChecks, servicePorts } from "./services";
 
 /**
@@ -88,20 +92,17 @@ export async function extraServerChecks(
   const services = options.serverRemote === undefined ? {} : { remote: options.serverRemote };
   for (const server of extraServers(plan)) {
     let login: ServerLogin;
+    let hardening: OwnServerHardening | undefined;
     try {
       login = await serverLogin(deps, plan, server);
+      // An extra own server's SSH ports and password choice, from its own last setup plan.
+      hardening = login.own
+        ? ownServerHardening(await lastServerSetup(deps, server), login)
+        : undefined;
       if (options.hostChecks) {
         const shell = await serverShell(deps, plan, server, services);
         deps.reporter.step(`Checking server ${server}'s hardening over SSH`);
-        // An extra own server's SSH ports and password choice come from its own setup plan once
-        // provision (T1810) keeps one per server; until then its login's port, and no passwords.
-        const checks = login.own
-          ? ownServerHostChecks({
-              sshPorts: [login.port],
-              rootLogin: login.user === "root",
-              passwordsKept: false,
-            })
-          : HOST_CHECKS;
+        const checks = hardening !== undefined ? ownServerHostChecks(hardening) : HOST_CHECKS;
         const results = await runHostChecks(shell.docker, [
           ...checks,
           ...serverServiceChecks(plan, server),
@@ -141,6 +142,7 @@ export async function extraServerChecks(
         runner: deps.runner,
         knownHostsFile: deps.paths.files.knownHosts,
         port: login.port,
+        ...(hardening !== undefined ? { passwordsKept: hardening.passwordsKept } : {}),
       }),
     ];
     probes.push(...outside.map((check) => onExtraServer(check, server)));

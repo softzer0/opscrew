@@ -87,4 +87,30 @@ describe("startMove: an app with services on other servers (FR-1820)", () => {
     expect(message).toContain("Nothing was changed.");
     expect(commands).toEqual([]);
   });
+
+  it("refuses while public SSH is closed, before any change or connection", async () => {
+    const commands: string[] = [];
+    const deps = await createTestPhaseDeps({
+      runner: {
+        async run(command) {
+          commands.push(command);
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      },
+    });
+    const { servers: _none, ...base } = splitPlan();
+    const single = {
+      ...base,
+      services: base.services.map(({ server: _s, ...service }) => service),
+    };
+    const { network } = allocateNetwork(single, {}, testKeyMaker());
+    const plan = withNetwork(single, { ...network, publicSsh: false });
+    const error = await startMove(deps, plan, {}).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("Public SSH is closed"),
+      hint: expect.stringContaining("`opscrew secure --open-public-ssh`"),
+    });
+    expect(commands).toEqual([]);
+  });
 });

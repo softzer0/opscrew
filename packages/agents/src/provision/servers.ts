@@ -28,6 +28,7 @@ import {
   updateServerAddresses,
 } from "../shared";
 import { inspectOwnHost } from "../shared/own-server";
+import { networkSshPort } from "../shared/server-address";
 import { applyNetworkPlans, type NetworkServer } from "./network";
 import {
   addExtraServerCheckKey,
@@ -386,11 +387,11 @@ async function serversExist(deps: PhaseDeps, plan: DeployPlan): Promise<boolean>
 }
 
 /**
- * How the network's host plan reaches the server `name`, with its login's SSH port, as drift reads
- * it: on the user's own (the app's or an extra one) its admin login, with what inspection finds
- * there now, alone when no other OpsCrew app is active there; on one OpsCrew created the deploy
- * user's shell (`services.remote`, else `serverRemote`), inspected and changed as root through
- * Docker in the pinned Caddy image, with SSH on port 22, always alone.
+ * How the network's host plan reaches the server `name`, as drift reads it, with the port sshd
+ * listens on there (`networkSshPort`): on the user's own (the app's or an extra one) its admin
+ * login, with what inspection finds there now, alone when no other OpsCrew app is active there; on
+ * one OpsCrew created the deploy user's shell (`services.remote`, else `serverRemote`), inspected
+ * and changed as root through Docker in the pinned Caddy image, always alone.
  */
 async function networkServer(
   deps: PhaseDeps,
@@ -411,7 +412,7 @@ async function networkServer(
       facts,
       apply: own.host.apply,
       verifyLogin: own.verifyLogin,
-      sshPort: own.session.connection.port,
+      sshPort: networkSshPort(facts, own.session.connection.port),
       alone: otherActiveApps(facts.apps, input.plan.app.name).length === 0,
     };
   }
@@ -436,7 +437,7 @@ async function networkServer(
     apply: host.apply,
     // The network's steps change no SSH setting the host adapter guards.
     verifyLogin: async () => true,
-    sshPort: 22,
+    sshPort: networkSshPort(facts, 22),
     alone: true,
     rootImage: IMAGES.caddy.ref,
   };

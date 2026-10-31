@@ -14,7 +14,7 @@ import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
-import { portainerClientFor, SshRemoteExec, serverAddress } from "../shared";
+import { appServerShell, portainerClientFor, serverAddress } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import { hasExtraServers } from "../status/components";
 import { serverShell } from "../status/servers";
@@ -198,16 +198,16 @@ async function cloudServerLogs(
       },
     );
   }
-  const remote =
-    services.remote?.(address.ipv4) ??
-    new SshRemoteExec({
-      host: address.ipv4,
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
+  const remote = await appServerShell(
+    deps,
+    plan,
+    { host: address.ipv4, port: 22 },
+    {
+      ...(services.remote !== undefined ? { remote: services.remote } : {}),
       // A quiet follow keeps its connection through NAT, and notices a server that went away.
       keepAliveSeconds: 15,
-    });
+    },
+  );
   const named = hasExtraServers(plan);
   return sshLogs(deps, remote, false, {
     where: named ? `on server ${APP_SERVER}` : "on the server",

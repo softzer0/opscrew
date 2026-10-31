@@ -111,10 +111,17 @@ describe("readNetwork", () => {
     });
     const links = await readNetwork(w.deps, w.plan, w.services);
     expect(links).toEqual([
-      { from: "app", to: "data", up: true, handshakeAgeSeconds: 5, roundTripMs: 0.8 },
-      { from: "app", to: "laptop", up: true, handshakeAgeSeconds: 60 },
-      { from: "data", to: "app", up: true, handshakeAgeSeconds: 10 },
-      { from: "data", to: "laptop", up: false, handshakeAgeSeconds: 400 },
+      {
+        from: "app",
+        to: "data",
+        kind: "server",
+        up: true,
+        handshakeAgeSeconds: 5,
+        roundTripMs: 0.8,
+      },
+      { from: "app", to: "laptop", kind: "device", up: true, handshakeAgeSeconds: 60 },
+      { from: "data", to: "app", kind: "server", up: true, handshakeAgeSeconds: 10 },
+      { from: "data", to: "laptop", kind: "device", up: false, handshakeAgeSeconds: 400 },
     ]);
     expect(w.commands.filter((c) => c.command.startsWith("ping "))).toEqual([
       { server: "app", command: `ping -c 3 -q ${w.prefix}.2` },
@@ -138,10 +145,10 @@ describe("readNetwork", () => {
     });
     const links = await readNetwork(w.deps, w.plan, w.services);
     expect(links).toEqual([
-      { from: "app", to: "data", up: false, handshakeAgeSeconds: 200 },
-      { from: "app", to: "laptop", up: false },
-      { from: "data", to: "app", up: true, handshakeAgeSeconds: 20 },
-      { from: "data", to: "laptop", up: false },
+      { from: "app", to: "data", kind: "server", up: false, handshakeAgeSeconds: 200 },
+      { from: "app", to: "laptop", kind: "device", up: false },
+      { from: "data", to: "app", kind: "server", up: true, handshakeAgeSeconds: 20 },
+      { from: "data", to: "laptop", kind: "device", up: false },
     ]);
   });
 
@@ -149,18 +156,25 @@ describe("readNetwork", () => {
     const handshakes = { app: { data: 5, laptop: 60 }, data: { app: 10, laptop: 30 } };
     const dataDown = await world({ offline: ["data"], handshakes });
     expect(await readNetwork(dataDown.deps, dataDown.plan, dataDown.services)).toEqual([
-      { from: "app", to: "data", up: true, handshakeAgeSeconds: 5, roundTripMs: 0.8 },
-      { from: "app", to: "laptop", up: true, handshakeAgeSeconds: 60 },
-      { from: "data", to: "app", up: false, reason: "unreachable" },
-      { from: "data", to: "laptop", up: false, reason: "unreachable" },
+      {
+        from: "app",
+        to: "data",
+        kind: "server",
+        up: true,
+        handshakeAgeSeconds: 5,
+        roundTripMs: 0.8,
+      },
+      { from: "app", to: "laptop", kind: "device", up: true, handshakeAgeSeconds: 60 },
+      { from: "data", to: "app", kind: "server", up: false, reason: "unreachable" },
+      { from: "data", to: "laptop", kind: "device", up: false, reason: "unreachable" },
     ]);
 
     const appDown = await world({ offline: ["app"], handshakes });
     expect(await readNetwork(appDown.deps, appDown.plan, appDown.services)).toEqual([
-      { from: "app", to: "data", up: false, reason: "unreachable" },
-      { from: "app", to: "laptop", up: false, reason: "unreachable" },
-      { from: "data", to: "app", up: true, handshakeAgeSeconds: 10 },
-      { from: "data", to: "laptop", up: true, handshakeAgeSeconds: 30 },
+      { from: "app", to: "data", kind: "server", up: false, reason: "unreachable" },
+      { from: "app", to: "laptop", kind: "device", up: false, reason: "unreachable" },
+      { from: "data", to: "app", kind: "server", up: true, handshakeAgeSeconds: 10 },
+      { from: "data", to: "laptop", kind: "device", up: true, handshakeAgeSeconds: 30 },
     ]);
     expect(appDown.reads.map((r) => r.server)).toEqual(["data"]);
 
@@ -206,8 +220,8 @@ describe("readNetwork", () => {
       const w = await world({ data: "own", privileges: { data: privilege }, handshakes });
       const links = await readNetwork(w.deps, w.plan, w.services);
       expect(links.filter((l) => l.from === "data")).toEqual([
-        { from: "data", to: "app", up: false, reason: "no-root" },
-        { from: "data", to: "laptop", up: false, reason: "no-root" },
+        { from: "data", to: "app", kind: "server", up: false, reason: "no-root" },
+        { from: "data", to: "laptop", kind: "device", up: false, reason: "no-root" },
       ]);
       expect(w.reads.map((r) => r.server)).toEqual(["app"]);
     }

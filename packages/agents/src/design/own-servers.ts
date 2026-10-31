@@ -17,6 +17,7 @@ import {
   ownServerFacts,
   ownServerPublicAddress,
 } from "../shared/own-server";
+import { ownServerReach } from "../shared/server-address";
 import {
   readServerAddresses,
   type ServerAddress,
@@ -102,6 +103,8 @@ export async function designOwnServer(
     login = await askedLogin(name, options.askServerLogin);
   }
   const connection = login;
+  // Once public SSH is closed, a server already on the network is reached at its private address.
+  const reach = await ownServerReach(deps, name, connection);
   const session = await connectPinnedLogin(
     deps,
     {
@@ -118,6 +121,7 @@ export async function designOwnServer(
         fix: `\`opscrew design\` (remove ownServers.${name} from .opscrew/server.json first, so it asks again)`,
         missingKey: `Remove ownServers.${name} from .opscrew/server.json and run \`opscrew design\` again, giving the path of your private key (or \`agent\`).`,
       },
+      ...(reach !== undefined ? { reach } : {}),
     },
     { services: options.extraServers },
   );

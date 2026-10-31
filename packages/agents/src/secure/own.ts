@@ -1,8 +1,9 @@
+import type { HostPlan } from "@opscrew/connector-ssh-host";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { OwnServerHardening } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { readOwnServerRecord } from "../provision";
-import { lastHostSetup, passwordLoginChoice, readServerAddresses } from "../shared";
+import { lastHostSetup, passwordLoginChoice, portList, readServerAddresses } from "../shared";
 
 /** How `opscrew secure` checks a server the user owns. Local state only; never committed. */
 export interface OwnSecureTarget {
@@ -20,19 +21,32 @@ export interface OwnSecureTarget {
   hidden: string[];
 }
 
-function ports(value: string | number | boolean | undefined): number[] {
-  return String(value ?? "")
-    .split(" ")
-    .map(Number)
-    .filter((port) => Number.isInteger(port) && port > 0 && port < 65536);
+/**
+ * What the host checks accept on a server the user owns, from its last applied setup host plan
+ * (`setup`): sshd's real ports, whether root keeps key-only logins because the user connects as
+ * root, and whether the user chose to keep password logins. Without that plan: the login's port,
+ * root login only for a root login, no password choice.
+ */
+export function ownServerHardening(
+  setup: HostPlan | undefined,
+  login: { port: number; user: string },
+): OwnServerHardening {
+  const step = (id: string) => setup?.steps.find((item) => item.id === id)?.params;
+  // sshd's real ports on the server, as the applied setup plan found them (the port the user logs
+  // in on may be forwarded, for example 2222 on a router to 22); the login's port only without one.
+  const planned = portList(step("ufw")?.sshPorts ?? step("fail2ban")?.sshPorts);
+  const sshPorts = [...new Set(planned.length > 0 ? planned : [login.port])].sort((a, b) => a - b);
+  const permitRootLogin = step("sshd")?.permitRootLogin;
+  const rootLogin =
+    permitRootLogin === undefined ? login.user === "root" : permitRootLogin === "prohibit-password";
+  return { sshPorts, rootLogin, passwordsKept: passwordLoginChoice(setup) === "keep" };
 }
 
 /**
  * What `opscrew secure` needs for a server the user owns, from OpsCrew's local state: the recorded
- * login and addresses, and the last applied setup host plan (sshd's real ports, whether root keeps
- * key-only logins because the user connects as root, and whether the user chose to keep password
- * logins). Without that plan: the login's port, root login only for a root login, no password
- * choice. `undefined` when this computer does not know how to reach the server.
+ * login and addresses, and what its last applied setup host plan accepts
+ * ({@link ownServerHardening}). `undefined` when this computer does not know how to reach the
+ * server.
  */
 export async function ownSecureTarget(
   deps: Pick<PhaseDeps, "paths">,
@@ -41,19 +55,7 @@ export async function ownSecureTarget(
   if (plan.target.provider !== "own") return undefined;
   const connection = await readOwnServerRecord(deps.paths);
   if (connection === undefined) return undefined;
-  const setup = await lastHostSetup(deps, plan);
-  const step = (id: string) => setup?.steps.find((item) => item.id === id)?.params;
-  // sshd's real ports on the server, as the applied setup plan found them (the port the user logs
-  // in on may be forwarded, for example 2222 on a router to 22); the login's port only without one.
-  const planned = ports(step("ufw")?.sshPorts ?? step("fail2ban")?.sshPorts);
-  const sshPorts = [...new Set(planned.length > 0 ? planned : [connection.port])].sort(
-    (a, b) => a - b,
-  );
-  const permitRootLogin = step("sshd")?.permitRootLogin;
-  const rootLogin =
-    permitRootLogin === undefined
-      ? connection.user === "root"
-      : permitRootLogin === "prohibit-password";
+  const hardening = ownServerHardening(await lastHostSetup(deps, plan), connection);
   const deployment = (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
   const access = plan.target.access;
   const publicIpv4 = deployment?.ipv4 ?? connection.publicIpv4;
@@ -71,11 +73,7 @@ export async function ownSecureTarget(
     probeHost: access === "public" ? (publicIpv4 ?? connection.host) : connection.host,
     ...(access === "public" && publicIpv6 !== undefined ? { probeIpv6: publicIpv6 } : {}),
     access,
-    hardening: {
-      sshPorts,
-      rootLogin,
-      passwordsKept: passwordLoginChoice(setup) === "keep",
-    },
+    hardening,
     hidden: [...new Set(hidden)],
   };
 }

@@ -110,7 +110,7 @@ describe("allocateNetwork", () => {
     );
   });
 
-  it("keeps every existing address, port and key, and the devices, grants and public SSH", () => {
+  it("keeps every existing address, port and key, and the devices, grants, public SSH and its allow-list", () => {
     const first = allocateNetwork(splitPlan(), {}, testKeyMaker("first"));
     const device = {
       name: "laptop",
@@ -124,6 +124,7 @@ describe("allocateNetwork", () => {
       devices: [device],
       grants: [{ device: "laptop", service: "db", access: "read-only" as const }],
       publicSsh: false,
+      publicSshAllowedCidrs: ["198.51.100.0/24"],
     };
     const plan = withNetwork(splitPlan(), network);
     const keys = testKeyMaker("again");

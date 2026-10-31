@@ -6,8 +6,6 @@ import {
   type DesiredRunner,
   type HostFacts,
   type HostPlan,
-  HostPlanSchema,
-  hostPlanHash,
   inspectHost,
   otherActiveApps,
   planAddon,
@@ -16,7 +14,7 @@ import {
   planUndo,
 } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
-import { OpsCrewError, type ProjectPaths, plural, writeFileAtomic } from "@opscrew/core";
+import { OpsCrewError, type ProjectPaths, plural } from "@opscrew/core";
 import {
   hostSysctl,
   keepNewerPins,
@@ -33,7 +31,6 @@ import {
   type OwnDeployTarget,
   servicesOn,
 } from "@opscrew/plan-schema";
-import { z } from "zod";
 import type { CheckKey } from "../check/key";
 import type { PhaseDeps } from "../context";
 import { serverNetworkInputs } from "../network";
@@ -61,14 +58,13 @@ import {
   randomPassword,
   readSecretFile,
   readServerAddresses,
-  readValidJson,
   requireNoBlockers,
   type SecretFile,
   type ServerAddress,
   stringOutput,
   updateServerAddresses,
 } from "../shared";
-import { hostPlanFile } from "../shared/host-plan";
+import { keepServerSetup } from "../shared/host-plan";
 import {
   connectAndInspectOwnServer,
   connectPinnedLogin,
@@ -78,6 +74,7 @@ import {
   ownServerLoginCheck,
   ownServerPublicAddress,
 } from "../shared/own-server";
+import { networkSshPort, ownServerReach } from "../shared/server-address";
 import {
   type ConnectorFirst,
   connectorFirst,
@@ -242,13 +239,6 @@ export async function ownWebSources(
   }
   if (ranges.ipv4.length === 0) throw rangesUnreadable();
   return { ipv4: [...ranges.ipv4] };
-}
-
-/** The port sshd listens on, on the server: the login's port when sshd uses it, else sshd's first. */
-function serverSshPort(facts: HostFacts, loginPort: number): number {
-  const ports = facts.sshd?.ports ?? [];
-  if (ports.length === 0 || ports.includes(loginPort)) return loginPort;
-  return ports[0] as number;
 }
 
 /**
@@ -507,7 +497,7 @@ export async function prepareOwnServer(
     // 22). Only the tunnel's SSH route, on the server itself, needs sshd's own port.
     sshPort:
       target.access === "tunnel"
-        ? serverSshPort(facts, session.connection.port)
+        ? networkSshPort(facts, session.connection.port)
         : session.connection.port,
     ...(webSources !== undefined ? { webSources } : {}),
     host,
@@ -970,6 +960,8 @@ async function connectExtraOwnServer(
     );
   }
   deps.reporter.step(`Connecting to server ${name}`);
+  // Once public SSH is closed, at its private address.
+  const reach = await ownServerReach(deps, name, login);
   const session = await connectPinnedLogin(
     deps,
     {
@@ -982,6 +974,7 @@ async function connectExtraOwnServer(
         }));
       },
       words: extraServerWords(name),
+      ...(reach !== undefined ? { reach } : {}),
     },
     { services: own },
   );
@@ -1142,39 +1135,6 @@ export async function addExtraServerCheckKey(
     secrets: async () => ({}),
     applying: `Adding the scheduled check's key to ${server}`,
   });
-}
-
-/** `.opscrew/plans/host-setup-<server>.json`: which saved host plan is the server's last setup. */
-function serverSetupFile(paths: Pick<ProjectPaths, "files">, server: string): string {
-  return join(paths.files.plansDir, `host-setup-${server}.json`);
-}
-
-/** Records that the saved host plan `hash` is the extra server's last setup (local state only). */
-async function keepServerSetup(
-  deps: Pick<PhaseDeps, "paths">,
-  server: string,
-  hash: string,
-): Promise<void> {
-  await writeFileAtomic(serverSetupFile(deps.paths, server), `${JSON.stringify({ hash })}\n`);
-}
-
-/**
- * The last setup host plan of the extra server `server` the user owns that is in place on it (one
- * provision applied there, or found already in place), as `.opscrew/plans/host-<hash>.json` keeps
- * it; `undefined` when this computer has none. `secure` reads its SSH ports and password setting
- * from it, as `lastHostSetup` gives the app's server's.
- */
-export async function lastServerSetup(
-  deps: Pick<PhaseDeps, "paths">,
-  server: string,
-): Promise<HostPlan | undefined> {
-  const pointer = await readValidJson(
-    serverSetupFile(deps.paths, server),
-    z.strictObject({ hash: z.string().regex(/^[0-9a-f]{64}$/) }),
-  );
-  if (pointer === undefined) return undefined;
-  const saved = await readValidJson(hostPlanFile(deps.paths, pointer.hash), HostPlanSchema);
-  return saved !== undefined && hostPlanHash(saved) === pointer.hash ? saved : undefined;
 }
 
 /**

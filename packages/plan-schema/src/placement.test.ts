@@ -556,6 +556,21 @@ describe("the network's devices and grants", () => {
     ).toBe(true);
   });
 
+  it("never names a device like one of the app's servers", async () => {
+    for (const name of ["app", "data", "box"]) {
+      const plan = await withNetwork((n) => ({
+        ...n,
+        devices: [...n.devices, { ...n.devices[0], name, address: "10.200.4.101" }],
+      }));
+      expect(issues(DeployPlanSchema.safeParse(plan)), name).toEqual([
+        {
+          path: "network.devices.1.name",
+          message: `"${name}" is the name of a server of the app; give the device another name, such as "laptop"`,
+        },
+      ]);
+    }
+  });
+
   it("refuses a device's private key or a field it doesn't know", async () => {
     const result = DeployPlanSchema.safeParse(
       await withNetwork((n) => ({
@@ -695,5 +710,21 @@ describe("the JSON schema of the plan", () => {
       grants: [],
       publicSsh: true,
     });
+  });
+
+  it("keeps the allow-list public SSH reopens to while it is closed", () => {
+    const closed = {
+      range: "10.200.4.0/24",
+      members: [],
+      publicSsh: false,
+      publicSshAllowedCidrs: ["203.0.113.0/24", "2001:db8::/32"],
+    };
+    expect(NetworkSchema.parse(closed).publicSshAllowedCidrs).toEqual([
+      "203.0.113.0/24",
+      "2001:db8::/32",
+    ]);
+    expect(
+      NetworkSchema.safeParse({ ...closed, publicSshAllowedCidrs: ["somewhere"] }).success,
+    ).toBe(false);
   });
 });

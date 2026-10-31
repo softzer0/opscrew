@@ -58,7 +58,7 @@ export interface ServerNetworkFacts {
    * `dashboard` marks a dashboard's (Beszel's, Portainer's).
    */
   published: readonly { service: string; port: number; dashboard?: boolean }[];
-  /** The port SSH listens on: the login's from the server record, 22 on a cloud server. */
+  /** The port sshd listens on, from the server's facts (`networkSshPort`). */
   sshPort: number;
 }
 

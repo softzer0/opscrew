@@ -463,7 +463,7 @@ export async function cloudConnectorRemoval(
   },
 ): Promise<HostChangeResult> {
   const { plan, services } = input;
-  const remote = await deployRemote(deps, services);
+  const remote = await deployRemote(deps, plan, services);
   const enabled = plan.portainer?.enabled === true;
   return approveAndApplyHostPlan(deps, {
     plan: cloudPortainerPlan(

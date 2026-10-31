@@ -6,7 +6,7 @@ import type { PhaseDeps } from "../context";
 import type { TunnelledChangeServices } from "../portainer/change";
 import { serverEndpoint } from "../portainer/status";
 import { appMemoryLimits } from "../shared/memory";
-import { SshRemoteExec } from "../shared/remote";
+import { appServerShell } from "../shared/server-address";
 import { dashboardOnNetwork } from "../vpn/dashboards";
 import { BESZEL_EMAIL } from "./secrets";
 import { ADDON_NAMES, ADDON_PHASE } from "./settings";
@@ -141,7 +141,8 @@ export function describeAddonStatus(state: AddonState, app?: string): string {
 
 /**
  * The deploy user's shell on the app's server (a cloud server's address, or the own server's login
- * address and SSH port), with the project's deploy key and the pinned host key.
+ * address and SSH port), with the project's deploy key and the pinned host key; its private address
+ * once public SSH is closed (`appServerShell`).
  */
 export async function deployUserShell(
   deps: Pick<PhaseDeps, "paths" | "runner">,
@@ -158,15 +159,11 @@ export async function deployUserShell(
       },
     );
   }
-  return (
-    services.deployRemote?.(server.host) ??
-    new SshRemoteExec({
-      host: server.host,
-      ...(server.port !== 22 ? { port: server.port } : {}),
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-    })
+  return appServerShell(
+    deps,
+    plan,
+    server,
+    services.deployRemote !== undefined ? { remote: services.deployRemote } : {},
   );
 }
 

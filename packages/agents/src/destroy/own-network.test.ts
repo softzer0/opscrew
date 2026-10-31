@@ -51,6 +51,7 @@ describe.skipIf(!findExecutable("git"))(
             },
           ],
           publicSsh: false,
+          publicSshAllowedCidrs: ["198.51.100.0/24"],
         },
       };
       await writeArtifact("plan", s.deps.paths.files.plan, plan);
@@ -85,6 +86,8 @@ describe.skipIf(!findExecutable("git"))(
       // Public SSH first (the network's removal deletes the SSH rule on its interface), then the
       // teardown, which removes the network's filter and interface with the app.
       expect(applied[0]).toEqual({ purpose: "setup", steps: ["public-ssh"] });
+      // Opened to the allow-list the plan held before public SSH closed.
+      expect(s.host.applies[before]?.plan.steps[0]?.params.allowedCidrs).toBe("198.51.100.0/24");
       expect(applied[1]?.purpose).toBe("teardown");
       expect(applied[1]?.steps).toEqual(expect.arrayContaining(["network-filter", "network"]));
       const removal = s.host.applies[before + 1]?.plan.steps.filter(
@@ -93,7 +96,8 @@ describe.skipIf(!findExecutable("git"))(
       expect(removal?.map((step) => step.params.interface)).toEqual([iface]);
       const after = await readArtifact("plan", s.deps.paths.files.plan);
       expect(after.network?.publicSsh).toBe(true);
-      expect(after.security.sshAllowedCidrs).toEqual(["0.0.0.0/0", "::/0"]);
+      expect(after.security.sshAllowedCidrs).toEqual(["198.51.100.0/24"]);
+      expect(after.network?.publicSshAllowedCidrs).toBeUndefined();
       expect(after.deployment.destroyedAt).toBeDefined();
     });
 

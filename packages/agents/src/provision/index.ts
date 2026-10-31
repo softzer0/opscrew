@@ -30,7 +30,6 @@ export {
   applyOwnHostPlan,
   desiredHost,
   ensurePortainerPassword,
-  lastServerSetup,
   type OwnServerRun,
   ownDeployTarget,
   ownEngineEnv,

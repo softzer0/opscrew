@@ -1,9 +1,13 @@
 import { BlockList, isIP } from "node:net";
+import type { HostFacts } from "@opscrew/connector-ssh-host";
 import type { RemoteExec, VpsProviderId } from "@opscrew/contracts";
 import { normalizeHostName, OpsCrewError, type Redactor, readTextIfExists } from "@opscrew/core";
-import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, readOptionalArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { hasPublicAddress } from "../network/endpoints";
+
 import { type EngineDeps, infrastructureOutputs, type OutputsOptions } from "./engine";
+import { lastHostSetup, lastServerSetup } from "./host-plan";
 import { ownServerKeyFile } from "./own-server";
 import { SshRemoteExec, type SshRemoteExecOptions } from "./remote";
 import {
@@ -205,6 +209,10 @@ export async function serverLogin(
 const SSH_UNREACHABLE =
   /connect to host|connection timed out|operation timed out|no route to host|network is unreachable|connection refused/i;
 
+/** How to check this computer's WireGuard tunnel, for a connection over it that failed. */
+export const TUNNEL_DOWN_HINT =
+  "Check that the WireGuard tunnel is on: your WireGuard app, or `sudo wg show` in a terminal, should list it with a recent handshake. Turn it on, then run the command again.";
+
 /** A connection over the private network that says when this computer's tunnel looks down. */
 function throughTunnel(
   remote: RemoteExec,
@@ -220,14 +228,121 @@ function throughTunnel(
         throw new OpsCrewError(
           "COMMAND_FAILED",
           `OpsCrew could not reach server ${server} at its private address ${address}. Public SSH is closed, so OpsCrew connects over the app's private network, and this computer's tunnel (device ${device}) looks down.`,
-          {
-            hint: "Check that the WireGuard tunnel is on: your WireGuard app, or `sudo wg show` in a terminal, should list it with a recent handshake. Turn it on, then run the command again.",
-          },
+          { hint: TUNNEL_DOWN_HINT },
         );
       }
       return result;
     },
   };
+}
+
+/** The valid ports of a host plan's ports text (`"22 2222"`, its `ufw` step's `sshPorts`). */
+export function portList(value: string | number | boolean | undefined): number[] {
+  return String(value ?? "")
+    .split(" ")
+    .map(Number)
+    .filter((port) => Number.isInteger(port) && port > 0 && port < 65536);
+}
+
+/**
+ * The port sshd listens on, for a connection that reaches it directly (the private network, the
+ * server itself): of sshd's `ports`, the login's when it is one of them, else the lowest; the
+ * login's when none is known. A router may forward another public port (2222) to sshd's (22).
+ */
+export function listeningSshPort(ports: readonly number[], loginPort: number): number {
+  if (ports.length === 0 || ports.includes(loginPort)) return loginPort;
+  return Math.min(...ports);
+}
+
+/**
+ * {@link listeningSshPort} from what inspection found on the server: sshd's ports (`sshd -T`) and
+ * the TCP ports sshd listens on.
+ */
+export function networkSshPort(
+  facts: Pick<HostFacts, "sshd" | "listeners">,
+  loginPort: number,
+): number {
+  const listening = facts.listeners
+    .filter((listener) => listener.proto === "tcp" && listener.process === "sshd")
+    .map((listener) => listener.port);
+  return listeningSshPort([...(facts.sshd?.ports ?? []), ...listening], loginPort);
+}
+
+/**
+ * The port sshd listens on on the server `name`, for a connection over the private network: on a
+ * server the user owns from its last setup plan (the SSH ports inspection found there, as `secure`
+ * reads them), on one OpsCrew created the login's (22).
+ */
+async function privateSshPort(
+  deps: Pick<EngineDeps, "paths">,
+  plan: DeployPlan,
+  name: string,
+  login: Pick<ServerLogin, "port" | "own">,
+): Promise<number> {
+  if (!login.own) return login.port;
+  const setup =
+    name === APP_SERVER ? await lastHostSetup(deps, plan) : await lastServerSetup(deps, name);
+  const ports = setup?.steps.find((step) => step.id === "ufw")?.params.sshPorts;
+  return listeningSshPort(portList(ports), login.port);
+}
+
+/** Where OpsCrew connects over SSH: an address and its port. */
+export interface SshReach {
+  host: string;
+  port: number;
+}
+
+/**
+ * Where OpsCrew reaches the server `name` over SSH once public SSH is closed
+ * (`network.publicSsh: false`): its private address, on the port sshd listens on there.
+ * `undefined` while public SSH is open, for a server without a public address (its SSH was never
+ * public: OpsCrew keeps reaching it at its login's address), and for a server not on the network.
+ */
+export async function privateReach(
+  deps: Pick<EngineDeps, "paths">,
+  plan: DeployPlan,
+  name: string,
+  login: Pick<ServerLogin, "port" | "own">,
+): Promise<SshReach | undefined> {
+  if (plan.network?.publicSsh !== false || !hasPublicAddress(plan, name)) return undefined;
+  const member = plan.network.members.find((m) => m.name === name);
+  if (member === undefined) return undefined;
+  return { host: member.address, port: await privateSshPort(deps, plan, name, login) };
+}
+
+/**
+ * `plan` with public SSH open again (`network.publicSsh: true`), to the allow-list the plan held
+ * before it closed (`network.publicSshAllowedCidrs`, which leaves the plan), else to
+ * `security.sshAllowedCidrs`, and to everyone when that list is empty (as it is while closed).
+ */
+export function reopenedPlan(plan: DeployPlan): DeployPlan {
+  if (plan.network === undefined) return plan;
+  const { publicSshAllowedCidrs: kept, ...network } = plan.network;
+  const cidrs = kept ?? plan.security.sshAllowedCidrs;
+  return {
+    ...plan,
+    network: { ...network, publicSsh: true },
+    security: {
+      ...plan.security,
+      sshAllowedCidrs: cidrs.length > 0 ? [...cidrs] : ["0.0.0.0/0", "::/0"],
+    },
+  };
+}
+
+/**
+ * {@link privateReach} of a server the user owns (`app` or an extra server), with the project's
+ * plan: for the connections that open with its login and confirm its host key. `undefined`
+ * without a readable plan.
+ */
+export async function ownServerReach(
+  deps: Pick<EngineDeps, "paths">,
+  name: string,
+  login: { port: number },
+): Promise<SshReach | undefined> {
+  const plan = await readOptionalArtifact("plan", deps.paths.files.plan).catch(() => undefined);
+  return plan === undefined
+    ? undefined
+    : privateReach(deps, plan, name, { port: login.port, own: true });
 }
 
 /**
@@ -254,11 +369,12 @@ async function pinPrivateName(file: string, from: string, to: string, server: st
 
 /**
  * A shell on the server `name` (`app` or an extra server), with its {@link serverLogin} and the
- * host key pinned in the project's known_hosts. It connects to the public address, or, when
- * `network.publicSsh` is `false`, to the server's private address with the same pinned host key.
- * Then, when this computer is a device on the network (`thisDevice`), a connection that fails says
- * this computer's tunnel looks down and how to check it. `options` are ssh's as other connections
- * take them: a new connection every time (`fresh`), keep-alive probes for long commands.
+ * host key pinned in the project's known_hosts. It connects to the public address, or, once
+ * public SSH is closed, to the server's private address on the port sshd listens on there
+ * ({@link privateReach}), with the same host key, pinned under that address as well. Then, when
+ * this computer is a device on the network (`thisDevice`), a connection that fails says this
+ * computer's tunnel looks down and how to check it. `options` are ssh's as other connections take
+ * them: a new connection every time (`fresh`), keep-alive probes for long commands.
  */
 export async function serverRemote(
   deps: EngineDeps,
@@ -267,29 +383,80 @@ export async function serverRemote(
   options: Pick<SshRemoteExecOptions, "fresh" | "keepAliveSeconds"> = {},
 ): Promise<RemoteExec> {
   const login = await serverLogin(deps, plan, name);
-  const knownHostsFile = deps.paths.files.knownHosts;
-  const ssh = (host: string) =>
-    new SshRemoteExec({
-      host,
-      port: login.port,
-      user: login.user,
-      ...(login.keyFile !== undefined ? { keyFile: login.keyFile } : {}),
-      knownHostsFile,
-      runner: deps.runner,
-      ...options,
-    });
-  if (plan.network?.publicSsh !== false) return ssh(login.host);
-  const member = plan.network.members.find((m) => m.name === name);
-  if (member === undefined) throw new Error(`Server "${name}" is not on the private network.`);
+  return remoteAt(
+    deps,
+    plan,
+    name,
+    login,
+    ({ host, port }) =>
+      new SshRemoteExec({
+        host,
+        port,
+        user: login.user,
+        ...(login.keyFile !== undefined ? { keyFile: login.keyFile } : {}),
+        knownHostsFile: deps.paths.files.knownHosts,
+        runner: deps.runner,
+        ...options,
+      }),
+  );
+}
+
+/**
+ * The deploy user's shell on the app's server (the project's deploy key, the pinned host key),
+ * whose deploy logs in at `login` (its public address and port): there, or once public SSH is
+ * closed at its private address, as {@link serverRemote} connects. `options.remote` replaces ssh
+ * in tests, given the address it connects to.
+ */
+export async function appServerShell(
+  deps: Pick<EngineDeps, "paths" | "runner">,
+  plan: DeployPlan,
+  login: SshReach,
+  options: { remote?: (host: string) => RemoteExec; keepAliveSeconds?: number } = {},
+): Promise<RemoteExec> {
+  const own = plan.target.provider === "own";
+  return remoteAt(
+    deps,
+    plan,
+    APP_SERVER,
+    { ...login, own },
+    ({ host, port }) =>
+      options.remote?.(host) ??
+      new SshRemoteExec({
+        host,
+        port,
+        keyFile: deps.paths.files.deployKey,
+        knownHostsFile: deps.paths.files.knownHosts,
+        runner: deps.runner,
+        ...(options.keepAliveSeconds !== undefined
+          ? { keepAliveSeconds: options.keepAliveSeconds }
+          : {}),
+      }),
+  );
+}
+
+/**
+ * The shell `ssh` opens on the server `name` at `login`, or, once public SSH is closed, at its
+ * private address ({@link privateReach}) with the host key pinned there too; then, when this
+ * computer is a device on the network, a connection that fails says its tunnel looks down.
+ */
+async function remoteAt(
+  deps: Pick<EngineDeps, "paths">,
+  plan: DeployPlan,
+  name: string,
+  login: SshReach & Pick<ServerLogin, "own">,
+  ssh: (at: SshReach) => RemoteExec,
+): Promise<RemoteExec> {
+  const reach = await privateReach(deps, plan, name, login);
+  if (reach === undefined) return ssh(login);
   await pinPrivateName(
-    knownHostsFile,
+    deps.paths.files.knownHosts,
     knownHostsName(login.host, login.port),
-    knownHostsName(member.address, login.port),
+    knownHostsName(reach.host, reach.port),
     name,
   );
-  const remote = ssh(member.address);
+  const remote = ssh(reach);
   const device = (await readServerAddresses(deps.paths)).thisDevice;
-  return device === undefined ? remote : throughTunnel(remote, name, member.address, device);
+  return device === undefined ? remote : throughTunnel(remote, name, reach.host, device);
 }
 
 /**

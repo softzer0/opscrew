@@ -328,6 +328,11 @@ describe("opscrew vpn add", () => {
     expect((await failure(vpnAdd(w.deps, "Laptop", { services: w.services }))).code).toBe(
       "INVALID_INPUT",
     );
+    // A server's name, the app's included, before anything is written.
+    const named = await failure(vpnAdd(w.deps, "app", { services: w.services }));
+    expect(named.code).toBe("INVALID_INPUT");
+    expect(named.message).toContain("Nothing was changed");
+    expect(w.keys.made).toEqual([]);
     const fresh = await world({ plan: testPlan() });
     const error = await failure(vpnAdd(fresh.deps, "laptop", { services: fresh.services }));
     expect(error.message).toContain("has no servers yet");

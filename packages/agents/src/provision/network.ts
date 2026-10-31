@@ -28,7 +28,7 @@ export interface NetworkServer {
   apply: HostAdapterApi["apply"];
   /** Opens new SSH connections, for the host adapter after an SSH or firewall change. */
   verifyLogin: () => Promise<boolean>;
-  /** The login's SSH port, which the network lets in on its interface (22 on a cloud server). */
+  /** The port sshd listens on (`networkSshPort`), which the network lets in on its interface. */
   sshPort: number;
   /** The server hosts this app alone (always so on a server OpsCrew created). */
   alone: boolean;

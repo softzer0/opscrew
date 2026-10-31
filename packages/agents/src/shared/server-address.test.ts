@@ -1,24 +1,38 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { HostFactsSchema, type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
 import type { IacEngine, IacInitOptions, IacRunOptions } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { allocateNetwork } from "../network";
 import { splitPlan, withNetwork } from "../network/__fixtures__/plans";
-import { createTestPhaseDeps, HOST_KEY, ScriptedRunner, testKeyMaker, testPlan } from "../testing";
+import {
+  createTestPhaseDeps,
+  freshFacts,
+  HOST_KEY,
+  ScriptedRunner,
+  testKeyMaker,
+  testPlan,
+} from "../testing";
 import {
   addressFromOutputs,
   addressNames,
+  appServerShell,
   committableUrl,
   damagedServerAddressesFile,
   ensureStatePassphrase,
   formatServerAddress,
   hasDeployment,
   hidesServerAddress,
+  hostPlanFile,
   infrastructureOutputs,
+  keepServerSetup,
+  listeningSshPort,
+  networkSshPort,
   type PortainerConnection,
+  portList,
   readOwnServer,
   readPortainerConnection,
   readServerAddresses,
@@ -798,6 +812,111 @@ describe("serverAddress and serverRemote for each of the app's servers", () => {
     expect(knownHosts).toContain(`[${DATA_IPV4}]:2222 ${PINNED}`);
     expect((await serverRemote(deps, plan, "app")).host).toBe(`${prefix}.1`);
     expect(await readFile(deps.paths.files.knownHosts, "utf8")).toContain(`${prefix}.1 ${PINNED}`);
+  });
+
+  it("reaches sshd's own port at the private address when the login's port is forwarded", async () => {
+    const { plan, deps, runner, prefix } = await splitWorld({ publicSsh: false, data: "own" });
+    // Server data's last setup found sshd on 22, which the router forwards 2222 to.
+    const setup: HostPlan = {
+      schemaVersion: 1,
+      purpose: "setup",
+      app: plan.app.name,
+      steps: [
+        {
+          id: "ufw",
+          title: "Firewall",
+          state: "in-place",
+          scope: "shared",
+          params: { sshPorts: "22" },
+        },
+      ],
+      findings: [],
+    };
+    await mkdir(deps.paths.files.plansDir, { recursive: true });
+    await writeFile(hostPlanFile(deps.paths, hostPlanHash(setup)), JSON.stringify(setup));
+    await keepServerSetup(deps, "data", hostPlanHash(setup));
+
+    await (await serverRemote(deps, plan, "data")).run("true");
+
+    expect(lastLogin(runner)).toMatchObject({ target: `admin@${prefix}.2`, port: "22" });
+    expect(await readFile(deps.paths.files.knownHosts, "utf8")).toContain(`${prefix}.2 ${PINNED}`);
+  });
+
+  it("routes the deploy user's shell on the app's server like serverRemote", async () => {
+    const open = await splitWorld();
+    const login = { host: IPV4, port: 22 };
+    await (await appServerShell(open.deps, open.plan, login)).run("true");
+    expect(lastLogin(open.runner)).toEqual({
+      target: `deploy@${IPV4}`,
+      port: "22",
+      key: open.deps.paths.files.deployKey,
+    });
+
+    const { plan, deps, runner, prefix } = await splitWorld({ publicSsh: false });
+    const remote = await appServerShell(deps, plan, login, { keepAliveSeconds: 15 });
+    await remote.run("true");
+    expect(lastLogin(runner)).toEqual({
+      target: `deploy@${prefix}.1`,
+      port: "22",
+      key: deps.paths.files.deployKey,
+    });
+    expect(runner.calls.at(-1)?.args).toContain("ServerAliveInterval=15");
+    expect(await readFile(deps.paths.files.knownHosts, "utf8")).toContain(`${prefix}.1 ${PINNED}`);
+    // A fake shell is given the address it connects to.
+    const hosts: string[] = [];
+    await appServerShell(deps, plan, login, {
+      remote: (host) => {
+        hosts.push(host);
+        return { host, run: async () => ({ exitCode: 0, stdout: "", stderr: "" }) };
+      },
+    });
+    expect(hosts).toEqual([`${prefix}.1`]);
+  });
+
+  it("says this computer's tunnel looks down when the deploy user's shell can't reach the app's server", async () => {
+    const { plan, deps, prefix } = await splitWorld({ publicSsh: false, thisDevice: "laptop" });
+    const offline = new ScriptedRunner(() => ({
+      exitCode: 255,
+      stdout: "",
+      stderr: `ssh: connect to host ${prefix}.1 port 22: Connection timed out\r\n`,
+    }));
+    const remote = await appServerShell({ ...deps, runner: offline }, plan, {
+      host: IPV4,
+      port: 22,
+    });
+    await expect(remote.run("true")).rejects.toMatchObject({
+      code: "COMMAND_FAILED",
+      message: expect.stringContaining("this computer's tunnel (device laptop) looks down"),
+    });
+  });
+
+  it("keeps a server without a public address at its login's address", async () => {
+    const base = splitPlan({ app: "own-tunnel" });
+    const { network } = allocateNetwork(
+      base,
+      { app: { udpPortsInUse: [], wireguardInterfaces: [] } },
+      testKeyMaker(),
+    );
+    const plan = withNetwork(base, { ...network, publicSsh: false });
+    const deps = await createTestPhaseDeps();
+    await updateServerAddresses(deps.paths, () => ({
+      schemaVersion: 1,
+      own: { host: "192.0.2.5", port: 22, user: "root", agent: true, reachable: false },
+    }));
+    expect((await serverRemote(deps, plan, "app")).host).toBe("192.0.2.5");
+  });
+
+  it("picks the port sshd listens on: the login's when it is one, else the lowest", () => {
+    expect(listeningSshPort([22], 2222)).toBe(22);
+    expect(listeningSshPort([2222, 22], 2222)).toBe(2222);
+    expect(listeningSshPort([2200, 22], 2222)).toBe(22);
+    expect(listeningSshPort([], 2222)).toBe(2222);
+    expect(portList("22 2222")).toEqual([22, 2222]);
+    expect(portList("22 0 x 70000")).toEqual([22]);
+    expect(portList(undefined)).toEqual([]);
+    const facts = HostFactsSchema.parse(freshFacts({ sshPorts: [22] }));
+    expect(networkSshPort(facts, 2222)).toBe(22);
+    expect(networkSshPort({ sshd: null, listeners: [] }, 2222)).toBe(2222);
   });
 
   it("passes ssh's options on: a new connection every time, keep-alive probes", async () => {

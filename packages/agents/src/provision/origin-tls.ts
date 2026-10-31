@@ -38,11 +38,11 @@ import { parse } from "yaml";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
+  appServerShell,
   type PortainerConnection,
   readServerAddresses,
   readValidJson,
   recordedStack,
-  SshRemoteExec,
 } from "../shared";
 import { generatedValuesFile } from "../shared/app-secrets";
 import { readOwnServerRecord } from "../shared/own-server";
@@ -463,15 +463,12 @@ export async function readServerEdge(
 ): Promise<ServerEdge | undefined> {
   const login = await deployLogin(deps, plan);
   if (login === undefined) return undefined;
-  const remote =
-    services.remote?.(login.host) ??
-    new SshRemoteExec({
-      host: login.host,
-      port: login.port,
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-    });
+  const remote = await appServerShell(
+    deps,
+    plan,
+    login,
+    services.remote !== undefined ? { remote: services.remote } : {},
+  );
   return readEdgeOver(deps, remote, plan.app.name);
 }
 

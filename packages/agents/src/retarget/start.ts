@@ -303,6 +303,16 @@ export async function startMove(
     throw serverlessTargetNoMove(plan.target.provider);
   // Nor, until retarget anywhere (feature 022), an app with services on other servers (FR-1820).
   if ((plan.servers ?? []).length > 0) throw splitAppNoMove(plan);
+  // Nor while public SSH is closed: the new server is reached at its public address.
+  if (plan.network?.publicSsh === false) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "Public SSH is closed, and a move reaches the new server over public SSH before it joins the app's private network. Nothing was changed.",
+      {
+        hint: "Open public SSH first (`opscrew secure --open-public-ssh`), move the app, then close it again with `opscrew secure --close-public-ssh`.",
+      },
+    );
+  }
   const address =
     plan.deployment.destroyedAt === undefined && (await hasState(deps.paths))
       ? await serverAddress(deps, plan, {

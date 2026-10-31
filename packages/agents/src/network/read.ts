@@ -32,6 +32,8 @@ export interface NetworkLink {
   from: string;
   /** Another server, or a device. */
   to: string;
+  /** What `to` is: a server of the app or a device on the network. */
+  kind: "server" | "device";
   up: boolean;
   /** Seconds since the last handshake; absent when there was none. */
   handshakeAgeSeconds?: number;
@@ -139,15 +141,18 @@ export async function readNetwork(
   for (const member of network.members) {
     const peers = await peersOf(member);
     const expected = [
-      ...network.members.filter((m) => m.name !== member.name).map((m) => ({ ...m, server: true })),
+      ...network.members
+        .filter((m) => m.name !== member.name)
+        .map((m) => ({ ...m, kind: "server" as const })),
       ...(hasPublicAddress(plan, member.name) ? network.devices : []).map((d) => ({
         ...d,
-        server: false,
+        kind: "device" as const,
       })),
     ];
     for (const peer of expected) {
+      const { kind } = peer;
       if (typeof peers === "string") {
-        links.push({ from: member.name, to: peer.name, up: false, reason: peers });
+        links.push({ from: member.name, to: peer.name, kind, up: false, reason: peers });
         continue;
       }
       const handshake = peers.find((p) => p.publicKey === peer.publicKey)?.latestHandshake;
@@ -156,10 +161,11 @@ export async function readNetwork(
           ? undefined
           : Math.max(0, Math.floor((now - handshake.getTime()) / 1000));
       const roundTripMs =
-        member.name === APP_SERVER && peer.server ? pings?.get(peer.name) : undefined;
+        member.name === APP_SERVER && kind === "server" ? pings?.get(peer.name) : undefined;
       links.push({
         from: member.name,
         to: peer.name,
+        kind,
         up: age !== undefined && age < HANDSHAKE_FRESH_SECONDS,
         ...(age !== undefined ? { handshakeAgeSeconds: age } : {}),
         ...(roundTripMs !== undefined ? { roundTripMs } : {}),

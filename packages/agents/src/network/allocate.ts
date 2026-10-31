@@ -128,6 +128,9 @@ export function allocateNetwork(
       devices: current?.devices ?? [],
       grants: current?.grants ?? [],
       publicSsh: current?.publicSsh ?? true,
+      ...(current?.publicSshAllowedCidrs !== undefined
+        ? { publicSshAllowedCidrs: current.publicSshAllowedCidrs }
+        : {}),
     },
     privateKeys,
   };

@@ -1,8 +1,10 @@
-import { rm } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
 import type { CheckResult, CommandResult } from "@opscrew/contracts";
 import { writeArtifact } from "@opscrew/plan-schema";
 import type { TcpConnect } from "@opscrew/secops";
 import { describe, expect, it } from "vitest";
+import { hostPlanFile, keepServerSetup } from "../shared/host-plan";
 import { APP_HOST, DATA_HOST, splitWorld } from "../status/__fixtures__/split";
 import { ScriptedRunner } from "../testing";
 import { type RunSecureOptions, runSecure } from "./run";
@@ -197,6 +199,54 @@ describe("secure across an app's servers", () => {
     expect(find(result.hostChecks, "service-db-private").status).toBe("pass");
     const onData = w.commands.filter((c) => c.host === DATA_HOST).map((c) => c.command);
     expect(onData.find((c) => c.includes("docker inspect"))).toMatch(/^sudo -n sh -c /);
+  });
+
+  it("reads an own server's SSH ports and password choice from its last setup plan", async () => {
+    const w = await secureWorld({ data: "own" });
+    // Server data's setup found sshd on 22 and 2200, and the user kept password logins.
+    const setup: HostPlan = {
+      schemaVersion: 1,
+      purpose: "setup",
+      app: w.plan.app.name,
+      steps: [
+        {
+          id: "ufw",
+          title: "ufw",
+          state: "in-place",
+          scope: "shared",
+          params: { sshPorts: "22 2200" },
+        },
+        {
+          id: "sshd",
+          title: "sshd",
+          state: "in-place",
+          scope: "shared",
+          params: { disablePasswords: false },
+        },
+      ],
+      findings: [],
+    };
+    await mkdir(w.deps.paths.files.plansDir, { recursive: true });
+    await writeFile(hostPlanFile(w.deps.paths, hostPlanHash(setup)), JSON.stringify(setup));
+    await keepServerSetup(w.deps, "data", hostPlanHash(setup));
+    const data = w.servers[DATA_HOST];
+    if (data !== undefined) {
+      data.other = (command) =>
+        command === "ss -H -tln"
+          ? { exitCode: 0, stdout: "LISTEN 0 4096 0.0.0.0:2200 0.0.0.0:*\n", stderr: "" }
+          : command.startsWith("cat /etc/ssh/sshd_config.d/")
+            ? {
+                exitCode: 0,
+                stdout: `${HARDENED_SSHD.replace("PasswordAuthentication no", "PasswordAuthentication yes")}\n`,
+                stderr: "",
+              }
+            : hardened(command);
+    }
+
+    const result = await runSecure(w.deps, w.options());
+
+    expect(find(result.hostChecks, "server-data-listening-ports").status).toBe("pass");
+    expect(find(result.hostChecks, "server-data-ssh-hardening").status).toBe("warn");
   });
 
   it("skips the extra servers' host checks with the app's when the deploy key is missing", async () => {

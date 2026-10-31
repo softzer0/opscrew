@@ -14,9 +14,9 @@ import { requirePortainerConnection, requirePortainerToken } from "../provision/
 import type { ProvisionServices } from "../provision/types";
 import { runnerStatusLines } from "../runners";
 import {
+  appServerShell,
   localhostNotSupported,
   portainerClientFor,
-  SshRemoteExec,
   serverAddress,
   serverlessNotSupported,
 } from "../shared";
@@ -119,14 +119,12 @@ export async function readServerContainers(
       },
     );
   }
-  const remote =
-    services.remote?.(address.ipv4) ??
-    new SshRemoteExec({
-      host: address.ipv4,
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-    });
+  const remote = await appServerShell(
+    deps,
+    plan,
+    { host: address.ipv4, port: 22 },
+    services.remote !== undefined ? { remote: services.remote } : {},
+  );
   deps.reporter.step("Reading the app's containers on the server (read-only)");
   const containers = await readAppContainers(remote, app);
   await deps.audit.append({

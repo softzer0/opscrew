@@ -16,6 +16,7 @@ import type { PhaseDeps } from "../context";
 import { hasPublicAddress, type KeyMaker, type ReadNetworkServices } from "../network";
 import type { NetworkServer } from "../provision/network";
 import { type HostAdapterApi, hasDeployment, serverLogin, serverRemote } from "../shared";
+import { networkSshPort } from "../shared/server-address";
 import { appServers } from "../status/servers";
 
 /** The phase `opscrew vpn` audits its host plans under. */
@@ -67,7 +68,7 @@ export function deviceServers(plan: DeployPlan): string[] {
 /**
  * How the private network's host plan reaches the server `name`, inspected read-only now: the
  * login's shell (the admin login on the user's own server, `deploy` on one OpsCrew created, which
- * becomes root through Docker in the pinned Caddy image), with the login's SSH port. The server
+ * becomes root through Docker in the pinned Caddy image), with the port sshd listens on. The server
  * hosts this app alone when OpsCrew created it, or when no other OpsCrew app is active on it.
  */
 export async function networkServer(
@@ -97,7 +98,7 @@ export async function networkServer(
     apply: host.apply,
     // The network's steps change no SSH setting the host adapter guards.
     verifyLogin: async () => true,
-    sshPort: login.port,
+    sshPort: networkSshPort(facts, login.port),
     alone: !login.own || otherActiveApps(facts.apps, plan.app.name).length === 0,
     ...(rootImage !== undefined ? { rootImage } : {}),
   };

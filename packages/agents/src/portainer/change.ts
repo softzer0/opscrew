@@ -23,6 +23,7 @@ import type { ProvisionServices } from "../provision/types";
 import {
   approvalEntry,
   approveAndWriteRenderedFiles,
+  appServerShell,
   committedText,
   diffRenderedFiles,
   ensureDeployKey,
@@ -34,7 +35,6 @@ import {
   projectEngine,
   readServerAddresses,
   requireGitRepo,
-  SshRemoteExec,
   stringOutput,
   writePlanIfChanged,
 } from "../shared";
@@ -285,7 +285,7 @@ export async function runTunnelledChange(
   }
   // Hetzner/DigitalOcean: the deploy user's shell.
   let cloudRemote: RemoteExec | undefined;
-  if (!own) cloudRemote = await deployRemote(deps, services);
+  if (!own) cloudRemote = await deployRemote(deps, change.after, services);
   await change.preflight?.({
     ...(ownRun !== undefined ? { ownRun } : {}),
     ...(cloudRemote !== undefined ? { remote: cloudRemote } : {}),
@@ -576,10 +576,12 @@ function halfDone(
 
 /**
  * Hetzner and DigitalOcean: the deploy user's shell on the server, over the deploy key and the
- * pinned host key (the address from this computer's local state).
+ * pinned host key (the address from this computer's local state), or its private address once
+ * public SSH is closed (`appServerShell`).
  */
 export async function deployRemote(
   deps: PhaseDeps,
+  plan: DeployPlan,
   services: Pick<TunnelledChangeServices, "deployRemote">,
 ): Promise<RemoteExec> {
   const address = (await readServerAddresses(deps.paths).catch(() => undefined))?.deployment;
@@ -590,14 +592,11 @@ export async function deployRemote(
       { hint: "Run `opscrew provision` here first; it records the address." },
     );
   }
-  return (
-    services.deployRemote?.(address.ipv4) ??
-    new SshRemoteExec({
-      host: address.ipv4,
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-    })
+  return appServerShell(
+    deps,
+    plan,
+    { host: address.ipv4, port: 22 },
+    services.deployRemote !== undefined ? { remote: services.deployRemote } : {},
   );
 }
 

@@ -210,6 +210,14 @@ export async function vpnAdd(
   const services = options.services ?? {};
   let plan = await readArtifact("plan", deps.paths.files.plan);
   requireServers(plan);
+  const serverNames = [APP_SERVER, ...(plan.servers ?? []).map((server) => server.name)];
+  if (serverNames.includes(device)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `A device can't be named ${device}: that is the name of one of the app's servers. Nothing was changed.`,
+      { hint: "Choose another name for the device, such as laptop." },
+    );
+  }
   const existing = plan.network?.devices.find((d) => d.name === device);
   const fresh = existing === undefined || options.again === true;
   if (existing !== undefined && options.again === true) {

@@ -12,6 +12,7 @@ import {
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { adapterBlocked, describeAdapterPlan } from "./adapter-plan";
 import { PlanRefusedError, refusalReason } from "./approvals";
@@ -27,6 +28,39 @@ export interface HostAdapterApi {
 /** `.opscrew/plans/host-<hash>.json`: the host plan the hash names, kept for review and audit. */
 export function hostPlanFile(paths: Pick<ProjectPaths, "files">, hash: string): string {
   return join(paths.files.plansDir, `host-${hash}.json`);
+}
+
+/** `.opscrew/plans/host-setup-<server>.json`: which saved host plan is the server's last setup. */
+function serverSetupFile(paths: Pick<ProjectPaths, "files">, server: string): string {
+  return join(paths.files.plansDir, `host-setup-${server}.json`);
+}
+
+/** Records that the saved host plan `hash` is the extra server's last setup (local state only). */
+export async function keepServerSetup(
+  deps: Pick<PhaseDeps, "paths">,
+  server: string,
+  hash: string,
+): Promise<void> {
+  await writeFileAtomic(serverSetupFile(deps.paths, server), `${JSON.stringify({ hash })}\n`);
+}
+
+/**
+ * The last setup host plan of the extra server `server` the user owns that is in place on it (one
+ * provision applied there, or found already in place), as `.opscrew/plans/host-<hash>.json` keeps
+ * it; `undefined` when this computer has none. `secure` reads its SSH ports and password setting
+ * from it, as {@link lastHostSetup} gives the app's server's.
+ */
+export async function lastServerSetup(
+  deps: Pick<PhaseDeps, "paths">,
+  server: string,
+): Promise<HostPlan | undefined> {
+  const pointer = await readValidJson(
+    serverSetupFile(deps.paths, server),
+    z.strictObject({ hash: z.string().regex(/^[0-9a-f]{64}$/) }),
+  );
+  if (pointer === undefined) return undefined;
+  const saved = await readValidJson(hostPlanFile(deps.paths, pointer.hash), HostPlanSchema);
+  return saved !== undefined && hostPlanHash(saved) === pointer.hash ? saved : undefined;
 }
 
 /**

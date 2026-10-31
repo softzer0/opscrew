@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { type HostFacts, inspectHost, isPublicAddress } from "@opscrew/connector-ssh-host";
 import type { CommandResult, PhaseName, RemoteExec } from "@opscrew/contracts";
 import { errorMessage, OpsCrewError, upperFirst } from "@opscrew/core";
+import { APP_SERVER } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
@@ -14,6 +15,7 @@ import {
 } from "../providers";
 import type { OwnServerServices } from "../provision/types";
 import { SshRemoteExec } from "./remote";
+import { ownServerReach, type SshReach, TUNNEL_DOWN_HINT } from "./server-address";
 import {
   type OwnServerConnection,
   readOwnServer,
@@ -61,6 +63,8 @@ export interface OwnServerSession {
   knownHostsFile: string;
   /** True when this connection pinned the key (first use, or a new key named with `--host-key`). */
   pinned: boolean;
+  /** Where OpsCrew connects when it is not the login's address: the server's private address. */
+  reach?: SshReach;
 }
 
 /** Plain-English stop when no login is recorded; never mentions an API token. */
@@ -191,6 +195,10 @@ const ON_SERVER =
   "the fingerprint on the server itself, for example in its provider's web console: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.";
 const CHECK_ON_SERVER = `Check ${ON_SERVER}`;
 
+/** Why OpsCrew connects at a private address: before {@link TUNNEL_DOWN_HINT}. */
+const OVER_TUNNEL =
+  "Public SSH is closed, so OpsCrew connects over the app's private network, through this computer's WireGuard tunnel.";
+
 /** What to do when the server presents another host key than the one the user confirmed. */
 const CHANGED_KEY_HINT = `If you did not reinstall the server or change its SSH keys, someone may be intercepting the connection: check the server in its provider's console before going on. If you did, check ${ON_SERVER} Then run the command again with --host-key and the new fingerprint.`;
 
@@ -217,6 +225,7 @@ export async function connectOwnServer(
 ): Promise<OwnServerSession> {
   const connection = await readOwnServerRecord(deps.paths);
   if (connection === undefined) throw ownServerNotSetUp();
+  const reach = await ownServerReach(deps, APP_SERVER, connection);
   return connectPinnedLogin(
     deps,
     {
@@ -224,6 +233,7 @@ export async function connectOwnServer(
       knownHostsFile: deps.paths.files.knownHosts,
       pin: (hostKey) => recordOwnServer(deps.paths, { ...connection, hostKey }),
       words: OWN_SERVER_WORDS,
+      ...(reach !== undefined ? { reach } : {}),
     },
     options,
   );
@@ -238,6 +248,11 @@ export interface PinnedLogin {
   /** Records the host key this connection confirmed with the login. */
   pin(hostKey: string): Promise<void>;
   words: LoginWords;
+  /**
+   * Where to connect instead of the login's address and port: the server's private address once
+   * public SSH is closed (`ownServerReach`). The confirmed host key is pinned under it too.
+   */
+  reach?: SshReach;
 }
 
 /**
@@ -277,18 +292,18 @@ export async function connectPinnedLogin(
   }
   await requireOwnServerKey(connection, deps.env, homeDir, words);
 
-  const where = `${connection.host} (SSH port ${connection.port})`;
-  const keys = await scanHostKeys({
-    host: connection.host,
-    port: connection.port,
-    runner: deps.runner,
-  });
+  const at = login.reach ?? connection;
+  const where = `${at.host} (SSH port ${at.port})`;
+  const keys = await scanHostKeys({ host: at.host, port: at.port, runner: deps.runner });
   if (keys.length === 0) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
       `OpsCrew could not reach SSH on ${noun} at ${where}, so it could not read its host key.`,
       {
-        hint: `Check that ${noun} is on and that this computer can reach it on that port. If the address or port is wrong, fix them with ${fix}, then try again.`,
+        hint:
+          login.reach !== undefined
+            ? `${OVER_TUNNEL} ${TUNNEL_DOWN_HINT}`
+            : `Check that ${noun} is on and that this computer can reach it on that port. If the address or port is wrong, fix them with ${fix}, then try again.`,
       },
     );
   }
@@ -361,12 +376,13 @@ export async function connectPinnedLogin(
 
   const before = await readFile(knownHostsFile, "utf8").catch(() => undefined);
   // Always (re)write the entry: the known_hosts file may be missing on this computer.
-  await writeKnownHost(knownHostsFile, knownHostsName(connection.host, connection.port), [chosen]);
+  await writeKnownHost(knownHostsFile, knownHostsName(at.host, at.port), [chosen]);
   const session = { ...connection, hostKey: chosen.fingerprint };
+  const target = { ...session, host: at.host, port: at.port };
   const remote =
-    options.services?.remote?.(session) ?? adminRemote(deps, session, knownHostsFile, homeDir);
+    options.services?.remote?.(target) ?? adminRemote(deps, target, knownHostsFile, homeDir);
   try {
-    await testLogin(deps, remote, session, { where, words });
+    await testLogin(deps, remote, target, { where, words, tunnel: login.reach !== undefined });
   } catch (error) {
     // Nothing changes when the login does not work: the earlier known_hosts comes back.
     if (before === undefined) await rm(knownHostsFile, { force: true });
@@ -378,7 +394,14 @@ export async function connectPinnedLogin(
     await login.pin(chosen.fingerprint);
     deps.reporter.success(`Pinned ${noun}'s SSH host key ${chosen.fingerprint}.`);
   }
-  return { connection: session, remote, hostKey: chosen, knownHostsFile, pinned: changed };
+  return {
+    connection: session,
+    remote,
+    hostKey: chosen,
+    knownHostsFile,
+    pinned: changed,
+    ...(login.reach !== undefined ? { reach: login.reach } : {}),
+  };
 }
 
 /**
@@ -453,7 +476,7 @@ async function testLogin(
   deps: Pick<OwnServerDeps, "redactor">,
   remote: RemoteExec,
   connection: OwnServerConnection & { hostKey: string },
-  { where, words }: { where: string; words: LoginWords },
+  { where, words, tunnel }: { where: string; words: LoginWords; tunnel: boolean },
 ): Promise<void> {
   const { noun, fix } = words;
   const unreachable = (detail: string) =>
@@ -461,7 +484,9 @@ async function testLogin(
       "COMMAND_FAILED",
       `OpsCrew could not reach SSH on ${noun} at ${where}. Nothing was changed.`,
       {
-        hint: `Check that ${noun} is on and that this computer can reach it on that port (a firewall or router may block it). If the address or port is wrong, fix them with ${fix}, then try again.${detail}`,
+        hint: tunnel
+          ? `${OVER_TUNNEL} ${TUNNEL_DOWN_HINT}${detail}`
+          : `Check that ${noun} is on and that this computer can reach it on that port (a firewall or router may block it). If the address or port is wrong, fix them with ${fix}, then try again.${detail}`,
       },
     );
   let result: CommandResult;
@@ -513,14 +538,15 @@ async function testLogin(
  */
 export function ownServerLoginCheck(
   deps: Pick<OwnServerDeps, "runner" | "env">,
-  session: Pick<OwnServerSession, "connection" | "knownHostsFile">,
+  session: Pick<OwnServerSession, "connection" | "knownHostsFile" | "reach">,
   options: { deployKeyFile?: string; homeDir?: string },
 ): () => Promise<boolean> {
   const { connection, knownHostsFile } = session;
+  const at = session.reach ?? connection;
   const login = async (user: string, keyFile: string | undefined) => {
     const remote = new SshRemoteExec({
-      host: connection.host,
-      port: connection.port,
+      host: at.host,
+      port: at.port,
       user,
       ...(keyFile !== undefined ? { keyFile } : {}),
       knownHostsFile,

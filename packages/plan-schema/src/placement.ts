@@ -92,6 +92,11 @@ export const NetworkSchema = z.strictObject({
     .default(() => []),
   /** `false` once `opscrew secure --close-public-ssh` closed SSH everywhere but the network. */
   publicSsh: z.boolean().default(true),
+  /**
+   * While public SSH is closed: the allow-list `security.sshAllowedCidrs` held before it closed,
+   * which `opscrew secure --open-public-ssh` restores.
+   */
+  publicSshAllowedCidrs: z.array(z.union([z.cidrv4(), z.cidrv6()])).optional(),
 });
 
 /**
@@ -337,6 +342,12 @@ function checkNetwork(
       issue(
         ["network", "devices", i, "name"],
         `"${device.name}" is already the name of another device; give each its own`,
+      );
+    }
+    if (expected.includes(device.name)) {
+      issue(
+        ["network", "devices", i, "name"],
+        `"${device.name}" is the name of a server of the app; give the device another name, such as "laptop"`,
       );
     }
     devices.add(device.name);

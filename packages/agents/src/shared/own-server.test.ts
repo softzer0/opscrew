@@ -6,7 +6,10 @@ import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import type { CommandResult } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { allocateNetwork } from "../network";
+import { withNetwork } from "../network/__fixtures__/plans";
 import {
   createTestPhaseDeps,
   ED25519,
@@ -16,11 +19,13 @@ import {
   hostKeyBlob,
   LAN_IPV4,
   OWN_IPV4,
+  ownPlan,
   ownRunner,
   placeholderKey,
   RSA,
   ScriptedApprovalHandler,
   ScriptedRunner,
+  testKeyMaker,
   withOtherApp,
 } from "../testing";
 import {
@@ -347,6 +352,40 @@ describe("connectOwnServer", () => {
   it("says the server cannot be reached when it presents no key", async () => {
     const { deps } = await connectSetup({ keys: [] });
     await expect(connectOwnServer(deps)).rejects.toMatchObject({ code: "COMMAND_FAILED" });
+  });
+
+  it("connects to the private address once public SSH is closed, keeping the recorded login", async () => {
+    const login = {
+      host: OWN_IPV4,
+      port: 2222,
+      user: "root",
+      agent: true,
+      hostKey: ED25519_FINGERPRINT,
+    };
+    const { deps, runner } = await connectSetup({ own: login });
+    const base = ownPlan({ access: "public", deployed: true });
+    const { network } = allocateNetwork(
+      base,
+      { app: { udpPortsInUse: [], wireguardInterfaces: [] } },
+      testKeyMaker(),
+    );
+    await writeArtifact(
+      "plan",
+      deps.paths.files.plan,
+      withNetwork(base, { ...network, publicSsh: false }),
+    );
+    const address = network.members[0]?.address ?? "";
+
+    const session = await connectOwnServer(deps);
+
+    expect(session.reach).toEqual({ host: address, port: 2222 });
+    expect(session.connection).toMatchObject({ host: OWN_IPV4, port: 2222 });
+    expect(runner.calls.find((c) => c.command === "ssh-keyscan")?.args).toContain(address);
+    expect(runner.calls.find((c) => c.command === "ssh")?.args).toContain(`root@${address}`);
+    expect(await readFile(deps.paths.files.knownHosts, "utf8")).toContain(
+      `[${address}]:2222 ssh-ed25519 ${ED25519}`,
+    );
+    expect((await readOwnServer(deps.paths))?.host).toBe(OWN_IPV4);
   });
 });
 

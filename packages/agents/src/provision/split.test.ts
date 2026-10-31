@@ -20,6 +20,7 @@ import { allocateNetwork, type NetworkHostFacts } from "../network";
 import { splitPlan, withNetwork } from "../network/__fixtures__/plans";
 import { providerProfile } from "../providers";
 import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
+import { lastServerSetup } from "../shared/host-plan";
 import {
   readServerAddresses,
   recordOwnServer,
@@ -52,7 +53,6 @@ import {
   testPlan,
   writeFakeState,
 } from "../testing";
-import { lastServerSetup } from "./own";
 import { runProvision } from "./run";
 import type { ProvisionServices } from "./types";
 

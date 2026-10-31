@@ -25,6 +25,7 @@ import type { PhaseDeps } from "../context";
 import { networkSteps, publicEndpoints, serverNetworkInputs } from "../network";
 import type { ProvisionServices } from "../provision/types";
 import { committedText } from "../shared";
+import { networkSshPort } from "../shared/server-address";
 import { appServers, serverShell } from "../status/servers";
 import {
   AREA_TITLES,
@@ -195,7 +196,10 @@ export async function serversDrift(
       const found = [
         ...(facts.network === null
           ? []
-          : networkDifferences(plan, name, facts, { endpoints, sshPort: shell.login.port })),
+          : networkDifferences(plan, name, facts, {
+              endpoints,
+              sshPort: networkSshPort(facts, shell.login.port),
+            })),
         ...(name === APP_SERVER ? [] : await extraServerFiles(deps, plan, name, facts)),
       ];
       differences.push(

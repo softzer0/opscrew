@@ -30,7 +30,7 @@ import { providerProfile } from "../providers";
 import { repositoryUrl } from "../runners";
 import { approvalEntry, gitClient, type HostAdapterApi } from "../shared";
 import { approveAndApplyHostPlan } from "../shared/host-plan";
-import { serverLogin, serverRemote } from "../shared/server-address";
+import { networkSshPort, reopenedPlan, serverLogin, serverRemote } from "../shared/server-address";
 import { readServerAddresses, updateServerAddresses } from "../shared/server-record";
 import { serverShell } from "../status/servers";
 import { deletesServer, serverData, serverIdsInPlan } from "./checks";
@@ -272,20 +272,15 @@ function loginWorks(
   };
 }
 
-/** The sources public SSH opens to again: the plan's allow-list, else everyone (its default). */
-function openTo(plan: DeployPlan): string[] {
-  const cidrs = plan.security.sshAllowedCidrs;
-  return cidrs.length > 0 ? [...cidrs] : ["0.0.0.0/0", "::/0"];
-}
-
 /**
  * With public SSH closed (`network.publicSsh: false`), opens it again on each of `servers` (the
  * user's own servers whose private network the teardown removes) before any network is removed,
  * since removing a network deletes the SSH rule on its interface: one `public-ssh` host plan per
- * server, reached over the private network and approved by its hash, under the safety switch.
- * Then `opscrew/plan.yaml` says public SSH is open (to the allow-list it was opened to), and every
- * later connection goes to the public address, and the plans' approvals are recorded in it. Returns
- * the plan as written; `plan` itself without closed SSH or such a server.
+ * server, reached over the private network and approved by its hash, under the safety switch, to
+ * the allow-list the plan held before it closed (`reopenedPlan`). Then `opscrew/plan.yaml` says
+ * public SSH is open with that allow-list, every later connection goes to the public address, and
+ * the plans' approvals are recorded in it. Returns the plan as written; `plan` itself without
+ * closed SSH or such a server.
  */
 export async function reopenPublicSsh(
   deps: PhaseDeps,
@@ -295,12 +290,8 @@ export async function reopenPublicSsh(
 ): Promise<DeployPlan> {
   const network = plan.network;
   if (network?.publicSsh !== false || servers.length === 0) return plan;
-  const allowedCidrs = openTo(plan);
-  const open: DeployPlan = {
-    ...plan,
-    network: { ...network, publicSsh: true },
-    security: { ...plan.security, sshAllowedCidrs: allowedCidrs },
-  };
+  const open = reopenedPlan(plan);
+  const allowedCidrs = open.security.sshAllowedCidrs;
   const adapter = hostAdapter(services);
   const approvals: ApprovalRecord[] = [];
   for (const name of servers) {
@@ -316,7 +307,7 @@ export async function reopenPublicSsh(
           open: true,
           interface: networkInterface(member),
           allowedCidrs,
-          sshPort: shell.login.port,
+          sshPort: networkSshPort(facts, shell.login.port),
           cloudServer: false,
         },
       },
