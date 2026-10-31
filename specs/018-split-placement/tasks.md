@@ -828,6 +828,24 @@ Effort`.
   - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: medium
 
+- [ ] T1832 [US4] With public SSH closed, provision waits for and pins each server through the private network, in `packages/agents/src/{provision,shared}/**` (+ tests)
+  - Owns: those paths
+  - Reads: T1826 and T1827's blocks; `readyNewServer` (shared/wait.ts) and its callers (`provision/run.ts` step 7, `readyExtraServers` in provision/servers.ts); `privateReach`, `remoteAt`, `throughTunnel` and `pinPrivateName` (shared/server-address.ts)
+  - Found by: T1821's sixth live run, step 7.
+    - `secure --close-public-ssh` applied the firewall without SSH.
+    - Provision then printed "Waiting for the server at <public address> to accept SSH" and stopped after 5 minutes: "did not open SSH within 5 minutes".
+    - Every later provision with public SSH closed would stop the same way.
+  - Accept:
+    - **Through the private network.** With `network.publicSsh: false`, provision's readiness wait and host-key pinning for the app's server and each extra server go through the private network. They use the network's address and SSH port, through this computer's tunnel, with the tunnel-down hint when it is down: the same reach as every other connection T1826 moved.
+    - **Every later use** of that reach in the same run follows it: the deploy secrets' target and the extra servers' `ServerReach`. Each reaches the server the way the deploy will.
+    - **When this computer is not on the network**, provision refuses as T1826's paths do.
+    - **Open public SSH and new servers** are unchanged.
+    - **Tests** with a `tcpConnect` fake that refuses the public addresses:
+      - the app's server and an extra server ready over the network;
+      - the tunnel-down hint.
+  - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: high
+
 - [ ] T1821 The live runs (lead): T1820's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 
 - [X] T1822 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1826's review: one `removedOwnServers(plan, record)` for provision's refusal and removal; the redundant `edge = undefined` in origin-tls; the four `removed.length === 1` ternaries; the split-placement guide page mentions `--allow-downtime` for approving a move's window in a script.
