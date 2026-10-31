@@ -801,7 +801,7 @@ Effort`.
   - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T1830 Two wrong hints found while writing the failed-deploy guide page, in `packages/agents/src/promote/run.ts` and `packages/secops/src/hardening/checks.ts` (+ tests)
+- [X] T1830 Two wrong hints found while writing the failed-deploy guide page, in `packages/agents/src/promote/run.ts` and `packages/secops/src/hardening/checks.ts` (+ tests)
   - Owns: those files and their tests
   - Accept:
     - **`promote`'s refusal for an environment that deploys from a branch** names that environment's real branch, not a hard-coded "main".
