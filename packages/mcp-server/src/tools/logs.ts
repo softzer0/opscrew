@@ -36,8 +36,8 @@ function bounded(lines: readonly LogLine[]): { lines: LogLine[]; truncated: bool
  * `opscrew_logs` (FR-1715): the app's latest log lines, as `opscrew logs` reads them (read-only,
  * each masked by the redactor), at most {@link MAX_LOG_LINES} lines and {@link MAX_LOG_BYTES}
  * (`truncated: true` past either, the newest kept). It never follows. On the user's own server it
- * connects only once the server's SSH host key was confirmed in a terminal. `options` is for tests
- * only.
+ * connects only once the server's SSH host key was confirmed in a terminal. `failed` reads the
+ * lines kept of the last failed copy instead (FR-1910). `options` is for tests only.
  */
 export function registerLogsTool(
   server: McpServer,
@@ -48,7 +48,7 @@ export function registerLogsTool(
     "opscrew_logs",
     {
       title: "OpsCrew logs",
-      description: `Read the app's latest log lines (newest last, each with its time and part) where it runs: on a server over SSH, in the user's Portainer, in local Docker, or a server-rendered app's requests on Cloudflare's hosting. GitHub Pages and a static site on Cloudflare keep no request logs: their last deploy runs instead. Read-only, never follows, secrets masked; at most ${MAX_LOG_LINES} lines and 64 KiB (truncated: true when more were left out). Call opscrew_status first, then read the failing part with a short since (for example 15m).`,
+      description: `Read the app's latest log lines (newest last, each with its time and part) where it runs: on a server over SSH, in the user's Portainer, in local Docker, or a server-rendered app's requests on Cloudflare's hosting. GitHub Pages and a static site on Cloudflare keep no request logs: their last deploy runs instead. Read-only, never follows, secrets masked; at most ${MAX_LOG_LINES} lines and 64 KiB (truncated: true when more were left out). Call opscrew_status first, then read the failing part with a short since (for example 15m). After a deploy whose new version failed its checks, failed: true reads the lines OpsCrew kept of that removed copy.`,
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -73,10 +73,16 @@ export function registerLogsTool(
           .describe(
             `How many of the latest lines (default 200). At most ${MAX_LOG_LINES} are returned, so never ask for more.`,
           ),
+        failed: z
+          .boolean()
+          .optional()
+          .describe(
+            "true: the lines OpsCrew kept of the last new version that failed its checks, before it removed that copy (of the part that failed unless service names another). Not with since. Servers and this computer only: Portainer and the sites keep none.",
+          ),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ projectDir, app, environment, service, since, tail }) =>
+    ({ projectDir, app, environment, service, since, tail, failed }) =>
       runTool(deps, "opscrew_logs", projectDir, async (call) => {
         const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
         const phase = await call.phaseDeps({ app: appKey, environment: name });
@@ -91,6 +97,7 @@ export function registerLogsTool(
         const read = await readLogs(phase, plan, {
           ...(service === undefined ? {} : { service }),
           ...(since === undefined ? {} : { since }),
+          ...(failed === true ? { failed: true } : {}),
           // Asking for more lines than are returned only reads more.
           ...(tail === undefined ? {} : { tail: Math.min(tail, MAX_LOG_LINES) }),
           ...(options.services === undefined ? {} : { services: options.services }),

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -36,12 +37,13 @@ function line(n: number, text: string): FakeLogLine {
 
 /**
  * `opscrew_logs` with `args`, on a deployed Hetzner app whose web process logged `lines`; with
- * `own`, on the user's own server whose host key was never confirmed (every connection recorded).
+ * `own`, on the user's own server whose host key was never confirmed (every connection recorded);
+ * `files` are the server's files that the fixed reads of a kept file (`test -e`, `cat`) return.
  */
 async function call(
   lines: FakeLogLine[],
   args: Record<string, unknown> = {},
-  options: { own?: boolean } = {},
+  options: { own?: boolean; files?: Record<string, string> } = {},
 ) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-logs-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
@@ -77,7 +79,21 @@ async function call(
     services: {
       remote: (host) => {
         connected.push(host);
-        return docker.remote(host);
+        const shell = docker.remote(host);
+        return {
+          host,
+          run: async (command, runOptions) => {
+            const file =
+              /^test -e (\S+) \|\| exit 3; test -x \1 \|\| exit 4; test -e (\S+) \|\| exit 3; cat \2$/.exec(
+                command,
+              )?.[2];
+            if (file === undefined) return shell.run(command, runOptions);
+            const text = options.files?.[file];
+            return text === undefined
+              ? { exitCode: 3, stdout: "", stderr: "" }
+              : { exitCode: 0, stdout: text, stderr: "" };
+          },
+        };
       },
       own: {
         remote: (connection) => {
@@ -181,5 +197,38 @@ describe("opscrew_logs", () => {
     const { result, text } = await call([line(1, "x")], { service: "nope" });
     expect(result.isError).toBe(true);
     expect(text).toContain('The app has no part named "nope".');
+  });
+
+  it("with failed: true, returns the failed copy's kept lines, masked, without Docker", async () => {
+    const token = fakeSecret("github-pat", "mcp-logs-failed");
+    const digest = `sha256:${createHash("sha256").update("mcp failed copy").digest("hex")}`;
+    const kept = "/srv/apps/shop/.failed-deploy";
+    const { result, text, data, docker } = await call(
+      [line(1, "the running version")],
+      { failed: true },
+      {
+        files: {
+          [`${kept}/about`]: `image=ghcr.io/example-org/shop@${digest}\ntime=2026-10-31T09:15:00Z\nfailed=health\n`,
+          [`${kept}/app.log`]: `2026-10-31T09:14:59.000000002Z crashed with ${token}\n`,
+        },
+      },
+    );
+    expect(result.isError).toBeFalsy();
+    expect(text.split("\n")[0]).toBe(
+      `Lines of the copy of ${digest.slice(0, 19)} that failed its health check at 2026-10-31 09:15 UTC; OpsCrew removed it. \`opscrew logs\` shows the version running now.`,
+    );
+    expect(data.lines).toEqual([
+      expect.objectContaining({ text: expect.stringMatching(/^crashed with /) }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain(token);
+    expect(JSON.stringify(result)).not.toContain(SERVER_IPV4);
+    expect(docker.commands).toEqual([]);
+  });
+
+  it("with failed: true, says so when none are kept", async () => {
+    const { result, data, text } = await call([line(1, "x")], { failed: true });
+    expect(result.isError).toBeFalsy();
+    expect(text).toContain("No failed deploy's lines are kept on the server");
+    expect(data.lines).toEqual([]);
   });
 });

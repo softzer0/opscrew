@@ -10,6 +10,7 @@ import { addHostKeyOption, checkApproveFlags } from "./provision";
 
 interface LogsFlags extends AppEnvFlags {
   follow?: boolean;
+  failed?: boolean;
   service?: string;
   since?: string;
   tail?: string;
@@ -44,13 +45,18 @@ function refuseOnSite(plan: DeployPlan, flags: LogsFlags, flag: string): void {
  * and part, read-only and masked (FR-1702, FR-1703). `--follow` then shows new lines until Ctrl-C,
  * and the process ends once the follow has stopped and the output has flushed. On GitHub Pages and
  * a static site on Cloudflare, which keep no request logs, it shows the last deploy runs and
- * refuses `--follow` and `--service`.
+ * refuses `--follow` and `--service`. `--failed` shows the lines the deploy kept of the last copy
+ * that failed its checks (FR-1910), read-only.
  */
 export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("logs")
     .description("Show the app's latest log lines, or follow new ones (read-only; secrets masked)")
     .option("--follow", "Keep showing new lines as they come, until Ctrl-C")
+    .option(
+      "--failed",
+      "Show the lines OpsCrew kept of the last new version that failed its checks, before it removed it",
+    )
     .option(
       "--service <name>",
       "The part whose lines to show: app (the default), a worker, a cron job or a service by its name, cron, or edge (the proxy in front of the app)",
@@ -75,6 +81,7 @@ export function register(program: Command, ctx: CliContext): void {
         // readLogs refuses anything but a positive whole number, with an example.
         ...(flags.tail === undefined ? {} : { tail: Number(flags.tail) }),
         ...(follow ? { follow: true } : {}),
+        ...(flags.failed === true ? { failed: true } : {}),
         ...(stop === undefined ? {} : { signal: stop.signal }),
         ...(hostKey === undefined ? {} : { hostKey }),
         ...(services === undefined ? {} : { services }),

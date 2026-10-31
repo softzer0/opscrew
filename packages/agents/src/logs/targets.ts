@@ -3,15 +3,19 @@
  * FR-1703): a server OpsCrew created as `deploy` with the project's deploy key, the user's own
  * server through its pinned admin login, the user's Portainer through its API, and this computer's
  * Docker; an extra server (feature 018) through its own shell. Each lists a part's containers and
- * reads or follows one container's lines, read-only.
+ * reads or follows one container's lines, read-only. On the app's server and this computer, it also
+ * reads the files the deploy keeps in the app's folder (`logs --failed`).
  */
+import { readFile } from "node:fs/promises";
+import { join, posix } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type ContainerLogLine, sinceAfter } from "@opscrew/connector-portainer";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, type Redactor } from "@opscrew/core";
-import { portainerTarget } from "@opscrew/iac-templates";
+import { appDir, portainerTarget, shellQuote } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { appFolder } from "../localhost/services";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
 import { appServerShell, portainerClientFor, serverAddress } from "../shared";
@@ -153,12 +157,20 @@ function noAnswer(server: string): OpsCrewError {
   );
 }
 
+/**
+ * A login to the app's server: its shell, whether it reads Docker and the app's folder through
+ * passwordless sudo, and how `logs` names the place.
+ */
+interface SshAccess {
+  remote: RemoteExec;
+  sudo: boolean;
+  words: Pick<DockerLogs, "where" | "audit"> & { server: string };
+}
+
 /** {@link DockerLogs} over SSH: `sudo` when the login reads Docker through passwordless sudo. */
 function sshLogs(
   deps: Pick<PhaseDeps, "redactor">,
-  remote: RemoteExec,
-  sudo: boolean,
-  words: Pick<DockerLogs, "where" | "audit"> & { server: string },
+  { remote, sudo, words }: SshAccess,
 ): DockerLogs {
   const exec: DockerExec = (args, { follow, onLine, signal }) =>
     remote.run(follow ? remoteFollow(args, sudo) : remoteRead(args, sudo), {
@@ -183,11 +195,11 @@ function sshLogs(
  * A server OpsCrew created: as `deploy` with the project's deploy key and the pinned host key, at
  * the address OpsCrew keeps on this computer, as `status` reads it.
  */
-async function cloudServerLogs(
+async function cloudServerSsh(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: LogServices,
-): Promise<DockerLogs> {
+): Promise<SshAccess> {
   const address = await serverAddress(deps, plan);
   if (address === undefined) {
     throw new OpsCrewError(
@@ -209,11 +221,15 @@ async function cloudServerLogs(
     },
   );
   const named = hasExtraServers(plan);
-  return sshLogs(deps, remote, false, {
-    where: named ? `on server ${APP_SERVER}` : "on the server",
-    audit: "server",
-    server: named ? `Server ${APP_SERVER}` : "The server",
-  });
+  return {
+    remote,
+    sudo: false,
+    words: {
+      where: named ? `on server ${APP_SERVER}` : "on the server",
+      audit: "server",
+      server: named ? `Server ${APP_SERVER}` : "The server",
+    },
+  };
 }
 
 /**
@@ -231,10 +247,10 @@ async function extraServerLogs(
   const { remote, sudo } = await serverShell(deps, plan, name, services, {
     keepAliveSeconds: 15,
   });
-  return sshLogs(deps, remote, sudo, {
-    where: `on server ${name}`,
-    audit: `server ${name}`,
-    server: `Server ${name}`,
+  return sshLogs(deps, {
+    remote,
+    sudo,
+    words: { where: `on server ${name}`, audit: `server ${name}`, server: `Server ${name}` },
   });
 }
 
@@ -243,12 +259,12 @@ async function extraServerLogs(
  * connects (`connectAndInspectOwnServer`), reading Docker as root through passwordless sudo when
  * the login is not root.
  */
-async function ownServerLogs(
+async function ownServerSsh(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: LogServices,
   hostKey: string | undefined,
-): Promise<DockerLogs> {
+): Promise<SshAccess> {
   let connected: Awaited<ReturnType<typeof connectAndInspectOwnServer>>;
   try {
     connected = await connectAndInspectOwnServer(deps, {
@@ -267,11 +283,15 @@ async function ownServerLogs(
   }
   const { session, facts } = connected;
   const named = hasExtraServers(plan);
-  return sshLogs(deps, session.remote, facts.privilege === "sudo", {
-    where: named ? `on server ${APP_SERVER}` : "on your server",
-    audit: "own server",
-    server: named ? `Server ${APP_SERVER}` : "Your server",
-  });
+  return {
+    remote: session.remote,
+    sudo: facts.privilege === "sudo",
+    words: {
+      where: named ? `on server ${APP_SERVER}` : "on your server",
+      audit: "own server",
+      server: named ? `Server ${APP_SERVER}` : "Your server",
+    },
+  };
 }
 
 /**
@@ -373,11 +393,113 @@ export async function dockerLogs(
     case "localhost":
       return localLogs(deps);
     case "own":
-      return ownServerLogs(deps, plan, services, options.hostKey);
+      return sshLogs(deps, await ownServerSsh(deps, plan, services, options.hostKey));
     case "hetzner":
     case "digitalocean":
-      return cloudServerLogs(deps, plan, services);
+      return sshLogs(deps, await cloudServerSsh(deps, plan, services));
     default:
       throw new Error(`A site on ${plan.target.provider} has no containers.`);
+  }
+}
+
+/** A place whose files in the app's folder `logs --failed` reads, read-only. */
+export interface AppFiles {
+  /** Where the app's folder is: `on the server`, `on your server`, `on this computer`. */
+  where: string;
+  /** The audit entry's target, never an address. */
+  audit: string;
+  /**
+   * The text of `path` in the app's folder, or undefined when there is no such file. `path` is
+   * fixed text and names checked by the caller.
+   */
+  read(path: string): Promise<string | undefined>;
+}
+
+/**
+ * The fixed read of `file`: `cat`, after `test`s that exit 3 for a missing folder or file and 4
+ * for a folder the login cannot enter, so neither is read from an error's words. Through
+ * `sudo -n` as one shell for a login that needs it: the folder is the deploy user's, 0700.
+ */
+function catCommand(file: string, sudo: boolean): string {
+  const dir = posix.dirname(file);
+  const read = `test -e ${dir} || exit 3; test -x ${dir} || exit 4; test -e ${file} || exit 3; cat ${file}`;
+  return sudo ? `sudo -n sh -c ${shellQuote(read)}` : read;
+}
+
+/** {@link AppFiles} over SSH, in the server's app folder (`/srv/apps/<app>`). */
+function sshFiles(
+  deps: Pick<PhaseDeps, "redactor">,
+  plan: DeployPlan,
+  { remote, sudo, words }: SshAccess,
+): AppFiles {
+  return {
+    where: words.where,
+    audit: words.audit,
+    async read(path) {
+      const result = await remote.run(catCommand(`${appDir(plan)}/${path}`, sudo), {
+        timeoutMs: 60_000,
+      });
+      if (result.exitCode === 3) return undefined;
+      if (result.exitCode === 255 || result.timedOut === true) throw noAnswer(words.server);
+      if (result.exitCode === 4) {
+        throw new OpsCrewError(
+          "COMMAND_FAILED",
+          `The login cannot read the deploy user's folder ${words.where}, where the failed deploy's lines are kept.`,
+          { hint: "Connect as root or with a login that has passwordless sudo, then try again." },
+        );
+      }
+      if (result.exitCode !== 0) {
+        throw new OpsCrewError(
+          "COMMAND_FAILED",
+          `OpsCrew could not read the failed deploy's lines ${words.where} (exit code ${result.exitCode})${dockerSaid(result, deps.redactor)}.`,
+          { hint: "Run `opscrew status` to see what runs there, then try again." },
+        );
+      }
+      return result.stdout;
+    },
+  };
+}
+
+/** {@link AppFiles} in the app's folder on this computer (`<OpsCrew home>/local/srv/apps/<app>`). */
+function localFiles(deps: Pick<PhaseDeps, "paths">, plan: DeployPlan): AppFiles {
+  return {
+    where: "on this computer",
+    audit: "this computer",
+    async read(path) {
+      try {
+        return await readFile(join(appFolder(deps.paths, plan), path), "utf8");
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") return undefined;
+        throw new OpsCrewError(
+          "COMMAND_FAILED",
+          `OpsCrew could not read the failed deploy's lines on this computer (${code ?? "an unknown error"}).`,
+          { hint: "Check that your user can read the app's folder, then try again.", cause: error },
+        );
+      }
+    },
+  };
+}
+
+/**
+ * The app's folder on the plan's app server or this computer, connected as `logs` connects (an
+ * own server's host key checked).
+ */
+export async function appFiles(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: { services?: LogServices | undefined; hostKey?: string | undefined },
+): Promise<AppFiles> {
+  const services = options.services ?? {};
+  switch (plan.target.provider) {
+    case "localhost":
+      return localFiles(deps, plan);
+    case "own":
+      return sshFiles(deps, plan, await ownServerSsh(deps, plan, services, options.hostKey));
+    case "hetzner":
+    case "digitalocean":
+      return sshFiles(deps, plan, await cloudServerSsh(deps, plan, services));
+    default:
+      throw new Error(`OpsCrew has no shell on ${plan.target.provider}.`);
   }
 }

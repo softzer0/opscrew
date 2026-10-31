@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { recordServerAddress } from "@opscrew/agents";
 import { FakeDocker, type FakeLogLine, SERVER_IPV4, testPlan } from "@opscrew/agents/testing";
+import type { RemoteExec } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { FAILED_DEPLOY_DIR } from "@opscrew/iac-templates";
 import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
@@ -142,6 +145,50 @@ describe("opscrew logs", () => {
     expect(signals.ended).toBe(1);
   });
 
+  it("--failed prints the failed copy's kept lines, masked", async () => {
+    const token = fakeSecret("github-pat", "cli-logs-failed");
+    const digest = `sha256:${createHash("sha256").update("cli failed copy").digest("hex")}`;
+    const kept = `/srv/apps/shop/${FAILED_DEPLOY_DIR}`;
+    const files: Record<string, string> = {
+      [`${kept}/about`]: `image=ghcr.io/example-org/shop@${digest}\ntime=2026-10-31T09:15:00Z\nfailed=health\n`,
+      [`${kept}/app.log`]: `2026-10-31T09:14:59.000000002Z crashed with token=${token}\n`,
+    };
+    const commands: string[] = [];
+    // The server's shell: the fixed reads of a kept file (a missing one exits 3).
+    const remote = (host: string): RemoteExec => ({
+      host,
+      run: async (command) => {
+        commands.push(command);
+        const read =
+          /^test -e (\S+) \|\| exit 3; test -x \1 \|\| exit 4; test -e (\S+) \|\| exit 3; cat \2$/;
+        const text = files[read.exec(command)?.[2] ?? ""];
+        return text === undefined
+          ? { exitCode: 3, stdout: "", stderr: "" }
+          : { exitCode: 0, stdout: text, stderr: "" };
+      },
+    });
+    const { ctx } = await setup(new FakeDocker([]));
+    withServices(ctx, { logs: { remote } });
+
+    expect(await run(ctx, "logs", "--failed"), ctx.errors).toBe(0);
+    expect(ctx.output).toContain(
+      `Lines of the copy of ${digest.slice(0, 19)} that failed its health check at 2026-10-31 09:15 UTC; OpsCrew removed it.`,
+    );
+    expect(ctx.output).toContain("2026-10-31T09:14:59.000000002Z app crashed with token=");
+    expect(ctx.output).not.toContain(token);
+    expect(commands).toHaveLength(2);
+  });
+
+  it("refuses --failed with --follow or --since", async () => {
+    for (const flag of [["--follow"], ["--since", "15m"]]) {
+      const { ctx } = await setup(new FakeDocker([]));
+      expect(await run(ctx, "logs", "--failed", ...flag)).toBe(2);
+      expect(ctx.errors).toContain(
+        `--failed shows the lines OpsCrew kept of the last failed deploy, so it takes no ${flag[0]}.`,
+      );
+    }
+  });
+
   it.each([
     ["github-pages", "GitHub Pages"],
     ["cloudflare-workers", "Cloudflare"],
@@ -168,6 +215,7 @@ describe("opscrew logs", () => {
     expect(await run(ctx, "logs", "--help")).toBe(0);
     for (const option of [
       "--follow",
+      "--failed",
       "--service <name>",
       "--since <duration>",
       "--tail <lines>",
