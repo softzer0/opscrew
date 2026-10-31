@@ -781,7 +781,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T1829 [US1] Design never shrinks a deployed server's disk, in `packages/agents/src/design/**` (+ tests), plus the live harness's cleanup destroy in `packages/cli/test/live/{environment-checks.ts,harness.ts}` (+ support tests)
+- [X] T1829 [US1] Design never shrinks a deployed server's disk, in `packages/agents/src/design/**` (+ tests), plus the live harness's cleanup destroy in `packages/cli/test/live/{environment-checks.ts,harness.ts}` (+ support tests)
   - Owns: those paths
   - Reads: `design/server-changes.ts` (`appServerChange`, `extraServerChanges`), `design/sizing.ts`, the catalogue's `diskGb` (`@opscrew/contracts` connector types)
   - Found by: T1821's second live run.
