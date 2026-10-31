@@ -272,6 +272,13 @@ export interface ProvisionOptions {
    * from the GitHub account's Pages settings. It replaces the one an earlier run recorded.
    */
   pagesVerification?: string;
+  /**
+   * `opscrew secure --open-public-ssh` reached the servers over the private network: the cloud
+   * firewalls drop public SSH until this run's infrastructure apply opens it, so every connection
+   * to a server before that apply goes over the private network, as with public SSH closed
+   * (`closedPlan`). After the apply, the plan's public reach applies.
+   */
+  privateSshUntilApply?: boolean;
   services?: ProvisionServices;
 }
 

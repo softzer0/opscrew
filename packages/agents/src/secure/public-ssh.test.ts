@@ -392,6 +392,8 @@ describe("opscrew secure --open-public-ssh", () => {
     for (const apply of w.applies) {
       expect(paramsOf(apply.plan)).toMatchObject({ open: true, allowedCidrs: ALLOWED.join(" ") });
     }
+    // Until its apply opens the cloud firewalls, provision reaches the servers over the network.
+    expect(w.provisioned[0]?.options).toEqual({ privateSshUntilApply: true });
     // Provision renders the cloud firewalls, the workflow and the check for an open plan.
     const rendered = w.provisioned[0]?.plan;
     expect(rendered?.network?.publicSsh).toBe(true);
@@ -437,6 +439,19 @@ describe("opscrew secure --open-public-ssh", () => {
     const result = await openPublicSsh(w.deps, { services: w.services });
     expect(result).toMatchObject({ open: true, hostPlanHashes: [], hostApplied: false });
     expect(w.events).toEqual(["provision"]);
+    // This computer on the network reaches the servers there until the cloud firewalls open.
+    expect(w.provisioned[0]?.options).toEqual({ privateSshUntilApply: true });
+  });
+
+  it("runs a plain provision while the plan says open and this computer is not on the network", async () => {
+    const { plan } = networked();
+    const runner = new ScriptedRunner(() => ({ exitCode: 0, stdout: "", stderr: "" }));
+    const w = await world({ plan, record: { thisDevice: "phone" }, runner });
+
+    await openPublicSsh(w.deps, { services: w.services });
+
+    expect(w.provisioned[0]?.options).toEqual({});
+    expect(runner.calls.filter((c) => c.command === "ssh")).toEqual([]);
   });
 
   describe("after this computer's tunnel is lost", () => {
@@ -500,6 +515,8 @@ describe("opscrew secure --open-public-ssh", () => {
         expect(paramsOf(apply.plan)).toMatchObject({ open: true, allowedCidrs: ALLOWED.join(" ") });
       }
       expect(w.provisioned[0]?.plan.security.sshAllowedCidrs).toEqual(ALLOWED);
+      // Provision reaches the servers where the user opened SSH, as a plain provision does.
+      expect(w.provisioned[0]?.options).toEqual({});
       const after = await w.plan();
       expect(after.network?.publicSsh).toBe(true);
       expect(after.security.sshAllowedCidrs).toEqual(ALLOWED);
@@ -519,6 +536,34 @@ describe("opscrew secure --open-public-ssh", () => {
       expect(w.deps.reporter.lines.map((l) => l.message).join("\n")).toContain(
         "over its public address",
       );
+    });
+
+    it("keeps provision on the private network while the app's server answers there", async () => {
+      const { closed, prefix } = closedPlan();
+      // Only server data's private address times out; its public one answers.
+      const runner = new ScriptedRunner((command, args) => {
+        const at = args.find((arg) => arg.includes("@")) ?? "";
+        return command === "ssh" && at.endsWith(`@${prefix}.2`)
+          ? {
+              exitCode: 255,
+              stdout: "",
+              stderr: `ssh: connect to host ${prefix}.2 port 22: Connection timed out`,
+            }
+          : { exitCode: 0, stdout: "", stderr: "" };
+      });
+      const w = await world({ plan: closed, open: false, runner });
+
+      await openPublicSsh(w.deps, { services: withoutShells(w.services) });
+
+      expect(w.events).toEqual([
+        `inspect ${prefix}.1`,
+        `apply ${prefix}.1`,
+        `inspect ${DATA_IPV4}`,
+        `apply ${DATA_IPV4}`,
+        "provision",
+      ]);
+      // Every connection provision makes before its apply goes to the app's server.
+      expect(w.provisioned[0]?.options).toEqual({ privateSshUntilApply: true });
     });
 
     it("refuses with both ways back in when neither address answers", async () => {

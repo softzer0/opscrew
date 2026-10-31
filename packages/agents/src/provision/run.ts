@@ -45,6 +45,7 @@ import {
   addressFromOutputs,
   approvalEntry,
   approveAndWriteRenderedFiles,
+  closedPlan,
   committableUrl,
   continuesHint,
   ensureDeployKey,
@@ -389,6 +390,12 @@ async function provisionFlow(
   const services = options.services ?? {};
   const root = deps.paths.root;
   let plan = extras.plan ?? (await readArtifact("plan", deps.paths.files.plan));
+  /**
+   * The plan a connection to a server before the infrastructure apply reaches it by: with
+   * `privateSshUntilApply`, over the private network, as with public SSH closed.
+   */
+  const beforeApply = (p: DeployPlan): DeployPlan =>
+    options.privateSshUntilApply === true ? closedPlan(p) : p;
   const command = `opscrew ${phase}`;
   if (plan.target.provider === "localhost") {
     if (phase !== "provision") throw localhostNotSupported(`\`${command}\``);
@@ -474,7 +481,7 @@ async function provisionFlow(
   );
   // What the server runs now (read-only, over SSH as deploy): its proxy, and the app's origin
   // certificate and client-certificate requirement, which the origin TLS clean-up waits for.
-  const served = await readServerEdge(deps, plan, services);
+  const served = await readServerEdge(deps, beforeApply(plan), services);
   const tls =
     cloudflare === undefined
       ? undefined
@@ -656,7 +663,7 @@ async function provisionFlow(
     // A server OpsCrew creates with the server's runner, before any change: an existing server's
     // first-boot parts the runner needs, and the repository's check (a public one needs its own
     // approval, FR-1527).
-    runnerRepository = await checkCloudRunner(deps, plan, services, {
+    runnerRepository = await checkCloudRunner(deps, beforeApply(plan), services, {
       phase,
       command,
       planOnly: options.planOnly === true,
@@ -812,7 +819,7 @@ async function provisionFlow(
   let cloudHostHash: string | undefined;
   const cloudConnector = (planOnly: boolean) =>
     cloudConnectorRemoval(deps, {
-      plan,
+      plan: beforeApply(plan),
       services,
       command,
       planOnly,

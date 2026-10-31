@@ -303,6 +303,24 @@ export async function privateReach(
 }
 
 /**
+ * `plan` with public SSH closed (`network.publicSsh: false`): the allow-list kept in
+ * `network.publicSshAllowedCidrs`, then emptied on every server. `plan` itself while it has no
+ * network or public SSH is closed already.
+ */
+export function closedPlan(plan: DeployPlan): DeployPlan {
+  if (plan.network === undefined || plan.network.publicSsh === false) return plan;
+  return {
+    ...plan,
+    network: {
+      ...plan.network,
+      publicSsh: false,
+      publicSshAllowedCidrs: [...plan.security.sshAllowedCidrs],
+    },
+    security: { ...plan.security, sshAllowedCidrs: [] },
+  };
+}
+
+/**
  * `plan` with public SSH open again (`network.publicSsh: true`), to the allow-list the plan held
  * before it closed (`network.publicSshAllowedCidrs`, which leaves the plan), else to
  * `security.sshAllowedCidrs`, and to everyone when that list is empty (as it is while closed).

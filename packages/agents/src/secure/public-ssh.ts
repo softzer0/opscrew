@@ -8,13 +8,14 @@
  */
 import type { CommandResult } from "@opscrew/contracts";
 import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { publicSshHostPlan, readNetwork } from "../network";
 import { runProvision } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
 import {
+  closedPlan,
   type HostPlanOutcome,
   outcomeSummary,
   readServerAddresses,
@@ -67,6 +68,12 @@ interface Missing {
   fix: string;
 }
 
+/** This computer's device (`thisDevice`) when it is a device on the app's network. */
+async function networkDevice(deps: PhaseDeps, plan: DeployPlan): Promise<string | undefined> {
+  const device = (await readServerAddresses(deps.paths)).thisDevice;
+  return plan.network?.devices.some((d) => d.name === device) === true ? device : undefined;
+}
+
 /**
  * The conditions of closing public SSH that are not met (FR-1815): the environment's deploys run
  * on the server's own runner (or this computer's, when it is a device), this computer is a device
@@ -90,8 +97,8 @@ async function missingConditions(
       fix: `Run them on the server's own runner: \`opscrew env set ${environment} --runner server\`, then \`opscrew provision\`.`,
     });
   }
-  const device = (await readServerAddresses(deps.paths)).thisDevice;
-  if (device === undefined || !plan.network?.devices.some((d) => d.name === device)) {
+  const device = await networkDevice(deps, plan);
+  if (device === undefined) {
     missing.push({
       condition:
         "this computer is not a device on the app's private network, so OpsCrew could not reach the servers once public SSH is closed",
@@ -152,34 +159,23 @@ async function requireNetworkSsh(deps: PhaseDeps, closed: DeployPlan): Promise<v
   );
 }
 
-/** `plan` with public SSH closed: the allow-list kept, then emptied on every server. */
-function closedPlan(plan: DeployPlan): DeployPlan {
-  const network = plan.network as NonNullable<DeployPlan["network"]>;
-  if (network.publicSsh === false) return plan;
-  return {
-    ...plan,
-    network: {
-      ...network,
-      publicSsh: false,
-      publicSshAllowedCidrs: [...plan.security.sshAllowedCidrs],
-    },
-    security: { ...plan.security, sshAllowedCidrs: [] },
-  };
-}
-
 /**
  * Provision, for the cloud firewalls, the workflow, the check and the deploy-setup pull request.
- * When it stops, its hint says how to finish (`then`).
+ * When it stops, its hint says how to finish (`then`). With `privateSshUntilApply`, its
+ * connections reach the servers over the private network until its infrastructure apply opens SSH
+ * in the cloud firewalls.
  */
 async function provisionStep(
   deps: PhaseDeps,
   options: PublicSshOptions,
   then: string,
+  privateSshUntilApply = false,
 ): Promise<ProvisionResult> {
   const provision = options.services?.provision ?? runProvision;
   try {
     return await provision(deps, {
       ...(options.approveHashes !== undefined ? { approveHashes: options.approveHashes } : {}),
+      ...(privateSshUntilApply ? { privateSshUntilApply } : {}),
     });
   } catch (error) {
     if (!(error instanceof OpsCrewError)) throw error;
@@ -377,9 +373,13 @@ export async function closePublicSsh(
  * `public-ssh` host plan opens SSH again, over the private network, to the allow-list the plan
  * held before it closed (`reopenedPlan`); then `opscrew/plan.yaml` says public SSH is open with
  * that allow-list, and provision runs its infrastructure plan for the cloud firewalls and renders
- * the workflow and the check again, in the deploy-setup pull request. While the plan says public
- * SSH is open already, only provision runs, for an app with a cloud server (an earlier run may
- * have stopped before its cloud firewalls opened); nothing for one on the user's own servers.
+ * the workflow and the check again, in the deploy-setup pull request. Until its infrastructure
+ * apply opens SSH in the cloud firewalls, provision reaches the app's server (every connection
+ * it makes before that apply goes there) the way the host plan did: over the private network,
+ * unless it answered only at its public address. While the plan says public SSH is open already,
+ * only provision runs, for an app with a cloud server (an earlier run may have stopped before its
+ * cloud firewalls opened), over the private network while this computer is a device on it and the
+ * app's server answers there; nothing for one on the user's own servers.
  */
 export async function openPublicSsh(
   deps: PhaseDeps,
@@ -397,7 +397,15 @@ export async function openPublicSsh(
     deps.reporter.info(
       "Public SSH is open on the servers as opscrew/plan.yaml says; provision checks the cloud firewalls follow it.",
     );
-    const provision = await provisionStep(deps, options, finish);
+    // An earlier run may have stopped before the cloud firewalls opened: this computer on the
+    // network reaches the servers there until provision opens them.
+    const closed = closedPlan(plan);
+    const privately =
+      (await networkDevice(deps, plan)) !== undefined &&
+      (await openingReach(deps, closed, plan, await commandOf(deps, "--open-public-ssh"))).get(
+        APP_SERVER,
+      ) === closed;
+    const provision = await provisionStep(deps, options, finish, privately);
     return { open: true, provision, hostPlanHashes: [], hostApplied: false };
   }
   const command = await commandOf(deps, "--open-public-ssh");
@@ -411,7 +419,7 @@ export async function openPublicSsh(
     reach,
   });
   await writePlanIfChanged(deps, withApprovals(open, outcomes));
-  const provision = await provisionStep(deps, options, finish);
+  const provision = await provisionStep(deps, options, finish, reach.get(APP_SERVER) === plan);
   deps.reporter.success(
     `Public SSH is open again to ${listText(open.security.sshAllowedCidrs)}, as opscrew/plan.yaml says.`,
   );

@@ -9,19 +9,29 @@ import {
   HostFactsSchema,
   type HostPlan,
   hostPlanHash,
+  inspectRunners,
 } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PlanSummary, RemoteExec, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { IMAGES } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import type { PhaseDeps } from "../context";
 import { allocateNetwork, type NetworkHostFacts } from "../network";
 import { splitPlan, withNetwork } from "../network/__fixtures__/plans";
+import type { PortainerServices } from "../portainer";
 import { providerProfile } from "../providers";
 import { FakeCloudRunnerHost } from "../runners/__fixtures__/cloud-host";
+import { openPublicSsh } from "../secure/public-ssh";
 import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
 import { lastServerSetup } from "../shared/host-plan";
+import { reopenedPlan } from "../shared/server-address";
 import {
   readServerAddresses,
   recordOwnServer,
@@ -31,6 +41,7 @@ import { writeKnownHost } from "../shared/wait";
 import {
   createProject,
   createTestPhaseDeps,
+  DEPLOYED_AT,
   ED25519,
   ED25519_FINGERPRINT,
   FakeEngine,
@@ -59,7 +70,7 @@ import {
 } from "../testing";
 import { runProvision } from "./run";
 import { isRemovalLiftRequest } from "./servers";
-import type { ProvisionServices } from "./types";
+import type { ProvisionOptions, ProvisionServices } from "./types";
 
 const DATA_IPV4 = "203.0.113.30";
 const DATA_IPV6 = "2001:db8::30";
@@ -152,6 +163,8 @@ interface SplitSetup {
   /** The engine fake (default {@link FakeEngine} with {@link splitOutputs}); it lists its calls. */
   engine?: IacEngine & { readonly calls: string[] };
   facts?: Record<string, HostFacts>;
+  /** This computer's commands (default {@link keyscanRunner}). */
+  runner?: ScriptedRunner;
   services?: ProvisionServices;
 }
 
@@ -170,7 +183,7 @@ async function setup(o: SplitSetup) {
   const deps = await createTestPhaseDeps({
     root: project.root,
     env,
-    runner: keyscanRunner(),
+    runner: o.runner ?? keyscanRunner(),
     approvalHandler: handler,
   });
   deps.redactor.addLiteral(HCLOUD, "HCLOUD_TOKEN");
@@ -1227,6 +1240,237 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
       expect(s.tried.every((host) => host === `${s.prefix}.1`)).toBe(true);
       // The server exists, so the wait over the network is short: 30 seconds, not 5 minutes.
       expect(s.elapsed()).toBe(30_000);
+    });
+  });
+
+  describe("opening public SSH again", () => {
+    const ALLOWED = ["198.51.100.0/24", "2001:db8::/32"];
+
+    /** What inspection reads on a server OpsCrew created with public SSH closed: ufw on, SSH on the network only. */
+    function closedFacts(): HostFacts {
+      const facts = freshFacts({ user: "deploy", privilege: "docker" });
+      return HostFactsSchema.parse({
+        ...facts,
+        firewall: {
+          ...facts.firewall,
+          ufw: "active",
+          ufwRules: [
+            {
+              rule: "allow in on wg-opscrew0 to any port 22 proto tcp",
+              comment: "opscrew-network",
+            },
+          ],
+        },
+        network: { dropIn: null, interfaces: [], filterUnit: null, filters: [] },
+      });
+    }
+
+    /**
+     * The split plan, deployed, with public SSH closed (the allow-list kept), deploys on the
+     * server's runner and this computer the device `laptop`, the host keys pinned at the public
+     * addresses. The cloud firewalls drop SSH at the public addresses until the infrastructure
+     * apply opens it (`openedByHand`: the user opened it in the provider's console already), and
+     * the private addresses answer only while this computer's tunnel is up (`tunnel`, default on).
+     * With `tunnelDeleted`, the plan also deletes a Cloudflare Tunnel, whose connector's removal
+     * goes first. Every SSH connection and wait is listed with its stage: before provision (`secure`), in
+     * provision before its infrastructure apply (`provision`), or after it (`applied`).
+     */
+    async function openingSetup(
+      o: { tunnel?: boolean; openedByHand?: boolean; tunnelDeleted?: boolean } = {},
+    ) {
+      const { plan: open, privateKeys, prefix } = withLaptop(splitPlan(), []);
+      const plan = DeployPlanSchema.parse({
+        ...open,
+        environment: { ...open.environment, runner: "server" },
+        security: { ...open.security, sshAllowedCidrs: [] },
+        network: { ...open.network, publicSsh: false, publicSshAllowedCidrs: ALLOWED },
+        deployment: { ...open.deployment, lastApplyAt: DEPLOYED_AT, placement: { db: "data" } },
+      });
+      // The cloud firewalls get their SSH rule back, for the kept allow-list: the plan's only change.
+      const planJson = planJsonFor();
+      for (const resource of planJson.planned_values.root_module.child_modules[0]?.resources ??
+        []) {
+        const values = resource.values as { rule?: { port: string; source_ips: string[] }[] };
+        for (const rule of values.rule ?? []) if (rule.port === "22") rule.source_ips = ALLOWED;
+      }
+      const engine = new FakeEngine({
+        outputs: splitOutputs(),
+        changes: [
+          {
+            address: "module.server.hcloud_firewall.this",
+            type: "hcloud_firewall",
+            name: "this",
+            provider: "hcloud",
+            action: "update",
+          },
+          ...(o.tunnelDeleted === true
+            ? [
+                {
+                  address: "module.portainer_tunnel.cloudflare_zero_trust_tunnel_cloudflared.this",
+                  type: "cloudflare_zero_trust_tunnel_cloudflared",
+                  name: "this",
+                  provider: "cloudflare",
+                  action: "delete" as const,
+                },
+              ]
+            : []),
+        ],
+        planJson,
+      });
+      const applied = () => engine.calls.includes("apply");
+      let provisioning = false;
+      const reached: { host: string; stage: "secure" | "provision" | "applied" }[] = [];
+      /** True when SSH answers at `host` now. */
+      const answers = (host: string): boolean => {
+        const stage = applied() ? "applied" : provisioning ? "provision" : "secure";
+        reached.push({ host, stage });
+        if (host === SERVER_IPV4 || host === DATA_IPV4) return o.openedByHand === true || applied();
+        return o.tunnel !== false;
+      };
+      const timedOut = (host: string) => ({
+        exitCode: 255,
+        stdout: "",
+        stderr: `ssh: connect to host ${host} port 22: Connection timed out`,
+      });
+      // This computer's own ssh logins (the host plans' checks), behind the same firewalls.
+      const keyscan = keyscanRunner();
+      const runner = new ScriptedRunner(async (command, args, options) => {
+        const host = args.find((arg) => arg.includes("@"))?.split("@")[1];
+        if (command === "ssh" && host !== undefined && !answers(host)) return timedOut(host);
+        return keyscan.run(command, args, options);
+      });
+      const runnerHost = new FakeCloudRunnerHost();
+      /** Where the tunnel connector's removal was applied. */
+      const connector: string[] = [];
+      const applyHost = async (remote: RemoteExec, p: HostPlan, options: ApplyOptions) => {
+        if (options.approvedHash !== hostPlanHash(p)) throw new Error("host plan hash mismatch");
+        connector.push(remote.host);
+        return { applied: p.steps.map((step) => step.id), skipped: [] };
+      };
+      // Provision passes its services on to the connector's removal, which reads `applyHost`.
+      const services: ProvisionServices & Pick<PortainerServices, "applyHost"> = {
+        tcpConnect: async (host) => answers(host),
+        runnerHost: { inspect: inspectRunners, apply: runnerHost.apply },
+        runnerGitHub: new FakeRunnerGitHub(),
+        remote: (host) => ({
+          host,
+          run: async (command, options) =>
+            answers(host) ? readyRemote(host).run(command, options) : timedOut(host),
+        }),
+        applyHost,
+      };
+      const s = await setup({ plan, privateKeys, engine, runner, services });
+      await updateServerAddresses(s.deps.paths, (current) => ({
+        ...current,
+        deployment: { ipv4: SERVER_IPV4, ipv6: SERVER_IPV6 },
+        servers: { data: { ipv4: DATA_IPV4, ipv6: DATA_IPV6 } },
+        thisDevice: "laptop",
+      }));
+      for (const host of [SERVER_IPV4, DATA_IPV4]) {
+        await writeKnownHost(s.deps.paths.files.knownHosts, host, [
+          { type: "ssh-ed25519", key: ED25519 },
+        ]);
+      }
+      /** The `public-ssh` host plans' adapter: what each server's inspection read, by address. */
+      const inspected: string[] = [];
+      const secure = {
+        host: {
+          async inspect(remote: RemoteExec) {
+            inspected.push(remote.host);
+            return closedFacts();
+          },
+          async apply(_remote: RemoteExec, p: HostPlan, options: ApplyOptions) {
+            if (options.approvedHash !== hostPlanHash(p))
+              throw new Error("host plan hash mismatch");
+            return { applied: p.steps.map((step) => step.id), skipped: [] };
+          },
+        },
+        provision: (deps: PhaseDeps, options: ProvisionOptions) => {
+          provisioning = true;
+          return runProvision(deps, { ...options, services: s.services });
+        },
+      };
+      /** The addresses reached at `stage`, in order. */
+      const at = (stage: (typeof reached)[number]["stage"]) =>
+        reached.filter((r) => r.stage === stage).map((r) => r.host);
+      return { ...s, plan, prefix, secure, inspected, connector, at };
+    }
+
+    it("reaches the servers over the private network until the apply opens the cloud firewalls", async () => {
+      const s = await openingSetup();
+
+      const result = await openPublicSsh(s.deps, { services: s.secure });
+
+      expect(result.provision?.applied).toBe(true);
+      expect(s.inspected).toEqual([`${s.prefix}.1`, `${s.prefix}.2`]);
+      // Provision's reads before its apply (the server's edge, its runner) go over the network.
+      expect(s.at("provision")).toContain(`${s.prefix}.1`);
+      expect(s.at("provision")).not.toContain(SERVER_IPV4);
+      expect(s.at("provision")).not.toContain(DATA_IPV4);
+      // After the apply, public as the plan says: each server awaited at its public address.
+      expect(s.at("applied")).toContain(SERVER_IPV4);
+      expect(s.at("applied")).toContain(DATA_IPV4);
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      expect(plan.network?.publicSsh).toBe(true);
+      expect(plan.security.sshAllowedCidrs).toEqual(ALLOWED);
+    });
+
+    it("removes a deleted tunnel's connector over the private network before the apply", async () => {
+      const s = await openingSetup({ tunnelDeleted: true });
+
+      const result = await openPublicSsh(s.deps, { services: s.secure });
+
+      expect(result.provision?.applied).toBe(true);
+      expect(s.connector).toEqual([`${s.prefix}.1`]);
+      expect(s.at("provision")).not.toContain(SERVER_IPV4);
+    });
+
+    it("finishes a run that stopped between the host plans and provision over the private network", async () => {
+      const s = await openingSetup();
+      // The host plans opened ufw and the plan says open; the cloud firewalls still drop SSH.
+      await writeArtifact("plan", s.deps.paths.files.plan, reopenedPlan(s.plan));
+
+      const result = await openPublicSsh(s.deps, { services: s.secure });
+
+      expect(result.provision?.applied).toBe(true);
+      expect(s.inspected).toEqual([]);
+      // Each server answered over the network first.
+      expect(s.at("secure")).toEqual([`${s.prefix}.1`, `${s.prefix}.2`]);
+      expect(s.at("provision")).toContain(`${s.prefix}.1`);
+      expect(s.at("provision")).not.toContain(SERVER_IPV4);
+      expect(s.at("provision")).not.toContain(DATA_IPV4);
+      expect(s.at("applied")).toContain(SERVER_IPV4);
+    });
+
+    it("keeps the public addresses when this computer's tunnel is down and the user opened port 22 by hand", async () => {
+      const s = await openingSetup({ tunnel: false, openedByHand: true });
+
+      const result = await openPublicSsh(s.deps, { services: s.secure });
+
+      expect(result.provision?.applied).toBe(true);
+      expect(s.inspected).toEqual([SERVER_IPV4, DATA_IPV4]);
+      // Provision reaches the servers as a plain provision does.
+      expect(s.at("provision")).toContain(SERVER_IPV4);
+      expect(s.at("provision")).not.toContain(`${s.prefix}.1`);
+    });
+
+    it("leaves a plain provision as it is: the public addresses before the apply too", async () => {
+      const s = await openingSetup({ openedByHand: true });
+      await writeArtifact("plan", s.deps.paths.files.plan, reopenedPlan(s.plan));
+
+      await s.secure.provision(s.deps, {});
+
+      expect(s.at("provision")).toContain(SERVER_IPV4);
+      expect(s.at("provision")).not.toContain(`${s.prefix}.1`);
+    });
+
+    it("stops a plain provision at the runner while the cloud firewalls still drop public SSH", async () => {
+      const s = await openingSetup();
+      await writeArtifact("plan", s.deps.paths.files.plan, reopenedPlan(s.plan));
+
+      const error = await s.secure.provision(s.deps, {}).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({ message: "OpsCrew could not read the runner on the server." });
     });
   });
 
