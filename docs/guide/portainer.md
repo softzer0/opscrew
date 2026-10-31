@@ -51,6 +51,10 @@ uses a self-signed certificate, so your browser warns you once) and log in as `a
 password from the file. The password file is only on the computer that turned Portainer on; copy it
 from there if you work on another computer.
 
+With this computer on the app's [private network](private-network.md#the-dashboards), Portainer can
+also answer on the server's private address, for your devices only, with no SSH tunnel:
+`npx opscrew portainer status` then prints that address instead.
+
 ## Optional: a subdomain behind Cloudflare Access
 
 ```bash

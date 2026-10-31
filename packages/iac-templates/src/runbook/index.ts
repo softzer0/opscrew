@@ -18,6 +18,7 @@ import {
   objectStorageSection,
   recoverySection,
 } from "./components";
+import { networkSection } from "./network";
 import { addonSections, checkSection } from "./observability";
 import { renderOwnRunbook } from "./own";
 import {
@@ -115,6 +116,7 @@ export function renderRunbook(plan: DeployPlan, ctx: RunbookContext): RenderedFi
     ...componentsSection(plan, environments),
     ...edgeSection(plan, false, environments),
     ...objectStorageSection(plan, projectDir, environments),
+    ...networkSection(plan, environments),
     "## Connect to the server",
     "",
     ...serverCommands(plan, [

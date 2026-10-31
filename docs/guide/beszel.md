@@ -62,6 +62,10 @@ open <http://localhost:8090> in your browser and log in as `admin@opscrew.invali
 `password` from `beszel_secrets.json`. That address is the dashboard's only user; it receives no
 email. The dashboard listens only on the server itself (`127.0.0.1:8090`), never on the internet.
 
+With this computer on the app's [private network](private-network.md#the-dashboards), the dashboard
+can also answer on the server's private address, for your devices only: `npx opscrew addon open beszel`
+then gives you that address to open instead of starting a tunnel.
+
 The password file is only on the computer that turned Beszel on, and in the recovery copy. Copy it
 from there, or [restore the copy](secrets-recovery.md#restoring-on-a-new-computer), to open the
 dashboard from another computer.

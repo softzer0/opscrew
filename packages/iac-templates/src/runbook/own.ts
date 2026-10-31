@@ -18,6 +18,7 @@ import {
   objectStorageSection,
   recoverySection,
 } from "./components";
+import { networkSection } from "./network";
 import { addonSections, checkSection } from "./observability";
 import {
   cell,
@@ -123,6 +124,7 @@ export function renderOwnRunbook(
     ...componentsSection(plan, environments),
     ...edgeSection(plan, true, environments),
     ...objectStorageSection(plan, projectDir, environments),
+    ...networkSection(plan, environments),
     "## Connect to the server",
     "",
     "Your own login keeps working as before (with your key). To work as the deploy user:",

@@ -109,7 +109,9 @@ broker is yours to choose, because its data may need a migration.
 
 ## Where components run
 
-- **Hetzner Cloud and DigitalOcean:** one app per server, with its components next to it.
+- **Hetzner Cloud and DigitalOcean:** one app per server, with its components next to it. A service
+  can also get a server of its own, linked privately to the app's: see
+  [split placement](split-placement.md).
 - **A server you already have:** several OpsCrew apps can share it, each with its own components
   and folders; see [Deploy to a server you already have](own-server.md).
 - **Your Portainer:** the components run in the app's stack, with their data in named volumes.

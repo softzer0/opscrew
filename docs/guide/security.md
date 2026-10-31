@@ -26,7 +26,13 @@ plan):
 - your own [proxy rules](reverse-proxy.md#your-own-rules), checked before they go live.
 
 **For the app's services:** every database and cache OpsCrew runs gets a generated password,
-Valkey included, and every service is reachable only from the app's own containers.
+Valkey included, and every service is reachable only from the app's own containers. A service on a
+[server of its own](split-placement.md) answers only the app's servers, over the app's private
+WireGuard network.
+
+**Your own access:** your devices can join that [private network](private-network.md) to reach SSH
+and the dashboards privately, after which you can [close public SSH](public-ssh.md). A device can
+get its own [read-only login to a database](database-access.md), off by default.
 
 ## What OpsCrew checks
 

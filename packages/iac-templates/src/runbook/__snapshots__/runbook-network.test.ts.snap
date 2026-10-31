@@ -1,0 +1,68 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the runbook's servers and private network > describes each server, the network, and the commands that cover every server 1`] = `
+"## Servers and the private network
+
+| Server | Where | Runs | Private address |
+|---|---|---|---|
+| \`app\` | Hetzner Cloud cx23 in nbg1 | the app, its workers and cron jobs, the edge | 10.200.4.1, UDP 51820 (\`wg-opscrew0\`) |
+| \`db\` | Hetzner Cloud cx33 in hel1 | PostgreSQL (\`db\`) | 10.200.4.2, UDP 51820 (\`wg-opscrew0\`) |
+| \`cache\` | DigitalOcean Droplet s-2vcpu-4gb in ams3 | Valkey (\`cache\`) | 10.200.4.3, UDP 51820 (\`wg-opscrew0\`) |
+
+The servers are linked by the app's private WireGuard network (\`10.200.4.0/24\`): every packet between them is
+encrypted and tied to the sender's key. Each server's private key stays on that server and on the machine
+that ran \`opscrew provision\`; this repository holds only public keys.
+A service on another server listens only on that server's private address, and answers only the app's server
+and the devices granted access to it. The app reaches it there; its code and settings files are unchanged.
+
+- \`opscrew status\` shows each server and each link: whether it is up, its last handshake and its measured round trip.
+- \`opscrew logs --service <name>\` reads the lines on the server that runs the service; \`opscrew drift\`, \`opscrew secure\` and
+  \`opscrew verify\` check every server and name it.
+- \`opscrew destroy\` lists every server and asks for each one's typed name before it deletes a server OpsCrew created.
+
+### Devices and SSH
+
+No device is on the network yet. \`opscrew vpn add <name> --this-computer\` adds this computer, and \`--qr\` shows a phone's
+configuration as a QR code for the WireGuard app.
+
+Public SSH is open to the allow-list in \`opscrew/plan.yaml\`. Once deploys run on the server's own runner and this computer is a device, \`opscrew secure --close-public-ssh\` closes it.
+"
+`;
+
+exports[`the runbook's servers and private network > lists devices and grants, a closed public SSH and a finished move 1`] = `
+"## Servers and the private network
+
+| Server | Where | Runs | Private address |
+|---|---|---|---|
+| \`app\` | Hetzner Cloud cx23 in nbg1 | the app, its workers and cron jobs, the edge | 10.200.4.1, UDP 51820 (\`wg-opscrew0\`) |
+| \`db\` | Hetzner Cloud cx33 in hel1 | PostgreSQL (\`db\`) | 10.200.4.2, UDP 51820 (\`wg-opscrew0\`) |
+
+The servers are linked by the app's private WireGuard network (\`10.200.4.0/24\`): every packet between them is
+encrypted and tied to the sender's key. Each server's private key stays on that server and on the machine
+that ran \`opscrew provision\`; this repository holds only public keys.
+A service on another server listens only on that server's private address, and answers only the app's server
+and the devices granted access to it. The app reaches it there; its code and settings files are unchanged.
+
+- \`opscrew status\` shows each server and each link: whether it is up, its last handshake and its measured round trip.
+- \`opscrew logs --service <name>\` reads the lines on the server that runs the service; \`opscrew drift\`, \`opscrew secure\` and
+  \`opscrew verify\` check every server and name it.
+- \`opscrew destroy\` lists every server and asks for each one's typed name before it deletes a server OpsCrew created.
+
+**A move:** \`db\` runs on \`db\` now. Its old copy stays, stopped, on \`app\` until \`opscrew provision --finish-move\` removes it, after you type the service's name.
+
+### Devices and SSH
+
+- \`laptop\`: 10.200.4.100
+
+With its tunnel on, a device reaches SSH on each server's private address. \`opscrew vpn list\` shows when each device last
+connected; \`opscrew vpn remove <name>\` takes a lost device off every server.
+
+Database and cache access, each with its own login (never the app's):
+
+- \`laptop\` to \`db\`, read-only
+
+\`opscrew vpn revoke <device> <service>\` removes a login and its rule.
+
+**Public SSH is closed:** SSH answers only on the private network, so turn this computer's tunnel on before any command that reaches a server. \`opscrew secure --open-public-ssh\` opens it again to the allow-list it had.
+"
+`;

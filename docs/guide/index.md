@@ -12,6 +12,8 @@ an app yet.
 - [Publish your site on GitHub Pages](github-pages.md)
 - [dev, staging and prod: environments](environments.md)
 - [Several apps in one repository](several-apps.md)
+- [A server of its own for a service: split placement](split-placement.md)
+- [Your devices on the private network](private-network.md)
 - [Portainer: a web UI for your containers](portainer.md)
 - [Buying or connecting a domain](domains.md)
 - [Your domain on Cloudflare, and several apps in one zone](cloudflare.md)
@@ -49,6 +51,8 @@ an app yet.
 
 - [Security: what OpsCrew sets up and checks](security.md)
 - [Only Cloudflare reaches your server: origin protection](origin-protection.md)
+- [Close public SSH](public-ssh.md)
+- [Your production database from your device](database-access.md)
 - [Certificates, CAA records and the minimum TLS version](tls-and-caa.md)
 - [The recovery copy of your app's secrets](secrets-recovery.md)
 - [Deeper security checks](deeper-checks.md)
