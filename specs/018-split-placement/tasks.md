@@ -692,6 +692,25 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: medium
 
+- [ ] T1826 [US4] Public SSH closed: the remaining paths, in `packages/iac-templates/modules/**`, `packages/connectors/ssh-host/src/plan.ts` (the ufw step), `packages/agents/src/{check/servers.ts,provision/origin-tls.ts,provision/servers.ts,provision/own.ts,secure/run.ts}`
+  - Owns: those paths (+ tests and snapshots); only the lines named below
+  - Reads: T1815's report in its commit; spec US4, FR-1815, FR-1816
+  - Depends: T1815, T1825
+  - Accept:
+    - **Cloud firewalls:** with `ssh_allowed_cidrs = []` both modules render no SSH rule (a dynamic
+      rule), validated and planned offline under both engines.
+    - **Own servers' ufw:** provision's own-server setup knows `network.publicSsh`; with it false, the
+      `ufw` step doesn't re-add the public SSH rule (the interface rule counts as SSH being open).
+    - **The check:** entries on private addresses use sshd's own port (`networkSshPort`).
+    - **Private connections (FR-1816):** `provision/origin-tls.ts` `readServerEdge` and `secure/run.ts`
+      `checkServer` connect through `serverRemote` (private address and sshd's port when closed), and
+      a failure is shown, not hidden.
+    - **Removing an extra own server** while public SSH is closed reopens it there first (the
+      `public-ssh` step), as destroy does.
+    - Tests for each; plans with public SSH open behave as before.
+  - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
+  - Effort: high
+
 ## Phase 8: Live
 
 - [ ] T1820 The live tests (gated on `OPSCREW_E2E_SPLIT=1` and the Hetzner token), in `packages/cli/test/live/split.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
