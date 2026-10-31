@@ -9,7 +9,6 @@ import {
   type HostStep,
   inspectHost,
   otherActiveApps,
-  planNetwork,
 } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
 import { errorText, isUserFacingError, sha256Hex } from "@opscrew/core";
@@ -22,11 +21,12 @@ import {
 } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, servicesOn } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { networkSteps, publicEndpoints, serverNetworkInputs } from "../network";
+import { networkHostPlan, publicEndpoints } from "../network";
 import type { ProvisionServices } from "../provision/types";
 import { committedText } from "../shared";
 import { networkSshPort } from "../shared/server-address";
-import { appServers, serverShell } from "../status/servers";
+import { appServers, hasExtraServers } from "../shared/servers";
+import { serverShell } from "../status/servers";
 import {
   AREA_TITLES,
   containerDifferences,
@@ -43,10 +43,17 @@ export interface ServersDriftOptions {
   inspect?: (remote: RemoteExec, options: { rootImage?: string }) => Promise<HostFacts>;
 }
 
-/** True when OpsCrew created the server `name` (`app` or an extra one): its login is `deploy`. */
-function cloudServer(plan: DeployPlan, name: string): boolean {
-  if (name === APP_SERVER) return plan.target.provider !== "own";
-  return plan.servers?.find((server) => server.name === name)?.target.provider !== "own";
+/**
+ * `items` about the server `server`, each title naming it (`Server data: …`) when the app has
+ * extra servers.
+ */
+export function namedDifferences(
+  plan: Pick<DeployPlan, "servers">,
+  server: string,
+  items: readonly HostDifference[],
+): HostDifference[] {
+  if (!hasExtraServers(plan)) return [...items];
+  return items.map((item) => ({ ...item, title: `Server ${server}: ${item.title}` }));
 }
 
 /** What differs in the `network` or `network-filter` step on a server, from its facts. */
@@ -66,28 +73,24 @@ function networkDetail(facts: HostFacts, step: HostStep): string {
 
 /**
  * The private network's host steps on the server `name`, as provision plans them from the same
- * plan and facts (`networkSteps` with the endpoints, the ports published on its private address
- * and its SSH port), each one not in place as a difference, and what blocks them as found.
+ * plan and facts (`networkHostPlan` with the endpoints and its SSH port; alone on a server OpsCrew
+ * created, on the user's `own` when no other OpsCrew app is active there), each one not in place
+ * as a difference, and what blocks them as found.
  */
 function networkDifferences(
   plan: DeployPlan,
   name: string,
   facts: HostFacts,
-  input: { endpoints: Readonly<Record<string, string>>; sshPort: number },
+  input: { endpoints: Readonly<Record<string, string>>; sshPort: number; own: boolean },
 ): HostDifference[] {
   const network = plan.network;
   if (network === undefined || !network.members.some((m) => m.name === name)) return [];
-  const alone = cloudServer(plan, name) || otherActiveApps(facts.apps, plan.app.name).length === 0;
-  const { published, localPorts } = serverNetworkInputs(plan, name, alone);
-  const steps = networkSteps(plan, name, {
-    endpoints: input.endpoints,
-    wireguardInterfaces: facts.wireguardInterfaces,
-    published,
-    sshPort: input.sshPort,
-  });
-  const hostPlan = planNetwork(
+  const alone = !input.own || otherActiveApps(facts.apps, plan.app.name).length === 0;
+  const hostPlan = networkHostPlan(
+    plan,
+    name,
     facts,
-    { app: plan.app.name, network: { ...steps.network, localPorts }, filter: steps.filter },
+    { endpoints: input.endpoints, sshPort: input.sshPort, alone },
     "opscrew provision",
   );
   return [
@@ -178,16 +181,13 @@ export async function serversDrift(
     notes.push(`OpsCrew could not compare the app's servers. ${errorText(error)}`);
     return [];
   }
-  const named = (plan.servers ?? []).length > 0;
   const differences: HostDifference[] = [];
   for (const name of appServers(plan)) {
     try {
       const shell = await serverShell(deps, plan, name, options.services ?? {});
       deps.reporter.step(`Comparing server ${name} with what OpsCrew set up`);
-      const facts = await inspect(
-        shell.remote,
-        cloudServer(plan, name) ? { rootImage: IMAGES.caddy.ref } : {},
-      );
+      const own = shell.login.own;
+      const facts = await inspect(shell.remote, own ? {} : { rootImage: IMAGES.caddy.ref });
       if (facts.network === null) {
         notes.push(
           `OpsCrew could not read the private network's state on server ${name} (its login does not become root without a password), so its WireGuard interface and filter were not compared.`,
@@ -199,14 +199,11 @@ export async function serversDrift(
           : networkDifferences(plan, name, facts, {
               endpoints,
               sshPort: networkSshPort(facts, shell.login.port),
+              own,
             })),
         ...(name === APP_SERVER ? [] : await extraServerFiles(deps, plan, name, facts)),
       ];
-      differences.push(
-        ...found.map((item) =>
-          named ? { ...item, title: `Server ${name}: ${item.title}` } : item,
-        ),
-      );
+      differences.push(...namedDifferences(plan, name, found));
     } catch (error) {
       if (!isUserFacingError(error)) throw error;
       notes.push(`OpsCrew could not compare server ${name}. ${errorText(error)}`);

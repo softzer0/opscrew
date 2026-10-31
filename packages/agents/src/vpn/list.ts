@@ -68,10 +68,7 @@ export async function vpnList(
   }
   const services = options.services ?? {};
   deps.reporter.step("Reading the private network on each server (read-only)");
-  const links = await readNetwork(deps, plan, {
-    ...(services.remote !== undefined ? { remote: services.remote } : {}),
-    ...(services.readWireGuard !== undefined ? { readWireGuard: services.readWireGuard } : {}),
-  });
+  const links = await readNetwork(deps, plan, services);
   const thisDevice = (await readServerAddresses(deps.paths)).thisDevice;
   const lines = [`Devices on the app's private network (${network.range}):`];
   const devices = network.devices.map((device): VpnDevice => {

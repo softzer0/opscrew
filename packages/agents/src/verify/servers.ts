@@ -10,8 +10,9 @@ import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { ReadNetworkServices } from "../network";
 import { checkResult } from "../shared";
+import { appServers } from "../shared/servers";
 import { handshakeText, notReadText, serviceWords } from "../status/network";
-import { appServers, readLinks, readPublishedPorts, serverShell } from "../status/servers";
+import { isPublished, readLinks, readPublishedPorts, serverShell } from "../status/servers";
 
 /**
  * The checks of every server of a plan with a private network; none without one. `remote` and
@@ -26,7 +27,6 @@ export async function serverChecks(
   const network = plan.network;
   if (network === undefined) return [];
   const { flag } = options;
-  const services = options.remote === undefined ? {} : { remote: options.remote };
   const checks: CheckResult[] = [];
   const unreachable = new Set<string>();
   for (const server of appServers(plan)) {
@@ -37,7 +37,7 @@ export async function serverChecks(
     };
     let published: Awaited<ReturnType<typeof readPublishedPorts>>;
     try {
-      const { docker } = await serverShell(deps, plan, server, services);
+      const { docker } = await serverShell(deps, plan, server, options);
       published = await readPublishedPorts(docker, plan.app.name);
     } catch (error) {
       if (!isUserFacingError(error)) throw error;
@@ -62,12 +62,7 @@ export async function serverChecks(
     for (const expected of publishedOnNetwork(plan, server)) {
       const what = serviceWords(plan, expected.service);
       const where = `${expected.address}:${expected.port}`;
-      const found = published.some(
-        (p) =>
-          p.service === expected.service &&
-          p.address === expected.address &&
-          p.port === expected.port,
-      );
+      const found = isPublished(published, expected);
       checks.push(
         checkResult(
           `server-${server}-${expected.service}-published`,
@@ -87,7 +82,7 @@ export async function serverChecks(
     }
   }
   const devices = new Set(network.devices.map((device) => device.name));
-  const links = await readLinks(deps, plan, services, options.network);
+  const links = await readLinks(deps, plan, options, options.network);
   for (const link of links) {
     if (devices.has(link.to) || unreachable.has(link.from)) continue;
     const id = `link-${link.from}-${link.to}`;

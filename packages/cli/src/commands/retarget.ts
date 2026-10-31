@@ -27,7 +27,7 @@ import {
   checkConfirmName,
   formatRequest,
   hashListed,
-  MaintenanceWindowApproval,
+  withAllowDowntime,
 } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
@@ -226,13 +226,7 @@ async function runCommand(
           print: ctx.stdout,
           clock,
         });
-        return flags.allowDowntime === true
-          ? new MaintenanceWindowApproval(handler, {
-              interactive: ctx.isInteractive,
-              print: ctx.stdout,
-              clock,
-            })
-          : handler;
+        return withAllowDowntime(ctx, flags.allowDowntime, handler, clock);
       },
     });
     const option = flags.option?.trim() || undefined;

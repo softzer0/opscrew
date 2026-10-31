@@ -3,6 +3,7 @@ import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { EngineDeps } from "../shared/engine";
 import { serverAddress } from "../shared/server-address";
 import { readServerAddresses } from "../shared/server-record";
+import { appServers } from "../shared/servers";
 
 /**
  * True when the server has a public address WireGuard can reach: every extra server, and the
@@ -25,12 +26,14 @@ export async function publicEndpoints(
 ): Promise<Record<string, string>> {
   const record = await readServerAddresses(deps.paths);
   const endpoints: Record<string, string> = {};
-  for (const name of [APP_SERVER, ...(plan.servers ?? []).map((s) => s.name)]) {
+  for (const name of appServers(plan)) {
     if (!hasPublicAddress(plan, name)) continue;
     const address =
-      name === APP_SERVER && plan.target.provider === "own"
-        ? (record.own?.publicIpv4 ?? record.own?.host)
-        : (await serverAddress(deps, plan, name))?.ipv4;
+      name !== APP_SERVER
+        ? record.servers?.[name]?.ipv4
+        : plan.target.provider === "own"
+          ? (record.own?.publicIpv4 ?? record.own?.host)
+          : (await serverAddress(deps, plan))?.ipv4;
     if (address === undefined) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",

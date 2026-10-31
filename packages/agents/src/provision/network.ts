@@ -3,12 +3,12 @@
  * app, `app` first, each with the `network` and `network-filter` steps, shown with the server's
  * name and approved by its own hash.
  */
-import { type HostFacts, planNetwork } from "@opscrew/connector-ssh-host";
+import type { HostFacts } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, plural } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, networkInterface } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { networkSteps, publicEndpoints, serverNetworkInputs } from "../network";
+import { networkHostPlan, publicEndpoints } from "../network";
 import {
   approveAndApplyHostPlan,
   type HostAdapterApi,
@@ -25,6 +25,7 @@ export interface NetworkServer {
   remote: RemoteExec;
   /** What inspection found there just now. */
   facts: HostFacts;
+  /** The host adapter's apply, with the root image bound on a server OpsCrew created. */
   apply: HostAdapterApi["apply"];
   /** Opens new SSH connections, for the host adapter after an SSH or firewall change. */
   verifyLogin: () => Promise<boolean>;
@@ -32,8 +33,6 @@ export interface NetworkServer {
   sshPort: number;
   /** The server hosts this app alone (always so on a server OpsCrew created). */
   alone: boolean;
-  /** The pinned image root steps run in when the login becomes root through Docker (cloud). */
-  rootImage?: string;
 }
 
 /** {@link applyNetworkPlans}' input. */
@@ -47,12 +46,8 @@ export interface NetworkPlansInput {
 }
 
 /**
- * Each server's private network host plan (`planNetwork`), in `servers`' order: its `network` step
- * from `networkSteps` (peers with the endpoints this computer knows), whose `localPorts` are the
- * TCP ports the app's services publish on that server's private address, and its
- * `network-filter` step for each port published there (on the app's server also the dashboards'
- * when it hosts this app alone and the network has devices), as drift plans them
- * (`serverNetworkInputs`). Each goes through {@link approveAndApplyHostPlan}:
+ * Each server's private network host plan (`networkHostPlan`, as drift plans it, with the endpoints
+ * this computer knows), in `servers`' order. Each goes through {@link approveAndApplyHostPlan}:
  * shown with the server's name, approved by its own hash and applied. The server's private key
  * (the generated values' `network`) is passed only when the facts say the server lacks it or holds
  * another. With `planOnly` each is only shown and saved. Returns the outcomes by server name.
@@ -73,19 +68,14 @@ export async function applyNetworkPlans(
     const { name, facts } = server;
     const member = plan.network.members.find((m) => m.name === name);
     if (member === undefined) throw new Error(`Server "${name}" is not on the private network.`);
-    const { published, localPorts } = serverNetworkInputs(plan, name, server.alone);
-    const steps = networkSteps(plan, name, {
-      endpoints,
-      wireguardInterfaces: facts.wireguardInterfaces,
-      published,
-      sshPort: server.sshPort,
-    });
-    const hostPlan = planNetwork(
+    const hostPlan = networkHostPlan(
+      plan,
+      name,
       facts,
-      { app: plan.app.name, network: { ...steps.network, localPorts }, filter: steps.filter },
+      { endpoints, sshPort: server.sshPort, alone: server.alone },
       command,
     );
-    const held = facts.network?.interfaces.find((i) => i.name === steps.network.interface);
+    const held = facts.network?.interfaces.find((i) => i.name === networkInterface(member));
     const holds = held?.publicKey === member.publicKey;
     const key = holds ? undefined : keys[name];
     if (!holds && key === undefined) {
@@ -99,14 +89,10 @@ export async function applyNetworkPlans(
     }
     if (key !== undefined) deps.redactor.addLiteral(key, "network-key");
     const changes = plural(hostPlan.steps.filter((s) => s.state === "change").length, "change");
-    const { rootImage } = server;
     const outcome = await approveAndApplyHostPlan(deps, {
       plan: hostPlan,
       remote: server.remote,
-      apply:
-        rootImage === undefined
-          ? server.apply
-          : (remote, applied, options) => server.apply(remote, applied, { ...options, rootImage }),
+      apply: server.apply,
       verifyLogin: server.verifyLogin,
       title: `Apply the private network's host plan to server ${name} (${changes})`,
       server: `server ${name}`,

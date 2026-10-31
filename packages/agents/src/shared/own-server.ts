@@ -21,6 +21,8 @@ import {
   readOwnServer,
   recordOwnServer,
   type ServerAddress,
+  type SshLogin,
+  updateServerAddresses,
 } from "./server-record";
 import {
   HOST_KEY_FINGERPRINT,
@@ -433,6 +435,51 @@ export async function inspectOwnHost(
     ...(options.detail !== undefined ? { detail: options.detail } : {}),
   });
   return facts;
+}
+
+/**
+ * Connects to the extra server `name` the user owns with its `login` (`.opscrew/server.json` →
+ * `ownServers`, or the one design just asked for), once public SSH is closed at its private
+ * address: the first connection confirms and pins its host key, which is recorded with the login.
+ * Then inspects it read-only through the host adapter of `services` (default `inspectHost`),
+ * audited under `phase`.
+ */
+export async function connectExtraServer(
+  deps: OwnServerDeps & Pick<PhaseDeps, "audit">,
+  name: string,
+  login: SshLogin,
+  options: {
+    services: Pick<OwnServerServices, "remote" | "homeDir" | "host"> | undefined;
+    phase: PhaseName;
+  },
+): Promise<{ session: OwnServerSession; facts: HostFacts }> {
+  const reach = await ownServerReach(deps, name, login);
+  const session = await connectPinnedLogin(
+    deps,
+    {
+      connection: login,
+      knownHostsFile: deps.paths.files.knownHosts,
+      pin: async (hostKey) => {
+        await updateServerAddresses(deps.paths, (current) => ({
+          ...current,
+          ownServers: { ...current.ownServers, [name]: { ...login, hostKey } },
+        }));
+      },
+      words: {
+        noun: `server ${name}`,
+        fix: `\`opscrew design\` (remove ownServers.${name} from .opscrew/server.json first, so it asks again)`,
+        missingKey: `Remove ownServers.${name} from .opscrew/server.json and run \`opscrew design\` again, giving the path of your private key (or \`agent\`).`,
+      },
+      ...(reach !== undefined ? { reach } : {}),
+    },
+    { services: options.services },
+  );
+  const facts = await inspectOwnHost(deps, session, {
+    services: options.services,
+    phase: options.phase,
+    machine: { noun: `server ${name}`, target: `own server ${name}` },
+  });
+  return { session, facts };
 }
 
 /**

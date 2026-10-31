@@ -3,9 +3,9 @@
  * in privileged Ubuntu 24.04 containers (`network-support.ts`), each with its own Docker, ufw and a
  * `deploy` user in the docker group without sudo, as the servers OpsCrew creates. `app` is the
  * app's server, `data` the extra server the services are placed on. OpsCrew's own code drives them:
- * - the `network` and `network-filter` host plans (`networkSteps` and `serverNetworkInputs` of the
- *   agents, `planNetwork`, `applyHostPlan` bound to the plan's hash) applied as `deploy`, root
- *   through Docker (the `docker` privilege), then planned again as in place;
+ * - the `network` and `network-filter` host plans (the agents' `networkHostPlan`, `applyHostPlan`
+ *   bound to the plan's hash) applied as `deploy`, root through Docker (the `docker` privilege),
+ *   then planned again as in place;
  * - a peer added on both servers while `app` pings `data`'s private address, losing nothing;
  * - the services placed on `data` rendered by `renderServerCompose` with their env files, started as
  *   the deploy starts them (`docker compose up -d --wait`, then the services' setup steps): Kafka,
@@ -35,8 +35,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   type AppEnvironment,
   assembleAppEnv,
-  networkSteps,
-  serverNetworkInputs,
+  networkHostPlan,
   serviceEnvSecrets,
   type WireGuardKeyPair,
   x25519KeyPair,
@@ -50,7 +49,6 @@ import {
   hostPlanHash,
   inspectHost,
   planGrant,
-  planNetwork,
 } from "@opscrew/connector-ssh-host";
 import type { CommandResult } from "@opscrew/contracts";
 import {
@@ -239,16 +237,11 @@ describe.skipIf(SKIP !== undefined)("the private network on two container server
   async function networkPlan(plan: DeployPlan, server: ServerName) {
     const facts = await inspectHost(servers[server].login, { rootImage: ROOT_IMAGE });
     expect(facts.privilege, `${server}: how deploy becomes root`).toBe("docker");
-    const { published, localPorts } = serverNetworkInputs(plan, server, true);
-    const steps = networkSteps(plan, server, {
-      endpoints,
-      wireguardInterfaces: facts.wireguardInterfaces,
-      published,
-      sshPort: 22,
-    });
-    const hostPlan = planNetwork(
+    const hostPlan = networkHostPlan(
+      plan,
+      server,
       facts,
-      { app: APP, network: { ...steps.network, localPorts }, filter: steps.filter },
+      { endpoints, sshPort: 22, alone: true },
       COMMAND,
     );
     const held = facts.network?.interfaces.find((i) => i.name === IFACE)?.publicKey;

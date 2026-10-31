@@ -20,14 +20,15 @@ import {
   type TcpConnect,
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
-import { networkSteps } from "../network";
+import { networkFilterRules } from "../network";
 import { providerProfile } from "../providers";
 
 import { checkResult } from "../shared";
 import { lastServerSetup } from "../shared/host-plan";
 import { type ServerLogin, serverLogin } from "../shared/server-address";
+import { extraServers } from "../shared/servers";
 import { serviceWords } from "../status/network";
-import { extraServers, readPublishedPorts, serverShell } from "../status/servers";
+import { readPublishedPorts, serverShell } from "../status/servers";
 import { ownServerHardening } from "./own";
 import { serverServiceChecks, servicePorts } from "./services";
 
@@ -45,7 +46,7 @@ export type NetworkFilterReader = (
 /** What the checks of {@link serverSecurityChecks} take: fakes in tests. */
 export interface ServerSecurityOptions {
   /** The shell on a server by its address (default `serverRemote`). */
-  serverRemote?: (host: string) => RemoteExec;
+  remote?: (host: string) => RemoteExec;
   /**
    * False when the app's server's checks were skipped (the deploy key is not on this computer):
    * the extra servers' host checks are skipped too, and only the outside probes run.
@@ -89,7 +90,6 @@ export async function extraServerChecks(
   const hostChecks: CheckResult[] = [];
   const probes: CheckResult[] = [];
   const hosts: { server: string; host: string }[] = [];
-  const services = options.serverRemote === undefined ? {} : { remote: options.serverRemote };
   for (const server of extraServers(plan)) {
     let login: ServerLogin;
     let hardening: OwnServerHardening | undefined;
@@ -100,7 +100,7 @@ export async function extraServerChecks(
         ? ownServerHardening(await lastServerSetup(deps, server), login)
         : undefined;
       if (options.hostChecks) {
-        const shell = await serverShell(deps, plan, server, services);
+        const shell = await serverShell(deps, plan, server, options);
         deps.reporter.step(`Checking server ${server}'s hardening over SSH`);
         const checks = hardening !== undefined ? ownServerHostChecks(hardening) : HOST_CHECKS;
         const results = await runHostChecks(shell.docker, [
@@ -150,11 +150,120 @@ export async function extraServerChecks(
   return { hostChecks, probes, hosts };
 }
 
+/** A private address with the member it is: `server app (10.200.4.1)`, `device laptop (…)`. */
+function memberName(network: NonNullable<DeployPlan["network"]>, address: string): string {
+  const server = network.members.find((m) => m.address === address);
+  if (server !== undefined) return `server ${server.name} (${address})`;
+  const device = network.devices.find((d) => d.address === address);
+  return device === undefined ? address : `device ${device.name} (${address})`;
+}
+
+/**
+ * {@link privateAddressChecks} on the server `member` of the network, for the services `expected`
+ * on its private address: its shell reads what the app's containers publish there and, as root,
+ * the network's filter.
+ */
+async function privateAddressChecksOn(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  member: NonNullable<DeployPlan["network"]>["members"][number],
+  expected: ReturnType<typeof publishedOnNetwork>,
+  options: ServerSecurityOptions,
+): Promise<CheckResult[]> {
+  const network = plan.network as NonNullable<DeployPlan["network"]>;
+  const server = member.name;
+  const named = (address: string) => memberName(network, address);
+  const shell =
+    options.appRemote !== undefined && server === APP_SERVER
+      ? { remote: options.appRemote, docker: options.appRemote }
+      : await serverShell(deps, plan, server, options);
+  const { remote } = shell;
+  const published = await readPublishedPorts(shell.docker, plan.app.name);
+  // The sources the filter should admit per port: the app's server, and the granted devices.
+  const wanted = networkFilterRules(plan, server, expected);
+  const privilege = await probePrivilege(remote);
+  const root = privilege === "root" || privilege === "sudo" || privilege === "docker";
+  const rules = root
+    ? await options.readNetworkFilter(remote, networkInterface(member), privilege, IMAGES.caddy.ref)
+    : undefined;
+  return expected.map((entry) => {
+    const what = `${serviceWords(plan, entry.service)} on server ${server}`;
+    const where = `${entry.address}:${entry.port}`;
+    const bindings = published.filter((p) => p.service === entry.service);
+    const elsewhere = bindings.filter((p) => p.address !== entry.address);
+    const check = (status: CheckResult["status"], message: string, remediation?: string) =>
+      checkResult(
+        `service-${entry.service}-private`,
+        `${what} answers only on the private network`,
+        "critical",
+        status,
+        message,
+        {
+          target: `server ${server}`,
+          ...(remediation !== undefined ? { remediation } : {}),
+        },
+      );
+    const provision = `Run \`opscrew provision\`: it shows the host plans for server ${server} and the files that publish ${entry.service} only on ${where}.`;
+    if (elsewhere.length > 0) {
+      const list = listText(elsewhere.map((p) => `${p.address}:${p.port}`));
+      return check(
+        "fail",
+        `${what} is published on ${list}, so it can be reached outside the private network.`,
+        provision,
+      );
+    }
+    if (bindings.length === 0) {
+      return check(
+        "warn",
+        `${what} is not published on its private address ${where}, so ${server === APP_SERVER ? "the devices granted it" : "the app"} can't reach it.`,
+        provision,
+      );
+    }
+    if (!root) {
+      return check(
+        "warn",
+        `${what} is published only on ${where}, but OpsCrew can't read the network's filter on server ${server} without root, so it was not checked.`,
+        `Give the login OpsCrew uses on server ${server} passwordless sudo, then run \`opscrew secure\` again.`,
+      );
+    }
+    const filterFix = `Run \`opscrew provision\`: it shows the network-filter host plan for server ${server}.`;
+    const rule = rules?.find((r) => r.port === entry.port);
+    if (rule === undefined) {
+      return check(
+        "fail",
+        `${what} is published only on ${where}, but the network's filter has no rule for port ${entry.port}, so any address that reaches the private network can connect to it.`,
+        filterFix,
+      );
+    }
+    const sources = wanted.find((r) => r.port === entry.port)?.sources ?? [];
+    const others = rule.sources.filter((source) => !sources.includes(source));
+    if (others.length > 0) {
+      return check(
+        "fail",
+        `${what} is published only on ${where}, but the network's filter also admits ${listText(others.map(named))} on port ${entry.port}.`,
+        filterFix,
+      );
+    }
+    const missing = sources.filter((source) => !rule.sources.includes(source));
+    if (missing.length > 0) {
+      return check(
+        "warn",
+        `${what} is published only on ${where}, but the network's filter does not admit ${listText(missing.map(named))}, so ${missing.length === 1 ? "it" : "they"} can't reach it.`,
+        filterFix,
+      );
+    }
+    return check(
+      "pass",
+      `${what} is published only on ${where}, and the network's filter admits only ${listText(sources.map(named))}.`,
+    );
+  });
+}
+
 /**
  * For each service published on a server's private address (`publishedOnNetwork`), that it answers
  * only there (FR-1805): its container's every published address is that address, and the
  * network's filter admits on its port exactly the app's server and the devices granted it
- * (`networkSteps`' sources). A finding for each that does not.
+ * (`networkFilterRules`). A finding for each that does not.
  */
 export async function privateAddressChecks(
   deps: PhaseDeps,
@@ -163,117 +272,16 @@ export async function privateAddressChecks(
 ): Promise<CheckResult[]> {
   const network = plan.network;
   if (network === undefined) return [];
-  const services = options.serverRemote === undefined ? {} : { remote: options.serverRemote };
-  /** A private address with the member it is: `server app (10.200.4.1)`, `device laptop (…)`. */
-  const memberName = (address: string) => {
-    const server = network.members.find((m) => m.address === address);
-    if (server !== undefined) return `server ${server.name} (${address})`;
-    const device = network.devices.find((d) => d.address === address);
-    return device === undefined ? address : `device ${device.name} (${address})`;
-  };
   const checks: CheckResult[] = [];
   for (const member of network.members) {
     const server = member.name;
     const expected = publishedOnNetwork(plan, server);
     if (expected.length === 0) continue;
-    const results = await (async (): Promise<CheckResult[]> => {
-      const shell =
-        options.appRemote !== undefined && server === APP_SERVER
-          ? { remote: options.appRemote, docker: options.appRemote }
-          : await serverShell(deps, plan, server, services);
-      const { remote } = shell;
-      const published = await readPublishedPorts(shell.docker, plan.app.name);
-      // The sources the filter should admit per port: the app's server, and the granted devices.
-      const wanted = networkSteps(plan, server, {
-        endpoints: {},
-        wireguardInterfaces: [],
-        published: expected,
-        sshPort: 22,
-      }).filter.rules;
-      const privilege = await probePrivilege(remote);
-      const root = privilege === "root" || privilege === "sudo" || privilege === "docker";
-      const rules = root
-        ? await options.readNetworkFilter(
-            remote,
-            networkInterface(member),
-            privilege,
-            IMAGES.caddy.ref,
-          )
-        : undefined;
-      return expected.map((entry) => {
-        const what = `${serviceWords(plan, entry.service)} on server ${server}`;
-        const where = `${entry.address}:${entry.port}`;
-        const bindings = published.filter((p) => p.service === entry.service);
-        const elsewhere = bindings.filter((p) => p.address !== entry.address);
-        const check = (status: CheckResult["status"], message: string, remediation?: string) =>
-          checkResult(
-            `service-${entry.service}-private`,
-            `${what} answers only on the private network`,
-            "critical",
-            status,
-            message,
-            {
-              target: `server ${server}`,
-              ...(remediation !== undefined ? { remediation } : {}),
-            },
-          );
-        const provision = `Run \`opscrew provision\`: it shows the host plans for server ${server} and the files that publish ${entry.service} only on ${where}.`;
-        if (elsewhere.length > 0) {
-          const list = listText(elsewhere.map((p) => `${p.address}:${p.port}`));
-          return check(
-            "fail",
-            `${what} is published on ${list}, so it can be reached outside the private network.`,
-            provision,
-          );
-        }
-        if (bindings.length === 0) {
-          return check(
-            "warn",
-            `${what} is not published on its private address ${where}, so ${server === APP_SERVER ? "the devices granted it" : "the app"} can't reach it.`,
-            provision,
-          );
-        }
-        if (!root) {
-          return check(
-            "warn",
-            `${what} is published only on ${where}, but OpsCrew can't read the network's filter on server ${server} without root, so it was not checked.`,
-            `Give the login OpsCrew uses on server ${server} passwordless sudo, then run \`opscrew secure\` again.`,
-          );
-        }
-        const filterFix = `Run \`opscrew provision\`: it shows the network-filter host plan for server ${server}.`;
-        const rule = rules?.find((r) => r.port === entry.port);
-        if (rule === undefined) {
-          return check(
-            "fail",
-            `${what} is published only on ${where}, but the network's filter has no rule for port ${entry.port}, so any address that reaches the private network can connect to it.`,
-            filterFix,
-          );
-        }
-        const sources = wanted.find((r) => r.port === entry.port)?.sources ?? [];
-        const others = rule.sources.filter((source) => !sources.includes(source));
-        if (others.length > 0) {
-          return check(
-            "fail",
-            `${what} is published only on ${where}, but the network's filter also admits ${listText(others.map(memberName))} on port ${entry.port}.`,
-            filterFix,
-          );
-        }
-        const missing = sources.filter((source) => !rule.sources.includes(source));
-        if (missing.length > 0) {
-          return check(
-            "warn",
-            `${what} is published only on ${where}, but the network's filter does not admit ${listText(missing.map(memberName))}, so ${missing.length === 1 ? "it" : "they"} can't reach it.`,
-            filterFix,
-          );
-        }
-        return check(
-          "pass",
-          `${what} is published only on ${where}, and the network's filter admits only ${listText(sources.map(memberName))}.`,
-        );
-      });
-    })().catch((error: unknown) => {
+    try {
+      checks.push(...(await privateAddressChecksOn(deps, plan, member, expected, options)));
+    } catch (error) {
       if (!isUserFacingError(error)) throw error;
-      return [
+      checks.push(
         checkResult(
           `server-${server}-private-ports`,
           `The services on server ${server} answer only on the private network`,
@@ -282,9 +290,8 @@ export async function privateAddressChecks(
           `OpsCrew could not read the ports server ${server} publishes. ${errorText(error)}`,
           { target: `server ${server}` },
         ),
-      ];
-    });
-    checks.push(...results);
+      );
+    }
   }
   return checks;
 }

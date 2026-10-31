@@ -6,26 +6,27 @@
  * delivered in the deploy-setup pull request, as provision does), and a `public-ssh` host plan per
  * server, under the host adapter's automatic undo of SSH and firewall changes.
  */
-import { planPublicSsh } from "@opscrew/connector-ssh-host";
 import type { CommandResult } from "@opscrew/contracts";
 import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
-import { type DeployPlan, networkInterface, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { readNetwork } from "../network";
+import { publicSshHostPlan, readNetwork } from "../network";
 import { runProvision } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
 import {
-  approvalEntry,
   type HostPlanOutcome,
+  outcomeSummary,
   readServerAddresses,
   reopenedPlan,
   serverLogin,
   serverRemote,
   TUNNEL_DOWN_HINT,
+  withApprovals,
   writePlanIfChanged,
 } from "../shared";
 import { approveAndApplyHostPlan } from "../shared/host-plan";
+import { extraCloudServers } from "../shared/servers";
 import { handshakeText, notReadText } from "../status/network";
 import { deviceServers, networkServer, requireServers, type VpnServices } from "../vpn/servers";
 
@@ -99,10 +100,7 @@ async function missingConditions(
     return missing;
   }
   deps.reporter.step("Reading this computer's tunnel on each server (read-only)");
-  const links = await readNetwork(deps, plan, {
-    ...(services.remote !== undefined ? { remote: services.remote } : {}),
-    ...(services.readWireGuard !== undefined ? { readWireGuard: services.readWireGuard } : {}),
-  });
+  const links = await readNetwork(deps, plan, services);
   const stale = deviceServers(plan).flatMap((server) => {
     const link = links.find((l) => l.from === server && l.kind === "device" && l.to === device);
     if (link?.up === true) return [];
@@ -212,36 +210,24 @@ async function publicSshPlans(
     reach?: ReadonlyMap<string, DeployPlan>;
   },
 ): Promise<HostPlanOutcome[]> {
-  const network = closed.network as NonNullable<DeployPlan["network"]>;
   const outcomes: HostPlanOutcome[] = [];
   for (const name of deviceServers(closed)) {
-    const member = network.members.find((m) => m.name === name);
-    if (member === undefined) throw new Error(`Server "${name}" is not on the private network.`);
     const at = input.reach?.get(name) ?? closed;
     const login = await serverLogin(deps, closed, name);
     const server = await networkServer(deps, at, name, input.services);
-    const hostPlan = planPublicSsh(
-      server.facts,
-      {
-        app: closed.app.name,
-        publicSsh: {
-          open: input.open,
-          interface: networkInterface(member),
-          allowedCidrs: input.allowedCidrs,
-          sshPort: server.sshPort,
-          cloudServer: !login.own,
-        },
-      },
-      input.command,
-    );
-    const { rootImage } = server;
+    const hostPlan = publicSshHostPlan(closed, name, server.facts, {
+      open: input.open,
+      allowedCidrs: input.allowedCidrs,
+      sshPort: server.sshPort,
+      cloudServer: !login.own,
+      command: input.command,
+    });
     const where = `server ${name}`;
     outcomes.push(
       await approveAndApplyHostPlan(deps, {
         plan: hostPlan,
         remote: server.remote,
-        apply: (remote, p, options) =>
-          server.apply(remote, p, rootImage === undefined ? options : { ...options, rootImage }),
+        apply: server.apply,
         verifyLogin: async () => (await freshLogin(deps, at, name))?.exitCode === 0,
         title: input.open
           ? `Open SSH on server ${name} again`
@@ -265,12 +251,6 @@ async function publicSshPlans(
     );
   }
   return outcomes;
-}
-
-/** `plan` with the approvals of the host plans approved this run. */
-function withApprovals(plan: DeployPlan, outcomes: readonly HostPlanOutcome[]): DeployPlan {
-  const approvals = outcomes.flatMap((o) => (o.approval ? [approvalEntry(o.approval)] : []));
-  return approvals.length === 0 ? plan : { ...plan, approvals: [...plan.approvals, ...approvals] };
 }
 
 /** The command as the user runs it again: `opscrew secure --close-public-ssh --env staging`. */
@@ -334,10 +314,7 @@ async function openingReach(
 
 /** True when the app has a server OpsCrew created, whose cloud firewall provision changes. */
 function hasCloudServer(plan: DeployPlan): boolean {
-  return (
-    plan.target.provider !== "own" ||
-    (plan.servers ?? []).some((server) => server.target.provider !== "own")
-  );
+  return plan.target.provider !== "own" || extraCloudServers(plan).length > 0;
 }
 
 /**
@@ -391,12 +368,8 @@ export async function closePublicSsh(
   deps.reporter.success(
     "Public SSH is closed: SSH answers only on the app's private network, and OpsCrew connects to the servers there.",
   );
-  return {
-    open: false,
-    provision,
-    hostPlanHashes: outcomes.map((o) => o.hash),
-    hostApplied: outcomes.some((o) => o.applied),
-  };
+  const { hostPlanHashes, applied: hostApplied } = outcomeSummary(outcomes);
+  return { open: false, provision, hostPlanHashes, hostApplied };
 }
 
 /**
@@ -442,10 +415,6 @@ export async function openPublicSsh(
   deps.reporter.success(
     `Public SSH is open again to ${listText(open.security.sshAllowedCidrs)}, as opscrew/plan.yaml says.`,
   );
-  return {
-    open: true,
-    provision,
-    hostPlanHashes: outcomes.map((o) => o.hash),
-    hostApplied: outcomes.some((o) => o.applied),
-  };
+  const { hostPlanHashes, applied: hostApplied } = outcomeSummary(outcomes);
+  return { open: true, provision, hostPlanHashes, hostApplied };
 }

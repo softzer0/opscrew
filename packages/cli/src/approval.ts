@@ -321,6 +321,25 @@ export class MaintenanceWindowApproval implements ApprovalHandler {
   }
 }
 
+/**
+ * `handler`, wrapped in a {@link MaintenanceWindowApproval} when `--allow-downtime` was given
+ * (`allow`), which then approves a move's maintenance window in a run nobody can answer.
+ */
+export function withAllowDowntime(
+  ctx: CliContext,
+  allow: boolean | undefined,
+  handler: ApprovalHandler,
+  clock: Clock,
+): ApprovalHandler {
+  return allow === true
+    ? new MaintenanceWindowApproval(handler, {
+        interactive: ctx.isInteractive,
+        print: ctx.stdout,
+        clock,
+      })
+    : handler;
+}
+
 /** Which requests a {@link FlagConfirmation} answers, and what it knows of the run. */
 export interface FlagConfirmationOptions {
   /** The kinds of the deleting requests it answers. */

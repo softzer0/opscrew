@@ -20,13 +20,15 @@ import {
 } from "../network";
 import { applyNetworkPlans, type NetworkServer } from "../provision/network";
 import {
-  approvalEntry,
-  type HostPlanOutcome,
+  outcomeSummary,
   readServerAddresses,
   updateServerAddresses,
+  withApprovals,
   writePlanIfChanged,
 } from "../shared";
 import { recordGeneratedEntries } from "../shared/app-secrets";
+import { appServers } from "../shared/servers";
+import { memberAddress } from "./grants";
 import {
   deviceServers,
   networkServer,
@@ -164,12 +166,6 @@ async function reachableServers(
   return servers;
 }
 
-/** `plan` with the approvals of the host plans the user approved this run. */
-export function withApprovals(plan: DeployPlan, outcomes: Iterable<HostPlanOutcome>): DeployPlan {
-  const approvals = [...outcomes].flatMap((o) => (o.approval ? [approvalEntry(o.approval)] : []));
-  return approvals.length === 0 ? plan : { ...plan, approvals: [...plan.approvals, ...approvals] };
-}
-
 /** Writes a device's configuration, readable only by the user (0600, in a folder of 0700). */
 async function writeDeviceConfig(file: string, text: string): Promise<void> {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
@@ -178,10 +174,7 @@ async function writeDeviceConfig(file: string, text: string): Promise<void> {
 
 /** `app 10.200.4.1, data 10.200.4.2`: the servers a device reaches, with their private addresses. */
 function serverAddressesText(plan: DeployPlan, servers: readonly string[]): string {
-  const members = plan.network?.members ?? [];
-  return servers
-    .map((name) => `${name} ${members.find((m) => m.name === name)?.address ?? ""}`)
-    .join(", ");
+  return servers.map((name) => `${name} ${memberAddress(plan, name)}`).join(", ");
 }
 
 /**
@@ -210,8 +203,7 @@ export async function vpnAdd(
   const services = options.services ?? {};
   let plan = await readArtifact("plan", deps.paths.files.plan);
   requireServers(plan);
-  const serverNames = [APP_SERVER, ...(plan.servers ?? []).map((server) => server.name)];
-  if (serverNames.includes(device)) {
+  if (appServers(plan).includes(device)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       `A device can't be named ${device}: that is the name of one of the app's servers. Nothing was changed.`,
@@ -230,7 +222,7 @@ export async function vpnAdd(
   const endpoints = await publicEndpoints(deps, plan);
   const keys = services.keys ?? x25519KeyPair;
   const created = plan.network === undefined;
-  if (plan.network === undefined) {
+  if (created) {
     const facts = Object.fromEntries(servers.map((server) => [server.name, server.facts]));
     const allocated = allocateNetwork(plan, facts, keys);
     await recordGeneratedEntries(deps, "network", allocated.privateKeys);
@@ -303,8 +295,7 @@ export async function vpnAdd(
     file,
     written: fresh,
     ...(options.qr === true && config !== undefined ? { qr: config } : {}),
-    hostPlanHashes: [...outcomes.values()].map((o) => o.hash),
-    applied: [...outcomes.values()].some((o) => o.applied),
+    ...outcomeSummary(outcomes.values()),
   };
 }
 
@@ -367,9 +358,5 @@ export async function vpnRemove(
   deps.reporter.success(
     `Device ${device} is off the app's private network: no server accepts its tunnel any more.`,
   );
-  return {
-    device,
-    hostPlanHashes: [...outcomes.values()].map((o) => o.hash),
-    applied: [...outcomes.values()].some((o) => o.applied),
-  };
+  return { device, ...outcomeSummary(outcomes.values()) };
 }

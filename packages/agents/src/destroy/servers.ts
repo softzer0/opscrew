@@ -7,11 +7,8 @@
  */
 import { parseGitHubRepo } from "@opscrew/connector-github";
 import {
-  applyHostPlan,
   type HostFacts,
-  inspectHost,
   otherActiveApps,
-  planPublicSsh,
   planTeardown,
   planUndo,
 } from "@opscrew/connector-ssh-host";
@@ -21,17 +18,27 @@ import {
   APP_SERVER,
   type CloudProvider,
   type DeployPlan,
-  networkInterface,
   servicesOn,
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { publicSshHostPlan } from "../network";
 import { providerProfile } from "../providers";
 import { repositoryUrl } from "../runners";
-import { approvalEntry, gitClient, type HostAdapterApi } from "../shared";
-import { approveAndApplyHostPlan } from "../shared/host-plan";
-import { networkSshPort, reopenedPlan, serverLogin, serverRemote } from "../shared/server-address";
+import { gitClient, type HostAdapterApi, withApprovals } from "../shared";
+import {
+  approveAndApplyHostPlan,
+  boundHostAdapter,
+  type HostPlanOutcome,
+} from "../shared/host-plan";
+import { networkSshPort, reopenedPlan } from "../shared/server-address";
 import { readServerAddresses, updateServerAddresses } from "../shared/server-record";
+import {
+  type ExtraCloudServer,
+  extraCloudServers,
+  hasExtraServers,
+  loginShell,
+} from "../shared/servers";
 import { serverShell } from "../status/servers";
 import { deletesServer, serverData, serverIdsInPlan } from "./checks";
 import { COMMAND, SHOWS_PLAN_AGAIN } from "./common";
@@ -40,6 +47,7 @@ import {
   type DeletionScope,
   type DeletionSession,
   forgetHostKeys,
+  remainingAfterDeletion,
   type SnapshotBeforeDeleteInput,
   snapshotWanted,
   takeSnapshotBeforeDelete,
@@ -47,40 +55,17 @@ import {
 import { destroyTexts } from "./texts";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";
 
-/** An extra server OpsCrew created: its module in the root and the name its provider shows. */
-export interface ExtraCloudServer {
-  /** Its name in the plan. */
-  name: string;
-  provider: CloudProvider;
-  /** Its name at the provider, which the user types: `<app>-<name>`. */
-  resource: string;
-  /** Its module's address prefix: `module.server_<name>.`. */
-  module: string;
-  /** The provider's automatic backups are on. */
-  backups: boolean;
-}
-
-/** The plan's extra servers OpsCrew created, in plan order. */
-export function extraCloudServers(plan: DeployPlan): ExtraCloudServer[] {
-  return (plan.servers ?? []).flatMap(({ name, target }) =>
-    target.provider === "own"
-      ? []
-      : [
-          {
-            name,
-            provider: target.provider,
-            resource: `${plan.app.name}-${name}`,
-            module: `module.server_${name}.`,
-            backups: target.backups,
-          },
-        ],
-  );
-}
-
 /** The names of the plan's extra servers the user owns, in plan order. */
 export function extraOwnServers(plan: DeployPlan): string[] {
   return (plan.servers ?? []).flatMap((server) =>
     server.target.provider === "own" ? [server.name] : [],
+  );
+}
+
+/** The plan's extra servers OpsCrew created whose provider has delete protection (Hetzner). */
+export function extraProtectedServers(plan: DeployPlan): ExtraCloudServer[] {
+  return extraCloudServers(plan).filter(
+    (server) => providerProfile(server.provider).deleteProtection,
   );
 }
 
@@ -90,9 +75,25 @@ export function extraOwnServers(plan: DeployPlan): string[] {
  */
 export function extraProtectionVars(plan: DeployPlan): Record<string, string> {
   return Object.fromEntries(
-    extraCloudServers(plan)
-      .filter((server) => providerProfile(server.provider).deleteProtection)
-      .map((server) => [`${server.name}_delete_protection`, "false"]),
+    extraProtectedServers(plan).map((server) => [`${server.name}_delete_protection`, "false"]),
+  );
+}
+
+/**
+ * What remains of each extra server OpsCrew created once the teardown deleted it: its snapshot
+ * (`snapshotIds`, by server name) and its kept backups, each by its name at the provider.
+ */
+export function extraServersRemaining(
+  plan: DeployPlan,
+  snapshotIds: Readonly<Record<string, string | undefined>>,
+): string[] {
+  return extraCloudServers(plan).flatMap((server) =>
+    remainingAfterDeletion({
+      provider: server.provider,
+      app: server.resource,
+      snapshotId: snapshotIds[server.name],
+      backups: server.backups,
+    }),
   );
 }
 
@@ -198,7 +199,7 @@ export async function snapshotServers(
  * a snapshot first (`snapshots`).
  */
 export function serverLines(plan: DeployPlan, snapshots: readonly ServerSnapshot[] = []): string[] {
-  if ((plan.servers ?? []).length === 0) return [];
+  if (!hasExtraServers(plan)) return [];
   const snapshot = (server: string) =>
     snapshots.some((s) => s.server === server && s.wanted)
       ? "a snapshot of it is taken first"
@@ -253,7 +254,7 @@ export async function confirmExtraServers(
 
 /** The host adapter for the user's own servers: the services' fake in tests, else ssh-host's. */
 function hostAdapter(services: DestroyServices): HostAdapterApi {
-  return services.own?.host ?? { inspect: (remote) => inspectHost(remote), apply: applyHostPlan };
+  return boundHostAdapter(services.own?.host);
 }
 
 /** True when a new login on the server `name` works (`plan`'s address for it), for the safety switch. */
@@ -265,9 +266,7 @@ function loginWorks(
 ): () => Promise<boolean> {
   if (services.own?.verifyLogin !== undefined) return services.own.verifyLogin;
   return async () => {
-    const remote =
-      services.remote?.((await serverLogin(deps, plan, name)).host) ??
-      (await serverRemote(deps, plan, name, { fresh: true }));
+    const { remote } = await loginShell(deps, plan, name, services, { fresh: true });
     return (await remote.run("true", { timeoutMs: 30_000 })).exitCode === 0;
   };
 }
@@ -288,36 +287,26 @@ export async function reopenPublicSsh(
   servers: readonly string[],
   services: DestroyServices,
 ): Promise<DeployPlan> {
-  const network = plan.network;
-  if (network?.publicSsh !== false || servers.length === 0) return plan;
+  if (plan.network?.publicSsh !== false || servers.length === 0) return plan;
   const open = reopenedPlan(plan);
   const allowedCidrs = open.security.sshAllowedCidrs;
   const adapter = hostAdapter(services);
-  const approvals: ApprovalRecord[] = [];
+  const outcomes: HostPlanOutcome[] = [];
   for (const name of servers) {
-    const member = network.members.find((m) => m.name === name);
-    if (member === undefined) throw new Error(`Server "${name}" is not on the private network.`);
     const shell = await serverShell(deps, plan, name, services);
     const facts = await adapter.inspect(shell.remote);
-    const hostPlan = planPublicSsh(
-      facts,
-      {
-        app: plan.app.name,
-        publicSsh: {
-          open: true,
-          interface: networkInterface(member),
-          allowedCidrs,
-          sshPort: networkSshPort(facts, shell.login.port),
-          cloudServer: false,
-        },
-      },
-      COMMAND,
-    );
+    const hostPlan = publicSshHostPlan(plan, name, facts, {
+      open: true,
+      allowedCidrs,
+      sshPort: networkSshPort(facts, shell.login.port),
+      cloudServer: false,
+      command: COMMAND,
+    });
     const where = `server ${name}`;
     const outcome = await approveAndApplyHostPlan(deps, {
       plan: hostPlan,
       remote: shell.remote,
-      apply: (remote, p, options) => adapter.apply(remote, p, options),
+      apply: adapter.apply,
       verifyLogin: loginWorks(deps, open, name, services),
       title: `Open SSH on server ${name} again before its private network is removed`,
       server: where,
@@ -334,9 +323,9 @@ export async function reopenPublicSsh(
       },
       secrets: async () => ({}),
     });
-    if (outcome.approval !== undefined) approvals.push(outcome.approval);
+    outcomes.push(outcome);
   }
-  const opened = { ...open, approvals: [...plan.approvals, ...approvals.map(approvalEntry)] };
+  const opened = withApprovals(open, outcomes);
   await writeArtifact("plan", deps.paths.files.plan, opened);
   deps.reporter.info(
     "Public SSH is open again on the servers whose private network the teardown removes; opscrew/plan.yaml says so.",
@@ -378,7 +367,7 @@ export async function removeExtraOwnServers(
     const where = `server ${name}`;
     const step = {
       remote: shell.remote,
-      apply: ((remote, p, o) => adapter.apply(remote, p, o)) satisfies HostAdapterApi["apply"],
+      apply: adapter.apply,
       verifyLogin: loginWorks(deps, plan, name, services),
       server: where,
       planOf: where,

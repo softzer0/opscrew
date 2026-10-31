@@ -15,6 +15,7 @@ import {
   serverRunnerName,
 } from "../runners";
 import { describeChanges, hasDeployment, planStop, refusalReason, serverAddress } from "../shared";
+import { extraCloudProviders, extraCloudServers } from "../shared/servers";
 import {
   deletedTunnels,
   requireTunnelClosed,
@@ -66,9 +67,10 @@ import { destroyPortainer } from "./portainer";
 import { destroyCloudflareWorkers, destroyGithubPages } from "./serverless";
 import {
   confirmExtraServers,
-  extraCloudServers,
   extraOwnServers,
+  extraProtectedServers,
   extraProtectionVars,
+  extraServersRemaining,
   forgetExtraCloudServers,
   removeExtraOwnServers,
   reopenPublicSsh,
@@ -518,8 +520,8 @@ export async function runDestroy(
   await checkProvider(deps, provider, services);
   // The extra servers at another provider are deleted too: that provider's token as well.
   const extras = extraCloudServers(plan);
-  for (const cloud of new Set(extras.map((server) => server.provider))) {
-    if (cloud !== provider) await checkProvider(deps, cloud, services);
+  for (const cloud of extraCloudProviders(plan, provider)) {
+    await checkProvider(deps, cloud, services);
   }
   await checkCloudflare(deps, plan, services);
   const github = await resolveGitHub(deps, services);
@@ -700,9 +702,7 @@ export async function runDestroy(
       vars: protectionVars,
       names: [
         ...(profile.deleteProtection ? [name] : []),
-        ...extras
-          .filter((server) => providerProfile(server.provider).deleteProtection)
-          .map((server) => server.resource),
+        ...extraProtectedServers(plan).map((server) => server.resource),
       ],
       serverInState: deletesServer(preview.changes, "hetzner"),
       ...(snapshotId !== undefined ? { snapshotId } : {}),
@@ -784,16 +784,7 @@ export async function runDestroy(
     files: await deploymentFiles(deps, plan),
   });
   // The extra servers' snapshots and kept backups, each by its name at the provider.
-  for (const server of extras) {
-    remaining.push(
-      ...remainingAfterDeletion({
-        provider: server.provider,
-        app: server.resource,
-        snapshotId: snapshotIds[server.name],
-        backups: server.backups,
-      }),
-    );
-  }
+  remaining.push(...extraServersRemaining(plan, snapshotIds));
   remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
   failIfBucketListed(bucketDeleted);

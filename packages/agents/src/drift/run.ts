@@ -28,7 +28,7 @@ import {
   storageDrift,
 } from "./infra";
 import { portainerDrift } from "./portainer";
-import { serversDrift } from "./servers";
+import { namedDifferences, serversDrift } from "./servers";
 import { siteDrift } from "./site";
 import type { DriftOptions, DriftReport } from "./types";
 
@@ -179,10 +179,7 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   // 018); with extra servers, each of the app server's differences names it too.
   if (plan.network !== undefined) {
     const servers = await serversDrift(deps, plan, notes, { services });
-    const named = (plan.servers ?? []).length > 0;
-    const app = (host?.differences ?? []).map((item) =>
-      named ? { ...item, title: `Server ${APP_SERVER}: ${item.title}` } : item,
-    );
+    const app = namedDifferences(plan, APP_SERVER, host?.differences ?? []);
     host = { differences: [...app, ...servers] };
   }
 

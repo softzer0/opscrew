@@ -2,12 +2,14 @@ import { join } from "node:path";
 import {
   type ApplyOptions,
   type ApplyResult,
+  applyHostPlan,
   HostApplyError,
   type HostFacts,
   type HostPlan,
   HostPlanSchema,
   type HostStep,
   hostPlanHash,
+  inspectHost,
 } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, type ProjectPaths, writeFileAtomic } from "@opscrew/core";
@@ -23,6 +25,18 @@ import type { HostChangeResult } from "./tunnel-connections";
 export interface HostAdapterApi {
   inspect(remote: RemoteExec): Promise<HostFacts>;
   apply(remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult>;
+}
+
+/**
+ * `host` (default ssh-host's `inspectHost` and `applyHostPlan`) with its calls bound, so its
+ * `apply` can be passed on as a function.
+ */
+export function boundHostAdapter(host?: HostAdapterApi): HostAdapterApi {
+  const adapter = host ?? { inspect: inspectHost, apply: applyHostPlan };
+  return {
+    inspect: (remote) => adapter.inspect(remote),
+    apply: (remote, plan, options) => adapter.apply(remote, plan, options),
+  };
 }
 
 /** `.opscrew/plans/host-<hash>.json`: the host plan the hash names, kept for review and audit. */
@@ -207,6 +221,15 @@ export interface HostPlanOutcome extends HostChangeResult {
   steps: readonly string[];
   /** The apps whose runner was removed while GitHub kept its registration (`ApplyResult`). */
   stillRegistered?: readonly string[];
+}
+
+/** The hashes of the host plans shown (`outcomes`, in order), and whether any was applied. */
+export function outcomeSummary(outcomes: Iterable<HostChangeResult>): {
+  hostPlanHashes: string[];
+  applied: boolean;
+} {
+  const all = [...outcomes];
+  return { hostPlanHashes: all.map((o) => o.hash), applied: all.some((o) => o.applied) };
 }
 
 /**

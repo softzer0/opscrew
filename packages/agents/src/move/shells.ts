@@ -8,7 +8,7 @@ import { appDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { ProvisionServices } from "../provision/types";
-import { SshRemoteExec, serverLogin, serverRemote, serverWords } from "../shared";
+import { appServerShell, privateReach, serverLogin, serverWords } from "../shared";
 
 /** One of the app's servers as a move reaches it. */
 export interface MoveShell {
@@ -16,15 +16,16 @@ export interface MoveShell {
   name: string;
   /** The deploy user's shell there. */
   remote: RemoteExec;
-  /** Its SSH port. */
+  /** The SSH port OpsCrew connects to there, with `remote.host`. */
   port: number;
 }
 
 /**
  * The deploy user's shell on the server `name` (`app` or an extra server), where the deploy logs
- * in: the project's deploy key, the login's SSH port, and the address OpsCrew connects to there
- * (`serverRemote`'s: the private one once public SSH is closed, its host key pinned under it).
- * `services.remote` stands in for it in tests.
+ * in, with the project's deploy key (`appServerShell`): at its login's address and port, or once
+ * public SSH is closed at its private address and the port sshd listens on there
+ * (`privateReach`), its host key pinned under it, saying when this computer's tunnel looks down.
+ * `services.remote` stands in for ssh in tests.
  * @throws OpsCrewError `PHASE_PRECONDITION` when the server's address or login is not on this
  * computer.
  */
@@ -35,17 +36,9 @@ export async function moveShell(
   name: string,
 ): Promise<MoveShell> {
   const login = await serverLogin(deps, plan, name);
-  const { host } = await serverRemote(deps, plan, name);
-  const remote =
-    services.remote?.(host) ??
-    new SshRemoteExec({
-      host,
-      port: login.port,
-      keyFile: deps.paths.files.deployKey,
-      knownHostsFile: deps.paths.files.knownHosts,
-      runner: deps.runner,
-    });
-  return { name, remote, port: login.port };
+  const { port } = (await privateReach(deps, plan, name, login)) ?? login;
+  const remote = await appServerShell(deps, plan, login, services, name);
+  return { name, remote, port };
 }
 
 /**

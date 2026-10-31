@@ -21,6 +21,7 @@ import {
   serverlessNotSupported,
 } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
+import { appServers, extraServers } from "../shared/servers";
 import { type CheckState, checkStateReport } from "./check-state";
 import {
   type AppContainer,
@@ -39,14 +40,7 @@ import {
   readServerResources,
   resourceLines,
 } from "./resources";
-import {
-  appServers,
-  extraServers,
-  readLinks,
-  readPublishedPorts,
-  serverShell,
-  unpublishedOnNetwork,
-} from "./servers";
+import { readLinks, readPublishedPorts, serverShell, unpublishedOnNetwork } from "./servers";
 import { siteStatusReport } from "./site";
 
 /** Options of {@link readServerContainers} and {@link readComponentStatus}. */
@@ -119,12 +113,7 @@ export async function readServerContainers(
       },
     );
   }
-  const remote = await appServerShell(
-    deps,
-    plan,
-    { host: address.ipv4, port: 22 },
-    services.remote !== undefined ? { remote: services.remote } : {},
-  );
+  const remote = await appServerShell(deps, plan, { host: address.ipv4, port: 22 }, services);
   deps.reporter.step("Reading the app's containers on the server (read-only)");
   const containers = await readAppContainers(remote, app);
   await deps.audit.append({

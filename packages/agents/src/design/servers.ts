@@ -25,7 +25,7 @@ import { regionLocations } from "./sizing";
 import { designWording } from "./wording";
 
 /** An extra server's target as the user wrote it, for a server OpsCrew creates. */
-export type EditedCloudTarget = Exclude<NonNullable<EditedServer["target"]>, { provider: "own" }>;
+type EditedCloudTarget = Exclude<NonNullable<EditedServer["target"]>, { provider: "own" }>;
 
 /** An extra server as design completed it, with what runs on it and its price. */
 export interface DesignedServer {

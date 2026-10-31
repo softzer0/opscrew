@@ -11,7 +11,7 @@ import type { PhaseDeps } from "../context";
 import { withPlacement } from "../provision/servers";
 import type { ProvisionServices } from "../provision/types";
 import { serverWords, writePlanIfChanged } from "../shared";
-import { switchedEnv } from "./app-env";
+import { failureDetail, switchedEnv } from "./app-env";
 import { moveShell } from "./shells";
 import { FINISH_COMMAND, MOVE_COMMAND } from "./window";
 
@@ -134,10 +134,9 @@ export async function finishMove(
   const shell = await moveShell(deps, plan, services, move.from);
   const result = await shell.remote.run(command, { timeoutMs: 5 * 60_000 });
   if (result.exitCode !== 0) {
-    const said = deps.redactor.redact(result.stderr.trim()).slice(0, 300);
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `Could not delete the old copy of ${service} on ${from}${said ? `: ${said}` : ` (exit code ${result.exitCode})`}.`,
+      `Could not delete the old copy of ${service} on ${from}${failureDetail(result, deps.redactor)}.`,
       {
         hint: `Check that ${from} is reachable and Docker runs there, then run \`${FINISH_COMMAND}\` again.`,
       },

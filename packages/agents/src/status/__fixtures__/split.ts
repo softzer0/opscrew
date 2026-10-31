@@ -5,9 +5,10 @@
  */
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { WireGuardPeer } from "@opscrew/connector-ssh-host";
 import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { type DeployPlan, DeployPlanSchema, type Network } from "@opscrew/plan-schema";
-import { allocateNetwork, type ReadNetworkServices, type WireGuardPeerState } from "../../network";
+import { allocateNetwork, type ReadNetworkServices } from "../../network";
 import { splitPlan } from "../../network/__fixtures__/plans";
 import { updateServerAddresses } from "../../shared/server-record";
 import { createTestPhaseDeps, testKeyMaker } from "../../testing";
@@ -203,7 +204,7 @@ export async function splitWorld(
       async readWireGuard(shell) {
         const peers = handshakes[serverOf(shell.host)] ?? {};
         return Object.entries(peers).map(
-          ([peer, seconds]): WireGuardPeerState => ({
+          ([peer, seconds]): WireGuardPeer => ({
             publicKey: keyOf(peer),
             allowedIps: [],
             ...(seconds !== undefined

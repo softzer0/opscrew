@@ -1,30 +1,10 @@
-import { probePrivilege, readWireGuard as readServerWireGuard } from "@opscrew/connector-ssh-host";
+import { probePrivilege, readWireGuard, type WireGuardPeer } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
 import { IMAGES } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, networkInterface } from "@opscrew/plan-schema";
 import type { EngineDeps } from "../shared/engine";
 import { serverRemote } from "../shared/server-address";
 import { hasPublicAddress } from "./endpoints";
-
-/** How the host adapter becomes root to read WireGuard: as root, through sudo, or through Docker. */
-export type WireGuardPrivilege = "root" | "sudo" | "docker";
-
-/** One peer of a WireGuard interface, as `wg show <if> dump` lists it. */
-export interface WireGuardPeerState {
-  publicKey: string;
-  endpoint?: string;
-  /** Absent when the peer never completed a handshake. */
-  latestHandshake?: Date;
-  allowedIps: string[];
-}
-
-/** Reads a server's WireGuard interface (the host adapter's `readWireGuard`). */
-export type WireGuardReader = (
-  remote: RemoteExec,
-  iface: string,
-  privilege: WireGuardPrivilege,
-  options: { rootImage: string },
-) => Promise<WireGuardPeerState[]>;
 
 /** A link of the private network, seen from the server `from`. */
 export interface NetworkLink {
@@ -50,17 +30,13 @@ export interface NetworkLink {
 /** The services {@link readNetwork} uses; each defaults to the real one, fakes in tests. */
 export interface ReadNetworkServices {
   /** Reads a server's interface (default the host adapter's `readWireGuard`). */
-  readWireGuard?: WireGuardReader;
+  readWireGuard?: typeof readWireGuard;
   /** The shell on a server (default `serverRemote`). */
   remote?: (server: string) => Promise<RemoteExec>;
 }
 
 /** WireGuard drops a session whose last handshake is older than this (`REJECT_AFTER_TIME`). */
 const HANDSHAKE_FRESH_SECONDS = 180;
-
-/** The host adapter's `readWireGuard`, as a {@link WireGuardReader}. */
-const readWireGuard: WireGuardReader = (remote, iface, privilege, { rootImage }) =>
-  readServerWireGuard(remote, iface, privilege, rootImage);
 
 /** The average round trip `ping -c 3 -q` printed (iputils and busybox); none without a reply. */
 function roundTrip(stdout: string): number | undefined {
@@ -120,7 +96,7 @@ export async function readNetwork(
   /** The server's WireGuard peers, or why they could not be read. */
   const peersOf = async (
     member: (typeof network.members)[number],
-  ): Promise<WireGuardPeerState[] | "unreachable" | "no-root"> => {
+  ): Promise<WireGuardPeer[] | "unreachable" | "no-root"> => {
     if (member.name === APP_SERVER && (app === undefined || pings === undefined)) {
       return "unreachable";
     }
@@ -129,9 +105,7 @@ export async function readNetwork(
         member.name === APP_SERVER && app !== undefined ? app : await remoteOf(member.name);
       const privilege = await probePrivilege(failingWhenUnreachable(remote));
       if (privilege === "sudo-password" || privilege === "none") return "no-root";
-      return await read(remote, networkInterface(member), privilege, {
-        rootImage: IMAGES.caddy.ref,
-      });
+      return await read(remote, networkInterface(member), privilege, IMAGES.caddy.ref);
     } catch {
       return "unreachable";
     }

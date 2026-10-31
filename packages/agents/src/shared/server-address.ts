@@ -78,37 +78,19 @@ export function hasDeployment(plan: Pick<DeployPlan, "deployment">): boolean {
 }
 
 /**
- * The public address of one of the app's servers: `app` (the default) or an extra server by name.
- *
- * The app's server: from OpsCrew's local state (`.opscrew/server.json`), else, for an applied
- * deployment whose infrastructure state is on this computer, from the OpenTofu/Terraform outputs
- * (`server_ipv4`, `server_ipv6`), which are then recorded in the local state. An extra server: from
- * the local state's `servers`. `undefined` when the server's address is not known here. Every
- * command that needs an address reads it here; it is never read from or written to
- * `opscrew/plan.yaml`.
+ * The public address of the app's server: from OpsCrew's local state (`.opscrew/server.json`),
+ * else, for an applied deployment whose infrastructure state is on this computer, from the
+ * OpenTofu/Terraform outputs (`server_ipv4`, `server_ipv6`), which are then recorded in the local
+ * state. `undefined` when the server's address is not known here. Every command that needs an
+ * address reads it here (an extra server's: the local state's `servers`); it is never read from
+ * or written to `opscrew/plan.yaml`.
  */
 export async function serverAddress(
   deps: EngineDeps,
   plan: DeployPlan,
-  options?: OutputsOptions,
-): Promise<ServerAddress | undefined>;
-export async function serverAddress(
-  deps: EngineDeps,
-  plan: DeployPlan,
-  name: string,
-  options?: OutputsOptions,
-): Promise<ServerAddress | undefined>;
-export async function serverAddress(
-  deps: EngineDeps,
-  plan: DeployPlan,
-  nameOrOptions: string | OutputsOptions = APP_SERVER,
-  outputsOptions: OutputsOptions = {},
+  options: OutputsOptions = {},
 ): Promise<ServerAddress | undefined> {
-  const name = typeof nameOrOptions === "string" ? nameOrOptions : APP_SERVER;
-  const options = typeof nameOrOptions === "string" ? outputsOptions : nameOrOptions;
-  const record = await readServerAddresses(deps.paths);
-  if (name !== APP_SERVER) return record.servers?.[name];
-  const local = record.deployment;
+  const local = (await readServerAddresses(deps.paths)).deployment;
   if (local !== undefined) return local;
   if (!hasDeployment(plan)) return undefined;
   const outputs = await infrastructureOutputs(deps, plan, options);
@@ -407,23 +389,26 @@ export async function serverRemote(
 }
 
 /**
- * The deploy user's shell on the app's server (the project's deploy key, the pinned host key),
- * whose deploy logs in at `login` (its public address and port): there, or once public SSH is
- * closed at its private address, as {@link serverRemote} connects. `options.remote` replaces ssh
- * in tests, given the address it connects to.
+ * The deploy user's shell on the server `server` (default the app's; the project's deploy key,
+ * the pinned host key), whose deploy logs in at `login` (its public address and port): there, or
+ * once public SSH is closed at its private address, as {@link serverRemote} connects, with the
+ * hint of this computer's tunnel when that fails. `options.remote` replaces ssh in tests, given
+ * the address it connects to.
  */
 export async function appServerShell(
   deps: Pick<EngineDeps, "paths" | "runner">,
   plan: DeployPlan,
   login: SshReach,
   options: { remote?: (host: string) => RemoteExec; keepAliveSeconds?: number } = {},
+  server: string = APP_SERVER,
 ): Promise<RemoteExec> {
-  const own = plan.target.provider === "own";
+  const target =
+    server === APP_SERVER ? plan.target : plan.servers?.find((s) => s.name === server)?.target;
   return remoteAt(
     deps,
     plan,
-    APP_SERVER,
-    { ...login, own },
+    server,
+    { ...login, own: target?.provider === "own" },
     ({ host, port }) =>
       options.remote?.(host) ??
       new SshRemoteExec({

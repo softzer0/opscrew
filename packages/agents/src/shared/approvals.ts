@@ -18,6 +18,15 @@ export function approvalEntry(record: ApprovalRecord): PlanApproval {
   };
 }
 
+/** `plan` with the approvals of the plans approved this run (`outcomes`, in order). */
+export function withApprovals(
+  plan: DeployPlan,
+  outcomes: Iterable<{ approval?: ApprovalRecord | undefined }>,
+): DeployPlan {
+  const approvals = [...outcomes].flatMap((o) => (o.approval ? [approvalEntry(o.approval)] : []));
+  return approvals.length === 0 ? plan : { ...plan, approvals: [...plan.approvals, ...approvals] };
+}
+
 /** ` (reason)` to follow a refusal's first words, or nothing when the handler gave no reason. */
 export function refusalReason(approval: { reason?: string | undefined }): string {
   return approval.reason ? ` (${approval.reason})` : "";

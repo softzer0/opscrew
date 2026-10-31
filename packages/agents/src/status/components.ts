@@ -2,6 +2,7 @@ import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, upperFirst } from "@opscrew/core";
 import { hostSettingsServices, serviceSpec } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { hasExtraServers } from "../shared/servers";
 
 /** A component of the plan that runs as containers: its Compose service and what it is. */
 export interface PlannedComponent {
@@ -41,11 +42,6 @@ export function componentServer(plan: DeployPlan, service: string): string {
 /** The planned components on `server`. */
 function componentsOn(plan: DeployPlan, server: string): PlannedComponent[] {
   return plannedComponents(plan).filter((c) => componentServer(plan, c.service) === server);
-}
-
-/** True when the app has extra servers: then every line about a server names it. */
-export function hasExtraServers(plan: Pick<DeployPlan, "servers">): boolean {
-  return (plan.servers ?? []).length > 0;
 }
 
 /**

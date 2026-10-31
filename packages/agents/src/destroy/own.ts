@@ -48,6 +48,7 @@ import {
   readValidJson,
 } from "../shared";
 import { connectAndInspectOwnServer, inspectOwnHost } from "../shared/own-server";
+import { extraCloudProviders, extraCloudServers } from "../shared/servers";
 import { deletesServer, serverData } from "./checks";
 import {
   applyCloudflareRemoval,
@@ -83,14 +84,14 @@ import {
   deletionSession,
   discardPlan,
   liftProtection,
-  remainingAfterDeletion,
   removeSnapshotRecord,
 } from "./deletion";
 import {
   confirmExtraServers,
-  extraCloudServers,
   extraOwnServers,
+  extraProtectedServers,
   extraProtectionVars,
+  extraServersRemaining,
   forgetExtraCloudServers,
   project,
   removeExtraOwnServers,
@@ -498,8 +499,7 @@ export async function destroyOwnServer(
 
   // 2. Credentials: the extra servers' providers too, whose servers the teardown deletes
   const cloudflare = removeApp && stateHere && plan.dns.provider === "cloudflare";
-  const clouds =
-    removeApp && stateHere ? [...new Set(extras.map((server) => server.provider))] : [];
+  const clouds = removeApp && stateHere ? extraCloudProviders(given) : [];
   deps.reporter.step(
     `Checking the login to your server${clouds.map((cloud) => `, your ${providerProfile(cloud).displayName} access`).join("")}${cloudflare ? ", your Cloudflare access" : ""}${removeApp ? " and GitHub access" : ""}`,
   );
@@ -703,9 +703,7 @@ export async function destroyOwnServer(
     }
     // The extra Hetzner servers' delete protection, lifted with a plan of its own first.
     if (iac !== undefined && Object.keys(vars).length > 0) {
-      const names = extras
-        .filter((server) => `${server.name}_delete_protection` in vars)
-        .map((server) => server.resource);
+      const names = extraProtectedServers(given).map((server) => server.resource);
       const protection = await liftProtection(iac, {
         vars,
         names,
@@ -909,16 +907,9 @@ export async function destroyOwnServer(
     files: await deploymentFiles(deps, plan),
   });
   // The extra servers OpsCrew deleted: their snapshots and kept backups, by their names.
-  for (const server of extras) {
-    remaining.push(
-      ...remainingAfterDeletion({
-        provider: server.provider,
-        app: server.resource,
-        snapshotId: snapshotIds[server.name],
-        backups: server.backups,
-      }),
-    );
-    if (removeApp) await removeSnapshotRecord(deps, "destroy", server.resource);
+  remaining.push(...extraServersRemaining(given, snapshotIds));
+  if (removeApp) {
+    for (const server of extras) await removeSnapshotRecord(deps, "destroy", server.resource);
   }
   remaining.push(...bucketStillListed(bucketDeleted));
   deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));

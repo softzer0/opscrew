@@ -17,7 +17,7 @@ import { hasPublicAddress, type KeyMaker, type ReadNetworkServices } from "../ne
 import type { NetworkServer } from "../provision/network";
 import { type HostAdapterApi, hasDeployment, serverLogin, serverRemote } from "../shared";
 import { networkSshPort } from "../shared/server-address";
-import { appServers } from "../status/servers";
+import { appServers } from "../shared/servers";
 
 /** The phase `opscrew vpn` audits its host plans under. */
 export const VPN_PHASE: PhaseName = "secure";
@@ -66,16 +66,18 @@ export function deviceServers(plan: DeployPlan): string[] {
 }
 
 /**
- * How the private network's host plan reaches the server `name`, inspected read-only now: the
- * login's shell (the admin login on the user's own server, `deploy` on one OpsCrew created, which
- * becomes root through Docker in the pinned Caddy image), with the port sshd listens on. The server
- * hosts this app alone when OpsCrew created it, or when no other OpsCrew app is active on it.
+ * How the private network's host plan reaches the server `name`, inspected read-only now (audited
+ * under `phase`): the login's shell (the admin login on the user's own server, `deploy` on one
+ * OpsCrew created, which becomes root through Docker in the pinned Caddy image, bound into its
+ * apply), with the port sshd listens on. The server hosts this app alone when OpsCrew created it,
+ * or when no other OpsCrew app is active on it.
  */
 export async function networkServer(
   deps: PhaseDeps,
   plan: DeployPlan,
   name: string,
-  services: VpnServices,
+  services: Pick<VpnServices, "remote" | "host">,
+  phase: PhaseName = VPN_PHASE,
 ): Promise<NetworkServer> {
   const login = await serverLogin(deps, plan, name);
   const remote = (await services.remote?.(name)) ?? (await serverRemote(deps, plan, name));
@@ -87,7 +89,7 @@ export async function networkServer(
     kind: "remote-exec",
     actor: "opscrew",
     action: `inspect host as ${login.own ? "the admin login" : "deploy"} (read-only)`,
-    phase: VPN_PHASE,
+    phase,
     target: `server ${name}`,
     decision: "allow",
   });
@@ -95,11 +97,13 @@ export async function networkServer(
     name,
     remote,
     facts,
-    apply: host.apply,
+    apply:
+      rootImage === undefined
+        ? host.apply
+        : (remote, applied, options) => host.apply(remote, applied, { ...options, rootImage }),
     // The network's steps change no SSH setting the host adapter guards.
     verifyLogin: async () => true,
     sshPort: networkSshPort(facts, login.port),
     alone: !login.own || otherActiveApps(facts.apps, plan.app.name).length === 0,
-    ...(rootImage !== undefined ? { rootImage } : {}),
   };
 }

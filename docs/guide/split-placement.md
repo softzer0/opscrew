@@ -99,6 +99,11 @@ app's server by removing `server`), its data moves with it.
    - the app's settings get the new address, and the app starts against the new copy and must
      pass its health check;
    - the deploys and the check resume.
+
+   In a script, where nobody can answer, add `--allow-downtime` to approve the window
+   (`npx opscrew provision --allow-downtime`). It approves only the maintenance window: every other
+   plan still needs its own approval, with `--approve` and its hash. In a terminal you are always
+   asked.
 4. **A failure before the app has started on the new copy** puts the app's settings back and starts
    the app on the old copy: nothing is lost, and you run `npx opscrew provision` again when ready.
 5. **Once the app has started on the new copy, OpsCrew only goes forward.** The app may already

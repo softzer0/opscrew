@@ -1,4 +1,4 @@
-import { type HostFacts, otherActiveApps, tunnelOf } from "@opscrew/connector-ssh-host";
+import { otherActiveApps, tunnelOf } from "@opscrew/connector-ssh-host";
 import { listText, OpsCrewError } from "@opscrew/core";
 import type { PlanService } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -10,20 +10,10 @@ import {
   SERVER_FIELDS,
   type ServerQuestion,
 } from "../interview/own-server";
+import type { NetworkHostFacts } from "../network";
 import type { OwnServerServices } from "../provision/types";
-import {
-  connectPinnedLogin,
-  inspectOwnHost,
-  ownServerFacts,
-  ownServerPublicAddress,
-} from "../shared/own-server";
-import { ownServerReach } from "../shared/server-address";
-import {
-  readServerAddresses,
-  type ServerAddress,
-  type SshLogin,
-  updateServerAddresses,
-} from "../shared/server-record";
+import { connectExtraServer, ownServerFacts, ownServerPublicAddress } from "../shared/own-server";
+import { readServerAddresses, type SshLogin, updateServerAddresses } from "../shared/server-record";
 import { distinctAmounts } from "./own";
 import type { DesignedServer } from "./servers";
 import { ownServerFreeDiskGb, ownServerMemory, smallServerWarnings } from "./sizing";
@@ -42,10 +32,8 @@ export interface OwnServersOptions {
 
 /** An extra server the user owns, as design read it. */
 export interface DesignedOwnServer extends DesignedServer {
-  /** What inspection found (the network's free port). */
-  facts: HostFacts;
-  /** Its public address, kept in `.opscrew/server.json` (`servers`). */
-  address: ServerAddress;
+  /** What inspection found, for the network's free port. */
+  facts: NetworkHostFacts;
 }
 
 /** The interview's questions that make a login. */
@@ -102,36 +90,12 @@ export async function designOwnServer(
     }
     login = await askedLogin(name, options.askServerLogin);
   }
-  const connection = login;
-  // Once public SSH is closed, a server already on the network is reached at its private address.
-  const reach = await ownServerReach(deps, name, connection);
-  const session = await connectPinnedLogin(
-    deps,
-    {
-      connection,
-      knownHostsFile: deps.paths.files.knownHosts,
-      pin: async (hostKey) => {
-        await updateServerAddresses(deps.paths, (current) => ({
-          ...current,
-          ownServers: { ...current.ownServers, [name]: { ...connection, hostKey } },
-        }));
-      },
-      words: {
-        noun: `server ${name}`,
-        fix: `\`opscrew design\` (remove ownServers.${name} from .opscrew/server.json first, so it asks again)`,
-        missingKey: `Remove ownServers.${name} from .opscrew/server.json and run \`opscrew design\` again, giving the path of your private key (or \`agent\`).`,
-      },
-      ...(reach !== undefined ? { reach } : {}),
-    },
-    { services: options.extraServers },
-  );
-  const facts = await inspectOwnHost(deps, session, {
+  const { facts } = await connectExtraServer(deps, name, login, {
     services: options.extraServers,
     phase: "design",
-    machine: { noun: `server ${name}`, target: `own server ${name}` },
   });
   const server = ownServerFacts(facts);
-  const address = ownServerPublicAddress({ host: connection.host }, facts);
+  const address = ownServerPublicAddress({ host: login.host }, facts);
   if (address === undefined) {
     const placed = listText(services.map((service) => service.name));
     throw new OpsCrewError(
@@ -180,7 +144,6 @@ export async function designOwnServer(
     memoryGb: server.memoryGb,
     ...(server.os === undefined ? {} : { os: server.os }),
     facts,
-    address,
     warnings,
   };
 }

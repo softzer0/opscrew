@@ -3,6 +3,7 @@
  * the deploy writes from the GitHub secret `OPSCREW_APP_ENV`. The switch changes only the moving
  * service's address in them. Their text holds secrets: it is never logged, shown or audited.
  */
+import type { CommandResult } from "@opscrew/contracts";
 import { OpsCrewError, type Redactor } from "@opscrew/core";
 import {
   appDir,
@@ -97,6 +98,18 @@ export async function switchedEnv(
 }
 
 /**
+ * What a failed command on a server said, to follow its description: `: <its error output>`
+ * (redacted, at most 300 characters), or ` (exit code <n>)` when it said nothing.
+ */
+export function failureDetail(
+  result: Pick<CommandResult, "exitCode" | "stderr">,
+  redactor: Pick<Redactor, "redact">,
+): string {
+  const said = redactor.redact(result.stderr.trim()).slice(0, 300);
+  return said ? `: ${said}` : ` (exit code ${result.exitCode})`;
+}
+
+/**
  * Writes `text` as the app's settings on its server (`app`), owner-only, replacing the file in one
  * step.
  * @throws OpsCrewError `COMMAND_FAILED` with the server's words, never the settings.
@@ -113,10 +126,9 @@ export async function writeAppEnv(
     { input: text, timeoutMs: 60_000 },
   );
   if (result.exitCode === 0) return;
-  const said = redactor.redact(result.stderr.trim()).slice(0, 300);
   throw new OpsCrewError(
     "COMMAND_FAILED",
-    `Could not write the app's settings (app.env) on ${serverWords(app.name)}${said ? `: ${said}` : ` (exit code ${result.exitCode})`}.`,
+    `Could not write the app's settings (app.env) on ${serverWords(app.name)}${failureDetail(result, redactor)}.`,
     { hint: "Check the free disk space on the app's server (`df -h /srv`)." },
   );
 }
@@ -136,10 +148,9 @@ export async function writeMask(
   if (script === "") return;
   const result = await app.remote.run("bash -s", { input: script, timeoutMs: 60_000 });
   if (result.exitCode === 0) return;
-  const said = redactor.redact(result.stderr.trim()).slice(0, 300);
   throw new OpsCrewError(
     "COMMAND_FAILED",
-    `Could not rewrite Grafana Alloy's masking file (mask.re) on ${serverWords(app.name)}${said ? `: ${said}` : ` (exit code ${result.exitCode})`}.`,
+    `Could not rewrite Grafana Alloy's masking file (mask.re) on ${serverWords(app.name)}${failureDetail(result, redactor)}.`,
     { hint: "Check the free disk space on the app's server (`df -h /srv`)." },
   );
 }

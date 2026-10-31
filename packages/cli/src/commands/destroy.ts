@@ -3,6 +3,7 @@ import {
   type DestroyPreview,
   type DestroyResult,
   destroyConfirmPrompt,
+  extraCloudServers,
   type PhaseDeps,
   providerBucket,
   runDestroy,
@@ -255,9 +256,7 @@ export async function runDestroyCommand(
     const scripted = confirms.length > 0;
     const again = `opscrew destroy${flag}`;
     // Each extra server OpsCrew created is deleted only with its own name at its provider.
-    const extras = (plan.servers ?? []).flatMap((server) =>
-      server.target.provider === "own" ? [] : [`${name}-${server.name}`],
-    );
+    const extras = extraCloudServers(plan).map((server) => server.resource);
     const confirmFlags = [name, ...extras].map((value) => ` --confirm ${value}`).join("");
     const howTo = `To ${own ? "remove the app from your server" : portainer ? "remove the app from your Portainer" : local ? "remove the app from this computer" : site ? "remove the site" : "delete the deployment"}, run \`${again}${confirmFlags}\`.`;
     // A value that names no server stops; so does a script without the deployment's own name.

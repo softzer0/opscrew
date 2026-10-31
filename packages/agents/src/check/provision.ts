@@ -15,6 +15,7 @@ import type { GitHubSetup } from "../provision/credentials";
 import type { ProvisionServices } from "../provision/types";
 import { trackedFiles } from "../shared/github";
 import type { HostAdapterApi, HostPlanOutcome } from "../shared/host-plan";
+import { extraCloudServers, hasExtraServers } from "../shared/servers";
 import { checkFiles, otherPlans } from "./files";
 import { addCheckKey } from "./host";
 import { type CheckKey, ensureCheckKey, readCheckKey } from "./key";
@@ -74,7 +75,7 @@ export async function deploySetupCheck(
  * the app server's runner when the environment deploys there).
  */
 function checkUsesKey(plan: DeployPlan): boolean {
-  return checkReachesOverSsh(plan) || (plan.servers ?? []).length > 0;
+  return checkReachesOverSsh(plan) || hasExtraServers(plan);
 }
 
 /** The check key of `plan`'s environment, when the check is on and reads a disk over SSH. */
@@ -98,7 +99,7 @@ export async function renderedCheckKeyLine(
   repository: string,
   create = true,
 ): Promise<string | undefined> {
-  const cloudExtras = (plan.servers ?? []).some((server) => server.target.provider !== "own");
+  const cloudExtras = extraCloudServers(plan).length > 0;
   const cloudApp = plan.target.provider !== "own" && checkReachesOverSsh(plan);
   if (plan.observability?.check?.enabled !== true || !(cloudApp || cloudExtras)) return undefined;
   const key = create

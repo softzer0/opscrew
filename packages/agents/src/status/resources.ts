@@ -24,13 +24,9 @@ import { providerProfile } from "../providers";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import { portainerClientFor } from "../shared";
 import { connectOwnServer } from "../shared/own-server";
+import { hasExtraServers } from "../shared/servers";
 import { deployShell } from "./certificates";
-import {
-  containerService,
-  hasExtraServers,
-  oneShotServices,
-  plannedComponents,
-} from "./components";
+import { containerService, oneShotServices, plannedComponents } from "./components";
 import type { ComponentStatusOptions } from "./run";
 
 /** One container's figures. */

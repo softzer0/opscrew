@@ -63,6 +63,7 @@ import {
 } from "../shared";
 import { hostPlanFile } from "../shared/host-plan";
 import { runPhase } from "../shared/phase-status";
+import { extraCloudProviders } from "../shared/servers";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
 import { deployShell } from "../status/certificates";
 import { checkAdditions } from "./additions";
@@ -115,13 +116,13 @@ import {
   setDeploySecrets,
 } from "./secrets";
 import {
-  extraCloudServers,
   liftRemovedProtection,
   readyExtraServers,
   recordExtraServers,
   removalConfirmPhrase,
   removalNotes,
   removedCloudServers,
+  removedOwnServers,
   requireDesignedPlacement,
   requirePublicSshForRemoval,
   serverHostPlans,
@@ -415,9 +416,7 @@ async function provisionFlow(
   await requirePublicSshForRemoval(deps, plan, command);
   const profile = providerProfile(planProvider(plan));
   // The providers of the extra servers OpsCrew creates, besides the app server's.
-  const extraProviders = [...new Set(extraCloudServers(plan).map((s) => s.provider))].filter(
-    (provider) => provider !== profile.id,
-  );
+  const extraProviders = extraCloudProviders(plan, profile.id);
   const others = extraProviders.map((provider) => `${providerProfile(provider).displayName}, `);
   deps.reporter.step(
     ownServer
@@ -687,9 +686,7 @@ async function provisionFlow(
   // delete protection lifted first, while the files still declare it), one the user owns gets its
   // undo host plans after the infrastructure apply.
   const serverRecord = await readServerAddresses(deps.paths);
-  const removedOwn = Object.keys(serverRecord.ownServers ?? {}).filter(
-    (name) => !(plan.servers ?? []).some((server) => server.name === name),
-  );
+  const removedOwn = removedOwnServers(plan, serverRecord);
   const hadServers = (plan.servers ?? []).length > 0 || serverRecord.servers !== undefined;
   if (hadServers && approveHash === undefined) {
     const stateOutputs = await infrastructureOutputs(deps, plan, {

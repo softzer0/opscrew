@@ -16,7 +16,8 @@ import { APP_SERVER, type DeployPlan, isServerlessProvider } from "@opscrew/plan
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { registerAppSecrets } from "../shared/app-secrets";
-import { componentServer, hasExtraServers, plannedComponents } from "../status/components";
+import { hasExtraServers } from "../shared/servers";
+import { componentServer, plannedComponents } from "../status/components";
 import { cloudflareLogs } from "./cloudflare";
 import { parseSince } from "./commands";
 import { type LogLine, type LogRead, logRead } from "./lines";

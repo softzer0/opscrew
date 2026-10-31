@@ -16,7 +16,7 @@ import { requirePortainerConnection, requirePortainerToken } from "../provision/
 import type { ProvisionServices } from "../provision/types";
 import { appServerShell, portainerClientFor, serverAddress } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
-import { hasExtraServers } from "../status/components";
+import { hasExtraServers } from "../shared/servers";
 import { serverShell } from "../status/servers";
 import {
   dockerLogLine,

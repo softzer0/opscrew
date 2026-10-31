@@ -24,7 +24,7 @@ import {
 } from "../network";
 import { databaseSize, serverOps } from "../retarget/server-ops";
 import { reasonOf } from "../shared/errors";
-import { serverRemote } from "../shared/server-address";
+import { serverRemote, serverWords } from "../shared/server-address";
 import { memoryText, serverMemoryText } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE } from "./cost";
 import { type HopDelay, hopDelay, type ServerPlace } from "./delay";
@@ -342,8 +342,7 @@ async function moveLines(
   }
   let size: { bytes: number } | { unknown: string };
   try {
-    const from = move.from === APP_SERVER ? "the app's server" : `server ${move.from}`;
-    deps.reporter.step(`Measuring ${move.service}'s database on ${from}`);
+    deps.reporter.step(`Measuring ${move.service}'s database on ${serverWords(move.from)}`);
     const remote = await serverRemote(deps, plan, move.from);
     size = {
       bytes: await databaseSize(remote, {

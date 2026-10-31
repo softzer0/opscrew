@@ -1,3 +1,4 @@
+import type { WireGuardPeer } from "@opscrew/connector-ssh-host";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { IMAGES } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -6,7 +7,7 @@ import { updateServerAddresses } from "../shared/server-record";
 import { createTestPhaseDeps, testKeyMaker } from "../testing";
 import { splitPlan, withNetwork } from "./__fixtures__/plans";
 import { allocateNetwork } from "./allocate";
-import { type ReadNetworkServices, readNetwork, type WireGuardPeerState } from "./read";
+import { type ReadNetworkServices, readNetwork } from "./read";
 
 const NOW = new Date("2026-10-30T12:00:00.000Z");
 const ago = (seconds: number) => new Date(NOW.getTime() - seconds * 1000);
@@ -62,7 +63,12 @@ async function world(options: {
     ownServers: { data: { ...login, host: "203.0.113.20", user: "admin" } },
   }));
   const commands: { server: string; command: string }[] = [];
-  const reads: { server: string; iface: string; privilege: string; rootImage: string }[] = [];
+  const reads: {
+    server: string;
+    iface: string;
+    privilege: string;
+    rootImage: string | undefined;
+  }[] = [];
   const remote = (server: string): RemoteExec => ({
     host: server,
     async run(command): Promise<CommandResult> {
@@ -86,11 +92,11 @@ async function world(options: {
     )?.publicKey ?? "";
   const services: ReadNetworkServices = {
     remote: async (server) => remote(server),
-    async readWireGuard(shell, iface, privilege, { rootImage }) {
+    async readWireGuard(shell, iface, privilege, rootImage) {
       reads.push({ server: shell.host, iface, privilege, rootImage });
       if (options.offline?.includes(shell.host)) throw new Error("wg show failed");
       return Object.entries(options.handshakes[shell.host] ?? {}).map(
-        ([peer, seconds]): WireGuardPeerState => ({
+        ([peer, seconds]): WireGuardPeer => ({
           publicKey: keyOf(peer),
           allowedIps: [],
           ...(seconds !== undefined ? { latestHandshake: ago(seconds) } : {}),

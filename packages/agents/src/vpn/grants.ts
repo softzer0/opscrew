@@ -23,8 +23,10 @@ import { applyNetworkPlans, type NetworkServer } from "../provision/network";
 import {
   approveAndApplyHostPlan,
   type HostPlanOutcome,
+  outcomeSummary,
   randomPassword,
   readValidJson,
+  withApprovals,
   writePlanIfChanged,
 } from "../shared";
 import {
@@ -32,7 +34,6 @@ import {
   generatedValuesFile,
   recordGeneratedEntries,
 } from "../shared/app-secrets";
-import { withApprovals } from "./devices";
 import { networkServer, requireServers, VPN_PHASE, type VpnServices } from "./servers";
 
 type Access = Network["grants"][number]["access"];
@@ -99,7 +100,7 @@ function passwordKey(device: string, service: string): string {
 }
 
 /** The private address of the server `server` on the app's network. */
-function memberAddress(plan: DeployPlan, server: string): string {
+export function memberAddress(plan: DeployPlan, server: string): string {
   return plan.network?.members.find((m) => m.name === server)?.address ?? "";
 }
 
@@ -217,15 +218,11 @@ function applyGrantPlan(
   password?: string,
 ): Promise<HostPlanOutcome> {
   const hostPlan = planGrant(server.facts, { app: plan.app.name, grant }, command);
-  const { rootImage } = server;
   const login = `device ${grant.login}'s login`;
   return approveAndApplyHostPlan(deps, {
     plan: hostPlan,
     remote: server.remote,
-    apply:
-      rootImage === undefined
-        ? server.apply
-        : (remote, applied, options) => server.apply(remote, applied, { ...options, rootImage }),
+    apply: server.apply,
     verifyLogin: server.verifyLogin,
     title: grant.remove
       ? `Remove ${login} from ${grant.service} on server ${server.name}`
@@ -412,8 +409,7 @@ export async function vpnGrant(
     address,
     port,
     connection: connection(service, device, password, address, port),
-    hostPlanHashes: outcomes.map((o) => o.hash),
-    applied: outcomes.some((o) => o.applied),
+    ...outcomeSummary(outcomes),
   };
 }
 
@@ -485,7 +481,6 @@ export async function vpnRevoke(
   return {
     device,
     service: service.name,
-    hostPlanHashes: outcomes.map((o) => o.hash),
-    applied: outcomes.some((o) => o.applied),
+    ...outcomeSummary(outcomes),
   };
 }

@@ -64,15 +64,21 @@ export async function saveMove(
   return next;
 }
 
-/** Audits a change the window made on the server `server`. */
-function audited(deps: Pick<PhaseDeps, "audit">, action: string, server: string, detail?: string) {
+/** Audits a change the window made on the server `server`, or (`refused`) its failure. */
+function audited(
+  deps: Pick<PhaseDeps, "audit">,
+  action: string,
+  server: string,
+  detail?: string,
+  decision: "approved" | "refused" = "approved",
+) {
   return deps.audit.append({
     kind: "remote-exec",
     actor: "opscrew",
     action,
     phase: "provision",
     target: `server ${server}`,
-    decision: "approved",
+    decision,
     ...(detail !== undefined ? { detail } : {}),
   });
 }
@@ -238,15 +244,13 @@ async function forwardFailure(
   error: unknown,
 ): Promise<OpsCrewError> {
   const { deps, plan, move, app, to } = run;
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "maintenance window",
-    phase: "provision",
-    target: `server ${app.name}`,
-    decision: "refused",
-    detail: `the switch failed and goes forward: ${failureReason(error)}`,
-  });
+  await audited(
+    deps,
+    "maintenance window",
+    app.name,
+    `the switch failed and goes forward: ${failureReason(error)}`,
+    "refused",
+  );
   await resumeCheck(deps, setup.target, plan, approval);
   return new OpsCrewError(
     codeOf(error),
@@ -482,15 +486,13 @@ interface WindowDone extends WindowSetup {
  */
 async function rollBack(run: MoveRun, cause: unknown, done: WindowDone): Promise<OpsCrewError> {
   const { deps, plan, move, app } = run;
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "maintenance window",
-    phase: "provision",
-    target: `server ${app.name}`,
-    decision: "refused",
-    detail: `the maintenance window failed: ${failureReason(cause)}`,
-  });
+  await audited(
+    deps,
+    "maintenance window",
+    app.name,
+    `the maintenance window failed: ${failureReason(cause)}`,
+    "refused",
+  );
   const old = `the old copy of ${move.service} on ${serverWords(move.from)}`;
   deps.reporter.warn(
     `The maintenance window failed: ${failureReason(cause)}. OpsCrew puts the app's settings back and starts the app on ${old}.`,

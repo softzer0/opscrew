@@ -19,7 +19,6 @@ export {
   type OwnServerDesignInput,
   type PreviewDesignOptions,
   previewDesignOptions,
-  type ResolvedCatalog,
   type RunDesignOptions,
   resolveCatalog,
   runDesign,

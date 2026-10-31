@@ -27,7 +27,12 @@ import {
 import { CLOUD_TUNNEL_DIR } from "../portainer/settings";
 import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
-import { applyOwnHostPlan, dashboardsOnNetwork, type OwnServerRun } from "../provision/own";
+import {
+  applyOwnHostPlan,
+  dashboardsOnNetwork,
+  dashboardsWaitForNetwork,
+  type OwnServerRun,
+} from "../provision/own";
 import { approveAndApplyHostPlan, hasDeployment } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import type { HostChangeResult } from "../shared/tunnel-connections";
@@ -448,8 +453,7 @@ async function addonHostChange(
     enabling &&
     plan.observability?.beszel?.mode === "hub" &&
     kind === "beszel" &&
-    dashboardsOnNetwork(plan, ownRun.facts) &&
-    !hasAppInterface(plan, ownRun.facts)
+    dashboardsWaitForNetwork(plan, ownRun.facts)
   ) {
     deps.reporter.info(
       "Beszel's dashboard goes on your server's private address for your devices once the private network is set up there: run `opscrew provision`, then `opscrew addon enable beszel` again.",

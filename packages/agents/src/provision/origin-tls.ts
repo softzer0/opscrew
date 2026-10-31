@@ -493,7 +493,6 @@ export async function readEdgeOver(
     edge = result.exitCode === 0 ? parseServerEdge(result.stdout) : undefined;
   } catch (error) {
     if (error instanceof OpsCrewError) failure = error;
-    edge = undefined;
   }
   await deps.audit.append({
     kind: "remote-exec",

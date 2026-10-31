@@ -8,13 +8,14 @@ import {
   HostFactsSchema,
   type HostPlan,
   hostPlanHash,
+  type WireGuardPeer,
 } from "@opscrew/connector-ssh-host";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
 import { type DeployPlan, type Network, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { allocateNetwork, type WireGuardPeerState } from "../network";
+import { allocateNetwork } from "../network";
 import { splitPlan, withNetwork } from "../network/__fixtures__/plans";
 import {
   GeneratedValuesSchema,
@@ -462,7 +463,7 @@ describe("opscrew vpn list", () => {
         return { exitCode: 1, stdout: "3 packets transmitted, 0 received", stderr: "" };
       },
     });
-    const handshakes: Record<string, WireGuardPeerState[]> = {
+    const handshakes: Record<string, WireGuardPeer[]> = {
       app: [
         {
           publicKey: testKeyPair("laptop").publicKey,

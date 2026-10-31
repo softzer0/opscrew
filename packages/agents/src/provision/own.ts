@@ -1,12 +1,10 @@
 import { join } from "node:path";
 import { CloudflareClient } from "@opscrew/connector-cloudflare";
 import {
-  applyHostPlan,
   type DesiredHost,
   type DesiredRunner,
   type HostFacts,
   type HostPlan,
-  inspectHost,
   otherActiveApps,
   planAddon,
   planHost,
@@ -64,17 +62,15 @@ import {
   stringOutput,
   updateServerAddresses,
 } from "../shared";
-import { keepServerSetup } from "../shared/host-plan";
+import { boundHostAdapter, keepServerSetup } from "../shared/host-plan";
 import {
   connectAndInspectOwnServer,
-  connectPinnedLogin,
-  inspectOwnHost,
-  type LoginWords,
+  connectExtraServer,
   type OwnServerSession,
   ownServerLoginCheck,
   ownServerPublicAddress,
 } from "../shared/own-server";
-import { networkSshPort, ownServerReach } from "../shared/server-address";
+import { networkSshPort } from "../shared/server-address";
 import {
   type ConnectorFirst,
   connectorFirst,
@@ -330,19 +326,23 @@ export function dashboardsOnNetwork(plan: DeployPlan, facts?: Pick<HostFacts, "a
 }
 
 /**
- * True when Portainer's web UI should also be on the app's server's private address
- * ({@link dashboardsOnNetwork}) but waits for the next provision: the server does not have the
- * private network's interface yet, which this run's network host plan sets up.
+ * True when the dashboards should be on the app's server's private address
+ * ({@link dashboardsOnNetwork}) but wait for the next provision: the server does not have the
+ * private network's interface yet, which the network host plan sets up.
  */
+export function dashboardsWaitForNetwork(
+  plan: DeployPlan,
+  facts: Pick<HostFacts, "apps" | "network">,
+): boolean {
+  return dashboardsOnNetwork(plan, facts) && !hasAppInterface(plan, facts);
+}
+
+/** True when Portainer's web UI waits for the private network ({@link dashboardsWaitForNetwork}). */
 export function portainerWaitsForNetwork(
   plan: DeployPlan,
   facts: Pick<HostFacts, "apps" | "network">,
 ): boolean {
-  return (
-    plan.portainer?.enabled === true &&
-    dashboardsOnNetwork(plan, facts) &&
-    !hasAppInterface(plan, facts)
-  );
+  return plan.portainer?.enabled === true && dashboardsWaitForNetwork(plan, facts);
 }
 
 /**
@@ -461,12 +461,8 @@ export async function prepareOwnServer(
   const { plan } = input;
   const target = ownTarget(plan);
   const own = input.services.own ?? {};
-  const adapter = own.host ?? { inspect: inspectHost, apply: applyHostPlan };
   // Bound, so `run.host.apply` can be passed on as a function.
-  const host: HostAdapterApi = {
-    inspect: (remote) => adapter.inspect(remote),
-    apply: (remote, plan, options) => adapter.apply(remote, plan, options),
-  };
+  const host = boundHostAdapter(own.host);
   if (target.access === "tunnel") sshHostname(plan); // a tunnel needs a Cloudflare domain
   // Behind Cloudflare's proxy the firewall needs Cloudflare's current ranges; read them first, so
   // a failure stops before anything is changed.
@@ -929,19 +925,11 @@ export function ownDeployTarget(
   return { host: address.ipv4, knownHosts: `${name} ${key.type} ${key.key}\n` };
 }
 
-/** The login words of the extra server `name` the user owns, whose login design records. */
-function extraServerWords(name: string): LoginWords {
-  return {
-    noun: `server ${name}`,
-    fix: `\`opscrew design\` (remove ownServers.${name} from .opscrew/server.json first, so it asks again)`,
-    missingKey: `Remove ownServers.${name} from .opscrew/server.json and run \`opscrew design\` again, giving the path of your private key (or \`agent\`).`,
-  };
-}
-
 /**
  * Connects to the extra server `name` the user owns with the login design recorded
  * (`.opscrew/server.json` → `ownServers`, its host key pinned there) and inspects it read-only
- * through the host adapter of `services.own` (default `inspectHost` and `applyHostPlan`).
+ * (`connectExtraServer`) through the host adapter of `services.own` (default `inspectHost` and
+ * `applyHostPlan`).
  * @throws OpsCrewError `PHASE_PRECONDITION` when this computer has no login for it.
  */
 async function connectExtraOwnServer(
@@ -950,11 +938,7 @@ async function connectExtraOwnServer(
 ): Promise<ExtraOwnServerRun> {
   const { name } = input;
   const own = input.services.own ?? {};
-  const adapter = own.host ?? { inspect: inspectHost, apply: applyHostPlan };
-  const host: HostAdapterApi = {
-    inspect: (remote) => adapter.inspect(remote),
-    apply: (remote, plan, options) => adapter.apply(remote, plan, options),
-  };
+  const host = boundHostAdapter(own.host);
   const login = (await readServerAddresses(deps.paths)).ownServers?.[name];
   if (login === undefined) {
     throw new OpsCrewError(
@@ -966,28 +950,9 @@ async function connectExtraOwnServer(
     );
   }
   deps.reporter.step(`Connecting to server ${name}`);
-  // Once public SSH is closed, at its private address.
-  const reach = await ownServerReach(deps, name, login);
-  const session = await connectPinnedLogin(
-    deps,
-    {
-      connection: login,
-      knownHostsFile: deps.paths.files.knownHosts,
-      pin: async (hostKey) => {
-        await updateServerAddresses(deps.paths, (current) => ({
-          ...current,
-          ownServers: { ...current.ownServers, [name]: { ...login, hostKey } },
-        }));
-      },
-      words: extraServerWords(name),
-      ...(reach !== undefined ? { reach } : {}),
-    },
-    { services: own },
-  );
-  const facts = await inspectOwnHost(deps, session, {
-    services: { host },
+  const { session, facts } = await connectExtraServer(deps, name, login, {
+    services: { ...own, host },
     phase: input.phase,
-    machine: { noun: `server ${name}`, target: `own server ${name}` },
   });
   return {
     name,

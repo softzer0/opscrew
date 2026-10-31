@@ -7,35 +7,13 @@ import { probePrivilege } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { publishedOnNetwork, shellQuote } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { type NetworkLink, type ReadNetworkServices, readNetwork } from "../network";
 import type { ProvisionServices } from "../provision/types";
-import { type ServerLogin, serverLogin, serverRemote } from "../shared/server-address";
+import type { ServerLogin, serverRemote } from "../shared/server-address";
+import { loginShell } from "../shared/servers";
 import { CONTAINER_NAME } from "./components";
-
-/** The extra servers' names, in plan order; none for an app on one server. */
-export function extraServers(plan: Pick<DeployPlan, "servers">): string[] {
-  return (plan.servers ?? []).map((server) => server.name);
-}
-
-/** Every server of the app by name: `app` first, then the extra servers in plan order. */
-export function appServers(plan: Pick<DeployPlan, "servers">): string[] {
-  return [APP_SERVER, ...extraServers(plan)];
-}
-
-/** The login's shell on the server `name`: `serverRemote`, or `services.remote` (tests). */
-async function loginShell(
-  deps: PhaseDeps,
-  plan: DeployPlan,
-  name: string,
-  services: Pick<ProvisionServices, "remote">,
-  options: Parameters<typeof serverRemote>[3] = {},
-): Promise<{ remote: RemoteExec; login: ServerLogin }> {
-  const login = await serverLogin(deps, plan, name);
-  const remote = services.remote?.(login.host) ?? (await serverRemote(deps, plan, name, options));
-  return { remote, login };
-}
 
 /** A shell on one of the app's servers ({@link serverShell}). */
 export interface ServerShell {
@@ -119,21 +97,24 @@ export async function readPublishedPorts(
   });
 }
 
+/** True when `published` holds `expected`: its service on that address and port. */
+export function isPublished(
+  published: readonly PublishedPort[],
+  expected: Readonly<PublishedPort>,
+): boolean {
+  return published.some(
+    (p) =>
+      p.service === expected.service && p.port === expected.port && p.address === expected.address,
+  );
+}
+
 /** What the server `server` should publish on its private address and does not (`published`). */
 export function unpublishedOnNetwork(
   plan: DeployPlan,
   server: string,
   published: readonly PublishedPort[],
 ): ReturnType<typeof publishedOnNetwork> {
-  return publishedOnNetwork(plan, server).filter(
-    (expected) =>
-      !published.some(
-        (p) =>
-          p.service === expected.service &&
-          p.port === expected.port &&
-          p.address === expected.address,
-      ),
-  );
+  return publishedOnNetwork(plan, server).filter((expected) => !isPublished(published, expected));
 }
 
 /**

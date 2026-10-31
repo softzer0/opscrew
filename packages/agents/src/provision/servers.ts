@@ -5,10 +5,9 @@
  */
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { applyHostPlan, inspectHost, otherActiveApps } from "@opscrew/connector-ssh-host";
+import { otherActiveApps } from "@opscrew/connector-ssh-host";
 import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import { listText, OpsCrewError, readTextIfExists, tfstateFile } from "@opscrew/core";
-import { IMAGES } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, serverOfService } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { CheckKey } from "../check/key";
@@ -23,13 +22,21 @@ import {
   readServerAddresses,
   readyNewServer,
   type ServerAddress,
-  serverLogin,
-  serverRemote,
   serverWords,
   updateServerAddresses,
 } from "../shared";
 import { inspectOwnHost } from "../shared/own-server";
 import { networkSshPort } from "../shared/server-address";
+import type { ServerAddresses } from "../shared/server-record";
+import {
+  appServers,
+  cloudServerName,
+  extraCloudServers,
+  extraServers,
+  hasExtraServers,
+  loginShell,
+} from "../shared/servers";
+import { networkServer } from "../vpn/servers";
 import { applyNetworkPlans, type NetworkServer } from "./network";
 import {
   addExtraServerCheckKey,
@@ -64,15 +71,6 @@ export function extraServerOutputs(
   );
 }
 
-/** The plan's extra servers OpsCrew creates (Hetzner, DigitalOcean), in plan order. */
-export function extraCloudServers(plan: Pick<DeployPlan, "servers">) {
-  return (plan.servers ?? []).flatMap((server) =>
-    server.target.provider === "own"
-      ? []
-      : [{ name: server.name, provider: server.target.provider }],
-  );
-}
-
 /**
  * Records the extra cloud servers' addresses from the outputs after an apply in this computer's
  * server record (`servers`), which keeps the addresses of the extra servers the user owns as design
@@ -86,7 +84,7 @@ export async function recordExtraServers(
 ): Promise<void> {
   const created = extraServerOutputs(outputs);
   const record = await readServerAddresses(deps.paths);
-  if ((plan.servers ?? []).length === 0 && record.servers === undefined) return;
+  if (!hasExtraServers(plan) && record.servers === undefined) return;
   await updateServerAddresses(deps.paths, ({ servers: current, ...rest }) => {
     const own = new Set(Object.keys(rest.ownServers ?? {}));
     const servers = {
@@ -136,7 +134,7 @@ export async function readyExtraServers(
  * longer lists: the next infrastructure plan deletes them.
  */
 export function removedCloudServers(
-  plan: Pick<DeployPlan, "servers">,
+  plan: Pick<DeployPlan, "app" | "servers">,
   outputs: Record<string, unknown> | undefined,
 ): string[] {
   const kept = new Set(extraCloudServers(plan).map((server) => server.name));
@@ -179,11 +177,6 @@ function deletions(
   return { removed: [...removed], others: others || (shared && removed.size === 0) };
 }
 
-/** The name of an extra cloud server at its provider: `<app>-<name>`. */
-function resourceName(plan: Pick<DeployPlan, "app">, server: string): string {
-  return `${plan.app.name}-${server}`;
-}
-
 /**
  * The name typed to approve an infrastructure plan that deletes: with extra servers the plan no
  * longer lists, their names at the provider (`<app>-<name>`), as `destroy` asks for a server's, and
@@ -193,7 +186,7 @@ function resourceName(plan: Pick<DeployPlan, "app">, server: string): string {
 export function removalConfirmPhrase(plan: DeployPlan, saved: Pick<SavedPlan, "changes">): string {
   const { removed, others } = deletions(plan, saved);
   if (removed.length === 0) return plan.app.name;
-  return [...(others ? [plan.app.name] : []), ...removed.map((s) => resourceName(plan, s))].join(
+  return [...(others ? [plan.app.name] : []), ...removed.map((s) => cloudServerName(plan, s))].join(
     " ",
   );
 }
@@ -202,7 +195,7 @@ export function removalConfirmPhrase(plan: DeployPlan, saved: Pick<SavedPlan, "c
 export function removalNotes(plan: DeployPlan, saved: Pick<SavedPlan, "changes">): string[] {
   return deletions(plan, saved).removed.map(
     (server) =>
-      `Server ${server} is no longer in servers in opscrew/plan.yaml, so this plan deletes it (${resourceName(plan, server)}) with everything on it.`,
+      `Server ${server} is no longer in servers in opscrew/plan.yaml, so this plan deletes it (${cloudServerName(plan, server)}) with everything on it.`,
   );
 }
 
@@ -259,7 +252,7 @@ export async function liftRemovedProtection(
   );
   await liftProtection(session, {
     vars: Object.fromEntries(protectedServers.map((s) => [`${s}_delete_protection`, "false"])),
-    names: protectedServers.map((server) => resourceName(input.plan, server)),
+    names: protectedServers.map((server) => cloudServerName(input.plan, server)),
     serverInState: true,
     mismatchHint: `Run \`${input.command}\` again once the infrastructure matches its files, or put the server back in servers.`,
   });
@@ -285,6 +278,23 @@ export function requireDesignedPlacement(plan: DeployPlan, command: string): voi
 }
 
 /**
+ * The extra servers the user owns that the plan no longer lists: this computer still has their
+ * logins (`record.ownServers`).
+ */
+export function removedOwnServers(
+  plan: Pick<DeployPlan, "servers">,
+  record: Pick<ServerAddresses, "ownServers">,
+): string[] {
+  const listed = new Set(extraServers(plan));
+  return Object.keys(record.ownServers ?? {}).filter((name) => !listed.has(name));
+}
+
+/** `one` for a single server, else `many`: `it` or `them`, `its` or `their`. */
+function pronoun(servers: readonly string[], one: string, many: string): string {
+  return servers.length === 1 ? one : many;
+}
+
+/**
  * Stops before any change when the plan no longer lists an extra server the user owns (this
  * computer still has its login) while public SSH is closed (`network.publicSsh: false`): OpsCrew
  * reaches it only over the private network, at the address the plan no longer holds, and taking
@@ -297,17 +307,15 @@ export async function requirePublicSshForRemoval(
   command: string,
 ): Promise<void> {
   if (plan.network?.publicSsh !== false) return;
-  const logins = (await readServerAddresses(deps.paths)).ownServers ?? {};
-  const removed = Object.keys(logins).filter(
-    (name) => !(plan.servers ?? []).some((server) => server.name === name),
-  );
+  const removed = removedOwnServers(plan, await readServerAddresses(deps.paths));
   if (removed.length === 0) return;
   const which = listText(removed.map((name) => `server ${name}`));
+  const them = pronoun(removed, "it", "them");
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `opscrew/plan.yaml no longer lists ${which}, but public SSH is closed, so OpsCrew could not reach ${removed.length === 1 ? "it" : "them"} to take the app off. Nothing was changed.`,
+    `opscrew/plan.yaml no longer lists ${which}, but public SSH is closed, so OpsCrew could not reach ${them} to take the app off. Nothing was changed.`,
     {
-      hint: `Put ${which} back in opscrew/plan.yaml as ${removed.length === 1 ? "it was" : "they were"} (with ${removed.length === 1 ? "its" : "their"} network members), run \`opscrew secure --open-public-ssh\`, then remove ${removed.length === 1 ? "it" : "them"} again and run \`${command}\`.`,
+      hint: `Put ${which} back in opscrew/plan.yaml as ${pronoun(removed, "it was", "they were")} (with ${pronoun(removed, "its", "their")} network members), run \`opscrew secure --open-public-ssh\`, then remove ${them} again and run \`${command}\`.`,
     },
   );
 }
@@ -390,9 +398,7 @@ export async function serverHostPlans(
     return outcomes;
   }
   const servers: NetworkServer[] = [];
-  for (const name of [APP_SERVER, ...(plan.servers ?? []).map((server) => server.name)]) {
-    servers.push(await networkServer(deps, input, name));
-  }
+  for (const name of appServers(plan)) servers.push(await serverForNetwork(deps, input, name));
   const network = await applyNetworkPlans(deps, {
     plan,
     servers,
@@ -413,11 +419,11 @@ async function serversExist(deps: PhaseDeps, plan: DeployPlan): Promise<boolean>
 /**
  * How the network's host plan reaches the server `name`, as drift reads it, with the port sshd
  * listens on there (`networkSshPort`): on the user's own (the app's or an extra one) its admin
- * login, with what inspection finds there now, alone when no other OpsCrew app is active there; on
- * one OpsCrew created the deploy user's shell (`services.remote`, else `serverRemote`), inspected
- * and changed as root through Docker in the pinned Caddy image, always alone.
+ * login as provision prepared it, with what inspection finds there now, alone when no other
+ * OpsCrew app is active there; on one OpsCrew created the deploy user's shell (`services.remote`,
+ * else `serverRemote`), as `opscrew vpn` reaches it (`networkServer`).
  */
-async function networkServer(
+async function serverForNetwork(
   deps: PhaseDeps,
   input: Pick<ServerHostPlansInput, "plan" | "services" | "ownRun" | "extraOwn" | "phase">,
   name: string,
@@ -440,31 +446,9 @@ async function networkServer(
       alone: otherActiveApps(facts.apps, input.plan.app.name).length === 0,
     };
   }
-  const login = await serverLogin(deps, input.plan, name);
-  const remote =
-    input.services.remote?.(login.host) ?? (await serverRemote(deps, input.plan, name));
-  const host = input.services.serverHost ?? { inspect: inspectHost, apply: applyHostPlan };
-  deps.reporter.step(`Inspecting server ${name} (read-only)`);
-  const facts = await host.inspect(remote, { rootImage: IMAGES.caddy.ref });
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: "inspect host as deploy (read-only)",
-    phase: input.phase,
-    target: `server ${name}`,
-    decision: "allow",
-  });
-  return {
-    name,
-    remote,
-    facts,
-    apply: host.apply,
-    // The network's steps change no SSH setting the host adapter guards.
-    verifyLogin: async () => true,
-    sshPort: networkSshPort(facts, 22),
-    alone: true,
-    rootImage: IMAGES.caddy.ref,
-  };
+  const { remote } = await loginShell(deps, input.plan, name, input.services);
+  const services = { remote: async () => remote, host: input.services.serverHost };
+  return networkServer(deps, input.plan, name, services, input.phase);
 }
 
 /**

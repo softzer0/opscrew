@@ -19,6 +19,7 @@ import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { providerBucket, readRequirements, requireStorageKey } from "../provision";
 import { designOptionLine, hasState, serverAddress } from "../shared";
+import { extraServers, hasExtraServers } from "../shared/servers";
 import {
   localhostTargetNoMove,
   ownServerNoMove,
@@ -58,10 +59,9 @@ function nothingLive(plan: DeployPlan): OpsCrewError {
  * another provider comes with retarget anywhere (feature 022). Said before any check or change.
  */
 function splitAppNoMove(plan: DeployPlan): OpsCrewError {
-  const servers = (plan.servers ?? []).map((server) => server.name);
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${plan.app.name} runs services on other servers too (${listText(servers)}), and moving an app with several servers to another provider comes with retarget anywhere (feature 022). Nothing was changed.`,
+    `${plan.app.name} runs services on other servers too (${listText(extraServers(plan))}), and moving an app with several servers to another provider comes with retarget anywhere (feature 022). Nothing was changed.`,
     {
       hint: "Until then the app stays where it is. To move it now, place its services back on the app's server first: remove `server` from those services and the servers from `servers` in opscrew/plan.yaml, run `opscrew design` and `opscrew provision`, then run `opscrew retarget`.",
     },
@@ -302,7 +302,7 @@ export async function startMove(
   if (isServerlessProvider(plan.target.provider))
     throw serverlessTargetNoMove(plan.target.provider);
   // Nor, until retarget anywhere (feature 022), an app with services on other servers (FR-1820).
-  if ((plan.servers ?? []).length > 0) throw splitAppNoMove(plan);
+  if (hasExtraServers(plan)) throw splitAppNoMove(plan);
   // Nor while public SSH is closed: the new server is reached at its public address.
   if (plan.network?.publicSsh === false) {
     throw new OpsCrewError(

@@ -50,12 +50,12 @@ import type { PortainerServices } from "../provision/types";
 import { type RunnerGitHubApi, runnerChecks } from "../runners";
 import { appServerShell, hidesServerAddress, serverAddress, withoutServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
+import { hasExtraServers } from "../shared/servers";
 import {
   proxyCertificateHosts,
   proxyRenewalAdvice,
   readRenewalFailure,
 } from "../status/certificates";
-import { hasExtraServers } from "../status/components";
 import { appDeployed } from "../status/run";
 import { verifyHosts } from "../verify/checks";
 import { siteHost } from "../verify/serverless";
@@ -478,7 +478,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   let extraHosts: { server: string; host: string }[] = [];
   if (plan.network !== undefined && sshHost !== undefined) {
     const servers = {
-      ...(options.serverRemote !== undefined ? { serverRemote: options.serverRemote } : {}),
+      ...(options.serverRemote !== undefined ? { remote: options.serverRemote } : {}),
       ...(remote !== undefined ? { appRemote: remote } : {}),
       readNetworkFilter: options.readNetworkFilter ?? readNetworkFilter,
       hostChecks: hostChecksSkipped === undefined,

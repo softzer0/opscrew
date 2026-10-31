@@ -132,12 +132,7 @@ export async function deployShell(
   if (plan.target.provider === "portainer") return undefined;
   const login = await deployLogin(deps, plan);
   if (login === undefined) return undefined;
-  return appServerShell(
-    deps,
-    plan,
-    login,
-    services.remote !== undefined ? { remote: services.remote } : {},
-  );
+  return appServerShell(deps, plan, login, services);
 }
 
 /**

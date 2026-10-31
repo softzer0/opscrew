@@ -170,7 +170,7 @@ export interface ProvisionServices {
    * fake in tests).
    */
   serverHost?: {
-    inspect(remote: RemoteExec, options: { rootImage: string }): Promise<HostFacts>;
+    inspect(remote: RemoteExec, options: { rootImage?: string }): Promise<HostFacts>;
     apply: HostAdapterApi["apply"];
   };
   /**

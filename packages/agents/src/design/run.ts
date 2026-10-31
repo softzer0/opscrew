@@ -340,8 +340,9 @@ export async function previewDesignOptions(
   const warnings: string[] = [];
   const read = await readPlanWithEdits(deps.paths.files.plan).catch(() => undefined);
   const previous = read?.plan;
-  const source = unplaced(
-    await sharedPartsSource(deps.paths, previous ?? newPlanBasis(inputs.requirements, undefined)),
+  const source = await unplacedSource(
+    deps.paths,
+    previous ?? newPlanBasis(inputs.requirements, undefined),
   );
   const move = previous === undefined ? undefined : moveInProgress(previous);
   if (move !== undefined) {
@@ -854,11 +855,9 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   }
   // The plan the components are designed from, as far as the earlier plan (or a new
   // environment's block) tells; the plan's own target decides it below.
-  const basis = unplaced(
-    await sharedPartsSource(
-      paths,
-      previous ?? newPlanBasis(inputs.requirements, options.environment),
-    ),
+  const basis = await unplacedSource(
+    paths,
+    previous ?? newPlanBasis(inputs.requirements, options.environment),
   );
 
   let ownServer = options.ownServer;
@@ -964,7 +963,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const { plan: own, lines: ownLines } = ownPlan(fresh);
   // Where the shared parts come from, now that the plan's target (on this computer, where its
   // image comes from) is chosen.
-  const source = unplaced(await sharedPartsSource(paths, own));
+  const source = await unplacedSource(paths, own);
   const keep =
     source === undefined ||
     previous === undefined ||
@@ -1243,10 +1242,15 @@ function newPlanBasis(
 }
 
 /**
- * The environment `source` with its services not placed on its servers: each environment places
- * its services on servers of its own (`services[].server` from its own plan.yaml).
+ * The environment the shared parts come from (`sharedPartsSource`), with its services not placed
+ * on its servers: each environment places its services on servers of its own (`services[].server`
+ * from its own plan.yaml).
  */
-function unplaced(source: SharedPartsSource | undefined): SharedPartsSource | undefined {
+async function unplacedSource(
+  paths: Parameters<typeof sharedPartsSource>[0],
+  plan: Parameters<typeof sharedPartsSource>[1],
+): Promise<SharedPartsSource | undefined> {
+  const source = await sharedPartsSource(paths, plan);
   if (source === undefined) return undefined;
   const services = source.plan.services.map(({ server: _server, ...service }) => service);
   return { ...source, plan: { ...source.plan, services } };

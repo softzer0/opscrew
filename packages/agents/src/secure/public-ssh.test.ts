@@ -6,12 +6,13 @@ import {
   HostFactsSchema,
   type HostPlan,
   hostPlanHash,
+  type WireGuardPeer,
 } from "@opscrew/connector-ssh-host";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, type Network, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { allocateNetwork, type WireGuardPeerState } from "../network";
+import { allocateNetwork } from "../network";
 import { splitPlan, withNetwork } from "../network/__fixtures__/plans";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
 import { reopenedPlan, serverRemote } from "../shared/server-address";
@@ -141,7 +142,7 @@ async function world(o: {
   const services = {
     remote: async (server: string) =>
       shellAt((await serverRemote(deps, await plan(), server)).host),
-    readWireGuard: async (remote: RemoteExec): Promise<WireGuardPeerState[]> => {
+    readWireGuard: async (remote: RemoteExec): Promise<WireGuardPeer[]> => {
       const age = ages[servers[remote.host] ?? ""];
       return age === undefined
         ? []

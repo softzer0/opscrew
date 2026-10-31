@@ -33,7 +33,7 @@ import {
   APPROVE_BY_HASH_KINDS,
   checkConfirmName,
   FlagConfirmation,
-  MaintenanceWindowApproval,
+  withAllowDowntime,
 } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
@@ -350,13 +350,7 @@ export async function runInfraCommand(
                   print: ctx.stdout,
                   clock,
                 });
-          return flags.allowDowntime === true
-            ? new MaintenanceWindowApproval(typedNames, {
-                interactive: ctx.isInteractive,
-                print: ctx.stdout,
-                clock,
-              })
-            : typedNames;
+          return withAllowDowntime(ctx, flags.allowDowntime, typedNames, clock);
         },
       });
       const result = await run(deps, {

@@ -770,14 +770,6 @@ function lastLogin(runner: ScriptedRunner): { target: string; port: string; key?
 }
 
 describe("serverAddress and serverRemote for each of the app's servers", () => {
-  it("reads an extra server's public address by name, and the app's as before", async () => {
-    const { plan, deps } = await splitWorld();
-    expect(await serverAddress(deps, plan, "data")).toEqual({ ipv4: DATA_IPV4 });
-    expect(await serverAddress(deps, plan, "app")).toEqual({ ipv4: IPV4 });
-    expect(await serverAddress(deps, plan)).toEqual({ ipv4: IPV4 });
-    expect(await serverAddress(deps, plan, "other")).toBeUndefined();
-  });
-
   it("connects to each server's public address with its login while public SSH is open", async () => {
     const { plan, deps, runner } = await splitWorld();
     await (await serverRemote(deps, plan, "app")).run("true");

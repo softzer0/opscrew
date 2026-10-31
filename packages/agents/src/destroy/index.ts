@@ -1,3 +1,4 @@
+export { extraCloudServers } from "../shared/servers";
 export { savedHostPlanPurpose } from "./own";
 export { runDestroy } from "./run";
 export { destroyConfirmPrompt } from "./texts";
