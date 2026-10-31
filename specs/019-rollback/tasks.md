@@ -94,7 +94,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm turbo run typecheck --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1903 [P] [US1] [US3] The GitHub connector: GHCR's tag list, run fields, file text, in `packages/connectors/github/**`
+- [X] T1903 [P] [US1] [US3] The GitHub connector: GHCR's tag list, run fields, file text, in `packages/connectors/github/**`
   - Owns: `packages/connectors/github/**` (+ tests)
   - Reads: plan.md "3."; contracts/rollback.md "connector-github"; research.md R6 (S2); `ghcr.ts`, `github.ts`
   - Depends: T1901
