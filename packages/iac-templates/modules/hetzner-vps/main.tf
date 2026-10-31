@@ -51,7 +51,10 @@ resource "hcloud_firewall" "this" {
     description = "Ping"
     direction   = "in"
     protocol    = "icmp"
-    source_ips  = ["0.0.0.0/0", "::/0"]
+    # Hetzner reads an ICMP rule's port back as "", while an update records the configured null:
+    # without this, every change to the rules shows as drift until the next apply.
+    port       = ""
+    source_ips = ["0.0.0.0/0", "::/0"]
   }
 
   # WireGuard answers nothing without a valid key, and devices roam, so it is open to all.
