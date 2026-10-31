@@ -286,6 +286,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
       - `--deploy` dispatches the branch with no inputs and follows it;
       - promoted: refused, with `opscrew promote`.
     - **Audit:** the pause set, restored and cleared; the dispatch; the outcome. No secret.
+    - **Portainer drift after a rollback** (from T1905): `drift/portainer.ts` compares the deploy branch with `fillPortainerStack(template, image)`, which fills `run`. A rollback's commit holds `OPSCREW_RELEASE: skip`, and drift accepts it as in place. `packages/agents/src/drift/portainer.ts` (+ test) joins this task's Owns for that.
     - **Tests:**
       - two environments: only the rolled-back one's key changes;
       - a rollback of a rollback;
@@ -420,7 +421,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
 - [ ] T1914 The live runs (lead): T1913's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 
-- [ ] T1915 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1902's review: one `appEnvFlags(plan)` in `workflow/shared.ts` for `switch.ts`'s `failedLogs` and `provisionCommand`; a re-run of the same image may show the earlier run's kept lines (the `check` keep is skipped when `about` names the image), and a start-script failure after the switch that is neither the health check nor a worker is kept as `failed=check`. From T1909: `status/deploys.ts` reads `rollback.json` with its own small schema, which `rollback/record.ts`'s reader should replace; the two lines that say GitHub can't be read could be one.
+- [ ] T1915 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1902's review: one `appEnvFlags(plan)` in `workflow/shared.ts` for `switch.ts`'s `failedLogs` and `provisionCommand`; a re-run of the same image may show the earlier run's kept lines (the `check` keep is skipped when `about` names the image), and a start-script failure after the switch that is neither the health check nor a worker is kept as `failed=check`. From T1909: `status/deploys.ts` reads `rollback.json` with its own small schema, which `rollback/record.ts`'s reader should replace; the two lines that say GitHub can't be read could be one. From T1905: `cli/test/e2e/{docker,portainer-redeploy}.test.ts` fill the Portainer stack by hand; `fillPortainerStack` would do it.
 
 - [ ] T1916 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync.
   - The changelog says every deploy workflow changes. Before the first rollback, each environment needs `opscrew provision` and its merged pull request.
