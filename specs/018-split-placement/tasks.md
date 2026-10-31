@@ -865,7 +865,7 @@ Effort`.
   - Verify: `PATH="/d/opscrew/.tools/bin:$PATH" OPSCREW_TEST_TMP=D:/opscrew-test-tmp pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: high
 
-- [ ] T1834 `destroy` refuses before any change while the server's runner runs a job, in `packages/agents/src/{destroy,runners}/**` (+ tests)
+- [X] T1834 `destroy` refuses before any change while the server's runner runs a job, in `packages/agents/src/{destroy,runners}/**` (+ tests)
   - Owns: those paths
   - Found by: T1821's eighth live run.
     - The cleanup's `opscrew destroy` lifted the servers' delete protection, then stopped: "GitHub could not remove the self-hosted runner 47: Bad request - Runner … is currently running a job and cannot be deleted."
