@@ -151,8 +151,11 @@ export async function destroyWithinBudget(
       try {
         await Promise.race([options.destroy(environment, timeLeft), late]);
       } catch (error) {
+        // The first line names the command; the last lines of its output say why it failed.
+        const [first, ...rest] = String(error).trimEnd().split("\n");
+        const why = rest.slice(-15).join("\n");
         options.log(
-          `opscrew destroy of ${environment} failed (${String(error).split("\n")[0]}); the API deletes what is left`,
+          `opscrew destroy of ${environment} failed (${first}); the API deletes what is left${why === "" ? "" : `\n${why}`}`,
         );
       } finally {
         clearTimeout(timer);

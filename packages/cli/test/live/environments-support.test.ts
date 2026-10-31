@@ -116,7 +116,7 @@ describe("destroyWithinBudget", () => {
     );
     expect(calls).toEqual([
       "destroy staging",
-      "opscrew destroy of staging failed (Error: exited with 2); the API deletes what is left",
+      "opscrew destroy of staging failed (Error: exited with 2); the API deletes what is left\nthe output",
       "destroy prod",
       "API deletion",
     ]);
