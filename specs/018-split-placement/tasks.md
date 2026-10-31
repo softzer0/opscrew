@@ -633,7 +633,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: medium
 
-- [ ] T1819 [P] The Docker pass (`OPSCREW_DOCKER_TESTS=1`), in `packages/cli/test/e2e/network.test.ts` (+ support)
+- [X] T1819 [P] The Docker pass (`OPSCREW_DOCKER_TESTS=1`), in `packages/cli/test/e2e/network.test.ts` (+ support)
   - Owns: that file and `packages/cli/test/e2e/network-support.ts`
   - Reads: plan.md "14."; research.md R5a (the container setup, tmpfs for `/var/lib/docker`)
   - Depends: T1806, T1810, T1816
