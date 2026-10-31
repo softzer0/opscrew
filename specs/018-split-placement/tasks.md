@@ -754,7 +754,7 @@ Effort`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` (the live run is T1821)
   - Effort: high
 
-- [ ] T1828 [US1] Removing an extra Hetzner server in a script, in `packages/agents/src/provision/{servers.ts,run.ts}`, `packages/cli/src/{commands/provision.ts,approval.ts}` (+ tests), step 9 of `packages/cli/test/live/split.test.ts`, `docs/e2e.md` (step 9) and `docs/guide/split-placement.md`
+- [X] T1828 [US1] Removing an extra Hetzner server in a script, in `packages/agents/src/provision/{servers.ts,run.ts}`, `packages/cli/src/{commands/provision.ts,approval.ts}` (+ tests), step 9 of `packages/cli/test/live/split.test.ts`, `docs/e2e.md` (step 9) and `docs/guide/split-placement.md`
   - Owns: those paths
   - Reads: `liftRemovedProtection` and `removalConfirmPhrase` (provision/servers.ts); `liftProtection` (destroy/deletion.ts); destroy's `TypedConfirmationHandler` (cli/commands/destroy.ts), whose typed name covers its own lift; `FlagConfirmation` (cli/approval.ts)
   - Depends: T1820, T1822c
