@@ -307,8 +307,10 @@ async function namesHostOrLocalPlan(deps: PhaseDeps, hash: string): Promise<bool
 /**
  * The saved infrastructure plans the `--approve` hashes name, apart from this run's Cloudflare
  * plans (`cloudflare`, granted by the approval handler). Servers OpsCrew creates have one
- * infrastructure plan, so the main plan is the first other hash that names a saved plan, else the
- * first other hash given (applying it then fails plainly). A server the user owns and
+ * infrastructure plan, so the main plan is the first other hash that names a saved plan not applied
+ * yet; none when every saved plan named was applied (a script that names every hash again plans
+ * afresh, which finds nothing to change); else the first other hash given (applying it then fails
+ * plainly). A server the user owns and
  * the user's Portainer have more (infrastructure, host or stack plan and, when an earlier setup
  * goes, its removal): the main plan is the hash whose saved plan exists, is not a removal and was
  * not applied yet (a script that names both hashes again after the infrastructure was applied
@@ -341,9 +343,13 @@ async function savedInfrastructureHashes(
     } else others.push(hash);
   }
   if (plan.target.provider !== "own" && plan.target.provider !== "portainer") {
-    // A Cloudflare plan an earlier run applied may be named too: the saved plan's hash wins.
-    const apply = others.find((hash) => saved.has(hash)) ?? others[0];
-    return apply === undefined ? found : { ...found, apply };
+    // A Cloudflare plan an earlier run applied may be named too: the saved plan's hash wins. A
+    // saved plan already applied (a script that gives every hash again, its servers' host plans
+    // too) plans afresh, which finds nothing to change: a real engine refuses a stale plan.
+    const unapplied = others.find((hash) => saved.has(hash) && !saved.get(hash)?.appliedAt);
+    if (unapplied !== undefined) return { ...found, apply: unapplied };
+    if (others.some((hash) => saved.has(hash))) return found;
+    return others[0] === undefined ? found : { ...found, apply: others[0] };
   }
   const applied = plan.deployment.lastPlanHash?.toLowerCase();
   for (const hash of others) {

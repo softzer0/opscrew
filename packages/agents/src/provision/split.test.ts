@@ -511,6 +511,48 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
     );
   });
 
+  it("in a script that names an applied infrastructure plan again, plans afresh rather than applying it twice", async () => {
+    const { plan, privateKeys } = networkedPlan();
+    const deployed = DeployPlanSchema.parse({
+      ...plan,
+      deployment: { lastApplyAt: "2026-10-12T08:00:00.000Z", placement: { db: "data" } },
+    });
+    const engine = new FakeEngine({ outputs: splitOutputs() });
+    const s = await setup({ plan: deployed, privateKeys, engine });
+    await updateServerAddresses(s.deps.paths, (current) => ({
+      ...current,
+      servers: { data: { ipv4: DATA_IPV4, ipv6: DATA_IPV6 } },
+    }));
+    const planned = await runProvision(s.deps, { services: s.services, planOnly: true });
+    const infrastructure = planned.planHash as string;
+    const approved = [infrastructure];
+    const byHash = new ScriptedApprovalHandler((request) =>
+      request.kind === "iac-apply" || request.kind === "host-apply"
+        ? approved.includes(request.planHash ?? "")
+        : true,
+    );
+    const deps = await createTestPhaseDeps({
+      root: s.root,
+      env: s.deps.env,
+      runner: keyscanRunner(),
+      approvalHandler: byHash,
+    });
+    // Only the infrastructure plan's hash: it is applied, and the run stops at the host plans.
+    await expect(
+      runProvision(deps, { services: s.services, approveHashes: [infrastructure] }),
+    ).rejects.toBeInstanceOf(OpsCrewError);
+    const applies = () => s.engine.calls.filter((call) => call === "apply").length;
+    expect(applies()).toBe(1);
+
+    // Every hash again, as a script gives them: the applied plan is not applied twice (a real
+    // engine refuses a stale saved plan); a fresh plan finds nothing to change.
+    approved.push(...(planned.serverHostPlanHashes ?? []));
+    engine.scenario.changes = [];
+    await runProvision(deps, { services: s.services, approveHashes: [...approved] });
+    expect(applies()).toBe(1);
+    expect(s.hosts.applies.map((a) => a.host)).toEqual([SERVER_IPV4, DATA_IPV4]);
+  });
+
   it("refuses a live service placed on another server by hand, before anything changes", async () => {
     const { plan, privateKeys } = networkedPlan();
     // db runs on the app's server; plan.yaml was edited to place it on data, without design's move.

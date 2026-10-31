@@ -532,9 +532,10 @@ describe.skipIf(!findExecutable("git"))("provision with a bucket at a provider (
     const bucketPlan = await findSavedPlan(f.deps.paths.files.plansDir, approved[0] as string);
     expect(bucketPlan?.appliedAt).toBe("2026-10-11T12:00:00.000Z");
 
-    // The same script again after a half-finished run: the bucket's applied plan is never applied
-    // twice; its root is planned afresh and finds nothing to change.
+    // The same script again after a half-finished run: neither applied plan is applied twice (a
+    // real engine refuses a stale plan); each root is planned afresh and finds nothing to change.
     f.engine.storage.scenario.changes = [];
+    f.main.scenario.changes = [];
     f.github.openPulls.set(DEPLOY_SETUP_BRANCH, OPEN_PULL);
     await runProvision(f.deps, { services: f.services, approveHashes: approved });
     expect(f.engine.storage.calls.filter((c) => c === "plan")).toHaveLength(2);
