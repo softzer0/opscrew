@@ -4,6 +4,65 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.1.3] - 2026-10-31
+
+### Added
+
+- **A server of its own for a service.** Put a database, cache or broker on another server by
+  adding it under `servers` in `opscrew/plan.yaml` and naming it in the service's `server`. It can
+  be another Hetzner Cloud server, a DigitalOcean Droplet or a server you already have.
+  - `opscrew design` sizes and prices each server, and estimates the delay each query then adds.
+  - Your app's code doesn't change: only the address it is given does.
+  - `status`, `logs`, `drift`, `secure`, `verify` and `destroy` cover every server.
+
+  See [A server of its own for a service](docs/guide/split-placement.md).
+- **Moving a running service to another server, with its data.** `opscrew provision` copies
+  PostgreSQL's data in a short maintenance window it shows you first, and pauses deploys meanwhile.
+  `opscrew provision --finish-move` then deletes the old copy, after you type the service's name.
+  In a script, `--allow-downtime` approves the window. Valkey, Redis and Dragonfly start empty on
+  the new server; other services that keep data can't move yet.
+- **A private network between your app's servers** (WireGuard): databases and caches on another
+  server listen only there.
+- **Your own devices on that network** (see
+  [Your devices on the private network](docs/guide/private-network.md)):
+  - `opscrew vpn add <name>` writes a WireGuard configuration for a laptop, or for a phone with
+    `--qr`.
+  - `opscrew vpn list` shows each device and when it last connected; `opscrew vpn remove` takes one
+    off.
+  - `opscrew vpn grant <device> <service>` gives a device its own login to a database or cache,
+    read-only unless `--full`; `opscrew vpn revoke` removes it. See
+    [Your production database from your device](docs/guide/database-access.md).
+- **SSH closed to the internet.** `opscrew secure --close-public-ssh` makes every server answer
+  SSH only on the private network, and `--open-public-ssh` opens it again. If you lose this
+  computer's tunnel, the guide says how to get back in. See
+  [Close public SSH](docs/guide/public-ssh.md).
+- **Removing a server in a script.** `opscrew provision --confirm <app>-<server> --yes` lifts the
+  delete protection of a Hetzner server you took out of `servers`, then prints the command that
+  deletes it.
+- [When a deploy fails, and how to recover](docs/guide/when-a-deploy-fails.md): what your visitors
+  get, what OpsCrew already put back and what to do next, for each kind of failure.
+- **The Claude Code plugin** shows each server and the private network in `opscrew_status`.
+  `opscrew_placement_estimate` prices a placement and estimates its delay before you change
+  anything, and the deploy and troubleshoot skills know about several servers.
+
+### Fixed
+
+- A script that runs `opscrew provision --approve` again with every hash it was given, the
+  infrastructure plan's and each host plan's, no longer fails with "Saved plan is stale" on servers
+  OpsCrew creates: an infrastructure plan that was already applied is planned afresh.
+- `opscrew drift` no longer reports a Hetzner firewall rule as changed outside OpsCrew after a
+  provision changed the firewall. The next `opscrew provision` updates the firewall once.
+- `opscrew design` no longer makes a server it already created smaller than its disk allows: neither
+  Hetzner Cloud nor DigitalOcean can shrink a disk, so the change used to fail at the provider. It
+  keeps the server's type, says why, and keeps the server in its location rather than proposing to
+  replace it.
+- `opscrew destroy` stops before changing anything while the server's own runner is running a job,
+  which GitHub would refuse to delete, and says to wait for the job or cancel it.
+- `opscrew promote` names the branch an environment really deploys from. Its hint for `--version`
+  on a server environment now says how to go back to an earlier version.
+- `opscrew secure`'s advice for a pending reboot no longer suggests `sudo` on servers OpsCrew
+  created, where the deploy user has none.
+
 ## [0.1.2] - 2026-10-29
 
 ### Added
@@ -118,6 +177,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.1.3]: https://github.com/softzer0/opscrew/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/softzer0/opscrew/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/softzer0/opscrew/compare/0dfc0e91...v0.1.1
 [0.1.0]: https://github.com/softzer0/opscrew/tree/0dfc0e91
