@@ -95,3 +95,6 @@ Both are in the encrypted recovery copy (014) with the other generated values.
   key is the app's existing one, also authorized on each extra server.
 - `OPSCREW_SERVICE_<NAME>_ENV` stays per service; the workflow writes it on the service's server.
 - The scheduled check's `OPSCREW_CHECK_SERVER` becomes a list of every server of the environment.
+- `OPSCREW_DEPLOY_PAUSED` (a repository variable, like 017's `OPSCREW_CHECK_PAUSED`): set for an app
+  and environment during a move's maintenance window, so a push can't deploy old settings mid-window;
+  the deploy workflow's jobs are skipped while it names the app.
