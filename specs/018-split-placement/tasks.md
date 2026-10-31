@@ -711,6 +711,21 @@ Effort`.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
 
+- [ ] T1827 [US4] Getting back in after the tunnel is lost: `--open-public-ssh` over the public address once the user reopened port 22 in the provider's console, in `packages/agents/src/secure/public-ssh.ts` (+ test)
+  - Owns: that file and its test
+  - Reads: spec US4 ("Losing this computer's configuration while public SSH is closed"); `docs/guide/public-ssh.md`
+  - Depends: T1815, T1826
+  - Accept:
+    - When the private connection to a server fails as "this computer's tunnel looks down" and port
+      22 answers on its public address (the user opened it by hand), `openPublicSsh` connects there
+      with the pinned host key (never a new one) and runs the same host plan; the plan, the IaC and
+      the kept allow-list follow as in a normal opening.
+    - When neither answers, it refuses with both ways back in (another device on the network, or
+      the provider's console then this command).
+    - Tests for the fallback, the refusal, and that a changed host key is refused.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: medium
+
 ## Phase 8: Live
 
 - [ ] T1820 The live tests (gated on `OPSCREW_E2E_SPLIT=1` and the Hetzner token), in `packages/cli/test/live/split.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
