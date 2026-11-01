@@ -10,7 +10,7 @@ import type {
   WorkerDeployment,
   WorkerVersion,
 } from "@opscrew/connector-cloudflare";
-import type { GitHubClient } from "@opscrew/connector-github";
+import type { GitHubClient, PagesRun } from "@opscrew/connector-github";
 import { errorText, isUserFacingError } from "@opscrew/core";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
@@ -21,6 +21,7 @@ import { sharedCloudflareClient } from "../provision/shared-cloudflare";
 import type { ProvisionServices } from "../provision/types";
 import type { VersionView } from "../rollback/types";
 import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
+import type { DeployPause } from "../shared/deploy-pause";
 import { verifyHosts } from "../verify/checks";
 import type { DeployState } from "./deploys";
 
@@ -28,6 +29,8 @@ import type { DeployState } from "./deploys";
 export interface SiteStatusOptions {
   /** Cloudflare's checks and OpsCrew's own Cloudflare client (fakes in tests). */
   services?: Pick<ProvisionServices, "cloudflare" | "sharedCloudflare">;
+  /** The environment's deploy pause, which tells which GitHub Pages run is running. */
+  pause?: DeployPause;
 }
 
 /** The run and build of a version's message, `opscrew <run id> <sha256>`, as the deploy job writes it. */
@@ -92,19 +95,26 @@ export function previousWorkerVersion<V extends { id: string }>(
 }
 
 /**
- * The run a rollback on GitHub Pages re-runs by default (ADR 0023 D4): the newest run created
- * before `runs[0]`, the latest started, which published the site now. A re-run keeps its run's
- * id, so ids give the order the runs were created in.
+ * Of a site's successful GitHub Pages runs (the latest started first), the one that published the
+ * site now (`running`) and the run a rollback re-runs by default (`previous`, ADR 0023 D4): the
+ * newest run created before it (a re-run keeps its run's id, so ids give the creation order).
+ * While a rollback pauses deploys, a push's run still succeeds with its deploy job skipped, so the
+ * running run is then the one the rollback pinned (`pause.image`), never the latest started.
  */
-export function previousPagesRun<R extends { runId: number }>(runs: readonly R[]): R | undefined {
-  const [running] = runs;
-  if (running === undefined) return undefined;
-  return runs
+export function pagesMarks<R extends { runId: number }>(
+  runs: readonly R[],
+  pause: DeployPause | undefined,
+): { running?: R; previous?: R } {
+  const running =
+    pause?.reason === "rollback" ? runs.find((run) => String(run.runId) === pause.image) : runs[0];
+  if (running === undefined) return {};
+  const previous = runs
     .filter((run) => run.runId < running.runId)
     .reduce<R | undefined>(
       (newest, run) => (newest === undefined || run.runId > newest.runId ? run : newest),
       undefined,
     );
+  return { running, ...(previous !== undefined ? { previous } : {}) };
 }
 
 /** A workflow run's page at GitHub; just its id without the repository. */
@@ -211,8 +221,15 @@ async function cloudflareLines(
   };
 }
 
-/** The lines of a site on GitHub Pages: the site, its certificate, HTTPS and its last runs. */
-async function pagesLines(deps: PhaseDeps, plan: DeployPlan): Promise<SiteSection> {
+/**
+ * The lines of a site on GitHub Pages: the site, its certificate, HTTPS, the run running
+ * ({@link pagesMarks}, with the environment's `pause`) and the one before.
+ */
+async function pagesLines(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  pause: DeployPause | undefined,
+): Promise<SiteSection> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const repo = await githubCoordinates(gitClient(deps));
   const head = `GitHub Pages, ${repo.owner}/${repo.repo} (read from GitHub now):`;
@@ -256,30 +273,36 @@ async function pagesLines(deps: PhaseDeps, plan: DeployPlan): Promise<SiteSectio
         : `not enforced yet. Once the certificate is issued, run \`opscrew provision${flag}\`: it enforces HTTPS.`
     }`,
   ];
-  const [last, previous] = runs;
-  const describe = (run: NonNullable<typeof last>) =>
+  const marks = pagesMarks(runs, pause);
+  const last = marks.running;
+  // The run that published the site before it: the next one started.
+  const previous = last === undefined ? undefined : runs[runs.indexOf(last) + 1];
+  const describe = (run: PagesRun) =>
     `${runLink(repo, run.runId)}, started ${formatUtc(run.startedAt)}, commit ${run.headSha.slice(0, 7)}`;
-  lines.push(
-    last === undefined
-      ? "  Last Pages run: none yet. Merge OpsCrew's deploy-setup pull request: its workflow publishes the site."
-      : `  Last Pages run: ${describe(last)}`,
-  );
-  if (last !== undefined) {
+  if (last === undefined) {
     lines.push(
+      runs.length === 0
+        ? "  Running: nothing yet. Merge OpsCrew's deploy-setup pull request: its workflow publishes the site."
+        : // Only a rollback's pause names a run that may not be listed (its re-run is not done).
+          `  Running: unknown: the run \`opscrew rollback\` pinned (${pause?.reason === "rollback" ? pause.image : ""}) has not succeeded yet.`,
+    );
+  } else {
+    lines.push(
+      `  Running: ${describe(last)}`,
       previous === undefined
-        ? "  The one before: none, so there is nothing to roll back to yet."
-        : `  The one before: ${describe(previous)}`,
+        ? "  Before it: none, so there is nothing to roll back to yet."
+        : `  Before it: ${describe(previous)}`,
     );
   }
-  const target = previousPagesRun(runs);
+  const target = marks.previous;
   if (target !== undefined) {
     lines.push(
       target === previous
         ? `  Roll back to it: opscrew rollback${flag} --to ${target.runId}`
-        : `  Roll back: opscrew rollback${flag} --to ${target.runId} (the newest run created before the last one)`,
+        : `  Roll back: opscrew rollback${flag} --to ${target.runId} (the newest run created before the one running)`,
     );
   }
-  const view = (run: NonNullable<typeof last>): VersionView => ({
+  const view = (run: PagesRun): VersionView => ({
     version: String(run.runId),
     commit: run.headSha,
     builtAt: run.startedAt,
@@ -308,7 +331,7 @@ export async function siteStatusReport(
     const section =
       target.provider === "cloudflare-workers"
         ? await cloudflareLines(deps, plan, target, options)
-        : await pagesLines(deps, plan);
+        : await pagesLines(deps, plan, options.pause);
     return { ...section, lines: section.lines.map((line) => deps.redactor.redact(line)) };
   } catch (error) {
     if (!isUserFacingError(error)) throw error;

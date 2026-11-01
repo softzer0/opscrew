@@ -1110,6 +1110,16 @@ describe("opscrew rollback --resume", () => {
     expect(await world.run({ resume: true })).toEqual({ kind: "resumed", wasPaused: true });
     expect(paused(world)).toBeUndefined();
     expect(world.github.dispatches).toEqual([]);
+    // Nothing deploys on a push there: the approval and the note name provision.
+    expect(JSON.stringify(world.handler.requests)).toContain(
+      "so `opscrew provision --env prod` deploys it again",
+    );
+    await world.run({ resume: true });
+    const text = world.deps.reporter.text();
+    expect(text).toContain(
+      "prod's deploys are not paused: `opscrew provision --env prod` deploys it",
+    );
+    expect(text + JSON.stringify(world.handler.requests)).not.toContain("each push to");
   });
 
   it("refuses --deploy for a promoted environment, naming opscrew promote", async () => {

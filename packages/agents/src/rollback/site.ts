@@ -21,13 +21,8 @@ import {
   siteWorkflow,
 } from "../promote/site";
 import { sharedCloudflareClient } from "../provision/shared-cloudflare";
-import { deployPauseOf } from "../shared/deploy-pause";
-import {
-  previousPagesRun,
-  previousWorkerVersion,
-  runningVersions,
-  versionBuild,
-} from "../status/site";
+import { type DeployPause, deployPauseOf } from "../shared/deploy-pause";
+import { pagesMarks, previousWorkerVersion, runningVersions, versionBuild } from "../status/site";
 import type { RollbackResult } from "./index";
 import { NOTHING, type RollbackRepository, type RollbackRun, rollbackRepository } from "./run";
 import { pausedText, pausedWhile, requireNoDeployRunning, UNKNOWN_COMMIT } from "./server";
@@ -94,12 +89,7 @@ function marked(view: VersionView, marks: VersionMark[]): VersionView {
 }
 
 /** The list's answer: the versions, and the environment's pause. */
-async function listed(
-  github: RollbackRepository,
-  run: RollbackRun,
-  versions: VersionView[],
-): Promise<RollbackResult> {
-  const paused = await deployPauseOf(github, run.plan);
+function listed(versions: VersionView[], paused: DeployPause | undefined): RollbackResult {
   return { kind: "list", versions, ...(paused !== undefined ? { paused } : {}), leftOut: 0 };
 }
 
@@ -141,7 +131,7 @@ async function rollbackWorker(run: RollbackRun): Promise<RollbackResult> {
         ...(version === previous ? (["previous"] as const) : []),
       ]),
     );
-    return listed(github, run, views);
+    return listed(views, await deployPauseOf(github, plan));
   }
 
   await requireDeployable(run, github);
@@ -171,21 +161,8 @@ async function rollbackWorker(run: RollbackRun): Promise<RollbackResult> {
   };
 }
 
-/**
- * Of the site's successful runs, the latest started first: the one that published the site now
- * (`running`), and the default target (`previous`, `previousPagesRun`).
- */
-function pagesMarks(runs: readonly PagesRun[]): { running?: PagesRun; previous?: PagesRun } {
-  const [running] = runs;
-  const previous = previousPagesRun(runs);
-  return {
-    ...(running !== undefined ? { running } : {}),
-    ...(previous !== undefined ? { previous } : {}),
-  };
-}
-
-/** A GitHub Pages run as the list shows it, with its marks. */
-function pagesView(run: PagesRun, marks: ReturnType<typeof pagesMarks>): VersionView {
+/** A GitHub Pages run as the list shows it, with its marks ({@link pagesMarks}). */
+function pagesView(run: PagesRun, marks: { running?: PagesRun; previous?: PagesRun }): VersionView {
   return marked({ version: String(run.runId), commit: run.headSha, builtAt: run.startedAt }, [
     ...(run === marks.running ? (["running"] as const) : []),
     ...(run === marks.previous ? (["previous"] as const) : []),
@@ -212,12 +189,12 @@ async function rollbackPages(run: RollbackRun): Promise<RollbackResult> {
   const github = await rollbackRepository(deps, services);
   const workflowFile = posix.basename(plan.cicd.workflowPath);
   const runs = await github.api.pagesRuns(github.owner, github.repo, workflowFile);
-  const marks = pagesMarks(runs);
+  const paused = await deployPauseOf(github, plan);
+  const marks = pagesMarks(runs, paused);
   if (options.list === true) {
     return listed(
-      github,
-      run,
       runs.map((known) => pagesView(known, marks)),
+      paused,
     );
   }
 

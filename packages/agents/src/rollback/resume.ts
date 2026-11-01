@@ -15,10 +15,14 @@ import { NOTHING, type RollbackRun, rollbackRepository } from "./run";
 
 /** How the environment deploys while its deploys are on. */
 function deploysOn(run: RollbackRun): string {
-  const deploySource = run.plan.environment?.deploySource;
-  return deploySource?.from === "promote"
-    ? `\`opscrew promote --to ${run.environment}\` deploys it`
-    : `each push to ${run.plan.cicd.branch} deploys it`;
+  const { plan } = run;
+  if (plan.environment?.deploySource?.from === "promote") {
+    return `\`opscrew promote --to ${run.environment}\` deploys it`;
+  }
+  // On this computer without the local runner, nothing deploys on a push.
+  return plan.target.provider === "localhost" && plan.environment?.runner !== "local"
+    ? `\`opscrew provision${run.flags}\` deploys it`
+    : `each push to ${plan.cicd.branch} deploys it`;
 }
 
 /**

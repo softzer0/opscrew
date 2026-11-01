@@ -397,6 +397,8 @@ function deployJob(
     : "The downloaded site has the SHA-256 $sha256, not $SHA256, the build's. Run the workflow again.";
   const failed =
     "failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')";
+  const env = plan.environment?.name;
+  const rollback = `opscrew rollback${appFlag(plan)}${env === undefined ? "" : ` --env ${env}`}`;
   const steps = [
     `- uses: ${ACTIONS.checkout}`,
     "  with:",
@@ -511,7 +513,7 @@ function deployJob(
       "  skipped)",
       '    echo "::error::The deploy failed, and the Worker had no earlier version to activate. Fix the problem and deploy again." ;;',
       "  *)",
-      `    echo "::error::The deploy failed, and OpsCrew could not activate the version that ran before ($PREVIOUS) again. Activate it with \\\`${promoteCommand(plan)} --version $PREVIOUS\\\`." ;;`,
+      `    echo "::error::The deploy failed, and OpsCrew could not activate the version that ran before ($PREVIOUS) again. Activate it with \\\`${rollback} --to $PREVIOUS\\\`." ;;`,
       "esac",
       "exit 1",
     ]),

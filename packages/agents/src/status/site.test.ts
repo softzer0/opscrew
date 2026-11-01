@@ -181,7 +181,7 @@ describe("opscrew status on GitHub Pages", () => {
       health: "issued",
     });
     const deps = await setup(pagesTestPlan(), pages.fetch);
-    // A rollback re-ran run 201 and paused prod's deploys.
+    // A rollback re-ran run 202 and paused prod's deploys.
     const registry = new FakePromoteGitHub();
     registry.variables.set(
       DEPLOY_PAUSED_VARIABLE,
@@ -189,8 +189,8 @@ describe("opscrew status on GitHub Pages", () => {
         "example-app/prod": {
           reason: "rollback",
           since: "2026-10-24T08:00:00.000Z",
-          image: `sha256:${"c".repeat(64)}`,
-          commit: "1".repeat(40),
+          image: "202",
+          commit: "2".repeat(40),
         },
       }),
     );
@@ -204,20 +204,20 @@ describe("opscrew status on GitHub Pages", () => {
       "  Site: published by OpsCrew's workflow, at https://docs.example.com",
       "  Certificate: issued by GitHub",
       "  HTTPS: enforced",
-      `  Last Pages run: ${runs}/202, started 2026-10-23 09:00 UTC, commit 2222222`,
-      `  The one before: ${runs}/201, started 2026-10-22 09:00 UTC, commit 1111111`,
+      `  Running: ${runs}/202, started 2026-10-23 09:00 UTC, commit 2222222`,
+      `  Before it: ${runs}/201, started 2026-10-22 09:00 UTC, commit 1111111`,
       "  Roll back to it: opscrew rollback --to 201",
       "",
       "Resources (read now):",
       "  Not available: resource figures (GitHub Pages serves the site's files without running any code, so there are none)",
       "",
       "Deploys (read from GitHub now):",
-      `  Paused since 2026-10-24 08:00 UTC: \`opscrew rollback\` pinned it to 1111111 (sha256:cccccccccccc). Run \`opscrew rollback --resume\` when the fix is pushed (add --deploy to deploy main's latest commit now).`,
+      `  Paused since 2026-10-24 08:00 UTC: \`opscrew rollback\` pinned it to 2222222 (202). Run \`opscrew rollback --resume\` when the fix is pushed (add --deploy to deploy main's latest commit now).`,
     ]);
     expect(deploys).toEqual({
       running: { version: "202", commit: "2".repeat(40), builtAt: "2026-10-23T09:00:00Z" },
       previous: { version: "201", commit: "1".repeat(40), builtAt: "2026-10-22T09:00:00Z" },
-      paused: expect.objectContaining({ reason: "rollback", commit: "1".repeat(40) }),
+      paused: expect.objectContaining({ reason: "rollback", commit: "2".repeat(40) }),
     });
     expect(pages.log.every((line) => line.startsWith("pages GET"))).toBe(true);
   });
@@ -249,12 +249,70 @@ describe("opscrew status on GitHub Pages", () => {
     const { lines } = await componentStatusReport(deps, pagesTestPlan());
     expect(lines[4]).toContain("/actions/runs/201,");
     expect(lines[5]).toContain(
-      "The one before: https://github.com/example-org/example-app/actions/runs/202,",
+      "Before it: https://github.com/example-org/example-app/actions/runs/202,",
     );
     expect(lines[6]).toBe(
-      "  Roll back: opscrew rollback --to 200 (the newest run created before the last one)",
+      "  Roll back: opscrew rollback --to 200 (the newest run created before the one running)",
     );
     expect(lines.join("\n")).not.toContain("--to 202");
+  });
+
+  it("while a rollback pauses deploys, shows the pinned run running, never a push's run whose deploy was skipped", async () => {
+    // 202 (B) was bad; the rollback re-ran 201 (A) and pinned it; 203 (C) was pushed while paused.
+    const pages = github(
+      {
+        site: { buildType: "workflow", cname: "docs.example.com", httpsEnforced: true },
+        health: "issued",
+      },
+      [
+        {
+          id: 200,
+          run_attempt: 1,
+          run_started_at: "2026-10-21T09:00:00Z",
+          head_sha: "0".repeat(40),
+        },
+        ...RUNS.slice(1),
+        {
+          id: 201,
+          run_attempt: 2,
+          run_started_at: "2026-10-24T09:00:00Z",
+          head_sha: "1".repeat(40),
+        },
+        {
+          id: 203,
+          run_attempt: 1,
+          run_started_at: "2026-10-25T09:00:00Z",
+          head_sha: "3".repeat(40),
+        },
+      ],
+    );
+    const deps = await setup(pagesTestPlan(), pages.fetch);
+    const registry = new FakePromoteGitHub();
+    registry.variables.set(
+      DEPLOY_PAUSED_VARIABLE,
+      JSON.stringify({
+        "example-app/prod": {
+          reason: "rollback",
+          since: "2026-10-24T08:59:00.000Z",
+          image: "201",
+          commit: "1".repeat(40),
+          from: "2".repeat(40),
+        },
+      }),
+    );
+    const { lines, deploys } = await componentStatusReport(deps, pagesTestPlan(), {
+      services: { deploys: registry },
+    });
+    expect(lines[4]).toContain(
+      "Running: https://github.com/example-org/example-app/actions/runs/201,",
+    );
+    expect(lines[5]).toContain(
+      "Before it: https://github.com/example-org/example-app/actions/runs/202,",
+    );
+    expect(lines[6]).toBe(
+      "  Roll back: opscrew rollback --to 200 (the newest run created before the one running)",
+    );
+    expect(deploys).toMatchObject({ running: { version: "201" }, previous: { version: "202" } });
   });
 
   it("says the certificate is pending and when to look again", async () => {

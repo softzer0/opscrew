@@ -312,7 +312,7 @@ describe("the commands a further app's files name", () => {
     );
     const site = ofApp(cloudflarePlan({ env: ["PUBLIC_API_URL"] }), "docs");
     expect(renderCloudflareWorkersWorkflow(site, FROM_STAGING).content).toContain(
-      "Activate it with \\`opscrew promote --app docs --to prod --version $PREVIOUS\\`.",
+      "Activate it with \\`opscrew rollback --app docs --to $PREVIOUS\\`.",
     );
     const local = ofApp(
       inEnvironment(localhostPlan(), { name: "staging", runner: "local" }),

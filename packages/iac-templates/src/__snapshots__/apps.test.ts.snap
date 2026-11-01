@@ -1072,7 +1072,7 @@ jobs:
             skipped)
               echo "::error::The deploy failed, and the Worker had no earlier version to activate. Fix the problem and deploy again." ;;
             *)
-              echo "::error::The deploy failed, and OpsCrew could not activate the version that ran before ($PREVIOUS) again. Activate it with \\\`opscrew promote --app docs --to prod --version $PREVIOUS\\\`." ;;
+              echo "::error::The deploy failed, and OpsCrew could not activate the version that ran before ($PREVIOUS) again. Activate it with \\\`opscrew rollback --app docs --to $PREVIOUS\\\`." ;;
           esac
           exit 1
 "

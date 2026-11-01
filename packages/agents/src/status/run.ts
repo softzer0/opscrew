@@ -241,13 +241,16 @@ export async function componentStatusReport(
 ): Promise<ComponentStatusReport> {
   let report: Omit<ComponentStatusReport, "check" | "deploys">;
   let versions: Pick<DeployState, "running" | "previous"> = {};
+  let deploys: Awaited<ReturnType<typeof deployStateReport>> = { lines: [] };
   const serverless = isServerlessProvider(plan.target.provider);
   if (serverless) {
-    const site = await siteStatusReport(
-      deps,
-      plan,
-      options.services ? { services: options.services } : {},
-    );
+    // Read first: the pause tells which GitHub Pages run is running.
+    deploys = await deployStateReport(deps, plan, options);
+    const pause = deploys.deploys?.paused;
+    const site = await siteStatusReport(deps, plan, {
+      ...(options.services ? { services: options.services } : {}),
+      ...(pause !== undefined ? { pause } : {}),
+    });
     versions = site.versions;
     try {
       const resources = await readResources(
@@ -265,12 +268,11 @@ export async function componentStatusReport(
     const components = await componentsReport(deps, plan, options);
     const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
     report = { ...components, lines: joinBlocks(components.lines, runner) };
+    // Nothing runs on a server, in Portainer or on this computer before a deploy was seen.
+    if (appDeployed(plan)) {
+      deploys = await deployStateReport(deps, plan, options, report.status !== undefined);
+    }
   }
-  // Nothing runs on a server, in Portainer or on this computer before a deploy was seen.
-  const deploys =
-    serverless || appDeployed(plan)
-      ? await deployStateReport(deps, plan, options, report.status !== undefined)
-      : { lines: [], deploys: undefined };
   const state = await checkStateReport(deps, plan, options.services?.github);
   return {
     ...report,
