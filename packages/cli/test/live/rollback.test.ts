@@ -194,8 +194,9 @@ describe.skipIf(MISSING.length > 0)(
         ).toBeUndefined();
 
         let took = 0;
+        let started = 0;
         const approved = await underLoad([await run.healthUrl()], "the rollback", log, async () => {
-          const started = Date.now();
+          started = Date.now();
           const result = await run.opscrewOk("rollback", "--to", A.commit, "--approve", shown.hash);
           took = Date.now() - started;
           return result;
@@ -220,6 +221,17 @@ describe.skipIf(MISSING.length > 0)(
           throw new Error(`The rollback named no workflow run:\n${run.tail(approved.output)}`);
         }
         const jobs = await run.github.jobs(runId);
+        // Where SC-1901's time goes: before the run's first job, then each job.
+        const firstStart = Math.min(...jobs.map((job) => Date.parse(job.startedAt ?? "")));
+        log(
+          `observed: the rollback run's first job started ${duration(firstStart - started)} after the approval; ${jobs
+            .filter((job) => job.startedAt && job.completedAt)
+            .map(
+              (job) =>
+                `${job.name} ${duration(Date.parse(job.completedAt as string) - Date.parse(job.startedAt as string))}`,
+            )
+            .join(", ")}`,
+        );
         const build = conclusionOf(jobs, BUILD_JOB);
         expect(build ?? "skipped", `the build job of the rollback run ${runId}`).toBe("skipped");
         expect(

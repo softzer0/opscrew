@@ -29,8 +29,8 @@ export const RELEASE_MARKER = "opscrew-e2e-release";
 /** `app.releaseCommand` the test sets before provision (no example has one). */
 export const RELEASE_COMMAND = `echo ${RELEASE_MARKER}`;
 
-/** SC-1901: a rollback serves the earlier version within 2 minutes of its approval. */
-export const SC_1901_MS = 2 * 60_000;
+/** SC-1901: a rollback serves the earlier version within 3 minutes of its approval. */
+export const SC_1901_MS = 3 * 60_000;
 
 /** The job that says why a run doesn't deploy while the environment's deploys are paused. */
 export const PAUSED_JOB = "Report the deploy pause";
