@@ -34,6 +34,7 @@ DNS goes through Cloudflare, optionally. AWS, Google Cloud, Azure and Contabo co
 How your app is built and shipped:
 - [How OpsCrew builds your app's image](docs/guide/builders.md): a builder chosen per language, non-root and pinned.
 - [Deploys without downtime](docs/guide/zero-downtime.md): a broken release never gets traffic.
+- [Rolling back a release](docs/guide/rollback.md): `opscrew rollback` puts the version before back with no build, and pauses deploys until you resume them.
 - [The image supply chain](docs/guide/supply-chain.md): SBOM, provenance, optional signing, Dependabot and deploy tags.
 - [The reverse proxy](docs/guide/reverse-proxy.md): Caddy or nginx, with your own rules.
 
