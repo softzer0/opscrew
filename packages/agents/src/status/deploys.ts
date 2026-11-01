@@ -25,7 +25,7 @@ import { type DeployPause, deployPauseOf, pinnedText } from "../shared/deploy-pa
 import { codeOf } from "../shared/errors";
 import { ghcrPackage } from "../shared/github";
 import { appServerCommand, sections } from "./resources";
-import type { ComponentStatusOptions } from "./run";
+import { appDeployed, type ComponentStatusOptions } from "./run";
 
 /** The environment's deploys as `status` read them (`deploys` in `opscrew_status`'s data). */
 export interface DeployState {
@@ -276,22 +276,39 @@ function pauseLines(
 }
 
 /**
+ * Where the versions are read: a site's in its own section (`site`); this computer's app folder
+ * (`computer`); GHCR's `opscrew-<env>` and `-previous` labels (`labels`), in the user's Portainer
+ * and on a server whose components were not read because `verify` has not seen a deploy yet; the
+ * server (`server`) once its components were read; nowhere (`unread`) when reading them failed
+ * or was refused.
+ */
+function versionSource(
+  plan: DeployPlan,
+  componentsRead: boolean,
+): "site" | "computer" | "labels" | "server" | "unread" {
+  const { provider } = plan.target;
+  if (isServerlessProvider(provider)) return "site";
+  if (provider === "localhost") return "computer";
+  if (provider === "portainer") return "labels";
+  if (componentsRead) return "server";
+  return appDeployed(plan) ? "unread" : "labels";
+}
+
+/**
  * The version the environment runs and the one before it, described, as lines: on a server, its
  * `.env` and `.env.previous` and `.env`'s time ({@link deploysCommand}); on this computer, the
- * same files in the app's folder; in the user's Portainer, GHCR's `opscrew-<env>` and `-previous`
- * labels. Each is described by its provenance (`describeImage`), else by its short digest; each
- * read that fails is a line that says why.
+ * same files in the app's folder; from GHCR's labels ({@link versionSource}), `opscrew-<env>` and
+ * `-previous`. Each is described by its provenance (`describeImage`), else by its short digest;
+ * each read that fails is a line that says why.
  */
 async function versionsSection(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions,
   github: Repository | { why: string },
-  componentsRead: boolean,
+  source: "computer" | "labels" | "server" | "unread",
 ): Promise<{ lines: string[]; running?: VersionView; previous?: VersionView }> {
-  const { provider } = plan.target;
-  const onServer = provider === "own" || provider === "hetzner" || provider === "digitalocean";
-  if (onServer && !componentsRead) {
+  if (source === "unread") {
     // The same login failed or was refused: no second connection, no second host-key question.
     return {
       lines: ["  OpsCrew did not read the versions, for the same reason as the components."],
@@ -299,14 +316,14 @@ async function versionsSection(
   }
   let held: Held;
   try {
-    if (provider === "portainer") {
+    if (source === "labels") {
       if ("why" in github) {
         return { lines: [`  OpsCrew could not read the versions from GitHub. ${github.why}`] };
       }
       held = await labelledImages(deps, plan, github);
     } else {
       held =
-        provider === "localhost"
+        source === "computer"
           ? await localImages(deps, plan)
           : await serverImages(deps, plan, options);
     }
@@ -422,8 +439,9 @@ async function pauseSection(
  *   runner, since nothing else deploys it on its own.
  *
  * `options.check` runs first, as for the components, and stops every read when it fails. When the
- * components could not be read from the app's server (`componentsRead` false), the server is not
- * read again, and the pause still is.
+ * components were not read from the app's server (`componentsRead` false), the server is not read:
+ * before `verify` saw a deploy, GHCR's labels name the versions; after, a read that failed or was
+ * refused is not tried again. The pause is read either way.
  */
 export async function deployStateReport(
   deps: PhaseDeps,
@@ -431,14 +449,13 @@ export async function deployStateReport(
   options: ComponentStatusOptions & { check?: () => Promise<void> } = {},
   componentsRead = true,
 ): Promise<{ lines: string[]; deploys?: DeployState }> {
-  const { provider } = plan.target;
-  const site = isServerlessProvider(provider);
+  const source = versionSource(plan, componentsRead);
   const where =
-    provider === "localhost"
+    source === "computer"
       ? "this computer and GitHub"
-      : provider === "portainer" || site
+      : source === "site" || source === "labels"
         ? "GitHub"
-        : provider === "own"
+        : plan.target.provider === "own"
           ? "your server and GitHub"
           : "the server and GitHub";
   const head = `Deploys (read from ${where} now):`;
@@ -449,9 +466,8 @@ export async function deployStateReport(
     return { lines: [head, "  OpsCrew did not read them, for the same reason as the components."] };
   }
   const github = await readRepository(deps, options);
-  const versions = site
-    ? { lines: [] }
-    : await versionsSection(deps, plan, options, github, componentsRead);
+  const versions =
+    source === "site" ? { lines: [] } : await versionsSection(deps, plan, options, github, source);
   const deploys: DeployState = {
     ...(versions.running !== undefined ? { running: versions.running } : {}),
     ...(versions.previous !== undefined ? { previous: versions.previous } : {}),

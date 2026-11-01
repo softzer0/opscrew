@@ -16,6 +16,7 @@ import type { ProvisionServices } from "../provision/types";
 import { runnerStatusLines } from "../runners";
 import {
   appServerShell,
+  hasDeployment,
   localhostNotSupported,
   portainerClientFor,
   serverAddress,
@@ -177,7 +178,7 @@ export interface ComponentStatusReport {
   resources?: ResourceReading;
   /** The scheduled check's state, when the plan has it on and GitHub could be read. */
   check?: CheckState;
-  /** The version running, the one before and the pause, once the app was deployed (FR-1913). */
+  /** The version running, the one before and the pause, once provision ran (FR-1913). */
   deploys?: DeployState;
   /** With a private network (feature 018): every server, `app` first, as it was read. */
   servers?: ServerStatus[];
@@ -228,8 +229,8 @@ function readingLines(
  * server's host-key check). With extra servers (feature 018, FR-1811), each server's components
  * and figures follow under its name, and with a private network its section
  * (`networkStatusLines`). A self-hosted runner's state follows (FR-1530), then the version
- * running, the one before and whether deploys are paused once the app was deployed
- * (`deployStateReport`, FR-1913), then the scheduled check's state and open alerts when the plan
+ * running, the one before and whether deploys are paused once provision ran, whether or not
+ * `verify` did (`deployStateReport`, FR-1913), then the scheduled check's state and open alerts when the plan
  * has it on (FR-1708). A site on Cloudflare's hosting
  * or GitHub Pages has no components: its running version, custom domains or Pages site instead
  * (`siteStatusReport`), and the figures it cannot give.
@@ -268,8 +269,8 @@ export async function componentStatusReport(
     const components = await componentsReport(deps, plan, options);
     const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
     report = { ...components, lines: joinBlocks(components.lines, runner) };
-    // Nothing runs on a server, in Portainer or on this computer before a deploy was seen.
-    if (appDeployed(plan)) {
+    // Nothing runs on a server, in Portainer or on this computer before provision ran.
+    if (hasDeployment(plan)) {
       deploys = await deployStateReport(deps, plan, options, report.status !== undefined);
     }
   }

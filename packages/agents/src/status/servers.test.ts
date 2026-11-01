@@ -223,13 +223,15 @@ describe("status of an app on two servers", () => {
       { ...w.plan, deployment },
       { services: { remote: w.remote }, network: w.network },
     );
-    expect(report.lines).toEqual([
+    expect(withoutDeploys(report.lines)).toEqual([
       "Components on server app (from opscrew/plan.yaml):",
       "  The web process (app)",
       "",
       "Components on server data (from opscrew/plan.yaml):",
       "  PostgreSQL (db)",
     ]);
+    // Provision ran, so the deploys' section follows, read from GitHub only.
+    expect(report.lines.at(-3)).toBe("Deploys (read from GitHub now):");
     expect(w.commands).toEqual([]);
   });
 

@@ -560,10 +560,49 @@ describe("componentStatusReport with the deploys", () => {
     expect(report.deploys?.paused?.reason).toBe("rollback");
   });
 
-  it("before a deploy was seen, reads nothing", async () => {
+  it("provisioned, never verified, rolled back: the version running from GHCR's labels, and the pause", async () => {
+    const { deps, github } = await serverWorld();
+    pauseRollback(github);
+    github.tags.set("opscrew-prod", RUNNING);
+    github.tags.set("opscrew-prod-previous", BEFORE);
+    const server = shell(serverOutput(BOTH));
+
+    // Provision ran (`lastApplyAt`); `verify` never did (no `firstDeployAt`).
+    const report = await componentStatusReport(deps, testPlan({ deployed: true }), {
+      services: { remote: server.remote, deploys: github },
+    });
+
+    const at = report.lines.indexOf("Deploys (read from GitHub now):");
+    expect(at).toBeGreaterThan(0);
+    expect(report.lines.slice(at + 1)).toEqual([
+      `  Running: ${RUNNING_COMMIT.slice(0, 7)} "Add invoices page" (${RUNNING.slice(0, 19)})`,
+      `  Before it: ${BEFORE_COMMIT.slice(0, 7)} "Fix checkout total" (${BEFORE.slice(0, 19)})`,
+      `  Paused since 2026-10-31 10:02 UTC: \`opscrew rollback\` pinned it to ${RUNNING_COMMIT.slice(0, 7)} (${RUNNING.slice(0, 19)}). Run \`opscrew rollback --resume\` when the fix is pushed (add --deploy to deploy main's latest commit now).`,
+    ]);
+    expect(report.deploys).toMatchObject({
+      running: { digest: RUNNING, commit: RUNNING_COMMIT },
+      paused: { reason: "rollback", image: RUNNING },
+    });
+    // The server is read once its components are, after `verify` saw a deploy.
+    expect(server.commands).toEqual([]);
+  });
+
+  it("provisioned, nothing deployed yet: no deployed version, deploys on", async () => {
+    const { deps, github } = await serverWorld();
+    const report = await componentStatusReport(deps, testPlan({ deployed: true }), {
+      services: { remote: shell("").remote, deploys: github },
+    });
+    const at = report.lines.indexOf("Deploys (read from GitHub now):");
+    expect(report.lines.slice(at + 1)).toEqual([
+      "  Running: OpsCrew found no deployed version.",
+      "  Deploys: on (each push to main deploys)",
+    ]);
+  });
+
+  it("before provision ran, reads nothing", async () => {
     const { deps, github } = await serverWorld();
     const server = shell(serverOutput(BOTH));
-    const report = await componentStatusReport(deps, testPlan({ deployed: true }), {
+    const report = await componentStatusReport(deps, testPlan(), {
       services: { remote: server.remote, deploys: github },
     });
     expect(report.deploys).toBeUndefined();
