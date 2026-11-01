@@ -3,6 +3,7 @@ import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { CommandOptions, CommandResult, CommandRunner, FetchLike } from "@opscrew/contracts";
 import { ProjectStateStore, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { PAGES_PUBLISH_JOB } from "@opscrew/iac-templates";
 import { afterEach, describe, expect, it } from "vitest";
 import { projectContext, run, type TempProject, tempProject } from "../ui/__fixtures__/harness";
 import { writeSitePlan } from "../ui/__fixtures__/site";
@@ -113,6 +114,9 @@ describe("opscrew status for a site on GitHub Pages", () => {
       }
       if (url.pathname.endsWith("/actions/workflows/opscrew-deploy.yml/runs")) {
         return Response.json({ workflow_runs: [run_(201, "22"), run_(202, "23")] });
+      }
+      if (/\/actions\/runs\/\d+\/attempts\/\d+\/jobs$/.test(url.pathname)) {
+        return Response.json({ jobs: [{ name: PAGES_PUBLISH_JOB, conclusion: "success" }] });
       }
       return new Response("not found", { status: 404 });
     };

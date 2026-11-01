@@ -54,6 +54,9 @@ class FakePromoteGitHub implements PromoteGitHubApi {
   async getRepo() {
     return { defaultBranch: "main", private: true, canPush: true };
   }
+  async runAttemptJobs() {
+    return [];
+  }
   async fileSha(_owner: string, _repo: string, file: string) {
     if (file !== ".github/workflows/opscrew-deploy.yml") return undefined;
     const bytes = Buffer.from(PROD_WORKFLOW, "utf8");

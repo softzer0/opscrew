@@ -5,7 +5,11 @@ import type { DriftReport, PromoteGitHubApi } from "@opscrew/agents";
 import { fakeSharedCloudflare } from "@opscrew/agents/testing";
 import { FAKE_ACCOUNT_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { CommandOptions, CommandResult, CommandRunner } from "@opscrew/contracts";
-import { renderCloudflareWorkersWorkflow, SITE_ARTIFACT } from "@opscrew/iac-templates";
+import {
+  PAGES_PUBLISH_JOB,
+  renderCloudflareWorkersWorkflow,
+  SITE_ARTIFACT,
+} from "@opscrew/iac-templates";
 import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { inEnvironment, planFile } from "../ui/__fixtures__/environments";
@@ -50,6 +54,7 @@ function pagesGitHub(): PromoteGitHubApi & { reruns: number[] } {
     reruns,
     getRepo: async () => ({ defaultBranch: "main", private: false, canPush: true }),
     getEnvironment: async () => undefined,
+    runAttemptJobs: async () => [{ name: PAGES_PUBLISH_JOB, conclusion: "success" }],
     pagesRuns: async () => [
       { runId: 202, attempt: 1, startedAt: "2026-10-23T09:00:00Z", headSha: "2".repeat(40) },
       { runId: 201, attempt: 1, startedAt: "2026-10-22T09:00:00Z", headSha: "1".repeat(40) },
@@ -78,7 +83,8 @@ function pagesGitHub(): PromoteGitHubApi & { reruns: number[] } {
     workflowRun: unused,
     dispatchWorkflow: unused,
     runArtifacts: unused,
-    getRepoVariable: unused,
+    // No deploy pause.
+    getRepoVariable: async () => undefined,
   };
 }
 
@@ -241,6 +247,7 @@ describe("opscrew promote on Cloudflare's hosting", () => {
       fileSha: async () => blob,
       getEnvironment: async () => undefined,
       runArtifacts: async () => [{ name: SITE_ARTIFACT, expired: false }],
+      runAttemptJobs: unused,
       dispatchWorkflow: async () => ({ runId: 900, url: runUrl }),
       waitForWorkflowRun: async () => ({
         id: 900,

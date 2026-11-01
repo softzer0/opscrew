@@ -235,6 +235,7 @@ describe("opscrew promote", () => {
       getRepo: async () => ({ defaultBranch: "main", private: true, canPush: true }),
       fileSha: async () => blob,
       getEnvironment: async () => undefined,
+      runAttemptJobs: async () => [],
       taggedDigest: async (_owner, _image, tag) =>
         tag === "opscrew-staging" || tag === `${commit}-staging` ? digest : undefined,
       imageFacts: async () => ({
