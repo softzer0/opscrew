@@ -12,7 +12,7 @@
 | `builtAt` | The build run's `created_at` |
 | `runUrl` | The build run that the image's provenance names |
 | `buildSucceeded` | That run's conclusion was `success` |
-| `marks` | `running` (`opscrew-<env>`), `previous` (the default target, plan.md 3.) |
+| `marks` | `running` (`opscrew-<env>`), `previous` (the default target, plan.md 3.), `skipped` (a Pages run whose publish job didn't run) |
 
 - Only versions whose provenance and CPU check out are listed: newest first, at most 20.
 - **This computer:** the images of `.env` and `.env.previous`.

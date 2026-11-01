@@ -38,8 +38,9 @@ the source's image or the target's previous one.
 - **D4 – the default target** is the deployment before the running one: `opscrew-<env>-previous`
   when it was built before the running image, otherwise (after a rollback) the newest listed
   version built before the running one. A second rollback goes further back; it never undoes the
-  first. The same holds on Cloudflare's hosting and GitHub Pages: their default is the newest
-  version older than the running one (Worker versions in creation order, Pages runs by run id).
+  first. The same rule holds on Cloudflare's hosting and GitHub Pages: the version that served
+  before the running one when it is older, otherwise the newest older one (Worker versions by
+  creation time, Pages runs by run id; a Pages run whose publish job was skipped never counts).
 - **D5 – the hash binds** the environment, the current digest, the target digest and the plan's
   hash, as a promotion's does.
 - **D6 – a rollback refuses while a deploy of the environment runs,** rather than waiting. It
