@@ -537,7 +537,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
 Each task keeps behaviour, apart from the bugs it names. Exported names used outside a task's Owns keep their signatures unless the task says otherwise; report any other change instead of making it.
 
-- [ ] T1924 Simplify the workflow templates and runbooks, in `packages/iac-templates/src/{workflow,runbook,runtime}/**` (+ tests, snapshots), not `runbook/network.ts`
+- [x] T1924 Simplify the workflow templates and runbooks, in `packages/iac-templates/src/{workflow,runbook,runtime}/**` (+ tests, snapshots), not `runbook/network.ts`
   - Owns: those paths, plus `packages/iac-templates/src/index.ts` for its own exports
   - Accept:
     - **One command builder:** the runbook's `opscrew(plan, command, environments?)` (`runbook/shared.ts`) moves next to `appFlag` in `workflow/shared.ts`. It builds `provisionCommand`, `pause.ts`'s `rollbackCommand`, the Workers failure message and `switch.ts`'s `failedLogs` flags, and no second builder is added. `DISPATCH_WITH_DIGEST` and `DISPATCH_FOR_ROLLBACK` come from one builder.
