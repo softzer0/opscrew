@@ -581,6 +581,7 @@ A push after step 2 skips its deploy job.
 - **A token without Variables: write** refuses before any change, since the pause is set first.
 - **Long pauses:** builds made while paused count toward `keep`. The pinned image is protected by its label.
 - **SC-1901's 3 minutes** (2 until live run 1 took 2 min 30 s; its run took 68 s): the approval run's drift check (`requireApplied`) and the image list, a poll interval after the pause is set, then `verify`'s queue time, the pull (the server keeps old images, since nothing prunes them), the switch, the check from outside and `label`. The live run measures it and logs where the time goes.
+- **SC-1604 (016) becomes 90 seconds:** a Workers rollback now sets the deploy pause and waits for running deploys before it activates the version. The Cloudflare hosting pass of 2026-11-01 took 1 min 10 s.
 - **D1 changes promote's security check:** T1904 tests both ways, and the review checks it.
 - **The Portainer release placeholder** changes every Portainer stack once (S5).
 
