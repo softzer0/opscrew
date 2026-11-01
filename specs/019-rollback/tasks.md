@@ -598,7 +598,7 @@ Each task keeps behaviour, apart from the bugs it names. Exported names used out
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T1926 Simplify provision, design and the login checks, in `packages/agents/src/{provision,design,secure,vpn,retarget,drift,serverless}/**`, `packages/agents/src/localhost/provision.ts`, `packages/iac-templates/src/catalog/**` and `packages/iac-templates/src/runbook/network.ts` (+ tests)
+- [x] T1926 Simplify provision, design and the login checks, in `packages/agents/src/{provision,design,secure,vpn,retarget,drift,serverless}/**`, `packages/agents/src/localhost/provision.ts`, `packages/iac-templates/src/catalog/**` and `packages/iac-templates/src/runbook/network.ts` (+ tests)
   - Owns: those paths, plus `packages/iac-templates/src/index.ts` for the catalog's exports
   - Accept:
     - **`ServiceSpec.auth` and `serviceAuth` go:**
