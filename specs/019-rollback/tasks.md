@@ -383,7 +383,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew && node plugin/validate.mjs`
   - Effort: high
 
-- [ ] T1912 [P] The guide and the runbook, in `docs/guide/**` and `packages/iac-templates/src/runbook/**`
+- [X] T1912 [P] The guide and the runbook, in `docs/guide/**` and `packages/iac-templates/src/runbook/**`
   - Owns: those paths (+ runbook tests and snapshots)
   - Reads: spec (all); plan.md "1.", "4.–8."; contracts/rollback.md
   - Depends: T1905, T1907, T1908
