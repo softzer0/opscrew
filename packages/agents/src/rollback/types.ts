@@ -18,9 +18,10 @@ export interface VersionsImage extends AppImage {
 
 /**
  * `running`: the image the environment runs (its `opscrew-<env>` label). `previous`: the version a
- * rollback goes back to by default (ADR 0023 D4).
+ * rollback goes back to by default (ADR 0023 D4). `skipped`: a GitHub Pages run whose publish job
+ * did not run (pushed while deploys were paused); re-running it publishes its commit.
  */
-export type VersionMark = "running" | "previous";
+export type VersionMark = "running" | "previous" | "skipped";
 
 /** One image of a server environment, by its digest (data-model.md "A version"). */
 export interface Version {

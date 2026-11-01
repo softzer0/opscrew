@@ -18,6 +18,9 @@ import {
   workflowStart,
 } from "./shared";
 
+/** The name of the job that publishes the site; skipped while the deploys are paused. */
+export const PAGES_PUBLISH_JOB = "Publish on GitHub Pages";
+
 /** The largest site GitHub Pages publishes: 1 GB. */
 const PAGES_SITE_BYTES = 1024 ** 3;
 
@@ -83,7 +86,7 @@ export function renderGithubPagesWorkflow(
   const rerun = "github.run_attempt > 1";
   const deploy = job({
     id: "deploy",
-    name: "Publish on GitHub Pages",
+    name: PAGES_PUBLISH_JOB,
     needs: "build",
     if: `\${{ ${rerun} || !${pausedTest(plan)} }}`,
     environment: "github-pages",

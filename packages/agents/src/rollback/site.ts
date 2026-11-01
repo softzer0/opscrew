@@ -22,7 +22,13 @@ import {
 } from "../promote/site";
 import { sharedCloudflareClient } from "../provision/shared-cloudflare";
 import { type DeployPause, deployPauseOf } from "../shared/deploy-pause";
-import { pagesMarks, previousWorkerVersion, runningVersions, versionBuild } from "../status/site";
+import {
+  type PagesMarks,
+  pagesMarks,
+  previousWorkerVersion,
+  runningVersions,
+  versionBuild,
+} from "../status/site";
 import type { RollbackResult } from "./index";
 import { NOTHING, type RollbackRepository, type RollbackRun, rollbackRepository } from "./run";
 import { pausedText, pausedWhile, requireNoDeployRunning, UNKNOWN_COMMIT } from "./server";
@@ -162,10 +168,11 @@ async function rollbackWorker(run: RollbackRun): Promise<RollbackResult> {
 }
 
 /** A GitHub Pages run as the list shows it, with its marks ({@link pagesMarks}). */
-function pagesView(run: PagesRun, marks: { running?: PagesRun; previous?: PagesRun }): VersionView {
+function pagesView(run: PagesRun, marks: PagesMarks): VersionView {
   return marked({ version: String(run.runId), commit: run.headSha, builtAt: run.startedAt }, [
     ...(run === marks.running ? (["running"] as const) : []),
     ...(run === marks.previous ? (["previous"] as const) : []),
+    ...(marks.skipped.includes(run) ? (["skipped"] as const) : []),
   ]);
 }
 
@@ -190,7 +197,8 @@ async function rollbackPages(run: RollbackRun): Promise<RollbackResult> {
   const workflowFile = posix.basename(plan.cicd.workflowPath);
   const runs = await github.api.pagesRuns(github.owner, github.repo, workflowFile);
   const paused = await deployPauseOf(github, plan);
-  const marks = pagesMarks(runs, paused);
+  const pin = paused?.reason === "rollback" ? paused : undefined;
+  const marks = await pagesMarks(github, runs, pin?.image);
   if (options.list === true) {
     return listed(
       runs.map((known) => pagesView(known, marks)),
@@ -202,6 +210,16 @@ async function rollbackPages(run: RollbackRun): Promise<RollbackResult> {
   const to = options.to?.trim();
   const chosen = to === undefined ? marks.previous : pagesRunOf(runs, to);
   if (chosen === undefined) {
+    if (to === undefined && pin !== undefined && marks.running === undefined) {
+      // The pinned run's latest attempt did not succeed, so it is not listed.
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `The run ${pin.image} that \`opscrew rollback\` pinned ${environment}'s site to has not succeeded: it waits for a reviewer, or it failed. ${NOTHING}`,
+        {
+          hint: `Roll back to another run with \`${command} --to <run id>\` (\`${command} --list\` lists the runs), or run \`${command} --resume\` to deploy forward again.`,
+        },
+      );
+    }
     if (to === undefined) {
       throw onlyOne(
         run,

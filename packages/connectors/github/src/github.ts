@@ -177,6 +177,14 @@ export interface PagesRun {
   headSha: string;
 }
 
+/** A job of a workflow run's attempt, as GitHub lists it. */
+export interface RunJob {
+  /** Its `name:` in the workflow. */
+  name: string;
+  /** `success`, `skipped`, `failure` and the like; `null` while it has not finished. */
+  conclusion: string | null;
+}
+
 /** An artifact of a workflow run, as GitHub lists it. */
 export interface RunArtifact {
   name: string;
@@ -381,6 +389,9 @@ const PagesRunSchema = z.looseObject({
   run_attempt: z.number(),
   run_started_at: z.string(),
   head_sha: z.string(),
+});
+const JobsSchema = z.looseObject({
+  jobs: z.array(z.looseObject({ name: z.string(), conclusion: z.string().nullable() })),
 });
 const RepoOwnerSchema = z.looseObject({
   private: z.boolean(),
@@ -1886,8 +1897,8 @@ export class GitHubClient {
 
   /**
    * The successful runs of the Pages workflow `workflowFile` (up to 100), the latest started
-   * first: the first published the site, the second is where a rollback goes. A re-run keeps its
-   * id and starts again, so it moves to the top. Needs Actions: Read.
+   * first. A re-run keeps its id and starts again, so it moves to the top. A run also succeeds
+   * when its publish job was skipped ({@link runAttemptJobs} tells). Needs Actions: Read.
    */
   async pagesRuns(owner: string, repo: string, workflowFile: string): Promise<PagesRun[]> {
     const runs = await this.#workflowRuns(
@@ -1904,6 +1915,28 @@ export class GitHubClient {
         headSha: run.head_sha,
       }))
       .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  }
+
+  /**
+   * The jobs of the attempt `attempt` of the workflow run `runId` (up to 100), each with its
+   * conclusion. Read-only; needs Actions: Read.
+   */
+  async runAttemptJobs(
+    owner: string,
+    repo: string,
+    runId: number,
+    attempt: number,
+  ): Promise<RunJob[]> {
+    const what = `list the jobs of workflow run ${runId}, attempt ${attempt}`;
+    const { json } = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`,
+      what,
+    );
+    return this.#parse(JobsSchema, json, what).jobs.map(({ name, conclusion }) => ({
+      name,
+      conclusion,
+    }));
   }
 
   /**

@@ -12,7 +12,7 @@ import type {
 } from "@opscrew/connector-github";
 import type { ProjectPaths } from "@opscrew/core";
 import { sha256Hex } from "@opscrew/core";
-import { environmentTag } from "@opscrew/iac-templates";
+import { environmentTag, PAGES_PUBLISH_JOB } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../../context";
 import type { DriftReport } from "../../drift";
@@ -171,6 +171,20 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
   readonly pages = new Map<string, PagesRun[]>();
   async pagesRuns(_owner: string, _repo: string, workflowFile: string) {
     return this.pages.get(workflowFile) ?? [];
+  }
+
+  /** The Pages runs whose publish job was skipped (pushed while deploys were paused), by id. */
+  readonly skippedRuns = new Set<number>();
+  /** The runs whose jobs were read, in order. */
+  readonly jobReads: number[] = [];
+  async runAttemptJobs(_owner: string, _repo: string, runId: number, _attempt: number) {
+    this.jobReads.push(runId);
+    return [
+      {
+        name: PAGES_PUBLISH_JOB,
+        conclusion: this.skippedRuns.has(runId) ? "skipped" : "success",
+      },
+    ];
   }
 
   /** The artifacts of each workflow run, by its id (none listed: GitHub has no such run). */

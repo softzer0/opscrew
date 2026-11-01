@@ -12,6 +12,7 @@ import type {
 } from "@opscrew/connector-cloudflare";
 import type { GitHubClient, PagesRun } from "@opscrew/connector-github";
 import { errorText, isUserFacingError } from "@opscrew/core";
+import { PAGES_PUBLISH_JOB } from "@opscrew/iac-templates";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -94,27 +95,62 @@ export function previousWorkerVersion<V extends { id: string }>(
   return at === -1 ? undefined : versions[at + 1];
 }
 
+/** The repository, with the GitHub call that tells whether a Pages run published the site. */
+export interface PagesRepository {
+  api: Pick<GitHubClient, "runAttemptJobs">;
+  owner: string;
+  repo: string;
+}
+
+/** A site's GitHub Pages runs as {@link pagesMarks} marks them. */
+export interface PagesMarks {
+  /** The run that published the site now. */
+  running?: PagesRun;
+  /** The run a rollback re-runs by default (ADR 0023 D4). */
+  previous?: PagesRun;
+  /** The runs read on the way whose publish job did not run (pushed while deploys were paused). */
+  skipped: PagesRun[];
+}
+
 /**
- * Of a site's successful GitHub Pages runs (the latest started first), the one that published the
- * site now (`running`) and the run a rollback re-runs by default (`previous`, ADR 0023 D4): the
- * newest run created before it (a re-run keeps its run's id, so ids give the creation order).
- * While a rollback pauses deploys, a push's run still succeeds with its deploy job skipped, so the
- * running run is then the one the rollback pinned (`pause.image`), never the latest started.
+ * Of a site's successful GitHub Pages runs (`runs`, the latest started first), the one that
+ * published the site now (`running`) and the run a rollback re-runs by default (`previous`, ADR
+ * 0023 D4). A run also succeeds when its job {@link PAGES_PUBLISH_JOB} was skipped, as a push's
+ * is while a rollback pauses deploys. So while a rollback pins a run (`pinned`, its id), that one
+ * runs; otherwise the latest started run whose publish job succeeded does. `previous` is the run
+ * with the highest id below the running one's (a re-run keeps its id, so ids give the creation
+ * order) whose publish job succeeded. Each run's jobs are read newest first, and the reads stop
+ * once both are found.
  */
-export function pagesMarks<R extends { runId: number }>(
-  runs: readonly R[],
-  pause: DeployPause | undefined,
-): { running?: R; previous?: R } {
+export async function pagesMarks(
+  github: PagesRepository,
+  runs: readonly PagesRun[],
+  pinned: string | undefined,
+): Promise<PagesMarks> {
+  const skipped: PagesRun[] = [];
+  const firstPublished = async (candidates: readonly PagesRun[]) => {
+    for (const run of candidates) {
+      const jobs = await github.api.runAttemptJobs(
+        github.owner,
+        github.repo,
+        run.runId,
+        run.attempt,
+      );
+      if (jobs.some((job) => job.name === PAGES_PUBLISH_JOB && job.conclusion === "success")) {
+        return run;
+      }
+      skipped.push(run);
+    }
+    return undefined;
+  };
   const running =
-    pause?.reason === "rollback" ? runs.find((run) => String(run.runId) === pause.image) : runs[0];
-  if (running === undefined) return {};
-  const previous = runs
-    .filter((run) => run.runId < running.runId)
-    .reduce<R | undefined>(
-      (newest, run) => (newest === undefined || run.runId > newest.runId ? run : newest),
-      undefined,
-    );
-  return { running, ...(previous !== undefined ? { previous } : {}) };
+    pinned === undefined
+      ? await firstPublished(runs)
+      : runs.find((run) => String(run.runId) === pinned);
+  if (running === undefined) return { skipped };
+  const older = runs.filter((run) => run.runId < running.runId).sort((a, b) => b.runId - a.runId);
+  const previous = await firstPublished(older);
+  return { running, ...(previous !== undefined ? { previous } : {}), skipped };
 }
 
 /** A workflow run's page at GitHub; just its id without the repository. */
@@ -273,18 +309,24 @@ async function pagesLines(
         : `not enforced yet. Once the certificate is issued, run \`opscrew provision${flag}\`: it enforces HTTPS.`
     }`,
   ];
-  const marks = pagesMarks(runs, pause);
+  const pin = pause?.reason === "rollback" ? pause : undefined;
+  const marks = await pagesMarks(
+    { api: client, owner: repo.owner, repo: repo.repo },
+    runs,
+    pin?.image,
+  );
   const last = marks.running;
   // The run that published the site before it: the next one started.
   const previous = last === undefined ? undefined : runs[runs.indexOf(last) + 1];
   const describe = (run: PagesRun) =>
     `${runLink(repo, run.runId)}, started ${formatUtc(run.startedAt)}, commit ${run.headSha.slice(0, 7)}`;
   if (last === undefined) {
+    const rollback = `opscrew rollback${flag}`;
     lines.push(
-      runs.length === 0
+      pin === undefined
         ? "  Running: nothing yet. Merge OpsCrew's deploy-setup pull request: its workflow publishes the site."
-        : // Only a rollback's pause names a run that may not be listed (its re-run is not done).
-          `  Running: unknown: the run \`opscrew rollback\` pinned (${pause?.reason === "rollback" ? pause.image : ""}) has not succeeded yet.`,
+        : // The pinned run's latest attempt did not succeed, so it is not listed.
+          `  Running: unknown: the run \`opscrew rollback\` pinned (${pin.image}) has not succeeded: it waits for a reviewer, or it failed. Roll back to another run with \`${rollback} --to <run id>\` (\`${rollback} --list\` lists the runs), or run \`${rollback} --resume\` to deploy forward again.`,
     );
   } else {
     lines.push(

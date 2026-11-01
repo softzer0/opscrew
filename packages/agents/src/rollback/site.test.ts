@@ -548,6 +548,85 @@ describe("opscrew rollback on GitHub Pages", () => {
     expect(world.github.reruns).toEqual([800, 700]);
   });
 
+  it("after --resume without --deploy, takes the run that published for the running one, marks the skipped push, and goes further back (D4)", async () => {
+    // 900 (B) is bad: the rollback re-ran 800 (A) and pinned it.
+    const world = await siteWorld({ pages: true });
+    await world.run();
+    // 1000 (C) was pushed while paused: its publish job was skipped. Then the pause ended.
+    world.github.pages.set("opscrew-deploy.yml", [
+      { runId: 1000, attempt: 1, startedAt: "2026-10-23T13:00:00Z", headSha: "c".repeat(40) },
+      { runId: 800, attempt: 2, startedAt: "2026-10-23T12:00:00Z", headSha: "e".repeat(40) },
+      { runId: 900, attempt: 1, startedAt: "2026-10-23T10:00:00Z", headSha: "f".repeat(40) },
+      { runId: 700, attempt: 1, startedAt: "2026-10-21T10:00:00Z", headSha: "d".repeat(40) },
+    ]);
+    world.github.skippedRuns.add(1000);
+    expect(await world.run({ resume: true })).toEqual({ kind: "resumed", wasPaused: true });
+    expect(world.paused()).toBeUndefined();
+
+    world.github.jobReads.length = 0;
+    const list = await world.run({ list: true });
+    expect(list).toMatchObject({
+      versions: [
+        { version: "1000", marks: ["skipped"] },
+        { version: "800", marks: ["running"] },
+        { version: "900" },
+        { version: "700", marks: ["previous"] },
+      ],
+    });
+    expect(list.kind === "list" && list.versions[2]).not.toHaveProperty("marks");
+    // Newest first, and no further than the run before the running one.
+    expect(world.github.jobReads).toEqual([1000, 800, 700]);
+    const second = await world.run();
+    expect(second).toMatchObject({ target: { version: "700" }, from: { version: "800" } });
+    expect(world.github.reruns).toEqual([800, 700]);
+  });
+
+  it("while paused, re-runs the push's skipped run --to names, and refuses the pinned one, which serves the site", async () => {
+    const world = await siteWorld({ pages: true });
+    await world.run();
+    world.github.pages.set("opscrew-deploy.yml", [
+      { runId: 1000, attempt: 1, startedAt: "2026-10-23T13:00:00Z", headSha: "c".repeat(40) },
+      { runId: 800, attempt: 2, startedAt: "2026-10-23T12:00:00Z", headSha: "e".repeat(40) },
+      { runId: 900, attempt: 1, startedAt: "2026-10-23T10:00:00Z", headSha: "f".repeat(40) },
+      { runId: 700, attempt: 1, startedAt: "2026-10-21T10:00:00Z", headSha: "d".repeat(40) },
+    ]);
+    world.github.skippedRuns.add(1000);
+    const pinned = await failure(world.run({ to: "800" }));
+    expect(pinned.message).toBe(
+      "The run 800 published the site that GitHub Pages serves now. Nothing was changed.",
+    );
+    const forward = await world.run({ to: "1000" });
+    expect(forward).toMatchObject({
+      target: { version: "1000" },
+      from: { version: "800", marks: ["running"] },
+    });
+    expect(world.github.reruns).toEqual([800, 1000]);
+  });
+
+  it("refuses with the next step when the pinned run has not succeeded, and still goes --to a run", async () => {
+    const world = await siteWorld({ pages: true });
+    await world.run();
+    // A reviewer rejected 800's re-run: its latest attempt failed, so GitHub lists it no more.
+    world.github.pages.set("opscrew-deploy.yml", [
+      { runId: 900, attempt: 1, startedAt: "2026-10-23T10:00:00Z", headSha: "f".repeat(40) },
+      { runId: 700, attempt: 1, startedAt: "2026-10-21T10:00:00Z", headSha: "d".repeat(40) },
+    ]);
+    const events = world.events.length;
+    const refused = await failure(world.run());
+    expect(refused.code).toBe("PHASE_PRECONDITION");
+    expect(refused.message).toBe(
+      "The run 800 that `opscrew rollback` pinned prod's site to has not succeeded: it waits for a reviewer, or it failed. Nothing was changed.",
+    );
+    expect(refused.hint).toBe(
+      `Roll back to another run with \`${COMMAND} --to <run id>\` (\`${COMMAND} --list\` lists the runs), or run \`${COMMAND} --resume\` to deploy forward again.`,
+    );
+    expect(world.events.length).toBe(events);
+    const list = await world.run({ list: true });
+    expect(list.kind === "list" && list.versions.flatMap((v) => v.marks ?? [])).toEqual([]);
+    expect(await world.run({ to: "700" })).toMatchObject({ target: { version: "700" } });
+    expect(world.github.reruns).toEqual([800, 700]);
+  });
+
   it("puts no GitHub token in the output, the audit, the approval or the pause", async () => {
     const token = fakeSecret("github-token", "rollback-pages");
     const world = await siteWorld({ pages: true });

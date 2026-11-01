@@ -234,7 +234,7 @@ function versionWords(image: string, view: VersionView | undefined): string {
  * True when its workflow deploys the environment on its own: every target but this computer
  * without the local runner.
  */
-function deploysOnTheirOwn(plan: DeployPlan): boolean {
+export function deploysOnTheirOwn(plan: DeployPlan): boolean {
   return plan.target.provider !== "localhost" || plan.environment?.runner === "local";
 }
 

@@ -241,6 +241,14 @@ const ROWS: Row[] = [
     notFound: "generic",
   },
   {
+    method: "runAttemptJobs",
+    route: `GET ${API}/actions/runs/1/attempts/2/jobs`,
+    call: (c) => c.runAttemptJobs("acme", "shop", 1, 2),
+    withHeader: ADMIN_WRITE,
+    withoutHeader: "generic",
+    notFound: "generic",
+  },
+  {
     method: "rerunWorkflowRun",
     route: `POST ${API}/actions/runs/1/rerun`,
     call: (c) => c.rerunWorkflowRun("acme", "shop", 1),

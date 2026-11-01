@@ -9,6 +9,7 @@ import { checkEnvironmentKey, DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templa
 import { PlanRefusedError } from "../shared";
 import { clearDeployPause, deployPauseOf, pinnedText } from "../shared/deploy-pause";
 import { dispatchAndFollow } from "../shared/deploy-run";
+import { deploysOnTheirOwn } from "../status/deploys";
 import type { RollbackResult } from "./index";
 import { readPendingRollback } from "./record";
 import { NOTHING, type RollbackRun, rollbackRepository } from "./run";
@@ -19,10 +20,9 @@ function deploysOn(run: RollbackRun): string {
   if (plan.environment?.deploySource?.from === "promote") {
     return `\`opscrew promote --to ${run.environment}\` deploys it`;
   }
-  // On this computer without the local runner, nothing deploys on a push.
-  return plan.target.provider === "localhost" && plan.environment?.runner !== "local"
-    ? `\`opscrew provision${run.flags}\` deploys it`
-    : `each push to ${plan.cicd.branch} deploys it`;
+  return deploysOnTheirOwn(plan)
+    ? `each push to ${plan.cicd.branch} deploys it`
+    : `\`opscrew provision${run.flags}\` deploys it`;
 }
 
 /**
@@ -72,7 +72,7 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
       },
     );
   }
-  if (deploy && plan.target.provider === "localhost" && plan.environment?.runner !== "local") {
+  if (deploy && !deploysOnTheirOwn(plan)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `${environment} runs on this computer without the local runner, so no workflow deploys it and --deploy has nothing to start. ${NOTHING}`,

@@ -1,7 +1,7 @@
 import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
+import { DEPLOY_PAUSED_VARIABLE, PAGES_PUBLISH_JOB } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { FakePromoteGitHub } from "../promote/__fixtures__/world";
@@ -162,18 +162,114 @@ describe("opscrew status on GitHub Pages", () => {
     { id: 202, run_attempt: 1, run_started_at: "2026-10-23T09:00:00Z", head_sha: "2".repeat(40) },
   ];
 
-  /** GitHub's Pages API, and `runs`, the successful runs of the Pages workflow. */
-  function github(pages: Omit<FakePagesOptions, "log">, runs = RUNS) {
+  /**
+   * GitHub's Pages API, `runs`, the successful runs of the Pages workflow, and each run's jobs:
+   * its publish job skipped for the runs in `skipped`, else successful. `jobReads` records the runs
+   * whose jobs were read.
+   */
+  function github(pages: Omit<FakePagesOptions, "log">, runs = RUNS, skipped: number[] = []) {
     const fake = fakeGithubPages(pages);
+    const jobReads: number[] = [];
     const fetch: FetchLike = async (input, init) => {
       const url = new URL(String(input));
       if (url.pathname.endsWith("/actions/workflows/opscrew-deploy.yml/runs")) {
         return Response.json({ workflow_runs: runs });
       }
+      const jobs = /\/actions\/runs\/(\d+)\/attempts\/\d+\/jobs$/.exec(url.pathname);
+      if (jobs !== null) {
+        const runId = Number(jobs[1]);
+        jobReads.push(runId);
+        const conclusion = skipped.includes(runId) ? "skipped" : "success";
+        return Response.json({ jobs: [{ name: PAGES_PUBLISH_JOB, conclusion }] });
+      }
       return fake.fetch(input, init);
     };
-    return { ...fake, fetch };
+    return { ...fake, fetch, jobReads };
   }
+
+  /** A successful run of the Pages workflow as GitHub lists it. */
+  const pagesRun = (id: number, attempt: number, started: string, sha: string) => ({
+    id,
+    run_attempt: attempt,
+    run_started_at: started,
+    head_sha: sha.repeat(40),
+  });
+
+  /** A rollback's entry in the pause variable, pinning the run `image`. */
+  function pinned(image: string, commit: string): FakePromoteGitHub {
+    const registry = new FakePromoteGitHub();
+    registry.variables.set(
+      DEPLOY_PAUSED_VARIABLE,
+      JSON.stringify({
+        "example-app/prod": {
+          reason: "rollback",
+          since: "2026-10-24T08:59:00.000Z",
+          image,
+          commit: commit.repeat(40),
+        },
+      }),
+    );
+    return registry;
+  }
+
+  const SITE = {
+    site: { buildType: "workflow" as const, cname: "docs.example.com", httpsEnforced: true },
+    health: "issued" as const,
+  };
+
+  it("after --resume without --deploy, shows the run that published running, never a push's whose publish job was skipped, and reads no further than it needs", async () => {
+    // 202 (B) was bad; the rollback re-ran 201 (A); 203 (C) was pushed while paused; then
+    // `--resume` without `--deploy` ended the pause.
+    const pages = github(
+      SITE,
+      [
+        pagesRun(199, 1, "2026-10-20T09:00:00Z", "9"),
+        pagesRun(200, 1, "2026-10-21T09:00:00Z", "0"),
+        ...RUNS.slice(1),
+        pagesRun(201, 2, "2026-10-24T09:00:00Z", "1"),
+        pagesRun(203, 1, "2026-10-25T09:00:00Z", "3"),
+      ],
+      [203],
+    );
+    const deps = await setup(pagesTestPlan(), pages.fetch);
+    const { lines, deploys } = await componentStatusReport(deps, pagesTestPlan(), {
+      services: { deploys: new FakePromoteGitHub() },
+    });
+    expect(lines[4]).toContain(
+      "Running: https://github.com/example-org/example-app/actions/runs/201,",
+    );
+    expect(lines[5]).toContain(
+      "Before it: https://github.com/example-org/example-app/actions/runs/202,",
+    );
+    expect(lines[6]).toBe(
+      "  Roll back: opscrew rollback --to 200 (the newest run created before the one running)",
+    );
+    expect(deploys).toMatchObject({ running: { version: "201" }, previous: { version: "202" } });
+    expect(pages.jobReads).toEqual([203, 201, 200]);
+  });
+
+  it("names the next step when the pinned run has not succeeded, and says when nothing ran yet", async () => {
+    // The rollback pinned 201, whose re-run a reviewer rejected: GitHub lists it no more.
+    const rejected = github(SITE, RUNS.slice(1));
+    const deps = await setup(pagesTestPlan(), rejected.fetch);
+    const { lines } = await componentStatusReport(deps, pagesTestPlan(), {
+      services: { deploys: pinned("201", "1") },
+    });
+    expect(lines[4]).toBe(
+      "  Running: unknown: the run `opscrew rollback` pinned (201) has not succeeded: it waits for a reviewer, or it failed. Roll back to another run with `opscrew rollback --to <run id>` (`opscrew rollback --list` lists the runs), or run `opscrew rollback --resume` to deploy forward again.",
+    );
+    expect(lines[5]).toBe("");
+
+    const none = github(SITE, []);
+    const fresh = await setup(pagesTestPlan(), none.fetch);
+    const empty = await componentStatusReport(fresh, pagesTestPlan(), {
+      services: { deploys: new FakePromoteGitHub() },
+    });
+    expect(empty.lines[4]).toBe(
+      "  Running: nothing yet. Merge OpsCrew's deploy-setup pull request: its workflow publishes the site.",
+    );
+    expect(empty.deploys).not.toHaveProperty("running");
+  });
 
   it("shows the site, its certificate, HTTPS, the last run and the one before", async () => {
     const pages = github({

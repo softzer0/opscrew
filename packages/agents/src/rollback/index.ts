@@ -84,7 +84,7 @@ export interface RollbackOptions {
 export type RollbackResult =
   | {
       kind: "list";
-      /** Newest first, with the marks `running` and `previous`. */
+      /** Newest first, with their marks ({@link VersionView}). */
       versions: VersionView[];
       /** The environment's pause entry, when its deploys are paused. */
       paused?: DeployPause;

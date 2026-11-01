@@ -328,6 +328,36 @@ describe("pagesRuns", () => {
   });
 });
 
+describe("runAttemptJobs", () => {
+  const route = `GET ${API}/actions/runs/4242/attempts/2/jobs`;
+
+  it("lists the attempt's jobs with their conclusions", async () => {
+    const { client, calls } = setup({
+      [route]: {
+        body: {
+          total_count: 3,
+          jobs: [
+            { id: 1, name: "Deploys are paused", status: "completed", conclusion: "skipped" },
+            { id: 2, name: "Build the site", status: "completed", conclusion: "success" },
+            { id: 3, name: "Publish on GitHub Pages", status: "in_progress", conclusion: null },
+          ],
+        },
+      },
+    });
+    expect(await client.runAttemptJobs("acme", "shop", 4242, 2)).toEqual([
+      { name: "Deploys are paused", conclusion: "skipped" },
+      { name: "Build the site", conclusion: "success" },
+      { name: "Publish on GitHub Pages", conclusion: null },
+    ]);
+    expect(calls[0]?.path).toBe(`${route.slice(4)}?per_page=100`);
+  });
+
+  it("refuses an answer without the jobs", async () => {
+    const { client } = setup({ [route]: { body: { total_count: 0 } } });
+    await failure(client.runAttemptJobs("acme", "shop", 4242, 2));
+  });
+});
+
 describe("rerunWorkflowRun", () => {
   it("re-runs the run", async () => {
     const { client, calls } = setup({ [`POST ${API}/actions/runs/4242/rerun`]: { status: 201 } });

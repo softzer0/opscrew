@@ -39,8 +39,9 @@ import { committedTfvars } from "../provision/render";
 import { sharedCloudflareClient } from "../provision/shared-cloudflare";
 import { PAGES_ENVIRONMENT } from "../serverless/pages/plan";
 import { hasDeployment, PlanRefusedError, serverlessName } from "../shared";
+import { readableDeployPause } from "../shared/deploy-pause";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
-import { runningVersions, versionBuild } from "../status/site";
+import { pagesMarks, runningVersions, versionBuild } from "../status/site";
 import { buildPromotionHash, rollbackHash } from "./record";
 import {
   type CheckedFor,
@@ -595,7 +596,8 @@ async function waitForRerun(
 
 /**
  * A rollback on GitHub Pages (`--version <run id>`): an earlier successful run of the site's
- * workflow, other than the one that published the site now, re-run after the `promote` approval,
+ * workflow, other than the one that published the site now (`pagesMarks`, with a rollback's pin
+ * when the token may read the deploy pause), re-run after the `promote` approval,
  * bound to {@link rollbackHash} of the target, the run and its plan's hash, and followed to its
  * end. GitHub builds the site again from that run's commit and publishes it. `run.beforeChange`
  * runs once it is approved, before the re-run.
@@ -616,8 +618,7 @@ export async function rollBackPages(run: SiteRun, version: string): Promise<Prom
   const { owner, repo } = github;
   const workflowFile = posix.basename(plan.cicd.workflowPath);
   const runs = await github.api.pagesRuns(owner, repo, workflowFile);
-  const at = runs.findIndex((known) => known.runId === Number(version));
-  const chosen = runs[at];
+  const chosen = runs.find((known) => known.runId === Number(version));
   const list = "`opscrew status` lists the run that published the site before";
   if (chosen === undefined) {
     throw new OpsCrewError(
@@ -626,7 +627,13 @@ export async function rollBackPages(run: SiteRun, version: string): Promise<Prom
       { hint: `${list}; run \`${command} ${versionFlag} <run id>\` with it.` },
     );
   }
-  if (at === 0) {
+  const pause = await readableDeployPause(github, plan);
+  const { running } = await pagesMarks(
+    github,
+    runs,
+    pause?.reason === "rollback" ? pause.image : undefined,
+  );
+  if (chosen === running) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The run ${chosen.runId} published the site that GitHub Pages serves now. ${nothingChanged(run.what)}`,

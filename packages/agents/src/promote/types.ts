@@ -16,6 +16,7 @@ export type PromoteGitHubApi = Pick<
   | "dispatchWorkflow"
   | "waitForWorkflowRun"
   | "pagesRuns"
+  | "runAttemptJobs"
   | "rerunWorkflowRun"
   | "runArtifacts"
   // Whether the target's deploys are paused (`OPSCREW_DEPLOY_PAUSED`).

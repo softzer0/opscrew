@@ -66,7 +66,7 @@ import {
 } from "./switch";
 
 export { CLOUDFLARE_DEPLOY_SECRETS, renderCloudflareWorkersWorkflow } from "./cloudflare-workers";
-export { renderGithubPagesWorkflow } from "./github-pages";
+export { PAGES_PUBLISH_JOB, renderGithubPagesWorkflow } from "./github-pages";
 export { DEPLOY_PAUSED_VARIABLE } from "./pause";
 export { PORTAINER_DEPLOY_SECRETS, portainerHealthUrl } from "./portainer";
 export { serverDeploySecrets } from "./servers";
