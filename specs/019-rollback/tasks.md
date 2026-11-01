@@ -420,7 +420,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck --filter=opscrew && pnpm --filter opscrew exec vitest run test/live/rollback-support.test.ts`
   - Effort: high
 
-- [ ] T1917 [US4] Three fixes found by T1912's fact-check, in `packages/agents/src/{rollback,status}/**` and `packages/iac-templates/src/workflow/cloudflare-workers.ts` (+ tests)
+- [x] T1917 [US4] Three fixes found by T1912's fact-check, in `packages/agents/src/{rollback,status}/**` and `packages/iac-templates/src/workflow/cloudflare-workers.ts` (+ tests)
   - Owns: those paths
   - Depends: T1910
   - Accept:
@@ -437,6 +437,13 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
     - **After `--resume` without `--deploy`,** a run whose publish job was skipped (C, pushed while paused) is no longer taken for the running run. The connector gains one method that lists a run attempt's jobs with their conclusions (`GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt}/jobs`, Actions: Read). Without a pause, the running run is the newest whose job "Publish on GitHub Pages" (the template's name, imported, not copied) succeeded, and the default target is the run with the highest id below the running one's whose publish job succeeded (D4). The walk asks newest first and stops once it has both: normally two or three calls. Runs it found skipped are marked so in `--list`. A run below the default target that nobody checked may be picked with `--to`: re-running it publishes its commit.
     - **`promote/site.ts`'s `rollBackPages`** takes the running run from the same marks, so it no longer refuses `--to <C>` while paused as "the run that GitHub Pages serves now", and refuses `--to <A>`, the pinned run.
     - Tests with T1917's scenario: B is bad, A is rolled back to, C is pushed while paused, then `--resume` without `--deploy`. Status says A is running, B comes before it, and a rollback goes further back than A.
+    - **From T1917's review: the pinned run never succeeds.** A's re-run waits for a reviewer who then rejects it, or it fails. Its latest attempt is then not `success`, so `pagesRuns` drops it and the marks are empty:
+      - `rollback` refuses with the false "nothing to roll back to";
+      - `--list` marks nothing as running;
+      - status says "has not succeeded yet" with no next step.
+
+      Instead, while a rollback pause names a run that isn't listed, `rollback` refuses saying the pinned run has not succeeded (it waits for a reviewer, or it failed), and offers `--to` (`--list` lists the runs) or `--resume`. Status gives the same next step, without "yet". Test it, and test status's "Running: nothing yet" line.
+    - **Simplify, from the same review:** narrow the rollback pause once in `status/site.ts` and pass it to `pagesMarks`, which removes the dead `""` branch. Export `deploysOnTheirOwn` from `status/deploys.ts` and use it for `resume.ts`'s two copies of the localhost-without-runner check.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github --filter=@opscrew/agents`
   - Effort: high
 
