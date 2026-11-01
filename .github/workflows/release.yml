@@ -45,5 +45,25 @@ jobs:
       - run: pnpm --filter opscrew build
       - name: The bundle runs
         run: node packages/cli/dist/opscrew.js --version
-      - run: npm stage publish
+      # The tarball is packed once, staged, and kept as the run's artifact, so the plugin's lockfile
+      # can take its integrity before a maintainer approves the version (scripts/plugin-lock.mjs).
+      - name: Pack the CLI
+        id: pack
         working-directory: packages/cli
+        run: |
+          npm pack --json > "$RUNNER_TEMP/pack.json"
+          node -e '
+            const [packed] = require(process.env.RUNNER_TEMP + "/pack.json");
+            require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, `file=${packed.filename}\n`);
+            require("node:fs").appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${packed.filename}: \`${packed.integrity}\`\n`);
+          '
+      - name: Stage it on npm
+        working-directory: packages/cli
+        env:
+          TARBALL: ${{ steps.pack.outputs.file }}
+        run: npm stage publish "./$TARBALL"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: opscrew-tarball
+          path: packages/cli/${{ steps.pack.outputs.file }}
+          if-no-files-found: error

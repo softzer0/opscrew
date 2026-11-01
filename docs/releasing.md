@@ -99,3 +99,11 @@ Do this after npm has the version: the plugin's lockfile records its integrity f
    `node node_modules/opscrew/dist/opscrew.js --version` prints the new version, and that the size
    the plugin's README and [the plugin's guide page](guide/claude-code-plugin.md) give still holds.
 5. Commit as `chore(plugin): <version>` and push. Watch the CI runs the push starts.
+
+**Option, not the default:** when the approval will come later, for example overnight, steps 5 and
+6 can be done before step 4, so that approving finishes the release. The Release run keeps the
+staged tarball as its `opscrew-tarball` artifact. Download it with
+`gh run download <run id> -n opscrew-tarball -D <folder>`, then run
+`node scripts/plugin-lock.mjs <folder>/opscrew-<version>.tgz` in place of step 6's lockfile
+command: it pins the plugin to that version with the tarball's integrity. Until the approval,
+installing the plugin fails, because npm doesn't have the version yet.
