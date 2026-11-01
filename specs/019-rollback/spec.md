@@ -266,6 +266,9 @@ one with it, using the variables OpsCrew gives the app.
 - **Two apps on one server.** Each app rolls back on its own.
 - **A Kafka client without the login** gets no clear error, only a timeout. The guide says so.
 - **A login turned on, or off, for a service that holds data** keeps the data (R8).
+- **Redpanda's login turned off again:** Redpanda keeps SASL in its own data, so the broker still
+  asks for the login while the app no longer sends it. OpsCrew doesn't turn it off: the guide says
+  so, and gives the `rpk` commands to do it by hand (lead, from T1920's review).
 - **A rollback across the login change** runs the earlier image with today's settings, as with any
   setting: an earlier app version that didn't send the login can't reach Kafka or Redpanda.
 
