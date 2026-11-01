@@ -271,12 +271,12 @@ export async function componentStatusReport(
     report = { ...components, lines: joinBlocks(components.lines, runner) };
     // Nothing runs on a server, in Portainer or on this computer before provision ran.
     if (hasDeployment(plan)) {
-      const components = !appDeployed(plan)
+      const read = !appDeployed(plan)
         ? "not-read"
         : report.status !== undefined
           ? "read"
           : "failed";
-      deploys = await deployStateReport(deps, plan, options, components);
+      deploys = await deployStateReport(deps, plan, options, read);
     }
   }
   const state = await checkStateReport(deps, plan, options.services?.github);

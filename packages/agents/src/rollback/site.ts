@@ -111,8 +111,8 @@ async function builtFrom(github: RollbackRepository, version: WorkerVersion): Pr
 }
 
 /**
- * Cloudflare's hosting: by default the newest version uploaded before the one running (ADR 0023
- * D4), or `--to <version>`; `--list` gives the Worker's versions.
+ * Cloudflare's hosting: by default the version that served before the one running when it is
+ * older, else the newest version uploaded before it (ADR 0023 D4), or `--to <version>`; `--list` gives the Worker's versions.
  * After {@link requireDeployable}, says before the approval that nothing is rebuilt, then
  * `rollBackWorker` checks the version (secrets changed since it ran, `--allow-old-secrets`) and
  * activates it, the pause set just before the activation.
@@ -185,8 +185,8 @@ function pagesRunOf(runs: readonly PagesRun[], to: string): PagesRun | undefined
 }
 
 /**
- * GitHub Pages: by default the newest run created before the one that published the site now
- * ({@link pagesMarks}), or `--to <run id | commit>`; `--list` gives the successful runs. After
+ * GitHub Pages: by default the run that published before the running one when it is older, else
+ * the newest run created before it that published ({@link pagesMarks}), or `--to <run id | commit>`; `--list` gives the successful runs. After
  * {@link requireDeployable}, says before the approval that GitHub builds that commit again, for up
  * to 30 days, then `rollBackPages` re-runs it, the pause set just before the re-run (the workflow
  * lets a re-run deploy).
