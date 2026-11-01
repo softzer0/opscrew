@@ -611,7 +611,7 @@ Each task keeps behaviour, apart from the bugs it names. Exported names used out
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1927 Simplify the CLI, the MCP server, the plugin and the test harnesses, in `packages/cli/**`, `packages/mcp-server/**`, `plugin/**` and `packages/agents/src/testing/**` (+ tests)
+- [x] T1927 Simplify the CLI, the MCP server, the plugin and the test harnesses, in `packages/cli/**`, `packages/mcp-server/**`, `plugin/**` and `packages/agents/src/testing/**` (+ tests)
   - Owns: those paths, plus one re-export of `pinnedText` in `packages/agents/src/rollback/index.ts` and `packages/agents/src/logs/failed.test.ts`'s use of the new test helper
   - Accept:
     - **Bug, `rollback --list` cuts a site's pinned version short:** `rollback.ts`'s `pauseLine` prints `shortDigest` of a Worker version id or a Pages run id. Build the line from the agents' `pinnedText`, and say "to deploy forward again" where pushes don't deploy, as `status` does.

@@ -49,8 +49,6 @@ When the run succeeds, OpsCrew says so and how to resume deploys:
 ```text
 prod runs 3f2a1c9 "Fix checkout total" again (sha256:ab12cd34ef56, https://github.com/…/actions/runs/…): no build, and no release command ran.
 prod's deploys are paused: a push to main builds but doesn't deploy. When the fix is pushed, run `opscrew rollback --env prod --resume` (add --deploy to deploy main's latest commit now).
-
-Rolled prod back to 3f2a1c9 "Fix checkout total" (sha256:ab12cd34ef56), the earlier image with no build: https://github.com/…/actions/runs/…
 ```
 
 Its next steps are `opscrew verify`, to check the live site, and `opscrew rollback --resume` once
