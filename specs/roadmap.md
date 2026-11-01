@@ -5,7 +5,7 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–017. In progress: [018 split placement and the private network](018-split-placement/).
+Done: 000–018. In progress: [019 rollback](019-rollback/).
 
 ## 019 Rollback
 
@@ -42,6 +42,24 @@ The lead's sketch, to settle in the spec:
   - a worker's failure hint (`docker compose logs <service>`) shows the old version's lines
     after the switch back;
   - say what to do about a migration that was half-applied when the release command failed.
+
+**Also in 019: logins for Kafka, Redpanda and OpenSearch** (founder, 2026-11-01). They get a login
+of their own, generated like every other service's password. Today only the network protects
+them: the app's Docker network on its server, the private network on another one. A login keeps
+them closed when something else on the app's server is compromised. The lead's sketch:
+- **Kafka and Redpanda:** SASL/SCRAM, opt-in per service, because a client sends a login only when
+  the app's code configures it (kafkajs, librdkafka and sarama share no environment-variable
+  convention). Turning it on gives the app the user, password and mechanism as variables, and the
+  analyst says whether the app's code reads them. Redpanda's admin user must exist before SASL
+  turns on (its bootstrap user), or nothing can log in.
+- **OpenSearch:** its security plugin, with the HTTP API kept on plain HTTP and the login in the
+  URL (`http://user:password@host:9200`), which its clients accept, so an app that reads one URL
+  variable needs no change. The plugin also needs certificates for the traffic between its nodes,
+  even with one node: OpsCrew generates them on the server, and they never leave it.
+- **Between servers,** WireGuard already encrypts every packet (018), so no TLS goes on top.
+- **Research first:** each pinned image's settings (Kafka's SCRAM users in KRaft mode, Redpanda's
+  bootstrap user, OpenSearch's initial admin password and its security setup without the demo
+  certificates), and what the detectors can read from the app's code.
 
 ## 020 Self-hosted monitoring
 
