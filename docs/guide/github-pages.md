@@ -150,8 +150,10 @@ after your approval. GitHub then publishes it. GitHub re-runs only runs from the
 an older version, revert the commit and push. In scripts, add `--approve <hash>`; `--yes` never
 approves a rollback.
 
-Without `--to`, it re-runs the newest successful run created before the one that published the
-site now, so a second rollback goes further back. `npx opscrew rollback --list` shows the
+Without `--to`, it re-runs the run that published the site before the one that publishes it now,
+when that run is older; otherwise the newest run created before it that published. So a second
+rollback goes further back, and never to the run you rolled back from. A run pushed while deploys
+were paused published nothing, and never counts. `npx opscrew rollback --list` shows the
 successful runs. It refuses while a deploy run is queued or running, and when the site's workflow
 is not the one its plan generates (run `npx opscrew provision` and merge its pull request).
 

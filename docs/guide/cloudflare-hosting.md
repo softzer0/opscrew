@@ -153,8 +153,9 @@ rebuilt, shows the version with the approval's hash, and activates it only after
 Cloudflare then serves it for all traffic within a minute. In scripts, add `--approve <hash>`;
 `--yes` never approves a rollback.
 
-Without `--to`, it goes to the newest version uploaded before the one running, so a second
-rollback goes further back. `npx opscrew rollback --list` shows the Worker's versions. It refuses
+Without `--to`, it goes to the version that served before the one running, when that version is
+older; otherwise to the newest version uploaded before the one running. So a second rollback goes
+further back, and never to the version you rolled back from. `npx opscrew rollback --list` shows the Worker's versions. It refuses
 while a deploy run is queued or running, and when the site's workflow on its branch is not the one
 its plan generates (run `npx opscrew provision` and merge its pull request).
 

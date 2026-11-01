@@ -89,8 +89,8 @@ registry no longer has."). When you name one of those with `--to`, OpsCrew refus
 second `opscrew rollback` goes one further back, to the newest version built before the running one
 whose build succeeded. It never undoes the first rollback: to go forward again, use
 [`--resume`](#deploys-pause-after-a-rollback), or `--to` with a newer version. Sites follow the
-same rule: the default is the newest Worker version uploaded, or the newest Pages run created,
-before the one running.
+same rule: the default is the Worker version or Pages run that served before the one running, when
+it is older, otherwise the newest older one.
 
 **`--to`** takes a commit (7 to 40 of its hexadecimal digits) or a digest (`sha256:` and at least
 12 of its digits). OpsCrew refuses, before any change, a version that is not in the list (it names

@@ -430,7 +430,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
   - Effort: medium
 
-- [ ] T1918 [US4] GitHub Pages: the running run is one that published, found by T1917, in `packages/connectors/github/src/**` and `packages/agents/src/{rollback,status,promote}/**` (+ tests)
+- [x] T1918 [US4] GitHub Pages: the running run is one that published, found by T1917, in `packages/connectors/github/src/**` and `packages/agents/src/{rollback,status,promote}/**` (+ tests)
   - Owns: those paths
   - Depends: T1917
   - Accept:
@@ -447,7 +447,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1919 [US6] `status` shows the deploys once provision ran, not only after `verify`, found by live run 1, in `packages/agents/src/status/**` (+ tests)
+- [x] T1919 [US6] `status` shows the deploys once provision ran, not only after `verify`, found by live run 1, in `packages/agents/src/status/**` (+ tests)
   - Owns: those paths
   - Depends: T1918 (same files; one implementer can do both)
   - Accept:
