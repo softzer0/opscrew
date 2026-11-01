@@ -144,7 +144,7 @@ describe("opscrew verify on Cloudflare's hosting", () => {
     await unchanged(true);
     const text = await runbook();
     expect(text).toContain("the Worker `example-app`");
-    expect(text).toContain("`opscrew promote --to prod --version <id>`");
+    expect(text).toContain("`opscrew rollback` activates the newest Worker version");
     expect(text).not.toContain(deps.env.GITHUB_TOKEN as string);
     expect((await deps.state.read()).phases.verify?.status).toBe("ok");
     const output = deps.reporter.text();
@@ -265,7 +265,7 @@ describe("opscrew verify on GitHub Pages", () => {
     // The runbook names the repository owner's verification record.
     const text = await runbook();
     expect(text).toContain("`_github-pages-challenge-example-org.example.com`");
-    expect(text).toContain("`opscrew promote --to prod --version <run id>`");
+    expect(text).toContain("`opscrew rollback` re-runs the newest successful Pages run");
     expect(text).not.toContain(deps.env.GITHUB_TOKEN as string);
     expect(result.runbookPath).toBe("opscrew/RUNBOOK.md");
     expect(deps.reporter.text()).not.toMatch(/server/i);
