@@ -321,7 +321,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
 ## Phase 5: Wave 4 (parallel)
 
-- [ ] T1910 [P] [US4] This computer, Cloudflare's hosting and GitHub Pages, in `packages/agents/src/rollback/{local,site}.ts`
+- [X] T1910 [P] [US4] This computer, Cloudflare's hosting and GitHub Pages, in `packages/agents/src/rollback/{local,site}.ts`
   - Owns:
     - `packages/agents/src/rollback/{local,site}.ts` (+ tests);
     - in `packages/agents/src/localhost/apply.ts`, only exporting `healthCheck`, `withRegistryLogin` and `outputTail`.
