@@ -296,7 +296,7 @@ versions, and the pause after a rollback.
 ### Measurable Outcomes
 
 - **SC-1901**: After a release that deploys fine, `opscrew rollback` serves the previous version
-  within 2 minutes of approval on a server environment. No request fails during the switch on a
+  within 3 minutes of approval on a server environment. No request fails during the switch on a
   rolling deploy, and no build or release command runs.
 - **SC-1902**: After a rollback, a push doesn't deploy until the user resumes. After
   `opscrew rollback --resume --deploy`, the latest commit is live.
