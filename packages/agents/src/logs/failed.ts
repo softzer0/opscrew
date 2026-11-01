@@ -24,6 +24,7 @@ const RUNNING_NOW = "`opscrew logs` shows the version running now.";
 function failedWhat(failed: string, process: string | undefined): string {
   if (process !== undefined) return `its process check (${process} did not keep running)`;
   if (failed === "health") return "its health check";
+  if (failed === "start") return "its start after the switch";
   if (failed === "check") return "the check from outside";
   return "its checks";
 }

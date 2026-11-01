@@ -166,6 +166,18 @@ describe("readLogs --failed on a server OpsCrew created", () => {
     ]);
   });
 
+  it("names a start that stopped after the switch", async () => {
+    const files = new FakeKeptFiles({
+      [`${KEPT}/about`]: about("start"),
+      [`${KEPT}/app.log`]: APP_LOG,
+    });
+    const { deps, services } = await cloudServer(files);
+    const read = await readLogs(deps, workerPlan(), { services, failed: true });
+    expect(read.first).toContain(
+      `Lines of the copy of ${SHORT} that failed its start after the switch at 2026-10-31 09:15 UTC; OpsCrew removed it.`,
+    );
+  });
+
   it("says so when no failed deploy's lines are kept (no folder)", async () => {
     const files = new FakeKeptFiles();
     const { deps, services } = await cloudServer(files);
