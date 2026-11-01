@@ -421,3 +421,115 @@ Other limits:
 - An app that reads that variable needs no change.
 - Certificates are made on the server for the traffic between nodes and never leave it.
 - Turning the plugin on for an engine that already holds data must keep its indexes.
+
+## R8. Logins: the spike with real containers (2026-11-01)
+
+An Opus agent ran the pinned images locally: `apache/kafka` 4.3.1, Redpanda v26.2.5 and OpenSearch 3.9.0. It also ran opensearch-js 3.9.0 and opensearch-py 3.2.0. R7's reading holds, with the corrections below. Every setup below was run on a new volume, on a volume with today's data, and again after a restart.
+
+### Kafka
+
+**Listeners and settings**
+- The clients' listener can't be called `SASL_PLAINTEXT`. The image's `configure` script then demands `KAFKA_OPTS` and exits under `nounset`. So it is named `CLIENT` and mapped to `SASL_PLAINTEXT`.
+- The broker needs a JAAS entry for that listener, even for SCRAM: `KAFKA_LISTENER_NAME_CLIENT_SCRAM___SHA___512_SASL_JAAS_CONFIG=org.apache.kafka.common.security.scram.ScramLoginModule required;`. No file is needed.
+- `KAFKA_SASL_ENABLED_MECHANISMS=SCRAM-SHA-512` is required; the default, GSSAPI, fails.
+- The loopback listener `PLAINTEXT://localhost:9094` must be advertised. Inter-broker traffic uses it by default, through the listener named `PLAINTEXT`.
+- `/proc/net/tcp6` shows 9093 and 9094 on 127.0.0.1 only.
+
+**The user**
+- `kafka-configs.sh --bootstrap-server localhost:9094 --alter --add-config "SCRAM-SHA-512=[password=…]" --entity-type users --entity-name app` creates the user. It takes about 4 s.
+- Re-running it is harmless.
+- A new password replaces the old one at once.
+- The user survives a restart.
+- The password variable must not start with `KAFKA_`, or the image turns it into a server property. `SASL_PASSWORD` works.
+- Hex passwords are safe inside `[password=…]`.
+- Whatever writes the password must strip CR and newline. On Windows, `openssl` added a CR that ended up in the stored password.
+
+**Results**
+- A client with no login gets no clear error, only a timeout (`Timed out waiting for a node assignment`). The guide must say so.
+- A wrong password gets a clear `SaslAuthenticationException`.
+- With the login, it produced and consumed.
+- Existing data is kept, and going back to today's settings on the same volume works.
+
+### Redpanda
+
+**Turning the login on**
+- Start without SASL, then run through `rpk` on the admin API:
+  1. `rpk security user create app -p … --mechanism SCRAM-SHA-512`;
+  2. `rpk cluster config set superusers '["app"]'`;
+  3. `rpk cluster config set enable_sasl true`.
+- These need no restart. They work on a new cluster and on one with data.
+- `create` fails when the user exists. `update` needs `--new-password` and fails when the user doesn't exist, so the step is `create || update`.
+
+**The admin API is open to every container on the network** (the image binds it to `0.0.0.0:9644`).
+- `rpk cluster config set admin_api_require_auth true`, run as the superuser, closes it:
+  - users and config return 403;
+  - `/v1/status/ready` still answers without a login, so the health check is unchanged;
+  - `rpk` then logs in with `RPK_USER`, `RPK_PASS` and `RPK_SASL_MECHANISM` from the container's environment.
+- After that, changing the password needs the old one as the admin login.
+
+**Other open ports**
+- Schema Registry (8081) kept accepting writes without a login after `enable_sasl`.
+- RPC (33145) listens on every interface.
+- `--rpc-addr 127.0.0.1:33145 --schema-registry-addr 127.0.0.1:8081 --pandaproxy-addr 127.0.0.1:8082` closes them. Only 9092 and 9644 are then reachable.
+
+**Memory:** 279 MiB, unchanged.
+
+**Not needed:** `RP_BOOTSTRAP_USER` and `.bootstrap.yaml`. They act only on a cluster's first start.
+
+### OpenSearch
+
+**Certificates**
+- The transport layer needs TLS even on one node: "No SSL configuration found".
+- The image has no `openssl`, but it has the JDK's `keytool`.
+- One self-signed key and certificate, which also trusts itself, is enough. It needs no CA, no admin certificate, no `nodes_dn` and no hostname setting. It takes about 2 s:
+
+  ```
+  k="keytool -keystore config/node.p12 -storepass changeit"
+  $k -genkeypair -alias node -keyalg RSA -keysize 2048 -dname CN=opensearch -validity 36500
+  $k -exportcert -alias node -rfc | $k -importcert -noprompt -alias trusted
+  ```
+
+- With `plugins.security.ssl.transport.keystore_filepath` and `truststore_filepath` set to `node.p12`, `changeit` needs no setting.
+
+**The admin user**
+- `plugins.security.allow_default_init_securityindex=true` creates the security index from `config/opensearch-security/` on the first start, so no admin certificate is needed.
+- `OPENSEARCH_INITIAL_ADMIN_PASSWORD` is used only by the demo installer. With the demo setup off, the image's own `internal_users.yml` lets in `admin:admin`, so OpsCrew always replaces that file.
+- `plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD` prints a bcrypt hash in about 1.5 s. The file then holds only `admin`, with that hash, `reserved: false` and `backend_roles: ["admin"]`.
+- The file is read only when the index is first created. A later change goes through `PUT _plugins/_security/api/account`, which `reserved: false` allows.
+
+**Results**
+- No login and a wrong password both get 401.
+- `http://admin:<password>@host:9200` gets 200.
+- The health check `curl -fsS -u "admin:$OPENSEARCH_PASSWORD" 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s'` passes.
+- Memory is the same with security on and off: about 955 MiB of 1 GiB.
+- Time to healthy is 49 s on the first start with security and 44 s on a restart. Both fit the 90 s start period.
+- Existing data is kept, and turning security off again works.
+- opensearch-js 3.9.0 and opensearch-py 3.2.0 both take the login inside the URL.
+
+**Not yet tested:** recreating the container (a new self-signed certificate) after the security index exists.
+
+### A login without a window
+
+- Adding the login with `docker exec` after the health check passes leaves a gap, in which an app that starts can't log in.
+- Instead, the container adds its own login: a background loop retries until the login exists, then the image's normal start runs. The health check passes only once the login exists.
+- This needs no deploy step, runs again harmlessly at every start, and works on brokers that already hold data.
+
+**Kafka's command and check**
+- Command:
+
+  ```
+  (until kafka-configs.sh --bootstrap-server localhost:9094 --alter --add-config "SCRAM-SHA-512=[password=$SASL_PASSWORD]" --entity-type users --entity-name app; do sleep 2; done) & exec /etc/kafka/docker/run
+  ```
+
+- Health check: `kafka-configs.sh --describe` for user `app` shows `SCRAM-SHA-512`.
+- Healthy in 10 s. Java stays PID 1.
+
+**Redpanda's command and check**
+- Command: `sh -c` with a `login()` function that runs `create || update`, then `superusers`, `enable_sasl` and `admin_api_require_auth`, retried in the background, then `exec /entrypoint.sh redpanda start …`.
+- Health check: `ready`, and `admin_api_require_auth` is `true`.
+- Healthy in 9 s.
+
+**OpenSearch's command**
+- Command: `bash -c`, which makes the keystore if it is missing, writes `internal_users.yml` from `hash.sh`, then runs `exec ./opensearch-docker-entrypoint.sh opensearch`.
+- The login exists before port 9200 opens.
+- The certificate and the hash stay inside the container.
