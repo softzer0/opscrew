@@ -231,7 +231,7 @@ describe("status of an app on two servers", () => {
       "  PostgreSQL (db)",
     ]);
     // Provision ran, so the deploys' section follows, read from GitHub only.
-    expect(report.lines.at(-3)).toBe("Deploys (read from GitHub now):");
+    expect(report.lines.at(-2)).toBe("Deploys (read from GitHub now):");
     expect(w.commands).toEqual([]);
   });
 

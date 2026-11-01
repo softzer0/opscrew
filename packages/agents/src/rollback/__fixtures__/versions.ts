@@ -1,15 +1,47 @@
-import type {
-  ImageFacts,
-  ImagePlatform,
-  RegistryCredential,
-  WorkflowRunSource,
-} from "@opscrew/connector-github";
-import { OpsCrewError } from "@opscrew/core";
+import type { ImageFacts, ImagePlatform, RegistryCredential } from "@opscrew/connector-github";
+import type { ApprovalRequest } from "@opscrew/contracts";
+import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
+import { expect } from "vitest";
 import { environmentPaths } from "../../environments";
-import { commitOf, digestOf, FakePromoteGitHub } from "../../promote/__fixtures__/world";
-import { createTestPhaseDeps, type TestPhaseDeps } from "../../testing";
+import {
+  commitOf,
+  digestOf,
+  FakePromoteGitHub,
+  type RunRecord,
+} from "../../promote/__fixtures__/world";
+import { createTestPhaseDeps, ScriptedRunner, type TestPhaseDeps } from "../../testing";
 import type { VersionsGitHubApi } from "../types";
+
+/** The kinds `--yes` grants in the CLI: none of them is bound to a hash. */
+export const YES_KINDS: readonly ApprovalRequest["kind"][] = [
+  "repo-write",
+  "github-secrets",
+  "github-settings",
+  "git-push",
+  "pull-request",
+];
+
+/** The hash of a plan as a rollback binds it: SHA-256 of its canonical JSON. */
+export const planHash = (plan: unknown) => sha256Hex(canonicalJson(plan));
+
+/** The `OpsCrewError` `promise` rejects with, checking that it rejects with one. */
+export async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
+  const error = await promise.then(
+    () => undefined,
+    (thrown: unknown) => thrown,
+  );
+  expect(error).toBeInstanceOf(OpsCrewError);
+  return error as OpsCrewError;
+}
+
+/** A runner whose git knows the GitHub remote `acme/shop`. */
+export const gitRemote = () =>
+  new ScriptedRunner((_command, args) =>
+    args.includes("get-url")
+      ? { exitCode: 0, stdout: "https://github.com/acme/shop.git\n", stderr: "" }
+      : { exitCode: 1, stdout: "", stderr: "not scripted" },
+  );
 
 /** GHCR's refusal of a token without `read:packages`, as the connector words it. */
 export function ghcrDenied(what: string): OpsCrewError {
@@ -37,7 +69,7 @@ export class FakeRollbackGitHub extends FakePromoteGitHub implements VersionsGit
   async listWorkflowRuns(
     _owner: string,
     _repo: string,
-    options: { workflowFile: string; branch?: string; event?: string; perPage?: number },
+    options: { workflowFile: string; branch?: string; perPage?: number },
   ) {
     this.runLists.push(options);
     return [...this.runs.entries()]
@@ -52,8 +84,6 @@ export class FakeRollbackGitHub extends FakePromoteGitHub implements VersionsGit
         htmlUrl: `https://github.com/acme/shop/actions/runs/${id}`,
         headSha: run.headSha,
         createdAt: run.createdAt,
-        event: run.event,
-        headBranch: run.headBranch,
         ...(run.headCommit !== undefined ? { headCommit: run.headCommit } : {}),
       }));
   }
@@ -114,7 +144,7 @@ export interface VersionsWorld {
       environment?: string;
       /** The commit, instead of the one of `seed`. */
       commit?: string;
-      run?: Partial<WorkflowRunSource>;
+      run?: Partial<RunRecord>;
       platforms?: ImagePlatform[];
     },
   ): Built;

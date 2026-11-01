@@ -1,8 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { WorkflowRunSource } from "@opscrew/connector-github";
 import type { ApprovalRequest } from "@opscrew/contracts";
-import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
+import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, serializeArtifact } from "@opscrew/plan-schema";
@@ -16,6 +15,7 @@ import {
   commitOf,
   DEPLOY_RUN_URL,
   inEnvironment,
+  type RunRecord,
   WORKFLOWS,
 } from "../promote/__fixtures__/world";
 import { promotionFile, readPromotion, writePromotion } from "../promote/record";
@@ -24,10 +24,17 @@ import {
   movingPlan,
   portainerPlan,
   ScriptedApprovalHandler,
-  ScriptedRunner,
   testPlan,
 } from "../testing";
-import { at, type Built, versionsWorld } from "./__fixtures__/versions";
+import {
+  at,
+  type Built,
+  failure,
+  gitRemote,
+  planHash,
+  versionsWorld,
+  YES_KINDS,
+} from "./__fixtures__/versions";
 import { type RollbackOptions, type RollbackServices, rollback } from "./index";
 import {
   imageRollbackHash,
@@ -42,30 +49,11 @@ const COMMAND = "opscrew rollback --env prod";
 /** The test deps' clock. */
 const NOW = "2026-10-11T12:00:00.000Z";
 
-/** The kinds `--yes` grants in the CLI: none of them is bound to a hash. */
-const YES_KINDS: readonly ApprovalRequest["kind"][] = [
-  "repo-write",
-  "github-secrets",
-  "github-settings",
-  "git-push",
-  "pull-request",
-];
-
-/** The hash of a plan as the rollback binds it: SHA-256 of its canonical JSON. */
-const planHash = (plan: unknown) => sha256Hex(canonicalJson(plan));
 const short = (built: Built) => `${built.commit.slice(0, 7)}`;
 const shortDigest = (built: Built) => built.digest.slice(0, 19);
 
 /** Prod, deployed from main on each push. */
 const prodPlan = (): DeployPlan => testPlan({ domain: "shop.example.com", deployed: true });
-
-/** A runner whose git knows the GitHub remote `acme/shop`. */
-const gitRemote = () =>
-  new ScriptedRunner((_command, args) =>
-    args.includes("get-url")
-      ? { exitCode: 0, stdout: "https://github.com/acme/shop.git\n", stderr: "" }
-      : { exitCode: 1, stdout: "", stderr: "not scripted" },
-  );
 
 interface WorldOptions {
   /** The environment rolled back (default prod). */
@@ -175,15 +163,6 @@ function paused(world: World): Record<string, unknown> | undefined {
   return text === undefined ? undefined : JSON.parse(text);
 }
 
-async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
-  const error = await promise.then(
-    () => undefined,
-    (thrown: unknown) => thrown,
-  );
-  expect(error).toBeInstanceOf(OpsCrewError);
-  return error as OpsCrewError;
-}
-
 /**
  * Nothing was changed, in a rollback's words (never promote's): no approval asked, no pause
  * written, no dispatch, nothing recorded.
@@ -198,7 +177,7 @@ async function nothingChanged(world: World, error: OpsCrewError) {
 }
 
 /** A run of prod's deploy workflow GitHub shows queued or in progress. */
-function runningRun(commit: string): WorkflowRunSource {
+function runningRun(commit: string): RunRecord {
   return {
     repository: "acme/shop",
     headRepository: "acme/shop",
@@ -795,17 +774,6 @@ describe("opscrew rollback on a server", () => {
     });
   });
 
-  it("changes only the rolled-back environment's key in the variable", async () => {
-    const { world, b } = await prodWorld();
-    const staging = { reason: "move", since: "2026-10-10T09:00:00.000Z" };
-    world.github.variables.set(DEPLOY_PAUSED_VARIABLE, JSON.stringify({ "shop/staging": staging }));
-    await world.run();
-    expect(paused(world)).toEqual({
-      "shop/staging": staging,
-      "shop/prod": expect.objectContaining({ reason: "rollback", image: b.digest }),
-    });
-  });
-
   it("rolls back an environment that follows another branch, on that branch", async () => {
     const staging = inEnvironment(prodPlan(), "staging");
     const plan = DeployPlanSchema.parse({
@@ -939,7 +907,7 @@ describe("opscrew rollback on a server", () => {
       const entry = { reason: "move", since: "2026-10-10T09:00:00.000Z" };
       world.github.variables.set(DEPLOY_PAUSED_VARIABLE, JSON.stringify({ "shop/prod": entry }));
       const result = await world.run({ list: true });
-      expect(result).toMatchObject({ kind: "list", paused: entry, leftOut: 0 });
+      expect(result).toMatchObject({ kind: "list", paused: entry, leftOut: [] });
       if (result.kind !== "list") throw new Error("not a list");
       expect(result.versions.map((version) => version.digest)).toEqual([
         c.digest,
@@ -956,11 +924,20 @@ describe("opscrew rollback on a server", () => {
       expect(world.github.dispatches).toEqual([]);
     });
 
-    it("counts the images it left out", async () => {
+    it("names each image it left out, and why", async () => {
       const { world } = await prodWorld();
-      world.deploy("arm", 4, { platforms: [{ architecture: "arm64", os: "linux" }] });
+      const arm = world.deploy("arm", 4, { platforms: [{ architecture: "arm64", os: "linux" }] });
       const result = await world.run({ list: true });
-      expect(result).toMatchObject({ kind: "list", leftOut: 1 });
+      expect(result).toMatchObject({
+        kind: "list",
+        leftOut: [
+          {
+            commit: arm.commit,
+            digest: arm.digest,
+            reason: `The image ghcr.io/acme/shop@${arm.digest} is built for arm64 only, but prod runs on amd64, so it would not start there.`,
+          },
+        ],
+      });
       expect(result).not.toHaveProperty("paused");
     });
   });

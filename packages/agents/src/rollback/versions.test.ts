@@ -1,4 +1,3 @@
-import type { WorkflowRunSource } from "@opscrew/connector-github";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, serializeArtifact } from "@opscrew/plan-schema";
@@ -6,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { selfHostedServices } from "../design/sizing";
 import { environmentPaths } from "../environments";
 import { ghcrReadCredential } from "../localhost/image";
-import { inEnvironment } from "../promote/__fixtures__/world";
+import { inEnvironment, type RunRecord } from "../promote/__fixtures__/world";
 import { testPlan } from "../testing";
 import { at, type Built, type VersionsWorld, versionsWorld } from "./__fixtures__/versions";
 import type { Version, VersionList, VersionsContext } from "./types";
@@ -156,7 +155,7 @@ describe("listVersions", () => {
     // A later run of c's commit started by hand, whose build failed before pushing: the tag stays
     // the push's image, built at minute 3.
     world.github.runs.set(900, {
-      ...(world.github.runs.get(c.runId) as WorkflowRunSource),
+      ...(world.github.runs.get(c.runId) as RunRecord),
       event: "workflow_dispatch",
       createdAt: at(30),
       conclusion: "failure",

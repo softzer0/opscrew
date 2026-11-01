@@ -2,7 +2,6 @@ import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApprovalRequest, CommandResult } from "@opscrew/contracts";
-import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { DEPLOY_PAUSED_VARIABLE, shellQuote } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -18,7 +17,7 @@ import {
   ScriptedApprovalHandler,
   ScriptedRunner,
 } from "../testing";
-import { FakeRollbackGitHub } from "./__fixtures__/versions";
+import { FakeRollbackGitHub, failure, planHash, YES_KINDS } from "./__fixtures__/versions";
 import { type RollbackOptions, rollback } from "./index";
 import { imageRollbackHash, readRollback, rollbackFile } from "./record";
 
@@ -28,24 +27,6 @@ const PREVIOUS = `ghcr.io/acme/shop@${digestOf("previous")}`;
 const COMMAND = "opscrew rollback --env prod";
 /** The test deps' clock. */
 const CLOCK = "2026-10-11T12:00:00.000Z";
-
-/** The kinds `--yes` grants in the CLI: none of them is bound to a hash. */
-const YES_KINDS: readonly ApprovalRequest["kind"][] = [
-  "repo-write",
-  "github-secrets",
-  "github-settings",
-  "git-push",
-  "pull-request",
-];
-
-async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
-  const error = await promise.then(
-    () => undefined,
-    (thrown: unknown) => thrown,
-  );
-  expect(error).toBeInstanceOf(OpsCrewError);
-  return error as OpsCrewError;
-}
 
 /** The start script, given the image and its rollback mode. */
 const SWITCH = /^set -- \S+ rollback\n/;
@@ -202,7 +183,7 @@ describe("opscrew rollback on this computer", () => {
       environment: "shop/prod",
       current: RUNNING,
       target: PREVIOUS,
-      targetPlanHash: sha256Hex(canonicalJson(world.plan)),
+      targetPlanHash: planHash(world.plan),
     });
     const request = world.handler.requests[0] as ApprovalRequest;
     expect(request).toMatchObject({ kind: "promote", planHash: hash });
@@ -340,7 +321,7 @@ describe("opscrew rollback on this computer", () => {
         { digest: digestOf("running"), marks: ["running"] },
         { digest: digestOf("previous"), marks: ["previous"] },
       ],
-      leftOut: 0,
+      leftOut: [],
     });
     expect(world.handler.requests).toEqual([]);
     expect(world.scripts()).toEqual([]);

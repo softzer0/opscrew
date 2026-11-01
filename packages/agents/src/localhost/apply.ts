@@ -11,11 +11,13 @@ import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
 import {
   initStepsFor,
+  type LocalhostSite,
   localhostTlsUpload,
   rollbackCommands,
   shellQuote,
   switchCommands,
 } from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { caFiles, ensureLocalCa, issueLeaf } from "./ca";
 import { nodeLocalRequest } from "./https";
@@ -35,13 +37,13 @@ import {
 import { localTarget, recordServedSite } from "./site";
 
 /** How long the start script and a local build may take (image pulls, builds). */
-export const SCRIPT_TIMEOUT_MS = 30 * 60_000;
+const SCRIPT_TIMEOUT_MS = 30 * 60_000;
 
 /** The health check's tries after the switch, 3 seconds apart. */
 const HEALTH_TRIES = 10;
 
 /** The last lines of a script's output, without GitHub Actions' `::error::` markers. */
-export function outputTail(result: { stdout: string; stderr: string }): string {
+function outputTail(result: { stdout: string; stderr: string }): string {
   const lines = `${result.stdout}\n${result.stderr}`
     .split(/\r?\n/)
     .map((line) => line.replace(/^::(?:error|warning|notice)::/, "").trimEnd())
@@ -99,7 +101,7 @@ async function buildImage(
  * afterwards whatever happened, so the token never stays on this computer's disk. Without a
  * registry (a local build) it runs `start` as it is.
  */
-export async function withRegistryLogin<T>(
+async function withRegistryLogin<T>(
   exec: RemoteExec,
   inShell: string,
   registry: LocalRegistry | undefined,
@@ -135,11 +137,10 @@ export async function withRegistryLogin<T>(
  * unless that is exactly the plan `approvedHash` names and its `host-apply` approval is recorded.
  * Then it builds a local image; makes the local CA on first use and, when the plan says so, issues
  * the app's leaf certificate (key at 0600) where the start script takes it; writes this project's
- * id, the files and the env files into the app's folder; runs the start script, logged in to GHCR
- * only meanwhile (`withRegistryLogin`); checks the app over HTTPS through 127.0.0.1, and records
- * the hostname it now serves. When the start or the check fails, the rollback script puts the
- * previous version back, and the error says what happened. Audited by the hash, never with a
- * secret.
+ * id, the files and the env files into the app's folder; switches the app to the image and checks
+ * it ({@link switchTo}), and records the hostname it now serves. When the start or the check
+ * fails, the rollback script puts the previous version back, and the error says what happened.
+ * Audited by the hash, never with a secret.
  */
 export async function applyLocal(
   deps: PhaseDeps,
@@ -155,7 +156,6 @@ export async function applyLocal(
   const local = computer(deps, options.services);
   const exec = await localShell(deps, await requireShell(local));
   const { plan, site } = deploy;
-  const target = localTarget(plan);
 
   return withLocalLock(deps.paths, local.sleep, async () => {
     // Planned again under the lock: another deploy may have changed the shared edge meanwhile.
@@ -185,7 +185,6 @@ export async function applyLocal(
       await mkdir(folder, { recursive: true });
       await mkdir(join(edge, "sites"), { recursive: true });
       // A local build first: a failed one leaves the app's folder as it was.
-      const inShell = `"$OPSCREW_APPS_DIR"/${shellQuote(plan.app.name)}`;
       const image =
         deploy.image.source === "local-build"
           ? await buildImage(deps, exec, deploy)
@@ -217,47 +216,28 @@ export async function applyLocal(
         await writeFileAtomic(join(folder, file.path), file.content, { mode: 0o600 });
       }
 
-      // As the workflow's start step: the running version is kept as `.env.previous` first.
-      await exec.run(
-        `cd ${inShell} && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous; fi`,
-        { timeoutMs: 30_000 },
-      );
-      const edgeFiles = {
-        originTls: false,
+      const switched = await switchTo(deps, {
+        exec,
+        local,
+        plan,
+        site,
+        image,
+        registry: options.registry,
         additions: deploy.uploads.some((file) => file.path.startsWith("additions.")),
-        localhost: site,
-      };
-      const start = await withRegistryLogin(exec, inShell, options.registry, () =>
-        exec.run(
-          [
-            `set -- ${shellQuote(image)}`,
-            ...switchCommands(plan, initStepsFor(plan), edgeFiles),
-          ].join("\n"),
-          { timeoutMs: SCRIPT_TIMEOUT_MS },
-        ),
-      );
-      const path = plan.app.healthPath;
-      const healthy =
-        start.exitCode === 0 &&
-        (await healthCheck(deps, local, { site, port: target.ports.https, path }));
-      if (!healthy) {
-        const rollback = await exec.run(
-          [`set -- ${shellQuote(image)}`, ...rollbackCommands(plan, site)].join("\n"),
-          { timeoutMs: SCRIPT_TIMEOUT_MS },
-        );
-        const outcome = rollback.stdout.trim().split(/\r?\n/).pop();
+      });
+      if (!switched.healthy) {
         const after =
-          outcome === "restored"
+          switched.back === "restored"
             ? "OpsCrew put the previous version back."
-            : outcome === "no-previous"
+            : switched.back === "no-previous"
               ? "There is no earlier version on this computer to go back to."
-              : outcome === "unchanged"
+              : switched.back === "unchanged"
                 ? "The previous version keeps running."
                 : `OpsCrew could not put the previous version back: run \`docker compose ps\` in ${folder}.`;
         const why =
-          start.exitCode === 0
-            ? `The new version did not answer at ${localPlan.address}${path}.`
-            : `The deploy on this computer failed:\n${outputTail(start)}`;
+          switched.startFailed === undefined
+            ? `The new version did not answer at ${localPlan.address}${plan.app.healthPath}.`
+            : `The deploy on this computer failed:\n${switched.startFailed}`;
         throw new OpsCrewError("COMMAND_FAILED", deps.redactor.redact(`${why}\n${after}`), {
           hint: "Fix the cause shown above, then run `opscrew provision` again.",
         });
@@ -276,11 +256,78 @@ export async function applyLocal(
   });
 }
 
+/** How a switch on this computer ended ({@link switchTo}). */
+export type SwitchOutcome =
+  | { healthy: true }
+  | {
+      healthy: false;
+      /** The start script's last lines when it failed; absent when the app did not answer. */
+      startFailed?: string;
+      /**
+       * The rollback script's last line: `restored`, `unchanged`, `no-previous`, or anything else
+       * when it could not switch back.
+       */
+      back: string | undefined;
+    };
+
+/**
+ * Switches the app on this computer to `image`, as the workflow's start step does: keeps the
+ * running version as `.env.previous`, runs the start script (in its `rollback` mode with
+ * `rollback`, which runs no release command) logged in to GHCR with `registry` only meanwhile
+ * (`withRegistryLogin`), then checks the app over HTTPS through 127.0.0.1. When the script or the
+ * check fails, the rollback script puts the version that ran back. Returns how it ended.
+ */
+export async function switchTo(
+  deps: Pick<PhaseDeps, "paths">,
+  input: {
+    exec: RemoteExec;
+    local: ReturnType<typeof computer>;
+    plan: DeployPlan;
+    site: LocalhostSite;
+    image: string;
+    rollback?: boolean;
+    registry: LocalRegistry | undefined;
+    /** Whether the app's folder has the user's additions to the edge. */
+    additions: boolean;
+  },
+): Promise<SwitchOutcome> {
+  const { exec, local, plan, site, image } = input;
+  const inShell = `"$OPSCREW_APPS_DIR"/${shellQuote(plan.app.name)}`;
+  await exec.run(
+    `cd ${inShell} && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous; fi`,
+    { timeoutMs: 30_000 },
+  );
+  const edgeFiles = { originTls: false, additions: input.additions, localhost: site };
+  const start = await withRegistryLogin(exec, inShell, input.registry, () =>
+    exec.run(
+      [
+        `set -- ${shellQuote(image)}${input.rollback === true ? " rollback" : ""}`,
+        ...switchCommands(plan, initStepsFor(plan), edgeFiles),
+      ].join("\n"),
+      { timeoutMs: SCRIPT_TIMEOUT_MS },
+    ),
+  );
+  const port = localTarget(plan).ports.https;
+  const healthy =
+    start.exitCode === 0 &&
+    (await healthCheck(deps, local, { site, port, path: plan.app.healthPath }));
+  if (healthy) return { healthy: true };
+  const back = await exec.run(
+    [`set -- ${shellQuote(image)}`, ...rollbackCommands(plan, site)].join("\n"),
+    { timeoutMs: SCRIPT_TIMEOUT_MS },
+  );
+  return {
+    healthy: false,
+    ...(start.exitCode !== 0 ? { startFailed: outputTail(start) } : {}),
+    back: back.stdout.trim().split(/\r?\n/).pop(),
+  };
+}
+
 /**
  * Whether the app answers over HTTPS at its hostname through 127.0.0.1, trusting only the local
  * CA: a status below 400 within {@link HEALTH_TRIES} tries, as `curl -f` counts it.
  */
-export async function healthCheck(
+async function healthCheck(
   deps: Pick<PhaseDeps, "paths">,
   local: ReturnType<typeof computer>,
   o: { site: { hostname: string }; port: number; path: string },

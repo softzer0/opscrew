@@ -13,12 +13,11 @@ import {
 } from "@opscrew/core";
 import { checkEnvironmentKey, ROLLBACK_INPUTS } from "@opscrew/iac-templates";
 import { workflowBranch } from "../environments/branches";
-import { ghcrReadCredential } from "../localhost/image";
+import { appImageOf } from "../promote/image";
 import { clearPendingPromotion, readPromotion, writePromotion } from "../promote/record";
 import { requireRollbackServices } from "../promote/run";
-import { requireApplied } from "../promote/shared";
-import { guardText, reviewedEnvironment } from "../promote/site";
-import { PlanRefusedError } from "../shared";
+import { movePaused, NOTHING_CHANGED, requireApplied } from "../promote/shared";
+import { approve, guardText, reviewedEnvironment } from "../promote/site";
 import {
   type DeployPause,
   deployPauseOf,
@@ -27,7 +26,7 @@ import {
   setDeployPause,
   waitForDeploys,
 } from "../shared/deploy-pause";
-import { type DispatchRepository, dispatchAndFollow } from "../shared/deploy-run";
+import { auditFinishedRun, deployRunFailure, dispatchAndFollow } from "../shared/deploy-run";
 import { codeOf } from "../shared/errors";
 import type { RollbackResult } from "./index";
 import {
@@ -38,32 +37,22 @@ import {
   writePendingRollback,
   writeRollback,
 } from "./record";
-import { NOTHING, type RollbackRepository, type RollbackRun, rollbackRepository } from "./run";
+import { type RollbackRepository, type RollbackRun, rollbackRepository } from "./run";
 import type { Version, VersionsContext, VersionView } from "./types";
-import { checkOldPlan, chooseVersion, listVersions, shortDigest, versionText } from "./versions";
+import {
+  checkOldPlan,
+  chooseVersion,
+  commitWords,
+  listVersions,
+  shortDigest,
+  versionText,
+} from "./versions";
 
 /** A version in a few words: `<short commit> "<message>"`, or its short digest without a commit. */
 function shortText(version: VersionView & { digest: string }): string {
-  if (version.commit === undefined) return shortDigest(version.digest);
-  const message = version.message === undefined ? "" : ` "${version.message}"`;
-  return `${version.commit.slice(0, 7)}${message}`;
-}
-
-/** The environment's image on GHCR, read with `OPSCREW_GHCR_READ_TOKEN` when it is set. */
-function versionsContext(run: RollbackRun, github: RollbackRepository): VersionsContext {
-  const { deps, plan } = run;
-  const credential = ghcrReadCredential(deps, github.owner);
-  return {
-    image: {
-      github: github.api,
-      owner: github.owner,
-      repo: github.repo,
-      key: plan.app.key,
-      ...(credential !== undefined ? { credential } : {}),
-    },
-    plan,
-    paths: deps.paths,
-  };
+  return version.commit === undefined
+    ? shortDigest(version.digest)
+    : commitWords(version.commit, version.message);
 }
 
 /** The promoted environment's source, or `undefined` for one that follows its branch. */
@@ -84,14 +73,15 @@ export function pausedText(run: RollbackRun): string {
 }
 
 /** The refusal while a move's window, since `since`, pauses the environment's deploys. */
-function movePaused(run: RollbackRun, since: string): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `The deploys of ${run.environment} are paused since ${since} while a service moves between the app's servers, and a rollback must not deploy during the move. ${NOTHING}`,
-    {
-      hint: `Run \`opscrew provision${run.flags}\`: it ends the move's maintenance window. Then run \`${run.command}\` again.`,
-    },
-  );
+function moveRefusal(run: RollbackRun, since: string): OpsCrewError {
+  return movePaused({
+    target: run.environment,
+    since,
+    why: "and a rollback must not deploy during the move",
+    flags: run.flags,
+    command: run.command,
+    what: "rollback",
+  });
 }
 
 /**
@@ -106,7 +96,7 @@ export async function requireNoDeployRunning(
   if (running === undefined) return;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `A run of ${run.environment}'s deploy workflow is queued or in progress: ${running.url}. OpsCrew rolls back only between deploys, so the two never race. ${NOTHING}`,
+    `A run of ${run.environment}'s deploy workflow is queued or in progress: ${running.url}. OpsCrew rolls back only between deploys, so the two never race. ${NOTHING_CHANGED}`,
     { hint: `Let it end, then run \`${run.command}\` again.` },
   );
 }
@@ -116,7 +106,7 @@ export async function requireNoDeployRunning(
  * 30 minutes, or the wait fails, puts back the pause entry `pauseBefore` and stops.
  * @throws OpsCrewError `COMMAND_FAILED` from `waitForDeploys`, saying the pause is back.
  */
-export async function waitAfterPause(
+async function waitAfterPause(
   run: RollbackRun,
   github: RollbackRepository,
   pauseBefore: DeployPause | undefined,
@@ -124,7 +114,7 @@ export async function waitAfterPause(
   const { deps, plan, environment, command, services } = run;
   try {
     await waitForDeploys(deps, github, plan, services, {
-      outcome: `the rollback did not start, and OpsCrew put ${environment}'s deploy pause back as it was. ${NOTHING}`,
+      outcome: `the rollback did not start, and OpsCrew put ${environment}'s deploy pause back as it was. ${NOTHING_CHANGED}`,
       hint: `Let it end (https://github.com/${github.owner}/${github.repo}/actions), then run \`${command}\` again.`,
     });
   } catch (error) {
@@ -236,17 +226,9 @@ async function checkPending(
     );
     return { ...result, status: "waiting" };
   }
-  const ok = last.conclusion === "success";
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "deploy workflow",
-    target: last.htmlUrl,
-    decision: ok ? "approved" : "refused",
-    detail: `workflow run ${last.id} finished: ${last.conclusion ?? "no result"}`,
-  });
+  await auditFinishedRun(deps, last);
   // The pending file goes only once what it holds is put back or recorded.
-  if (!ok) {
+  if (last.conclusion !== "success") {
     await restoreDeployPause(deps, github, plan, pending.pauseBefore ?? undefined);
     await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
     deps.reporter.warn(
@@ -302,9 +284,6 @@ async function servicesLines(
   ];
 }
 
-/** A run as `waitForWorkflowRun` gives it once it ended or waits for a reviewer. */
-type FinishedRun = Awaited<ReturnType<DispatchRepository["api"]["waitForWorkflowRun"]>>;
-
 /**
  * After the pause is set: waits for the deploys created just before it, then starts the workflow
  * with the target's digest and commit tag and `rollback`, and follows its run. A failed or
@@ -327,64 +306,43 @@ async function dispatchRollback(
 ): Promise<{ status: "deployed" | "waiting"; runId: number; runUrl: string }> {
   const { deps, plan, environment, command, flags } = run;
   const { workflowFile, branch, target } = input;
-  const restore = () => restoreDeployPause(deps, github, plan, input.pauseBefore);
   await waitAfterPause(run, github, input.pauseBefore);
-  // Which of `dispatchAndFollow`'s failures happened: whether GitHub accepted the dispatch, and the
-  // run once it ended.
-  let accepted = false;
-  let finished: FinishedRun | undefined;
-  const api: DispatchRepository["api"] = {
-    dispatchWorkflow: (owner, repo, file, ref, inputs, onAccepted) =>
-      github.api.dispatchWorkflow(owner, repo, file, ref, inputs, async () => {
-        accepted = true;
-        await onAccepted?.();
-      }),
-    waitForWorkflowRun: async (owner, repo, options) => {
-      finished = await github.api.waitForWorkflowRun(owner, repo, options);
-      return finished;
-    },
-  };
   deps.reporter.step(
     `Starting ${workflowFile} on ${branch} with the digest of ${shortText(target)}: no build, and no release command`,
   );
   try {
-    return await dispatchAndFollow(
-      deps,
-      { ...github, api },
-      {
-        workflowFile,
-        ref: branch,
-        inputs: {
-          [ROLLBACK_INPUTS.digest]: target.digest,
-          [ROLLBACK_INPUTS.tag]: target.tag,
-          [ROLLBACK_INPUTS.rollback]: "true",
-        },
-        target: environment,
-        command,
-        detail: `${workflowFile} on ${branch} with ${target.digest}, a rollback (hash ${input.hash})`,
+    return await dispatchAndFollow(deps, github, {
+      workflowFile,
+      ref: branch,
+      inputs: {
+        [ROLLBACK_INPUTS.digest]: target.digest,
+        [ROLLBACK_INPUTS.tag]: target.tag,
+        [ROLLBACK_INPUTS.rollback]: "true",
       },
-    );
+      target: environment,
+      command,
+      detail: `${workflowFile} on ${branch} with ${target.digest}, a rollback (hash ${input.hash})`,
+    });
   } catch (error) {
-    if (finished?.status === "completed" && finished.conclusion !== "success") {
-      await restore();
+    const failure = deployRunFailure(error);
+    if (failure.kind === "failed") {
+      await restoreDeployPause(deps, github, plan, input.pauseBefore);
       throw new OpsCrewError(
         "COMMAND_FAILED",
-        `The rollback of ${environment} did not succeed (${finished.conclusion ?? "no result"}): ${finished.htmlUrl}. When the earlier version fails its checks, the automatic switch back returns ${environment} to the version it ran, ${input.from}. OpsCrew put ${environment}'s deploy pause back as it was.`,
+        `The rollback of ${environment} did not succeed (${failure.conclusion ?? "no result"}): ${failure.runUrl}. When the earlier version fails its checks, the automatic switch back returns ${environment} to the version it ran, ${input.from}. OpsCrew put ${environment}'s deploy pause back as it was.`,
         {
           hint: `Open the run to see which job failed; \`opscrew logs --failed${flags}\` shows the earlier version's last lines when it failed its health check. Then roll back to another version (\`${command} --list\`), or deploy a fix forward.`,
         },
       );
     }
-    const code = codeOf(error);
-    // A definite refusal started nothing, as `dispatchAndFollow` tells it apart: GitHub's 404 or
-    // 422, or a token it refused.
-    if (!accepted && (code === "PHASE_PRECONDITION" || code.startsWith("CREDENTIALS_"))) {
-      await restore();
+    // A definite refusal started nothing.
+    if (failure.kind === "refused") {
+      await restoreDeployPause(deps, github, plan, input.pauseBefore);
       throw error;
     }
     const hint = error instanceof OpsCrewError ? error.hint : undefined;
     throw new OpsCrewError(
-      code,
+      codeOf(error),
       `${errorMessage(error)} ${environment}'s deploys stay paused, pinned to ${shortText(target)}: \`${command} --resume\` ends the pause.`,
       hint !== undefined ? { hint } : {},
     );
@@ -412,7 +370,7 @@ async function dispatchRollback(
 export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> {
   const { deps, options, plan, environment, command, services } = run;
   const github = await rollbackRepository(deps, services);
-  const ctx = versionsContext(run, github);
+  const ctx: VersionsContext = { image: appImageOf(deps, plan, github), plan, paths: deps.paths };
   if (options.list === true) {
     deps.reporter.step(`Reading ${environment}'s versions in GitHub Container Registry`);
     const list = await listVersions(deps, ctx);
@@ -421,7 +379,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
       kind: "list",
       versions: list.versions,
       ...(paused !== undefined ? { paused } : {}),
-      leftOut: list.leftOut.length,
+      leftOut: list.leftOut,
     };
   }
 
@@ -429,7 +387,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
   const followed = await checkPending(run, github);
   if (followed !== undefined) return followed;
   const pause = await deployPauseOf(github, plan);
-  if (pause?.reason === "move") throw movePaused(run, pause.since);
+  if (pause?.reason === "move") throw moveRefusal(run, pause.since);
   const branch = workflowBranch(plan, github.defaultBranch);
   const workflowFile = await requireApplied(deps, {
     target: environment,
@@ -446,66 +404,52 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
   // 5. The version, and what it ran with.
   deps.reporter.step(`Reading ${environment}'s versions in GitHub Container Registry`);
   const list = await listVersions(deps, ctx);
-  const { target, running: current } = chooseVersion(list, {
+  const {
+    target,
+    running: current,
+    runningDigest,
+  } = chooseVersion(list, {
     environment,
     ...(options.to !== undefined ? { to: options.to } : {}),
     command,
   });
-  // `chooseVersion` stops when no image is labelled as running.
-  const currentDigest = list.running as string;
   const added = await servicesLines(run, ctx, target);
 
   // 6. The approval, bound to the rollback's hash. It says whether GitHub also asks a reviewer.
   const targetPlanHash = sha256Hex(canonicalJson(plan));
   const hash = imageRollbackHash({
     environment: checkEnvironmentKey(plan),
-    current: currentDigest,
+    current: runningDigest,
     target: target.digest,
     targetPlanHash,
   });
-  const nowText = current !== undefined ? versionText(current) : shortDigest(currentDigest);
+  const nowText = current !== undefined ? versionText(current) : shortDigest(runningDigest);
   const url = plan.deployment.url;
-  const details = [
-    `Now: ${nowText}`,
-    `Back to: ${versionText(target)}`,
-    `Image: ${target.image}, built by ${target.runUrl}`,
-    "The data, the database schema and the app's settings and secrets stay as they are now: the earlier version must work with them. The release command does not run.",
-    ...added,
-    `Target: ${environment}${url !== undefined ? ` (${url})` : ""}, ${toPosixRelative(deps.paths.root, deps.paths.files.plan)} with plan hash ${targetPlanHash}; nothing is waiting for \`opscrew provision\``,
-    `Deploy: ${workflowFile} on ${branch}, given the digest; nothing is rebuilt. Afterwards ${environment}'s deploys pause until \`${command} --resume\`.`,
-    ...(plan.supplyChain.sign
-      ? [
-          "Signature: the workflow checks the image's cosign signature before anything is deployed (supplyChain.sign)",
-        ]
-      : []),
-    `Rollback hash: ${hash}`,
-    "",
-    guardText(await reviewedEnvironment(plan, github)),
-  ].join("\n");
-  deps.reporter.info(details);
-  const later = `${command} --to ${target.digest} --approve ${hash}`;
-  if (options.approveHash !== undefined && options.approveHash.toLowerCase() !== hash) {
-    throw new OpsCrewError(
-      "PLAN_NOT_APPROVED",
-      `The rollback you approved (${options.approveHash}) is not this one: the version ${environment} runs, the version to go back to or ${environment}'s plan changed since you reviewed it. ${NOTHING}`,
-      { hint: `Review the rollback above; to apply it, run: ${later}` },
-    );
-  }
-  const approval = await deps.approvals.request({
-    kind: "promote",
-    title: `Roll ${environment} back to ${target.commit.slice(0, 7)} (${shortDigest(target.digest)})`,
-    details,
-    planHash: hash,
-  });
-  if (!approval.approved) {
-    throw new PlanRefusedError({
-      plan: "rollback",
-      ...(approval.reason ? { reason: approval.reason } : {}),
-      unchanged: NOTHING,
-      hint: `To roll back later without prompts, run: ${later}`,
-    });
-  }
-  await deps.approvals.assertApprovedPromotion(hash);
+  await approve(
+    { deps, approveHash: options.approveHash, target: environment, what: "rollback" },
+    {
+      title: `Roll ${environment} back to ${target.commit.slice(0, 7)} (${shortDigest(target.digest)})`,
+      details: [
+        `Now: ${nowText}`,
+        `Back to: ${versionText(target)}`,
+        `Image: ${target.image}, built by ${target.runUrl}`,
+        "The data, the database schema and the app's settings and secrets stay as they are now: the earlier version must work with them. The release command does not run.",
+        ...added,
+        `Target: ${environment}${url !== undefined ? ` (${url})` : ""}, ${toPosixRelative(deps.paths.root, deps.paths.files.plan)} with plan hash ${targetPlanHash}; nothing is waiting for \`opscrew provision\``,
+        `Deploy: ${workflowFile} on ${branch}, given the digest; nothing is rebuilt. Afterwards ${environment}'s deploys pause until \`${command} --resume\`.`,
+        ...(plan.supplyChain.sign
+          ? [
+              "Signature: the workflow checks the image's cosign signature before anything is deployed (supplyChain.sign)",
+            ]
+          : []),
+        `Rollback hash: ${hash}`,
+        "",
+        guardText(await reviewedEnvironment(plan, github)),
+      ].join("\n"),
+      hash,
+      later: `${command} --to ${target.digest} --approve ${hash}`,
+    },
+  );
 
   // 7. The pause, then the workflow with the digest, and its run.
   deps.reporter.step(`Pausing ${environment}'s deploys`);
@@ -519,7 +463,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
   // A move's window that started since the check above: its entry goes back, and nothing deploys.
   if (pauseBefore?.reason === "move") {
     await restoreDeployPause(deps, github, plan, pauseBefore);
-    throw movePaused(run, pauseBefore.since);
+    throw moveRefusal(run, pauseBefore.since);
   }
   const outcome = await dispatchRollback(run, github, {
     workflowFile,
@@ -532,7 +476,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
 
   // 8. The record.
   const from = {
-    digest: currentDigest,
+    digest: runningDigest,
     ...(current !== undefined ? { commit: current.commit } : {}),
   };
   const at = deps.clock.now().toISOString();

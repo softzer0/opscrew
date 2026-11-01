@@ -29,7 +29,8 @@ export type DeployPause =
       from?: string;
     };
 
-const PauseSchema = z.discriminatedUnion("reason", [
+/** An environment's entry in `OPSCREW_DEPLOY_PAUSED`, as OpsCrew reads it. */
+export const DeployPauseSchema: z.ZodType<DeployPause> = z.discriminatedUnion("reason", [
   z.object({ reason: z.literal("move"), since: z.string() }),
   z.object({
     reason: z.literal("rollback"),
@@ -87,7 +88,7 @@ async function readPauses(
   if (!all.success) throw notOpsCrews(github);
   const entry = all.data[checkEnvironmentKey(plan)];
   if (entry === undefined) return { all: json as Record<string, unknown>, own: undefined };
-  const own = PauseSchema.safeParse(entry);
+  const own = DeployPauseSchema.safeParse(entry);
   if (!own.success) throw notOpsCrews(github);
   return { all: json as Record<string, unknown>, own: own.data };
 }
@@ -254,17 +255,12 @@ export async function waitForDeploys(
   services: Pick<ProvisionServices, "sleep" | "now">,
   stillRun: DeploysStillRun,
 ): Promise<void> {
-  const workflowFile = posix.basename(plan.cicd.workflowPath);
   // A run that started just before the pause may not be listed yet.
   await (services.sleep ?? realSleep)(POLL_MS);
   let said = false;
   const idle = await pollUntil(
     async () => {
-      const runs = await github.api.listWorkflowRuns(github.owner, github.repo, {
-        workflowFile,
-        perPage: 20,
-      });
-      if (runs.every((run) => run.status === "completed")) return true;
+      if ((await runningDeploy(github, plan)) === undefined) return true;
       if (!said) deps.reporter.step(`Waiting for the running deploy of ${plan.app.name} to end`);
       said = true;
       return undefined;
@@ -279,7 +275,7 @@ export async function waitForDeploys(
   if (idle) return;
   throw new OpsCrewError(
     "COMMAND_FAILED",
-    `A deploy of ${plan.app.name} (${workflowFile}) still runs after 30 minutes, so ${stillRun.outcome}`,
+    `A deploy of ${plan.app.name} (${posix.basename(plan.cicd.workflowPath)}) still runs after 30 minutes, so ${stillRun.outcome}`,
     { hint: stillRun.hint },
   );
 }

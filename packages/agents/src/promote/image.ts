@@ -1,22 +1,44 @@
 import type { ImageFacts, RegistryCredential } from "@opscrew/connector-github";
 import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
 import { environmentTag } from "@opscrew/iac-templates";
-import { ghcrImageFor } from "@opscrew/plan-schema";
+import { type DeployPlan, ghcrImageFor } from "@opscrew/plan-schema";
+import type { PhaseDeps } from "../context";
+import { ghcrReadCredential } from "../localhost/image";
 import { ghcrPackage } from "../shared/github";
 import type { PromoteGitHubApi } from "./types";
 
 /**
  * The app's image on GHCR: `ghcr.io/<owner>/<repo>`, a further app's `ghcr.io/<owner>/<repo>/<key>`
- * (plan-schema's `ghcrImageFor`), read with `credential` when given.
+ * (plan-schema's `ghcrImageFor`), read through `github` (promote's calls by default) with
+ * `credential` when given.
  */
-export interface AppImage {
-  github: PromoteGitHubApi;
+export interface AppImage<Api extends PromoteGitHubApi = PromoteGitHubApi> {
+  github: Api;
   owner: string;
   /** The GitHub repository's name. */
   repo: string;
   /** A further app's key (`plan.app.key`); absent for the repository's first app. */
   key?: string | undefined;
   credential?: RegistryCredential;
+}
+
+/**
+ * The plan's app image on GHCR in `github`'s repository, read with `OPSCREW_GHCR_READ_TOKEN` when
+ * it is set (GHCR may refuse a fine-grained token), else with the client's own token.
+ */
+export function appImageOf<Api extends PromoteGitHubApi>(
+  deps: Pick<PhaseDeps, "env" | "redactor">,
+  plan: Pick<DeployPlan, "app">,
+  github: { api: Api; owner: string; repo: string },
+): AppImage<Api> {
+  const credential = ghcrReadCredential(deps, github.owner);
+  return {
+    github: github.api,
+    owner: github.owner,
+    repo: github.repo,
+    key: plan.app.key,
+    ...(credential !== undefined ? { credential } : {}),
+  };
 }
 
 /** The image a promotion deploys. */

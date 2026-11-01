@@ -11,11 +11,6 @@ import type { PromoteGitHubApi } from "../promote/types";
 export type VersionsGitHubApi = PromoteGitHubApi &
   Pick<GitHubClient, "listWorkflowRuns" | "imageTags" | "describeTags" | "fileText">;
 
-/** The app's image on GHCR, read with the calls the versions need. */
-export interface VersionsImage extends AppImage {
-  github: VersionsGitHubApi;
-}
-
 /**
  * `running`: the image the environment runs (its `opscrew-<env>` label). `previous`: the version a
  * rollback goes back to by default (ADR 0023 D4). `skipped`: a GitHub Pages run whose publish job
@@ -80,7 +75,8 @@ export interface VersionList {
 
 /** The environment whose versions are listed. */
 export interface VersionsContext {
-  image: VersionsImage;
+  /** The app's image on GHCR, read with the calls the versions need. */
+  image: AppImage<VersionsGitHubApi>;
   /** The environment's plan (a server environment's). */
   plan: DeployPlan;
   /** The environment's paths; `paths.environment` names it. */

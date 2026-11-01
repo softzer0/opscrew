@@ -8,6 +8,7 @@ import { FAILED_DEPLOY_DIR } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { shortImage } from "../rollback/versions";
 import { dockerLogLine, isContainerName } from "./commands";
 import { type LogLine, type LogRead, logRead } from "./lines";
 import { logPart, logParts } from "./parts";
@@ -25,11 +26,6 @@ function failedWhat(failed: string, process: string | undefined): string {
   if (failed === "health") return "its health check";
   if (failed === "check") return "the check from outside";
   return "its checks";
-}
-
-/** The image's short digest (`sha256:` and 12 digits), or the image as kept when it has none. */
-function shortDigest(image: string): string {
-  return /sha256:[0-9a-f]{64}/.exec(image)?.[0].slice(0, 19) ?? image;
 }
 
 /** The value of `key=` in `about`, or "" when it has none. */
@@ -93,7 +89,7 @@ export async function readFailedLogs(
   }
   const failed = aboutValue(about, "failed");
   const process = /^process (.+)$/.exec(failed)?.[1];
-  const copy = `Lines of the copy of ${shortDigest(aboutValue(about, "image"))} that failed ${failedWhat(failed, process)} at ${formatUtc(aboutValue(about, "time"))}; OpsCrew removed it.`;
+  const copy = `Lines of the copy of ${shortImage(aboutValue(about, "image"))} that failed ${failedWhat(failed, process)} at ${formatUtc(aboutValue(about, "time"))}; OpsCrew removed it.`;
   const parts = logParts(plan);
   const part = asked ?? parts.find((candidate) => candidate.service === (process ?? "app"));
   if (part === undefined) {

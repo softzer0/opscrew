@@ -703,7 +703,7 @@ describe("workflowRun", () => {
     ...extra,
   });
 
-  it("reads the run's source, state, time and head commit", async () => {
+  it("reads the run's source, time and head commit", async () => {
     const { fetch, calls } = fakeFetch({
       "GET /repos/acme/shop/actions/runs/123456": { body: record() },
     });
@@ -717,21 +717,17 @@ describe("workflowRun", () => {
       headSha: "b".repeat(40),
       path: ".github/workflows/opscrew-deploy.yml",
       createdAt: "2026-10-30T09:00:00Z",
-      status: "completed",
-      conclusion: "success",
       headCommit: { message: MESSAGE, timestamp: "2026-10-30T08:59:00Z" },
     });
     expect(calls[0]?.path).toBe("/repos/acme/shop/actions/runs/123456");
   });
 
-  it("has no head commit when GitHub gives none, and a run in progress has no conclusion", async () => {
+  it("has no head commit when GitHub gives none", async () => {
     const { fetch } = fakeFetch({
-      "GET /repos/acme/shop/actions/runs/123456": {
-        body: record({ head_commit: null, status: "in_progress", conclusion: null }),
-      },
+      "GET /repos/acme/shop/actions/runs/123456": { body: record({ head_commit: null }) },
     });
     const run = await new GitHubClient({ token: TOKEN, fetch }).workflowRun("acme", "shop", 123456);
-    expect(run).toMatchObject({ status: "in_progress", conclusion: null });
+    expect(run).toMatchObject({ headSha: "b".repeat(40) });
     expect(run).not.toHaveProperty("headCommit");
   });
 

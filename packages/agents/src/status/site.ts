@@ -89,11 +89,11 @@ export function runningVersions(deployments: readonly WorkerDeployment[]): {
  * (Cloudflare lists them newest first), so a rollback of a rollback goes further back and never to
  * the version it went back from.
  */
-export function previousWorkerVersion<V extends { id: string; createdOn: string }>(
-  versions: readonly V[],
+export function previousWorkerVersion(
+  versions: readonly WorkerVersion[],
   running: string | undefined,
   before: string | undefined,
-): V | undefined {
+): WorkerVersion | undefined {
   const at = versions.findIndex((version) => version.id === running);
   const now = versions[at];
   if (now === undefined) return undefined;
@@ -176,6 +176,22 @@ export async function pagesMarks(
     ...(before !== undefined ? { before } : {}),
     ...(previous !== undefined ? { previous } : {}),
     skipped: skippedRuns(),
+  };
+}
+
+/**
+ * The GitHub Pages run `run` that `opscrew rollback` pinned the site of `environment` to has not
+ * succeeded, so it is not listed: why (`why`, starting lower case), and the next step with
+ * `command`, the rollback's.
+ */
+export function pinnedRunFailed(
+  run: string,
+  environment: string,
+  command: string,
+): { why: string; next: string } {
+  return {
+    why: `the run ${run} that \`opscrew rollback\` pinned ${environment}'s site to has not succeeded: it is still running, waits for a reviewer, or failed.`,
+    next: `Roll back to another run with \`${command} --to <run id>\` (\`${command} --list\` lists the runs), or run \`${command} --resume\` to deploy forward again.`,
   };
 }
 
@@ -351,12 +367,15 @@ async function pagesLines(
   const describe = (run: PagesRun) =>
     `${runLink(repo, run.runId)}, started ${formatUtc(run.startedAt)}, commit ${run.headSha.slice(0, 7)}`;
   if (last === undefined) {
-    const rollback = `opscrew rollback${flag}`;
-    lines.push(
+    // The pinned run's latest attempt did not succeed, so it is not listed.
+    const failed =
       pin === undefined
+        ? undefined
+        : pinnedRunFailed(pin.image, deps.paths.environment, `opscrew rollback${flag}`);
+    lines.push(
+      failed === undefined
         ? "  Running: nothing yet. Merge OpsCrew's deploy-setup pull request: its workflow publishes the site."
-        : // The pinned run's latest attempt did not succeed, so it is not listed.
-          `  Running: unknown: the run \`opscrew rollback\` pinned (${pin.image}) has not succeeded: it is still running, waits for a reviewer, or failed. Roll back to another run with \`${rollback} --to <run id>\` (\`${rollback} --list\` lists the runs), or run \`${rollback} --resume\` to deploy forward again.`,
+        : `  Running: unknown: ${failed.why} ${failed.next}`,
     );
   } else {
     lines.push(

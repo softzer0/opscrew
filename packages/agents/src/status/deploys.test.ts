@@ -255,9 +255,8 @@ describe("the deploys on a server OpsCrew created", () => {
       "Deploys (read from the server and GitHub now):",
       `  Running: ${RUNNING.slice(0, 19)}, since 2026-10-31 10:04 UTC`,
       `  Before it: ${BEFORE.slice(0, 19)}`,
-      `  OpsCrew could not read their commits from GitHub. ${why}`,
-      `  OpsCrew could not read whether deploys are paused. ${why}`,
-      `  The last rollback on this computer: ${RUNNING_COMMIT.slice(0, 7)} at 2026-10-31 10:05 UTC (GitHub can't be read now, so OpsCrew can't tell whether deploys are still paused).`,
+      `  OpsCrew could not read their commits or whether deploys are paused from GitHub. ${why}`,
+      `  The last rollback on this computer: ${RUNNING_COMMIT.slice(0, 7)} at 2026-10-31 10:05 UTC.`,
     ]);
     expect(report.deploys).toEqual({
       running: { digest: RUNNING },
@@ -271,7 +270,7 @@ describe("the deploys on a server OpsCrew created", () => {
       services: { remote: shell(serverOutput(BOTH)).remote, deploys: null },
     });
     expect(report.lines.at(-1)).toBe(
-      "  OpsCrew could not read whether deploys are paused. No GitHub token is available (set GITHUB_TOKEN or run `gh auth login`).",
+      "  OpsCrew could not read their commits or whether deploys are paused from GitHub. No GitHub token is available (set GITHUB_TOKEN or run `gh auth login`).",
     );
     expect(report.deploys?.paused).toBeUndefined();
   });

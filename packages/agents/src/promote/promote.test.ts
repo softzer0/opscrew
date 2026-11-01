@@ -26,13 +26,7 @@ import {
   WORKFLOWS,
 } from "./__fixtures__/world";
 import { promote, promotionHash } from "./index";
-import {
-  clearPendingPromotion,
-  PENDING_PROMOTION_FILE,
-  promotionFile,
-  readPendingPromotion,
-  writePendingPromotion,
-} from "./record";
+import { promotionFile, readPendingPromotion } from "./record";
 import { requireApplied } from "./shared";
 
 /** What promote says of prod's deploy run left waiting for its reviewer. */
@@ -1208,7 +1202,7 @@ describe("promote", () => {
       expect(text).toContain(STILL_WAITING);
       expect(text).not.toMatch(/did not succeed|did not finish|timed out/);
       expect(await recordedPromotion(world.deps.paths)).toBeUndefined();
-      expect(await readPendingPromotion(world.deps.paths, PENDING_PROMOTION_FILE)).toEqual({
+      expect(await readPendingPromotion(world.deps.paths)).toEqual({
         digest: STAGING_IMAGE,
         source: "staging",
         runId: 777,
@@ -1244,7 +1238,7 @@ describe("promote", () => {
         source: "staging",
         runUrl: DEPLOY_RUN_URL,
       });
-      expect(await readPendingPromotion(world.deps.paths, PENDING_PROMOTION_FILE)).toBeUndefined();
+      expect(await readPendingPromotion(world.deps.paths)).toBeUndefined();
     });
 
     it("says again that the pending run waits, with its link and the command", async () => {
@@ -1255,7 +1249,7 @@ describe("promote", () => {
       expect(result).toEqual({ status: "waiting", digest: STAGING_IMAGE, runUrl: DEPLOY_RUN_URL });
       expect(world.deps.reporter.text()).toContain(STILL_WAITING);
       expect(world.github.dispatches).toHaveLength(1);
-      expect(await readPendingPromotion(world.deps.paths, PENDING_PROMOTION_FILE)).toMatchObject({
+      expect(await readPendingPromotion(world.deps.paths)).toMatchObject({
         runId: 777,
       });
     });
@@ -1273,7 +1267,7 @@ describe("promote", () => {
       expect(world.handler.requests.map((r) => r.kind)).toEqual(["promote"]);
       expect(world.github.dispatches).toHaveLength(2);
       expect(result.status).toBe("deployed");
-      expect(await readPendingPromotion(world.deps.paths, PENDING_PROMOTION_FILE)).toBeUndefined();
+      expect(await readPendingPromotion(world.deps.paths)).toBeUndefined();
     });
   });
 
@@ -1477,20 +1471,5 @@ describe("what rollback shares with promote", () => {
     expect(error.message).toBe(
       `The branch release has no ${PROD_WORKFLOW}, the deploy workflow prod's plan generates, so GitHub cannot start it. Nothing was deployed.`,
     );
-  });
-
-  it("keeps each pending file by the name it is given", async () => {
-    const { paths } = (await promoteWorld()).deps;
-    const pending = {
-      digest: PREVIOUS_IMAGE,
-      source: "prod",
-      runId: 9,
-      at: "2026-10-11T12:00:00.000Z",
-    };
-    await writePendingPromotion(paths, "pending-rollback.json", pending);
-    expect(await readPendingPromotion(paths, PENDING_PROMOTION_FILE)).toBeUndefined();
-    expect(await readPendingPromotion(paths, "pending-rollback.json")).toEqual(pending);
-    await clearPendingPromotion(paths, "pending-rollback.json");
-    expect(await readPendingPromotion(paths, "pending-rollback.json")).toBeUndefined();
   });
 });

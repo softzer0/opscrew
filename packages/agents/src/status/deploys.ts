@@ -6,21 +6,21 @@
  */
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { errorText, isUserFacingError, OpsCrewError, readTextIfExists } from "@opscrew/core";
+import { errorText, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { appDir } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
-import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { followsBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
-import { ghcrReadCredential } from "../localhost/image";
+import { runningImage } from "../localhost/plan";
 import { appFolder } from "../localhost/services";
-import type { AppImage } from "../promote/image";
+import { appImageOf } from "../promote/image";
 import type { PromoteGitHubApi } from "../promote/types";
+import { readRollback } from "../rollback/record";
 import type { VersionView } from "../rollback/types";
-import { describeImage } from "../rollback/versions";
-import { gitClient, githubClientFromToken, githubCoordinates, readValidJson } from "../shared";
+import { commitWords, describeImage, shortDigest, shortImage } from "../rollback/versions";
+import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
 import { type DeployPause, deployPauseOf, pinnedText } from "../shared/deploy-pause";
 import { codeOf } from "../shared/errors";
 import { ghcrPackage } from "../shared/github";
@@ -74,11 +74,6 @@ interface Repository {
 function imageOf(value: string | undefined): string | undefined {
   const image = value?.trim();
   return image !== undefined && IMAGE.test(image) ? image : undefined;
-}
-
-/** `APP_IMAGE`'s value in an env file's text. */
-function appImageIn(text: string | undefined): string | undefined {
-  return imageOf(/^APP_IMAGE=(.*)$/m.exec(text ?? "")?.[1]);
 }
 
 /**
@@ -158,25 +153,13 @@ async function serverImages(
 /** The images in the app's folder on this computer, and `.env`'s modification time. */
 async function localImages(deps: PhaseDeps, plan: DeployPlan): Promise<Held> {
   const folder = appFolder(deps.paths, plan);
-  const running = appImageIn(await readTextIfExists(join(folder, ".env")));
-  const previous = appImageIn(await readTextIfExists(join(folder, ".env.previous")));
+  const running = imageOf(await runningImage(folder));
+  const previous = imageOf(await runningImage(folder, ".env.previous"));
   return {
     ...(running !== undefined
       ? { running, since: (await stat(join(folder, ".env"))).mtime.toISOString() }
       : {}),
     ...(previous !== undefined ? { previous } : {}),
-  };
-}
-
-/** The app's image on GHCR, read with `OPSCREW_GHCR_READ_TOKEN` when it is set. */
-function appImage(deps: PhaseDeps, plan: DeployPlan, github: Repository): AppImage {
-  const credential = ghcrReadCredential(deps, github.owner);
-  return {
-    github: github.api,
-    owner: github.owner,
-    repo: github.repo,
-    key: plan.app.key,
-    ...(credential !== undefined ? { credential } : {}),
   };
 }
 
@@ -189,7 +172,7 @@ async function labelledImages(
   plan: DeployPlan,
   github: Repository,
 ): Promise<Held> {
-  const image = appImage(deps, plan, github);
+  const image = appImageOf(deps, plan, github);
   const label = `opscrew-${deps.paths.environment}`;
   const digestOf = (tag: string) =>
     image.github.taggedDigest(
@@ -223,17 +206,12 @@ async function readRepository(
   }
 }
 
-/** The last rollback `rollback.json` records on this computer (data-model.md). */
-const RollbackRecordSchema = z.object({ commit: z.string(), at: z.string() });
-
 /** A version in a line: `<short commit> "<message>" (sha256:<12>)`, or what is known of it. */
 function versionWords(image: string, view: VersionView | undefined): string {
-  const digest = view?.digest;
-  if (digest === undefined) return image;
-  const short = digest.slice(0, 19);
-  if (view?.commit === undefined) return short;
-  const message = view.message === undefined ? "" : ` "${view.message}"`;
-  return `${view.commit.slice(0, 7)}${message} (${short})`;
+  const short = shortImage(image);
+  return view?.commit === undefined
+    ? short
+    : `${commitWords(view.commit, view.message)} (${short})`;
 }
 
 /**
@@ -245,7 +223,7 @@ export function deploysOnTheirOwn(plan: DeployPlan): boolean {
 }
 
 /** True when a push to the environment's branch deploys it: not promoted, {@link deploysOnTheirOwn}. */
-function pushesDeploy(plan: DeployPlan): boolean {
+export function pushesDeploy(plan: DeployPlan): boolean {
   return followsBranch(plan) && deploysOnTheirOwn(plan);
 }
 
@@ -275,7 +253,7 @@ function pauseLines(
   ];
   if (running !== undefined && running !== pause.image) {
     lines.push(
-      `  It runs ${running.slice(0, 19)}, not the pinned ${pause.image.slice(0, 19)}: the rollback's run hasn't finished.`,
+      `  It runs ${shortDigest(running)}, not the pinned ${shortDigest(pause.image)}: the rollback's run hasn't finished.`,
     );
   }
   return lines;
@@ -304,7 +282,8 @@ function versionSource(
  * `.env` and `.env.previous` and `.env`'s time ({@link deploysCommand}); on this computer, the
  * same files in the app's folder; from GHCR's labels ({@link versionSource}), `opscrew-<env>` and
  * `-previous`. Each is described by its provenance (`describeImage`), else by its short digest;
- * each read that fails is a line that says why.
+ * each read that fails is a line that says why. `unread` names what GitHub, when it can't be read,
+ * would have given: the versions themselves, or their commits.
  */
 async function versionsSection(
   deps: PhaseDeps,
@@ -312,7 +291,7 @@ async function versionsSection(
   options: ComponentStatusOptions,
   github: Repository | { why: string },
   source: "computer" | "labels" | "server" | "unread",
-): Promise<{ lines: string[]; running?: VersionView; previous?: VersionView }> {
+): Promise<{ lines: string[]; running?: VersionView; previous?: VersionView; unread?: string }> {
   if (source === "unread") {
     // The same login failed or was refused: no second connection, no second host-key question.
     return {
@@ -322,9 +301,7 @@ async function versionsSection(
   let held: Held;
   try {
     if (source === "labels") {
-      if ("why" in github) {
-        return { lines: [`  OpsCrew could not read the versions from GitHub. ${github.why}`] };
-      }
+      if ("why" in github) return { lines: [], unread: "the versions" };
       held = await labelledImages(deps, plan, github);
     } else {
       held =
@@ -345,12 +322,9 @@ async function versionsSection(
     if (digest !== undefined) views.set(digest, { digest });
   }
   const notes: string[] = [];
-  if ("why" in github) {
-    if (views.size > 0)
-      notes.push(`  OpsCrew could not read their commits from GitHub. ${github.why}`);
-  } else if (views.size > 0) {
+  if (!("why" in github) && views.size > 0) {
     try {
-      const image = appImage(deps, plan, github);
+      const image = appImageOf(deps, plan, github);
       for (const digest of views.keys()) {
         const described = await describeImage(deps, image, digest);
         if (described === undefined) continue;
@@ -384,55 +358,54 @@ async function versionsSection(
     ],
     ...(running !== undefined ? { running } : {}),
     ...(previous !== undefined ? { previous } : {}),
+    ...("why" in github && views.size > 0 ? { unread: "their commits" } : {}),
   };
 }
 
+/** The last rollback this computer's `rollback.json` records, as a line; none without one. */
+async function lastRollbackLines(deps: PhaseDeps): Promise<string[]> {
+  const recorded = await readRollback(deps.paths);
+  if (recorded === undefined) return [];
+  const version =
+    recorded.commit === undefined ? shortImage(recorded.digest) : recorded.commit.slice(0, 7);
+  return [`  The last rollback on this computer: ${version} at ${formatUtc(recorded.at)}.`];
+}
+
 /**
- * The pause's lines ({@link pauseLines}): from GitHub (`deployPauseOf`); a token GitHub refuses
- * the variable (no Variables: Read) is a line saying the pause is unknown, never "on"; when GitHub
- * can't be read, why, and the last rollback this computer's `rollback.json` records, never as the
- * pause.
+ * The pause's lines ({@link pauseLines}), read from GitHub (`deployPauseOf`): a token GitHub
+ * refuses the variable (no Variables: Read) is a line saying the pause is unknown, never "on";
+ * another refusal says why, with the last rollback this computer's `rollback.json` records,
+ * never as the pause.
  */
 async function pauseSection(
   deps: PhaseDeps,
   plan: DeployPlan,
-  github: Repository | { why: string },
+  github: Repository,
   running: string | undefined,
 ): Promise<{ lines: string[]; paused?: DeployPause }> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-  let why: string;
-  if ("why" in github) {
-    why = github.why;
-  } else {
-    try {
-      const paused = await deployPauseOf(github, plan);
+  try {
+    const paused = await deployPauseOf(github, plan);
+    return {
+      lines: pauseLines(plan, paused, flag, running),
+      ...(paused !== undefined ? { paused } : {}),
+    };
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    if (codeOf(error).startsWith("CREDENTIALS_")) {
       return {
-        lines: pauseLines(plan, paused, flag, running),
-        ...(paused !== undefined ? { paused } : {}),
+        lines: [
+          "  Deploys: OpsCrew can't tell whether they're paused: the GitHub token can't read repository variables (Variables: Read).",
+        ],
       };
-    } catch (error) {
-      if (!isUserFacingError(error)) throw error;
-      if (codeOf(error).startsWith("CREDENTIALS_")) {
-        return {
-          lines: [
-            "  Deploys: OpsCrew can't tell whether they're paused: the GitHub token can't read repository variables (Variables: Read).",
-          ],
-        };
-      }
-      why = errorText(error);
     }
+    return {
+      lines: [
+        `  OpsCrew could not read whether deploys are paused. ${errorText(error)}`,
+        ...(await lastRollbackLines(deps)),
+      ],
+    };
   }
-  const lines = [`  OpsCrew could not read whether deploys are paused. ${why}`];
-  const recorded = await readValidJson(
-    join(deps.paths.stateDir, "rollback.json"),
-    RollbackRecordSchema,
-  );
-  if (recorded !== undefined) {
-    lines.push(
-      `  The last rollback on this computer: ${recorded.commit.slice(0, 7)} at ${formatUtc(recorded.at)} (GitHub can't be read now, so OpsCrew can't tell whether deploys are still paused).`,
-    );
-  }
-  return { lines };
 }
 
 /**
@@ -443,10 +416,12 @@ async function pauseSection(
  * - whether its deploys are paused ({@link pauseSection}); on this computer only with the local
  *   runner, since nothing else deploys it on its own.
  *
- * `options.check` runs first, as for the components, and stops every read when it fails. When the
- * components were not read from the app's server (`components`), the server is not read: before
- * `verify` saw a deploy (`not-read`), GHCR's labels name the versions; a read that failed or was
- * refused (`failed`) is not tried again. The pause is read either way.
+ * When GitHub can't be read, one line names what it would have given (the versions or their
+ * commits, and whether deploys are paused) and why, followed by the last rollback this computer's
+ * `rollback.json` records. `options.check` runs first, as for the components, and stops every
+ * read when it fails. When the components were not read from the app's server (`components`), the
+ * server is not read: before `verify` saw a deploy (`not-read`), GHCR's labels name the versions;
+ * a read that failed or was refused (`failed`) is not tried again. The pause is read either way.
  */
 export async function deployStateReport(
   deps: PhaseDeps,
@@ -478,7 +453,17 @@ export async function deployStateReport(
     ...(versions.previous !== undefined ? { previous: versions.previous } : {}),
   };
   const lines = [head, ...versions.lines];
-  if (deploysOnTheirOwn(plan)) {
+  const pauses = deploysOnTheirOwn(plan);
+  if ("why" in github) {
+    const unread = [
+      ...("unread" in versions && versions.unread !== undefined ? [versions.unread] : []),
+      ...(pauses ? ["whether deploys are paused"] : []),
+    ];
+    if (unread.length > 0) {
+      lines.push(`  OpsCrew could not read ${unread.join(" or ")} from GitHub. ${github.why}`);
+    }
+    if (pauses) lines.push(...(await lastRollbackLines(deps)));
+  } else if (pauses) {
     const pause = await pauseSection(deps, plan, github, versions.running?.digest);
     lines.push(...pause.lines);
     if (pause.paused !== undefined) deploys.paused = pause.paused;

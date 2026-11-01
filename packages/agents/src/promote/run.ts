@@ -17,11 +17,11 @@ import {
 import type { PhaseDeps } from "../context";
 import { environmentPaths, sharedPartsDiffer } from "../environments";
 import { builderBranch, followsBranch } from "../environments/branches";
-import { ghcrReadCredential } from "../localhost/image";
 import { hasDeployment, PlanRefusedError } from "../shared";
-import { dispatchAndFollow, NOT_RECORDED } from "../shared/deploy-run";
+import { auditFinishedRun, dispatchAndFollow, NOT_RECORDED } from "../shared/deploy-run";
 import {
   type AppImage,
+  appImageOf,
   type ChosenImage,
   checkPlatform,
   checkProvenance,
@@ -44,6 +44,7 @@ import {
   type CheckedFor,
   githubRepository,
   NOTHING,
+  NOTHING_CHANGED,
   requireApplied,
   requireNotPaused,
 } from "./shared";
@@ -105,7 +106,7 @@ export function requireRollbackServices(
   if (run.what === "rollback") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${target}'s image ${run.digest.slice(0, 19)} ran with the ${services}. Nothing was changed.`,
+      `${target}'s image ${run.digest.slice(0, 19)} ran with the ${services}. ${NOTHING_CHANGED}`,
       {
         hint: `Roll back to a version that ran without ${one ? "it" : "them"} (\`${command} --list\` shows the versions), or deploy a fix: once ${source} runs it, \`opscrew promote --to ${target}\` deploys it.`,
       },
@@ -135,7 +136,7 @@ async function checkPending(
   image: AppImage,
   run: { target: string; command: string; services: string[] },
 ): Promise<PromoteResult | undefined> {
-  const pending = await readPendingPromotion(paths, PENDING_PROMOTION_FILE);
+  const pending = await readPendingPromotion(paths);
   if (pending === undefined) return undefined;
   const { target, command, services } = run;
   const { digest, source } = pending;
@@ -150,14 +151,7 @@ async function checkPending(
     return { status: "waiting", digest, runUrl: last.htmlUrl };
   }
   const ok = last.conclusion === "success";
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "deploy workflow",
-    target: last.htmlUrl,
-    decision: ok ? "approved" : "refused",
-    detail: `workflow run ${last.id} finished: ${last.conclusion ?? "no result"}`,
-  });
+  await auditFinishedRun(deps, last);
   await clearPendingPromotion(paths, PENDING_PROMOTION_FILE);
   if (!ok) {
     deps.reporter.warn(
@@ -323,16 +317,8 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
 
   // 1. The image, and 2. where and for which CPU it was built.
   const github = await githubRepository(deps, services);
-  const { owner, repo, defaultBranch } = github;
-  // OPSCREW_GHCR_READ_TOKEN when set (GHCR may refuse a fine-grained token), else the client's own.
-  const credential = ghcrReadCredential(deps, owner);
-  const image: AppImage = {
-    github: github.api,
-    owner,
-    repo,
-    key: plan.app.key,
-    ...(credential !== undefined ? { credential } : {}),
-  };
+  const { defaultBranch } = github;
+  const image = appImageOf(deps, plan, github);
   const followed = await checkPending(deps, targetPaths, image, {
     target,
     command,
@@ -434,7 +420,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
       : "the image's provenance",
   });
   if (run.status === "waiting") {
-    await writePendingPromotion(targetPaths, PENDING_PROMOTION_FILE, {
+    await writePendingPromotion(targetPaths, {
       digest,
       source,
       runId: run.runId,

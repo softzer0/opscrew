@@ -41,6 +41,7 @@ import { sharedCloudflareClient } from "../provision/shared-cloudflare";
 import { PAGES_ENVIRONMENT } from "../serverless/pages/plan";
 import { hasDeployment, PlanRefusedError, serverlessName } from "../shared";
 import { readableDeployPause } from "../shared/deploy-pause";
+import { auditFinishedRun } from "../shared/deploy-run";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { pagesMarks, runningVersions, versionBuild } from "../status/site";
 import { buildPromotionHash, rollbackHash } from "./record";
@@ -150,10 +151,11 @@ export function guardText(reviewed: string | undefined): string {
 
 /**
  * Shows `details`, refuses an `--approve` hash that is not `hash`, asks the `promote` approval
- * bound to `hash` and checks it; `later` is the command that applies it without prompts.
+ * bound to `hash` and checks it; `later` is the command that applies it without prompts. The
+ * refusals name `run.what`, a promotion or a rollback, of `run.target`.
  */
-async function approve(
-  run: SiteRun,
+export async function approve(
+  run: Pick<SiteRun, "deps" | "approveHash" | "target" | "what">,
   input: { title: string; details: string; hash: string; later: string },
 ): Promise<void> {
   const { deps, what } = run;
@@ -227,16 +229,8 @@ async function followRun(
     );
     return { status: "waiting", runUrl: done.htmlUrl };
   }
-  const ok = done.conclusion === "success";
-  await deps.audit.append({
-    kind: "provider-call",
-    actor: "opscrew",
-    action: "deploy workflow",
-    target: done.htmlUrl,
-    decision: ok ? "approved" : "refused",
-    detail: `workflow run ${done.id} finished: ${done.conclusion ?? "no result"}`,
-  });
-  if (!ok) {
+  await auditFinishedRun(deps, done);
+  if (done.conclusion !== "success") {
     throw new OpsCrewError(
       "COMMAND_FAILED",
       `${target}'s deploy run did not succeed (${done.conclusion ?? "no result"}): ${done.htmlUrl}.`,
@@ -488,15 +482,20 @@ function oldSecretsRefusal(
  * hash and the secrets `--allow-old-secrets` names. No build and no workflow run. When Cloudflare
  * refuses the version because secrets changed since it was active, the rollback is forced only
  * when the approval named each of them; otherwise it is refused, with nothing changed.
- * `run.beforeChange` runs once it is approved, before the activation.
+ * `run.beforeChange` runs once it is approved, before the activation. `known`: the Worker's
+ * versions and the one running, when the caller read them already (`opscrew rollback`).
  */
-export async function rollBackWorker(run: SiteRun, version: string): Promise<PromoteResult> {
+export async function rollBackWorker(
+  run: SiteRun,
+  version: string,
+  known?: { versions: readonly WorkerVersion[]; running: string | undefined },
+): Promise<PromoteResult> {
   const { deps, target, plan, command, versionFlag } = run;
   requireProvisioned(run, plan, target);
   const { worker } = plan.target as CloudflareWorkersDeployTarget;
   const client = sharedCloudflareClient(deps, run.services);
   const accountId = await accountOf(run, plan, target);
-  const state = await workerState(client, accountId, worker);
+  const state = known ?? (await workerState(client, accountId, worker));
   const chosen = state?.versions.find((known) => known.id === version);
   const list = `\`opscrew status${target === "prod" ? "" : ` --env ${target}`}\` lists the version that ran before`;
   if (chosen === undefined) {

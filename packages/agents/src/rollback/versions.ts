@@ -17,12 +17,9 @@ import {
   imageFactsOf,
   imageReference,
 } from "../promote/image";
-import { NOTHING as NOTHING_DEPLOYED } from "../promote/shared";
+import { NOTHING_CHANGED, NOTHING as NOTHING_DEPLOYED } from "../promote/shared";
 import { ghcrPackage } from "../shared/github";
 import type { LeftOutVersion, Version, VersionList, VersionsContext } from "./types";
-
-/** What every refusal of a rollback ends with. */
-const NOTHING = "Nothing was changed.";
 
 /** The most versions listed. */
 const LISTED = 20;
@@ -32,7 +29,7 @@ const RUNS_READ = 100;
 const NAMED = 5;
 
 /** The first line of a commit's message, redacted; `undefined` when it is empty. */
-function messageOf(
+export function messageOf(
   deps: Pick<PhaseDeps, "redactor">,
   commit: WorkflowRunSource["headCommit"],
 ): string | undefined {
@@ -45,13 +42,23 @@ export function shortDigest(digest: string): string {
   return digest.slice(0, 19);
 }
 
+/** An image reference in a few words: its short digest, or the reference without one. */
+export function shortImage(ref: string): string {
+  const digest = /sha256:[0-9a-f]{64}/.exec(ref)?.[0];
+  return digest === undefined ? ref : shortDigest(digest);
+}
+
+/** A commit in a few words: `<short commit> "<message>"`, without the message when it has none. */
+export function commitWords(commit: string, message: string | undefined): string {
+  return `${commit.slice(0, 7)}${message === undefined ? "" : ` "${message}"`}`;
+}
+
 /**
  * A version in one line: `<short commit> "<message>", built <time> (sha256:<12>)`, as the
  * approval and the refusals name it.
  */
 export function versionText(version: Version): string {
-  const message = version.message === undefined ? "" : ` "${version.message}"`;
-  return `${version.commit.slice(0, 7)}${message}, built ${version.builtAt} (${shortDigest(version.digest)})`;
+  return `${commitWords(version.commit, version.message)}, built ${version.builtAt} (${shortDigest(version.digest)})`;
 }
 
 /** Why `promote`'s check refused an image, without its closing sentence. */
@@ -255,7 +262,8 @@ const COMMIT_PREFIX = /^[0-9a-f]{7,40}$/;
 const DIGEST_PREFIX = /^sha256:[0-9a-f]{12,64}$/;
 
 /**
- * The version a rollback of `environment` goes to, and the one it runs when that is listed:
+ * The version a rollback of `environment` goes to, the digest it runs (`runningDigest`), and that
+ * version when it is listed (`running`):
  * without `to`, the `previous` mark; with `to` (`--to`), the version whose commit starts with it
  * (7 to 40 hexadecimal digits) or whose digest does (`sha256:` and 12 to 64 of them).
  * `command` is the rollback's command, which the hints name.
@@ -266,26 +274,29 @@ const DIGEST_PREFIX = /^sha256:[0-9a-f]{12,64}$/;
 export function chooseVersion(
   list: VersionList,
   input: { environment: string; to?: string; command: string },
-): { target: Version; running?: Version } {
+): { target: Version; running?: Version; runningDigest: string } {
   const { environment, command } = input;
   const listed = `\`${command} --list\` shows the versions there`;
   if (list.running === undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `GitHub Container Registry has no image labelled opscrew-${environment}, so OpsCrew can't tell which version ${environment} runs. ${NOTHING}`,
+      `GitHub Container Registry has no image labelled opscrew-${environment}, so OpsCrew can't tell which version ${environment} runs. ${NOTHING_CHANGED}`,
       {
         hint: `${environment}'s deploy workflow labels its image after a healthy deploy: let a deploy of ${environment} finish, then run \`${command}\` again.`,
       },
     );
   }
   const running = list.versions.find((version) => version.marks.includes("running"));
-  const withRunning = running !== undefined ? { running } : {};
+  const withRunning = {
+    ...(running !== undefined ? { running } : {}),
+    runningDigest: list.running,
+  };
   if (input.to === undefined) {
     const target = list.versions.find((version) => version.marks.includes("previous"));
     if (target !== undefined) return { target, ...withRunning };
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `OpsCrew can't roll ${environment} back: ${noDefault({ ...list, running: list.running }, environment, running)} ${NOTHING}`,
+      `OpsCrew can't roll ${environment} back: ${noDefault({ ...list, running: list.running }, environment, running)} ${NOTHING_CHANGED}`,
       {
         hint:
           list.versions.length > (running === undefined ? 0 : 1)
@@ -300,7 +311,7 @@ export function chooseVersion(
   if (!byDigest && !COMMIT_PREFIX.test(to)) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `"${input.to}" is not a commit or an image digest. ${NOTHING}`,
+      `"${input.to}" is not a commit or an image digest. ${NOTHING_CHANGED}`,
       {
         hint: `Name a commit (7 to 40 hexadecimal digits) or a digest (sha256: and at least 12 of its digits): ${listed}.`,
       },
@@ -312,7 +323,7 @@ export function chooseVersion(
   if (matches.length > 1) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `${input.to} names ${matches.length} versions of ${environment}: ${matches.map(versionText).join("; ")}. ${NOTHING}`,
+      `${input.to} names ${matches.length} versions of ${environment}: ${matches.map(versionText).join("; ")}. ${NOTHING_CHANGED}`,
       { hint: "Name one with more of its digits." },
     );
   }
@@ -322,15 +333,15 @@ export function chooseVersion(
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       left !== undefined
-        ? `OpsCrew won't roll ${environment} back to ${input.to}: ${left.reason} ${NOTHING}`
-        : `${input.to} is not among ${environment}'s versions in GitHub Container Registry: it was never built for ${environment}, or is gone. ${available(list)} ${NOTHING}`,
+        ? `OpsCrew won't roll ${environment} back to ${input.to}: ${left.reason} ${NOTHING_CHANGED}`
+        : `${input.to} is not among ${environment}'s versions in GitHub Container Registry: it was never built for ${environment}, or is gone. ${available(list)} ${NOTHING_CHANGED}`,
       { hint: `Name one of ${environment}'s versions with --to: ${listed}.` },
     );
   }
   if (target.digest === list.running) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${environment} runs ${versionText(target)} already. ${NOTHING}`,
+      `${environment} runs ${versionText(target)} already. ${NOTHING_CHANGED}`,
       { hint: `Name an earlier version with --to: ${listed}.` },
     );
   }
@@ -408,7 +419,7 @@ export async function checkOldPlan(
     const one = gone.length === 1;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${short} ran with the ${one ? "service" : "services"} ${listText(gone)}, which ${environment}'s plan no longer has, so rolling back would run that version without ${one ? "it" : "them"}. ${NOTHING}`,
+      `${short} ran with the ${one ? "service" : "services"} ${listText(gone)}, which ${environment}'s plan no longer has, so rolling back would run that version without ${one ? "it" : "them"}. ${NOTHING_CHANGED}`,
       {
         hint: `Choose a version built after ${one ? "it was" : "they were"} removed (\`${command} --list\` shows them), or deploy a fix forward.`,
       },

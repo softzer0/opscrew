@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { canonicalJson, type ProjectPaths, sha256Hex, writeFileAtomic } from "@opscrew/core";
 import { z } from "zod";
 import { readValidJson } from "../shared";
-import type { DeployPause } from "../shared/deploy-pause";
+import { DeployPauseSchema } from "../shared/deploy-pause";
 
 /** What a rollback's `promote` approval binds (ADR 0023 D5). */
 export interface ImageRollbackParts {
@@ -77,18 +77,6 @@ export async function writeRollback(
   await writeFileAtomic(rollbackFile(paths), `${JSON.stringify(record, null, 2)}\n`);
 }
 
-/** An entry of `OPSCREW_DEPLOY_PAUSED`, as `shared/deploy-pause.ts` reads it. */
-const PauseSchema: z.ZodType<DeployPause> = z.discriminatedUnion("reason", [
-  z.object({ reason: z.literal("move"), since: z.string() }),
-  z.object({
-    reason: z.literal("rollback"),
-    since: z.string(),
-    image: z.string(),
-    commit: z.string(),
-    from: z.string().optional(),
-  }),
-]);
-
 /** A rollback whose deploy run still waited for a required reviewer when the command ended. */
 const PendingRollbackSchema = z.object({
   digest: z.string(),
@@ -99,7 +87,7 @@ const PendingRollbackSchema = z.object({
   at: z.string(),
   hash: z.string(),
   /** The environment's pause entry the rollback replaced, put back when the run fails. */
-  pauseBefore: PauseSchema.nullable(),
+  pauseBefore: DeployPauseSchema.nullable(),
 });
 
 export type PendingRollback = z.infer<typeof PendingRollbackSchema>;

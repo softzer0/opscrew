@@ -157,7 +157,7 @@ describe("listWorkflowRuns", () => {
   const ROUTE = "GET /repos/acme/shop/actions/workflows/opscrew-deploy.yml/runs";
   const MESSAGE = "Fix checkout totals\n\nThe long description";
 
-  it("lists runs with their event, branch and head commit, filtered by branch and event", async () => {
+  it("lists runs with their head commit, filtered by branch", async () => {
     const { fetch, calls } = fakeFetch({
       [ROUTE]: [
         {
@@ -185,7 +185,6 @@ describe("listWorkflowRuns", () => {
       await client(fetch).listWorkflowRuns("acme", "shop", {
         workflowFile: FILE,
         branch: "main",
-        event: "push",
         perPage: 100,
       }),
     ).toEqual([
@@ -196,8 +195,6 @@ describe("listWorkflowRuns", () => {
         htmlUrl: "https://github.com/acme/shop/actions/runs/9",
         headSha: "abc",
         createdAt: "2026-10-30T09:00:00Z",
-        event: "push",
-        headBranch: "main",
         headCommit: { message: MESSAGE, timestamp: "2026-10-30T08:59:00Z" },
       },
       {
@@ -207,11 +204,10 @@ describe("listWorkflowRuns", () => {
         htmlUrl: "https://github.com/acme/shop/actions/runs/8",
         headSha: "abc",
         createdAt: "2026-10-29T09:00:00Z",
-        event: "push",
       },
     ]);
     const query = new URL(calls[0]?.url ?? "").searchParams;
-    expect(Object.fromEntries(query)).toEqual({ per_page: "100", branch: "main", event: "push" });
+    expect(Object.fromEntries(query)).toEqual({ per_page: "100", branch: "main" });
   });
 
   it("refuses a run it cannot read without putting its commit message in the error", async () => {
@@ -341,6 +337,7 @@ describe("waitForWorkflowRun", () => {
         status: "completed",
         conclusion,
         htmlUrl: "https://github.com/acme/shop/actions/runs/42",
+        headSha: "abc",
       });
       expect(calls).toHaveLength(3);
       expect(clock.sleeps).toEqual([1000, 1000]);
@@ -399,6 +396,7 @@ describe("waitForWorkflowRun", () => {
       status: "completed",
       conclusion: "success",
       htmlUrl: "https://github.com/acme/shop/actions/runs/42",
+      headSha: "abc",
     });
   });
 
@@ -422,6 +420,7 @@ describe("waitForWorkflowRun", () => {
       status: "waiting",
       conclusion: null,
       htmlUrl: "https://github.com/acme/shop/actions/runs/42",
+      headSha: "abc",
     });
     expect(clock.sleeps.reduce((a, b) => a + b, 0)).toBe(60_000);
   });

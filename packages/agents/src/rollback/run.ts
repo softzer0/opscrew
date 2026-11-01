@@ -8,13 +8,10 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { appFlag } from "../apps/choice";
 import type { PhaseDeps } from "../context";
 import { FINISH_COMMAND, MOVE_COMMAND } from "../move/window";
-import { githubRepository, type PromoteRepository } from "../promote/shared";
+import { githubRepository, NOTHING_CHANGED, type PromoteRepository } from "../promote/shared";
 import { moveInProgress } from "../provision/guard";
 import { hasDeployment } from "../shared";
 import type { RollbackGitHubApi, RollbackOptions, RollbackServices } from "./index";
-
-/** What every refusal of a rollback ends with. */
-export const NOTHING = "Nothing was changed.";
 
 /** One run of `opscrew rollback`, on the environment its deps belong to. */
 export interface RollbackRun {
@@ -32,18 +29,14 @@ export interface RollbackRun {
 }
 
 /** The repository a rollback runs in, with every call it makes. */
-export interface RollbackRepository extends Omit<PromoteRepository, "api"> {
-  api: RollbackGitHubApi;
-}
+export type RollbackRepository = PromoteRepository<RollbackGitHubApi>;
 
 /** The GitHub repository the environment deploys from, with its default branch. */
-export async function rollbackRepository(
+export function rollbackRepository(
   deps: PhaseDeps,
   services: RollbackServices,
 ): Promise<RollbackRepository> {
-  const repository = await githubRepository(deps, services);
-  // `githubRepository` gives `services.github` itself, or a `GitHubClient`, which has every call.
-  return { ...repository, api: repository.api as RollbackGitHubApi };
+  return githubRepository(deps, services);
 }
 
 /**
@@ -59,7 +52,7 @@ export async function rollbackRun(deps: PhaseDeps, options: RollbackOptions): Pr
   if (options.allowOldSecrets !== undefined && plan.target.provider !== "cloudflare-workers") {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `--allow-old-secrets goes only with a rollback on Cloudflare's hosting: it lets that rollback activate a Worker version older than a change to the secrets it names. ${NOTHING}`,
+      `--allow-old-secrets goes only with a rollback on Cloudflare's hosting: it lets that rollback activate a Worker version older than a change to the secrets it names. ${NOTHING_CHANGED}`,
       { hint: `Leave --allow-old-secrets out, then run \`${command}\` again.` },
     );
   }
@@ -76,7 +69,7 @@ export function requireRollbackable(run: RollbackRun): void {
   if (!hasDeployment(plan)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The ${environment} environment is not provisioned, so there is nothing to roll back. ${NOTHING}`,
+      `The ${environment} environment is not provisioned, so there is nothing to roll back. ${NOTHING_CHANGED}`,
       {
         hint: `Run \`opscrew provision${flags}\` first; once a second version has deployed, \`${command}\` can go back to the first.`,
       },
@@ -86,14 +79,14 @@ export function requireRollbackable(run: RollbackRun): void {
   if (retarget !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${retarget.message} OpsCrew rolls back an app only where it stays. ${NOTHING}`,
+      `${retarget.message} OpsCrew rolls back an app only where it stays. ${NOTHING_CHANGED}`,
       { hint: retarget.hint },
     );
   }
   if (plan.move !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${plan.move.service} moves between the app's servers, and the move needs the app's deploys until it is finished. ${NOTHING}`,
+      `${plan.move.service} moves between the app's servers, and the move needs the app's deploys until it is finished. ${NOTHING_CHANGED}`,
       {
         hint: `Finish the move first: \`${MOVE_COMMAND}${flags}\` takes it on, and \`${FINISH_COMMAND}${flags}\` ends it once the app runs on the new copy. Then run \`${command}\` again.`,
       },

@@ -347,7 +347,7 @@ describe("opscrew status on GitHub Pages", () => {
       services: { deploys: pinned("201", "1") },
     });
     expect(lines[4]).toBe(
-      "  Running: unknown: the run `opscrew rollback` pinned (201) has not succeeded: it is still running, waits for a reviewer, or failed. Roll back to another run with `opscrew rollback --to <run id>` (`opscrew rollback --list` lists the runs), or run `opscrew rollback --resume` to deploy forward again.",
+      "  Running: unknown: the run 201 that `opscrew rollback` pinned prod's site to has not succeeded: it is still running, waits for a reviewer, or failed. Roll back to another run with `opscrew rollback --to <run id>` (`opscrew rollback --list` lists the runs), or run `opscrew rollback --resume` to deploy forward again.",
     );
     expect(lines[5]).toBe("");
 

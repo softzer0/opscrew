@@ -45,6 +45,9 @@ export const PROD_IMAGE = digestOf("prod");
 /** The promotion's deploy run. */
 export const DEPLOY_RUN_URL = "https://github.com/acme/shop/actions/runs/777";
 
+/** GitHub's record of a workflow run: its source, and its state as the list of runs shows it. */
+export type RunRecord = WorkflowRunSource & { status: string; conclusion: string | null };
+
 const buildRunUrl = (runId: number) =>
   `https://github.com/acme/shop/actions/runs/${runId}/attempts/1`;
 
@@ -71,7 +74,7 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
   /** The platforms of each image, by digest (`build` gives linux/amd64). */
   readonly platforms = new Map<string, ImagePlatform[]>();
   /** GitHub's records of workflow runs, by id. */
-  readonly runs = new Map<number, WorkflowRunSource>();
+  readonly runs = new Map<number, RunRecord>();
   /** The registry credential of every GHCR read. */
   readonly credentials: (RegistryCredential | undefined)[] = [];
   readonly dispatches: { workflowFile: string; ref: string; inputs: Record<string, string> }[] =
@@ -164,6 +167,7 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
       status: waiting ? ("waiting" as const) : ("completed" as const),
       conclusion: waiting ? null : this.conclusion,
       htmlUrl: DEPLOY_RUN_URL,
+      headSha: STAGING_COMMIT,
     };
   }
 
@@ -247,7 +251,7 @@ export class FakePromoteGitHub implements PromoteGitHubApi {
       runId: number;
       commit: string;
       environment?: string;
-      run?: Partial<WorkflowRunSource>;
+      run?: Partial<RunRecord>;
     },
   ): void {
     const environment = build.environment ?? "staging";

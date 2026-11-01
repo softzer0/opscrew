@@ -2,7 +2,6 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { FAKE_ACCOUNT_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
-import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
@@ -10,15 +9,16 @@ import { describe, expect, it } from "vitest";
 import { blobOf, cleanDrift, commitOf } from "../promote/__fixtures__/world";
 import { rollbackHash } from "../promote/record";
 import { siteWorkflow } from "../promote/site";
-import {
-  createTestPhaseDeps,
-  fakeSharedCloudflare,
-  ScriptedApprovalHandler,
-  ScriptedRunner,
-} from "../testing";
+import { createTestPhaseDeps, fakeSharedCloudflare, ScriptedApprovalHandler } from "../testing";
 import { pagesTestPlan } from "../testing/pages";
 import { sitePlan } from "../testing/serverless";
-import { FakeRollbackGitHub } from "./__fixtures__/versions";
+import {
+  FakeRollbackGitHub,
+  failure,
+  gitRemote,
+  planHash,
+  YES_KINDS,
+} from "./__fixtures__/versions";
 import { type RollbackOptions, type RollbackServices, rollback } from "./index";
 
 /** Worker version ids, as Cloudflare names them. */
@@ -30,34 +30,6 @@ const BEFORE_COMMIT = commitOf("before");
 const COMMAND = "opscrew rollback --env prod";
 /** The test deps' clock. */
 const CLOCK = "2026-10-11T12:00:00.000Z";
-
-/** The kinds `--yes` grants in the CLI: none of them is bound to a hash. */
-const YES_KINDS: readonly ApprovalRequest["kind"][] = [
-  "repo-write",
-  "github-secrets",
-  "github-settings",
-  "git-push",
-  "pull-request",
-];
-
-const planHash = (plan: unknown) => sha256Hex(canonicalJson(plan));
-
-async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
-  const error = await promise.then(
-    () => undefined,
-    (thrown: unknown) => thrown,
-  );
-  expect(error).toBeInstanceOf(OpsCrewError);
-  return error as OpsCrewError;
-}
-
-/** A runner whose git knows the GitHub remote `acme/shop`. */
-const gitRemote = () =>
-  new ScriptedRunner((_command, args) =>
-    args.includes("get-url")
-      ? { exitCode: 0, stdout: "https://github.com/acme/shop.git\n", stderr: "" }
-      : { exitCode: 1, stdout: "", stderr: "not scripted" },
-  );
 
 const deployed = (plan: DeployPlan) =>
   DeployPlanSchema.parse({ ...plan, deployment: { lastApplyAt: "2026-10-23T11:00:00.000Z" } });
@@ -295,7 +267,7 @@ describe("opscrew rollback on Cloudflare's hosting", () => {
         { version: OLDEST, builtAt: "2026-10-21T10:00:00Z" },
       ],
       paused: entry,
-      leftOut: 0,
+      leftOut: [],
     });
     expect(world.handler.requests).toEqual([]);
     expect(world.events).toEqual([]);
@@ -740,7 +712,7 @@ describe("opscrew rollback on GitHub Pages", () => {
         { version: "800", marks: ["previous"] },
         { version: "700", commit: "d".repeat(40) },
       ],
-      leftOut: 0,
+      leftOut: [],
     });
     expect(result).not.toHaveProperty("paused");
     expect(world.events).toEqual([]);

@@ -14,11 +14,10 @@ import { resumeDeploys } from "./resume";
 import { requireRollbackable, rollbackRun } from "./run";
 import { rollbackServer } from "./server";
 import { rollbackSite } from "./site";
-import type { VersionsGitHubApi, VersionView } from "./types";
+import type { LeftOutVersion, VersionsGitHubApi, VersionView } from "./types";
 
 export { pinnedText } from "../shared/deploy-pause";
-export { type ImageRollbackParts, imageRollbackHash } from "./record";
-export type { DeployPause, VersionView };
+export type { DeployPause, LeftOutVersion, VersionView };
 
 /**
  * `opscrew rollback` on the environment `deps` belong to (FR-1901–FR-1909): with `resume`, ends
@@ -89,8 +88,8 @@ export type RollbackResult =
       versions: VersionView[];
       /** The environment's pause entry, when its deploys are paused. */
       paused?: DeployPause;
-      /** How many images were left out (FR-1903). */
-      leftOut: number;
+      /** The images left out, each with why (FR-1903); none on this computer and the sites. */
+      leftOut: LeftOutVersion[];
     }
   | {
       kind: "rolled-back";

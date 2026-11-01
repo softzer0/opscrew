@@ -8,10 +8,10 @@
 import { posix } from "node:path";
 import type { WorkerVersion } from "@opscrew/connector-cloudflare";
 import type { PagesRun } from "@opscrew/connector-github";
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, upperFirst } from "@opscrew/core";
 import type { CloudflareWorkersDeployTarget } from "@opscrew/plan-schema";
 import { workflowBranch } from "../environments/branches";
-import { requireApplied } from "../promote/shared";
+import { NOTHING_CHANGED, requireApplied } from "../promote/shared";
 import {
   accountOf,
   oldSecretNames,
@@ -25,12 +25,13 @@ import { type DeployPause, deployPauseOf } from "../shared/deploy-pause";
 import {
   type PagesMarks,
   pagesMarks,
+  pinnedRunFailed,
   previousWorkerVersion,
   runningVersions,
   versionBuild,
 } from "../status/site";
 import type { RollbackResult } from "./index";
-import { NOTHING, type RollbackRepository, type RollbackRun, rollbackRepository } from "./run";
+import { type RollbackRepository, type RollbackRun, rollbackRepository } from "./run";
 import { pausedText, pausedWhile, requireNoDeployRunning, UNKNOWN_COMMIT } from "./server";
 import type { VersionMark, VersionView } from "./types";
 
@@ -39,7 +40,7 @@ function onlyOne(run: RollbackRun, what: string): OpsCrewError {
   const { command } = run;
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${what}, so there is nothing to roll back to. ${NOTHING}`,
+    `${what}, so there is nothing to roll back to. ${NOTHING_CHANGED}`,
     {
       hint: `\`${command} --list\` lists its versions; once another one has deployed, \`${command}\` goes back to the one before.`,
     },
@@ -96,7 +97,7 @@ function marked(view: VersionView, marks: VersionMark[]): VersionView {
 
 /** The list's answer: the versions, and the environment's pause. */
 function listed(versions: VersionView[], paused: DeployPause | undefined): RollbackResult {
-  return { kind: "list", versions, ...(paused !== undefined ? { paused } : {}), leftOut: 0 };
+  return { kind: "list", versions, ...(paused !== undefined ? { paused } : {}), leftOut: [] };
 }
 
 /**
@@ -154,7 +155,7 @@ async function rollbackWorker(run: RollbackRun): Promise<RollbackResult> {
     "Cloudflare serves that Worker version at 100% within a minute; nothing is rebuilt.",
   );
   await pausedWhile(run, github, { image: to, commit }, (beforeChange) =>
-    rollBackWorker({ ...site, beforeChange }, to),
+    rollBackWorker({ ...site, beforeChange }, to, { versions, running: running?.versionId }),
   );
   deps.reporter.info(pausedText(run));
   return {
@@ -212,13 +213,10 @@ async function rollbackPages(run: RollbackRun): Promise<RollbackResult> {
   if (chosen === undefined) {
     if (to === undefined && pin !== undefined && marks.running === undefined) {
       // The pinned run's latest attempt did not succeed, so it is not listed.
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `The run ${pin.image} that \`opscrew rollback\` pinned ${environment}'s site to has not succeeded: it is still running, waits for a reviewer, or failed. ${NOTHING}`,
-        {
-          hint: `Roll back to another run with \`${command} --to <run id>\` (\`${command} --list\` lists the runs), or run \`${command} --resume\` to deploy forward again.`,
-        },
-      );
+      const failed = pinnedRunFailed(pin.image, environment, command);
+      throw new OpsCrewError("PHASE_PRECONDITION", `${upperFirst(failed.why)} ${NOTHING_CHANGED}`, {
+        hint: failed.next,
+      });
     }
     if (to === undefined) {
       throw onlyOne(
@@ -228,7 +226,7 @@ async function rollbackPages(run: RollbackRun): Promise<RollbackResult> {
     }
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${to} is neither the id nor the commit of a successful run of ${workflowFile}, ${environment}'s site workflow. ${NOTHING}`,
+      `${to} is neither the id nor the commit of a successful run of ${workflowFile}, ${environment}'s site workflow. ${NOTHING_CHANGED}`,
       { hint: `\`${command} --list\` lists the runs; name one with --to <run id | commit>.` },
     );
   }

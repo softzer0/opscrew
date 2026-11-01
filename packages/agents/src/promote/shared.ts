@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
-import { githubConnector } from "@opscrew/connector-github";
+import { type GitHubClient, githubConnector } from "@opscrew/connector-github";
 import { listText, OpsCrewError, type ProjectPaths, upperFirst } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -14,36 +14,45 @@ import type { PromoteGitHubApi, PromoteServices } from "./types";
 /** What every refusal of a promotion ends with. */
 export const NOTHING = "Nothing was deployed.";
 
+/** What every refusal of a rollback ends with. */
+export const NOTHING_CHANGED = "Nothing was changed.";
+
 /**
  * What a shared check refuses for, which its refusals name: `opscrew promote` (a promotion, the
- * default) or `opscrew rollback` (a rollback, whose refusals end "Nothing was changed.").
+ * default) or `opscrew rollback` (a rollback, whose refusals end {@link NOTHING_CHANGED}).
  */
 export type CheckedFor = "promotion" | "rollback";
 
 /**
- * What a refusal for `what` ends with: a promotion's "Nothing was deployed.", a rollback's
- * "Nothing was changed.".
+ * What a refusal for `what` ends with: a promotion's {@link NOTHING}, a rollback's
+ * {@link NOTHING_CHANGED}.
  */
 export function nothingChanged(what: CheckedFor): string {
-  return what === "rollback" ? "Nothing was changed." : NOTHING;
+  return what === "rollback" ? NOTHING_CHANGED : NOTHING;
 }
 
 /** How many pending changes a refusal names before it says how many more there are. */
 const LISTED = 5;
 
-/** The GitHub repository a promotion deploys from, with the API and its default branch. */
-export interface PromoteRepository {
-  api: PromoteGitHubApi;
+/**
+ * The GitHub repository a promotion deploys from, with the API (`Api`, promote's calls by
+ * default) and its default branch.
+ */
+export interface PromoteRepository<Api extends PromoteGitHubApi = PromoteGitHubApi> {
+  api: Api;
   owner: string;
   repo: string;
   defaultBranch: string;
 }
 
-/** The GitHub repository the promotion deploys from, with the API and its default branch. */
-export async function githubRepository(
+/**
+ * The GitHub repository the promotion deploys from, with its default branch, and the API
+ * `services.github` gives (a test fake), else a `GitHubClient` with the user's token.
+ */
+export async function githubRepository<Api extends PromoteGitHubApi>(
   deps: PhaseDeps,
-  services: PromoteServices,
-): Promise<PromoteRepository> {
+  services: { github?: Api | null },
+): Promise<PromoteRepository<Api | GitHubClient>> {
   const { owner, repo } = await githubCoordinates(gitClient(deps));
   const api = services.github === undefined ? await githubClientFromToken(deps) : services.github;
   if (!api) {
@@ -51,6 +60,29 @@ export async function githubRepository(
   }
   const { defaultBranch } = await api.getRepo(owner, repo);
   return { api, owner, repo, defaultBranch };
+}
+
+/**
+ * The refusal while a move's maintenance window, since `since`, pauses the deploys of `target`:
+ * `why` says what that would do to this promotion or rollback; `flags` are the target's in
+ * `opscrew provision`'s command.
+ */
+export function movePaused(input: {
+  target: string;
+  since: string;
+  why: string;
+  flags: string;
+  command: string;
+  what: CheckedFor;
+}): OpsCrewError {
+  const { target, since, flags, command, what } = input;
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The deploys of ${target} are paused since ${since} while a service moves between the app's servers, ${input.why}. ${nothingChanged(what)}`,
+    {
+      hint: `Run \`opscrew provision${flags}\`: it ends the move's maintenance window. Then run \`${command}\` again.`,
+    },
+  );
 }
 
 /**
@@ -184,19 +216,20 @@ export async function requireNotPaused(
 ): Promise<void> {
   const pause = await readableDeployPause(github, plan);
   if (pause === undefined) return;
-  const skipped = `so a promotion's deploy run would skip its deploy job. ${NOTHING}`;
+  const skipped = "so a promotion's deploy run would skip its deploy job";
   if (pause.reason === "rollback") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The deploys of ${target} are paused since ${pause.since}: ${pinnedText(pause)}, ${skipped}`,
+      `The deploys of ${target} are paused since ${pause.since}: ${pinnedText(pause)}, ${skipped}. ${NOTHING}`,
       { hint: `Run \`opscrew rollback --env ${target} --resume\`, then \`${command}\` again.` },
     );
   }
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `The deploys of ${target} are paused since ${pause.since} while a service moves between the app's servers, ${skipped}`,
-    {
-      hint: `Run \`opscrew provision --env ${target}\`: it ends the move's maintenance window. Then run \`${command}\` again.`,
-    },
-  );
+  throw movePaused({
+    target,
+    since: pause.since,
+    why: skipped,
+    flags: ` --env ${target}`,
+    command,
+    what: "promotion",
+  });
 }

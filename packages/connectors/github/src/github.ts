@@ -137,9 +137,6 @@ export interface WorkflowRunSource {
   path: string;
   /** When the run was created (ISO 8601). */
   createdAt: string;
-  status: string;
-  /** `null` until the run completes. */
-  conclusion: string | null;
   /** The head commit's message and time, when GitHub gives them. */
   headCommit?: HeadCommit;
 }
@@ -247,10 +244,6 @@ export interface WorkflowRun {
   createdAt: string;
   /** 1 for the first attempt, then one more for each re-run (when GitHub says, as it does). */
   attempt?: number;
-  /** What started the run (`push`, `workflow_dispatch`…), when GitHub says. */
-  event?: string;
-  /** Its branch, when GitHub names one. */
-  headBranch?: string;
   /** The head commit's message and time, when GitHub gives them. */
   headCommit?: HeadCommit;
 }
@@ -289,8 +282,6 @@ const RunSchema = z.looseObject({
   head_sha: z.string(),
   created_at: z.string(),
   run_attempt: z.number().int().positive().optional(),
-  event: z.string().optional(),
-  head_branch: z.string().nullable().optional(),
   head_commit: HeadCommitSchema,
 });
 const RunSourceSchema = z.looseObject({
@@ -302,8 +293,6 @@ const RunSourceSchema = z.looseObject({
   path: z.string(),
   repository: z.looseObject({ full_name: z.string() }),
   created_at: z.string(),
-  status: z.string(),
-  conclusion: z.string().nullable(),
 });
 /** A file's text from the contents API: base64, or `none` for a file over 1 MB. */
 const FileSchema = z.looseObject({
@@ -611,8 +600,6 @@ function toWorkflowRun(run: z.infer<typeof RunSchema>): WorkflowRun {
     headSha: run.head_sha,
     createdAt: run.created_at,
     ...(run.run_attempt !== undefined ? { attempt: run.run_attempt } : {}),
-    ...(run.event !== undefined ? { event: run.event } : {}),
-    ...(typeof run.head_branch === "string" ? { headBranch: run.head_branch } : {}),
     ...headCommitOf(run.head_commit),
   };
 }
@@ -1544,11 +1531,11 @@ export class GitHubClient {
     );
   }
 
-  /** Lists recent runs of a workflow, newest first, of one branch and event when given. */
+  /** Lists recent runs of a workflow, newest first, of one branch when given. */
   async listWorkflowRuns(
     owner: string,
     repo: string,
-    options: { workflowFile: string; branch?: string; event?: string; perPage?: number },
+    options: { workflowFile: string; branch?: string; perPage?: number },
   ): Promise<WorkflowRun[]> {
     return (await this.#workflowRuns(owner, repo, options, RunSchema)).map(toWorkflowRun);
   }
@@ -1560,7 +1547,6 @@ export class GitHubClient {
     options: {
       workflowFile: string;
       branch?: string;
-      event?: string;
       status?: string;
       perPage?: number;
     },
@@ -1569,7 +1555,6 @@ export class GitHubClient {
     const what = "list workflow runs";
     const query = new URLSearchParams({ per_page: String(options.perPage ?? 5) });
     if (options.branch) query.set("branch", options.branch);
-    if (options.event) query.set("event", options.event);
     if (options.status) query.set("status", options.status);
     const { json } = await this.#request(
       "GET",
@@ -1613,8 +1598,6 @@ export class GitHubClient {
       headSha: run.head_sha,
       path: run.path,
       createdAt: run.created_at,
-      status: run.status,
-      conclusion: run.conclusion,
       ...headCommitOf(run.head_commit),
     };
   }
@@ -1716,6 +1699,8 @@ export class GitHubClient {
     status: "completed" | "waiting";
     conclusion: string | null;
     htmlUrl: string;
+    /** The commit the run runs on. */
+    headSha: string;
   }> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
     const pollMs = options.pollMs ?? DEFAULT_RUN_POLL_MS;
@@ -1732,6 +1717,7 @@ export class GitHubClient {
           status: "completed",
           conclusion: run.conclusion,
           htmlUrl: run.htmlUrl,
+          headSha: run.headSha,
         };
       }
       if (run.status === "waiting") {
@@ -1752,7 +1738,13 @@ export class GitHubClient {
       }
       // A run still waiting for its reviewer is returned, not a timeout.
       if (onWaiting !== undefined && run.status === "waiting") {
-        return { id: run.id, status: "waiting", conclusion: null, htmlUrl: run.htmlUrl };
+        return {
+          id: run.id,
+          status: "waiting",
+          conclusion: null,
+          htmlUrl: run.htmlUrl,
+          headSha: run.headSha,
+        };
       }
       const branch = options.ref.replace(/^refs\/heads\//, "");
       throw new OpsCrewError(

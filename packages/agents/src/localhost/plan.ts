@@ -195,9 +195,15 @@ async function fileAction(file: string, content: string): Promise<LocalItem["act
   return current.replaceAll("\r\n", "\n") === content ? "keep" : "change";
 }
 
-/** The image the app's folder's `.env` names, as the last deploy wrote it. */
-export async function runningImage(folder: string): Promise<string | undefined> {
-  const env = await readTextIfExists(join(folder, ".env"));
+/**
+ * The image the env file `file` in the app's folder names (`APP_IMAGE`): `.env`'s is the one
+ * running, as the last deploy wrote it, and `.env.previous`'s the one it replaced.
+ */
+export async function runningImage(
+  folder: string,
+  file: ".env" | ".env.previous" = ".env",
+): Promise<string | undefined> {
+  const env = await readTextIfExists(join(folder, file));
   return env === undefined ? undefined : /^APP_IMAGE=(.+)$/m.exec(env)?.[1]?.trim();
 }
 

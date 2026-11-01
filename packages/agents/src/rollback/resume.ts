@@ -6,13 +6,15 @@
 import { posix } from "node:path";
 import { OpsCrewError } from "@opscrew/core";
 import { checkEnvironmentKey, DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
+import { NOTHING_CHANGED } from "../promote/shared";
 import { PlanRefusedError } from "../shared";
 import { clearDeployPause, deployPauseOf, pinnedText } from "../shared/deploy-pause";
 import { dispatchAndFollow } from "../shared/deploy-run";
 import { deploysOnTheirOwn } from "../status/deploys";
 import type { RollbackResult } from "./index";
 import { readPendingRollback } from "./record";
-import { NOTHING, type RollbackRun, rollbackRepository } from "./run";
+import { type RollbackRun, rollbackRepository } from "./run";
+import { commitWords, messageOf } from "./versions";
 
 /** How the environment deploys while its deploys are on. */
 function deploysOn(run: RollbackRun): string {
@@ -47,7 +49,7 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
   if (pending !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `A rollback of ${environment} was left waiting for a required reviewer in GitHub: https://github.com/${owner}/${repo}/actions/runs/${pending.runId}. OpsCrew resumes the deploys only once that rollback is recorded. ${NOTHING}`,
+      `A rollback of ${environment} was left waiting for a required reviewer in GitHub: https://github.com/${owner}/${repo}/actions/runs/${pending.runId}. OpsCrew resumes the deploys only once that rollback is recorded. ${NOTHING_CHANGED}`,
       {
         hint: `Approve or reject that run in GitHub, then run \`${command}\` again to record it; after that, \`${command} --resume${deploy ? " --deploy" : ""}\` resumes the deploys.`,
       },
@@ -58,7 +60,7 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
   if (pause?.reason === "move") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${environment}'s deploys are paused since ${pause.since} for a move's maintenance window, which \`opscrew provision\` ends, not \`${command} --resume\`. ${NOTHING}`,
+      `${environment}'s deploys are paused since ${pause.since} for a move's maintenance window, which \`opscrew provision\` ends, not \`${command} --resume\`. ${NOTHING_CHANGED}`,
       { hint: `Run \`opscrew provision${flags}\` to go on with the move.` },
     );
   }
@@ -66,7 +68,7 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
   if (deploy && deploySource?.from === "promote") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${environment} is promoted from ${deploySource.source}, so it has no branch of its own for --deploy to deploy. ${NOTHING}`,
+      `${environment} is promoted from ${deploySource.source}, so it has no branch of its own for --deploy to deploy. ${NOTHING_CHANGED}`,
       {
         hint: `Run \`${command} --resume\`, then \`opscrew promote --to ${environment}\` to deploy what ${deploySource.source} runs.`,
       },
@@ -75,14 +77,16 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
   if (deploy && !deploysOnTheirOwn(plan)) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${environment} runs on this computer without the local runner, so no workflow deploys it and --deploy has nothing to start. ${NOTHING}`,
+      `${environment} runs on this computer without the local runner, so no workflow deploys it and --deploy has nothing to start. ${NOTHING_CHANGED}`,
       {
         hint: `Run \`${command} --resume\` without --deploy if its deploys are paused, then \`opscrew provision${flags}\` to deploy the checked-out commit.`,
       },
     );
   }
   if (pause === undefined && !deploy) {
-    deps.reporter.info(`${environment}'s deploys are not paused: ${deploysOn(run)}. ${NOTHING}`);
+    deps.reporter.info(
+      `${environment}'s deploys are not paused: ${deploysOn(run)}. ${NOTHING_CHANGED}`,
+    );
     return { kind: "resumed", wasPaused: false };
   }
 
@@ -101,11 +105,10 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
       branch,
       perPage: 1,
     });
-    const subject = newest?.headCommit?.message.split("\n")[0]?.trim();
     const built =
       newest === undefined
         ? `${branch}'s latest commit`
-        : `${newest.headSha.slice(0, 7)}${subject ? ` "${deps.redactor.redact(subject)}"` : ""}`;
+        : commitWords(newest.headSha, messageOf(deps, newest.headCommit));
     lines.push(
       `It also starts ${workflowFile} on ${branch} now: it builds ${built} and deploys it${plan.app.releaseCommand !== undefined ? ", with its release command" : ""}.`,
     );
@@ -124,7 +127,7 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
     throw new PlanRefusedError({
       plan: pause !== undefined ? `resume of ${key}'s deploys` : `deploy of ${branch}`,
       ...(approval.reason ? { reason: approval.reason } : {}),
-      unchanged: NOTHING,
+      unchanged: NOTHING_CHANGED,
       hint: `Run \`${again}\` again when you want it; in a script, add --yes.`,
     });
   }
@@ -135,7 +138,7 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
   if (!deploy) return { kind: "resumed", wasPaused: true };
 
   deps.reporter.step(`Starting ${workflowFile} on ${branch}`);
-  const started = await dispatchAndFollow(deps, github, {
+  const { status, runUrl, headSha } = await dispatchAndFollow(deps, github, {
     workflowFile,
     ref: branch,
     inputs: {},
@@ -143,17 +146,16 @@ export async function resumeDeploys(run: RollbackRun): Promise<RollbackResult> {
     command: again,
     detail: `${workflowFile} on ${branch}, deploying its latest commit (resume of ${key})`,
   });
-  const commit = (await github.api.getWorkflowRun(owner, repo, started.runId)).headSha;
-  if (started.status === "waiting") {
+  if (status === "waiting") {
     deps.reporter.warn(
-      `${environment}'s deploy run waits in GitHub for a required reviewer: ${started.runUrl}. Once they approve it, it deploys ${commit.slice(0, 7)}.`,
+      `${environment}'s deploy run waits in GitHub for a required reviewer: ${runUrl}. Once they approve it, it deploys ${headSha.slice(0, 7)}.`,
     );
   } else {
-    deps.reporter.success(`${environment} runs ${commit.slice(0, 7)} (${started.runUrl}).`);
+    deps.reporter.success(`${environment} runs ${headSha.slice(0, 7)} (${runUrl}).`);
   }
   return {
     kind: "resumed",
     wasPaused: pause !== undefined,
-    deployed: { status: started.status, runUrl: started.runUrl, commit },
+    deployed: { status, runUrl, commit: headSha },
   };
 }
