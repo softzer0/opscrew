@@ -114,11 +114,6 @@ export interface ServiceSpec {
   init?: (ctx: ServiceContext) => ServiceInitStep[];
   secrets: GeneratedSecret[];
   /**
-   * How the app logs in, with one of {@link secrets}. Kafka and Redpanda have this login only with
-   * `options.login`: read a service's through `serviceAuth`.
-   */
-  auth: "password" | "token" | "key";
-  /**
    * Where the app reaches the service, as its own detected variable holds it (see
    * {@link ServiceContext.variable}): a URL with the login, or Kafka's `host:port`.
    */

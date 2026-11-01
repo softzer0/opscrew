@@ -685,9 +685,7 @@ describe("moving a service of a deployed app", () => {
     const refused = await runDesign(deps, { catalog: euCatalog() }).catch((e: unknown) => e);
     expect(refused).toMatchObject({
       code: "PHASE_PRECONDITION",
-      message: expect.stringContaining(
-        "Moving the others comes with retargeting anywhere (feature 022)",
-      ),
+      message: expect.stringContaining("Moving the others comes with retargeting anywhere"),
     });
     await writeFile(deps.paths.files.plan, before);
     await editPlan(deps, (raw) => {

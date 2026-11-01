@@ -13,11 +13,11 @@ import {
   appVariables,
   CATALOG,
   checkServiceVersion,
+  hasLogin,
   hostSysctl,
   initStepsFor,
   pinnedVersion,
   SERVICE_SPECS,
-  serviceAuth,
   serviceSpec,
 } from "./index";
 import type { ServiceContext } from "./types";
@@ -158,27 +158,7 @@ describe("the catalog", () => {
     }
   });
 
-  it("logs the app in with a password, a token or a key, each a secret OpsCrew generates", () => {
-    expect(Object.fromEntries(SERVICE_SPECS.map((spec) => [spec.kind, spec.auth]))).toEqual({
-      postgres: "password",
-      valkey: "password",
-      redis: "password",
-      dragonfly: "password",
-      mysql: "password",
-      mariadb: "password",
-      mongodb: "password",
-      rabbitmq: "password",
-      nats: "token",
-      kafka: "password",
-      redpanda: "password",
-      garage: "key",
-      opensearch: "password",
-      elasticsearch: "password",
-      meilisearch: "key",
-      typesense: "key",
-      clickhouse: "password",
-      neo4j: "password",
-    });
+  it("gives every service a secret OpsCrew generates", () => {
     for (const spec of SERVICE_SPECS) {
       expect(spec.secrets.length, spec.kind).toBeGreaterThan(0);
     }
@@ -193,19 +173,18 @@ describe("the catalog", () => {
     });
   });
 
-  it("serviceAuth: Kafka and Redpanda have no login unless the plan turns it on", () => {
-    const auth = (kind: SelfHostedServiceKind, options?: object) =>
-      serviceAuth(only(kind, options === undefined ? {} : { options }).service);
-    expect(auth("kafka")).toBe("internal-only");
-    expect(auth("kafka", { retentionHours: 24 })).toBe("internal-only");
-    expect(auth("kafka", { login: true })).toBe("password");
-    expect(auth("redpanda")).toBe("internal-only");
-    expect(auth("redpanda", { login: true })).toBe("password");
-    // Every other kind: its entry's own.
-    expect(auth("opensearch")).toBe("password");
-    expect(auth("nats")).toBe("token");
-    expect(auth("meilisearch")).toBe("key");
-    expect(auth("postgres")).toBe("password");
+  it("hasLogin: Kafka and Redpanda have no login unless the plan turns it on", () => {
+    const login = (kind: SelfHostedServiceKind, options?: object) =>
+      hasLogin(only(kind, options === undefined ? {} : { options }).service);
+    expect(login("kafka")).toBe(false);
+    expect(login("kafka", { retentionHours: 24 })).toBe(false);
+    expect(login("kafka", { login: true })).toBe(true);
+    expect(login("redpanda")).toBe(false);
+    expect(login("redpanda", { login: true })).toBe(true);
+    // Every other kind always has one.
+    for (const kind of ["opensearch", "nats", "meilisearch", "postgres"] as const) {
+      expect(login(kind), kind).toBe(true);
+    }
   });
 
   it("puts no secret in a settings file, a command, a health check or a setup step", () => {

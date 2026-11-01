@@ -83,7 +83,7 @@ describe("startMove: an app with services on other servers (FR-1820)", () => {
     expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
     const message = (error as OpsCrewError).message;
     expect(message).toContain("runs services on other servers too (data)");
-    expect(message).toContain("retarget anywhere (feature 022)");
+    expect(message).toContain("retarget anywhere");
     expect(message).toContain("Nothing was changed.");
     expect(commands).toEqual([]);
   });

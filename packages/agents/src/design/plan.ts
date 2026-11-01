@@ -3,8 +3,8 @@ import {
   appRoot,
   containerPort,
   detectStack,
+  hasLogin,
   releaseCommandInImage,
-  serviceAuth,
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
@@ -216,7 +216,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       running !== undefined &&
       (variable.urlScheme === undefined || variable.urlScheme === service)
     ) {
-      env.set(variable.name, derived(variable.name, serviceAuth(running) !== "internal-only"));
+      env.set(variable.name, derived(variable.name, hasLogin(running)));
       continue;
     }
     env.set(variable.name, {

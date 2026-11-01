@@ -414,7 +414,7 @@ export interface ExpectedRuntimeFiles {
   sitePath: string;
   /**
    * The env files of the services the deploy workflow writes, by service name: each enabled
-   * service with secrets in the catalog reads `<name>.env` (Postgres's `db` reads `db.env`).
+   * service reads `<name>.env` (Postgres's `db` reads `db.env`).
    */
   serviceEnvFiles: Readonly<Record<string, { title: string; secret: string }>>;
 }
@@ -447,7 +447,7 @@ export function expectedRuntimeFiles(
     sitePath: `${EDGE_DIR}/sites/${plan.app.name}.${EDGE_PROXIES[edgeProxy(plan)].site}`,
     serviceEnvFiles: Object.fromEntries(
       plan.services
-        .filter((service) => service.enabled && serviceSpec(service.kind).secrets.length > 0)
+        .filter((service) => service.enabled)
         .map((service) => [
           `${service.name}.env`,
           { title: serviceSpec(service.kind).title, secret: serviceEnvSecret(service.name) },

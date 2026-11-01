@@ -19,10 +19,10 @@ import {
   deployBranchFor,
   deploymentRecord,
   mergeDeploysNote,
-  pausedMergeNote,
   provisionEngine,
   publicOutputs,
   publishDeployment,
+  reportPausedMerge,
   withLearnedZone,
 } from "../../provision/steps";
 import type { ProvisionOptions, ProvisionResult } from "../../provision/types";
@@ -36,7 +36,6 @@ import {
   readValidJson,
   writePlanIfChanged,
 } from "../../shared";
-import { readableDeployPause } from "../../shared/deploy-pause";
 import type { ServerlessProvisionInput } from "../index";
 import { storeSiteSecrets } from "../shared";
 import {
@@ -397,8 +396,7 @@ export async function provisionPages(
   const merge = mergeDeploysNote(published.plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
   // While a rollback pins the environment, what this run merges deploys only once it resumes.
-  const paused = await pausedMergeNote(deps, plan, await readableDeployPause(github, plan));
-  if (paused !== undefined) deps.reporter.info(paused);
+  await reportPausedMerge(deps, plan, github);
   // The site is set up again: a pause of its check (a teardown) ends.
   await resumeCheck(deps, github, plan, { command, phase: "provision" });
   if (record.applied) deps.reporter.info(verifyStepNote({ owner, domain, page }));

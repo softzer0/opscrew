@@ -23,8 +23,8 @@ import {
   deploymentRecord,
   deploySecretsStep,
   mergeDeploysNote,
-  pausedMergeNote,
   publishDeployment,
+  reportPausedMerge,
 } from "../provision/steps";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
 import { planWhere, requireLocalRunnerImage } from "../runners";
@@ -37,7 +37,6 @@ import {
   writePlanIfChanged,
 } from "../shared";
 import type { AppEnvironment } from "../shared/app-env";
-import { readableDeployPause } from "../shared/deploy-pause";
 import { applyLocal } from "./apply";
 import { caTrusted } from "./ca";
 import { githubRegistry, type LocalImage, type LocalRegistry, resolveLocalImage } from "./image";
@@ -63,7 +62,7 @@ function valueLines(text: string): Record<string, string> {
   );
 }
 
-/** The env files of the app's folder: `app.env`, and `<service>.env` for each service with secrets. */
+/** The env files of the app's folder: `app.env`, and `<service>.env` for each running service. */
 function localEnvFiles(plan: DeployPlan, environment: AppEnvironment): LocalFile[] {
   const secrets = serviceEnvSecrets(plan, environment);
   return [
@@ -259,12 +258,7 @@ export async function provisionLocalhost(
   const merge = mergeDeploysNote(published.plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
   // While a rollback pins the environment, what this run merges deploys only once it resumes.
-  const paused = await pausedMergeNote(
-    deps,
-    recorded,
-    await readableDeployPause(github.setup, recorded),
-  );
-  if (paused !== undefined) deps.reporter.info(paused);
+  await reportPausedMerge(deps, recorded, github.setup);
   deps.reporter.info(
     `Once the deploy workflow ${plan.cicd.workflowPath} is on ${published.published.base}, \`opscrew runner start --env ${deps.paths.environment}\` runs its deploy job on this computer.`,
   );

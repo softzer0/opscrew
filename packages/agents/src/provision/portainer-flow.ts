@@ -48,7 +48,6 @@ import {
   stringOutput,
   writePlanIfChanged,
 } from "../shared";
-import { readableDeployPause } from "../shared/deploy-pause";
 import { connectorFirst, tunnelChange } from "../shared/tunnel-connections";
 import { portainerAdditionsNote } from "./additions";
 import { caddyRecordNote, deletedRecordHosts, requireCaddyRecords } from "./caddy-records";
@@ -110,10 +109,10 @@ import {
   deploySecretsStep,
   mergeDeploysNote,
   type ProvisionPhase,
-  pausedMergeNote,
   provisionEngine,
   publicOutputs,
   publishDeployment,
+  reportPausedMerge,
   type SavedInfrastructureHashes,
   withLearnedZone,
 } from "./steps";
@@ -993,8 +992,7 @@ export async function provisionPortainer(
   const merge = mergeDeploysNote(plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
   // While a rollback pins the environment, what this run merges deploys only once it resumes.
-  const paused = await pausedMergeNote(deps, plan, await readableDeployPause(github, plan));
-  if (paused !== undefined) deps.reporter.info(paused);
+  await reportPausedMerge(deps, plan, github);
   // The environment is set up again: a pause of its check (a teardown) ends.
   await resumeCheck(deps, github, plan, { command, phase });
   return {

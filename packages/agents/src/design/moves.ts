@@ -99,7 +99,7 @@ export function designMove(
   ) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${service} runs on ${serverWords(from)} with its data, and OpsCrew cannot move its data to ${serverWords(to)} yet: only Postgres's data is copied, and Valkey, Redis and Dragonfly start empty. Moving the others comes with retargeting anywhere (feature 022). plan.yaml was not changed.`,
+      `${service} runs on ${serverWords(from)} with its data, and OpsCrew cannot move its data to ${serverWords(to)} yet: only Postgres's data is copied, and Valkey, Redis and Dragonfly start empty. Moving the others comes with retargeting anywhere. plan.yaml was not changed.`,
       {
         hint: `Keep ${first.name} on ${serverWords(from)} (services[].server as it was). A service the app has not deployed yet can be placed on any server.`,
       },

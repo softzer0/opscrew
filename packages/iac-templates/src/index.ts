@@ -5,11 +5,11 @@ export {
   CATALOG,
   DRAGONFLY_MIN_VCPUS,
   grantHashSecret,
+  hasLogin,
   hostSysctl,
   initStepsFor,
   pinnedVersion,
   SERVICE_SPECS,
-  serviceAuth,
   serviceSpec,
 } from "./catalog";
 export type {

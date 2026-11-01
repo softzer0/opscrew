@@ -467,11 +467,8 @@ async function provisionFlow(
       ? await deployPauseOf(github, plan)
       : await readableDeployPause(github, plan);
   const pinned = paused?.reason === "rollback" ? paused : undefined;
-  const resume =
-    pinned === undefined
-      ? ""
-      : `opscrew rollback${await commandFlags(deps.paths.root, plan.environment?.name ?? "prod", plan.app.key)} --resume`;
   if (pinned !== undefined && plan.move !== undefined) {
+    const resume = `opscrew rollback${await commandFlags(deps.paths.root, plan.environment?.name ?? "prod", plan.app.key)} --resume`;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The deploys of ${checkEnvironmentKey(plan)} are paused since ${pinned.since}: ${pinnedText(pinned)}, and ${plan.move.service}'s move needs the app's deploys. Nothing was changed.`,

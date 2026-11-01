@@ -185,13 +185,8 @@ function reportUnsetVariables(deps: PhaseDeps, environment: AppEnvironment): voi
   }
 }
 
-/** The plan's services with secrets: each reads `<name>.env` on a server. */
-function servicesWithSecrets(plan: DeployPlan): DeployPlan["services"] {
-  return plan.services.filter((service) => serviceSpec(service.kind).secrets.length > 0);
-}
-
 /**
- * `<name>.env` of every running service with secrets, by its GitHub secret
+ * `<name>.env` of every running service, by its GitHub secret
  * (`serviceEnvSecret(name)`): the catalog's `environment(ctx)` with the real values, as the
  * deploy writes it next to compose.yaml (`db.env` for Postgres).
  */
@@ -200,7 +195,7 @@ export function serviceEnvSecrets(
   environment: Pick<AppEnvironment, "values">,
 ): Record<string, string> {
   const secrets: Record<string, string> = {};
-  for (const service of servicesWithSecrets(plan).filter((s) => s.enabled)) {
+  for (const service of plan.services.filter((s) => s.enabled)) {
     const values = environment.values.services[service.name] ?? {};
     const env = serviceSpec(service.kind).environment({
       plan,
@@ -232,7 +227,7 @@ export function serviceEnvSecrets(
 /**
  * Every GitHub Actions secret provision may have set for the plan's environment, by its name there
  * (`deploySecretName`: `OPSCREW_<ENV>_…` outside prod). On a server: the deploy secrets, one per
- * service with secrets (enabled or not, an earlier run may have set it), each extra server's
+ * service (enabled or not, an earlier run may have set it), each extra server's
  * address and known hosts and, on a server the user owns, the tunnel's service token. In the user's
  * Portainer: the build values and the webhook's.
  * On a server-less target: those its workflow reads (`deploySecretNamesFor`: on Cloudflare the
@@ -249,7 +244,7 @@ export function deploySecretNames(plan: DeployPlan): string[] {
         ]
       : [
           ...Object.values(DEPLOY_SECRETS),
-          ...servicesWithSecrets(plan).map((service) => serviceEnvSecret(service.name)),
+          ...plan.services.map((service) => serviceEnvSecret(service.name)),
           ...(plan.servers ?? []).flatMap((server) =>
             Object.values(serverDeploySecrets(server.name)),
           ),
@@ -574,7 +569,7 @@ export interface ServerReach {
 }
 
 /**
- * The GitHub Actions secrets the deploy workflow reads, with one per service with secrets
+ * The GitHub Actions secrets the deploy workflow reads, with one per running service
  * ({@link serviceEnvSecrets}). In tunnel mode (a server the user owns without a public address)
  * `tunnel` adds the Cloudflare Access service token the workflow reaches SSH through; `host` is
  * then the tunnel's SSH hostname and `knownHosts` holds the server's host key under that name.

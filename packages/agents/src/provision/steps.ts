@@ -14,7 +14,7 @@ import {
   projectEngine,
   writePlanIfChanged,
 } from "../shared";
-import { type DeployPause, pinnedText } from "../shared/deploy-pause";
+import { type DeployPause, pinnedText, readableDeployPause } from "../shared/deploy-pause";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
 import type { DependabotStep } from "./dependabot";
 import type { PlanAndApplyResult } from "./plan-apply";
@@ -287,4 +287,17 @@ export async function pausedMergeNote(
       ? `\`${resume}\`, then \`opscrew promote --to ${environment}\``
       : `\`${resume} --deploy\``;
   return `The deploys of ${checkEnvironmentKey(plan)} are paused since ${pause.since}: ${pinnedText(pause)}. The merged files deploy only after ${deploys}.`;
+}
+
+/**
+ * Reports {@link pausedMergeNote} for the environment's pause in GitHub, read without asking the
+ * token for a new permission ({@link readableDeployPause}); nothing when no rollback pins it.
+ */
+export async function reportPausedMerge(
+  deps: Pick<PhaseDeps, "paths" | "reporter">,
+  plan: DeployPlan,
+  github: Parameters<typeof readableDeployPause>[0],
+): Promise<void> {
+  const note = await pausedMergeNote(deps, plan, await readableDeployPause(github, plan));
+  if (note !== undefined) deps.reporter.info(note);
 }

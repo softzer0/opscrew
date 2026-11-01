@@ -1,6 +1,6 @@
 import type { ComputeCatalog, Money } from "@opscrew/contracts";
 import { formatMoney, OpsCrewError } from "@opscrew/core";
-import { serviceAuth, serviceSpec } from "@opscrew/iac-templates";
+import { hasLogin, serviceSpec } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type CloudProvider,
@@ -328,7 +328,7 @@ function hopLines(
  * says it has no login and how to turn one on).
  */
 function noLoginLine(service: PlanService, server: string): string[] {
-  if (serviceAuth(service) !== "internal-only") return [];
+  if (hasLogin(service)) return [];
   const spec = serviceSpec(service.kind);
   return [
     `${spec.title} (${service.name}) on server ${server}: only the app's servers reach it, through the private network, and no device can be given access to it.`,

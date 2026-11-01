@@ -109,7 +109,6 @@ const POSTGRES: ServiceSpec = {
   }),
   healthcheck: () => ({ test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"] }),
   secrets: [PASSWORD],
-  auth: "password",
   // `postgresql://` for every name: SQLAlchemy rejects `postgres://`, while libpq, node-postgres,
   // Prisma, Sequelize, dj-database-url, Rails and the Go and Rust drivers accept both.
   address: (ctx) => loginUrl(ctx, "postgresql", 5432, "/app"),
@@ -256,7 +255,6 @@ const VALKEY: ServiceSpec = {
   environment: (ctx) => ({ VALKEY_PASSWORD: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
   healthcheck: () => redisCliCheck("VALKEY_PASSWORD", "valkey-cli"),
   secrets: [PASSWORD],
-  auth: "password",
   address: passwordRedisUrl,
   conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
@@ -281,7 +279,6 @@ const REDIS: ServiceSpec = {
   environment: (ctx) => ({ REDIS_PASSWORD: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
   healthcheck: () => redisCliCheck("REDIS_PASSWORD"),
   secrets: [PASSWORD],
-  auth: "password",
   address: passwordRedisUrl,
   conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
@@ -356,7 +353,6 @@ const DRAGONFLY: ServiceSpec = {
   // Its own health check sends PING without the password and counts any reply.
   healthcheck: () => redisCliCheck("DFLY_requirepass"),
   secrets: [PASSWORD],
-  auth: "password",
   address: passwordRedisUrl,
   conventionalVariables: redisVariables,
   targets: BOTH_TARGETS,
@@ -412,7 +408,6 @@ const MYSQL: ServiceSpec = {
   // since the image's first-start server listens on the socket only.
   healthcheck: () => ({ test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"], startSeconds: 60 }),
   secrets: [PASSWORD, ROOT_PASSWORD],
-  auth: "password",
   address: (ctx) => loginUrl(ctx, "mysql", 3306, "/app"),
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
   targets: BOTH_TARGETS,
@@ -445,7 +440,6 @@ const MARIADB: ServiceSpec = {
     startSeconds: 30,
   }),
   secrets: [PASSWORD, ROOT_PASSWORD],
-  auth: "password",
   address: (ctx) => loginUrl(ctx, "mysql", 3306, "/app"),
   conventionalVariables: (_ctx, url) => ({ DATABASE_URL: url }),
   targets: BOTH_TARGETS,
@@ -541,7 +535,6 @@ const MONGODB: ServiceSpec = {
   }),
   init: mongoInit,
   secrets: [PASSWORD],
-  auth: "password",
   address: (ctx) => {
     const query = replicaSet(ctx)
       ? `?authSource=admin&replicaSet=${REPLICA_SET}`
@@ -598,7 +591,6 @@ const RABBITMQ: ServiceSpec = {
   }),
   healthcheck: () => ({ test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"], startSeconds: 30 }),
   secrets: [PASSWORD],
-  auth: "password",
   // `%2F` is the default virtual host `/`; a URL without a path leaves it to each client.
   address: (ctx) => loginUrl(ctx, "amqp", 5672, "/%2F"),
   conventionalVariables: (_ctx, url) => ({ AMQP_URL: url, RABBITMQ_URL: url }),
@@ -648,7 +640,6 @@ const NATS: ServiceSpec = {
   environment: (ctx) => ({ NATS_TOKEN: ctx.secretRef("token") }),
   healthcheck: () => ({ test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8222/healthz"] }),
   secrets: [{ name: "token", format: "hex32" }],
-  auth: "token",
   address: (ctx) => `nats://${ctx.secretRef("token")}@${serviceHost(ctx)}:4222`,
   conventionalVariables: (_ctx, url) => ({ NATS_URL: url }),
   targets: BOTH_TARGETS,
@@ -808,7 +799,6 @@ const KAFKA: ServiceSpec = {
   }),
   // Also without the login, so turning it on changes no secret.
   secrets: [PASSWORD],
-  auth: "password",
   ...BROKER_VARIABLES,
   targets: BOTH_TARGETS,
 };
@@ -912,7 +902,6 @@ const REDPANDA: ServiceSpec = {
   }),
   // Also without the login, so turning it on changes no secret.
   secrets: [PASSWORD],
-  auth: "password",
   ...BROKER_VARIABLES,
   targets: BOTH_TARGETS,
 };
@@ -989,7 +978,6 @@ const GARAGE: ServiceSpec = {
     { name: "key-id", format: "garage-key-id" },
     { name: "secret-key", format: "hex32" },
   ],
-  auth: "key",
   address: (ctx) => `http://${serviceHost(ctx)}:3900`,
   conventionalVariables: (ctx, endpoint) => ({
     AWS_ACCESS_KEY_ID: ctx.secretRef("key-id"),
@@ -1098,7 +1086,6 @@ const OPENSEARCH: ServiceSpec = {
     startSeconds: 90,
   }),
   secrets: [PASSWORD],
-  auth: "password",
   // opensearch-js and opensearch-py take the login in the URL.
   address: (ctx) => `http://admin:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:9200`,
   conventionalVariables: (_ctx, url) => ({ OPENSEARCH_URL: url }),
@@ -1142,7 +1129,6 @@ const ELASTICSEARCH: ServiceSpec = {
     startSeconds: 90,
   }),
   secrets: [PASSWORD],
-  auth: "password",
   address: (ctx) => `http://elastic:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:9200`,
   conventionalVariables: (_ctx, url) => ({ ELASTICSEARCH_URL: url }),
   ulimits: { nofile: 65536 },
@@ -1174,7 +1160,6 @@ const MEILISEARCH: ServiceSpec = {
   // Alpine's busybox wget.
   healthcheck: () => ({ test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:7700/health"] }),
   secrets: [{ name: "master-key", format: "hex32" }],
-  auth: "key",
   // Laravel Scout's names, which the other clients' examples use too.
   address: (ctx) => `http://${serviceHost(ctx)}:7700`,
   conventionalVariables: (ctx, url) => ({
@@ -1205,7 +1190,6 @@ const TYPESENSE: ServiceSpec = {
   }),
   healthcheck: () => ({ test: bashHttpCheck(8108, "/health") }),
   secrets: [{ name: "api-key", format: "hex32" }],
-  auth: "key",
   // Its clients take the address in parts (Laravel Scout's names).
   address: (ctx) => `http://${serviceHost(ctx)}:8108`,
   conventionalVariables: (ctx) => ({
@@ -1298,7 +1282,6 @@ const CLICKHOUSE: ServiceSpec = {
   }),
   healthcheck: () => ({ test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8123/ping"] }),
   secrets: [PASSWORD],
-  auth: "password",
   address: (ctx) => loginUrl(ctx, "http", 8123, "/app"),
   conventionalVariables: (ctx, url) => ({
     CLICKHOUSE_URL: url,
@@ -1339,7 +1322,6 @@ const NEO4J: ServiceSpec = {
   },
   healthcheck: () => ({ test: bashHttpCheck(7474, "/"), startSeconds: 60 }),
   secrets: [PASSWORD],
-  auth: "password",
   address: (ctx) => `bolt://${serviceHost(ctx)}:7687`,
   conventionalVariables: (ctx, url) => ({
     NEO4J_URI: url,

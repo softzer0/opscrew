@@ -12,7 +12,7 @@ import type { ServiceInitStep } from "../workflow/switch";
 import { DRAGONFLY_MIN_VCPUS, grantHashSecret, hasLogin, SERVICE_SPECS } from "./entries";
 import type { ServiceContext, ServiceSpec } from "./types";
 
-export { DRAGONFLY_MIN_VCPUS, grantHashSecret, SERVICE_SPECS };
+export { DRAGONFLY_MIN_VCPUS, grantHashSecret, hasLogin, SERVICE_SPECS };
 
 /** {@link SERVICE_SPECS} by kind: one entry for every kind (a test checks each is there). */
 export const CATALOG = Object.fromEntries(
@@ -22,14 +22,6 @@ export const CATALOG = Object.fromEntries(
 /** The catalog's entry for `kind`. */
 export function serviceSpec(kind: SelfHostedServiceKind): ServiceSpec {
   return CATALOG[kind];
-}
-
-/**
- * How the app logs in to `service`: `internal-only` for a Kafka or Redpanda without
- * `options.login` (no login; only the app's own containers reach it), else its entry's `auth`.
- */
-export function serviceAuth(service: PlanService): ServiceSpec["auth"] | "internal-only" {
-  return hasLogin(service) ? serviceSpec(service.kind).auth : "internal-only";
 }
 
 /**

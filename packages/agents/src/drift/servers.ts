@@ -128,12 +128,10 @@ async function extraServerFiles(
     rendered: { "compose.yaml": sha256Hex(keepNewerPins(committed, compose.content)) },
     sitePath: "",
     serviceEnvFiles: Object.fromEntries(
-      servicesOn(plan, name)
-        .filter((service) => serviceSpec(service.kind).secrets.length > 0)
-        .map((service) => [
-          `${service.name}.env`,
-          { title: serviceSpec(service.kind).title, secret: serviceEnvSecret(service.name) },
-        ]),
+      servicesOn(plan, name).map((service) => [
+        `${service.name}.env`,
+        { title: serviceSpec(service.kind).title, secret: serviceEnvSecret(service.name) },
+      ]),
     ),
   };
   // Only the files the deploy writes on an extra server: its Compose file and its env files.
