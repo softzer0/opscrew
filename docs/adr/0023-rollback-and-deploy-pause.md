@@ -1,6 +1,6 @@
 # ADR 0023: Rollback by digest, and a deploy pause
 
-**Status**: Proposed (2026-10-31, feature 019). The founder asked for `opscrew rollback` on
+**Status**: Accepted (2026-10-31, feature 019; released in 0.2.0). The founder asked for `opscrew rollback` on
 2026-10-31 and gave the go-ahead; the design is the lead's.
 
 ## Context
