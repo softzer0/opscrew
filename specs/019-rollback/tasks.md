@@ -399,7 +399,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
 ## Phase 6: Wave 5
 
-- [ ] T1913 The live test (gated on `OPSCREW_E2E_ROLLBACK=1` and the Hetzner pass's variables), in `packages/cli/test/live/rollback.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
+- [X] T1913 The live test (gated on `OPSCREW_E2E_ROLLBACK=1` and the Hetzner pass's variables), in `packages/cli/test/live/rollback.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns:
     - `packages/cli/test/live/{rollback.test.ts,rollback-support.ts,rollback-support.test.ts}`;
     - `docs/e2e.md`, `docs/e2e-coverage.md`;
