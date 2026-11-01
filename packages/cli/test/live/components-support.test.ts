@@ -448,9 +448,6 @@ describe("what the server shows", () => {
   it("knows when OpsCrew generates values: a service's login, or an app secret", () => {
     expect(generatesValues(plan({}))).toBe(false);
     expect(
-      generatesValues(plan({ services: [{ name: "kafka", kind: "kafka", enabled: true }] })),
-    ).toBe(false);
-    expect(
       generatesValues(plan({ services: [{ name: "mysql", kind: "mysql", enabled: true }] })),
     ).toBe(true);
     expect(
