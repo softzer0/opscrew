@@ -459,7 +459,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
 ## Phase: Logins for Kafka, Redpanda and OpenSearch (US7, founder 2026-11-01; plan section 11, research R7 and R8)
 
-- [ ] T1920 [US7] The logins in the plan schema and the catalog, in `packages/plan-schema/src/**` and `packages/iac-templates/src/**` (+ tests, snapshots)
+- [x] T1920 [US7] The logins in the plan schema and the catalog, in `packages/plan-schema/src/**` and `packages/iac-templates/src/**` (+ tests, snapshots)
   - Owns: those paths
   - Reads: plan section 11, research R8 (the exact settings, commands and health checks the spike ran)
   - Accept:
@@ -493,7 +493,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T1921 [US7] Design, secure and the private network follow the service's login, in `packages/agents/src/**`, `packages/secops/src/**`, `packages/detect/src/**` and `examples/kafka-app/**` (+ tests)
+- [x] T1921 [US7] Design, secure and the private network follow the service's login, in `packages/agents/src/**`, `packages/secops/src/**`, `packages/detect/src/**` and `examples/kafka-app/**` (+ tests)
   - Owns: those paths
   - Depends: T1920
   - Accept:
@@ -504,7 +504,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops --filter=@opscrew/detect`
   - Effort: high
 
-- [ ] T1922 [US7] The Docker pass checks the logins, in `packages/cli/test/e2e/**`
+- [x] T1922 [US7] The Docker pass checks the logins, in `packages/cli/test/e2e/**`
   - Owns: that path
   - Depends: T1920
   - Accept:
@@ -518,7 +518,7 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck --filter=opscrew && OPSCREW_DOCKER_TESTS=1 OPSCREW_DOCKER_ENGINES=opensearch,kafka,redpanda pnpm --filter opscrew exec vitest run test/e2e/engines.test.ts` (or the file the brokers' check lives in)
   - Effort: high
 
-- [ ] T1923 [US7] The guide and the plugin say it, in `docs/guide/**` and `plugin/**`
+- [x] T1923 [US7] The guide and the plugin say it, in `docs/guide/**` and `plugin/**`
   - Owns: those paths
   - Depends: T1921
   - Accept:
