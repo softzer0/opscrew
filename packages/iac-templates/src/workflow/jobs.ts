@@ -3,7 +3,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { ACTIONS, TOOLS } from "../pins";
 import type { RenderContext } from "../types";
 import { buildJob, sealsImage } from "./build";
-import { pausedJob, pausedTest } from "./pause";
+import { pausedJob, unpaused } from "./pause";
 import { retentionScript } from "./retention";
 import {
   block,
@@ -18,7 +18,9 @@ import {
   imageSubpath,
   job,
   promoted,
+  ROLLBACK_INPUTS,
   ROLLING_BACK,
+  refuse,
   run,
   runnerLabel,
   selfHosted,
@@ -85,58 +87,58 @@ const BUILDER_ID_FILTER = ".. | .runDetails?.builder?.id? // empty";
  */
 const provenanceCheck = (plan: DeployPlan) => [
   "set -euo pipefail",
-  'if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then',
-  '  echo "::error::The digest input is not an image digest (sha256: and 64 hexadecimal digits). Start this workflow with \\`opscrew promote\\` or \\`opscrew rollback\\`, which fill it in."',
-  "  exit 1",
-  "fi",
+  ...refuse(
+    '[[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]',
+    "The digest input is not an image digest (sha256: and 64 hexadecimal digits). Start this workflow with \\`opscrew promote\\` or \\`opscrew rollback\\`, which fill it in.",
+  ),
   `name="ghcr.io/\${GITHUB_REPOSITORY,,}${imageSubpath(plan)}"`,
   'image="$name@$DIGEST"',
-  'if ! provenance="$(docker buildx imagetools inspect "$image" --format \'{{json .Provenance}}\')"; then',
-  '  echo "::error::GitHub Container Registry has no image $image. Start this workflow with \\`opscrew promote\\` or \\`opscrew rollback\\`, which choose an image that is there."',
-  "  exit 1",
-  "fi",
+  ...refuse(
+    '! provenance="$(docker buildx imagetools inspect "$image" --format \'{{json .Provenance}}\')"',
+    "GitHub Container Registry has no image $image. Start this workflow with \\`opscrew promote\\` or \\`opscrew rollback\\`, which choose an image that is there.",
+  ),
   "# buildx names the run that built the image in runDetails.builder.id (per platform).",
   `mapfile -t runs < <(jq -r '${BUILDER_ID_FILTER}' <<< "$provenance" | sort -u)`,
-  'if [[ "${#runs[@]}" -ne 1 || ! "${runs[0]}" =~ ^https://github\\.com/([^/]+/[^/]+)/actions/runs/([0-9]+)/attempts/[0-9]+$ ]]; then',
-  "  echo \"::error::The image's build provenance does not name one GitHub Actions run, so OpsCrew cannot tell where it was built. OpsCrew deploys a digest only when this repository's deploy workflow built it.\"",
-  "  exit 1",
-  "fi",
+  ...refuse(
+    '[[ "${#runs[@]}" -ne 1 || ! "${runs[0]}" =~ ^https://github\\.com/([^/]+/[^/]+)/actions/runs/([0-9]+)/attempts/[0-9]+$ ]]',
+    "The image's build provenance does not name one GitHub Actions run, so OpsCrew cannot tell where it was built. OpsCrew deploys a digest only when this repository's deploy workflow built it.",
+  ),
   'built_in="${BASH_REMATCH[1]}"',
   'run_id="${BASH_REMATCH[2]}"',
-  'if [[ "${built_in,,}" != "${GITHUB_REPOSITORY,,}" ]]; then',
-  '  echo "::error::The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it."',
-  "  exit 1",
-  "fi",
-  'if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq \'"\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"\')"; then',
-  '  echo "::error::GitHub shows no run $run_id in this repository, which the image\'s provenance names as its build. OpsCrew deploys a digest only when this repository built it."',
-  "  exit 1",
-  "fi",
+  ...refuse(
+    '[[ "${built_in,,}" != "${GITHUB_REPOSITORY,,}" ]]',
+    "The image was built by a run of $built_in, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it.",
+  ),
+  ...refuse(
+    '! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq \'"\\(.event) \\(.head_repository.full_name) \\(.head_branch) \\(.head_sha) \\(.path)"\')"',
+    "GitHub shows no run $run_id in this repository, which the image's provenance names as its build. OpsCrew deploys a digest only when this repository built it.",
+  ),
   'read -r event head_repo branch commit workflow <<< "$record"',
   "# The run's path can end with @<ref>, which the signing identity carries separately.",
   'workflow="${workflow%%@*}"',
   "# A fork's pull request runs in this repository too, with its own branch name: only a push, or a",
   "# run started by hand, which takes write access (ADR 0023 D1), counts.",
-  'if [[ "$event" != "push" && "$event" != "workflow_dispatch" ]]; then',
-  '  echo "::error::The image was built by a $event run, not by a push or a run started by hand. OpsCrew deploys a digest only when a push to $BUILD_BRANCH, or a run started by hand there, built it."',
-  "  exit 1",
-  "fi",
-  'if [[ "${head_repo,,}" != "${GITHUB_REPOSITORY,,}" ]]; then',
-  '  echo "::error::The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it."',
-  "  exit 1",
-  "fi",
-  'if [[ "$branch" != "$BUILD_BRANCH" ]]; then',
-  '  echo "::error::The image was built from the branch $branch, not from $BUILD_BRANCH, the branch that builds this environment\'s images. OpsCrew deploys a digest only when a build on $BUILD_BRANCH made it."',
-  "  exit 1",
-  "fi",
+  ...refuse(
+    '[[ "$event" != "push" && "$event" != "workflow_dispatch" ]]',
+    "The image was built by a $event run, not by a push or a run started by hand. OpsCrew deploys a digest only when a push to $BUILD_BRANCH, or a run started by hand there, built it.",
+  ),
+  ...refuse(
+    '[[ "${head_repo,,}" != "${GITHUB_REPOSITORY,,}" ]]',
+    "The image was built from the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). OpsCrew deploys a digest only when this repository built it.",
+  ),
+  ...refuse(
+    '[[ "$branch" != "$BUILD_BRANCH" ]]',
+    "The image was built from the branch $branch, not from $BUILD_BRANCH, the branch that builds this environment's images. OpsCrew deploys a digest only when a build on $BUILD_BRANCH made it.",
+  ),
   "# prod's build tags its commit, another environment's <commit>-<env>.",
-  'if [[ "$TAG" != "$commit" && ! "$TAG" =~ ^$commit-[a-z][a-z0-9-]*$ ]]; then',
-  '  echo "::error::The tag input is not a commit tag of the image\'s build ($commit, or $commit-<environment>). Start this workflow with \\`opscrew promote\\` or \\`opscrew rollback\\`, which fill it in."',
-  "  exit 1",
-  "fi",
-  'if [[ "$(docker buildx imagetools inspect "$name:$TAG" --format \'{{.Manifest.Digest}}\')" != "$DIGEST" ]]; then',
-  '  echo "::error::The image is not the one tagged with its build\'s commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. \\`opscrew rollback --list\\` shows the versions to roll back to, and \\`opscrew promote\\` takes the image another environment runs."',
-  "  exit 1",
-  "fi",
+  ...refuse(
+    '[[ "$TAG" != "$commit" && ! "$TAG" =~ ^$commit-[a-z][a-z0-9-]*$ ]]',
+    "The tag input is not a commit tag of the image's build ($commit, or $commit-<environment>). Start this workflow with \\`opscrew promote\\` or \\`opscrew rollback\\`, which fill it in.",
+  ),
+  ...refuse(
+    '[[ "$(docker buildx imagetools inspect "$name:$TAG" --format \'{{.Manifest.Digest}}\')" != "$DIGEST" ]]',
+    "The image is not the one tagged with its build's commit ($TAG): a later build of that commit replaced the tag, or the image was pushed another way. \\`opscrew rollback --list\\` shows the versions to roll back to, and \\`opscrew promote\\` takes the image another environment runs.",
+  ),
   "{",
   '  echo "image=$image"',
   '  echo "tag=$name:$TAG"',
@@ -170,8 +172,8 @@ function verifyJob(plan: DeployPlan, ctx: Pick<RenderContext, "builderBranch">):
       "- id: provenance",
       "  name: Check the image's provenance",
       "  env:",
-      "    DIGEST: ${{ inputs.digest }}",
-      "    TAG: ${{ inputs.tag }}",
+      `    DIGEST: \${{ inputs.${ROLLBACK_INPUTS.digest} }}`,
+      `    TAG: \${{ inputs.${ROLLBACK_INPUTS.tag} }}`,
       `    BUILD_BRANCH: ${JSON.stringify(branch)}`,
       "    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
       ...run(provenanceCheck(plan)),
@@ -208,7 +210,7 @@ export function jobsBeforeDeploy(
   ctx: Pick<RenderContext, "builderBranch">,
 ): string[] {
   return [
-    ...pausedJob(plan, `\${{ !${ROLLING_BACK} && ${pausedTest(plan)} }}`),
+    ...pausedJob(plan, ROLLING_BACK),
     "",
     ...(promoted(plan) ? [] : [...buildJob(plan), ""]),
     ...verifyJob(plan, ctx),
@@ -224,9 +226,9 @@ export function jobsBeforeDeploy(
  * ran before this deploy (empty on the first one), which the image retention job never deletes and
  * the label job labels `opscrew-<env>-previous`.
  *
- * It is skipped while the environment is paused ({@link pausedTest}), except in a rollback
- * dispatch (a rollback of a rollback). In an environment that follows a branch one of `build` and
- * `verify` is always skipped, so it checks their results itself (research R6, S3).
+ * It is skipped while the environment is paused ({@link unpaused}), except in a rollback dispatch
+ * (a rollback of a rollback). In an environment that follows a branch one of `build` and `verify`
+ * is always skipped, so it checks their results itself (research R6, S3).
  */
 export function deployJob(
   plan: DeployPlan,
@@ -235,15 +237,15 @@ export function deployJob(
   previous: string,
   steps: readonly string[],
 ): string[] {
-  const unpaused = `${ROLLING_BACK} || !${pausedTest(plan)}`;
+  const imaged = imageJobs(plan)
+    .map((id) => `needs.${id}.result == 'success'`)
+    .join(" || ");
   const own = selfHosted(plan);
   return job({
     id: "deploy",
     name,
     needs: imageJobs(plan),
-    if: promoted(plan)
-      ? `\${{ ${unpaused} }}`
-      : `\${{ !cancelled() && (needs.build.result == 'success' || needs.verify.result == 'success') && (${unpaused}) }}`,
+    if: `\${{ !cancelled() && (${imaged}) && (${unpaused(plan, ROLLING_BACK)}) }}`,
     environment: githubEnvironment(plan),
     runsOn: own ? `[self-hosted, ${runnerLabel(plan)}]` : undefined,
     shell: own ? "bash" : undefined,
@@ -267,7 +269,7 @@ function labelJob(plan: DeployPlan): string[] {
     id: "label",
     name: "Label the deployed image",
     needs: [...imageJobs(plan), "deploy"],
-    ...(promoted(plan) ? {} : { if: "${{ !cancelled() && needs.deploy.result == 'success' }}" }),
+    if: "${{ !cancelled() && needs.deploy.result == 'success' }}",
     permissions: ["packages: write"],
     steps: [
       ...GHCR_LOGIN,

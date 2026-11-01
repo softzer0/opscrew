@@ -155,8 +155,8 @@ const PRELUDE = [
  * `compose` calls act on $WORK/containers-<project>; the workers and cron named in PROCESSES live
  * in $WORK/processes-<project>, one container each unless REPLICAS says otherwise (`worker=2`), as
  * `p<n> <service> <image> <status> <restarts>`; they are recreated only when their image changed,
- * as Compose does, and `compose stop` exits them. `compose up` fails with COMPOSE_UP_FAIL, and for
- * the app only with APP_UP_FAIL. Any other `compose exec` in an app project is a setup step: it
+ * as Compose does, and `compose stop` exits them. `compose up` fails with COMPOSE_UP_FAIL, for
+ * the app only with APP_UP_FAIL, and for the workers and cron only with PROCESS_UP_FAIL. Any other `compose exec` in an app project is a setup step: it
  * fails when its words are a line of $WORK/failing. In the edge's project, `up` fails with
  * EDGE_UP_FAIL, Caddy's reload with CADDY_RELOAD_FAIL, nginx's from its NGINX_RELOAD_FAIL-th on,
  * and kamal-proxy's `deploy <service>` writes the target it routes to in $WORK/routes/<service>;
@@ -207,7 +207,11 @@ const FAKE_DOCKER = [
   '    [[ -z "${COMPOSE_UP_FAIL:-}" ]] || exit 1',
   '    [[ -z "${APP_UP_FAIL:-}" || "${@: -1}" != app ]] || exit 1',
   '    if [[ "${@: -1}" != app ]]; then',
-  '      for arg in "${@:3}"; do [[ " ${PROCESSES:-} " != *" $arg "* ]] || up_process "$arg"; done',
+  '      for arg in "${@:3}"; do',
+  '        [[ " ${PROCESSES:-} " != *" $arg "* ]] && continue',
+  '        [[ -z "${PROCESS_UP_FAIL:-}" ]] || exit 1',
+  '        up_process "$arg"',
+  "      done",
   "      exit 0",
   "    fi",
   '    if [[ " $* " == *" --scale "* ]]; then',
@@ -2077,6 +2081,48 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       expect(run(rolling.start, { UNHEALTHY: NEW }).status).toBe(1);
       expect(readdirSync(appFile(".failed-deploy")).sort()).toEqual(["about", "app.log"]);
       expect(kept("about")?.split("\n")).toEqual(about("health"));
+    });
+
+    it("shows a re-run's own failure of the same image, not the earlier run's lines", () => {
+      server({ ".env": OLD }, [OLD]);
+      expect(run(rolling.start, { UNHEALTHY: NEW }).status).toBe(1);
+      expect(kept("about")?.split("\n")).toEqual(about("health"));
+      expect(kept("app.log")).toBe(lines("c1"));
+
+      // The re-run starts, then fails the check from outside: its own copy's lines are kept.
+      resetCalls();
+      expect(run(rolling.start).status).toBe(0);
+      resetCalls();
+      expect(run(rolling.rollback).output).toContain("restored the previous version");
+      expect(kept("about")?.split("\n")).toEqual(about("check"));
+      expect(kept("app.log")).toBe(lines("c2"));
+
+      // A worker's failure, then a re-run's health check: only the re-run's lines stay.
+      setUp();
+      server({ ".env": OLD }, [OLD]);
+      runningProcesses(OLD);
+      expect(run(withWorkers.start, { STOP: "beat" }).status).toBe(1);
+      expect(readdirSync(appFile(".failed-deploy")).sort()).toEqual(["about", "beat.log"]);
+      expect(run(withWorkers.start, { UNHEALTHY: NEW }).status).toBe(1);
+      expect(readdirSync(appFile(".failed-deploy")).sort()).toEqual(["about", "app.log"]);
+      expect(kept("about")?.split("\n")).toEqual(about("health"));
+    });
+
+    it("keeps the switched copy's lines as the start's when the start script failed after the switch", () => {
+      server({ ".env": OLD }, [OLD]);
+      runningProcesses(OLD);
+      const start = run(withWorkers.start, { PROCESS_UP_FAIL: "1" });
+      expect(start.status).not.toBe(0);
+      expect(routed()).toBe(NEW);
+      expect(kept("about")).toBeUndefined();
+
+      resetCalls();
+      const rollback = run(withWorkers.rollback);
+      expect(rollback.output).toContain("restored the previous version");
+      expect(kept("about")?.split("\n")).toEqual(about("start"));
+      expect(kept("app.log")).toBe(lines("c1"));
+      keptBefore("c1", "docker stop c1");
+      noLeak(rollback.output);
     });
 
     it.skipIf(process.platform === "win32")(

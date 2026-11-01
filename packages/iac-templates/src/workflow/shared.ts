@@ -186,12 +186,34 @@ export function appFlag(plan: Pick<AppEnvironment, "app">): string {
 }
 
 /**
- * `opscrew provision` for the plan's app and environment: `--app <key>` for a further app
- * ({@link appFlag}), then `--env <env>` for an environment other than prod.
+ * The environment a command names with `--env`: its own outside prod, and `prod` for prod when the
+ * app has other `environments`; none for a prod-only app.
  */
+export function commandEnvironment(
+  plan: DeployPlan,
+  environments: readonly string[] | undefined,
+): string | undefined {
+  return plan.environment?.name ?? ((environments?.length ?? 0) > 1 ? "prod" : undefined);
+}
+
+/**
+ * `opscrew <command>` for the plan's app and environment: a further app's `--app <key>`
+ * ({@link appFlag}), then `--env <name>` outside prod, and `--env prod` for prod when the app has
+ * other `environments` (a bare command then asks which one, or stops in scripts), so every command
+ * acts on that environment only.
+ */
+export function opscrew(
+  plan: DeployPlan,
+  command: string,
+  environments?: readonly string[],
+): string {
+  const env = commandEnvironment(plan, environments);
+  return `opscrew ${command}${appFlag(plan)}${env === undefined ? "" : ` --env ${env}`}`;
+}
+
+/** `opscrew provision` for the plan's app and environment ({@link opscrew}). */
 export function provisionCommand(plan: DeployPlan): string {
-  const name = plan.environment?.name;
-  return `opscrew provision${appFlag(plan)}${name === undefined ? "" : ` --env ${name}`}`;
+  return opscrew(plan, "provision");
 }
 
 /**
@@ -305,13 +327,19 @@ export function onRunnerMachine(plan: DeployPlan): boolean {
   return plan.environment?.runner === "host";
 }
 
+/**
+ * Bash lines that stop the step with `message` as the run's error when `condition` (a bash
+ * condition, such as `[[ … ]]` or `! command`) holds. `message` goes between double quotes.
+ */
+export function refuse(condition: string, message: string): string[] {
+  return [`if ${condition}; then`, `  echo "::error::${message}"`, "  exit 1", "fi"];
+}
+
 /** Stops a step whose `$IMAGE` is not a GHCR digest reference. */
-export const CHECK_IMAGE = [
-  `if [[ ! "$IMAGE" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-  '  echo "::error::The build job did not report the image digest; re-run the workflow."',
-  "  exit 1",
-  "fi",
-];
+export const CHECK_IMAGE = refuse(
+  `[[ ! "$IMAGE" =~ ${DIGEST_REF_PATTERN} ]]`,
+  "The build job did not report the image digest; re-run the workflow.",
+);
 
 export function block(lines: readonly string[], indent: number): string[] {
   const pad = " ".repeat(indent);
@@ -360,54 +388,46 @@ export function promotedAbout(
   ];
 }
 
-/** The `rollback` input of a dispatch with a digest ({@link ROLLBACK_INPUTS}). */
-const ROLLBACK_INPUT = [
-  `      ${ROLLBACK_INPUTS.rollback}:`,
-  "        description: Deploy the image without running the release command, for a rollback; `opscrew rollback` sets it.",
-  "        required: false",
-  "        type: boolean",
-  "        default: false",
-];
-
 /**
- * A promoted environment's trigger: `opscrew promote` and `opscrew rollback` dispatch the workflow
- * with the digest and the image's commit tag ({@link environmentTag} of the environment that built
- * it, which may be the source's own source), and a rollback with `rollback` set.
+ * The `workflow_dispatch` trigger of a server or Portainer environment, with a digest, the image's
+ * commit tag and `rollback` ({@link ROLLBACK_INPUTS}). For a promoted environment (`promotion`),
+ * `opscrew promote` and `opscrew rollback` dispatch it with the digest and the commit tag
+ * ({@link environmentTag} of the environment that built the image, which may be the source's own
+ * source), required. For one that follows a branch they are optional: without inputs it builds and
+ * deploys the branch, and `opscrew rollback` gives it an earlier image's, which it deploys without
+ * a build. A rollback sets `rollback`.
  */
-const DISPATCH_WITH_DIGEST = [
-  "  workflow_dispatch:",
-  "    inputs:",
-  `      ${ROLLBACK_INPUTS.digest}:`,
-  "        description: The image to deploy, by its digest (sha256:…); `opscrew promote` or `opscrew rollback` fills it in.",
-  "        required: true",
-  "        type: string",
-  `      ${ROLLBACK_INPUTS.tag}:`,
-  "        description: The image's commit tag (<commit>, or <commit>-<env> when another environment than prod built it); `opscrew promote` or `opscrew rollback` fills it in.",
-  "        required: true",
-  "        type: string",
-  ...ROLLBACK_INPUT,
-];
-
-/**
- * The trigger by hand of a server or Portainer environment that follows a branch: without inputs
- * it builds and deploys the branch, and `opscrew rollback` gives it an earlier image's digest and
- * commit tag with `rollback` set, which deploys that image without a build.
- */
-const DISPATCH_FOR_ROLLBACK = [
-  "  workflow_dispatch:",
-  "    inputs:",
-  `      ${ROLLBACK_INPUTS.digest}:`,
-  "        description: For a rollback, the image to deploy, by its digest (sha256:…); `opscrew rollback` fills it in.",
-  "        required: false",
-  "        type: string",
-  '        default: ""',
-  `      ${ROLLBACK_INPUTS.tag}:`,
-  "        description: For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod); `opscrew rollback` fills it in.",
-  "        required: false",
-  "        type: string",
-  '        default: ""',
-  ...ROLLBACK_INPUT,
-];
+function imageDispatch(promotion: boolean): string[] {
+  const fills = promotion
+    ? "`opscrew promote` or `opscrew rollback` fills it in."
+    : "`opscrew rollback` fills it in.";
+  const input = (name: string, description: string) => [
+    `      ${name}:`,
+    `        description: ${description} ${fills}`,
+    `        required: ${promotion}`,
+    "        type: string",
+    ...(promotion ? [] : ['        default: ""']),
+  ];
+  return [
+    "  workflow_dispatch:",
+    "    inputs:",
+    ...input(
+      ROLLBACK_INPUTS.digest,
+      `${promotion ? "The image" : "For a rollback, the image"} to deploy, by its digest (sha256:…);`,
+    ),
+    ...input(
+      ROLLBACK_INPUTS.tag,
+      promotion
+        ? "The image's commit tag (<commit>, or <commit>-<env> when another environment than prod built it);"
+        : "For a rollback, the image's commit tag (<commit>, or <commit>-<env> outside prod);",
+    ),
+    `      ${ROLLBACK_INPUTS.rollback}:`,
+    "        description: Deploy the image without running the release command, for a rollback; `opscrew rollback` sets it.",
+    "        required: false",
+    "        type: boolean",
+    "        default: false",
+  ];
+}
 
 /** The trigger by hand with no inputs, of a site that follows its branch. */
 export const DISPATCH_BY_HAND = ["  workflow_dispatch: {}"];
@@ -446,7 +466,7 @@ export function runbookFilePath(plan: AppEnvironment): string {
  * (the filter `pushPaths` makes from what the run reads), and by hand; a promoted one only
  * through a dispatch. `dispatch` is the `workflow_dispatch` trigger: by default a server's or
  * Portainer's, which takes an image's digest and commit tag, for a promotion or a rollback
- * ({@link DISPATCH_WITH_DIGEST}, {@link DISPATCH_FOR_ROLLBACK}). Each
+ * ({@link imageDispatch}). Each
  * environment's runs queue in a group of their own (the first app's prod's `opscrew-deploy`, any
  * other's `opscrew-deploy-<app name>`, which is unique in the repository), so one environment never
  * deploys twice at once. A running deploy is never cancelled; of the runs waiting behind it, GitHub
@@ -456,7 +476,7 @@ export function workflowStart(
   plan: DeployPlan,
   about: readonly string[],
   paths: readonly string[],
-  dispatch: readonly string[] = promoted(plan) ? DISPATCH_WITH_DIGEST : DISPATCH_FOR_ROLLBACK,
+  dispatch: readonly string[] = imageDispatch(promoted(plan)),
 ): string[] {
   const first = plan.app.key === undefined && plan.environment?.name === undefined;
   return [

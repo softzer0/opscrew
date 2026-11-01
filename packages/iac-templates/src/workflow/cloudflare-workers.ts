@@ -20,7 +20,7 @@ import {
 import { wranglerConfigPath } from "../serverless/wrangler";
 import type { RenderContext, RenderedFile } from "../types";
 import { pushPaths, siteReads } from "./paths";
-import { pausedJob, pausedTest } from "./pause";
+import { pausedJob, unpaused } from "./pause";
 import {
   appFlag,
   block,
@@ -30,8 +30,10 @@ import {
   environmentName,
   githubEnvironment,
   job,
+  opscrew,
   promoteCommand,
   promoted,
+  refuse,
   run,
   secret,
   workflowStart,
@@ -299,12 +301,6 @@ function buildRunCheck(
   const promote = `\\\`${promoteCommand(plan)}\\\``;
   const only =
     "OpsCrew promotes only a site that a push to $BUILD_BRANCH, or a run started by hand there, built with $BUILD_WORKFLOW.";
-  const refuse = (condition: string, message: string) => [
-    `if [[ ${condition} ]]; then`,
-    `  echo "::error::${message}"`,
-    "  exit 1",
-    "fi",
-  ];
   return [
     "- name: Check the run that built the site",
     "  env:",
@@ -316,31 +312,31 @@ function buildRunCheck(
     ...run([
       "set -euo pipefail",
       ...refuse(
-        '! "$RUN" =~ ^[0-9]+$ || ! "$SHA256" =~ ^[0-9a-f]{64}$',
+        '[[ ! "$RUN" =~ ^[0-9]+$ || ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]',
         `The run input must be a workflow run's id, and sha256 a SHA-256 (64 hexadecimal digits). Start this workflow with ${promote}, which fills them in.`,
       ),
-      'if ! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq \'"\\(.event) \\(.conclusion) \\(.head_repository.full_name) \\(.head_branch) \\(.path)"\')"; then',
-      `  echo "::error::GitHub shows no run $RUN in this repository. Promote with ${promote}, which reads the build the source environment runs."`,
-      "  exit 1",
-      "fi",
+      ...refuse(
+        '! record="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq \'"\\(.event) \\(.conclusion) \\(.head_repository.full_name) \\(.head_branch) \\(.path)"\')"',
+        `GitHub shows no run $RUN in this repository. Promote with ${promote}, which reads the build the source environment runs.`,
+      ),
       'read -r event conclusion head_repo branch workflow <<< "$record"',
       "# The run's path can end with @<ref>.",
       'workflow="${workflow%%@*}"',
       ...refuse(
-        '"$event" != "push" && "$event" != "workflow_dispatch"',
+        '[[ "$event" != "push" && "$event" != "workflow_dispatch" ]]',
         `Run $RUN was started by a $event, not by a push or by hand. ${only}`,
       ),
       ...refuse(
-        '"${head_repo,,}" != "${GITHUB_REPOSITORY,,}"',
+        '[[ "${head_repo,,}" != "${GITHUB_REPOSITORY,,}" ]]',
         `Run $RUN built the commits of $head_repo, not of this repository ($GITHUB_REPOSITORY). ${only}`,
       ),
-      ...refuse('"$branch" != "$BUILD_BRANCH"', `Run $RUN built the branch $branch. ${only}`),
+      ...refuse('[[ "$branch" != "$BUILD_BRANCH" ]]', `Run $RUN built the branch $branch. ${only}`),
       ...refuse(
-        '"$workflow" != "$BUILD_WORKFLOW"',
+        '[[ "$workflow" != "$BUILD_WORKFLOW" ]]',
         `Run $RUN is of the workflow $workflow. ${only}`,
       ),
       ...refuse(
-        '"$conclusion" != "success"',
+        '[[ "$conclusion" != "success" ]]',
         `Run $RUN did not succeed (its conclusion is $conclusion). Promote the build the source environment runs with ${promote}.`,
       ),
     ]),
@@ -365,7 +361,7 @@ function buildRunCheck(
  *    ({@link answerCheck}). When the activation or the check fails, the version that ran before
  *    (the latest deployment's, read before the upload) is activated again and the job fails.
  *
- * It is skipped while the environment's deploys are paused ({@link pausedTest}): `opscrew
+ * It is skipped while the environment's deploys are paused ({@link unpaused}): `opscrew
  * rollback` activates an earlier version itself, with no run.
  */
 function deployJob(
@@ -397,8 +393,7 @@ function deployJob(
     : "The downloaded site has the SHA-256 $sha256, not $SHA256, the build's. Run the workflow again.";
   const failed =
     "failure() && (steps.activate.outcome == 'failure' || steps.check.outcome == 'failure')";
-  const env = plan.environment?.name;
-  const rollback = `opscrew rollback${appFlag(plan)}${env === undefined ? "" : ` --env ${env}`}`;
+  const rollback = opscrew(plan, "rollback");
   const steps = [
     `- uses: ${ACTIONS.checkout}`,
     "  with:",
@@ -522,7 +517,7 @@ function deployJob(
     id: "deploy",
     name: "Deploy to Cloudflare",
     needs: fromRun ? undefined : "build",
-    if: `\${{ !${pausedTest(plan)} }}`,
+    if: `\${{ ${unpaused(plan)} }}`,
     environment: githubEnvironment(plan),
     permissions: fromRun ? ["actions: read", "contents: read"] : ["contents: read"],
     steps,
@@ -569,7 +564,7 @@ export function renderCloudflareWorkersWorkflow(
   const dispatch = promoted(plan) ? DISPATCH_WITH_BUILD : DISPATCH_BY_HAND;
   const lines = [
     ...workflowStart(plan, about, pushPaths(plan, reads, ctx), dispatch),
-    ...pausedJob(plan, `\${{ ${pausedTest(plan)} }}`),
+    ...pausedJob(plan),
     "",
     ...(promoted(plan) ? [] : [...buildJob(plan, files), ""]),
     ...deployJob(plan, ctx, files),

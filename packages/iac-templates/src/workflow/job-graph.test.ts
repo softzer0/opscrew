@@ -340,7 +340,7 @@ describe("a server environment that follows its branch (S3)", () => {
     const afterBuild =
       "${{ !cancelled() && needs.build.result == 'success' && needs.deploy.result == 'success' }}";
     expect(shape).toEqual({
-      paused: { if: `\${{ !inputs.rollback && ${PAUSED} }}` },
+      paused: { if: `\${{ !(inputs.rollback) && ${PAUSED} }}` },
       build: { if: "${{ !inputs.rollback }}" },
       verify: { if: "${{ inputs.rollback }}" },
       deploy: {
@@ -486,10 +486,17 @@ describe("a promoted server environment", () => {
       Object.entries(jobs).map(([id, job]) => [id, { needs: job.needs, if: job.if }]),
     );
     expect(shape).toEqual({
-      paused: { if: `\${{ !inputs.rollback && ${PAUSED} }}` },
+      paused: { if: `\${{ !(inputs.rollback) && ${PAUSED} }}` },
       verify: {},
-      deploy: { needs: "verify", if: `\${{ inputs.rollback || !${PAUSED} }}` },
-      label: { needs: ["verify", "deploy"] },
+      // The server's conditions: with verify the only image job, they hold as GitHub's own.
+      deploy: {
+        needs: "verify",
+        if: `\${{ !cancelled() && (needs.verify.result == 'success') && (inputs.rollback || !${PAUSED}) }}`,
+      },
+      label: {
+        needs: ["verify", "deploy"],
+        if: "${{ !cancelled() && needs.deploy.result == 'success' }}",
+      },
     });
   });
 
@@ -506,6 +513,7 @@ describe("a promoted server environment", () => {
     expect(mode(PROMOTION)).toBe("deploy");
     expect(mode(ROLLBACK)).toBe("rollback");
     expect(simulate(flow, { ...ROLLBACK, fail: ["verify"] }).results.deploy).toBe("skipped");
+    expect(simulate(flow, { ...PROMOTION, fail: ["deploy"] }).results.label).toBe("skipped");
   });
 });
 

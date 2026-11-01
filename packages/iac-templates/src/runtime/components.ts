@@ -75,23 +75,17 @@ function dataMounts(
 }
 
 /**
- * A service's environment: on a server, a service with secrets reads all of it from `<name>.env`
- * next to compose.yaml (the deploy writes it; OpsCrew keeps the values), the others have it
- * inline; in Portainer, as the target gives it.
+ * A service's environment: on a server, it reads all of it from `<name>.env` next to compose.yaml
+ * (every catalog service has secrets; the deploy writes the file, OpsCrew keeps the values); in
+ * Portainer, as the target gives it.
  */
 function serviceEnvironment(
-  plan: DeployPlan,
   service: PlanService,
   spec: ServiceSpec,
   target: ComponentTarget,
 ): object {
-  if (target.kind === "server" && spec.secrets.length > 0) {
-    return { env_file: [`${service.name}.env`] };
-  }
-  const environment =
-    target.kind === "portainer"
-      ? target.environment(service, spec)
-      : spec.environment(renderContext(plan, service));
+  if (target.kind === "server") return { env_file: [`${service.name}.env`] };
+  const environment = target.environment(service, spec);
   return Object.keys(environment).length > 0 ? { environment } : {};
 }
 
@@ -260,7 +254,7 @@ export function renderServices(
       ...(spec.hostname ? { hostname: service.name } : {}),
       ...(entrypoint === undefined ? {} : { entrypoint: entrypoint.map(composeLiteral) }),
       ...(command === undefined ? {} : { command: command.map(composeLiteral) }),
-      ...serviceEnvironment(plan, service, spec, target),
+      ...serviceEnvironment(service, spec, target),
       volumes: [...data.mounts, ...mounts],
       ...(configs.length > 0 ? { configs } : {}),
       ...(files.length > 0

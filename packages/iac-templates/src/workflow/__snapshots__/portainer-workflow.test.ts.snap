@@ -46,7 +46,7 @@ concurrency:
 jobs:
   paused:
     name: Report the deploy pause
-    if: \${{ !inputs.rollback && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
+    if: \${{ !(inputs.rollback) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -689,7 +689,7 @@ concurrency:
 jobs:
   paused:
     name: Report the deploy pause
-    if: \${{ !inputs.rollback && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
+    if: \${{ !(inputs.rollback) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:

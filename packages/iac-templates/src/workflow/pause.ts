@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { checkEnvironmentKey } from "../check";
-import { appFlag, job, promoteCommand, promoted, provisionCommand, run } from "./shared";
+import { job, opscrew, promoteCommand, promoted, provisionCommand, run } from "./shared";
 
 /**
  * The repository variable that pauses an environment's deploys: JSON,
@@ -12,30 +12,34 @@ import { appFlag, job, promoteCommand, promoted, provisionCommand, run } from ".
 export const DEPLOY_PAUSED_VARIABLE = "OPSCREW_DEPLOY_PAUSED";
 
 /** True when {@link DEPLOY_PAUSED_VARIABLE} names the plan's environment (an expression). */
-export function pausedTest(plan: DeployPlan): string {
+function pausedTest(plan: DeployPlan): string {
   return `contains(vars.${DEPLOY_PAUSED_VARIABLE}, '"${checkEnvironmentKey(plan)}"')`;
 }
 
-/** `opscrew rollback` for the plan's app and environment, with `args`, as `provisionCommand`. */
-function rollbackCommand(plan: DeployPlan, args: string): string {
-  const env = plan.environment?.name;
-  return `opscrew rollback${appFlag(plan)}${env === undefined ? "" : ` --env ${env}`} ${args}`;
+/**
+ * The deploy job's condition (an expression): the environment is not paused ({@link pausedTest}),
+ * or the run is `exempt` from the pause (an expression).
+ */
+export function unpaused(plan: DeployPlan, exempt?: string): string {
+  return `${exempt === undefined ? "" : `${exempt} || `}!${pausedTest(plan)}`;
 }
 
 /**
- * The `paused` job, which runs when `condition` holds (the environment is paused and the run is
- * not exempt): on GitHub's machines with no permission, it reads the environment's entry in
- * {@link DEPLOY_PAUSED_VARIABLE} with jq and says in a notice and the run's summary why the
- * deploy job is skipped and how deploys resume, for a rollback's pin or a move's window.
+ * The `paused` job, which runs when the environment is paused and the run is not `exempt` (an
+ * expression; see {@link unpaused}): on GitHub's machines with no permission, it reads the
+ * environment's entry in {@link DEPLOY_PAUSED_VARIABLE} with jq and says in a notice and the run's
+ * summary why the deploy job is skipped and how deploys resume, for a rollback's pin or a move's
+ * window.
  */
-export function pausedJob(plan: DeployPlan, condition: string): string[] {
+export function pausedJob(plan: DeployPlan, exempt?: string): string[] {
+  const rollback = opscrew(plan, "rollback");
   const deploys = promoted(plan)
-    ? `This run didn't deploy. \\\`${rollbackCommand(plan, "--resume")}\\\` resumes them; then \\\`${promoteCommand(plan)}\\\` deploys.`
-    : `This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`${rollbackCommand(plan, "--resume --deploy")}\\\` deploys the branch's latest commit.`;
+    ? `This run didn't deploy. \\\`${rollback} --resume\\\` resumes them; then \\\`${promoteCommand(plan)}\\\` deploys.`
+    : `This run built \${GITHUB_SHA:0:7} but didn't deploy it. \\\`${rollback} --resume --deploy\\\` deploys the branch's latest commit.`;
   return job({
     id: "paused",
     name: "Report the deploy pause",
-    if: condition,
+    if: `\${{ ${exempt === undefined ? "" : `!(${exempt}) && `}${pausedTest(plan)} }}`,
     permissions: [],
     steps: [
       "- name: Say why this run does not deploy",

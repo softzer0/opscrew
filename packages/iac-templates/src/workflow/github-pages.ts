@@ -7,7 +7,7 @@ import { shellQuote } from "../runtime/services";
 import { answerCheck, siteBuildSteps, siteExists, siteFiles, siteUrl } from "../serverless/site";
 import type { RenderContext, RenderedFile } from "../types";
 import { pushPaths, siteReads } from "./paths";
-import { pausedJob, pausedTest } from "./pause";
+import { pausedJob, unpaused } from "./pause";
 import {
   appFlag,
   DISPATCH_BY_HAND,
@@ -88,7 +88,7 @@ export function renderGithubPagesWorkflow(
     id: "deploy",
     name: PAGES_PUBLISH_JOB,
     needs: "build",
-    if: `\${{ ${rerun} || !${pausedTest(plan)} }}`,
+    if: `\${{ ${unpaused(plan, rerun)} }}`,
     environment: "github-pages",
     permissions: ["pages: write", "id-token: write"],
     steps: [
@@ -114,7 +114,7 @@ export function renderGithubPagesWorkflow(
       pushPaths(plan, siteReads(plan), ctx),
       DISPATCH_BY_HAND,
     ),
-    ...pausedJob(plan, `\${{ !(${rerun}) && ${pausedTest(plan)} }}`),
+    ...pausedJob(plan, rerun),
     "",
     ...build,
     "",

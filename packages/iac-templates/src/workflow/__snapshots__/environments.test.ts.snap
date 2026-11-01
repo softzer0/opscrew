@@ -46,7 +46,7 @@ concurrency:
 jobs:
   paused:
     name: Report the deploy pause
-    if: \${{ !inputs.rollback && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
+    if: \${{ !(inputs.rollback) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/staging"') }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -306,16 +306,18 @@ jobs:
           export DOCKER_CONFIG="$APPS_DIR"/shop-staging/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop-staging
+          echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-staging/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
               mkdir -p "$APPS_DIR"/shop-staging/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-staging/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-staging/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
@@ -385,6 +387,7 @@ jobs:
             docker stop "$id" > /dev/null
             docker rm "$id" > /dev/null
           done
+          echo finished > .start.outcome
           REMOTE
       - id: health
         name: Check that the app is healthy
@@ -437,17 +440,20 @@ jobs:
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-staging/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
               mkdir -p "$APPS_DIR"/shop-staging/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-staging/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-staging/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
-          if ! grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-staging/.failed-deploy/about 2> /dev/null; then
-            for id in $(docker compose ps -aq app); do keep_failed app "$id" check; done
+          outcome="$(cat .start.outcome 2> /dev/null || true)"
+          if [ "$outcome" != kept ]; then
+            why=start; if [ "$outcome" = finished ]; then why=check; fi
+            for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
           fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE
@@ -791,7 +797,7 @@ concurrency:
 jobs:
   paused:
     name: Report the deploy pause
-    if: \${{ !inputs.rollback && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
+    if: \${{ !(inputs.rollback) && contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
     runs-on: ubuntu-latest
     permissions: {}
     steps:
@@ -901,7 +907,7 @@ jobs:
   deploy:
     name: Deploy to the server
     needs: verify
-    if: \${{ inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"') }}
+    if: \${{ !cancelled() && (needs.verify.result == 'success') && (inputs.rollback || !contains(vars.OPSCREW_DEPLOY_PAUSED, '"shop/prod"')) }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -978,16 +984,18 @@ jobs:
           export DOCKER_CONFIG="$APPS_DIR"/shop/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop
+          echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
               mkdir -p "$APPS_DIR"/shop/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
@@ -1057,6 +1065,7 @@ jobs:
             docker stop "$id" > /dev/null
             docker rm "$id" > /dev/null
           done
+          echo finished > .start.outcome
           REMOTE
       - id: health
         name: Check that the app is healthy
@@ -1109,17 +1118,20 @@ jobs:
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
               mkdir -p "$APPS_DIR"/shop/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
-          if ! grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop/.failed-deploy/about 2> /dev/null; then
-            for id in $(docker compose ps -aq app); do keep_failed app "$id" check; done
+          outcome="$(cat .start.outcome 2> /dev/null || true)"
+          if [ "$outcome" != kept ]; then
+            why=start; if [ "$outcome" = finished ]; then why=check; fi
+            for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
           fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE
@@ -1170,6 +1182,7 @@ jobs:
   label:
     name: Label the deployed image
     needs: [verify, deploy]
+    if: \${{ !cancelled() && needs.deploy.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -1281,16 +1294,18 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           export DOCKER_CONFIG="$APPS_DIR"/shop-eu-staging/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop-eu-staging
+          echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-eu-staging/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-eu-staging/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop-eu-staging/.failed-deploy
               mkdir -p "$APPS_DIR"/shop-eu-staging/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-eu-staging/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-eu-staging/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
@@ -1360,6 +1375,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
             docker stop "$id" > /dev/null
             docker rm "$id" > /dev/null
           done
+          echo finished > .start.outcome
           REMOTE
       - id: health
         name: Check that the app is healthy
@@ -1412,17 +1428,20 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-eu-staging/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-eu-staging/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop-eu-staging/.failed-deploy
               mkdir -p "$APPS_DIR"/shop-eu-staging/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-eu-staging/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-eu-staging/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
-          if ! grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-eu-staging/.failed-deploy/about 2> /dev/null; then
-            for id in $(docker compose ps -aq app); do keep_failed app "$id" check; done
+          outcome="$(cat .start.outcome 2> /dev/null || true)"
+          if [ "$outcome" != kept ]; then
+            why=start; if [ "$outcome" = finished ]; then why=check; fi
+            for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
           fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE
@@ -1545,16 +1564,18 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           export DOCKER_CONFIG="$APPS_DIR"/shop-staging/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop-staging
+          echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-staging/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
               mkdir -p "$APPS_DIR"/shop-staging/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-staging/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-staging/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
@@ -1624,6 +1645,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             docker stop "$id" > /dev/null
             docker rm "$id" > /dev/null
           done
+          echo finished > .start.outcome
           REMOTE
       - id: health
         name: Check that the app is healthy
@@ -1675,17 +1697,20 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-staging/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop-staging/.failed-deploy
               mkdir -p "$APPS_DIR"/shop-staging/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-staging/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-staging/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
-          if ! grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-staging/.failed-deploy/about 2> /dev/null; then
-            for id in $(docker compose ps -aq app); do keep_failed app "$id" check; done
+          outcome="$(cat .start.outcome 2> /dev/null || true)"
+          if [ "$outcome" != kept ]; then
+            why=start; if [ "$outcome" = finished ]; then why=check; fi
+            for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
           fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE
@@ -1843,16 +1868,18 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           export DOCKER_CONFIG="$APPS_DIR"/shop-dev/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop-dev
+          echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-dev/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-dev/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop-dev/.failed-deploy
               mkdir -p "$APPS_DIR"/shop-dev/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-dev/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-dev/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
@@ -1923,6 +1950,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             docker stop "$id" > /dev/null
             docker rm "$id" > /dev/null
           done
+          echo finished > .start.outcome
           REMOTE
       - id: health
         name: Check that the app is healthy
@@ -1986,17 +2014,20 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           keep_failed() {
             (
               umask 077
-              grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-dev/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop-dev/.failed-deploy
+              grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop-dev/.failed-deploy
               mkdir -p "$APPS_DIR"/shop-dev/.failed-deploy
               docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop-dev/.failed-deploy/"$1".log 2>&1
               printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop-dev/.failed-deploy/about
+              echo kept > .start.outcome
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
-          if ! grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop-dev/.failed-deploy/about 2> /dev/null; then
-            for id in $(docker compose ps -aq app); do keep_failed app "$id" check; done
+          outcome="$(cat .start.outcome 2> /dev/null || true)"
+          if [ "$outcome" != kept ]; then
+            why=start; if [ "$outcome" = finished ]; then why=check; fi
+            for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
           fi
           APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .env.previous)"
           export APP_IMAGE

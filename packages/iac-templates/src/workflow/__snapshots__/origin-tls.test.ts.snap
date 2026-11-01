@@ -21,16 +21,18 @@ set -eu
 export DOCKER_CONFIG="$APPS_DIR"/shop/.docker
 trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
 cd "$APPS_DIR"/shop
+echo started > .start.outcome
 export APP_IMAGE="$1"
 RUN_IMAGE="$1"
 MODE="\${2:-deploy}"
 keep_failed() {
   (
     umask 077
-    grep -qxF "image=$RUN_IMAGE" "$APPS_DIR"/shop/.failed-deploy/about 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
+    grep -qxF kept .start.outcome 2> /dev/null || rm -rf "$APPS_DIR"/shop/.failed-deploy
     mkdir -p "$APPS_DIR"/shop/.failed-deploy
     docker logs --timestamps --tail 500 "$2" > "$APPS_DIR"/shop/.failed-deploy/"$1".log 2>&1
     printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > "$APPS_DIR"/shop/.failed-deploy/about
+    echo kept > .start.outcome
   ) || true
 }
 edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
@@ -102,6 +104,7 @@ for id in $old; do
   docker stop "$id" > /dev/null
   docker rm "$id" > /dev/null
 done
+echo finished > .start.outcome
 REMOTE
 ",
   "upload": {

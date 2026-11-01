@@ -9,7 +9,7 @@ import {
   type PlanService,
   servicesOn,
 } from "@opscrew/plan-schema";
-import { enabledServices, initStepsFor, serviceSpec } from "../catalog";
+import { enabledServices, initStepsFor } from "../catalog";
 import { additionsPath, appDir, EDGE_DIR, type LocalhostSite } from "../edge";
 import { httpsPortSuffix, localhostSite } from "../edge/localhost";
 import { ACTIONS, type PinArch, TOOLS, toolDownloadUrl } from "../pins";
@@ -272,19 +272,12 @@ function installCloudflaredStep(machine: boolean): string[] {
   ];
 }
 
-/** Of `services`, those that read `<name>.env` on their server: those with secrets. */
-function envFileServices(services: readonly PlanService[]): string[] {
-  return services
-    .filter((service) => serviceSpec(service.kind).secrets.length > 0)
-    .map((service) => service.name);
-}
-
-/** Each of `services`' env file ({@link envFileServices}) with its deploy secret. */
+/**
+ * Each of `services`' env file, `<name>.env`, which it reads on its server (every catalog service
+ * has secrets), with its deploy secret.
+ */
 function serviceEnvFiles(services: readonly PlanService[]): EnvFile[] {
-  return envFileServices(services).map((name) => ({
-    file: `${name}.env`,
-    secret: serviceEnvSecret(name),
-  }));
+  return services.map(({ name }) => ({ file: `${name}.env`, secret: serviceEnvSecret(name) }));
 }
 
 /** The `env:` lines that give a step each env file's secret under its own name. */
@@ -906,7 +899,7 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
     ...connection,
     ...extra,
     DEPLOY_SECRETS.appEnv,
-    ...envFileServices(enabledServices(plan)).map(serviceEnvSecret),
+    ...enabledServices(plan).map(({ name }) => serviceEnvSecret(name)),
     ...(tunnel ? [] : [DEPLOY_SECRETS.originTls]),
     ...build,
   ];

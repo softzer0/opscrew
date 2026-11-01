@@ -26,6 +26,7 @@ import {
   cell,
   deployAgain,
   environmentRows,
+  fixForward,
   opscrew,
   pauseAfterRollback,
   pauseByHand,
@@ -144,9 +145,7 @@ export function renderSiteRunbook(plan: DeployPlan, ctx: SiteRunbookContext): Re
           "  Then, in GitHub → Actions, open that run and choose **Re-run all jobs**. A re-run publishes even while the",
           "  deploys are paused.",
         ]),
-    from !== undefined
-      ? `- **A fix:** push it to \`${branch}\`, let the \`${from}\` environment deploy it, then promote it.`
-      : `- **With git:** revert the bad commit and push to \`${branch}\`; the workflow deploys the reverted code.`,
+    fixForward(plan),
     "",
     ...(cloudflare ? [] : pagesDomain(plan, ctx.owner, command)),
     ...secretsSection(plan, { cloudflare, ssr, command }),

@@ -28,7 +28,7 @@ import { hostSettingsServices, siteHosts } from "../runtime";
 import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
 import { portRepair } from "./servers";
-import { appFlag, hasCronJobs, healthPath, planFilePath, runbookFilePath } from "./shared";
+import { appFlag, hasCronJobs, healthPath, opscrew, planFilePath, runbookFilePath } from "./shared";
 
 /**
  * The first lines of every script (contracts/localhost.md "The script roots"): the apps' and the
@@ -90,7 +90,8 @@ const NO_RELEASE = "A rollback runs no release command: the data and the schema 
 
 /**
  * The folder in the app's folder where the deploy keeps the last failed copy's lines: `about`
- * (`image=`, `time=` in UTC, `failed=` `health`, `process <name>` or `check`) and `<service>.log`.
+ * (`image=`, `time=` in UTC, `failed=` `health`, `process <name>`, `start` or `check`) and
+ * `<service>.log`.
  */
 export const FAILED_DEPLOY_DIR = ".failed-deploy";
 
@@ -98,11 +99,19 @@ export const FAILED_DEPLOY_DIR = ".failed-deploy";
 const FAILED_LINES = 500;
 
 /**
+ * Where the start script records how far this run got, in the app's folder: `started`, then
+ * `finished` when it succeeds, or `kept` once the run kept a failure's lines (`keep_failed`). The
+ * rollback reads it to tell what failed.
+ */
+const START_OUTCOME = ".start.outcome";
+
+/**
  * `keep_failed <service> <container> <why>`: writes the container's last lines (both streams, with
  * Docker's timestamps) to `<service>.log` in {@link FAILED_DEPLOY_DIR}, then `about` for this run's
- * image (`$RUN_IMAGE`), readable by the deploy user only (umask 077, as `release.log`). A failure of
- * another image is cleared first. It never fails the script: keeping the lines changes nothing in
- * what the deploy or the rollback does.
+ * image (`$RUN_IMAGE`), readable by the deploy user only (umask 077, as `release.log`). The first
+ * lines a run keeps clear what an earlier run kept, of any image; then {@link START_OUTCOME} says
+ * `kept`. It never fails the script: keeping the lines changes nothing in what the deploy or the
+ * rollback does.
  */
 function keepFailed(plan: DeployPlan): string[] {
   const dir = `${appFolder(plan)}/${FAILED_DEPLOY_DIR}`;
@@ -110,22 +119,22 @@ function keepFailed(plan: DeployPlan): string[] {
     "keep_failed() {",
     "  (",
     "    umask 077",
-    `    grep -qxF "image=$RUN_IMAGE" ${dir}/about 2> /dev/null || rm -rf ${dir}`,
+    `    grep -qxF kept ${START_OUTCOME} 2> /dev/null || rm -rf ${dir}`,
     `    mkdir -p ${dir}`,
     `    docker logs --timestamps --tail ${FAILED_LINES} "$2" > ${dir}/"$1".log 2>&1`,
     `    printf 'image=%s\\ntime=%s\\nfailed=%s\\n' "$RUN_IMAGE" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$3" > ${dir}/about`,
+    `    echo kept > ${START_OUTCOME}`,
     "  ) || true",
     "}",
   ];
 }
 
 /**
- * `opscrew logs --failed` for the plan's app and environment (`--service <service>` when given),
- * with the `--app` and `--env` flags as `provisionCommand` builds them.
+ * `opscrew logs --failed` for the plan's app and environment ({@link opscrew}), with
+ * `--service <service>` when given.
  */
 function failedLogs(plan: DeployPlan, service?: string): string {
-  const env = plan.environment?.name;
-  return `opscrew logs --failed${service === undefined ? "" : ` --service ${service}`}${appFlag(plan)}${env === undefined ? "" : ` --env ${env}`}`;
+  return opscrew(plan, `logs --failed${service === undefined ? "" : ` --service ${service}`}`);
 }
 
 /** How long kamal-proxy waits for the new copy to pass its health check. */
@@ -741,7 +750,8 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
  * 7. the workers and cron on the new image;
  * 8. a check that every worker and cron container keeps running for 30 seconds.
  * A copy that fails its health check, or a worker that stops, leaves its last lines in
- * {@link FAILED_DEPLOY_DIR} ({@link keepFailed}) before it goes. A failure before the switch leaves
+ * {@link FAILED_DEPLOY_DIR} ({@link keepFailed}) before it goes, and the script records how far it
+ * got in {@link START_OUTCOME}. A failure before the switch leaves
  * the running version untouched; after it, the workflow's
  * rollback ({@link rollbackCommands}) puts the web and the workers back. The services are never
  * named after the setup, and no Compose command names another app's folder or project. The script
@@ -776,6 +786,7 @@ export function switchCommands(
     `export DOCKER_CONFIG=${appFolder(plan)}/.docker`,
     `trap '${LOGOUT}' EXIT`,
     `cd ${appFolder(plan)}`,
+    `echo started > ${START_OUTCOME}`,
     'export APP_IMAGE="$1"',
     'RUN_IMAGE="$1"',
     'MODE="${2:-deploy}"',
@@ -796,6 +807,7 @@ export function switchCommands(
       [LOGOUT],
     ),
     ...startProcesses(plan, processServices(plan)),
+    `echo finished > ${START_OUTCOME}`,
   ];
 }
 
@@ -829,9 +841,10 @@ export function serverCommands(
  * deploy, starts on it the workers and cron that ran before the deploy and stops the others, and
  * prints `restored`; prints `unchanged` when this run never switched, `no-previous` when there is
  * nothing to go back to, and nothing when the switch back failed. Before the switch back it keeps
- * the lines of the app containers it replaces (`failed=check`), unless the start script already
- * kept this image's failure (a health check or a worker). On this computer `localhost` is the
- * app's hostname there, as the start script had it.
+ * the lines of the app containers it replaces, unless this run's start script already kept its
+ * failure (a health check or a worker; {@link START_OUTCOME}): `failed=check` when the start script
+ * finished and the check from outside failed, `failed=start` when it stopped after the switch. On
+ * this computer `localhost` is the app's hostname there, as the start script had it.
  */
 export function rollbackCommands(plan: DeployPlan, localhost?: LocalhostSite): string[] {
   return [
@@ -843,9 +856,10 @@ export function rollbackCommands(plan: DeployPlan, localhost?: LocalhostSite): s
     EDGE_FUNCTION,
     'if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi',
     "if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi",
-    // Unless the start script kept this image's failure, the check from outside failed.
-    `if ! grep -qxF "image=$RUN_IMAGE" ${appFolder(plan)}/${FAILED_DEPLOY_DIR}/about 2> /dev/null; then`,
-    '  for id in $(docker compose ps -aq app); do keep_failed app "$id" check; done',
+    `outcome="$(cat ${START_OUTCOME} 2> /dev/null || true)"`,
+    'if [ "$outcome" != kept ]; then',
+    '  why=start; if [ "$outcome" = finished ]; then why=check; fi',
+    '  for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done',
     "fi",
     "APP_IMAGE=\"$(sed -n 's/^APP_IMAGE=//p' .env.previous)\"",
     "export APP_IMAGE",

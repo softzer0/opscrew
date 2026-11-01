@@ -7,9 +7,11 @@ import { DEPLOY_PAUSED_VARIABLE } from "../workflow/pause";
 import {
   appFlag,
   builderBranchOf,
+  commandEnvironment,
   deploySecretName,
   environmentName,
   githubEnvironment,
+  opscrew,
   promoteCommand,
   promoted,
   runnerLabel,
@@ -31,33 +33,8 @@ export interface RunbookContext extends RenderContext {
   environments?: readonly string[];
 }
 
-/** The environment a runbook's commands name with `--env`: its own outside prod, `prod` beside others. */
-function commandEnvironment(
-  plan: DeployPlan,
-  environments: readonly string[] | undefined,
-): string | undefined {
-  return plan.environment?.name ?? (several(environments) ? "prod" : undefined);
-}
-
-/** True when the app has more than one environment. */
-function several(environments: readonly string[] | undefined): boolean {
-  return (environments?.length ?? 0) > 1;
-}
-
-/**
- * `opscrew <command>` for the plan's app and environment: a further app's `--app <key>`
- * ({@link appFlag}), then `--env <name>` outside prod, and `--env prod` for prod when the app has
- * other `environments` (a bare command then asks which one, or stops in scripts), so every command
- * a runbook names acts on that environment only.
- */
-export function opscrew(
-  plan: DeployPlan,
-  command: string,
-  environments?: readonly string[],
-): string {
-  const env = commandEnvironment(plan, environments);
-  return `opscrew ${command}${appFlag(plan)}${env === undefined ? "" : ` --env ${env}`}`;
-}
+/** The command builder every runbook names its commands with. */
+export { opscrew } from "../workflow/shared";
 
 /**
  * The app's environment's folders as a runbook names them (data-model.md "Apps in a repository"):
@@ -272,8 +249,6 @@ export function pauseByHand(plan: DeployPlan, image: string): string[] {
  */
 function rollbackSection(plan: DeployPlan, environments: readonly string[] | undefined): string[] {
   const rollback = opscrew(plan, "rollback", environments);
-  const branch = plan.cicd.branch;
-  const source = plan.environment?.deploySource;
   return [
     "## Roll back",
     "",
@@ -287,14 +262,24 @@ function rollbackSection(plan: DeployPlan, environments: readonly string[] | und
     "- **By hand in GitHub:** the summary of the run that built the version to go back to says",
     '  "Pushed `<image>:<tag>` as `<image>@<digest>`".',
     ...pauseByHand(plan, "<digest>"),
-    `  Then, in GitHub → Actions → "${workflowName(plan)}", choose **Run workflow** on ${source?.from === "promote" ? "the default branch" : `\`${branch}\``},`,
+    `  Then, in GitHub → Actions → "${workflowName(plan)}", choose **Run workflow** on ${promoted(plan) ? "the default branch" : `\`${plan.cicd.branch}\``},`,
     "  enter the digest as `digest` and the tag as `tag`, and tick `rollback`. The run checks where the image was built",
     `  and deploys it without a build or the release command. \`${rollback} --resume\` removes the entry later.`,
-    source?.from === "promote"
-      ? `- **A fix:** push it to \`${branch}\`, let the \`${source.source}\` environment deploy it, then promote it.`
-      : `- **With git:** revert the bad commit and push to \`${branch}\`; the workflow deploys the reverted code.`,
+    fixForward(plan),
     "",
   ];
+}
+
+/**
+ * The last bullet of "Roll back": the fix pushed to the branch, then for a promoted environment
+ * deployed by its source and promoted; otherwise a revert the workflow deploys.
+ */
+export function fixForward(plan: DeployPlan): string {
+  const branch = plan.cicd.branch;
+  const source = plan.environment?.deploySource;
+  return source?.from === "promote"
+    ? `- **A fix:** push it to \`${branch}\`, let the \`${source.source}\` environment deploy it, then promote it.`
+    : `- **With git:** revert the bad commit and push to \`${branch}\`; the workflow deploys the reverted code.`;
 }
 
 /** A shell block that logs in with `login` and shows the app's containers in `/srv/apps/<app>`. */
