@@ -16,6 +16,7 @@ import { rollbackServer } from "./server";
 import { rollbackSite } from "./site";
 import type { VersionsGitHubApi, VersionView } from "./types";
 
+export { pinnedText } from "../shared/deploy-pause";
 export { type ImageRollbackParts, imageRollbackHash } from "./record";
 export type { DeployPause, VersionView };
 

@@ -12,7 +12,13 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { caFiles, readServerAddresses } from "@opscrew/agents";
 import { canonicalJson, sha256Hex } from "@opscrew/core";
-import { appDir, deploySecretName, githubEnvironment, runnerLabel } from "@opscrew/iac-templates";
+import {
+  appDir,
+  checkEnvironmentKey,
+  deploySecretName,
+  githubEnvironment,
+  runnerLabel,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { expect } from "vitest";
 import {
@@ -48,6 +54,7 @@ import {
 import { secretNames } from "./portainer-cloud";
 import { deployedImage } from "./portainer-support";
 import { pagesRemovalBlocker } from "./serverless-support";
+import { clearDeployPause } from "./split-checks";
 import { approveHashes, type LoadFailure, leakedLabels, printedHash } from "./support";
 
 /**
@@ -720,7 +727,7 @@ export class AppEnvironments {
    * destroyed yet (newest first), within {@link CLEANUP_DESTROY_BUDGET_MS} in all; then, whatever
    * those did, through Hetzner's API whatever is left of each app (with a Hetzner token), GitHub's
    * runners with this run's labels, the GitHub environments that appeared during the run, the
-   * deploy secrets OpsCrew's records name, and for the runner tests `main` put back to the example.
+   * deploy secrets OpsCrew's records name, each environment's deploy pause, and for the runner tests `main` put back to the example.
    */
   private async teardown(attempt: CleanupAttempt): Promise<void> {
     const { run } = this;
@@ -745,8 +752,9 @@ export class AppEnvironments {
           });
         }
         await attempt("remove this run's runners from GitHub", () => this.removeRunners());
-        await attempt("remove the GitHub environments and deploy secrets this run left", () =>
-          this.removeGithubLeftovers(),
+        await attempt(
+          "remove the GitHub environments, deploy secrets and pauses this run left",
+          () => this.removeGithubLeftovers(),
         );
         if (this.options.restoreMain === true && run.repoReady) {
           await attempt("put main back to the example's commit", () => run.restoreMain());
@@ -820,6 +828,10 @@ export class AppEnvironments {
       return deleted.status === 204;
     };
     for (const environment of this.apps.keys()) {
+      // The environment's entry in the deploy pause variable, which a run stopped between a
+      // rollback and its --resume leaves behind.
+      const key = checkEnvironmentKey(await this.readPlan(environment));
+      problems.push(...(await clearDeployPause(github, key)));
       const record = await secretsRecord(this.paths(environment));
       if (record === undefined || record.repo.toLowerCase() !== github.name.toLowerCase()) continue;
       for (const name of record.names) {

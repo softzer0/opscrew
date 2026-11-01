@@ -10,7 +10,7 @@
  * (`DeviceComputer`), which also runs the built CLI as "this computer" while public SSH is closed.
  */
 import { readFile, writeFile } from "node:fs/promises";
-import { appDir, checkEnvironmentKey, runnerLabel } from "@opscrew/iac-templates";
+import { appDir, runnerLabel } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { canConnect, minutes, waitFor } from "./cloud";
@@ -26,7 +26,6 @@ import { repoInfo } from "./portainer-cloud";
 import {
   COUNT_SQL,
   checkoutOpenDeploySetup,
-  clearDeployPause,
   DeviceComputer,
   DIGEST_SQL,
   deployPauseExperiment,
@@ -97,8 +96,6 @@ describe.skipIf(MISSING.length > 0)(
     let rows = "";
     /** Design's estimated round trip of a query to the second server (ms). */
     let estimateMs: number | undefined;
-    /** The deploy pause variable's key of the app (`<app>/prod`), once known. */
-    let pauseKey: string | undefined;
 
     async function remember(): Promise<void> {
       await envs.rememberServers();
@@ -243,7 +240,6 @@ describe.skipIf(MISSING.length > 0)(
         const design = await placeDatabase(EXTRA_SERVER);
         estimateMs = estimatedRoundTrip(design);
         log(`design estimates ${estimateMs ?? "no"} ms a query to server ${EXTRA_SERVER}`);
-        pauseKey = checkEnvironmentKey(await run.readPlan());
         await move(EXTRA_SERVER, windowMinutes(design), async (plan) => {
           log(`observed: ${await deployPauseExperiment(run, plan)}`);
         });
@@ -533,15 +529,11 @@ describe.skipIf(MISSING.length > 0)(
       { always: true },
     );
 
-    // After the harness's cleanup of Cloudflare: the device, the deploy pause, and what is left at
-    // DigitalOcean (at Hetzner the harness's cleanup deletes it by the app's labels).
+    // After the harness's cleanup of Cloudflare: the device, and what is left at DigitalOcean (at
+    // Hetzner the harness's cleanup deletes it by the app's labels).
     envs.registerCleanup({
       last: async (attempt) => {
         await attempt("remove the device", () => device.remove());
-        const key = pauseKey;
-        if (key !== undefined) {
-          await attempt("clear the deploy pause", () => clearDeployPause(run.github, key));
-        }
         const app = envs.apps.get("prod");
         if (app === undefined || SECOND.provider !== "digitalocean") return;
         await attempt(`delete what is left of ${app} at ${SECOND.name}`, async () => {

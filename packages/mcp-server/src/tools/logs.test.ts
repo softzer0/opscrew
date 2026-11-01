@@ -9,6 +9,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { recordOwnServer, recordServerAddress } from "@opscrew/agents";
 import {
   FakeDocker,
+  FakeKeptFiles,
   type FakeLogLine,
   forbiddenFetch,
   OWN_IPV4,
@@ -66,6 +67,7 @@ async function call(
     await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
   }
   const docker = new FakeDocker([{ name: "shop-app-1", project: "shop", service: "app", lines }]);
+  const shell = new FakeKeptFiles(options.files, (host) => docker.remote(host));
   const deps = resolveMcpDeps({
     version: "0.0.0-test",
     env,
@@ -79,21 +81,7 @@ async function call(
     services: {
       remote: (host) => {
         connected.push(host);
-        const shell = docker.remote(host);
-        return {
-          host,
-          run: async (command, runOptions) => {
-            const file =
-              /^test -e (\S+) \|\| exit 3; test -x \1 \|\| exit 4; test -e (\S+) \|\| exit 3; cat \2$/.exec(
-                command,
-              )?.[2];
-            if (file === undefined) return shell.run(command, runOptions);
-            const text = options.files?.[file];
-            return text === undefined
-              ? { exitCode: 3, stdout: "", stderr: "" }
-              : { exitCode: 0, stdout: text, stderr: "" };
-          },
-        };
+        return shell.remote(host);
       },
       own: {
         remote: (connection) => {

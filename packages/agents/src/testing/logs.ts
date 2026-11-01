@@ -233,3 +233,47 @@ export function fakePortainerLogs(docker: FakeDocker, options: { visible?: boole
   } as unknown as PortainerClient;
   return { client: () => client, calls };
 }
+
+/** The fixed read of a kept file, as `logs --failed` sends it, with or without `sudo -n sh -c`. */
+const KEPT_READ =
+  /^(?:sudo -n sh -c ')?test -e (\S+) \|\| exit 3; test -x \1 \|\| exit 4; test -e (\S+) \|\| exit 3; cat \2'?$/;
+
+/**
+ * A server's shell for `logs --failed` tests: it answers the fixed reads of a kept file (the
+ * `test`s, then `cat`) from `files` (path to text; a missing file or folder exits 3), and records
+ * each command. Every other command goes to `fallback`; without one, `true` (the own server's
+ * connection check) succeeds and anything else throws. With `enterable` false, the login cannot
+ * enter the kept folder (0700, another user's).
+ */
+export class FakeKeptFiles {
+  readonly commands: string[] = [];
+  enterable = true;
+  constructor(
+    readonly files: Record<string, string> = {},
+    private readonly fallback?: (host: string) => RemoteExec,
+  ) {}
+
+  remote(host = "server"): RemoteExec {
+    return {
+      host,
+      run: async (command, options) => {
+        this.commands.push(command);
+        const match = KEPT_READ.exec(command);
+        if (match === null) {
+          if (this.fallback !== undefined) return this.fallback(host).run(command, options);
+          if (command === "true") return { exitCode: 0, stdout: "", stderr: "" };
+          throw new Error(`unexpected command: ${command}`);
+        }
+        const dir = `${match[1]}/`;
+        if (!Object.keys(this.files).some((file) => file.startsWith(dir))) {
+          return { exitCode: 3, stdout: "", stderr: "" };
+        }
+        if (!this.enterable) return { exitCode: 4, stdout: "", stderr: "" };
+        const text = this.files[match[2] as string];
+        return text === undefined
+          ? { exitCode: 3, stdout: "", stderr: "" }
+          : { exitCode: 0, stdout: text, stderr: "" };
+      },
+    };
+  }
+}

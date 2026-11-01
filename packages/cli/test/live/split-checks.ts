@@ -47,6 +47,7 @@ import {
   pauseVariableWith,
   pauseVariableWithout,
 } from "./split-support";
+import { SERVER_DEPLOY_JOB } from "./support";
 
 // ---------------------------------------------------------------------------------------------
 // The second server's provider.
@@ -789,9 +790,6 @@ export class DeviceComputer {
 // ---------------------------------------------------------------------------------------------
 // GitHub: the deploy pause and the deploy-setup branch.
 
-/** The deploy job's name in OpsCrew's deploy workflow (the job the pause skips). */
-const DEPLOY_JOB = "Deploy to the server";
-
 /** The repository variable `OPSCREW_DEPLOY_PAUSED`, or `undefined` when it is not set. */
 async function readPause(github: GitHubRepo): Promise<string | undefined> {
   return github.variable(DEPLOY_PAUSED_VARIABLE);
@@ -895,7 +893,7 @@ async function observePause(
     `/repos/${github.name}/actions/runs/${created.id}/jobs?per_page=100`,
   );
   const before = (jobs.json as { jobs?: { name: string; status: string }[] }).jobs?.find(
-    (job) => job.name === DEPLOY_JOB,
+    (job) => job.name === SERVER_DEPLOY_JOB,
   );
   const waiting = before === undefined || ["queued", "waiting", "pending"].includes(before.status);
   const done = await github.waitForDeploy({
@@ -904,7 +902,7 @@ async function observePause(
     since,
     workflow,
   });
-  const job = done.jobs.find((item) => item.name === DEPLOY_JOB);
+  const job = done.jobs.find((item) => item.name === SERVER_DEPLOY_JOB);
   const readAt = pauseReadAt(job?.conclusion ?? null);
   if (!waiting) {
     return `inconclusive: the deploy job of run ${created.id} had started (${before?.status}) before ${DEPLOY_PAUSED_VARIABLE} was set; it ended ${job?.conclusion ?? "unlisted"}`;

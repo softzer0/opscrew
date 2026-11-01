@@ -26,11 +26,10 @@ import { portainerClient } from "@opscrew/connector-portainer";
 import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import {
+  fillPortainerStack,
   IMAGES,
   PORTAINER_COMPOSE_FILE,
   PORTAINER_DEPLOY_BRANCH,
-  PORTAINER_IMAGE_PLACEHOLDER,
-  PORTAINER_VERSION_PLACEHOLDER,
   portainerImageVersion,
   portainerStackName,
   renderPortainerStack,
@@ -142,8 +141,11 @@ describe.skipIf(SKIP !== undefined)("Portainer's redeploy under load (014, T1416
   /** Whether the registry's image was here before this test pulled it. */
   let hadRegistry = true;
   const images = new Set<string>();
-  /** Each version pushed: its image by digest and the version Caddy serves. */
-  const versions: { image: string; version: string; body: string }[] = [];
+  /**
+   * Each version pushed: its image by digest in the local registry, the GHCR image of the same
+   * digest the workflow would deploy, and the version Caddy serves.
+   */
+  const versions: { image: string; ghcr: string; version: string; body: string }[] = [];
 
   /** Portainer's API with the administrator's session (only the setup uses it). */
   async function admin(method: string, route: string, body?: unknown) {
@@ -190,10 +192,9 @@ describe.skipIf(SKIP !== undefined)("Portainer's redeploy under load (014, T1416
     );
     const digest = manifest.headers.get("docker-content-digest") ?? "";
     expect(digest).toMatch(/^sha256:[0-9a-f]{64}$/);
-    // The workflow's version: the image's digest, as for a GHCR image.
-    const version = portainerImageVersion(`ghcr.io/acme/shop@${digest}`);
+    const ghcr = `ghcr.io/acme/shop@${digest}`;
     const image = `127.0.0.1:${registryPort}/opscrew-test/app@${digest}`;
-    versions.push({ image, version, body });
+    versions.push({ image, ghcr, version: portainerImageVersion(ghcr), body });
     return versions.at(-1) as (typeof versions)[number];
   }
 
@@ -203,9 +204,8 @@ describe.skipIf(SKIP !== undefined)("Portainer's redeploy under load (014, T1416
    */
   async function commitStack(at: (typeof versions)[number]): Promise<void> {
     const template = renderPortainerStack(plan, renderContext()).content;
-    const filled = template
-      .replaceAll(PORTAINER_IMAGE_PLACEHOLDER, at.image)
-      .replaceAll(PORTAINER_VERSION_PLACEHOLDER, at.version);
+    // As for the GHCR image, then the local registry's of the same digest.
+    const filled = fillPortainerStack(template, at.ghcr).replaceAll(at.ghcr, at.image);
     const doc = parse(filled) as { services: { caddy: { ports?: string[] } } };
     doc.services.caddy.ports = [`127.0.0.1:${caddyPort}:80`];
     await writeFile(

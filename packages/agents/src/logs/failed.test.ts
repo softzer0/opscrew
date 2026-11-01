@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { FAILED_DEPLOY_DIR } from "@opscrew/iac-templates";
@@ -15,6 +14,7 @@ import {
   createTestPhaseDeps,
   ED25519_FINGERPRINT,
   FakeHostServer,
+  FakeKeptFiles,
   freshFacts,
   OWN_IPV4,
   ownPlan,
@@ -55,41 +55,6 @@ async function collect(read: LogRead): Promise<LogLine[]> {
 /** The fixed read of a kept file, as `logs --failed` sends it (without sudo). */
 function readKept(name: string): string {
   return `test -e ${KEPT} || exit 3; test -x ${KEPT} || exit 4; test -e ${KEPT}/${name} || exit 3; cat ${KEPT}/${name}`;
-}
-
-/**
- * A server's shell that answers the fixed reads of a kept file (the `test`s, then `cat`), with or
- * without `sudo -n sh -c`, and the own server's connection check (`true`); it records each
- * command. With `enterable` false, the login cannot enter the kept folder (0700, another user's).
- */
-class FakeKeptFiles {
-  readonly commands: string[] = [];
-  enterable = true;
-  constructor(readonly files: Record<string, string> = {}) {}
-
-  remote(host = "server"): RemoteExec {
-    return {
-      host,
-      run: async (command: string) => {
-        this.commands.push(command);
-        if (command === "true") return { exitCode: 0, stdout: "", stderr: "" };
-        const match =
-          /^(?:sudo -n sh -c ')?test -e (\S+) \|\| exit 3; test -x \1 \|\| exit 4; test -e (\S+) \|\| exit 3; cat \2'?$/.exec(
-            command,
-          );
-        if (match === null) throw new Error(`unexpected command: ${command}`);
-        const dir = `${match[1]}/`;
-        if (!Object.keys(this.files).some((file) => file.startsWith(dir))) {
-          return { exitCode: 3, stdout: "", stderr: "" };
-        }
-        if (!this.enterable) return { exitCode: 4, stdout: "", stderr: "" };
-        const text = this.files[match[2] as string];
-        return text === undefined
-          ? { exitCode: 3, stdout: "", stderr: "" }
-          : { exitCode: 0, stdout: text, stderr: "" };
-      },
-    };
-  }
 }
 
 /** A Hetzner plan with a worker, deployed. */

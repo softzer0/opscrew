@@ -296,13 +296,13 @@ export function registerEnvironmentTools(
           .string()
           .optional()
           .describe(
-            "Only when the user names it: the image digest (sha256:…) of the target's previous image, or the one its source runs. To undo a release, the user runs `npx opscrew rollback` in their terminal instead, which also pauses the deploys.",
+            "Only when the user names it: the image digest (sha256:…) of the target's previous image, or the one its source runs.",
           ),
         version: z
           .string()
           .optional()
           .describe(
-            "Only when the user names it, on Cloudflare's hosting or GitHub Pages: the earlier Worker version id or GitHub Pages run id, as opscrew_status names the one before. To undo a release, the user runs `npx opscrew rollback` in their terminal instead, which also pauses the deploys.",
+            "Only when the user names it, on Cloudflare's hosting or GitHub Pages: the earlier Worker version id or GitHub Pages run id, as opscrew_status names the one before.",
           ),
         allowOldSecrets: z
           .array(z.string().regex(WORKER_SECRET_NAME))

@@ -36,6 +36,7 @@ import {
   provenanceProblems,
   restartedServices,
   Scrubber,
+  SERVER_DEPLOY_JOB,
   type SourceEdit,
   sbomPackages,
   startedAtCommand,
@@ -44,7 +45,6 @@ import {
 } from "./support";
 
 /** The deploy workflow's jobs the checks read (their names in the workflow). */
-const DEPLOY_JOB = "Deploy to the server";
 const PRUNE_JOB = "Delete old images";
 
 /** Requests per second the load sends to the health route. */
@@ -444,7 +444,7 @@ export async function builderChecks(
       }),
     );
     expect(broken.conclusion, "the deploy run of the broken release").toBe("failure");
-    const errors = await jobErrors(run.github, broken.id, DEPLOY_JOB);
+    const errors = await jobErrors(run.github, broken.id, SERVER_DEPLOY_JOB);
     expect(
       errors.some(
         (message) =>

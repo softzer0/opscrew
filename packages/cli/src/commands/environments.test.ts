@@ -293,9 +293,10 @@ describe("opscrew promote", () => {
       },
     });
     expect(await run(ctx, "promote", "--to", "prod"), ctx.errors).toBe(0);
-    expect(ctx.output).toContain(`waits in GitHub for a required reviewer of prod: ${runUrl}`);
-    expect(ctx.output).toContain("The deploy goes on once the reviewer approves it in GitHub.");
-    expect(ctx.output).not.toContain("Deployed ");
+    expect(ctx.errors).toContain(
+      `prod's deploy run still waits in GitHub for a required reviewer: ${runUrl}`,
+    );
+    expect(ctx.output).toContain("once the run succeeded, run `opscrew verify --env prod`.");
   });
 });
 

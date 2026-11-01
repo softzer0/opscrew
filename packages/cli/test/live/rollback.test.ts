@@ -9,7 +9,7 @@
  * version never answers fails, C keeps running and `logs --failed` shows the copy's lines
  * (SC-1904); it is reverted. Then destroy, and the leak search (SC-1905).
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { appDir, checkEnvironmentKey, DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
 import { writeArtifact } from "@opscrew/plan-schema";
@@ -17,7 +17,7 @@ import { describe, expect } from "vitest";
 import { underLoad } from "./builder-checks";
 import { minutes, waitFor } from "./cloud";
 import { AppEnvironments, designProd } from "./environment-checks";
-import { CHANGE_FILE, LiveRun, serverSettings } from "./harness";
+import { LiveRun, serverSettings } from "./harness";
 import { jobLog } from "./portainer-cloud";
 import {
   listedVersions,
@@ -33,7 +33,6 @@ import {
   shownRollback,
   statusDeploys,
 } from "./rollback-support";
-import { clearDeployPause } from "./split-checks";
 import {
   BUILD_JOB,
   type DeployJob,
@@ -109,25 +108,6 @@ describe.skipIf(MISSING.length > 0)(
     async function listedRunning(): Promise<string | undefined> {
       const listed = listedVersions((await run.opscrewOk("rollback", "--list")).output);
       return listed.find((row) => row.marks.includes("running"))?.commit;
-    }
-
-    /**
-     * A change as a user merges one, without waiting for its run: `text` written to `file` (a
-     * path in the repository) on a branch of its own, a pull request `title`, and its merge.
-     * Returns the merge commit; `main` is checked out again.
-     */
-    async function mergeEdit(title: string, file: string, text: string): Promise<string> {
-      const branch = `e2e/change-${run.runId}-${Date.now().toString(36)}`;
-      await run.git("checkout", "-q", "-b", branch);
-      await writeFile(join(run.repo, file), text);
-      await run.git("add", file);
-      await run.git("commit", "-q", "-m", title);
-      await run.git("push", "-q", "-u", "origin", branch);
-      const number = await run.github.createPullRequest(title, branch);
-      log(`merging the change #${number} (${title})`);
-      const sha = await run.github.merge(number);
-      await run.checkoutMain();
-      return sha;
     }
 
     run.step(
@@ -268,12 +248,7 @@ describe.skipIf(MISSING.length > 0)(
       "4. a push of C while paused builds but doesn't deploy: the deploy job skipped, the paused job's notice there, A still running (SC-1902)",
       minutes(45),
       async () => {
-        const title = "e2e: change C, pushed while paused";
-        C.commit = await mergeEdit(
-          title,
-          CHANGE_FILE,
-          `${title} (run ${run.runId}, ${new Date().toISOString()}).\n`,
-        );
+        C.commit = await run.merge("e2e: change C, pushed while paused");
         const done = await run.github.waitForDeploy({ headSha: C.commit });
         expect(conclusionOf(done.jobs, BUILD_JOB), `C's build job (run ${done.id})`).toBe(
           "success",
@@ -337,7 +312,7 @@ describe.skipIf(MISSING.length > 0)(
       async () => {
         const resumed = await run.opscrewOk("rollback", "--resume", "--deploy", "--yes");
         expect(
-          resumed.output.includes(`The deploy run of ${short(C.commit)}`),
+          resumed.output.includes(`prod runs ${short(C.commit)} (`),
           `the resume deployed C:\n${run.tail(resumed.output)}`,
         ).toBe(true);
         expect(
@@ -360,7 +335,7 @@ describe.skipIf(MISSING.length > 0)(
         const dockerfile = (await run.readPlan()).app.dockerfile;
         const original = await readFile(join(run.repo, dockerfile), "utf8");
         const marker = `opscrew-e2e-never-answers-${run.runId}`;
-        const broken = await mergeEdit(
+        const broken = await run.merge(
           "e2e: a version that never answers",
           dockerfile,
           neverAnswering(original, marker),
@@ -383,7 +358,7 @@ describe.skipIf(MISSING.length > 0)(
           `logs --failed shows the failed copy's lines:\n${run.tail(logs.output)}`,
         ).toBe(true);
 
-        const reverted = await mergeEdit(
+        const reverted = await run.merge(
           "e2e: revert the version that never answers",
           dockerfile,
           original,
@@ -438,14 +413,6 @@ describe.skipIf(MISSING.length > 0)(
       { always: true },
     );
 
-    // After the harness's cleanup of Cloudflare: prod's entry in the deploy pause variable, which
-    // a run stopped between the rollback and --resume leaves behind.
-    envs.registerCleanup({
-      last: async (attempt) => {
-        const key = pauseKey;
-        if (key === undefined) return;
-        await attempt("clear the deploy pause", () => clearDeployPause(run.github, key));
-      },
-    });
+    envs.registerCleanup();
   },
 );

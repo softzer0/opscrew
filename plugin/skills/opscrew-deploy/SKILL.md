@@ -372,16 +372,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   `opscrew_verify` with that environment afterwards. Without image signing
   (`supplyChain.sign`) the provenance check is a consistency check, not a security gate: say so if
   the user relies on it.
-- **Rolling back.** When a release deploys fine but is wrong and the user asks to undo it, first
-  state the database caveat: the data and the schema stay as they are, the release command doesn't
-  run, the earlier version must work with the newer schema, and restoring a backup is a separate
-  step. Then the user runs `npx opscrew rollback` in their terminal (with `--env <name>` when there
-  are several environments; `--list` shows the versions, `--to <one of them>` goes back further); it
-  asks for approval, so it never goes through a tool. Afterwards that environment's automatic
-  deploys stay paused, so the next push doesn't redeploy the bad release (`opscrew_status` shows
-  the pause), and a promotion to it is refused. Once the fix is pushed, the user runs
-  `npx opscrew rollback --resume` (`--deploy` also deploys the branch's latest commit now). The
-  `opscrew-troubleshoot` skill finds whether a release is the cause.
+- **Rolling back.** To undo a release that deploys fine but is wrong, the user runs
+  `npx opscrew rollback` in their terminal, never a tool; follow the `opscrew-troubleshoot` skill's
+  "A release that deploys fine but is wrong", which says what to tell them first.
 - **This computer.** An environment can run on the user's computer (`localhost`, in Docker, at
   `https://<app>.localhost`). Two steps stay in their terminal: `npx opscrew localhost trust`
   (shows the command that trusts OpsCrew's local certificate authority and asks first;

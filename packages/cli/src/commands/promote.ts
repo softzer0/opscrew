@@ -1,4 +1,4 @@
-import { promote, promotedText } from "@opscrew/agents";
+import { promote } from "@opscrew/agents";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import type { Command } from "commander";
 import type { CliContext } from "../context";
@@ -82,21 +82,12 @@ export function register(program: Command, ctx: CliContext): void {
       ...(approve === undefined ? {} : { approveHash: approve }),
       ...(services === undefined ? {} : { services }),
     });
+    // The agent's reporter has said what runs now, or that the run waits for a reviewer.
     const verify = `\`opscrew verify${app.flag} --env ${target}\``;
-    if (result.status === "waiting") {
-      // Not a failure: GitHub holds the run for the environment's required reviewer.
-      ctx.stdout(
-        `\nThe deploy run for ${promotedText(result)} waits in GitHub for a required reviewer of ${target}: ${result.runUrl}\nThe deploy goes on once the reviewer approves it in GitHub.\n`,
-      );
-      printNextSteps(ctx, [
-        result.digest === undefined
-          ? `once the run succeeded, run ${verify}.`
-          : `once the run succeeded, run \`opscrew promote${app.flag} --to ${target}\` again (it records the image without a new deploy), then ${verify}.`,
-      ]);
-      return;
-    }
-    const run = result.runUrl === undefined ? "" : `: ${result.runUrl}`;
-    ctx.stdout(`\nDeployed ${promotedText(result)} to ${target}${run}\n`);
-    printNextSteps(ctx, [`run ${verify} to check the live site.`]);
+    printNextSteps(ctx, [
+      result.status === "waiting"
+        ? `once the run succeeded, run ${verify}.`
+        : `run ${verify} to check the live site.`,
+    ]);
   });
 }

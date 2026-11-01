@@ -148,7 +148,7 @@ describe("opscrew rollback --list", () => {
     );
     expect(out).toContain("previous");
     expect(out).toContain(
-      `Deploys of prod are paused since 2026-10-20 11:00 UTC: pinned to ${(previous.commit as string).slice(0, 7)} (${(previous.digest as string).slice(0, 19)}).`,
+      `Deploys of prod are paused since 2026-10-20 11:00 UTC: \`opscrew rollback\` pinned it to ${(previous.commit as string).slice(0, 7)} (${(previous.digest as string).slice(0, 19)}).`,
     );
     expect(out).toContain("`opscrew rollback --resume`");
     expect(out).toContain("Not offered: 2 more images of prod that failed");
@@ -187,6 +187,26 @@ describe("opscrew rollback --list", () => {
     expect(ctx.output).toContain("`opscrew rollback --to <version>`");
   });
 
+  it("names a site's pinned version whole", async () => {
+    const ctx = await setup();
+    const worker = "cccccccc-3333-4333-8333-333333333333";
+    fake.answer = async () => ({
+      kind: "list",
+      versions: [],
+      paused: {
+        reason: "rollback",
+        since: "2026-10-20T11:00:00.000Z",
+        image: worker,
+        commit: commitOf("a"),
+      },
+      leftOut: 0,
+    });
+    expect(await run(ctx, "rollback", "--list")).toBe(0);
+    expect(ctx.output).toContain(
+      `\`opscrew rollback\` pinned it to ${commitOf("a").slice(0, 7)} (${worker}).`,
+    );
+  });
+
   it("names a move's pause and the command that ends it", async () => {
     const ctx = await setup();
     fake.answer = async () => ({
@@ -203,7 +223,7 @@ describe("opscrew rollback --list", () => {
 });
 
 describe("opscrew rollback", () => {
-  it("passes the flags and the attached services, then prints the result and the next steps", async () => {
+  it("passes the flags and the attached services, then prints only the next step", async () => {
     const now = () => 0;
     const services: RollbackServices = { localhost: { arch: "x64" }, now, sleep: async () => {} };
     project = await withEnvironments({});
@@ -225,14 +245,12 @@ describe("opscrew rollback", () => {
     const [call] = fake.calls;
     expect(call?.options).toEqual({ to: "1a2b3c4", approveHash: HASH, services });
     expect(call?.deps.paths.environment).toBe("prod");
-    expect(ctx.output).toContain(
-      `Rolled prod back to ${(target.commit as string).slice(0, 7)} "Release 2" (${(target.digest as string).slice(0, 19)}), the earlier image with no build: https://github.com/example-org/example-app/actions/runs/301`,
-    );
+    // The agent's reporter says what runs now and how to resume; the CLI adds only the next step.
+    expect(ctx.output).not.toContain("Release 2");
     expect(ctx.output).toContain("run `opscrew verify` to check the live site.");
-    expect(ctx.output).toContain("run `opscrew rollback --resume`");
   });
 
-  it("splits --allow-old-secrets and says how a Worker went back", async () => {
+  it("splits --allow-old-secrets", async () => {
     const ctx = await setup();
     fake.answer = async () => ({
       kind: "rolled-back",
@@ -246,13 +264,9 @@ describe("opscrew rollback", () => {
       ctx.errors,
     ).toBe(0);
     expect(fake.calls[0]?.options.allowOldSecrets).toEqual(["STRIPE_SECRET_KEY", "OTHER"]);
-    expect(ctx.output).toContain(
-      "Rolled prod back to version v-1, the earlier Worker version with no build",
-    );
-    expect(ctx.output).not.toContain("--resume");
   });
 
-  it("reports a run waiting for a reviewer as exit code 0", async () => {
+  it("exits 0 for a run waiting for a reviewer, with no verify step yet", async () => {
     const ctx = await setup();
     fake.answer = async () => ({
       kind: "rolled-back",
@@ -263,10 +277,7 @@ describe("opscrew rollback", () => {
       how: "image",
     });
     expect(await run(ctx, "rollback")).toBe(0);
-    expect(ctx.output).toContain(
-      "The rollback run of prod waits in GitHub for a required reviewer: https://github.com/example-org/example-app/actions/runs/302",
-    );
-    expect(ctx.output).toContain("run `opscrew rollback` again");
+    expect(ctx.output).not.toContain("opscrew verify");
   });
 
   it("acts on the environment --env names", async () => {
@@ -320,7 +331,7 @@ describe("opscrew rollback", () => {
 });
 
 describe("opscrew rollback --resume", () => {
-  it("passes --deploy and --yes, and prints the deploy run", async () => {
+  it("passes --deploy and --yes, then prints the verify step", async () => {
     const ctx = await setup();
     fake.answer = async () => ({
       kind: "resumed",
@@ -333,9 +344,7 @@ describe("opscrew rollback --resume", () => {
     });
     expect(await run(ctx, "rollback", "--resume", "--deploy", "--yes"), ctx.errors).toBe(0);
     expect(fake.calls[0]?.options).toEqual({ resume: true, deploy: true });
-    expect(ctx.output).toContain(
-      `Deploys of prod are on again. The deploy run of ${commitOf("4").slice(0, 7)}: https://github.com/example-org/example-app/actions/runs/303`,
-    );
+    expect(ctx.output).not.toContain("actions/runs/303");
     expect(ctx.output).toContain("run `opscrew verify`");
   });
 
@@ -352,10 +361,9 @@ describe("opscrew rollback --resume", () => {
       return { kind: "resumed", wasPaused: true };
     };
     expect(await run(ctx, "rollback", "--resume", "--yes"), ctx.errors).toBe(0);
-    expect(ctx.output).toContain("Deploys of prod are on again.");
   });
 
-  it("says when the deploy run waits for a reviewer, with no verify step yet", async () => {
+  it("gives no verify step while the deploy run waits for a reviewer", async () => {
     const ctx = await setup();
     fake.answer = async () => ({
       kind: "resumed",
@@ -367,16 +375,6 @@ describe("opscrew rollback --resume", () => {
       },
     });
     expect(await run(ctx, "rollback", "--resume", "--deploy"), ctx.errors).toBe(0);
-    expect(ctx.output).toContain(
-      `Deploys of prod are on again. The deploy run of ${commitOf("5").slice(0, 7)} waits in GitHub for a required reviewer: https://github.com/example-org/example-app/actions/runs/304`,
-    );
     expect(ctx.output).not.toContain("opscrew verify");
-  });
-
-  it("adds nothing when the deploys were not paused", async () => {
-    const ctx = await setup();
-    fake.answer = async () => ({ kind: "resumed", wasPaused: false });
-    expect(await run(ctx, "rollback", "--resume")).toBe(0);
-    expect(ctx.output).not.toContain("on again");
   });
 });

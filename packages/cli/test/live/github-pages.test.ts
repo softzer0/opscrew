@@ -14,7 +14,7 @@
  * (`pagesStandIn`): GitHub publishes the site and issues its certificate without the
  * verification. The pass checks the record and the printed step, and skips the click.
  */
-import { checkEnvironmentKey, verificationRecordName } from "@opscrew/iac-templates";
+import { verificationRecordName } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { type CloudflareZone, httpRequest, minutes, sleep, waitFor } from "./cloud";
@@ -30,7 +30,6 @@ import {
   takeoverWindow,
 } from "./serverless-support";
 import { designSite, siteEnv, siteSettings, workflowOf } from "./site-checks";
-import { clearDeployPause } from "./split-checks";
 import { duration, missingVariables } from "./support";
 
 const GATE = "OPSCREW_E2E_GITHUB_PAGES";
@@ -319,14 +318,6 @@ describe.skipIf(MISSING.length > 0)(
       };
     }
 
-    envs.registerCleanup({
-      // The site's entry in the deploy pause variable, which a run stopped between the rollback
-      // (step 4b) and its --resume leaves behind.
-      last: async (attempt) => {
-        if (plan === undefined) return;
-        const key = checkEnvironmentKey(plan);
-        await attempt("clear the deploy pause", () => clearDeployPause(run.github, key));
-      },
-    });
+    envs.registerCleanup();
   },
 );

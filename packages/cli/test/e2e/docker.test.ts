@@ -95,13 +95,12 @@ import {
 } from "@opscrew/agents/testing";
 import { FakeAgentRuntime, fakeSecret, materializeFixture } from "@opscrew/core/testing";
 import {
+  fillPortainerStack,
   hostSettingsServices,
   IMAGES,
   initStepsFor,
   type PinArch,
-  PORTAINER_IMAGE_PLACEHOLDER,
   PORTAINER_STACK_VARIABLES,
-  PORTAINER_VERSION_PLACEHOLDER,
   portainerSecretVariables,
   portainerStackEnvKeys,
   processServices,
@@ -528,11 +527,12 @@ async function keptAsPeers(container: string, dir: string, names: string[]): Pro
  * port published on 127.0.0.1 for the checks.
  */
 function localStack(content: string, image: string, port: number): string {
-  const doc = parse(
-    content
-      .replaceAll(PORTAINER_IMAGE_PLACEHOLDER, image)
-      .replaceAll(PORTAINER_VERSION_PLACEHOLDER, "local"),
-  ) as { services: Record<string, ComposeService>; configs: Record<string, unknown> };
+  // Filled as for a GHCR image, which the image built here then replaces.
+  const ghcr = `ghcr.io/opscrew-test/app@sha256:${"0".repeat(64)}`;
+  const doc = parse(fillPortainerStack(content, ghcr).replaceAll(ghcr, image)) as {
+    services: Record<string, ComposeService>;
+    configs: Record<string, unknown>;
+  };
   delete doc.services.caddy;
   delete doc.services.cloudflared;
   delete doc.configs.caddyfile;

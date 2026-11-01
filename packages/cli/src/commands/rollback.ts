@@ -1,4 +1,4 @@
-import { type DeployPause, type RollbackResult, rollback, type VersionView } from "@opscrew/agents";
+import { type DeployPause, pinnedText, type RollbackResult, rollback } from "@opscrew/agents";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import { formatUtc } from "@opscrew/secops";
 import type { Command } from "commander";
@@ -25,27 +25,6 @@ interface RollbackFlags extends AppEnvFlags {
 function shortDigest(digest: string): string {
   return digest.slice(0, 19);
 }
-
-/** `<short commit> "<message>" (<short digest or version>)`, from what the version has. */
-function versionLabel(version: VersionView): string {
-  const id =
-    version.version !== undefined
-      ? `version ${version.version}`
-      : version.digest !== undefined
-        ? shortDigest(version.digest)
-        : undefined;
-  if (version.commit === undefined) return id ?? "the earlier version";
-  const message = version.message === undefined ? "" : ` "${version.message}"`;
-  return `${version.commit.slice(0, 7)}${message}${id === undefined ? "" : ` (${id})`}`;
-}
-
-/** How each target went back. */
-const HOW: Record<Extract<RollbackResult, { kind: "rolled-back" }>["how"], string> = {
-  image: "the earlier image with no build",
-  worker: "the earlier Worker version with no build",
-  pages: "a re-run of its GitHub Pages run, which rebuilt that commit",
-  local: "the earlier image on this computer",
-};
 
 /**
  * Refuses flags that don't go together, before any work (exit code 2), and returns the trimmed
@@ -112,7 +91,7 @@ function pauseLine(name: string, pause: DeployPause, flag: string): string {
   if (pause.reason === "move") {
     return `Deploys of ${name} are paused since ${since} for a move's maintenance window: \`opscrew provision${flag}\` ends it.`;
   }
-  return `Deploys of ${name} are paused since ${since}: pinned to ${pause.commit.slice(0, 7)} (${shortDigest(pause.image)}). Run \`opscrew rollback${flag} --resume\` to turn them back on.`;
+  return `Deploys of ${name} are paused since ${since}: ${pinnedText(pause)}. Run \`opscrew rollback${flag} --resume\` to turn them back on.`;
 }
 
 /** `--list`: the versions as a table, newest first, the pause and the images left out. */
@@ -238,45 +217,14 @@ export function register(program: Command, ctx: CliContext): void {
         ...(oldSecrets === undefined ? {} : { allowOldSecrets: oldSecrets }),
         ...(services === undefined ? {} : { services }),
       });
-      const verify = `run \`opscrew verify${flag}\` to check the live site.`;
-      const resume = `once the fix is ready, run \`opscrew rollback${flag} --resume\` to turn ${name}'s deploys back on.`;
-      switch (result.kind) {
-        case "list":
-          printList(ctx, name, flag, result);
-          return;
-        case "rolled-back": {
-          const target = versionLabel(result.target);
-          if (result.status === "waiting") {
-            // Not a failure: GitHub holds the run for the environment's required reviewer.
-            ctx.stdout(
-              `\nThe rollback run of ${name} waits in GitHub for a required reviewer: ${result.runUrl ?? ""}\nIt goes back to ${target} once the reviewer approves it in GitHub.\n`,
-            );
-            printNextSteps(ctx, [
-              `once the run has finished, run \`opscrew rollback${flag}\` again: it records the rollback.`,
-            ]);
-            return;
-          }
-          const run = result.runUrl === undefined ? "" : `: ${result.runUrl}`;
-          ctx.stdout(`\nRolled ${name} back to ${target}, ${HOW[result.how]}${run}\n`);
-          printNextSteps(ctx, result.paused ? [verify, resume] : [verify]);
-          return;
-        }
-        case "resumed":
-          if (result.deployed !== undefined) {
-            const { status, commit, runUrl } = result.deployed;
-            const on = result.wasPaused ? `Deploys of ${name} are on again. ` : "";
-            if (status === "waiting") {
-              ctx.stdout(
-                `\n${on}The deploy run of ${commit.slice(0, 7)} waits in GitHub for a required reviewer: ${runUrl}\nIt deploys once the reviewer approves it in GitHub.\n`,
-              );
-            } else {
-              ctx.stdout(`\n${on}The deploy run of ${commit.slice(0, 7)}: ${runUrl}\n`);
-              printNextSteps(ctx, [verify]);
-            }
-          } else if (result.wasPaused) {
-            ctx.stdout(`\nDeploys of ${name} are on again.\n`);
-          }
-          return;
+      if (result.kind === "list") {
+        printList(ctx, name, flag, result);
+        return;
+      }
+      // The agent's reporter has said what runs now, what waits for a reviewer, and how to resume.
+      const status = result.kind === "rolled-back" ? result.status : result.deployed?.status;
+      if (status === "deployed") {
+        printNextSteps(ctx, [`run \`opscrew verify${flag}\` to check the live site.`]);
       }
     });
 }

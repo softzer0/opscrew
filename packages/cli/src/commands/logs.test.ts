@@ -1,8 +1,13 @@
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { recordServerAddress } from "@opscrew/agents";
-import { FakeDocker, type FakeLogLine, SERVER_IPV4, testPlan } from "@opscrew/agents/testing";
-import type { RemoteExec } from "@opscrew/contracts";
+import {
+  FakeDocker,
+  FakeKeptFiles,
+  type FakeLogLine,
+  SERVER_IPV4,
+  testPlan,
+} from "@opscrew/agents/testing";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { FAILED_DEPLOY_DIR } from "@opscrew/iac-templates";
@@ -153,22 +158,9 @@ describe("opscrew logs", () => {
       [`${kept}/about`]: `image=ghcr.io/example-org/shop@${digest}\ntime=2026-10-31T09:15:00Z\nfailed=health\n`,
       [`${kept}/app.log`]: `2026-10-31T09:14:59.000000002Z crashed with token=${token}\n`,
     };
-    const commands: string[] = [];
-    // The server's shell: the fixed reads of a kept file (a missing one exits 3).
-    const remote = (host: string): RemoteExec => ({
-      host,
-      run: async (command) => {
-        commands.push(command);
-        const read =
-          /^test -e (\S+) \|\| exit 3; test -x \1 \|\| exit 4; test -e (\S+) \|\| exit 3; cat \2$/;
-        const text = files[read.exec(command)?.[2] ?? ""];
-        return text === undefined
-          ? { exitCode: 3, stdout: "", stderr: "" }
-          : { exitCode: 0, stdout: text, stderr: "" };
-      },
-    });
+    const server = new FakeKeptFiles(files);
     const { ctx } = await setup(new FakeDocker([]));
-    withServices(ctx, { logs: { remote } });
+    withServices(ctx, { logs: { remote: (host) => server.remote(host) } });
 
     expect(await run(ctx, "logs", "--failed"), ctx.errors).toBe(0);
     expect(ctx.output).toContain(
@@ -176,7 +168,7 @@ describe("opscrew logs", () => {
     );
     expect(ctx.output).toContain("2026-10-31T09:14:59.000000002Z app crashed with token=");
     expect(ctx.output).not.toContain(token);
-    expect(commands).toHaveLength(2);
+    expect(server.commands).toHaveLength(2);
   });
 
   it("refuses --failed with --follow or --since", async () => {

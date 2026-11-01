@@ -108,7 +108,7 @@ describe("opscrew promote --version on a site", () => {
     });
     expect(await run(ctx, "promote", "--to", "prod", "--version", "201"), ctx.errors).toBe(0);
     expect(github.reruns).toEqual([201]);
-    expect(ctx.output).toContain(`Deployed version 201 to prod: ${RUN_URL}`);
+    expect(ctx.output).toContain("GitHub Pages serves the site run 201 published again.");
     expect(ctx.output).toContain("run `opscrew verify --env prod` to check the live site.");
     expect(ctx.output).not.toContain("sha256:");
   });
@@ -185,7 +185,7 @@ describe("opscrew promote --version --allow-old-secrets on Cloudflare's hosting"
       "Old secrets (--allow-old-secrets): STRIPE_SECRET_KEY. If Cloudflare reports them changed",
     );
     expect(allowed.zone.writes().at(-1)?.path).toContain("/deployments?force=true");
-    expect(allowed.ctx.output).toContain("Deployed version v-1 to prod");
+    expect(allowed.ctx.output).toContain("prod runs the version v-1 of its Worker again.");
   });
 
   it("refuses an --allow-old-secrets that names no secret", async () => {
@@ -287,9 +287,8 @@ describe("opscrew promote on Cloudflare's hosting", () => {
       },
     });
     expect(await run(ctx, "promote", "--to", "prod"), ctx.errors).toBe(0);
-    expect(ctx.output).toContain(
-      `Deployed the build of run 501 (SHA-256 ${sha256}) to prod: ${runUrl}`,
-    );
+    expect(ctx.output).toContain(`with the SHA-256 ${sha256}`);
+    expect(ctx.output).toContain(`prod now runs the build staging runs (${runUrl}).`);
     expect(ctx.output).not.toContain("sha256:");
   });
 });

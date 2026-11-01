@@ -18,7 +18,7 @@ import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
-import { checkEnvironmentKey, siteEnvSecret } from "@opscrew/iac-templates";
+import { siteEnvSecret } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { httpRequest, minutes, sleep, waitFor } from "./cloud";
@@ -48,7 +48,6 @@ import {
   wwwAnswers,
   wwwOn,
 } from "./site-checks";
-import { clearDeployPause } from "./split-checks";
 import { approveHashes, duration, missingVariables } from "./support";
 
 const GATE = "OPSCREW_E2E_CLOUDFLARE_HOSTING";
@@ -564,22 +563,6 @@ describe.skipIf(MISSING.length > 0)(
       { always: true },
     );
 
-    envs.registerCleanup({
-      others: [ssrEnvs],
-      // Each app's entry in the deploy pause variable, which a run stopped between a rollback
-      // (step 5, S3) and its --resume leaves behind.
-      last: async (attempt) => {
-        for (const [app, planned] of [
-          [run, plan],
-          [ssr, ssrPlan],
-        ] as const) {
-          if (planned === undefined) continue;
-          const key = checkEnvironmentKey(planned);
-          await attempt(`clear the deploy pause of ${key}`, () =>
-            clearDeployPause(app.github, key),
-          );
-        }
-      },
-    });
+    envs.registerCleanup({ others: [ssrEnvs] });
   },
 );

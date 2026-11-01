@@ -63,7 +63,7 @@ describe("the rollback live test's helpers", () => {
   it("reads the run an output names last", () => {
     expect(
       runIdIn(
-        "built by https://github.com/o/r/actions/runs/101\nRolled prod back: https://github.com/o/r/actions/runs/202\n",
+        "built by https://github.com/o/r/actions/runs/101\nprod runs 1a2b3c4 again (https://github.com/o/r/actions/runs/202).\n",
       ),
     ).toBe(202);
     expect(runIdIn("no run here")).toBeUndefined();
@@ -94,7 +94,7 @@ describe("the rollback live test's helpers", () => {
       "",
       table,
       "",
-      "Deploys of prod are paused since 2026-11-01 10:30 UTC: pinned to …",
+      "Deploys of prod are paused since 2026-11-01 10:30 UTC: `opscrew rollback` pinned it to …",
     ].join("\n");
     expect(listedVersions(output)).toEqual([
       {

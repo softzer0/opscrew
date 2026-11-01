@@ -1207,31 +1207,40 @@ export class LiveRun {
   }
 
   /**
-   * A change as a user merges one: `file` ({@link CHANGE_FILE} by default, a path in the
-   * repository) written on a branch of its own, a pull request `title`, its merge, and the merge
-   * commit's run of each of `workflows` (prod's by default), which must succeed. Returns the
-   * first run's id.
+   * A change as a user merges one, without waiting for its runs: `text` (the title, the run and
+   * the time by default) written to `file` ({@link CHANGE_FILE} by default, a path in the
+   * repository) on a branch of its own, a pull request `title`, and its merge. Returns the merge
+   * commit; `main` is checked out again.
+   */
+  async merge(
+    title: string,
+    file = CHANGE_FILE,
+    text = `${title} (run ${this.runId}, ${new Date().toISOString()}).\n`,
+  ): Promise<string> {
+    const branch = `e2e/change-${this.runId}-${Date.now().toString(36)}`;
+    await this.git("checkout", "-q", "-b", branch);
+    await mkdir(dirname(join(this.repo, file)), { recursive: true });
+    await writeFile(join(this.repo, file), text);
+    await this.git("add", file);
+    await this.git("commit", "-q", "-m", title);
+    await this.git("push", "-q", "-u", "origin", branch);
+    const number = await this.github.createPullRequest(title, branch);
+    this.log(`merging the change #${number} (${title})`);
+    const sha = await this.github.merge(number);
+    await this.checkoutMain();
+    return sha;
+  }
+
+  /**
+   * {@link merge}, then the merge commit's run of each of `workflows` (prod's by default), which
+   * must succeed. Returns the first run's id.
    */
   async mergeChange(
     title: string,
     workflows: readonly string[] = [DEPLOY_WORKFLOW],
     file = CHANGE_FILE,
   ): Promise<number> {
-    const branch = `e2e/change-${this.runId}-${Date.now().toString(36)}`;
-    await this.git("checkout", "-q", "-b", branch);
-    await mkdir(dirname(join(this.repo, file)), { recursive: true });
-    await writeFile(
-      join(this.repo, file),
-      `${title} (run ${this.runId}, ${new Date().toISOString()}).\n`,
-    );
-    await this.git("add", file);
-    await this.git("commit", "-q", "-m", title);
-    await this.git("push", "-q", "-u", "origin", branch);
-    const number = await this.github.createPullRequest(title, branch);
-    this.log(`merging the change #${number}`);
-    const sha = await this.github.merge(number);
-    await this.checkoutMain();
-    return this.expectRuns(sha, workflows, title);
+    return this.expectRuns(await this.merge(title, file), workflows, title);
   }
 
   private expectDeployed(

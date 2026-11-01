@@ -17,7 +17,7 @@ import {
   type SharedRuleRef,
 } from "@opscrew/connector-cloudflare";
 import { Redactor } from "@opscrew/core";
-import { EDGE_PROJECT, serviceSpec, TOOLS } from "@opscrew/iac-templates";
+import { EDGE_PROJECT, PAGES_PUBLISH_JOB, TOOLS } from "@opscrew/iac-templates";
 import type { DeployPlan, ImageBuilder } from "@opscrew/plan-schema";
 
 /** The variables both server live tests need besides their gate (each deploys a second app). */
@@ -613,16 +613,8 @@ export const DEPLOY_JOBS: readonly string[] = [
   SERVER_DEPLOY_JOB,
   "Deploy to Portainer",
   "Deploy to Cloudflare",
-  "Publish on GitHub Pages",
+  PAGES_PUBLISH_JOB,
 ];
-
-/** The conclusions of a job that failed (a skipped job did not). */
-const FAILED_CONCLUSIONS: ReadonlySet<string> = new Set([
-  "failure",
-  "cancelled",
-  "timed_out",
-  "startup_failure",
-]);
 
 /**
  * Whether a job of a finished run succeeded. GitHub can mark the run completed while a job's own
@@ -639,23 +631,11 @@ export function jobSucceeded(job: DeployJob, runConclusion: string | null): bool
 }
 
 /**
- * Whether a job of a finished deploy run failed the deploy: the deploy job ({@link DEPLOY_JOBS})
- * unless it succeeded ({@link jobSucceeded}), any other job only with a failure, a cancellation or
- * a timeout. Every deploy run skips some jobs (feature 019: `paused`, and the build or the check
- * of a given digest), which is no failure.
- */
-export function deployJobFailed(job: DeployJob, runConclusion: string | null): boolean {
-  if (DEPLOY_JOBS.includes(job.name) || job.conclusion === null) {
-    return !jobSucceeded(job, runConclusion);
-  }
-  return FAILED_CONCLUSIONS.has(job.conclusion);
-}
-
-/**
  * Why a finished deploy run did not deploy, `undefined` when it did: the run did not succeed, it
  * lists no job of {@link DEPLOY_JOBS} (a deploy job renamed in the templates would otherwise let a
- * skipped deploy pass), or a job failed it ({@link deployJobFailed}). Names jobs and conclusions
- * only.
+ * skipped deploy pass), or its deploy job, or a job GitHub still lists as running, did not succeed
+ * ({@link jobSucceeded}). Every deploy run skips some other jobs (feature 019: `paused`, and the
+ * build or the check of a given digest), which is no failure. Names jobs and conclusions only.
  */
 export function deployRunProblem(run: {
   conclusion: string | null;
@@ -667,7 +647,11 @@ export function deployRunProblem(run: {
   }
   if (
     run.conclusion !== "success" ||
-    run.jobs.some((job) => deployJobFailed(job, run.conclusion))
+    run.jobs.some(
+      (job) =>
+        (DEPLOY_JOBS.includes(job.name) || job.conclusion === null) &&
+        !jobSucceeded(job, run.conclusion),
+    )
   ) {
     return `it ended ${run.conclusion}; jobs: ${jobs}`;
   }
@@ -853,12 +837,14 @@ export function sbomPackages(sbom: unknown): number {
   );
 }
 
-/** Whether OpsCrew generates values for the plan: a service's login, or an app secret. */
+/**
+ * Whether OpsCrew generates values for the plan: a service's login (every service has one), or an
+ * app secret.
+ */
 export function generatesValues(plan: Pick<DeployPlan, "app" | "services">): boolean {
   return (
-    plan.services.some(
-      (service) => service.enabled && serviceSpec(service.kind).secrets.length > 0,
-    ) || plan.app.env.some((variable) => variable.source === "generated")
+    plan.services.some((service) => service.enabled) ||
+    plan.app.env.some((variable) => variable.source === "generated")
   );
 }
 
