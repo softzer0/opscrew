@@ -10,7 +10,10 @@
   recovered, before pointing OpsCrew at a real app.
 - Also in scope, the rest of recovery: a failed copy's last log lines, the worker hint after a
   switch back, and advice for a migration that stopped halfway.
-- Research: [research.md](research.md). R5 holds the lead's decisions this spec builds on.
+- Also in 019 (founder, 2026-11-01): logins for Kafka, Redpanda and OpenSearch, which ran with
+  none (User Story 7).
+- Research: [research.md](research.md). R5 holds the lead's decisions this spec builds on; R7 and
+  R8 hold the logins' research and spike.
 
 ## Why
 
@@ -205,6 +208,43 @@ versions, and the pause after a rollback.
 
 ---
 
+### User Story 7 - Logins for Kafka, Redpanda and OpenSearch (Priority: P2)
+
+Today these three run without a login, and only the network keeps others out. OpenSearch gets a
+login by default, inside the address the app already reads. Kafka and Redpanda get one when the
+user turns it on, because the app's code has to send it.
+
+**Why this priority**: a login keeps the data closed when something else on the app's network or
+server is compromised. Nothing changes for an app that doesn't turn it on, except on OpenSearch,
+whose clients take the login inside the URL.
+
+**Independent Test**: in local Docker, each service refuses a client without the login and serves
+one with it, using the variables OpsCrew gives the app.
+
+**Acceptance Scenarios**:
+
+1. **Given** an app with OpenSearch, **When** it is provisioned or deployed, **Then**:
+   - OpenSearch runs its security plugin, with plain HTTP;
+   - `OPENSEARCH_URL` carries the user `admin` and a generated password;
+   - a request without them gets 401;
+   - existing indexes stay.
+2. **Given** an app with Kafka or Redpanda and `login: true` in that service's options in
+   `opscrew/plan.yaml`, **When** it is deployed, **Then**:
+   - the clients' listener asks for SCRAM-SHA-512;
+   - the app gets `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` and
+     `KAFKA_SECURITY_PROTOCOL`;
+   - a client without them is refused;
+   - existing topics stay.
+3. **Given** Kafka or Redpanda without the setting, **When** design runs, **Then** it says the
+   service has no login, how to turn one on, and what the app's code must send. **When** the app's
+   code already reads `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD`, design turns it on.
+4. **Given** Redpanda with a login, **Then** its admin API, Schema Registry, HTTP Proxy and RPC take
+   no change from another container without the login.
+5. **Given** a service with a login on another server (018), **Then** design no longer says it has
+   no login. A device still can't be given access to it: its one login is the app's.
+
+---
+
 ### Edge Cases
 
 - **The previous image fails its checks.** The automatic switch back returns to the version that
@@ -224,6 +264,10 @@ versions, and the pause after a rollback.
 - **An environment promoted from another** pauses the same way. A promotion while paused needs
   `--resume` first.
 - **Two apps on one server.** Each app rolls back on its own.
+- **A Kafka client without the login** gets no clear error, only a timeout. The guide says so.
+- **A login turned on, or off, for a service that holds data** keeps the data (R8).
+- **A rollback across the login change** runs the earlier image with today's settings, as with any
+  setting: an earlier app version that didn't send the login can't reach Kafka or Redpanda.
 
 ## Requirements *(mandatory)*
 
@@ -281,6 +325,34 @@ versions, and the pause after a rollback.
   audited, as deploys are.
 - **FR-1915**: The guide MUST document rollback, the pause and resume, and the database caveat. The
   failed-deploy page links to it.
+- **FR-1916**: OpenSearch MUST run its security plugin, with:
+  - a generated password for its one user, `admin`;
+  - plain HTTP;
+  - a transport certificate made inside the container, which never leaves it.
+
+  `OPENSEARCH_URL` MUST carry the login, and the health check MUST use it. Data from before the
+  login MUST stay.
+- **FR-1917**: Kafka and Redpanda MUST accept `login: true` in the service's options. With it:
+  - the clients' listener asks for SCRAM-SHA-512;
+  - the user `app` has a generated password. The service creates the user itself before its health
+    check passes, so the app never starts before the login exists;
+  - the service's own traffic stays on loopback;
+  - the app gets the four `KAFKA_*` variables of US7 #2.
+
+  Turning the login on or off MUST keep the data.
+- **FR-1918**: With Redpanda's login:
+  - its admin API MUST require the login for changes;
+  - its Schema Registry, HTTP Proxy and RPC MUST listen on loopback only.
+- **FR-1919**: Design MUST say, per service, whether it has a login.
+  - For Kafka and Redpanda without one, it says how to turn one on.
+  - The default is on when the app's code reads the SASL variables.
+  - Every message from 018 that says a service has no login MUST follow the service's actual
+    setting. Devices still get no access to these three.
+- **FR-1920**: The guide MUST document the logins:
+  - the variables;
+  - a kafkajs example;
+  - that a Kafka client without the login only times out;
+  - that OpsCrew generates the password once and has no command to change it.
 
 ### Key Entities
 
@@ -306,6 +378,14 @@ versions, and the pause after a rollback.
   copy's last lines.
 - **SC-1905**: No secret appears in any rollback output, audit entry or committed file across the
   live pass.
+- **SC-1906**: In the local Docker pass, Kafka, Redpanda and OpenSearch each refuse a client without
+  the login and serve one with it, in four cases:
+  - after a first start;
+  - after a restart;
+  - after the container is recreated;
+  - after the login is turned on for a service that already holds data.
+
+  No password appears in any output or committed file.
 
 ## Assumptions
 
@@ -323,7 +403,16 @@ Defaults the lead chose on 2026-10-31. The founder can change any of them.
   latest 10 by default; the user can change that in `opscrew/plan.yaml`.
 - **The command:** `opscrew rollback` is new. `promote --digest` and `promote --version` keep
   working; their rollback use is documented as `opscrew rollback`.
+- **Logins (lead, 2026-11-01; R7 and R8):**
+  - **OpenSearch's login is on by default.** Its clients take the login inside the URL, as
+    Elasticsearch's do in OpsCrew already.
+  - **Kafka's and Redpanda's are opt-in.** A Kafka client sends a login only when its code is
+    configured to, and no variable convention exists.
+  - **SCRAM-SHA-512,** which never sends the password itself.
+  - **No TLS on top:** the traffic stays inside the app's Docker network, or inside WireGuard
+    between servers (018).
 - **Not in scope:**
+  - users per device or per app for these three services, and changing their password;
   - rolling back the database or volumes (a backup restore is a later item on the roadmap);
   - rolling back infrastructure changes (`provision`) or a service's version;
   - Claude Code running the rollback itself, since it asks for approval in the terminal.

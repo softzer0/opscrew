@@ -584,6 +584,60 @@ A push after step 2 skips its deploy job.
 - **D1 changes promote's security check:** T1904 tests both ways, and the review checks it.
 - **The Portainer release placeholder** changes every Portainer stack once (S5).
 
+### 11. Logins for Kafka, Redpanda and OpenSearch (T1920–T1923; US7, research R7 and R8)
+
+**The plan's option** (`plan-schema/src/components.ts`)
+- `kafka`'s options gain `login: boolean`, default `false`.
+- `redpanda` gets options of its own, `{ login }`, joining `KINDS_WITH_OPTIONS`.
+- OpenSearch has no option: its login is always on.
+
+**The catalog** (`iac-templates/src/catalog/entries.ts`), as R8's spike ran it:
+- **OpenSearch:**
+  - a `PASSWORD` secret, as Elasticsearch has;
+  - no `DISABLE_SECURITY_PLUGIN`;
+  - `plugins.security.allow_default_init_securityindex=true` and the two transport keystore paths;
+  - a `bash -c` command that makes `node.p12` with `keytool` when it is missing, writes `internal_users.yml` from `hash.sh` (`admin`, `reserved: false`), then runs the image's entrypoint;
+  - the health check logs in with `curl -u`;
+  - `address` is `http://admin:<password>@<host>:9200`.
+- **Kafka with `login`:**
+  - the `CLIENT` listener mapped to `SASL_PLAINTEXT`, and `PLAINTEXT://localhost:9094` advertised;
+  - `KAFKA_SASL_ENABLED_MECHANISMS=SCRAM-SHA-512`, and the listener's JAAS entry;
+  - the password as `SASL_PASSWORD`, a name without `KAFKA_`;
+  - the command loops `kafka-configs.sh` on 9094 in the background, then runs `exec /etc/kafka/docker/run`;
+  - the health check asks for the user's SCRAM entry on 9094.
+- **Redpanda with `login`:**
+  - the three loopback flags;
+  - `RPK_USER`, `RPK_PASS` and `RPK_SASL_MECHANISM`;
+  - the `login()` loop (`create || update`, then `superusers`, `enable_sasl` and `admin_api_require_auth`), then `exec /entrypoint.sh redpanda start …`;
+  - the health check is `ready` plus `admin_api_require_auth`.
+- **Kafka and Redpanda without `login`:** they stay exactly as today.
+- **Secrets:** Kafka and Redpanda always carry their `PASSWORD` secret. It is used only with `login`, which keeps `secrets` a plain list and the env file's shape stable. Every `$` in Compose is `$$`.
+- **Login variables:** with `login`, the conventional variables add `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME` (`app`), `KAFKA_SASL_PASSWORD` and `KAFKA_SECURITY_PROTOCOL`.
+
+**Where `auth` is read.** One helper, `serviceAuth(service)` in iac-templates, gives `internal-only` for Kafka and Redpanda without `login`, and `password` otherwise. Every reader R7's code map lists goes through it:
+- design's `noLoginLine` and `plan.ts`;
+- the network runbook;
+- `secure`'s login checks;
+- the secops service checks.
+
+Device grants stay refused for these three (`vpn/grants.ts` and the plan schema), with a new reason: the service's one login is the app's.
+
+**Design's default** (FR-1919)
+- When the analysis found the app reading `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD`, a new Kafka or Redpanda service gets `login: true`.
+- Otherwise design's line says the service has no login, how to set `login: true` in `opscrew/plan.yaml`, and what the client must send.
+
+**The example** `examples/kafka-app` sends SASL when `KAFKA_SASL_USERNAME` is set, so the Docker pass and the guide's example use it.
+
+**Tests**
+- **Units:** the rendered Compose for each case, and snapshots.
+- **The Docker pass** (`cli/test/e2e/engines.test.ts`, `OPSCREW_DOCKER_TESTS=1`): OpenSearch's checks change from "answers without a login" to 401 without it and 200 with it. Kafka and Redpanda with `login` are added. Each runs SC-1906's four cases: a first start, a restart, a recreated container, and the login turned on over data written without one.
+- **The live passes** of 013's examples that use these services (`kafka-app`, and `meili-search` with OpenSearch) run again in T1914.
+
+**Risks**
+- **Every deployment with OpenSearch changes on its next provision.** Its `OPENSEARCH_URL` gains the login. The changelog says so.
+- **The Kafka image's start scripts are not a public interface.** Its `/etc/kafka/docker/run` and its `configure` rule on `SASL_*` names are pinned by the image digest. The Docker pass catches a change at the next pin bump.
+- **Changing Redpanda's password** needs the old one (R8). OpsCrew generates it once and has no command to change it, so this doesn't arise. The guide says it.
+
 ## Decisions (lead, 2026-10-31: D1–D6 accepted as recommended; ADR 0023)
 
 - **D1:** provenance accepts `workflow_dispatch` builds from this repository's branch, in both checks. Recommended.
@@ -600,7 +654,7 @@ A push after step 2 skips its deploy job.
 
 ## Order
 
-T1901 → wave 1 {T1902, T1903, T1904} → wave 2 {T1905, T1906, T1907} → wave 3 {T1908, T1909} → wave 4 {T1910, T1911, T1912} → wave 5 {T1913} → T1914 (live runs) → T1915 (simplify) → T1916 (release).
+T1901 → wave 1 {T1902, T1903, T1904} → wave 2 {T1905, T1906, T1907} → wave 3 {T1908, T1909} → wave 4 {T1910, T1911, T1912} → wave 5 {T1913} → fixes {T1917, T1918, T1919} → logins {T1920} → {T1921, T1922} → {T1923} → T1914 (live runs) → T1915 (simplify) → T1916 (release).
 
 ## Complexity Tracking
 

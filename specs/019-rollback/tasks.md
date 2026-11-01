@@ -457,9 +457,84 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
 
-- [ ] T1914 The live runs (lead): T1913's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
+## Phase: Logins for Kafka, Redpanda and OpenSearch (US7, founder 2026-11-01; plan section 11, research R7 and R8)
+
+- [ ] T1920 [US7] The logins in the plan schema and the catalog, in `packages/plan-schema/src/**` and `packages/iac-templates/src/**` (+ tests, snapshots)
+  - Owns: those paths
+  - Reads: plan section 11, research R8 (the exact settings, commands and health checks the spike ran)
+  - Accept:
+    - **The option:** `kafka`'s options gain `login` (default `false`). `redpanda` gets options `{ login }`.
+    - **OpenSearch** runs its security plugin as R8 ran it:
+      - a `PASSWORD` secret;
+      - no `DISABLE_SECURITY_PLUGIN`;
+      - the `keytool` keystore made in the container when it is missing;
+      - `internal_users.yml` written from `hash.sh` with `admin` and `reserved: false`;
+      - the health check with `curl -u`;
+      - `address` `http://admin:<password>@<host>:9200`.
+    - **Kafka with `login`:**
+      - the `CLIENT` listener (`SASL_PLAINTEXT`), and the loopback `PLAINTEXT://localhost:9094` advertised;
+      - SCRAM-SHA-512, and the listener's JAAS entry;
+      - `SASL_PASSWORD`;
+      - the background `kafka-configs.sh` loop, then `exec /etc/kafka/docker/run`;
+      - the health check on the user's SCRAM entry.
+    - **Redpanda with `login`:**
+      - the three loopback flags;
+      - `RPK_USER`, `RPK_PASS` and `RPK_SASL_MECHANISM`;
+      - the `login()` loop: `create || update`, then `superusers`, `enable_sasl` and `admin_api_require_auth`;
+      - the health check: `ready` plus `admin_api_require_auth`.
+    - **Without `login`:** Kafka and Redpanda render exactly as before.
+    - **Secrets and Compose:** Kafka and Redpanda always carry a `PASSWORD` secret. Every `$` in Compose is `$$`.
+    - **The app's variables:** with `login`, `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME` (`app`), `KAFKA_SASL_PASSWORD` and `KAFKA_SECURITY_PROTOCOL` are added.
+    - **One exported helper, `serviceAuth(service)`:**
+      - `internal-only` for Kafka and Redpanda without `login`;
+      - the entry's own `auth` for everything else.
+      - The runbook's no-login lines use it.
+    - **Tests:** rendered Compose for each case, and the snapshots. Every password appears only by reference.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates`
+  - Effort: xhigh
+
+- [ ] T1921 [US7] Design, secure and the private network follow the service's login, in `packages/agents/src/**`, `packages/secops/src/**`, `packages/detect/src/**` and `examples/kafka-app/**` (+ tests)
+  - Owns: those paths
+  - Depends: T1920
+  - Accept:
+    - **Every reader of `spec.auth`** goes through `serviceAuth`: design's `noLoginLine` and `plan.ts`, `secure/services.ts`, `secure/portainer.ts`, and `secops/src/hardening/services.ts`. A Kafka with `login` is no longer "has no login".
+    - **Devices:** these three still get no device access. The refusal says their one login is the app's.
+    - **Design's default:** a new Kafka or Redpanda service gets `login: true` when the analysis found the app reading `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD`. Otherwise design's line says it has no login, how to set `login: true` in `opscrew/plan.yaml`, and that the app's client must then send SCRAM-SHA-512 with those variables.
+    - **`examples/kafka-app`** sends SASL when `KAFKA_SASL_USERNAME` is set.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/secops --filter=@opscrew/detect`
+  - Effort: high
+
+- [ ] T1922 [US7] The Docker pass checks the logins, in `packages/cli/test/e2e/**`
+  - Owns: that path
+  - Depends: T1920
+  - Accept:
+    - **`engines.test.ts`, OpenSearch:** 401 without the login and 200 with it, where the check used to be "answers without a login". The image facts it checks change to `keytool` and `hash.sh`.
+    - **Kafka and Redpanda with `login`,** rendered and started as the deploy starts them:
+      - a client without the login is refused (Kafka's only times out, so time-box it);
+      - one with the app's variables produces and consumes;
+      - Redpanda's admin API refuses a change from another container.
+    - **SC-1906's four cases** for each of the three: a first start, a restart, a recreated container, and the login turned on over data written without one.
+    - **Gating and cleanup:** gated by `OPSCREW_DOCKER_TESTS=1`, like the rest of the Docker pass; each Compose project is removed with its volumes.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew && OPSCREW_DOCKER_TESTS=1 OPSCREW_DOCKER_ENGINES=opensearch,kafka,redpanda pnpm --filter opscrew exec vitest run test/e2e/engines.test.ts` (or the file the brokers' check lives in)
+  - Effort: high
+
+- [ ] T1923 [US7] The guide and the plugin say it, in `docs/guide/**` and `plugin/**`
+  - Owns: those paths
+  - Depends: T1921
+  - Accept:
+    - **Pages:** `search-and-analytics.md`, the message-broker page and `split-placement.md`'s "Services with no login" describe the logins:
+      - OpenSearch's login is in `OPENSEARCH_URL`;
+      - Kafka's and Redpanda's `login: true` and the four variables, with a kafkajs example;
+      - a Kafka client without the login only times out;
+      - OpsCrew makes the password once, and changing it isn't a command.
+    - **Upgrades:** the next provision of an app with OpenSearch turns its login on.
+    - **Scope:** the plugin's skills change only where they say these services have no login.
+  - Verify: `node plugin/validate.mjs && pnpm lint`
+  - Effort: medium
+
+- [ ] T1914 The live runs (lead): T1913's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks. After T1920–T1922, 013's live passes `kafka-app` (with `login: true`) and `meili-search` with OpenSearch run again on Hetzner.
 
 - [ ] T1915 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1902's review: one `appEnvFlags(plan)` in `workflow/shared.ts` for `switch.ts`'s `failedLogs` and `provisionCommand`; a re-run of the same image may show the earlier run's kept lines (the `check` keep is skipped when `about` names the image), and a start-script failure after the switch that is neither the health check nor a worker is kept as `failed=check`. From T1909: `status/deploys.ts` reads `rollback.json` with its own small schema, which `rollback/record.ts`'s reader should replace; the two lines that say GitHub can't be read could be one. From T1905: `cli/test/e2e/{docker,portainer-redeploy}.test.ts` fill the Portainer stack by hand; `fillPortainerStack` would do it. From T1909's review: `status/deploys.ts`'s `appImageIn` repeats `localhost/plan.ts`'s `runningImage`. So does `rollback/local.ts`'s `localImages` (a third copy): let `runningImage` take the file name. From T1905's review: `workflow/pause.ts`'s `rollbackCommand` copies `provisionCommand`'s flags (one `opscrewCommand(plan, verb)` with T1902's `appEnvFlags`); `DISPATCH_WITH_DIGEST` and `DISPATCH_FOR_ROLLBACK` could come from one builder. From T1908: an exported classifier of `dispatchAndFollow`'s errors in `shared/deploy-run.ts` (`rollback/server.ts` wraps the API to tell them apart); `deploy-pause.ts` exporting its schema for `rollback/record.ts`; `githubRepository` typed so `rollbackRepository` needs no cast; `status/deploys.ts` using `record.ts`'s `readRollback`. `dispatchAndFollow` returning the run's `headSha` (the connector's `waitForWorkflowRun` returns it, `promote/__fixtures__/world.ts` too), so `rollback/resume.ts` drops its extra `getWorkflowRun`. From T1911: `rollback --list` shows only a count of left-out images, since `RollbackResult.leftOut` is a number; carrying `listVersions`'s `LeftOutVersion[]` would let it name each one and why. The CLI's rollback and promote result lines repeat what the agents' reporters already print. From T1910: this computer's local runner rolls back without `requireApplied` (drift there counts stopped containers as pending, which a broken app has); a workflow-only variant of the check would cover it. From T1913: the live rollback pass's own `mergeEdit` repeats `mergeChange`'s first half; splitting `mergeChange` into merge and wait in the harness would remove it. `builder-checks.ts` and `split-checks.ts` each define their own `DEPLOY_JOB`; `support.ts` now exports `SERVER_DEPLOY_JOB`. From T1917: the Workers failure message builds `opscrew rollback` with its flags inline, a third copy next to `provisionCommand` and `rollbackCommand` (the `opscrewCommand(plan, verb)` item). The lead's own: user-facing messages name feature numbers, which users don't know and which go stale (`retarget/start.ts` and `design/moves.ts` say "feature 022", now 023); drop the numbers.
 
 - [ ] T1916 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync.
-  - The changelog says every deploy workflow changes. Before the first rollback, each environment needs `opscrew provision` and its merged pull request.
+  - The changelog says every deploy workflow changes. Before the first rollback, each environment needs `opscrew provision` and its merged pull request. It also says that the next provision of an app with OpenSearch turns on its login, and `OPENSEARCH_URL` changes.
