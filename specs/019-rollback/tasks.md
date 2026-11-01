@@ -614,7 +614,7 @@ Each task keeps behaviour, apart from the bugs it names. Exported names used out
 - [x] T1927 Simplify the CLI, the MCP server, the plugin and the test harnesses, in `packages/cli/**`, `packages/mcp-server/**`, `plugin/**` and `packages/agents/src/testing/**` (+ tests)
   - Owns: those paths, plus one re-export of `pinnedText` in `packages/agents/src/rollback/index.ts` and `packages/agents/src/logs/failed.test.ts`'s use of the new test helper
   - Accept:
-    - **Bug, `rollback --list` cuts a site's pinned version short:** `rollback.ts`'s `pauseLine` prints `shortDigest` of a Worker version id or a Pages run id. Build the line from the agents' `pinnedText`, and say "to deploy forward again" where pushes don't deploy, as `status` does.
+    - **Bug, `rollback --list` cuts a site's pinned version short:** `rollback.ts`'s `pauseLine` prints `shortDigest` of a Worker version id or a Pages run id. Build the line from the agents' `pinnedText`. (Lead, during the task: the "to deploy forward again" wording for environments where pushes don't deploy is dropped; it needed a new export or a plan read, and the resume wording is right either way.)
     - **The CLI's rollback and promote result lines** no longer repeat what the agents' reporters already print.
     - **The live harnesses:**
       - `AppEnvironments.removeGithubLeftovers` clears each environment's deploy pause, and the four copies in `rollback`, `cloudflare-hosting`, `github-pages` and `split` go;
