@@ -38,8 +38,11 @@ export const SEVERAL_APPS_VARIABLES = [
 /** SC-1601: a static example live on Cloudflare within 10 minutes of the start of `provision`. */
 export const SC_1601_MS = 10 * 60_000;
 
-/** SC-1604: a rollback on Cloudflare answers with the previous version within a minute. */
-export const SC_1604_MS = 60_000;
+/**
+ * SC-1604: a rollback on Cloudflare answers with the previous version within 90 seconds: a minute
+ * until `opscrew rollback` (feature 019) set the deploy pause and waited for running deploys first.
+ */
+export const SC_1604_MS = 90_000;
 
 /** OpsCrew's security headers every answer of a site on Cloudflare carries (spec US1 scenario 4). */
 export const OPSCREW_HEADERS = [

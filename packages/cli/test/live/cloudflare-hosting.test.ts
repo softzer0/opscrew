@@ -4,7 +4,7 @@
  * on `e2e-` hostnames:
  * - `examples/static-vite` in `OPSCREW_E2E_GITHUB_REPO`: provision, the deploy, the headers, a
  *   second provision with nothing to change (the `www` redirect rule included), a change, a
- *   rollback within a minute (SC-1604), a Worker rename, staging promoted to prod with the same
+ *   rollback within 90 seconds (SC-1604), a Worker rename, staging promoted to prod with the same
  *   build SHA-256, and destroy leaving nothing. The time from `provision` to the first answer is
  *   logged; over 10 minutes is a finding that fails the run (SC-1601).
  * - `examples/astro-ssr` in `OPSCREW_E2E_GITHUB_REPO_B`, with a page showing the SHA-256 of its
@@ -230,7 +230,7 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "5. opscrew rollback goes back to the version before within a minute (SC-1604), then --resume",
+      "5. opscrew rollback goes back to the version before within 90 seconds (SC-1604), then --resume",
       minutes(15),
       async () => {
         // Without --to: the version before the running one.
