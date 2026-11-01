@@ -134,7 +134,10 @@ describe("opscrew rollback --list", () => {
         image: previous.digest as string,
         commit: previous.commit as string,
       },
-      leftOut: 2,
+      leftOut: [
+        { commit: "a".repeat(40), reason: "it is built for another CPU" },
+        { commit: "b".repeat(40), reason: "the registry no longer has it" },
+      ],
     });
     expect(await run(ctx, "rollback", "--list"), ctx.errors).toBe(0);
     expect(fake.calls[0]?.options.list).toBe(true);
@@ -151,13 +154,15 @@ describe("opscrew rollback --list", () => {
       `Deploys of prod are paused since 2026-10-20 11:00 UTC: \`opscrew rollback\` pinned it to ${(previous.commit as string).slice(0, 7)} (${(previous.digest as string).slice(0, 19)}).`,
     );
     expect(out).toContain("`opscrew rollback --resume`");
-    expect(out).toContain("Not offered: 2 more images of prod that failed");
+    expect(out).toContain(
+      "Not offered (prod):\n  aaaaaaa: it is built for another CPU\n  bbbbbbb: the registry no longer has it",
+    );
     expect(out).toContain("`opscrew rollback --to <commit or digest>`");
   });
 
   it("says when there are no versions", async () => {
     const ctx = await setup();
-    fake.answer = async () => ({ kind: "list", versions: [], leftOut: 0 });
+    fake.answer = async () => ({ kind: "list", versions: [], leftOut: [] });
     expect(await run(ctx, "rollback", "--list")).toBe(0);
     expect(ctx.output).toContain("No versions of prod were found to roll back to.");
   });
@@ -180,7 +185,7 @@ describe("opscrew rollback --list", () => {
           marks: ["previous"],
         },
       ],
-      leftOut: 0,
+      leftOut: [],
     });
     expect(await run(ctx, "rollback", "--list")).toBe(0);
     expect(ctx.output).toMatch(/202\s+[0-9a-f]{7}\s+2026-10-23 09:00 UTC\s+running/);
@@ -199,7 +204,7 @@ describe("opscrew rollback --list", () => {
         image: worker,
         commit: commitOf("a"),
       },
-      leftOut: 0,
+      leftOut: [],
     });
     expect(await run(ctx, "rollback", "--list")).toBe(0);
     expect(ctx.output).toContain(
@@ -213,7 +218,7 @@ describe("opscrew rollback --list", () => {
       kind: "list",
       versions: [version("1", 10, { marks: ["running"] })],
       paused: { reason: "move", since: "2026-10-20T11:00:00.000Z" },
-      leftOut: 0,
+      leftOut: [],
     });
     expect(await run(ctx, "rollback", "--list")).toBe(0);
     expect(ctx.output).toContain(
@@ -283,7 +288,7 @@ describe("opscrew rollback", () => {
   it("acts on the environment --env names", async () => {
     const prod = testPlan({ deployed: true });
     const ctx = await setup({ plans: { staging: inEnvironment(prod, "staging") } });
-    fake.answer = async () => ({ kind: "list", versions: [], leftOut: 0 });
+    fake.answer = async () => ({ kind: "list", versions: [], leftOut: [] });
     expect(await run(ctx, "rollback", "--env", "staging", "--list"), ctx.errors).toBe(0);
     expect(fake.calls[0]?.deps.paths.environment).toBe("staging");
     expect(ctx.output).toContain("No versions of staging were found");

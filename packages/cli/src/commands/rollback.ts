@@ -121,11 +121,9 @@ function printList(
       .join("\n");
     ctx.stdout(`\nVersions of ${name}, newest first:\n\n${table}\n`);
   }
-  if (leftOut > 0) {
-    const images = leftOut === 1 ? "1 more image" : `${leftOut} more images`;
-    ctx.stdout(
-      `\nNot offered: ${images} of ${name} that failed the provenance or CPU check, or that the registry no longer has.\n`,
-    );
+  if (leftOut.length > 0) {
+    const lines = leftOut.map((image) => `  ${image.commit.slice(0, 7)}: ${image.reason}`);
+    ctx.stdout(`\nNot offered (${name}):\n${lines.join("\n")}\n`);
   }
   if (paused !== undefined) ctx.stdout(`\n${pauseLine(name, paused, flag)}\n`);
   if (versions.length > 1) {

@@ -102,6 +102,7 @@ class FakePromoteGitHub implements PromoteGitHubApi {
       status: this.pending ? ("waiting" as const) : ("completed" as const),
       conclusion: this.pending ? null : "success",
       htmlUrl: "https://github.com/acme/shop/actions/runs/777",
+      headSha: STAGING_COMMIT,
     };
   }
   async getWorkflowRun(_owner: string, _repo: string, runId: number) {

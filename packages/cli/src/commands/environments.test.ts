@@ -230,7 +230,13 @@ describe("opscrew promote", () => {
     await writeFile(file, workflow);
     const bytes = Buffer.from(workflow, "utf8");
     const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
-    const waiting = { id: 777, status: "waiting" as const, conclusion: null, htmlUrl: runUrl };
+    const waiting = {
+      id: 777,
+      status: "waiting" as const,
+      conclusion: null,
+      htmlUrl: runUrl,
+      headSha: commit,
+    };
     const github: PromoteGitHubApi = {
       getRepo: async () => ({ defaultBranch: "main", private: true, canPush: true }),
       fileSha: async () => blob,
