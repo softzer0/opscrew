@@ -286,3 +286,138 @@ Docker 29.9.2, Compose 5.6.1:
 5. **5., Portainer:**
    - The switch works.
    - Every `up -d` restarts `release`, with the value written in the stack file, even when nothing changed. That predates 019.
+
+## R7. Logins for Kafka, Redpanda and OpenSearch (2026-11-01)
+
+The founder added these logins to 019 on 2026-11-01 ([roadmap](../roadmap.md)). A Sonnet agent
+read 14 official pages for the pinned versions: Kafka 4.3.1 (`apache/kafka`), Redpanda v26.2.5 and
+OpenSearch 3.9.0. It also mapped the code. "Unconfirmed" marks a fact no fetched page stated.
+
+### Kafka
+
+Sources:
+- [SASL authentication](https://kafka.apache.org/43/security/authentication-using-sasl/)
+- [the Docker image](https://raw.githubusercontent.com/apache/kafka/trunk/docs/getting-started/docker.md)
+- its [`launch`](https://raw.githubusercontent.com/apache/kafka/4.3/docker/jvm/launch) script
+- its [`configure`](https://raw.githubusercontent.com/apache/kafka/4.3/docker/resources/common-scripts/configure) script
+
+**Where users live**
+- In KRaft, SCRAM credentials are stored in the metadata log.
+- `kafka-storage.sh format --add-scram 'SCRAM-SHA-256=[name=…,password=…]'` creates users at format time.
+- `kafka-configs.sh --bootstrap-server … --alter --add-config 'SCRAM-SHA-512=[password=…]' --entity-type users --entity-name …` creates or updates them later.
+- Credentials for inter-broker traffic must exist before the broker starts.
+
+**Settings**
+- Broker: `listeners=SASL_PLAINTEXT://…`, `sasl.enabled.mechanisms`, and, for inter-broker logins, `listener.name.<listener>.<mechanism>.sasl.jaas.config` with `ScramLoginModule`.
+- Client: `security.protocol`, `sasl.mechanism`, `sasl.jaas.config`.
+
+**The image**
+- Environment variables map to properties: `.` becomes `_`, `_` becomes `__`, `-` becomes `___`, and the name gets the prefix `KAFKA_`.
+- Its start script formats storage itself, with no way to add `--add-scram`. It carries on when storage is already formatted.
+
+**Today** (`catalog/entries.ts`)
+- Listeners: `PLAINTEXT://:9092` and `CONTROLLER://localhost:9093`.
+- The health check is `kafka-broker-api-versions.sh` against `localhost:9092`, with no login.
+- `auth: "internal-only"`, `secrets: []`.
+
+### Redpanda
+
+Sources:
+- [authentication](https://docs.redpanda.com/current/manage/security/authentication/)
+- [production deployment](https://docs.redpanda.com/current/deploy/deployment-option/self-hosted/manual/production/production-deployment/)
+- [cluster properties](https://docs.redpanda.com/current/reference/properties/cluster-properties/)
+
+**The order**
+- Enabling authorization without a superuser can lock you out. The documented order: set `superusers`, create a SCRAM user, then enable SASL, then ACLs.
+
+**Ways to create the first user**
+- `RP_BOOTSTRAP_USER=user:password[:mechanism]` creates one user on the first start only.
+- `.bootstrap.yaml` next to `redpanda.yaml` is read on the first start only. Whether it takes `enable_sasl` is unconfirmed.
+
+**Turning SASL on**
+- `enable_sasl: true` is a cluster property. It needs no restart and turns authorization on too.
+- The alternative is per-listener `authentication_method: sasl` plus `kafka_enable_authorization`, with a restart. Use one of the two, never both.
+- Superusers skip ACLs.
+
+**Unconfirmed**
+- Whether the admin API (port 9644, used by the health check and by `rpk`) stays open while `admin_api_require_auth` is off.
+
+**Today**
+- `redpanda start … --kafka-addr 0.0.0.0:9092`, no environment, `secrets: []`.
+
+### OpenSearch
+
+Sources:
+- [TLS](https://docs.opensearch.org/latest/security/configuration/tls/)
+- [generating certificates](https://docs.opensearch.org/latest/security/configuration/generate-certificates/)
+- [securityadmin](https://docs.opensearch.org/latest/security/configuration/security-admin/)
+- [Docker](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/docker/)
+
+**TLS**
+- "TLS is optional for the REST layer and mandatory for the transport layer." `plugins.security.ssl.http.enabled` defaults to `false`.
+- The transport needs `pemcert_filepath`, `pemkey_filepath` (a PKCS#8 key) and `pemtrustedcas_filepath`, under the `config` folder.
+
+**Certificate names**
+- `plugins.security.nodes_dn` lists the node certificates.
+- `plugins.security.authcz.admin_dn` lists the admin certificates. A node certificate can't be one.
+- The guide turns off `enforce_hostname_verification`.
+- It generates a CA, a node and an admin certificate with `openssl genrsa`, `pkcs8 -topk8 -nocrypt`, `req` and `x509 -req`.
+
+**The admin user and the security index**
+- Since 2.12 the demo setup needs `OPENSEARCH_INITIAL_ADMIN_PASSWORD`, which must pass a strength check.
+- The demo setup installs public certificates and default users, so it is never used.
+- `securityadmin.sh` writes the security index from `config/opensearch-security/`. Its page lists HTTP TLS as a prerequisite.
+
+**Unconfirmed**
+- Whether 3.9.0 starts with security on, HTTP TLS off, its own certificates and no demo setup.
+- How the admin password gets in: `internal_users.yml` with a bcrypt hash from the plugin's `tools/hash.sh`, plus `allow_default_init_securityindex`.
+
+**Clients**
+- opensearch-js takes the login in the URL (`http://user:password@host:9200`).
+- opensearch-py and the Elasticsearch clients: unconfirmed.
+
+**Today**
+- `DISABLE_SECURITY_PLUGIN=true`, `DISABLE_INSTALL_DEMO_CONFIG=true`, the variable `OPENSEARCH_URL` (detection also reads `OPENSEARCH_NODE`).
+- The `ELASTICSEARCH` entry is the model to follow: its `PASSWORD` secret is in the URL as `http://elastic:<password>@host:9200`.
+
+### Apps
+
+- No environment-variable convention exists for Kafka logins (kafkajs, librdkafka, sarama, franz-go).
+- Spring Boot binds `spring.kafka.properties[…]`. Whether `SPRING_KAFKA_PROPERTIES_SASL_MECHANISM` reaches the dotted key is unconfirmed.
+- `packages/detect` reads manifests and variable names, not source, so it can't see a client's SASL settings today.
+
+### What the code assumes (code map)
+
+`auth: "internal-only"` is fixed per kind, and these places read it:
+- the design line `noLoginLine` (`design/placement.ts`);
+- the device-grant refusal (`vpn/grants.ts`, `plan-schema/src/placement.ts`);
+- `design/plan.ts`, whether a variable is secret;
+- the network runbook;
+- the login checks in `secure/services.ts` and `secure/portainer.ts`;
+- `secops/src/hardening/services.ts`;
+- the guide pages `split-placement.md` and `search-and-analytics.md`.
+
+Other limits:
+- A service's generated values reach the server only as its `<name>.env` (a GitHub secret per service with secrets, `provision/secrets.ts`).
+- Config files are mounted from the runtime folder and hold no secrets.
+- `GeneratedSecret.format` is `hex32` or `garage-key-id`.
+
+### The lead's first reading, for the spike to confirm
+
+**Kafka and Redpanda: opt-in per service**
+- An app's client sends a login only when its code is configured to, so turning it on is the user's choice.
+- When on, the app gets these variables (OpsCrew's names; no standard exists):
+  - `KAFKA_SASL_MECHANISM` (`SCRAM-SHA-512`)
+  - `KAFKA_SASL_USERNAME`
+  - `KAFKA_SASL_PASSWORD`
+  - `KAFKA_SECURITY_PROTOCOL` (`SASL_PLAINTEXT`)
+
+**Users made after the start, so an existing broker can turn it on too**
+- Kafka keeps a PLAINTEXT listener on loopback for its own traffic and the health check. Only the clients' listener asks for SASL, and the user is added through the loopback listener with `kafka-configs.sh`. That needs no format-time trick and no inter-broker login.
+- Redpanda gets its user, `superusers` and `enable_sasl` through `rpk` on the admin API, in that order. The admin API isn't published.
+
+**OpenSearch: default on**
+- The security plugin runs with HTTP TLS off, and the login is in `OPENSEARCH_URL`, as Elasticsearch's is.
+- An app that reads that variable needs no change.
+- Certificates are made on the server for the traffic between nodes and never leave it.
+- Turning the plugin on for an engine that already holds data must keep its indexes.
