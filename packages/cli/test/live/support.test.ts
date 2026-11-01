@@ -36,10 +36,13 @@ import {
   BUILD_JOB,
   blockedByCloudflare,
   cloudflareRecordProblems,
+  DEPLOY_JOBS,
   deployJobFailed,
+  deployRunProblem,
   expectedSharedHosts,
   HEALTH_BREAKS,
   ipv6PrefixForms,
+  jobSucceeded,
   jsonStrings,
   leakedLabels,
   missingBuildSteps,
@@ -51,6 +54,7 @@ import {
   rulesCleanup,
   runHostname,
   Scrubber,
+  SERVER_DEPLOY_JOB,
   type SourceEdit,
   sbomPackages,
   seededDescription,
@@ -696,29 +700,79 @@ describe("removalApproval", () => {
 
 describe("deployJobFailed", () => {
   const ok = { conclusion: "success" };
-  it("judges a finished job by its conclusion", () => {
-    expect(deployJobFailed({ name: "deploy", conclusion: "success", steps: [] }, "success")).toBe(
-      false,
-    );
-    expect(deployJobFailed({ name: "deploy", conclusion: "skipped", steps: [ok] }, "success")).toBe(
-      true,
-    );
-    expect(deployJobFailed({ name: "deploy", conclusion: "failure", steps: [ok] }, "failure")).toBe(
-      true,
-    );
+  const deploy = SERVER_DEPLOY_JOB;
+  it("needs each target's deploy job to have succeeded: skipped is a failed deploy", () => {
+    for (const name of DEPLOY_JOBS) {
+      expect(deployJobFailed({ name, conclusion: "success", steps: [] }, "success")).toBe(false);
+      expect(deployJobFailed({ name, conclusion: "skipped", steps: [] }, "success")).toBe(true);
+      expect(deployJobFailed({ name, conclusion: "failure", steps: [ok] }, "failure")).toBe(true);
+    }
+  });
+
+  it("lets every other job be skipped, and fails it only on a failure, cancellation or timeout", () => {
+    // A push's run: `paused` and `verify` skipped; a rollback's: the build skipped (feature 019).
+    for (const name of ["Report the deploy pause", "Check where the image was built", BUILD_JOB]) {
+      expect(deployJobFailed({ name, conclusion: "skipped", steps: [] }, "success")).toBe(false);
+      expect(deployJobFailed({ name, conclusion: "success", steps: [ok] }, "success")).toBe(false);
+    }
+    for (const conclusion of ["failure", "cancelled", "timed_out", "startup_failure"]) {
+      expect(deployJobFailed({ name: BUILD_JOB, conclusion, steps: [] }, "failure")).toBe(true);
+    }
   });
 
   it("takes a job GitHub still lists as running from its steps, only when the run succeeded", () => {
     const steps = [ok, { conclusion: "skipped" }, ok];
-    expect(deployJobFailed({ name: "deploy", conclusion: null, steps }, "success")).toBe(false);
-    expect(deployJobFailed({ name: "deploy", conclusion: null, steps }, "failure")).toBe(true);
-    expect(deployJobFailed({ name: "deploy", conclusion: null, steps: [] }, "success")).toBe(true);
-    expect(
-      deployJobFailed(
-        { name: "deploy", conclusion: null, steps: [ok, { conclusion: null }] },
-        "success",
-      ),
-    ).toBe(true);
+    for (const name of [deploy, BUILD_JOB]) {
+      expect(deployJobFailed({ name, conclusion: null, steps }, "success")).toBe(false);
+      expect(deployJobFailed({ name, conclusion: null, steps }, "failure")).toBe(true);
+      expect(deployJobFailed({ name, conclusion: null, steps: [] }, "success")).toBe(true);
+      expect(
+        deployJobFailed({ name, conclusion: null, steps: [ok, { conclusion: null }] }, "success"),
+      ).toBe(true);
+    }
+  });
+});
+
+describe("jobSucceeded", () => {
+  const ok = { conclusion: "success" };
+  it("needs success: a skipped job did not succeed", () => {
+    expect(jobSucceeded({ name: "x", conclusion: "success", steps: [] }, "success")).toBe(true);
+    expect(jobSucceeded({ name: "x", conclusion: "skipped", steps: [] }, "success")).toBe(false);
+    expect(jobSucceeded({ name: "x", conclusion: null, steps: [ok] }, "success")).toBe(true);
+    expect(jobSucceeded({ name: "x", conclusion: null, steps: [ok] }, "failure")).toBe(false);
+  });
+});
+
+describe("deployRunProblem", () => {
+  const job = (name: string, conclusion: string) => ({ name, conclusion, steps: [] });
+  const paused = job("Report the deploy pause", "skipped");
+  it("passes a run whose deploy job succeeded, with other jobs skipped", () => {
+    const run = {
+      conclusion: "success",
+      jobs: [paused, job(BUILD_JOB, "success"), job(SERVER_DEPLOY_JOB, "success")],
+    };
+    expect(deployRunProblem(run)).toBeUndefined();
+  });
+
+  it("fails a run that lists no known deploy job, so a renamed one never passes skipped", () => {
+    const run = {
+      conclusion: "success",
+      jobs: [paused, job(BUILD_JOB, "success"), job("Deploy it somewhere new", "skipped")],
+    };
+    expect(deployRunProblem(run)).toMatch(/lists none of the deploy jobs Deploy to the server, /);
+    expect(deployRunProblem({ conclusion: "success", jobs: [] })).toMatch(/lists none/);
+  });
+
+  it("fails a run whose deploy job was skipped or failed, or that did not succeed", () => {
+    const skipped = { conclusion: "success", jobs: [job(SERVER_DEPLOY_JOB, "skipped")] };
+    expect(deployRunProblem(skipped)).toBe(`it ended success; jobs: ${SERVER_DEPLOY_JOB}=skipped`);
+    const failed = { conclusion: "failure", jobs: [job("Deploy to Cloudflare", "failure")] };
+    expect(deployRunProblem(failed)).toMatch(/^it ended failure;/);
+    const cancelled = {
+      conclusion: "cancelled",
+      jobs: [job("Publish on GitHub Pages", "success"), job("Label", "cancelled")],
+    };
+    expect(deployRunProblem(cancelled)).toMatch(/^it ended cancelled;/);
   });
 });
 

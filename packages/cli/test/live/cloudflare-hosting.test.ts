@@ -18,13 +18,14 @@ import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
-import { siteEnvSecret } from "@opscrew/iac-templates";
+import { checkEnvironmentKey, siteEnvSecret } from "@opscrew/iac-templates";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { httpRequest, minutes, sleep, waitFor } from "./cloud";
 import { AppEnvironments, opscrewUntilApproved, secretsRecord } from "./environment-checks";
 import { type CliRun, LiveRun, REPO_ROOT, serverSettings } from "./harness";
 import { liveRunTarget, logsAndFigures } from "./observability-checks";
+import { shownRollback } from "./rollback-support";
 import {
   CLOUDFLARE_HOSTING_VARIABLES,
   redirectProblem,
@@ -37,7 +38,6 @@ import {
 import {
   designSite,
   expectHeaders,
-  rollBack,
   siteEnv,
   siteHosts,
   siteSettings,
@@ -48,6 +48,7 @@ import {
   wwwAnswers,
   wwwOn,
 } from "./site-checks";
+import { clearDeployPause } from "./split-checks";
 import { approveHashes, duration, missingVariables } from "./support";
 
 const GATE = "OPSCREW_E2E_CLOUDFLARE_HOSTING";
@@ -229,10 +230,14 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "5. promote --version rolls back to the version before within a minute (SC-1604)",
+      "5. opscrew rollback goes back to the version before within a minute (SC-1604), then --resume",
       minutes(15),
       async () => {
-        const { version, startedAt } = await rollBack(run);
+        // Without --to: the version before the running one.
+        const shown = await shownRollback(run);
+        const version = shown.to;
+        const startedAt = Date.now();
+        await run.opscrewOk("rollback", "--to", version, "--approve", shown.hash);
         await waitFor(
           `${host()} serving the version before the change`,
           minutes(3),
@@ -251,6 +256,8 @@ describe.skipIf(MISSING.length > 0)(
         const running = await workerRunning(run, workerOf(plan as DeployPlan));
         expect(running.version, "the version Cloudflare serves after the rollback").toBe(version);
         await expectHeaders(run, `https://${host()}/`);
+        // The rollback paused the deploys; the next steps deploy again.
+        await run.opscrewOk("rollback", "--resume", "--yes");
       },
     );
 
@@ -450,21 +457,13 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     /**
-     * `opscrew promote --to prod --version <version>` with `extra`, approved by the hash its first
-     * run printed: the approved run.
+     * `opscrew rollback --to <version>` with `extra`, approved by the hash its first run printed:
+     * the approved run.
      */
     async function approvedRollback(version: string, ...extra: string[]): Promise<CliRun> {
-      const args = ["promote", "--to", "prod", "--version", version, ...extra];
-      const shown = await ssr.opscrew(...args);
-      expect(
-        shown.exitCode,
-        `promote --version without --approve stops at the approval:\n${ssr.tail(shown.output)}`,
-      ).toBe(1);
-      const hash = approveHashes(shown.output).at(-1);
-      if (hash === undefined) {
-        throw new Error(`promote printed no command to approve:\n${ssr.tail(shown.output)}`);
-      }
-      return ssr.opscrew(...args, "--approve", hash);
+      const args = ["--to", version, ...extra];
+      const { hash } = await shownRollback(ssr, args);
+      return ssr.opscrew("rollback", ...args, "--approve", hash);
     }
 
     ssr.step(
@@ -520,6 +519,7 @@ describe.skipIf(MISSING.length > 0)(
         expect(running.version, "the version Cloudflare serves after the rollback").toBe(
           oldVersion,
         );
+        await ssr.opscrewOk("rollback", "--resume", "--yes");
         // What the secret page shows once it no longer shows the new secret; still the new one
         // after two minutes means the version before had it too.
         const shown = await waitFor(
@@ -564,6 +564,22 @@ describe.skipIf(MISSING.length > 0)(
       { always: true },
     );
 
-    envs.registerCleanup({ others: [ssrEnvs] });
+    envs.registerCleanup({
+      others: [ssrEnvs],
+      // Each app's entry in the deploy pause variable, which a run stopped between a rollback
+      // (step 5, S3) and its --resume leaves behind.
+      last: async (attempt) => {
+        for (const [app, planned] of [
+          [run, plan],
+          [ssr, ssrPlan],
+        ] as const) {
+          if (planned === undefined) continue;
+          const key = checkEnvironmentKey(planned);
+          await attempt(`clear the deploy pause of ${key}`, () =>
+            clearDeployPause(app.github, key),
+          );
+        }
+      },
+    });
   },
 );

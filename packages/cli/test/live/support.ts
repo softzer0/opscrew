@@ -602,18 +602,76 @@ export interface DeployJob {
   completedAt?: string | null;
 }
 
+/** The deploy job of a server's deploy workflow, as GitHub names it. */
+export const SERVER_DEPLOY_JOB = "Deploy to the server";
+
 /**
- * Whether a job of a finished deploy run did not succeed. GitHub can mark the run completed while
- * a job's own record still says in progress (seen live on 2026-10-18); such a job counts as
- * succeeded when the run succeeded and each of its steps succeeded or was skipped.
+ * The deploy job of each target's deploy workflow (a server, a Portainer, Cloudflare's hosting,
+ * GitHub Pages), as GitHub names it: a deploy run deploys only when it succeeded.
+ */
+export const DEPLOY_JOBS: readonly string[] = [
+  SERVER_DEPLOY_JOB,
+  "Deploy to Portainer",
+  "Deploy to Cloudflare",
+  "Publish on GitHub Pages",
+];
+
+/** The conclusions of a job that failed (a skipped job did not). */
+const FAILED_CONCLUSIONS: ReadonlySet<string> = new Set([
+  "failure",
+  "cancelled",
+  "timed_out",
+  "startup_failure",
+]);
+
+/**
+ * Whether a job of a finished run succeeded. GitHub can mark the run completed while a job's own
+ * record still says in progress (seen live on 2026-10-18); such a job counts as succeeded when the
+ * run succeeded and each of its steps succeeded or was skipped.
+ */
+export function jobSucceeded(job: DeployJob, runConclusion: string | null): boolean {
+  if (job.conclusion !== null) return job.conclusion === "success";
+  return (
+    runConclusion === "success" &&
+    job.steps.length > 0 &&
+    job.steps.every((step) => step.conclusion === "success" || step.conclusion === "skipped")
+  );
+}
+
+/**
+ * Whether a job of a finished deploy run failed the deploy: the deploy job ({@link DEPLOY_JOBS})
+ * unless it succeeded ({@link jobSucceeded}), any other job only with a failure, a cancellation or
+ * a timeout. Every deploy run skips some jobs (feature 019: `paused`, and the build or the check
+ * of a given digest), which is no failure.
  */
 export function deployJobFailed(job: DeployJob, runConclusion: string | null): boolean {
-  if (job.conclusion !== null) return job.conclusion !== "success";
-  return (
-    runConclusion !== "success" ||
-    job.steps.length === 0 ||
-    job.steps.some((step) => step.conclusion !== "success" && step.conclusion !== "skipped")
-  );
+  if (DEPLOY_JOBS.includes(job.name) || job.conclusion === null) {
+    return !jobSucceeded(job, runConclusion);
+  }
+  return FAILED_CONCLUSIONS.has(job.conclusion);
+}
+
+/**
+ * Why a finished deploy run did not deploy, `undefined` when it did: the run did not succeed, it
+ * lists no job of {@link DEPLOY_JOBS} (a deploy job renamed in the templates would otherwise let a
+ * skipped deploy pass), or a job failed it ({@link deployJobFailed}). Names jobs and conclusions
+ * only.
+ */
+export function deployRunProblem(run: {
+  conclusion: string | null;
+  jobs: readonly DeployJob[];
+}): string | undefined {
+  const jobs = run.jobs.map((job) => `${job.name}=${job.conclusion}`).join(", ");
+  if (!run.jobs.some((job) => DEPLOY_JOBS.includes(job.name))) {
+    return `it lists none of the deploy jobs ${DEPLOY_JOBS.join(", ")}; jobs: ${jobs}`;
+  }
+  if (
+    run.conclusion !== "success" ||
+    run.jobs.some((job) => deployJobFailed(job, run.conclusion))
+  ) {
+    return `it ended ${run.conclusion}; jobs: ${jobs}`;
+  }
+  return undefined;
 }
 
 /** Minutes and seconds in words (`3 min 5 s`). */

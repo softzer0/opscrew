@@ -39,12 +39,26 @@ describe("the server-less live tests' helpers", () => {
       "Cloudflare hosting, the Worker static-vite-demo (read from Cloudflare now):",
       "  Running: version 2f0c-new, deployed 2026-10-24 10:01 UTC, built by https://github.com/o/r/actions/runs/102",
       "  Before it: version 1e0b-old, deployed 2026-10-24 09:01 UTC, built by https://github.com/o/r/actions/runs/101",
-      "  Roll back to it: opscrew promote --to prod --version 1e0b-old",
+      "  Roll back to it: opscrew rollback --to 1e0b-old",
     ].join("\n");
     expect(statusVersions(output)).toEqual({ running: "2f0c-new", rollback: "1e0b-old" });
     expect(
-      statusVersions("  Roll back to it: opscrew promote --app docs --to prod --version 201\r\n"),
+      statusVersions("  Roll back to it: opscrew rollback --app docs --env prod --to 201\r\n"),
     ).toEqual({ rollback: "201" });
+    expect(
+      statusVersions(
+        "  Roll back: opscrew rollback --to 0d9a-older (the newest version uploaded before the one running)",
+      ),
+    ).toEqual({ rollback: "0d9a-older" });
+    expect(
+      statusVersions(
+        "  Roll back: opscrew rollback --env prod --to 4711 (the newest run created before the last one)\n",
+      ),
+    ).toEqual({ rollback: "4711" });
+    // Promote no longer rolls a site back (feature 019).
+    expect(statusVersions("  Roll back to it: opscrew promote --to prod --version 201")).toEqual(
+      {},
+    );
     expect(statusVersions("  Running: nothing deployed yet")).toEqual({});
   });
 

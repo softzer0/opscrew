@@ -40,7 +40,7 @@ import {
   approveHashes,
   blockedByCloudflare,
   cloudflareRecordProblems,
-  deployJobFailed,
+  deployRunProblem,
   duration,
   ed25519FromKeyscan,
   expectedSharedHosts,
@@ -1238,11 +1238,9 @@ export class LiveRun {
     run: Awaited<ReturnType<GitHubRepo["waitForDeploy"]>>,
     what: string,
   ): number {
-    const failed = run.jobs.filter((job) => deployJobFailed(job, run.conclusion));
-    if (run.conclusion !== "success" || failed.length > 0) {
-      throw new Error(
-        `The deploy run ${run.id} (${what}) ended ${run.conclusion}; jobs: ${run.jobs.map((j) => `${j.name}=${j.conclusion}`).join(", ")}.`,
-      );
+    const problem = deployRunProblem(run);
+    if (problem !== undefined) {
+      throw new Error(`The deploy run ${run.id} (${what}) did not deploy: ${problem}.`);
     }
     this.log(`deploy run ${run.id} (${what}) succeeded`);
     return run.id;

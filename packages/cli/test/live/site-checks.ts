@@ -2,19 +2,17 @@
  * What feature 016's live tests on the server-less targets (`cloudflare-hosting.test.ts`,
  * `github-pages.test.ts`, `several-apps.test.ts`) share on top of the harness and the environment
  * checks: the CLI's tokens for a site, the design of a site as a user starts it, its hostnames and
- * workflow, OpsCrew's headers on an answer, the version a Worker runs and the build it came from,
- * and a rollback through `opscrew promote --version`, each approved by its hash. Everything logged
- * goes through the run's scrubber.
+ * workflow, OpsCrew's headers on an answer, and the version a Worker runs and the build it came
+ * from. Everything logged goes through the run's scrubber.
  */
 import { writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
-import { expect } from "vitest";
 import { httpRequest, minutes, waitFor } from "./cloud";
 import type { AppEnvironments } from "./environment-checks";
 import type { LiveRun, ServerSettings } from "./harness";
-import { missingHeaders, servingVersion, statusVersions, versionBuild } from "./serverless-support";
-import { approveHashes, duration } from "./support";
+import { missingHeaders, servingVersion, versionBuild } from "./serverless-support";
+import { duration } from "./support";
 
 /** The deploy token the Cloudflare passes give OpsCrew (`OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN`). */
 export const DEPLOY_TOKEN = process.env.OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN?.trim() ?? "";
@@ -178,44 +176,4 @@ export async function workerExists(run: LiveRun, worker: string): Promise<boolea
   const accountId = run.zone?.accountId;
   if (accountId === undefined) throw new Error("The run has no Cloudflare zone.");
   return (await run.cloudflare.workerDeployments(accountId, worker)) !== undefined;
-}
-
-/**
- * Prod's rollback as a user runs it: `opscrew status` names the version before and its command
- * (or `version` is given); `promote --to prod --version <it>` shows the rollback and stops at its
- * approval (exit 1); the same with `--approve <the hash it printed>` rolls back. Returns the
- * version and when the approved run started, for the "within a minute" checks.
- */
-export async function rollBack(
-  run: LiveRun,
-  version?: string,
-): Promise<{ version: string; startedAt: number }> {
-  let rollback = version;
-  if (rollback === undefined) {
-    const status = await run.opscrewOk("status");
-    rollback = statusVersions(status.stdout).rollback;
-    if (rollback === undefined) {
-      throw new Error(
-        `opscrew status named no version to roll back to:\n${run.tail(status.output)}`,
-      );
-    }
-  }
-  const promote = ["promote", "--to", "prod"];
-  const shown = await run.opscrew(...promote, "--version", rollback);
-  expect(
-    shown.exitCode,
-    `promote --version without --approve stops at the approval:\n${run.tail(shown.output)}`,
-  ).toBe(1);
-  const hash = approveHashes(shown.output).at(-1);
-  if (hash === undefined) {
-    throw new Error(`promote printed no command to approve:\n${run.tail(shown.output)}`);
-  }
-  const startedAt = Date.now();
-  const approved = await run.opscrew(...promote, "--version", rollback, "--approve", hash);
-  if (approved.exitCode !== 0) {
-    throw new Error(
-      `The approved rollback to ${rollback} exited with ${approved.exitCode}. A version older than a secret change is refused, naming the secrets, unless --allow-old-secrets names them (T1623):\n${run.tail(approved.output)}`,
-    );
-  }
-  return { version: rollback, startedAt };
 }

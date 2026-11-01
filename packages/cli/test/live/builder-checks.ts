@@ -27,9 +27,9 @@ import { deployedImage } from "./portainer-support";
 import {
   applyEdit,
   BUILD_JOB,
-  deployJobFailed,
   generatesValues,
   HEALTH_BREAKS,
+  jobSucceeded,
   type LoadFailure,
   leakedLabels,
   missingBuildSteps,
@@ -470,7 +470,7 @@ export async function builderChecks(
     // (Buildpacks and Railpack: their build-<commit> images, which share the layers, are deleted).
     const prune = restored.jobs.find((job) => job.name === PRUNE_JOB);
     expect(
-      prune !== undefined && !deployJobFailed(prune, restored.conclusion),
+      prune !== undefined && jobSucceeded(prune, restored.conclusion),
       `the "${PRUNE_JOB}" job of the last deploy succeeded`,
     ).toBe(true);
     for (const image of [first, final]) {

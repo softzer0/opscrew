@@ -43,8 +43,8 @@ of the pass passed; otherwise the status says how many of its steps did.
 | The server's runner (`runners.test.ts`): the deploy job on the server while its firewall refuses SSH from GitHub's Actions ranges | `OPSCREW_E2E_RUNNER=1`, a Cloudflare domain | Passed, 6 of 6 steps (run 2; run 1 found the runner's `docker` group) | 2026-10-22 | — |
 | A runner machine (`runners.test.ts`): the image built on a throwaway runner machine with its SSH firewall (kept across a reboot) and deployed over SSH to a server that refuses GitHub's ranges | `OPSCREW_E2E_RUNNER_HOST=1`, a Cloudflare domain | Passed, 6 of 6 steps, the SSH firewall included (run 3) | 2026-10-23 | — |
 | The local runner (`local-runner.test.ts`, quickstart "5.", SC-1507): dev on this computer, the deploy jobs of its first deploy and of a change on the local runner, the new version answering locally within 10 minutes, `stop()` leaving no runner at GitHub, destroy leaving nothing in Docker ([its steps](e2e.md#the-local-runner)) | `OPSCREW_E2E_LOCAL_RUNNER=1`, Docker here, a private repository | Passed, 7 of 7 steps on Windows (run 6; runs 1–5 found six fixes, see Live results); 8 of 8 with 017's step 4b on Ubuntu under WSL (run 3; runs 1–2 found T1718 and T1714c) | 2026-10-29 | — |
-| Cloudflare's hosting (`cloudflare-hosting.test.ts`, feature 016, quickstart "1.", "2.", "4.", "5."): a static site live within 10 minutes of provision (SC-1601), its headers and `www` redirect, a second provision with nothing to change, a change, a rollback within a minute (SC-1604), a Worker rename, staging promoted to prod with the same build SHA-256, destroy leaving nothing; an SSR app rendered per request with its secret, a rollback across a secret change refused, then done with `--allow-old-secrets`, and the leak search (SC-1602) ([its steps](e2e.md#cloudflares-hosting)) | `OPSCREW_E2E_CLOUDFLARE_HOSTING=1`, `OPSCREW_E2E_GITHUB_REPO_B`, `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN`, a Cloudflare domain | **Passed** (13 steps; 14 with 017's step S2b) | 2026-10-29 (run 5) | — |
-| GitHub Pages (`github-pages.test.ts`, feature 016, quickstart "3."): Pages on with its custom domain and DNS-only records, the verification record and the printed Verify step, the certificate and HTTPS enforced (SC-1603), destroy in the takeover-safe order with the verification record kept, then removed (SC-1605) ([its steps](e2e.md#github-pages)) | `OPSCREW_E2E_GITHUB_PAGES=1`, the public `OPSCREW_E2E_GITHUB_REPO_C`, a Cloudflare domain | **Passed** (7 steps) | 2026-10-24 (run 2) | — |
+| Cloudflare's hosting (`cloudflare-hosting.test.ts`, feature 016, quickstart "1.", "2.", "4.", "5."): a static site live within 10 minutes of provision (SC-1601), its headers and `www` redirect, a second provision with nothing to change, a change, a rollback within a minute (SC-1604), a Worker rename, staging promoted to prod with the same build SHA-256, destroy leaving nothing; an SSR app rendered per request with its secret, a rollback across a secret change refused, then done with `--allow-old-secrets`, and the leak search (SC-1602) ([its steps](e2e.md#cloudflares-hosting)) | `OPSCREW_E2E_CLOUDFLARE_HOSTING=1`, `OPSCREW_E2E_GITHUB_REPO_B`, `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN`, a Cloudflare domain | **Passed** (13 steps; 14 with 017's step S2b). Steps 5 and S3 with `opscrew rollback` and `--resume` (feature 019): **not run yet** | 2026-10-29 (run 5) | — |
+| GitHub Pages (`github-pages.test.ts`, feature 016, quickstart "3."): Pages on with its custom domain and DNS-only records, the verification record and the printed Verify step, the certificate and HTTPS enforced (SC-1603), a rollback with `opscrew rollback` (a re-run, feature 019), destroy in the takeover-safe order with the verification record kept, then removed (SC-1605) ([its steps](e2e.md#github-pages)) | `OPSCREW_E2E_GITHUB_PAGES=1`, the public `OPSCREW_E2E_GITHUB_REPO_C`, a Cloudflare domain | **Passed** (7 steps). Step 4b, the rollback (feature 019): **not run yet** | 2026-10-24 (run 2) | — |
 | Two apps in one repository (`several-apps.test.ts`, feature 016, US6): two static sites on Cloudflare's hosting, each with its own hostname, workflow and secrets, the second destroyed while the first answers (SC-1607) ([its steps](e2e.md#two-apps-in-one-repository)) | `OPSCREW_E2E_SEVERAL_APPS=1`, `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN`, a Cloudflare domain | **Passed** (5 steps) | 2026-10-24 (run 4) | — |
 | The localhost Docker pass (`test/e2e/localhost.test.ts`, feature 015, quickstart "1."): the site at `https://<app>.localhost` through the local CA, a second environment beside it, the stack's differences from a server's, destroy leaving nothing | `OPSCREW_DOCKER_TESTS=1`, Docker here | Passed, 7 of 7 tests: Windows by hand; Linux CI (`ubuntu-latest`); Intel macOS CI (`macos-15-intel` with Colima, run 39805990349, where the first provision takes about 9 minutes) | 2026-10-22 | — |
 | The off-Linux Buildpacks build (`test/e2e/off-linux-build.test.ts`): the pinned Linux `pack` in a container builds `examples/go-api` on a computer that is not Linux | `OPSCREW_DOCKER_TESTS=1`, Docker here, not Linux | Passed on Windows by hand (442 s). Intel macOS CI: **not tested live**: a plain `docker pull` of the 1.5 GB Paketo builder kills Colima's VM there, even one layer at a time, with no OpsCrew code involved, so the job no longer runs it | 2026-10-22 (Windows) | A macOS computer with more room for Docker |
@@ -57,6 +57,7 @@ of the pass passed; otherwise the status says how many of its steps did.
 | Ctrl+C on `logs --follow` over SSH and on `addon open beszel` on Windows (feature 017) | by hand ([how](e2e.md#windows-by-hand)) | **Not run yet** | — | A Windows computer |
 | Split placement and the private network (`split.test.ts`, feature 018, quickstart "1."–"6."): Postgres with seeded rows moved to a second Hetzner server and back through its maintenance windows, rows and checksum kept (SC-1802), its port closed to the internet (SC-1801), `status`' link against design's estimate (SC-1808), a deploy across both, a reboot of each (SC-1803), a device reaching SSH (SC-1804), public SSH closed and opened from the device (SC-1805), a read-only grant (SC-1806), the deploy pause's experiment, the second server deleted, destroy and the leak search (SC-1807) ([its steps](e2e.md#split-placement-and-the-private-network)) | `OPSCREW_E2E_SPLIT=1`, a Cloudflare domain, a private repository, Docker here | **Passed** (11 steps, run 9) | 2026-10-31 | — |
 | Split placement with the second server at DigitalOcean (the same pass) | + `OPSCREW_E2E_DIGITALOCEAN_TOKEN` | **Not run yet** | — | A DigitalOcean API token |
+| Rollback on Hetzner (`rollback.test.ts`, feature 019): `opscrew rollback` in a script shows the rollback and changes nothing, then `--approve <hash>` under load with no build and no release command, timed from the approval (SC-1901); `status` paused; a push while paused skipped with the `paused` job's notice, `--resume --deploy` (SC-1902); `--list` and a refused `--to` (SC-1903); a version that never answers and `logs --failed` (SC-1904); destroy and the leak search (SC-1905) ([its steps](e2e.md#rollback)) | `OPSCREW_E2E_ROLLBACK=1`, a Cloudflare domain, + `OPSCREW_E2E_GHCR_READ_TOKEN` | **Not run yet** | — | — |
 
 Run in development, not tracked by date:
 
@@ -164,8 +165,8 @@ Run in development, not tracked by date:
 - **Server rendering with Next.js, Nuxt or SvelteKit** on Cloudflare: the live pass and the Docker
   pass deploy Astro; the other adapters have unit tests only (adapt's playbooks, and the spike's
   builds).
-- **A rollback on GitHub Pages** (a re-run of an earlier run) and a private repository's refusal:
-  unit tests and the spike only.
+- **A private repository's refusal** on GitHub Pages: unit tests and the spike only. The rollback
+  (a re-run of an earlier run) is step 4b of the Pages pass.
 - **Raising the zone's minimum TLS on Cloudflare's hosting**: the e2e zone is already at 1.2, so
   provision has nothing to raise there; unit tests cover the raise and the advice.
 
@@ -219,6 +220,21 @@ Run in development, not tracked by date:
   does not dispatch the check.
 - **The app's server at DigitalOcean:** it is always at Hetzner; with the DigitalOcean token only
   the second server goes there.
+
+### Rollback (feature 019)
+
+The live pass rolls back a server OpsCrew created at Hetzner, and the site passes roll back on
+Cloudflare's hosting and GitHub Pages. These have unit tests only:
+
+- **Your existing Portainer:** the rollback dispatch to a stack, with its release placeholder, and
+  the pause there.
+- **Your own server:** the same dispatch as on a server OpsCrew created, on a host OpsCrew didn't
+  create.
+- **This computer:** an earlier image on this computer, with the local runner and without it.
+- **A promoted environment:** a rollback by digest of an environment promoted from another, and
+  `promote` refusing while it is paused.
+- **A run held for a reviewer:** a rollback run that waits in GitHub for a required reviewer,
+  recorded by the next `opscrew rollback` once it finished, or its pause put back when it failed.
 
 ## Confirmed live behaviour
 

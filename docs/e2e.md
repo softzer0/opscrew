@@ -1356,10 +1356,11 @@ The static site:
    within 5 minutes. `status` must then name a new running version and offer the one before as its
    rollback. Cloudflare's deployments must serve the version `status` names, and its message must
    name the run and the build's SHA-256.
-5. **A rollback:** `promote --to prod --version <the one before>` stops at its approval (exit 1);
-   with `--approve <hash>` it activates that version, and the site must serve the version before
-   the change again (the change's file answers 404, or the single-page app). The time from the approved run's start is logged; over a minute is a finding
-   (SC-1604).
+5. **A rollback:** `opscrew rollback` stops at its approval (exit 1) and prints the command with
+   the version before and the hash; `rollback --to <it> --approve <hash>` activates that version,
+   and the site must serve the version before the change again (the change's file answers 404,
+   or the single-page app). The time from the approved run's start is logged; over a minute is a
+   finding (SC-1604). Then `rollback --resume --yes` turns the deploys back on for the next steps.
 6. **A Worker rename:** as a user renames the app's Worker, the test sets `target.worker` in
    `opscrew/plan.yaml` to `<worker>-r`. `provision` replaces the Worker (its plan deletes the old
    one, so it also needs the app's name, `--confirm`), and the merge of its pull request deploys the
@@ -1396,11 +1397,11 @@ The server-rendered app:
 - **S3. A new value:** the test writes another stand-in, and `provision` must set GitHub's
   `OPSCREW_ENV_STRIPE_SECRET_KEY` again. After a merged change, `/secret` shows the new value's
   SHA-256. Then the rollback of step 5, to the version that ran before the new value (noted
-  first), with `promote --version <it>`. Cloudflare may refuse a
-  version older than a secret change unless the deployment is forced (T1610b's note): when the
-  approved rollback fails, the step fails with OpsCrew's output and says that `deployWorkerVersion`
-  then needs Cloudflare's `force`. When it passes, the rolled-back version must serve its own
-  (old) secret; anything else is a finding.
+  first), with `rollback --to <it>`. Approved, it must be refused (exit 1), naming the secret and
+  `--allow-old-secrets <name>`, and Cloudflare must still serve the new version. With
+  `--allow-old-secrets STRIPE_SECRET_KEY`, approved by its own hash, it goes ahead, and Cloudflare
+  must serve the old version. The rolled-back version must serve its own (old) secret; anything
+  else is a finding. Then `rollback --resume --yes`.
 - **S4. Destroyed:** nothing of it may be left at Cloudflare or GitHub.
 
 9. **Nothing leaked,** as for environments, over both apps: no token (the deploy token included)
@@ -1413,14 +1414,16 @@ destroy` for each environment not destroyed yet (the SSR app first), within the 
 [environments](#environments-and-promotion). Then, through the APIs: the GitHub environments that
 appeared during the run and the deploy secrets OpsCrew's records name; in Cloudflare, the run's
 Workers (under every name they had), the custom domains and records on the run's hostnames,
-OpsCrew's shared rules that list only them, and the seeded rules; then both repositories are reset.
+OpsCrew's shared rules that list only them, and the seeded rules; then each app's entry in its
+repository's `OPSCREW_DEPLOY_PAUSED` (a run stopped between a rollback and its `--resume` leaves
+it), and both repositories are reset.
 
 If a run was interrupted, delete by hand: in Cloudflare's **Workers & Pages**, the Workers each
 plan's `target.worker` names (the example's app name, with `-r` after the rename and `-staging`
 for staging), which takes their custom domains with them; the records on the run's hostnames
 `e2e-<run id>…` and those hostnames in OpsCrew's shared rules; and in both repositories the Actions
 secrets `OPSCREW_CLOUDFLARE_API_TOKEN`, `OPSCREW_CLOUDFLARE_ACCOUNT_ID` and `OPSCREW_ENV_…` (with
-staging's prefix too).
+staging's prefix too) and the variable `OPSCREW_DEPLOY_PAUSED`.
 
 | Variable | What it is |
 |---|---|
@@ -1471,6 +1474,13 @@ gets the Cloudflare token for the DNS records.
    OpsCrew's spike saw about 65 minutes before the DNS check passed). Then `https://<host>/` must
    serve the site, `http://<host>/` must answer 301 to it, `verify` must pass and `status` must say
    that HTTPS is enforced.
+
+   **4b. A rollback** (feature 019): a merged change adds `static/opscrew-e2e-change.txt`, which
+   the site must serve within 10 minutes. `opscrew rollback` stops at its approval (exit 1) and
+   prints the command with the run before the change's run and the hash; `rollback --to <run id>
+   --approve <hash>` re-runs that run, which builds its commit again. The change's file must then
+   answer 404 within 10 minutes; the time from the approved run's start is logged. Then
+   `rollback --resume --yes`.
 5. **Destroy in the takeover-safe order:** while `destroy --confirm <app>` runs, the test reads the
    Pages site and then the hostname's records every 2 seconds. No sample may show a record pointing
    at GitHub while the site does not claim the hostname (SC-1605). Afterwards the Pages site and its
@@ -1494,11 +1504,13 @@ on the run's hostname and the verification record's name, and the seeded rules. 
 GitHub Pages site the run made (its custom domain first; step 1 refuses a repository that has one
 already), after a fresh read of the zone: while a record on the run's hostnames still points at
 GitHub, the cleanup keeps the site and names the record, so that no record ever points at GitHub
-with no site claiming the hostname. Then the repository is reset.
+with no site claiming the hostname. Then the site's entry in `OPSCREW_DEPLOY_PAUSED` (a run stopped
+between step 4b's rollback and its `--resume` leaves it), and the repository is reset.
 
 If a run was interrupted, delete by hand in this order: the records on `e2e-<run id>.<zone>` and
 `_github-pages-challenge-<owner>.e2e-<run id>.<zone>`; then in the repository's Settings → Pages the
-custom domain, then GitHub Pages itself; then its `github-pages` environment.
+custom domain, then GitHub Pages itself; then its `github-pages` environment, and the variable
+`OPSCREW_DEPLOY_PAUSED` (Settings → Secrets and variables → Actions → Variables).
 
 | Variable | What it is |
 |---|---|
@@ -1946,6 +1958,91 @@ DigitalOcean passes.
 Not measured yet: about 3 hours, with two of the smallest servers for that time (a few cents),
 and about 12 deploys' builds on GitHub's machines (about 30 to 40 Actions minutes in a private
 repository). The deploy jobs run on the server.
+
+## Rollback
+
+`packages/cli/test/live/rollback.test.ts`, with `OPSCREW_E2E_ROLLBACK=1`, runs feature 019's
+`opscrew rollback` on one server OpsCrew creates at Hetzner, behind Cloudflare, in the throwaway
+repository `OPSCREW_E2E_GITHUB_REPO`. It always deploys `examples/nextjs-postgres`
+(`OPSCREW_E2E_APP` is ignored). OpsCrew gets the Hetzner and Cloudflare tokens, as a user's run
+does, and `OPSCREW_E2E_GHCR_READ_TOKEN` as `OPSCREW_GHCR_READ_TOKEN`. Every rollback runs
+as a script runs it: the first run without `--approve` shows the rollback and its hash and stops
+(exit 1), and the second gives `--approve <hash>`. `--yes` never grants a rollback.
+
+1. **Two versions:** prod is designed as for [environments](#environments-and-promotion). Then,
+   as a user edits `opscrew/plan.yaml`, `app.releaseCommand: "echo opscrew-e2e-release"` (no
+   example has a release command). `adapt`, `provision` until done, and the first deploy (A).
+   A merged change deploys B. Each version's commit and image digest are kept. The digest is read
+   from the server's `.env` over SSH, as `deploy` with OpsCrew's key. `release.log` on the server
+   must hold the release command's output after B's deploy.
+2. **The rollback** (SC-1901):
+   - `opscrew rollback` without `--approve` must exit 1. The approval must name B as running now
+     (`Now:`) and A as the version to go back to (`Back to:`). The printed command must name A's
+     digest. Nothing may have changed: the server still runs B, and prod's deploys aren't paused.
+   - `opscrew rollback --to <A's commit> --approve <hash>` runs under 20 requests per second to the
+     health route, with no failed request allowed (as [the builders](#the-builders)' load). The
+     time from that run's start to its success is logged. Over 2 minutes is a finding that fails
+     the run at the end.
+   - Afterwards:
+     - the server's `.env` names A's digest;
+     - `release.log`'s modification time is unchanged, so no release command ran;
+     - the rollback's workflow run has no build job that ran, and its deploy job succeeded;
+     - `rollback --list` marks A as running, which it reads from GHCR's `opscrew-prod` label;
+     - the repository variable `OPSCREW_DEPLOY_PAUSED` holds prod's `rollback` entry, pinned to A.
+3. **`status`** must name A as running and say the deploys are paused, pinned to A.
+4. **A push while paused** (SC-1902): a merged change (C). Its run must build C, skip the deploy
+   job and run the `paused` job. That job's notice, the line it also writes to the run's summary,
+   must name the pause and A. The test reads the notice in the job's log, since GitHub's API
+   doesn't give a run's summary. The server still runs A.
+5. **`rollback --list`** (SC-1903) must show C, B and A, newest first, with A marked running. Then
+   `rollback --to <the example's own commit>`, which was pushed before the deploy workflow existed
+   and so was never built, must be refused (exit 1) with "is not among prod's versions" and
+   "Nothing was changed." The pause variable and the running image must stay as they were.
+6. **`rollback --resume --deploy --yes`** (SC-1902): its output names the deploy run of C. Prod's
+   pause entry is gone, the server runs a new image, and `rollback --list` marks C as running.
+7. **A version that never answers** (SC-1904): a merged change appends to the app's Dockerfile a
+   last `CMD` that prints `opscrew-e2e-never-answers-<run id>` and then only sleeps. Its run must
+   fail in the deploy job. The server must still run C's image and answer. `logs --failed` must
+   show the marker, from the lines the deploy kept of the failed copy. A second merged change puts
+   the Dockerfile back. Its run must succeed, and the server then runs a new image.
+8. **Destroy:** nothing of the app may be left at Hetzner or in Cloudflare.
+9. **Nothing leaked** (SC-1905), as for environments: no known secret in any CLI output (the
+   approvals and `logs --failed` among them), commit, pull request, audit entry, plan or state
+   file, and no secret or server address in any value of `OPSCREW_DEPLOY_PAUSED` the test read
+   while prod was paused.
+
+**Cleanup.** The cleanup is the one for environments: `opscrew destroy` if needed, then
+Hetzner's API by the app's labels, the GitHub environments and deploy secrets, and Cloudflare.
+Then prod's entry in `OPSCREW_DEPLOY_PAUSED` is removed (and the variable, when nothing else is in
+it), since a run stopped between the rollback and `--resume` leaves it paused.
+
+**If a run was interrupted**, delete by hand what the environments test lists, and the variable
+`OPSCREW_DEPLOY_PAUSED` under the repository's Settings → Secrets and variables → Actions →
+Variables.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_ROLLBACK` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for environments. The GitHub token needs Variables (read and write), as in [Setup](#setup): the rollback sets the pause, and `--resume` removes it. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | Required: the classic `read:packages` token of [the builders](#the-builders). OpsCrew lists the image's tags in GitHub's registry with it, which refuses a fine-grained token (403 `DENIED`, specs/019-rollback/research.md R6, S2). Without it the test is skipped with a message. |
+| `OPSCREW_E2E_REGION`, `OPSCREW_E2E_APP_ENV` | Optional, as above. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_ROLLBACK=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_GHCR_READ_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… \
+  OPSCREW_E2E_DOMAIN=e2e.example.com npx vitest run test/live/rollback.test.ts
+```
+
+Not measured yet: about 90 minutes, with one of the smallest servers for that time (a few
+cents). It makes six deploy runs with a build (A, B, C, the resume's, the failing version and
+its revert) and one rollback run without a build: about 25 to 35 Actions minutes in a private
+repository.
+
+The site passes roll back too: step 5 and S3 of [Cloudflare's hosting](#cloudflares-hosting) and
+step 4b of [GitHub Pages](#github-pages) run `opscrew rollback` as above, then
+`opscrew rollback --resume --yes`.
 
 ## Price tables
 

@@ -4,8 +4,9 @@
  * repository `OPSCREW_E2E_GITHUB_REPO_C`, on the run's own hostname in the e2e zone. Provision
  * turns Pages on with the workflow source and the custom domain, creates the DNS-only records and
  * the verification record, and prints the Verify step; the merge publishes the site; provision runs
- * again until GitHub has issued the certificate and HTTPS is enforced (a long, logged wait);
- * destroy goes in the takeover-safe order, watched all along, and keeps the verification record
+ * again until GitHub has issued the certificate and HTTPS is enforced (a long, logged wait); a
+ * merged change is rolled back with `opscrew rollback`, which re-runs the run before it (feature
+ * 019), and the deploys resumed; destroy goes in the takeover-safe order, watched all along, and keeps the verification record
  * until `--delete-verification` (SC-1603, SC-1605).
  *
  * The Verify click on GitHub's settings page has no API, and the record's value exists only on
@@ -13,13 +14,14 @@
  * (`pagesStandIn`): GitHub publishes the site and issues its certificate without the
  * verification. The pass checks the record and the printed step, and skips the click.
  */
-import { verificationRecordName } from "@opscrew/iac-templates";
+import { checkEnvironmentKey, verificationRecordName } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { type CloudflareZone, httpRequest, minutes, sleep, waitFor } from "./cloud";
 import { AppEnvironments, readGithubEnvironment, secretsRecord } from "./environment-checks";
 import { LiveRun, serverSettings } from "./harness";
 import { repoInfo } from "./portainer-cloud";
+import { shownRollback } from "./rollback-support";
 import {
   GITHUB_PAGES_VARIABLES,
   pagesStandIn,
@@ -28,6 +30,7 @@ import {
   takeoverWindow,
 } from "./serverless-support";
 import { designSite, siteEnv, siteSettings, workflowOf } from "./site-checks";
+import { clearDeployPause } from "./split-checks";
 import { duration, missingVariables } from "./support";
 
 const GATE = "OPSCREW_E2E_GITHUB_PAGES";
@@ -40,6 +43,8 @@ const SETTINGS = {
 const CERTIFICATE_WAIT_MS = minutes(180);
 /** The text of `examples/hugo-site`'s home page. */
 const HOME_TEXT = "Hugo on OpsCrew";
+/** A change Hugo publishes as is, at `/opscrew-e2e-change.txt`. */
+const SITE_CHANGE = "static/opscrew-e2e-change.txt";
 
 if (process.env[GATE] === "1" && MISSING.length > 0) {
   console.warn(
@@ -201,6 +206,35 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
+      "4b. a merged change publishes a new version; opscrew rollback re-runs the run before it, which publishes the site without the change; then --resume",
+      minutes(60),
+      async () => {
+        const title = "e2e: a change to the Pages site";
+        const changeUrl = () => `https://${host()}/opscrew-e2e-change.txt?t=${Date.now()}`;
+        await run.mergeChange(title, [workflowOf(plan as DeployPlan)], SITE_CHANGE);
+        await waitFor(`https://${host()}/ serving the change`, minutes(10), async () => {
+          const answer = await httpRequest(changeUrl());
+          if (answer.status !== 200) throw new Error(`it answered ${answer.status}.`);
+          return answer.body.includes(`${title} (run ${run.runId}`) ? true : undefined;
+        });
+        // Without --to: the run before the one that published the site now.
+        const shown = await shownRollback(run);
+        const started = Date.now();
+        await run.opscrewOk("rollback", "--to", shown.to, "--approve", shown.hash);
+        await waitFor(`https://${host()}/ no longer serving the change`, minutes(10), async () => {
+          const answer = await httpRequest(changeUrl());
+          if (answer.status === 404) return true;
+          throw new Error(`it answered ${answer.status}.`);
+        });
+        log(
+          `observed: the re-run of run ${shown.to} published the site without the change ${duration(Date.now() - started)} after the approved rollback started`,
+        );
+        // The rollback paused the deploys; destroy and the cleanup find them on again.
+        await run.opscrewOk("rollback", "--resume", "--yes");
+      },
+    );
+
+    run.step(
       "5. destroy in the takeover-safe order: no record ever points at GitHub while no site claims the hostname, and the verification record stays (SC-1605)",
       minutes(30),
       async () => {
@@ -285,6 +319,14 @@ describe.skipIf(MISSING.length > 0)(
       };
     }
 
-    envs.registerCleanup();
+    envs.registerCleanup({
+      // The site's entry in the deploy pause variable, which a run stopped between the rollback
+      // (step 4b) and its --resume leaves behind.
+      last: async (attempt) => {
+        if (plan === undefined) return;
+        const key = checkEnvironmentKey(plan);
+        await attempt("clear the deploy pause", () => clearDeployPause(run.github, key));
+      },
+    });
   },
 );

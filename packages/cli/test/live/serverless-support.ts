@@ -60,11 +60,13 @@ export function missingHeaders(headers: Record<string, string | string[] | undef
 
 /**
  * What `opscrew status` shows of a site's versions: the id after `Running: version`, and the id
- * its rollback command (`Roll back to it: opscrew promote … --version <id>`) names.
+ * its rollback command names (`Roll back to it: opscrew rollback … --to <id>`, or `Roll back:
+ * opscrew rollback … --to <id> (the newest … before …)` when that is not the one before it).
  */
 export function statusVersions(output: string): { running?: string; rollback?: string } {
   const running = /^\s*Running: version (\S+?),/m.exec(output)?.[1];
-  const rollback = /^\s*Roll back to it: opscrew promote .*--version (\S+)\s*$/m.exec(output)?.[1];
+  const rollback =
+    /^\s*Roll back(?: to it)?: opscrew rollback\b.* --to (\S+)(?: \(.*\))?\s*$/m.exec(output)?.[1];
   return {
     ...(running === undefined ? {} : { running }),
     ...(rollback === undefined ? {} : { rollback }),
