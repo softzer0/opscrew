@@ -289,9 +289,10 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     await runProvision(deps, { services });
 
     const names = [...github.secrets.keys()].filter((name) => name.startsWith("OPSCREW_SERVICE_"));
-    // Kafka runs without a login, so it has no env file.
+    // Kafka carries its password also without its login, so it has an env file too.
     expect(names.sort()).toEqual([
       "OPSCREW_SERVICE_DB_ENV",
+      "OPSCREW_SERVICE_KAFKA_ENV",
       "OPSCREW_SERVICE_ORDERS_DB_ENV",
       "OPSCREW_SERVICE_RABBITMQ_ENV",
     ]);

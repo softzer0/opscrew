@@ -10,6 +10,7 @@ import {
   portainerDeployBranch,
   portainerSecretVariables,
   portainerTarget,
+  serviceAuth,
   serviceSpec,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
@@ -340,8 +341,8 @@ function registryCheck(
 /**
  * Each running service with a login has it set in the app stack's environment (FR-1328), by the
  * stack variables of its secrets ({@link portainerSecretVariables}): each is there, and, with the
- * value key on this computer, not empty (by its keyed fingerprint). Names only, never a value. An
- * `internal-only` service (Valkey, Kafka, Redpanda) has no login; only the app's containers reach
+ * value key on this computer, not empty (by its keyed fingerprint). Names only, never a value. A
+ * Kafka or Redpanda without its login (`serviceAuth`) has none; only the app's containers reach
  * it, and no service publishes a port (the stack file's check).
  */
 function serviceLoginChecks(
@@ -353,7 +354,7 @@ function serviceLoginChecks(
 ): CheckResult[] {
   const variables = portainerSecretVariables(plan);
   return plan.services
-    .filter((service) => service.enabled && serviceSpec(service.kind).auth !== "internal-only")
+    .filter((service) => service.enabled && serviceAuth(service) !== "internal-only")
     .map((service) => {
       const who = `${serviceSpec(service.kind).title} (${service.name})`;
       const id = `service-${service.name}-login`;

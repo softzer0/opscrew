@@ -348,7 +348,7 @@ function freshServices(
         entry(
           runs,
           `${usesText(facts, kind, "Kafka")} Apache Kafka runs it; Redpanda is the other choice (set this service's kind to redpanda in opscrew/plan.yaml).`,
-          { variable },
+          { options: { login: readsBrokerLogin(facts) }, variable },
         ),
       );
     } else {
@@ -356,6 +356,33 @@ function freshServices(
     }
   }
   return services;
+}
+
+/** The variables the app's Kafka client reads its login from, once a broker asks for one. */
+const BROKER_LOGIN_VARIABLES = ["KAFKA_SASL_USERNAME", "KAFKA_SASL_PASSWORD"];
+
+/** Whether the app reads its Kafka login: then a new broker asks for one (FR-1919). */
+function readsBrokerLogin(facts: ProjectFacts): boolean {
+  return BROKER_LOGIN_VARIABLES.every((name) => facts.envVars.some((v) => v.name === name));
+}
+
+/**
+ * Whether a Kafka or Redpanda asks for a login (FR-1919), and without one how to turn it on and
+ * what the app's client must then send; nothing for the other kinds. Redpanda keeps its login in
+ * its own data, so OpsCrew never turns it off: its line says so.
+ */
+function brokerLoginLine(service: PlanService): string[] {
+  if (service.kind !== "kafka" && service.kind !== "redpanda") return [];
+  const who = `${serviceSpec(service.kind).title} (${service.name})`;
+  const stays =
+    service.kind === "redpanda"
+      ? " Once on, it stays on: Redpanda keeps it in its own data, so setting login: false would leave it asking for a login the app no longer sends (the guide gives the rpk commands to turn it off by hand)."
+      : "";
+  return [
+    service.options.login
+      ? `${who} asks for a login: the app's Kafka client must send SCRAM-SHA-512 with KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD, which OpsCrew sets (with KAFKA_SASL_MECHANISM and KAFKA_SECURITY_PROTOCOL).${stays}`
+      : `${who} has no login: only the app reaches it. To turn one on, set login: true in its options in opscrew/plan.yaml; the app's Kafka client must then send SCRAM-SHA-512 with KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD (KAFKA_SASL_MECHANISM and KAFKA_SECURITY_PROTOCOL hold the mechanism and the protocol).`,
+  ];
 }
 
 /** An engine on Redis's protocol for the app, and the sentence that says why (FR-1321a). */
@@ -465,12 +492,14 @@ interface Notes {
 }
 
 /**
- * The options of a kept service: the previous plan's, or on a switch to another engine of its
- * family the mode alone (Redis's protocol) or none, the new engine's defaults filling the rest.
+ * The options of a kept service: the previous plan's, but of a Dragonfly the user chose over the
+ * fresh engine only its mode, its threads and hashtag locks coming from its server and the app's
+ * libraries.
  */
 function keptOptions(before: PlanService, fresh: PlanService): object {
-  if (before.kind === fresh.kind) return before.options;
-  return "mode" in before.options ? { mode: before.options.mode } : {};
+  return before.kind === "dragonfly" && fresh.kind !== "dragonfly"
+    ? { mode: before.options.mode }
+    : before.options;
 }
 
 /**
@@ -1115,6 +1144,7 @@ function componentLines(components: Components, facts: ProjectFacts): string[] {
     }
     lines.push(
       `${spec.title} ${service.version} (${service.name}, ${service.memoryMb} MB): ${service.reason}`,
+      ...brokerLoginLine(service),
     );
   }
   for (const worker of components.processes.workers.filter((w) => w.enabled)) {

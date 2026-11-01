@@ -8,7 +8,7 @@ export interface ServiceCheckInput {
   name: string;
   /** Its kind in words, for example `MySQL`. */
   title: string;
-  /** The variables of its environment that hold its login; empty for an `internal-only` one. */
+  /** The variables of its environment that hold its login; empty for a service without one. */
   login: readonly string[];
   /**
    * The command that pings it from inside its container without its password, which it must
@@ -144,7 +144,7 @@ function pingCheck(project: string, service: ServiceCheckInput, ping: string): H
 /**
  * The checks of the app's backing services on the server (FR-1328), run as `deploy` with
  * `runHostChecks`: for each, that no port is published on the host, for each with a login
- * (`auth` other than `internal-only`) that its login is set, and for each with a `ping` that it
+ * (its `login` variables) that its login is set, and for each with a `ping` that it
  * refuses a request without its password. `project` is the app's Compose project, its name.
  */
 export function serviceHostChecks(

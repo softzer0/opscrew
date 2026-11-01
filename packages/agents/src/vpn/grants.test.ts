@@ -392,6 +392,23 @@ describe("opscrew vpn grant", () => {
     await expectUnchanged(w, before);
   });
 
+  it("refuses a Kafka with its login and OpenSearch: their one login is the app's", async () => {
+    for (const [kind, options] of [
+      ["kafka", { login: true }],
+      ["opensearch", {}],
+    ] as const) {
+      const { network: _none, ...base } = testPlan();
+      const service = PlanServiceSchema.parse({ ...serviceOf(kind, "data"), options });
+      const w = await world(networked({ ...base, services: [...base.services, service] }));
+      const before = await readFile(w.deps.paths.files.plan, "utf8");
+      const error = await failure(vpnGrant(w.deps, "laptop", "data", { services: w.services }));
+      expect(error.code).toBe("INVALID_INPUT");
+      expect(error.message).toContain("its one login is the app's");
+      expect(error.message).not.toContain("has no login");
+      await expectUnchanged(w, before);
+    }
+  });
+
   it("refuses a broker or search engine, an unknown service or device, and a login the database uses, before any change", async () => {
     const kafka = single("kafka", "events");
     const w = await world(kafka);

@@ -251,7 +251,7 @@ describe("sizeFor", () => {
         ...s,
         kind: "redpanda" as const,
         memoryMb: 1024,
-        options: {},
+        options: { login: false },
       })),
     });
     expect(redpanda.memoryGb).toBe(2);

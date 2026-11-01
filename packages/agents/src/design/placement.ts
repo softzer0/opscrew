@@ -1,6 +1,6 @@
 import type { ComputeCatalog, Money } from "@opscrew/contracts";
 import { formatMoney, OpsCrewError } from "@opscrew/core";
-import { serviceSpec } from "@opscrew/iac-templates";
+import { serviceAuth, serviceSpec } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type CloudProvider,
@@ -301,8 +301,8 @@ function serverLines(
 
 /**
  * The estimated delay of each hop from the app's server to the services on another server
- * (warnings above the threshold go to `warnings`), and for each service there without a login
- * (Kafka, Redpanda, OpenSearch) that only the app's servers reach it.
+ * (warnings above the threshold go to `warnings`), and for each service there without a login (a
+ * Kafka or Redpanda without `login`) that only the app's servers reach it.
  */
 function hopLines(
   plan: DeployPlan,
@@ -323,12 +323,15 @@ function hopLines(
   });
 }
 
-/** For a service without a login on another server: who reaches it, and how. */
+/**
+ * For a service without a login on another server: who reaches it, and how (its components line
+ * says it has no login and how to turn one on).
+ */
 function noLoginLine(service: PlanService, server: string): string[] {
+  if (serviceAuth(service) !== "internal-only") return [];
   const spec = serviceSpec(service.kind);
-  if (spec.auth !== "internal-only") return [];
   return [
-    `${spec.title} (${service.name}) on server ${server} has no login: only the app's servers reach it, through the private network, and no device can be given access to it.`,
+    `${spec.title} (${service.name}) on server ${server}: only the app's servers reach it, through the private network, and no device can be given access to it.`,
   ];
 }
 

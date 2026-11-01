@@ -6,7 +6,7 @@
 import { posix } from "node:path";
 import { type GrantParams, GrantParamsSchema, planGrant } from "@opscrew/connector-ssh-host";
 import { listText, OpsCrewError } from "@opscrew/core";
-import { publishedOnNetwork, serviceSpec } from "@opscrew/iac-templates";
+import { publishedOnNetwork, serviceAuth, serviceSpec } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   GRANTABLE_KINDS,
@@ -133,9 +133,9 @@ function grantableService(plan: DeployPlan, name: string): PlanService {
   if (!GRANTABLE.has(service.kind)) {
     const spec = serviceSpec(service.kind);
     const why =
-      spec.auth === "internal-only"
+      serviceAuth(service) === "internal-only"
         ? "it has no login: only the app's servers reach it, through the private network"
-        : `a device can have a login of its own only to ${listText(GRANTABLE_KINDS.map((k) => serviceSpec(k).title))}`;
+        : `its one login is the app's: a device can have a login of its own only to ${listText(GRANTABLE_KINDS.map((k) => serviceSpec(k).title))}`;
     throw new OpsCrewError(
       "INVALID_INPUT",
       `${name} is a ${spec.title} service, and ${why}. Nothing was changed.`,

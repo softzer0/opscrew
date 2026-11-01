@@ -451,6 +451,9 @@ describe("assembleAppEnv: the services' variables from the catalog (FR-1314)", (
     expect(rabbitmq?.password).toMatch(HEX);
     const queue = first.generated.services?.queue;
     expect(queue?.password).toMatch(HEX);
+    // Kafka's password is made also without its login, which then reads none.
+    const kafka = first.generated.services?.kafka;
+    expect(kafka?.password).toMatch(HEX);
     const amqp = `amqp://app:${rabbitmq?.password}@rabbitmq:5672/%2F`;
     expect(first.values.app).toEqual({
       AMQP_URL: amqp,
@@ -462,7 +465,7 @@ describe("assembleAppEnv: the services' variables from the catalog (FR-1314)", (
       REDIS_URL: `redis://:${queue?.password}@queue:6379`,
     });
     // For the services' own environment.
-    expect(first.values.services).toEqual({ mysql, rabbitmq, queue });
+    expect(first.values.services).toEqual({ mysql, rabbitmq, queue, kafka });
     const again = await assembleAppEnv({
       plan: withComponents(env, components),
       dotenvText: "",

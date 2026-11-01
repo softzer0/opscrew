@@ -120,6 +120,33 @@ describe("designComponents: one service per kind the app uses", () => {
     expect(components.services[0]?.reason).toContain("Redpanda is the other choice");
   });
 
+  it("turns Kafka's login on when the app reads the SASL variables, and says how otherwise (FR-1919)", () => {
+    const read = (name: string) => ({
+      name,
+      files: ["kafka.js"],
+      clientExposed: false,
+      secretLikely: name.endsWith("PASSWORD"),
+    });
+    const services = [service("kafka", "dependency:kafkajs")];
+    const on = designed({
+      services,
+      envVars: [read("KAFKA_SASL_PASSWORD"), read("KAFKA_SASL_USERNAME")],
+    });
+    expect(on.components.services[0]?.options).toEqual({ login: true });
+    expect(on.lines).toContain(
+      "Apache Kafka (kafka) asks for a login: the app's Kafka client must send SCRAM-SHA-512 with KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD, which OpsCrew sets (with KAFKA_SASL_MECHANISM and KAFKA_SECURITY_PROTOCOL).",
+    );
+    expect(on.lines.join("\n")).not.toContain("has no login");
+
+    for (const envVars of [[], [read("KAFKA_SASL_USERNAME")]]) {
+      const off = designed({ services, envVars });
+      expect(off.components.services[0]?.options).toEqual({ login: false });
+      expect(off.lines).toContain(
+        "Apache Kafka (kafka) has no login: only the app reaches it. To turn one on, set login: true in its options in opscrew/plan.yaml; the app's Kafka client must then send SCRAM-SHA-512 with KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD (KAFKA_SASL_MECHANISM and KAFKA_SECURITY_PROTOCOL hold the mechanism and the protocol).",
+      );
+    }
+  });
+
   it("keeps Cassandra external, says why and names a hosted option", () => {
     const { components, lines } = designed({
       services: [service("cassandra", "dependency:cassandra-driver")],
@@ -873,7 +900,7 @@ describe("designComponents: the user's edits to the previous plan (FR-1304)", ()
               kind: "redpanda",
               version: "26.2",
               memoryMb: 1536,
-              options: {},
+              options: { login: true },
               licence: "BSL-1.1",
             },
     ),
@@ -893,6 +920,12 @@ describe("designComponents: the user's edits to the previous plan (FR-1304)", ()
       ["cache", "valkey", 128, false],
       ["kafka", "redpanda", 1536, true],
     ]);
+    // The login the user turned on for Redpanda stays, though the app reads no SASL variable.
+    expect(components.services[2]?.options).toEqual({ login: true });
+    // Redpanda keeps its login in its own data, so OpsCrew never turns it off.
+    expect(lines).toContain(
+      "Redpanda (kafka) asks for a login: the app's Kafka client must send SCRAM-SHA-512 with KAFKA_SASL_USERNAME and KAFKA_SASL_PASSWORD, which OpsCrew sets (with KAFKA_SASL_MECHANISM and KAFKA_SECURITY_PROTOCOL). Once on, it stays on: Redpanda keeps it in its own data, so setting login: false would leave it asking for a login the app no longer sends (the guide gives the rpk commands to turn it off by hand).",
+    );
     // A re-detected component the user turned off stays off; Redis is then hosted elsewhere.
     expect(components.externalServices).toEqual(["redis"]);
     expect(lines).toContain(

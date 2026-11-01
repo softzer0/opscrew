@@ -217,6 +217,37 @@ describe.skipIf(!findExecutable("git"))("opscrew secure for the user's Portainer
     expect(`${report}\n${s.deps.reporter.text()}`).not.toContain(password);
   });
 
+  it("checks a Kafka's login only when it has one", async () => {
+    const base = portainerPlan();
+    const kafka = (name: string, options: object) => {
+      const spec = serviceSpec("kafka");
+      return {
+        name,
+        kind: "kafka",
+        version: spec.defaultVersion,
+        memoryMb: spec.memory.defaultMb,
+        options,
+        reason: "The app uses it.",
+        licence: spec.licence.id,
+      };
+    };
+    const plan = DeployPlanSchema.parse({
+      ...base,
+      services: [...base.services, kafka("open", {}), kafka("closed", { login: true })],
+    });
+    const s = await portainerProject({ plan });
+    await provisionPortainerProject(s);
+    await deployImage(s);
+    const result = await secure(s);
+    const ids = result.hostChecks.map((check) => check.id);
+    expect(ids).not.toContain("service-open-login");
+    expect(result.hostChecks.find((check) => check.id === "service-closed-login")).toMatchObject({
+      status: "pass",
+      message:
+        "Apache Kafka (closed) requires its login: OPSCREW_SVC_CLOSED_PASSWORD is set in the app stack's environment.",
+    });
+  });
+
   it("fails on a hand-hardened-down stack, a failed deploy, a missing updater and a lost grant", async () => {
     const s = await deployed();
     const app = s.fake.stacks.find((stack) => stack.Name === "opscrew-shop");

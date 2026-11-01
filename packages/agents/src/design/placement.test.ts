@@ -233,7 +233,7 @@ describe("design with a service on a server of its own", () => {
     );
   });
 
-  it("says that Kafka on another server has no login and only the app's servers reach it", async () => {
+  it("says that only the app's servers reach a Kafka without its login on another server", async () => {
     const facts = makeFacts({
       services: [{ kind: "kafka", evidence: ["dependency:kafkajs"] }],
     });
@@ -243,8 +243,31 @@ describe("design with a service on a server of its own", () => {
     await editPlan(deps, place(kafka, "events"));
     const result = await runDesign(deps, { catalog: euCatalog(), keys: testKeyMaker() });
     expect(result.lines).toContain(
-      `Apache Kafka (${kafka}) on server events has no login: only the app's servers reach it, through the private network, and no device can be given access to it.`,
+      `Apache Kafka (${kafka}) on server events: only the app's servers reach it, through the private network, and no device can be given access to it.`,
     );
+    // One line says it has no login: the components' line, which also says how to turn it on.
+    expect(result.lines.join("\n").match(/has no login/g)).toHaveLength(1);
+  });
+
+  it("says nothing of a missing login for a Kafka with its login on another server", async () => {
+    const read = (name: string) => ({
+      name,
+      files: ["kafka.js"],
+      clientExposed: false,
+      secretLikely: false,
+    });
+    const facts = makeFacts({
+      services: [{ kind: "kafka", evidence: ["dependency:kafkajs"] }],
+      envVars: [read("KAFKA_SASL_PASSWORD"), read("KAFKA_SASL_USERNAME")],
+    });
+    const deps = await setup(facts);
+    const first = await runDesign(deps, { catalog: euCatalog() });
+    const kafka = first.plan.services[0]?.name ?? "";
+    await editPlan(deps, place(kafka, "events"));
+    const result = await runDesign(deps, { catalog: euCatalog(), keys: testKeyMaker() });
+    expect(result.plan.services[0]?.options).toMatchObject({ login: true });
+    expect(result.lines.join("\n")).not.toContain("has no login");
+    expect(result.lines.join("\n")).not.toContain("only the app's servers reach it");
   });
 
   it("prices the app's server without the placed services in the read-only preview", async () => {

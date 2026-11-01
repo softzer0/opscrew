@@ -1,4 +1,4 @@
-import { publishedOnNetwork, serviceSpec } from "@opscrew/iac-templates";
+import { publishedOnNetwork, serviceAuth, serviceSpec } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, servicesOn } from "@opscrew/plan-schema";
 import { type HostCheck, type ServiceCheckInput, serviceHostChecks } from "@opscrew/secops";
 
@@ -8,8 +8,8 @@ const SECRET = "\u0000secret\u0000";
 /**
  * The app's running services on `server` (default the app's) for the secops checks there
  * (FR-1328), from the catalog: each with the variables of its environment that hold its login (a
- * generated secret), none for an `internal-only` service (Kafka, Redpanda), which only the app's
- * containers reach, and for Valkey the ping it must refuse without its password.
+ * generated secret), none for a Kafka or Redpanda without its login (`serviceAuth`), which only
+ * the app's containers reach, and for Valkey the ping it must refuse without its password.
  */
 export function serviceCheckInputs(plan: DeployPlan, server = APP_SERVER): ServiceCheckInput[] {
   return servicesOn(plan, server).map((service) => {
@@ -19,7 +19,7 @@ export function serviceCheckInputs(plan: DeployPlan, server = APP_SERVER): Servi
       name: service.name,
       title: spec.title,
       login:
-        spec.auth === "internal-only"
+        serviceAuth(service) === "internal-only"
           ? []
           : Object.keys(environment).filter((name) => environment[name]?.includes(SECRET)),
       // Valkey must refuse a request without its password (FR-1450).
