@@ -50,6 +50,17 @@ export interface ServiceConfigFile {
   content: string;
 }
 
+/**
+ * A Compose health check that works with the image's own tools (`test` with `CMD` or `CMD-SHELL`
+ * first), checked every 10 seconds and unhealthy after 6 failures; `startSeconds` for a service
+ * whose first start takes longer (failures then do not count).
+ */
+export interface ServiceHealthcheck {
+  test: string[];
+  timeoutSeconds?: number;
+  startSeconds?: number;
+}
+
 /** One kind of backing service: everything the renderers and design need to run it. */
 export interface ServiceSpec {
   /** The kind in `plan.services[].kind`. */
@@ -81,18 +92,21 @@ export interface ServiceSpec {
   namedVolume?: boolean;
   /** Mounted settings files, for example `my.cnf` or `rabbitmq.conf`. */
   configFiles?: (ctx: ServiceContext) => ServiceConfigFile[];
-  /** The container's command, for example `mongod --wiredTigerCacheSizeGB <n>`. */
-  command?: (ctx: ServiceContext) => string[];
+  /**
+   * The container's command, for example `mongod --wiredTigerCacheSizeGB <n>`; undefined: the
+   * image's own.
+   */
+  command?: (ctx: ServiceContext) => string[] | undefined;
+  /**
+   * The container's entrypoint in place of the image's, for a command the image's would not run
+   * (Redpanda's runs only `rpk`); undefined: the image's own.
+   */
+  entrypoint?: (ctx: ServiceContext) => string[] | undefined;
   /** The container's hostname, for a service whose data is named after it (RabbitMQ). */
   hostname?: boolean;
   /** The service's own settings, secrets by reference. */
   environment: (ctx: ServiceContext) => Record<string, string>;
-  /**
-   * A Compose health check that works with the image's own tools (`test` with `CMD` or
-   * `CMD-SHELL` first), checked every 10 seconds and unhealthy after 6 failures; `startSeconds`
-   * for a service whose first start takes longer (failures then do not count).
-   */
-  healthcheck: { test: string[]; timeoutSeconds?: number; startSeconds?: number };
+  healthcheck: (ctx: ServiceContext) => ServiceHealthcheck;
   /**
    * The one-time setup the deploy runs in the healthy service on a server, each step only when its
    * check fails: MongoDB's replica set.
@@ -100,10 +114,10 @@ export interface ServiceSpec {
   init?: (ctx: ServiceContext) => ServiceInitStep[];
   secrets: GeneratedSecret[];
   /**
-   * How the app logs in. `internal-only`: no login, reachable only from the app's own containers
-   * (Valkey, Kafka, Redpanda, OpenSearch).
+   * How the app logs in, with one of {@link secrets}. Kafka and Redpanda have this login only with
+   * `options.login`: read a service's through `serviceAuth`.
    */
-  auth: "password" | "token" | "key" | "internal-only";
+  auth: "password" | "token" | "key";
   /**
    * Where the app reaches the service, as its own detected variable holds it (see
    * {@link ServiceContext.variable}): a URL with the login, or Kafka's `host:port`.

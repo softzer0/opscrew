@@ -431,8 +431,10 @@ function stackOriginTls(plan: DeployPlan, ctx: Pick<RuntimeContext, "originTls">
 /**
  * Every variable the app stack interpolates, each list sorted: what its environment in Portainer
  * (`Env`, set through the API, values never in files) must hold. Portainer fills only the
- * `${VARS}` a stack references. The app's and OpsCrew's names never overlap. With `ctx.originTls`
- * in web mode `caddy`, OpsCrew's include {@link PORTAINER_STACK_VARIABLES}' `originTls`.
+ * `${VARS}` a stack references. A Kafka's or Redpanda's password is there with its login off too,
+ * unused, so turning the login on changes no variable. The app's and OpsCrew's names never
+ * overlap. With `ctx.originTls` in web mode `caddy`, OpsCrew's include
+ * {@link PORTAINER_STACK_VARIABLES}' `originTls`.
  * @throws OpsCrewError `INVALID_INPUT` for an app variable named `OPSCREW_*` or `COMPOSE_*`, or a
  * service that needs a setting of the Docker host (so provision stops before any change).
  */

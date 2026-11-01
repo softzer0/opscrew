@@ -9,6 +9,7 @@ export {
   initStepsFor,
   pinnedVersion,
   SERVICE_SPECS,
+  serviceAuth,
   serviceSpec,
 } from "./catalog";
 export type {

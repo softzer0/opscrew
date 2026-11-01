@@ -25,6 +25,7 @@ type Service = Record<string, unknown> & {
   healthcheck?: Record<string, unknown>;
   environment?: Record<string, string>;
   labels?: Record<string, string>;
+  command?: string[];
 };
 
 /** `plan` with `app.build` for `builder`, `probe` and `memoryMb`, and these processes. */
@@ -159,13 +160,12 @@ describe("the services on a server", () => {
     expect(Object.keys(doc.volumes)).toEqual(["kafka_data", "kafka_secrets", "kafka_config"]);
   });
 
-  it("reads a service's secrets from its env file and has the other settings inline", () => {
+  it("reads a service's settings and secrets from its env file", () => {
     const all = services(withServices([{ kind: "mysql" }, { kind: "nats" }, { kind: "kafka" }]));
-    expect(all.mysql?.env_file).toEqual(["mysql.env"]);
-    expect(all.mysql?.environment).toBeUndefined();
-    expect(all.nats?.env_file).toEqual(["nats.env"]);
-    expect(all.kafka?.env_file).toBeUndefined();
-    expect(all.kafka?.environment?.KAFKA_ADVERTISED_LISTENERS).toBe("PLAINTEXT://kafka:9092");
+    for (const name of ["mysql", "nats", "kafka"]) {
+      expect(all[name]?.env_file, name).toEqual([`${name}.env`]);
+      expect(all[name]?.environment, name).toBeUndefined();
+    }
   });
 
   it("lets Garage make the app's key and bucket itself when it starts, from its env file", () => {
@@ -217,6 +217,81 @@ describe("the services on a server", () => {
     expect(
       renderRuntimeFiles(withServices([{ kind: "mysql", enabled: false }])).map((f) => f.path),
     ).toEqual(["opscrew/runtime/edge/compose.yaml"]);
+  });
+});
+
+describe("the logins of Kafka, Redpanda and OpenSearch", () => {
+  const LOGINS = withServices([
+    { kind: "kafka", options: { login: true } },
+    { kind: "redpanda", options: { login: true } },
+    { kind: "opensearch" },
+  ]);
+  const NAMES = ["kafka", "redpanda", "opensearch"];
+
+  it("each start with the login, its password only in the service's env file (snapshot)", () => {
+    // A secret in a rendered file throws: the renderer resolves none.
+    const compose = renderCompose(LOGINS).content;
+    expect(compose).toMatchSnapshot();
+    const all = services(LOGINS);
+    for (const name of NAMES) {
+      expect(all[name]?.env_file, name).toEqual([`${name}.env`]);
+      expect(all[name]?.environment, name).toBeUndefined();
+    }
+    expect(all.kafka?.command).toEqual([
+      "sh",
+      "-c",
+      expect.stringContaining('"SCRAM-SHA-512=[password=$$SASL_PASSWORD]"'),
+    ]);
+    expect(all.redpanda?.entrypoint).toEqual(["sh", "-c"]);
+    expect(all.redpanda?.command?.[0]).toContain('rpk security user create app -p "$$RPK_PASS"');
+    expect(all.opensearch?.command?.[2]).toContain("hash.sh -env OPENSEARCH_PASSWORD");
+    expect(all.opensearch?.healthcheck?.test).toEqual([
+      "CMD-SHELL",
+      expect.stringContaining('curl -fsS -u "admin:$$OPENSEARCH_PASSWORD"'),
+    ]);
+  });
+
+  it("leave every `$` of their commands and health checks to the container's shell", () => {
+    const all = services(LOGINS);
+    for (const name of NAMES) {
+      const service = all[name] as Service & { healthcheck: { test: string[] } };
+      const words = [...(service.command ?? []), ...service.healthcheck.test];
+      expect(words.join("\n").replaceAll("$$", ""), name).not.toContain("$");
+      expect(words.join("\n"), name).toContain("$$");
+    }
+  });
+
+  it("render Kafka and Redpanda without a login as before, from their env file", () => {
+    const all = services(withServices([{ kind: "kafka" }, { kind: "redpanda" }]));
+    expect(all.kafka?.command).toBeUndefined();
+    expect(all.redpanda?.entrypoint).toBeUndefined();
+    expect(all.kafka?.env_file).toEqual(["kafka.env"]);
+    expect(all.kafka?.healthcheck?.test).toEqual([
+      "CMD-SHELL",
+      "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null",
+    ]);
+    expect(all.redpanda?.command).toEqual([
+      "redpanda",
+      "start",
+      "--smp",
+      "1",
+      "--memory",
+      "1024M",
+      "--reserve-memory",
+      "0M",
+      "--overprovisioned",
+      "--kafka-addr",
+      "0.0.0.0:9092",
+      "--advertise-kafka-addr",
+      "redpanda:9092",
+    ]);
+    expect(all.redpanda?.env_file).toEqual(["redpanda.env"]);
+    expect(all.redpanda?.healthcheck?.test).toEqual([
+      "CMD",
+      "curl",
+      "-fsS",
+      "http://localhost:9644/v1/status/ready",
+    ]);
   });
 });
 

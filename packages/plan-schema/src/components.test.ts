@@ -131,7 +131,30 @@ describe("DeployPlan components", () => {
     );
     const kafka = { ...postgres, kind: "kafka", version: "4.1", licence: "Apache-2.0" };
     const retention = { retentionHours: 168, retentionGb: 5 };
-    expect(parse({ ...kafka, options: retention }).data?.services[0]?.options).toEqual(retention);
+    expect(parse({ ...kafka, options: retention }).data?.services[0]?.options).toEqual({
+      ...retention,
+      login: false,
+    });
+    expect(parse(kafka).data?.services[0]?.options).toEqual({ login: false });
+    expect(parse({ ...kafka, options: { login: true } }).data?.services[0]?.options).toEqual({
+      login: true,
+    });
+    expect(pathsOf(parse({ ...kafka, options: { login: "yes" } }))).toEqual([
+      "services.0.options.login",
+    ]);
+    // Redpanda takes the login only; OpenSearch's is always on.
+    const redpanda = { ...postgres, kind: "redpanda", version: "26.2", licence: "BSL-1.1" };
+    expect(parse(redpanda).data?.services[0]?.options).toEqual({ login: false });
+    expect(parse({ ...redpanda, options: { login: true } }).data?.services[0]?.options).toEqual({
+      login: true,
+    });
+    expect(pathsOf(parse({ ...redpanda, options: { retentionHours: 24 } }))).toEqual([
+      "services.0.options",
+    ]);
+    const opensearch = { ...postgres, kind: "opensearch", version: "3.9", licence: "Apache-2.0" };
+    expect(pathsOf(parse({ ...opensearch, options: { login: true } }))).toEqual([
+      "services.0.options",
+    ]);
     expect(pathsOf(parse({ ...valkey("cache"), options: {} }))).toEqual([
       "services.0.options.mode",
     ]);

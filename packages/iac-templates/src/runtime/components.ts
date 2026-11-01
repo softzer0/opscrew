@@ -6,7 +6,7 @@
 import { OpsCrewError, sha256Hex } from "@opscrew/core";
 import { APP_SERVER, type DeployPlan, type PlanService } from "@opscrew/plan-schema";
 import { checkServiceVersion, dataDirs, hostSysctl, renderContext, serviceSpec } from "../catalog";
-import type { ServiceSpec } from "../catalog/types";
+import type { ServiceHealthcheck, ServiceSpec } from "../catalog/types";
 import { GENERATED_USERS } from "../docker/stacks";
 import { IMAGES } from "../pins";
 import { runtimeDir } from "../runtime-dir";
@@ -104,8 +104,8 @@ function configLabel(settings: string): { labels: Record<string, string> } {
 }
 
 /** A catalog health check: every 10 seconds, unhealthy after 6 failures. */
-function healthcheck(spec: ServiceSpec): object {
-  const { test, timeoutSeconds, startSeconds } = spec.healthcheck;
+function healthcheck(check: ServiceHealthcheck): object {
+  const { test, timeoutSeconds, startSeconds } = check;
   return {
     test: test.map(composeLiteral),
     interval: "10s",
@@ -252,11 +252,13 @@ export function renderServices(
         mounts.push(`./${path}:${file.target}:ro`);
       }
     }
+    const entrypoint = spec.entrypoint?.(ctx);
     const command = spec.command?.(ctx);
     rendered.services[service.name] = {
       image: IMAGES[spec.image].ref,
       restart: "unless-stopped",
       ...(spec.hostname ? { hostname: service.name } : {}),
+      ...(entrypoint === undefined ? {} : { entrypoint: entrypoint.map(composeLiteral) }),
       ...(command === undefined ? {} : { command: command.map(composeLiteral) }),
       ...serviceEnvironment(plan, service, spec, target),
       volumes: [...data.mounts, ...mounts],
@@ -265,7 +267,7 @@ export function renderServices(
         ? configLabel(files.map((file) => `${file.name}\n${file.content}`).join("\n"))
         : {}),
       ...(address === undefined ? {} : { ports: [`${address}:${spec.port}:${spec.port}`] }),
-      healthcheck: healthcheck(spec),
+      healthcheck: healthcheck(spec.healthcheck(ctx)),
       ...memoryLimit(service.memoryMb),
       ...(spec.ulimits === undefined
         ? {}

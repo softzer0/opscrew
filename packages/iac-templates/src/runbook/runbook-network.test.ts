@@ -54,6 +54,14 @@ describe("the runbook's servers and private network", () => {
     const kafka = { ...db, name: "events", kind: "kafka" } as DeployPlan["services"][number];
     const text = section({ ...plan, services: [...plan.services, kafka] });
     expect(text).toMatch(/Kafka \(`events`\) has no login: only the app's servers reach it/);
+    // A Kafka with its login, and OpenSearch, have one.
+    const others = [
+      { ...db, name: "orders", kind: "kafka", options: { login: true } },
+      { ...db, name: "search", kind: "opensearch" },
+    ] as DeployPlan["services"];
+    const logins = section({ ...plan, services: [...plan.services, kafka, ...others] });
+    expect(logins).toMatch(/Kafka \(`events`\) has no login/);
+    expect(logins).not.toMatch(/`orders`\)[^\n]* no login|`search`\)[^\n]* no login/);
   });
 
   it("lists devices and grants, a closed public SSH and a finished move", () => {

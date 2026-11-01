@@ -671,6 +671,7 @@ describe("the components in a stack", () => {
   it("lists every variable the stack interpolates: the services' addresses for the app, their secrets for OpsCrew", () => {
     const keys = portainerStackEnvKeys(components);
     expect(keys.opscrew).toEqual([
+      "OPSCREW_SVC_KAFKA_PASSWORD",
       "OPSCREW_SVC_MYSQL_PASSWORD",
       "OPSCREW_SVC_MYSQL_ROOT_PASSWORD",
       "OPSCREW_SVC_RABBITMQ_PASSWORD",
@@ -679,7 +680,11 @@ describe("the components in a stack", () => {
     for (const name of ["DATABASE_URL", "AMQP_URL", "RABBITMQ_URL", "KAFKA_BROKERS"]) {
       expect(keys.app).toContain(name);
     }
-    expect(interpolated(componentsFile.content)).toEqual([...keys.app, ...keys.opscrew].sort());
+    // Kafka's password is there with its login off too, so turning it on changes no variable.
+    const kafkaPassword = "OPSCREW_SVC_KAFKA_PASSWORD";
+    expect(interpolated(componentsFile.content)).toEqual(
+      [...keys.app, ...keys.opscrew].filter((name) => name !== kafkaPassword).sort(),
+    );
     expect(portainerServiceVariable("search-db", "root-password")).toBe(
       "OPSCREW_SVC_SEARCH_DB_ROOT_PASSWORD",
     );
@@ -766,6 +771,29 @@ describe("the components in a stack", () => {
 describe("one-time setup and host settings in a stack", () => {
   const withComponents = (services: Record<string, unknown>[], fields = {}) =>
     DeployPlanSchema.parse({ ...components, services, ...fields });
+
+  it("runs Kafka's and Redpanda's logins with their passwords as stack variables", () => {
+    const plan = withComponents([
+      entry("kafka", { options: { login: true } }),
+      entry("redpanda", { options: { login: true } }),
+    ]);
+    const content = renderPortainerStack(plan, ctx).content;
+    const { kafka, redpanda, app } = stack(content).services;
+    expect(kafka?.environment?.SASL_PASSWORD).toBe("${OPSCREW_SVC_KAFKA_PASSWORD}");
+    expect(kafka?.command?.[2]).toContain('"SCRAM-SHA-512=[password=$$SASL_PASSWORD]"');
+    expect(redpanda?.environment?.RPK_PASS).toBe("${OPSCREW_SVC_REDPANDA_PASSWORD}");
+    expect(redpanda?.entrypoint).toEqual(["sh", "-c"]);
+    expect(redpanda?.command?.[0]).toContain('-p "$$RPK_PASS"');
+    // The app's login, as its other variables, from the stack's environment.
+    expect(app?.environment).toMatchObject({
+      KAFKA_SASL_MECHANISM: "${KAFKA_SASL_MECHANISM}",
+      KAFKA_SASL_USERNAME: "${KAFKA_SASL_USERNAME}",
+      KAFKA_SASL_PASSWORD: "${KAFKA_SASL_PASSWORD}",
+      KAFKA_SECURITY_PROTOCOL: "${KAFKA_SECURITY_PROTOCOL}",
+    });
+    const keys = portainerStackEnvKeys(plan);
+    expect(interpolated(content)).toEqual([...keys.app, ...keys.opscrew].sort());
+  });
 
   it("initiates MongoDB's replica set in a one-shot service the app, release, workers and cron wait for", () => {
     const plan = withComponents([entry("mongodb", { options: { replicaSet: true } })]);

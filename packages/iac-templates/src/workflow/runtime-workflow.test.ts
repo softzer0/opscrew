@@ -159,11 +159,13 @@ describe("renderWorkflow", () => {
     ]);
     const deploy = parse(renderWorkflow(services, ctx).content).jobs.deploy.steps as Step[];
     const upload = deploy.find((s) => s.name === "Upload runtime files and environment");
+    // Kafka has its password with the login off too, so it has an env file either way.
     expect(Object.keys(upload?.env ?? {})).toEqual([
       "HOST",
       "OPSCREW_APP_ENV",
       "OPSCREW_SERVICE_MAIN_DB_ENV",
       "OPSCREW_SERVICE_RABBITMQ_ENV",
+      "OPSCREW_SERVICE_KAFKA_ENV",
     ]);
     expect(upload?.env?.OPSCREW_SERVICE_MAIN_DB_ENV).toBe(
       "${{ secrets.OPSCREW_SERVICE_MAIN_DB_ENV }}",
@@ -171,8 +173,9 @@ describe("renderWorkflow", () => {
     expect(upload?.run).toContain(
       `printf '%s\\n' "\${OPSCREW_SERVICE_MAIN_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/main-db.env'`,
     );
-    // Kafka has no secret, so it has no env file.
-    expect(upload?.run).not.toContain("kafka.env");
+    expect(upload?.run).toContain("/srv/apps/shop/kafka.env");
+    // A service turned off has none.
+    expect(upload?.run).not.toContain("nats.env");
   });
 
   it("checks health over HTTPS on the domain and rolls back on failure", () => {

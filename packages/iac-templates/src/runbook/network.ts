@@ -5,7 +5,7 @@ import {
   type PlanService,
   servicesOn,
 } from "@opscrew/plan-schema";
-import { serviceSpec } from "../catalog";
+import { serviceAuth, serviceSpec } from "../catalog";
 import { cloudTarget, PROVIDER_TEXT } from "../providers";
 import { cell, opscrew, runbookFolders } from "./shared";
 
@@ -47,7 +47,7 @@ export function networkSection(plan: DeployPlan, environments?: readonly string[
     ...servicesOn(plan, APP_SERVER).map(serviceWords),
   ];
   const elsewhere = servers.flatMap((server) => servicesOn(plan, server.name));
-  const noLogin = elsewhere.filter((s) => serviceSpec(s.kind).auth === "internal-only");
+  const noLogin = elsewhere.filter((s) => serviceAuth(s) === "internal-only");
   const lines = [
     "## Servers and the private network",
     "",

@@ -136,14 +136,15 @@ describe("an extra server's Compose file", () => {
     expect(file.content).toMatchSnapshot();
   });
 
-  it("advertises Kafka at its private address (snapshot)", () => {
+  it("publishes Kafka at its private address, which its env file advertises (snapshot)", () => {
     const file = renderServerCompose(KAFKA_ELSEWHERE, "broker");
     const events = compose(file.content).services.events as {
       ports: string[];
-      environment: Record<string, string>;
+      env_file: string[];
     };
     expect(events.ports).toEqual(["10.200.4.2:9092:9092"]);
-    expect(events.environment.KAFKA_ADVERTISED_LISTENERS).toBe("PLAINTEXT://10.200.4.2:9092");
+    // The catalog's tests check the address it advertises there.
+    expect(events.env_file).toEqual(["events.env"]);
     expect(compose(file.content).volumes).toEqual({
       events_data: {},
       events_secrets: {},

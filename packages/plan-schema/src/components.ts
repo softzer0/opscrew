@@ -143,13 +143,20 @@ function serviceEntry<K extends z.ZodType, O extends z.ZodType>(kind: K, options
 export const REDIS_PROTOCOL_KINDS = ["valkey", "redis", "dragonfly"] as const;
 
 /** Kinds with options of their own; every other kind has none. */
-const KINDS_WITH_OPTIONS = [...REDIS_PROTOCOL_KINDS, "mongodb", "kafka"] as const;
+const KINDS_WITH_OPTIONS = [...REDIS_PROTOCOL_KINDS, "mongodb", "kafka", "redpanda"] as const;
 
 /**
  * The mode of an engine on the Redis protocol. `cache`: evicts the least recently used keys and
  * keeps nothing on disk. `queue`: never evicts, and keeps its data on disk.
  */
 const RedisModeSchema = z.enum(["cache", "queue"]);
+
+/**
+ * Kafka's and Redpanda's login: with `true`, the clients' listener asks for SCRAM-SHA-512 as the
+ * user `app`, whose password OpsCrew generates, and the app gets the `KAFKA_SASL_*` variables. Off
+ * by default, since the app's code must send it.
+ */
+const BrokerLoginSchema = z.boolean().default(false);
 
 /** A service entry as written, its name perhaps left out. */
 const ServiceEntrySchema = z.discriminatedUnion("kind", [
@@ -181,9 +188,11 @@ const ServiceEntrySchema = z.discriminatedUnion("kind", [
       .strictObject({
         retentionHours: z.int().positive().optional(),
         retentionGb: z.int().positive().optional(),
+        login: BrokerLoginSchema,
       })
       .prefault({}),
   ),
+  serviceEntry(z.literal("redpanda"), z.strictObject({ login: BrokerLoginSchema }).prefault({})),
   serviceEntry(
     SelfHostedServiceKindSchema.exclude(KINDS_WITH_OPTIONS),
     z.strictObject({}).prefault({}),

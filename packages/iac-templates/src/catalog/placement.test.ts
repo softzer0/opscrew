@@ -82,7 +82,7 @@ describe("a service on another server", () => {
         AWS_ENDPOINT_URL_S3: "http://10.200.4.2:3900",
       },
     ],
-    ["opensearch", { OPENSEARCH_URL: "http://10.200.4.2:9200" }],
+    ["opensearch", { OPENSEARCH_URL: "http://admin:<password>@10.200.4.2:9200" }],
     ["elasticsearch", { ELASTICSEARCH_URL: "http://elastic:<password>@10.200.4.2:9200" }],
     [
       "meilisearch",
@@ -141,7 +141,21 @@ describe("a service on another server", () => {
     expect(
       serviceSpec("kafka").environment(ctx(ELSEWHERE, "kafka")).KAFKA_ADVERTISED_LISTENERS,
     ).toBe("PLAINTEXT://10.200.4.2:9092");
-    expect(serviceSpec("redpanda").command?.(ctx(ELSEWHERE, "redpanda")).join(" ")).toContain(
+    expect(serviceSpec("redpanda").command?.(ctx(ELSEWHERE, "redpanda"))?.join(" ")).toContain(
+      "--advertise-kafka-addr 10.200.4.2:9092",
+    );
+    // With the login, on the clients' listener; the broker's own stays on loopback.
+    const login = withPlacement(
+      withServices([
+        { kind: "kafka", options: { login: true } },
+        { kind: "redpanda", options: { login: true } },
+      ]),
+      { servers: { data: "hetzner" }, placed: { kafka: "data", redpanda: "data" } },
+    );
+    expect(serviceSpec("kafka").environment(ctx(login, "kafka")).KAFKA_ADVERTISED_LISTENERS).toBe(
+      "CLIENT://10.200.4.2:9092,PLAINTEXT://localhost:9094",
+    );
+    expect(serviceSpec("redpanda").command?.(ctx(login, "redpanda"))?.[0]).toContain(
       "--advertise-kafka-addr 10.200.4.2:9092",
     );
   });

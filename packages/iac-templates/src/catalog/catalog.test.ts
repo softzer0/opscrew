@@ -17,6 +17,7 @@ import {
   initStepsFor,
   pinnedVersion,
   SERVICE_SPECS,
+  serviceAuth,
   serviceSpec,
 } from "./index";
 import type { ServiceContext } from "./types";
@@ -157,7 +158,7 @@ describe("the catalog", () => {
     }
   });
 
-  it("logs the app in with a password, a token or a key, or keeps the service internal only", () => {
+  it("logs the app in with a password, a token or a key, each a secret OpsCrew generates", () => {
     expect(Object.fromEntries(SERVICE_SPECS.map((spec) => [spec.kind, spec.auth]))).toEqual({
       postgres: "password",
       valkey: "password",
@@ -168,10 +169,10 @@ describe("the catalog", () => {
       mongodb: "password",
       rabbitmq: "password",
       nats: "token",
-      kafka: "internal-only",
-      redpanda: "internal-only",
+      kafka: "password",
+      redpanda: "password",
       garage: "key",
-      opensearch: "internal-only",
+      opensearch: "password",
       elasticsearch: "password",
       meilisearch: "key",
       typesense: "key",
@@ -179,7 +180,12 @@ describe("the catalog", () => {
       neo4j: "password",
     });
     for (const spec of SERVICE_SPECS) {
-      expect(spec.secrets.length > 0).toBe(spec.auth !== "internal-only");
+      expect(spec.secrets.length, spec.kind).toBeGreaterThan(0);
+    }
+    // Kafka and Redpanda carry their password with the login off too, so turning it on changes no
+    // secret's name.
+    for (const kind of ["kafka", "redpanda", "opensearch"] as const) {
+      expect(serviceSpec(kind).secrets).toEqual([{ name: "password", format: "hex32" }]);
     }
     expect(serviceSpec("garage").secrets).toContainEqual({
       name: "key-id",
@@ -187,13 +193,30 @@ describe("the catalog", () => {
     });
   });
 
-  it("puts no secret in a settings file, a command or a setup step", () => {
+  it("serviceAuth: Kafka and Redpanda have no login unless the plan turns it on", () => {
+    const auth = (kind: SelfHostedServiceKind, options?: object) =>
+      serviceAuth(only(kind, options === undefined ? {} : { options }).service);
+    expect(auth("kafka")).toBe("internal-only");
+    expect(auth("kafka", { retentionHours: 24 })).toBe("internal-only");
+    expect(auth("kafka", { login: true })).toBe("password");
+    expect(auth("redpanda")).toBe("internal-only");
+    expect(auth("redpanda", { login: true })).toBe("password");
+    // Every other kind: its entry's own.
+    expect(auth("opensearch")).toBe("password");
+    expect(auth("nats")).toBe("token");
+    expect(auth("meilisearch")).toBe("key");
+    expect(auth("postgres")).toBe("password");
+  });
+
+  it("puts no secret in a settings file, a command, a health check or a setup step", () => {
     const plan = withServices(
       [
         ...[...PART_ONE_KINDS, ...PART_TWO_KINDS]
           .filter((kind) => kind !== "mongodb")
           .map((kind) => ({ kind, name: kind })),
         { kind: "mongodb", options: { replicaSet: true } },
+        { kind: "kafka", name: "kafka-login", options: { login: true } },
+        { kind: "redpanda", name: "redpanda-login", options: { login: true } },
       ],
       { storage: GARAGE_STORAGE },
     );
@@ -208,6 +231,8 @@ describe("the catalog", () => {
       };
       expect(() => spec.configFiles?.(strict)).not.toThrow();
       expect(() => spec.command?.(strict)).not.toThrow();
+      expect(() => spec.entrypoint?.(strict)).not.toThrow();
+      expect(() => spec.healthcheck(strict)).not.toThrow();
       expect(() => spec.init?.(strict)).not.toThrow();
     }
   });
@@ -247,7 +272,9 @@ describe("the app's variables", () => {
       AWS_REGION: "garage",
       AWS_ENDPOINT_URL_S3: "http://garage:3900",
     });
-    expect(vars("opensearch")).toEqual({ OPENSEARCH_URL: "http://opensearch:9200" });
+    expect(vars("opensearch")).toEqual({
+      OPENSEARCH_URL: "http://admin:<password>@opensearch:9200",
+    });
     expect(vars("elasticsearch")).toEqual({
       ELASTICSEARCH_URL: "http://elastic:<password>@elasticsearch:9200",
     });
@@ -271,6 +298,27 @@ describe("the app's variables", () => {
       NEO4J_USERNAME: "neo4j",
       NEO4J_PASSWORD: "<password>",
     });
+  });
+
+  it("add the SASL login for Kafka and Redpanda with `login`", () => {
+    const login = {
+      KAFKA_SASL_MECHANISM: "SCRAM-SHA-512",
+      KAFKA_SASL_USERNAME: "app",
+      KAFKA_SASL_PASSWORD: "<password>",
+      KAFKA_SECURITY_PROTOCOL: "SASL_PLAINTEXT",
+    };
+    for (const kind of ["kafka", "redpanda"] as const) {
+      const brokers = `${kind}:9092`;
+      expect(appVariables(only(kind, { options: { login: true } })), kind).toEqual({
+        KAFKA_BROKERS: brokers,
+        KAFKA_BOOTSTRAP_SERVERS: brokers,
+        ...login,
+      });
+      expect(appVariables(only(kind, { options: { login: false } })), kind).toEqual({
+        KAFKA_BROKERS: brokers,
+        KAFKA_BOOTSTRAP_SERVERS: brokers,
+      });
+    }
   });
 
   it("give a search engine's own detected variable its address", () => {
@@ -358,7 +406,7 @@ describe("the services' settings", () => {
     expect(conf?.content).toContain('http: "127.0.0.1:8222"\n');
     expect(nats.dataDir).toBe("/data");
     expect(nats.environment(c)).toEqual({ NATS_TOKEN: "<token>" });
-    expect(nats.healthcheck.test).toEqual([
+    expect(nats.healthcheck(c).test).toEqual([
       "CMD",
       "wget",
       "-q",
@@ -424,7 +472,7 @@ describe("the services' settings", () => {
     );
     expect(valkey.environment(queue)).toEqual({ VALKEY_PASSWORD: "<password>" });
     expect(valkey.secrets).toEqual([{ name: "password", format: "hex32" }]);
-    expect(valkey.healthcheck.test).toEqual([
+    expect(valkey.healthcheck(queue).test).toEqual([
       "CMD-SHELL",
       'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli ping | grep -q PONG',
     ]);
@@ -449,7 +497,7 @@ describe("the services' settings", () => {
     expect(redis.environment(queue)).toEqual({ REDIS_PASSWORD: "<password>" });
     expect(redis.secrets).toEqual([{ name: "password", format: "hex32" }]);
     // redis-cli answers NOAUTH with exit code 0, so the check reads the reply.
-    expect(redis.healthcheck.test).toEqual([
+    expect(redis.healthcheck(queue).test).toEqual([
       "CMD-SHELL",
       'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli ping | grep -q PONG',
     ]);
@@ -497,7 +545,7 @@ describe("the services' settings", () => {
     // Its smallest limit holds the 256 MB a thread needs with a quarter to spare.
     expect(Math.floor(dragonfly.memory.minimumMb * 0.75)).toBeGreaterThanOrEqual(256);
     expect(dragonfly.environment(only("dragonfly"))).toEqual({ DFLY_requirepass: "<password>" });
-    expect(dragonfly.healthcheck.test).toEqual([
+    expect(dragonfly.healthcheck(only("dragonfly")).test).toEqual([
       "CMD-SHELL",
       'REDISCLI_AUTH="$DFLY_requirepass" redis-cli ping | grep -q PONG',
     ]);
@@ -524,17 +572,137 @@ describe("the services' settings", () => {
     expect(bounded.KAFKA_LOG_RETENTION_BYTES).toBe(String(5 * 1024 ** 3));
     // The image runs as uid 1000: a folder Docker makes for a bind mount would be root's.
     expect(kafka.namedVolume).toBe(true);
-    expect(kafka.secrets).toEqual([]);
   });
 
-  it("Redpanda: one core with its own memory below the limit, advertised by its name", () => {
+  it("Kafka without a login: one PLAINTEXT listener for the app, the image's own start", () => {
+    const kafka = serviceSpec("kafka");
+    const c = only("kafka");
+    const env = kafka.environment(c);
+    expect(env.KAFKA_LISTENERS).toBe("PLAINTEXT://:9092,CONTROLLER://localhost:9093");
+    expect(env.KAFKA_ADVERTISED_LISTENERS).toBe("PLAINTEXT://kafka:9092");
+    expect(env.KAFKA_LISTENER_SECURITY_PROTOCOL_MAP).toBe(
+      "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+    );
+    expect(Object.keys(env).filter((name) => name.includes("SASL"))).toEqual([]);
+    expect(kafka.command?.(c)).toBeUndefined();
+    expect(kafka.healthcheck(c)).toEqual({
+      test: [
+        "CMD-SHELL",
+        "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null",
+      ],
+      timeoutSeconds: 10,
+      startSeconds: 60,
+    });
+  });
+
+  it("Kafka with a login: SCRAM-SHA-512 on the clients' listener, its own traffic on loopback", () => {
+    const kafka = serviceSpec("kafka");
+    const c = only("kafka", { options: { login: true } });
+    const env = kafka.environment(c);
+    // The clients' listener is CLIENT: one named SASL_PLAINTEXT makes the image demand KAFKA_OPTS.
+    expect(env.KAFKA_LISTENERS).toBe(
+      "CLIENT://:9092,PLAINTEXT://localhost:9094,CONTROLLER://localhost:9093",
+    );
+    // The broker's own traffic uses the listener named PLAINTEXT, so it is advertised too.
+    expect(env.KAFKA_ADVERTISED_LISTENERS).toBe("CLIENT://kafka:9092,PLAINTEXT://localhost:9094");
+    expect(env.KAFKA_LISTENER_SECURITY_PROTOCOL_MAP).toBe(
+      "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,CLIENT:SASL_PLAINTEXT",
+    );
+    expect(env.KAFKA_SASL_ENABLED_MECHANISMS).toBe("SCRAM-SHA-512");
+    expect(env.KAFKA_LISTENER_NAME_CLIENT_SCRAM___SHA___512_SASL_JAAS_CONFIG).toBe(
+      "org.apache.kafka.common.security.scram.ScramLoginModule required;",
+    );
+    // Not KAFKA_SASL_PASSWORD: the image would make every KAFKA_ variable a server property.
+    expect(env.SASL_PASSWORD).toBe("<password>");
+    expect(Object.keys(env).filter((name) => name.includes("PASSWORD"))).toEqual(["SASL_PASSWORD"]);
+    // The rest is as without the login.
+    const {
+      KAFKA_LISTENERS: _listeners,
+      KAFKA_ADVERTISED_LISTENERS: _advertised,
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: _protocols,
+      ...plain
+    } = kafka.environment(only("kafka"));
+    expect(env).toMatchObject(plain);
+
+    // The container adds its own user, retried until the broker answers, then starts the broker
+    // as PID 1: the health check passes only once the login exists.
+    const configs =
+      "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-configs.sh --bootstrap-server localhost:9094";
+    expect(kafka.command?.(c)).toEqual([
+      "sh",
+      "-c",
+      `(until ${configs} --alter --add-config "SCRAM-SHA-512=[password=$SASL_PASSWORD]" --entity-type users --entity-name app; do sleep 2; done) & exec /etc/kafka/docker/run`,
+    ]);
+    expect(kafka.healthcheck(c)).toEqual({
+      test: [
+        "CMD-SHELL",
+        `${configs} --describe --entity-type users --entity-name app | grep -q SCRAM-SHA-512`,
+      ],
+      timeoutSeconds: 10,
+      startSeconds: 60,
+    });
+  });
+
+  it("Redpanda without a login: one core with its own memory below the limit, advertised by its name", () => {
     const redpanda = serviceSpec("redpanda");
-    const command = redpanda.command?.(only("redpanda")) ?? [];
-    expect(command.slice(0, 2)).toEqual(["redpanda", "start"]);
-    expect(command.join(" ")).toContain("--smp 1 --memory 1024M --reserve-memory 0M");
-    expect(command.join(" ")).toContain("--advertise-kafka-addr redpanda:9092");
-    expect(command).not.toContain("dev-container");
+    const c = only("redpanda");
+    expect(redpanda.command?.(c)).toEqual([
+      "redpanda",
+      "start",
+      "--smp",
+      "1",
+      "--memory",
+      "1024M",
+      "--reserve-memory",
+      "0M",
+      "--overprovisioned",
+      "--kafka-addr",
+      "0.0.0.0:9092",
+      "--advertise-kafka-addr",
+      "redpanda:9092",
+    ]);
+    expect(redpanda.entrypoint?.(c)).toBeUndefined();
+    expect(redpanda.environment(c)).toEqual({});
+    expect(redpanda.healthcheck(c)).toEqual({
+      test: ["CMD", "curl", "-fsS", "http://localhost:9644/v1/status/ready"],
+      startSeconds: 30,
+    });
     expect(redpanda.namedVolume).toBe(true);
+  });
+
+  it("Redpanda with a login: the user, superuser, SASL and an admin API that needs the login, then its start on loopback", () => {
+    const redpanda = serviceSpec("redpanda");
+    const c = only("redpanda", { options: { login: true } });
+    // rpk logs in with these once the admin API asks for a login.
+    expect(redpanda.environment(c)).toEqual({
+      RPK_USER: "app",
+      RPK_PASS: "<password>",
+      RPK_SASL_MECHANISM: "SCRAM-SHA-512",
+    });
+    const login = [
+      `{ rpk security user create app -p "$RPK_PASS" --mechanism SCRAM-SHA-512 || rpk security user update app --new-password "$RPK_PASS" --mechanism SCRAM-SHA-512; }`,
+      `rpk cluster config set superusers '["app"]'`,
+      "rpk cluster config set enable_sasl true",
+      "rpk cluster config set admin_api_require_auth true",
+    ].join(" && ");
+    const start =
+      "exec /entrypoint.sh redpanda start --smp 1 --memory 1024M --reserve-memory 0M --overprovisioned --kafka-addr 0.0.0.0:9092 --advertise-kafka-addr redpanda:9092";
+    // Schema Registry, the HTTP Proxy and RPC on loopback: only 9092 and 9644 stay reachable.
+    const loopback =
+      "--rpc-addr 127.0.0.1:33145 --schema-registry-addr 127.0.0.1:8081 --pandaproxy-addr 127.0.0.1:8082";
+    // A shell of its own: the image's entrypoint runs only `rpk`.
+    expect(redpanda.entrypoint?.(c)).toEqual(["sh", "-c"]);
+    expect(redpanda.command?.(c)).toEqual([
+      `login() { ${login}; }; (until login; do sleep 2; done) & ${start} ${loopback}`,
+    ]);
+    // Ready answers without a login; the check passes once the admin API asks for one.
+    expect(redpanda.healthcheck(c)).toEqual({
+      test: [
+        "CMD-SHELL",
+        "curl -fsS http://localhost:9644/v1/status/ready > /dev/null && rpk cluster config get admin_api_require_auth | grep -qx true",
+      ],
+      startSeconds: 30,
+    });
   });
 
   it("Garage: one node from OpsCrew's garage.toml, its secrets only in its environment", () => {
@@ -550,7 +718,7 @@ describe("the services' settings", () => {
       GARAGE_DEFAULT_ACCESS_KEY: "<key-id>",
       GARAGE_DEFAULT_SECRET_KEY: "<secret-key>",
     });
-    expect(garage.healthcheck.test).toEqual(["CMD", "/garage", "status"]);
+    expect(garage.healthcheck(c).test).toEqual(["CMD", "/garage", "status"]);
   });
 
   it("Garage: makes the app's key, and its bucket when the plan has one, itself when it starts", () => {
@@ -570,21 +738,44 @@ describe("the services' settings", () => {
 });
 
 describe("the search and analytics engines' settings", () => {
-  it("OpenSearch: one node with the security plugin off and half its limit as heap", () => {
+  it("OpenSearch: one node with its security plugin, over plain HTTP, and half its limit as heap", () => {
     const opensearch = serviceSpec("opensearch");
-    expect(opensearch.environment(only("opensearch"))).toEqual({
+    const c = only("opensearch");
+    // No demo setup: it would install public certificates and default users.
+    expect(opensearch.environment(c)).toEqual({
       "discovery.type": "single-node",
-      DISABLE_SECURITY_PLUGIN: "true",
       DISABLE_INSTALL_DEMO_CONFIG: "true",
+      "plugins.security.allow_default_init_securityindex": "true",
+      "plugins.security.ssl.transport.keystore_filepath": "node.p12",
+      "plugins.security.ssl.transport.truststore_filepath": "node.p12",
       OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m",
+      OPENSEARCH_PASSWORD: "<password>",
     });
     expect(
       opensearch.environment(only("opensearch", { memoryMb: 2048 })).OPENSEARCH_JAVA_OPTS,
     ).toBe("-Xms1024m -Xmx1024m");
-    expect(opensearch.healthcheck.test).toEqual([
-      "CMD-SHELL",
-      "curl -fsS 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null",
+    // The transport's certificate is made in the container once, and never leaves it; the admin's
+    // hash is written at every start (read only when the security index is first made), from the
+    // password in the container's environment.
+    const keytool = 'k="keytool -keystore config/node.p12 -storepass changeit"';
+    expect(opensearch.command?.(c)).toEqual([
+      "bash",
+      "-c",
+      [
+        "set -e",
+        `[ -f config/node.p12 ] || { ${keytool}; $k -genkeypair -alias node -keyalg RSA -keysize 2048 -dname CN=opensearch -validity 36500; $k -exportcert -alias node -rfc | $k -importcert -noprompt -alias trusted; }`,
+        "h=$(plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD)",
+        `printf '_meta:\\n  type: "internalusers"\\n  config_version: 2\\nadmin:\\n  hash: "%s"\\n  reserved: false\\n  backend_roles:\\n  - "admin"\\n' "$h" > config/opensearch-security/internal_users.yml`,
+        "exec ./opensearch-docker-entrypoint.sh opensearch",
+      ].join("; "),
     ]);
+    expect(opensearch.healthcheck(c)).toEqual({
+      test: [
+        "CMD-SHELL",
+        `curl -fsS -u "admin:$OPENSEARCH_PASSWORD" 'localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' > /dev/null`,
+      ],
+      startSeconds: 90,
+    });
     // It runs as uid 1000.
     expect(opensearch.namedVolume).toBe(true);
   });
@@ -601,7 +792,9 @@ describe("the search and analytics engines' settings", () => {
       ES_JAVA_OPTS: "-Xms512m -Xmx512m",
     });
     // The password comes from the container's own environment, never from a file.
-    expect(elasticsearch.healthcheck.test[1]).toContain('-u "elastic:$ELASTIC_PASSWORD"');
+    expect(elasticsearch.healthcheck(only("elasticsearch")).test[1]).toContain(
+      '-u "elastic:$ELASTIC_PASSWORD"',
+    );
     expect(elasticsearch.namedVolume).toBe(true);
   });
 
@@ -622,7 +815,7 @@ describe("the search and analytics engines' settings", () => {
       TYPESENSE_API_KEY: "<api-key>",
     });
     expect(typesense.dataDir).toBe("/data");
-    expect(typesense.healthcheck.test).toEqual([
+    expect(typesense.healthcheck(only("typesense")).test).toEqual([
       "CMD",
       "bash",
       "-c",
@@ -649,7 +842,7 @@ describe("the search and analytics engines' settings", () => {
     expect(server?.content).not.toMatch(/<!--(?:(?!-->)[\s\S])*--(?!>)/);
     expect(users?.target).toBe("/etc/clickhouse-server/users.d/opscrew.xml");
     expect(users?.content).toContain("<max_threads>2</max_threads>");
-    expect(clickhouse.healthcheck.test).toEqual([
+    expect(clickhouse.healthcheck(c).test).toEqual([
       "CMD",
       "wget",
       "-q",
@@ -667,7 +860,7 @@ describe("the search and analytics engines' settings", () => {
       NEO4J_server_memory_pagecache_size: "512m",
     });
     expect(neo4j.dataDir).toEqual({ data: "/data", logs: "/logs" });
-    expect(neo4j.healthcheck.test.slice(0, 3)).toEqual(["CMD", "bash", "-c"]);
+    expect(neo4j.healthcheck(only("neo4j")).test.slice(0, 3)).toEqual(["CMD", "bash", "-c"]);
   });
 
   it("hostSysctl: the kernel settings the plan's enabled services need, once each", () => {

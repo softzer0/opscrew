@@ -15,11 +15,19 @@ import { privateAddress } from "../runtime/network";
 import { shellQuote } from "../runtime/services";
 import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
-import type { ServiceContext, ServiceSpec } from "./types";
+import type { ServiceContext, ServiceHealthcheck, ServiceSpec } from "./types";
 
 const BOTH_TARGETS: ServiceSpec["targets"] = ["server", "portainer"];
 const PASSWORD = { name: "password", format: "hex32" } as const;
 const ROOT_PASSWORD = { name: "root-password", format: "hex32" } as const;
+
+/**
+ * Whether the app logs in to `service`: always, except to a Kafka or Redpanda without
+ * `options.login`, which then has no login (only the app's own containers reach it).
+ */
+export function hasLogin(service: PlanService): boolean {
+  return !(service.kind === "kafka" || service.kind === "redpanda") || service.options.login;
+}
 
 /**
  * The service's host for the app (`host`), which is also the one it advertises to its clients
@@ -73,7 +81,7 @@ function passwordRedisUrl(ctx: ServiceContext): string {
 }
 
 /** A health check that logs in with the password in `variable` and reads the reply. */
-function redisCliCheck(variable: string, cli = "redis-cli"): ServiceSpec["healthcheck"] {
+function redisCliCheck(variable: string, cli = "redis-cli"): ServiceHealthcheck {
   // redis-cli (and valkey-cli) answers NOAUTH with exit code 0, so the check reads the reply.
   return { test: ["CMD-SHELL", `REDISCLI_AUTH="$${variable}" ${cli} ping | grep -q PONG`] };
 }
@@ -99,7 +107,7 @@ const POSTGRES: ServiceSpec = {
     POSTGRES_DB: "app",
     POSTGRES_PASSWORD: ctx.secretRef(PASSWORD.name),
   }),
-  healthcheck: { test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"] },
+  healthcheck: () => ({ test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"] }),
   secrets: [PASSWORD],
   auth: "password",
   // `postgresql://` for every name: SQLAlchemy rejects `postgres://`, while libpq, node-postgres,
@@ -246,7 +254,7 @@ const VALKEY: ServiceSpec = {
   dataDir: "/data",
   command: (ctx) => passwordServerCommand(ctx, "valkey", "VALKEY_PASSWORD"),
   environment: (ctx) => ({ VALKEY_PASSWORD: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
-  healthcheck: redisCliCheck("VALKEY_PASSWORD", "valkey-cli"),
+  healthcheck: () => redisCliCheck("VALKEY_PASSWORD", "valkey-cli"),
   secrets: [PASSWORD],
   auth: "password",
   address: passwordRedisUrl,
@@ -271,7 +279,7 @@ const REDIS: ServiceSpec = {
   dataDir: "/data",
   command: (ctx) => passwordServerCommand(ctx, "redis", "REDIS_PASSWORD"),
   environment: (ctx) => ({ REDIS_PASSWORD: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
-  healthcheck: redisCliCheck("REDIS_PASSWORD"),
+  healthcheck: () => redisCliCheck("REDIS_PASSWORD"),
   secrets: [PASSWORD],
   auth: "password",
   address: passwordRedisUrl,
@@ -346,7 +354,7 @@ const DRAGONFLY: ServiceSpec = {
   // Dragonfly reads each of its flags from `DFLY_<flag>` (an unknown one stops it).
   environment: (ctx) => ({ DFLY_requirepass: ctx.secretRef(PASSWORD.name), ...aclUsers(ctx) }),
   // Its own health check sends PING without the password and counts any reply.
-  healthcheck: redisCliCheck("DFLY_requirepass"),
+  healthcheck: () => redisCliCheck("DFLY_requirepass"),
   secrets: [PASSWORD],
   auth: "password",
   address: passwordRedisUrl,
@@ -402,7 +410,7 @@ const MYSQL: ServiceSpec = {
   }),
   // Liveness only: it exits 0 even when the login is refused, so it needs no password. Over TCP,
   // since the image's first-start server listens on the socket only.
-  healthcheck: { test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"], startSeconds: 60 },
+  healthcheck: () => ({ test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"], startSeconds: 60 }),
   secrets: [PASSWORD, ROOT_PASSWORD],
   auth: "password",
   address: (ctx) => loginUrl(ctx, "mysql", 3306, "/app"),
@@ -432,10 +440,10 @@ const MARIADB: ServiceSpec = {
     MARIADB_ROOT_PASSWORD: ctx.secretRef(ROOT_PASSWORD.name),
   }),
   // The image writes the check's own login on first start.
-  healthcheck: {
+  healthcheck: () => ({
     test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"],
     startSeconds: 30,
-  },
+  }),
   secrets: [PASSWORD, ROOT_PASSWORD],
   auth: "password",
   address: (ctx) => loginUrl(ctx, "mysql", 3306, "/app"),
@@ -527,10 +535,10 @@ const MONGODB: ServiceSpec = {
     MONGO_INITDB_ROOT_USERNAME: "app",
     MONGO_INITDB_ROOT_PASSWORD: ctx.secretRef(PASSWORD.name),
   }),
-  healthcheck: {
+  healthcheck: () => ({
     test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"],
     startSeconds: 30,
-  },
+  }),
   init: mongoInit,
   secrets: [PASSWORD],
   auth: "password",
@@ -588,7 +596,7 @@ const RABBITMQ: ServiceSpec = {
     RABBITMQ_DEFAULT_USER: "app",
     RABBITMQ_DEFAULT_PASS: ctx.secretRef(PASSWORD.name),
   }),
-  healthcheck: { test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"], startSeconds: 30 },
+  healthcheck: () => ({ test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"], startSeconds: 30 }),
   secrets: [PASSWORD],
   auth: "password",
   // `%2F` is the default virtual host `/`; a URL without a path leaves it to each client.
@@ -638,7 +646,7 @@ const NATS: ServiceSpec = {
   ],
   command: () => ["nats-server", "--config", NATS_CONF],
   environment: (ctx) => ({ NATS_TOKEN: ctx.secretRef("token") }),
-  healthcheck: { test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8222/healthz"] },
+  healthcheck: () => ({ test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8222/healthz"] }),
   secrets: [{ name: "token", format: "hex32" }],
   auth: "token",
   address: (ctx) => `nats://${ctx.secretRef("token")}@${serviceHost(ctx)}:4222`,
@@ -646,12 +654,27 @@ const NATS: ServiceSpec = {
   targets: BOTH_TARGETS,
 };
 
-/** Kafka and Redpanda: where the app's Kafka clients connect, and the names they read it from. */
+/** The user of Kafka's and Redpanda's login, and its mechanism (research R8). */
+const BROKER_USER = "app";
+const SCRAM = "SCRAM-SHA-512";
+
+/**
+ * Kafka and Redpanda: where the app's Kafka clients connect, and the names they read it from; with
+ * the login, OpsCrew's names for it too (no client has a convention of its own, research R7).
+ */
 const BROKER_VARIABLES: Pick<ServiceSpec, "address" | "conventionalVariables"> = {
   address: (ctx) => `${serviceHost(ctx)}:9092`,
-  conventionalVariables: (_ctx, brokers) => ({
+  conventionalVariables: (ctx, brokers) => ({
     KAFKA_BROKERS: brokers,
     KAFKA_BOOTSTRAP_SERVERS: brokers,
+    ...(hasLogin(ctx.service)
+      ? {
+          KAFKA_SASL_MECHANISM: SCRAM,
+          KAFKA_SASL_USERNAME: BROKER_USER,
+          KAFKA_SASL_PASSWORD: ctx.secretRef(PASSWORD.name),
+          KAFKA_SECURITY_PROTOCOL: "SASL_PLAINTEXT",
+        }
+      : {}),
   }),
 };
 
@@ -661,9 +684,44 @@ function kafkaClusterId(ctx: ServiceContext): string {
   return Buffer.from(hex, "hex").toString("base64url");
 }
 
+/** With the login, the listener of the broker's own traffic and of the user's setup. */
+const KAFKA_LOOPBACK = "PLAINTEXT://localhost:9094";
+
+/**
+ * Kafka's listeners; the controller's is on loopback either way. Without the login, the app's
+ * PLAINTEXT on 9092. With it (research R8):
+ * - the clients' listener on 9092 asks for SCRAM-SHA-512. It is named `CLIENT`: one named
+ *   `SASL_PLAINTEXT` makes the image demand `KAFKA_OPTS`. The broker needs its JAAS entry even for
+ *   SCRAM;
+ * - the broker's own traffic uses the listener named `PLAINTEXT`, on loopback, so it is advertised;
+ * - the password is `SASL_PASSWORD`: the image makes every `KAFKA_` variable a server property.
+ */
+function kafkaListeners(ctx: ServiceContext): Record<string, string> {
+  const host = serviceHost(ctx);
+  if (!hasLogin(ctx.service)) {
+    return {
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://localhost:9093",
+      KAFKA_ADVERTISED_LISTENERS: `PLAINTEXT://${host}:9092`,
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER",
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+    };
+  }
+  return {
+    KAFKA_LISTENERS: `CLIENT://:9092,${KAFKA_LOOPBACK},CONTROLLER://localhost:9093`,
+    KAFKA_ADVERTISED_LISTENERS: `CLIENT://${host}:9092,${KAFKA_LOOPBACK}`,
+    KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER",
+    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP:
+      "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,CLIENT:SASL_PLAINTEXT",
+    KAFKA_SASL_ENABLED_MECHANISMS: SCRAM,
+    KAFKA_LISTENER_NAME_CLIENT_SCRAM___SHA___512_SASL_JAAS_CONFIG:
+      "org.apache.kafka.common.security.scram.ScramLoginModule required;",
+    SASL_PASSWORD: ctx.secretRef(PASSWORD.name),
+  };
+}
+
 /**
  * One combined broker and controller (KRaft) with every replication factor at 1: the image needs
- * all of them once any `KAFKA_*` setting is given. The controller listens on loopback only. The
+ * all of them once any `KAFKA_*` setting is given. Its listeners: {@link kafkaListeners}. The
  * heap is half the limit; logs are kept `retentionHours` (Kafka's own 168 by default) and, with
  * `retentionGb`, at most that much per partition.
  */
@@ -674,10 +732,7 @@ function kafkaEnvironment(ctx: ServiceContext): Record<string, string> {
     CLUSTER_ID: kafkaClusterId(ctx),
     KAFKA_NODE_ID: "1",
     KAFKA_PROCESS_ROLES: "broker,controller",
-    KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://localhost:9093",
-    KAFKA_ADVERTISED_LISTENERS: `PLAINTEXT://${serviceHost(ctx)}:9092`,
-    KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER",
-    KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+    ...kafkaListeners(ctx),
     KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093",
     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1",
     KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1",
@@ -692,6 +747,30 @@ function kafkaEnvironment(ctx: ServiceContext): Record<string, string> {
       : { KAFKA_LOG_RETENTION_BYTES: String(retentionGb * 1024 ** 3) }),
     KAFKA_HEAP_OPTS: `-Xmx${heap} -Xms${heap}`,
   };
+}
+
+/**
+ * One of Kafka's tools: a JVM of its own (about 2 seconds), with a small heap so it fits beside
+ * the broker's.
+ */
+function kafkaTool(name: string): string {
+  return `KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/${name}.sh`;
+}
+
+/** `kafka-configs.sh` on the loopback listener, for the login's user. */
+const KAFKA_USER_CONFIGS = `${kafkaTool("kafka-configs")} --bootstrap-server localhost:9094`;
+const KAFKA_USER_ENTITY = `--entity-type users --entity-name ${BROKER_USER}`;
+
+/**
+ * With the login, the container adds its own user before the broker serves anyone (research R8):
+ * a background loop sets the user's password on the loopback listener until the broker answers
+ * (harmless at every start, and on a broker that already holds data), then the image's own start
+ * runs as PID 1. Without it, the image's own command.
+ */
+function kafkaCommand(ctx: ServiceContext): string[] | undefined {
+  if (!hasLogin(ctx.service)) return undefined;
+  const add = `${KAFKA_USER_CONFIGS} --alter --add-config "${SCRAM}=[password=$SASL_PASSWORD]" ${KAFKA_USER_ENTITY}`;
+  return ["sh", "-c", `(until ${add}; do sleep 2; done) & exec /etc/kafka/docker/run`];
 }
 
 const KAFKA: ServiceSpec = {
@@ -714,21 +793,87 @@ const KAFKA: ServiceSpec = {
   },
   // It runs as uid 1000.
   namedVolume: true,
+  command: kafkaCommand,
   environment: kafkaEnvironment,
-  // A JVM of its own (about 2 seconds), with a small heap so it fits beside the broker's.
-  healthcheck: {
+  // With the login, healthy only once its user exists, so the app never starts before it.
+  healthcheck: (ctx) => ({
     test: [
       "CMD-SHELL",
-      "KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null",
+      hasLogin(ctx.service)
+        ? `${KAFKA_USER_CONFIGS} --describe ${KAFKA_USER_ENTITY} | grep -q ${SCRAM}`
+        : `${kafkaTool("kafka-broker-api-versions")} --bootstrap-server localhost:9092 > /dev/null`,
     ],
     timeoutSeconds: 10,
     startSeconds: 60,
-  },
-  secrets: [],
-  auth: "internal-only",
+  }),
+  // Also without the login, so turning it on changes no secret.
+  secrets: [PASSWORD],
+  auth: "password",
   ...BROKER_VARIABLES,
   targets: BOTH_TARGETS,
 };
+
+/** Redpanda's admin API answers this without a login, also once it asks for one (research R8). */
+const REDPANDA_READY = "http://localhost:9644/v1/status/ready";
+
+/**
+ * With the login, Schema Registry, the HTTP Proxy and RPC on loopback: only 9092 and the admin
+ * API's 9644 stay reachable.
+ */
+const REDPANDA_LOOPBACK = [
+  "--rpc-addr",
+  "127.0.0.1:33145",
+  "--schema-registry-addr",
+  "127.0.0.1:8081",
+  "--pandaproxy-addr",
+  "127.0.0.1:8082",
+];
+
+/**
+ * The login's setup through `rpk` on the admin API, in the documented order (research R7, R8):
+ * the user (`create` fails when it exists and `update` when it doesn't), the one superuser, SASL,
+ * then an admin API that asks for the login. None needs a restart or changes data.
+ */
+const REDPANDA_LOGIN = [
+  `{ rpk security user create ${BROKER_USER} -p "$RPK_PASS" --mechanism ${SCRAM} || rpk security user update ${BROKER_USER} --new-password "$RPK_PASS" --mechanism ${SCRAM}; }`,
+  `rpk cluster config set superusers '["${BROKER_USER}"]'`,
+  "rpk cluster config set enable_sasl true",
+  "rpk cluster config set admin_api_require_auth true",
+].join(" && ");
+
+/** One core; its own memory is the limit less 512 MB for everything outside it. */
+function redpandaStart(ctx: ServiceContext): string[] {
+  return [
+    "redpanda",
+    "start",
+    "--smp",
+    "1",
+    "--memory",
+    `${ctx.service.memoryMb - 512}M`,
+    "--reserve-memory",
+    "0M",
+    "--overprovisioned",
+    "--kafka-addr",
+    "0.0.0.0:9092",
+    "--advertise-kafka-addr",
+    `${serviceHost(ctx)}:9092`,
+  ];
+}
+
+/**
+ * Redpanda's start. With the login, a shell ({@link REDPANDA.entrypoint}) repeats
+ * {@link REDPANDA_LOGIN} in the background until it passes (harmless at every start, and on a
+ * cluster that already holds data), then runs the image's own start, on loopback but for 9092 and
+ * 9644, as PID 1.
+ */
+function redpandaCommand(ctx: ServiceContext): string[] {
+  const start = redpandaStart(ctx);
+  if (!hasLogin(ctx.service)) return start;
+  const run = [...start, ...REDPANDA_LOOPBACK].map(shellWord).join(" ");
+  return [
+    `login() { ${REDPANDA_LOGIN}; }; (until login; do sleep 2; done) & exec /entrypoint.sh ${run}`,
+  ];
+}
 
 const REDPANDA: ServiceSpec = {
   kind: "redpanda",
@@ -747,29 +892,27 @@ const REDPANDA: ServiceSpec = {
   dataDir: "/var/lib/redpanda/data",
   // It runs as uid 101.
   namedVolume: true,
-  // One core; its own memory is the limit less 512 MB for everything outside it.
-  command: (ctx) => [
-    "redpanda",
-    "start",
-    "--smp",
-    "1",
-    "--memory",
-    `${ctx.service.memoryMb - 512}M`,
-    "--reserve-memory",
-    "0M",
-    "--overprovisioned",
-    "--kafka-addr",
-    "0.0.0.0:9092",
-    "--advertise-kafka-addr",
-    `${serviceHost(ctx)}:9092`,
-  ],
-  environment: () => ({}),
-  healthcheck: {
-    test: ["CMD", "curl", "-fsS", "http://localhost:9644/v1/status/ready"],
+  command: redpandaCommand,
+  // The image's entrypoint runs only `rpk`.
+  entrypoint: (ctx) => (hasLogin(ctx.service) ? ["sh", "-c"] : undefined),
+  // With the login, rpk logs in with these once the admin API asks for it.
+  environment: (ctx): Record<string, string> =>
+    hasLogin(ctx.service)
+      ? { RPK_USER: BROKER_USER, RPK_PASS: ctx.secretRef(PASSWORD.name), RPK_SASL_MECHANISM: SCRAM }
+      : {},
+  // With the login, healthy only once the admin API asks for it, which comes last.
+  healthcheck: (ctx) => ({
+    test: hasLogin(ctx.service)
+      ? [
+          "CMD-SHELL",
+          `curl -fsS ${REDPANDA_READY} > /dev/null && rpk cluster config get admin_api_require_auth | grep -qx true`,
+        ]
+      : ["CMD", "curl", "-fsS", REDPANDA_READY],
     startSeconds: 30,
-  },
-  secrets: [],
-  auth: "internal-only",
+  }),
+  // Also without the login, so turning it on changes no secret.
+  secrets: [PASSWORD],
+  auth: "password",
   ...BROKER_VARIABLES,
   targets: BOTH_TARGETS,
 };
@@ -840,7 +983,7 @@ const GARAGE: ServiceSpec = {
       ...(bucket === undefined ? {} : { GARAGE_DEFAULT_BUCKET: bucket }),
     };
   },
-  healthcheck: { test: ["CMD", "/garage", "status"] },
+  healthcheck: () => ({ test: ["CMD", "/garage", "status"] }),
   secrets: [
     { name: "rpc-secret", format: "hex32" },
     { name: "key-id", format: "garage-key-id" },
@@ -886,6 +1029,41 @@ function bashHttpCheck(port: number, path: string): string[] {
 /** The cluster's health, yellow being the best one node gets for an index with replicas. */
 const CLUSTER_HEALTH = "localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s";
 
+/** OpenSearch's transport keystore in its config folder, with the JDK's default password. */
+const OPENSEARCH_KEYSTORE = "node.p12";
+
+/**
+ * OpenSearch's security plugin as research R8 ran it, from the image's folder:
+ * - the transport layer needs TLS even on one node. When the container has none yet, the JDK's
+ *   keytool makes one self-signed key that trusts itself; it never leaves the container;
+ * - `internal_users.yml` then holds only `admin`, with the bcrypt hash of `OPENSEARCH_PASSWORD` and
+ *   `reserved: false`. The image's own lets in `admin:admin`. It is read only when the security
+ *   index is first made, so writing it at every start changes nothing after that;
+ * - then the image's own start.
+ */
+function opensearchCommand(): string[] {
+  const keystore = `config/${OPENSEARCH_KEYSTORE}`;
+  const users = [
+    "_meta:",
+    '  type: "internalusers"',
+    "  config_version: 2",
+    "admin:",
+    '  hash: "%s"',
+    "  reserved: false",
+    "  backend_roles:",
+    '  - "admin"',
+    "",
+  ].join("\\n");
+  const script = [
+    "set -e",
+    `[ -f ${keystore} ] || { k="keytool -keystore ${keystore} -storepass changeit"; $k -genkeypair -alias node -keyalg RSA -keysize 2048 -dname CN=opensearch -validity 36500; $k -exportcert -alias node -rfc | $k -importcert -noprompt -alias trusted; }`,
+    "h=$(plugins/opensearch-security/tools/hash.sh -env OPENSEARCH_PASSWORD)",
+    `printf '${users}' "$h" > config/opensearch-security/internal_users.yml`,
+    "exec ./opensearch-docker-entrypoint.sh opensearch",
+  ];
+  return ["bash", "-c", script.join("; ")];
+}
+
 const OPENSEARCH: ServiceSpec = {
   kind: "opensearch",
   title: "OpenSearch",
@@ -899,20 +1077,30 @@ const OPENSEARCH: ServiceSpec = {
   dataDir: "/usr/share/opensearch/data",
   // It runs as uid 1000.
   namedVolume: true,
-  // No login: the security plugin is off, and only the app's own containers reach it (R5).
+  command: opensearchCommand,
+  // The security plugin over plain HTTP on the app's internal network, as Elasticsearch: no demo
+  // setup (public certificates and default users), and the security index made from OpsCrew's
+  // users on the first start.
   environment: (ctx) => ({
     "discovery.type": "single-node",
-    DISABLE_SECURITY_PLUGIN: "true",
     DISABLE_INSTALL_DEMO_CONFIG: "true",
+    "plugins.security.allow_default_init_securityindex": "true",
+    "plugins.security.ssl.transport.keystore_filepath": OPENSEARCH_KEYSTORE,
+    "plugins.security.ssl.transport.truststore_filepath": OPENSEARCH_KEYSTORE,
     OPENSEARCH_JAVA_OPTS: halfHeap(ctx),
+    OPENSEARCH_PASSWORD: ctx.secretRef(PASSWORD.name),
   }),
-  healthcheck: {
-    test: ["CMD-SHELL", `curl -fsS '${CLUSTER_HEALTH}' > /dev/null`],
+  healthcheck: () => ({
+    test: [
+      "CMD-SHELL",
+      `curl -fsS -u "admin:$OPENSEARCH_PASSWORD" '${CLUSTER_HEALTH}' > /dev/null`,
+    ],
     startSeconds: 90,
-  },
-  secrets: [],
-  auth: "internal-only",
-  address: (ctx) => `http://${serviceHost(ctx)}:9200`,
+  }),
+  secrets: [PASSWORD],
+  auth: "password",
+  // opensearch-js and opensearch-py take the login in the URL.
+  address: (ctx) => `http://admin:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:9200`,
   conventionalVariables: (_ctx, url) => ({ OPENSEARCH_URL: url }),
   ulimits: { nofile: 65536 },
   hostSettings: MAX_MAP_COUNT,
@@ -949,10 +1137,10 @@ const ELASTICSEARCH: ServiceSpec = {
     ELASTIC_PASSWORD: ctx.secretRef(PASSWORD.name),
     ES_JAVA_OPTS: halfHeap(ctx),
   }),
-  healthcheck: {
+  healthcheck: () => ({
     test: ["CMD-SHELL", `curl -fsS -u "elastic:$ELASTIC_PASSWORD" '${CLUSTER_HEALTH}' > /dev/null`],
     startSeconds: 90,
-  },
+  }),
   secrets: [PASSWORD],
   auth: "password",
   address: (ctx) => `http://elastic:${ctx.secretRef(PASSWORD.name)}@${serviceHost(ctx)}:9200`,
@@ -984,7 +1172,7 @@ const MEILISEARCH: ServiceSpec = {
     MEILI_NO_ANALYTICS: "true",
   }),
   // Alpine's busybox wget.
-  healthcheck: { test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:7700/health"] },
+  healthcheck: () => ({ test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:7700/health"] }),
   secrets: [{ name: "master-key", format: "hex32" }],
   auth: "key",
   // Laravel Scout's names, which the other clients' examples use too.
@@ -1015,7 +1203,7 @@ const TYPESENSE: ServiceSpec = {
     TYPESENSE_DATA_DIR: "/data",
     TYPESENSE_API_KEY: ctx.secretRef("api-key"),
   }),
-  healthcheck: { test: bashHttpCheck(8108, "/health") },
+  healthcheck: () => ({ test: bashHttpCheck(8108, "/health") }),
   secrets: [{ name: "api-key", format: "hex32" }],
   auth: "key",
   // Its clients take the address in parts (Laravel Scout's names).
@@ -1108,7 +1296,7 @@ const CLICKHOUSE: ServiceSpec = {
     CLICKHOUSE_USER: "app",
     CLICKHOUSE_PASSWORD: ctx.secretRef(PASSWORD.name),
   }),
-  healthcheck: { test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8123/ping"] },
+  healthcheck: () => ({ test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8123/ping"] }),
   secrets: [PASSWORD],
   auth: "password",
   address: (ctx) => loginUrl(ctx, "http", 8123, "/app"),
@@ -1149,7 +1337,7 @@ const NEO4J: ServiceSpec = {
       NEO4J_server_memory_pagecache_size: third,
     };
   },
-  healthcheck: { test: bashHttpCheck(7474, "/"), startSeconds: 60 },
+  healthcheck: () => ({ test: bashHttpCheck(7474, "/"), startSeconds: 60 }),
   secrets: [PASSWORD],
   auth: "password",
   address: (ctx) => `bolt://${serviceHost(ctx)}:7687`,
