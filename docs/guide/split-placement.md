@@ -134,17 +134,20 @@ Which services can move with their data:
 One service moves at a time. Moving the whole app to another provider is
 `npx opscrew retarget`, which an app with extra servers can't use yet: it refuses before any change.
 
-## Services with no login
+## Kafka, Redpanda and OpenSearch
 
-Kafka, Redpanda and OpenSearch run without a login of their own. A Kafka or Redpanda login works
-only when the app's code sends one (its client's SASL settings), and OpenSearch's login needs
-certificates for the traffic between its nodes, which OpsCrew doesn't create. The network protects
-them instead. On the app's server, only the app's containers reach them. On another server, design
-says so: only the app's servers reach them, through the private network, and no
-[device](private-network.md) can be given access to them.
+Kafka and Redpanda run without a login unless you set `login: true` in their options, because
+the app's code must send it (see [their login](brokers.md#kafkas-and-redpandas-login)). Without
+it, the network protects them. On the app's server, only the app's containers reach them. On
+another server, design says so: only the app's servers reach them, through the private network.
 
-Every other service keeps the password OpsCrew generates for it. Between the servers, WireGuard
-encrypts every packet and proves which server sent it, so OpsCrew adds no TLS on top.
+OpenSearch always has a login, inside `OPENSEARCH_URL` (see
+[Search and analytics engines](search-and-analytics.md#each-engines-settings)). No device can
+be given access to Kafka, Redpanda or OpenSearch: with a login, it is the app's only one; without
+one, only the app's servers reach them. See [devices](private-network.md).
+
+Every service with a login keeps the password OpsCrew generates for it. Between the servers,
+WireGuard encrypts every packet and proves which server sent it, so OpsCrew adds no TLS on top.
 
 ## Every command covers every server
 

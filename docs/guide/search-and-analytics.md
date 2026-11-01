@@ -13,7 +13,7 @@ with its share of the server's price (see [Components](components.md)).
 
 | Engine | Version | Memory limit (lowest) | Smallest server | Licence | Login |
 |---|---|---|---|---|---|
-| OpenSearch | 3.9 | 1024 MB (768 MB) | 4 GB | Apache 2.0 | none: only the app's containers reach it |
+| OpenSearch | 3.9 | 1024 MB (768 MB) | 4 GB | Apache 2.0 | user `admin`, generated password |
 | Elasticsearch | 9.5 | 1024 MB (768 MB) | 4 GB | Elastic License 2.0 | generated password |
 | Meilisearch | 1.55 | 512 MB (256 MB) | 2 GB | MIT | generated master key |
 | Typesense | 30.2 | 512 MB (256 MB) | 2 GB | GPL 3.0 | generated API key |
@@ -34,7 +34,7 @@ sharing the engine itself.
 
 | Engine | Variables |
 |---|---|
-| OpenSearch | `OPENSEARCH_URL` (`http://opensearch:9200`) |
+| OpenSearch | `OPENSEARCH_URL` (`http://admin:<password>@opensearch:9200`) |
 | Elasticsearch | `ELASTICSEARCH_URL` (`http://elastic:<password>@elasticsearch:9200`) |
 | Meilisearch | `MEILISEARCH_HOST` (`http://meilisearch:7700`), `MEILISEARCH_KEY` |
 | Typesense | `TYPESENSE_HOST`, `TYPESENSE_PORT`, `TYPESENSE_PROTOCOL`, `TYPESENSE_API_KEY` |
@@ -47,8 +47,16 @@ your repository.
 
 ## Each engine's settings
 
-- **OpenSearch** runs with its security plugin off: it has no login, and only the app's own
-  containers can reach it, on the app's internal network. Its Java heap is half the memory limit.
+- **OpenSearch** runs its security plugin, with one user, `admin`, and a generated password, over
+  plain HTTP on the app's internal network. The login is inside `OPENSEARCH_URL`, and opensearch-js
+  and opensearch-py read it from there: an app that connects with that address needs no change. A
+  request without the login gets 401. The security plugin also needs a certificate for the
+  traffic between nodes: OpsCrew's start command makes it with the JDK's keytool inside the
+  container, and it never leaves it. OpsCrew generates the password once and keeps it; it has no
+  command to change it. Its Java heap is half the memory limit.
+
+  An app that already runs OpenSearch gets the login at its next `npx opscrew provision` and the
+  deploy after its pull request. `OPENSEARCH_URL` then carries the login, and the indexes stay.
 - **Elasticsearch** runs only for apps that use an Elasticsearch client: since version 7.14,
   Elasticsearch clients refuse OpenSearch, and OpenSearch clients refuse Elasticsearch. Security is
   on, with the `elastic` user's password, over plain HTTP on the app's internal network. Machine

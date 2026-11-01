@@ -502,7 +502,8 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   Redis and Dragonfly start empty); it runs in the user's terminal with `npx opscrew provision`
   (scripts add `--allow-downtime`), and once the app runs on the new copy,
   `npx opscrew provision --finish-move` deletes the old one after they type the service's name.
-  Kafka, Redpanda and OpenSearch have no login: say that only the app's servers reach them.
+  A Kafka or Redpanda without `login: true` in its options has no login: say that only the app's
+  servers reach it.
 - **Devices on the private network.** The user's laptop or phone can join the app's private
   network, to reach each server's SSH, Beszel and Portainer on its private address without a
   public port or an SSH tunnel. Adding a device is terminal-only, with no tool on purpose: tell
