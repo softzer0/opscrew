@@ -10,6 +10,7 @@ import {
   WorkerSecretsChangedError,
   type WorkerVersion,
 } from "@opscrew/connector-cloudflare";
+import type { PagesRun } from "@opscrew/connector-github";
 import {
   canonicalJson,
   listText,
@@ -600,9 +601,14 @@ async function waitForRerun(
  * when the token may read the deploy pause), re-run after the `promote` approval,
  * bound to {@link rollbackHash} of the target, the run and its plan's hash, and followed to its
  * end. GitHub builds the site again from that run's commit and publishes it. `run.beforeChange`
- * runs once it is approved, before the re-run.
+ * runs once it is approved, before the re-run. `known`: the site's runs and the one running, when
+ * the caller read them already (`opscrew rollback`).
  */
-export async function rollBackPages(run: SiteRun, version: string): Promise<PromoteResult> {
+export async function rollBackPages(
+  run: SiteRun,
+  version: string,
+  known?: { runs: readonly PagesRun[]; running: PagesRun | undefined },
+): Promise<PromoteResult> {
   const { deps, target, plan, command, versionFlag } = run;
   if (!/^[1-9][0-9]*$/.test(version)) {
     throw new OpsCrewError(
@@ -617,7 +623,7 @@ export async function rollBackPages(run: SiteRun, version: string): Promise<Prom
   const github = await githubRepository(deps, run.services);
   const { owner, repo } = github;
   const workflowFile = posix.basename(plan.cicd.workflowPath);
-  const runs = await github.api.pagesRuns(owner, repo, workflowFile);
+  const runs = known?.runs ?? (await github.api.pagesRuns(owner, repo, workflowFile));
   const chosen = runs.find((known) => known.runId === Number(version));
   const list = "`opscrew status` lists the run that published the site before";
   if (chosen === undefined) {
@@ -627,12 +633,12 @@ export async function rollBackPages(run: SiteRun, version: string): Promise<Prom
       { hint: `${list}; run \`${command} ${versionFlag} <run id>\` with it.` },
     );
   }
-  const pause = await readableDeployPause(github, plan);
-  const { running } = await pagesMarks(
-    github,
-    runs,
-    pause?.reason === "rollback" ? pause.image : undefined,
-  );
+  let running = known?.running;
+  if (known === undefined) {
+    const pause = await readableDeployPause(github, plan);
+    const pinned = pause?.reason === "rollback" ? pause.image : undefined;
+    ({ running } = await pagesMarks(github, runs, pinned));
+  }
   if (chosen === running) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

@@ -126,10 +126,10 @@ async function rollbackWorker(run: RollbackRun): Promise<RollbackResult> {
   const client = sharedCloudflareClient(deps, services);
   deps.reporter.step(`Reading the versions of the Worker ${worker} at Cloudflare`);
   const versions = (await client.listWorkerVersions(accountId, worker)) ?? [];
-  const { running } = runningVersions(
+  const { running, before } = runningVersions(
     (await client.listWorkerDeployments(accountId, worker)) ?? [],
   );
-  const previous = previousWorkerVersion(versions, running?.versionId);
+  const previous = previousWorkerVersion(versions, running?.versionId, before?.versionId);
   if (options.list === true) {
     const views = versions.map((version) =>
       marked({ version: version.id, builtAt: version.createdOn }, [
@@ -214,7 +214,7 @@ async function rollbackPages(run: RollbackRun): Promise<RollbackResult> {
       // The pinned run's latest attempt did not succeed, so it is not listed.
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `The run ${pin.image} that \`opscrew rollback\` pinned ${environment}'s site to has not succeeded: it waits for a reviewer, or it failed. ${NOTHING}`,
+        `The run ${pin.image} that \`opscrew rollback\` pinned ${environment}'s site to has not succeeded: it is still running, waits for a reviewer, or failed. ${NOTHING}`,
         {
           hint: `Roll back to another run with \`${command} --to <run id>\` (\`${command} --list\` lists the runs), or run \`${command} --resume\` to deploy forward again.`,
         },
@@ -243,7 +243,7 @@ async function rollbackPages(run: RollbackRun): Promise<RollbackResult> {
     ...(now !== undefined && now !== chosen ? { from: now.headSha } : {}),
   };
   const outcome = await pausedWhile(run, github, pinned, (beforeChange) =>
-    rollBackPages({ ...siteRun(run), beforeChange }, version),
+    rollBackPages({ ...siteRun(run), beforeChange }, version, { runs, running: now }),
   );
   deps.reporter.info(pausedText(run));
   return {

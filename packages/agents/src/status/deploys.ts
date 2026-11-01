@@ -25,7 +25,7 @@ import { type DeployPause, deployPauseOf, pinnedText } from "../shared/deploy-pa
 import { codeOf } from "../shared/errors";
 import { ghcrPackage } from "../shared/github";
 import { appServerCommand, sections } from "./resources";
-import { appDeployed, type ComponentStatusOptions } from "./run";
+import type { ComponentStatusOptions } from "./run";
 
 /** The environment's deploys as `status` read them (`deploys` in `opscrew_status`'s data). */
 export interface DeployState {
@@ -36,6 +36,12 @@ export interface DeployState {
   /** Its entry in `OPSCREW_DEPLOY_PAUSED`; absent when its deploys are on. */
   paused?: DeployPause;
 }
+
+/**
+ * Whether `status` read the components from the app's server: `not-read` before `verify` saw a
+ * deploy, `failed` when the read failed or was refused.
+ */
+export type ComponentsRead = "read" | "not-read" | "failed";
 
 /** The mark before each part of the server read's output. */
 const MARK = "==opscrew-deploys:";
@@ -278,20 +284,19 @@ function pauseLines(
 /**
  * Where the versions are read: a site's in its own section (`site`); this computer's app folder
  * (`computer`); GHCR's `opscrew-<env>` and `-previous` labels (`labels`), in the user's Portainer
- * and on a server whose components were not read because `verify` has not seen a deploy yet; the
- * server (`server`) once its components were read; nowhere (`unread`) when reading them failed
- * or was refused.
+ * and on a server whose components were not read (`verify` has not seen a deploy yet); the server
+ * (`server`) once its components were read; nowhere (`unread`) when reading them failed or was
+ * refused.
  */
 function versionSource(
   plan: DeployPlan,
-  componentsRead: boolean,
+  components: ComponentsRead,
 ): "site" | "computer" | "labels" | "server" | "unread" {
   const { provider } = plan.target;
   if (isServerlessProvider(provider)) return "site";
   if (provider === "localhost") return "computer";
-  if (provider === "portainer") return "labels";
-  if (componentsRead) return "server";
-  return appDeployed(plan) ? "unread" : "labels";
+  if (provider === "portainer" || components === "not-read") return "labels";
+  return components === "read" ? "server" : "unread";
 }
 
 /**
@@ -439,17 +444,17 @@ async function pauseSection(
  *   runner, since nothing else deploys it on its own.
  *
  * `options.check` runs first, as for the components, and stops every read when it fails. When the
- * components were not read from the app's server (`componentsRead` false), the server is not read:
- * before `verify` saw a deploy, GHCR's labels name the versions; after, a read that failed or was
- * refused is not tried again. The pause is read either way.
+ * components were not read from the app's server (`components`), the server is not read: before
+ * `verify` saw a deploy (`not-read`), GHCR's labels name the versions; a read that failed or was
+ * refused (`failed`) is not tried again. The pause is read either way.
  */
 export async function deployStateReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions & { check?: () => Promise<void> } = {},
-  componentsRead = true,
+  components: ComponentsRead = "read",
 ): Promise<{ lines: string[]; deploys?: DeployState }> {
-  const source = versionSource(plan, componentsRead);
+  const source = versionSource(plan, components);
   const where =
     source === "computer"
       ? "this computer and GitHub"

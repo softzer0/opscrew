@@ -140,6 +140,46 @@ describe("opscrew status on Cloudflare's hosting", () => {
     expect(lines.join("\n")).not.toContain("--to v-new");
   });
 
+  it("after a rollback and a deploy forward, rolls back to the version served before, never the bad one (D4)", async () => {
+    const zone = zoneWithWorker();
+    const worker = zone.workers.get("example-app");
+    if (worker === undefined) throw new Error("no Worker");
+    // v-new was bad: the rollback went back to v-old; then the fix, v-fix, deployed.
+    worker.versions.unshift({
+      id: "v-fix",
+      created_on: "2026-10-25T10:00:00Z",
+      message: `opscrew 103 ${"d".repeat(64)}`,
+    });
+    worker.deployments.unshift(
+      {
+        id: "d-4",
+        created_on: "2026-10-25T10:01:00Z",
+        source: "wrangler",
+        strategy: "percentage",
+        versions: [{ version_id: "v-fix", percentage: 100 }],
+      },
+      {
+        id: "d-3",
+        created_on: "2026-10-24T10:01:00Z",
+        source: "api",
+        strategy: "percentage",
+        versions: [{ version_id: "v-old", percentage: 100 }],
+      },
+    );
+    const deps = await setup(sitePlan({ deployed: true }));
+    const { lines } = await componentStatusReport(deps, sitePlan({ deployed: true }), {
+      services: {
+        cloudflare: fakeCloudflare(),
+        sharedCloudflare: fakeSharedCloudflare(zone),
+        deploys: new FakePromoteGitHub(),
+      },
+    });
+    expect(lines[1]).toContain("Running: version v-fix");
+    expect(lines[2]).toContain("Before it: version v-old");
+    expect(lines[3]).toBe("  Roll back to it: opscrew rollback --to v-old");
+    expect(lines.join("\n")).not.toContain("--to v-new");
+  });
+
   it("says when nothing is deployed yet, and when the Worker is gone", async () => {
     const zone = new FakeZone();
     zone.workers.set("example-app", { versions: [], deployments: [] });
@@ -245,7 +285,58 @@ describe("opscrew status on GitHub Pages", () => {
       "  Roll back: opscrew rollback --to 200 (the newest run created before the one running)",
     );
     expect(deploys).toMatchObject({ running: { version: "201" }, previous: { version: "202" } });
-    expect(pages.jobReads).toEqual([203, 201, 200]);
+    // B (202) is checked as "before it", then the walk goes on below A's id; nothing read twice.
+    expect(pages.jobReads).toEqual([203, 201, 202, 200]);
+  });
+
+  it("after --resume --deploy, names the run that published before, past a skipped push, and rolls back to it (D4)", async () => {
+    // 202 (B) was bad; the rollback re-ran 201 (A); 203 (C) was pushed while paused, its publish
+    // skipped; `--resume --deploy` published 204 (E).
+    const pages = github(
+      SITE,
+      [
+        pagesRun(200, 1, "2026-10-21T09:00:00Z", "0"),
+        ...RUNS.slice(1),
+        pagesRun(201, 2, "2026-10-24T09:00:00Z", "1"),
+        pagesRun(203, 1, "2026-10-25T09:00:00Z", "3"),
+        pagesRun(204, 1, "2026-10-26T09:00:00Z", "4"),
+      ],
+      [203],
+    );
+    const deps = await setup(pagesTestPlan(), pages.fetch);
+    const { lines, deploys } = await componentStatusReport(deps, pagesTestPlan(), {
+      services: { deploys: new FakePromoteGitHub() },
+    });
+    const runs = "https://github.com/example-org/example-app/actions/runs";
+    expect(lines.slice(4, 7)).toEqual([
+      `  Running: ${runs}/204, started 2026-10-26 09:00 UTC, commit 4444444`,
+      `  Before it: ${runs}/201, started 2026-10-24 09:00 UTC, commit 1111111`,
+      "  Roll back to it: opscrew rollback --to 201",
+    ]);
+    expect(deploys).toMatchObject({ running: { version: "204" }, previous: { version: "201" } });
+    expect(pages.jobReads).toEqual([204, 203, 201]);
+  });
+
+  it("keeps the site's lines when GitHub refuses to list a run's jobs", async () => {
+    const pages = github(SITE);
+    const fetch: FetchLike = async (input, init) =>
+      new URL(String(input)).pathname.endsWith("/jobs")
+        ? Response.json({ message: "Resource not accessible by integration" }, { status: 403 })
+        : pages.fetch(input, init);
+    const deps = await setup(pagesTestPlan(), fetch);
+    const { lines, deploys } = await componentStatusReport(deps, pagesTestPlan(), {
+      services: { deploys: new FakePromoteGitHub() },
+    });
+    expect(lines.slice(1, 4)).toEqual([
+      "  Site: published by OpsCrew's workflow, at https://docs.example.com",
+      "  Certificate: issued by GitHub",
+      "  HTTPS: enforced",
+    ]);
+    expect(lines[4]).toMatch(
+      /^ {2}Running: OpsCrew could not read which run published the site\. GitHub refused/,
+    );
+    expect(lines[5]).toBe("");
+    expect(deploys).not.toHaveProperty("running");
   });
 
   it("names the next step when the pinned run has not succeeded, and says when nothing ran yet", async () => {
@@ -256,7 +347,7 @@ describe("opscrew status on GitHub Pages", () => {
       services: { deploys: pinned("201", "1") },
     });
     expect(lines[4]).toBe(
-      "  Running: unknown: the run `opscrew rollback` pinned (201) has not succeeded: it waits for a reviewer, or it failed. Roll back to another run with `opscrew rollback --to <run id>` (`opscrew rollback --list` lists the runs), or run `opscrew rollback --resume` to deploy forward again.",
+      "  Running: unknown: the run `opscrew rollback` pinned (201) has not succeeded: it is still running, waits for a reviewer, or failed. Roll back to another run with `opscrew rollback --to <run id>` (`opscrew rollback --list` lists the runs), or run `opscrew rollback --resume` to deploy forward again.",
     );
     expect(lines[5]).toBe("");
 
