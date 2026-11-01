@@ -829,9 +829,11 @@ export class AppEnvironments {
     };
     for (const environment of this.apps.keys()) {
       // The environment's entry in the deploy pause variable, which a run stopped between a
-      // rollback and its --resume leaves behind.
-      const key = checkEnvironmentKey(await this.readPlan(environment));
-      problems.push(...(await clearDeployPause(github, key)));
+      // rollback and its --resume leaves behind. A failure here never skips the secrets below.
+      const cleared = await this.readPlan(environment)
+        .then((plan) => clearDeployPause(github, checkEnvironmentKey(plan)))
+        .catch((error: Error) => [`the deploy pause of ${environment}: ${error.message}`]);
+      problems.push(...cleared);
       const record = await secretsRecord(this.paths(environment));
       if (record === undefined || record.repo.toLowerCase() !== github.name.toLowerCase()) continue;
       for (const name of record.names) {
