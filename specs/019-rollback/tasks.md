@@ -533,9 +533,106 @@ plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
   - Verify: `node plugin/validate.mjs && pnpm lint`
   - Effort: medium
 
+## Phase: The simplify pass (T1915's findings; three reviewers by area, 2026-11-01)
+
+Each task keeps behaviour, apart from the bugs it names. Exported names used outside a task's Owns keep their signatures unless the task says otherwise; report any other change instead of making it.
+
+- [ ] T1924 Simplify the workflow templates and runbooks, in `packages/iac-templates/src/{workflow,runbook,runtime}/**` (+ tests, snapshots), not `runbook/network.ts`
+  - Owns: those paths, plus `packages/iac-templates/src/index.ts` for its own exports
+  - Accept:
+    - **One command builder:** the runbook's `opscrew(plan, command, environments?)` (`runbook/shared.ts`) moves next to `appFlag` in `workflow/shared.ts`. It builds `provisionCommand`, `pause.ts`'s `rollbackCommand`, the Workers failure message and `switch.ts`'s `failedLogs` flags, and no second builder is added. `DISPATCH_WITH_DIGEST` and `DISPATCH_FOR_ROLLBACK` come from one builder.
+    - **One `refuse(condition, message)`** in `workflow/shared.ts` for the `if …; then echo "::error::…"; exit 1; fi` blocks of `provenanceCheck` (`jobs.ts`), `cloudflare-workers.ts`'s `buildRunCheck`, and `CHECK_IMAGE`.
+    - **The pause conditions and the deploy jobs' conditions come from one source:**
+      - `pausedJob(plan, exempt?)` builds `!(exempt) && paused`, and a matching `unpaused(plan, exempt?)` serves the deploy jobs. This applies in `jobs.ts`, `github-pages.ts` and `cloudflare-workers.ts`.
+      - `deployJob` uses one expression for both cases.
+      - `labelJob` always carries its `if:`.
+      - Snapshots change; behaviour doesn't. The job-graph tests prove it.
+    - **`verifyJob`** uses `ROLLBACK_INPUTS` for the input names.
+    - **One `fixForward(plan)`** in `runbook/shared.ts` serves both runbooks. `rollbackSection` uses `promoted(plan)`.
+    - **Dead paths:** every catalog entry has a secret now, so `runtime/components.ts` `serviceEnvironment`'s inline path for servers and `workflow/index.ts` `envFileServices`' filter go.
+    - **Two switch-script quirks:**
+      - A re-run of the same image that fails shows its own lines, not the earlier run's kept ones.
+      - A start-script failure after the switch that is neither the health check nor a worker is kept as `failed=start`, not `failed=check`.
+      - Test both.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
+  - Effort: high
+
+- [ ] T1925 Simplify rollback, promote, status and the shared deploy code, in `packages/agents/src/{rollback,promote,status,shared,logs}/**`, `packages/agents/src/localhost/apply.ts`, `packages/agents/src/localhost/plan.ts` and `packages/connectors/github/src/**` (+ tests)
+  - Owns: those paths
+  - Accept:
+    - **Bug, the reviewer in the approval:** `rollback/server.ts` reads the GitHub environment's reviewers through `secretsEnvironment(plan)`, which is `undefined` for a prod-only app. Its deploy job runs in `production`, so the approval wrongly says nothing gates the deploy. Use `promote/site.ts`'s `reviewedEnvironment`, exported. One `guardText` serves all three copies of "GitHub also asks a required reviewer…" (`promote/run.ts`, `promote/site.ts`, `rollback/server.ts`). Test it with a prod-only app whose `production` has a reviewer.
+    - **Bug, the local runner's rollback skips `requireApplied`:** this computer's local runner rolls back without it, because drift there counts stopped containers as pending, and a broken app has them. A workflow-only variant of the check covers it.
+    - **One approval flow:** `promote/site.ts`'s `approve(run, …)` is exported, takes `Pick<SiteRun, "deps" | "approveHash" | "target" | "what">`, and serves `rollback/server.ts` and `rollback/local.ts`.
+    - **One switch for this computer:** `localhost/apply.ts` gains `switchTo(…)` (switch, health check, switch back, outcome). `applyLocal` and `rollback/local.ts` both use it, and the helpers it hides are no longer exported.
+    - **One `appImageOf(deps, plan, github)`** in `promote/image.ts` replaces the four builders of the app's GHCR image. They are in `rollback/server.ts` `versionsContext`, `rollback/local.ts` `pinnedImage`, `status/deploys.ts` `appImage` and `promote/run.ts`.
+    - **A Worker rollback reads Cloudflare once:** `rollBackWorker` takes `known?` as `rollBackPages` does.
+    - **The pending files:**
+      - `readPendingPromotion` and `writePendingPromotion` lose their dead `file` parameter;
+      - rollback's pending file keeps its own reader and writer;
+      - `rollback/record.ts` reads `rollback.json` with `deploy-pause.ts`'s exported schema, and `status/deploys.ts` uses `readRollback`.
+    - **One `auditFinishedRun(deps, run)`** in `shared/deploy-run.ts` (three copies).
+    - **The deploy run:** `shared/deploy-run.ts` exports a classifier of `dispatchAndFollow`'s errors, so `rollback/server.ts` stops wrapping the API to tell them apart. `dispatchAndFollow` returns the run's `headSha`, and `rollback/resume.ts` drops its extra `getWorkflowRun`. `githubRepository` is typed so `rollbackRepository` needs no cast.
+    - **One of each:**
+      - one "Nothing was changed." constant;
+      - one `commitWords(commit, message)` and one `shortImage(ref)`, next to `shortDigest` (`server.ts` `shortText`, `status/deploys.ts` `versionWords`, `versions.ts` `versionText`, `resume.ts`, `logs/failed.ts`, `rollback/local.ts`);
+      - `messageOf` exported and used by `resume.ts`;
+      - `waitForDeploys` polling through `runningDeploy`;
+      - `pushesDeploy` exported, replacing `rollback/local.ts`'s `deploysFromBranch`;
+      - one function each for "the run pinned … has not succeeded" (`status/site.ts`, `rollback/site.ts`) and for the refusal while a move's window pauses deploys (`rollback/server.ts`, `promote/shared.ts`).
+    - **One running image:** `status/deploys.ts`'s `appImageIn`, `localhost/plan.ts`'s `runningImage` and `rollback/local.ts`'s `localImages` become one, and `runningImage` takes the file name.
+    - **Status's GitHub notes:** status's two "GitHub can't be read" lines become one.
+    - **`rollback --list` names each left-out image and why:** `RollbackResult.leftOut` carries `LeftOutVersion[]`.
+    - **Dead exports and types:**
+      - `waitAfterPause` export;
+      - `ImageRollbackParts` and `imageRollbackHash` re-exports;
+      - `VersionsImage`;
+      - the generic on `previousWorkerVersion`;
+      - `list.running as string`, since `chooseVersion` returns the digest.
+    - **The GitHub connector's unused additions go:**
+      - `listWorkflowRuns`' `event` filter, with its test;
+      - `WorkflowRun.event` and `headBranch`;
+      - `WorkflowRunSource.status` and `conclusion`. The fixtures keep those in a local type.
+    - **Tests:**
+      - `YES_KINDS`, `failure()`, `gitRemote()` and `planHash` move into `rollback/__fixtures__/versions.ts`;
+      - `rollback/run.test.ts`'s duplicate "changes only the rolled-back environment's key" test goes.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github --filter=@opscrew/agents`
+  - Effort: xhigh
+
+- [ ] T1926 Simplify provision, design and the login checks, in `packages/agents/src/{provision,design,secure,vpn,retarget,drift,serverless}/**`, `packages/agents/src/localhost/provision.ts`, `packages/iac-templates/src/catalog/**` and `packages/iac-templates/src/runbook/network.ts` (+ tests)
+  - Owns: those paths, plus `packages/iac-templates/src/index.ts` for the catalog's exports
+  - Accept:
+    - **`ServiceSpec.auth` and `serviceAuth` go:**
+      - nothing but `serviceAuth` read `auth`, and every caller only asks whether a service has a login;
+      - export `hasLogin` and use `!hasLogin(service)` in `runbook/network.ts`, `vpn/grants.ts`, `secure/services.ts`, `secure/portainer.ts`, `design/placement.ts` and `design/plan.ts`;
+      - the catalog's `auth: …` lines and their test go.
+    - **One `reportPausedMerge(deps, plan, github)`** in `provision/steps.ts` serves the four `pausedMergeNote` callers. `provision/run.ts` builds its `--resume` command inside the `throw` only.
+    - **Dead paths:** every catalog entry has a secret, so the `secrets.length > 0` paths in `provision/secrets.ts`, `drift/servers.ts` and `drift/host.ts` go.
+    - **Feature numbers:** user-facing messages no longer name feature numbers, which users don't know and which go stale (`retarget/start.ts` and `design/moves.ts` say "feature 022"). Tests follow.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T1927 Simplify the CLI, the MCP server, the plugin and the test harnesses, in `packages/cli/**`, `packages/mcp-server/**`, `plugin/**` and `packages/agents/src/testing/**` (+ tests)
+  - Owns: those paths, plus one re-export of `pinnedText` in `packages/agents/src/rollback/index.ts` and `packages/agents/src/logs/failed.test.ts`'s use of the new test helper
+  - Accept:
+    - **Bug, `rollback --list` cuts a site's pinned version short:** `rollback.ts`'s `pauseLine` prints `shortDigest` of a Worker version id or a Pages run id. Build the line from the agents' `pinnedText`, and say "to deploy forward again" where pushes don't deploy, as `status` does.
+    - **The CLI's rollback and promote result lines** no longer repeat what the agents' reporters already print.
+    - **The live harnesses:**
+      - `AppEnvironments.removeGithubLeftovers` clears each environment's deploy pause, and the four copies in `rollback`, `cloudflare-hosting`, `github-pages` and `split` go;
+      - `mergeChange` splits into merge and wait, and `rollback.test.ts`'s `mergeEdit` goes;
+      - `builder-checks.ts` and `split-checks.ts` use `support.ts`'s `SERVER_DEPLOY_JOB`;
+      - `deployRunProblem` loses `deployJobFailed` and `FAILED_CONCLUSIONS`, which are dead;
+      - `"Publish on GitHub Pages"` comes from `PAGES_PUBLISH_JOB`;
+      - `generatesValues` loses its secrets check, which is always true.
+    - **The Docker tests:** `cli/test/e2e/{docker,portainer-redeploy}.test.ts` fill the Portainer stack with `fillPortainerStack`.
+    - **One test helper** in `@opscrew/agents/testing`, for example `keptFilesRemote(files, fallback?)`. It replaces the three copies of the fake that reads the kept files (cli `logs.test.ts`, mcp-server `logs.test.ts`, agents `logs/failed.test.ts`).
+    - **The plugin:** the deploy skill's "Rolling back" keeps one or two lines and points to the troubleshoot skill's section.
+    - **The MCP server:** `opscrew_promote` says "use rollback instead" in its description only.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs`
+  - Effort: high
+
 - [ ] T1914 The live runs (lead): T1913's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks. After T1920–T1922, 013's live passes `kafka-app` (with `login: true`) and `meili-search` with OpenSearch run again on Hetzner.
 
-- [ ] T1915 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Known items from T1902's review: one `appEnvFlags(plan)` in `workflow/shared.ts` for `switch.ts`'s `failedLogs` and `provisionCommand`; a re-run of the same image may show the earlier run's kept lines (the `check` keep is skipped when `about` names the image), and a start-script failure after the switch that is neither the health check nor a worker is kept as `failed=check`. From T1909: `status/deploys.ts` reads `rollback.json` with its own small schema, which `rollback/record.ts`'s reader should replace; the two lines that say GitHub can't be read could be one. From T1905: `cli/test/e2e/{docker,portainer-redeploy}.test.ts` fill the Portainer stack by hand; `fillPortainerStack` would do it. From T1909's review: `status/deploys.ts`'s `appImageIn` repeats `localhost/plan.ts`'s `runningImage`. So does `rollback/local.ts`'s `localImages` (a third copy): let `runningImage` take the file name. From T1905's review: `workflow/pause.ts`'s `rollbackCommand` copies `provisionCommand`'s flags (one `opscrewCommand(plan, verb)` with T1902's `appEnvFlags`); `DISPATCH_WITH_DIGEST` and `DISPATCH_FOR_ROLLBACK` could come from one builder. From T1908: an exported classifier of `dispatchAndFollow`'s errors in `shared/deploy-run.ts` (`rollback/server.ts` wraps the API to tell them apart); `deploy-pause.ts` exporting its schema for `rollback/record.ts`; `githubRepository` typed so `rollbackRepository` needs no cast; `status/deploys.ts` using `record.ts`'s `readRollback`. `dispatchAndFollow` returning the run's `headSha` (the connector's `waitForWorkflowRun` returns it, `promote/__fixtures__/world.ts` too), so `rollback/resume.ts` drops its extra `getWorkflowRun`. From T1911: `rollback --list` shows only a count of left-out images, since `RollbackResult.leftOut` is a number; carrying `listVersions`'s `LeftOutVersion[]` would let it name each one and why. The CLI's rollback and promote result lines repeat what the agents' reporters already print. From T1910: this computer's local runner rolls back without `requireApplied` (drift there counts stopped containers as pending, which a broken app has); a workflow-only variant of the check would cover it. From T1913: the live rollback pass's own `mergeEdit` repeats `mergeChange`'s first half; splitting `mergeChange` into merge and wait in the harness would remove it. `builder-checks.ts` and `split-checks.ts` each define their own `DEPLOY_JOB`; `support.ts` now exports `SERVER_DEPLOY_JOB`. From T1917: the Workers failure message builds `opscrew rollback` with its flags inline, a third copy next to `provisionCommand` and `rollbackCommand` (the `opscrewCommand(plan, verb)` item). From T1920's review: every catalog entry now has a secret, so `spec.secrets.length > 0` is always true. The inline-environment path for servers in `runtime/components.ts` `serviceEnvironment`, `workflow/index.ts` `envFileServices`' filter, and the copies in `provision/secrets.ts`, `drift/servers.ts`, `drift/host.ts` and `cli/test/live/support.ts` can go. The lead's own: user-facing messages name feature numbers, which users don't know and which go stale (`retarget/start.ts` and `design/moves.ts` say "feature 022", now 023); drop the numbers.
+- [ ] T1915 The simplify pass (lead): `/simplify` (or reviewers) over the whole feature's diff; real findings become tasks. Done 2026-11-01 by three reviewers by area: their findings and the known items below are T1924–T1927. Known items from T1902's review: one `appEnvFlags(plan)` in `workflow/shared.ts` for `switch.ts`'s `failedLogs` and `provisionCommand`; a re-run of the same image may show the earlier run's kept lines (the `check` keep is skipped when `about` names the image), and a start-script failure after the switch that is neither the health check nor a worker is kept as `failed=check`. From T1909: `status/deploys.ts` reads `rollback.json` with its own small schema, which `rollback/record.ts`'s reader should replace; the two lines that say GitHub can't be read could be one. From T1905: `cli/test/e2e/{docker,portainer-redeploy}.test.ts` fill the Portainer stack by hand; `fillPortainerStack` would do it. From T1909's review: `status/deploys.ts`'s `appImageIn` repeats `localhost/plan.ts`'s `runningImage`. So does `rollback/local.ts`'s `localImages` (a third copy): let `runningImage` take the file name. From T1905's review: `workflow/pause.ts`'s `rollbackCommand` copies `provisionCommand`'s flags (one `opscrewCommand(plan, verb)` with T1902's `appEnvFlags`); `DISPATCH_WITH_DIGEST` and `DISPATCH_FOR_ROLLBACK` could come from one builder. From T1908: an exported classifier of `dispatchAndFollow`'s errors in `shared/deploy-run.ts` (`rollback/server.ts` wraps the API to tell them apart); `deploy-pause.ts` exporting its schema for `rollback/record.ts`; `githubRepository` typed so `rollbackRepository` needs no cast; `status/deploys.ts` using `record.ts`'s `readRollback`. `dispatchAndFollow` returning the run's `headSha` (the connector's `waitForWorkflowRun` returns it, `promote/__fixtures__/world.ts` too), so `rollback/resume.ts` drops its extra `getWorkflowRun`. From T1911: `rollback --list` shows only a count of left-out images, since `RollbackResult.leftOut` is a number; carrying `listVersions`'s `LeftOutVersion[]` would let it name each one and why. The CLI's rollback and promote result lines repeat what the agents' reporters already print. From T1910: this computer's local runner rolls back without `requireApplied` (drift there counts stopped containers as pending, which a broken app has); a workflow-only variant of the check would cover it. From T1913: the live rollback pass's own `mergeEdit` repeats `mergeChange`'s first half; splitting `mergeChange` into merge and wait in the harness would remove it. `builder-checks.ts` and `split-checks.ts` each define their own `DEPLOY_JOB`; `support.ts` now exports `SERVER_DEPLOY_JOB`. From T1917: the Workers failure message builds `opscrew rollback` with its flags inline, a third copy next to `provisionCommand` and `rollbackCommand` (the `opscrewCommand(plan, verb)` item). From T1920's review: every catalog entry now has a secret, so `spec.secrets.length > 0` is always true. The inline-environment path for servers in `runtime/components.ts` `serviceEnvironment`, `workflow/index.ts` `envFileServices`' filter, and the copies in `provision/secrets.ts`, `drift/servers.ts`, `drift/host.ts` and `cli/test/live/support.ts` can go. The lead's own: user-facing messages name feature numbers, which users don't know and which go stale (`retarget/start.ts` and `design/moves.ts` say "feature 022", now 023); drop the numbers.
 
 - [ ] T1916 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync.
   - The changelog says every deploy workflow changes. Before the first rollback, each environment needs `opscrew provision` and its merged pull request. It also says that the next provision of an app with OpenSearch turns on its login, and `OPENSEARCH_URL` changes.
