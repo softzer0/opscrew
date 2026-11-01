@@ -4,6 +4,60 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.0] - 2026-11-01
+
+Every deploy workflow changes in this release. Run `npx opscrew provision` for each environment
+and merge its pull request; until then, `opscrew rollback` says so and changes nothing. An app
+with OpenSearch gets its login with that same provision.
+
+### Added
+
+- **`opscrew rollback`: back to the version that ran before, with one command.**
+  - It deploys that version's image by its digest: nothing is rebuilt and no release command runs.
+  - It uses a deploy's own switch and checks, so with rolling deploys your site keeps serving.
+  - `--list` shows the versions you can go back to, and `--to <commit or digest>` picks one.
+  - It asks for approval in a terminal; a script passes `--approve <hash>`. `--yes` never
+    approves a rollback.
+  - Your data, schema and secrets stay as they are now. The guide says what that means for
+    migrations.
+
+  It works on servers OpsCrew creates, your own server, your Portainer and this computer. On
+  Cloudflare's hosting it activates an earlier Worker version, and on GitHub Pages it re-runs an
+  earlier run. See [Rolling back a release](docs/guide/rollback.md).
+- **Deploys pause after a rollback,** so the next push doesn't undo it unnoticed: a push still
+  builds, but doesn't deploy. `opscrew rollback --resume` turns deploys back on, and `--deploy`
+  also deploys the branch's latest commit now.
+- **`opscrew status` shows which version runs,** the one before it, and whether deploys are
+  paused. `opscrew_status` in the Claude Code plugin includes the same.
+- **`opscrew logs --failed`** shows the last lines of a new version that failed its health check.
+  The server keeps them after the failed copy is removed, and the failure messages point there.
+- **Logins for Kafka, Redpanda and OpenSearch.**
+  - OpenSearch runs its security plugin, and its address carries the login: an app that reads
+    `OPENSEARCH_URL` needs no change.
+  - Kafka and Redpanda ask for a login when you set `login: true` in the service's options in
+    `opscrew/plan.yaml`. Your app gets `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME`,
+    `KAFKA_SASL_PASSWORD` and `KAFKA_SECURITY_PROTOCOL`, and its Kafka client sends them.
+  - `opscrew design` turns the login on when your app's code already reads those variables.
+
+  See [Message brokers](docs/guide/brokers.md) and
+  [Search and analytics](docs/guide/search-and-analytics.md).
+- **The Claude Code plugin** suggests `opscrew rollback` in the terminal when a recent release is
+  the likely cause, after stating what it leaves as it is.
+
+### Changed
+
+- **`promote` and `rollback` accept images built by GitHub's "Run workflow"** on the deploy
+  branch, as well as those built by a push.
+- **Going back on Cloudflare's hosting and GitHub Pages** is `opscrew rollback`, which also pauses
+  their deploys. The runbooks and the deploy failure messages name it.
+- **A failed release command** now says the migration may have run partly, where its output is, and
+  what to do next.
+
+### Fixed
+
+- After a worker or cron process failed following a switch, the failure message pointed to the
+  lines of the version restarted in its place, not to the failed one's.
+
 ## [0.1.3] - 2026-10-31
 
 ### Added
@@ -177,6 +231,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.0]: https://github.com/softzer0/opscrew/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/softzer0/opscrew/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/softzer0/opscrew/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/softzer0/opscrew/compare/0dfc0e91...v0.1.1
