@@ -1,16 +1,21 @@
 /**
- * The catalog's search and analytics engines (T1311), and Redis 8 and Dragonfly (T1317), on
- * Docker: each is rendered into OpsCrew's
+ * The catalog's search and analytics engines (T1311), Redis 8 and Dragonfly (T1317), and Kafka and
+ * Redpanda with their login (T1922), on Docker: each is rendered into OpsCrew's
  * server Compose file for a Hetzner server (`renderCompose`, adapted to this computer like the
  * Docker pass's) and started alone, as the deploy starts the services (`up -d --no-deps --wait`,
  * after the one-shot `sysctl` container where the engine needs a kernel setting), one at a time
  * because their memory adds up. Each must:
  * - pass its health check, with its memory limit;
- * - require its login (Elasticsearch, Typesense, Neo4j), or answer without one on the app's
- *   network (OpenSearch, whose security plugin is off);
+ * - require its login (Elasticsearch, Typesense, Neo4j);
+ * - for OpenSearch, and Kafka and Redpanda with `login: true` (SC-1906): refuse a client without
+ *   the login and serve one with the app's variables (`OPENSEARCH_URL`, `KAFKA_SASL_*`) after a
+ *   first start, a restart, a recreated container, and the login turned on over data written
+ *   without one, which stays. OpenSearch also refuses the image's own `admin:admin`. A Kafka client
+ *   without the login only times out, so it gets a few seconds. Redpanda's admin API refuses a
+ *   change from another container, which can't reach its Schema Registry and HTTP Proxy either;
  * - show the image facts the catalog relies on: curl in the OpenSearch and Elasticsearch images
- *   (their health checks) and OpenSearch 3.9 honouring DISABLE_SECURITY_PLUGIN and
- *   DISABLE_INSTALL_DEMO_CONFIG; bash with `/dev/tcp` in the Typesense and Neo4j images; Neo4j's
+ *   (their health checks), OpenSearch's `keytool` and `hash.sh` (its login's setup) and no demo
+ *   certificates; bash with `/dev/tcp` in the Typesense and Neo4j images; Neo4j's
  *   `/logs` among the volumes OpsCrew mounts (no anonymous volume); busybox wget in
  *   Meilisearch's; wget in ClickHouse's, and ClickHouse starting with `remove="1"` on the log
  *   tables it turns off;
@@ -22,7 +27,8 @@
  *
  * Gated like the Docker pass: OPSCREW_DOCKER_TESTS=1 with a running Docker daemon.
  * OPSCREW_DOCKER_ENGINES=a,b limits the run to those kinds. Each Compose project is removed with
- * its volumes; the engines' images stay, as base images do.
+ * its volumes; the engines' images stay, as base images do. No check prints a password: the
+ * clients' output is shown with the engine's secrets replaced.
  */
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -43,6 +49,7 @@ import {
   type ComposeProject,
   type ComposeService,
   compose,
+  composeOk,
   docker,
   dockerSkipReason,
   LABEL,
@@ -65,11 +72,61 @@ const ENGINES = [
   "clickhouse",
   "redis",
   "dragonfly",
+  "kafka",
+  "redpanda",
 ] as const;
 type Engine = (typeof ENGINES)[number];
 
 /** The engines on Redis's protocol, which the pinned Redis image's redis-cli reaches. */
 const REDIS_PROTOCOL: readonly Engine[] = ["redis", "dragonfly"];
+
+/** The engines whose login SC-1906 checks in its four cases (Kafka and Redpanda with `login`). */
+const LOGIN_CASES: readonly Engine[] = ["opensearch", "kafka", "redpanda"];
+
+/**
+ * A client of each broker in the broker's own image, as shell scripts that read the app's
+ * variables (`KAFKA_BROKERS`, and the `KAFKA_SASL_*` ones when the app has a login), `TOPIC` and
+ * `MESSAGE`: `setup` first, then one of the others. `list` lists the topics within seconds.
+ */
+const BROKER_CLIENTS: Record<
+  "kafka" | "redpanda",
+  { setup: string; produce: string; consume: string; list: string }
+> = {
+  kafka: {
+    setup: [
+      "export KAFKA_HEAP_OPTS=-Xmx128m",
+      "cd /opt/kafka/bin",
+      ": > /tmp/client.properties",
+      `if [ -n "$KAFKA_SASL_USERNAME" ]; then printf 'security.protocol=%s\\nsasl.mechanism=%s\\nsasl.jaas.config=org.apache.kafka.common.security.scram.ScramLoginModule required username="%s" password="%s";\\n' "$KAFKA_SECURITY_PROTOCOL" "$KAFKA_SASL_MECHANISM" "$KAFKA_SASL_USERNAME" "$KAFKA_SASL_PASSWORD" > /tmp/client.properties; fi`,
+    ].join("; "),
+    produce:
+      'echo "$MESSAGE" | ./kafka-console-producer.sh --bootstrap-server "$KAFKA_BROKERS" --topic "$TOPIC" --producer.config /tmp/client.properties',
+    consume:
+      './kafka-console-consumer.sh --bootstrap-server "$KAFKA_BROKERS" --topic "$TOPIC" --from-beginning --max-messages 1 --timeout-ms 30000 --consumer.config /tmp/client.properties',
+    // Without the login Kafka gives no error, so the client stops waiting after 5 seconds.
+    list: [
+      "printf 'default.api.timeout.ms=5000\\nrequest.timeout.ms=3000\\n' >> /tmp/client.properties",
+      'timeout 30 ./kafka-topics.sh --bootstrap-server "$KAFKA_BROKERS" --list --command-config /tmp/client.properties',
+    ].join("; "),
+  },
+  redpanda: {
+    setup: [
+      'export RPK_BROKERS="$KAFKA_BROKERS"',
+      'if [ -n "$KAFKA_SASL_USERNAME" ]; then export RPK_USER="$KAFKA_SASL_USERNAME" RPK_PASS="$KAFKA_SASL_PASSWORD" RPK_SASL_MECHANISM="$KAFKA_SASL_MECHANISM"; fi',
+    ].join("; "),
+    produce: 'rpk topic create "$TOPIC" && echo "$MESSAGE" | rpk topic produce "$TOPIC"',
+    consume: "timeout 60 rpk topic consume \"$TOPIC\" --num 1 --offset start --format '%v\\n'",
+    list: "timeout 30 rpk topic list",
+  },
+};
+
+/** The app's login variables for Kafka and Redpanda, which a client without the login leaves out. */
+const BROKER_LOGIN = /^KAFKA_(SASL_|SECURITY_PROTOCOL$)/;
+
+/** The app's `variables` without the broker's login: those of an app with the login off. */
+function withoutBrokerLogin(variables: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(Object.entries(variables).filter(([name]) => !BROKER_LOGIN.test(name)));
+}
 
 /**
  * A BullMQ-style script: it declares the queue's list and also writes a key of the same hashtag
@@ -121,16 +178,19 @@ const LOGINS: Partial<
 
 /**
  * A Hetzner plan whose one service is `kind`, named after it, with the catalog's version and
- * memory: Redis 8 and Dragonfly as a queue, Dragonfly with BullMQ's hashtag locks.
+ * memory: Redis 8 and Dragonfly as a queue, Dragonfly with BullMQ's hashtag locks, Kafka and
+ * Redpanda with `login` (default true).
  */
-function enginePlan(kind: Engine): DeployPlan {
+function enginePlan(kind: Engine, login = true): DeployPlan {
   const spec = serviceSpec(kind);
   const options =
     kind === "redis"
       ? { mode: "queue" }
       : kind === "dragonfly"
         ? { mode: "queue", lockOnHashtags: true }
-        : undefined;
+        : kind === "kafka" || kind === "redpanda"
+          ? { login }
+          : undefined;
   const service = PlanServiceSchema.parse({
     name: kind,
     kind,
@@ -162,6 +222,7 @@ describe.skipIf(SKIP !== undefined)(
       let dir = "";
       let environment: AppEnvironment | undefined;
       let started: ProjectContainer | undefined;
+      let serviceEnv: string | undefined;
 
       /** The engine's generated secret `name`. */
       function secret(name: string): string {
@@ -218,21 +279,192 @@ describe.skipIf(SKIP !== undefined)(
         return result.stdout.trim();
       }
 
+      /** `text` with the engine's secrets replaced, so a check's message never shows them. */
+      function redact(text: string): string {
+        let shown = text;
+        for (const value of Object.values(environment?.values.services[kind] ?? {})) {
+          shown = shown.replaceAll(value, "[secret]");
+        }
+        return shown;
+      }
+
+      /** Writes the project: the steady services of the Compose `file`, and the engine's `env`. */
+      async function writeProject(file: string, env: string | undefined): Promise<void> {
+        // Without the app.
+        const doc = parse(file) as { services: Record<string, ComposeService> };
+        doc.services = Object.fromEntries(steady.map((name) => [name, doc.services[name] ?? {}]));
+        await writeFile(project.file, stringify(doc, { lineWidth: 0 }));
+        if (env !== undefined) await writeFile(path.join(dir, `${kind}.env`), env);
+      }
+
+      /** `up -d --no-deps --wait` with `args`, as the deploy starts a service; then the engine runs. */
+      async function up(...args: string[]): Promise<ProjectContainer[]> {
+        const began = Date.now();
+        const result = await compose(
+          project,
+          ["up", "-d", "--no-deps", "--wait", ...args],
+          TEN_MINUTES,
+        );
+        if (result.exitCode !== 0) {
+          const logs = await compose(project, ["logs", "--tail", "60"]);
+          throw new Error(
+            redact(
+              `${kind} did not become healthy (exit ${result.exitCode}):\n${tail(result.stderr, 20)}\nIts log:\n${tail(logs.stdout, 60)}`,
+            ),
+          );
+        }
+        console.info(`${kind}: healthy ${Math.round((Date.now() - began) / 1000)} s after up`);
+        const containers = await projectContainers(project.name);
+        started = containers.find((c) => c.service === kind);
+        return containers;
+      }
+
+      /**
+       * A broker's client `step` ({@link BROKER_CLIENTS}) on its network with the app's
+       * `variables` and `topic`: its exit code, and its output with the engine's secrets replaced.
+       */
+      async function broker(
+        variables: Readonly<Record<string, string>>,
+        step: "produce" | "consume" | "list",
+        topic = "",
+      ): Promise<{ exitCode: number; output: string }> {
+        if (kind !== "kafka" && kind !== "redpanda") throw new Error(`${kind} is not a broker.`);
+        const client = BROKER_CLIENTS[kind];
+        const file = path.join(dir, "client.env");
+        const values = { ...variables, TOPIC: topic, MESSAGE: `checked-${topic}` };
+        await writeFile(
+          file,
+          Object.entries(values)
+            .map(([name, value]) => `${name}=${value}\n`)
+            .join(""),
+        );
+        const result = await docker(
+          [
+            "run",
+            "--rm",
+            "--label",
+            LABEL,
+            "--network",
+            `${project.name}_internal`,
+            "--env-file",
+            file,
+            "--entrypoint",
+            "sh",
+            IMAGES[kind].ref,
+            "-c",
+            `${client.setup}; ${client[step]}`,
+          ],
+          TWO_MINUTES,
+        );
+        return { exitCode: result.exitCode, output: redact(`${result.stdout}\n${result.stderr}`) };
+      }
+
+      /** A client with the app's `variables` reads the message written to `topic`. */
+      async function expectMessage(
+        variables: Readonly<Record<string, string>>,
+        topic: string,
+      ): Promise<void> {
+        const consumed = await broker(variables, "consume", topic);
+        expect(consumed.exitCode, `consuming ${topic}:\n${tail(consumed.output, 20)}`).toBe(0);
+        expect(consumed.output.split(/\r?\n/), `the message on ${topic}`).toContain(
+          `checked-${topic}`,
+        );
+      }
+
+      /**
+       * SC-1906's check: a client without the login is refused, and one with the app's variables
+       * is served (a broker's produces to `topic` and consumes it). Redpanda's admin API refuses a
+       * change from another container.
+       */
+      async function checkLogin(topic: string): Promise<void> {
+        const app = environment?.values.app ?? {};
+        if (kind === "opensearch") {
+          expect(await status("http://opensearch:9200/"), "without the login").toBe("401");
+          expect(
+            await status("http://opensearch:9200/", "-u", "admin:admin"),
+            "with the image's own login",
+          ).toBe("401");
+          expect(await status(`${app.OPENSEARCH_URL}/`), "with OPENSEARCH_URL").toBe("200");
+          return;
+        }
+        const began = Date.now();
+        const refused = await broker(withoutBrokerLogin(app), "list");
+        console.info(
+          `${kind}: a client without the login stopped after ${Math.round((Date.now() - began) / 1000)} s`,
+        );
+        expect(refused.exitCode, `without the login:\n${tail(refused.output, 20)}`).not.toBe(0);
+        expect(refused.output, "without the login").toMatch(
+          kind === "kafka" ? /Timed out waiting for a node assignment/ : /SASL/,
+        );
+        const produced = await broker(app, "produce", topic);
+        expect(produced.exitCode, `producing with the login:\n${tail(produced.output, 20)}`).toBe(
+          0,
+        );
+        await expectMessage(app, topic);
+        if (kind === "redpanda") {
+          const change = await status(
+            "http://redpanda:9644/v1/cluster_config",
+            ...["-X", "PUT", "-H", "Content-Type: application/json"],
+            ...["-d", '{"upsert":{"superusers":["intruder"]},"remove":[]}'],
+          );
+          expect(change, "a change to the admin API without the login").toBe("403");
+          const superusers = await exec("rpk", "cluster", "config", "get", "superusers");
+          expect(superusers.exitCode, redact(superusers.stderr)).toBe(0);
+          expect(superusers.stdout, "the superusers").toContain("app");
+          expect(superusers.stdout, "the superusers").not.toContain("intruder");
+          // Schema Registry and the HTTP Proxy listen on loopback only.
+          expect(await status("http://redpanda:8081/subjects"), "Schema Registry").toBe("000");
+          expect(await status("http://redpanda:8082/topics"), "the HTTP Proxy").toBe("000");
+        }
+      }
+
+      /**
+       * The project as OpsCrew ran the engine without a login, with the app's variables then:
+       * Kafka and Redpanda without `login` (the same secrets), OpenSearch as before its login (the
+       * image's own command and the security plugin off).
+       */
+      function withoutLogin(): {
+        file: string;
+        env: string | undefined;
+        app: Record<string, string>;
+      } {
+        if (kind === "opensearch") {
+          const doc = parse(localServerCompose(plan)) as {
+            services: Record<string, Record<string, unknown>>;
+          };
+          delete doc.services.opensearch?.command;
+          const env = (serviceEnv ?? "")
+            .split("\n")
+            .filter((line) => !line.startsWith("plugins.security."))
+            .join("\n");
+          return {
+            file: stringify(doc, { lineWidth: 0 }),
+            env: `${env}DISABLE_SECURITY_PLUGIN=true\n`,
+            app: {},
+          };
+        }
+        if (environment === undefined) throw new Error(`${kind} has no environment yet.`);
+        const off = enginePlan(kind, false);
+        return {
+          file: localServerCompose(off),
+          env: serviceEnvSecrets(off, environment)[serviceEnvSecret(kind)],
+          app: withoutBrokerLogin(environment.values.app),
+        };
+      }
+
       beforeAll(async () => {
         dir = await mkdtemp(path.join(tmpdir(), `opscrew-engine-${kind}-`));
-        // Without the app.
-        const doc = parse(localServerCompose(plan)) as {
-          services: Record<string, ComposeService>;
-        };
-        doc.services = Object.fromEntries(steady.map((name) => [name, doc.services[name] ?? {}]));
         project.file = path.join(dir, "compose.yaml");
-        await writeFile(project.file, stringify(doc, { lineWidth: 0 }));
         environment = await assembleAppEnv({ plan, ask: async () => ({ skip: true }) });
-        const text = serviceEnvSecrets(plan, environment)[serviceEnvSecret(kind)];
-        if (text !== undefined) await writeFile(path.join(dir, `${kind}.env`), text);
+        serviceEnv = serviceEnvSecrets(plan, environment)[serviceEnvSecret(kind)];
+        await writeProject(localServerCompose(plan), serviceEnv);
       });
 
       afterAll(async () => {
+        // A client a failed check left running would keep the network from being removed.
+        const left = await docker(["ps", "-aq", "--filter", `network=${project.name}_internal`]);
+        const clients = left.stdout.split(/\s+/).filter((id) => id !== "");
+        if (clients.length > 0) await docker(["rm", "-f", ...clients]);
         await compose(project, ["down", "-v", "--remove-orphans"]);
         await rm(dir, { recursive: true, force: true });
       }, TWO_MINUTES);
@@ -240,27 +472,13 @@ describe.skipIf(SKIP !== undefined)(
       it(
         "starts alone with its memory limit, and its health check passes",
         async () => {
-          const began = Date.now();
-          const up = await compose(
-            project,
-            ["up", "-d", "--no-deps", "--wait", ...steady],
-            TEN_MINUTES,
-          );
-          if (up.exitCode !== 0) {
-            const logs = await compose(project, ["logs", "--tail", "60"]);
-            throw new Error(
-              `${kind} did not become healthy (exit ${up.exitCode}):\n${tail(up.stderr, 20)}\nIts log:\n${tail(logs.stdout, 60)}`,
-            );
-          }
-          console.info(`${kind}: healthy ${Math.round((Date.now() - began) / 1000)} s after up`);
-          const containers = await projectContainers(project.name);
+          const containers = await up(...steady);
           const services = (
             parse(renderCompose(plan).content) as {
               services: Record<string, ComposeService>;
             }
           ).services;
           expect(limitProblems(containers, services), `${kind}: memory limits`).toEqual([]);
-          started = containers.find((c) => c.service === kind);
           expect(started?.running, `${kind} runs`).toBe(true);
           // On a cloud server the one-shot container sets the host's kernel setting first.
           const sysctl = containers.find((c) => c.service === "sysctl");
@@ -273,16 +491,12 @@ describe.skipIf(SKIP !== undefined)(
         TEN_MINUTES + TWO_MINUTES,
       );
 
-      it.runIf(kind === "opensearch")(
-        "answers without a login on its network, with no demo certificates",
+      it.runIf(LOGIN_CASES.includes(kind))(
+        "refuses a client without its login and serves one with it, after a first start",
         async () => {
-          expect(await status("http://opensearch:9200/")).toBe("200");
-          const config = await exec("ls", "-1A", "/usr/share/opensearch/config");
-          expect(config.exitCode, config.stderr).toBe(0);
-          const pem = config.stdout.split(/\r?\n/).filter((file) => file.endsWith(".pem"));
-          expect(pem, "demo certificates").toEqual([]);
+          await checkLogin("first-start");
         },
-        TWO_MINUTES,
+        TEN_MINUTES,
       );
 
       it.runIf(LOGINS[kind] !== undefined)(
@@ -380,6 +594,22 @@ describe.skipIf(SKIP !== undefined)(
             const curl = await exec("curl", "--version");
             expect(curl.exitCode, `curl in the ${kind} image: ${curl.stderr}`).toBe(0);
           }
+          if (kind === "opensearch") {
+            // Its login's setup, from the image's folder.
+            const tools = await exec(
+              "bash",
+              "-c",
+              "command -v keytool && test -x plugins/opensearch-security/tools/hash.sh",
+            );
+            expect(
+              tools.exitCode,
+              `keytool and hash.sh in the OpenSearch image: ${tools.stderr}`,
+            ).toBe(0);
+            const config = await exec("ls", "-1A", "/usr/share/opensearch/config");
+            expect(config.exitCode, config.stderr).toBe(0);
+            const pem = config.stdout.split(/\r?\n/).filter((file) => file.endsWith(".pem"));
+            expect(pem, "demo certificates").toEqual([]);
+          }
           if (kind === "typesense" || kind === "neo4j") {
             const open = await exec(
               "bash",
@@ -432,6 +662,58 @@ describe.skipIf(SKIP !== undefined)(
           }
         },
         TWO_MINUTES,
+      );
+
+      it.runIf(LOGIN_CASES.includes(kind))(
+        "refuses a client without its login and serves one with it, after a restart",
+        async () => {
+          await composeOk(project, `restarting ${kind}`, ["restart", kind]);
+          await up(kind);
+          await checkLogin("restart");
+        },
+        TEN_MINUTES + TWO_MINUTES,
+      );
+
+      it.runIf(LOGIN_CASES.includes(kind))(
+        "refuses a client without its login and serves one with it, after the container is recreated",
+        async () => {
+          await up("--force-recreate", kind);
+          await checkLogin("recreate");
+        },
+        TEN_MINUTES + TWO_MINUTES,
+      );
+
+      it.runIf(LOGIN_CASES.includes(kind))(
+        "keeps the data written without a login once the login is turned on, and asks for it",
+        async () => {
+          await composeOk(project, "removing the project", ["down", "-v", "--remove-orphans"]);
+          const before = withoutLogin();
+          await writeProject(before.file, before.env);
+          await up(...steady);
+          if (kind === "opensearch") {
+            const written = await status(
+              "http://opensearch:9200/kept/_doc/1?refresh=true",
+              ...["-X", "PUT", "-H", "Content-Type: application/json", "-d", '{"kept":true}'],
+            );
+            expect(written, "a document written without a login").toBe("201");
+          } else {
+            const produced = await broker(before.app, "produce", "kept");
+            expect(
+              produced.exitCode,
+              `producing without a login:\n${tail(produced.output, 20)}`,
+            ).toBe(0);
+          }
+          await writeProject(localServerCompose(plan), serviceEnv);
+          await up(kind);
+          await checkLogin("login-on");
+          const app = environment?.values.app ?? {};
+          if (kind === "opensearch") {
+            expect(await status(`${app.OPENSEARCH_URL}/kept/_doc/1`), "the document").toBe("200");
+          } else {
+            await expectMessage(app, "kept");
+          }
+        },
+        2 * TEN_MINUTES,
       );
     });
   },
