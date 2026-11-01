@@ -18,7 +18,6 @@ import type { PhaseDeps } from "../context";
 import { environmentPaths, sharedPartsDiffer } from "../environments";
 import { builderBranch, followsBranch } from "../environments/branches";
 import { ghcrReadCredential } from "../localhost/image";
-import { secretsEnvironment } from "../provision/secrets";
 import { hasDeployment, PlanRefusedError } from "../shared";
 import { dispatchAndFollow, NOT_RECORDED } from "../shared/deploy-run";
 import {
@@ -48,7 +47,7 @@ import {
   requireApplied,
   requireNotPaused,
 } from "./shared";
-import { promoteSite } from "./site";
+import { guardText, promoteSite, reviewedEnvironment } from "./site";
 import type { PromoteOptions, PromoteResult } from "./types";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -217,9 +216,7 @@ function promotionDetails(input: {
       : []),
     `Promotion hash: ${input.hash}`,
     "",
-    input.reviewed !== undefined
-      ? `GitHub also asks a required reviewer of the GitHub environment ${input.reviewed} before the deploy job runs: that review is the real gate. OpsCrew's approval guards against mistakes.`
-      : "OpsCrew's approval guards against mistakes, not against someone with write access to the repository, who can start the workflow themselves.",
+    guardText(input.reviewed),
   ].join("\n");
 }
 
@@ -379,11 +376,6 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
   });
 
   // 4. The approval, bound to the promotion's hash. It says whether GitHub also asks a reviewer.
-  const environment = secretsEnvironment(plan);
-  const reviewers =
-    environment === undefined
-      ? []
-      : ((await github.api.getEnvironment(owner, repo, environment))?.reviewers ?? []);
   const targetPlanHash = sha256Hex(canonicalJson(plan));
   const hash = promotionHash({ target, source, digest, targetPlanHash });
   const details = promotionDetails({
@@ -398,7 +390,7 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     workflowFile,
     defaultBranch,
     hash,
-    reviewed: reviewers.length > 0 ? environment : undefined,
+    reviewed: await reviewedEnvironment(plan, github),
     unchecked,
   });
   deps.reporter.info(details);

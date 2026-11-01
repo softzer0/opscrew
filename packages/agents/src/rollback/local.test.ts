@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
 import { FakeComputer, localPlan } from "../localhost/__fixtures__/computer";
 import { lockFile } from "../localhost/lock";
 import { appFolder, ownerFile } from "../localhost/services";
-import { commitOf, digestOf } from "../promote/__fixtures__/world";
+import { localSite } from "../localhost/site";
+import { localRenderContext, localStackFiles } from "../localhost/stack";
+import { blobOf, cleanDrift, commitOf, digestOf } from "../promote/__fixtures__/world";
 import {
   createTestPhaseDeps,
   DEPLOYED_AT,
@@ -117,6 +119,13 @@ async function localWorld(
     commit: commitOf("previous"),
     environment: "prod",
   });
+  // The default branch holds the workflow the plan generates, which pauses.
+  const ctx = await localRenderContext(deps, plan, await localSite(deps.paths, plan));
+  const workflow = localStackFiles(plan, ctx).find((file) => file.path === plan.cicd.workflowPath);
+  if (o.runner === true && workflow === undefined) throw new Error("no local runner workflow");
+  if (workflow !== undefined) {
+    github.onMain.set(plan.cicd.workflowPath, blobOf(workflow.content.replace(/\r\n/g, "\n")));
+  }
   const api = Object.assign(github, {
     async setRepoVariable(_owner: string, _repo: string, name: string, value: string) {
       events.push("pause");
@@ -134,6 +143,21 @@ async function localWorld(
       services: {
         localhost: computer.services(),
         github: o.runner === true ? api : null,
+        // Drift counts a broken app's stopped containers as pending: the rollback never asks it.
+        drift: async () =>
+          cleanDrift({
+            clean: false,
+            host: {
+              differences: [
+                {
+                  area: "app",
+                  title: "The app's containers",
+                  detail: "app is stopped.",
+                  restoredByProvision: true,
+                },
+              ],
+            },
+          }),
         sleep: async () => {
           events.push(existsSync(lockFile(deps.paths)) ? "sleep (locked)" : "sleep");
         },
@@ -408,6 +432,21 @@ describe("opscrew rollback on this computer with the local runner", () => {
     );
     expect(world.handler.requests).toEqual([]);
     expect(world.events).toEqual([]);
+  });
+
+  it("refuses before any change when the branch's workflow is not the one the plan generates", async () => {
+    const world = await localWorld({ runner: true });
+    const path = world.plan.cicd.workflowPath;
+    world.github.onMain.set(path, blobOf("name: an older workflow, without the pause\n"));
+    const error = await failure(world.run());
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      `The deploy workflow on the default branch main (${path}) is not the one prod's plan generates, so its run would not do what this rollback shows. Nothing was changed.`,
+    );
+    expect(error.hint).toContain("opscrew provision --env prod");
+    expect(world.handler.requests).toEqual([]);
+    expect(world.events).toEqual([]);
+    expect(world.scripts()).toEqual([]);
   });
 
   it("lists the pause with the images", async () => {

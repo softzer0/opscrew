@@ -138,8 +138,11 @@ async function workerState(
   return { versions, ...(running !== undefined ? { running } : {}) };
 }
 
-/** The approval's closing words: what OpsCrew's approval guards against, and GitHub's review. */
-function guardText(reviewed: string | undefined): string {
+/**
+ * The approval's closing words: what OpsCrew's approval guards against, and GitHub's review in
+ * `reviewed`, the GitHub environment with required reviewers ({@link reviewedEnvironment}).
+ */
+export function guardText(reviewed: string | undefined): string {
   return reviewed !== undefined
     ? `GitHub also asks a required reviewer of the GitHub environment ${reviewed} before the deploy job runs: that review is the real gate. OpsCrew's approval guards against mistakes.`
     : "OpsCrew's approval guards against mistakes, not against someone with write access to the repository, who can start the workflow themselves.";
@@ -246,15 +249,15 @@ async function followRun(
 }
 
 /**
- * The GitHub environment the target's deploy job runs in (on GitHub Pages always
- * `github-pages`), when it has required reviewers.
+ * The GitHub environment the plan's deploy job runs in (on GitHub Pages always `github-pages`),
+ * when it has required reviewers.
  */
-async function reviewedEnvironment(
-  run: SiteRun,
+export async function reviewedEnvironment(
+  plan: DeployPlan,
   github: PromoteRepository,
 ): Promise<string | undefined> {
   const environment =
-    run.plan.target.provider === "github-pages" ? PAGES_ENVIRONMENT : githubEnvironment(run.plan);
+    plan.target.provider === "github-pages" ? PAGES_ENVIRONMENT : githubEnvironment(plan);
   if (environment === undefined) return undefined;
   const view = await github.api.getEnvironment(github.owner, github.repo, environment);
   return (view?.reviewers ?? []).length > 0 ? environment : undefined;
@@ -371,7 +374,7 @@ async function promoteBuild(run: SiteRun): Promise<PromoteResult> {
     `Deploy: ${workflowFile} on ${github.defaultBranch}, given the run and the SHA-256: it downloads that build, refuses it unless its SHA-256 matches, and uploads it to the Worker ${targetWorker}; nothing is rebuilt`,
     `Promotion hash: ${hash}`,
     "",
-    guardText(await reviewedEnvironment(run, github)),
+    guardText(await reviewedEnvironment(run.plan, github)),
   ].join("\n");
   await approve(run, {
     title: `Deploy the build ${source} runs to ${target}`,
@@ -657,7 +660,7 @@ export async function rollBackPages(
       `Deploy: GitHub re-runs that run: it builds the site again from that commit and publishes it`,
       `${upperFirst(run.what)} hash: ${hash}`,
       "",
-      guardText(await reviewedEnvironment(run, github)),
+      guardText(await reviewedEnvironment(run.plan, github)),
     ].join("\n"),
     hash,
     later: `${command} ${versionFlag} ${chosen.runId} --approve ${hash}`,

@@ -17,7 +17,7 @@ import { ghcrReadCredential } from "../localhost/image";
 import { clearPendingPromotion, readPromotion, writePromotion } from "../promote/record";
 import { requireRollbackServices } from "../promote/run";
 import { requireApplied } from "../promote/shared";
-import { secretsEnvironment } from "../provision/secrets";
+import { guardText, reviewedEnvironment } from "../promote/site";
 import { PlanRefusedError } from "../shared";
 import {
   type DeployPause,
@@ -456,12 +456,6 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
   const added = await servicesLines(run, ctx, target);
 
   // 6. The approval, bound to the rollback's hash. It says whether GitHub also asks a reviewer.
-  const environmentName = secretsEnvironment(plan);
-  const reviewers =
-    environmentName === undefined
-      ? []
-      : ((await github.api.getEnvironment(github.owner, github.repo, environmentName))?.reviewers ??
-        []);
   const targetPlanHash = sha256Hex(canonicalJson(plan));
   const hash = imageRollbackHash({
     environment: checkEnvironmentKey(plan),
@@ -486,9 +480,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
       : []),
     `Rollback hash: ${hash}`,
     "",
-    reviewers.length > 0
-      ? `GitHub also asks a required reviewer of the GitHub environment ${environmentName} before the deploy job runs: that review is the real gate. OpsCrew's approval guards against mistakes.`
-      : "OpsCrew's approval guards against mistakes, not against someone with write access to the repository, who can start the workflow themselves.",
+    guardText(await reviewedEnvironment(plan, github)),
   ].join("\n");
   deps.reporter.info(details);
   const later = `${command} --to ${target.digest} --approve ${hash}`;

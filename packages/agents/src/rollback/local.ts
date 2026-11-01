@@ -17,11 +17,14 @@ import {
   checkEnvironmentKey,
   edgeProxy,
   initStepsFor,
+  renderWorkflow,
   rollbackCommands,
   shellQuote,
   switchCommands,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import type { PhaseDeps } from "../context";
+import { workflowBranch } from "../environments/branches";
 import { healthCheck, outputTail, SCRIPT_TIMEOUT_MS, withRegistryLogin } from "../localhost/apply";
 import { ghcrReadCredential, githubRegistry } from "../localhost/image";
 import { withLocalLock } from "../localhost/lock";
@@ -33,7 +36,9 @@ import {
   requireOwnLocalApp,
   requireShell,
 } from "../localhost/services";
-import { localAddress, localTarget, servedSite } from "../localhost/site";
+import { localAddress, localSite, localTarget, servedSite } from "../localhost/site";
+import { localRenderContext } from "../localhost/stack";
+import { requireWorkflowApplied } from "../promote/shared";
 import { PlanRefusedError } from "../shared";
 import { deployPauseOf } from "../shared/deploy-pause";
 import type { RollbackResult } from "./index";
@@ -84,6 +89,14 @@ async function localImages(folder: string): Promise<{ running?: string; previous
     ...(running !== undefined ? { running } : {}),
     ...(previous !== undefined ? { previous } : {}),
   };
+}
+
+/** The deploy workflow the local runner's plan generates, as provision renders it. */
+async function localWorkflow(deps: PhaseDeps, plan: DeployPlan): Promise<string> {
+  return renderWorkflow(
+    plan,
+    await localRenderContext(deps, plan, await localSite(deps.paths, plan)),
+  ).content;
 }
 
 /** True when `rollback.json` says this computer went back from `previous` to `running`. */
@@ -226,7 +239,19 @@ export async function rollbackLocal(run: RollbackRun): Promise<RollbackResult> {
     ? (local.registry ?? (await githubRegistry(deps)))
     : undefined;
   const github = pauses ? await rollbackRepository(deps, services) : undefined;
-  if (github !== undefined) await requireNoDeployRunning(run, github);
+  if (github !== undefined) {
+    // The workflow must be the plan's, which pauses; drift is not asked (see `requireWorkflowApplied`).
+    await requireWorkflowApplied(deps, {
+      target: environment,
+      plan,
+      github,
+      command,
+      branch: workflowBranch(plan, github.defaultBranch),
+      workflow: await localWorkflow(deps, plan),
+      what: "rollback",
+    });
+    await requireNoDeployRunning(run, github);
+  }
   const pinned = github === undefined ? undefined : await pinnedImage(run, github, previous);
 
   // 3. The approval, bound to the rollback's hash.

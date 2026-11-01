@@ -570,6 +570,24 @@ describe("opscrew rollback on a server", () => {
       expect(world.events).toEqual([]);
     });
 
+    it("says GitHub's review is the real gate when a prod-only app's production has a reviewer", async () => {
+      const { world } = await prodWorld();
+      world.github.environments.set("production", {
+        name: "production",
+        waitTimer: 0,
+        preventSelfReview: false,
+        reviewers: [{ type: "User", id: 1001 }],
+        branchPolicy: { protectedBranches: false, customBranchPolicies: true },
+        canAdminsBypass: true,
+      });
+      await world.run();
+      const details = world.handler.requests[0]?.details ?? "";
+      expect(details).toContain(
+        "GitHub also asks a required reviewer of the GitHub environment production before the deploy job runs: that review is the real gate. OpsCrew's approval guards against mistakes.",
+      );
+      expect(details).not.toContain("not against someone with write access");
+    });
+
     it("goes ahead with --approve naming this rollback's hash", async () => {
       const { world, b, c } = await prodWorld();
       const hash = hashOf(world, c, b);

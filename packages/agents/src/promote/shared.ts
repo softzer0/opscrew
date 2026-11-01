@@ -86,46 +86,64 @@ function gitBlobSha(text: string): string {
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }
 
+/** What {@link requireWorkflowApplied} checks, and the words of its refusals. */
+interface WorkflowCheck {
+  target: string;
+  plan: DeployPlan;
+  github: PromoteRepository;
+  command: string;
+  /** The branch the workflow is started on. */
+  branch: string;
+  /**
+   * The workflow the plan generates (its text), as provision renders it; without it, the
+   * repository's copy, which only drift can tell is the plan's.
+   */
+  workflow?: string;
+  what?: CheckedFor;
+}
+
 /**
  * Stops (`PHASE_PRECONDITION`, nothing deployed) unless the target environment `target` (its plan
  * and paths) has nothing `opscrew provision` would apply (read-only drift) and the deploy workflow
- * on `branch` (promote's: the default branch) is the one its plan generates (by git blob hash), so
- * the approval names what will run. On a server, drift compares the generated files, so the
- * repository's copy is the one the plan generates; a site's drift compares none, so its caller
- * passes `workflow`, the workflow rendered from the plan, which must be the branch's. The
+ * on `branch` (promote's: the default branch) is the one its plan generates
+ * ({@link requireWorkflowApplied}), so the approval names what will run. On a server, drift
+ * compares the generated files, so the repository's copy is the one the plan generates; a site's
+ * drift compares none, so its caller passes `workflow`, the workflow rendered from the plan. The
  * refusals name `what` the caller checks for (default a promotion) and its `command`. Returns
  * the workflow's file name, which the caller starts.
  */
 export async function requireApplied(
   deps: PhaseDeps,
-  input: {
-    target: string;
-    plan: DeployPlan;
-    paths: ProjectPaths;
-    github: PromoteRepository;
-    services: PromoteServices;
-    command: string;
-    /** The branch the workflow is started on. */
-    branch: string;
-    /** A site: the workflow its plan generates (its text), as provision renders it. */
-    workflow?: string;
-    what?: CheckedFor;
-  },
+  input: WorkflowCheck & { paths: ProjectPaths; services: PromoteServices },
 ): Promise<string> {
-  const { target, plan, github, command, branch } = input;
+  const { target, command } = input;
   const what = input.what ?? "promotion";
-  const nothing = nothingChanged(what);
-  const provisionFirst = `Run \`opscrew provision --env ${target}\` first, then \`${command}\` again.`;
   deps.reporter.step(`Checking ${target} for changes not applied yet (read-only)`);
   const report = await (input.services.drift ?? runDrift)({ ...deps, paths: input.paths });
   const pending = pendingChanges(report);
   if (pending.length > 0) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The ${target} environment has changes that are not applied yet: ${shortList(pending)}. ${what === "rollback" ? "OpsCrew rolls back only an environment" : "OpsCrew promotes only to an environment"} whose plan is applied, so the approval names what will run. ${nothing}`,
-      { hint: provisionFirst },
+      `The ${target} environment has changes that are not applied yet: ${shortList(pending)}. ${what === "rollback" ? "OpsCrew rolls back only an environment" : "OpsCrew promotes only to an environment"} whose plan is applied, so the approval names what will run. ${nothingChanged(what)}`,
+      { hint: `Run \`opscrew provision --env ${target}\` first, then \`${command}\` again.` },
     );
   }
+  return requireWorkflowApplied(deps, input);
+}
+
+/**
+ * The workflow half of {@link requireApplied}, without drift (this computer's local runner, where
+ * drift counts a broken app's stopped containers as pending): stops (`PHASE_PRECONDITION`) unless
+ * the deploy workflow on `branch` is the one the plan generates, by git blob hash. Returns the
+ * workflow's file name.
+ */
+export async function requireWorkflowApplied(
+  deps: PhaseDeps,
+  input: WorkflowCheck,
+): Promise<string> {
+  const { target, plan, github, command, branch } = input;
+  const what = input.what ?? "promotion";
+  const nothing = nothingChanged(what);
   const { workflowPath } = plan.cicd;
   const where =
     branch === github.defaultBranch ? `the default branch ${branch}` : `the branch ${branch}`;
