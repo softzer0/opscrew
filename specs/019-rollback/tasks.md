@@ -557,7 +557,7 @@ Each task keeps behaviour, apart from the bugs it names. Exported names used out
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T1925 Simplify rollback, promote, status and the shared deploy code, in `packages/agents/src/{rollback,promote,status,shared,logs}/**`, `packages/agents/src/localhost/apply.ts`, `packages/agents/src/localhost/plan.ts` and `packages/connectors/github/src/**` (+ tests)
+- [x] T1925 Simplify rollback, promote, status and the shared deploy code, in `packages/agents/src/{rollback,promote,status,shared,logs}/**`, `packages/agents/src/localhost/apply.ts`, `packages/agents/src/localhost/plan.ts` and `packages/connectors/github/src/**` (+ tests)
   - Owns: those paths
   - Accept:
     - **Bug, the reviewer in the approval:** `rollback/server.ts` reads the GitHub environment's reviewers through `secretsEnvironment(plan)`, which is `undefined` for a prod-only app. Its deploy job runs in `production`, so the approval wrongly says nothing gates the deploy. Use `promote/site.ts`'s `reviewedEnvironment`, exported. One `guardText` serves all three copies of "GitHub also asks a required reviewer…" (`promote/run.ts`, `promote/site.ts`, `rollback/server.ts`). Test it with a prod-only app whose `production` has a reviewer.
