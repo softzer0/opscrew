@@ -185,18 +185,19 @@ network above all).
   - Reads: plan.md "7."; research.md R4, R7 (S5); 017's plan.md "6." (the masking file)
   - Depends: T2002
   - Accept:
-    - **With monitoring on:**
+    - **Always (every plan with a Caddy edge, plan.md 7.):**
       - the Caddyfile gets `metrics { per_host }` and the `http://:<CADDY_METRICS_PORT>` site with
         only `metrics`;
       - the port isn't published;
-      - `observe_catchall_hosts` is off.
+      - `observe_catchall_hosts` is off;
+      - `EDGE_VERSION` is raised.
     - **The masking file:**
       - with monitoring on, the deploy job writes it on the app's server, and the extra servers'
         upload step writes it on each extra server;
       - each from the values that server receives;
       - readable only by the deploy user (`0600`, as 017 writes it), never in the repository.
-    - **Without monitoring,** the edge's and every workflow's snapshots are unchanged. That covers
-      Grafana Cloud-only plans too.
+    - **Without monitoring,** every workflow's snapshots are unchanged (Grafana Cloud-only plans
+      too); the edge's change for every plan, as above.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
@@ -406,6 +407,10 @@ network above all).
     - figures kept through a 2-minute stop of the stack.
 
     It cleans up its containers, volumes and images (targeted removal only).
+  - Notes from T2005: `caddy_http_request_errors_total` exists only after a handler error, so the
+    pass causes one (a 502 from a stopped upstream). Docker Desktop gave no `node_filesystem_*`
+    series in the spike: check the servers dashboard's two disk panels, and if they can only be empty
+    on Docker Desktop, say so in the test and leave them to the live pass.
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter opscrew exec vitest run test/e2e/monitoring.test.ts`
   - Effort: xhigh
 

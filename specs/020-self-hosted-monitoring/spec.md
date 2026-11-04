@@ -334,8 +334,9 @@ first.
 - **FR-2010**: the agent MUST read Docker only through OpsCrew's read-only proxy, and Postgres
   through a login of its own that can only read the server's statistics.
 - **FR-2011**: on a server where Grafana Cloud is on too, one agent MUST send to both.
-- **FR-2012**: Caddy's figures MUST be on per hostname, served only to the agent, and only when
-  monitoring is on. Without monitoring, every generated file MUST stay byte-identical.
+- **FR-2012**: Caddy's figures MUST be on per hostname, served only on the edge's internal Docker
+  network and never published. They are on in every edge, since the edge is shared by every OpsCrew
+  app on a server. Without monitoring, every other generated file MUST stay byte-identical.
 
 **The stack**
 - **FR-2013**: the stack MUST run pinned images of Prometheus, Loki and Grafana, each with a memory
@@ -405,7 +406,8 @@ first.
   Docker pass and the live pass).
 - **SC-2005**: the stack stays within its memory limits on the default monitoring server with three
   servers sending.
-- **SC-2006**: a plan without monitoring renders every file byte-identical to today's (snapshots).
+- **SC-2006**: a plan without monitoring renders every file byte-identical to today's (snapshots),
+  except the shared edge, whose Caddy figures are always on (plan.md 7.).
 - **SC-2007**: after turning monitoring off or destroying, nothing OpsCrew installed for it remains
   on any server.
 - **SC-2008**: none of a token, an app secret, Grafana's password or a server's public address

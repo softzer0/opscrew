@@ -347,15 +347,23 @@ Research R7 "The collector" is the source; the spike's working `config.alloy` is
   (snapshots).
 
 ### 7. Caddy's figures and the masking file (T2007)
-- **Caddy, when the plan has monitoring on:**
+- **Caddy, always (lead decision at T2007's merge):**
   - the global `metrics { per_host }`;
   - a site `http://:<metrics port>` with only `metrics`, on the edge's internal network, never
     published;
-  - `observe_catchall_hosts` stays off.
+  - `observe_catchall_hosts` stays off;
+  - `EDGE_VERSION` raised.
+
+  The edge is shared by every OpsCrew app on a server, and a deploy puts its own copy in place
+  when the versions are equal and the content differs. With the figures only for monitored plans,
+  a monitored app and another one on the same server would swap the edge on every deploy. Always
+  on, every app renders the same edge, and the raised version keeps an older app's deploy from
+  taking the figures away. Without monitoring nothing scrapes them.
 - **The masking file:** written on every server of a monitored environment, by the deploy job for
   the app's server and by the extra servers' upload step, from the env values that server receives.
   Today it is written only for Grafana Cloud, and only on the app's server.
-- Without monitoring, the edge and the workflow stay byte-identical (snapshots).
+- Without monitoring, the workflow stays byte-identical (snapshots); the edge changes for every
+  plan, as above.
 
 ### 8. The host adapter (T2008)
 - **`ADDON_KINDS` gains `monitoring`.**
