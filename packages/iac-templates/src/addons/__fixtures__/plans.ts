@@ -16,7 +16,7 @@ export const BESZEL_SUBDOMAIN = {
 /** Grafana Cloud's endpoints, as a stack's details page gives them. */
 export const GRAFANA_CLOUD = {
   enabled: true,
-  version: "1.21.2",
+  version: "1.21.3",
   metrics: { url: "https://prometheus-prod-01-eu-west-0.grafana.net/api/prom/push", user: "123456" },
   logs: { url: "https://logs-prod-eu-west-0.grafana.net/loki/api/v1/push", user: "654321" },
 } as const;

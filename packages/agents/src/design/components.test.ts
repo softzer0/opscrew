@@ -1005,7 +1005,7 @@ describe("memoryText", () => {
       },
       grafanaCloud: {
         enabled: true,
-        version: "1.21.2",
+        version: "1.21.3",
         metrics: { url: "https://prometheus.example.net/api/prom/push", user: "123" },
         logs: { url: "https://logs.example.net/loki/api/v1/push", user: "456" },
         logSampling: 100,

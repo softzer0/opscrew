@@ -159,7 +159,7 @@ export async function moveWorld(o: MoveWorldOptions = {}) {
         ? {
             grafanaCloud: {
               enabled: true,
-              version: "1.21.2",
+              version: "1.21.3",
               metrics: { url: "https://prometheus.example.grafana.net/api/prom/push", user: "1" },
               logs: { url: "https://logs.example.grafana.net/loki/api/v1/push", user: "2" },
             },

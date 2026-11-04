@@ -244,7 +244,7 @@ describe.skipIf(SKIP !== undefined)("Beszel and Grafana Alloy on Docker (017)", 
             observability: {
               ...designedPlan.observability,
               beszel: { enabled: true, version: "0.21.1" },
-              grafanaCloud: { enabled: true, version: "1.21.2", ...CLOUD },
+              grafanaCloud: { enabled: true, version: "1.21.3", ...CLOUD },
             },
           }),
       },

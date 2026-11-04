@@ -122,7 +122,7 @@ describe("the runbook's add-ons", () => {
   const beszel = { enabled: true, version: "0.21.1" } as const;
   const grafana = {
     enabled: true,
-    version: "1.21.2",
+    version: "1.21.3",
     metrics: { url: "https://metrics.example.com/api/prom/push", user: "123456" },
     logs: { url: "https://logs.example.com/loki/api/v1/push", user: "654321" },
   } as const;
@@ -131,7 +131,7 @@ describe("the runbook's add-ons", () => {
     const text = renderRunbook(
       observed(testPlan({ domain: "example.com" }), {
         beszel: { ...beszel, enabled: false },
-        grafanaCloud: { enabled: false, version: "1.21.2" },
+        grafanaCloud: { enabled: false, version: "1.21.3" },
       }),
       ctx,
     ).content;

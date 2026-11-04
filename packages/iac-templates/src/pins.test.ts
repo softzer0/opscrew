@@ -93,7 +93,10 @@ describe("pins.ts", () => {
       linuxTools: "latest",
       beszel: "0.21.1",
       beszelAgent: "0.21.1",
-      alloy: "v1.21.2",
+      alloy: "v1.21.3",
+      prometheus: "v3.15.1",
+      loki: "3.7.9",
+      grafana: "13.3.0",
     });
     // Distroless publishes no versioned tags; the digest pins it, update-pins refreshes it.
     expect(parseImageRef(IMAGES.linuxTools.ref).repo).toBe("gcr.io/distroless/base-debian13");
@@ -112,6 +115,9 @@ describe("pins.ts", () => {
     expect(parseImageRef(IMAGES.beszel.ref).repo).toBe("henrygd/beszel");
     expect(parseImageRef(IMAGES.beszelAgent.ref).repo).toBe("henrygd/beszel-agent");
     expect(parseImageRef(IMAGES.alloy.ref).repo).toBe("grafana/alloy");
+    expect(parseImageRef(IMAGES.prometheus.ref).repo).toBe("prom/prometheus");
+    expect(parseImageRef(IMAGES.loki.ref).repo).toBe("grafana/loki");
+    expect(parseImageRef(IMAGES.grafana.ref).repo).toBe("grafana/grafana");
     expect(Object.keys(IMAGES).sort()).toEqual(
       [
         "alloy",
@@ -125,9 +131,11 @@ describe("pins.ts", () => {
         "dragonfly",
         "redis",
         "garage",
+        "grafana",
         "kafka",
         "kamalProxy",
         "linuxTools",
+        "loki",
         "mariadb",
         "mongodb",
         "mysql",
@@ -145,6 +153,7 @@ describe("pins.ts", () => {
         "pebble",
         "portainer",
         "postgres",
+        "prometheus",
         "python",
         "railpackFrontend",
         "rabbitmq",

@@ -639,7 +639,7 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
     expect(s.server.commands).toContain(serverReadCommand("shop", true));
     expect((await s.plan()).observability?.grafanaCloud).toMatchObject({
       enabled: true,
-      version: "1.21.2",
+      version: "1.21.3",
       metrics: { url: GRAFANA.metricsUrl, user: GRAFANA.metricsUser },
       logs: { url: GRAFANA.logsUrl, user: GRAFANA.logsUser },
       logSampling: 100,

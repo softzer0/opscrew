@@ -195,7 +195,20 @@ export const IMAGES = {
   },
   /** Grafana Alloy, sending logs and server metrics to the user's Grafana Cloud stack. */
   alloy: {
-    ref: "grafana/alloy:v1.21.2@sha256:89a5a320168387336b9ac3c850609c3ba7757eadd4ae5f1d819deb35e9854b18",
+    ref: "grafana/alloy:v1.21.3@sha256:8ab871206bd2d8f89277f53abffee5f452a293980788d52f85fa183a87a505a4",
+  },
+  // The 020 self-hosted monitoring stack (2026-11-04, research.md R1). Prometheus's tags have a `v`.
+  /** Prometheus, keeping the metrics every server's Alloy pushes to the monitoring server. */
+  prometheus: {
+    ref: "prom/prometheus:v3.15.1@sha256:fa3302279710be2f21a8301ec17a8b4f2301fd829bd113839b3b6b02b6f191a2",
+  },
+  /** Loki, keeping the logs every server's Alloy pushes to the monitoring server. */
+  loki: {
+    ref: "grafana/loki:3.7.9@sha256:0db216b630ae1f348a1584c67f3cead8b4c1fc839169a39501db664744158e28",
+  },
+  /** Grafana OSS, showing the monitoring server's metrics and logs. */
+  grafana: {
+    ref: "grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205",
   },
 } as const satisfies Record<string, ImagePin>;
 
