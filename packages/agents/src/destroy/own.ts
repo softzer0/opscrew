@@ -87,6 +87,7 @@ import {
   liftProtection,
   removeSnapshotRecord,
 } from "./deletion";
+import { leaveSharedMonitoring } from "./monitoring";
 import {
   confirmExtraServers,
   extraOwnServers,
@@ -683,6 +684,14 @@ export async function destroyOwnServer(
         throw error;
       })
     : [];
+  // Another environment's monitoring server this one sends to: left over its owner's login,
+  // while nothing is deleted yet.
+  const monitoringApprovals = removeApp
+    ? await leaveSharedMonitoring(deps, plan, services).catch(async (error: unknown) => {
+        if (bucket !== undefined) await discardBucketDeletion(bucket);
+        throw error;
+      })
+    : [];
 
   // 4b. The app's bucket: R2's first, since Cloudflare refuses a bucket that holds files and then
   // nothing else is deleted yet; any other after the app (at the end of the block below).
@@ -815,6 +824,7 @@ export async function destroyOwnServer(
     await forgetExtraCloudServers(deps, plan);
     const approvals = [
       ...machines.map((outcome) => outcome.approval),
+      ...monitoringApprovals,
       bucketDeleted?.approval,
       protectionApproval,
       removal?.approval,

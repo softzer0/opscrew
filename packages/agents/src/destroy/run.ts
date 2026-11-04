@@ -63,6 +63,7 @@ import {
   savePlan,
   snapshotKeptNote,
 } from "./deletion";
+import { leaveSharedMonitoring, requireNoMonitoringSenders } from "./monitoring";
 import { destroyOwnServer } from "./own";
 import { destroyPortainer } from "./portainer";
 import { destroyCloudflareWorkers, destroyGithubPages } from "./serverless";
@@ -498,6 +499,8 @@ export async function runDestroy(
   const plan = await readArtifact("plan", deps.paths.files.plan);
   // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
+  // Nor while other environments send to this one's monitoring server.
+  await requireNoMonitoringSenders(deps, plan);
   if (plan.target.provider === "localhost") return destroyLocalhost(deps, plan, options);
   if (plan.target.provider === "cloudflare-workers") {
     return destroyCloudflareWorkers(deps, plan, options);
@@ -689,7 +692,12 @@ export async function runDestroy(
   let protection: Awaited<ReturnType<typeof liftProtection>>;
   let current = plan;
   let ownApprovals: ApprovalRecord[] = [];
+  let monitoringApprovals: ApprovalRecord[] = [];
   try {
+    // Another environment's monitoring server this one sends to: left first, over its
+    // owner's login, while nothing is deleted yet.
+    monitoringApprovals = await leaveSharedMonitoring(deps, plan, services);
+
     if (bucket?.bucket.provider === "r2") bucketDeleted = await deleteBucket(bucket);
 
     // 5. Snapshots (inside the confirmed flow: after the typed names, before anything is deleted),
@@ -755,6 +763,7 @@ export async function runDestroy(
   await forgetExtraCloudServers(deps, plan);
   const approvals = [
     ...machines.map((outcome) => outcome.approval),
+    ...monitoringApprovals,
     ...ownApprovals,
     bucketDeleted?.approval,
     protection.approval,

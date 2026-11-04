@@ -56,6 +56,7 @@ import {
   approveAndApplyHostPlan,
   type HostPlanOutcome,
   type HostPlanStep,
+  hasDeployment,
   readServerAddresses,
   serverWords,
 } from "../shared";
@@ -183,6 +184,23 @@ export async function monitoringHostPlans(
   outcomes.push(...(await applyChanges(run, await setup(run, monitoring, needs))));
   if (!input.planOnly) await summary(run, monitoring);
   return outcomes;
+}
+
+/**
+ * Leaves the monitoring server another environment owns that this computer recorded `plan` on
+ * (its kept `owner`), as turning monitoring off does: the stack without this environment's
+ * network, then its interface there, over the owner's login, each approved by its hash; then the
+ * kept `owner` is forgotten. Nothing without one. `destroy`'s, before the servers go.
+ */
+export async function leaveMonitoringServer(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: MonitoringHostPlansInput,
+): Promise<HostPlanOutcome[]> {
+  const kept = (await monitoringValues(deps)) ?? {};
+  if (kept.owner === undefined) return [];
+  const run: Run = { deps, plan, input, servers: [], kept };
+  return applyChanges(run, await leave(run, kept.owner));
 }
 
 /**
@@ -582,7 +600,7 @@ async function ownerPassword(run: Run, ownerPlan: DeployPlan, paths: PhaseDeps["
 /**
  * Leaving the monitoring server another environment owns (`old`): its stack without this
  * environment's network, then this network's interface there, over the owner's login. Nothing
- * when the owner no longer runs it (its server went with it).
+ * when the owner no longer runs it, or its deployment was torn down (its server went with it).
  */
 async function leave(run: Run, old: Owner): Promise<Change[]> {
   const { deps, plan, input } = run;
@@ -591,7 +609,12 @@ async function leave(run: Run, old: Owner): Promise<Change[]> {
   };
   const ownerPlan = await readOptionalArtifact("plan", join(deps.paths.root, old.plan));
   const where = ownerPlan === undefined ? undefined : monitoringOf(ownerPlan)?.where;
-  if (ownerPlan === undefined || where?.kind !== "server" || where.server !== old.server) {
+  if (
+    ownerPlan === undefined ||
+    !hasDeployment(ownerPlan) ||
+    where?.kind !== "server" ||
+    where.server !== old.server
+  ) {
     deps.reporter.info(
       `${upperFirst(otherServer(old))} no longer runs the monitoring stack, so nothing of this environment is left to take off it.`,
     );

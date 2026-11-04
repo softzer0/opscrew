@@ -29,11 +29,18 @@ export type DestroyCloudflareApi = Pick<CloudflareClient, "verifyToken">;
 /**
  * Collaborators that talk to the outside world, as in provisioning. Each defaults to the real
  * implementation built from `PhaseDeps` (env, fetch, runner); tests replace them with fakes.
+ * `serverHost` reaches another environment's monitoring server this one leaves.
  */
 export interface DestroyServices
   extends Pick<
     ProvisionServices,
-    "engine" | "provider" | "sharedCloudflare" | "runnerGitHub" | "runnerMachine" | "remote"
+    | "engine"
+    | "provider"
+    | "sharedCloudflare"
+    | "runnerGitHub"
+    | "runnerMachine"
+    | "remote"
+    | "serverHost"
   > {
   /** Cloudflare API (default: client from `CLOUDFLARE_API_TOKEN`); `null` means no token. */
   cloudflare?: DestroyCloudflareApi | null;

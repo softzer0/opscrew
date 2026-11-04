@@ -7,6 +7,7 @@ import {
   type DeployPlan,
   type DesignOption,
   isServerlessProvider,
+  monitoringOf,
   type ProjectFacts,
   type Retarget,
   readArtifact,
@@ -16,6 +17,7 @@ import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
 import { chooseBuilder } from "../design/builder";
 import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
+import { commandFlags } from "../environments/choice";
 import { providerProfile, requestedProvider, vpsConnector } from "../providers";
 import { providerBucket, readRequirements, requireStorageKey } from "../provision";
 import { designOptionLine, hasState, serverAddress } from "../shared";
@@ -64,6 +66,22 @@ function splitAppNoMove(plan: DeployPlan): OpsCrewError {
     `${plan.app.name} runs services on other servers too (${listText(extraServers(plan))}), and moving an app with several servers to another provider comes with retarget anywhere. Nothing was changed.`,
     {
       hint: "Until then the app stays where it is. To move it now, place its services back on the app's server first: remove `server` from those services and the servers from `servers` in opscrew/plan.yaml, run `opscrew design` and `opscrew provision`, then run `opscrew retarget`.",
+    },
+  );
+}
+
+/**
+ * An app with self-hosted monitoring on is not moved (FR-2026): its agents, its stack and the
+ * monitoring server's network move with retarget anywhere. Said before any check or change, with
+ * the commands that turn it off.
+ */
+async function monitoringNoMove(deps: PhaseDeps, plan: DeployPlan): Promise<OpsCrewError> {
+  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `Self-hosted monitoring is on for ${plan.app.name}, and moving an app with self-hosted monitoring to another provider comes with retarget anywhere. Nothing was changed.`,
+    {
+      hint: `Turn it off first: run \`opscrew addon disable monitoring${flag}\` and then \`opscrew provision${flag}\`, then run \`opscrew retarget${flag}\` again. Turn monitoring on again once the move is finished.`,
     },
   );
 }
@@ -301,7 +319,10 @@ export async function startMove(
   if (plan.target.provider === "localhost") throw localhostTargetNoMove();
   if (isServerlessProvider(plan.target.provider))
     throw serverlessTargetNoMove(plan.target.provider);
-  // Nor, until retarget anywhere, an app with services on other servers (FR-1820).
+  // Nor, until retarget anywhere, an app with self-hosted monitoring on (FR-2026), said before
+  // the extra servers (its monitoring server may be one), nor one with services on other servers
+  // (FR-1820).
+  if (monitoringOf(plan) !== undefined) throw await monitoringNoMove(deps, plan);
   if (hasExtraServers(plan)) throw splitAppNoMove(plan);
   // Nor while public SSH is closed: the new server is reached at its public address.
   if (plan.network?.publicSsh === false) {
