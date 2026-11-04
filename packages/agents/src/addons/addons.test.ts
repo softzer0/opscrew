@@ -3,9 +3,14 @@ import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
-import { type ApplyOptions, type HostPlan, hostPlanHash } from "@opscrew/connector-ssh-host";
+import {
+  type ApplyOptions,
+  HostFactsSchema,
+  type HostPlan,
+  hostPlanHash,
+} from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, CommandRunner, RemoteExec } from "@opscrew/contracts";
-import { findExecutable, OpsCrewError } from "@opscrew/core";
+import { findExecutable, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import {
   type DeployPlan,
@@ -14,9 +19,11 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { MONITORING_VERSIONS } from "../monitoring/settings";
 import { allocateNetwork } from "../network";
 import { portainerDisable, portainerEnable } from "../portainer";
 import { inEnvironment } from "../promote/__fixtures__/world";
+import { monitoringAlloy } from "../provision/monitoring";
 import { runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
 import {
@@ -666,6 +673,80 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
     expect((await s.plan()).observability).toBeUndefined();
   });
 
+  it("with self-hosted monitoring on: enable and disable change the one Alloy that sends to both", async () => {
+    const token = grafanaToken();
+    const base = testPlan({ domain: "shop.example.com", deployed: true });
+    const monitored = DeployPlanSchema.parse({
+      ...base,
+      observability: {
+        monitoring: {
+          enabled: true,
+          where: { kind: "app" },
+          versions: MONITORING_VERSIONS,
+          retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 10 },
+        },
+      },
+    });
+    const s = await cloudSetup({ plan: monitored, env: { OPSCREW_GRAFANA_CLOUD_TOKEN: token } });
+
+    // Before provision set monitoring up, Alloy doesn't send to the stack: refused, nothing changed.
+    const early = await failure(
+      addonEnable(s.deps, await s.plan(), "grafana-cloud", { ...GRAFANA, services: s.services }),
+    );
+    expect(early.message).toBe(
+      "Self-hosted monitoring is on in the plan, but Grafana Alloy on the app's server doesn't send to the monitoring stack yet, so OpsCrew doesn't change it for Grafana Cloud. Nothing was changed.",
+    );
+    expect(early.hint).toContain("Run `opscrew provision` first");
+    expect(s.handler.requests).toEqual([]);
+    expect(s.server.applies).toEqual([]);
+    expect((await s.plan()).observability?.grafanaCloud).toBeUndefined();
+
+    // Provision set it up: Alloy sends to the stack.
+    s.server.running.set("alloy", JSON.stringify({ destinations: "monitoring" }));
+    const result = await addonEnable(s.deps, await s.plan(), "grafana-cloud", {
+      ...GRAFANA,
+      services: s.services,
+    });
+    expect(s.handler.requests[0]?.title).toBe(
+      "Run Grafana Alloy on the server, sending the app's logs and the server's metrics to Grafana Cloud and to the monitoring stack",
+    );
+    const on = s.server.applies[0];
+    const step = on?.plan.steps[0];
+    // As provision plans it: both destinations, the stack's front by name, Postgres's login.
+    expect(step?.params).toMatchObject({
+      server: "app",
+      destinations: "grafanaCloud monitoring",
+      postgresHost: "db",
+    });
+    expect(String(step?.params["file:config.alloy"])).toContain("http://front:9091");
+    const postgres = on?.options.secrets?.monitoringPostgresPassword;
+    expect(postgres).toMatch(/^[A-Za-z0-9]{32}$/);
+    expect(on?.options.secrets).toEqual({
+      grafanaCloudToken: token,
+      monitoringPostgresPassword: postgres,
+    });
+
+    // Off: Alloy keeps sending to the stack alone; nothing is removed.
+    s.handler.requests.length = 0;
+    await addonDisable(s.deps, await s.plan(), "grafana-cloud", { services: s.services });
+    expect(s.handler.requests[0]?.title).toBe(
+      "Stop sending to Grafana Cloud from the server: Grafana Alloy keeps sending to the monitoring stack",
+    );
+    const off = s.server.applies.at(-1);
+    expect(off?.plan.steps[0]?.params).toMatchObject({
+      server: "app",
+      destinations: "monitoring",
+      postgresHost: "db",
+    });
+    expect(off?.plan.steps[0]?.params).not.toHaveProperty("remove");
+    expect(off?.options.secrets).toEqual({ monitoringPostgresPassword: postgres });
+    expect((await s.plan()).observability?.grafanaCloud).toBeUndefined();
+    expect((await s.plan()).observability?.monitoring?.enabled).toBe(true);
+    const shown = await everythingShown(s, result);
+    expect(shown).not.toContain(token);
+    expect(shown).not.toContain(postgres as string);
+  });
+
   it("over the free tier: says so with the sampling that fits before the approval, and goes on", async () => {
     const token = grafanaToken();
     const s = await cloudSetup({ env: { OPSCREW_GRAFANA_CLOUD_TOKEN: token } });
@@ -1041,6 +1122,65 @@ async function ownSetup(answer: (request: ApprovalRequest) => boolean = () => tr
 }
 
 describe.skipIf(!hasGit)("add-ons on a server the user owns", () => {
+  it("Grafana Cloud off with monitoring on: in place once Alloy runs as planned, unless the login's password is new", async () => {
+    const s = await ownSetup();
+    const deployed = await s.plan();
+    const monitoring = {
+      enabled: true,
+      where: { kind: "app" },
+      versions: MONITORING_VERSIONS,
+      retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 10 },
+    };
+    const grafanaCloud = {
+      enabled: true,
+      version: MONITORING_VERSIONS.alloy,
+      metrics: { url: GRAFANA.metricsUrl, user: GRAFANA.metricsUser },
+      logs: { url: GRAFANA.logsUrl, user: GRAFANA.logsUser },
+    };
+    const both = DeployPlanSchema.parse({
+      ...deployed,
+      observability: { monitoring, grafanaCloud },
+    });
+    const after = DeployPlanSchema.parse({ ...deployed, observability: { monitoring } });
+    // Alloy already sends to the stack alone, as Grafana Cloud's removal plans it.
+    const enable = monitoringAlloy(after, "app");
+    s.host.facts = HostFactsSchema.parse({
+      ...s.host.facts,
+      containers: [
+        ...s.host.facts.containers,
+        { name: "opscrew-alloy-alloy-1", project: "opscrew-alloy", ports: "", running: true },
+      ],
+      alloy: {
+        destinations: ["monitoring"],
+        files: Object.fromEntries(
+          Object.entries(enable.files).map(([name, text]) => [name, sha256Hex(text)]),
+        ),
+        postgresHost: "db",
+      },
+    });
+    const turnOff = async () => {
+      await writeArtifact("plan", s.deps.paths.files.plan, both);
+      s.handler.requests.length = 0;
+      return addonDisable(s.deps, both, "grafana-cloud", { services: s.services });
+    };
+
+    // No login password on this computer yet: one is made, so the step writes it.
+    const first = await turnOff();
+    expect(first.hostApplied).toBe(true);
+    const password = s.server.applies.at(-1)?.options.secrets?.monitoringPostgresPassword;
+    expect(password).toMatch(/^[A-Za-z0-9]{32}$/);
+
+    // Kept now: Alloy runs as planned, so nothing is asked or changed.
+    const applies = s.server.applies.length;
+    const again = await turnOff();
+    expect(again.hostApplied).toBe(false);
+    expect(kinds(s.handler)).not.toContain("host-apply");
+    expect(s.server.applies).toHaveLength(applies);
+    expect(s.deps.reporter.text()).toContain(
+      "Grafana Alloy already runs on your server as planned",
+    );
+  });
+
   it("Beszel: its own host plan as root with the server's facts, no price share", async () => {
     const s = await ownSetup();
     const result = await addonEnable(s.deps, await s.plan(), "beszel", { services: s.services });

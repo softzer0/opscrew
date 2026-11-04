@@ -21,6 +21,8 @@
  * Grafana and its front) as root on any server, Grafana's password in a root-only file; `alloy`
  * runs on any server of the app with its destinations; and `planGrant`'s `monitor` access makes
  * the Postgres login `opscrew_monitor` (`MONITOR_LOGIN`) that Alloy reads Postgres's figures with.
+ * `planNetworkRemoval` takes one network's interface off a server, such as the monitoring server
+ * another environment owns once this one stops sending to it.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md`,
  * `specs/015-environments-runners/contracts/runners.md`,
@@ -33,6 +35,7 @@ export { applyHostPlan, HostApplyError } from "./apply";
 export {
   ADDON_PROJECTS,
   type AddonKind,
+  ALLOY_DESTINATIONS_FILE,
   addonDir,
   appDirs,
   checkKeyComment,
@@ -68,7 +71,7 @@ export {
 } from "./facts";
 export { type GrantParams, GrantParamsSchema, MONITOR_LOGIN } from "./grant";
 export { hostPlanHash } from "./hash";
-export { inspectHost, inspectRunners, probePrivilege } from "./inspect";
+export { inspectHost, inspectRunners, probePrivilege, readGrant } from "./inspect";
 export { localExec } from "./local";
 export { type NetworkStepParams, NetworkStepParamsSchema } from "./network";
 export { networkFileHashes, networkFilterFileHashes, networkUfwRules } from "./network-files";
@@ -87,6 +90,7 @@ export {
   planGrant,
   planHost,
   planNetwork,
+  planNetworkRemoval,
   planPortainer,
   planPublicSsh,
   planRunner,

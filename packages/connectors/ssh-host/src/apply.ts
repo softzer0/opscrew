@@ -786,11 +786,18 @@ export async function applyHostPlan(
       const gone = ownerGone(step.id, owner, ctx.recorder.apps);
       if (!gone || !isRemoval(valid, step)) throw addonTaken(step.id, owner, gone);
     }
-    // Another app's private network is never changed by this app's plan.
+    // Another app's private network is never changed by this app's plan, and an app's plan removes
+    // only an interface the record names as its own (an undo removes whatever OpsCrew left).
     for (const { step } of changes) {
-      if (step.id !== "network" || isRemoval(valid, step)) continue;
+      if (step.id !== "network" || valid.purpose === "undo") continue;
       const iface = String(step.params.interface);
       const owner = ctx.recorder.networkOwner(iface);
+      if (isRemoval(valid, step) && owner !== valid.app) {
+        throw refuse(
+          `The WireGuard interface ${iface} on this server is ${owner === undefined ? "no OpsCrew app's private network on record" : `the private network of the OpsCrew app "${owner}"`}, so OpsCrew does not remove it for "${valid.app}". Nothing was changed.`,
+          `Make a fresh plan with ${opts.command}.`,
+        );
+      }
       if (owner !== undefined && owner !== valid.app) {
         throw refuse(
           `The WireGuard interface ${iface} on this server is the private network of the OpsCrew app "${owner}", so OpsCrew does not change it for "${valid.app}".`,

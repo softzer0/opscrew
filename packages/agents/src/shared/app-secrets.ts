@@ -11,6 +11,26 @@ export function generatedValuesFile(deps: Pick<PhaseDeps, "paths">): string {
   return join(deps.paths.projectHomeDir, "generated_values.json");
 }
 
+/**
+ * The self-hosted monitoring's values in the generated values (`monitoring`): its two passwords,
+ * each generated once, and the monitoring server of another environment this one has an interface
+ * on, so provision can take it off again once monitoring is off there.
+ */
+export const MonitoringValuesSchema = z.strictObject({
+  /** Grafana's admin password, of the stack this environment owns: letters, digits, `-`, `_`. */
+  grafanaAdminPassword: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{16,128}$/)
+    .optional(),
+  /** The Postgres monitoring login's (`opscrew_monitor`) password: letters and digits. */
+  postgresPassword: z
+    .string()
+    .regex(/^[A-Za-z0-9]{16,128}$/)
+    .optional(),
+  /** The other environment's plan file, its monitoring server, and this network's interface there. */
+  owner: z.strictObject({ plan: z.string(), server: z.string(), interface: z.string() }).optional(),
+});
+
 /** The generated values provision keeps (`generated_values.json`), as far as they are secrets. */
 export const GeneratedValuesSchema = z.object({
   dbPassword: z.string().min(1).optional(),
@@ -20,6 +40,8 @@ export const GeneratedValuesSchema = z.object({
   network: z.record(z.string(), z.string().min(1)).optional(),
   /** Each device login's password, by `<device>/<service>`. */
   grants: z.record(z.string(), z.string().min(1)).optional(),
+  /** The self-hosted monitoring's values; damaged ones read as none (writing them stops). */
+  monitoring: MonitoringValuesSchema.optional().catch(undefined),
 });
 
 /**
@@ -40,7 +62,8 @@ interface AppSecrets {
 /**
  * Registers the app's values with the redactor, so none shows in OpsCrew's text: every app and
  * build value except host lists and fixed production words, each service's generated secrets, and
- * the private network's keys and the device logins' passwords this computer keeps.
+ * the private network's keys, the device logins' passwords and the self-hosted monitoring's
+ * passwords this computer keeps.
  * `environment` is the one provision just assembled. Without it, the values this computer keeps:
  * the generated values, and the production values in the file `OPSCREW_APP_ENV_FILE` names.
  * @throws OpsCrewError `INVALID_INPUT` when `OPSCREW_APP_ENV_FILE` names a file that does not exist.
@@ -69,6 +92,10 @@ export async function registerAppSecrets(
   }
   for (const password of Object.values(generated.grants ?? {})) {
     deps.redactor.addLiteral(password, "app-env");
+  }
+  const { grafanaAdminPassword, postgresPassword } = generated.monitoring ?? {};
+  for (const password of [grafanaAdminPassword, postgresPassword]) {
+    if (password !== undefined) deps.redactor.addLiteral(password, "monitoring-password");
   }
 }
 

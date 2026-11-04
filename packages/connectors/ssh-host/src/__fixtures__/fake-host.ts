@@ -10,6 +10,7 @@ import { sha256Hex as sha256 } from "@opscrew/core";
 import {
   ADDON_KINDS,
   ALLOY_DESTINATIONS_FILE,
+  ALLOY_POSTGRES_HOST_FILE,
   addonDir,
   APP_RECORDS_DIR,
   AUTO_UPGRADES_FILE,
@@ -1046,10 +1047,19 @@ export class FakeHost implements RemoteExec {
         if (name === GRAFANA_ADMIN_CREDENTIAL || name.split("/").some((part) => part.startsWith("."))) continue;
         lines.push(`file ${name} ${sha256(content)}`);
       }
+      if ((this.files.get(`${stack}/${GRAFANA_ADMIN_CREDENTIAL}`) ?? "") !== "") lines.push("credential");
     }
     const alloy = found("alloy");
     if (alloy !== undefined) {
       lines.push(`alloy ${this.files.get(`${alloy}/${ALLOY_DESTINATIONS_FILE}`)?.trim() ?? "grafanaCloud"}`);
+      for (const [path, content] of [...this.files].sort(([a], [b]) => a.localeCompare(b))) {
+        const name = path.slice(alloy.length + 1);
+        if (!path.startsWith(`${alloy}/`) || name.includes("/") || name.startsWith(".")) continue;
+        if (name === "grafana_cloud_credential" || name === "postgres_monitor_credential") continue;
+        lines.push(`alloyfile ${name} ${sha256(content)}`);
+      }
+      const host = this.files.get(`${alloy}/${ALLOY_POSTGRES_HOST_FILE}`);
+      if (host !== undefined) lines.push(`alloypg ${host.trim()}`);
     }
     return lines.join("\n");
   }
@@ -2370,6 +2380,7 @@ export class FakeHost implements RemoteExec {
           `${dir}/postgres_monitor_credential`,
           `postgresql://opscrew_monitor:${pgpw}@${p.POSTGRES_HOST}:5432/postgres?sslmode=disable`,
         );
+        this.files.set(`${dir}/${ALLOY_POSTGRES_HOST_FILE}`, `${p.POSTGRES_HOST}\n`);
       }
       if (p.DESTINATIONS) this.files.set(`${dir}/${ALLOY_DESTINATIONS_FILE}`, `${p.DESTINATIONS}\n`);
       for (const stale of FakeHost.words(p.STALE_FILES)) this.files.delete(`${dir}/${stale}`);

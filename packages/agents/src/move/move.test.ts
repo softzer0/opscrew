@@ -1,6 +1,7 @@
 import { CHECK_PAUSED_VARIABLE, DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
-import { readArtifact } from "@opscrew/plan-schema";
+import { ADDON_MEMORY_DEFAULTS, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { MONITORING_VERSIONS } from "../monitoring/settings";
 import { moveWorld } from "./__fixtures__/world";
 import { runMove } from "./index";
 
@@ -566,6 +567,34 @@ describe("runMove", () => {
     };
     await runMove(failed.deps, { plan: failed.plan, services: failed.services }).catch(() => {});
     expect(failed.servers.app.masks).toEqual([failed.env.after, failed.env.before]);
+  });
+
+  it("rewrites the masking file with self-hosted monitoring on and Grafana Cloud off, and says so", async () => {
+    const w = await moveWorld({ step: "deployed" });
+    const plan = DeployPlanSchema.parse({
+      ...w.plan,
+      observability: {
+        ...w.plan.observability,
+        monitoring: {
+          enabled: true,
+          where: { kind: "app" },
+          versions: MONITORING_VERSIONS,
+          retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 10 },
+          memoryMb: { ...ADDON_MEMORY_DEFAULTS.monitoring },
+        },
+      },
+    });
+    await runMove(w.deps, { plan, services: w.services });
+    expect(w.servers.app.masks).toEqual([w.env.after]);
+    expect(w.handler.requests[0]?.details).toContain(
+      "Grafana Alloy's masking file (/srv/apps/shop/mask.re) is rewritten from the new app.env.",
+    );
+
+    // Without either, nothing masks the logs: the window neither rewrites nor names it.
+    const plain = await moveWorld({ step: "deployed" });
+    await runMove(plain.deps, { plan: plain.plan, services: plain.services });
+    expect(plain.servers.app.masks).toEqual([]);
+    expect(plain.handler.requests[0]?.details).not.toContain("mask.re");
   });
 
   it("keeps the app stopped on its old settings when the masking file can't follow them back", async () => {

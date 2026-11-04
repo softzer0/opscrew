@@ -29,7 +29,7 @@ import {
 } from "./facts";
 import type { NetworkFilterRule } from "./network-filter";
 import { runnerUnitText } from "./runner-unit";
-import { StackPathSchema } from "./types";
+import { ServiceNameSchema, StackPathSchema } from "./types";
 
 /** Output of one inspection section: its text and the exit code of its command. */
 export interface Section {
@@ -714,30 +714,59 @@ export function parseAddons(text: string): Map<string, AddonLine> {
 
 /**
  * The monitoring section (see `MONITORING_SNIPPET`): `stack` when the stack's folder holds its
- * Compose file, `file <path> <sha256>` for each of its files, and `alloy <destination>…` when the
- * server has Alloy. Lines that are not one of these, a path outside the stack's folder and an
- * unknown destination are left out.
+ * Compose file, `file <path> <sha256>` for each of its files, `credential` when its password file
+ * is there; `alloy <destination>…` when the server has Alloy, `alloyfile <name> <sha256>` for each
+ * of its files and `alloypg <host>` for its Postgres data source's host. Lines that are not one of
+ * these, a path outside the stack's folder, a bad name or host and an unknown destination are
+ * left out.
  */
 export function parseMonitoring(text: string): {
   stack: boolean;
   files: Record<string, string>;
-  alloy?: AlloyDestination[];
+  credential: boolean;
+  alloy?: {
+    destinations: AlloyDestination[];
+    files: Record<string, string>;
+    postgresHost?: string;
+  };
 } {
   const files: Record<string, string> = {};
+  const alloyFiles: Record<string, string> = {};
   let stack = false;
-  let alloy: AlloyDestination[] | undefined;
+  let credential = false;
+  let destinations: AlloyDestination[] | undefined;
+  let postgresHost: string | undefined;
+  const hash = /^[0-9a-f]{64}$/;
   for (const line of linesOf(text)) {
     const [kind, ...rest] = line.split(/\s+/);
-    if (kind === "stack") stack = true;
     const [path = "", sum = ""] = rest;
-    if (kind === "file" && StackPathSchema.safeParse(path).success && /^[0-9a-f]{64}$/.test(sum)) {
+    if (kind === "stack") stack = true;
+    if (kind === "credential") credential = true;
+    if (kind === "file" && StackPathSchema.safeParse(path).success && hash.test(sum)) {
       files[path] = sum;
     }
     if (kind === "alloy") {
-      alloy = ALLOY_DESTINATIONS.filter((destination) => rest.includes(destination));
+      destinations = ALLOY_DESTINATIONS.filter((destination) => rest.includes(destination));
     }
+    if (kind === "alloyfile" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(path) && hash.test(sum)) {
+      alloyFiles[path] = sum;
+    }
+    if (kind === "alloypg" && ServiceNameSchema.safeParse(path).success) postgresHost = path;
   }
-  return alloy === undefined ? { stack, files } : { stack, files, alloy };
+  return {
+    stack,
+    files,
+    credential,
+    ...(destinations === undefined
+      ? {}
+      : {
+          alloy: {
+            destinations,
+            files: alloyFiles,
+            ...(postgresHost === undefined ? {} : { postgresHost }),
+          },
+        }),
+  };
 }
 
 /**

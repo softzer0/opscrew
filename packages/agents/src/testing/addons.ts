@@ -79,6 +79,12 @@ export class FakeAddonServer {
         if (this.running.has("alloy")) lines.push("opscrew-alloy-alloy-1|75.2MiB / 192MiB");
         return { exitCode: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
       }
+      // Where Alloy sends: the destinations of the Alloy that runs (none without one).
+      if (command.startsWith("cat /home/deploy/opscrew/addons/alloy/.opscrew-destinations")) {
+        const alloy = this.running.get("alloy");
+        const destinations = alloy === undefined ? "" : (JSON.parse(alloy).destinations ?? "");
+        return { exitCode: 0, stdout: destinations === "" ? "" : `${destinations}\n`, stderr: "" };
+      }
       // Portainer's read-only checks, for tests that turn Portainer on beside the add-ons.
       if (command.startsWith("docker version")) {
         return { exitCode: 0, stdout: "28.5.1\n", stderr: "" };

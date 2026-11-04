@@ -662,7 +662,7 @@ describe("drift", () => {
     const stack = facts(r.owner, "monitoring", input);
     const edited: HostFacts = {
       ...stack,
-      alloy: { destinations: [] },
+      alloy: { destinations: [], files: {} },
       addons: {
         ...stack.addons,
         alloy: { ...stack.addons.alloy, composeSha256: "0".repeat(64), running: false },
@@ -677,6 +677,7 @@ describe("drift", () => {
             .filter(([path]) => path !== "prometheus.yml")
             .map(([path, hash]) => [path, path === "loki.yaml" ? "1".repeat(64) : hash]),
         ),
+        credential: true,
       },
     };
     expect(alloyDifferences(r.owner, "monitoring", edited).map((d) => d.detail)).toEqual([

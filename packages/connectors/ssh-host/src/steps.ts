@@ -14,6 +14,7 @@ import {
   type AddonKind,
   ALLOY_DESTINATIONS,
   ALLOY_DESTINATIONS_FILE,
+  ALLOY_POSTGRES_HOST_FILE,
   APP_RECORDS_DIR,
   APT_LOG,
   AUTO_UPGRADES_FILE,
@@ -2727,6 +2728,7 @@ function alloyVariant(p: AddonSettings): AddonVariant {
     staleFiles: [
       ...files.filter(([, used]) => !used).map(([name]) => name),
       ...lines(p.destinations === undefined, ALLOY_DESTINATIONS_FILE),
+      ...lines(!postgres, ALLOY_POSTGRES_HOST_FILE),
     ],
     destinations: p.destinations?.join(" ") ?? "",
     dataDirs: ["data"],
@@ -2748,6 +2750,8 @@ function alloyVariant(p: AddonSettings): AddonVariant {
         postgres,
         `printf 'postgresql://${MONITOR_LOGIN}:%s@%s:5432/postgres?sslmode=disable' "$pgpw" "$POSTGRES_HOST" | put "$DIR/${POSTGRES_MONITOR_CREDENTIAL}"`,
         "pgpw=''",
+        // The host again, apart from the secret, for inspection.
+        `printf '%s\\n' "$POSTGRES_HOST" | put "$DIR/${ALLOY_POSTGRES_HOST_FILE}" 0644`,
       ),
       ...lines(
         p.destinations !== undefined,
@@ -2833,6 +2837,7 @@ files_ok() {
   for entry in $PLAIN; do [ "$(sum_of "$DIR/\${entry%%:*}")" = "\${entry#*:}" ] || return 1; done
   for f in $SECRET_FILES; do [ -s "$DIR/$f" ] || return 1; done
   [ -z "$POSTGRES_HOST" ] || grep -qF "@$POSTGRES_HOST:5432/" "$DIR/${POSTGRES_MONITOR_CREDENTIAL}" || return 1
+  [ -z "$POSTGRES_HOST" ] || [ "$(cat "$DIR/${ALLOY_POSTGRES_HOST_FILE}" 2>/dev/null)" = "$POSTGRES_HOST" ] || return 1
   for f in $STALE_FILES; do [ ! -e "$DIR/$f" ] && [ ! -L "$DIR/$f" ] || return 1; done
   [ -z "$DESTINATIONS" ] || [ "$(cat "$DIR/${ALLOY_DESTINATIONS_FILE}" 2>/dev/null)" = "$DESTINATIONS" ] || return 1
   for d in $DATA_DIRS; do [ -d "$DIR/$d" ] && [ ! -L "$DIR/$d" ] || return 1; done

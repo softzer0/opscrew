@@ -456,13 +456,23 @@ export const HostFactsSchema = z.object({
     .object({
       containers: z.array(z.object({ name: z.string(), running: z.boolean() })),
       files: z.record(StackPathSchema, z.string().regex(/^[0-9a-f]{64}$/)),
+      /** Grafana's password file is there and not empty (never read). */
+      credential: z.boolean().default(false),
     })
     .optional(),
   /**
-   * This server's Grafana Alloy (feature 017's add-on, or one with destinations): where it sends.
-   * An Alloy whose step named no destinations sends to Grafana Cloud only. Absent without Alloy.
+   * This server's Grafana Alloy (feature 017's add-on, or one with destinations): where it sends,
+   * the SHA-256 of each file in its folder but its secret files and dot-files, and the Postgres
+   * host its monitoring login's data source names (never the rest of it). An Alloy whose step
+   * named no destinations sends to Grafana Cloud only. Absent without Alloy.
    */
-  alloy: z.object({ destinations: z.array(z.enum(ALLOY_DESTINATIONS)) }).optional(),
+  alloy: z
+    .object({
+      destinations: z.array(z.enum(ALLOY_DESTINATIONS)),
+      files: z.record(z.string(), z.string().regex(/^[0-9a-f]{64}$/)).default({}),
+      postgresHost: z.string().optional(),
+    })
+    .optional(),
   /** Each app's GitHub Actions runner whose folder exists (see {@link runnerOf}). */
   runners: z.array(RunnerSchema).default([]),
   /** Docker's firewall and OpsCrew's web filter. */

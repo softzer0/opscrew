@@ -136,7 +136,8 @@ export async function writeAppEnv(
 /**
  * Rewrites Grafana Alloy's masking file `mask.re` on the app's server from the `app.env` there,
  * with the deploy's own script (`maskFileScript`), so the logs it sends mask the settings' new
- * values too; nothing without Grafana Cloud.
+ * values too; nothing when Alloy masks no log line on the app's server (neither Grafana Cloud nor
+ * self-hosted monitoring is on).
  * @throws OpsCrewError `COMMAND_FAILED` with the server's words, never the settings.
  */
 export async function writeMask(

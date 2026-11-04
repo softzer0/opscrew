@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -32,7 +32,14 @@ import {
 import { pagesTestPlan } from "../testing/pages";
 import { sitePlan } from "../testing/serverless";
 import { runProvision } from "./run";
-import { buildAppEnvironment, deploySecretNames, serviceEnvSecrets } from "./secrets";
+import {
+  buildAppEnvironment,
+  deploySecretNames,
+  keepMonitoringValues,
+  monitoringPassword,
+  monitoringValues,
+  serviceEnvSecrets,
+} from "./secrets";
 import type { ProvisionServices } from "./types";
 
 const HCLOUD = "hcloud-test-token-not-a-real-value";
@@ -832,6 +839,46 @@ describe("device logins in a Valkey service's environment (OPSCREW_ACL_USERS)", 
     expect(() => serviceEnvSecrets(plan, environment)).toThrow(
       /Device laptop's login to cache needs its password, and this computer does not have it/,
     );
+  });
+});
+
+describe("the self-hosted monitoring's values", () => {
+  it("generates each password once, keeps it through provision's rewrite and registers it with the redactor", async () => {
+    const deps = await createTestPhaseDeps();
+    await recordGeneratedEntries(deps, "grants", { "laptop/db": fakeSecret("generic-password") });
+    const grafana = await monitoringPassword(deps, "grafanaAdminPassword");
+    const postgres = await monitoringPassword(deps, "postgresPassword");
+    expect(grafana).toMatch(/^[A-Za-z0-9]{32}$/);
+    expect(postgres).toMatch(/^[A-Za-z0-9]{32}$/);
+    expect(postgres).not.toBe(grafana);
+    expect(await monitoringPassword(deps, "grafanaAdminPassword")).toBe(grafana);
+    expect(deps.redactor.redact(`a ${grafana} b ${postgres}`)).not.toContain(grafana);
+
+    // Provision's rewrite of the generated values keeps them beside everything else.
+    await buildAppEnvironment(deps, testPlan({ userSecret: false }), {});
+    const generated = JSON.parse(await readFile(generatedValuesFile(deps), "utf8"));
+    expect(generated.monitoring).toEqual({
+      grafanaAdminPassword: grafana,
+      postgresPassword: postgres,
+    });
+    expect(generated.grants).toEqual({ "laptop/db": fakeSecret("generic-password") });
+    expect(await monitoringPassword(deps, "postgresPassword")).toBe(postgres);
+
+    // Removing them leaves the other values.
+    await keepMonitoringValues(deps, () => undefined);
+    expect(await monitoringValues(deps)).toBeUndefined();
+    const after = JSON.parse(await readFile(generatedValuesFile(deps), "utf8"));
+    expect(after.grants).toEqual({ "laptop/db": fakeSecret("generic-password") });
+  });
+
+  it("never overwrites damaged generated values", async () => {
+    const deps = await createTestPhaseDeps();
+    await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
+    await writeFile(generatedValuesFile(deps), "{ not json");
+    await expect(monitoringPassword(deps, "grafanaAdminPassword")).rejects.toMatchObject({
+      code: "ARTIFACT_INVALID",
+    });
+    await expect(readFile(generatedValuesFile(deps), "utf8")).resolves.toBe("{ not json");
   });
 });
 

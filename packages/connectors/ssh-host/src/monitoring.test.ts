@@ -23,7 +23,7 @@ import { ShellHarness } from "./__fixtures__/shell-harness";
 import { HostApplyError } from "./apply";
 import { MAX_SCRIPT_BYTES } from "./constants";
 import { type GrantParams, GrantParamsSchema, grantEngine } from "./grant";
-import { inspectHost, MONITORING_SNIPPET } from "./inspect";
+import { inspectHost, MONITORING_SNIPPET, readGrant } from "./inspect";
 import { parseMonitoring } from "./parse";
 import { planAddon, planGrant, planTeardown } from "./plan";
 import { dockerRootCommand } from "./privilege";
@@ -435,6 +435,7 @@ describe("the monitoring stack's inspection facts", () => {
       files: Object.fromEntries(
         Object.entries(MONITORING_FILES).map(([path, content]) => [path, sha256Hex(content)]),
       ),
+      credential: true,
     });
     expect(facts.addons.monitoring).toMatchObject({ installed: true, running: true });
     expect(facts.alloy).toBeUndefined();
@@ -444,7 +445,12 @@ describe("the monitoring stack's inspection facts", () => {
       { secrets: { grafanaCloudToken: addonSecrets().secrets.grafanaCloudToken } },
     );
     // Feature 017's Alloy names no destinations: it sends to Grafana Cloud only.
-    expect((await inspectHost(fake)).alloy).toEqual({ destinations: ["grafanaCloud"] });
+    expect((await inspectHost(fake)).alloy).toEqual({
+      destinations: ["grafanaCloud"],
+      files: Object.fromEntries(
+        Object.entries(ALLOY_FILES).map(([name, content]) => [name, sha256Hex(content)]),
+      ),
+    });
   });
 
   it("parse only the lines they expect", () => {
@@ -457,16 +463,27 @@ describe("the monitoring stack's inspection facts", () => {
           `file grafana/dashboards/servers.json ${sum}`,
           `file ../etc/shadow ${sum}`,
           "file loki.yaml not-a-hash",
+          "credential",
           "alloy monitoring nonsense grafanaCloud",
+          `alloyfile config.alloy ${sum}`,
+          `alloyfile ../config.alloy ${sum}`,
+          "alloyfile compose.yaml not-a-hash",
+          "alloypg db",
+          "alloypg Not/A/Host",
           "odd line",
         ].join("\n"),
       ),
     ).toEqual({
       stack: true,
       files: { "compose.yaml": sum, "grafana/dashboards/servers.json": sum },
-      alloy: ["grafanaCloud", "monitoring"],
+      credential: true,
+      alloy: {
+        destinations: ["grafanaCloud", "monitoring"],
+        files: { "config.alloy": sum },
+        postgresHost: "db",
+      },
     });
-    expect(parseMonitoring("")).toEqual({ stack: false, files: {} });
+    expect(parseMonitoring("")).toEqual({ stack: false, files: {}, credential: false });
   });
 
   it.skipIf(!SH_AVAILABLE)(
@@ -480,16 +497,32 @@ describe("the monitoring stack's inspection facts", () => {
         h.write(`${CLOUD_STACK_DIR}/.opscrew-files`, "compose.yaml:x\n");
         h.write("/srv/opscrew/addons/alloy/compose.yaml", "services: {}\n");
         h.write("/srv/opscrew/addons/alloy/.opscrew-destinations", "grafanaCloud monitoring\n");
+        const token = addonSecrets().secrets.grafanaCloudToken as string;
+        const password = monitoringSecrets().monitoringPostgresPassword;
+        h.write("/srv/opscrew/addons/alloy/grafana_cloud_credential", token);
+        h.write(
+          "/srv/opscrew/addons/alloy/postgres_monitor_credential",
+          `postgresql://opscrew_monitor:${password}@other:5432/postgres?sslmode=disable`,
+        );
+        h.write("/srv/opscrew/addons/alloy/.opscrew-postgres-host", "db\n");
         const path = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
         const out = h.run(`${path}\n${MONITORING_SNIPPET}`);
         expect(out.stderr).toBe("");
+        // The secret files are never read: the host comes from the step's own file.
+        expect(out.stdout).not.toContain(password);
+        expect(out.stdout).not.toContain(sha256Hex(token));
         expect(parseMonitoring(out.stdout)).toEqual({
           stack: true,
           files: {
             "compose.yaml": sha256Hex("services: {}\n"),
             "grafana/dashboards/servers.json": sha256Hex("{}\n"),
           },
-          alloy: ["grafanaCloud", "monitoring"],
+          credential: true,
+          alloy: {
+            destinations: ["grafanaCloud", "monitoring"],
+            files: { "compose.yaml": sha256Hex("services: {}\n") },
+            postgresHost: "db",
+          },
         });
       } finally {
         h.dispose();
@@ -698,6 +731,101 @@ exit 0`;
   },
 );
 
+describe("planning the monitoring add-ons again", () => {
+  it("puts the stack in place when it runs as planned, and plans a changed file", async () => {
+    const fake = cloudServer();
+    fake.dockerAccess = true;
+    fake.dockerRunning = true;
+    const plan = async (files: Record<string, string>) =>
+      planAddon("monitoring", {
+        app: "shop",
+        runAs: "login",
+        facts: await inspectHost(fake, { rootImage: IMAGE }),
+        enable: { files },
+      });
+    const { grafanaAdminPassword } = monitoringSecrets();
+    expect(onlyStep(await plan(MONITORING_FILES)).state).toBe("change");
+    await applyApproved(fake, await plan(MONITORING_FILES), {
+      secrets: { grafanaAdminPassword },
+      rootImage: IMAGE,
+    });
+
+    expect(onlyStep(await plan(MONITORING_FILES))).toMatchObject({ state: "in-place" });
+    const changed = { ...MONITORING_FILES, "prometheus.yml": "global: {}\n" };
+    expect(onlyStep(await plan(changed)).state).toBe("change");
+    // A stopped container, or a missing password file, is a change too.
+    const [first] = fake.containers.filter((c) => c.project === "opscrew-monitoring");
+    if (first !== undefined) first.stopped = true;
+    expect(onlyStep(await plan(MONITORING_FILES)).state).toBe("change");
+    if (first !== undefined) first.stopped = false;
+    fake.files.delete("/home/deploy/opscrew/addons/monitoring/grafana_admin_credential");
+    expect(onlyStep(await plan(MONITORING_FILES)).state).toBe("change");
+  });
+
+  it("puts Alloy with destinations in place when it runs as planned, unless a secret is new", async () => {
+    const fake = await ownServer();
+    const enable = {
+      files: ALLOY_FILES,
+      server: "data",
+      destinations: ["monitoring"] as const,
+      postgresHost: "db",
+    };
+    const plan = async (options: { secretsChanged?: boolean; postgresHost?: string } = {}) =>
+      planAddon("alloy", {
+        app: "shop",
+        runAs: "root",
+        facts: await inspectHost(fake),
+        enable: {
+          ...enable,
+          destinations: ["monitoring"],
+          postgresHost: options.postgresHost ?? "db",
+        },
+        ...(options.secretsChanged === undefined ? {} : { secretsChanged: options.secretsChanged }),
+      });
+    const { monitoringPostgresPassword } = monitoringSecrets();
+    await applyApproved(fake, await plan(), { secrets: { monitoringPostgresPassword } });
+
+    expect(onlyStep(await plan()).state).toBe("in-place");
+    expect(onlyStep(await plan({ secretsChanged: true })).state).toBe("change");
+    expect(onlyStep(await plan({ postgresHost: "postgres" })).state).toBe("change");
+    // Feature 017's Alloy (no destinations) is always planned as a change.
+    const cloud = planAddon("alloy", {
+      app: "shop",
+      runAs: "root",
+      facts: await inspectHost(fake),
+      enable: { files: ALLOY_FILES },
+    });
+    expect(onlyStep(cloud).state).toBe("change");
+  });
+
+  it("puts the monitoring login in place once the server reads it so", async () => {
+    const fake = await ownServer();
+    const facts = await inspectHost(fake);
+    const grant = {
+      service: "db",
+      kind: "postgres",
+      login: "opscrew_monitor",
+      access: "monitor",
+      remove: false,
+    } as const;
+    const read = () => readGrant(fake, { app: "shop", grant }, facts.privilege);
+    expect(await read()).toBe(false);
+    const plan = planGrant(facts, { app: "shop", grant, inPlace: await read() }, "x");
+    expect(onlyStep(plan).state).toBe("change");
+    const { monitoringPostgresPassword } = monitoringSecrets();
+    await applyApproved(fake, plan, { secrets: { monitoringPostgresPassword } });
+
+    expect(await read()).toBe(true);
+    const again = planGrant(facts, { app: "shop", grant, inPlace: await read() }, "x");
+    expect(onlyStep(again).state).toBe("in-place");
+    // Its removal reads the other way round.
+    const removal = { ...grant, remove: true };
+    expect(await readGrant(fake, { app: "shop", grant: removal }, facts.privilege)).toBe(false);
+    // A login that cannot become root reads nothing.
+    expect(await readGrant(fake, { app: "shop", grant }, "none")).toBe(false);
+  });
+});
+
 describe("Alloy on any server of the app", () => {
   it("sends to the monitoring stack only: no Grafana Cloud token, its destinations on the server, an old token removed", async () => {
     const fake = cloudServer();
@@ -720,7 +848,7 @@ describe("Alloy on any server of the app", () => {
     expect(fake.files.has(`${dir}/grafana_cloud_credential`)).toBe(false);
     expect(fake.files.get(`${dir}/.opscrew-destinations`)).toBe("monitoring\n");
     expect((await applyApproved(fake, plan)).applied).toEqual([]);
-    expect((await inspectHost(fake)).alloy).toEqual({ destinations: ["monitoring"] });
+    expect((await inspectHost(fake)).alloy).toMatchObject({ destinations: ["monitoring"] });
   });
 
   it("on Postgres's server writes the monitoring login's whole data source from stdin, never in the plan", async () => {
@@ -759,6 +887,9 @@ describe("Alloy on any server of the app", () => {
     expect(fake.files.get(`${dir}/postgres_monitor_credential`)).toBe(
       `postgresql://opscrew_monitor:${monitoringPostgresPassword}@db:5432/postgres?sslmode=disable`,
     );
+    // The host apart from the secret, for inspection, which never reads the data source.
+    expect(fake.files.get(`${dir}/.opscrew-postgres-host`)).toBe("db\n");
+    expect((await inspectHost(fake)).alloy?.postgresHost).toBe("db");
     expect(fake.calls.find((call) => call.name === "alloy.apply")?.input).toBe(
       `${grafanaCloudToken}\n${monitoringPostgresPassword}\n`,
     );

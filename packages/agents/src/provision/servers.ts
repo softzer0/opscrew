@@ -463,7 +463,7 @@ async function serversExist(deps: PhaseDeps, plan: DeployPlan): Promise<boolean>
  * OpsCrew app is active there; on one OpsCrew created the deploy user's shell (`services.remote`,
  * else `serverRemote`), as `opscrew vpn` reaches it (`networkServer`).
  */
-async function serverForNetwork(
+export async function serverForNetwork(
   deps: PhaseDeps,
   input: Pick<ServerHostPlansInput, "plan" | "services" | "ownRun" | "extraOwn" | "phase">,
   name: string,

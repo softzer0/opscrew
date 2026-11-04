@@ -84,6 +84,7 @@ import { checkAdditions } from "./additions";
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
 import { requireNoMoveInProgress } from "./guard";
+import { monitoringHostPlans } from "./monitoring";
 import {
   deployRenewedCertificate,
   edgeSwitch,
@@ -1002,13 +1003,12 @@ async function provisionFlow(
       planOnly: true,
       repository: machineRepository,
     });
-    // The app's servers' own host plans (feature 018), shown and saved where the servers exist.
-    const serverPlans = await serverHostPlans(deps, {
-      ...serverPlansInput,
-      plan,
-      appPending,
-      planOnly: true,
-    });
+    // The app's servers' own host plans (feature 018), then the monitoring's (feature 020), shown
+    // and saved where the servers exist.
+    const serverPlans = [
+      ...(await serverHostPlans(deps, { ...serverPlansInput, plan, appPending, planOnly: true })),
+      ...(await monitoringHostPlans(deps, plan, { ...serverPlansInput, planOnly: true })),
+    ];
     // The only change such a run applies, a script's lift of delete protection, keeps its approval.
     if (approvals.length > 0) plan = { ...plan, approvals: [...plan.approvals, ...approvals] };
     if (learned.zoneLearned || approvals.length > 0) {
@@ -1143,19 +1143,23 @@ async function provisionFlow(
 
   // 7d. The extra servers OpsCrew created: ready, their host keys pinned, as the app's server. Then
   // the servers' own host plans, each approved by its own hash: an extra own server's removal or
-  // setup, and each server's private network before any deploy publishes a port on it.
+  // setup, and each server's private network before any deploy publishes a port on it; then the
+  // monitoring's (feature 020).
   const cloudReach = await readyExtraServers(deps, {
     plan,
     keyFile: deployKey.privateKeyFile,
     command,
     services,
   });
-  const serverPlans = await serverHostPlans(deps, {
-    ...serverPlansInput,
-    plan,
-    appPending: false,
-    planOnly: false,
-  });
+  const serverPlans = [
+    ...(await serverHostPlans(deps, {
+      ...serverPlansInput,
+      plan,
+      appPending: false,
+      planOnly: false,
+    })),
+    ...(await monitoringHostPlans(deps, plan, { ...serverPlansInput, planOnly: false })),
+  ];
   if (ownRun !== undefined && portainerWaitsForNetwork(plan, ownRun.facts)) {
     deps.reporter.info(
       `Portainer's web UI goes on your server's private address at the next \`${command}\`: this run sets up the private network, and Docker can publish only on an address the server has.`,

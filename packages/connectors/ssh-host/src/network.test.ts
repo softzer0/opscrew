@@ -33,7 +33,7 @@ import {
   parseWireguardLinks,
   splitSections,
 } from "./parse";
-import { planHost, planNetwork, planTeardown, planUndo } from "./plan";
+import { planHost, planNetwork, planNetworkRemoval, planTeardown, planUndo } from "./plan";
 import { dockerRootCommand } from "./privilege";
 import { asRoot, pipedScript } from "./shell";
 import { stepScripts } from "./steps";
@@ -1029,6 +1029,136 @@ describe("the network on a server the user owns", () => {
     await applyApproved(fake, undo, { command: "opscrew destroy --undo-host" });
     expect(fake.wireguard.size).toBe(0);
     expect(fake.files.has(NETWORK_DROP_IN)).toBe(false);
+  });
+});
+
+describe("planNetworkRemoval", () => {
+  /** blog's network on wg-opscrew1, beside shop's on wg-opscrew0. */
+  const blogNetwork = appNetwork({
+    interface: "wg-opscrew1",
+    address: "10.200.7.3/24",
+    port: 51821,
+    publicKey: wireguardKeys("blog").publicKey,
+    peers: [],
+    otherInterfaces: ["wg-opscrew0"],
+    localPorts: [],
+  });
+  const leaving = {
+    app: "blog",
+    network: { interface: "wg-opscrew1", remove: true, otherInterfaces: ["wg-opscrew0"] },
+    filter: { interface: "wg-opscrew1", remove: true },
+  } as const;
+
+  /** A server the user owns with shop's network and blog's, each recorded as its app's. */
+  async function twoNetworks(): Promise<FakeHost> {
+    const fake = new FakeHost();
+    await provision(fake);
+    await applyApproved(
+      fake,
+      planNetwork(await inspectHost(fake), { app: "shop", network: appNetwork() }, COMMAND),
+      { secrets: { wireguardKey: APP_KEY } },
+    );
+    await applyApproved(
+      fake,
+      planNetwork(
+        await inspectHost(fake),
+        {
+          app: "blog",
+          network: blogNetwork,
+          filter: { interface: "wg-opscrew1", address: "10.200.7.3", rules: [] },
+        },
+        COMMAND,
+      ),
+      { secrets: { wireguardKey: wireguardKeys("blog").privateKey } },
+    );
+    return fake;
+  }
+
+  it("removes one app's interface, its filter first, and keeps the other's", async () => {
+    const fake = await twoNetworks();
+    expect(record(fake).networks).toEqual({ "wg-opscrew0": "shop", "wg-opscrew1": "blog" });
+
+    const plan = planNetworkRemoval(await inspectHost(fake), leaving, COMMAND);
+    expect(plan).toMatchObject({ purpose: "setup", app: "blog", findings: [] });
+    expect(plan.steps.map((step) => [step.id, step.state, step.params])).toEqual([
+      ["network-filter", "change", { interface: "wg-opscrew1", remove: true }],
+      [
+        "network",
+        "change",
+        { interface: "wg-opscrew1", remove: true, otherInterfaces: "wg-opscrew0" },
+      ],
+    ]);
+    expect(plan.steps[1]?.reason).toContain("Docker keeps starting after wg-opscrew0.");
+
+    await applyApproved(fake, plan);
+    expect(fake.wireguard.has("wg-opscrew1")).toBe(false);
+    expect(fake.wireguard.has("wg-opscrew0")).toBe(true);
+    expect(fake.files.get(NETWORK_DROP_IN)).toBe(networkDropIn(["wg-opscrew0"]));
+    expect(record(fake).networks).toEqual({ "wg-opscrew0": "shop" });
+
+    // Once it is gone, both steps are in place.
+    const again = planNetworkRemoval(await inspectHost(fake), leaving, COMMAND);
+    expect(again.steps.map((step) => step.state)).toEqual(["in-place", "in-place"]);
+  });
+
+  it("is refused on the server, before any change, for an interface the record gives another app or none", async () => {
+    const fake = await twoNetworks();
+    // As on a server OpsCrew created, inspection could not read the host record.
+    const facts = { ...(await inspectHost(fake)), record: null };
+    const taking = (iface: string, others: string[]) =>
+      planNetworkRemoval(
+        facts,
+        {
+          app: "blog",
+          network: { interface: iface, remove: true, otherInterfaces: others },
+          filter: { interface: iface, remove: true },
+        },
+        COMMAND,
+      );
+    const before = fake.calls.length;
+    await expect(applyApproved(fake, taking("wg-opscrew0", ["wg-opscrew1"]))).rejects.toThrow(
+      'The WireGuard interface wg-opscrew0 on this server is the private network of the OpsCrew app "shop", so OpsCrew does not remove it for "blog". Nothing was changed.',
+    );
+    // blog's own interface, once the record no longer names it, is refused too (fail closed).
+    const held = record(fake);
+    fake.files.set(RECORD_PATH, JSON.stringify({ ...held, networks: { "wg-opscrew0": "shop" } }));
+    await expect(applyApproved(fake, taking("wg-opscrew1", ["wg-opscrew0"]))).rejects.toThrow(
+      'The WireGuard interface wg-opscrew1 on this server is no OpsCrew app\'s private network on record, so OpsCrew does not remove it for "blog". Nothing was changed.',
+    );
+    expect(fake.calls.slice(before).some((call) => call.name.startsWith("network"))).toBe(false);
+    expect(fake.wireguard.has("wg-opscrew0")).toBe(true);
+    expect(fake.wireguard.has("wg-opscrew1")).toBe(true);
+  });
+
+  it("refuses an interface the host record gives another app, and bad parameters", async () => {
+    const facts = await inspectHost(await twoNetworks());
+    expect(() =>
+      planNetworkRemoval(
+        facts,
+        {
+          app: "blog",
+          network: { interface: "wg-opscrew0", remove: true, otherInterfaces: ["wg-opscrew1"] },
+          filter: { interface: "wg-opscrew0", remove: true },
+        },
+        COMMAND,
+      ),
+    ).toThrow(
+      'The WireGuard interface wg-opscrew0 on this server is the private network of the OpsCrew app "shop", so OpsCrew does not remove it for "blog". Nothing was changed.',
+    );
+    expect(() =>
+      planNetworkRemoval(
+        facts,
+        { ...leaving, filter: { interface: "wg-opscrew0", remove: true } },
+        COMMAND,
+      ),
+    ).toThrow(/^The private network's interface to remove is not valid/);
+    expect(() =>
+      planNetworkRemoval(
+        facts,
+        { ...leaving, network: { ...leaving.network, interface: "wg0" } },
+        COMMAND,
+      ),
+    ).toThrow(/^The private network's interface to remove is not valid \(network\.interface/);
   });
 });
 

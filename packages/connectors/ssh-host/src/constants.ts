@@ -228,6 +228,12 @@ export type AlloyDestination = (typeof ALLOY_DESTINATIONS)[number];
 /** The file in Alloy's folder that names its destinations (not secret; inspection reads it). */
 export const ALLOY_DESTINATIONS_FILE = ".opscrew-destinations";
 
+/**
+ * The file in Alloy's folder that names the Postgres host its monitoring login's data source
+ * reaches (not secret; inspection reads it instead of the data source).
+ */
+export const ALLOY_POSTGRES_HOST_FILE = ".opscrew-postgres-host";
+
 /** The text in Beszel's rendered `config.yml` that the host step replaces with the agent token. */
 // biome-ignore lint/suspicious/noTemplateCurlyInString: the placeholder is literal text.
 export const BESZEL_TOKEN_PLACEHOLDER = "${BESZEL_TOKEN}";

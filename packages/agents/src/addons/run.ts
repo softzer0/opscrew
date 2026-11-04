@@ -1,6 +1,8 @@
 import {
   type AddonConnector,
+  ALLOY_DESTINATIONS_FILE,
   type ApplySecrets,
+  addonDir,
   applyHostPlan,
   type HostPlan,
   planAddon,
@@ -8,12 +10,14 @@ import {
 import type { RemoteExec } from "@opscrew/contracts";
 import { formatMoney, OpsCrewError } from "@opscrew/core";
 import { type AddonKind, beszelHostname, renderAddon, usesTunnel } from "@opscrew/iac-templates";
-import type {
-  BeszelSettings,
-  DeployPlan,
-  GrafanaCloudSettings,
-  Money,
-  Observability,
+import {
+  APP_SERVER,
+  type BeszelSettings,
+  type DeployPlan,
+  type GrafanaCloudSettings,
+  type Money,
+  monitoringOf,
+  type Observability,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
@@ -33,12 +37,14 @@ import {
 import { CLOUD_TUNNEL_DIR } from "../portainer/settings";
 import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
+import { monitoringAlloy } from "../provision/monitoring";
 import {
   applyOwnHostPlan,
   dashboardsOnNetwork,
   dashboardsWaitForNetwork,
   type OwnServerRun,
 } from "../provision/own";
+import { monitoringPassword, monitoringValues } from "../provision/secrets";
 import { approveAndApplyHostPlan, hasDeployment } from "../shared";
 import { connectAndInspectOwnServer } from "../shared/own-server";
 import type { HostChangeResult } from "../shared/tunnel-connections";
@@ -463,7 +469,8 @@ async function addonHostChange(
       connector = { dir: CLOUD_TUNNEL_DIR, remove: true };
     }
   }
-  const hostPlan = addonPlan(change, plan, ownRun, connector);
+  const kept = (await monitoringValues(deps))?.postgresPassword !== undefined;
+  const hostPlan = addonPlan(change, plan, ownRun, connector, kept);
   if (
     ownRun !== undefined &&
     enabling &&
@@ -478,19 +485,25 @@ async function addonHostChange(
   const name = ADDON_NAMES[kind];
   const server = ownRun ? "your server" : "the server";
   const what = kind === "beszel" ? "Beszel" : "Grafana Alloy";
-  const title = enabling
-    ? kind === "beszel"
-      ? plan.observability?.beszel?.mode === "agent"
-        ? `Run Beszel's agent on ${server}, connected to your hub`
-        : `Run Beszel (its dashboard and agent) on ${server}`
-      : `Run Grafana Alloy on ${server}, sending the app's logs and the server's metrics to Grafana Cloud`
-    : agentOnly(change)
-      ? `Remove Beszel's agent from ${server}`
-      : change.history === true
-        ? `Delete Beszel's kept history on ${server}`
-        : hostPlan.deleteData === true
-          ? `Remove Beszel and delete its history on ${server}`
-          : `Remove ${what} from ${server}${kind === "beszel" ? " (its history stays)" : ""}`;
+  // With self-hosted monitoring on, the one Alloy keeps sending to the monitoring stack.
+  const monitored = kind === "grafana-cloud" && monitoringOf(plan) !== undefined;
+  const title = monitored
+    ? enabling
+      ? `Run Grafana Alloy on ${server}, sending the app's logs and the server's metrics to Grafana Cloud and to the monitoring stack`
+      : `Stop sending to Grafana Cloud from ${server}: Grafana Alloy keeps sending to the monitoring stack`
+    : enabling
+      ? kind === "beszel"
+        ? plan.observability?.beszel?.mode === "agent"
+          ? `Run Beszel's agent on ${server}, connected to your hub`
+          : `Run Beszel (its dashboard and agent) on ${server}`
+        : `Run Grafana Alloy on ${server}, sending the app's logs and the server's metrics to Grafana Cloud`
+      : agentOnly(change)
+        ? `Remove Beszel's agent from ${server}`
+        : change.history === true
+          ? `Delete Beszel's kept history on ${server}`
+          : hostPlan.deleteData === true
+            ? `Remove Beszel and delete its history on ${server}`
+            : `Remove ${what} from ${server}${kind === "beszel" ? " (its history stays)" : ""}`;
   return approveAndApplyHostPlan(deps, {
     plan: hostPlan,
     remote: ownRun?.session.remote ?? (input.remote as RemoteExec),
@@ -498,9 +511,10 @@ async function addonHostChange(
     verifyLogin: ownRun?.verifyLogin ?? NO_LOGIN_CHECK,
     title,
     server,
-    upToDate: enabling
-      ? `${name} already runs on ${server} as planned; nothing on it changes.`
-      : `${name} is no longer on ${server}; nothing on it changes.`,
+    upToDate:
+      enabling || monitored
+        ? `${monitored ? "Grafana Alloy" : name} already runs on ${server} as planned; nothing on it changes.`
+        : `${name} is no longer on ${server}; nothing on it changes.`,
     command,
     phase: ADDON_PHASE,
     ...(hostPlan.deleteData === true ? { allowDestroy: true } : {}),
@@ -509,6 +523,10 @@ async function addonHostChange(
     secrets: async () => ({
       ...(enabling ? change.input?.secrets : {}),
       ...(tunnelToken !== undefined ? { tunnelToken } : {}),
+      // Alloy on Postgres's server reads it with the monitoring login.
+      ...(hostPlan.steps.some((step) => step.params.postgresHost !== undefined)
+        ? { monitoringPostgresPassword: await monitoringPassword(deps, "postgresPassword") }
+        : {}),
     }),
     ...(input.shown !== undefined ? { shown: input.shown } : {}),
   });
@@ -526,13 +544,32 @@ function dashboardsPublished(plan: DeployPlan, ownRun: OwnServerRun | undefined)
   );
 }
 
-/** The add-on's host plan: on (the files `renderAddon` renders for `plan`) or off. */
+/**
+ * The add-on's host plan: on (the files `renderAddon` renders for `plan`) or off. Grafana Cloud on
+ * a plan with self-hosted monitoring on changes the one Alloy that sends to both
+ * (`monitoringAlloy`, as provision plans it): on, it sends to both; off, to the stack alone. A
+ * token given anew, or a monitoring login's password this computer did not keep yet
+ * (`passwordKept` false), is written even when nothing else changes.
+ */
 function addonPlan(
   change: AddonChange,
   plan: DeployPlan,
   ownRun: OwnServerRun | undefined,
   connector?: AddonConnector,
+  passwordKept = true,
 ): HostPlan {
+  if (change.kind === "grafana-cloud" && monitoringOf(plan) !== undefined) {
+    const enable = monitoringAlloy(plan, APP_SERVER);
+    return planAddon("alloy", {
+      app: plan.app.name,
+      runAs: ownRun ? "root" : "login",
+      ...(ownRun ? { facts: ownRun.facts } : {}),
+      enable,
+      secretsChanged:
+        change.input?.tokenVariable !== undefined ||
+        (enable.postgresHost !== undefined && !passwordKept),
+    });
+  }
   const files = change.enabling
     ? Object.fromEntries(
         renderAddon(plan, change.kind, {
@@ -555,6 +592,42 @@ function addonPlan(
         }),
     ...(connector !== undefined ? { connector } : {}),
   });
+}
+
+/**
+ * Stops before any change unless the app's server's Alloy already sends to the monitoring stack
+ * (what inspection read on the user's own server; its destinations file, read as the deploy user,
+ * on one OpsCrew created): until provision has set monitoring up, Grafana Cloud's change of that
+ * Alloy would point it at a stack that isn't there.
+ */
+async function requireMonitoringAlloy(
+  deps: PhaseDeps,
+  ownRun: OwnServerRun | undefined,
+  shell: RemoteExec | undefined,
+): Promise<void> {
+  let destinations: readonly string[] = ownRun?.facts.alloy?.destinations ?? [];
+  if (shell !== undefined) {
+    const file = `${addonDir("alloy", "login")}/${ALLOY_DESTINATIONS_FILE}`;
+    const result = await shell.run(`cat ${file} 2>/dev/null || true`, { timeoutMs: 60_000 });
+    destinations = result.stdout.trim().split(/\s+/);
+    await deps.audit.append({
+      kind: "remote-exec",
+      actor: "opscrew",
+      action: "read where Grafana Alloy sends (read-only)",
+      phase: ADDON_PHASE,
+      target: "server",
+      decision: "allow",
+    });
+  }
+  if (destinations.includes("monitoring")) return;
+  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "Self-hosted monitoring is on in the plan, but Grafana Alloy on the app's server doesn't send to the monitoring stack yet, so OpsCrew doesn't change it for Grafana Cloud. Nothing was changed.",
+    {
+      hint: `Run \`opscrew provision${flag}\` first: it sets monitoring up on your servers. Then run this command again.`,
+    },
+  );
 }
 
 /** Turning off Beszel's agent mode: only the agent runs on the server, which keeps no history. */
@@ -603,9 +676,21 @@ async function runAddonChange(
     preflight: async ({ ownRun, remote }) => {
       // One of each per server: another app's add-on is refused here, before anything changes.
       if (ownRun) addonPlan(addon, after, ownRun);
+      const shell = async () => remote ?? (await deployUserShell(deps, after, services));
+      if (kind === "grafana-cloud" && monitoringOf(after) !== undefined) {
+        await requireMonitoringAlloy(
+          deps,
+          ownRun,
+          ownRun === undefined ? await shell() : undefined,
+        );
+      }
       if (!enabling) return;
-      const shell = remote ?? (await deployUserShell(deps, after, services));
-      const reading = await readServer(deps, shell, after.app.name, kind === "grafana-cloud");
+      const reading = await readServer(
+        deps,
+        await shell(),
+        after.app.name,
+        kind === "grafana-cloud",
+      );
       intro.push(
         memoryLine(after, kind, {
           memoryMb: reading.memoryMb,
@@ -665,7 +750,9 @@ async function runAddonChange(
   } else {
     deps.reporter.success(
       kind === "grafana-cloud"
-        ? "Grafana Cloud is off: Grafana Alloy, its buffer and its token are removed from the server, and the token from this computer. The data already in Grafana Cloud stays in your account."
+        ? monitoringOf(plan) !== undefined
+          ? "Grafana Cloud is off: Grafana Alloy no longer sends to it and keeps sending to the monitoring stack, and its token is removed from the server and from this computer. The data already in Grafana Cloud stays in your account."
+          : "Grafana Cloud is off: Grafana Alloy, its buffer and its token are removed from the server, and the token from this computer. The data already in Grafana Cloud stays in your account."
         : agentOnly(change)
           ? "Beszel's agent is off: it and its token are removed from the server and from this computer. Remove the system from your hub too."
           : change.history === true

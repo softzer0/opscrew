@@ -35,12 +35,14 @@ import {
   assembleAppEnv,
   dotenvLine,
   type GeneratedValues,
+  randomPassword,
   readValidJson,
   type StorageLogin,
 } from "../shared";
 import {
   GeneratedValuesSchema,
   generatedValuesFile,
+  MonitoringValuesSchema,
   registerAppSecrets,
 } from "../shared/app-secrets";
 import { codeOf, hintOf } from "../shared/errors";
@@ -49,22 +51,95 @@ import type { ProvisionServices } from "./types";
 
 /**
  * What the generated values hold besides the app's environment, which provision's rewrite keeps as
- * it is: the origin TLS values (`./origin-tls`), the private network's keys and the device logins'
- * passwords.
+ * it is: the origin TLS values (`./origin-tls`), the private network's keys, the device logins'
+ * passwords and the self-hosted monitoring's values.
  */
-const KEPT_VALUES = ["originTls", "network", "grants"] as const;
+const KEPT_VALUES = ["originTls", "network", "grants", "monitoring"] as const;
 
-/** The generated values of earlier runs, with {@link KEPT_VALUES} as they are. */
+/** The self-hosted monitoring's values this computer keeps for an environment. */
+export type MonitoringValues = z.infer<typeof MonitoringValuesSchema>;
+
+/**
+ * The generated values of earlier runs as an object, every value as it is (`{}` without the file);
+ * `undefined` when the file is damaged.
+ */
 async function readGenerated(
-  deps: PhaseDeps,
-): Promise<(GeneratedValues & Partial<Record<(typeof KEPT_VALUES)[number], unknown>>) | undefined> {
+  deps: Pick<PhaseDeps, "paths">,
+): Promise<Record<string, unknown> | undefined> {
   const text = await readTextIfExists(generatedValuesFile(deps));
-  if (text === undefined) return undefined;
+  if (text === undefined) return {};
   try {
-    return JSON.parse(text) as GeneratedValues;
+    return z.looseObject({}).parse(JSON.parse(text));
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The self-hosted monitoring's values kept with the generated values of `deps.paths` (another
+ * environment's too, with its paths), each password registered with the redactor; `undefined` when
+ * there are none, or the file or its values are damaged (writing them then stops).
+ */
+export async function monitoringValues(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+): Promise<MonitoringValues | undefined> {
+  const values = MonitoringValuesSchema.safeParse((await readGenerated(deps))?.monitoring).data;
+  for (const password of [values?.grafanaAdminPassword, values?.postgresPassword]) {
+    if (password !== undefined) deps.redactor.addLiteral(password, "monitoring-password");
+  }
+  return values;
+}
+
+/**
+ * Changes the self-hosted monitoring's values (`change` gets the current ones, `{}` for none) and
+ * keeps every other generated value (0600); `undefined` removes them.
+ * @throws OpsCrewError `ARTIFACT_INVALID` when the file or its monitoring values are damaged: they
+ * are never overwritten.
+ */
+export async function keepMonitoringValues(
+  deps: Pick<PhaseDeps, "paths">,
+  change: (current: MonitoringValues) => MonitoringValues | undefined,
+): Promise<void> {
+  const file = generatedValuesFile(deps);
+  const generated = await readGenerated(deps);
+  const current = MonitoringValuesSchema.optional().safeParse(generated?.monitoring);
+  if (generated === undefined || !current.success) {
+    throw new OpsCrewError(
+      "ARTIFACT_INVALID",
+      `OpsCrew's generated values (${file}) are damaged, so OpsCrew wrote nothing into them.`,
+      {
+        hint: "Fix the JSON in that file, or restore it from your recovery copy, then run the command again.",
+      },
+    );
+  }
+  const { monitoring: _old, ...rest } = generated;
+  const next = change(current.data ?? {});
+  const kept =
+    next === undefined || Object.keys(next).length === 0 ? rest : { ...rest, monitoring: next };
+  await writeFileAtomic(
+    file,
+    `${JSON.stringify(kept)}
+`,
+  );
+}
+
+/**
+ * The monitoring password `name` of this environment, generated the first time (32 letters and
+ * digits) and kept with the generated values, which the recovery copy holds; registered with the
+ * redactor.
+ */
+export async function monitoringPassword(
+  deps: Pick<PhaseDeps, "paths" | "redactor">,
+  name: "grafanaAdminPassword" | "postgresPassword",
+): Promise<string> {
+  let password = (await monitoringValues(deps))?.[name];
+  if (password === undefined) {
+    const made = randomPassword(32);
+    await keepMonitoringValues(deps, (current) => ({ ...current, [name]: made }));
+    password = made;
+  }
+  deps.redactor.addLiteral(password, "monitoring-password");
+  return password;
 }
 
 /**
@@ -113,7 +188,9 @@ export async function buildAppEnvironment(
       }
     }
   }
-  const previous = await readGenerated(deps);
+  const previous = (await readGenerated(deps)) as
+    | (GeneratedValues & Partial<Record<(typeof KEPT_VALUES)[number], unknown>>)
+    | undefined;
   const environment = await assembleAppEnv({
     plan,
     ...(dotenvText !== undefined ? { dotenvText } : {}),

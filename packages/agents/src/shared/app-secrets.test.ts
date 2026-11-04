@@ -176,6 +176,26 @@ describe("the private network's keys and the device logins' passwords", () => {
     }
   });
 
+  it("register the self-hosted monitoring's passwords with the redactor in every command", async () => {
+    const plan = laravelPlan();
+    const environment = await assembleAppEnv({ plan, dotenvText: STRIPE_LINE });
+    const grafana = "monitoringGrafana0001";
+    const postgres = "monitoringPostgres0001";
+    for (const assembled of [undefined, environment]) {
+      const deps = await createTestPhaseDeps();
+      const file = generatedValuesFile(deps);
+      await mkdir(dirname(file), { recursive: true });
+      await writeFile(
+        file,
+        `${JSON.stringify({ monitoring: { grafanaAdminPassword: grafana, postgresPassword: postgres } })}\n`,
+      );
+      await registerAppSecrets(deps, plan, assembled);
+      expect(deps.redactor.redact(`grafana ${grafana} postgres ${postgres}`)).toBe(
+        "grafana [REDACTED:monitoring-password] postgres [REDACTED:monitoring-password]",
+      );
+    }
+  });
+
   it("are still registered, with every other value, after someone edited a key by hand", async () => {
     const plan = laravelPlan();
     const first = await assembleAppEnv({ plan, dotenvText: STRIPE_LINE });

@@ -6,7 +6,13 @@
  */
 import type { ApprovalRecord } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { appDir, DEPLOY_SECRETS, deploySecretName, edgeProxy } from "@opscrew/iac-templates";
+import {
+  appDir,
+  DEPLOY_SECRETS,
+  deploySecretName,
+  edgeProxy,
+  maskFileScript,
+} from "@opscrew/iac-templates";
 import type { DeployPlan, Move } from "@opscrew/plan-schema";
 import { type CheckPauseTarget, changeCheckPause } from "../check/pause";
 import type { PhaseDeps } from "../context";
@@ -389,7 +395,7 @@ async function approveWindow(
                 ]
               : []),
           ]),
-      ...(plan.observability?.grafanaCloud?.enabled === true
+      ...(maskFileScript(plan) !== ""
         ? [
             `Grafana Alloy's masking file (${ops.folder}/mask.re) is rewritten from the new app.env.`,
           ]

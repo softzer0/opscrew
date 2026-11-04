@@ -5,6 +5,7 @@ import {
   ADDON_KINDS,
   ADDON_PROJECTS,
   ALLOY_DESTINATIONS_FILE,
+  ALLOY_POSTGRES_HOST_FILE,
   APP_RECORDS_DIR,
   APPS_DIR,
   addonDir,
@@ -20,6 +21,7 @@ import {
   HOST_SYSCTL_KEYS,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
+  POSTGRES_MONITOR_CREDENTIAL,
   READY_FLAG,
   RECORD_PATH,
   RUNNERS_DIR,
@@ -40,6 +42,7 @@ import {
   type WebFilterFacts,
 } from "./facts";
 import { foreignFirewalls } from "./firewall";
+import { type GrantParams, GrantParamsSchema } from "./grant";
 import { NETWORK_DROP_IN, WIREGUARD_DIR } from "./network";
 import {
   NETWORK_FILTER_SCRIPT_PREFIX,
@@ -86,15 +89,16 @@ import {
   splitSections,
   udpPorts,
 } from "./parse";
-import { callOptions, type RemoteCall, rootCall } from "./privilege";
-import { asLogin, asRoot, buildScript } from "./shell";
+import { callOptions, type RemoteCall, readAsRoot, rootCall } from "./privilege";
+import { asDeployUser, asLogin, asRoot, buildScript } from "./shell";
 import {
   SSH_FIREWALL_FUNCTIONS,
   SSH_FIREWALL_RULES,
   SSH_FIREWALL_SERVICE,
   SSH_FIREWALL_UNIT,
 } from "./ssh-firewall";
-import { AppNameSchema } from "./types";
+import { stepScripts } from "./steps";
+import { AppNameSchema, HOST_PLAN_SCHEMA_VERSION, type HostPlan, type HostStep } from "./types";
 import {
   WEB_FILTER_DROP_IN,
   WEB_FILTER_SCRIPT,
@@ -278,11 +282,17 @@ monitor() {
 }
 ${ADDON_KINDS.map((kind) => `monitor ${kind} ${addonDir(kind, "root")}`).join("\n")}`;
 
+/** Alloy's secret files, which inspection never hashes. */
+const ALLOY_SECRET_FILES = ["grafana_cloud_credential", POSTGRES_MONITOR_CREDENTIAL];
+
 /**
  * The monitoring stack in its folder, on a server the user owns or one OpsCrew created: `stack`,
  * then the SHA-256 of each of its files (never its password file, and not OpsCrew's own
- * dot-files). Then this server's Alloy and where it sends: an Alloy without OpsCrew's
- * destinations file is feature 017's, which sends to Grafana Cloud only. Never follows a link.
+ * dot-files), and `credential` when its password file is there (never read). Then this server's
+ * Alloy and where it sends (an Alloy without OpsCrew's destinations file is feature 017's, which
+ * sends to Grafana Cloud only), the SHA-256 of each of its files but its secret ones, and the
+ * Postgres host its step wrote apart from the data source. Never reads a secret file, and never
+ * follows a link.
  */
 export const MONITORING_SNIPPET = `for d in ${addonDir("monitoring", "root")} ${addonDir("monitoring", "login")}; do
   if [ -L "$d" ] || [ ! -f "$d/compose.yaml" ]; then continue; fi
@@ -290,11 +300,19 @@ export const MONITORING_SNIPPET = `for d in ${addonDir("monitoring", "root")} ${
   find "$d" -type f ! -name ${GRAFANA_ADMIN_CREDENTIAL} ! -name '.*' | while IFS= read -r f; do
     echo "file \${f#"$d"/} $(sha256sum "$f" | cut -d ' ' -f 1)"
   done
+  if [ -s "$d/${GRAFANA_ADMIN_CREDENTIAL}" ] && [ ! -L "$d/${GRAFANA_ADMIN_CREDENTIAL}" ]; then echo credential; fi
   break
 done
 for d in ${addonDir("alloy", "root")} ${addonDir("alloy", "login")}; do
   if [ -L "$d" ] || [ ! -f "$d/compose.yaml" ]; then continue; fi
   if [ -f "$d/${ALLOY_DESTINATIONS_FILE}" ]; then echo "alloy $(cat "$d/${ALLOY_DESTINATIONS_FILE}")"; else echo 'alloy grafanaCloud'; fi
+  for f in "$d"/*; do
+    if [ -L "$f" ] || [ ! -f "$f" ]; then continue; fi
+    case "\${f##*/}" in ${ALLOY_SECRET_FILES.join("|")}) continue ;; esac
+    echo "alloyfile \${f##*/} $(sha256sum "$f" | cut -d ' ' -f 1)"
+  done
+  pg="$d/${ALLOY_POSTGRES_HOST_FILE}"
+  if [ -f "$pg" ] && [ ! -L "$pg" ]; then echo "alloypg $(head -n 1 "$pg")"; fi
   break
 done`;
 
@@ -862,9 +880,15 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
       monitoring: addon("monitoring", ADDON_PROJECTS.monitoring),
     },
     ...(monitoring.stack || stackContainers.length > 0
-      ? { monitoring: { containers: stackContainers, files: monitoring.files } }
+      ? {
+          monitoring: {
+            containers: stackContainers,
+            files: monitoring.files,
+            credential: monitoring.credential,
+          },
+        }
       : {}),
-    ...(monitoring.alloy === undefined ? {} : { alloy: { destinations: monitoring.alloy } }),
+    ...(monitoring.alloy === undefined ? {} : { alloy: monitoring.alloy }),
     runners: parseRunners(text("runners")),
     webFilter: {
       ...dockerFirewall({
@@ -967,4 +991,43 @@ export async function inspectRunners(remote: RemoteExec): Promise<RunnerFacts> {
     });
   }
   return parsed.data;
+}
+
+/**
+ * Whether the `grant` step for `input` is in place on the server now (for `planGrant`'s
+ * `inPlace`): the step's own read-only check, which reads the login's state through
+ * `docker compose -p <app> exec` as the deploy user, root the way `privilege` says (`rootImage` is
+ * the `docker` privilege's image). False when the login cannot become root or the state could not
+ * be read (the service is not running): the step is then planned as a change. Throws
+ * COMMAND_FAILED when the server cannot be reached.
+ */
+export async function readGrant(
+  remote: RemoteExec,
+  input: { app: string; grant: GrantParams },
+  privilege: HostFacts["privilege"],
+  rootImage?: string,
+): Promise<boolean> {
+  if (privilege === "sudo-password" || privilege === "none") return false;
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app: input.app,
+    steps: [],
+    findings: [],
+  };
+  const step: HostStep = {
+    id: "grant",
+    title: "",
+    state: "change",
+    scope: "app",
+    params: { ...GrantParamsSchema.parse(input.grant) },
+  };
+  const result = await readAsRoot(
+    remote,
+    privilege,
+    rootImage,
+    asDeployUser(stepScripts(plan, step).check),
+    "OpsCrew could not read the database's logins on the server.",
+  );
+  return result.exitCode === 0 && /^state=in-place$/m.test(result.stdout);
 }

@@ -75,6 +75,7 @@ import {
   clashingRoutes,
   DOCKER_POOLS,
   hostAddress,
+  NetworkInterfaceSchema,
   type NetworkStepParams,
   NetworkStepParamsSchema,
   networkConfigPath,
@@ -2379,26 +2380,36 @@ function networkRemovals(
   const staying = Object.keys(facts.record?.networks ?? {})
     .filter((iface) => !ifaces.includes(iface))
     .sort();
-  return [...ifaces]
-    .sort()
-    .flatMap((iface) => [
-      step(
-        "network-filter",
-        `Remove the private network's filter on ${iface}`,
-        "change",
-        { interface: iface, remove: true },
-        `Docker stops requiring ${networkFilterService(iface)}, then OpsCrew's chain ${networkFilterChain(iface)}, its jump from DOCKER-USER, the unit and ${networkFilterScriptPath(iface)} are removed. Your own rules stay.`,
-        scope,
-      ),
-      step(
-        "network",
-        `Remove the private network's WireGuard interface ${iface}: its configuration, key and firewall rules`,
-        "change",
-        { interface: iface, remove: true, otherInterfaces: staying.join(" ") },
-        `${networkUnit(iface)} is stopped and disabled, and ${networkConfigPath(iface)}, ${networkKeyPath(iface)} and OpsCrew's ufw rules for it ("${UFW_NETWORK_COMMENT}", "${UFW_NETWORK_SSH_COMMENT}", "${UFW_NETWORK_LOCAL_COMMENT}") are removed. ${staying.length > 0 ? `Docker keeps starting after ${listText(staying)}.` : "Docker's drop-in for OpsCrew's interfaces goes too."}`,
-        scope,
-      ),
-    ]);
+  return [...ifaces].sort().flatMap((iface) => interfaceRemoval(iface, staying, scope));
+}
+
+/**
+ * The steps that remove the private network of the interface `iface`: its filter, then the
+ * interface, Docker's drop-in keeping the interfaces `staying`.
+ */
+function interfaceRemoval(
+  iface: string,
+  staying: readonly string[],
+  scope: HostStep["scope"],
+): [HostStep, HostStep] {
+  return [
+    step(
+      "network-filter",
+      `Remove the private network's filter on ${iface}`,
+      "change",
+      { interface: iface, remove: true },
+      `Docker stops requiring ${networkFilterService(iface)}, then OpsCrew's chain ${networkFilterChain(iface)}, its jump from DOCKER-USER, the unit and ${networkFilterScriptPath(iface)} are removed. Your own rules stay.`,
+      scope,
+    ),
+    step(
+      "network",
+      `Remove the private network's WireGuard interface ${iface}: its configuration, key and firewall rules`,
+      "change",
+      { interface: iface, remove: true, otherInterfaces: staying.join(" ") },
+      `${networkUnit(iface)} is stopped and disabled, and ${networkConfigPath(iface)}, ${networkKeyPath(iface)} and OpsCrew's ufw rules for it ("${UFW_NETWORK_COMMENT}", "${UFW_NETWORK_SSH_COMMENT}", "${UFW_NETWORK_LOCAL_COMMENT}") are removed. ${staying.length > 0 ? `Docker keeps starting after ${listText(staying)}.` : "Docker's drop-in for OpsCrew's interfaces goes too."}`,
+      scope,
+    ),
+  ];
 }
 
 /**
@@ -2616,6 +2627,78 @@ export function planNetwork(
   return networkPlan(input.app, steps, found);
 }
 
+/** {@link planNetworkRemoval}'s interface: the one that goes, and those that stay. */
+const NetworkRemovalInputSchema = z
+  .object({
+    network: z.object({
+      interface: NetworkInterfaceSchema,
+      otherInterfaces: z.array(NetworkInterfaceSchema),
+    }),
+    filter: z.object({ interface: NetworkInterfaceSchema }),
+  })
+  .refine(
+    (p) =>
+      p.filter.interface === p.network.interface &&
+      !p.network.otherInterfaces.includes(p.network.interface),
+    { message: "the filter must be the interface's, which is not among those that stay" },
+  );
+
+/**
+ * The host plan that removes one private network's interface from a server whose member left that
+ * network (feature 020: the monitoring server another environment owns, once this environment
+ * turned monitoring off or was destroyed), with the parameters the agents derive
+ * (`networkRemovalSteps`): the interface's filter, then the interface with its key and firewall
+ * rules, Docker's drop-in keeping `otherInterfaces`. `app` is the app whose network it is: the host
+ * record names it, and an interface the record gives another app is refused. A step is in place
+ * when the state read as root no longer has it; without that state it is planned as a change, and
+ * its check on the server skips it when it is done. Findings say to run `command` again once fixed.
+ */
+export function planNetworkRemoval(
+  facts: HostFacts,
+  input: {
+    app: string;
+    network: { interface: string; remove: true; otherInterfaces: readonly string[] };
+    filter: { interface: string; remove: true };
+  },
+  command: string,
+): HostPlan {
+  const { f, found } = networkPlanStart(facts, input.app, command);
+  const p = parseInput(
+    NetworkRemovalInputSchema,
+    input,
+    "The private network's interface to remove is not valid",
+    "This is a problem in OpsCrew; please report it.",
+  );
+  const iface = p.network.interface;
+  const owner = f.record?.networks?.[iface];
+  if (owner !== undefined && owner !== input.app) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The WireGuard interface ${iface} on this server is the private network of the OpsCrew app "${owner}", so OpsCrew does not remove it for "${input.app}". Nothing was changed.`,
+      { hint: `Run \`${command}\` in the project of "${owner}" to change its network.` },
+    );
+  }
+  const [removeFilter, removeInterface] = interfaceRemoval(
+    iface,
+    [...p.network.otherInterfaces].sort(),
+    "app",
+  );
+  // Undefined when the state was not read as root: then each is planned as a change.
+  const present = (items: readonly { name: string }[] | undefined) =>
+    items?.some((item) => item.name === iface);
+  const stated = (item: HostStep, there: boolean | undefined): HostStep =>
+    found[0] !== undefined
+      ? { ...item, state: "blocked", reason: found[0].message }
+      : there === false
+        ? { ...item, state: "in-place", reason: "Already removed." }
+        : item;
+  const steps = [
+    stated(removeFilter, present(f.network?.filters)),
+    stated(removeInterface, present(f.network?.interfaces)),
+  ];
+  return networkPlan(input.app, steps, found);
+}
+
 /**
  * The public SSH rules for the port that are OpsCrew's (comment `opscrew-ssh`; on a server
  * OpsCrew created also cloud-init's uncommented one), as `ufw allow` takes them.
@@ -2685,8 +2768,9 @@ export function planPublicSsh(
  * `docker compose -p <app> exec -T <service>` as the deploy user, the engine's administrator
  * signed in from the container's own environment. The login's password is never in the plan:
  * apply passes it as the `grantPassword` secret. Whether the login already has that access is
- * known only on the server, so the step is planned as a change and its check skips it when it is
- * in place. Findings say to run `command` again once fixed.
+ * known only on the server: `inPlace` is what `readGrant` read there just now (the step is then in
+ * place); without it the step is planned as a change, and its check skips it when it is in place.
+ * Findings say to run `command` again once fixed.
  *
  * Access `monitor` (feature 020) is OpsCrew's monitoring login `opscrew_monitor` on Postgres:
  * `LOGIN`, at most 3 connections and `pg_monitor`, its password passed as the
@@ -2694,7 +2778,7 @@ export function planPublicSsh(
  */
 export function planGrant(
   facts: HostFacts,
-  input: { app: string; grant: GrantParams },
+  input: { app: string; grant: GrantParams; inPlace?: boolean },
   command: string,
 ): HostPlan {
   const { found } = networkPlanStart(facts, input.app, command);
@@ -2718,7 +2802,7 @@ export function planGrant(
     : p.access === "monitor"
       ? `The login is made or updated with fixed statements, ${exec}, with LOGIN, at most 3 connections and the pg_monitor role only: it reads the database server's statistics, never the app's data. ${stdin}`
       : `The login is made or updated with fixed statements, ${exec}, ${p.access === "read-only" ? "with read-only access" : "with read and write access to all the app's data, never control of the database server"}. ${stdin}`;
-  const item = networkStep("grant", title, { ...p }, found[0], false, reason);
+  const item = networkStep("grant", title, { ...p }, found[0], input.inPlace === true, reason);
   return networkPlan(input.app, [item], found);
 }
 
@@ -2933,6 +3017,11 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  * the record changes it, so plan it with that app's name). Apply it with `applyHostPlan` like any
  * host plan.
  *
+ * With `facts`, turning on the monitoring stack or Alloy with destinations is in place when they
+ * show it running as planned (its files, Alloy's destinations and Postgres host, its containers),
+ * unless `secretsChanged`; every other add-on step is planned as a change, which its check on the
+ * server skips when it is in place.
+ *
  * `connector` adds the Cloudflare Tunnel connector that serves Beszel's dashboard at its subdomain
  * on a server OpsCrew created, as `planPortainer`'s does (its token supplied at apply as
  * `tunnelToken`), or `{ dir, remove: true }` removes it. It comes before the add-on's step.
@@ -2948,6 +3037,11 @@ export function planAddon<K extends AddonPlanKind>(
     enable?: AddonEnable<K>;
     disable?: { keepData?: boolean; mode?: "hub" | "agent"; removeData?: boolean };
     connector?: AddonConnector;
+    /**
+     * A secret the step writes is new on this computer (a rotated Grafana Cloud token): the step
+     * is planned as a change even when the facts show it running as planned.
+     */
+    secretsChanged?: boolean;
   },
 ): HostPlan {
   const { app, runAs, enable, disable, connector } = options;
@@ -3001,18 +3095,21 @@ export function planAddon<K extends AddonPlanKind>(
           ? monitoringRemoval(runAs, disable.removeData === true)
           : addonRemoval(kind as AddonKind, app, runAs, keepData, disable.mode === "agent");
   } else {
-    item = addonStep(
-      kind,
-      app,
-      runAs,
-      repository,
-      parseInput(
-        AddonEnableSchemas[kind] as z.ZodType<AddonSettings>,
-        enable,
-        "The add-on's settings are not valid",
-        "Make the plan again with OpsCrew; if this keeps happening, report it.",
-      ),
+    const settings = parseInput(
+      AddonEnableSchemas[kind] as z.ZodType<AddonSettings>,
+      enable,
+      "The add-on's settings are not valid",
+      "Make the plan again with OpsCrew; if this keeps happening, report it.",
     );
+    item = addonStep(kind, app, runAs, repository, settings);
+    const facts = options.facts === undefined ? undefined : parseFacts(options.facts);
+    if (
+      facts !== undefined &&
+      options.secretsChanged !== true &&
+      runsAsPlanned(kind, facts, settings)
+    ) {
+      item = { ...item, state: "in-place", reason: "Already set." };
+    }
   }
   const plan: HostPlan = {
     schemaVersion: HOST_PLAN_SCHEMA_VERSION,
@@ -3048,6 +3145,47 @@ type AddonSettings =
       destinations?: AlloyDestination[];
       postgresHost?: string;
     };
+
+/** `files` by name, each as its SHA-256. */
+function fileHashes(files: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(files).map(([name, text]) => [name, sha256Hex(text)]));
+}
+
+/** True when `found` holds exactly the hashes of `planned`. */
+function sameFiles(found: Record<string, string>, planned: Record<string, string>): boolean {
+  return canonicalJson(found) === canonicalJson(fileHashes(planned));
+}
+
+/** True when the Compose project has containers and every one of them runs. */
+function allRunning(containers: readonly { running: boolean }[]): boolean {
+  return containers.length > 0 && containers.every((container) => container.running);
+}
+
+/**
+ * True when inspection (`facts`) shows the monitoring stack or Alloy with destinations (feature
+ * 020) already running as `settings` plan it, as their steps' checks compare: the stack's files
+ * and its password file, Alloy's files, destinations and Postgres host, and every container of
+ * the Compose project running. Other add-ons are always planned as a change.
+ */
+function runsAsPlanned(kind: AddonPlanKind, facts: HostFacts, settings: AddonSettings): boolean {
+  if (!("files" in settings)) return false;
+  if (kind === "monitoring") {
+    const stack = facts.monitoring;
+    return (
+      stack?.credential === true &&
+      sameFiles(stack.files, settings.files) &&
+      allRunning(stack.containers)
+    );
+  }
+  const alloy = facts.alloy;
+  if (kind !== "alloy" || settings.destinations === undefined || alloy === undefined) return false;
+  return (
+    sameList(alloy.destinations, settings.destinations) &&
+    sameFiles(alloy.files, settings.files) &&
+    alloy.postgresHost === settings.postgresHost &&
+    allRunning(facts.containers.filter((c) => c.project === ADDON_PROJECTS.alloy))
+  );
+}
 
 /** The monitoring stack's step: its files by path in its folder, as root (see `planAddon`). */
 function monitoringStep(runAs: RunAs, files: HostStep["params"]): HostStep {
