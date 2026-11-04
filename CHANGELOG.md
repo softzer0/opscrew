@@ -4,6 +4,54 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.1] - 2026-11-04
+
+Nothing to redo: your plans keep working as they are. The first deploy after your next
+`npx opscrew provision` updates the shared edge on the server once, as its version is raised.
+
+### Added
+
+- **Self-hosted monitoring: Prometheus, Loki and Grafana on a server of your own.**
+  - `opscrew addon enable monitoring` writes it into your plan, with the server's type and monthly
+    price, the agent's memory on each of your servers, the retention and the disk it takes.
+    `opscrew provision` then sets it up, each change approved by its hash.
+  - By default the stack runs on a small server of its own at your app's provider and location.
+    `--on app` puts it on the app's server (from 4 GB). Another app or environment in the
+    repository sends to the same server; `--new-server` gives it one of its own.
+  - Grafana Alloy on every server sends the server's and the containers' figures, Caddy's and
+    Postgres's figures, and your app's log lines, with secrets masked before they leave the server.
+  - Six ready-made dashboards: servers, containers, HTTP traffic, Caddy, Postgres and logs.
+  - Nothing is reachable from the internet. `opscrew addon open monitoring` gives Grafana's private
+    address when this computer is a device on the private network, or opens an SSH tunnel.
+  - Figures are kept 15 days and logs 7 by default; `--metrics-days` and `--logs-days` change it.
+    `opscrew addon status` and `opscrew status` show each server's last data.
+  - `opscrew addon disable monitoring` removes everything it installed; the monitoring server is
+    deleted only after you type its name.
+
+  Grafana and Loki are licensed AGPL-3.0 and run unmodified as containers. See
+  [Self-hosted monitoring](docs/guide/monitoring.md).
+- **The Claude Code plugin** shows monitoring's status and turns it on or off; its
+  troubleshooting skill says how to open the dashboards and what each shows.
+
+### Changed
+
+- **Caddy keeps figures per hostname in every OpsCrew edge,** on the edge's internal network only,
+  never published. Nothing reads them unless monitoring is on; every app on a server now shares
+  the same edge again.
+- **Grafana Alloy 1.21.3.** A plan that names 1.21.2 for Grafana Cloud keeps running it, by its
+  tag; `opscrew addon enable grafana-cloud` moves it to the pinned version.
+
+### Fixed
+
+- **A new secret now reaches the server:** a rotated Grafana Cloud or Beszel token through
+  `opscrew addon enable`, and a device's new database password from `opscrew vpn grant` after this
+  computer lost the old one. Before, the server's check saw its files unchanged and skipped writing
+  the new value.
+- **A changed Alloy or Beszel configuration restarts its container.** Before, the new file was
+  written but the running container kept the old one.
+- **`opscrew provision` no longer refuses a plan whose extra server keeps no backups** while the
+  app's server does: each server is checked against its own setting.
+
 ## [0.2.0] - 2026-11-01
 
 Every deploy workflow changes in this release. Run `npx opscrew provision` for each environment
@@ -231,6 +279,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.1]: https://github.com/softzer0/opscrew/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/softzer0/opscrew/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/softzer0/opscrew/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/softzer0/opscrew/compare/v0.1.1...v0.1.2
