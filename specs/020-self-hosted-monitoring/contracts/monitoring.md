@@ -60,6 +60,7 @@ export interface MonitoringStackInput {
 }
 export function renderMonitoringStack(input: MonitoringStackInput): { path: string; content: string }[];
 export const MONITORING_DIR = "opscrew/addons/monitoring";
+export const MONITORING_PUSH_NETWORK = "opscrew-monitoring-push";   // the front by name, for the stack's own server's Alloy
 
 // T2005
 export interface DashboardQuery { dashboard: string; panel: string; datasource: "prometheus" | "loki"; expr: string }
@@ -73,7 +74,7 @@ export function renderAlloyConfig(plan: DeployPlan, server: string, destinations
 export function renderAlloyCompose(plan: DeployPlan, server: string, destinations: AlloyDestinations): string;
 // renderAddon(plan, "grafana-cloud") keeps its output for a plan without monitoring
 
-// T2007
+// T2007 (the constant is in edge/index.ts from the start, so T2006 can import it)
 export const CADDY_METRICS_PORT = 9180;   // on the edge's internal network only
 ```
 

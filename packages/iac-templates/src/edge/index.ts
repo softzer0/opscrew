@@ -68,6 +68,12 @@ export const EDGE_PROXY_KEY = "x-opscrew-edge-proxy";
 /** Where Caddy sends every app's traffic: kamal-proxy, which routes by hostname to the app's copy. */
 export const EDGE_UPSTREAM = "kamal-proxy:80";
 
+/**
+ * The port of Caddy's metrics site, with monitoring on: on the edge's internal network only, never
+ * published, scraped by Alloy on the edge's server.
+ */
+export const CADDY_METRICS_PORT = 9180;
+
 /** The reverse proxy in front of the apps on a server (`target.edge`). */
 export type EdgeProxy = "caddy" | "nginx";
 

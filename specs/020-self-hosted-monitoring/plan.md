@@ -252,7 +252,13 @@ design goes into this plan before wave 1. ADR 0024 records D1–D6 of research R
     and `grafana/dashboards/*.json` from T2005.
 - **The header comment** of each file says which plan generated it and how to regenerate it.
 - With `kind: "app"` and no network, there are no private addresses: Grafana only on `127.0.0.1`,
-  and no front.
+  and the front unpublished.
+- **The front always runs.** It is also on a network named `MONITORING_PUSH_NETWORK`
+  (`opscrew-monitoring-push`, set with `name:`), which the Alloy on the stack's own server joins to
+  push to `front` by name. That covers `kind: "app"` with no network too.
+- **Grafana's password file** is `grafana_admin_credential` in `MONITORING_DIR` (not `…password`:
+  the redactor would take the mount line for a labelled secret, as 017's Grafana Cloud file), mounted
+  at `/run/opscrew/grafana_admin_credential`.
 
 ### 5. The dashboards (T2005)
 - **One module per dashboard, rendering classic Grafana JSON at `schemaVersion` 42** (S3), with
@@ -319,7 +325,8 @@ Research R7 "The collector" is the source; the spike's working `config.alloy` is
   - and through sampling to Grafana Cloud's.
   - Figures go to both `prometheus.remote_write`s, Grafana Cloud's through today's allow-list.
 - **The stack's writers:** `http://<the monitoring server's private address on this network>:<push
-  port>/…`, with no auth (the filter and the front stand guard). The remote write has
+  port>/…`, or `http://front:<push port>/…` over `MONITORING_PUSH_NETWORK` on the stack's own server
+  (`monitoringServerName(plan) === server`), with no auth (the filter and the front stand guard). The remote write has
   `queue_config { max_shards = 1 }`, and `loki.write` has `max_backoff_period = "30s"` and
   `max_backoff_retries = 40`: with them a 10-minute outage lost nothing (S7).
 - **Every series** gets `app`, `env` and `server`.
@@ -328,8 +335,11 @@ Research R7 "The collector" is the source; the spike's working `config.alloy` is
 - **`renderAlloyCompose`:**
   - with monitoring, the mounts `/:/rootfs:ro` and `/sys:/sys:ro` (S1) instead of 017's
     `/host/root` and `/host/sys`; no `privileged`, no `/var/lib/docker`;
-  - joins the edge's network on the edge's server, and the app's network on Postgres's server,
+  - joins the edge's network on the edge's server (Caddy at `caddy:<CADDY_METRICS_PORT>`), the
+    app's network on Postgres's server, and `MONITORING_PUSH_NETWORK` on the stack's own server,
     only with monitoring;
+  - the Postgres data source file is `postgres_monitor_credential` beside the Compose file, mounted
+    at `/etc/alloy/postgres_monitor_credential` (the name follows 017's `grafana_cloud_credential`);
   - the memory limits from `monitoring.memoryMb.alloy` and `.proxy` when monitoring is on.
 - **The proxy's allow-list is unchanged:** cAdvisor and `discovery.docker` call only paths it
   already passes.

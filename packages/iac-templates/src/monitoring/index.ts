@@ -9,6 +9,12 @@ export * from "./dashboards";
 /** The stack's directory, under the deploy user's home on its server. */
 export const MONITORING_DIR = "opscrew/addons/monitoring";
 
+/**
+ * The stack's Docker network that the Alloy on the stack's own server joins, to push to the front
+ * by its service name (`front`). Created by the stack's Compose file under this exact name.
+ */
+export const MONITORING_PUSH_NETWORK = "opscrew-monitoring-push";
+
 /** What the stack's files are rendered from. */
 export interface MonitoringStackInput {
   /** The owner's settings. */

@@ -100,9 +100,9 @@ answer.
 
 | Path | What | Owner |
 |---|---|---|
-| `~deploy/opscrew/addons/monitoring/` | the stack's `compose.yaml`, `prometheus.yml`, `loki.yaml`, `grafana/provisioning/**`, `grafana/dashboards/*.json`, the front's `Caddyfile`, and Grafana's password file | the `monitoring` step |
+| `~deploy/opscrew/addons/monitoring/` | the stack's `compose.yaml`, `prometheus.yml`, `loki.yaml`, `grafana/provisioning/**`, `grafana/dashboards/*.json`, the front's `Caddyfile`, and Grafana's password file `grafana_admin_credential` (`root:root 0640`) | the `monitoring` step |
 | volumes `opscrew-monitoring_{prometheus,loki,grafana}` | the stack's data | the `monitoring` step; removed only with `removeData` |
-| `~deploy/opscrew/addons/alloy/` | Alloy's `compose.yaml`, `config.alloy`, the Grafana Cloud token file, the Postgres monitoring password file | the `alloy` step |
+| `~deploy/opscrew/addons/alloy/` | Alloy's `compose.yaml`, `config.alloy`, the Grafana Cloud token file, and the Postgres data source file `postgres_monitor_credential` (`0600`, the deploy user's) | the `alloy` step |
 | `/srv/apps/<app>/mask.re` | the known values, one RE2 capture group, readable only by the deploy user (`0600`), as 017 writes it | the deploy job (app's server) and the extra servers' upload step |
 
 ## The host record
