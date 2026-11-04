@@ -1,8 +1,8 @@
 import { createPrivateKey, createPublicKey } from "node:crypto";
-import { NetworkSchema, WireGuardKeySchema } from "@opscrew/plan-schema";
+import { isOutsideMember, NetworkSchema, WireGuardKeySchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testKeyMaker } from "../testing";
-import { splitPlan, withNetwork } from "./__fixtures__/plans";
+import { monitoredPlan, senderPlan, splitPlan, withNetwork } from "./__fixtures__/plans";
 import { allocateNetwork, networkRange, nextDeviceAddress } from "./allocate";
 import { x25519KeyPair } from "./keys";
 
@@ -170,6 +170,84 @@ describe("allocateNetwork", () => {
     expect(network.members.find((m) => m.name === "search")).toEqual(
       first.network.members.find((m) => m.name === "search"),
     );
+  });
+});
+
+describe("allocateNetwork: the monitoring server another environment owns", () => {
+  /** The monitoring server's facts: its owner's network on wg-opscrew0, a stale wg-opscrew1. */
+  const FACTS = {
+    monitoring: {
+      udpPortsInUse: [51820, 51822],
+      wireguardInterfaces: ["wg-opscrew0", "wg-opscrew1"],
+    },
+  };
+
+  /** The sender's network before it sends: the app and `data`. */
+  function existing() {
+    const { observability: _off, ...plan } = senderPlan();
+    return allocateNetwork(plan, {}, testKeyMaker("before")).network;
+  }
+
+  it("adds it as the outside member: the first free address from .2, the first free port there, a key", () => {
+    const before = existing();
+    const keys = testKeyMaker();
+    const { network, privateKeys } = allocateNetwork(
+      { ...senderPlan(), network: before },
+      FACTS,
+      keys,
+    );
+    const base = n(network.range.split("/")[0] ?? "");
+    expect(network.members.map((m) => [m.name, n(m.address) - base, m.port])).toEqual([
+      ["app", 1, 51820],
+      ["data", 2, 51820],
+      // 51820 and 51822 listen there, and wg-opscrew1 holds 51821.
+      ["monitoring", 3, 51823],
+    ]);
+    expect(network.members.slice(0, 2)).toEqual(before.members);
+    expect(network.members[2]?.publicKey).toBe(keys.made[0]?.publicKey);
+    // Its private half goes into the sender's generated values, as every new member's does.
+    expect(privateKeys).toEqual({ monitoring: keys.made[0]?.privateKey });
+    const plan = withNetwork(senderPlan(), network);
+    const member = plan.network?.members[2];
+    expect(member !== undefined && isOutsideMember(plan, member)).toBe(true);
+    // The plan holds no private key and no public address.
+    const text = JSON.stringify(plan);
+    for (const pair of keys.made) expect(text).not.toContain(pair.privateKey);
+    expect(text).not.toContain("203.0.113.");
+  });
+
+  it("keeps it, with its address, port and key, without the monitoring server's facts", () => {
+    const first = allocateNetwork(senderPlan(), FACTS, testKeyMaker("first"));
+    const keys = testKeyMaker("again");
+    const again = allocateNetwork({ ...senderPlan(), network: first.network }, {}, keys);
+    expect(again.network).toEqual(first.network);
+    expect(again.privateKeys).toEqual({});
+    expect(keys.made).toEqual([]);
+  });
+
+  it("needs the monitoring server's facts for a new outside member", () => {
+    expect(() => allocateNetwork(senderPlan(), {}, testKeyMaker())).toThrow(
+      "Server monitoring is the monitoring server of opscrew/plan.yaml, and its facts are needed for its port.",
+    );
+  });
+
+  it("drops it once the plan no longer sends there, as any member that is not one of its servers", () => {
+    const { network } = allocateNetwork(senderPlan(), FACTS, testKeyMaker());
+    const { observability: _off, ...plan } = senderPlan();
+    const keys = testKeyMaker("after");
+    const after = allocateNetwork({ ...plan, network }, {}, keys);
+    expect(after.network.members).toEqual(network.members.slice(0, 2));
+    expect(keys.made).toEqual([]);
+  });
+
+  it("makes no outside member for the owner or the stack on the app's server", () => {
+    for (const plan of [monitoredPlan(), monitoredPlan({ on: "app" })]) {
+      const { network } = allocateNetwork(plan, {}, testKeyMaker());
+      expect(network.members.map((m) => m.name)).toEqual([
+        "app",
+        ...(plan.servers ?? []).map((s) => s.name),
+      ]);
+    }
   });
 });
 

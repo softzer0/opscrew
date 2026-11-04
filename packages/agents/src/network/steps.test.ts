@@ -1,20 +1,32 @@
-import type { DeployPlan } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  MONITORING_GRAFANA_PORT,
+  MONITORING_PUSH_PORT,
+  networkInterface,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testKeyMaker } from "../testing";
-import { splitPlan, withNetwork } from "./__fixtures__/plans";
-import { allocateNetwork } from "./allocate";
+import { monitoredPlan, senderPlan, splitPlan, withNetwork } from "./__fixtures__/plans";
+import { allocateNetwork, type NetworkHostFacts } from "./allocate";
 import { deviceConfig } from "./device";
-import { networkSteps, wireGuardEndpoint } from "./steps";
+import { networkFilterRules, networkRemovalSteps, networkSteps, wireGuardEndpoint } from "./steps";
 
 const APP_IP = "203.0.113.10";
 const DATA_IP = "203.0.113.20";
+const MONITORING_IP = "203.0.113.30";
 const OWN_FACTS = { app: { udpPortsInUse: [], wireguardInterfaces: [] } };
 
-/** A split plan on the network, with a laptop granted read-only Postgres and a phone with no grant. */
-function planWithDevices(app: "cloud" | "own-tunnel" = "cloud") {
-  const keys = testKeyMaker(app);
-  const plan = splitPlan({ app });
-  const { network, privateKeys } = allocateNetwork(plan, app === "cloud" ? {} : OWN_FACTS, keys);
+/**
+ * A split plan (or `plan`) on the network, allocated with `facts`, with a laptop granted read-only
+ * Postgres and a phone with no grant.
+ */
+function planWithDevices(
+  app: "cloud" | "own-tunnel" = "cloud",
+  plan: Omit<DeployPlan, "network"> = splitPlan({ app }),
+  facts: Readonly<Record<string, NetworkHostFacts>> = app === "cloud" ? {} : OWN_FACTS,
+) {
+  const keys = testKeyMaker(`${app}-${plan.app.name}`);
+  const { network, privateKeys } = allocateNetwork(plan, facts, keys);
   const prefix = network.range.split(".").slice(0, 3).join(".");
   const devices = ["laptop", "phone"].map((name, i) => ({
     name,
@@ -150,6 +162,162 @@ describe("networkSteps", () => {
         sshPort: 22,
       }),
     ).toThrow('Server "nope" is not on the plan\'s private network.');
+  });
+});
+
+describe("the monitoring server on the network", () => {
+  /** The shared monitoring server: its owner's network on wg-opscrew0. */
+  const SHARED_FACTS = {
+    monitoring: { udpPortsInUse: [51820], wireguardInterfaces: ["wg-opscrew0"] },
+  };
+  const PUBLISHED = {
+    app: [{ service: "beszel", port: 8090, dashboard: true }],
+    data: [{ service: "db", port: 5432 }],
+  };
+
+  /** Every address a server's rules admit. */
+  function admitted(plan: DeployPlan, server: "app" | "data"): string[] {
+    return networkFilterRules(plan, server, PUBLISHED[server]).flatMap((rule) => rule.sources);
+  }
+
+  it("on its own server: the servers push to the front, only the devices open Grafana, nothing admits it", () => {
+    const { plan, prefix } = planWithDevices("cloud", monitoredPlan());
+    expect(member(plan, "monitoring").address).toBe(`${prefix}.3`);
+    expect(networkFilterRules(plan, "monitoring", [])).toEqual([
+      { port: MONITORING_PUSH_PORT, sources: [`${prefix}.1`, `${prefix}.2`] },
+      { port: MONITORING_GRAFANA_PORT, sources: [`${prefix}.100`, `${prefix}.101`] },
+    ]);
+    // The app's and data's rules stay 018's: the monitoring server only receives.
+    expect(networkFilterRules(plan, "app", PUBLISHED.app)).toEqual([
+      { port: 8090, sources: [`${prefix}.100`, `${prefix}.101`] },
+    ]);
+    expect(networkFilterRules(plan, "data", PUBLISHED.data)).toEqual([
+      { port: 5432, sources: [`${prefix}.1`, `${prefix}.100`] },
+    ]);
+    for (const server of ["app", "data"] as const) {
+      expect(admitted(plan, server)).not.toContain(`${prefix}.3`);
+    }
+  });
+
+  it("on the app's server: the extra servers push to it, and the app still reaches its services", () => {
+    const { plan, prefix } = planWithDevices("cloud", monitoredPlan({ on: "app" }));
+    expect(networkFilterRules(plan, "app", PUBLISHED.app)).toEqual([
+      { port: 8090, sources: [`${prefix}.100`, `${prefix}.101`] },
+      { port: MONITORING_PUSH_PORT, sources: [`${prefix}.2`] },
+      { port: MONITORING_GRAFANA_PORT, sources: [`${prefix}.100`, `${prefix}.101`] },
+    ]);
+    expect(networkFilterRules(plan, "data", PUBLISHED.data)).toEqual([
+      { port: 5432, sources: [`${prefix}.1`, `${prefix}.100`] },
+    ]);
+    // Behind a Cloudflare Tunnel no device reaches the app's server: Grafana admits none.
+    const tunnel = planWithDevices("own-tunnel", monitoredPlan({ on: "app", app: "own-tunnel" }));
+    expect(networkFilterRules(tunnel.plan, "app", [])).toEqual([
+      { port: MONITORING_PUSH_PORT, sources: [`${tunnel.prefix}.2`] },
+      { port: MONITORING_GRAFANA_PORT, sources: [] },
+    ]);
+  });
+
+  it("on a shared server: each interface gets its own network's peers and rules", () => {
+    const owner = planWithDevices("cloud", monitoredPlan());
+    const sender = planWithDevices("cloud", senderPlan(), SHARED_FACTS);
+    const o = owner.prefix;
+    const s = sender.prefix;
+    expect(s).not.toBe(o);
+    const onServer = {
+      wireguardInterfaces: ["wg0", "wg-opscrew0", "wg-opscrew1"],
+      published: [],
+      sshPort: 22,
+    };
+    const ownerSteps = networkSteps(owner.plan, "monitoring", {
+      ...onServer,
+      endpoints: { app: APP_IP, data: DATA_IP, monitoring: MONITORING_IP },
+    });
+    const senderSteps = networkSteps(sender.plan, "monitoring", {
+      ...onServer,
+      endpoints: { app: "203.0.113.11", data: "203.0.113.21", monitoring: MONITORING_IP },
+    });
+    expect(ownerSteps.network).toMatchObject({
+      interface: "wg-opscrew0",
+      address: `${o}.3/24`,
+      otherInterfaces: ["wg-opscrew1"],
+    });
+    expect(ownerSteps.filter).toEqual({
+      interface: "wg-opscrew0",
+      address: `${o}.3`,
+      rules: [
+        { port: MONITORING_PUSH_PORT, sources: [`${o}.1`, `${o}.2`] },
+        { port: MONITORING_GRAFANA_PORT, sources: [`${o}.100`, `${o}.101`] },
+      ],
+    });
+    const outside = member(sender.plan, "monitoring");
+    expect(senderSteps.network).toEqual({
+      interface: "wg-opscrew1",
+      address: `${s}.3/24`,
+      port: 51821,
+      publicKey: outside.publicKey,
+      peers: [
+        {
+          name: "app",
+          publicKey: member(sender.plan, "app").publicKey,
+          endpoint: "203.0.113.11:51820",
+          allowedIp: `${s}.1/32`,
+          keepalive: 25,
+        },
+        {
+          name: "data",
+          publicKey: member(sender.plan, "data").publicKey,
+          endpoint: "203.0.113.21:51820",
+          allowedIp: `${s}.2/32`,
+          keepalive: 25,
+        },
+        { name: "laptop", publicKey: sender.keys.made[3]?.publicKey, allowedIp: `${s}.100/32` },
+        { name: "phone", publicKey: sender.keys.made[4]?.publicKey, allowedIp: `${s}.101/32` },
+      ],
+      otherInterfaces: ["wg-opscrew0"],
+      sshPort: 22,
+    });
+    expect(senderSteps.filter).toEqual({
+      interface: "wg-opscrew1",
+      address: `${s}.3`,
+      rules: [
+        { port: MONITORING_PUSH_PORT, sources: [`${s}.1`, `${s}.2`] },
+        { port: MONITORING_GRAFANA_PORT, sources: [`${s}.100`, `${s}.101`] },
+      ],
+    });
+    // The sender's servers link to it at its public address, on its port there, and never admit it.
+    const app = networkSteps(sender.plan, "app", {
+      endpoints: { app: "203.0.113.11", data: "203.0.113.21", monitoring: MONITORING_IP },
+      wireguardInterfaces: [],
+      published: PUBLISHED.app,
+      sshPort: 22,
+    });
+    expect(app.network.peers).toContainEqual({
+      name: "monitoring",
+      publicKey: outside.publicKey,
+      endpoint: `${MONITORING_IP}:51821`,
+      allowedIp: `${s}.3/32`,
+      keepalive: 25,
+    });
+    for (const server of ["app", "data"] as const) {
+      expect(admitted(sender.plan, server)).not.toContain(`${s}.3`);
+    }
+    // No private key in any step's params, the outside member's included.
+    const text = JSON.stringify([ownerSteps, senderSteps, app]);
+    for (const pair of [...owner.keys.made, ...sender.keys.made]) {
+      expect(text).not.toContain(pair.privateKey);
+    }
+    expect(sender.privateKeys.monitoring).toBe(sender.keys.made[2]?.privateKey);
+  });
+
+  it("gives the removal params of a member's interface once it leaves", () => {
+    const { plan } = planWithDevices("cloud", senderPlan(), SHARED_FACTS);
+    const iface = networkInterface(member(plan, "monitoring"));
+    expect(
+      networkRemovalSteps(iface, { wireguardInterfaces: ["wg0", "wg-opscrew0", "wg-opscrew1"] }),
+    ).toEqual({
+      network: { interface: "wg-opscrew1", remove: true, otherInterfaces: ["wg-opscrew0"] },
+      filter: { interface: "wg-opscrew1", remove: true },
+    });
   });
 });
 

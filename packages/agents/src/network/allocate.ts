@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
-import { APP_SERVER, type DeployPlan, type Network, networkInterface } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  monitoringOf,
+  type Network,
+  networkInterface,
+} from "@opscrew/plan-schema";
 import { type KeyMaker, x25519KeyPair } from "./keys";
 
 /** WireGuard's own port: the first OpsCrew network on a server listens there. */
@@ -60,6 +66,11 @@ export interface AllocatedNetwork {
   privateKeys: Record<string, string>;
 }
 
+/** A server the user owns takes its port from its facts; one OpsCrew creates listens on 51820. */
+function ownServer(target: { provider: string }): { needsFacts?: string } {
+  return target.provider === "own" ? { needsFacts: "the user's own" } : {};
+}
+
 /** The first port from 51820 that the host neither listens on nor has an interface for. */
 function freePort(facts: NetworkHostFacts): number {
   const interfaces = new Set(facts.wireguardInterfaces);
@@ -73,22 +84,38 @@ function freePort(facts: NetworkHostFacts): number {
  * The plan's private network: one member per server in plan order (`app` first), with the app's
  * server at `.1` and new extra servers at the first free address from `.2`. Each new member listens
  * on 51820, or on a server the user owns on the first port its `facts` (by server name) show free,
- * and gets a key pair from `keys` (default Node's x25519). An existing network keeps its range,
- * devices, grants, public SSH and every kept member's address, port and public key; a server no
- * longer in the plan leaves it.
- * @throws Error when a new member is on a server the user owns whose facts are missing.
+ * and gets a key pair from `keys` (default Node's x25519). A plan that sends to another
+ * environment's monitoring server (`where.kind` "shared") has that server last, as the outside
+ * member: a server address like an extra server's, and the first port free on it (its `facts`,
+ * whose other interfaces are the networks of the environments it already serves). An existing
+ * network keeps its range, devices, grants, public SSH and every kept member's address, port and
+ * public key; a server no longer in the plan, or a monitoring server it no longer sends to, leaves
+ * it.
+ * @throws Error when a new member is on a server the user owns, or is the outside member, and its
+ * facts are missing.
  */
 export function allocateNetwork(
-  plan: Pick<DeployPlan, "app" | "environment" | "target" | "servers" | "network">,
+  plan: Pick<
+    DeployPlan,
+    "app" | "environment" | "target" | "servers" | "network" | "observability"
+  >,
   facts: Readonly<Record<string, NetworkHostFacts>>,
   keys: KeyMaker = x25519KeyPair,
 ): AllocatedNetwork {
   const current = plan.network;
   const range = current?.range ?? networkRange(plan);
-  const servers = [
-    { name: APP_SERVER, own: plan.target.provider === "own" },
-    ...(plan.servers ?? []).map((s) => ({ name: s.name, own: s.target.provider === "own" })),
+  /** Each server, and what it is when a new member's port comes from its facts. */
+  const servers: { name: string; needsFacts?: string }[] = [
+    { name: APP_SERVER, ...ownServer(plan.target) },
+    ...(plan.servers ?? []).map((s) => ({ name: s.name, ...ownServer(s.target) })),
   ];
+  const where = monitoringOf(plan)?.where;
+  if (where?.kind === "shared" && !servers.some((s) => s.name === where.owner.server)) {
+    servers.push({
+      name: where.owner.server,
+      needsFacts: `the monitoring server of ${where.owner.plan}`,
+    });
+  }
   const kept = new Map(
     (current?.members ?? [])
       .filter((m) => servers.some((s) => s.name === m.name))
@@ -96,7 +123,7 @@ export function allocateNetwork(
   );
   const taken = new Set([...kept.values()].map((m) => hostOf(m.address)));
   const privateKeys: Record<string, string> = {};
-  const members = servers.map(({ name, own }) => {
+  const members = servers.map(({ name, needsFacts }) => {
     const member = kept.get(name);
     if (member !== undefined) return member;
     let host = name === APP_SERVER ? 1 : FIRST_SERVER;
@@ -110,10 +137,10 @@ export function allocateNetwork(
     }
     taken.add(host);
     let port = FIRST_PORT;
-    if (own) {
+    if (needsFacts !== undefined) {
       const found = facts[name];
       if (found === undefined) {
-        throw new Error(`Server ${name} is the user's own, and its facts are needed for its port.`);
+        throw new Error(`Server ${name} is ${needsFacts}, and its facts are needed for its port.`);
       }
       port = freePort(found);
     }

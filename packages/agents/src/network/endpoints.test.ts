@@ -1,7 +1,8 @@
+import { resolveProjectPaths } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { updateServerAddresses } from "../shared/server-record";
 import { createTestPhaseDeps } from "../testing";
-import { splitPlan } from "./__fixtures__/plans";
+import { senderPlan, splitPlan } from "./__fixtures__/plans";
 import { hasPublicAddress, publicEndpoints } from "./endpoints";
 
 const APP_IP = "203.0.113.10";
@@ -57,6 +58,48 @@ describe("publicEndpoints", () => {
       code: "PHASE_PRECONDITION",
       message:
         "OpsCrew does not know the public address of server data on this computer, so it cannot link the app's servers.",
+    });
+  });
+});
+
+describe("publicEndpoints with a monitoring server another environment owns", () => {
+  /** The staging environment's deps and record, beside prod's (the owner's) record. */
+  async function stagingDeps(owner: { monitoring?: string }) {
+    const deps = await createTestPhaseDeps({ environment: "staging" });
+    await updateServerAddresses(deps.paths, () => ({
+      schemaVersion: 1,
+      deployment: { ipv4: APP_IP },
+      servers: { data: { ipv4: DATA_IP } },
+    }));
+    const prod = resolveProjectPaths(deps.paths.root, {
+      env: { OPSCREW_HOME: deps.paths.homeDir },
+    });
+    await updateServerAddresses(prod, () => ({
+      schemaVersion: 1,
+      deployment: { ipv4: "203.0.113.40" },
+      ...(owner.monitoring === undefined
+        ? {}
+        : { servers: { monitoring: { ipv4: owner.monitoring } } }),
+    }));
+    return deps;
+  }
+
+  it("adds the monitoring server's address from its owner's record on this computer", async () => {
+    const plan = senderPlan();
+    expect(await publicEndpoints(await stagingDeps({ monitoring: "203.0.113.30" }), plan)).toEqual({
+      app: APP_IP,
+      data: DATA_IP,
+      monitoring: "203.0.113.30",
+    });
+    expect(hasPublicAddress(plan, "monitoring")).toBe(true);
+  });
+
+  it("says plainly when the owner's record does not have it", async () => {
+    await expect(publicEndpoints(await stagingDeps({}), senderPlan())).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "OpsCrew does not know the public address of the monitoring server monitoring on this computer, so it cannot link the app's servers to it.",
+      hint: "Run the command on the computer that ran `opscrew provision` for the plan opscrew/plan.yaml (it keeps that server's address in its .opscrew/ folder).",
     });
   });
 });

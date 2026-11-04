@@ -4,6 +4,7 @@ import type { EngineDeps } from "../shared/engine";
 import { serverAddress } from "../shared/server-address";
 import { readServerAddresses } from "../shared/server-record";
 import { appServers } from "../shared/servers";
+import { monitoringOwner } from "./owner";
 
 /**
  * True when the server has a public address WireGuard can reach: every extra server, and the
@@ -17,7 +18,8 @@ export function hasPublicAddress(plan: Pick<DeployPlan, "target">, server: strin
  * The public address of each of the app's servers that has one ({@link hasPublicAddress}), by
  * server name, from this computer's server record: the endpoints of the network's peers. A server
  * the user owns is reached at the public address it was given (else the address OpsCrew logs in
- * at).
+ * at). The monitoring server another environment owns, when the plan sends to it, is reached at
+ * the address in that environment's record, which is never in the plan.
  * @throws OpsCrewError `PHASE_PRECONDITION` when a server's public address is not on this computer.
  */
 export async function publicEndpoints(
@@ -45,5 +47,18 @@ export async function publicEndpoints(
     }
     endpoints[name] = address;
   }
+  const owner = monitoringOwner(deps.paths, plan);
+  if (owner === undefined) return endpoints;
+  const address = (await readServerAddresses(owner.paths)).servers?.[owner.server]?.ipv4;
+  if (address === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `OpsCrew does not know the public address of the monitoring server ${owner.server} on this computer, so it cannot link the app's servers to it.`,
+      {
+        hint: `Run the command on the computer that ran \`opscrew provision\` for the plan ${owner.plan} (it keeps that server's address in its .opscrew/ folder).`,
+      },
+    );
+  }
+  endpoints[owner.server] = address;
   return endpoints;
 }

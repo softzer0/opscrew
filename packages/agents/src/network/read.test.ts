@@ -1,11 +1,12 @@
 import type { WireGuardPeer } from "@opscrew/connector-ssh-host";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
+import { resolveProjectPaths } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { updateServerAddresses } from "../shared/server-record";
-import { createTestPhaseDeps, testKeyMaker } from "../testing";
-import { splitPlan, withNetwork } from "./__fixtures__/plans";
+import { createTestPhaseDeps, ScriptedRunner, testKeyMaker } from "../testing";
+import { monitoredPlan, senderPlan, splitPlan, withNetwork } from "./__fixtures__/plans";
 import { allocateNetwork } from "./allocate";
 import { type ReadNetworkServices, readNetwork } from "./read";
 
@@ -23,10 +24,19 @@ function pingOutput(address: string, received: number): string {
   ].join("\n");
 }
 
-/** A split plan on the network with a laptop, and fake shells and WireGuard reads per server. */
+/** The shared monitoring server's facts: its owner's network on wg-opscrew0. */
+const SHARED_FACTS = {
+  monitoring: { udpPortsInUse: [51820], wireguardInterfaces: ["wg-opscrew0"] },
+};
+
+/**
+ * A split plan on the network with a laptop (or the staging environment that sends to prod's
+ * monitoring server, `sender`), and fake shells and WireGuard reads per server.
+ */
 async function world(options: {
   app?: "cloud" | "own";
   data?: "cloud" | "own";
+  sender?: boolean;
   pingReplies?: number;
   /** What the host adapter's privilege probe prints per server (default `docker`). */
   privileges?: Record<string, string>;
@@ -35,10 +45,14 @@ async function world(options: {
   handshakes: Record<string, Record<string, number | undefined>>;
 }) {
   const keys = testKeyMaker();
-  const base = splitPlan({ app: options.app ?? "cloud", data: options.data ?? "cloud" });
+  const base =
+    options.sender === true
+      ? senderPlan()
+      : splitPlan({ app: options.app ?? "cloud", data: options.data ?? "cloud" });
   const facts = {
     app: { udpPortsInUse: [], wireguardInterfaces: [] },
     data: { udpPortsInUse: [], wireguardInterfaces: [] },
+    ...SHARED_FACTS,
   };
   const { network } = allocateNetwork(base, facts, keys);
   const prefix = network.range.split(".").slice(0, 3).join(".");
@@ -231,6 +245,94 @@ describe("readNetwork", () => {
       ]);
       expect(w.reads.map((r) => r.server)).toEqual(["app"]);
     }
+  });
+
+  it("lists the monitoring server another environment owns, read on its interface for this network", async () => {
+    const w = await world({
+      sender: true,
+      handshakes: {
+        app: { data: 5, monitoring: 10, laptop: 60 },
+        data: { app: 5, monitoring: 12 },
+        monitoring: { app: 10, data: 12, laptop: 30 },
+      },
+    });
+    const links = await readNetwork(w.deps, w.plan, w.services);
+    expect(links.filter((l) => l.from === "monitoring" || l.to === "monitoring")).toEqual([
+      {
+        from: "app",
+        to: "monitoring",
+        kind: "server",
+        up: true,
+        handshakeAgeSeconds: 10,
+        roundTripMs: 0.8,
+      },
+      { from: "data", to: "monitoring", kind: "server", up: true, handshakeAgeSeconds: 12 },
+      { from: "monitoring", to: "app", kind: "server", up: true, handshakeAgeSeconds: 10 },
+      { from: "monitoring", to: "data", kind: "server", up: true, handshakeAgeSeconds: 12 },
+      { from: "monitoring", to: "laptop", kind: "device", up: true, handshakeAgeSeconds: 30 },
+    ]);
+    expect(w.commands.filter((c) => c.command.startsWith("ping ")).map((c) => c.command)).toEqual([
+      `ping -c 3 -q ${w.prefix}.2`,
+      `ping -c 3 -q ${w.prefix}.3`,
+    ]);
+    // Its interface for this network, the second on the monitoring server.
+    expect(w.reads.at(-1)).toEqual({
+      server: "monitoring",
+      iface: "wg-opscrew1",
+      privilege: "docker",
+      rootImage: IMAGES.caddy.ref,
+    });
+  });
+
+  it("reaches the monitoring server another environment owns with that environment's login", async () => {
+    const runner = new ScriptedRunner(() => ({ exitCode: 0, stdout: "docker\n", stderr: "" }));
+    const deps = await createTestPhaseDeps({
+      environment: "staging",
+      runner,
+      clock: { now: () => NOW },
+    });
+    const keys = testKeyMaker();
+    const sender = withNetwork(
+      senderPlan(),
+      allocateNetwork(senderPlan(), SHARED_FACTS, keys).network,
+    );
+    const prod = resolveProjectPaths(deps.paths.root, {
+      env: { OPSCREW_HOME: deps.paths.homeDir },
+    });
+    const owner = monitoredPlan();
+    await writeArtifact(
+      "plan",
+      prod.files.plan,
+      withNetwork(owner, allocateNetwork(owner, {}, keys).network),
+    );
+    await updateServerAddresses(prod, () => ({
+      schemaVersion: 1,
+      deployment: { ipv4: "203.0.113.40" },
+      servers: { data: { ipv4: "203.0.113.41" }, monitoring: { ipv4: "203.0.113.30" } },
+    }));
+    await updateServerAddresses(deps.paths, () => ({
+      schemaVersion: 1,
+      deployment: { ipv4: "203.0.113.10" },
+      servers: { data: { ipv4: "203.0.113.20" } },
+    }));
+    const reads: string[] = [];
+    await readNetwork(deps, sender, {
+      async readWireGuard(shell) {
+        reads.push(shell.host);
+        return [];
+      },
+    });
+    expect(reads).toEqual(["203.0.113.10", "203.0.113.20", "203.0.113.30"]);
+    const login = (host: string) => runner.calls.find((c) => c.args.includes(`deploy@${host}`));
+    expect(login("203.0.113.30")?.args).toEqual(
+      expect.arrayContaining([prod.files.deployKey, `UserKnownHostsFile=${prod.files.knownHosts}`]),
+    );
+    expect(login("203.0.113.10")?.args).toEqual(
+      expect.arrayContaining([
+        deps.paths.files.deployKey,
+        `UserKnownHostsFile=${deps.paths.files.knownHosts}`,
+      ]),
+    );
   });
 
   it("reads nothing without a network", async () => {

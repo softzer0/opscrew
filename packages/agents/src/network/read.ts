@@ -1,10 +1,11 @@
 import { probePrivilege, readWireGuard, type WireGuardPeer } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
 import { IMAGES } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, networkInterface } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, networkInterface, readArtifact } from "@opscrew/plan-schema";
 import type { EngineDeps } from "../shared/engine";
 import { serverRemote } from "../shared/server-address";
 import { hasPublicAddress } from "./endpoints";
+import { monitoringOwner } from "./owner";
 
 /** A link of the private network, seen from the server `from`. */
 export interface NetworkLink {
@@ -31,7 +32,10 @@ export interface NetworkLink {
 export interface ReadNetworkServices {
   /** Reads a server's interface (default the host adapter's `readWireGuard`). */
   readWireGuard?: typeof readWireGuard;
-  /** The shell on a server (default `serverRemote`). */
+  /**
+   * The shell on a server (default `serverRemote`, with the owner's login for the monitoring
+   * server another environment owns).
+   */
   remote?: (server: string) => Promise<RemoteExec>;
 }
 
@@ -61,14 +65,30 @@ function failingWhenUnreachable(remote: RemoteExec): RemoteExec {
 }
 
 /**
+ * The login's shell on the server `server` of the plan's network: one of the app's servers, or
+ * the monitoring server another environment owns, with that environment's login.
+ */
+async function memberRemote(
+  deps: EngineDeps,
+  plan: DeployPlan,
+  server: string,
+): Promise<RemoteExec> {
+  const owner = monitoringOwner(deps.paths, plan);
+  if (owner?.server !== server) return serverRemote(deps, plan, server);
+  const ownerPlan = await readArtifact("plan", owner.paths.files.plan);
+  return serverRemote({ ...deps, paths: owner.paths }, ownerPlan, server);
+}
+
+/**
  * The state of the private network's links: each server's WireGuard interface read through its
  * shell, after the app's server pinged every other server's private address (`ping -c 3 -q`) for
  * the round trip. A link is up when its last handshake is under three minutes old: every link
  * between servers keeps itself alive every 25 seconds, and a device's does while it is on. Each
  * server is read as root the way the host adapter's probe says its login becomes root (`deploy` on
- * a server OpsCrew created: through Docker, with the pinned Caddy image). A server that cannot be
- * reached or read throws nothing: its links are down, with the reason `unreachable`, or `no-root`
- * when its login cannot become root. Reads only.
+ * a server OpsCrew created: through Docker, with the pinned Caddy image); the monitoring server
+ * another environment owns is one of them, read on its interface for this network with that
+ * environment's login. A server that cannot be reached or read throws nothing: its links are down,
+ * with the reason `unreachable`, or `no-root` when its login cannot become root. Reads only.
  */
 export async function readNetwork(
   deps: EngineDeps,
@@ -77,7 +97,7 @@ export async function readNetwork(
 ): Promise<NetworkLink[]> {
   const network = plan.network;
   if (network === undefined) return [];
-  const remoteOf = services.remote ?? ((server: string) => serverRemote(deps, plan, server));
+  const remoteOf = services.remote ?? ((server: string) => memberRemote(deps, plan, server));
   const read = services.readWireGuard ?? readWireGuard;
   /** The pings' round trips by server; `undefined` when the app's server could not be reached. */
   const ping = async (app: RemoteExec) => {
