@@ -475,6 +475,7 @@ network above all).
 - [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
   - Noted at merge: `catalogs()` in `monitoring/enable.ts` repeats design's private `extraCatalogs`; `pinnedVersion` in `monitoring/settings.ts` repeats the one in `addons/settings.ts` (T2009).
+  - Noted at merge: destroy's owner refusal repeats `monitoringDisable`'s wording and command list (T2013). `MonitoringStackInput.networks[].servers`/`devices` are still unused by the stack (T2004; `hasDevices` already removed at T2021).
   - Noted at merge: `runAddonChange`'s preflight calls the `shell` closure twice on a server OpsCrew created (T2011).
   - Noted at merge: `postgresOn` from `addons/alloy.ts` is copied in `provision/monitoring.ts` (T2011). 018's "Waiting for server X at <ip>" lines print public addresses (outside 020; consider masking).
   - Noted at merge: `drift/monitoring.ts` has its own `monitoringStackInput`; switch it to T2011's export. `monitoringDrift` inspects each server a second time, apart from `serversDrift` (T2012).
