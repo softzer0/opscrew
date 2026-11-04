@@ -102,7 +102,7 @@ network above all).
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2004 [P] [US1] [US3] [US6] The stack's files, in `packages/iac-templates/src/monitoring/`
+- [x] T2004 [P] [US1] [US3] [US6] The stack's files, in `packages/iac-templates/src/monitoring/`
   - Owns: `packages/iac-templates/src/monitoring/**` except `dashboards/` (+ tests, snapshots)
   - Reads: plan.md "4."; data-model.md "On the servers"; contracts/monitoring.md "T2004"; research.md R3, R4, R7 (S2–S5); `addons/proxy.ts`, `addons/compose.ts`, `runtime/services.ts` (`hardened`)
   - Depends: T2002, T2003
@@ -425,6 +425,7 @@ network above all).
 
 - [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
+  - Noted at merge: `GO_MEMORY_SHARE` is defined in both `monitoring/compose.ts` and `addons/alloy.ts`; `MonitoringStackInput.networks[].servers`/`devices` are unused by the stack (T2004).
 - [ ] T2020 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync. A patch version (0.2.1): plans without monitoring render byte-identical, so no project has to be redone. Only a minor version (0.3.0) if the feature ends up changing files that existing projects must redo (`docs/releasing.md` 1.).
 
 ## Dependencies
