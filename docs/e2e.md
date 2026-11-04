@@ -2044,6 +2044,114 @@ The site passes roll back too: step 5 and S3 of [Cloudflare's hosting](#cloudfla
 step 4b of [GitHub Pages](#github-pages) run `opscrew rollback` as above, then
 `opscrew rollback --resume --yes`.
 
+## Self-hosted monitoring
+
+`packages/cli/test/live/monitoring.test.ts`, with `OPSCREW_E2E_MONITORING=1`, runs feature 020's
+self-hosted monitoring on `examples/nextjs-postgres` (always this example: its Postgres gives the
+stack its database figures, so `OPSCREW_E2E_APP` is ignored). The app runs at Hetzner behind
+Cloudflare, in the throwaway repository `OPSCREW_E2E_GITHUB_REPO`. Monitoring is turned on after
+the app's first deploy, as a user does: Alloy starts on a server only once the app runs there.
+
+**The device** is the one of [split placement](#split-placement-and-the-private-network): a
+privileged Linux container on this computer, its image built at the start, before any server
+exists. It imports the configuration `opscrew vpn add` wrote and turns it on with `wg-quick`. Its
+HTTP requests are made with the image's Node.js.
+
+The steps:
+
+1. **The app:** the example goes to `main`, the device's image is built, then prod's design (as
+   for [environments](#environments-and-promotion)), `adapt`, `provision` until done, the first
+   deploy, and the site through Cloudflare. The page `/` must answer with the database's time.
+2. **Turned on:** `addon enable monitoring --env prod` must show a monthly price, the licences
+   (AGPL-3.0) and `opscrew provision` as the next step, and write `observability.monitoring` with
+   the stack on server `monitoring`, a member of the private network. Hetzner must still list one
+   server of the app. Then `provision` until done (the monitoring server, the network, the stack,
+   Alloy and Postgres's monitoring login, each plan approved by its hash), and its deploy-setup pull
+   request merged and deployed. Hetzner must then list two servers of the app.
+3. **The data** (SC-2001): `addon status --env prod --json`, every 15 seconds, must show figures
+   and a log line from each server of prod (`app` and `monitoring`), none flagged silent. The time
+   from the deploy to the last one is logged; over 2 minutes is a finding that fails the run at the
+   end, and over 5 minutes stops it.
+4. **From the internet** (SC-2002): SSH must answer on the monitoring server's public address, and
+   none of TCP ports 80, 443, 3000 (Grafana), 9091 (the front), 9090 (Prometheus), 3100 (Loki),
+   12345 (Alloy) and 5432. Its cloud firewall `<app>-monitoring-firewall` must allow exactly ping,
+   SSH and the network's WireGuard UDP port. `verify` must pass, and `secure` must write its report.
+5. **The private network** (SC-2002, US3): `vpn add laptop`, each plan approved by its hash, and the
+   device's tunnel on. Within a minute, Grafana's `/api/health` on the monitoring server's private
+   address must answer the device with 200; the front's push port must not answer it. From the
+   app's server, as `deploy` with `curl`: `POST /api/v1/write` and `POST /loki/api/v1/push` at the
+   front must pass it (any answer but 403), a query (`GET /api/v1/query`) must get 403, and
+   Grafana's port must not answer. Then, through Grafana's API from the device, signed in as
+   `admin` with `monitoring.grafanaAdminPassword` from this computer's generated values (read,
+   masked, never printed), with the Docker pass's helpers (`test/e2e/monitoring-support.ts`):
+   - **The dashboards** (SC-2003): 20 requests to the app (a quarter to a missing page, for 4xx),
+     and one 502: kamal-proxy in the edge's Compose project is stopped on the app's server until
+     the site answers 502, then started again. Then every `DASHBOARD_QUERIES` entry, with the
+     dashboards' variables set to prod's app server, goes through `/api/ds/query` over the last
+     five minutes, every 10 seconds for up to 5 minutes. Each panel still without data is a
+     finding, the two disk panels included (on a real server Alloy sees the disk).
+   - **The stored lines** (SC-2004): Loki's lines of the app since the run started (at most 5,000,
+     `{app="<app>"}` with no filter: the search is the test's). None may hold one of the app's
+     secret values: OpsCrew's generated values, and the settings the plan marks secret in
+     `app.env` on the app's server (8 characters or more). Each value found is a finding by its
+     name and count, never printed.
+
+   Then `vpn remove laptop`, and the tunnel goes off.
+6. **A second environment** (US5): `env add staging --target hetzner --from main`, its
+   `provision`, its first deploy and its health route through Cloudflare. Then
+   `addon enable monitoring --env staging` must send to the repository's monitoring server
+   (`where.kind: shared`), and staging's `provision` (which also changes the monitoring server, each
+   host plan approved by its hash) and deploy follow. Hetzner must list no new server (two of
+   prod's app, one of staging's), the monitoring server must have two WireGuard interfaces, and
+   prod's `addon status` must show figures and logs from staging's server under `env` staging,
+   within the times of step 3.
+7. **The owner and a sender** (US5, US7): `addon disable monitoring --env prod` must be refused,
+   naming staging, with "Nothing was changed.", and the plan keeps monitoring. Then staging's
+   `destroy`: nothing of it may be left at Hetzner, and the monitoring server must be back to one
+   WireGuard interface.
+8. **Turned off** (US7, SC-2007): `addon disable monitoring --env prod` takes monitoring and server
+   `monitoring` out of the plan. As in split placement's step 9, `provision --confirm
+   <app>-monitoring --yes` lifts the server's delete protection, then `provision` until done
+   deletes it after its typed name, and its pull request (if any) is deployed. The app must still
+   answer, Hetzner must no longer list `<app>-monitoring`, and no container of Alloy's Compose
+   project (`opscrew-alloy`) may be left on the app's server.
+9. **Destroy:** `destroy --confirm <app> --no-snapshot`; nothing of the app may be left at Hetzner
+   (by its labels) or in Cloudflare.
+10. **Nothing leaked** (SC-2008), as for environments, the generated Grafana and Postgres
+    monitoring passwords and the servers' WireGuard keys included. The output of every
+    `opscrew addon` command must hold no server's public address either.
+
+**Cleanup.** The cleanup is the one for environments: `opscrew destroy` for each environment not
+destroyed yet (staging first, since prod's is refused while staging sends to its monitoring
+server), then always Hetzner's API by each app's labels, which delete every server (the monitoring
+server too), firewall and SSH key the run made, GitHub's runners, environments and deploy secrets,
+and Cloudflare. After the Cloudflare cleanup the device's container and image are removed.
+
+**If a run was interrupted**, delete by hand what the environments test lists (the server
+`<app>-monitoring` carries the app's labels), and the container `opscrew-e2e-device-<run id>` and
+the image `opscrew-e2e-device:<run id>` (`docker rm -f`, `docker image rm`).
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_MONITORING` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for environments. Without any of them the test is skipped with a message naming it. |
+| `OPSCREW_E2E_REGION`, `OPSCREW_E2E_APP_ENV` | Optional, as above. |
+
+Docker must run here with privileged containers whose kernel has WireGuard, as for split
+placement, and this computer must reach the servers' WireGuard port (UDP 51820).
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_MONITORING=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/monitoring.test.ts
+```
+
+Not measured yet: about 2 hours, with up to three of the smallest servers for that time (prod's,
+the monitoring server and staging's; well under €1 in all), and five or six deploy runs with a
+build (about 20 to 30 Actions minutes in a private repository).
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
