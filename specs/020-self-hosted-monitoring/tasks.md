@@ -457,7 +457,7 @@ network above all).
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter opscrew exec vitest run test/e2e/monitoring.test.ts`
   - Effort: xhigh
 
-- [ ] T2017 [P] The live tests (gated on `OPSCREW_E2E_MONITORING=1` and the Hetzner token), in `packages/cli/test/live/monitoring.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
+- [x] T2017 [P] The live tests (gated on `OPSCREW_E2E_MONITORING=1` and the Hetzner token), in `packages/cli/test/live/monitoring.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: plan.md "15."; spec's Independent Tests; 018's `split.test.ts`
   - Depends: T2013, T2014
