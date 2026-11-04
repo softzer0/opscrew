@@ -555,6 +555,11 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
     - `postgresOn` imported from iac-templates in provision and the estimate (a second
       Postgres's server now counts its 40 series); `monitoringSenders` gone;
     - the `networked(plan, facts?)` test fixture added to `network/__fixtures__/plans.ts` for T2027.
+    - from T2022's review: the Postgres monitoring password is made once per run in memory and
+      saved only after the last step that uses it (Alloy) is applied, so a refused or failed step
+      leaves nothing saved and the re-run plans the same `rewrite` hashes; tests for the refusal of
+      Alloy after the grant and for a lost password reaching both (`provision/secrets.ts`'s
+      `monitoringPassword` is in this task's Owns for that).
     - from T2024: drift calls `stoppedServices` from `monitoring/status.ts`; the owner wording at
       `enable.ts` (~486) uses the shared one (`enable.ts` is in this task's Owns for that line).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents && pnpm turbo run typecheck --filter=opscrew`
