@@ -29,6 +29,7 @@ import {
 import { recordGeneratedEntries } from "../shared/app-secrets";
 import { appServers } from "../shared/servers";
 import { memberAddress } from "./grants";
+import { sharedMonitoringServer } from "./monitoring";
 import {
   deviceServers,
   networkServer,
@@ -190,9 +191,13 @@ function serverAddressesText(plan: DeployPlan, servers: readonly string[]): stri
  *   shown and approved by its own hash (provision's `applyNetworkPlans`). The plan is written
  *   before them, so a run whose plans were refused is finished by running the command again with
  *   `--approve` and the hashes (the same key, the same plans), without a new key.
+ * - On an environment that sends to another environment's monitoring server, that server's
+ *   interface for this network gets the peer too, last, over its owner's login
+ *   (`sharedMonitoringServer`), so the device reaches Grafana, which shows every environment.
  * - `thisComputer` records the device as this computer once every server has it.
  * @throws OpsCrewError before any change: no server with a public address, the device is this
- * computer's while public SSH is closed (`again`), or a server's address is not on this computer.
+ * computer's while public SSH is closed (`again`), a server's address is not on this computer, or
+ * the monitoring server's owner no longer runs it.
  */
 export async function vpnAdd(
   deps: PhaseDeps,
@@ -220,6 +225,7 @@ export async function vpnAdd(
   const command = `opscrew vpn add ${device}${flag}${options.thisComputer === true ? " --this-computer" : ""}`;
   const servers = await reachableServers(deps, plan, services);
   const endpoints = await publicEndpoints(deps, plan);
+  const monitoring = await sharedMonitoringServer(deps, plan, services);
   const keys = services.keys ?? x25519KeyPair;
   const created = plan.network === undefined;
   if (created) {
@@ -257,7 +263,7 @@ export async function vpnAdd(
   }
   const outcomes = await applyNetworkPlans(deps, {
     plan,
-    servers,
+    servers: monitoring === undefined ? servers : [...servers, monitoring.server],
     command,
     phase: VPN_PHASE,
   });
@@ -275,6 +281,11 @@ export async function vpnAdd(
   } else {
     deps.reporter.info(
       `Device ${device} (${address}) is on ${listText(names.map((n) => `server ${n}`))}. Its configuration is the one written when it was added (${file}); OpsCrew keeps no copy of its key${options.qr === true ? ", so it can't show it as a QR code again" : ""}. For a new configuration, run \`opscrew vpn add ${device}${flag} --again\`.`,
+    );
+  }
+  if (monitoring !== undefined) {
+    deps.reporter.info(
+      `Device ${device} also reaches Grafana on ${monitoring.words}, at ${monitoring.grafana}: it sees the dashboards of every environment there, as Grafana has one login for all of them.`,
     );
   }
   const dashboards = first ? dashboardCommands(plan, flag) : [];
@@ -301,10 +312,13 @@ export async function vpnAdd(
 
 /**
  * `opscrew vpn remove <name>`: takes the device off every server with a public address, through
- * each server's private network host plan approved by its own hash, then out of
+ * each server's private network host plan approved by its own hash (on an environment that sends
+ * to another environment's monitoring server, that server's interface for this network too, over
+ * its owner's login), then out of
  * `opscrew/plan.yaml` (and out of the server record's `thisDevice` when it was this computer).
  * @throws OpsCrewError before any change: the device is not on the network, it still has access
- * to a database or cache (revoke it first), or it is this computer's while public SSH is closed.
+ * to a database or cache (revoke it first), it is this computer's while public SSH is closed, or
+ * the monitoring server's owner no longer runs it.
  */
 export async function vpnRemove(
   deps: PhaseDeps,
@@ -340,14 +354,16 @@ export async function vpnRemove(
   }
   await requireNotThisTunnel(deps, plan, device, "removing it");
   requireServers(plan);
-  const servers = await reachableServers(deps, plan, options.services ?? {});
+  const services = options.services ?? {};
+  const servers = await reachableServers(deps, plan, services);
+  const monitoring = await sharedMonitoringServer(deps, plan, services);
   const after: DeployPlan = {
     ...plan,
     network: { ...network, devices: network.devices.filter((d) => d.name !== device) },
   };
   const outcomes = await applyNetworkPlans(deps, {
     plan: after,
-    servers,
+    servers: monitoring === undefined ? servers : [...servers, monitoring.server],
     command: `opscrew vpn remove ${device}${flag}`,
     phase: VPN_PHASE,
   });
