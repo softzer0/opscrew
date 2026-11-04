@@ -107,5 +107,8 @@ answer.
 
 ## The host record
 
-The `monitoring` step adds `addons.monitoring = { app, env }` to the host record. The `alloy`
-step's entry keeps its app, and gains its destinations (`grafanaCloud`, `monitoring`).
+The `monitoring` step adds `addons.monitoring` to the host record: the host plan's app name
+(`<app>-<env>` outside prod), as every add-on records its owner. Only that owner may change or
+remove the stack: a monitoring server sets up no app, so the owner is never treated as gone. The
+`alloy` step's entry keeps its app; its destinations come from inspection (`.opscrew-destinations`
+in Alloy's folder; without it, `grafanaCloud`).

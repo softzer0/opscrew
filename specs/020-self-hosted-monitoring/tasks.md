@@ -133,7 +133,7 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T2005 [P] [US2] The six dashboards and their queries, in `packages/iac-templates/src/monitoring/dashboards/`
+- [x] T2005 [P] [US2] The six dashboards and their queries, in `packages/iac-templates/src/monitoring/dashboards/`
   - Owns: `packages/iac-templates/src/monitoring/dashboards/**` (+ tests, snapshots)
   - Reads: plan.md "5."; data-model.md "The labels every series carries"; contracts/monitoring.md "T2005"; research.md R4, R7 (S3, S5)
   - Depends: T2002
@@ -293,6 +293,14 @@ network above all).
   - Owns: `packages/agents/src/provision/monitoring.ts` (+ test), and in `packages/agents/src/provision/{run.ts,secrets.ts}` only the calls into it and the two generated values (+ their tests); `packages/agents/src/testing/**` for the fakes it needs
   - Reads: plan.md "11."; spec US1, US4, US5, US7; data-model.md "Secrets kept apart"; 018's `provision/network.ts`, `provision/servers.ts`
   - Depends: T2004, T2006, T2007, T2008, T2009, T2010
+  - Notes from wave 1:
+    - T2008: the `monitoring` step always runs as root (pass `rootImage` and the facts; `runAs`
+      only picks the folder). Plan it with the owner's app name, a sender re-rendering it too:
+      only the recorded owner may change or remove the stack. `grant`'s `monitor` reads
+      `monitoringPostgresPassword`; the login is the exported `MONITOR_LOGIN`. Generate the Postgres
+      password as 16–128 letters and digits, Grafana's as 16–128 letters, digits, `-` and `_`.
+    - T2006: `renderAddon(plan, "grafana-cloud")` ignores monitoring; call `renderAlloyConfig` and
+      `renderAlloyCompose` with both destinations. The proxy's Caddyfile is `renderProxyCaddyfile`.
   - Accept:
     - **The order of plan.md 11.,** each host plan shown and approved by its hash, tested on:
       - a cloud monitoring server;
@@ -430,6 +438,7 @@ network above all).
 
 - [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
+  - Noted at merge: the add-on project names (`opscrew-beszel`, `opscrew-monitoring`) are plain strings in `addons/alloy.ts` (T2006).
   - Noted at merge: `GO_MEMORY_SHARE` is defined in both `monitoring/compose.ts` and `addons/alloy.ts`; `MonitoringStackInput.networks[].servers`/`devices` are unused by the stack (T2004).
 - [ ] T2020 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync. A patch version (0.2.1): plans without monitoring render byte-identical, so no project has to be redone. Only a minor version (0.3.0) if the feature ends up changing files that existing projects must redo (`docs/releasing.md` 1.).
 
