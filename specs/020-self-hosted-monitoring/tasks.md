@@ -153,7 +153,7 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T2006 [P] [US1] Alloy on any server, with two destinations, in `packages/iac-templates/src/addons/`
+- [x] T2006 [P] [US1] Alloy on any server, with two destinations, in `packages/iac-templates/src/addons/`
   - Owns: `packages/iac-templates/src/addons/{alloy.ts,index.ts,proxy.ts,compose.ts}` (+ tests, `__snapshots__/**`, `__fixtures__/**`)
   - Reads: plan.md "6."; data-model.md "The labels"; contracts/monitoring.md "T2006"; research.md R2, R7 (S1, S5, S7); 017's plan.md "6."
   - Depends: T2002, T2003
@@ -230,7 +230,7 @@ network above all).
   - Owns:
     - `packages/agents/src/monitoring/**` except `status.ts` (+ tests, `__fixtures__/**`);
     - `packages/agents/src/shared/memory.ts`;
-    - `packages/agents/src/design/{servers.ts,kept-edits.ts,sizing.ts}` (+ tests);
+    - `packages/agents/src/design/{servers.ts,kept-edits.ts,sizing.ts,placement-edits.ts,placement.ts,own-servers.ts}` and `serverMemoryText` in `design/components.ts` (+ tests; the last four added at the lead's decision during the task: keeping monitoring across a re-design, and sizing for the stack);
     - in `packages/agents/src/addons/run.ts`, only the dispatch of `monitoring` to
       `monitoringEnable` and `monitoringDisable`.
   - Reads: plan.md "9."; spec US1, US4–US7; data-model.md; research.md R3, R7 (S2); `addons/estimate.ts`, `design/servers.ts`, `network/allocate.ts`, 013's app list
