@@ -493,7 +493,7 @@ excepted), the 017 plan texts stay, and no test loses what it proves. Rejected b
 approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
 
 - [ ] T2022 A change of secrets only reaches the server (correctness, found by the ssh-host reviewer), in `packages/connectors/ssh-host/**` and the callers in `packages/agents/src/{provision/monitoring.ts,addons/run.ts}`
-  - Owns: `packages/connectors/ssh-host/src/{steps,plan,types,apply}.ts` (+ tests, fixtures, snapshots); in agents `provision/monitoring.ts` and `addons/run.ts` only the places that pass `secretsChanged` or a grant's in-place (+ tests)
+  - Owns: `packages/connectors/ssh-host/src/{steps,plan,types,apply}.ts` (+ tests, fixtures, snapshots); in agents `provision/monitoring.ts` and `addons/run.ts` only the places that pass `secretsChanged` or a grant's in-place (+ tests); `packages/agents/src/testing/addons.ts`'s comparison; `packages/agents/src/vpn/grants.ts` for a device's regenerated password (018 had the same flaw)
   - Reads: `apply.ts` `runStep` (a check printing `state=in-place` skips the apply); `MONITOR_HELPERS`' `files_ok` (secret files only `-s`); `grantScripts`' check (the login's attributes only); T2011's notes
   - Depends: none
   - Accept:
