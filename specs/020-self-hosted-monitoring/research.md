@@ -372,5 +372,38 @@ Grafana 13.3.0, Alloy 1.21.3, and OpsCrew's Caddy 2.11.7.
 - **Scrape interval:** Alloy's default is 60 s, so every scrape sets `15s`.
 - **Alloy's memory** (32 containers): logs and the unix exporter 96 MiB; with Grafana Cloud too 107;
   with Postgres and Caddy 117; with cAdvisor 161–234. At 017's 256 MB limit it ran at 200–242 MiB,
-  held down by the garbage collector, so monitoring needs a larger limit (S2). 017's proxy used 27
-  of its 32 MiB.
+  held down by the garbage collector; with discovery limited to the app's and OpsCrew's projects it
+  needs less (S2). 017's proxy used 27 of its 32 MiB.
+- **postgres_exporter adds its own `server` label** (`server="db:5432"`) to `pg_stat_activity_*` and
+  `pg_settings_*`, the same clash as Caddy's: Alloy renames it `pg_server` (found in S2).
+- **`discovery.docker` can't filter on several projects:** Docker ANDs label filters, so the
+  projects are kept by a relabel on `__meta_docker_container_label_com_docker_compose_project`.
+
+### S2, memory and disk
+
+The stack (part B's files, limits doubled so they wouldn't shape the figures) with three Alloys
+sending through the front for 60 minutes: `app` (the edge, kamal-proxy, web), `db` (Postgres, Valkey,
+a client) and `worker` (worker, cron); 8 app containers, about 5 HTTP requests a second, about 74,000
+log lines an hour (4.5 MB of text), and six rounds of Grafana's UI queries. `docker stats` every
+30 s.
+
+| Container | Steady | Peak (MiB) | Default limit (MB) |
+|---|---|---|---|
+| prometheus | 50 | 51 | 192 (the hour ended before its first block compaction, so doubled) |
+| loki | 206 | 225 (perhaps still rising: chunks flush after 30 min idle) | 384 |
+| grafana | 266 | 266 at a 384 MB limit (461 under the doubled one, lazy collection) | 416 |
+| front | 60 | 60 | 96 |
+| alloy (each) | 149–163 | 164 | 256, 017's, which holds |
+| proxy (each) | 18–21 | 21 | 32, 017's, which holds |
+
+- **The stack's limits total 1,088 MB;** with the monitoring server's own Alloy and proxy, 1,376 MB
+  plus the system's share.
+- **`keepequal`** cost about 10 MiB with discovery limited (146.7 MiB against 136.8 for the ids only),
+  on 4 containers.
+- The Alloy figures are upper bounds: the machine had 12 CPUs (65 unix series per server, 17 on 2
+  vCPUs), and each cAdvisor saw every container on it.
+- **Series:** 361 active (app 138, db 136, worker 87; unix 195, cAdvisor 76, Caddy 46, Postgres
+  44); about 217 on 2-vCPU servers.
+- **Disk:** Prometheus grew about 0.87 MB an hour (WAL; about 10 bytes a sample before compaction,
+  1–2 bytes in compacted blocks). Loki grew about 1.72 MB an hour for 4.5 MB of text (chunks 0.33
+  MB, the rest its WAL). Grafana's volume stayed at 1.7 MB.

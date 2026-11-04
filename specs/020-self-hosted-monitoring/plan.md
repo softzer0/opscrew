@@ -285,7 +285,7 @@ design goes into this plan before wave 1. ADR 0024 records D1–D6 of research R
   - uids are unique;
   - every panel uses one of the two data source uids;
   - every label a query uses is in the contract, or is one of the series' own (`container`,
-    `container_id`, `caddy_server`, `code`, `method`, `handler`, `datname`, `state`, `interface`,
+    `container_id`, `caddy_server`, `pg_server`, `code`, `method`, `handler`, `datname`, `state`, `interface`,
     `cpu`, `mode`, `mountpoint`, `device`, `fstype`, `le`).
 - **http and caddy with another edge:** with nginx or the user's own proxy, these two dashboards
   hold a text panel saying they need Caddy.
@@ -311,10 +311,14 @@ Research R7 "The collector" is the source; the spike's working `config.alloy` is
   - **with Grafana Cloud only:** today's four figures, unchanged.
 - **On the edge's server, with monitoring:** a scrape of Caddy's metrics listener (T2007) on the
   edge's network. Caddy's `server` label becomes `caddy_server` before OpsCrew's `server` is set,
-  and the metrics handler's own requests (`handler="metrics"`) are dropped.
+  and the metrics handler's own requests (`handler="metrics"`) are dropped. Only series whose
+  `host` is empty or one of this plan's hostnames (with an optional port) are kept: the edge is
+  shared, and other apps' hosts must not get this app's labels. Then `service="caddy"` is set.
 - **On Postgres's server, with monitoring:** `prometheus.exporter.postgres` with the `database`
   and `stat_database` collectors and a keep-list, its whole data source read from a file
-  (`local.file`, `is_secret = true`), logging in as `opscrew_monitor`.
+  (`local.file`, `is_secret = true`), logging in as `opscrew_monitor`. The Postgres chosen is the
+  first enabled one whose `server` is this server. The exporter's own `server` label becomes
+  `pg_server` (S2).
 - **Every scrape** sets `scrape_interval = "15s"` (Alloy's default is 60 s).
 - **Masking:** unchanged, on every server; with monitoring the known-values file is read through
   `/rootfs` (the mount below). With monitoring on, the sampling moves out of
@@ -409,8 +413,10 @@ Research R7 "The collector" is the source; the spike's working `config.alloy` is
   - **The estimate,** `estimate.ts`:
     - series per server (research R7): 5 per vCPU + 7 for the server, 5 per container + 2 for the
       network, about 80 per hostname on the edge's server, and 40 on Postgres's;
-    - figures over the retention, at 15-second intervals and the bytes per sample S2 measured;
-    - the log volume over the retention, read as 017's `grafanaEstimate` reads it;
+    - figures over the retention, at 15-second intervals and 2 bytes a sample (compacted blocks;
+      S2), plus the WAL's few hours at about 10 bytes a sample;
+    - the log volume over the retention, read as 017's `grafanaEstimate` reads it, at a quarter of
+      its text size on disk (S2: chunks and index well under that, plus Loki's WAL);
     - summed over every sending environment for a shared server;
     - `metricsMaxGb` is 80% of the disk left after logs;
     - a refusal above 80% (FR-2020).

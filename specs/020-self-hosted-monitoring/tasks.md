@@ -180,7 +180,7 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T2007 [P] [US1] [US2] Caddy's figures and the masking file on every server, in `packages/iac-templates/src/edge/` and `packages/iac-templates/src/workflow/`
+- [x] T2007 [P] [US1] [US2] Caddy's figures and the masking file on every server, in `packages/iac-templates/src/edge/` and `packages/iac-templates/src/workflow/`
   - Owns: `packages/iac-templates/src/edge/index.ts`, `packages/iac-templates/src/workflow/{index.ts,servers.ts}` (+ their tests, `__snapshots__/**`, `__fixtures__/**`)
   - Reads: plan.md "7."; research.md R4, R7 (S5); 017's plan.md "6." (the masking file)
   - Depends: T2002
@@ -290,7 +290,7 @@ network above all).
 ## Phase 4: Wave 3 (parallel)
 
 - [ ] T2011 [US1] [US4] [US5] [US7] Provision: the host plans per server, the secrets, the shared server, in `packages/agents/src/provision/monitoring.ts`
-  - Owns: `packages/agents/src/provision/monitoring.ts` (+ test), and in `packages/agents/src/provision/{run.ts,secrets.ts}` only the calls into it and the two generated values (+ their tests); `packages/agents/src/testing/**` for the fakes it needs
+  - Owns: `packages/agents/src/provision/monitoring.ts` (+ test), and in `packages/agents/src/provision/{run.ts,secrets.ts}` only the calls into it and the two generated values (+ their tests); `packages/agents/src/testing/**` for the fakes it needs; in `packages/agents/src/move/{app-env.ts,window.ts}` only the masking file's lines (+ tests)
   - Reads: plan.md "11."; spec US1, US4, US5, US7; data-model.md "Secrets kept apart"; 018's `provision/network.ts`, `provision/servers.ts`
   - Depends: T2004, T2006, T2007, T2008, T2009, T2010
   - Notes from wave 1:
@@ -299,6 +299,14 @@ network above all).
       only the recorded owner may change or remove the stack. `grant`'s `monitor` reads
       `monitoringPostgresPassword`; the login is the exported `MONITOR_LOGIN`. Generate the Postgres
       password as 16–128 letters and digits, Grafana's as 16–128 letters, digits, `-` and `_`.
+    - T2007: `maskFileScript` now returns a script with monitoring on and no Grafana Cloud, so a move
+      rewrites `mask.re` for those plans too. Update `writeMask`'s comment in `move/app-env.ts` and
+      the move window's text in `move/window.ts` (it lists the rewrite only with Grafana Cloud): gate
+      it on `maskFileScript(plan) !== ""`.
+    - T2006: with monitoring on, Alloy's Compose file names `opscrew-edge`, `<app>_internal` and
+      `opscrew-monitoring-push` as external networks: they must exist before the `alloy` host plan
+      runs (a fresh extra server before its first deploy too). Pick Postgres per server as T2006
+      does: the first enabled Postgres whose `server` is that server.
     - T2006: `renderAddon(plan, "grafana-cloud")` ignores monitoring; call `renderAlloyConfig` and
       `renderAlloyCompose` with both destinations. The proxy's Caddyfile is `renderProxyCaddyfile`.
   - Accept:
@@ -438,6 +446,7 @@ network above all).
 
 - [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
+  - Noted at merge: `pinnedTag` in `workflow/__fixtures__/plans.ts` repeats `pinnedVersion`'s tag slicing (T2007).
   - Noted at merge: the add-on project names (`opscrew-beszel`, `opscrew-monitoring`) are plain strings in `addons/alloy.ts` (T2006).
   - Noted at merge: `GO_MEMORY_SHARE` is defined in both `monitoring/compose.ts` and `addons/alloy.ts`; `MonitoringStackInput.networks[].servers`/`devices` are unused by the stack (T2004).
 - [ ] T2020 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync. A patch version (0.2.1): plans without monitoring render byte-identical, so no project has to be redone. Only a minor version (0.3.0) if the feature ends up changing files that existing projects must redo (`docs/releasing.md` 1.).
