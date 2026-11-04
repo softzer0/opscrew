@@ -362,7 +362,7 @@ network above all).
 
 ## Phase 5: Wave 4 (parallel)
 
-- [ ] T2013 [P] [US7] Destroy and retarget, in `packages/agents/src/{destroy,retarget}/`
+- [x] T2013 [P] [US7] Destroy and retarget, in `packages/agents/src/{destroy,retarget}/`
   - Owns: the monitoring parts of `packages/agents/src/{destroy,retarget}/**` (+ tests, fixtures); in `packages/agents/src/provision/monitoring.ts` `leaveMonitoringServer`'s export and `leave()` skipping an owner with no deployment (added at the lead's decision)
   - Reads: plan.md "13."; spec US5 #4, US7; 018's `destroy/servers.ts`
   - Depends: T2011
