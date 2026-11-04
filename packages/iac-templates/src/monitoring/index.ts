@@ -33,7 +33,6 @@ export interface MonitoringStackInput {
     /** The devices' private addresses. */
     devices: string[];
   }[];
-  hasDevices: boolean;
   /** The owner's plan, for headers and labels. */
   plan: DeployPlan;
 }

@@ -221,7 +221,9 @@ design goes into this plan before wave 1. ADR 0024 records D1–D6 of research R
     - **`loki`:** `-config.file`, a tmpfs `/tmp` (without it retention silently deletes nothing),
       no published port, no healthcheck (its image has no shell or `wget`).
     - **`grafana`:**
-      - published on `127.0.0.1:<grafana port>`, and on each private address when devices exist;
+      - published on `127.0.0.1:<grafana port>` and on each private address, where the network's
+        filter admits only devices (none until one is added), so `vpn add` needs no stack change
+        (lead decision at T2021);
       - the `GF_*` settings of research R7 (S3), the two `GRAFANA_COM` URLs and
         `GF_PLUGINS_DISABLE_PLUGINS` included;
       - the admin password as `GF_SECURITY_ADMIN_PASSWORD=$$__file{<path>}`, never `__FILE`

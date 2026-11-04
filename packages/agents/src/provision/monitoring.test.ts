@@ -1166,6 +1166,5 @@ describe("monitoringStackInput", () => {
         devices: [],
       },
     ]);
-    expect(input.hasDevices).toBe(false);
   });
 });

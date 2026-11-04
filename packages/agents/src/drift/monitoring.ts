@@ -58,7 +58,6 @@ export function monitoringStackInput(
   return {
     settings: monitoringOf(owner) as MonitoringSettings,
     networks,
-    hasDevices: networks.some((network) => network.devices.length > 0),
     plan: owner,
   };
 }

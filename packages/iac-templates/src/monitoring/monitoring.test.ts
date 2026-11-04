@@ -62,7 +62,6 @@ function input(plan: DeployPlan, networks: MonitoringStackInput["networks"]): Mo
   return {
     settings,
     networks,
-    hasDevices: networks.some((network) => network.devices.length > 0),
     plan,
   };
 }
@@ -374,14 +373,15 @@ describe("publishing", () => {
     );
   }
 
-  it("publishes Grafana on 127.0.0.1 and the front on the private address", () => {
+  it("publishes Grafana on 127.0.0.1 and each private address, with or without devices", () => {
+    // The network's filter admits only devices to Grafana, so a first device needs no stack change.
     expect(published("a monitoring server on one network")).toEqual({
-      grafana: ["127.0.0.1:3000:3000"],
+      grafana: ["127.0.0.1:3000:3000", "10.200.4.2:3000:3000"],
       front: ["10.200.4.2:9091:9091"],
     });
   });
 
-  it("publishes Grafana and the front on each private address when devices exist", () => {
+  it("publishes Grafana and the front on each private address of each network", () => {
     expect(published("a monitoring server shared by two networks")).toEqual({
       grafana: ["127.0.0.1:3000:3000", "10.200.4.2:3000:3000", "10.205.40.3:3000:3000"],
       front: ["10.200.4.2:9091:9091", "10.205.40.3:9091:9091"],

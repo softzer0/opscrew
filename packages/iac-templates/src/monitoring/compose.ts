@@ -101,11 +101,13 @@ function memory(mb: number): { environment: { GOMEMLIMIT: string }; limit: objec
  * the front, each with a read-only root, no capability (the front only binds), the image's own
  * user (the front 65534), the plan's memory limit with `GOMEMLIMIT` at 80% of it, and its data on a
  * named volume. Prometheus and Loki are only on the internal `stack` network. Grafana is published
- * on the server's loopback, and with devices on each private address; the front on each private
- * address at {@link MONITORING_PUSH_PORT}, and on the push network the Alloy on this server joins.
+ * on the server's loopback and on each private address, where the network's filter admits only
+ * devices (none until one is added), so a new device reaches it with no change to the stack; the
+ * front on each private address at {@link MONITORING_PUSH_PORT}, and on the push network the Alloy
+ * on this server joins.
  */
 export function renderMonitoringCompose(input: MonitoringStackInput): string {
-  const { settings, networks, hasDevices, plan } = input;
+  const { settings, networks, plan } = input;
   const { memoryMb, retention, versions } = settings;
   const prometheus = addonImage(IMAGES.prometheus.ref, `v${versions.prometheus}`);
   const loki = addonImage(IMAGES.loki.ref, versions.loki);
@@ -165,7 +167,7 @@ export function renderMonitoringCompose(input: MonitoringStackInput): string {
         fetches(`http://127.0.0.1:${MONITORING_GRAFANA_PORT}/api/health`),
         "60s",
       ),
-      ports: publish(MONITORING_GRAFANA_PORT, ["127.0.0.1", ...(hasDevices ? addresses : [])]),
+      ports: publish(MONITORING_GRAFANA_PORT, ["127.0.0.1", ...addresses]),
       networks: [STACK, PUBLISHED],
       read_only: true,
       // Its data sources' plugins talk to Grafana over Unix sockets in /tmp.
@@ -207,8 +209,8 @@ export function renderMonitoringCompose(input: MonitoringStackInput): string {
     addresses.length > 0
       ? `The front passes only the two push paths, on ${addresses.join(", ")}.`
       : "The front passes only the two push paths, on this server's push network only.",
-    hasDevices
-      ? `Grafana is on 127.0.0.1, and for your devices on ${addresses.join(", ")}.`
+    addresses.length > 0
+      ? `Grafana is on 127.0.0.1, and for your devices on ${addresses.join(", ")} (the filter admits devices only).`
       : "Grafana is on 127.0.0.1 only.",
     `Grafana's admin password is in ${GRAFANA_CREDENTIAL_FILE} beside this file, never in it.`,
     ...unpinned

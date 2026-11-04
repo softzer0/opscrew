@@ -55,7 +55,6 @@ export interface MonitoringStackInput {
     servers: string[];                     // the members that send (private addresses)
     devices: string[];                     // the devices' private addresses
   }[];
-  hasDevices: boolean;
   plan: DeployPlan;                        // the owner's, for headers and labels
 }
 export function renderMonitoringStack(input: MonitoringStackInput): { path: string; content: string }[];

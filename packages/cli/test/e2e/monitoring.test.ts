@@ -325,7 +325,6 @@ describe.skipIf(SKIP !== undefined)("self-hosted monitoring on Docker (020)", ()
     const stackFiles = renderMonitoringStack({
       settings,
       networks: [{ address: addresses.monitoring, servers: Object.values(addresses), devices: [] }],
-      hasDevices: false,
       plan,
     });
     await writeFiles(

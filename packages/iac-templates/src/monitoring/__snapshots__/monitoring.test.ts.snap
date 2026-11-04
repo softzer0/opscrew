@@ -44,7 +44,7 @@ exports[`renderMonitoringStack > renders a monitoring server on one network (sna
 # OpsCrew's monitoring stack: Prometheus and Loki keep what the servers' Alloy pushes through the
 # front, and Grafana shows it. Prometheus and Loki have no route out and no published port.
 # The front passes only the two push paths, on 10.200.4.2.
-# Grafana is on 127.0.0.1 only.
+# Grafana is on 127.0.0.1, and for your devices on 10.200.4.2 (the filter admits devices only).
 # Grafana's admin password is in grafana_admin_credential beside this file, never in it.
 name: opscrew-monitoring
 services:
@@ -148,6 +148,7 @@ services:
       start_period: 60s
     ports:
       - 127.0.0.1:3000:3000
+      - 10.200.4.2:3000:3000
     networks:
       - stack
       - published
@@ -405,7 +406,7 @@ exports[`renderMonitoringStack > renders a monitoring server shared by two netwo
 # OpsCrew's monitoring stack: Prometheus and Loki keep what the servers' Alloy pushes through the
 # front, and Grafana shows it. Prometheus and Loki have no route out and no published port.
 # The front passes only the two push paths, on 10.200.4.2, 10.205.40.3.
-# Grafana is on 127.0.0.1, and for your devices on 10.200.4.2, 10.205.40.3.
+# Grafana is on 127.0.0.1, and for your devices on 10.200.4.2, 10.205.40.3 (the filter admits devices only).
 # Grafana's admin password is in grafana_admin_credential beside this file, never in it.
 name: opscrew-monitoring
 services:
@@ -769,7 +770,7 @@ exports[`renderMonitoringStack > renders kind "app" with a device (snapshot) 1`]
 # OpsCrew's monitoring stack: Prometheus and Loki keep what the servers' Alloy pushes through the
 # front, and Grafana shows it. Prometheus and Loki have no route out and no published port.
 # The front passes only the two push paths, on 10.200.4.1.
-# Grafana is on 127.0.0.1, and for your devices on 10.200.4.1.
+# Grafana is on 127.0.0.1, and for your devices on 10.200.4.1 (the filter admits devices only).
 # Grafana's admin password is in grafana_admin_credential beside this file, never in it.
 name: opscrew-monitoring
 services:
