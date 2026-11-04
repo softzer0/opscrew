@@ -492,7 +492,7 @@ excepted), the 017 plan texts stay, and no test loses what it proves. Rejected b
 `planNetworkRemoval`'s input shape and dropping its plan-time owner check (refusing before the
 approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
 
-- [ ] T2022 A change of secrets only reaches the server (correctness, found by the ssh-host reviewer), in `packages/connectors/ssh-host/**` and the callers in `packages/agents/src/{provision/monitoring.ts,addons/run.ts}`
+- [x] T2022 A change of secrets only reaches the server (correctness, found by the ssh-host reviewer), in `packages/connectors/ssh-host/**` and the callers in `packages/agents/src/{provision/monitoring.ts,addons/run.ts}`
   - Owns: `packages/connectors/ssh-host/src/{steps,plan,types,apply}.ts` (+ tests, fixtures, snapshots); in agents `provision/monitoring.ts` and `addons/run.ts` only the places that pass `secretsChanged` or a grant's in-place (+ tests); `packages/agents/src/testing/addons.ts`'s comparison; `packages/agents/src/vpn/grants.ts` for a device's regenerated password (018 had the same flaw)
   - Reads: `apply.ts` `runStep` (a check printing `state=in-place` skips the apply); `MONITOR_HELPERS`' `files_ok` (secret files only `-s`); `grantScripts`' check (the login's attributes only); T2011's notes
   - Depends: none
@@ -508,7 +508,7 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2023 [P] Simplify the templates and the plan schema, in `packages/iac-templates/**`, `packages/plan-schema/**`, and the regex escape helper
+- [x] T2023 [P] Simplify the templates and the plan schema, in `packages/iac-templates/**`, `packages/plan-schema/**`, and the regex escape helper
   - Owns: `packages/iac-templates/src/{monitoring,addons,edge,workflow,runbook}/**` and `scripts/update-pins-lib.ts` (+ tests, snapshots, fixtures), except `MonitoringStackInput`'s shape (T2025); `packages/plan-schema/src/{plan.ts,monitoring.test.ts}` (+ the generated schema); `packages/core/src/{text.ts,redact.ts}` (+ tests); `packages/iac-templates/src/docker/stacks.ts`, `edge/vercel-routing.ts` and agents `shared/server-address.ts` only for the escape helper
   - Accept (the iac-templates reviewer's findings 2, 3, 4 for iac-templates' own tests, 5, 6, 7, 8, 9, 10, and its notes):
     - the stack's snapshots: every file for one case, `compose.yaml` only for the other three;
@@ -529,7 +529,7 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2024 [P] Simplify agents' monitoring settings, enable, status and the generated values, in `packages/agents/src/**`
+- [x] T2024 [P] Simplify agents' monitoring settings, enable, status and the generated values, in `packages/agents/src/**`
   - Owns: `packages/agents/src/{monitoring/{enable,settings,estimate,status}.ts,addons/{settings,status}.ts,design/{run,servers}.ts,shared/app-secrets.ts,provision/secrets.ts,secure/{monitoring,servers}.ts,verify/monitoring.ts,index.ts,monitoring/index.ts}` (+ tests); not `provision/monitoring.ts`, `addons/run.ts`, `drift/`, `vpn/`, `destroy/`, `network/` (T2022, T2025)
   - Accept (the agents reviewer's findings 4, 5, 6, 10, 11, 12, 13 except `repository.ts`, 14 for the source, 17 except destroy):
     - one `changeGenerated` for the generated values (`GeneratedFileSchema` gains `monitoring`);
