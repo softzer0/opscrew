@@ -290,10 +290,15 @@ network above all).
 ## Phase 4: Wave 3 (parallel)
 
 - [ ] T2011 [US1] [US4] [US5] [US7] Provision: the host plans per server, the secrets, the shared server, in `packages/agents/src/provision/monitoring.ts`
-  - Owns: `packages/agents/src/provision/monitoring.ts` (+ test), and in `packages/agents/src/provision/{run.ts,secrets.ts}` only the calls into it and the two generated values (+ their tests); `packages/agents/src/testing/**` for the fakes it needs; in `packages/agents/src/move/{app-env.ts,window.ts}` only the masking file's lines (+ tests)
+  - Owns: `packages/agents/src/provision/monitoring.ts` (+ test), and in `packages/agents/src/provision/{run.ts,secrets.ts}` only the calls into it and the two generated values (+ their tests); `packages/agents/src/testing/**` for the fakes it needs; in `packages/agents/src/move/{app-env.ts,window.ts}` only the masking file's lines (+ tests); in `packages/connectors/ssh-host/**` a public planner for removing one network interface (`planNetworkRemoval`, + tests)
   - Reads: plan.md "11."; spec US1, US4, US5, US7; data-model.md "Secrets kept apart"; 018's `provision/network.ts`, `provision/servers.ts`
   - Depends: T2004, T2006, T2007, T2008, T2009, T2010
   - Notes from wave 1:
+    - T2010: for a sender, the monitoring server's `network` and `network-filter` steps come from
+      `networkSteps(plan, owner.server, facts)`; turning off or leaving uses `networkRemovalSteps`,
+      planned through a small new ssh-host planner for one interface (`planNetworkRemoval`: today
+      the removal steps exist only inside `planTeardown`/`planUndo`). Reach the owner's plan,
+      login and record through `monitoringOwner(paths, plan)` from `network/`.
     - T2008: the `monitoring` step always runs as root (pass `rootImage` and the facts; `runAs`
       only picks the folder). Plan it with the owner's app name, a sender re-rendering it too:
       only the recorded owner may change or remove the stack. `grant`'s `monitor` reads
@@ -412,6 +417,20 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
   - Effort: medium
 
+- [ ] T2021 [P] [US3] [US5] `opscrew vpn add` and `vpn remove` on a sender update the monitoring server, in `packages/agents/src/vpn/`
+  - Owns: the monitoring parts of `packages/agents/src/vpn/**` (+ tests, fixtures)
+  - Reads: spec US3 ("Other devices added with `opscrew vpn add` reach the same private address"), US5 #5; plan.md "10.", "11."; 018's `vpn/`; T2010's `monitoringOwner` and `networkSteps(plan, owner.server, facts)`
+  - Depends: T2011
+  - Accept:
+    - On a sender (`where.kind: "shared"`), `vpn add` and `vpn remove` also plan the monitoring
+      server's `network` and `network-filter` host plans for that network's interface, over the
+      owner's login, each shown and approved by its hash, so the device reaches Grafana at once
+      (found at T2010: today only the sender's own servers learn of the device).
+    - Its output says the device sees every environment's dashboards on that server.
+    - A plan without monitoring, and the owner's plan, behave as today (existing tests unchanged).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
 ## Phase 6: Wave 5 (parallel)
 
 - [ ] T2016 [P] The Docker pass (`OPSCREW_DOCKER_TESTS=1`), in `packages/cli/test/e2e/monitoring.test.ts` (+ support)
@@ -450,6 +469,7 @@ network above all).
 
 - [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
+  - Noted at merge: `monitoringOwner` (T2010) reads an owner's paths back from `owner.plan`; any similar code in T2009, T2011 or T2012 should use it.
   - Noted at merge: `escapeRegExp` is a private one-liner in `addons/alloy.ts`, `docker/stacks.ts` and `edge/vercel-routing.ts` (T2006).
   - Noted at merge: `pinnedTag` in `workflow/__fixtures__/plans.ts` repeats `pinnedVersion`'s tag slicing (T2007).
   - Noted at merge: the add-on project names (`opscrew-beszel`, `opscrew-monitoring`) are plain strings in `addons/alloy.ts` (T2006).
@@ -459,16 +479,16 @@ network above all).
 ## Dependencies
 
 T2001 → {T2002, T2003} → {T2004, T2005, T2006, T2007, T2008} → {T2009, T2010} → {T2011, T2012} →
-{T2013, T2014, T2015} → {T2016, T2017} → T2018 → T2019 → T2020.
+{T2013, T2014, T2015, T2021} → {T2016, T2017} → T2018 → T2019 → T2020.
 
 T2005 needs only T2002, and T2016 needs only wave 1, so either can start early when a slot is free.
 
 **User stories:**
 - **US1** (a monitoring server): T2002, T2004, T2006, T2007, T2008, T2009, T2011, T2014.
 - **US2** (dashboards): T2005, T2007, T2015, T2016.
-- **US3** (private access): T2004, T2008, T2010, T2012, T2014.
+- **US3** (private access): T2004, T2008, T2010, T2012, T2014, T2021.
 - **US4** (on the app's server): T2009, T2011.
-- **US5** (one server for the repository): T2002, T2009, T2010, T2011, T2013.
+- **US5** (one server for the repository): T2002, T2009, T2010, T2011, T2013, T2021.
 - **US6** (retention, disk, status): T2004, T2009, T2012, T2014.
 - **US7** (off, destroy): T2008, T2009, T2011, T2013.
 - **US8** (Claude Code): T2014.
@@ -484,7 +504,8 @@ T2005 needs only T2002, and T2016 needs only wave 1, so either can start early w
    - the ssh-host connector.
 2. T2009, T2010: `monitoring/` with design's sizing and `shared/memory.ts`; `network/`.
 3. T2011, T2012: provision; status, verify, secure and drift.
-4. T2013, T2014, T2015: destroy and retarget; CLI, MCP and the skill; the guide and the runbook.
+4. T2013, T2014, T2015, T2021: destroy and retarget; CLI, MCP and the skill; the guide and the runbook;
+   `vpn add`/`remove` on a sender.
 5. T2016, T2017: the Docker pass; the live tests.
 6. T2018, then T2019, then T2020 (lead).
 
