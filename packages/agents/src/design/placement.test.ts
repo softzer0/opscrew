@@ -13,6 +13,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { recordOwnServerAnswers } from "../interview";
+import { MONITORING_VERSIONS } from "../monitoring/settings";
 import { readServerAddresses, recordServerAddress } from "../shared";
 import { generatedValuesFile } from "../shared/app-secrets";
 import { inspectOwnServerForDesign } from "../shared/own-server-design";
@@ -994,6 +995,165 @@ describe("reading plan.yaml's placement", () => {
       expect.stringContaining("The existing opscrew/plan.yaml could not be read"),
     );
     expect(result.plan.servers).toBeUndefined();
+  });
+});
+
+describe("self-hosted monitoring across a re-design", () => {
+  /** euCatalog with 1 GB and 2 GB types: the stack, Alloy and the system fit the 2 GB one. */
+  function smallCatalog(): MemoryCatalog {
+    const small = (location: string) => [
+      offer({ id: "cx11", vcpus: 1, memoryGb: 1, diskGb: 20, price: 2.49, location }),
+      offer({ id: "cx21", vcpus: 1, memoryGb: 2, diskGb: 30, price: 3.29, location }),
+    ];
+    return new MemoryCatalog([...euCatalog().offers, ...small("nbg1"), ...small("fsn1")]);
+  }
+
+  /** Monitoring on a server `monitoring` with `target`, as plan.yaml says it. */
+  function monitored(target: Record<string, unknown> = { backups: false }) {
+    return (raw: Record<string, unknown>) => {
+      raw.servers = [
+        ...((raw.servers as unknown[] | undefined) ?? []),
+        { name: "monitoring", target },
+      ];
+      raw.observability = {
+        ...(raw.observability as Record<string, unknown> | undefined),
+        monitoring: {
+          enabled: true,
+          where: { kind: "server", server: "monitoring" },
+          versions: MONITORING_VERSIONS,
+          retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 23 },
+        },
+      };
+    };
+  }
+
+  it("keeps the settings and the server, sized for the stack, and the deployment record", async () => {
+    const deps = await setup();
+    await runDesign(deps, { catalog: smallCatalog() });
+    await deployed(deps, undefined);
+    await editPlan(deps, monitored());
+    const result = await runDesign(deps, { catalog: smallCatalog(), keys: testKeyMaker() });
+    const { plan } = result;
+    // No service runs on it: 384 MB would fit the 1 GB type, the stack's 1,376 MB need the 2 GB.
+    expect(plan.servers).toEqual([
+      {
+        name: "monitoring",
+        target: {
+          provider: "hetzner",
+          mode: "vps-compose",
+          location: (plan.target as { location: string }).location,
+          serverType: "cx21",
+          image: "ubuntu-24.04",
+          backups: false,
+        },
+      },
+    ]);
+    expect(plan.observability?.monitoring).toMatchObject({
+      enabled: true,
+      where: { kind: "server", server: "monitoring" },
+      retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 23 },
+    });
+    expect(plan.network?.members.map((m) => m.name)).toEqual(["app", "monitoring"]);
+    expect(plan.deployment.lastApplyAt).toBe("2026-10-11T12:30:00.000Z");
+    expect(result.lines).toContainEqual(
+      expect.stringMatching(
+        /^Memory limits on server monitoring: Grafana Alloy 288 MB \(€[\d.]+\/month\), Prometheus 192 MB \(€[\d.]+\/month\), Loki 384 MB \(€[\d.]+\/month\), Grafana 416 MB \(€[\d.]+\/month\), the monitoring front 96 MB \(€[\d.]+\/month\); the system 384 MB; 0\.3 GB of 2\.0 GB free\.$/,
+      ),
+    );
+
+    // The next design reads the whole plan, monitoring included, and keeps it as it is.
+    const again = await runDesign(deps, { catalog: smallCatalog(), keys: testKeyMaker() });
+    expect(again.plan.servers).toEqual(plan.servers);
+    expect(again.plan.network).toEqual(plan.network);
+    expect(again.plan.observability).toEqual(plan.observability);
+    expect(again.plan.deployment).toEqual(plan.deployment);
+    expect(again.warnings.join("\n")).not.toContain("could not be read");
+  });
+
+  it("sizes the app's server for the stack when it runs there", async () => {
+    const deps = await setup();
+    await runDesign(deps, { catalog: smallCatalog() });
+    await editPlan(deps, (raw) => {
+      (raw.app as Record<string, unknown>).memoryMb = 6144;
+    });
+    // The app's 6,144 MB, db's 512, the edge's 128 and the system's 384 fit an 8 GB type.
+    const types = (result: { options: { target: { serverType?: string } }[] }) =>
+      result.options.map((option) => option.target.serverType);
+    const without = await runDesign(deps, { catalog: smallCatalog() });
+    expect(without.plan.target).toMatchObject({ serverType: "cx33" });
+    await editPlan(deps, (raw) => {
+      raw.observability = {
+        ...(raw.observability as Record<string, unknown> | undefined),
+        monitoring: {
+          enabled: true,
+          where: { kind: "app" },
+          versions: MONITORING_VERSIONS,
+          retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 23 },
+        },
+      };
+    });
+    // With Alloy's 288 MB and the stack's 1,088 it is 8,544 MB: no 8 GB type is offered.
+    const result = await runDesign(deps, { catalog: smallCatalog() });
+    expect(types(result)).not.toContain("cx33");
+    expect(result.options.every((option) => option.target.memoryGb >= 16)).toBe(true);
+    expect(result.plan.target).toMatchObject({ serverType: "cx43" });
+    expect(result.chosen.summary).toContain("Grafana Alloy 288 MB");
+    expect(result.plan.observability?.monitoring?.where).toEqual({ kind: "app" });
+    expect(result.plan.servers).toBeUndefined();
+  });
+
+  it("refuses a service placed on the monitoring server, and keeps the plan", async () => {
+    const deps = await setup();
+    await runDesign(deps, { catalog: smallCatalog() });
+    await editPlan(deps, monitored());
+    await runDesign(deps, { catalog: smallCatalog() });
+    await editPlan(deps, (raw) => {
+      const db = raw.services.find((s) => s.name === "db");
+      if (db !== undefined) db.server = "monitoring";
+    });
+    const before = await readFile(deps.paths.files.plan, "utf8");
+    const error = await runDesign(deps, { catalog: smallCatalog() }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        "OpsCrew cannot place db on server monitoring: it holds only the monitoring stack. plan.yaml was not changed.",
+    });
+    expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+  });
+
+  it("checks one of the user's own servers as the monitoring server against Alloy and the stack", async () => {
+    const deps = await setup(nextPostgresFacts(), makeRequirements(), {
+      interactive: true,
+      runner: ownRunner(),
+    });
+    await runDesign(deps, { catalog: euCatalog() });
+    await editPlan(deps, monitored({ provider: "own" }));
+    const { ask } = loginAsker();
+    // 1 GB: after the system's 384 MB, the stack and Alloy's 1,376 MB don't fit.
+    const small = new FakeHostServer(HostFactsSchema.parse(freshFacts({ memoryGb: 1 })));
+    const error = await runDesign(deps, {
+      catalog: euCatalog(),
+      keys: testKeyMaker(),
+      askServerLogin: ask,
+      extraServers: { host: small },
+    }).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      message:
+        "Server monitoring has 1024 MB of memory. After 384 MB for the system, 640 MB are left, and this app's services there have 1376 MB of memory limits. plan.yaml was not changed.",
+    });
+    const fits = new FakeHostServer(HostFactsSchema.parse(freshFacts({ memoryGb: 2 })));
+    const result = await runDesign(deps, {
+      catalog: euCatalog(),
+      keys: testKeyMaker(),
+      askServerLogin: ask,
+      extraServers: { host: fits },
+    });
+    expect(result.plan.servers).toEqual([
+      { name: "monitoring", target: { provider: "own", mode: "vps-compose", arch: "amd64" } },
+    ]);
+    expect(result.lines).toContain(
+      "Memory limits on server monitoring: Grafana Alloy 288 MB, Prometheus 192 MB, Loki 384 MB, Grafana 416 MB, the monitoring front 96 MB; the system 384 MB; 0.3 GB of 2.0 GB free.",
+    );
   });
 });
 

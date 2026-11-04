@@ -8,6 +8,7 @@ import {
   serviceSpec,
 } from "@opscrew/iac-templates";
 import type {
+  MonitoringSettings,
   PlanService,
   ProjectFacts,
   Region,
@@ -44,6 +45,8 @@ export interface Sizing {
   edgeMb: number;
   /** What runs next to the app. */
   components: Components;
+  /** The self-hosted monitoring, whose containers on the app's server `limitsMb` counts. */
+  monitoring?: MonitoringSettings;
   /** Containers that run next to the app on the server. */
   services: PlanService[];
   /** Services the app keeps using outside the server (sorted in schema order). */
@@ -250,13 +253,15 @@ export function ownServerFreeDiskGb(sizing: Pick<Sizing, "services">): number {
  * from the facts and requirements alone): the plan.md sizing table by expected users (more with
  * Postgres and Redis), and at least the containers' memory limits plus OpsCrew's edge (`edge`'s
  * `edgeMemoryMb`) and the system's reserve (384 MB) (FR-1325), and at least the smallest
- * server of each service; with Dragonfly, at least 2 vCPUs.
+ * server of each service; with Dragonfly, at least 2 vCPUs. With the self-hosted `monitoring` on,
+ * the limits count its containers on the app's server: Alloy, and the stack with `--on app`.
  */
 export function sizeFor(
   facts: ProjectFacts,
   requirements: Requirements,
   components: Components = designComponents({ facts, requirements }).components,
   edge: EdgeProxy = "caddy",
+  monitoring?: MonitoringSettings,
 ): Sizing {
   const { services } = components;
   const postgres = serviceOf(components, "postgres") !== undefined;
@@ -279,7 +284,7 @@ export function sizeFor(
   if (redis) memoryGb += REDIS_MEMORY_GB;
   // Dragonfly is offered on 2 vCPUs or more (FR-1321a).
   if (dragonfly) vcpus = Math.max(vcpus, DRAGONFLY_MIN_VCPUS);
-  const limitsMb = appMemoryMb(components);
+  const limitsMb = appMemoryMb({ ...components, observability: { monitoring } });
   const edgeMb = edgeMemoryMb(edge);
   const smallestServerMb = Math.max(
     0,
@@ -301,6 +306,7 @@ export function sizeFor(
     edge,
     edgeMb,
     components,
+    ...(monitoring === undefined ? {} : { monitoring }),
     services: [...services],
     externalServices: [...components.externalServices],
   };

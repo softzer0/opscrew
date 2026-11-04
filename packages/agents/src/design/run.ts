@@ -24,6 +24,7 @@ import {
   infraDirFor,
   isServerlessProvider,
   isServerlessTarget,
+  type MonitoringSettings,
   type Observability,
   onOneServer,
   type PlanService,
@@ -367,7 +368,12 @@ export async function previewDesignOptions(
     previous,
     shared: source?.plan,
     localhost: { services: options.localhost, environment: previous ?? {} },
-    ...(read === undefined ? {} : { placed: read.edits.placed }),
+    ...(read === undefined
+      ? {}
+      : {
+          placed: read.edits.placed,
+          ...(read.edits.monitoring === undefined ? {} : { monitoring: read.edits.monitoring }),
+        }),
   });
 }
 
@@ -577,6 +583,8 @@ interface PlanBasis {
    * is sized and priced without them.
    */
   placed?: Readonly<Record<string, string>>;
+  /** The self-hosted monitoring plan.yaml has: its containers on the app's server are sized for. */
+  monitoring?: MonitoringSettings;
 }
 
 /** A preview, with the catalogue a server OpsCrew creates was priced from. */
@@ -700,7 +708,7 @@ async function priceOptions(
   ownServer: OwnServerDesignInput | undefined,
   basis: PlanBasis,
 ): Promise<PricedPreview> {
-  const { previous, shared, placed = {} } = basis;
+  const { previous, shared, placed = {}, monitoring } = basis;
   const { facts, requirements } = inputs;
   // The user's own server is the catalogue's only offer; its vCPUs decide whether Dragonfly is
   // offered there.
@@ -782,6 +790,7 @@ async function priceOptions(
       components,
       edge,
       deployed,
+      ...(monitoring === undefined ? {} : { monitoring }),
     });
   } catch (error) {
     // A live catalogue that fails half-way falls back to the static table; sizing errors do not.
@@ -801,6 +810,7 @@ async function priceOptions(
       components,
       edge,
       deployed,
+      ...(monitoring === undefined ? {} : { monitoring }),
     });
   }
   const designOptions = set.options;
@@ -896,6 +906,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
         options.environment === undefined ? (previous ?? {}) : { environment: options.environment },
     },
     placed: edits.placed,
+    ...(edits.monitoring === undefined ? {} : { monitoring: edits.monitoring }),
   });
   const { facts, requirements, priceSource, components } = preview;
   const designOptions = preview.options;

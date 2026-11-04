@@ -4,7 +4,13 @@ import { join } from "node:path";
 import type { DeployPlan, ProjectFacts, Requirements } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { makeFacts, makeRequirements, testPlan } from "../testing";
-import { designComponents, hostedChoices, memoryText, workerName } from "./components";
+import {
+  designComponents,
+  hostedChoices,
+  memoryText,
+  serverMemoryText,
+  workerName,
+} from "./components";
 import { sizeFor } from "./sizing";
 import { checkSqliteFolder, storageOffers } from "./storage";
 
@@ -1027,6 +1033,20 @@ describe("memoryText", () => {
     } as DeployPlan["observability"];
     expect(memoryText({ ...plan, observability: agentOnly }, 4096, 128)).toContain(
       "the app 512 MB, Beszel 96 MB;",
+    );
+  });
+});
+
+describe("serverMemoryText", () => {
+  it("lists an extra server's services, then the add-ons' containers on it", () => {
+    const { services } = testPlan();
+    const alloy = { name: "Grafana Alloy", memoryMb: 288 };
+    expect(serverMemoryText("data", services, 4096)).toBe(
+      "Memory limits on server data: db 512 MB; the system 384 MB; 3.1 GB of 4.0 GB free.",
+    );
+    const monthly = { amount: 8, currency: "EUR" } as const;
+    expect(serverMemoryText("data", services, 4096, monthly, [alloy])).toBe(
+      "Memory limits on server data: db 512 MB (€1.00/month), Grafana Alloy 288 MB (€0.56/month); the system 384 MB; 2.8 GB of 4.0 GB free.",
     );
   });
 });

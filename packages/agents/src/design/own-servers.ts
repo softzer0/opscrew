@@ -12,6 +12,7 @@ import {
 } from "../interview/own-server";
 import type { NetworkHostFacts } from "../network";
 import type { OwnServerServices } from "../provision/types";
+import type { MemoryLimit } from "../shared/memory";
 import { connectExtraServer, ownServerFacts, ownServerPublicAddress } from "../shared/own-server";
 import { readServerAddresses, type SshLogin, updateServerAddresses } from "../shared/server-record";
 import { distinctAmounts } from "./own";
@@ -64,18 +65,24 @@ async function askedLogin(
  * `.opscrew/server.json` (`ownServers`), else are asked for once; the first connection confirms and
  * pins its host key and records the login; inspection (read-only, through the host adapter) gives
  * its size, its architecture and the OpsCrew apps already there. Its memory must hold `services`
- * next to them, its smaller shortfalls are warnings, and its public address is recorded
- * (`servers`) for the private network.
+ * and the add-ons' containers on it (`addons`, such as monitoring's) next to them, its smaller
+ * shortfalls are warnings, and its public address is recorded (`servers`) for the private network.
  * @throws OpsCrewError `PHASE_PRECONDITION` when nobody can be asked for its login, when it has no
  * public address (`appPublic` false: the app's server has none either, so nothing can link them),
  * or when its memory cannot hold the services, each before plan.yaml changes.
  */
 export async function designOwnServer(
   deps: PhaseDeps,
-  input: { name: string; services: PlanService[]; app: string; appPublic: boolean },
+  input: {
+    name: string;
+    services: PlanService[];
+    addons?: readonly MemoryLimit[];
+    app: string;
+    appPublic: boolean;
+  },
   options: OwnServersOptions,
 ): Promise<DesignedOwnServer> {
-  const { name, services } = input;
+  const { name, services, addons = [] } = input;
   const record = await readServerAddresses(deps.paths);
   let login = record.ownServers?.[name];
   if (login === undefined) {
@@ -97,7 +104,7 @@ export async function designOwnServer(
   const server = ownServerFacts(facts);
   const address = ownServerPublicAddress({ host: login.host }, facts);
   if (address === undefined) {
-    const placed = listText(services.map((service) => service.name));
+    const placed = listText([...services, ...addons].map((limit) => limit.name));
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       input.appPublic
@@ -119,7 +126,7 @@ export async function designOwnServer(
     memoryMb: app.memoryMb,
     tunnel: tunnelOf(facts, app.app).installed,
   }));
-  const servicesMb = services.reduce((sum, service) => sum + service.memoryMb, 0);
+  const servicesMb = [...services, ...addons].reduce((sum, limit) => sum + limit.memoryMb, 0);
   const memory = ownServerMemory(serverMb, servicesMb, others, 0, name);
   if (memory?.refused !== undefined) {
     throw new OpsCrewError("PHASE_PRECONDITION", memory.refused.message, {

@@ -27,7 +27,8 @@ export function serverReadCommand(app: string, logs: boolean): string {
   return `${base} && docker ps -q --filter label=com.docker.compose.project=${app} | while read -r id; do docker logs --since 24h "$id" 2>&1; done | wc -c`;
 }
 
-const CountSchema = z
+/** A count a read-only command printed: up to 15 digits. */
+export const CountSchema = z
   .string()
   .regex(/^\d{1,15}$/)
   .transform(Number);

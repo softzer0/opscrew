@@ -7,6 +7,7 @@ import {
   extraServerNeed,
   sizeExtraServer,
   totalCost,
+  withoutServerCost,
 } from "./servers";
 import { selfHostedServices } from "./sizing";
 
@@ -71,6 +72,53 @@ describe("an extra server's size", () => {
       code: "INVALID_INPUT",
       message:
         "No available x86 Hetzner server in fsn1 has the 2 GB of memory and 2 vCPUs server cache needs for cache and the system. plan.yaml was not changed.",
+    });
+  });
+});
+
+describe("an extra server with add-ons' containers", () => {
+  const stack = [
+    { name: "Grafana Alloy", memoryMb: 288 },
+    { name: "Prometheus", memoryMb: 192 },
+    { name: "Loki", memoryMb: 384 },
+    { name: "Grafana", memoryMb: 416 },
+    { name: "the monitoring front", memoryMb: 96 },
+  ];
+  const small = new MemoryCatalog([
+    offer({ id: "cx11", vcpus: 1, memoryGb: 1, diskGb: 20, price: 2, location: "fsn1" }),
+    offer({ id: "cx21", vcpus: 1, memoryGb: 2, diskGb: 30, price: 3, location: "fsn1" }),
+  ]);
+
+  it("is sized for them as for its services, and names them", async () => {
+    // The stack and Alloy, 1,376 MB, and the system's 384 MB need the 2 GB type.
+    expect(extraServerNeed([], stack)).toEqual({ memoryMb: 1760, vcpus: 1 });
+    expect(extraServerNeed([db], [{ name: "Grafana Alloy", memoryMb: 288 }])).toEqual({
+      memoryMb: 1184,
+      vcpus: 1,
+    });
+    const input: CloudServerInput = {
+      name: "monitoring",
+      target: undefined,
+      services: [],
+      addons: stack,
+      app,
+      region: undefined,
+      backups: false,
+      catalogFor: async () => small,
+    };
+    const designed = await designCloudServer(input);
+    expect(designed.server.target.serverType).toBe("cx21");
+    expect(designed.diskGb).toBe(30);
+    // Without them the 1 GB type would do.
+    expect((await designCloudServer({ ...input, addons: [] })).server.target.serverType).toBe(
+      "cx11",
+    );
+    const error = await designCloudServer({ ...input, target: { serverType: "cx11" } }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toMatchObject({
+      message:
+        "Server monitoring is a cx11 (1 vCPU, 1 GB memory), but Grafana Alloy, Prometheus, Loki, Grafana and the monitoring front on it need 1.7 GB of memory with the system's share. plan.yaml was not changed.",
     });
   });
 });
@@ -173,5 +221,12 @@ describe("the plan's cost with extra servers", () => {
     // The static price list dates the total.
     expect(total).toMatchObject({ source: "static", asOf: "2026-09-01T00:00:00.000Z" });
     expect(totalCost(appCost, [])).toBe(appCost);
+    // A server leaving the plan takes its line with it.
+    expect(withoutServerCost(total, "db")).toEqual({
+      ...total,
+      breakdown: appCost.breakdown,
+      monthly: appCost.monthly,
+    });
+    expect(withoutServerCost(total, "data")).toBe(total);
   });
 });

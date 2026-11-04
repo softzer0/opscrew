@@ -1,5 +1,5 @@
 import type { ComputeCatalog, Money } from "@opscrew/contracts";
-import { formatMoney, OpsCrewError } from "@opscrew/core";
+import { formatMoney, listText, OpsCrewError } from "@opscrew/core";
 import { hasLogin, serviceSpec } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
@@ -11,11 +11,13 @@ import {
   type DesignOption,
   type ExtraServer,
   type Move,
+  monitoringOf,
   type PlanService,
   type Requirements,
   servicesOn,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { requireOwnerCopies } from "../monitoring/repository";
 import {
   allocateNetwork,
   hasPublicAddress,
@@ -23,7 +25,9 @@ import {
   type NetworkHostFacts,
 } from "../network";
 import { databaseSize, serverOps } from "../retarget/server-ops";
+import { planFile } from "../runners/words";
 import { reasonOf } from "../shared/errors";
+import { monitoringLimits } from "../shared/memory";
 import { serverRemote, serverWords } from "../shared/server-address";
 import { memoryText, serverMemoryText } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE } from "./cost";
@@ -110,7 +114,10 @@ export function onAppServer<T extends Pick<DeployPlan, "services">>(plan: T): T 
  * - the move a changed `services[].server` asks for on a deployed app;
  * - the private network, allocated or kept, its members following the servers;
  * - the cost: one line per server, and the total, with a warning over the budget;
- * - a warning for each deployed extra server the next provision replaces or resizes.
+ * - a warning for each deployed extra server the next provision replaces or resizes;
+ * - the self-hosted monitoring, read with the placement (`edits.monitoring`) and put back: each
+ *   server sized and checked with its monitoring containers (`monitoringLimits`), the monitoring
+ *   server for the stack, no service on it, and a sender's copies of its owner's settings checked.
  *
  * Its lines show each server (provider, location, size, price, its services' memory), the total,
  * each hop's estimated delay, which services have no login, and a move's maintenance window. A
@@ -125,17 +132,37 @@ export async function designPlacement(
   options: PlacementOptions = {},
 ): Promise<DesignedPlacement> {
   const { edits } = input;
-  const base = input.plan;
+  // The monitoring was read with the placement; its servers are designed below.
+  const base =
+    edits.monitoring === undefined
+      ? input.plan
+      : {
+          ...input.plan,
+          observability: { ...input.plan.observability, monitoring: edits.monitoring },
+        };
+  await requireOwnerCopies(deps, base);
   if (!hasPlacement(edits)) {
     // A service the deployment runs on another server still can't lose it unnoticed.
     designMove({ services: base.services, servers: [] }, input.previous, undefined);
-    return { plan: base, privateKeys: {}, lines: [], warnings: [] };
+    const plan = edits.monitoring === undefined ? base : placedPlan(base);
+    return { plan, privateKeys: {}, lines: [], warnings: [] };
   }
   const services = base.services.map((service) => {
     const server = edits.placed[service.name];
     return server === undefined ? service : { ...service, server };
   });
   const on = (server: string) => servicesOn({ services }, server);
+  const stack = monitoringOf(base)?.where;
+  if (stack?.kind === "server" && on(stack.server).length > 0) {
+    const names = on(stack.server).map((service) => service.name);
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `OpsCrew cannot place ${listText(names)} on server ${stack.server}: it holds only the monitoring stack. plan.yaml was not changed.`,
+      {
+        hint: `Place ${names.length === 1 ? "it" : "them"} on the app's server (no services[].server) or another server in \`servers\` of ${planFile(base)}, then run \`opscrew design\` again.`,
+      },
+    );
+  }
   const warnings: string[] = [];
   const designed: DesignedServer[] = [];
   const facts: Record<string, NetworkHostFacts> = {};
@@ -149,10 +176,11 @@ export async function designPlacement(
   );
   for (const edited of edits.servers) {
     const placed = on(edited.name);
+    const addons = monitoringLimits(base, edited.name);
     if (edited.target?.provider === "own") {
       const own = await designOwnServer(
         deps,
-        { name: edited.name, services: placed, app: base.app.name, appPublic },
+        { name: edited.name, services: placed, addons, app: base.app.name, appPublic },
         options,
       );
       facts[edited.name] = own.facts;
@@ -164,6 +192,7 @@ export async function designPlacement(
         name: edited.name,
         target: edited.target,
         services: placed,
+        addons,
         app: base.target,
         region: input.requirements.region,
         backups: input.requirements.dataCriticality !== "none",
@@ -198,7 +227,7 @@ export async function designPlacement(
     (all, { server, vcpus }) => withServerThreads(all, vcpus, (s) => s.server === server.name),
     services,
   );
-  const parsed = DeployPlanSchema.safeParse({
+  const plan = placedPlan({
     ...base,
     services: threaded,
     ...(servers.length === 0 ? {} : { servers }),
@@ -206,15 +235,6 @@ export async function designPlacement(
     ...(moved.move === undefined ? {} : { move: moved.move }),
     cost: totalCost(base.cost, designed),
   });
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `OpsCrew cannot place the services as opscrew/plan.yaml asks: ${issue?.path.join(".") || "plan"} ${issue?.message ?? "is not valid"}. plan.yaml was not changed.`,
-      { hint: "Fix the field shown above in opscrew/plan.yaml, then run `opscrew design` again." },
-    );
-  }
-  const plan = parsed.data;
   if (servers.length > 0) {
     const over = overBudget(plan.cost, input.requirements.budgetMonthly, servers.length + 1);
     if (over !== undefined) warnings.push(over);
@@ -225,6 +245,21 @@ export async function designPlacement(
     ...(await moveLines(deps, plan, moved.move)),
   ];
   return { plan, privateKeys: allocated?.privateKeys ?? {}, lines, warnings };
+}
+
+/**
+ * `plan` as the plan's schema and its rules across fields take it.
+ * @throws OpsCrewError `INVALID_INPUT` naming the first field they refuse; plan.yaml unchanged.
+ */
+function placedPlan(plan: unknown): DeployPlan {
+  const parsed = DeployPlanSchema.safeParse(plan);
+  if (parsed.success) return parsed.data;
+  const issue = parsed.error.issues[0];
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `OpsCrew cannot place the services as opscrew/plan.yaml asks: ${issue?.path.join(".") || "plan"} ${issue?.message ?? "is not valid"}. plan.yaml was not changed.`,
+    { hint: "Fix the field shown above in opscrew/plan.yaml, then run `opscrew design` again." },
+  );
 }
 
 /**
@@ -293,6 +328,7 @@ function serverLines(
         server.services,
         server.memoryGb * 1024,
         server.cost?.monthly,
+        monitoringLimits(plan, server.server.name),
       ),
     ]),
     totalLine(plan.cost, designed),

@@ -3,6 +3,8 @@ import {
   CloudProviderSchema,
   type DeployPlan,
   DeployPlanSchema,
+  MonitoringSchema,
+  type MonitoringSettings,
   type Move,
   MoveSchema,
   type Network,
@@ -56,11 +58,19 @@ export interface PlacementEdits {
   placed: Record<string, string>;
   network?: Network;
   move?: Move;
+  /**
+   * The self-hosted monitoring (`observability.monitoring`): its rules name a server and the
+   * network, so it is read with them and put back once they are designed.
+   */
+  monitoring?: MonitoringSettings;
 }
 
 /** {@link readPlanWithEdits}'s result. */
 export interface PlanWithEdits {
-  /** The plan without its placement (`servers`, `services[].server`, `network`, `move`). */
+  /**
+   * The plan without its placement (`servers`, `services[].server`, `network`, `move`) and its
+   * monitoring.
+   */
   plan: DeployPlan;
   /** The plan as the file holds it, when the file is valid as a whole. */
   whole?: DeployPlan;
@@ -106,7 +116,16 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
     }
   }
   if (!isRecord(raw)) throw failure;
-  const { servers, network, move, ...rest } = raw;
+  const { servers, network, move, ...others } = raw;
+  // Monitoring's rules name a server and the network, so it is read with them (a block that is
+  // not valid in itself stays, and the plan's own error names it).
+  const { monitoring: block, ...observability }: Record<string, unknown> = isRecord(
+    others.observability,
+  )
+    ? others.observability
+    : {};
+  const monitoring = MonitoringSchema.safeParse(block).data;
+  const rest = monitoring === undefined ? others : { ...others, observability };
   const placed: Record<string, string> = {};
   const issues: { path: string; message: string }[] = [];
   const services = Array.isArray(rest.services)
@@ -126,7 +145,20 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
       })
     : rest.services;
   const plan = DeployPlanSchema.safeParse({ ...rest, services });
-  if (!plan.success) throw failure;
+  if (!plan.success) {
+    const issue = plan.error.issues[0];
+    // The file is valid as a whole, but not without its placement: design must not start over.
+    throw (
+      failure ??
+      new OpsCrewError(
+        "INVALID_INPUT",
+        `OpsCrew cannot read opscrew/plan.yaml apart from where its services run: ${issue?.path.join(".") || "plan"} ${issue?.message ?? "is not valid"}. Nothing was written.`,
+        {
+          hint: "Fix the field shown above in opscrew/plan.yaml, then run `opscrew design` again.",
+        },
+      )
+    );
+  }
   const edits = EditsSchema.safeParse({ servers, network, move });
   for (const issue of edits.error?.issues ?? []) {
     issues.push({ path: issue.path.map(String).join("."), message: issue.message });
@@ -146,6 +178,7 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
       placed,
       ...(edits.data.network === undefined ? {} : { network: edits.data.network }),
       ...(edits.data.move === undefined ? {} : { move: edits.data.move }),
+      ...(monitoring === undefined ? {} : { monitoring }),
     },
   };
 }

@@ -1274,15 +1274,19 @@ export function memoryText(
  * The memory of the extra server `server` (feature 018): its (enabled) services' limits, each with
  * its share of the server's monthly price when there is one, the system's share and what stays
  * free: `Memory limits on server db: db 512 MB (€0.78/month); the system 384 MB; 3.1 GB of 4.0 GB
- * free.`
+ * free.` The add-ons' containers on it (`addons`, such as monitoring's) follow its services.
  */
 export function serverMemoryText(
   server: string,
   services: readonly PlanService[],
   serverMb: number,
   monthly?: Money,
+  addons: readonly { name: string; memoryMb: number }[] = [],
 ): string {
-  const limits = services.map((service) => ({ name: service.name, memoryMb: service.memoryMb }));
+  const limits = [
+    ...services.map((service) => ({ name: service.name, memoryMb: service.memoryMb })),
+    ...addons,
+  ];
   return limitsText(
     limits,
     { label: "the system", mb: SYSTEM_RESERVE_MB },

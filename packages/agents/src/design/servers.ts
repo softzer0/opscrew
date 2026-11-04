@@ -11,7 +11,7 @@ import {
   type Region,
 } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
-import { memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import {
   convertMoney,
   EXCHANGE_RATE_NOTE,
@@ -48,19 +48,26 @@ export interface DesignedServer {
 export interface DesignedCloudServer extends DesignedServer {
   server: { name: string; target: Exclude<ExtraServer["target"], { provider: "own" }> };
   cost: CostEstimate;
+  diskGb: number;
 }
 
 /**
- * What a server for `services` alone must hold, as the app's server is sized: their memory limits
- * plus the system's share, at least each one's smallest comfortable server, and with Dragonfly at
- * least 2 vCPUs.
+ * What a server for `services` alone (and the add-ons' containers on it, `addons`) must hold, as
+ * the app's server is sized: their memory limits plus the system's share, at least each service's
+ * smallest comfortable server, and with Dragonfly at least 2 vCPUs.
  */
-export function extraServerNeed(services: readonly PlanService[]): {
+export function extraServerNeed(
+  services: readonly PlanService[],
+  addons: readonly MemoryLimit[] = [],
+): {
   memoryMb: number;
   vcpus: number;
 } {
   const running = services.filter((service) => service.enabled);
-  const limits = running.reduce((sum, service) => sum + service.memoryMb, SYSTEM_RESERVE_MB);
+  const limits = [...running, ...addons].reduce(
+    (sum, limit) => sum + limit.memoryMb,
+    SYSTEM_RESERVE_MB,
+  );
   const smallest = Math.max(
     0,
     ...running.map((service) => serviceSpec(service.kind).memory.smallestServerMb),
@@ -79,8 +86,8 @@ function cheapestFirst(a: ComputeOffer, b: ComputeOffer): number {
 }
 
 /**
- * The smallest server type of `catalog` in `location` for a server that runs only `services`: the
- * cheapest available x86 type that is not deprecated, whose memory holds what
+ * The smallest server type of `catalog` in `location` for a server that runs only `services` (and
+ * `addons`): the cheapest available x86 type that is not deprecated, whose memory holds what
  * {@link extraServerNeed} asks for and whose disk has at least `minDiskGb`; `undefined` when none
  * does.
  */
@@ -89,8 +96,9 @@ export async function sizeExtraServer(
   location: string,
   services: readonly PlanService[],
   minDiskGb = 0,
+  addons: readonly MemoryLimit[] = [],
 ): Promise<ComputeOffer | undefined> {
-  const need = extraServerNeed(services);
+  const need = extraServerNeed(services, addons);
   return (await catalog.listOffers(location))
     .filter(
       (offer) =>
@@ -112,6 +120,8 @@ export interface CloudServerInput {
   target: EditedCloudTarget | undefined;
   /** The enabled services placed on it. */
   services: PlanService[];
+  /** The add-ons' containers on it (`monitoringLimits`): sized for and counted as its services. */
+  addons?: readonly MemoryLimit[];
   /** The app's server, whose provider and location a new server takes. */
   app: DeployTarget;
   /** The region the user asked for: another provider's first location there. */
@@ -136,7 +146,7 @@ export interface CloudServerInput {
  * (a kept type naming one with a disk at least as large that does).
  */
 export async function designCloudServer(input: CloudServerInput): Promise<DesignedCloudServer> {
-  const { name, target = {}, services, app } = input;
+  const { name, target = {}, services, app, addons = [] } = input;
   const appCloud = app.provider === "hetzner" || app.provider === "digitalocean" ? app : undefined;
   const provider = target.provider ?? appCloud?.provider;
   const location =
@@ -160,11 +170,11 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
     throw new Error(`Design needs the ${provider} catalogue but got the ${catalog.provider} one.`);
   }
   const wording = designWording(provider);
-  const sized = await sizeExtraServer(catalog, location, services);
+  const sized = await sizeExtraServer(catalog, location, services, 0, addons);
   const { serverType } = target;
-  const need = extraServerNeed(services);
+  const need = extraServerNeed(services, addons);
   const needs = `${Math.round((need.memoryMb / 1024) * 10) / 10} GB of memory${need.vcpus > 1 ? ` and ${need.vcpus} vCPUs` : ""}`;
-  const placed = listText(services.map((s) => s.name));
+  const placed = listText([...services, ...addons].map((s) => s.name));
   if (serverType === undefined && sized === undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -201,7 +211,7 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
   const instead = sized === undefined || sized.id === offer.id ? "" : `, such as ${sized.id},`;
   if (offer.memoryGb * 1024 < need.memoryMb || offer.vcpus < need.vcpus) {
     if (kept !== undefined) {
-      const larger = await sizeExtraServer(catalog, location, services, kept.diskGb);
+      const larger = await sizeExtraServer(catalog, location, services, kept.diskGb, addons);
       const { profile } = wording;
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -219,7 +229,7 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
       },
     );
   }
-  const limitsMb = services.reduce((sum, service) => sum + service.memoryMb, 0);
+  const limitsMb = [...services, ...addons].reduce((sum, limit) => sum + limit.memoryMb, 0);
   const headroom = memoryHeadroom(offer.memoryGb * 1024, limitsMb, 0);
   const warnings = [
     ...(kept === undefined ? [] : [keptTypeText(name, provider, planned.id, kept.id)]),
@@ -250,6 +260,7 @@ export async function designCloudServer(input: CloudServerInput): Promise<Design
     services,
     vcpus: offer.vcpus,
     memoryGb: offer.memoryGb,
+    diskGb: offer.diskGb,
     cost,
     warnings,
   };
@@ -308,6 +319,7 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
         ? ""
         : `, ${formatMoney(cost.monthly)} converted at 1 EUR = ${USD_PER_EUR.toFixed(2)} USD`;
     return {
+      // serverCostItem finds it by these words.
       item: `Server ${server.name}${where}${extras}${converted}`,
       monthly: convertMoney(cost.monthly, currency),
     };
@@ -322,6 +334,22 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
     source: notLive === undefined ? "live" : "static",
     asOf: notLive?.asOf ?? app.asOf,
   });
+}
+
+/** {@link totalCost}'s line of the extra server `name`. */
+function serverCostItem(item: string, name: string): boolean {
+  return item.startsWith(`Server ${name} (`);
+}
+
+/**
+ * The plan's cost without the line {@link totalCost} added for the extra server `name` (a server
+ * leaving the plan), its total recomputed; `cost` itself without such a line.
+ */
+export function withoutServerCost(cost: CostEstimate, name: string): CostEstimate {
+  const breakdown = cost.breakdown.filter((line) => !serverCostItem(line.item, name));
+  if (breakdown.length === cost.breakdown.length) return cost;
+  const amount = breakdown.reduce((sum, line) => sum + line.monthly.amount, 0);
+  return { ...cost, breakdown, monthly: { ...cost.monthly, amount: roundCents(amount) } };
 }
 
 /**

@@ -17,6 +17,12 @@ import type {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { monitoringDisable } from "../monitoring/disable";
+import {
+  type MonitoringChange,
+  type MonitoringServices,
+  monitoringEnable,
+} from "../monitoring/enable";
 import {
   cloudTunnelConnector,
   NO_LOGIN_CHECK,
@@ -73,6 +79,8 @@ export interface AddonQuestion {
 export interface AddonServices extends TunnelledChangeServices {
   /** Asks the user for a missing value (interactive runs only). */
   ask?: (question: AddonQuestion) => Promise<string>;
+  /** Self-hosted monitoring's reads and prices. */
+  monitoring?: MonitoringServices;
 }
 
 /** Options every add-on command takes (`--plan-only`, `--approve`, `--host-key`, `--engine`). */
@@ -90,6 +98,14 @@ export interface AddonEnableOptions extends AddonRunOptions, BeszelRequest {
   logsUser?: string;
   /** Grafana Cloud: the percentage of log lines sent (1–100). */
   logSampling?: number;
+  /** Monitoring: `app` runs the stack on the app's server, `server` (default) on its own. */
+  on?: "app" | "server";
+  /** Monitoring: a monitoring server of its own, even when the repository has one. */
+  newServer?: boolean;
+  /** Monitoring: days figures are kept (1–90). */
+  metricsDays?: number;
+  /** Monitoring: days logs are kept (1–30). */
+  logsDays?: number;
 }
 
 /** `opscrew addon disable`. */
@@ -665,6 +681,26 @@ async function runAddonChange(
   return { ...done, status };
 }
 
+/**
+ * Self-hosted monitoring changes only the plan (provision applies it): its summary said, nothing
+ * applied, no host plan.
+ */
+async function monitoringResult(
+  deps: PhaseDeps,
+  change: MonitoringChange,
+  command: string,
+): Promise<AddonResult> {
+  for (const line of change.summary.split("\n")) deps.reporter.info(line);
+  return {
+    applied: false,
+    hostPlanHashes: [],
+    hostApplied: false,
+    files: [],
+    status: await addonStatusOf(deps, change.plan),
+    approveCommand: command,
+  };
+}
+
 /** Said after Grafana Cloud is turned on: the app's own values are masked from the next deploy. */
 const GRAFANA_MASKING_NOTE =
   "The app's own secret values are masked from the next deploy, which writes the masking file once the change is on your deploy branch; until then only values shaped like secrets are.";
@@ -704,11 +740,28 @@ function grafanaCheck(plan: DeployPlan, reading: ServerReading): string[] {
 export async function addonEnable(
   deps: PhaseDeps,
   plan: DeployPlan,
-  kind: AddonKind,
+  kind: AddonKind | "monitoring",
   options: AddonEnableOptions = {},
 ): Promise<AddonResult> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const command = `opscrew addon enable ${kind}${flag}`;
+  if (kind === "monitoring") {
+    const { on, newServer, metricsDays, logsDays, services } = options;
+    const change = await monitoringEnable(deps, plan, {
+      ...(on === undefined ? {} : { on }),
+      ...(newServer === undefined ? {} : { newServer }),
+      ...(metricsDays === undefined ? {} : { metricsDays }),
+      ...(logsDays === undefined ? {} : { logsDays }),
+      ...(services?.monitoring === undefined ? {} : { services: services.monitoring }),
+    });
+    const asked = [
+      on === undefined ? "" : ` --on ${on}`,
+      newServer === true ? " --new-server" : "",
+      metricsDays === undefined ? "" : ` --metrics-days ${metricsDays}`,
+      logsDays === undefined ? "" : ` --logs-days ${logsDays}`,
+    ].join("");
+    return monitoringResult(deps, change, `${command}${asked}`);
+  }
   requireDeployedServer(plan, kind, command, true);
   if (kind === "grafana-cloud") {
     const beszelOnly = ["mode", "access", "hostname", "allowEmails", "hubUrl", "hubKey"] as const;
@@ -752,10 +805,17 @@ export async function addonEnable(
 export async function addonDisable(
   deps: PhaseDeps,
   plan: DeployPlan,
-  kind: AddonKind,
+  kind: AddonKind | "monitoring",
   options: AddonDisableOptions = {},
 ): Promise<AddonResult> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  if (kind === "monitoring") {
+    return monitoringResult(
+      deps,
+      await monitoringDisable(deps, plan),
+      `opscrew addon disable monitoring${flag}`,
+    );
+  }
   const command = `opscrew addon disable ${kind}${flag}${options.keepData === true ? " --keep-data" : ""}`;
   requireDeployedServer(plan, kind, command, false);
   if (options.keepData === true && kind !== "beszel") {

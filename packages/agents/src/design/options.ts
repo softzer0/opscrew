@@ -12,6 +12,7 @@ import {
   type CostEstimate,
   type DesignOption,
   DesignOptionListSchema,
+  type MonitoringSettings,
   type ProjectFacts,
   type Requirements,
   serviceOf,
@@ -42,6 +43,8 @@ export interface BuildDesignOptionsInput {
   edge?: EdgeProxy;
   /** The app's server as deployed on this provider (`deployedAppServer`), which keeps its disk. */
   deployed?: ServerSize;
+  /** The self-hosted monitoring, whose containers on the app's server the sizing counts. */
+  monitoring?: MonitoringSettings;
 }
 
 /** Option tiers, in display order. */
@@ -106,7 +109,7 @@ export async function buildDesignOptionSet(
   const { profile } = wording;
   const region = requestedRegion(requirements);
   if (region === undefined) throw new Error(`${provider} requirements need a region.`);
-  const sizing = sizeFor(facts, requirements, input.components, input.edge);
+  const sizing = sizeFor(facts, requirements, input.components, input.edge, input.monitoring);
   const locations = regionLocations(region, provider);
   const backups = requirements.dataCriticality !== "none";
 
@@ -339,7 +342,12 @@ function toOption(
     `One ${offer.id} ${wording.summaryNoun} (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${containersText(sizing)} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.`,
     `${price}.`,
     backups ? "Automated backups are on." : "Automated backups are off.",
-    memoryText(sizing.components, serverMb, sizing.edgeMb, cost.monthly),
+    memoryText(
+      { ...sizing.components, observability: { monitoring: sizing.monitoring } },
+      serverMb,
+      sizing.edgeMb,
+      cost.monthly,
+    ),
   ].join(" ");
 
   const tradeoffs = [
