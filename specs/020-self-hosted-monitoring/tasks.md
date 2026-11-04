@@ -383,7 +383,8 @@ network above all).
   - Depends: T2011, T2012
   - Accept:
     - **The CLI:**
-      - `addon enable monitoring [--on app|server] [--new-server]`, `addon disable monitoring` and
+      - `addon enable monitoring [--on app|server] [--new-server] [--metrics-days <n>] [--logs-days <n>]`
+        (the two retention options passed to `monitoringEnable`, from T2009), `addon disable monitoring` and
         `addon open monitoring [--port]`, with help text;
       - `addon status`'s section and `status`'s line;
       - the next-step line after enable says to run `opscrew provision`.
@@ -472,6 +473,7 @@ network above all).
 
 - [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
+  - Noted at merge: `catalogs()` in `monitoring/enable.ts` repeats design's private `extraCatalogs`; `pinnedVersion` in `monitoring/settings.ts` repeats the one in `addons/settings.ts` (T2009).
   - Noted at merge: `monitoringOwner` (T2010) reads an owner's paths back from `owner.plan`; any similar code in T2009, T2011 or T2012 should use it.
   - Noted at merge: `escapeRegExp` is a private one-liner in `addons/alloy.ts`, `docker/stacks.ts` and `edge/vercel-routing.ts` (T2006).
   - Noted at merge: `pinnedTag` in `workflow/__fixtures__/plans.ts` repeats `pinnedVersion`'s tag slicing (T2007).
