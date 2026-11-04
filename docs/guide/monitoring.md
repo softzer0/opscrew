@@ -293,5 +293,6 @@ plans of your next `npx opscrew provision`.
 ## From Claude Code
 
 The [OpsCrew plugin](claude-code-plugin.md) can show monitoring's status (each server's last data,
-the disk and the retention) and turn it on or off, with the same approvals as the terminal. To open
+the disk and the retention) and turn it on or off, which writes the plan as the terminal does; then
+run `npx opscrew provision` in your terminal to apply it, each change approved by its hash. To open
 Grafana, run `npx opscrew addon open monitoring` in your terminal.
