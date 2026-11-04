@@ -1,19 +1,24 @@
 /**
  * The self-hosted monitoring stack's files (`opscrew-monitoring`): Prometheus, Loki, Grafana and
- * the front, rendered from the owner's plan. A stub until the stack's task fills it.
+ * the front, rendered from the owner's plan.
  */
 import type { DeployPlan, MonitoringSettings } from "@opscrew/plan-schema";
+import { edgeProxy } from "../edge";
+import { renderMonitoringCompose } from "./compose";
+import {
+  renderFrontCaddyfile,
+  renderGrafanaDashboardProvider,
+  renderGrafanaDatasources,
+  renderLokiConfig,
+  renderPrometheusConfig,
+} from "./config";
+import { renderDashboards } from "./dashboards";
 
+export { GRAFANA_CREDENTIAL_FILE, MONITORING_PROJECT, MONITORING_PUSH_NETWORK } from "./compose";
 export * from "./dashboards";
 
 /** The stack's directory, under the deploy user's home on its server. */
 export const MONITORING_DIR = "opscrew/addons/monitoring";
-
-/**
- * The stack's Docker network that the Alloy on the stack's own server joins, to push to the front
- * by its service name (`front`). Created by the stack's Compose file under this exact name.
- */
-export const MONITORING_PUSH_NETWORK = "opscrew-monitoring-push";
 
 /** What the stack's files are rendered from. */
 export interface MonitoringStackInput {
@@ -33,9 +38,33 @@ export interface MonitoringStackInput {
   plan: DeployPlan;
 }
 
-/** The stack's files, each with its path under {@link MONITORING_DIR}. */
+/**
+ * The stack's files, each with its path under {@link MONITORING_DIR}: `compose.yaml`,
+ * `prometheus.yml`, `loki.yaml`, the front's `Caddyfile`, Grafana's provisioning files and its
+ * dashboards (`grafana/dashboards/*.json`; http and caddy need the plan's edge to be Caddy). None
+ * holds a secret: Grafana reads its admin password from `grafana_admin_credential`, which the host
+ * step writes beside them.
+ */
 export function renderMonitoringStack(
-  _input: MonitoringStackInput,
+  input: MonitoringStackInput,
 ): { path: string; content: string }[] {
-  throw new Error("renderMonitoringStack is not implemented yet.");
+  const { plan, settings } = input;
+  return [
+    { path: "compose.yaml", content: renderMonitoringCompose(input) },
+    { path: "prometheus.yml", content: renderPrometheusConfig(plan) },
+    { path: "loki.yaml", content: renderLokiConfig(plan, settings) },
+    { path: "Caddyfile", content: renderFrontCaddyfile(plan) },
+    {
+      path: "grafana/provisioning/datasources/opscrew.yaml",
+      content: renderGrafanaDatasources(plan),
+    },
+    {
+      path: "grafana/provisioning/dashboards/opscrew.yaml",
+      content: renderGrafanaDashboardProvider(plan),
+    },
+    ...renderDashboards({ caddy: edgeProxy(plan) === "caddy" }).map((dashboard) => ({
+      path: `grafana/dashboards/${dashboard.file}`,
+      content: dashboard.json,
+    })),
+  ];
 }

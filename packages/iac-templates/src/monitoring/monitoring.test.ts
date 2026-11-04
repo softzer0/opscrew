@@ -1,0 +1,440 @@
+// biome-ignore-all lint/suspicious/noTemplateCurlyInString: Grafana's $__file{} in expected values, not JavaScript templates.
+// Feature 020: the self-hosted monitoring stack's files (T2004).
+import { Redactor } from "@opscrew/core";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { describe, expect, it, vi } from "vitest";
+import { parse } from "yaml";
+import { testPlan } from "../__fixtures__/plans";
+import { withPlacement } from "../catalog/__fixtures__/plans";
+import { IMAGES } from "../pins";
+import {
+  MONITORING_PUSH_NETWORK,
+  type MonitoringStackInput,
+  renderDashboards,
+  renderMonitoringStack,
+} from "./index";
+
+// The dashboards are T2005's: stubbed, so these files don't depend on their content.
+vi.mock("./dashboards", async (original) => ({
+  ...(await original<typeof import("./dashboards")>()),
+  renderDashboards: vi.fn(({ caddy }: { caddy: boolean }) => [
+    { uid: "opscrew-servers", file: "servers.json", json: '{"uid":"opscrew-servers"}\n' },
+    { uid: "opscrew-http", file: "http.json", json: `{"uid":"opscrew-http","caddy":${caddy}}\n` },
+  ]),
+}));
+
+const versions = { prometheus: "3.15.1", loki: "3.7.9", grafana: "13.3.0", alloy: "1.21.3" };
+const retention = { metricsDays: 15, logsDays: 7, metricsMaxGb: 24 };
+
+/** `plan` with monitoring on at `where`, and `monitoring`'s other fields over the defaults. */
+function withMonitoring(
+  plan: DeployPlan,
+  where: object,
+  monitoring: Record<string, unknown> = {},
+): DeployPlan {
+  return DeployPlanSchema.parse({
+    ...plan,
+    observability: { monitoring: { enabled: true, where, versions, retention, ...monitoring } },
+  });
+}
+
+/**
+ * The owner: the stack on its extra server `monitoring` (10.200.4.2), with `devices`. Placed
+ * through `db`, since a server without a service is refused until monitoring holds it.
+ */
+function ownerPlan(monitoring: Record<string, unknown> = {}, devices: string[] = []): DeployPlan {
+  const placed = withPlacement(testPlan(), {
+    servers: { monitoring: "hetzner" },
+    placed: { db: "monitoring" },
+    devices,
+  });
+  return withMonitoring(
+    { ...placed, services: placed.services.map(({ server: _, ...service }) => service) },
+    { kind: "server", server: "monitoring" },
+    monitoring,
+  );
+}
+
+/** The input for `plan` on `networks`, with devices when any network lists one. */
+function input(plan: DeployPlan, networks: MonitoringStackInput["networks"]): MonitoringStackInput {
+  const settings = plan.observability?.monitoring;
+  if (settings === undefined) throw new Error("the test plan has no monitoring");
+  return {
+    settings,
+    networks,
+    hasDevices: networks.some((network) => network.devices.length > 0),
+    plan,
+  };
+}
+
+const cases = {
+  "a monitoring server on one network": () =>
+    input(ownerPlan(), [
+      { address: "10.200.4.2", servers: ["10.200.4.1", "10.200.4.2"], devices: [] },
+    ]),
+  "a monitoring server shared by two networks": () =>
+    input(ownerPlan({}, ["laptop"]), [
+      { address: "10.200.4.2", servers: ["10.200.4.1", "10.200.4.2"], devices: ["10.200.4.100"] },
+      { address: "10.205.40.3", servers: ["10.205.40.2"], devices: [] },
+    ]),
+  'kind "app" with no network and no devices': () =>
+    input(withMonitoring(testPlan(), { kind: "app" }), []),
+  'kind "app" with a device': () =>
+    input(withMonitoring(withPlacement(testPlan(), { devices: ["laptop"] }), { kind: "app" }), [
+      { address: "10.200.4.1", servers: ["10.200.4.1"], devices: ["10.200.4.100"] },
+    ]),
+};
+type Case = keyof typeof cases;
+
+function files(stack: MonitoringStackInput): Record<string, string> {
+  return Object.fromEntries(renderMonitoringStack(stack).map((f) => [f.path, f.content]));
+}
+
+type Service = Record<string, unknown> & {
+  environment: Record<string, string>;
+  volumes: string[];
+  networks: string[];
+  ports?: string[];
+};
+interface Compose {
+  name: string;
+  services: Record<string, Service>;
+  networks: Record<string, Record<string, unknown>>;
+  volumes: Record<string, unknown>;
+}
+const compose = (stack: MonitoringStackInput): Compose =>
+  parse(files(stack)["compose.yaml"] as string);
+
+describe("renderMonitoringStack", () => {
+  for (const [label, stack] of Object.entries(cases)) {
+    it(`renders ${label} (snapshot)`, () => {
+      expect(files(stack())).toMatchSnapshot();
+    });
+  }
+
+  it("returns the stack's files, the dashboards from renderDashboards under grafana/dashboards", () => {
+    expect(Object.keys(files(cases["a monitoring server on one network"]()))).toEqual([
+      "compose.yaml",
+      "prometheus.yml",
+      "loki.yaml",
+      "Caddyfile",
+      "grafana/provisioning/datasources/opscrew.yaml",
+      "grafana/provisioning/dashboards/opscrew.yaml",
+      "grafana/dashboards/servers.json",
+      "grafana/dashboards/http.json",
+    ]);
+  });
+
+  it("asks for the Caddy dashboards only when the plan's edge is Caddy", () => {
+    const render = vi.mocked(renderDashboards);
+    render.mockClear();
+    renderMonitoringStack(cases["a monitoring server on one network"]());
+    const nginx = ownerPlan();
+    renderMonitoringStack(
+      input(DeployPlanSchema.parse({ ...nginx, target: { ...nginx.target, edge: "nginx" } }), []),
+    );
+    expect(render.mock.calls).toEqual([[{ caddy: true }], [{ caddy: false }]]);
+  });
+
+  it("starts every file but the dashboards with the plan and the command that regenerates it", () => {
+    const line =
+      "# Generated by OpsCrew from opscrew/plan.yaml; `opscrew provision` regenerates it.";
+    for (const [label, stack] of Object.entries(cases)) {
+      for (const [path, content] of Object.entries(files(stack()))) {
+        if (path.endsWith(".json")) continue;
+        expect(content.split("\n")[0], `${label}: ${path}`).toBe(line);
+      }
+    }
+  });
+
+  it("puts no secret in any file: Grafana's password is only a file's path", () => {
+    const redactor = new Redactor();
+    for (const [label, stack] of Object.entries(cases)) {
+      for (const [path, content] of Object.entries(files(stack()))) {
+        expect(redactor.redact(content), `${label}: ${path}`).toBe(content);
+        expect(content, `${label}: ${path}`).not.toContain("__FILE");
+      }
+    }
+    const grafana = compose(cases["a monitoring server on one network"]()).services.grafana;
+    expect(grafana?.environment.GF_SECURITY_ADMIN_PASSWORD).toBe(
+      "$$__file{/run/opscrew/grafana_admin_credential}",
+    );
+    expect(grafana?.volumes).toContain(
+      "./grafana_admin_credential:/run/opscrew/grafana_admin_credential:ro",
+    );
+  });
+});
+
+describe("the stack's services", () => {
+  const memoryMb = { prometheus: 640, loki: 300, grafana: 400, front: 70 };
+  const stack = () =>
+    input(ownerPlan({ memoryMb }), [{ address: "10.200.4.2", servers: [], devices: [] }]);
+
+  it("are the pinned images, hardened, with the plan's memory, GOMEMLIMIT at 80% and their volume", () => {
+    const { name, services, volumes } = compose(stack());
+    expect(name).toBe("opscrew-monitoring");
+    expect(Object.keys(services)).toEqual(["prometheus", "loki", "grafana", "front"]);
+    const images = {
+      prometheus: IMAGES.prometheus.ref,
+      loki: IMAGES.loki.ref,
+      grafana: IMAGES.grafana.ref,
+      front: IMAGES.caddy.ref,
+    };
+    const data = { prometheus: "prometheus:/prometheus", loki: "loki:/loki" };
+    for (const [service, mb] of Object.entries(memoryMb) as [keyof typeof memoryMb, number][]) {
+      const s = services[service] as Service;
+      expect(s).toMatchObject({
+        image: images[service],
+        restart: "unless-stopped",
+        read_only: true,
+        mem_limit: `${mb}m`,
+        memswap_limit: `${mb}m`,
+        security_opt: ["no-new-privileges:true"],
+        logging: { driver: "json-file", options: { "max-size": "10m", "max-file": "3" } },
+        cap_drop: ["ALL"],
+      });
+      expect(s.environment.GOMEMLIMIT).toBe(`${Math.floor(mb * 0.8)}MiB`);
+      if (service !== "front") expect(s.user).toBeUndefined();
+      if (service in data) expect(s.volumes).toContain(data[service as keyof typeof data]);
+    }
+    expect(services.grafana?.volumes).toContain("grafana:/var/lib/grafana");
+    expect(services.front).toMatchObject({ user: "65534:65534", cap_add: ["NET_BIND_SERVICE"] });
+    expect(volumes).toEqual({ prometheus: {}, loki: {}, grafana: {} });
+  });
+
+  it("keeps Prometheus and Loki on the internal network; the front also on the push network", () => {
+    const { services, networks } = compose(stack());
+    expect(networks).toEqual({
+      stack: { internal: true },
+      published: {},
+      push: { name: MONITORING_PUSH_NETWORK },
+    });
+    expect(services.prometheus?.networks).toEqual(["stack"]);
+    expect(services.loki?.networks).toEqual(["stack"]);
+    expect(services.grafana?.networks).toEqual(["stack", "published"]);
+    expect(services.front?.networks).toEqual(["stack", "published", "push"]);
+  });
+
+  it("names the image by tag only, and says so, for a version that isn't the pinned one", () => {
+    const plan = ownerPlan({ versions: { ...versions, grafana: "13.2.0" } });
+    const content = files(input(plan, []))["compose.yaml"] as string;
+    expect(parse(content).services.grafana.image).toBe("grafana/grafana:13.2.0");
+    expect(content).toContain(
+      "# Grafana 13.2.0 (monitoring.versions.grafana in the plan) is pinned by tag only, not by digest.",
+    );
+    expect(content).not.toContain("Prometheus 3.15.1 (");
+  });
+});
+
+describe("Prometheus", () => {
+  const plan = ownerPlan({ retention: { metricsDays: 30, logsDays: 3, metricsMaxGb: 40 } });
+
+  it("receives remote writes and keeps the plan's retention, by time and size", () => {
+    const { prometheus } = compose(input(plan, [])).services;
+    expect(prometheus?.command).toEqual([
+      "--config.file=/etc/prometheus/prometheus.yml",
+      "--storage.tsdb.path=/prometheus",
+      "--storage.tsdb.retention.time=30d",
+      "--storage.tsdb.retention.size=40GB",
+      "--web.enable-remote-write-receiver",
+    ]);
+    expect(prometheus?.volumes).toContain("./prometheus.yml:/etc/prometheus/prometheus.yml:ro");
+    expect(prometheus?.healthcheck).toMatchObject({
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9090/-/ready"],
+    });
+  });
+
+  it("has no scrape job and accepts samples up to 4 hours late", () => {
+    expect(parse(files(input(plan, []))["prometheus.yml"] as string)).toEqual({
+      global: {},
+      storage: { tsdb: { out_of_order_time_window: "4h" } },
+    });
+  });
+});
+
+describe("Loki", () => {
+  const plan = ownerPlan({ retention: { metricsDays: 30, logsDays: 3, metricsMaxGb: 40 } });
+
+  it("keeps logs logsDays, refuses older lines, and adds no label of its own", () => {
+    const loki = parse(files(input(plan, []))["loki.yaml"] as string);
+    expect(loki.auth_enabled).toBe(false);
+    expect(loki.schema_config.configs).toEqual([
+      {
+        from: "2026-01-01",
+        store: "tsdb",
+        object_store: "filesystem",
+        schema: "v13",
+        index: { prefix: "index_", period: "24h" },
+      },
+    ]);
+    expect(loki.compactor).toMatchObject({ retention_enabled: true });
+    expect(loki.limits_config).toMatchObject({
+      retention_period: "72h",
+      reject_old_samples: true,
+      reject_old_samples_max_age: "72h",
+      discover_service_name: [],
+      ingestion_rate_mb: 4,
+    });
+    expect(loki.analytics).toEqual({ reporting_enabled: false });
+  });
+
+  it("runs with a writable /tmp, which retention needs, and its config read-only", () => {
+    const { loki } = compose(input(plan, [])).services;
+    expect(loki).toMatchObject({
+      command: ["-config.file=/etc/loki/loki.yaml"],
+      tmpfs: ["/tmp"],
+      volumes: ["./loki.yaml:/etc/loki/loki.yaml:ro", "loki:/loki"],
+    });
+    expect(loki?.healthcheck).toBeUndefined();
+  });
+});
+
+describe("Grafana", () => {
+  const stack = cases["a monitoring server on one network"];
+
+  it("has the two data sources, read-only", () => {
+    const provisioning = parse(
+      files(stack())["grafana/provisioning/datasources/opscrew.yaml"] as string,
+    );
+    expect(provisioning.prune).toBe(true);
+    expect(provisioning.datasources).toEqual([
+      expect.objectContaining({
+        uid: "opscrew-prometheus",
+        type: "prometheus",
+        url: "http://prometheus:9090",
+        editable: false,
+      }),
+      expect.objectContaining({
+        uid: "opscrew-loki",
+        type: "loki",
+        url: "http://loki:3100",
+        editable: false,
+      }),
+    ]);
+  });
+
+  it("provisions OpsCrew's dashboards from grafana/dashboards, not saved from the UI", () => {
+    const provider = parse(
+      files(stack())["grafana/provisioning/dashboards/opscrew.yaml"] as string,
+    );
+    expect(provider.providers).toEqual([
+      expect.objectContaining({
+        type: "file",
+        folder: "OpsCrew",
+        allowUiUpdates: false,
+        options: { path: "/etc/grafana/dashboards", foldersFromFilesStructure: false },
+      }),
+    ]);
+    expect(compose(stack()).services.grafana?.volumes).toEqual([
+      "./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro",
+      "./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro",
+      "./grafana/dashboards:/etc/grafana/dashboards:ro",
+      "./grafana_admin_credential:/run/opscrew/grafana_admin_credential:ro",
+      "grafana:/var/lib/grafana",
+    ]);
+  });
+
+  it("opens nothing without a login and calls nothing home", () => {
+    const { grafana } = compose(stack()).services;
+    expect(grafana?.environment).toMatchObject({
+      GF_USERS_ALLOW_SIGN_UP: "false",
+      GF_USERS_ALLOW_ORG_CREATE: "false",
+      GF_AUTH_ANONYMOUS_ENABLED: "false",
+      GF_PUBLIC_DASHBOARDS_ENABLED: "false",
+      GF_SNAPSHOTS_EXTERNAL_ENABLED: "false",
+      GF_METRICS_ENABLED: "false",
+      GF_ANALYTICS_REPORTING_ENABLED: "false",
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false",
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false",
+      GF_ANALYTICS_FEEDBACK_LINKS_ENABLED: "false",
+      GF_NEWS_NEWS_FEED_ENABLED: "false",
+      GF_PLUGINS_PLUGIN_ADMIN_ENABLED: "false",
+      GF_SECURITY_DISABLE_GRAVATAR: "true",
+      GF_PLUGINS_PREINSTALL_DISABLED: "true",
+      GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED: "true",
+      GF_GRAFANA_COM_URL: "http://127.0.0.1:9",
+      GF_GRAFANA_COM_API_URL: "http://127.0.0.1:9/api",
+    });
+    const disabled = grafana?.environment.GF_PLUGINS_DISABLE_PLUGINS?.split(",");
+    expect(disabled).toHaveLength(12);
+    expect(disabled).not.toContain("prometheus");
+    expect(disabled).not.toContain("loki");
+    expect(grafana).toMatchObject({ tmpfs: ["/tmp"] });
+  });
+});
+
+describe("publishing", () => {
+  /** Every published port, by service. */
+  function published(label: Case): Record<string, string[]> {
+    const { services } = compose(cases[label]());
+    return Object.fromEntries(
+      Object.entries(services)
+        .filter(([, service]) => service.ports !== undefined)
+        .map(([name, service]) => [name, service.ports as string[]]),
+    );
+  }
+
+  it("publishes Grafana on 127.0.0.1 and the front on the private address", () => {
+    expect(published("a monitoring server on one network")).toEqual({
+      grafana: ["127.0.0.1:3000:3000"],
+      front: ["10.200.4.2:9091:9091"],
+    });
+  });
+
+  it("publishes Grafana and the front on each private address when devices exist", () => {
+    expect(published("a monitoring server shared by two networks")).toEqual({
+      grafana: ["127.0.0.1:3000:3000", "10.200.4.2:3000:3000", "10.205.40.3:3000:3000"],
+      front: ["10.200.4.2:9091:9091", "10.205.40.3:9091:9091"],
+    });
+    expect(published('kind "app" with a device')).toEqual({
+      grafana: ["127.0.0.1:3000:3000", "10.200.4.1:3000:3000"],
+      front: ["10.200.4.1:9091:9091"],
+    });
+  });
+
+  it("with no network, publishes only Grafana on 127.0.0.1; the front still runs", () => {
+    expect(published('kind "app" with no network and no devices')).toEqual({
+      grafana: ["127.0.0.1:3000:3000"],
+    });
+    const { front } = compose(cases['kind "app" with no network and no devices']()).services;
+    expect(front?.networks).toContain("push");
+  });
+});
+
+describe("the front's Caddyfile", () => {
+  const caddyfile = () =>
+    (files(cases["a monitoring server on one network"]()).Caddyfile as string).split("\n");
+
+  it("has no admin API, caps the body, routes the two POST paths, and refuses the rest", () => {
+    const lines = caddyfile();
+    for (const line of [
+      "\tadmin off",
+      "\tauto_https off",
+      "\tpersist_config off",
+      ":9091 {",
+      "\t\tmax_size 8MiB",
+    ]) {
+      expect(lines).toContain(line);
+    }
+    const text = lines.join("\n");
+    expect(text).toContain(
+      "\t@metrics {\n\t\tmethod POST\n\t\tpath /api/v1/write\n\t}\n\thandle @metrics {\n\t\trewrite * /api/v1/write\n\t\treverse_proxy prometheus:9090\n\t}",
+    );
+    expect(text).toContain(
+      "\t@logs {\n\t\tmethod POST\n\t\tpath /loki/api/v1/push\n\t}\n\thandle @logs {\n\t\trewrite * /loki/api/v1/push\n\t\treverse_proxy loki:3100\n\t}",
+    );
+    expect(text).toContain("\thandle {\n\t\trespond 403\n\t}\n}");
+    expect(lines.filter((line) => line.includes("reverse_proxy"))).toHaveLength(2);
+  });
+
+  it("is checked by a healthcheck on both upstreams", () => {
+    const { front } = compose(cases["a monitoring server on one network"]()).services;
+    expect(front?.healthcheck).toMatchObject({
+      test: [
+        "CMD-SHELL",
+        "wget -q -O /dev/null http://loki:3100/ready && wget -q -O /dev/null http://prometheus:9090/-/ready",
+      ],
+    });
+    expect(front?.depends_on).toEqual(["prometheus", "loki"]);
+  });
+});
