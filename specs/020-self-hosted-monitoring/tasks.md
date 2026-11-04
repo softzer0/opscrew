@@ -201,7 +201,7 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T2008 [P] [US1] [US3] [US7] The host adapter: the `monitoring` step, `alloy` on any server, `grant`'s `monitor`, in `packages/connectors/ssh-host/**`
+- [x] T2008 [P] [US1] [US3] [US7] The host adapter: the `monitoring` step, `alloy` on any server, `grant`'s `monitor`, in `packages/connectors/ssh-host/**`
   - Owns: `packages/connectors/ssh-host/**` (+ tests, fixtures, snapshots)
   - Reads: plan.md "8."; data-model.md "On the servers", "The host record"; contracts/monitoring.md "ssh-host"; research.md R7 (S3); 018's `grant.ts`
   - Depends: T2002
