@@ -470,7 +470,15 @@ export class LocalEdge {
     ];
     const main = doc.configs.caddyfile;
     if (proxy === "caddy" && main !== undefined) {
-      main.content = `{\n\tacme_ca https://pebble:14000/dir\n\tacme_ca_root /test/pebble.minica.pem\n}\n${main.content}`;
+      // Caddy takes one global options block, first: the rendered edge always has one (its
+      // figures), so Pebble's CA goes into it.
+      const acme = "\tacme_ca https://pebble:14000/dir\n\tacme_ca_root /test/pebble.minica.pem\n";
+      const lines = main.content.split("\n");
+      const open = lines.findIndex((line) => line === "{");
+      if (open === -1) throw new Error("The rendered Caddyfile has no global options block.");
+      main.content = [...lines.slice(0, open + 1), acme.trimEnd(), ...lines.slice(open + 1)].join(
+        "\n",
+      );
       front.volumes = [...(front.volumes ?? []), "./pebble.minica.pem:/test/pebble.minica.pem:ro"];
     }
     return stringify(doc, { lineWidth: 0 });
