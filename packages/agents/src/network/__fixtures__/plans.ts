@@ -4,6 +4,7 @@ import {
   DeployPlanSchema,
   type Network,
 } from "@opscrew/plan-schema";
+import { MONITORING_VERSIONS } from "../../monitoring/settings";
 import { ownPlan, testKeyMaker, testPlan } from "../../testing";
 import { allocateNetwork, type NetworkHostFacts } from "../allocate";
 
@@ -57,7 +58,7 @@ export function networked(
 /** Monitoring on, without `where`: the owner's versions, retention and limits. */
 const MONITORING = {
   enabled: true,
-  versions: { prometheus: "3.15.1", loki: "3.7.9", grafana: "13.3.0", alloy: "1.21.3" },
+  versions: MONITORING_VERSIONS,
   retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 24 },
   memoryMb: { ...ADDON_MEMORY_DEFAULTS.monitoring },
 };

@@ -29,11 +29,6 @@ const APP_FOLDER_IN_ALLOY = "/opscrew-test/app";
 /** The folder beside Alloy's Compose file that stands in for the app's folder on the server. */
 export const APP_FOLDER = "app-folder";
 
-/** The version in a pinned image's tag: `prom/prometheus:v3.15.1@sha256:…` gives `3.15.1`. */
-export function imageVersion(ref: string): string {
-  return (ref.split(/[:@]/)[1] ?? "").replace(/^v/, "");
-}
-
 /** Writes each file under `dir`, its folders made first, with `mode`. */
 export async function writeFiles(
   dir: string,

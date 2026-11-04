@@ -1,15 +1,9 @@
 /** `opscrew retarget` with self-hosted monitoring on (feature 020, US7 #4, FR-2026). */
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { allocateNetwork } from "../network";
-import { monitoredPlan, senderPlan, withNetwork } from "../network/__fixtures__/plans";
-import { createTestPhaseDeps, testKeyMaker } from "../testing";
+import { monitoredPlan, networked, senderPlan } from "../network/__fixtures__/plans";
+import { createTestPhaseDeps } from "../testing";
 import { startMove } from "./start";
-
-/** `plan` on its private network. */
-function networked(plan: ReturnType<typeof monitoredPlan>) {
-  return withNetwork(plan, allocateNetwork(plan, {}, testKeyMaker()).network);
-}
 
 /** The app alone on its server, with the stack there too (`--on app`). */
 function onAppAlone() {
@@ -22,7 +16,7 @@ function onAppAlone() {
 
 describe("startMove: an app with self-hosted monitoring on", () => {
   it.each([
-    ["on its own monitoring server", () => networked(monitoredPlan())],
+    ["on its own monitoring server", () => networked(monitoredPlan()).plan],
     ["on the app's server, alone", onAppAlone],
     [
       "sending to another environment's",
@@ -30,10 +24,7 @@ describe("startMove: an app with self-hosted monitoring on", () => {
         const facts = {
           monitoring: { udpPortsInUse: [51820], wireguardInterfaces: ["wg-opscrew0"] },
         };
-        return withNetwork(
-          senderPlan(),
-          allocateNetwork(senderPlan(), facts, testKeyMaker()).network,
-        );
+        return networked(senderPlan(), facts).plan;
       },
     ],
   ])(

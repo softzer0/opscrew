@@ -21,8 +21,8 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ownProject, provisionOwn } from "../drift/__fixtures__/own-project";
-import { allocateNetwork, type NetworkHostFacts } from "../network";
-import { monitoredPlan, senderPlan, withNetwork } from "../network/__fixtures__/plans";
+import type { NetworkHostFacts } from "../network";
+import { monitoredPlan, networked, senderPlan } from "../network/__fixtures__/plans";
 import { monitoringValues } from "../provision/secrets";
 import { ensureStatePassphrase } from "../shared";
 import { generatedValuesFile } from "../shared/app-secrets";
@@ -44,7 +44,6 @@ import {
   SERVER_ADDRESS,
   SERVER_IPV4,
   serverAttributes,
-  testKeyMaker,
 } from "../testing";
 import { runDestroy } from "./run";
 import type { DestroyPreview, DestroyServices } from "./types";
@@ -59,9 +58,8 @@ function deployed(
   plan: Omit<DeployPlan, "network">,
   facts: Record<string, NetworkHostFacts> = {},
 ): DeployPlan {
-  const { network } = allocateNetwork(plan, facts, testKeyMaker(plan.app.name));
   return DeployPlanSchema.parse({
-    ...withNetwork(plan, network),
+    ...networked(plan, facts).plan,
     deployment: {
       ...plan.deployment,
       lastPlanHash: "a".repeat(64),
@@ -529,15 +527,14 @@ describe.skipIf(skipNoGit)("destroy of a sender on the user's own server", () =>
         },
       },
     } as Omit<DeployPlan, "network">;
-    const { network } = allocateNetwork(
-      sender,
-      {
+    await writeArtifact(
+      "plan",
+      s.deps.paths.files.plan,
+      networked(sender, {
         app: { udpPortsInUse: [], wireguardInterfaces: [] },
         monitoring: { udpPortsInUse: [51820], wireguardInterfaces: ["wg-opscrew0"] },
-      },
-      testKeyMaker("shop"),
+      }).plan,
     );
-    await writeArtifact("plan", s.deps.paths.files.plan, withNetwork(sender, network));
     await keepOwner(s, QA_PLAN);
     const installed = {
       installed: true,

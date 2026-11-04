@@ -13,6 +13,7 @@
 import { readFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
+import { ADDON_PROJECTS } from "@opscrew/connector-ssh-host";
 import { appDir, DASHBOARD_QUERIES, EDGE_PROJECT } from "@opscrew/iac-templates";
 import {
   MONITORING_GRAFANA_PORT,
@@ -62,8 +63,6 @@ const SETTINGS = { ...serverSettings(process.env), app: "nextjs-postgres" };
 const STAGING = "staging";
 /** The device of step 5. */
 const LAPTOP = "laptop";
-/** The Compose project of Grafana Alloy on each server (`addons/alloy.ts`). */
-const ALLOY_PROJECT = "opscrew-alloy";
 /**
  * `$METHOD $URL` from the device with the authorization `$AUTH` and the JSON body `$BODY` when set
  * (values passed by name, never on a command line): prints the status, a newline and the answer's
@@ -545,7 +544,7 @@ describe.skipIf(MISSING.length > 0)(
         ).toBe(false);
         expect(
           await (await envs.shell()).ok(
-            `docker ps -aq --filter label=com.docker.compose.project=${ALLOY_PROJECT}`,
+            `docker ps -aq --filter label=com.docker.compose.project=${ADDON_PROJECTS.alloy}`,
           ),
           "Alloy's containers on the app's server",
         ).toBe("");

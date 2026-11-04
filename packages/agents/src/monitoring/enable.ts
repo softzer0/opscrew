@@ -337,7 +337,7 @@ async function chooseWhere(
     if (moved) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `Monitoring is already on, ${current.kind === "app" ? "on the app's server" : current.kind === "server" ? `on server ${current.server}` : `sending to server ${current.owner.server} of ${current.owner.plan}`}, and OpsCrew doesn't move it in place. Nothing was changed.`,
+        `Monitoring is already on, ${current.kind === "app" ? "on the app's server" : current.kind === "server" ? `on server ${current.server}` : `sending to ${otherServer(current.owner)}`}, and OpsCrew doesn't move it in place. Nothing was changed.`,
         {
           hint: `Turn it off with \`opscrew addon disable monitoring${flag}\` and \`opscrew provision${flag}\` first, then run this command again.`,
         },

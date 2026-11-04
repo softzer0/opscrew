@@ -47,7 +47,7 @@ import { cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { x25519KeyPair } from "@opscrew/agents";
+import { MONITORING_VERSIONS, x25519KeyPair } from "@opscrew/agents";
 import { testPlan } from "@opscrew/agents/testing";
 import { MONITOR_LOGIN } from "@opscrew/connector-ssh-host";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -102,7 +102,6 @@ import {
   DASHBOARD_UIDS,
   GrafanaApi,
   hasData,
-  imageVersion,
   instantValue,
   internalTls,
   LOKI_MAX_LINES,
@@ -216,12 +215,7 @@ function monitoredPlan(app: string, prefix: string): DeployPlan {
       monitoring: {
         enabled: true,
         where: { kind: "server", server: MONITORING_SERVER },
-        versions: {
-          prometheus: imageVersion(IMAGES.prometheus.ref),
-          loki: imageVersion(IMAGES.loki.ref),
-          grafana: imageVersion(IMAGES.grafana.ref),
-          alloy: imageVersion(IMAGES.alloy.ref),
-        },
+        versions: MONITORING_VERSIONS,
         retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 24 },
       },
     },

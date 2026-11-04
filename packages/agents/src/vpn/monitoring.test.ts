@@ -23,17 +23,12 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { allocateNetwork, type NetworkHostFacts } from "../network";
-import { monitoredPlan, senderPlan, splitPlan, withNetwork } from "../network/__fixtures__/plans";
+import { deployed } from "../monitoring/__fixtures__/world";
+import type { NetworkHostFacts } from "../network";
+import { monitoredPlan, networked, senderPlan, splitPlan } from "../network/__fixtures__/plans";
 import { recordGeneratedEntries } from "../shared/app-secrets";
 import { updateServerAddresses } from "../shared/server-record";
-import {
-  createTestPhaseDeps,
-  DEPLOYED_AT,
-  freshFacts,
-  ScriptedApprovalHandler,
-  testKeyMaker,
-} from "../testing";
+import { createTestPhaseDeps, freshFacts, ScriptedApprovalHandler, testKeyMaker } from "../testing";
 import { deviceConfigFile, vpnAdd, vpnRemove } from "./devices";
 import type { VpnServices } from "./servers";
 
@@ -57,13 +52,6 @@ function cloudFacts(wireguardInterfaces: string[] = []): HostFacts {
     ...freshFacts({ user: "deploy", privilege: "docker" }),
     wireguardInterfaces,
   });
-}
-
-/** `plan` deployed, on its private network, with the keys allocation made. */
-function networked(plan: Omit<DeployPlan, "network">, facts: Record<string, NetworkHostFacts>) {
-  const deployed = { ...plan, deployment: { ...plan.deployment, lastApplyAt: DEPLOYED_AT } };
-  const made = allocateNetwork(deployed, facts, testKeyMaker(plan.app.name));
-  return { plan: withNetwork(deployed, made.network), privateKeys: made.privateKeys };
 }
 
 /** The member `name` of `plan`'s network. */
@@ -154,12 +142,12 @@ type Repository = Awaited<ReturnType<typeof repository>>;
 
 /** Prod: the split plan with a monitoring server of its own. */
 function ownerPlan() {
-  return networked(monitoredPlan(), {});
+  return networked(deployed(monitoredPlan()));
 }
 
 /** Staging: sends to prod's monitoring server, on its own interface there (wg-opscrew1). */
 function staging() {
-  return networked(senderPlan(), { monitoring: MONITORING_HOST });
+  return networked(deployed(senderPlan()), { monitoring: MONITORING_HOST });
 }
 
 /** The `network` step's params of a host plan. */
@@ -327,7 +315,7 @@ describe("opscrew vpn on an environment that sends to another environment's moni
     const added = r.applies.length;
     // Prod turned monitoring off: its plan has no monitoring server any more.
     const prod = await createTestPhaseDeps({ root: r.deps.paths.root, env: r.deps.env });
-    await writeArtifact("plan", prod.paths.files.plan, networked(splitPlan(), {}).plan);
+    await writeArtifact("plan", prod.paths.files.plan, networked(deployed(splitPlan())).plan);
     const before = await readFile(r.deps.paths.files.plan, "utf8");
 
     const error = await failure(vpnRemove(r.deps, "laptop", { services: r.services }));

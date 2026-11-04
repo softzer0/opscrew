@@ -20,10 +20,7 @@ import { readValidJson } from "../shared/files";
 import { type ServerAddresses, updateServerAddresses } from "../shared/server-record";
 import {
   createTestPhaseDeps,
-  DEPLOYED_AT,
   freshFacts,
-  MemoryCatalog,
-  offer,
   ownPlan,
   portainerPlan,
   type ScriptedRunner,
@@ -32,6 +29,7 @@ import {
   testPlan,
 } from "../testing";
 import { sitePlan } from "../testing/serverless";
+import { catalog, deployed } from "./__fixtures__/world";
 import { monitoringDisable } from "./disable";
 import { type MonitoringServices, monitoringEnable } from "./enable";
 import { figuresCommand } from "./estimate";
@@ -41,16 +39,6 @@ const NOW = new Date("2026-11-04T12:00:00.000Z");
 const APP_IPV4 = "203.0.113.10";
 const DATA_IPV4 = "203.0.113.30";
 const GIB = 1024 ** 3;
-
-/** Hetzner's types in nbg1, from 1 GB up: the stack, Alloy and the system (1,760 MB) fit the 2 GB one. */
-function catalog(): MemoryCatalog {
-  return new MemoryCatalog([
-    offer({ id: "cx11", vcpus: 1, memoryGb: 1, diskGb: 20, price: 2.49 }),
-    offer({ id: "cx21", vcpus: 1, memoryGb: 2, diskGb: 30, price: 3.29 }),
-    offer({ id: "cx23", vcpus: 2, memoryGb: 4, diskGb: 40, price: 5.49 }),
-    offer({ id: "cx33", vcpus: 4, memoryGb: 8, diskGb: 80, price: 8.49 }),
-  ]);
-}
 
 /** What a server's read answers: its CPUs, memory, the app's log bytes of a day, containers, free disk. */
 interface Figures {
@@ -146,11 +134,6 @@ async function repositoryFiles(root: string): Promise<Map<string, string>> {
   await walk(root);
   return files;
 }
-
-const deployed = (plan: DeployPlan): DeployPlan => ({
-  ...plan,
-  deployment: { ...plan.deployment, lastApplyAt: DEPLOYED_AT },
-});
 
 /** The split plan (`db` on server `data`, a cx23) on its network, deployed. */
 function splitWorld(dataType = "cx23") {

@@ -21,13 +21,12 @@ import {
   createTestPhaseDeps,
   DEPLOYED_AT,
   freshFacts,
-  MemoryCatalog,
   makeRequirements,
-  offer,
   type TestPhaseDeps,
   testKeyMaker,
   testPlan,
 } from "../testing";
+import { catalog, deployed } from "./__fixtures__/world";
 import { monitoringDisable } from "./disable";
 import { type MonitoringServices, monitoringEnable } from "./enable";
 import { figuresCommand } from "./estimate";
@@ -37,14 +36,6 @@ const NOW = new Date("2026-11-04T12:00:00.000Z");
 const GIB = 1024 ** 3;
 const ADDRESSES = { prod: "203.0.113.10", staging: "203.0.113.11", qa: "203.0.113.12" };
 const MONITORING_IPV4 = "203.0.113.40";
-
-function catalog(): MemoryCatalog {
-  return new MemoryCatalog([
-    offer({ id: "cx11", vcpus: 1, memoryGb: 1, diskGb: 20, price: 2.49 }),
-    offer({ id: "cx21", vcpus: 1, memoryGb: 2, diskGb: 30, price: 3.29 }),
-    offer({ id: "cx23", vcpus: 2, memoryGb: 4, diskGb: 40, price: 5.49 }),
-  ]);
-}
 
 /**
  * Every server reads the same but for its app's log bytes of a day (`logBytes`, by app name; 40 MB
@@ -91,11 +82,6 @@ class FakeServers {
     };
   }
 }
-
-const deployed = (plan: DeployPlan): DeployPlan => ({
-  ...plan,
-  deployment: { ...plan.deployment, lastApplyAt: DEPLOYED_AT },
-});
 
 /** The environment `name` of the repository at `root` (prod's plan the first app's), deployed. */
 async function environment(

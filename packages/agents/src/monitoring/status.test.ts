@@ -16,8 +16,8 @@ import {
 import { describe, expect, it } from "vitest";
 import { addonOpen, addonStatus } from "../addons/status";
 import { alloyDifferences, monitoringDrift, stackDifferences } from "../drift/monitoring";
-import { monitoredPlan, senderPlan, withNetwork } from "../network/__fixtures__/plans";
-import { allocateNetwork, type NetworkHostFacts } from "../network/allocate";
+import { monitoredPlan, networked, senderPlan } from "../network/__fixtures__/plans";
+import { type NetworkHostFacts, networkRange } from "../network/allocate";
 import { stackAddresses } from "../provision/monitoring";
 import { monitoringSecurityChecks } from "../secure/monitoring";
 import { servicePorts } from "../secure/services";
@@ -57,30 +57,31 @@ function onNetwork(
     publicSsh?: boolean;
   } = {},
 ): DeployPlan {
-  const keys = testKeyMaker(plan.app.name);
-  const { network } = allocateNetwork(plan, options.facts ?? {}, keys);
-  const prefix = network.range.split(".").slice(0, 3).join(".");
-  const full = withNetwork(plan, {
-    ...network,
-    devices: options.devices
-      ? [
-          {
-            name: "laptop",
-            address: `${prefix}.100`,
-            publicKey: keys().publicKey,
-            addedAt: "2026-11-01T10:00:00.000Z",
-          },
-        ]
-      : [],
-    ...(options.publicSsh === false
-      ? { publicSsh: false, publicSshAllowedCidrs: ["0.0.0.0/0"] }
-      : {}),
-  });
+  const allocated = networked(plan, options.facts).plan;
+  const prefix = networkRange(plan).split(".").slice(0, 3).join(".");
   return DeployPlanSchema.parse({
-    ...full,
-    ...(options.publicSsh === false ? { security: { ...full.security, sshAllowedCidrs: [] } } : {}),
+    ...allocated,
+    network: {
+      ...allocated.network,
+      devices: options.devices
+        ? [
+            {
+              name: "laptop",
+              address: `${prefix}.100`,
+              publicKey: testKeyMaker("laptop")().publicKey,
+              addedAt: "2026-11-01T10:00:00.000Z",
+            },
+          ]
+        : [],
+      ...(options.publicSsh === false
+        ? { publicSsh: false, publicSshAllowedCidrs: ["0.0.0.0/0"] }
+        : {}),
+    },
+    ...(options.publicSsh === false
+      ? { security: { ...allocated.security, sshAllowedCidrs: [] } }
+      : {}),
     deployment: {
-      ...full.deployment,
+      ...allocated.deployment,
       lastApplyAt: "2026-11-01T09:00:00.000Z",
       firstDeployAt: "2026-11-01T09:30:00.000Z",
     },
