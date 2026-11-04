@@ -392,6 +392,10 @@ network above all).
   - Depends: T2009, T2012
   - Accept:
     - **`monitoring.md`,** written for users:
+      - (from T2006) an app with no domain yet has no HTTP figures: Caddy serves it for any host,
+        so the HTTP and Caddy dashboards fill once it has its domain;
+      - (from T2006's S7) with Grafana Cloud on too, a monitoring server down for hours delays
+        Grafana Cloud's logs once the agent's queue fills;
       - what runs, and where;
       - the price;
       - turning it on (both placements and the shared server);
@@ -446,6 +450,7 @@ network above all).
 
 - [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
+  - Noted at merge: `escapeRegExp` is a private one-liner in `addons/alloy.ts`, `docker/stacks.ts` and `edge/vercel-routing.ts` (T2006).
   - Noted at merge: `pinnedTag` in `workflow/__fixtures__/plans.ts` repeats `pinnedVersion`'s tag slicing (T2007).
   - Noted at merge: the add-on project names (`opscrew-beszel`, `opscrew-monitoring`) are plain strings in `addons/alloy.ts` (T2006).
   - Noted at merge: `GO_MEMORY_SHARE` is defined in both `monitoring/compose.ts` and `addons/alloy.ts`; `MonitoringStackInput.networks[].servers`/`devices` are unused by the stack (T2004).
