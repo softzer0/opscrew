@@ -577,7 +577,7 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
   - Effort: high
 
 - [ ] T2027 [P] The tests' shared fixtures (after T2025), in agents and the CLI's test harnesses
-  - Owns: agents `{vpn,retarget,destroy,provision}/monitoring.test.ts`, `monitoring/status.test.ts`; `packages/cli/test/{e2e,live}/monitoring*.ts`; the hand-built owner wording at `monitoring/enable.ts` (~328), to use `otherServer` (found at T2025)
+  - Owns: agents `{vpn,retarget,destroy,provision}/monitoring.test.ts`, `monitoring/status.test.ts`; `packages/cli/test/{e2e,live}/monitoring*.ts`; the hand-built owner wording at `monitoring/enable.ts` (~328), to use `otherServer` (found at T2025); `monitoring/{monitoring,shared}.test.ts` and a new `monitoring/__fixtures__/world.ts` for the shared `catalog()`/`deployed` (item 3, left out of Owns by the lead)
   - Accept (agents findings 14 for the Docker pass, 16, and the `opscrew-alloy` note): one
     `networked(plan, facts?)` fixture (added by T2025) used by the five tests; `MONITORING_VERSIONS`
     for the pins; `catalog()`/`deployed` shared; the Docker pass's `imageVersion` gone; the live
