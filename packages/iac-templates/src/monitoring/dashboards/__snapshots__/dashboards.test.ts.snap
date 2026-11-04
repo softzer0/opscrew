@@ -1,0 +1,2106 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderDashboards > snapshots caddy.json 1`] = `
+"{
+  "uid": "opscrew-caddy",
+  "title": "OpsCrew: Caddy",
+  "description": "Caddy, OpsCrew's default edge: requests in flight, its memory and CPU, and errors.",
+  "tags": [
+    "opscrew"
+  ],
+  "schemaVersion": 42,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "fiscalYearStartMonth": 0,
+  "links": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "label": "App",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1, app)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1, app)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\"}, env)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\"}, env)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Requests in flight",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (app, env, server) (caddy_http_requests_in_flight{service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"})",
+          "legendFormat": "{{app}} {{env}} {{server}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Errors",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (host) (rate(caddy_http_request_errors_total{service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))",
+          "legendFormat": "{{host}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Memory",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "process_resident_memory_bytes{service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}",
+          "legendFormat": "{{app}} {{env}} {{server}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "CPU (cores)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "rate(process_cpu_seconds_total{service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval])",
+          "legendFormat": "{{app}} {{env}} {{server}}",
+          "range": true
+        }
+      ]
+    }
+  ]
+}
+"
+`;
+
+exports[`renderDashboards > snapshots containers.json 1`] = `
+"{
+  "uid": "opscrew-containers",
+  "title": "OpsCrew: containers",
+  "description": "Each container's CPU, memory against its limit, and restarts.",
+  "tags": [
+    "opscrew"
+  ],
+  "schemaVersion": 42,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "fiscalYearStartMonth": 0,
+  "links": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "label": "App",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1, app)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1, app)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\"}, env)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\"}, env)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CPU (cores)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (app, env, server, service, container) (rate(container_cpu_usage_seconds_total{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))",
+          "legendFormat": "{{server}} {{container}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Memory (working set)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "max by (app, env, server, service, container) (container_memory_working_set_bytes{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"})",
+          "legendFormat": "{{server}} {{container}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Memory against its limit",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "max by (app, env, server, service, container) (container_memory_working_set_bytes{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}) / max by (app, env, server, service, container) (container_spec_memory_limit_bytes{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"} > 0)",
+          "legendFormat": "{{server}} {{container}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "bargauge",
+      "title": "Restarts",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "changes((max by (app, env, server, service) (container_start_time_seconds{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}))[$__range:15s])",
+          "legendFormat": "{{server}} {{service}}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    }
+  ]
+}
+"
+`;
+
+exports[`renderDashboards > snapshots http.json 1`] = `
+"{
+  "uid": "opscrew-http",
+  "title": "OpsCrew: HTTP",
+  "description": "Requests, error shares and latency per host, from Caddy, OpsCrew's default edge.",
+  "tags": [
+    "opscrew"
+  ],
+  "schemaVersion": 42,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "fiscalYearStartMonth": 0,
+  "links": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "label": "App",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1, app)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1, app)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\"}, env)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\"}, env)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Requests",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (host) (rate(caddy_http_request_duration_seconds_count{handler!=\\"metrics\\", service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))",
+          "legendFormat": "{{host}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Latency p50 and p95",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (host, le) (rate(caddy_http_request_duration_seconds_bucket{handler!=\\"metrics\\", service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval])))",
+          "legendFormat": "p50 {{host}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (host, le) (rate(caddy_http_request_duration_seconds_bucket{handler!=\\"metrics\\", service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval])))",
+          "legendFormat": "p95 {{host}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "4xx share",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "(sum by (host) (rate(caddy_http_request_duration_seconds_count{handler!=\\"metrics\\", code=~\\"4..\\", service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval])) or 0 * sum by (host) (rate(caddy_http_request_duration_seconds_count{handler!=\\"metrics\\", service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))) / sum by (host) (rate(caddy_http_request_duration_seconds_count{handler!=\\"metrics\\", service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))",
+          "legendFormat": "{{host}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "5xx share",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "(sum by (host) (rate(caddy_http_request_duration_seconds_count{handler!=\\"metrics\\", code=~\\"5..\\", service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval])) or 0 * sum by (host) (rate(caddy_http_request_duration_seconds_count{handler!=\\"metrics\\", service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))) / sum by (host) (rate(caddy_http_request_duration_seconds_count{handler!=\\"metrics\\", service=\\"caddy\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))",
+          "legendFormat": "{{host}}",
+          "range": true
+        }
+      ]
+    }
+  ]
+}
+"
+`;
+
+exports[`renderDashboards > snapshots logs.json 1`] = `
+"{
+  "uid": "opscrew-logs",
+  "title": "OpsCrew: logs",
+  "description": "The app's logs, masked before they left the server, and their volume.",
+  "tags": [
+    "opscrew"
+  ],
+  "schemaVersion": 42,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "fiscalYearStartMonth": 0,
+  "links": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "label": "App",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1, app)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1, app)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\"}, env)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\"}, env)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "loki",
+          "uid": "opscrew-loki"
+        },
+        "query": {
+          "type": 1,
+          "label": "service",
+          "stream": "{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}",
+          "refId": "LokiVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values({app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}, service)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "search",
+        "label": "Search",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": [],
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Log volume",
+      "datasource": {
+        "type": "loki",
+        "uid": "opscrew-loki"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "opscrew-loki"
+          },
+          "expr": "sum by (service) (count_over_time({app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\", service=~\\"$service\\"} |= \\"$search\\" [$__interval]))",
+          "legendFormat": "{{service}}",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "logs",
+      "title": "Logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "opscrew-loki"
+      },
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "opscrew-loki"
+          },
+          "expr": "{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\", service=~\\"$service\\"} |= \\"$search\\"",
+          "legendFormat": "",
+          "queryType": "range"
+        }
+      ]
+    }
+  ]
+}
+"
+`;
+
+exports[`renderDashboards > snapshots postgres.json 1`] = `
+"{
+  "uid": "opscrew-postgres",
+  "title": "OpsCrew: Postgres",
+  "description": "Postgres's connections, transactions, cache hit ratio, size, deadlocks and oldest query.",
+  "tags": [
+    "opscrew"
+  ],
+  "schemaVersion": 42,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "fiscalYearStartMonth": 0,
+  "links": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "label": "App",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1, app)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1, app)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\"}, env)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\"}, env)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Connections",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (app, env, server, service) (pg_stat_database_numbackends{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"})",
+          "legendFormat": "in use {{server}} {{service}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "max by (app, env, server, service) (pg_settings_max_connections{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"})",
+          "legendFormat": "max_connections {{server}} {{service}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Transactions",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (app, env, server, service, datname) (rate(pg_stat_database_xact_commit{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]) + rate(pg_stat_database_xact_rollback{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))",
+          "legendFormat": "{{server}} {{service}} {{datname}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Cache hit ratio",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (app, env, server, service, datname) (rate(pg_stat_database_blks_hit{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval])) / (sum by (app, env, server, service, datname) (rate(pg_stat_database_blks_hit{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval])) + sum by (app, env, server, service, datname) (rate(pg_stat_database_blks_read{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval])))",
+          "legendFormat": "{{server}} {{service}} {{datname}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Size",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "max by (app, env, server, service, datname) (pg_database_size_bytes{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"})",
+          "legendFormat": "{{server}} {{service}} {{datname}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "bargauge",
+      "title": "Deadlocks",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (app, env, server, service, datname) (increase(pg_stat_database_deadlocks{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__range]))",
+          "legendFormat": "{{server}} {{service}} {{datname}}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Oldest running query",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "max by (app, env, server, service) (pg_stat_activity_max_tx_duration{state=\\"active\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"})",
+          "legendFormat": "{{server}} {{service}}",
+          "range": true
+        }
+      ]
+    }
+  ]
+}
+"
+`;
+
+exports[`renderDashboards > snapshots servers.json 1`] = `
+"{
+  "uid": "opscrew-servers",
+  "title": "OpsCrew: servers",
+  "description": "Each server's CPU, load, memory, disk and network.",
+  "tags": [
+    "opscrew"
+  ],
+  "schemaVersion": 42,
+  "version": 1,
+  "editable": true,
+  "graphTooltip": 1,
+  "timezone": "browser",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "fiscalYearStartMonth": 0,
+  "links": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "app",
+        "label": "App",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1, app)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1, app)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "env",
+        "label": "Environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\"}, env)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\"}, env)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      },
+      {
+        "name": "server",
+        "label": "Server",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "opscrew-prometheus"
+        },
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "definition": "label_values(node_load1{app=~\\"$app\\", env=~\\"$env\\"}, server)",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [],
+        "regex": "",
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CPU in use",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "1 - avg by (app, env, server) (rate(node_cpu_seconds_total{mode=\\"idle\\", app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))",
+          "legendFormat": "{{app}} {{env}} {{server}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Load",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "node_load1{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}",
+          "legendFormat": "1m {{app}} {{env}} {{server}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "node_load5{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}",
+          "legendFormat": "5m {{app}} {{env}} {{server}}",
+          "range": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "node_load15{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}",
+          "legendFormat": "15m {{app}} {{env}} {{server}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Memory in use",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "1 - node_memory_MemAvailable_bytes{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"} / node_memory_MemTotal_bytes{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}",
+          "legendFormat": "{{app}} {{env}} {{server}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Disk in use",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "1 - node_filesystem_avail_bytes{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"} / node_filesystem_size_bytes{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}",
+          "legendFormat": "{{app}} {{env}} {{server}} {{mountpoint}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Disk free",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "node_filesystem_avail_bytes{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}",
+          "legendFormat": "{{app}} {{env}} {{server}} {{mountpoint}}",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Network in and out",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "opscrew-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (app, env, server, interface) (rate(container_network_receive_bytes_total{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))",
+          "legendFormat": "in {{app}} {{env}} {{server}} {{interface}}",
+          "range": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "opscrew-prometheus"
+          },
+          "expr": "sum by (app, env, server, interface) (rate(container_network_transmit_bytes_total{app=~\\"$app\\", env=~\\"$env\\", server=~\\"$server\\"}[$__rate_interval]))",
+          "legendFormat": "out {{app}} {{env}} {{server}} {{interface}}",
+          "range": true
+        }
+      ]
+    }
+  ]
+}
+"
+`;
