@@ -485,6 +485,99 @@ network above all).
   - Noted at merge: `pinnedTag` in `workflow/__fixtures__/plans.ts` and `imageVersion` in `cli/test/e2e/monitoring-support.ts` repeat `pinnedVersion`'s tag slicing (T2007, T2016); the Docker pass repeats `grant.ts`'s monitor-login SQL because `grantEngine` isn't exported (T2016).
   - Noted at merge: the add-on project names (`opscrew-beszel`, `opscrew-monitoring`) are plain strings in `addons/alloy.ts` (T2006).
   - Noted at merge: `GO_MEMORY_SHARE` is defined in both `monitoring/compose.ts` and `addons/alloy.ts`; `MonitoringStackInput.networks[].servers`/`devices` are unused by the stack (T2004).
+### From the simplify pass (three reviewers by area, 2026-11-04)
+
+Every task keeps behaviour: plans without monitoring render byte-identical files (the edge
+excepted), the 017 plan texts stay, and no test loses what it proves. Rejected by the lead:
+`planNetworkRemoval`'s input shape and dropping its plan-time owner check (refusing before the
+approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
+
+- [ ] T2022 A change of secrets only reaches the server (correctness, found by the ssh-host reviewer), in `packages/connectors/ssh-host/**` and the callers in `packages/agents/src/{provision/monitoring.ts,addons/run.ts}`
+  - Owns: `packages/connectors/ssh-host/src/{steps,plan,types,apply}.ts` (+ tests, fixtures, snapshots); in agents `provision/monitoring.ts` and `addons/run.ts` only the places that pass `secretsChanged` or a grant's in-place (+ tests)
+  - Reads: `apply.ts` `runStep` (a check printing `state=in-place` skips the apply); `MONITOR_HELPERS`' `files_ok` (secret files only `-s`); `grantScripts`' check (the login's attributes only); T2011's notes
+  - Depends: none
+  - Accept:
+    - A step param bound into the plan's hash (`rewrite: true`) makes its check print
+      `state=change`, so the apply runs; the planners set it when a secret changed: the `alloy`
+      step with `secretsChanged` (a new Grafana Cloud token or Postgres monitoring password), the
+      `beszel` step with a new token, and `grant`'s `monitor` when the password wasn't kept.
+    - Real-shell tests: an in-place step with a new secret applies and writes it (the token file,
+      the data source, the login's password); without `rewrite` an unchanged step stays in place.
+    - 017's Grafana Cloud token rotation through `addon enable grafana-cloud` now reaches the
+      server (it had the same flaw); its plan text gains only the new param when a token is given.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T2023 [P] Simplify the templates and the plan schema, in `packages/iac-templates/**`, `packages/plan-schema/**`, and the regex escape helper
+  - Owns: `packages/iac-templates/src/{monitoring,addons,edge,workflow,runbook}/**` and `scripts/update-pins-lib.ts` (+ tests, snapshots, fixtures), except `MonitoringStackInput`'s shape (T2025); `packages/plan-schema/src/{plan.ts,monitoring.test.ts}` (+ the generated schema); `packages/core/src/{text.ts,redact.ts}` (+ tests); `packages/iac-templates/src/docker/stacks.ts`, `edge/vercel-routing.ts` and agents `shared/server-address.ts` only for the escape helper
+  - Accept (the iac-templates reviewer's findings 2, 3, 4 for iac-templates' own tests, 5, 6, 7, 8, 9, 10, and its notes):
+    - the stack's snapshots: every file for one case, `compose.yaml` only for the other three;
+    - `goMemLimit(mb)` in `addons/compose.ts`, used by the stack and Alloy (`GO_MEMORY_SHARE` once);
+    - the tests' monitored plans from `addons/__fixtures__/plans.ts` (`monitoredPlan`, `MONITORING`);
+      `pinnedTag` and the workflow fixture's version copies gone;
+    - in `addons/alloy.ts`: `environmentName`, `listText`, an exported `postgresOn` (by
+      `servicesOn`), one `appLabels`, the Alloy project name built once, `BESZEL_PROJECT` exported
+      from `beszel.ts` and used;
+    - the dashboards' shared variable fields, one `DATASOURCES` used by provisioning, uids built
+      once; dead exports `MONITORING_DIR` and `MONITORING_LABELS` (into the test) removed, the
+      contract updated by the lead;
+    - plan-schema: the never-alone "not on the private network" rule and its test removed; tests
+      that restate constants or repeat a snapshot removed;
+    - one exported `escapeRegExp` in `@opscrew/core` (`text.ts`), used by redact, alloy, docker
+      stacks, vercel routing, update-pins-lib and agents' server-address (not `adapt/health/text.ts`,
+      which also escapes `/`).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T2024 [P] Simplify agents' monitoring settings, enable, status and the generated values, in `packages/agents/src/**`
+  - Owns: `packages/agents/src/{monitoring/{enable,settings,estimate,status}.ts,addons/{settings,status}.ts,design/{run,servers}.ts,shared/app-secrets.ts,provision/secrets.ts,secure/{monitoring,servers}.ts,verify/monitoring.ts,index.ts,monitoring/index.ts}` (+ tests); not `provision/monitoring.ts`, `addons/run.ts`, `drift/`, `vpn/`, `destroy/`, `network/` (T2022, T2025)
+  - Accept (the agents reviewer's findings 4, 5, 6, 10, 11, 12, 13 except `repository.ts`, 14 for the source, 17 except destroy):
+    - one `changeGenerated` for the generated values (`GeneratedFileSchema` gains `monitoring`);
+    - enable's stack-only design and stack literal built once each, `roomOf` reused, the
+      summary's room built once; `extraCatalogs` exported from design and used;
+    - `STACK_SERVICES` and `stoppedServices`, `memberName` and `environmentServers` shared;
+    - dead exports removed (the root's `./provision/monitoring`, the unused monitoring and status
+      exports); `pinnedVersion` exported from `addons/settings.ts` and used; `serverCostItem`
+      inlined; the small items; `MONITORING_VERSIONS` (the pinned versions) exported from
+      `monitoring/settings.ts` for the tests.
+    - If `addons/run.ts`'s `enableFlags` or `shell` items need that file, leave them to T2025.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: high
+
+- [ ] T2025 The stack's input, the owner helpers and drift's copies (after T2022, T2023, T2024), across iac-templates and agents
+  - Owns: `packages/iac-templates/src/monitoring/{index,compose}.ts` (the input's shape) and its tests; agents `network/owner.ts` (+ test), `network/__fixtures__/plans.ts`, `provision/monitoring.ts` (+ test), `drift/monitoring.ts`, `vpn/monitoring.ts`, `destroy/monitoring.ts`, `monitoring/{disable,repository,estimate}.ts`, `monitoring/{shared,monitoring}.test.ts`, `addons/run.ts`; `packages/cli/test/e2e/monitoring.test.ts` (its input call)
+  - Accept (iac-templates finding 1; agents findings 1, 2, 3, 7, 8, 9, 13's `repository.ts`, 15, 17's destroy item):
+    - `renderMonitoringStack(plan, addresses)`: the stack reads `monitoringOf(plan)`; the
+      `servers`/`devices` builders go; drift uses provision's builder and `monitoringAlloy`;
+    - `otherServer`, `currentOwner`, `joinedOn` exported from `network/owner.ts` and used by
+      provision, vpn and drift, with one owner wording;
+    - one sender refusal helper for disable and destroy; one `enableFlags`; `shell` resolved once;
+    - `postgresOn` imported from iac-templates in provision and the estimate (a second
+      Postgres's server now counts its 40 series); `monitoringSenders` gone;
+    - the `networked(plan, facts?)` test fixture added to `network/__fixtures__/plans.ts` for T2027.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents && pnpm turbo run typecheck --filter=opscrew`
+  - Effort: high
+
+- [ ] T2026 [P] Simplify the host adapter's tests and source (after T2022), in `packages/connectors/ssh-host/**`
+  - Owns: `packages/connectors/ssh-host/**`
+  - Accept (the ssh-host reviewer's findings 1, 2, 5–14): the monitor grant cases folded into
+    `grant.test.ts`; the copied test helpers moved to `__fixtures__/helpers.ts`; the fake's recreate
+    copy and the test of it gone; one `scriptsFor` helper; `AddonVariant` computing destinations;
+    one `ALLOY_SECRET_FILES`; `files_ok` no longer opening the data source (the host file only); the
+    destinations normalised in the schema; the grant tuple, the parent-cleanup fragment and the
+    small items. Plan texts unchanged (017's snapshots).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host`
+  - Effort: high
+
+- [ ] T2027 [P] The tests' shared fixtures (after T2025), in agents and the CLI's test harnesses
+  - Owns: agents `{vpn,retarget,destroy,provision}/monitoring.test.ts`, `monitoring/status.test.ts`; `packages/cli/test/{e2e,live}/monitoring*.ts`
+  - Accept (agents findings 14 for the Docker pass, 16, and the `opscrew-alloy` note): one
+    `networked(plan, facts?)` fixture (added by T2025) used by the five tests; `MONITORING_VERSIONS`
+    for the pins; `catalog()`/`deployed` shared; the Docker pass's `imageVersion` gone; the live
+    test's `opscrew-alloy` from `ADDON_PROJECTS.alloy`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm turbo run typecheck --filter=opscrew`
+  - Effort: medium
+
 - [ ] T2020 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync. A patch version (0.2.1): plans without monitoring render byte-identical, so no project has to be redone. Only a minor version (0.3.0) if the feature ends up changing files that existing projects must redo (`docs/releasing.md` 1.).
 
 ## Dependencies
