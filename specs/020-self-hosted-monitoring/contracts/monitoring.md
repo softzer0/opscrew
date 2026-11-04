@@ -47,17 +47,9 @@ export function isOutsideMember(plan: DeployPlan, member: NetworkMember): boolea
 // T2003
 IMAGES.prometheus, IMAGES.loki, IMAGES.grafana: ImagePin;   // IMAGES.alloy → 1.21.3
 
-// T2004
-export interface MonitoringStackInput {
-  settings: MonitoringSettings;            // the owner's
-  networks: {                              // empty for kind "app" with no network
-    address: string;                       // the monitoring server's address on that network
-    servers: string[];                     // the members that send (private addresses)
-    devices: string[];                     // the devices' private addresses
-  }[];
-  plan: DeployPlan;                        // the owner's, for headers and labels
-}
-export function renderMonitoringStack(input: MonitoringStackInput): { path: string; content: string }[];
+// T2004 (the input simplified by T2025: the stack reads monitoringOf(plan) and needs only the
+// monitoring server's private address on each network, empty for kind "app" with no network)
+export function renderMonitoringStack(plan: DeployPlan, addresses: readonly string[]): { path: string; content: string }[];
 export const MONITORING_PUSH_NETWORK = "opscrew-monitoring-push";   // the front by name, for the stack's own server's Alloy
 
 // T2005
@@ -95,9 +87,8 @@ ApplyOptions.secrets += { grafanaAdminPassword?: string; monitoringPostgresPassw
 // T2009 (agents/src/monitoring)
 monitoringEnable(deps, plan, { on?: "app" | "server"; newServer?: boolean }): Promise<MonitoringChange>;
 monitoringDisable(deps, plan): Promise<MonitoringChange>;
-monitoringEstimate(deps, plans): Promise<MonitoringEstimate>;   // series, figures GB, logs GB, metricsMaxGb
-repositoryMonitoring(deps): Promise<{ plan: RepoPath; server: string } | undefined>;
-monitoringSenders(deps, ownerPlan): Promise<RepoPath[]>;
+// The estimate, the repository's server and its senders are internal to agents/src/monitoring
+// (T2024 and T2025 removed the unused exports).
 
 // T2011 (agents/src/provision/monitoring.ts)
 monitoringHostPlans(deps, plan): Promise<HostPlanStep[]>;   // in the order of plan.md 11.
