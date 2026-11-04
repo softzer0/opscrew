@@ -13,7 +13,7 @@ import {
 import { z } from "zod";
 import type { AddonContainer } from "../addons/status";
 import type { PhaseDeps } from "../context";
-import { monitoringOwner } from "../network/owner";
+import { type MonitoringOwner, monitoringOwner } from "../network/owner";
 import type { ProvisionServices } from "../provision/types";
 import { sizeText } from "../retarget/texts";
 import { appServers } from "../shared/servers";
@@ -22,7 +22,7 @@ import { serverShell } from "../status/servers";
 import { readOwnerPlan, senderPlans } from "./repository";
 
 /** A server whose last figures are older than this is silent (US6 #5). */
-export const SILENT_AFTER_MS = 5 * 60_000;
+const SILENT_AFTER_MS = 5 * 60_000;
 
 /** One of the stack's containers: its state, health and memory. */
 export interface MonitoringContainer extends AddonContainer {
@@ -82,9 +82,7 @@ export async function monitoringStack(deps: PhaseDeps, plan: DeployPlan): Promis
   }
   if (where.kind === "app") return { plan, deps, server: APP_SERVER };
   if (where.kind === "server") return { plan, deps, server: where.server };
-  const owner = monitoringOwner(deps.paths, plan) as NonNullable<
-    ReturnType<typeof monitoringOwner>
-  >;
+  const owner = monitoringOwner(deps.paths, plan) as MonitoringOwner;
   const ownerPlan = await readOwnerPlan(deps, owner, "Nothing was changed.");
   return { plan: ownerPlan, deps: { ...deps, paths: owner.paths }, server: owner.server };
 }
@@ -98,12 +96,22 @@ function envLabel(plan: DeployPlan): string {
  * Every server the stack of `ownerPlan` watches, by the labels its Alloy sets: each server of the
  * owner's environment (the monitoring server included), then each sender's, in repository order.
  */
-export async function monitoredServers(
+async function monitoredServers(
   deps: Pick<PhaseDeps, "paths">,
   ownerPlan: DeployPlan,
 ): Promise<Omit<MonitoredServer, "silent">[]> {
   return [ownerPlan, ...(await senderPlans(deps, ownerPlan))].flatMap((plan) =>
     appServers(plan).map((server) => ({ app: plan.app.name, env: envLabel(plan), server })),
+  );
+}
+
+/** The stack's four services, by the name Compose gives their container. */
+const STACK_SERVICES = ["prometheus", "loki", "grafana", "front"];
+
+/** The stack's services without a running container among `containers`. */
+export function stoppedServices(containers: readonly Pick<AddonContainer, "name" | "running">[]) {
+  return STACK_SERVICES.filter(
+    (service) => !containers.some((c) => c.name.includes(`-${service}-`) && c.running),
   );
 }
 
@@ -161,7 +169,7 @@ function sections(stdout: string): Record<string, string[]> {
 
 /** One of the stack's own containers, by the names Compose gives the project's four services. */
 const CONTAINER = new RegExp(
-  `^(${CONTAINER_PREFIX}(?:prometheus|loki|grafana|front)-\\d+)\\|([a-z]+)\\|(.*)$`,
+  `^(${CONTAINER_PREFIX}(?:${STACK_SERVICES.join("|")})-\\d+)\\|([a-z]+)\\|(.*)$`,
 );
 const MEMORY = /^([A-Za-z0-9][A-Za-z0-9_.-]*)\|([0-9.]+ ?[KMGT]?i?B \/ [0-9.]+ ?[KMGT]?i?B)$/;
 
@@ -328,7 +336,7 @@ function ago(at: string, now: Date): string {
 }
 
 /** A monitored server in words: `server app of shop (staging)`. */
-export function monitoredServerWords(server: Pick<MonitoredServer, "app" | "env" | "server">) {
+function monitoredServerWords(server: Pick<MonitoredServer, "app" | "env" | "server">) {
   return `server ${server.server} of ${server.app} (${server.env})`;
 }
 
@@ -383,15 +391,23 @@ export function monitoringReadingLines(reading: MonitoringReading, now: Date): s
   ];
 }
 
+/** The servers of `plan`'s environment among those the stack watches. */
+export function environmentServers(
+  reading: MonitoringReading,
+  plan: DeployPlan,
+): MonitoredServer[] {
+  return reading.servers.filter(
+    (server) => server.app === plan.app.name && server.env === envLabel(plan),
+  );
+}
+
 /**
  * `opscrew status`'s one line for this environment (FR-2021): how many of its servers send, and
  * which are silent, with what to check.
  */
 export function monitoringStatusLine(reading: MonitoringReading, plan: DeployPlan): string {
   const { stack } = reading;
-  const mine = reading.servers.filter(
-    (server) => server.app === plan.app.name && server.env === envLabel(plan),
-  );
+  const mine = environmentServers(reading, plan);
   const silent = mine.filter((server) => server.silent);
   const where = `the monitoring stack on server ${stack.server}${stack.app === plan.app.name && stack.env === envLabel(plan) ? "" : ` of ${stack.app} (${stack.env})`}`;
   if (reading.unanswered.includes("figures")) {

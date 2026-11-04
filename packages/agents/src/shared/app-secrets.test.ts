@@ -225,5 +225,12 @@ describe("the private network's keys and the device logins' passwords", () => {
       recordGeneratedEntries(deps, "network", { app: testKeyMaker()().privateKey }),
     ).rejects.toMatchObject({ code: "ARTIFACT_INVALID" });
     expect(await readFile(file, "utf8")).toBe("{ not json");
+    // Nor over monitoring values OpsCrew can't read.
+    const damaged = `${JSON.stringify({ monitoring: { grafanaAdminPassword: "not one" } })}\n`;
+    await writeFile(file, damaged);
+    await expect(
+      recordGeneratedEntries(deps, "grants", { "laptop/db": "grant-password-0003" }),
+    ).rejects.toMatchObject({ code: "ARTIFACT_INVALID" });
+    expect(await readFile(file, "utf8")).toBe(damaged);
   });
 });

@@ -10,18 +10,14 @@ import {
   type MonitoringSettings,
   onOneServer,
 } from "@opscrew/plan-schema";
-
-/** The version in an image pin (`prom/prometheus:v3.15.1@sha256:…` → `3.15.1`, without a `v`). */
-function pinnedVersion(ref: string): string {
-  return (ref.split(/[:@]/)[1] as string).replace(/^v/, "");
-}
+import { ALLOY_VERSION, pinnedVersion } from "../addons/settings";
 
 /** The stack's and Alloy's versions OpsCrew pins. */
 export const MONITORING_VERSIONS: MonitoringSettings["versions"] = {
   prometheus: pinnedVersion(IMAGES.prometheus.ref),
   loki: pinnedVersion(IMAGES.loki.ref),
   grafana: pinnedVersion(IMAGES.grafana.ref),
-  alloy: pinnedVersion(IMAGES.alloy.ref),
+  alloy: ALLOY_VERSION,
 };
 
 /** How long figures and logs are kept unless the plan says. */

@@ -23,8 +23,9 @@ import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
 import { pricedOffer } from "../design/cost";
 import { onAppServer } from "../design/placement";
-import { resolveCatalog } from "../design/run";
+import { extraCatalogs } from "../design/run";
 import {
+  type DesignedCloudServer,
   type DesignedServer,
   designCloudServer,
   serverLine,
@@ -144,22 +145,6 @@ function isCloud(target: DeployTarget | ExtraServer["target"]): target is CloudT
 function targetOf(plan: DeployPlan, name: string): DeployTarget | ExtraServer["target"] {
   if (name === APP_SERVER) return plan.target;
   return ((plan.servers ?? []).find((server) => server.name === name) as ExtraServer).target;
-}
-
-/** Each provider's catalogue, resolved once (its warning said when it is the price list). */
-function catalogs(deps: PhaseDeps): NonNullable<MonitoringServices["catalogFor"]> {
-  const found = new Map<CloudProvider, Promise<ComputeCatalog>>();
-  return (provider, location) => {
-    let catalog = found.get(provider);
-    if (catalog === undefined) {
-      catalog = resolveCatalog(deps, provider, location).then((resolved) => {
-        if (resolved.warning !== undefined) deps.reporter.warn(resolved.warning);
-        return resolved.catalog;
-      });
-      found.set(provider, catalog);
-    }
-    return catalog;
-  };
 }
 
 /** One of the plan's servers as the checks see it: its memory and price. */
@@ -412,6 +397,31 @@ function ownServerOf(entry: ExtraServer, facts: HostFacts): DesignedServer {
   };
 }
 
+/** A server OpsCrew creates for the stack alone (in `plan`), sized and priced through design's code. */
+function designStackServer(
+  plan: DeployPlan,
+  name: string,
+  target: Exclude<ExtraServer["target"], { provider: "own" }> | undefined,
+  backups: boolean,
+  catalogFor: NonNullable<MonitoringServices["catalogFor"]>,
+): Promise<DesignedCloudServer> {
+  return designCloudServer({
+    name,
+    target,
+    services: [],
+    addons: monitoringLimits(plan, name),
+    app: plan.target,
+    region: undefined,
+    backups,
+    catalogFor,
+  });
+}
+
+/** The stack's server `designed`, as `words` say it, with `diskGb` of disk. */
+function stackOf(designed: DesignedServer, words: string, diskGb: number): StackServer {
+  return { line: serverLine(designed), words, diskGb, vcpus: designed.vcpus };
+}
+
 /**
  * The stack's own server of this plan (`where.kind` "server"): a server OpsCrew creates sized for
  * the stack and priced through design's code (its type kept when the plan sets one), or one the
@@ -425,22 +435,13 @@ async function ownStackServer(
   command: string,
 ): Promise<StackServer & { designed: DesignedServer }> {
   const entry = draft.servers?.find((server) => server.name === name);
-  const addons = monitoringLimits(draft, name);
+  const words = `server ${name}`;
   if (entry !== undefined && !isCloud(entry.target)) {
-    const found = facts[name] as HostFacts;
-    await requireRoom(
-      draft,
-      { name, serverMb: found.memoryBytes / 1024 ** 2, facts: found },
-      addons,
-    );
+    const room = await roomOf(name, entry.target, facts[name], catalogFor);
+    await requireRoom(draft, room, monitoringLimits(draft, name));
+    const found = room.facts as HostFacts;
     const designed = ownServerOf(entry, found);
-    return {
-      line: serverLine(designed),
-      words: `server ${name}`,
-      diskGb: found.diskFreeBytes / GIB,
-      vcpus: designed.vcpus,
-      designed,
-    };
+    return { ...stackOf(designed, words, found.diskFreeBytes / GIB), designed };
   }
   if (entry === undefined && !isCloud(draft.target)) {
     throw new OpsCrewError(
@@ -451,23 +452,14 @@ async function ownStackServer(
       },
     );
   }
-  const designed = await designCloudServer({
+  const designed = await designStackServer(
+    draft,
     name,
-    target: entry?.target as Exclude<ExtraServer["target"], { provider: "own" }> | undefined,
-    services: [],
-    addons,
-    app: draft.target,
-    region: undefined,
-    backups: false,
+    entry?.target as Exclude<ExtraServer["target"], { provider: "own" }> | undefined,
+    false,
     catalogFor,
-  });
-  return {
-    line: serverLine(designed),
-    words: `server ${name}`,
-    diskGb: designed.diskGb,
-    vcpus: designed.vcpus,
-    designed,
-  };
+  );
+  return { ...stackOf(designed, words, designed.diskGb), designed };
 }
 
 /**
@@ -493,27 +485,16 @@ async function sharedStackServer(
   const entry = ownerPlan.servers?.find((server) => server.name === owner.server) as ExtraServer;
   const words = `server ${owner.server} of ${owner.plan}`;
   if (!isCloud(entry.target)) {
-    const designed = ownServerOf(entry, facts);
-    const diskGb = facts.diskFreeBytes / GIB;
-    return { line: serverLine(designed), words, diskGb, vcpus: designed.vcpus, facts };
+    return { ...stackOf(ownServerOf(entry, facts), words, facts.diskFreeBytes / GIB), facts };
   }
-  const designed = await designCloudServer({
-    name: owner.server,
-    target: entry.target,
-    services: [],
-    addons: monitoringLimits(ownerPlan, owner.server),
-    app: ownerPlan.target,
-    region: undefined,
-    backups: entry.target.backups,
+  const designed = await designStackServer(
+    ownerPlan,
+    owner.server,
+    entry.target,
+    entry.target.backups,
     catalogFor,
-  });
-  return {
-    line: serverLine(designed),
-    words,
-    diskGb: designed.diskGb,
-    vcpus: designed.vcpus,
-    facts,
-  };
+  );
+  return { ...stackOf(designed, words, designed.diskGb), facts };
 }
 
 /** `draft` with monitoring's settings set to `where` (not yet checked by the schema). */
@@ -547,16 +528,13 @@ async function requireOnApp(
   let own = "";
   if (isCloud(draft.target)) {
     const server = withWhere(draft, { kind: "server", server: MONITORING_SERVER });
-    const designed = await designCloudServer({
-      name: MONITORING_SERVER,
-      target: undefined,
-      services: [],
-      addons: monitoringLimits(server, MONITORING_SERVER),
-      app: draft.target,
-      region: undefined,
-      backups: false,
+    const designed = await designStackServer(
+      server,
+      MONITORING_SERVER,
+      undefined,
+      false,
       catalogFor,
-    });
+    );
     own = ` (a ${designed.server.target.serverType} at ${formatMoney(designed.cost.monthly)}/month)`;
   }
   const why = large
@@ -680,6 +658,19 @@ function summaryText(input: SummaryInput): string {
     room.monthly === undefined
       ? ""
       : ` (${formatMoney({ amount: (room.monthly.amount * mb) / room.serverMb, currency: room.monthly.currency })}/month of its price)`;
+  // The stack's own server isn't among the rooms: its memory and price are its design's.
+  const rooms: Pick<Room, "name" | "serverMb" | "monthly">[] = [
+    ...input.rooms,
+    ...(where.kind === "server"
+      ? [
+          {
+            name: where.server,
+            serverMb: (stack.designed?.memoryGb ?? 0) * 1024,
+            monthly: stack.designed?.cost?.monthly,
+          },
+        ]
+      : []),
+  ];
   const lines: string[] = [];
   if (where.kind === "shared") {
     lines.push(
@@ -695,27 +686,12 @@ function summaryText(input: SummaryInput): string {
     );
     const server = where.kind === "app" ? APP_SERVER : where.server;
     const stackLimits = monitoringLimits(after, server).filter((l) => l.name !== "Grafana Alloy");
-    const room = input.rooms.find((r) => r.name === server) ?? {
-      serverMb: (stack.designed?.memoryGb ?? 0) * 1024,
-      monthly: stack.designed?.cost?.monthly,
-    };
+    const room = rooms.find((r) => r.name === server) as (typeof rooms)[number];
     lines.push(
       `The stack's memory limits on ${serverWords(server)}: ${stackLimits.map((l) => `${l.name} ${l.memoryMb} MB${share(l.memoryMb, room)}`).join(", ")}.`,
     );
   }
-  const stackRoom =
-    where.kind === "server"
-      ? [
-          {
-            name: where.server,
-            serverMb: (stack.designed?.memoryGb ?? 0) * 1024,
-            monthly: stack.designed?.cost?.monthly,
-          },
-        ]
-      : [];
-  const alloy = [...input.rooms, ...stackRoom].map(
-    (room) => `${serverWords(room.name)}${share(alloyMb, room)}`,
-  );
+  const alloy = rooms.map((room) => `${serverWords(room.name)}${share(alloyMb, room)}`);
   lines.push(
     `Grafana Alloy collects them, with its Docker proxy, in ${alloyMb} MB of memory on each of this environment's servers: ${listText(alloy)}.`,
     `Figures are kept ${retention.metricsDays} days (at most ${retention.metricsMaxGb} GB) and logs ${retention.logsDays} days: ${about(estimate.figuresGb + estimate.logsGb)} of the ${gb(estimate.diskGb)} disk on ${stack.words} (${estimate.series.toLocaleString("en-US")} series and ${gb(input.logBytes24h / GIB)} of logs a day from ${input.servers} servers).`,
@@ -782,7 +758,8 @@ export async function monitoringEnable(
   }
   const where = await chooseWhere(deps, plan, options, flag);
   requireRetention(options, where);
-  const catalogFor = services.catalogFor ?? catalogs(deps);
+  const catalogFor =
+    services.catalogFor ?? extraCatalogs(deps, undefined, (text) => deps.reporter.warn(text));
   const ownFacts = await inspectOwnServers(deps, plan, where, services);
   const ownerPlan =
     where.kind === "shared"

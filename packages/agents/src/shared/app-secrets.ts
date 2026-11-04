@@ -51,6 +51,7 @@ export const GeneratedValuesSchema = z.object({
 const GeneratedFileSchema = z.looseObject({
   network: z.record(z.string(), WireGuardKeySchema).optional(),
   grants: GeneratedValuesSchema.shape.grants,
+  monitoring: MonitoringValuesSchema.optional(),
 });
 
 /** The app's values by name, and the services' secrets. */
@@ -134,16 +135,13 @@ async function keptSecrets(
 }
 
 /**
- * Sets the entries of the generated values' `network` (member → WireGuard private key) or
- * `grants` (`<device>/<service>` → password), or removes those given as `undefined`, keeping
- * every other value of the file (0600).
- * @throws OpsCrewError `ARTIFACT_INVALID` when the file is there but not a JSON object: its values
- * are never overwritten.
+ * Writes `edit` of the generated values (`{}` without the file) over them (0600).
+ * @throws OpsCrewError `ARTIFACT_INVALID` when the file is there but damaged (not a JSON object, or
+ * a value OpsCrew writes not as it writes it): its values are never overwritten.
  */
-export async function recordGeneratedEntries(
+export async function changeGenerated(
   deps: Pick<PhaseDeps, "paths">,
-  field: "network" | "grants",
-  entries: Record<string, string | undefined>,
+  edit: (values: z.output<typeof GeneratedFileSchema>) => Record<string, unknown>,
 ): Promise<void> {
   const file = generatedValuesFile(deps);
   const text = await readTextIfExists(file);
@@ -165,11 +163,23 @@ export async function recordGeneratedEntries(
       },
     );
   }
-  const next: Record<string, string | undefined> = { ...parsed.data[field], ...entries };
-  for (const [name, value] of Object.entries(next)) if (value === undefined) delete next[name];
-  await writeFileAtomic(
-    file,
-    `${JSON.stringify({ ...parsed.data, [field]: next })}
-`,
-  );
+  await writeFileAtomic(file, `${JSON.stringify(edit(parsed.data))}\n`);
+}
+
+/**
+ * Sets the entries of the generated values' `network` (member → WireGuard private key) or
+ * `grants` (`<device>/<service>` → password), or removes those given as `undefined`, keeping
+ * every other value of the file (0600).
+ * @throws OpsCrewError `ARTIFACT_INVALID` when the file is damaged ({@link changeGenerated}).
+ */
+export async function recordGeneratedEntries(
+  deps: Pick<PhaseDeps, "paths">,
+  field: "network" | "grants",
+  entries: Record<string, string | undefined>,
+): Promise<void> {
+  await changeGenerated(deps, (values) => {
+    const next: Record<string, string | undefined> = { ...values[field], ...entries };
+    for (const [name, value] of Object.entries(next)) if (value === undefined) delete next[name];
+    return { ...values, [field]: next };
+  });
 }

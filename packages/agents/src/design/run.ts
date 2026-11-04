@@ -1889,7 +1889,7 @@ export async function resolveCatalog(
  * from for the same provider, else that provider's own ({@link resolveCatalog}, its warning said),
  * read once per provider.
  */
-function extraCatalogs(
+export function extraCatalogs(
   deps: PhaseDeps,
   appCatalog: ComputeCatalog | undefined,
   warn: (text: string) => void,

@@ -18,7 +18,7 @@ import { z } from "zod";
 export const ADDON_PHASE = "provision";
 
 /** The version in an image pin (`henrygd/beszel:0.21.1@sha256:…` → `0.21.1`, without a `v`). */
-function pinnedVersion(ref: string): string {
+export function pinnedVersion(ref: string): string {
   return (ref.split(/[:@]/)[1] as string).replace(/^v/, "");
 }
 

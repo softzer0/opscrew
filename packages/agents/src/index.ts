@@ -20,7 +20,6 @@ export * from "./portainer";
 export * from "./promote";
 export * from "./providers";
 export * from "./provision";
-export * from "./provision/monitoring";
 export * from "./retarget";
 export * from "./rollback";
 export {

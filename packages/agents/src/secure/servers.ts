@@ -151,7 +151,7 @@ export async function extraServerChecks(
 }
 
 /** A private address with the member it is: `server app (10.200.4.1)`, `device laptop (…)`. */
-function memberName(network: NonNullable<DeployPlan["network"]>, address: string): string {
+export function memberName(network: NonNullable<DeployPlan["network"]>, address: string): string {
   const server = network.members.find((m) => m.address === address);
   if (server !== undefined) return `server ${server.name} (${address})`;
   const device = network.devices.find((d) => d.address === address);

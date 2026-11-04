@@ -7,25 +7,22 @@ import { errorText, isUserFacingError, listText } from "@opscrew/core";
 import { type DeployPlan, monitoringOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
+  environmentServers,
   type MonitoringReading,
   type MonitoringStatusServices,
   monitoringStatus,
   silentText,
+  stoppedServices,
 } from "../monitoring/status";
 import { checkResult } from "../shared";
 
 const STACK = { id: "monitoring-stack", title: "The monitoring stack runs" };
 const DATA = { id: "monitoring-data", title: "Every server's figures reach the monitoring stack" };
 
-/** The stack's four services, by the name Compose gives their container. */
-const SERVICES = ["prometheus", "loki", "grafana", "front"];
-
 /** The stack's containers: all four running, none unhealthy. */
 function stackCheck(reading: MonitoringReading, flag: string): CheckResult {
   const where = `on server ${reading.stack.server}`;
-  const missing = SERVICES.filter(
-    (service) => !reading.containers.some((c) => c.name.includes(`-${service}-`) && c.running),
-  );
+  const missing = stoppedServices(reading.containers);
   const unhealthy = reading.containers.filter((c) => c.healthy === false).map((c) => c.name);
   if (missing.length === 0 && unhealthy.length === 0) {
     return checkResult(
@@ -58,8 +55,7 @@ function stackCheck(reading: MonitoringReading, flag: string): CheckResult {
 
 /** This environment's servers: each sent figures in the last 5 minutes. */
 function dataCheck(reading: MonitoringReading, plan: DeployPlan, flag: string): CheckResult {
-  const env = plan.environment?.name ?? "prod";
-  const mine = reading.servers.filter((s) => s.app === plan.app.name && s.env === env);
+  const mine = environmentServers(reading, plan);
   if (reading.unanswered.includes("figures")) {
     return checkResult(
       DATA.id,

@@ -319,7 +319,7 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
         ? ""
         : `, ${formatMoney(cost.monthly)} converted at 1 EUR = ${USD_PER_EUR.toFixed(2)} USD`;
     return {
-      // serverCostItem finds it by these words.
+      // withoutServerCost finds it by these words.
       item: `Server ${server.name}${where}${extras}${converted}`,
       monthly: convertMoney(cost.monthly, currency),
     };
@@ -336,17 +336,13 @@ export function totalCost(app: CostEstimate, servers: readonly DesignedServer[])
   });
 }
 
-/** {@link totalCost}'s line of the extra server `name`. */
-function serverCostItem(item: string, name: string): boolean {
-  return item.startsWith(`Server ${name} (`);
-}
-
 /**
  * The plan's cost without the line {@link totalCost} added for the extra server `name` (a server
  * leaving the plan), its total recomputed; `cost` itself without such a line.
  */
 export function withoutServerCost(cost: CostEstimate, name: string): CostEstimate {
-  const breakdown = cost.breakdown.filter((line) => !serverCostItem(line.item, name));
+  // totalCost's line of the server starts with these words.
+  const breakdown = cost.breakdown.filter((line) => !line.item.startsWith(`Server ${name} (`));
   if (breakdown.length === cost.breakdown.length) return cost;
   const amount = breakdown.reduce((sum, line) => sum + line.monthly.amount, 0);
   return { ...cost, breakdown, monthly: { ...cost.monthly, amount: roundCents(amount) } };

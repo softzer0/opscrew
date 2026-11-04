@@ -24,7 +24,7 @@ import { monitoringStack } from "../monitoring/status";
 import { networkFilterRules } from "../network";
 import { checkResult } from "../shared";
 import { readPublishedPorts, serverShell } from "../status/servers";
-import type { ServerSecurityOptions } from "./servers";
+import { memberName, type ServerSecurityOptions } from "./servers";
 
 /** The private IPv4 ranges a private network's addresses come from. */
 const PRIVATE = (() => {
@@ -130,8 +130,9 @@ export async function monitoringSecurityChecks(
             { target },
           ),
     ];
-    const member = plan.network?.members.find((m) => m.name === monitoringServerName(plan));
-    if (member === undefined) return checks;
+    const { network } = plan;
+    const member = network?.members.find((m) => m.name === monitoringServerName(plan));
+    if (network === undefined || member === undefined) return checks;
     const privilege = await probePrivilege(shell.remote);
     if (privilege !== "root" && privilege !== "sudo" && privilege !== "docker") {
       return [
@@ -171,7 +172,7 @@ export async function monitoringSecurityChecks(
     const wanted = networkFilterRules(plan, member.name, []).filter(
       (rule) => rule.port === MONITORING_PUSH_PORT || rule.port === MONITORING_GRAFANA_PORT,
     );
-    return [...checks, filterCheck(plan, target, wanted, rules, fix)];
+    return [...checks, filterCheck(network, target, wanted, rules, fix)];
   } catch (error) {
     if (!isUserFacingError(error)) throw error;
     return [
@@ -186,17 +187,9 @@ export async function monitoringSecurityChecks(
   }
 }
 
-/** A private address with what it is on the plan's network: `server app (10.…)`, `device laptop (…)`. */
-function named(plan: DeployPlan, address: string): string {
-  const server = plan.network?.members.find((m) => m.address === address);
-  if (server !== undefined) return `server ${server.name} (${address})`;
-  const device = plan.network?.devices.find((d) => d.address === address);
-  return device === undefined ? address : `device ${device.name} (${address})`;
-}
-
 /** The filter's rules for the two ports against `wanted`: missing or extra sources, by port. */
 function filterCheck(
-  plan: DeployPlan,
+  network: NonNullable<DeployPlan["network"]>,
   target: string,
   wanted: { port: number; sources: string[] }[],
   rules: { port: number; sources: string[] }[],
@@ -215,11 +208,15 @@ function filterCheck(
     }
     const others = rule.sources.filter((source) => !want.sources.includes(source));
     if (others.length > 0) {
-      failures.push(`it also admits ${listText(others.map((a) => named(plan, a)))} to ${what}`);
+      failures.push(
+        `it also admits ${listText(others.map((a) => memberName(network, a)))} to ${what}`,
+      );
     }
     const missing = want.sources.filter((source) => !rule.sources.includes(source));
     if (missing.length > 0) {
-      warnings.push(`it does not admit ${listText(missing.map((a) => named(plan, a)))} to ${what}`);
+      warnings.push(
+        `it does not admit ${listText(missing.map((a) => memberName(network, a)))} to ${what}`,
+      );
     }
   }
   if (failures.length > 0) {

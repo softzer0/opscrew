@@ -40,6 +40,7 @@ import {
   type StorageLogin,
 } from "../shared";
 import {
+  changeGenerated,
   GeneratedValuesSchema,
   generatedValuesFile,
   MonitoringValuesSchema,
@@ -93,34 +94,18 @@ export async function monitoringValues(
 /**
  * Changes the self-hosted monitoring's values (`change` gets the current ones, `{}` for none) and
  * keeps every other generated value (0600); `undefined` removes them.
- * @throws OpsCrewError `ARTIFACT_INVALID` when the file or its monitoring values are damaged: they
- * are never overwritten.
+ * @throws OpsCrewError `ARTIFACT_INVALID` when the file is damaged ({@link changeGenerated}).
  */
 export async function keepMonitoringValues(
   deps: Pick<PhaseDeps, "paths">,
   change: (current: MonitoringValues) => MonitoringValues | undefined,
 ): Promise<void> {
-  const file = generatedValuesFile(deps);
-  const generated = await readGenerated(deps);
-  const current = MonitoringValuesSchema.optional().safeParse(generated?.monitoring);
-  if (generated === undefined || !current.success) {
-    throw new OpsCrewError(
-      "ARTIFACT_INVALID",
-      `OpsCrew's generated values (${file}) are damaged, so OpsCrew wrote nothing into them.`,
-      {
-        hint: "Fix the JSON in that file, or restore it from your recovery copy, then run the command again.",
-      },
-    );
-  }
-  const { monitoring: _old, ...rest } = generated;
-  const next = change(current.data ?? {});
-  const kept =
-    next === undefined || Object.keys(next).length === 0 ? rest : { ...rest, monitoring: next };
-  await writeFileAtomic(
-    file,
-    `${JSON.stringify(kept)}
-`,
-  );
+  await changeGenerated(deps, ({ monitoring, ...rest }) => {
+    const next = change(monitoring ?? {});
+    return next === undefined || Object.keys(next).length === 0
+      ? rest
+      : { ...rest, monitoring: next };
+  });
 }
 
 /**

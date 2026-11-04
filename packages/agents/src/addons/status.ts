@@ -13,7 +13,6 @@ import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import {
   type MonitoringReading,
-  type MonitoringStack,
   monitoringReadingLines,
   monitoringStack,
   monitoringStatus,
@@ -493,7 +492,7 @@ async function monitoringOpen(
   plan: DeployPlan,
   options: AddonOpenOptions,
 ): Promise<void> {
-  const stack: MonitoringStack = await monitoringStack(deps, plan);
+  const stack = await monitoringStack(deps, plan);
   const values = generatedValuesFile(stack.deps);
   const password = `Log in as admin; the password is monitoring.grafanaAdminPassword in ${values}, on the computer that set the stack up, and in its recovery copy (\`opscrew secrets restore\` puts it on another computer).`;
   const device = (await readServerAddresses(deps.paths).catch(() => undefined))?.thisDevice;
