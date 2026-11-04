@@ -472,8 +472,8 @@ network above all).
 
 ## Phase 7: Live, simplify, release (lead)
 
-- [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
-- [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
+- [x] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
+- [x] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
   - Noted at merge: `catalogs()` in `monitoring/enable.ts` repeats design's private `extraCatalogs`; `pinnedVersion` in `monitoring/settings.ts` repeats the one in `addons/settings.ts` (T2009).
   - Noted at merge: `vpn/monitoring.ts` repeats provision's private `currentOwner`/`joinedOn` lookup and `otherServer(owner)` wording (T2021).
   - Noted at merge: destroy's owner refusal repeats `monitoringDisable`'s wording and command list (T2013). `MonitoringStackInput.networks[].servers`/`devices` are still unused by the stack (T2004; `hasDevices` already removed at T2021).
@@ -576,7 +576,7 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host`
   - Effort: high
 
-- [ ] T2027 [P] The tests' shared fixtures (after T2025), in agents and the CLI's test harnesses
+- [x] T2027 [P] The tests' shared fixtures (after T2025), in agents and the CLI's test harnesses
   - Owns: agents `{vpn,retarget,destroy,provision}/monitoring.test.ts`, `monitoring/status.test.ts`; `packages/cli/test/{e2e,live}/monitoring*.ts`; the hand-built owner wording at `monitoring/enable.ts` (~328), to use `otherServer` (found at T2025); `monitoring/{monitoring,shared}.test.ts` and a new `monitoring/__fixtures__/world.ts` for the shared `catalog()`/`deployed` (item 3, left out of Owns by the lead)
   - Accept (agents findings 14 for the Docker pass, 16, and the `opscrew-alloy` note): one
     `networked(plan, facts?)` fixture (added by T2025) used by the five tests; `MONITORING_VERSIONS`
