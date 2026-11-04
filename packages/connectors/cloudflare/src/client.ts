@@ -181,6 +181,15 @@ export interface CloudflareZone {
   accountId?: string;
 }
 
+/**
+ * {@link CloudflareClient.verifyToken}'s answer, with the token's status and expiry (ISO 8601)
+ * when Cloudflare's verify answer gives them (an expiry only when one is set).
+ */
+export interface CloudflareTokenCheck extends CredentialCheck {
+  status?: "active" | "disabled" | "expired";
+  expiresOn?: string;
+}
+
 export interface CloudflareDnsRecord {
   id: string;
   type: string;
@@ -351,6 +360,10 @@ interface RawAnswer {
   json: unknown;
 }
 
+const TokenVerifySchema = z.looseObject({
+  status: z.enum(["active", "disabled", "expired"]),
+  expires_on: z.string().optional(),
+});
 const ZoneSchema = z.looseObject({
   id: z.string(),
   name: z.string(),
@@ -1117,15 +1130,30 @@ export class CloudflareClient {
     return `/accounts/${encodeURIComponent(accountId)}/${this.#registrar}${rest}`;
   }
 
-  /** Checks the token works. Falls back to listing zones for account-owned tokens. */
-  async verifyToken(): Promise<CredentialCheck> {
+  /**
+   * Checks the token works, with its status and expiry when Cloudflare's verify answer gives
+   * them. Falls back to listing zones for account-owned tokens.
+   */
+  async verifyToken(): Promise<CloudflareTokenCheck> {
     if (!this.#token) {
       return { ok: false, message: "CLOUDFLARE_API_TOKEN is not set." };
     }
     const { status, body } = await this.#request("/user/tokens/verify");
-    const result = z.looseObject({ status: z.string() }).safeParse(body.result);
-    if (body.success && result.success && result.data.status === "active") {
-      return { ok: true, identity: "user API token", message: "The Cloudflare token is active." };
+    const result = TokenVerifySchema.safeParse(body.result);
+    const token: Pick<CloudflareTokenCheck, "status" | "expiresOn"> =
+      body.success && result.success
+        ? {
+            status: result.data.status,
+            ...(result.data.expires_on ? { expiresOn: result.data.expires_on } : {}),
+          }
+        : {};
+    if (token.status === "active") {
+      return {
+        ok: true,
+        identity: "user API token",
+        message: "The Cloudflare token is active.",
+        ...token,
+      };
     }
     const zones = await this.#request("/zones?per_page=1");
     if (zones.body.success && zones.status < 400) {
@@ -1133,14 +1161,20 @@ export class CloudflareClient {
         ok: true,
         identity: "account API token",
         message: "The Cloudflare token can read zones.",
+        ...token,
       };
     }
     if (status === 401 || status === 403 || zones.status === 401 || zones.status === 403) {
-      return { ok: false, message: `The Cloudflare token was rejected. ${permissionHint()}` };
+      return {
+        ok: false,
+        message: `The Cloudflare token was rejected. ${permissionHint()}`,
+        ...token,
+      };
     }
     return {
       ok: false,
       message: `Cloudflare could not verify the token: ${body.errors.map((e) => e.message).join("; ") || `HTTP ${status}`}.`,
+      ...token,
     };
   }
 

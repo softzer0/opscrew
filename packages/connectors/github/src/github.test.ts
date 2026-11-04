@@ -377,6 +377,7 @@ describe("githubConnector", () => {
       "Pages: Read and write (only for GitHub Pages)",
       "Plan: Read (optional, for GitHub Pages on a private repository: an account permission, or an organization permission when an organization owns the repository)",
       "Issues: Read (only with the scheduled check)",
+      "Dependabot alerts: Read (optional, for `opscrew advise`)",
       "Variables: Read and write (for the scheduled check, for moving an app to another target, and for `opscrew rollback`)",
     ]);
     expect(

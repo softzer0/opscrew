@@ -31,6 +31,7 @@ export const GITHUB_API = "https://api.github.com";
  * Issues (the check's open alerts) are needed only with the scheduled check; Actions above covers
  * reading the check workflow's state. Variables pause the check, and pause deploys while an app
  * moves to another target or is rolled back.
+ * Dependabot alerts: Read is optional: `opscrew advise` reads the open alerts with it.
  */
 export const GITHUB_TOKEN_PERMISSIONS = [
   "Contents: Read and write",
@@ -44,6 +45,7 @@ export const GITHUB_TOKEN_PERMISSIONS = [
   "Pages: Read and write (only for GitHub Pages)",
   "Plan: Read (optional, for GitHub Pages on a private repository: an account permission, or an organization permission when an organization owns the repository)",
   "Issues: Read (only with the scheduled check)",
+  "Dependabot alerts: Read (optional, for `opscrew advise`)",
   "Variables: Read and write (for the scheduled check, for moving an app to another target, and for `opscrew rollback`)",
 ] as const;
 
@@ -235,6 +237,32 @@ export interface PullRequest {
   url: string;
 }
 
+/** An open Dependabot alert: its advisory's severity, the package and the alert's page. */
+export interface DependabotAlert {
+  severity: "critical" | "high" | "medium" | "low";
+  package: string;
+  url: string;
+}
+
+/** A repository's Dependabot alerts: the open ones, or `off` when the repository has them off. */
+export type DependabotAlerts = { state: "on"; alerts: DependabotAlert[] } | { state: "off" };
+
+/** An open pull request opened by Dependabot. */
+export interface DependabotPull {
+  number: number;
+  title: string;
+  /** When it was opened (ISO 8601). */
+  createdAt: string;
+  url: string;
+}
+
+/** An issue as {@link GitHubClient.issuesSince} reads it: when it was opened and closed (ISO 8601). */
+export interface IssueDates {
+  number: number;
+  createdAt: string;
+  closedAt?: string;
+}
+
 export interface WorkflowRun {
   id: number;
   status: string;
@@ -265,10 +293,26 @@ const IssueSchema = z.looseObject({
   html_url: z.string(),
   body: z.string().nullable().optional(),
   created_at: z.string(),
+  closed_at: z.string().nullable().optional(),
   pull_request: z.unknown().optional(),
 });
 const VariableSchema = z.looseObject({ value: z.string() });
 const PullSchema = z.looseObject({ number: z.number(), html_url: z.string() });
+const AuthoredPullSchema = PullSchema.extend({
+  title: z.string(),
+  created_at: z.string(),
+  user: z.looseObject({ login: z.string() }).nullable(),
+});
+const DependabotAlertSchema = z.looseObject({
+  html_url: z.string(),
+  dependency: z.looseObject({ package: z.looseObject({ name: z.string() }) }),
+  security_advisory: z.looseObject({ severity: z.enum(["critical", "high", "medium", "low"]) }),
+});
+/** GitHub's token expiry header: `2026-11-27 17:25:14 UTC`. */
+const TokenExpirySchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$/)
+  .transform((value) => `${value.slice(0, 10)}T${value.slice(11, 19)}Z`);
 const PublicKeySchema = z.looseObject({ key_id: z.string(), key: z.string() });
 const HeadCommitSchema = z
   .looseObject({ message: z.string(), timestamp: z.string() })
@@ -416,6 +460,14 @@ const ENVIRONMENTS = "Environments: Read and write";
 const ACTIONS_READ = "Actions: Read";
 /** What reading the check's issues needs. */
 const ISSUES_READ = "Issues: Read";
+/** What reading Dependabot alerts needs. */
+const DEPENDABOT_ALERTS_READ = "Dependabot alerts: Read";
+/** GitHub's 403 when the repository has Dependabot alerts off, whatever the token may do. */
+const DEPENDABOT_OFF = /Dependabot alerts are disabled/i;
+/** What listing pull requests needs. */
+const PULL_REQUESTS_READ = "Pull requests: Read";
+/** The account Dependabot opens its pull requests as. */
+const DEPENDABOT_LOGIN = "dependabot[bot]";
 /** What reading an Actions secret's metadata needs. */
 const SECRETS_READ = "Secrets: Read";
 /** What the repository variable endpoints need. */
@@ -757,20 +809,10 @@ export class GitHubClient {
   /** The open issues labelled `label`, every page, pull requests left out. Needs Issues: Read. */
   async openIssues(owner: string, repo: string, label: string): Promise<OpenIssue[]> {
     const what = `list the open issues labelled ${label}`;
+    const query = new URLSearchParams({ labels: label, state: "open", per_page: "100" });
     const issues: OpenIssue[] = [];
-    for (let page = 1; ; page++) {
-      const query = new URLSearchParams({
-        labels: label,
-        state: "open",
-        per_page: "100",
-        page: String(page),
-      });
-      const { json, headers } = await this.#request(
-        "GET",
-        `/repos/${owner}/${repo}/issues?${query}`,
-        what,
-        { permission: ISSUES_READ },
-      );
+    const path = `/repos/${owner}/${repo}/issues?${query}`;
+    for await (const { json } of this.#pages(path, what, { permission: ISSUES_READ })) {
       for (const item of this.#parse(z.array(IssueSchema), json, what)) {
         if (item.pull_request !== undefined) continue;
         issues.push({
@@ -781,8 +823,114 @@ export class GitHubClient {
           createdAt: item.created_at,
         });
       }
-      if (!/rel="next"/.test(headers.get("link") ?? "")) return issues;
     }
+    return issues;
+  }
+
+  /**
+   * Each page of a list GitHub pages with `Link: <…>; rel="next"`, from `path` on. A next page on
+   * another host is refused, so the token goes nowhere else.
+   */
+  async *#pages(
+    path: string,
+    what: string,
+    options: RequestOptions,
+  ): AsyncGenerator<{ status: number; json: unknown }> {
+    let next: string | undefined = path;
+    while (next !== undefined) {
+      const { status, json, headers }: { status: number; json: unknown; headers: Headers } =
+        await this.#request("GET", next, what, options);
+      yield { status, json };
+      const url = /<([^>]+)>;\s*rel="next"/.exec(headers.get("link") ?? "")?.[1];
+      if (url !== undefined && !url.startsWith(`${this.#baseUrl}/`)) {
+        throw new OpsCrewError(
+          "PROVIDER_ERROR",
+          `GitHub pointed the next page elsewhere when trying to ${what}.`,
+          { hint: "Run the command again; if it keeps failing, please report this to OpsCrew." },
+        );
+      }
+      next = url?.slice(this.#baseUrl.length);
+    }
+  }
+
+  /**
+   * The repository's open Dependabot alerts, every page; `off` when the repository has them off.
+   * Needs Dependabot alerts: Read: any other refusal names it.
+   */
+  async dependabotAlerts(owner: string, repo: string): Promise<DependabotAlerts> {
+    const what = `read the Dependabot alerts of ${owner}/${repo}`;
+    const alerts: DependabotAlert[] = [];
+    const path = `/repos/${owner}/${repo}/dependabot/alerts?state=open&per_page=100`;
+    for await (const { status, json } of this.#pages(path, what, { ok: [403] })) {
+      if (status === 403) {
+        if (DEPENDABOT_OFF.test(messageOf(json, ""))) return { state: "off" };
+        throw missingPermission(what, json, DEPENDABOT_ALERTS_READ);
+      }
+      for (const alert of this.#parse(z.array(DependabotAlertSchema), json, what)) {
+        alerts.push({
+          severity: alert.security_advisory.severity,
+          package: alert.dependency.package.name,
+          url: alert.html_url,
+        });
+      }
+    }
+    return { state: "on", alerts };
+  }
+
+  /** The open pull requests Dependabot opened, every page. Needs Pull requests: Read. */
+  async dependabotPulls(owner: string, repo: string): Promise<DependabotPull[]> {
+    const what = `list the open pull requests of ${owner}/${repo}`;
+    const pulls: DependabotPull[] = [];
+    const path = `/repos/${owner}/${repo}/pulls?state=open&per_page=100`;
+    for await (const { json } of this.#pages(path, what, { permission: PULL_REQUESTS_READ })) {
+      for (const pull of this.#parse(z.array(AuthoredPullSchema), json, what)) {
+        if (pull.user?.login !== DEPENDABOT_LOGIN) continue;
+        pulls.push({
+          number: pull.number,
+          title: pull.title,
+          createdAt: pull.created_at,
+          url: pull.html_url,
+        });
+      }
+    }
+    return pulls;
+  }
+
+  /**
+   * The issues labelled `label` opened since `since` (ISO 8601), open or closed, every page, pull
+   * requests left out. GitHub's own `since` goes by the last update, so the opening date is
+   * checked here too. Needs Issues: Read.
+   */
+  async issuesSince(
+    owner: string,
+    repo: string,
+    label: string,
+    since: string,
+  ): Promise<IssueDates[]> {
+    const what = `list the issues labelled ${label}`;
+    const from = Date.parse(since);
+    const query = new URLSearchParams({ labels: label, state: "all", since, per_page: "100" });
+    const issues: IssueDates[] = [];
+    const path = `/repos/${owner}/${repo}/issues?${query}`;
+    for await (const { json } of this.#pages(path, what, { permission: ISSUES_READ })) {
+      for (const item of this.#parse(z.array(IssueSchema), json, what)) {
+        if (item.pull_request !== undefined || Date.parse(item.created_at) < from) continue;
+        issues.push({
+          number: item.number,
+          createdAt: item.created_at,
+          ...(item.closed_at ? { closedAt: item.closed_at } : {}),
+        });
+      }
+    }
+    return issues;
+  }
+
+  /** When the token expires (ISO 8601), from GitHub's expiry header; `undefined` without one. */
+  async tokenExpiry(): Promise<string | undefined> {
+    const what = "read your GitHub token's expiry";
+    const { headers } = await this.#request("GET", "/user", what);
+    const header = headers.get("github-authentication-token-expiration");
+    return header === null ? undefined : this.#parse(TokenExpirySchema, header, what);
   }
 
   /** The repository variable `name`'s value, `undefined` when it does not exist. Needs Variables. */

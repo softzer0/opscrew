@@ -4,6 +4,9 @@ export { GitClient, type GitStatusEntry, parseGitHubRepo } from "./git";
 export {
   type BranchPolicy,
   type CheckWorkflowState,
+  type DependabotAlert,
+  type DependabotAlerts,
+  type DependabotPull,
   type EnvironmentCapability,
   type EnvironmentReviewer,
   type EnvironmentSettings,
@@ -11,6 +14,7 @@ export {
   type ForkPrApprovalPolicy,
   GITHUB_TOKEN_PERMISSIONS,
   GitHubClient,
+  type IssueDates,
   type OpenIssue,
   type PagesAllowed,
   type PagesHealth,

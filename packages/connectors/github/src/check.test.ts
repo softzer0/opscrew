@@ -79,7 +79,7 @@ describe("checkWorkflowState", () => {
 
 describe("openIssues", () => {
   it("reads every page, and skips pull requests", async () => {
-    const first = `${API}/issues?labels=opscrew-check&state=open&per_page=100&page=1`;
+    const first = `${API}/issues?labels=opscrew-check&state=open&per_page=100`;
     const second = `${API}/issues?labels=opscrew-check&state=open&per_page=100&page=2`;
     const { client, calls } = setup({
       [`GET ${first}`]: {

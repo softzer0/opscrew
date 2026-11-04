@@ -58,7 +58,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2103 [P] [US7] The connectors' reads: Dependabot, the check's issues, tokens' expiry, in `packages/connectors/{github,cloudflare}/`
+- [x] T2103 [P] [US7] The connectors' reads: Dependabot, the check's issues, tokens' expiry, in `packages/connectors/{github,cloudflare}/`
   - Owns: `packages/connectors/github/src/**`, `packages/connectors/cloudflare/src/**` (+ tests)
   - Reads: research.md R1.4, R1.5, R5 (S3); contracts/advise.md "connectors"
   - Depends: T2101
