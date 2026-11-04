@@ -1,0 +1,43 @@
+# The app of the monitoring Docker pass (monitoring.test.ts), its own Compose project as an app's
+# is on a server: `web` behind the shared edge, which logs a value of its app.env and a token every
+# second and each request it serves, and Postgres (the pinned image, as OpsCrew runs it, with the
+# superuser `app`), on the app's network `internal`. The test writes `.env` beside this file at run
+# time: the images, the edge's network, and the generated values.
+services:
+  web:
+    image: ${NODE_IMAGE:?}
+    restart: unless-stopped
+    user: node
+    command: ["node", "/app/web.mjs"]
+    environment:
+      KNOWN_VALUE: ${KNOWN_VALUE:?}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:?}
+    volumes:
+      - ./web.mjs:/app/web.mjs:ro
+    mem_limit: 64m
+    memswap_limit: 64m
+    networks: [internal, edge]
+  db:
+    image: ${POSTGRES_IMAGE:?}
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_DB: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "app", "-d", "app"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    mem_limit: 256m
+    memswap_limit: 256m
+    networks: [internal]
+networks:
+  internal: {}
+  edge:
+    name: ${EDGE_NETWORK:?}
+    external: true
+volumes:
+  db: {}

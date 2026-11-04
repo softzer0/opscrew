@@ -157,7 +157,7 @@ describe.skipIf(SKIP !== undefined)("the private network on two container server
   const names = { app: unique("app"), data: unique("data") };
   let servers: Record<ServerName, ContainerServer>;
   let endpoints: Record<string, string>;
-  let before: Set<string> = new Set();
+  let before: Set<string> | undefined;
   const keys: Record<ServerName | DeviceName, WireGuardKeyPair> = {
     app: x25519KeyPair(),
     data: x25519KeyPair(),
@@ -398,7 +398,8 @@ describe.skipIf(SKIP !== undefined)("the private network on two container server
     }
     await docker(["network", "rm", network]);
     await docker(["image", "rm", image]);
-    await removeNewImages(before, [...SERVICE_IMAGES, ROOT_IMAGE, UBUNTU]);
+    if (before !== undefined)
+      await removeNewImages(before, [...SERVICE_IMAGES, ROOT_IMAGE, UBUNTU]);
   }, TEN_MINUTES);
 
   it(

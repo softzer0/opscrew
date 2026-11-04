@@ -219,7 +219,7 @@ describe.skipIf(SKIP !== undefined)("Beszel and Grafana Alloy on Docker (017)", 
     key: generateEd25519KeyPair("beszel-hub"),
   };
   const pulled = [IMAGES.caddy.ref, IMAGES.curl.ref, IMAGES.beszel.ref, IMAGES.beszelAgent.ref];
-  let before = new Set<string>();
+  let before: Set<string> | undefined;
   let work = "";
   let cleanupProject: (() => Promise<void>) | undefined;
   let plan: DeployPlan;
@@ -416,7 +416,9 @@ describe.skipIf(SKIP !== undefined)("Beszel and Grafana Alloy on Docker (017)", 
       if (project.file !== "") await composeOkQuiet(project);
       await removeLabelled(`com.docker.compose.project=${project.name}`);
     }
-    await removeNewImages(before, [...pulled, IMAGES.alloy.ref, LOKI, PROMETHEUS]);
+    if (before !== undefined) {
+      await removeNewImages(before, [...pulled, IMAGES.alloy.ref, LOKI, PROMETHEUS]);
+    }
     if (work !== "") await rm(work, { recursive: true, force: true });
     await cleanupProject?.();
   }, TEN_MINUTES);
@@ -759,7 +761,7 @@ describe.skipIf(SKIP !== undefined)("the check key under OpsCrew's sshd settings
   const repository = "acme/shop";
   const runner = new NodeCommandRunner({ defaultTimeoutMs: TEN_MINUTES });
   const checkKey = generateEd25519KeyPair("opscrew-check@test");
-  let before = new Set<string>();
+  let before: Set<string> | undefined;
   let work = "";
   /** ssh as the scheduled check runs it (`check.mjs`'s `sshDf`), up to the login. */
   let checkSsh: string[] = [];
@@ -880,7 +882,7 @@ RUN apt-get update -qq \\
 
   afterAll(async () => {
     await removeLabelled(RUN_LABEL);
-    await removeNewImages(before, [UBUNTU]);
+    if (before !== undefined) await removeNewImages(before, [UBUNTU]);
     if (work !== "") await rm(work, { recursive: true, force: true });
   }, TWO_MINUTES);
 
