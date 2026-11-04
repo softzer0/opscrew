@@ -25,6 +25,7 @@ import { portainerDisable, portainerEnable } from "../portainer";
 import { inEnvironment } from "../promote/__fixtures__/world";
 import { monitoringAlloy } from "../provision/monitoring";
 import { runProvision } from "../provision/run";
+import { monitoringPassword, monitoringValues } from "../provision/secrets";
 import type { ProvisionServices } from "../provision/types";
 import {
   hostPlanFile,
@@ -169,6 +170,17 @@ async function everythingShown(
     JSON.stringify(s.server.applies.map((apply) => apply.plan)),
     JSON.stringify(result),
   ].join("\n");
+}
+
+/** `plan` without its steps' `rewrite` parameter: the same plan once the new secret is kept here. */
+function withoutRewrite(plan: HostPlan): HostPlan {
+  return {
+    ...plan,
+    steps: plan.steps.map(({ params: { rewrite: _, ...params }, ...step }) => ({
+      ...step,
+      params,
+    })),
+  };
 }
 
 async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
@@ -325,7 +337,12 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
       "Run Beszel's agent on the server, connected to your hub",
     );
     const apply = s.server.applies[0];
-    expect(apply?.plan.steps[0]?.params).toMatchObject({ mode: "agent", runAs: "login" });
+    // A token given: written even when the agent already runs.
+    expect(apply?.plan.steps[0]?.params).toMatchObject({
+      mode: "agent",
+      runAs: "login",
+      rewrite: true,
+    });
     expect(apply?.options.secrets).toEqual({ beszelToken: token });
     expect(apply?.plan.steps[0]?.params["file:compose.yaml"]).toContain(
       "https://beszel.example.net",
@@ -343,7 +360,8 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
     expect(await everythingShown(s, result)).not.toContain(token);
     expect(s.deps.reporter.text()).toContain("Open your hub at https://beszel.example.net");
 
-    // Re-enable without the variable: the kept token, the same plan, nothing changes.
+    // Re-enable without the variable: the kept token, the same plan but for the new token's
+    // rewrite, nothing changes.
     const env = { ...s.deps.env };
     delete env.OPSCREW_BESZEL_TOKEN;
     const again = await addonEnable({ ...s.deps, env }, await s.plan(), "beszel", {
@@ -353,7 +371,7 @@ describe.skipIf(!hasGit)("Beszel on a cloud server (as the deploy user)", () => 
       services: s.services,
     });
     expect(again.hostApplied).toBe(false);
-    expect(again.hostPlanHashes).toEqual([hostPlanHash(apply?.plan as HostPlan)]);
+    expect(again.hostPlanHashes).toEqual([hostPlanHash(withoutRewrite(apply?.plan as HostPlan))]);
 
     // Off: the agent and its token go, here and on the server; it keeps no history, so no typed
     // name is asked.
@@ -642,6 +660,7 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
     expect(request?.details).toContain("Memory limits of Grafana Cloud's containers: Alloy 256 MB");
     const apply = s.server.applies[0];
     expect(apply?.plan.steps.map((step) => step.id)).toEqual(["alloy"]);
+    expect(apply?.plan.steps[0]?.params.rewrite).toBe(true);
     expect(apply?.options.secrets).toEqual({ grafanaCloudToken: token });
     expect(s.server.commands).toContain(serverReadCommand("shop", true));
     expect((await s.plan()).observability?.grafanaCloud).toMatchObject({
@@ -654,14 +673,33 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
     expect((await readFile(s.deps.paths.files.grafanaCloudToken, "utf8")).trim()).toBe(token);
     expect(await everythingShown(s, result)).not.toContain(token);
 
-    // Re-enable from this computer: the plan's stack and the kept token, the same host plan.
+    // Re-enable from this computer: the plan's stack and the kept token, the same host plan but
+    // for the new token's rewrite.
     const env = { ...s.deps.env };
     delete env.OPSCREW_GRAFANA_CLOUD_TOKEN;
     const again = await addonEnable({ ...s.deps, env }, await s.plan(), "grafana-cloud", {
       services: s.services,
     });
     expect(again.hostApplied).toBe(false);
-    expect(again.hostPlanHashes).toEqual([hostPlanHash(apply?.plan as HostPlan)]);
+    const kept = withoutRewrite(apply?.plan as HostPlan);
+    expect(again.hostPlanHashes).toEqual([hostPlanHash(kept)]);
+
+    // A rotated token reaches the running Alloy: the plan gains only the rewrite parameter.
+    const rotated = grafanaToken();
+    s.handler.requests.length = 0;
+    const turned = await addonEnable(
+      { ...s.deps, env: { ...env, OPSCREW_GRAFANA_CLOUD_TOKEN: rotated } },
+      await s.plan(),
+      "grafana-cloud",
+      { services: s.services },
+    );
+    expect(turned.hostApplied).toBe(true);
+    const rotation = s.server.applies.at(-1);
+    expect(rotation?.plan.steps[0]?.params.rewrite).toBe(true);
+    expect(withoutRewrite(rotation?.plan as HostPlan)).toEqual(kept);
+    expect(rotation?.options.secrets).toEqual({ grafanaCloudToken: rotated });
+    expect((await readFile(s.deps.paths.files.grafanaCloudToken, "utf8")).trim()).toBe(rotated);
+    expect(await everythingShown(s, turned)).not.toContain(rotated);
 
     // Off: no typed name, everything goes, the token too.
     s.handler.requests.length = 0;
@@ -701,8 +739,22 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
     expect(s.server.applies).toEqual([]);
     expect((await s.plan()).observability?.grafanaCloud).toBeUndefined();
 
-    // Provision set it up: Alloy sends to the stack.
+    // Alloy sends to the stack, but this computer has no password of the monitoring login, which
+    // only provision sets on the server: refused, nothing changed, no password made.
     s.server.running.set("alloy", JSON.stringify({ destinations: "monitoring" }));
+    const lost = await failure(
+      addonEnable(s.deps, await s.plan(), "grafana-cloud", { ...GRAFANA, services: s.services }),
+    );
+    expect(lost.message).toBe(
+      "This computer has no monitoring login password for Postgres: run `opscrew provision` first, which sets it on the server. Nothing was changed.",
+    );
+    expect(s.handler.requests).toEqual([]);
+    expect(s.server.applies).toEqual([]);
+    expect((await s.plan()).observability?.grafanaCloud).toBeUndefined();
+    expect(await monitoringValues(s.deps)).toBeUndefined();
+
+    // Provision set it up: Alloy sends to the stack, and the password is kept here.
+    const postgres = await monitoringPassword(s.deps, "postgresPassword");
     const result = await addonEnable(s.deps, await s.plan(), "grafana-cloud", {
       ...GRAFANA,
       services: s.services,
@@ -719,12 +771,39 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
       postgresHost: "db",
     });
     expect(String(step?.params["file:config.alloy"])).toContain("http://front:9091");
-    const postgres = on?.options.secrets?.monitoringPostgresPassword;
-    expect(postgres).toMatch(/^[A-Za-z0-9]{32}$/);
     expect(on?.options.secrets).toEqual({
       grafanaCloudToken: token,
       monitoringPostgresPassword: postgres,
     });
+    // The token is new here: written though Alloy runs.
+    expect(step?.params.rewrite).toBe(true);
+
+    // A new token on the running Alloy reaches it, with the kept password.
+    const rotated = grafanaToken();
+    const env: Record<string, string | undefined> = {
+      ...s.deps.env,
+      OPSCREW_GRAFANA_CLOUD_TOKEN: rotated,
+    };
+    const turned = await addonEnable({ ...s.deps, env }, await s.plan(), "grafana-cloud", {
+      services: s.services,
+    });
+    expect(turned.hostApplied).toBe(true);
+    const rotation = s.server.applies.at(-1);
+    expect(rotation?.plan.steps[0]?.params.rewrite).toBe(true);
+    expect(withoutRewrite(rotation?.plan as HostPlan)).toEqual(
+      withoutRewrite(on?.plan as HostPlan),
+    );
+    expect(rotation?.options.secrets).toEqual({
+      grafanaCloudToken: rotated,
+      monitoringPostgresPassword: postgres,
+    });
+    // Both kept now: the same plan without the rewrite, in place.
+    delete env.OPSCREW_GRAFANA_CLOUD_TOKEN;
+    const kept = await addonEnable({ ...s.deps, env }, await s.plan(), "grafana-cloud", {
+      services: s.services,
+    });
+    expect(kept.hostApplied).toBe(false);
+    expect(kept.hostPlanHashes).toEqual([hostPlanHash(withoutRewrite(on?.plan as HostPlan))]);
 
     // Off: Alloy keeps sending to the stack alone; nothing is removed.
     s.handler.requests.length = 0;
@@ -743,8 +822,7 @@ describe.skipIf(!hasGit)("Grafana Cloud on a cloud server", () => {
     expect((await s.plan()).observability?.grafanaCloud).toBeUndefined();
     expect((await s.plan()).observability?.monitoring?.enabled).toBe(true);
     const shown = await everythingShown(s, result);
-    expect(shown).not.toContain(token);
-    expect(shown).not.toContain(postgres as string);
+    for (const secret of [token, rotated, postgres]) expect(shown).not.toContain(secret);
   });
 
   it("over the free tier: says so with the sampling that fits before the approval, and goes on", async () => {
@@ -1122,7 +1200,7 @@ async function ownSetup(answer: (request: ApprovalRequest) => boolean = () => tr
 }
 
 describe.skipIf(!hasGit)("add-ons on a server the user owns", () => {
-  it("Grafana Cloud off with monitoring on: in place once Alloy runs as planned, unless the login's password is new", async () => {
+  it("Grafana Cloud off with monitoring on: refused without the login's password, in place once Alloy runs as planned", async () => {
     const s = await ownSetup();
     const deployed = await s.plan();
     const monitoring = {
@@ -1164,14 +1242,20 @@ describe.skipIf(!hasGit)("add-ons on a server the user owns", () => {
       return addonDisable(s.deps, both, "grafana-cloud", { services: s.services });
     };
 
-    // No login password on this computer yet: one is made, so the step writes it.
-    const first = await turnOff();
-    expect(first.hostApplied).toBe(true);
-    const password = s.server.applies.at(-1)?.options.secrets?.monitoringPostgresPassword;
-    expect(password).toMatch(/^[A-Za-z0-9]{32}$/);
-
-    // Kept now: Alloy runs as planned, so nothing is asked or changed.
+    // No login password on this computer: only provision sets one on the server, so refused before
+    // any change, and none is made.
     const applies = s.server.applies.length;
+    const lost = await failure(turnOff());
+    expect(lost.message).toBe(
+      "This computer has no monitoring login password for Postgres: run `opscrew provision` first, which sets it on the server. Nothing was changed.",
+    );
+    expect(kinds(s.handler)).toEqual([]);
+    expect(s.server.applies).toHaveLength(applies);
+    expect(await monitoringValues(s.deps)).toBeUndefined();
+    expect(await s.plan()).toEqual(both);
+
+    // Kept (provision set it): Alloy runs as planned, so nothing is asked or changed.
+    await monitoringPassword(s.deps, "postgresPassword");
     const again = await turnOff();
     expect(again.hostApplied).toBe(false);
     expect(kinds(s.handler)).not.toContain("host-apply");

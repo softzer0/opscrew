@@ -469,8 +469,7 @@ async function addonHostChange(
       connector = { dir: CLOUD_TUNNEL_DIR, remove: true };
     }
   }
-  const kept = (await monitoringValues(deps))?.postgresPassword !== undefined;
-  const hostPlan = addonPlan(change, plan, ownRun, connector, kept);
+  const hostPlan = addonPlan(change, plan, ownRun, connector);
   if (
     ownRun !== undefined &&
     enabling &&
@@ -548,15 +547,13 @@ function dashboardsPublished(plan: DeployPlan, ownRun: OwnServerRun | undefined)
  * The add-on's host plan: on (the files `renderAddon` renders for `plan`) or off. Grafana Cloud on
  * a plan with self-hosted monitoring on changes the one Alloy that sends to both
  * (`monitoringAlloy`, as provision plans it): on, it sends to both; off, to the stack alone. A
- * token given anew, or a monitoring login's password this computer did not keep yet
- * (`passwordKept` false), is written even when nothing else changes.
+ * token given anew is written even when nothing else changes.
  */
 function addonPlan(
   change: AddonChange,
   plan: DeployPlan,
   ownRun: OwnServerRun | undefined,
   connector?: AddonConnector,
-  passwordKept = true,
 ): HostPlan {
   if (change.kind === "grafana-cloud" && monitoringOf(plan) !== undefined) {
     const enable = monitoringAlloy(plan, APP_SERVER);
@@ -565,9 +562,7 @@ function addonPlan(
       runAs: ownRun ? "root" : "login",
       ...(ownRun ? { facts: ownRun.facts } : {}),
       enable,
-      secretsChanged:
-        change.input?.tokenVariable !== undefined ||
-        (enable.postgresHost !== undefined && !passwordKept),
+      secretsChanged: change.input?.tokenVariable !== undefined,
     });
   }
   const files = change.enabling
@@ -583,7 +578,7 @@ function addonPlan(
     runAs: ownRun ? "root" : "login",
     ...(ownRun ? { facts: ownRun.facts } : {}),
     ...(change.enabling
-      ? { enable }
+      ? { enable, secretsChanged: change.input?.tokenVariable !== undefined }
       : {
           disable: {
             keepData: change.keepData,
@@ -683,6 +678,19 @@ async function runAddonChange(
           ownRun,
           ownRun === undefined ? await shell() : undefined,
         );
+        // The Alloy on Postgres's server reads it with the monitoring login, whose password only
+        // provision sets on the server: one made here would never reach the login.
+        if (
+          monitoringAlloy(after, APP_SERVER).postgresHost !== undefined &&
+          (await monitoringValues(deps))?.postgresPassword === undefined
+        ) {
+          const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+          throw new OpsCrewError(
+            "PHASE_PRECONDITION",
+            `This computer has no monitoring login password for Postgres: run \`opscrew provision${flag}\` first, which sets it on the server. Nothing was changed.`,
+            { hint: `Run \`opscrew provision${flag}\`, then run this command again.` },
+          );
+        }
       }
       if (!enabling) return;
       const reading = await readServer(

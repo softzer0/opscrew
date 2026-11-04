@@ -522,9 +522,11 @@ async function grantStep(
   } as const;
   const app = plan.app.name;
   const privilege = server.facts.privilege;
-  // A password made in this run reaches the login only through the step: never in place then.
+  // A password made in this run reaches the login only through the step: never in place then, and
+  // the server's check (which sees the login, never its password) does not skip it.
+  const secretsChanged = !remove && run.kept.postgresPassword === undefined;
   let inPlace = false;
-  if (remove || run.kept.postgresPassword !== undefined) {
+  if (!secretsChanged) {
     inPlace = await readGrant(server.remote, { app, grant }, privilege, rootImageOf(server));
     await deps.audit.append({
       kind: "remote-exec",
@@ -537,7 +539,7 @@ async function grantStep(
   }
   return {
     ...on(run, server),
-    plan: planGrant(server.facts, { app, grant, inPlace }, input.command),
+    plan: planGrant(server.facts, { app, grant, inPlace, secretsChanged }, input.command),
     title: remove
       ? `Remove OpsCrew's monitoring login from ${postgres.name} on ${words}`
       : `Let OpsCrew's monitoring read the statistics of ${postgres.name} on ${words}, with a login of its own`,

@@ -507,8 +507,25 @@ describe.skipIf(skipNoGit)("provision with self-hosted monitoring", () => {
       ["grant", { monitoringPostgresPassword: fresh }],
       ["alloy", { monitoringPostgresPassword: fresh }],
     ]);
+    // Both steps carry rewrite, so the server's checks (which never see a password) don't skip
+    // them; the grant is planned without reading the login.
+    expect(onData.map((a) => a.plan.steps[0]?.params.rewrite)).toEqual([true, true]);
+    expect(onData.map((a) => a.plan.steps[0]?.state)).toEqual(["change", "change"]);
     // The app's server's Alloy reads no Postgres: still in place.
     expect(appliesOf(s, "alloy", SERVER_IPV4)).toHaveLength(1);
+    // The password stays out of every shown, audited, committed or saved text.
+    expect(await shownText(s)).not.toContain(fresh);
+    expect(await savedPlans(s)).not.toContain(fresh);
+
+    // Kept now: a third run plans both without rewrite, in place.
+    s.handler.requests.length = 0;
+    const third = s.hosts.applies.length;
+    await runProvision(s.deps, { services: s.services });
+    expect(
+      s.hosts.applies
+        .slice(third)
+        .filter((a) => a.host === DATA_IPV4 && a.plan.steps[0]?.id !== "network"),
+    ).toEqual([]);
   });
 
   it("keeps the login's password while a server the deploy hasn't started the app on still has the login", async () => {

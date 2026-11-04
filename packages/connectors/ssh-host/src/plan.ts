@@ -2770,6 +2770,8 @@ export function planPublicSsh(
  * apply passes it as the `grantPassword` secret. Whether the login already has that access is
  * known only on the server: `inPlace` is what `readGrant` read there just now (the step is then in
  * place); without it the step is planned as a change, and its check skips it when it is in place.
+ * With `secretsChanged` (the password is new on this computer, which the check cannot see) the
+ * step is a change with the `rewrite` parameter: its check never skips it, so the password is set.
  * Findings say to run `command` again once fixed.
  *
  * Access `monitor` (feature 020) is OpsCrew's monitoring login `opscrew_monitor` on Postgres:
@@ -2778,7 +2780,7 @@ export function planPublicSsh(
  */
 export function planGrant(
   facts: HostFacts,
-  input: { app: string; grant: GrantParams; inPlace?: boolean },
+  input: { app: string; grant: GrantParams; inPlace?: boolean; secretsChanged?: boolean },
   command: string,
 ): HostPlan {
   const { found } = networkPlanStart(facts, input.app, command);
@@ -2802,7 +2804,15 @@ export function planGrant(
     : p.access === "monitor"
       ? `The login is made or updated with fixed statements, ${exec}, with LOGIN, at most 3 connections and the pg_monitor role only: it reads the database server's statistics, never the app's data. ${stdin}`
       : `The login is made or updated with fixed statements, ${exec}, ${p.access === "read-only" ? "with read-only access" : "with read and write access to all the app's data, never control of the database server"}. ${stdin}`;
-  const item = networkStep("grant", title, { ...p }, found[0], input.inPlace === true, reason);
+  const rewrite = input.secretsChanged === true;
+  const item = networkStep(
+    "grant",
+    title,
+    { ...p, ...(rewrite ? { rewrite } : {}) },
+    found[0],
+    input.inPlace === true && !rewrite,
+    reason,
+  );
   return networkPlan(input.app, [item], found);
 }
 
@@ -3038,8 +3048,9 @@ export function planAddon<K extends AddonPlanKind>(
     disable?: { keepData?: boolean; mode?: "hub" | "agent"; removeData?: boolean };
     connector?: AddonConnector;
     /**
-     * A secret the step writes is new on this computer (a rotated Grafana Cloud token): the step
-     * is planned as a change even when the facts show it running as planned.
+     * Beszel's or Alloy's: a secret the step writes is new on this computer (a rotated token, a
+     * new password of the monitoring login). The step is a change with the `rewrite` parameter,
+     * even when the facts show it running as planned, and its check never skips it.
      */
     secretsChanged?: boolean;
   },
@@ -3103,11 +3114,11 @@ export function planAddon<K extends AddonPlanKind>(
     );
     item = addonStep(kind, app, runAs, repository, settings);
     const facts = options.facts === undefined ? undefined : parseFacts(options.facts);
-    if (
-      facts !== undefined &&
-      options.secretsChanged !== true &&
-      runsAsPlanned(kind, facts, settings)
-    ) {
+    if (options.secretsChanged === true) {
+      if (kind === "alloy" || kind === "beszel") {
+        item = { ...item, params: { ...item.params, rewrite: true } };
+      }
+    } else if (facts !== undefined && runsAsPlanned(kind, facts, settings)) {
       item = { ...item, state: "in-place", reason: "Already set." };
     }
   }

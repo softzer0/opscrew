@@ -230,11 +230,20 @@ type StepSpec = Omit<StepScripts, "check" | "apply" | "verify"> & {
   apply: string;
   /** What the verify script says when the end state does not hold. */
   failed: string;
+  /**
+   * The step's `rewrite` parameter: a secret it writes is new, which `verify_state` cannot see
+   * (it never reads a secret), so the check prints `state=change` and the apply writes it.
+   */
+  rewrite?: boolean;
 };
+
+/** A step's `rewrite` parameter, bound into the plan's hash with the others (see `StepSpec`). */
+const RewriteParams = z.object({ rewrite: z.literal(true).optional() });
 
 /**
  * A step's scripts from one spec: the read-only check (the snapshot, then `state=in-place` when
- * `verify_state` holds), the apply and the verify, with the same parameters and helpers.
+ * `verify_state` holds, unless `rewrite`), the apply and the verify, with the same parameters and
+ * helpers.
  */
 function scripts({
   name,
@@ -244,19 +253,25 @@ function scripts({
   snapshot = "",
   apply,
   failed,
+  rewrite = false,
   ...rest
 }: StepSpec): StepScripts {
   return {
     check: buildScript(
       `${name}.check`,
-      params,
+      rewrite ? { ...params, REWRITE: true } : params,
       `${APT_FUNCTIONS}
 ${helpers}
 verify_state() {
 ${verify}
 }
 ${snapshot}
-if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi`,
+${
+  rewrite
+    ? `# REWRITE: a secret the step writes is new, so the apply writes it even when the rest is in place.
+echo state=change`
+    : "if verify_state >/dev/null 2>&1; then echo state=in-place; else echo state=change; fi"
+}`,
       { tolerant: true },
     ),
     apply: applyScript(name, params, helpers, apply),
@@ -1563,7 +1578,10 @@ extra | while IFS= read -r rule; do ufw --force delete allow $rule >/dev/null; d
  * the planned access.
  */
 function grantScripts(plan: HostPlan, step: HostStep): StepScripts {
-  const p = params(step, GrantParamsSchema);
+  // `rewrite` is the step's, beside the grant's own parameters (a new password: see `scripts`).
+  const { rewrite } = params(step, RewriteParams);
+  const { rewrite: _, ...grant } = step.params;
+  const p = params({ ...step, params: grant }, GrantParamsSchema);
   if (!AppNameSchema.safeParse(plan.app).success) throw invalid(step, "the plan names no app");
   const engine = grantEngine(p);
   const monitor = p.access === "monitor";
@@ -1630,6 +1648,7 @@ pw=''`,
     failed: p.remove
       ? `${Login} is still in the database.`
       : `${Login} does not have the planned access.`,
+    rewrite: rewrite === true,
     secrets: p.remove
       ? undefined
       : { names: [monitor ? "monitoringPostgresPassword" : "grantPassword"], required: true },
@@ -2672,6 +2691,7 @@ const AddonParams = z.object({
    * the host of the monitoring login's data source.
    */
   postgresHost: ServiceNameSchema.optional(),
+  ...RewriteParams.shape,
 });
 type AddonSettings = z.infer<typeof AddonParams>;
 
@@ -2962,6 +2982,7 @@ until all_running; do
   sleep 2
 done`,
     failed: `${what} is not running as planned.`,
+    rewrite: p.rewrite === true,
     ...(variant.secrets.length > 0 ? { secrets: { names: variant.secrets, required: true } } : {}),
     doing: `starting ${what}`,
     timeoutMs: 10 * MINUTE,

@@ -206,7 +206,8 @@ async function confirmFullAccess(
 /**
  * The `grant` host plan on the service's server (`planGrant`), shown, approved by its hash and
  * applied: the login made, updated or (with `remove`) removed. The password goes to the server
- * only on apply, as `grantPassword`.
+ * only on apply, as `grantPassword`. `rewrite` (a password new on this computer) makes the step
+ * set it even when the server has the login as planned.
  */
 function applyGrantPlan(
   deps: PhaseDeps,
@@ -215,8 +216,13 @@ function applyGrantPlan(
   grant: GrantParams,
   command: string,
   password?: string,
+  rewrite = false,
 ): Promise<HostPlanOutcome> {
-  const hostPlan = planGrant(server.facts, { app: plan.app.name, grant }, command);
+  const hostPlan = planGrant(
+    server.facts,
+    { app: plan.app.name, grant, secretsChanged: rewrite },
+    command,
+  );
   const login = `device ${grant.login}'s login`;
   return approveAndApplyHostPlan(deps, {
     plan: hostPlan,
@@ -362,7 +368,10 @@ export async function vpnGrant(
   ];
   const password = kept ?? randomPassword(32);
   deps.redactor.addLiteral(password, "grant-password");
-  if (kept === undefined) await recordGeneratedEntries(deps, "grants", { [key]: password });
+  // A new password is kept once the grant's step has set it, so a run whose plan was refused or
+  // failed plans the same again; a declared login reads it from the generated values.
+  const keep = () => recordGeneratedEntries(deps, "grants", { [key]: password });
+  if (kept === undefined && declared(service)) await keep();
   const grant = { device, service: service.name, access };
   const grants =
     existing === undefined
@@ -376,7 +385,9 @@ export async function vpnGrant(
   if (!declared(service)) {
     const params = { service: service.name, kind: service.kind, login: device, access };
     const login = GrantParamsSchema.parse({ ...params, remove: false });
-    outcomes.push(await applyGrantPlan(deps, target, plan, login, command, password));
+    const rewrite = kept === undefined;
+    outcomes.push(await applyGrantPlan(deps, target, plan, login, command, password, rewrite));
+    if (rewrite) await keep();
   }
   const admitted = await applyNetworkPlans(deps, {
     plan,

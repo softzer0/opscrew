@@ -40,11 +40,13 @@ export class FakeAddonServer {
     const applied: string[] = [];
     const skipped: string[] = [];
     for (const step of plan.steps) {
-      const params = JSON.stringify(step.params);
+      // `rewrite` (a new secret) is no setting: the step's check never skips it.
+      const { rewrite, ...settings } = step.params;
+      const params = JSON.stringify(settings);
       if (step.params.remove === true) {
         if (this.running.delete(step.id)) applied.push(step.id);
         else skipped.push(step.id);
-      } else if (this.running.get(step.id) === params) {
+      } else if (rewrite !== true && this.running.get(step.id) === params) {
         skipped.push(step.id);
       } else {
         this.running.set(step.id, params);

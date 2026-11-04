@@ -224,6 +224,8 @@ describe("opscrew vpn grant", () => {
       login: "laptop",
       access: "read-only",
       remove: false,
+      // A password new on this computer: set even when the login is there as planned.
+      rewrite: true,
     });
     const password = (await w.passwords())["laptop/db"] as string;
     expect(password).toMatch(/^[A-Za-z0-9]{16,128}$/);
@@ -260,6 +262,33 @@ describe("opscrew vpn grant", () => {
     expect(text).not.toContain(password);
     expect(text).not.toContain(APP_DB_PASSWORD);
     expect(JSON.stringify(result)).not.toContain(APP_DB_PASSWORD);
+  });
+
+  it("sets a new password on a login whose password this computer lost, and keeps a kept one as it is", async () => {
+    const w = await world(split());
+    await vpnGrant(w.deps, "laptop", "db", { services: w.services });
+    const first = (await w.passwords())["laptop/db"] as string;
+
+    // Kept here: the same login, planned without rewrite (the server's check may skip it).
+    await vpnGrant(w.deps, "laptop", "db", { services: w.services });
+    const kept = stepOf(w.applies.at(-2)?.plan, "grant");
+    expect(kept?.params).not.toHaveProperty("rewrite");
+    expect(w.applies.at(-2)?.options.secrets).toEqual({ grantPassword: first });
+
+    // Lost on this computer (the login stays on the server): a new password, which the step sets.
+    await recordGeneratedEntries(w.deps, "grants", { "laptop/db": undefined });
+    const result = await vpnGrant(w.deps, "laptop", "db", { services: w.services });
+    const fresh = (await w.passwords())["laptop/db"] as string;
+    expect(fresh).toMatch(/^[A-Za-z0-9]{32}$/);
+    expect(fresh).not.toBe(first);
+    const grant = w.applies.at(-2);
+    expect(stepOf(grant?.plan, "grant")).toMatchObject({
+      state: "change",
+      params: { login: "laptop", rewrite: true },
+    });
+    expect(grant?.options.secrets).toEqual({ grantPassword: fresh });
+    expect(result.connection.password).toBe(fresh);
+    expect(await everything(w)).not.toContain(fresh);
   });
 
   it.each([
@@ -451,7 +480,33 @@ describe("opscrew vpn grant", () => {
     expect(reserved.inspected).toEqual([]);
   });
 
-  it("a refused host plan keeps the grant and its password: --approve with the shown hash finishes it", async () => {
+  it("a failed apply of the grant keeps no password: the re-run plans the rewrite again, by the same hash", async () => {
+    const w = await world(split());
+    const host = w.services.host as NonNullable<VpnServices["host"]>;
+    const apply = host.apply;
+    let fail = true;
+    host.apply = async (remote, plan, options) => {
+      if (fail && plan.steps.some((step) => step.id === "grant")) {
+        fail = false;
+        throw new Error("the grant's apply failed on the server");
+      }
+      return apply(remote, plan, options);
+    };
+
+    await expect(vpnGrant(w.deps, "laptop", "db", { services: w.services })).rejects.toThrow();
+    const failed = w.handler.requests[0]?.planHash;
+    expect(await w.passwords()).toEqual({});
+
+    const again = await vpnGrant(w.deps, "laptop", "db", { services: w.services });
+    expect(again.hostPlanHashes[0]).toBe(failed);
+    const [grant] = w.applies;
+    expect(stepOf(grant?.plan, "grant")?.params.rewrite).toBe(true);
+    const password = (await w.passwords())["laptop/db"];
+    expect(grant?.options.secrets).toEqual({ grantPassword: password });
+    expect(again.connection.password).toBe(password);
+  });
+
+  it("a refused host plan keeps the grant, not a password it never sent: --approve with the shown hash finishes it", async () => {
     let answers = 0;
     const w = await world({ ...split(), answer: () => answers++ > 0 });
 
@@ -461,13 +516,15 @@ describe("opscrew vpn grant", () => {
     expect(error.hint).toBe(
       `To apply it later without prompts, run: opscrew vpn grant laptop db --approve ${refused}`,
     );
-    const password = (await w.passwords())["laptop/db"];
+    expect(await w.passwords()).toEqual({});
     expect((await w.plan()).network?.grants).toHaveLength(1);
 
     const again = await vpnGrant(w.deps, "laptop", "db", { services: w.services });
 
+    // The password is kept as it is sent; it is never in the plan, so the hash is the same.
     expect(again.hostPlanHashes[0]).toBe(refused);
-    expect((await w.passwords())["laptop/db"]).toBe(password);
+    const password = (await w.passwords())["laptop/db"];
+    expect(password).toMatch(/^[A-Za-z0-9]{32}$/);
     expect(again.connection.password).toBe(password);
     expect(w.applies[0]?.options.secrets).toEqual({ grantPassword: password });
   });

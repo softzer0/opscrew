@@ -1956,7 +1956,10 @@ export class FakeHost implements RemoteExec {
       // the monitoring add-ons
       case "beszel.check":
       case "alloy.check":
-        return this.check(this.addonOk(p), { installed: this.files.has(`${p.DIR}/compose.yaml`) });
+        // A new secret (REWRITE): the check never skips the apply, as on a server.
+        return this.check(this.addonOk(p) && p.REWRITE !== "true", {
+          installed: this.files.has(`${p.DIR}/compose.yaml`),
+        });
       case "beszel.apply":
       case "alloy.apply":
         return this.addonApply(name, p, input);
@@ -2139,7 +2142,7 @@ export class FakeHost implements RemoteExec {
     const key = `${p.PROJECT}/${p.SERVICE}/${p.LOGIN}`;
     const state = this.databaseLogins.get(key);
     const ok = p.REMOVE === "true" ? state === undefined : state === p.WANT;
-    if (name === "grant.check") return this.check(ok);
+    if (name === "grant.check") return this.check(ok && p.REWRITE !== "true");
     if (name === "grant.verify") return this.verify(ok, p);
     if (p.REMOVE === "true") {
       if (state !== undefined) this.grantLog.push(`drop ${key}`);
