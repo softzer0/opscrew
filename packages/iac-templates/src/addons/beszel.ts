@@ -16,6 +16,9 @@ import { PROXY_SOCKET, PROXY_SOCKET_DIR, PROXY_VOLUME, proxyService } from "./pr
  */
 export const BESZEL_TOKEN_PLACEHOLDER = "${BESZEL_TOKEN}";
 
+/** Beszel's Compose project. */
+export const BESZEL_PROJECT = "opscrew-beszel";
+
 /** Where the agent keeps its fingerprint (`DATA_DIR`), so a restart keeps the hub's trust. */
 const AGENT_DATA_DIR = "/var/lib/beszel-agent";
 
@@ -95,7 +98,7 @@ export function renderBeszelCompose(
         ]),
   ];
   return composeFile(header, {
-    name: "opscrew-beszel",
+    name: BESZEL_PROJECT,
     services,
     volumes: { [PROXY_VOLUME]: {} },
   });

@@ -1,3 +1,4 @@
+import { escapeRegExp } from "@opscrew/core";
 import { cleanRepoPath, type ProjectFacts } from "@opscrew/plan-schema";
 import {
   IMAGES,
@@ -812,10 +813,6 @@ function inAppFolder(command: string, dir: string): string {
     if (sub) return `cd ${sub[1]} && ${command.slice(sub[0].length)}`;
   }
   return command;
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** The detected release command as the app's image runs it, or why the image cannot. */

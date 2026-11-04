@@ -1,3 +1,4 @@
+import { escapeRegExp, listText } from "@opscrew/core";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -6,6 +7,7 @@ import {
   monitoringOf,
   monitoringServerName,
   type PlanService,
+  servicesOn,
 } from "@opscrew/plan-schema";
 import { appDir, CADDY_METRICS_PORT, EDGE_PROJECT, edgeProxy } from "../edge";
 import { MONITORING_PROJECT, MONITORING_PUSH_NETWORK } from "../monitoring";
@@ -14,8 +16,9 @@ import { siteHosts } from "../runtime";
 import { memoryLimit } from "../runtime/components";
 import { servicesRunningOn } from "../runtime/move";
 import { hardened } from "../runtime/services";
-import { planFilePath } from "../workflow/shared";
-import { addonImage, composeFile, DEPLOY_USER } from "./compose";
+import { environmentName, planFilePath } from "../workflow/shared";
+import { BESZEL_PROJECT } from "./beszel";
+import { addonImage, composeFile, DEPLOY_USER, goMemLimit } from "./compose";
 import { PROXY_SOCKET, PROXY_SOCKET_DIR, PROXY_VOLUME, proxyService } from "./proxy";
 import { re2TokenPatterns } from "./re2";
 
@@ -36,10 +39,13 @@ const PROJECT = "opscrew-alloy";
  * OpsCrew's own Compose projects, whose containers' figures Alloy sends with the app's: the edge,
  * the add-ons and the monitoring stack.
  */
-const OPSCREW_PROJECTS = [EDGE_PROJECT, "opscrew-beszel", PROJECT, MONITORING_PROJECT];
+const OPSCREW_PROJECTS = [EDGE_PROJECT, BESZEL_PROJECT, PROJECT, MONITORING_PROJECT];
 
 /** Alloy's storage (its write-ahead log and positions), the bind-mounted `data/` folder. */
-const STORAGE = "/var/lib/opscrew-alloy";
+const STORAGE = `/var/lib/${PROJECT}`;
+
+/** Alloy's hostname, the figures' fixed `instance` label: `opscrew-alloy-<app>`. */
+const instanceName = (plan: DeployPlan) => `${PROJECT}-${plan.app.name}`;
 
 /** Where Alloy reads a file beside its Compose file. */
 const inContainer = (file: string) => `/etc/alloy/${file}`;
@@ -70,9 +76,6 @@ const HTTP_ADDRESS = "127.0.0.1:12345";
 
 /** Every scrape's interval with monitoring (Alloy's default is a minute). */
 const SCRAPE_INTERVAL = "15s";
-
-/** The share of the memory limit Go's garbage collector aims to stay under (spike result 3). */
-const GO_MEMORY_SHARE = 0.8;
 
 /** The server's figures Alloy sends: CPU time, load, total and available memory, and `/`'s size. */
 const METRICS_KEPT =
@@ -106,16 +109,8 @@ const str = (value: string) => JSON.stringify(value);
 const list = (items: readonly string[]) => `[${items.join(", ")}]`;
 
 /** The first enabled Postgres on `server`, whose figures that server's Alloy then sends. */
-function postgresOn(plan: DeployPlan, server: string): PlanService | undefined {
-  return plan.services.find(
-    (service) =>
-      service.kind === "postgres" && service.enabled && (service.server ?? APP_SERVER) === server,
-  );
-}
-
-/** `text` matched literally in an RE2 (or JavaScript) expression. */
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+export function postgresOn(plan: DeployPlan, server: string): PlanService | undefined {
+  return servicesOn(plan, server).find((service) => service.kind === "postgres");
 }
 
 /** True on the edge's server (the app's) behind Caddy, whose figures Alloy then scrapes. */
@@ -193,7 +188,7 @@ export function renderAlloyCompose(
   const postgres = postgresOn(plan, server) !== undefined;
   const sources = ["the server", "its containers", ...(caddy ? ["Caddy"] : [])];
   if (postgres) sources.push("Postgres");
-  const figures = `${sources.slice(0, -1).join(", ")} and ${sources.at(-1)}`;
+  const figures = listText(sources);
   const beside = "is in a file beside this one that only the deploy user can read.";
   return alloyCompose(plan, {
     header: [
@@ -263,7 +258,7 @@ function alloyCompose(plan: DeployPlan, setup: AlloySetup): string {
         image: alloy.image,
         restart: "unless-stopped",
         // The metrics' `instance` label: fixed, so a new container doesn't start new series.
-        hostname: `opscrew-alloy-${plan.app.name}`,
+        hostname: instanceName(plan),
         user: DEPLOY_USER,
         command: [
           "run",
@@ -272,7 +267,7 @@ function alloyCompose(plan: DeployPlan, setup: AlloySetup): string {
           ...setup.flags,
           inContainer("config.alloy"),
         ],
-        environment: { GOMEMLIMIT: `${Math.floor(limit * GO_MEMORY_SHARE)}MiB` },
+        environment: { GOMEMLIMIT: goMemLimit(limit) },
         volumes: [
           `./config.alloy:${inContainer("config.alloy")}:ro`,
           ...setup.files.map((file) => `./${file}:${inContainer(file)}:ro`),
@@ -328,7 +323,7 @@ export function renderAlloyConfig(
 ): string {
   const { grafanaCloud, monitoring } = destinations;
   if (monitoring === undefined) return grafanaCloudConfig(plan, onlyDestination(grafanaCloud));
-  const labels = `{ app = ${str(plan.app.name)}, env = ${str(environmentOf(plan))}, server = ${str(server)} }`;
+  const labels = appLabels(plan, server);
   const cloud = grafanaCloud === undefined ? undefined : endpoints(grafanaCloud);
   const logs = appLogsOn(plan, server);
   const postgres = postgresOn(plan, server);
@@ -417,14 +412,13 @@ function grafanaCloudConfig(plan: DeployPlan, grafana: GrafanaCloudSettings): st
   ].join("\n");
 }
 
-/** The plan's environment, as the `env` label names it. */
-function environmentOf(plan: DeployPlan): string {
-  return plan.environment?.name ?? "prod";
-}
-
-/** The labels of Grafana Cloud's lines and figures: the app's and environment's names. */
-function appLabels(plan: DeployPlan): string {
-  return `{ app = ${str(plan.app.name)}, env = ${str(environmentOf(plan))} }`;
+/**
+ * The labels of the lines and figures: the app's and environment's names, and with `server` (for
+ * the monitoring stack) the server's.
+ */
+function appLabels(plan: DeployPlan, server?: string): string {
+  const onServer = server === undefined ? "" : `, server = ${str(server)}`;
+  return `{ app = ${str(plan.app.name)}, env = ${str(environmentName(plan))}${onServer} }`;
 }
 
 /** Grafana Cloud's endpoints. */
@@ -646,7 +640,7 @@ function containerFigures(plan: DeployPlan): string[] {
     "  }",
     "  rule {",
     '    target_label = "instance"',
-    `    replacement  = ${str(`opscrew-alloy-${plan.app.name}`)}`,
+    `    replacement  = ${str(instanceName(plan))}`,
     "  }",
     "  rule {",
     '    target_label = "job"',

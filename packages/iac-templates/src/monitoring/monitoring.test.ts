@@ -1,10 +1,10 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: Grafana's $__file{} in expected values, not JavaScript templates.
 // Feature 020: the self-hosted monitoring stack's files (T2004).
 import { Redactor } from "@opscrew/core";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
-import { testPlan } from "../__fixtures__/plans";
+import { MONITORING, monitoredPlan } from "../addons/__fixtures__/plans";
 import { withPlacement } from "../catalog/__fixtures__/plans";
 import { IMAGES } from "../pins";
 import {
@@ -23,39 +23,13 @@ vi.mock("./dashboards", async (original) => ({
   ]),
 }));
 
-const versions = { prometheus: "3.15.1", loki: "3.7.9", grafana: "13.3.0", alloy: "1.21.3" };
-const retention = { metricsDays: 15, logsDays: 7, metricsMaxGb: 24 };
+/** The owner: the stack on its extra server `monitoring` (10.200.4.2), with `monitoring`'s fields. */
+const ownerPlan = (monitoring: Record<string, unknown> = {}) => monitoredPlan({ monitoring });
 
-/** `plan` with monitoring on at `where`, and `monitoring`'s other fields over the defaults. */
-function withMonitoring(
-  plan: DeployPlan,
-  where: object,
-  monitoring: Record<string, unknown> = {},
-): DeployPlan {
-  return DeployPlanSchema.parse({
-    ...plan,
-    observability: { monitoring: { enabled: true, where, versions, retention, ...monitoring } },
-  });
-}
+/** The stack on the app's server, with no extra server. */
+const appPlan = () => monitoredPlan({ servers: [], monitoring: { where: { kind: "app" } } });
 
-/**
- * The owner: the stack on its extra server `monitoring` (10.200.4.2), with `devices`. Placed
- * through `db`, since a server without a service is refused until monitoring holds it.
- */
-function ownerPlan(monitoring: Record<string, unknown> = {}, devices: string[] = []): DeployPlan {
-  const placed = withPlacement(testPlan(), {
-    servers: { monitoring: "hetzner" },
-    placed: { db: "monitoring" },
-    devices,
-  });
-  return withMonitoring(
-    { ...placed, services: placed.services.map(({ server: _, ...service }) => service) },
-    { kind: "server", server: "monitoring" },
-    monitoring,
-  );
-}
-
-/** The input for `plan` on `networks`, with devices when any network lists one. */
+/** The input for `plan` on `networks`. */
 function input(plan: DeployPlan, networks: MonitoringStackInput["networks"]): MonitoringStackInput {
   const settings = plan.observability?.monitoring;
   if (settings === undefined) throw new Error("the test plan has no monitoring");
@@ -72,14 +46,13 @@ const cases = {
       { address: "10.200.4.2", servers: ["10.200.4.1", "10.200.4.2"], devices: [] },
     ]),
   "a monitoring server shared by two networks": () =>
-    input(ownerPlan({}, ["laptop"]), [
+    input(ownerPlan(), [
       { address: "10.200.4.2", servers: ["10.200.4.1", "10.200.4.2"], devices: ["10.200.4.100"] },
       { address: "10.205.40.3", servers: ["10.205.40.2"], devices: [] },
     ]),
-  'kind "app" with no network and no devices': () =>
-    input(withMonitoring(testPlan(), { kind: "app" }), []),
+  'kind "app" with no network and no devices': () => input(appPlan(), []),
   'kind "app" with a device': () =>
-    input(withMonitoring(withPlacement(testPlan(), { devices: ["laptop"] }), { kind: "app" }), [
+    input(withPlacement(appPlan(), { devices: ["laptop"] }), [
       { address: "10.200.4.1", servers: ["10.200.4.1"], devices: ["10.200.4.100"] },
     ]),
 };
@@ -105,9 +78,14 @@ const compose = (stack: MonitoringStackInput): Compose =>
   parse(files(stack)["compose.yaml"] as string);
 
 describe("renderMonitoringStack", () => {
-  for (const [label, stack] of Object.entries(cases)) {
-    it(`renders ${label} (snapshot)`, () => {
-      expect(files(stack())).toMatchSnapshot();
+  it("renders a monitoring server on one network (snapshot)", () => {
+    expect(files(cases["a monitoring server on one network"]())).toMatchSnapshot();
+  });
+
+  // The other files don't depend on the networks: compose.yaml only.
+  for (const [label, stack] of Object.entries(cases).slice(1)) {
+    it(`renders ${label}'s compose.yaml (snapshot)`, () => {
+      expect(files(stack())["compose.yaml"]).toMatchSnapshot();
     });
   }
 
@@ -128,10 +106,7 @@ describe("renderMonitoringStack", () => {
     const render = vi.mocked(renderDashboards);
     render.mockClear();
     renderMonitoringStack(cases["a monitoring server on one network"]());
-    const nginx = ownerPlan();
-    renderMonitoringStack(
-      input(DeployPlanSchema.parse({ ...nginx, target: { ...nginx.target, edge: "nginx" } }), []),
-    );
+    renderMonitoringStack(input(monitoredPlan({ edge: "nginx" }), []));
     expect(render.mock.calls).toEqual([[{ caddy: true }], [{ caddy: false }]]);
   });
 
@@ -215,7 +190,7 @@ describe("the stack's services", () => {
   });
 
   it("names the image by tag only, and says so, for a version that isn't the pinned one", () => {
-    const plan = ownerPlan({ versions: { ...versions, grafana: "13.2.0" } });
+    const plan = ownerPlan({ versions: { ...MONITORING.versions, grafana: "13.2.0" } });
     const content = files(input(plan, []))["compose.yaml"] as string;
     expect(parse(content).services.grafana.image).toBe("grafana/grafana:13.2.0");
     expect(content).toContain(

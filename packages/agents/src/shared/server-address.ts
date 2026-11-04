@@ -1,7 +1,13 @@
 import { BlockList, isIP } from "node:net";
 import type { HostFacts } from "@opscrew/connector-ssh-host";
 import type { RemoteExec, VpsProviderId } from "@opscrew/contracts";
-import { normalizeHostName, OpsCrewError, type Redactor, readTextIfExists } from "@opscrew/core";
+import {
+  escapeRegExp,
+  normalizeHostName,
+  OpsCrewError,
+  type Redactor,
+  readTextIfExists,
+} from "@opscrew/core";
 import { APP_SERVER, type DeployPlan, readOptionalArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { hasPublicAddress } from "../network/endpoints";
@@ -523,10 +529,6 @@ async function remoteAt(
  */
 export function hidesServerAddress(plan: Pick<DeployPlan, "dns">): boolean {
   return plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined && plan.dns.proxied;
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**

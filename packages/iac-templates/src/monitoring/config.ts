@@ -4,15 +4,12 @@ import {
   type MonitoringSettings,
 } from "@opscrew/plan-schema";
 import { GRAFANA_DASHBOARDS_IN_CONTAINER } from "./compose";
+import { DATASOURCES } from "./dashboards/grafana";
 import { headerComment } from "./header";
 
 /** Prometheus's upstream on the stack's network, and Loki's. */
 const PROMETHEUS = "prometheus:9090";
 const LOKI = "loki:3100";
-
-/** The two data sources' uids, which the dashboards name. */
-const PROMETHEUS_DATASOURCE_UID = "opscrew-prometheus";
-const LOKI_DATASOURCE_UID = "opscrew-loki";
 
 /**
  * `prometheus.yml`: no scrape jobs and no external labels (every figure arrives by remote write,
@@ -187,7 +184,7 @@ export function renderGrafanaDatasources(plan: DeployPlan): string {
     "prune: true",
     "datasources:",
     "  - name: Prometheus",
-    `    uid: ${PROMETHEUS_DATASOURCE_UID}`,
+    `    uid: ${DATASOURCES.prometheus.uid}`,
     "    type: prometheus",
     "    access: proxy",
     `    url: http://${PROMETHEUS}`,
@@ -199,7 +196,7 @@ export function renderGrafanaDatasources(plan: DeployPlan): string {
     "      timeInterval: 15s",
     "      prometheusType: Prometheus",
     "  - name: Loki",
-    `    uid: ${LOKI_DATASOURCE_UID}`,
+    `    uid: ${DATASOURCES.loki.uid}`,
     "    type: loki",
     "    access: proxy",
     `    url: http://${LOKI}`,

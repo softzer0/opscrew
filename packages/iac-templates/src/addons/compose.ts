@@ -18,6 +18,14 @@ export function addonImage(ref: string, tag: string): { image: string; pinned: b
     : { image: `${repository}:${tag}`, pinned: false };
 }
 
+/** The share of a memory limit Go's garbage collector aims to stay under (spike result 3). */
+const GO_MEMORY_SHARE = 0.8;
+
+/** `GOMEMLIMIT` for a Go container whose memory limit is `mb`: 80% of it, in MiB. */
+export function goMemLimit(mb: number): string {
+  return `${Math.floor(mb * GO_MEMORY_SHARE)}MiB`;
+}
+
 /** A Compose file: the header's comment lines, then `document` (no YAML aliases). */
 export function composeFile(header: readonly string[], document: object): string {
   const comments = header.map((line) => `# ${line}`).join("\n");

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { DASHBOARD_QUERIES, MONITORING_LABELS, renderDashboards } from "./index";
+import { DASHBOARD_QUERIES, renderDashboards } from "./index";
+
+/** The labels every series carries (the contract's): the variables and queries use these. */
+const MONITORING_LABELS = ["app", "env", "server", "service", "host"];
 
 /** The series' own labels the queries may use (plan.md 5.), beside the contract's. */
 const OWN_LABELS = [
@@ -19,7 +22,7 @@ const OWN_LABELS = [
   "fstype",
   "le",
 ];
-const ALLOWED = new Set<string>([...MONITORING_LABELS, ...OWN_LABELS]);
+const ALLOWED = new Set([...MONITORING_LABELS, ...OWN_LABELS]);
 
 const NAMES = ["servers", "containers", "http", "caddy", "postgres", "logs"];
 

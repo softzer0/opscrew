@@ -6,7 +6,8 @@
 /** The stack's two provisioned data sources. */
 export type Source = "prometheus" | "loki";
 
-const DATASOURCES = {
+/** The data sources' types and uids, as the dashboards and the provisioning file name them. */
+export const DATASOURCES = {
   prometheus: { type: "prometheus", uid: "opscrew-prometheus" },
   loki: { type: "loki", uid: "opscrew-loki" },
 } as const;
@@ -41,7 +42,7 @@ export type Panel =
 
 /** A dashboard, before rendering. */
 export interface Dashboard {
-  /** The short name: the uid is `opscrew-<name>` and the file `<name>.json`. */
+  /** The short name: the uid is {@link dashboardUid} and the file `<name>.json`. */
   name: string;
   title: string;
   description: string;
@@ -49,6 +50,25 @@ export interface Dashboard {
   /** Variables after `app`, `env` and `server`. */
   variables?: object[];
 }
+
+/** A dashboard's stable uid: `opscrew-<name>`. */
+export function dashboardUid(dashboard: Pick<Dashboard, "name">): string {
+  return `opscrew-${dashboard.name}`;
+}
+
+/** Every variable's fields after its query: multi-select with "All" (R7 S3). */
+const MULTI_SELECT = {
+  refresh: 2,
+  sort: 1,
+  multi: true,
+  includeAll: true,
+  // Loki refuses a selector whose only matcher is `=~".*"`.
+  allValue: ".+",
+  current: { text: ["All"], value: ["$__all"] },
+  options: [],
+  regex: "",
+  hide: 0,
+};
 
 /**
  * A multi-select variable with "All" (R7 S3), from the label's values on `node_load1`, which every
@@ -63,16 +83,7 @@ function labelVariable(name: string, label: string, selector: string): object {
     datasource: DATASOURCES.prometheus,
     query: { qryType: 1, query, refId: "PrometheusVariableQueryEditor-VariableQuery" },
     definition: query,
-    refresh: 2,
-    sort: 1,
-    multi: true,
-    includeAll: true,
-    // Loki refuses a selector whose only matcher is `=~".*"`.
-    allValue: ".+",
-    current: { text: ["All"], value: ["$__all"] },
-    options: [],
-    regex: "",
-    hide: 0,
+    ...MULTI_SELECT,
   };
 }
 
@@ -92,15 +103,7 @@ export function lokiLabelVariable(name: string, label: string): object {
     datasource: DATASOURCES.loki,
     query: { type: 1, label: name, stream, refId: "LokiVariableQueryEditor-VariableQuery" },
     definition: `label_values(${stream}, ${name})`,
-    refresh: 2,
-    sort: 1,
-    multi: true,
-    includeAll: true,
-    allValue: ".+",
-    current: { text: ["All"], value: ["$__all"] },
-    options: [],
-    regex: "",
-    hide: 0,
+    ...MULTI_SELECT,
   };
 }
 
@@ -184,7 +187,7 @@ export function renderDashboard(dashboard: Dashboard): string {
     return renderPanel(panel, index + 1, gridPos);
   });
   const json = {
-    uid: `opscrew-${dashboard.name}`,
+    uid: dashboardUid(dashboard),
     title: dashboard.title,
     description: dashboard.description,
     tags: ["opscrew"],

@@ -4,7 +4,12 @@ import { renderAlloyCompose, renderAlloyConfig } from "./alloy";
 import { renderBeszelCompose, renderBeszelConfig } from "./beszel";
 import { renderProxyCaddyfile } from "./proxy";
 
-export { type AlloyDestinations, renderAlloyCompose, renderAlloyConfig } from "./alloy";
+export {
+  type AlloyDestinations,
+  postgresOn,
+  renderAlloyCompose,
+  renderAlloyConfig,
+} from "./alloy";
 export { BESZEL_TOKEN_PLACEHOLDER } from "./beszel";
 export { renderProxyCaddyfile } from "./proxy";
 

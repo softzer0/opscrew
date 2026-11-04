@@ -1,4 +1,5 @@
 import { isSecretEnvName } from "./env";
+import { escapeRegExp } from "./text";
 
 /** A pattern that finds one kind of secret in free text. */
 export interface RedactionRule {
@@ -129,10 +130,6 @@ function applyRule(text: string, { rule, pattern }: CompiledRule): string {
     cursor = end;
   }
   return out + text.slice(cursor);
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // A name stands alone: right after a percent-escape (`%2F%2Fnas`, `user%40nas`), or not right after

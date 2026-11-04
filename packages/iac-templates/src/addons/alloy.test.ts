@@ -14,6 +14,7 @@ import { MONITORING_PUSH_NETWORK } from "../monitoring";
 import { IMAGES } from "../pins";
 import {
   GRAFANA_CLOUD,
+  MONITORING,
   type MonitoredPlanOptions,
   monitoredPlan,
   observabilityPlan,
@@ -533,9 +534,7 @@ describe("Alloy with monitoring", () => {
 
   it("runs another Alloy version by its tag, and says it is not pinned by digest", () => {
     const plan = monitoredPlan({
-      monitoring: {
-        versions: { prometheus: "3.15.1", loki: "3.7.9", grafana: "13.3.0", alloy: "1.21.2" },
-      },
+      monitoring: { versions: { ...MONITORING.versions, alloy: "1.21.2" } },
     });
     const text = renderAlloyCompose(plan, "app", { monitoring: STACK });
     expect(parse(text).services.alloy.image).toBe("grafana/alloy:v1.21.2");

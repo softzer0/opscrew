@@ -1,5 +1,5 @@
 import { MONITORING_GRAFANA_PORT, MONITORING_PUSH_PORT } from "@opscrew/plan-schema";
-import { addonImage, composeFile } from "../addons/compose";
+import { addonImage, composeFile, goMemLimit } from "../addons/compose";
 import { IMAGES } from "../pins";
 import { memoryLimit } from "../runtime/components";
 import { hardened } from "../runtime/services";
@@ -21,9 +21,6 @@ const GRAFANA_CREDENTIAL_IN_CONTAINER = `/run/opscrew/${GRAFANA_CREDENTIAL_FILE}
 
 /** Where Grafana reads OpsCrew's dashboards (the stack's `grafana/dashboards/`). */
 export const GRAFANA_DASHBOARDS_IN_CONTAINER = "/etc/grafana/dashboards";
-
-/** The share of each memory limit Go's garbage collector aims to stay under (017's Alloy too). */
-const GO_MEMORY_SHARE = 0.8;
 
 /** The networks: `stack` has no route out; `published` carries the two published services. */
 const STACK = "stack";
@@ -88,14 +85,6 @@ function healthcheck(command: string, startPeriod: string): object {
 /** `wget` of `url`, quietly, the body discarded. */
 const fetches = (url: string) => `wget -q -O /dev/null ${url}`;
 
-/** The memory limit `mb` and `GOMEMLIMIT` at 80% of it. */
-function memory(mb: number): { environment: { GOMEMLIMIT: string }; limit: object } {
-  return {
-    environment: { GOMEMLIMIT: `${Math.floor(mb * GO_MEMORY_SHARE)}MiB` },
-    limit: memoryLimit(mb),
-  };
-}
-
 /**
  * The stack's `compose.yaml` (project {@link MONITORING_PROJECT}): Prometheus, Loki, Grafana and
  * the front, each with a read-only root, no capability (the front only binds), the image's own
@@ -114,12 +103,6 @@ export function renderMonitoringCompose(input: MonitoringStackInput): string {
   const grafana = addonImage(IMAGES.grafana.ref, versions.grafana);
   const addresses = networks.map((network) => network.address);
   const publish = (port: number, on: string[]) => on.map((address) => `${address}:${port}:${port}`);
-  const limits = {
-    prometheus: memory(memoryMb.prometheus),
-    loki: memory(memoryMb.loki),
-    grafana: memory(memoryMb.grafana),
-    front: memory(memoryMb.front),
-  };
   const services = {
     prometheus: {
       image: prometheus.image,
@@ -131,31 +114,31 @@ export function renderMonitoringCompose(input: MonitoringStackInput): string {
         `--storage.tsdb.retention.size=${retention.metricsMaxGb}GB`,
         "--web.enable-remote-write-receiver",
       ],
-      environment: limits.prometheus.environment,
+      environment: { GOMEMLIMIT: goMemLimit(memoryMb.prometheus) },
       volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro", "prometheus:/prometheus"],
       healthcheck: healthcheck(fetches("http://127.0.0.1:9090/-/ready"), "30s"),
       networks: [STACK],
       read_only: true,
-      ...limits.prometheus.limit,
+      ...memoryLimit(memoryMb.prometheus),
       ...hardened({ noCapabilities: true }),
     },
     loki: {
       image: loki.image,
       restart: "unless-stopped",
       command: ["-config.file=/etc/loki/loki.yaml"],
-      environment: limits.loki.environment,
+      environment: { GOMEMLIMIT: goMemLimit(memoryMb.loki) },
       volumes: ["./loki.yaml:/etc/loki/loki.yaml:ro", "loki:/loki"],
       networks: [STACK],
       read_only: true,
       // The compactor writes its retention markers in /tmp: without it nothing is ever deleted.
       tmpfs: ["/tmp"],
-      ...limits.loki.limit,
+      ...memoryLimit(memoryMb.loki),
       ...hardened({ noCapabilities: true }),
     },
     grafana: {
       image: grafana.image,
       restart: "unless-stopped",
-      environment: { ...limits.grafana.environment, ...GRAFANA_SETTINGS },
+      environment: { GOMEMLIMIT: goMemLimit(memoryMb.grafana), ...GRAFANA_SETTINGS },
       volumes: [
         "./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro",
         "./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro",
@@ -172,14 +155,14 @@ export function renderMonitoringCompose(input: MonitoringStackInput): string {
       read_only: true,
       // Its data sources' plugins talk to Grafana over Unix sockets in /tmp.
       tmpfs: ["/tmp"],
-      ...limits.grafana.limit,
+      ...memoryLimit(memoryMb.grafana),
       ...hardened({ noCapabilities: true }),
     },
     front: {
       image: IMAGES.caddy.ref,
       restart: "unless-stopped",
       user: "65534:65534",
-      environment: limits.front.environment,
+      environment: { GOMEMLIMIT: goMemLimit(memoryMb.front) },
       volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro"],
       // Loki's image has no shell or wget: the front checks that both are ready.
       healthcheck: healthcheck(
@@ -193,7 +176,7 @@ export function renderMonitoringCompose(input: MonitoringStackInput): string {
       tmpfs: ["/data:uid=65534,gid=65534,mode=0700", "/config:uid=65534,gid=65534,mode=0700"],
       // Caddy's binary carries the binding capability: without it in the bounding set it can't run.
       cap_add: ["NET_BIND_SERVICE"],
-      ...limits.front.limit,
+      ...memoryLimit(memoryMb.front),
       ...hardened({ noCapabilities: true }),
     },
   };

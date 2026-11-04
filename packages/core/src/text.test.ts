@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   durationText,
+  escapeRegExp,
   formatMoney,
   isoDateOr,
   listText,
@@ -79,6 +80,14 @@ describe("lowerFirst and upperFirst", () => {
     expect(upperFirst("run it again")).toBe("Run it again");
     expect(lowerFirst("")).toBe("");
     expect(upperFirst("")).toBe("");
+  });
+});
+
+describe("escapeRegExp", () => {
+  it("escapes every metacharacter but /, so a pattern matches the text literally", () => {
+    const text = "a.b*c+d?e^f$g{h}i(j)k|l[m]n\\o/p";
+    expect(escapeRegExp(text)).toBe("a\\.b\\*c\\+d\\?e\\^f\\$g\\{h\\}i\\(j\\)k\\|l\\[m\\]n\\\\o/p");
+    expect(new RegExp(`^${escapeRegExp(text)}$`).test(text)).toBe(true);
   });
 });
 

@@ -5,6 +5,7 @@
  * `trailingSlash` first), then rewrites. A rewrite applies only when the app answers 404 for the
  * original path, since Vercel serves the app's own files before it rewrites ("Spike results" 17).
  */
+import { escapeRegExp } from "@opscrew/core";
 import { type PlatformRouting, VercelSourceSchema } from "@opscrew/plan-schema";
 import { BASELINE_HEADERS } from "../runtime/services";
 import type { EdgeProxy } from "./index";
@@ -68,10 +69,6 @@ function unsafeChar(text: string, proxy: EdgeProxy, spaces: boolean): string | u
   return UNSAFE[proxy].exec(text)?.[0] ?? (spaces ? undefined : /\s/.exec(text)?.[0]);
 }
 
-function escapeRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /**
  * The index of the `)` closing the group that opens at `start`; a capturing group inside it
  * cannot be numbered the way Vercel numbers parameters, so it is skipped.
@@ -106,7 +103,7 @@ function pathPattern(source: string): Pattern {
   while (i < source.length) {
     const ch = source.charAt(i);
     if (ch === "\\") {
-      regex += escapeRegex(source.charAt(i + 1));
+      regex += escapeRegExp(source.charAt(i + 1));
       i += 2;
     } else if (ch === ":" || ch === "(") {
       let name: string | undefined;
@@ -137,7 +134,7 @@ function pathPattern(source: string): Pattern {
     } else if ("{}*+?".includes(ch)) {
       throw new Skip(`its \`${ch}\` is a path-to-regexp form OpsCrew does not translate yet`);
     } else {
-      regex += escapeRegex(ch);
+      regex += escapeRegExp(ch);
       i++;
     }
   }

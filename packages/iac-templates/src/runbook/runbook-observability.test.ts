@@ -1,6 +1,7 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { MONITORING } from "../addons/__fixtures__/plans";
 import { withPlacement } from "../catalog/__fixtures__/plans";
 import { cloudflarePlan, pagesPlan, ssrPlan } from "../serverless/__fixtures__/plans";
 import { inEnvironment, localhostPlan } from "../workflow/__fixtures__/plans";
@@ -236,10 +237,8 @@ describe("the runbook's add-ons", () => {
 });
 
 describe("the runbook's self-hosted monitoring", () => {
-  const versions = { prometheus: "3.15.1", loki: "3.7.9", grafana: "13.3.0", alloy: "1.21.3" };
-  const retention = { metricsDays: 30, logsDays: 7, metricsMaxGb: 24 };
   const monitoring = (where: object) => ({
-    monitoring: { enabled: true, where, versions, retention },
+    monitoring: { ...MONITORING, where, retention: { ...MONITORING.retention, metricsDays: 30 } },
   });
 
   /** The owner: the stack on its extra server `monitoring` (placed through `db`, then freed). */

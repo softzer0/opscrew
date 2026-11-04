@@ -4,14 +4,11 @@
  */
 import { caddy } from "./caddy";
 import { containers } from "./containers";
-import { type Dashboard, renderDashboard } from "./grafana";
+import { type Dashboard, dashboardUid, renderDashboard } from "./grafana";
 import { http } from "./http";
 import { logs } from "./logs";
 import { postgres } from "./postgres";
 import { servers } from "./servers";
-
-/** The labels every series carries; the dashboards' variables and queries use only these. */
-export const MONITORING_LABELS = ["app", "env", "server", "service", "host"] as const;
 
 /** One panel's query: its dashboard, its title and its data source. */
 export interface DashboardQuery {
@@ -33,7 +30,7 @@ export const DASHBOARD_QUERIES: readonly DashboardQuery[] = DASHBOARDS.flatMap((
     panel.type === "text"
       ? []
       : panel.targets.map((target) => ({
-          dashboard: `opscrew-${dashboard.name}`,
+          dashboard: dashboardUid(dashboard),
           panel: panel.title,
           datasource: panel.source,
           expr: target.expr,
@@ -56,7 +53,7 @@ export function renderDashboards(options: {
   caddy: boolean;
 }): { uid: string; file: string; json: string }[] {
   return DASHBOARDS.map((dashboard) => ({
-    uid: `opscrew-${dashboard.name}`,
+    uid: dashboardUid(dashboard),
     file: `${dashboard.name}.json`,
     json: renderDashboard(
       options.caddy || !FROM_CADDY.has(dashboard) ? dashboard : withoutCaddy(dashboard),

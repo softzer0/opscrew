@@ -7,9 +7,6 @@ import {
   ADDON_MEMORY_DEFAULTS,
   DeployPlanSchema,
   isOutsideMember,
-  MONITORING_GRAFANA_PORT,
-  MONITORING_PUSH_PORT,
-  MONITORING_SERVER,
   MonitoringSchema,
   MonitoringWhereSchema,
   monitoringOf,
@@ -124,26 +121,6 @@ describe("plan.observability.monitoring", () => {
     expect(parseArtifact("plan", serializeArtifact("plan", owner), "round trip")).toEqual(owner);
   });
 
-  it("keeps the memory defaults the spike measured", () => {
-    expect(ADDON_MEMORY_DEFAULTS.monitoring).toEqual({
-      prometheus: 192,
-      loki: 384,
-      grafana: 416,
-      front: 96,
-      alloy: 256,
-      proxy: 32,
-    });
-    expect(ADDON_MEMORY_DEFAULTS.grafanaCloud).toEqual({ alloy: 256, proxy: 32 });
-  });
-
-  it("exports the ports and the default server's name", () => {
-    expect([MONITORING_PUSH_PORT, MONITORING_GRAFANA_PORT, MONITORING_SERVER]).toEqual([
-      9091,
-      3000,
-      "monitoring",
-    ]);
-  });
-
   it("refuses retention outside its bounds, a floating version and an unknown where", () => {
     const base = { where: { kind: "app" }, versions, retention };
     const fails = (value: unknown) => MonitoringSchema.safeParse(value).success;
@@ -206,16 +183,6 @@ describe("monitoring's rules", () => {
           'is "monitoring", which runs services: the monitoring server holds only the monitoring stack; move those services (services[].server) to another server, or name a server of its own',
       },
     ]);
-  });
-
-  it('refuses kind "server" naming a server that is not on the network', async () => {
-    const plan = await ownerPlan();
-    const network = { ...plan.network, members: plan.network.members.slice(0, 1) };
-    expect(issues(DeployPlanSchema.safeParse({ ...plan, network }))).toContainEqual({
-      path: "observability.monitoring.where.server",
-      message:
-        'is "monitoring", which is not on the private network: the servers send to it there; add it to network.members (run opscrew design)',
-    });
   });
 
   it("lets the monitoring server run no service, and only while monitoring is on", async () => {

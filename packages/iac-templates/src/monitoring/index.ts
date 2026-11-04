@@ -17,9 +17,6 @@ import { renderDashboards } from "./dashboards";
 export { GRAFANA_CREDENTIAL_FILE, MONITORING_PROJECT, MONITORING_PUSH_NETWORK } from "./compose";
 export * from "./dashboards";
 
-/** The stack's directory, under the deploy user's home on its server. */
-export const MONITORING_DIR = "opscrew/addons/monitoring";
-
 /** What the stack's files are rendered from. */
 export interface MonitoringStackInput {
   /** The owner's settings. */
@@ -38,7 +35,7 @@ export interface MonitoringStackInput {
 }
 
 /**
- * The stack's files, each with its path under {@link MONITORING_DIR}: `compose.yaml`,
+ * The stack's files, each with its path under `opscrew/addons/monitoring`: `compose.yaml`,
  * `prometheus.yml`, `loki.yaml`, the front's `Caddyfile`, Grafana's provisioning files and its
  * dashboards (`grafana/dashboards/*.json`; http and caddy need the plan's edge to be Caddy). None
  * holds a secret: Grafana reads its admin password from `grafana_admin_credential`, which the host

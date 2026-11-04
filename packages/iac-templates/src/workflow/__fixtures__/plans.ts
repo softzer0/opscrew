@@ -5,8 +5,8 @@ import {
   type RuntimeLanguage,
 } from "@opscrew/plan-schema";
 import { designProbe, testPlan } from "../../__fixtures__/plans";
+import { MONITORING } from "../../addons/__fixtures__/plans";
 import { withServices } from "../../catalog/__fixtures__/plans";
-import { IMAGES } from "../../pins";
 
 /**
  * `plan` with `app.build` set to `builder` for `language` (default Go 1.26, chosen by design, with
@@ -137,32 +137,16 @@ export function splitPlan(o: { publicSsh?: boolean } = {}): DeployPlan {
   );
 }
 
-/** The version in the tag of a pinned image: `3.15.1` for `prom/prometheus:v3.15.1@…`. */
-function pinnedTag(image: "prometheus" | "loki" | "grafana" | "alloy"): string {
-  const { ref } = IMAGES[image];
-  return ref.slice(ref.lastIndexOf(":", ref.indexOf("@")) + 1, ref.indexOf("@")).replace(/^v/, "");
-}
-
 /**
- * `plan` with self-hosted monitoring (`observability.monitoring`), its stack on the app's server,
- * on unless `enabled` is false, at the pinned versions; the plan's other add-ons stay.
+ * `plan` with self-hosted monitoring ({@link MONITORING}), its stack on the app's server, on unless
+ * `enabled` is false; the plan's other add-ons stay.
  */
 export function withMonitoring(plan: DeployPlan, o: { enabled?: boolean } = {}): DeployPlan {
   return DeployPlanSchema.parse({
     ...plan,
     observability: {
       ...plan.observability,
-      monitoring: {
-        enabled: o.enabled ?? true,
-        where: { kind: "app" },
-        versions: {
-          prometheus: pinnedTag("prometheus"),
-          loki: pinnedTag("loki"),
-          grafana: pinnedTag("grafana"),
-          alloy: pinnedTag("alloy"),
-        },
-        retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 24 },
-      },
+      monitoring: { ...MONITORING, enabled: o.enabled ?? true, where: { kind: "app" } },
     },
   });
 }

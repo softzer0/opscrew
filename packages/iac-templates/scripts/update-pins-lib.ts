@@ -5,7 +5,7 @@
  * `src/registry.ts`.
  */
 import { createHash } from "node:crypto";
-import type { LocalPlatform } from "@opscrew/core";
+import { escapeRegExp, type LocalPlatform } from "@opscrew/core";
 import type { BUILDPACKS_OFFERS, PinArch, RunnerPlatform } from "../src/pins";
 
 type OfferLanguage = keyof typeof BUILDPACKS_OFFERS;
@@ -124,10 +124,6 @@ export function lynisPublished(html: string): { version: string; sha256: string 
     throw new Error("The Lynis downloads page names no version and SHA-256.");
   }
   return { version, sha256 };
-}
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Replaces the string literal `old` (it must appear exactly once) with `next`. */

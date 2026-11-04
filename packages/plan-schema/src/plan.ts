@@ -716,8 +716,9 @@ function checkObservability(plan: DeployPlanFields, ctx: z.RefinementCtx): void 
 }
 
 /**
- * Monitoring's rules, when it is on: only on a server, its extra server a member of the network
- * that runs no service, a shared one's outside member on the network, and one Alloy version.
+ * Monitoring's rules, when it is on: only on a server, its extra server one that runs no service
+ * (018's rules put it on the network), a shared one's outside member on the network, and one
+ * Alloy version.
  */
 function checkMonitoring(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   const monitoring = monitoringOf(plan);
@@ -740,19 +741,11 @@ function checkMonitoring(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
         ["where", "server"],
         `names no server of the plan: "${where.server}"; add it to servers (opscrew addon enable monitoring does), or name one of servers`,
       );
-    } else {
-      if (plan.services.some((service) => service.server === where.server)) {
-        issue(
-          ["where", "server"],
-          `is "${where.server}", which runs services: the monitoring server holds only the monitoring stack; move those services (services[].server) to another server, or name a server of its own`,
-        );
-      }
-      if (!members.some((member) => member.name === where.server)) {
-        issue(
-          ["where", "server"],
-          `is "${where.server}", which is not on the private network: the servers send to it there; add it to network.members (run opscrew design)`,
-        );
-      }
+    } else if (plan.services.some((service) => service.server === where.server)) {
+      issue(
+        ["where", "server"],
+        `is "${where.server}", which runs services: the monitoring server holds only the monitoring stack; move those services (services[].server) to another server, or name a server of its own`,
+      );
     }
   }
   if (where.kind === "shared" && !members.some((member) => isOutsideMember(plan, member))) {

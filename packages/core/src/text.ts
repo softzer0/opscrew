@@ -49,6 +49,11 @@ export function upperFirst(text: string): string {
   return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
 }
 
+/** `text` with every regular expression metacharacter escaped, so a pattern matches it literally. */
+export function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** A provider's date as ISO 8601 in UTC, or the text as it is when it is not a date. */
 export function isoDateOr(value: string): string {
   const date = new Date(value);
