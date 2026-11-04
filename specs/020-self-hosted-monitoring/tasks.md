@@ -290,7 +290,7 @@ network above all).
 ## Phase 4: Wave 3 (parallel)
 
 - [ ] T2011 [US1] [US4] [US5] [US7] Provision: the host plans per server, the secrets, the shared server, in `packages/agents/src/provision/monitoring.ts`
-  - Owns: `packages/agents/src/provision/monitoring.ts` (+ test), and in `packages/agents/src/provision/{run.ts,secrets.ts}` only the calls into it and the two generated values (+ their tests); `packages/agents/src/testing/**` for the fakes it needs; in `packages/agents/src/move/{app-env.ts,window.ts}` only the masking file's lines (+ tests); in `packages/connectors/ssh-host/**` a public planner for removing one network interface (`planNetworkRemoval`, + tests)
+  - Owns: `packages/agents/src/provision/monitoring.ts` (+ test), and in `packages/agents/src/provision/{run.ts,secrets.ts}` only the calls into it and the two generated values (+ their tests); `packages/agents/src/testing/**` for the fakes it needs; in `packages/agents/src/move/{app-env.ts,window.ts}` only the masking file's lines (+ tests); in `packages/connectors/ssh-host/**` a public planner for removing one network interface (`planNetworkRemoval`), and the add-on and grant planners' in-place checks from inspection facts (+ tests); `registerAppSecrets` in `packages/agents/src/shared/app-secrets.ts`; in `packages/agents/src/addons/run.ts` the Grafana Cloud path when monitoring is on; `serverForNetwork`'s export in `provision/servers.ts`
   - Reads: plan.md "11."; spec US1, US4, US5, US7; data-model.md "Secrets kept apart"; 018's `provision/network.ts`, `provision/servers.ts`
   - Depends: T2004, T2006, T2007, T2008, T2009, T2010
   - Notes from wave 1:
@@ -474,6 +474,7 @@ network above all).
 - [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
   - Noted at merge: `catalogs()` in `monitoring/enable.ts` repeats design's private `extraCatalogs`; `pinnedVersion` in `monitoring/settings.ts` repeats the one in `addons/settings.ts` (T2009).
+  - Noted at merge: `postgresOn` from `addons/alloy.ts` is copied in `provision/monitoring.ts` (T2011). 018's "Waiting for server X at <ip>" lines print public addresses (outside 020; consider masking).
   - Noted at merge: `drift/monitoring.ts` has its own `monitoringStackInput`; switch it to T2011's export. `monitoringDrift` inspects each server a second time, apart from `serversDrift` (T2012).
   - Noted at merge: `monitoringOwner` (T2010) reads an owner's paths back from `owner.plan`; any similar code in T2009, T2011 or T2012 should use it.
   - Noted at merge: `escapeRegExp` is a private one-liner in `addons/alloy.ts`, `docker/stacks.ts` and `edge/vercel-routing.ts` (T2006).
