@@ -1,10 +1,12 @@
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { RenderContext } from "../types";
 import { renderAlloyCompose, renderAlloyConfig } from "./alloy";
 import { renderBeszelCompose, renderBeszelConfig } from "./beszel";
 import { renderProxyCaddyfile } from "./proxy";
 
+export { type AlloyDestinations, renderAlloyCompose, renderAlloyConfig } from "./alloy";
 export { BESZEL_TOKEN_PLACEHOLDER } from "./beszel";
+export { renderProxyCaddyfile } from "./proxy";
 
 /** An add-on OpsCrew runs on a server: Beszel, or Grafana Alloy sending to Grafana Cloud. */
 export type AddonKind = "beszel" | "grafana-cloud";
@@ -44,8 +46,14 @@ export function renderAddon(
     throw new Error("The plan doesn't turn Grafana Cloud on (observability.grafanaCloud.enabled).");
   }
   return [
-    { path: "compose.yaml", content: renderAlloyCompose(plan, grafana) },
+    {
+      path: "compose.yaml",
+      content: renderAlloyCompose(plan, APP_SERVER, { grafanaCloud: grafana }),
+    },
     { path: "Caddyfile", content: renderProxyCaddyfile(kind) },
-    { path: "config.alloy", content: renderAlloyConfig(plan, grafana) },
+    {
+      path: "config.alloy",
+      content: renderAlloyConfig(plan, APP_SERVER, { grafanaCloud: grafana }),
+    },
   ];
 }
