@@ -1,12 +1,29 @@
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
-import { exists, OpsCrewError } from "@opscrew/core";
+import { errorText, exists, isUserFacingError, OpsCrewError } from "@opscrew/core";
 import { type AddonKind, BESZEL_PORT, beszelHostname } from "@opscrew/iac-templates";
-import { type DeployPlan, onOneServer } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  MONITORING_GRAFANA_PORT,
+  type MonitoringSettings,
+  monitoringOf,
+  monitoringServerName,
+  onOneServer,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
+import {
+  type MonitoringReading,
+  type MonitoringStack,
+  monitoringReadingLines,
+  monitoringStack,
+  monitoringStatus,
+} from "../monitoring/status";
 import type { TunnelledChangeServices } from "../portainer/change";
 import { serverEndpoint } from "../portainer/status";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { appMemoryLimits } from "../shared/memory";
-import { appServerShell } from "../shared/server-address";
+import { appServerShell, serverLogin } from "../shared/server-address";
+import { readServerAddresses } from "../shared/server-record";
 import { dashboardOnNetwork } from "../vpn/dashboards";
 import { BESZEL_EMAIL } from "./secrets";
 import { ADDON_NAMES, ADDON_PHASE } from "./settings";
@@ -48,9 +65,26 @@ export interface AddonState {
   containers?: AddonContainer[];
 }
 
-/** Both add-ons' states. */
+/**
+ * Self-hosted monitoring as `opscrew addon status` shows it (FR-2021). Never a secret or a public
+ * address.
+ */
+export interface MonitoringState {
+  where: MonitoringSettings["where"];
+  versions: MonitoringSettings["versions"];
+  retention: MonitoringSettings["retention"];
+  /** The stack's memory limits together (Prometheus, Loki, Grafana and the front), in MB. */
+  memoryMb: number;
+  /** Read from the stack's server by {@link addonStatus}; absent when not read. */
+  reading?: MonitoringReading;
+  /** Why the stack could not be read, in plain words. */
+  note?: string;
+}
+
+/** Both add-ons' states, and self-hosted monitoring's when it is on. */
 export interface AddonStatus {
   addons: AddonState[];
+  monitoring?: MonitoringState;
 }
 
 /** The add-ons' states from the plan and this computer only (nothing is contacted). */
@@ -95,7 +129,39 @@ export async function addonStatusOf(
           logSampling: grafana.logSampling,
         }
       : { kind: "grafana-cloud", enabled: false };
-  return { addons: [beszelState, grafanaState] };
+  const monitoring = monitoringOf(plan);
+  if (monitoring === undefined) return { addons: [beszelState, grafanaState] };
+  const { prometheus, loki, grafana: dashboards, front } = monitoring.memoryMb;
+  return {
+    addons: [beszelState, grafanaState],
+    monitoring: {
+      where: monitoring.where,
+      versions: monitoring.versions,
+      retention: monitoring.retention,
+      memoryMb: prometheus + loki + dashboards + front,
+    },
+  };
+}
+
+/** Where the stack runs, in words: `on the app's server`, `on server monitoring`. */
+function stackWords(where: MonitoringSettings["where"]): string {
+  if (where.kind === "app") return "on the app's server";
+  if (where.kind === "server") return `on server ${where.server}`;
+  return `on server ${where.owner.server}, which ${where.owner.plan} runs for the repository`;
+}
+
+/**
+ * Self-hosted monitoring's lines for `opscrew addon status` (FR-2021): what runs where and how to
+ * open Grafana, then, when read, the stack's containers, retention, disk and each server's last
+ * data (their ages from `now`), or why they were not read. Never a secret or a public address.
+ */
+export function describeMonitoringStatus(state: MonitoringState, now: Date): string {
+  const { versions } = state;
+  return [
+    `Self-hosted monitoring: Prometheus ${versions.prometheus}, Loki ${versions.loki} and Grafana ${versions.grafana} run ${stackWords(state.where)} (${state.memoryMb} MB), and Grafana Alloy ${versions.alloy} on each server sends to them. Open Grafana with \`opscrew addon open monitoring\`.`,
+    ...(state.reading !== undefined ? monitoringReadingLines(state.reading, now) : []),
+    ...(state.note !== undefined ? [`  ${state.note}`] : []),
+  ].join("\n");
 }
 
 /** How to open the add-on, and what runs, in plain words; never a secret. */
@@ -251,42 +317,106 @@ export async function addonStatus(
   for (const state of status.addons) {
     deps.reporter.info(describeAddonStatus(state, plan.app.name));
   }
+  if (status.monitoring !== undefined) {
+    const remote = options.services?.deployRemote;
+    try {
+      status.monitoring.reading = await monitoringStatus(
+        deps,
+        plan,
+        remote === undefined ? {} : { remote },
+      );
+    } catch (error) {
+      if (!isUserFacingError(error)) throw error;
+      status.monitoring.note = deps.redactor.redact(
+        `OpsCrew could not read the monitoring stack. ${errorText(error)}`,
+      );
+    }
+    deps.reporter.info(describeMonitoringStatus(status.monitoring, deps.clock.now()));
+  }
   return status;
 }
 
-/** The SSH arguments of the tunnel to Beszel's dashboard, as Portainer's status command builds it. */
-function tunnelArgs(
-  deps: Pick<PhaseDeps, "paths">,
-  server: { host: string; port: number },
-): string[] {
-  const { deployKey, knownHosts } = deps.paths.files;
+/** Where a tunnel logs in: the server's address and SSH port, the login and its key file. */
+interface TunnelLogin {
+  host: string;
+  port: number;
+  user: string;
+  /** Absent when the SSH agent holds the key. */
+  keyFile?: string;
+}
+
+/**
+ * The SSH arguments of a tunnel from `local` on this computer to `remote` on the server's
+ * loopback, with the login's key and the pinned host keys of `knownHosts`, as Portainer's status
+ * command builds it.
+ */
+function tunnelArgs(login: TunnelLogin, knownHosts: string, local: number, remote: number) {
   return [
-    ...(server.port === 22 ? [] : ["-p", String(server.port)]),
-    "-i",
-    deployKey,
+    ...(login.port === 22 ? [] : ["-p", String(login.port)]),
+    ...(login.keyFile === undefined ? [] : ["-i", login.keyFile]),
     "-o",
     `UserKnownHostsFile=${knownHosts}`,
     "-N",
     "-L",
-    `${BESZEL_PORT}:127.0.0.1:${BESZEL_PORT}`,
-    `deploy@${server.host}`,
+    `${local}:127.0.0.1:${remote}`,
+    `${login.user}@${login.host}`,
   ];
+}
+
+/**
+ * Runs `ssh args` until it is stopped (`signal`, Ctrl+C), which ends it quietly whether the runner
+ * then rejects or resolves; any other end is an error, `stoppedText` and `hint` saying what to do.
+ */
+async function runTunnel(
+  deps: Pick<PhaseDeps, "runner">,
+  args: string[],
+  signal: AbortSignal | undefined,
+  stoppedText: string,
+  hint: string,
+): Promise<void> {
+  const stopped = () => signal?.aborted === true;
+  let result: CommandResult;
+  try {
+    result = await deps.runner.run("ssh", args, {
+      timeoutMs: Number.POSITIVE_INFINITY,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+  } catch (error) {
+    if (stopped()) return;
+    throw error;
+  }
+  if (stopped()) return;
+  if (result.exitCode !== 0) {
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      `The SSH tunnel to ${stoppedText} stopped (exit code ${result.exitCode}).`,
+      { hint },
+    );
+  }
+}
+
+/** What `opscrew addon open` takes besides the plan. */
+export interface AddonOpenOptions {
+  signal?: AbortSignal;
+  /** Monitoring: the port on this computer Grafana's tunnel listens on (default 3000). */
+  port?: number;
 }
 
 /**
  * `opscrew addon open beszel`: runs the SSH tunnel to Beszel's dashboard
  * (`ssh -N -L 8090:127.0.0.1:8090 deploy@…`, with the deploy key and the pinned host key) until it
- * is stopped (`signal`), after saying the local address and where the password is. Only Beszel's
- * dashboard on the server opens this way. When this computer is a device on the app's private
- * network and the dashboard is published there, it says that address and port instead, and opens
- * no tunnel.
+ * is stopped (`signal`), after saying the local address and where the password is. When this
+ * computer is a device on the app's private network and the dashboard is published there, it says
+ * that address and port instead, and opens no tunnel. `opscrew addon open monitoring` opens Grafana
+ * the same way ({@link monitoringOpen}).
  */
 export async function addonOpen(
   deps: PhaseDeps,
   plan: DeployPlan,
-  kind: AddonKind,
-  options: { signal?: AbortSignal } = {},
+  kind: AddonKind | "monitoring",
+  options: AddonOpenOptions = {},
 ): Promise<void> {
+  if (kind === "monitoring") return monitoringOpen(deps, plan, options);
   if (kind === "grafana-cloud") {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -336,26 +466,70 @@ export async function addonOpen(
       login,
     ].join("\n"),
   );
-  // Stopped (Ctrl+C) ends it quietly, whether the runner then rejects or resolves.
-  const stopped = () => options.signal?.aborted === true;
-  let result: CommandResult;
-  try {
-    result = await deps.runner.run("ssh", tunnelArgs(deps, server), {
-      timeoutMs: Number.POSITIVE_INFINITY,
-      ...(options.signal !== undefined ? { signal: options.signal } : {}),
-    });
-  } catch (error) {
-    if (stopped()) return;
-    throw error;
+  await runTunnel(
+    deps,
+    tunnelArgs(
+      { ...server, user: "deploy", keyFile: deps.paths.files.deployKey },
+      deps.paths.files.knownHosts,
+      BESZEL_PORT,
+      BESZEL_PORT,
+    ),
+    options.signal,
+    "Beszel's dashboard",
+    `Check that the server is on and that port ${BESZEL_PORT} on this computer is free, then run \`opscrew addon open beszel\` again.`,
+  );
+}
+
+/**
+ * `opscrew addon open monitoring` (FR-2022, US3): when this computer is a device on the app's
+ * private network, Grafana's address there (the stack's server's private address); otherwise the
+ * SSH tunnel to Grafana on the stack's server's loopback (`127.0.0.1:3000`), with that server's
+ * login (a sender's: its owner's), until it is stopped. With public SSH closed and no device, it
+ * refuses before anything, with the command that adds this computer as a device (US3 #5). It
+ * always says where Grafana's password is, never the password itself.
+ */
+async function monitoringOpen(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: AddonOpenOptions,
+): Promise<void> {
+  const stack: MonitoringStack = await monitoringStack(deps, plan);
+  const values = generatedValuesFile(stack.deps);
+  const password = `Log in as admin; the password is monitoring.grafanaAdminPassword in ${values}, on the computer that set the stack up, and in its recovery copy (\`opscrew secrets restore\` puts it on another computer).`;
+  const device = (await readServerAddresses(deps.paths).catch(() => undefined))?.thisDevice;
+  const member = plan.network?.members.find((m) => m.name === monitoringServerName(plan));
+  if (device !== undefined && member !== undefined) {
+    deps.reporter.info(
+      [
+        `This computer is device ${device} on the app's private network: with its WireGuard tunnel on, Grafana is at http://${member.address}:${MONITORING_GRAFANA_PORT}, with no SSH tunnel.`,
+        password,
+      ].join("\n"),
+    );
+    return;
   }
-  if (stopped()) return;
-  if (result.exitCode !== 0) {
+  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  if (stack.plan.network?.publicSsh === false) {
     throw new OpsCrewError(
-      "COMMAND_FAILED",
-      `The SSH tunnel to Beszel's dashboard stopped (exit code ${result.exitCode}).`,
+      "PHASE_PRECONDITION",
+      `Public SSH to server ${stack.server} is closed and this computer is not a device on the app's private network, so OpsCrew can't reach Grafana from here. Nothing was changed.`,
       {
-        hint: `Check that the server is on and that port ${BESZEL_PORT} on this computer is free, then run \`opscrew addon open beszel\` again.`,
+        hint: `Add this computer as a device with \`opscrew vpn add <name>${flag} --this-computer\`, turn its WireGuard tunnel on, then run \`opscrew addon open monitoring${flag}\` again.`,
       },
     );
   }
+  const login = await serverLogin(stack.deps, stack.plan, stack.server);
+  const local = options.port ?? MONITORING_GRAFANA_PORT;
+  deps.reporter.info(
+    [
+      `Grafana is at http://localhost:${local} while this runs (stop it with Ctrl+C).`,
+      password,
+    ].join("\n"),
+  );
+  await runTunnel(
+    deps,
+    tunnelArgs(login, stack.deps.paths.files.knownHosts, local, MONITORING_GRAFANA_PORT),
+    options.signal,
+    "Grafana",
+    `Check that server ${stack.server} is on and that port ${local} on this computer is free (\`--port\` picks another), then run \`opscrew addon open monitoring${flag}\` again.`,
+  );
 }

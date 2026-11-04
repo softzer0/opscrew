@@ -9,6 +9,7 @@ import {
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { localComponentStatus } from "../localhost/status";
+import type { MonitoringReading } from "../monitoring/status";
 import type { NetworkLink, ReadNetworkServices } from "../network";
 import type { PromoteGitHubApi } from "../promote/types";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
@@ -36,6 +37,7 @@ import {
   serviceContainers,
 } from "./components";
 import { type DeployState, deployStateReport } from "./deploys";
+import { monitoringStatusReport } from "./monitoring";
 import { networkStatusLines, type UnpublishedPort } from "./network";
 import {
   type ResourceReading,
@@ -188,6 +190,8 @@ export interface ComponentStatusReport {
   devices?: { name: string; address: string }[];
   /** Which device may reach which service, and how. */
   grants?: Network["grants"];
+  /** Self-hosted monitoring's stack as read now, once provision ran (feature 020). */
+  monitoring?: MonitoringReading;
 }
 
 /** One of the app's servers as `status` read it (feature 018). */
@@ -228,7 +232,8 @@ function readingLines(
  * deployment cannot be read. `check` runs first and may stop the read the same way (the MCP
  * server's host-key check). With extra servers (feature 018, FR-1811), each server's components
  * and figures follow under its name, and with a private network its section
- * (`networkStatusLines`). A self-hosted runner's state follows (FR-1530), then the version
+ * (`networkStatusLines`). A self-hosted runner's state follows (FR-1530), then with self-hosted
+ * monitoring one line on this environment's servers sending to the stack (FR-2021), then the version
  * running, the one before and whether deploys are paused once provision ran, whether or not
  * `verify` did (`deployStateReport`, FR-1913), then the scheduled check's state and open alerts when the plan
  * has it on (FR-1708). A site on Cloudflare's hosting
@@ -268,7 +273,14 @@ export async function componentStatusReport(
   } else {
     const components = await componentsReport(deps, plan, options);
     const runner = await runnerStatusLines(deps, plan, options.services?.runnerGitHub);
-    report = { ...components, lines: joinBlocks(components.lines, runner) };
+    const remote = options.services?.remote;
+    // Self-hosted monitoring's line (feature 020): this environment's servers still sending.
+    const monitoring = await monitoringStatusReport(deps, plan, remote ? { remote } : {});
+    report = {
+      ...components,
+      lines: joinBlocks(components.lines, runner, monitoring.lines),
+      ...(monitoring.monitoring !== undefined ? { monitoring: monitoring.monitoring } : {}),
+    };
     // Nothing runs on a server, in Portainer or on this computer before provision ran.
     if (hasDeployment(plan)) {
       const read = !appDeployed(plan)

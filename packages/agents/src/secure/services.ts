@@ -1,5 +1,13 @@
 import { hasLogin, publishedOnNetwork, serviceSpec } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, servicesOn } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  MONITORING_GRAFANA_PORT,
+  MONITORING_PUSH_PORT,
+  monitoringOf,
+  monitoringServerName,
+  servicesOn,
+} from "@opscrew/plan-schema";
 import { type HostCheck, type ServiceCheckInput, serviceHostChecks } from "@opscrew/secops";
 
 /** Stands in for a secret while the variables that hold one are found. */
@@ -27,19 +35,35 @@ export function serviceCheckInputs(plan: DeployPlan, server = APP_SERVER): Servi
   });
 }
 
+/** The monitoring stack's published ports, which must not answer from the internet. */
+const MONITORING_PORTS: Record<number, string> = {
+  [MONITORING_GRAFANA_PORT]: "Grafana",
+  [MONITORING_PUSH_PORT]: "the monitoring stack's front",
+};
+
 /**
  * The ports of the app's running services with their kind's name, for the outside probes; on
- * `server` only when given.
+ * `server` only when given. On the server the plan's own monitoring stack runs on (`app` when
+ * `server` is not given), Grafana's and the stack's front's too (feature 020).
  */
 export function servicePorts(plan: DeployPlan, server?: string): Record<number, string> {
-  return Object.fromEntries(
-    (server === undefined ? plan.services.filter((s) => s.enabled) : servicesOn(plan, server)).map(
-      (service) => {
+  const where = monitoringOf(plan)?.where;
+  const stack =
+    where !== undefined &&
+    where.kind !== "shared" &&
+    monitoringServerName(plan) === (server ?? APP_SERVER);
+  return {
+    ...Object.fromEntries(
+      (server === undefined
+        ? plan.services.filter((s) => s.enabled)
+        : servicesOn(plan, server)
+      ).map((service) => {
         const spec = serviceSpec(service.kind);
         return [spec.port, spec.title];
-      },
+      }),
     ),
-  );
+    ...(stack ? MONITORING_PORTS : {}),
+  };
 }
 
 /**

@@ -1,3 +1,4 @@
+import { type HostFacts, inspectHost } from "@opscrew/connector-ssh-host";
 import type { ResourceChange, ResourceDrift } from "@opscrew/contracts";
 import { OpsCrewError, tfstateFile } from "@opscrew/core";
 import { usesTunnel } from "@opscrew/iac-templates";
@@ -27,8 +28,9 @@ import {
   stateHoldsNothing,
   storageDrift,
 } from "./infra";
+import { monitoringDrift } from "./monitoring";
 import { portainerDrift } from "./portainer";
-import { namedDifferences, serversDrift } from "./servers";
+import { namedDifferences, type ServersDriftOptions, serversDrift } from "./servers";
 import { siteDrift } from "./site";
 import type { DriftOptions, DriftReport } from "./types";
 
@@ -177,10 +179,22 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
 
   // 5b. The private network on every server, and the extra servers' files and containers (feature
   // 018); with extra servers, each of the app server's differences names it too.
+  // Each server is inspected once, for its network and its monitoring alike.
+  const inspected = new Map<string, Promise<HostFacts>>();
+  const inspect: ServersDriftOptions["inspect"] = (remote, options) => {
+    const facts = inspected.get(remote.host) ?? inspectHost(remote, options);
+    inspected.set(remote.host, facts);
+    return facts;
+  };
   if (plan.network !== undefined) {
-    const servers = await serversDrift(deps, plan, notes, { services });
+    const servers = await serversDrift(deps, plan, notes, { services, inspect });
     const app = namedDifferences(plan, APP_SERVER, host?.differences ?? []);
     host = { differences: [...app, ...servers] };
+  }
+  // 5c. Self-hosted monitoring (feature 020): each server's Alloy, and the stack on its server.
+  const monitoring = await monitoringDrift(deps, plan, notes, { services, inspect });
+  if (monitoring.length > 0) {
+    host = { ...host, differences: [...(host?.differences ?? []), ...monitoring] };
   }
 
   return finishDriftReport(deps, plan, {

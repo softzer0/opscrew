@@ -13,6 +13,7 @@ export { BESZEL_EMAIL } from "./secrets";
 export { ADDON_NAMES, type BeszelRequest } from "./settings";
 export {
   type AddonContainer,
+  type AddonOpenOptions,
   type AddonState,
   type AddonStatus,
   addonOpen,
@@ -20,4 +21,6 @@ export {
   addonStatusOf,
   BESZEL_LOCAL_URL,
   describeAddonStatus,
+  describeMonitoringStatus,
+  type MonitoringState,
 } from "./status";

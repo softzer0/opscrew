@@ -59,6 +59,7 @@ import {
 import { appDeployed } from "../status/run";
 import { verifyHosts } from "../verify/checks";
 import { siteHost } from "../verify/serverless";
+import { monitoringSecurityChecks } from "./monitoring";
 import { type OwnSecureTarget, ownSecureTarget } from "./own";
 import {
   PORTAINER_PROBES_SKIPPED,
@@ -501,6 +502,17 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     ];
     probes = [...probes.map(onApp), ...extra.probes];
     extraHosts = extra.hosts;
+  }
+  // Self-hosted monitoring (feature 020): Grafana and the front only on private addresses, and
+  // the network's filter for their ports, on the stack's server.
+  if (sshHost !== undefined && hostChecksSkipped === undefined) {
+    hostChecks = [
+      ...hostChecks,
+      ...(await monitoringSecurityChecks(deps, plan, {
+        ...(options.serverRemote !== undefined ? { remote: options.serverRemote } : {}),
+        readNetworkFilter: options.readNetworkFilter ?? readNetworkFilter,
+      })),
+    ];
   }
 
   const settings = [

@@ -56,6 +56,7 @@ import {
   siteUrl,
   UNKNOWN_ADDRESS_REMEDIATION,
 } from "./checks";
+import { monitoringChecks } from "./monitoring";
 import {
   type DnsResolver,
   defaultDnsResolver,
@@ -303,6 +304,13 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
     ...(await serverChecks(deps, plan, {
       ...(options.remote !== undefined ? { remote: options.remote } : {}),
       ...(options.network !== undefined ? { network: options.network } : {}),
+      flag,
+    })),
+  );
+  // Self-hosted monitoring (feature 020): the stack runs, and every server's figures arrive.
+  checked.push(
+    ...(await monitoringChecks(deps, plan, {
+      ...(options.remote !== undefined ? { remote: options.remote } : {}),
       flag,
     })),
   );

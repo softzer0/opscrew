@@ -18,7 +18,7 @@ export interface UnpublishedPort {
 }
 
 /** `5 seconds ago`, `3 minutes ago`, `2 hours ago` or `4 days ago`. */
-function ageText(seconds: number): string {
+export function ageText(seconds: number): string {
   if (seconds < 60) return `${plural(seconds, "second")} ago`;
   if (seconds < 3600) return `${plural(Math.floor(seconds / 60), "minute")} ago`;
   if (seconds < 2 * 86_400) return `${plural(Math.floor(seconds / 3600), "hour")} ago`;
