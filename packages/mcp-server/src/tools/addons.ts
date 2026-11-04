@@ -8,6 +8,7 @@ import {
   addonEnable,
   addonStatus,
   describeAddonStatus,
+  describeMonitoringStatus,
   type PhaseDeps,
 } from "@opscrew/agents";
 import { exists, OpsCrewError } from "@opscrew/core";
@@ -31,17 +32,28 @@ export interface AddonToolOptions {
   services?: AddonServices;
 }
 
-type AddonKind = keyof typeof ADDON_NAMES;
+type AddonKind = keyof typeof ADDON_NAMES | "monitoring";
 
-const KINDS = Object.keys(ADDON_NAMES) as [AddonKind, ...AddonKind[]];
+const KINDS: [AddonKind, ...AddonKind[]] = [
+  "monitoring",
+  ...(Object.keys(ADDON_NAMES) as AddonKind[]),
+];
 
 const kindInput = {
-  addon: z.enum(KINDS).describe("The add-on: beszel or grafana-cloud."),
+  addon: z
+    .enum(KINDS)
+    .describe(
+      "The add-on: beszel, grafana-cloud or monitoring (self-hosted Prometheus, Loki and Grafana).",
+    ),
 };
 
 /** What the model is told about the add-ons' secrets, in every result that names them. */
 const SECRETS_NOTE =
   "Never read Beszel's secrets file or the Grafana Cloud token into this chat; to open Beszel's dashboard, the user runs `npx opscrew addon open beszel` in a terminal.";
+
+/** What the model is told about Grafana's password, in every result that shows monitoring. */
+const MONITORING_NOTE =
+  "Never read OpsCrew's generated values file (it holds Grafana's password) into this chat; to open Grafana, the user runs `npx opscrew addon open monitoring` in a terminal.";
 
 /** The app's plan and the phase deps of a call, for the app and environment it names. */
 async function planOf(
@@ -55,9 +67,13 @@ async function planOf(
   return { phase, plan: await readArtifact("plan", phase.paths.files.plan), terminal: flag };
 }
 
-/** Each add-on's state in words, never a secret. */
-function statusText(status: AddonStatus, app: string): string {
-  return status.addons.map((state) => describeAddonStatus(state, app)).join("\n\n");
+/** Each add-on's state in words, then the notes on their secrets; never a secret. */
+function statusText(status: AddonStatus, app: string, now: Date): string {
+  return [
+    ...status.addons.map((state) => describeAddonStatus(state, app)),
+    ...(status.monitoring === undefined ? [] : [describeMonitoringStatus(status.monitoring, now)]),
+    [SECRETS_NOTE, ...(status.monitoring === undefined ? [] : [MONITORING_NOTE])].join(" "),
+  ].join("\n\n");
 }
 
 /**
@@ -66,7 +82,7 @@ function statusText(status: AddonStatus, app: string): string {
  */
 async function requireToken(
   phase: PhaseDeps,
-  kind: AddonKind,
+  kind: keyof typeof ADDON_NAMES,
   mode: "hub" | "agent" | undefined,
   terminal: string,
 ): Promise<void> {
@@ -88,7 +104,7 @@ async function requireToken(
 }
 
 /** What a change did, in plain text: the hashes approved and the add-on's state now. */
-function changeText(result: AddonResult, plan: DeployPlan): string {
+function changeText(result: AddonResult, plan: DeployPlan, now: Date): string {
   return [
     ...(result.cloudflarePlanHash !== undefined
       ? [appliedCloudflarePlan(result.cloudflarePlanHash)]
@@ -101,9 +117,31 @@ function changeText(result: AddonResult, plan: DeployPlan): string {
       ? `Wrote ${result.files.join(", ")}; ask the user to commit them with opscrew/plan.yaml.`
       : "Ask the user to commit opscrew/plan.yaml.",
     "",
-    statusText(result.status, plan.app.name),
+    statusText(result.status, plan.app.name, now),
+  ].join("\n");
+}
+
+/**
+ * What turning monitoring on or off did, in plain text: its summary (what it adds, costs and keeps,
+ * or what provision removes), that only the plan changed, and the `provision` the user runs.
+ */
+function monitoringChangeText(
+  call: ToolCall,
+  result: AddonResult,
+  plan: DeployPlan,
+  sub: "enable" | "disable",
+  terminal: string,
+  now: Date,
+): string {
+  const summary = call.reporter.messages
+    .filter((message) => message.level === "info")
+    .map((message) => message.message);
+  return [
+    ...summary,
     "",
-    SECRETS_NOTE,
+    `Nothing changed on any server, account or repository yet. Ask the user to run \`npx opscrew provision${terminal}\` in a terminal to ${sub === "enable" ? "set it up" : "remove what monitoring installed"}: it shows each change for their approval by its hash. Then they commit opscrew/plan.yaml.`,
+    "",
+    statusText(result.status, plan.app.name, now),
   ].join("\n");
 }
 
@@ -122,13 +160,16 @@ function changeData(result: AddonResult, approvals: unknown): Record<string, unk
 }
 
 /**
- * The add-on tools (FR-1711–FR-1713): `opscrew_addon_status` (read-only: whether Beszel and
- * Grafana Cloud are on, their containers' state and memory, how to open them; never a secret),
- * and `opscrew_addon_enable` / `opscrew_addon_disable`, whose every plan the user approves in a
- * dialog (the model never approves). Tokens come only from the MCP server's environment
- * (`OPSCREW_BESZEL_TOKEN`, `OPSCREW_GRAFANA_CLOUD_TOKEN`) or this computer, never from a tool
- * input. Turning Beszel's hub off always keeps its history: deleting it needs the app's name typed
- * in a terminal. Opening Beszel's dashboard is terminal-only. `options` is for tests only.
+ * The add-on tools (FR-1711–FR-1713, FR-2027): `opscrew_addon_status` (read-only: whether Beszel,
+ * Grafana Cloud and self-hosted monitoring are on, their containers' state and memory, how to open
+ * them, and monitoring's last data, disk and retention; never a secret or a public address), and
+ * `opscrew_addon_enable` / `opscrew_addon_disable`, whose every plan the user approves in a dialog
+ * (the model never approves). Monitoring's enable and disable only write the plan, as the CLI's:
+ * the user runs `npx opscrew provision` in a terminal to apply it. Tokens come only from the MCP
+ * server's environment (`OPSCREW_BESZEL_TOKEN`, `OPSCREW_GRAFANA_CLOUD_TOKEN`) or this computer,
+ * never from a tool input. Turning Beszel's hub off always keeps its history: deleting it needs the
+ * app's name typed in a terminal. Opening Beszel's dashboard or Grafana is terminal-only.
+ * `options` is for tests only.
  */
 export function registerAddonTools(
   server: McpServer,
@@ -142,7 +183,7 @@ export function registerAddonTools(
     {
       title: "Add-on status",
       description:
-        "Show whether Beszel (a light dashboard on the server) and Grafana Cloud (Grafana Alloy sending the app's logs and the server's metrics to the user's Grafana Cloud stack) are on for the app, their versions and memory, their containers' state and memory (read over SSH as the deploy user, read-only, when one is on) and how to open them. Never returns a password or token. Changes nothing.",
+        "Show whether Beszel (a light dashboard on the server), Grafana Cloud (Grafana Alloy sending the app's logs and the server's metrics to the user's Grafana Cloud stack) and self-hosted monitoring (Prometheus, Loki and Grafana on the user's own server) are on for the app, their versions and memory, their containers' state and memory (read over SSH, read-only, when one is on) and how to open them. With monitoring on, also its stack's containers, when each server's last figures and log line arrived (servers silent for more than 5 minutes flagged, with what to check), the disk taken and the retention. Never returns a password, token or public address. Changes nothing.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -155,7 +196,7 @@ export function registerAddonTools(
           services,
         );
         return {
-          text: `${statusText(status, plan.app.name)}\n\n${SECRETS_NOTE}`,
+          text: statusText(status, plan.app.name, phase.clock.now()),
           data: { ...status },
         };
       }),
@@ -166,7 +207,7 @@ export function registerAddonTools(
     {
       title: "Turn an add-on on",
       description:
-        "Add Beszel or Grafana Cloud's collector (Grafana Alloy) to the app's server (a cloud server or the user's own), pinned, with a memory limit, reading Docker only through a read-only proxy. Beszel: mode hub (its dashboard and agent on the server, reached through an SSH tunnel, or with access subdomain plus hostname and allowEmails behind Cloudflare Access) or agent (only the agent, connected to the user's hub: hubUrl, hubKey, and the token from OPSCREW_BESZEL_TOKEN). Grafana Cloud: metricsUrl, metricsUser, logsUrl, logsUser of the user's stack, logSampling, and the token from OPSCREW_GRAFANA_CLOUD_TOKEN (scopes metrics:write and logs:write only); its estimate against the free tier is shown with the plan. Tokens are never tool inputs: they come only from the MCP server's environment. Each plan (the host plan with each container's memory and price share; for a subdomain also the Cloudflare and infrastructure plans) is shown to the USER in a dialog and applied only after they approve it; the coding agent cannot approve. Refuses when the client cannot show dialogs.",
+        "Add Beszel or Grafana Cloud's collector (Grafana Alloy) to the app's server (a cloud server or the user's own), pinned, with a memory limit, reading Docker only through a read-only proxy. Beszel: mode hub (its dashboard and agent on the server, reached through an SSH tunnel, or with access subdomain plus hostname and allowEmails behind Cloudflare Access) or agent (only the agent, connected to the user's hub: hubUrl, hubKey, and the token from OPSCREW_BESZEL_TOKEN). Grafana Cloud: metricsUrl, metricsUser, logsUrl, logsUser of the user's stack, logSampling, and the token from OPSCREW_GRAFANA_CLOUD_TOKEN (scopes metrics:write and logs:write only); its estimate against the free tier is shown with the plan. Tokens are never tool inputs: they come only from the MCP server's environment. Each plan (the host plan with each container's memory and price share; for a subdomain also the Cloudflare and infrastructure plans) is shown to the USER in a dialog and applied only after they approve it; the coding agent cannot approve. Refuses when the client cannot show dialogs. Monitoring (self-hosted Prometheus, Loki and Grafana, with Grafana Alloy on each of the environment's servers): by default on a small server of its own at the app's provider (on server), or on the app's server with on app; newServer for one of this environment's own when the repository has one; metricsDays and logsDays for the retention. It only writes the plan, after saying the server, its price, each server's agent memory, the retention and its disk estimate: nothing changes until the user runs `npx opscrew provision` in a terminal, which shows each change for their approval by its hash.",
       inputSchema: {
         ...projectDirInput,
         ...appInput,
@@ -225,24 +266,57 @@ export function registerAddonTools(
           .describe(
             "Grafana Cloud (--log-sampling): the percentage of log lines sent, 1 to 100 (default 100).",
           ),
+        on: z
+          .enum(["app", "server"])
+          .optional()
+          .describe(
+            "Monitoring (--on): server (the default: the repository's monitoring server, or a small one of its own) or app (the app's server, with at least 4 GB of memory).",
+          ),
+        newServer: z
+          .boolean()
+          .optional()
+          .describe(
+            "Monitoring (--new-server): a monitoring server of this environment's own, even when the repository has one.",
+          ),
+        metricsDays: z
+          .number()
+          .int()
+          .optional()
+          .describe(
+            "Monitoring (--metrics-days): the days figures are kept, 1 to 90 (default 15).",
+          ),
+        logsDays: z
+          .number()
+          .int()
+          .optional()
+          .describe("Monitoring (--logs-days): the days logs are kept, 1 to 30 (default 7)."),
       },
       annotations: IDEMPOTENT_WRITE,
       _meta: REQUIRES_USER,
     },
     ({ projectDir, app, environment, addon, ...request }, extra: CallExtra) =>
       runTool(deps, "opscrew_addon_enable", projectDir, async (call) => {
+        const given = Object.fromEntries(
+          Object.entries(request).filter(([, value]) => value !== undefined),
+        );
+        if (addon === "monitoring") {
+          // Only the plan is written, as the CLI's: there is nothing to approve here.
+          const { phase, plan, terminal } = await planOf(call, app, environment);
+          const result = await addonEnable(phase, plan, addon, { ...given, ...services });
+          return {
+            text: monitoringChangeText(call, result, plan, "enable", terminal, phase.clock.now()),
+            data: changeData(result, []),
+          };
+        }
         requireDialogs(server, `npx opscrew addon enable ${addon}`);
         const handler = dialogHandler(server, deps, extra);
         const { phase, plan, terminal } = await planOf(call, app, environment, {
           approvalHandler: handler,
         });
         await requireToken(phase, addon, request.mode, terminal);
-        const given = Object.fromEntries(
-          Object.entries(request).filter(([, value]) => value !== undefined),
-        );
         const result = await addonEnable(phase, plan, addon, { ...given, ...services });
         return {
-          text: changeText(result, plan),
+          text: changeText(result, plan, phase.clock.now()),
           data: changeData(result, handler.decisions),
         };
       }),
@@ -253,7 +327,7 @@ export function registerAddonTools(
     {
       title: "Turn an add-on off",
       description:
-        "Remove Beszel or Grafana Alloy from the app's server, with everything it added there (Grafana Alloy's buffer and token, Beszel's agent token, the tunnel and Access of Beszel's subdomain). Beszel's hub always keeps its history (its dashboard's data) through this tool: deleting it needs the app's name typed by the user, in a terminal (`npx opscrew addon disable beszel`). The data already in Grafana Cloud stays in the user's account. Every plan is approved by the user in a dialog; the coding agent cannot approve. Refuses when the client cannot show dialogs.",
+        "Remove Beszel or Grafana Alloy from the app's server, with everything it added there (Grafana Alloy's buffer and token, Beszel's agent token, the tunnel and Access of Beszel's subdomain). Beszel's hub always keeps its history (its dashboard's data) through this tool: deleting it needs the app's name typed by the user, in a terminal (`npx opscrew addon disable beszel`). The data already in Grafana Cloud stays in the user's account. Every plan is approved by the user in a dialog; the coding agent cannot approve. Refuses when the client cannot show dialogs. Monitoring: it only takes it out of the plan; the user then runs `npx opscrew provision` in a terminal, which removes each agent and the stack by hash-approved plans, and deletes the monitoring server, or the stack's data on the app's server, only after the user types its name.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput, ...kindInput },
       annotations: {
         readOnlyHint: false,
@@ -265,6 +339,14 @@ export function registerAddonTools(
     },
     ({ projectDir, app, environment, addon }, extra: CallExtra) =>
       runTool(deps, "opscrew_addon_disable", projectDir, async (call) => {
+        if (addon === "monitoring") {
+          const { phase, plan, terminal } = await planOf(call, app, environment);
+          const result = await addonDisable(phase, plan, addon, services);
+          return {
+            text: monitoringChangeText(call, result, plan, "disable", terminal, phase.clock.now()),
+            data: changeData(result, []),
+          };
+        }
         requireDialogs(server, `npx opscrew addon disable ${addon}`);
         const handler = dialogHandler(server, deps, extra);
         const { phase, plan, terminal } = await planOf(call, app, environment, {
@@ -283,7 +365,7 @@ export function registerAddonTools(
             ]
           : [];
         return {
-          text: [changeText(result, plan), ...kept].join("\n"),
+          text: [changeText(result, plan, phase.clock.now()), ...kept].join("\n"),
           data: { ...changeData(result, handler.decisions), keptHistory: keepData },
         };
       }),

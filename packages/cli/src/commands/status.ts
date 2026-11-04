@@ -99,7 +99,8 @@ async function tlsLines(ctx: CliContext, deps: PhaseDeps, plan: DeployPlan): Pro
  * `opscrew status`: which phases have run in this project, with their result and time, the
  * image builder and the deploy strategy with their reasons, the supply-chain settings (signing,
  * deploy tags, image retention), the app's components and whether each runs, the server's proxy,
- * the certificates OpsCrew manages with their expiry, the recovery copy's state, the server's
+ * the certificates OpsCrew manages with their expiry, the recovery copy's state, with self-hosted
+ * monitoring a line on whether every server sent to its stack within the last 5 minutes, the server's
  * address (from OpsCrew's local state; it is never committed) and a `retarget` line while a move
  * to another provider is in progress (from → to, last completed step, the next command).
  * `--ip` prints only the server's IPv4 address, for scripts such as
@@ -109,7 +110,7 @@ export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("status")
     .description(
-      "Show which OpsCrew phases have run, the app's components and whether they run on each server, the private network, and where a move between providers stands",
+      "Show which OpsCrew phases have run, the app's components and whether they run on each server, the private network, whether the servers send to self-hosted monitoring, and where a move between providers stands",
     )
     .option(
       "--ip",

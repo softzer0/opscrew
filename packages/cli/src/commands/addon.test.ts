@@ -1,14 +1,17 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import type { AddonServices } from "@opscrew/agents";
-import { recordServerAddress } from "@opscrew/agents";
+import type { AddonServices, MonitoringServices } from "@opscrew/agents";
+import { MONITORING_STATUS_COMMAND, recordServerAddress } from "@opscrew/agents";
 import {
+  euCatalog,
   FakeAddonServer,
   FakeEngine,
   fakeSharedCloudflare,
+  freshFacts,
   ownCloudflare,
   SERVER_IPV4,
   TUNNEL_ID,
+  testKeyMaker,
   testPlan,
 } from "@opscrew/agents/testing";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
@@ -19,10 +22,11 @@ import type {
   CommandOptions,
   CommandResult,
   CommandRunner,
+  RemoteExec,
 } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { monitoringOf, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { withServices } from "../deps";
 import { deployProject } from "../ui/__fixtures__/deploy";
@@ -121,12 +125,15 @@ async function setup(options: { cloudflare?: boolean } = {}) {
   }
   await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
   const host = new FakeAddonServer();
+  const keys = testKeyMaker("cli-monitoring");
   const p = project;
   const context = (
     options: {
       approvals?: ApprovalHandler;
       prompts?: ScriptedPrompts;
       runner?: CommandRunner;
+      /** The deploy user's shell instead of the add-on server's (the monitoring stack's). */
+      deployRemote?: (host: string) => RemoteExec;
     } = {},
   ) => {
     const ctx = projectContext(p, {
@@ -138,10 +145,82 @@ async function setup(options: { cloudflare?: boolean } = {}) {
       },
     });
     return withServices(ctx, {
-      addon: { deployRemote: host.shell, applyHost: host.apply, ...cloudflare },
+      clock: { now: () => NOW },
+      addon: {
+        deployRemote: options.deployRemote ?? host.shell,
+        applyHost: host.apply,
+        monitoring: monitoringServices(keys),
+        ...cloudflare,
+      },
     });
   };
-  return { context, host, paths, plan: () => readArtifact("plan", paths.files.plan) };
+  return { context, host, keys, paths, plan: () => readArtifact("plan", paths.files.plan) };
+}
+
+const NOW = new Date("2026-11-04T12:00:00.000Z");
+const GIB = 1024 ** 3;
+
+/**
+ * Monitoring's reads as fakes: every server answers 2 CPUs, 3.7 GiB of memory, 40 MB of logs a
+ * day, 5 containers and 30 GiB free; a fresh Ubuntu; the network's keys from `keys`; and the
+ * Hetzner catalogue. Nothing is applied.
+ */
+function monitoringServices(keys: MonitoringServices["keys"]): MonitoringServices {
+  const figures = [2, 3_900_000, 40_000_000, 5, 30 * GIB].join("\n");
+  return {
+    remote: async (server) => ({
+      host: server,
+      run: async () => ({ exitCode: 0, stdout: `${figures}\n`, stderr: "" }),
+    }),
+    host: {
+      inspect: async () => freshFacts(),
+      apply: async () => {
+        throw new Error("nothing is applied");
+      },
+    },
+    ...(keys === undefined ? {} : { keys }),
+    catalogFor: async () => euCatalog(),
+  };
+}
+
+/** The monitoring stack's answer on the app's server: every container up, the app sending. */
+function stackShell(figuresAgo: number): (host: string) => RemoteExec {
+  const seconds = NOW.getTime() / 1000;
+  const labels = { app: "shop", env: "prod", server: "app" };
+  const stdout = [
+    "==opscrew-monitoring:containers",
+    "opscrew-monitoring-prometheus-1|running|Up 2 hours (healthy)",
+    "opscrew-monitoring-loki-1|running|Up 2 hours",
+    "opscrew-monitoring-grafana-1|running|Up 2 hours (healthy)",
+    "opscrew-monitoring-front-1|running|Up 2 hours (healthy)",
+    "==opscrew-monitoring:memory",
+    "opscrew-monitoring-prometheus-1|120.5MiB / 192MiB",
+    "opscrew-monitoring-grafana-1|210MiB / 416MiB",
+    "==opscrew-monitoring:figures",
+    JSON.stringify({
+      status: "success",
+      data: {
+        resultType: "vector",
+        result: [{ metric: labels, value: [seconds, String(seconds - figuresAgo)] }],
+      },
+    }),
+    "==opscrew-monitoring:logs",
+    JSON.stringify({
+      status: "success",
+      data: { resultType: "matrix", result: [{ metric: labels, values: [[seconds - 60, "12"]] }] },
+    }),
+    "==opscrew-monitoring:disk",
+    "1048576\t/v/prometheus",
+    "2048\t/v/loki",
+    "",
+  ].join("\n");
+  return (host) => ({
+    host,
+    run: async (command) =>
+      command === MONITORING_STATUS_COMMAND
+        ? { exitCode: 0, stdout, stderr: "" }
+        : { exitCode: 255, stdout: "", stderr: "ssh: connect to host: Connection timed out" },
+  });
 }
 
 function printedHash(output: string): string {
@@ -397,6 +476,10 @@ describe("opscrew addon", () => {
         "--logs-url <url>",
         "--logs-user <id>",
         "--log-sampling <percent>",
+        "--on <where>",
+        "--new-server",
+        "--metrics-days <n>",
+        "--logs-days <n>",
         "--plan-only",
         "--approve <hash>",
         "--app <key>",
@@ -410,12 +493,144 @@ describe("opscrew addon", () => {
         "--env <name>",
       ],
       status: ["--json", "--app <key>", "--env <name>"],
-      open: ["--app <key>", "--env <name>"],
+      open: ["--port <local>", "--app <key>", "--env <name>"],
     };
     for (const [command, flags] of Object.entries(options)) {
       const ctx = s.context();
       expect(await run(ctx, "addon", command, "--help")).toBe(0);
+      expect(ctx.output, command).toContain("monitoring");
       for (const flag of flags) expect(ctx.output, `${command} ${flag}`).toContain(flag);
     }
+  });
+});
+
+describe("opscrew addon … monitoring", () => {
+  it("enable writes only the plan, with the days asked for, and says to run provision", async () => {
+    const s = await setup();
+    const ctx = s.context();
+    const code = await run(
+      ctx,
+      "addon",
+      "enable",
+      "monitoring",
+      "--metrics-days",
+      "30",
+      "--logs-days",
+      "14",
+    );
+    expect(code, ctx.errors).toBe(0);
+    const monitoring = monitoringOf(await s.plan());
+    expect(monitoring?.where).toEqual({ kind: "server", server: "monitoring" });
+    expect(monitoring?.retention).toMatchObject({ metricsDays: 30, logsDays: 14 });
+    expect(s.host.applies).toEqual([]);
+    expect(ctx.output).toContain("The monitoring stack runs on a server of its own.");
+    expect(ctx.output).toContain(
+      "\nNext: run `opscrew provision` to set it up: it shows each change for your approval by its hash.\n",
+    );
+    // No public address, and none of the network's private keys.
+    const printed = `${ctx.output}${ctx.errors}`;
+    expect(printed).not.toContain(SERVER_IPV4);
+    expect(s.keys.made.length).toBeGreaterThan(0);
+    for (const pair of s.keys.made) expect(printed).not.toContain(pair.privateKey);
+  });
+
+  it("passes --on and --new-server to the agents, which refuse the two together", async () => {
+    const s = await setup();
+    const both = s.context();
+    expect(await run(both, "addon", "enable", "monitoring", "--on", "app", "--new-server")).toBe(2);
+    expect(monitoringOf(await s.plan())).toBeUndefined();
+    const onApp = s.context();
+    expect(await run(onApp, "addon", "enable", "monitoring", "--on", "app"), onApp.errors).toBe(0);
+    expect(monitoringOf(await s.plan())?.where).toEqual({ kind: "app" });
+    expect(onApp.output).toContain("The monitoring stack runs on the app's server; no new server.");
+    const bad = s.context();
+    expect(await run(bad, "addon", "enable", "monitoring", "--on", "laptop")).toBe(2);
+  });
+
+  it("refuses the flags of server changes before anything changes: it only writes the plan", async () => {
+    const s = await setup();
+    const planOnly = s.context();
+    expect(await run(planOnly, "addon", "enable", "monitoring", "--plan-only")).toBe(2);
+    expect(planOnly.errors).toContain(
+      "`opscrew addon enable monitoring` only writes the plan, so --plan-only does not apply to it. Nothing was changed.",
+    );
+    expect(monitoringOf(await s.plan())).toBeUndefined();
+    const flags = s.context();
+    expect(
+      await run(flags, "addon", "disable", "monitoring", "--keep-data", "--confirm", "shop"),
+    ).toBe(2);
+    expect(flags.errors).toContain("so --keep-data, --confirm do not apply to it");
+  });
+
+  it("disable takes it out of the plan and says to run provision", async () => {
+    const s = await setup();
+    const on = s.context();
+    expect(await run(on, "addon", "enable", "monitoring"), on.errors).toBe(0);
+    const off = s.context();
+    expect(await run(off, "addon", "disable", "monitoring"), off.errors).toBe(0);
+    expect(monitoringOf(await s.plan())).toBeUndefined();
+    expect(off.output).toContain(
+      "\nNext: run `opscrew provision` to remove what monitoring installed: it shows each change for your approval by its hash.\n",
+    );
+    expect(s.host.applies).toEqual([]);
+  });
+
+  it("status shows the stack, each server's last data, the disk and the retention; --json the reading", async () => {
+    const s = await setup();
+    const on = s.context();
+    expect(await run(on, "addon", "enable", "monitoring", "--on", "app"), on.errors).toBe(0);
+    const ctx = s.context({ deployRemote: stackShell(20) });
+    expect(await run(ctx, "addon", "status"), ctx.errors).toBe(0);
+    expect(ctx.output).toContain("Self-hosted monitoring: Prometheus ");
+    expect(ctx.output).toContain("run on the app's server");
+    expect(ctx.output).toContain(
+      "  opscrew-monitoring-grafana-1: running, healthy, memory 210MiB / 416MiB",
+    );
+    expect(ctx.output).toContain("  Disk: figures 1.0 GB, logs 2.0 MB.");
+    expect(ctx.output).toMatch(/ {2}Kept: figures 15 days \(at most \d+ GB\), logs 7 days\./);
+    expect(ctx.output).toContain(
+      "  server app of shop (prod): figures 20 seconds ago, last log line 1 minute ago",
+    );
+    expect(ctx.output).not.toContain(SERVER_IPV4);
+
+    const silent = s.context({ deployRemote: stackShell(900) });
+    expect(await run(silent, "addon", "status"), silent.errors).toBe(0);
+    expect(silent.output).toContain(
+      "  server app of shop (prod): nothing has arrived for more than 5 minutes. Check its agent",
+    );
+
+    const json = s.context({ deployRemote: stackShell(20) });
+    expect(await run(json, "addon", "status", "--json"), json.errors).toBe(0);
+    const data = JSON.parse(json.output);
+    expect(data.monitoring.reading.servers).toEqual([
+      expect.objectContaining({ app: "shop", env: "prod", server: "app", silent: false }),
+    ]);
+    expect(json.output).not.toContain(SERVER_IPV4);
+  });
+
+  it("open --port runs Grafana's tunnel on that local port, and says where the password is", async () => {
+    const s = await setup();
+    const on = s.context();
+    expect(await run(on, "addon", "enable", "monitoring", "--on", "app"), on.errors).toBe(0);
+    const runner = new TunnelRunner();
+    const ctx = s.context({ runner });
+    let stop: (() => void) | undefined;
+    withServices(ctx, {
+      onStop: (fn) => {
+        stop = fn;
+        return () => {};
+      },
+    });
+    const running = run(ctx, "addon", "open", "monitoring", "--port", "3100");
+    while (runner.calls.length === 0) await delay(5);
+    expect(runner.calls[0]).toEqual(expect.arrayContaining(["-N", "-L", "3100:127.0.0.1:3000"]));
+    expect(ctx.output).toContain("Grafana is at http://localhost:3100 while this runs");
+    expect(ctx.output).toContain("monitoring.grafanaAdminPassword");
+    stop?.();
+    expect(await running, ctx.errors).toBe(0);
+
+    const bad = s.context();
+    expect(await run(bad, "addon", "open", "monitoring", "--port", "70000")).toBe(2);
+    expect(bad.errors).toContain("Give a port number from 1 to 65535.");
   });
 });

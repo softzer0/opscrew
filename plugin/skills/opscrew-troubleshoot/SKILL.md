@@ -1,6 +1,6 @@
 ---
 name: opscrew-troubleshoot
-description: Find out why an app OpsCrew deployed is failing, slow or using too much, from its status, resource figures, alerts and logs, all read-only with secrets masked, and when a recent release is the cause, how to roll it back in the terminal. Use when the user asks "why is my app failing?", "why is it down?", "it's slow", "how much memory (or CPU, or disk) does it use?", "undo the last release", "roll back", or about an OpsCrew alert issue.
+description: Find out why an app OpsCrew deployed is failing, slow or using too much, from its status, resource figures, alerts and logs, all read-only with secrets masked, and when a recent release is the cause, how to roll it back in the terminal; with self-hosted monitoring on, how to open its Grafana dashboards and what each shows. Use when the user asks "why is my app failing?", "why is it down?", "it's slow", "how much memory (or CPU, or disk) does it use?", "undo the last release", "roll back", "how do I see the logs (or figures) of last week?", "open Grafana", "is monitoring working?", or about an OpsCrew alert issue.
 ---
 
 # Troubleshooting with OpsCrew
@@ -32,6 +32,8 @@ Cloudflare. Secrets in log lines arrive masked; never try to recover them.
      row. A device that never connects to a server added later needs a new configuration, which
      the user makes in their terminal (`npx opscrew vpn add <name> --again`): it holds a private
      key, so it never goes through this chat.
+   - **Monitoring:** with self-hosted monitoring on, one line says whether every server sent to its
+     stack within the last 5 minutes. See "History: self-hosted monitoring" below.
 2. **Then the logs of the failing part.** Call `opscrew_logs` with `service` set to that part and a
    short `since` (`15m`, `1h`; `2h` at most at first). Without `service` it reads the web process
    (`app`); `edge` is the proxy in front of the app. Keep `tail` at 200 or less, and never ask for
@@ -82,3 +84,55 @@ keep no request logs, so the tool shows the last deploy runs instead.
 
 Never read `.env` files, secrets files or private keys yourself, and never ask the user to paste a
 token into the chat.
+
+## History: self-hosted monitoring
+
+`opscrew_status` and `opscrew_logs` show the moment's figures and the latest lines. For weeks of
+figures and searchable logs, OpsCrew can run a private monitoring stack: Prometheus keeps the
+figures, Loki the log lines, and Grafana shows them in dashboards.
+
+**Where the data is.** Everything runs on the user's own servers: by default a small server of its
+own at the app's provider, or the app's server (`--on app`). No third party gets the data, and
+Grafana sends nothing to grafana.com. Nobody on the internet reaches it: only the user's devices on
+the app's private network, and the SSH tunnel. Secrets in log lines are masked on each server before
+they are sent, so the stack only ever holds masked lines.
+
+**Is it working?** Call `opscrew_addon_status` (read-only). With monitoring on, it shows the
+stack's containers and their memory, when each server's last figures and last log line arrived, the
+disk taken by figures and by logs, and the retention (figures 15 days and logs 7 by default). A
+server that sent nothing for more than 5 minutes is flagged with what to check: its agent (Grafana
+Alloy) and its link on the private network. When the stack itself doesn't answer, pass on the
+command it names (`npx opscrew provision`).
+
+**Opening the dashboards.** The user runs `npx opscrew addon open monitoring` in their terminal
+(never through a tool):
+- on a device of the app's private network, it prints Grafana's private address; they open it with
+  the WireGuard tunnel on;
+- otherwise it opens an SSH tunnel and keeps it open until Ctrl+C: they open
+  `http://localhost:3000` while it runs (`--port <local>` picks another port);
+- when public SSH is closed and the computer is not a device, it says so, with the command that adds
+  it as one (`npx opscrew vpn add <name> --this-computer`).
+
+They log in as `admin`. The password is `monitoring.grafanaAdminPassword` in OpsCrew's generated
+values on the computer that turned monitoring on, and in the recovery copy
+(`npx opscrew secrets restore` on another computer). Tell them where it is; never read that file or
+ask for the password.
+
+**The six dashboards,** in Grafana's folder **OpsCrew**, each with a choice of app, environment and
+server:
+- **Servers:** CPU, load, memory, disk in use and free, and network traffic, per server.
+- **Containers:** each container's CPU, its memory against its limit, and its restarts.
+- **HTTP traffic,** per hostname: requests, the share of 4xx and 5xx answers, and response times
+  (the median and the slowest 5%).
+- **Caddy:** requests in flight, its memory and CPU, and its own errors.
+- **Postgres,** when the environment has Postgres: connections against the limit, transactions,
+  cache hits, the database's size, deadlocks, and the age of the longest-running query.
+- **Logs:** the lines by app, environment and service, with a box to search the text.
+
+HTTP traffic and Caddy need Caddy, the default reverse proxy, and an app with no domain yet has no
+HTTP figures. MySQL, MariaDB, MongoDB and the other services are on the Containers dashboard.
+
+**Turning it on or off.** `opscrew_addon_enable` and `opscrew_addon_disable` with
+`addon: "monitoring"` only write the plan, after saying the server, its price, the retention and
+the disk it takes. Nothing changes until the user runs `npx opscrew provision` in their terminal,
+which shows each change for their approval by its hash.

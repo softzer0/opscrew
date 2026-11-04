@@ -1,7 +1,12 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { allocateNetwork, recordServerAddress, serverAddressesFile } from "@opscrew/agents";
+import {
+  allocateNetwork,
+  MONITORING_STATUS_COMMAND,
+  recordServerAddress,
+  serverAddressesFile,
+} from "@opscrew/agents";
 import {
   FakeGitHub,
   ScriptedRunner,
@@ -407,6 +412,72 @@ describe("opscrew status and the server's address", () => {
       expect(await main(argv("status", "--ip"), ip)).toBe(0);
       expect(ssh.hosts).toEqual([]);
     });
+  });
+
+  it("with self-hosted monitoring, a line on whether every server sent within 5 minutes", async () => {
+    await provisioned();
+    const paths = resolveProjectPaths(dir, { env: {} });
+    const base = testPlan({ deployed: true, userSecret: false });
+    await writeArtifact(
+      "plan",
+      paths.files.plan,
+      DeployPlanSchema.parse({
+        ...base,
+        observability: {
+          ...base.observability,
+          monitoring: {
+            enabled: true,
+            where: { kind: "app" },
+            versions: { prometheus: "3.15.1", loki: "3.7.9", grafana: "13.3.0", alloy: "1.21.3" },
+            retention: { metricsDays: 15, logsDays: 7, metricsMaxGb: 23 },
+          },
+        },
+      }),
+    );
+    const now = new Date("2026-11-04T12:00:00.000Z");
+    const seconds = now.getTime() / 1000;
+    /** The stack on the app's server: the app's figures arrived `ago` seconds before now. */
+    const stack = (ago: number) => (host: string) => ({
+      host,
+      run: async (command: string) =>
+        command === MONITORING_STATUS_COMMAND
+          ? {
+              exitCode: 0,
+              stdout: [
+                "==opscrew-monitoring:figures",
+                JSON.stringify({
+                  status: "success",
+                  data: {
+                    resultType: "vector",
+                    result: [
+                      {
+                        metric: { app: "shop", env: "prod", server: "app" },
+                        value: [seconds, String(seconds - ago)],
+                      },
+                    ],
+                  },
+                }),
+              ].join("\n"),
+              stderr: "",
+            }
+          : { exitCode: 255, stdout: "", stderr: "" },
+    });
+    const sending = withServices(createTestContext({ cwd: dir }), {
+      clock: { now: () => now },
+      provision: { remote: stack(20) },
+    });
+    expect(await main(argv("status"), sending), sending.errors).toBe(0);
+    expect(sending.output).toContain(
+      "\nMonitoring: 1 server sending to the monitoring stack on server app, each within the last 5 minutes.\n",
+    );
+    const silent = withServices(createTestContext({ cwd: dir }), {
+      clock: { now: () => now },
+      provision: { remote: stack(900) },
+    });
+    expect(await main(argv("status"), silent), silent.errors).toBe(0);
+    expect(silent.output).toContain(
+      "\nMonitoring: server app sent nothing to the monitoring stack on server app for more than 5 minutes. Check its agent, Grafana Alloy, and its link on the private network;",
+    );
   });
 
   it("says where the address is when this computer does not know it", async () => {
