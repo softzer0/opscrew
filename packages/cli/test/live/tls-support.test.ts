@@ -411,6 +411,19 @@ describe("the secret parts of the generated values", () => {
     expect(generatedSecrets(["not an object value"])).toEqual(["not an object value"]);
   });
 
+  it("keeps monitoring's two passwords, not its owner's plan, server and interface", () => {
+    const grafana = fakeSecret("generic-password", "grafana");
+    const postgres = fakeSecret("generic-password", "monitor");
+    const values = {
+      monitoring: {
+        grafanaAdminPassword: grafana,
+        postgresPassword: postgres,
+        owner: { plan: "opscrew/plan.yaml", server: "monitoring", interface: "wg-opscrew1" },
+      },
+    };
+    expect(generatedSecrets(values)).toEqual([grafana, postgres]);
+  });
+
   it("does not take a PEM armor line for a secret of its own", () => {
     const scrubber = new Scrubber();
     const key = fakeSecret("private-key-pem", "origin");

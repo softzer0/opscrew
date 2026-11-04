@@ -383,7 +383,11 @@ export function longestInterruption(
  */
 export function generatedSecrets(json: unknown): string[] {
   if (json === null || typeof json !== "object" || Array.isArray(json)) return jsonStrings(json);
-  const { originTls, ...rest } = json as Record<string, unknown>;
+  // Monitoring keeps its owner (plan path, server, interface) beside its two passwords: only
+  // the passwords are secret.
+  const { originTls, monitoring, ...rest } = json as Record<string, unknown>;
+  const kept = (monitoring ?? {}) as Record<string, unknown>;
+  const passwords = [kept.grafanaAdminPassword, kept.postgresPassword];
   const tls = (originTls ?? {}) as Record<string, unknown>;
   const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : undefined);
   const request = (tls.ORIGIN_TLS_REQUEST ?? {}) as Record<string, unknown>;
@@ -397,5 +401,10 @@ export function generatedSecrets(json: unknown): string[] {
     cert !== undefined && key !== undefined && pull !== undefined
       ? [Buffer.from(`${cert}${key}${pull}`).toString("base64")]
       : [];
-  return [...jsonStrings(rest), ...keys, ...bundle];
+  return [
+    ...jsonStrings(rest),
+    ...keys,
+    ...bundle,
+    ...passwords.map(text).filter((value): value is string => value !== undefined),
+  ];
 }

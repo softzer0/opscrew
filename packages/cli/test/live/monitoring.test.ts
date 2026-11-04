@@ -488,7 +488,8 @@ describe.skipIf(MISSING.length > 0)(
           owner: { server: MONITORING_SERVER },
         });
         await envs.provision(STAGING, "staging's monitoring");
-        await run.deploy("staging's monitoring files", workflows);
+        // Its pull request changes staging's files only, so prod's workflow doesn't run.
+        await run.deploy("staging's monitoring files", [await workflowOf(STAGING)]);
         expect(await serverCount(prodApp), "prod's servers at Hetzner").toBe(2);
         expect(await serverCount(envs.app(STAGING)), "staging's servers at Hetzner").toBe(1);
         expect(await wireguardInterfaces(), "the monitoring server's networks").toBe(2);
