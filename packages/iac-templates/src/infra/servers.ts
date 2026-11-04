@@ -31,7 +31,17 @@ function extraServerPrefix(name: string): VariablePrefix {
  * `terraform.tfvars.json` holds them once provision rendered the server.
  */
 export function extraServerVariables(name: string): { location: string; serverType: string } {
-  return { location: `${name}_location`, serverType: `${name}_server_type` };
+  return serverVariableNames(extraServerPrefix(name));
+}
+
+/** The root module's variables that hold the app server's location and server type (no prefix). */
+export function appServerVariables(): { location: string; serverType: string } {
+  return serverVariableNames("");
+}
+
+/** The names {@link serverTfvars} writes a server's location and server type under. */
+function serverVariableNames(prefix: VariablePrefix): { location: string; serverType: string } {
+  return { location: `${prefix}location`, serverType: `${prefix}server_type` };
 }
 
 /** The plan's extra servers OpsCrew creates, in plan order; servers the user owns have none. */

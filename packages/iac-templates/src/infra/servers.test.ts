@@ -4,7 +4,7 @@ import { testContext, testPlan } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
 import { splitPlan, type TestExtraServer } from "./__fixtures__/servers";
-import { extraServerVariables, renderInfra } from "./index";
+import { appServerVariables, extraServerVariables, renderInfra } from "./index";
 
 const root = (files: readonly RenderedFile[], name: string) =>
   files.find((f) => f.path === `opscrew/infra/prod/${name}`)?.content ?? "";
@@ -92,9 +92,16 @@ describe("an extra server on the app server's provider (Hetzner app plus Hetzner
       db_backups: false,
     });
     expect(tfvars).not.toHaveProperty("db_delete_protection");
-    // Design reads them back by these names.
+    // Design and provision read them back by these names, the app server's too.
     const names = extraServerVariables("db");
     expect([tfvars[names.location], tfvars[names.serverType]]).toEqual(["hel1", "cx33"]);
+    const { target } = splitPlan({ servers: [{ name: "db", provider: "hetzner" }] });
+    if (target.provider !== "hetzner") throw new Error("expected a Hetzner app server");
+    const app = appServerVariables();
+    expect([tfvars[app.location], tfvars[app.serverType]]).toEqual([
+      target.location,
+      target.serverType,
+    ]);
     expect(root(files, "variables.tf")).toMatch(
       /variable "db_delete_protection" \{[^}]*default {5}= true/,
     );

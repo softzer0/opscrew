@@ -28,6 +28,7 @@ import {
 } from "../check/provision";
 import { requireCheckSettingsPlace } from "../check/settings";
 import type { PhaseDeps } from "../context";
+import { resolveCatalog } from "../design/run";
 import { builderBranch, workflowBranch } from "../environments/branches";
 import { commandFlags } from "../environments/choice";
 import { requireOwnHostnames } from "../environments/hostnames";
@@ -83,6 +84,7 @@ import { deployShell } from "../status/certificates";
 import { checkAdditions } from "./additions";
 import { checkProvider, setupCloudflare, setupGitHub } from "./credentials";
 import { deploySetupDependabot } from "./dependabot";
+import { requireNoSmallerDisk } from "./disk-guard";
 import { requireNoMoveInProgress } from "./guard";
 import { monitoringHostPlans } from "./monitoring";
 import {
@@ -458,6 +460,16 @@ async function provisionFlow(
     const check = services.providers?.[provider];
     await checkProvider(deps, provider, check !== undefined ? { provider: check } : {});
   }
+  // A deployed server never moves to a type with a smaller disk: the provider refuses only after
+  // switching it off (research R5, S1).
+  const diskWarnings = await requireNoSmallerDisk({
+    root,
+    plan,
+    catalogFor: async (provider, location) =>
+      (await resolveCatalog(deps, provider, location)).catalog,
+    command,
+  });
+  for (const warning of diskWarnings) deps.reporter.warn(warning);
   const cloudflare = await setupCloudflare(deps, plan, services);
   const github = await setupGitHub(deps, git, services);
   // A rollback pins the environment (ADR 0023): a move's deploy and window need its deploys, and

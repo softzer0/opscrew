@@ -132,7 +132,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2114 [P] Provision refuses a smaller disk, in `packages/agents/src/provision/`
+- [x] T2114 [P] Provision refuses a smaller disk, in `packages/agents/src/provision/`
   - Owns: `packages/agents/src/provision/disk-guard.ts` (+ test) and its call in `provision/run.ts`
   - Reads: research.md R5 (S1); `design/server-changes.ts` (`appServerChange`, `deployedExtraServers`, `extraServerChanges`), `design/run.ts` (`resolveCatalog`), `design/options.ts` (how design already keeps a type for its disk)
   - Depends: T2101

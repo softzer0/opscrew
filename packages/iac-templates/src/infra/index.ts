@@ -42,7 +42,7 @@ export {
   renderPagesVerification,
   verificationRecordName,
 } from "./serverless";
-export { extraServerVariables } from "./servers";
+export { appServerVariables, extraServerVariables } from "./servers";
 export {
   type BucketProvider,
   type ProviderBucket,
