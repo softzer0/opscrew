@@ -4,7 +4,7 @@
  */
 import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { edgeProxy, siteHosts } from "@opscrew/iac-templates";
+import { edgeProxy, postgresOn, siteHosts } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -231,7 +231,6 @@ export async function readLoads(
   for (const plan of plans) {
     const stackServer = monitoringServerName(plan);
     const kind = plan.observability?.monitoring?.where.kind;
-    const postgres = plan.services.find((s) => s.enabled && s.kind === "postgres");
     for (const server of appServers(plan)) {
       if (kind === "server" && server === stackServer) {
         const containers = ALLOY_CONTAINERS + STACK_CONTAINERS;
@@ -252,7 +251,7 @@ export async function readLoads(
         ...(server === APP_SERVER && edgeProxy(plan) === "caddy"
           ? { hostnames: Math.max(1, siteHosts(plan).length) }
           : {}),
-        postgres: postgres !== undefined && (postgres.server ?? APP_SERVER) === server,
+        postgres: postgresOn(plan, server) !== undefined,
       });
       loads.push({ plan, server, series, logBytes24h: figures.logBytes24h, figures });
     }

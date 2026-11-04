@@ -15,14 +15,10 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { addonOpen, addonStatus } from "../addons/status";
-import {
-  alloyDifferences,
-  monitoringDrift,
-  monitoringStackInput,
-  stackDifferences,
-} from "../drift/monitoring";
+import { alloyDifferences, monitoringDrift, stackDifferences } from "../drift/monitoring";
 import { monitoredPlan, senderPlan, withNetwork } from "../network/__fixtures__/plans";
 import { allocateNetwork, type NetworkHostFacts } from "../network/allocate";
+import { stackAddresses } from "../provision/monitoring";
 import { monitoringSecurityChecks } from "../secure/monitoring";
 import { servicePorts } from "../secure/services";
 import { generatedValuesFile } from "../shared/app-secrets";
@@ -579,12 +575,8 @@ describe("secure", () => {
 });
 
 describe("drift", () => {
-  /** The facts of a server with Alloy as provision sets it up, and the stack when `input` is given. */
-  function facts(
-    plan: DeployPlan,
-    server: string,
-    input?: ReturnType<typeof monitoringStackInput>,
-  ): HostFacts {
+  /** The facts of a server with Alloy as provision sets it up, and the stack on `addresses` when given. */
+  function facts(plan: DeployPlan, server: string, addresses?: string[]): HostFacts {
     const destinations = { monitoring: { address: "front" } };
     const compose = renderAlloyCompose(plan, server, destinations);
     return HostFactsSchema.parse({
@@ -617,7 +609,7 @@ describe("drift", () => {
         },
       },
       alloy: { destinations: ["monitoring"] },
-      ...(input === undefined
+      ...(addresses === undefined
         ? {}
         : {
             monitoring: {
@@ -626,7 +618,10 @@ describe("drift", () => {
                 running: true,
               })),
               files: Object.fromEntries(
-                renderMonitoringStack(input).map((file) => [file.path, sha256Hex(file.content)]),
+                renderMonitoringStack(plan, addresses).map((file) => [
+                  file.path,
+                  sha256Hex(file.content),
+                ]),
               ),
             },
           }),
@@ -635,15 +630,12 @@ describe("drift", () => {
 
   it("finds nothing on servers as provision sets them up, the stack with the senders on its server", async () => {
     const r = await repository();
-    const input = monitoringStackInput(r.owner, [r.sender]);
-    expect(input.networks.map((n) => n.address)).toEqual([
-      address(r.owner, "monitoring"),
-      address(r.sender, "monitoring"),
-    ]);
+    const addresses = stackAddresses(r.owner, [r.sender]);
+    expect(addresses).toEqual([address(r.owner, "monitoring"), address(r.sender, "monitoring")]);
     const byHost: Record<string, HostFacts> = {
       [IPS.app]: facts(r.owner, "app"),
       [IPS.data]: facts(r.owner, "data"),
-      [IPS.monitoring]: facts(r.owner, "monitoring", input),
+      [IPS.monitoring]: facts(r.owner, "monitoring", addresses),
     };
     const notes: string[] = [];
     const differences = await monitoringDrift(r.prod, r.owner, notes, {
@@ -658,8 +650,8 @@ describe("drift", () => {
 
   it("names each server's Alloy and the stack's files and containers that differ", async () => {
     const r = await repository();
-    const input = monitoringStackInput(r.owner, [r.sender]);
-    const stack = facts(r.owner, "monitoring", input);
+    const addresses = stackAddresses(r.owner, [r.sender]);
+    const stack = facts(r.owner, "monitoring", addresses);
     const edited: HostFacts = {
       ...stack,
       alloy: { destinations: [], files: {} },
@@ -685,14 +677,14 @@ describe("drift", () => {
       "Its Compose file was edited, or the plan changed since the last provision.",
       "It is not running.",
     ]);
-    expect(stackDifferences(input, edited).map((d) => d.detail)).toEqual([
+    expect(stackDifferences(r.owner, [r.sender], edited).map((d) => d.detail)).toEqual([
       "prometheus.yml is missing.",
       "loki.yaml differs from the plan: edited on the server, or the plan changed since the last provision.",
       "loki is not running.",
     ]);
-    expect(stackDifferences(input, { monitoring: undefined }).map((d) => d.detail)).toEqual([
-      "The monitoring stack is not on this server.",
-    ]);
+    expect(
+      stackDifferences(r.owner, [r.sender], { monitoring: undefined }).map((d) => d.detail),
+    ).toEqual(["The monitoring stack is not on this server."]);
     const notes: string[] = [];
     const differences = await monitoringDrift(r.prod, r.owner, notes, {
       services: {

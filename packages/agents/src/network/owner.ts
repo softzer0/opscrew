@@ -1,5 +1,6 @@
+import type { HostFacts } from "@opscrew/connector-ssh-host";
 import { OpsCrewError, type ProjectPaths, resolveProjectPaths } from "@opscrew/core";
-import { type DeployPlan, monitoringOf } from "@opscrew/plan-schema";
+import { type DeployPlan, monitoringOf, networkInterface } from "@opscrew/plan-schema";
 
 /**
  * Where an environment's plan is kept: `opscrew/[apps/<key>/][environments/<name>/]plan.yaml`,
@@ -50,4 +51,31 @@ export function monitoringOwner(
       ...(environment === undefined ? {} : { environment }),
     }),
   };
+}
+
+/** `server <name> of <plan file>`: another environment's server, as OpsCrew names it. */
+export function otherServer(owner: { plan: string; server: string }): string {
+  return `server ${owner.server} of ${owner.plan}`;
+}
+
+/**
+ * The monitoring server another environment owns that `plan` sends to, with this network's
+ * interface there; `undefined` for every other plan, and before its network has that server.
+ */
+export function currentOwner(
+  plan: Pick<DeployPlan, "observability" | "network">,
+): { plan: string; server: string; interface: string } | undefined {
+  const where = monitoringOf(plan)?.where;
+  if (where?.kind !== "shared") return undefined;
+  const member = plan.network?.members.find((m) => m.name === where.owner.server);
+  return member === undefined ? undefined : { ...where.owner, interface: networkInterface(member) };
+}
+
+/** True when the sender `sender`'s interface is on the stack's server (its `facts`). */
+export function joinedOn(
+  sender: Pick<DeployPlan, "observability" | "network">,
+  facts: Pick<HostFacts, "wireguardInterfaces">,
+): boolean {
+  const owner = currentOwner(sender);
+  return owner !== undefined && facts.wireguardInterfaces.includes(owner.interface);
 }

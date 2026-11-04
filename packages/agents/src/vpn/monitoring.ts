@@ -3,10 +3,10 @@
  * monitoring server (feature 020, US3, US5 #5): that server's interface for this network learns of
  * the device too, over its owner's login, so the device reaches Grafana at once.
  */
-import { type DeployPlan, MONITORING_GRAFANA_PORT, networkInterface } from "@opscrew/plan-schema";
+import { type DeployPlan, MONITORING_GRAFANA_PORT } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { readOwnerPlan } from "../monitoring/repository";
-import { monitoringOwner } from "../network";
+import { joinedOn, monitoringOwner, otherServer } from "../network/owner";
 import type { NetworkServer } from "../provision/network";
 import { networkServer, type VpnServices } from "./servers";
 
@@ -43,10 +43,10 @@ export async function sharedMonitoringServer(
     owner.server,
     services,
   );
-  if (!server.facts.wireguardInterfaces.includes(networkInterface(member))) return undefined;
+  if (!joinedOn(plan, server.facts)) return undefined;
   return {
     server,
-    words: `server ${owner.server} of ${owner.plan}`,
+    words: otherServer(owner),
     grafana: `http://${member.address}:${MONITORING_GRAFANA_PORT}`,
   };
 }

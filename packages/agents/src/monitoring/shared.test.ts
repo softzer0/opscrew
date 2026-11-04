@@ -15,6 +15,7 @@ import { describe, expect, it } from "vitest";
 import { designPlacement } from "../design/placement";
 import { readPlanWithEdits } from "../design/placement-edits";
 import { inEnvironment } from "../promote/__fixtures__/world";
+import { planFile } from "../runners/words";
 import { updateServerAddresses } from "../shared/server-record";
 import {
   createTestPhaseDeps,
@@ -30,7 +31,7 @@ import {
 import { monitoringDisable } from "./disable";
 import { type MonitoringServices, monitoringEnable } from "./enable";
 import { figuresCommand } from "./estimate";
-import { monitoringSenders, repositoryMonitoring, requireOwnerCopies } from "./repository";
+import { repositoryMonitoring, requireOwnerCopies, senderPlans } from "./repository";
 
 const NOW = new Date("2026-11-04T12:00:00.000Z");
 const GIB = 1024 ** 3;
@@ -188,7 +189,7 @@ describe("the repository's monitoring server", () => {
         expect(text).not.toContain(address);
       }
     }
-    expect(await monitoringSenders(staging.deps, prod.plan)).toEqual([
+    expect((await senderPlans(staging.deps, prod.plan)).map(planFile)).toEqual([
       "opscrew/environments/staging/plan.yaml",
     ]);
   });
@@ -287,6 +288,21 @@ describe("the repository's monitoring server", () => {
     expect(off.summary).toContain("takes server monitoring off this environment's private network");
     // Then the owner can.
     const owner = await monitoringDisable(prod.deps, prod.plan);
+    expect(owner.plan.servers).toBeUndefined();
+  });
+
+  it("can be turned off by its owner once the sender is destroyed: its plan file still names it", async () => {
+    const { servers, staging, prod } = await repository();
+    const { plan: sender } = await monitoringEnable(staging.deps, staging.plan, {
+      services: servers.services(),
+    });
+    // `opscrew destroy` leaves the sender's plan, with its monitoring, marked destroyed.
+    await writeArtifact("plan", staging.deps.paths.files.plan, {
+      ...sender,
+      deployment: { ...sender.deployment, destroyedAt: NOW.toISOString() },
+    });
+    const owner = await monitoringDisable(prod.deps, prod.plan);
+    expect(monitoringOf(owner.plan)).toBeUndefined();
     expect(owner.plan.servers).toBeUndefined();
   });
 });

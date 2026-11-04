@@ -2,8 +2,8 @@ import { join, resolve } from "node:path";
 import { resolveProjectPaths } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { monitoredPlan, senderPlan, splitPlan } from "./__fixtures__/plans";
-import { monitoringOwner } from "./owner";
+import { monitoredPlan, networked, senderPlan, splitPlan } from "./__fixtures__/plans";
+import { currentOwner, joinedOn, monitoringOwner, otherServer } from "./owner";
 
 /** A repository's paths at its staging environment; nothing is read or written there. */
 const ROOT = resolve("example-repo");
@@ -68,5 +68,34 @@ describe("monitoringOwner", () => {
         }),
       );
     }
+  });
+});
+
+describe("the owner's helpers", () => {
+  // The owner's server has its own network's interface already: the sender's is the next one.
+  const sender = networked(senderPlan(), {
+    monitoring: { udpPortsInUse: [51820], wireguardInterfaces: ["wg-opscrew0"] },
+  }).plan;
+
+  it("names another environment's server with its plan file", () => {
+    expect(otherServer({ plan: "opscrew/plan.yaml", server: "monitoring" })).toBe(
+      "server monitoring of opscrew/plan.yaml",
+    );
+  });
+
+  it("gives a sender's owner with this network's interface there, and none to the others", () => {
+    expect(currentOwner(sender)).toEqual({
+      plan: "opscrew/plan.yaml",
+      server: "monitoring",
+      interface: "wg-opscrew1",
+    });
+    expect(currentOwner(senderPlan())).toBeUndefined();
+    expect(currentOwner(networked(monitoredPlan()).plan)).toBeUndefined();
+  });
+
+  it("says whether the sender's interface is on the stack's server", () => {
+    expect(joinedOn(sender, { wireguardInterfaces: ["wg-opscrew0", "wg-opscrew1"] })).toBe(true);
+    expect(joinedOn(sender, { wireguardInterfaces: ["wg-opscrew0"] })).toBe(false);
+    expect(joinedOn(networked(monitoredPlan()).plan, { wireguardInterfaces: [] })).toBe(false);
   });
 });

@@ -11,7 +11,7 @@ import {
   type HostStep,
   hostPlanHash,
 } from "@opscrew/connector-ssh-host";
-import type { IacEngine, RemoteExec } from "@opscrew/contracts";
+import type { ApprovalRequest, IacEngine, RemoteExec } from "@opscrew/contracts";
 import { findExecutable, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import {
@@ -24,7 +24,13 @@ import {
 import { describe, expect, it } from "vitest";
 import { monitoringDisable } from "../monitoring/disable";
 import { allocateNetwork, type NetworkHostFacts } from "../network";
-import { monitoredPlan, senderPlan, splitPlan, withNetwork } from "../network/__fixtures__/plans";
+import {
+  monitoredPlan,
+  networked,
+  senderPlan,
+  splitPlan,
+  withNetwork,
+} from "../network/__fixtures__/plans";
 import { generatedValuesFile, recordGeneratedEntries } from "../shared/app-secrets";
 import { updateServerAddresses } from "../shared/server-record";
 import {
@@ -44,7 +50,7 @@ import {
   SERVER_IPV6,
   testKeyMaker,
 } from "../testing";
-import { monitoringHostPlans, monitoringStackInput } from "./monitoring";
+import { monitoringHostPlans, stackAddresses } from "./monitoring";
 import { runProvision } from "./run";
 import { keepMonitoringValues, monitoringValues } from "./secrets";
 import type { ProvisionServices } from "./types";
@@ -214,15 +220,6 @@ function keyscanRunner(): ScriptedRunner {
   });
 }
 
-/** `plan` on its private network, with the keys allocation made. */
-function networked(
-  plan: Omit<DeployPlan, "network">,
-  facts: Record<string, NetworkHostFacts> = {},
-) {
-  const { network, privateKeys } = allocateNetwork(plan, facts, testKeyMaker(plan.app.name));
-  return { plan: withNetwork(plan, network), privateKeys };
-}
-
 interface Setup {
   plan: DeployPlan;
   privateKeys: Record<string, string>;
@@ -231,7 +228,8 @@ interface Setup {
   /** The project's root when the plan is another environment's of it. */
   root?: string;
   environment?: string;
-  approve?: boolean;
+  /** The answer to each approval request (default: approved). */
+  approve?: (request: ApprovalRequest) => boolean;
 }
 
 /** A project with `plan` (prod's, or `environment`'s in `root`), and the fakes provision uses. */
@@ -243,7 +241,7 @@ async function setup(o: Setup) {
   await writeFile(join(project.root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
   const engine = o.engine ?? new FakeEngine({ outputs: outputs() });
   const github = new FakeGitHub();
-  const handler = new ScriptedApprovalHandler(() => o.approve ?? true);
+  const handler = new ScriptedApprovalHandler(o.approve);
   const deps = await createTestPhaseDeps({
     root: project.root,
     env: {
@@ -527,6 +525,118 @@ describe.skipIf(skipNoGit)("provision with self-hosted monitoring", () => {
         .filter((a) => a.host === DATA_IPV4 && a.plan.steps[0]?.id !== "network"),
     ).toEqual([]);
   });
+
+  it("keeps a login password made in this run only once Alloy is applied: refused after the grant, none is kept and the re-run plans the same", async () => {
+    const { plan, privateKeys } = ownerPlan();
+    const ALLOY_ON_DATA =
+      "Run Grafana Alloy on server data, sending its figures and logs to the monitoring stack";
+    const GRANT =
+      "Let OpsCrew's monitoring read the statistics of db on server data, with a login of its own";
+    let refuse = false;
+    const s = await setup({
+      plan,
+      privateKeys,
+      approve: (request) => !(refuse && request.title === ALLOY_ON_DATA),
+    });
+    const hashesOf = (title: string) =>
+      s.handler.requests.filter((r) => r.title === title).map((r) => r.planHash);
+    const passwordsOn = (id: string, from: number) =>
+      s.hosts.applies
+        .slice(from)
+        .filter((a) => a.host === DATA_IPV4 && a.plan.steps[0]?.id === id)
+        .map((a) => a.options.secrets?.monitoringPostgresPassword);
+    await runProvision(s.deps, { services: s.services });
+    // The password is lost on this computer; the next run makes one and refuses Alloy on data.
+    await keepMonitoringValues(s.deps, ({ postgresPassword: _, ...rest }) => rest);
+    s.github.openPull = OPEN_PULL;
+    s.handler.requests.length = 0;
+    refuse = true;
+    const refused = s.hosts.applies.length;
+
+    await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+    });
+
+    // The grant is applied with a password made in this run, which no file keeps.
+    const [first] = passwordsOn("grant", refused);
+    expect(first).toMatch(/^[A-Za-z0-9]{32}$/);
+    expect(passwordsOn("alloy", refused)).toEqual([]);
+    expect((await monitoringValues(s.deps))?.postgresPassword).toBeUndefined();
+    const planned = [hashesOf(GRANT), hashesOf(ALLOY_ON_DATA)];
+    expect(planned).toEqual([[expect.any(String)], [expect.any(String)]]);
+
+    // The re-run plans the grant and Alloy with the same hashes, both with rewrite, and a new
+    // password reaches both before it is kept.
+    refuse = false;
+    s.handler.requests.length = 0;
+    const before = s.hosts.applies.length;
+    await runProvision(s.deps, { services: s.services });
+    expect([hashesOf(GRANT), hashesOf(ALLOY_ON_DATA)]).toEqual(planned);
+    const [second] = passwordsOn("grant", before);
+    expect(second).toMatch(/^[A-Za-z0-9]{32}$/);
+    expect(second).not.toBe(first);
+    expect(passwordsOn("alloy", before)).toEqual([second]);
+    expect((await monitoringValues(s.deps))?.postgresPassword).toBe(second);
+    const text = await shownText(s);
+    for (const secret of [first, second] as string[]) {
+      expect(text).not.toContain(secret);
+      expect(await savedPlans(s)).not.toContain(secret);
+    }
+  });
+
+  it.each([
+    [
+      "Grafana Alloy",
+      "Run Grafana Alloy on server data, sending its figures and logs to the monitoring stack",
+    ],
+    ["the stack", "Run the monitoring stack (Prometheus, Loki and Grafana) on server monitoring"],
+  ])(
+    "removes a login whose password was never kept: %s refused after the grant, then monitoring off",
+    async (_what, refusedTitle) => {
+      const { plan, privateKeys } = ownerPlan();
+      const deployed = DeployPlanSchema.parse({
+        ...plan,
+        deployment: { lastApplyAt: DEPLOYED_AT, placement: { db: "data" } },
+      });
+      let refuse = true;
+      const s = await setup({
+        plan: deployed,
+        privateKeys,
+        approve: (request) => !(refuse && request.title === refusedTitle),
+      });
+
+      await expect(runProvision(s.deps, { services: s.services })).rejects.toMatchObject({
+        code: "APPROVAL_REFUSED",
+      });
+      // The grant is applied; only the marker says so on this computer.
+      expect(s.hosts.granted.has(DATA_IPV4)).toBe(true);
+      const kept = await monitoringValues(s.deps);
+      expect(kept?.login).toBe(true);
+      expect(kept?.postgresPassword).toBeUndefined();
+
+      refuse = false;
+      await monitoringDisable(s.deps, await readArtifact("plan", s.deps.paths.files.plan));
+      // While the app is not running on data, the marker stays and the output says what it is.
+      const data = s.hosts.facts[DATA_IPV4] as HostFacts;
+      s.hosts.facts[DATA_IPV4] = { ...data, containers: [] };
+      await runProvision(s.deps, { services: s.services });
+      expect(s.deps.reporter.text()).toContain(
+        "OpsCrew removes its monitoring login from db on server data at the next `opscrew provision`, once the app runs there again; until then this computer remembers that the login is there, to remove it then.",
+      );
+      expect(await monitoringValues(s.deps)).toEqual({ login: true });
+      s.hosts.facts[DATA_IPV4] = data;
+      s.github.openPull = OPEN_PULL;
+      const before = s.hosts.applies.length;
+      await runProvision(s.deps, { services: s.services });
+
+      const grants = s.hosts.applies.slice(before).filter((a) => a.plan.steps[0]?.id === "grant");
+      expect(grants.map((a) => [a.host, a.plan.steps[0]?.params.remove])).toEqual([
+        [DATA_IPV4, true],
+      ]);
+      expect(s.hosts.granted.has(DATA_IPV4)).toBe(false);
+      expect(await monitoringValues(s.deps)).toBeUndefined();
+    },
+  );
 
   it("keeps the login's password while a server the deploy hasn't started the app on still has the login", async () => {
     const { plan, privateKeys } = ownerPlan();
@@ -1162,26 +1272,17 @@ describe("monitoringHostPlans without monitoring", () => {
   });
 });
 
-describe("monitoringStackInput", () => {
-  it("lists the owner's network, then each sender's, at the stack's address on each", () => {
+describe("stackAddresses", () => {
+  it("lists the stack's address on the owner's network, then on each sender's", () => {
     const owner = ownerPlan().plan;
     const sender = networked(senderPlan(), {
       monitoring: { udpPortsInUse: [51820], wireguardInterfaces: ["wg-opscrew0"] },
     }).plan;
-    const input = monitoringStackInput(owner, [sender]);
-    expect(input.plan).toBe(owner);
-    expect(input.settings).toEqual(owner.observability?.monitoring);
-    expect(input.networks).toEqual([
-      {
-        address: addressOf(owner, "monitoring"),
-        servers: [addressOf(owner, "app"), addressOf(owner, "data")],
-        devices: [],
-      },
-      {
-        address: addressOf(sender, "monitoring"),
-        servers: [addressOf(sender, "app"), addressOf(sender, "data")],
-        devices: [],
-      },
+    expect(stackAddresses(owner, [sender])).toEqual([
+      addressOf(owner, "monitoring"),
+      addressOf(sender, "monitoring"),
     ]);
+    const onApp = networked(monitoredPlan({ on: "app" })).plan;
+    expect(stackAddresses(onApp, [])).toEqual([addressOf(onApp, "app")]);
   });
 });

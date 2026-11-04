@@ -6,15 +6,13 @@
  * server is refused while others send to it, and a sender leaves that server.
  */
 import type { ApprovalRecord } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, monitoringOf } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
-import { senderPlans } from "../monitoring/repository";
+import { requireNoSenders } from "../monitoring/repository";
+import { otherServer } from "../network/owner";
 import { leaveMonitoringServer } from "../provision/monitoring";
 import { monitoringValues } from "../provision/secrets";
-import { planFile } from "../runners/words";
-import { hasDeployment } from "../shared";
 import { COMMAND } from "./common";
 import type { DestroyServices } from "./types";
 
@@ -24,25 +22,12 @@ import type { DestroyServices } from "./types";
  * @throws OpsCrewError `PHASE_PRECONDITION` saying to turn monitoring off there first.
  */
 export async function requireNoMonitoringSenders(deps: PhaseDeps, plan: DeployPlan) {
-  const where = monitoringOf(plan)?.where;
-  if (where === undefined || where.kind === "shared") return;
-  const senders = (await senderPlans(deps, plan)).filter(hasDeployment);
-  if (senders.length === 0) return;
-  const { root } = deps.paths;
-  const commands = await Promise.all(
-    senders.map(
-      async (sender) =>
-        `\`opscrew addon disable monitoring${await commandFlags(root, sender.environment?.name ?? "prod", sender.app.key)}\``,
-    ),
-  );
-  const flag = await commandFlags(root, deps.paths.environment, deps.paths.app);
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `Other environments send their figures and logs to this environment's monitoring server: ${senders.map(planFile).join(", ")}. Deleting it would leave them sending nowhere. Nothing was changed.`,
-    {
-      hint: `Turn monitoring off there first (${commands.join(", ")}, each followed by \`opscrew provision\` with the same options), then run \`${COMMAND}${flag}\` again.`,
-    },
-  );
+  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  await requireNoSenders(deps, plan, {
+    to: "this environment's monitoring server",
+    after: "Deleting it would leave them sending nowhere.",
+    again: `\`${COMMAND}${flag}\``,
+  });
 }
 
 /**
@@ -69,7 +54,7 @@ export async function leaveSharedMonitoring(
   });
   if (owner !== undefined && outcomes.length > 0) {
     deps.reporter.info(
-      `This environment no longer sends to server ${owner.server} of ${owner.plan}; \`opscrew provision${flag}\` adds it again if you stop here.`,
+      `This environment no longer sends to ${otherServer(owner)}; \`opscrew provision${flag}\` adds it again if you stop here.`,
     );
   }
   return outcomes.flatMap((outcome) => (outcome.approval === undefined ? [] : [outcome.approval]));

@@ -14,7 +14,6 @@
 import { join } from "node:path";
 import {
   type AddonEnable,
-  type HostFacts,
   MONITOR_LOGIN,
   planAddon,
   planGrant,
@@ -27,7 +26,7 @@ import {
   EDGE_PROJECT,
   edgeProxy,
   IMAGES,
-  type MonitoringStackInput,
+  postgresOn,
   renderAddon,
   renderAlloyCompose,
   renderAlloyConfig,
@@ -41,7 +40,6 @@ import {
   type MonitoringSettings,
   monitoringOf,
   monitoringServerName,
-  networkInterface,
   type PlanService,
   readOptionalArtifact,
 } from "@opscrew/plan-schema";
@@ -51,12 +49,14 @@ import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { readOwnerPlan, senderPlans } from "../monitoring/repository";
 import { monitoringOwner, networkRemovalSteps } from "../network";
+import { currentOwner, joinedOn, otherServer } from "../network/owner";
 import { planFile } from "../runners/words";
 import {
   approveAndApplyHostPlan,
   type HostPlanOutcome,
   type HostPlanStep,
   hasDeployment,
+  randomPassword,
   readServerAddresses,
   serverWords,
 } from "../shared";
@@ -106,41 +106,26 @@ interface Run {
 
 /**
  * What the setup needs from this computer, read before any change: Grafana Cloud's token when the
- * app's server's Alloy sends there too, and for a plan that sends to another environment's
- * monitoring server, that environment's plan, paths and Grafana password.
+ * app's server's Alloy sends there too; the Postgres monitoring login's password, the kept one or
+ * one made for this run (in memory until Alloy, its last user, is applied); and for a plan that
+ * sends to another environment's monitoring server, that environment's plan, paths and Grafana
+ * password.
  */
 interface SetupNeeds {
   token: string;
+  postgresPassword: string;
   owner?: { plan: DeployPlan; paths: PhaseDeps["paths"]; server: string; password: string };
 }
 
 /**
- * The monitoring stack's input (`renderMonitoringStack`) from the plan that owns it and the plans
- * that send to it, in that order: one network per plan with one, at the stack's server's address
- * there, with the network's other members and its devices, each in the plan's order. Its settings
- * and plan are the owner's.
+ * The stack's private addresses (`renderMonitoringStack`'s), from the plan that owns it and the
+ * plans that send to it, in that order: the stack's server's address on each plan's network.
  */
-export function monitoringStackInput(
-  owner: DeployPlan,
-  senders: readonly DeployPlan[],
-): MonitoringStackInput {
-  const networks = [owner, ...senders].flatMap((plan) => {
-    const network = plan.network;
-    const self = network?.members.find((m) => m.name === monitoringServerName(plan));
-    if (network === undefined || self === undefined) return [];
-    return [
-      {
-        address: self.address,
-        servers: network.members.filter((m) => m !== self).map((m) => m.address),
-        devices: network.devices.map((d) => d.address),
-      },
-    ];
+export function stackAddresses(owner: DeployPlan, senders: readonly DeployPlan[]): string[] {
+  return [owner, ...senders].flatMap((plan) => {
+    const self = plan.network?.members.find((m) => m.name === monitoringServerName(plan));
+    return self === undefined ? [] : [self.address];
   });
-  return {
-    settings: monitoringOf(owner) as MonitoringSettings,
-    networks,
-    plan: owner,
-  };
 }
 
 /**
@@ -152,7 +137,9 @@ export function monitoringStackInput(
  * each server), planned once the removals are applied. A plan whose server already runs it as
  * planned (inspection's facts; the login's state read on the server, with its password kept on
  * this computer) is in place and asks for no approval. Grafana's and the login's
- * passwords are generated once, kept with the generated values and passed only on apply. A server
+ * passwords are generated once, kept with the generated values and passed only on apply; the
+ * login's is kept once Alloy, its last user, is applied, so a refused or failed step leaves none
+ * kept and the next run plans the same. A server
  * the deploy has not yet started the app on gets its Alloy and login at the next run: Alloy joins
  * the Docker networks the deploy creates. A plan without monitoring that never had it on this
  * computer reaches no server.
@@ -213,8 +200,10 @@ async function setupNeeds(run: Run, monitoring: MonitoringSettings): Promise<Set
   const cloud =
     app !== undefined && ready(plan, app) && grafanaCloudOn(plan, APP_SERVER) !== undefined;
   const token = cloud ? await grafanaToken(run) : "";
+  const postgresPassword = run.kept.postgresPassword ?? randomPassword(32);
+  deps.redactor.addLiteral(postgresPassword, "monitoring-password");
   const owner = monitoringOwner(deps.paths, plan);
-  if (owner === undefined || monitoring.where.kind !== "shared") return { token };
+  if (owner === undefined || monitoring.where.kind !== "shared") return { token, postgresPassword };
   const ownerPlan = await readOwnerPlan(
     deps,
     monitoring.where.owner,
@@ -223,6 +212,7 @@ async function setupNeeds(run: Run, monitoring: MonitoringSettings): Promise<Set
   const password = await ownerPassword(run, ownerPlan, owner.paths);
   return {
     token,
+    postgresPassword,
     owner: { plan: ownerPlan, paths: owner.paths, server: owner.server, password },
   };
 }
@@ -286,13 +276,6 @@ async function reachServer(
   return { ...server, own: isOwn(plan, name) };
 }
 
-/** The first enabled Postgres on the server `server` (Alloy reads its figures there). */
-function postgresOn(plan: DeployPlan, server: string): PlanService | undefined {
-  return plan.services.find(
-    (s) => s.kind === "postgres" && s.enabled && (s.server ?? APP_SERVER) === server,
-  );
-}
-
 /**
  * The Docker networks Alloy joins on `server` that are not there yet, which a deploy creates: the
  * edge's on the app's server behind Caddy, and the app's on Postgres's server (whose running
@@ -332,25 +315,6 @@ function on(run: Run, server: Reached) {
   };
 }
 
-/** `server <name> of <plan file>`: another environment's server. */
-function otherServer(owner: { plan: string; server: string }): string {
-  return `server ${owner.server} of ${owner.plan}`;
-}
-
-/** The interface of the monitoring server another environment owns that `plan` sends to. */
-function currentOwner(plan: DeployPlan): Owner | undefined {
-  const where = monitoringOf(plan)?.where;
-  if (where?.kind !== "shared") return undefined;
-  const member = plan.network?.members.find((m) => m.name === where.owner.server);
-  return member === undefined ? undefined : { ...where.owner, interface: networkInterface(member) };
-}
-
-/** True when the sender `sender`'s interface is on the stack's server (its `facts`). */
-function joinedOn(sender: DeployPlan, facts: HostFacts): boolean {
-  const owner = currentOwner(sender);
-  return owner !== undefined && facts.wireguardInterfaces.includes(owner.interface);
-}
-
 /**
  * The Grafana Cloud token for Alloy on the app's server, from `OPSCREW_GRAFANA_CLOUD_TOKEN` or this
  * computer (registered with the redactor).
@@ -384,9 +348,10 @@ const runAs = (server: Reached) => (server.own ? "root" : "login") as "root" | "
  * What monitoring no longer needs, in reverse of its setup: with monitoring off, Alloy back to
  * Grafana Cloud alone (else removed) where it sends to the stack; the stack and its data on a
  * server of this plan it no longer runs on; another environment's monitoring server this one no
- * longer sends to (or sends to on another interface); with monitoring off, the Postgres login, and
- * then this computer's monitoring values, the login's password kept while a server the deploy has
- * not started the app on still has the login.
+ * longer sends to (or sends to on another interface); with monitoring off, the Postgres login (when
+ * this computer kept its password or the marker set before its grant), and then this computer's
+ * monitoring values, the login's password or marker kept while a server the deploy has not started
+ * the app on still has the login.
  */
 async function removals(run: Run): Promise<Change[]> {
   const { deps, plan, servers, kept, input } = run;
@@ -418,21 +383,23 @@ async function removals(run: Run): Promise<Change[]> {
   if (old !== undefined && !same) changes.push(...(await leave(run, old)));
   if (monitoring !== undefined) return changes;
   const waiting: string[] = [];
-  for (const server of kept.postgresPassword === undefined ? [] : servers) {
+  const login = kept.postgresPassword !== undefined || kept.login === true;
+  for (const server of login ? servers : []) {
     const postgres = postgresOn(plan, server.name);
     if (postgres === undefined) continue;
-    if (ready(plan, server)) changes.push({ host: await grantStep(run, server, postgres, true) });
+    if (ready(plan, server)) changes.push({ host: await grantStep(run, server, postgres) });
     else waiting.push(`${postgres.name} on ${serverWords(server.name)}`);
   }
   if (waiting.length > 0) {
     deps.reporter.info(
-      `OpsCrew removes its monitoring login from ${listText(waiting)} at the next \`${input.command}\`, once the app runs there again; until then this computer keeps the login's password.`,
+      `OpsCrew removes its monitoring login from ${listText(waiting)} at the next \`${input.command}\`, once the app runs there again; until then this computer ${kept.postgresPassword === undefined ? "remembers that the login is there, to remove it then" : "keeps the login's password"}.`,
     );
   }
   changes.push({
     local: () =>
-      keepMonitoringValues(deps, ({ postgresPassword }) =>
-        waiting.length > 0 && postgresPassword !== undefined ? { postgresPassword } : undefined,
+      // The login's password, or its marker, stays while a server still has the login.
+      keepMonitoringValues(deps, ({ grafanaAdminPassword: _, owner: _owner, ...values }) =>
+        waiting.length > 0 ? values : undefined,
       ),
   });
   return changes;
@@ -501,18 +468,19 @@ function stackRemoval(run: Run, server: Reached): HostPlanStep {
 const rootImageOf = (server: Reached) => (server.own ? undefined : IMAGES.caddy.ref);
 
 /**
- * The `grant` of OpsCrew's monitoring login on `postgres` (on `server`), or its removal, in place
- * when the server reads it so now (`readGrant`, audited) and, for the login, this computer kept its
- * password before this run; the password is generated once and passed only on apply.
+ * The `grant` of OpsCrew's monitoring login on `postgres` (on `server`) with `password`, or its
+ * removal without one, in place when the server reads it so now (`readGrant`, audited) and, for
+ * the login, this computer kept its password before this run; the password passed only on apply.
  */
 async function grantStep(
   run: Run,
   server: Reached,
   postgres: PlanService,
-  remove: boolean,
+  password?: string,
 ): Promise<HostPlanStep> {
   const { deps, plan, input } = run;
   const words = serverWords(server.name);
+  const remove = password === undefined;
   const grant = {
     service: postgres.name,
     kind: "postgres",
@@ -544,10 +512,7 @@ async function grantStep(
       ? `Remove OpsCrew's monitoring login from ${postgres.name} on ${words}`
       : `Let OpsCrew's monitoring read the statistics of ${postgres.name} on ${words}, with a login of its own`,
     upToDate: `OpsCrew's monitoring login on ${postgres.name} is as planned; nothing on ${words} changes.`,
-    secrets: async () =>
-      remove
-        ? {}
-        : { monitoringPostgresPassword: await monitoringPassword(deps, "postgresPassword") },
+    secrets: async () => (password === undefined ? {} : { monitoringPostgresPassword: password }),
     applying: remove
       ? `Removing OpsCrew's monitoring login from ${postgres.name}`
       : `Setting up OpsCrew's monitoring login on ${postgres.name}`,
@@ -564,7 +529,7 @@ function stackStep(
   stack: { owner: DeployPlan; senders: readonly DeployPlan[]; where: string; title: string },
   password: () => Promise<string>,
 ): HostPlanStep {
-  const files = renderMonitoringStack(monitoringStackInput(stack.owner, stack.senders));
+  const files = renderMonitoringStack(stack.owner, stackAddresses(stack.owner, stack.senders));
   return {
     ...on(run, server),
     server: stack.where,
@@ -667,8 +632,9 @@ async function leave(run: Run, old: Owner): Promise<Change[]> {
 /**
  * Monitoring's setup, in the order of plan.md 11.: the Postgres login on each server with Postgres,
  * then the stack's server (for a shared one, first its interface for this network), then Alloy on
- * each of the environment's servers. A server the deploy has not yet started the app on is left
- * for the next run, and said.
+ * each of the environment's servers; a login password made for this run is kept after them, a
+ * marker before the grants. A server the deploy has not yet started the app on is left for the next
+ * run, and said.
  */
 async function setup(
   run: Run,
@@ -684,15 +650,31 @@ async function setup(
       `OpsCrew sets up Grafana Alloy on ${listText(waiting.map((s) => serverWords(s.name)))} at the next \`${input.command}\`, once a deploy has started the app there: Alloy joins Docker networks the deploy creates (${listText(networks)}).`,
     );
   }
-  const changes: Change[] = [];
+  const { postgresPassword } = needs;
+  const grants: Change[] = [];
   for (const server of started) {
     const postgres = postgresOn(plan, server.name);
-    if (postgres !== undefined)
-      changes.push({ host: await grantStep(run, server, postgres, false) });
+    if (postgres !== undefined) {
+      grants.push({ host: await grantStep(run, server, postgres, postgresPassword) });
+    }
   }
-  changes.push(...(await stackChanges(run, monitoring, needs)));
-  for (const server of started) changes.push({ host: alloyStep(run, server, needs.token) });
-  return changes;
+  // A password made in this run is kept once Alloy, its last user, runs with it; until then the
+  // marker says the login may be there, so turning monitoring off still removes it.
+  const made = grants.length > 0 && run.kept.postgresPassword === undefined;
+  return [
+    ...(made ? [{ local: () => keepMonitoringValues(deps, (v) => ({ ...v, login: true })) }] : []),
+    ...grants,
+    ...(await stackChanges(run, monitoring, needs)),
+    ...started.map((server) => ({ host: alloyStep(run, server, needs) })),
+    ...(made
+      ? [
+          {
+            local: () =>
+              keepMonitoringValues(deps, ({ login: _, ...v }) => ({ ...v, postgresPassword })),
+          },
+        ]
+      : []),
+  ];
 }
 
 /**
@@ -797,10 +779,10 @@ export function monitoringAlloy(plan: DeployPlan, server: string): AddonEnable<"
 
 /**
  * Alloy on `server` ({@link monitoringAlloy}), in place when inspection shows it running as
- * planned; Grafana Cloud's `token` and the monitoring login's password go only on apply.
+ * planned; Grafana Cloud's token and the monitoring login's password go only on apply.
  */
-function alloyStep(run: Run, server: Reached, token: string): HostPlanStep {
-  const { deps, plan } = run;
+function alloyStep(run: Run, server: Reached, needs: SetupNeeds): HostPlanStep {
+  const { plan } = run;
   const grafanaCloud = grafanaCloudOn(plan, server.name);
   const postgres = postgresOn(plan, server.name);
   const words = serverWords(server.name);
@@ -817,10 +799,8 @@ function alloyStep(run: Run, server: Reached, token: string): HostPlanStep {
     title: `Run Grafana Alloy on ${words}, sending its figures and logs to the monitoring stack${grafanaCloud === undefined ? "" : " and to Grafana Cloud"}`,
     upToDate: `Grafana Alloy on ${words} already runs as planned; nothing on it changes.`,
     secrets: async () => ({
-      ...(grafanaCloud === undefined ? {} : { grafanaCloudToken: token }),
-      ...(postgres === undefined
-        ? {}
-        : { monitoringPostgresPassword: await monitoringPassword(deps, "postgresPassword") }),
+      ...(grafanaCloud === undefined ? {} : { grafanaCloudToken: needs.token }),
+      ...(postgres === undefined ? {} : { monitoringPostgresPassword: needs.postgresPassword }),
     }),
     applying: `Starting Grafana Alloy on ${words}`,
   };

@@ -1,10 +1,14 @@
-import { MONITORING_GRAFANA_PORT, MONITORING_PUSH_PORT } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  MONITORING_GRAFANA_PORT,
+  MONITORING_PUSH_PORT,
+  type MonitoringSettings,
+} from "@opscrew/plan-schema";
 import { addonImage, composeFile, goMemLimit } from "../addons/compose";
 import { IMAGES } from "../pins";
 import { memoryLimit } from "../runtime/components";
 import { hardened } from "../runtime/services";
 import { generatedBy } from "./header";
-import type { MonitoringStackInput } from "./index";
 
 /**
  * The stack's Docker network that the Alloy on the stack's own server joins, to push to the front
@@ -95,14 +99,17 @@ const fetches = (url: string) => `wget -q -O /dev/null ${url}`;
  * front on each private address at {@link MONITORING_PUSH_PORT}, and on the push network the Alloy
  * on this server joins.
  */
-export function renderMonitoringCompose(input: MonitoringStackInput): string {
-  const { settings, networks, plan } = input;
+export function renderMonitoringCompose(
+  plan: DeployPlan,
+  settings: MonitoringSettings,
+  addresses: readonly string[],
+): string {
   const { memoryMb, retention, versions } = settings;
   const prometheus = addonImage(IMAGES.prometheus.ref, `v${versions.prometheus}`);
   const loki = addonImage(IMAGES.loki.ref, versions.loki);
   const grafana = addonImage(IMAGES.grafana.ref, versions.grafana);
-  const addresses = networks.map((network) => network.address);
-  const publish = (port: number, on: string[]) => on.map((address) => `${address}:${port}:${port}`);
+  const publish = (port: number, on: readonly string[]) =>
+    on.map((address) => `${address}:${port}:${port}`);
   const services = {
     prometheus: {
       image: prometheus.image,

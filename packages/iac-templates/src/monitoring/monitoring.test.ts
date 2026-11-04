@@ -7,12 +7,7 @@ import { parse } from "yaml";
 import { MONITORING, monitoredPlan } from "../addons/__fixtures__/plans";
 import { withPlacement } from "../catalog/__fixtures__/plans";
 import { IMAGES } from "../pins";
-import {
-  MONITORING_PUSH_NETWORK,
-  type MonitoringStackInput,
-  renderDashboards,
-  renderMonitoringStack,
-} from "./index";
+import { MONITORING_PUSH_NETWORK, renderDashboards, renderMonitoringStack } from "./index";
 
 // The dashboards are T2005's: stubbed, so these files don't depend on their content.
 vi.mock("./dashboards", async (original) => ({
@@ -29,37 +24,22 @@ const ownerPlan = (monitoring: Record<string, unknown> = {}) => monitoredPlan({ 
 /** The stack on the app's server, with no extra server. */
 const appPlan = () => monitoredPlan({ servers: [], monitoring: { where: { kind: "app" } } });
 
-/** The input for `plan` on `networks`. */
-function input(plan: DeployPlan, networks: MonitoringStackInput["networks"]): MonitoringStackInput {
-  const settings = plan.observability?.monitoring;
-  if (settings === undefined) throw new Error("the test plan has no monitoring");
-  return {
-    settings,
-    networks,
-    plan,
-  };
-}
+/** What the stack is rendered from: the owner's plan and the stack's private addresses. */
+type Stack = Parameters<typeof renderMonitoringStack>;
+const input = (plan: DeployPlan, addresses: string[]): Stack => [plan, addresses];
 
 const cases = {
-  "a monitoring server on one network": () =>
-    input(ownerPlan(), [
-      { address: "10.200.4.2", servers: ["10.200.4.1", "10.200.4.2"], devices: [] },
-    ]),
+  "a monitoring server on one network": () => input(ownerPlan(), ["10.200.4.2"]),
   "a monitoring server shared by two networks": () =>
-    input(ownerPlan(), [
-      { address: "10.200.4.2", servers: ["10.200.4.1", "10.200.4.2"], devices: ["10.200.4.100"] },
-      { address: "10.205.40.3", servers: ["10.205.40.2"], devices: [] },
-    ]),
+    input(ownerPlan(), ["10.200.4.2", "10.205.40.3"]),
   'kind "app" with no network and no devices': () => input(appPlan(), []),
   'kind "app" with a device': () =>
-    input(withPlacement(appPlan(), { devices: ["laptop"] }), [
-      { address: "10.200.4.1", servers: ["10.200.4.1"], devices: ["10.200.4.100"] },
-    ]),
+    input(withPlacement(appPlan(), { devices: ["laptop"] }), ["10.200.4.1"]),
 };
 type Case = keyof typeof cases;
 
-function files(stack: MonitoringStackInput): Record<string, string> {
-  return Object.fromEntries(renderMonitoringStack(stack).map((f) => [f.path, f.content]));
+function files(stack: Stack): Record<string, string> {
+  return Object.fromEntries(renderMonitoringStack(...stack).map((f) => [f.path, f.content]));
 }
 
 type Service = Record<string, unknown> & {
@@ -74,8 +54,7 @@ interface Compose {
   networks: Record<string, Record<string, unknown>>;
   volumes: Record<string, unknown>;
 }
-const compose = (stack: MonitoringStackInput): Compose =>
-  parse(files(stack)["compose.yaml"] as string);
+const compose = (stack: Stack): Compose => parse(files(stack)["compose.yaml"] as string);
 
 describe("renderMonitoringStack", () => {
   it("renders a monitoring server on one network (snapshot)", () => {
@@ -105,8 +84,8 @@ describe("renderMonitoringStack", () => {
   it("asks for the Caddy dashboards only when the plan's edge is Caddy", () => {
     const render = vi.mocked(renderDashboards);
     render.mockClear();
-    renderMonitoringStack(cases["a monitoring server on one network"]());
-    renderMonitoringStack(input(monitoredPlan({ edge: "nginx" }), []));
+    renderMonitoringStack(...cases["a monitoring server on one network"]());
+    renderMonitoringStack(monitoredPlan({ edge: "nginx" }), []);
     expect(render.mock.calls).toEqual([[{ caddy: true }], [{ caddy: false }]]);
   });
 
@@ -141,8 +120,7 @@ describe("renderMonitoringStack", () => {
 
 describe("the stack's services", () => {
   const memoryMb = { prometheus: 640, loki: 300, grafana: 400, front: 70 };
-  const stack = () =>
-    input(ownerPlan({ memoryMb }), [{ address: "10.200.4.2", servers: [], devices: [] }]);
+  const stack = () => input(ownerPlan({ memoryMb }), ["10.200.4.2"]);
 
   it("are the pinned images, hardened, with the plan's memory, GOMEMLIMIT at 80% and their volume", () => {
     const { name, services, volumes } = compose(stack());

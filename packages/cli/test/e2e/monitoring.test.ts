@@ -70,7 +70,6 @@ import {
   DeployPlanSchema,
   MONITORING_PUSH_PORT,
   MONITORING_SERVER,
-  monitoringOf,
 } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -290,8 +289,6 @@ describe.skipIf(SKIP !== undefined)("self-hosted monitoring on Docker (020)", ()
     before = await imageIds();
     work = await tempDir("opscrew-monitoring-");
     plan = monitoredPlan(app, prefix);
-    const settings = monitoringOf(plan);
-    if (settings === undefined) throw new Error("The test plan has no monitoring.");
     variables = {
       app,
       env: plan.environment?.name ?? "prod",
@@ -322,11 +319,7 @@ describe.skipIf(SKIP !== undefined)("self-hosted monitoring on Docker (020)", ()
     // The stack, on the monitoring server: its files, and Grafana's password beside them (on a
     // server root's, 0640, which Grafana reads through its group 0; here a file it can read).
     const stackDir = path.join(work, "monitoring");
-    const stackFiles = renderMonitoringStack({
-      settings,
-      networks: [{ address: addresses.monitoring, servers: Object.values(addresses), devices: [] }],
-      plan,
-    });
+    const stackFiles = renderMonitoringStack(plan, [addresses.monitoring]);
     await writeFiles(
       stackDir,
       stackFiles.filter((file) => file.path !== "compose.yaml"),

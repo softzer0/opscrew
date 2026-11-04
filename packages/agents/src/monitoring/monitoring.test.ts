@@ -7,6 +7,7 @@ import {
   type DeployPlan,
   DeployPlanSchema,
   monitoringOf,
+  type PlanService,
   readArtifact,
   writeArtifact,
 } from "@opscrew/plan-schema";
@@ -287,6 +288,23 @@ describe("monitoringEnable on a server of its own", () => {
     for (const text of [summary, JSON.stringify(deps.audit.entries)]) {
       expect(text).not.toContain(DATA_IPV4);
     }
+  });
+
+  it("counts Postgres's 40 series on each server that runs one, a second Postgres's server too", async () => {
+    const seriesOf = async (plan: DeployPlan) => {
+      const deps = await world(plan, { record: { servers: { data: { ipv4: DATA_IPV4 } } } });
+      const { summary } = await monitoringEnable(deps, plan, {
+        services: new FakeServers().services(),
+      });
+      return Number(/\((\d+) series/.exec(summary)?.[1]);
+    };
+    const plan = splitWorld();
+    const { server: _data, ...db } = plan.services.find((s) => s.name === "db") as PlanService;
+    const second = DeployPlanSchema.parse({
+      ...plan,
+      services: [...plan.services, { ...db, name: "reports" }],
+    });
+    expect((await seriesOf(second)) - (await seriesOf(plan))).toBe(40);
   });
 
   it("keeps the type and retention the plan sets when it runs again, re-estimating the cap", async () => {

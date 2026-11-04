@@ -4,7 +4,8 @@ import {
   DeployPlanSchema,
   type Network,
 } from "@opscrew/plan-schema";
-import { ownPlan, testPlan } from "../../testing";
+import { ownPlan, testKeyMaker, testPlan } from "../../testing";
+import { allocateNetwork, type NetworkHostFacts } from "../allocate";
 
 /** Postgres (`db`) on a Hetzner server `data`; the app on its Hetzner server (or the user's own). */
 export function splitPlan(
@@ -39,6 +40,18 @@ export function splitPlan(
 /** `plan` with `network`, checked by the plan's schema and its rules across fields. */
 export function withNetwork(plan: Omit<DeployPlan, "network">, network: Network): DeployPlan {
   return DeployPlanSchema.parse({ ...plan, network });
+}
+
+/**
+ * `plan` on its private network, allocated with `facts` (the servers' it shares) and the test key
+ * maker of its app's name, with the private keys that allocation made.
+ */
+export function networked(
+  plan: Omit<DeployPlan, "network">,
+  facts: Record<string, NetworkHostFacts> = {},
+): { plan: DeployPlan; privateKeys: Record<string, string> } {
+  const { network, privateKeys } = allocateNetwork(plan, facts, testKeyMaker(plan.app.name));
+  return { plan: withNetwork(plan, network), privateKeys };
 }
 
 /** Monitoring on, without `where`: the owner's versions, retention and limits. */

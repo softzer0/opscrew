@@ -2,7 +2,6 @@
  * `opscrew addon disable monitoring`: the self-hosted monitoring taken out of the plan. Only the
  * plan changes; provision removes what runs, the server and the stack's data after the typed name.
  */
-import { OpsCrewError } from "@opscrew/core";
 import {
   type DeployPlan,
   isOutsideMember,
@@ -15,7 +14,7 @@ import { commandFlags } from "../environments/choice";
 import { planFile } from "../runners/words";
 import { writePlanIfChanged } from "../shared/plan-file";
 import type { MonitoringChange } from "./enable";
-import { senderPlans } from "./repository";
+import { requireNoSenders } from "./repository";
 import { withMonitoring } from "./settings";
 
 /** What provision removes once monitoring left the plan, by where it ran. */
@@ -40,8 +39,8 @@ function removalText(plan: DeployPlan, monitoring: MonitoringSettings, flag: str
  * `opscrew addon disable monitoring` (FR-2023, FR-2024): removes `observability.monitoring` from
  * the plan, with the monitoring server's entry and network member (or a shared server's outside
  * member) and its line in the cost. Nothing else changes: provision removes what runs.
- * @throws OpsCrewError `PHASE_PRECONDITION`, before any change, while other environments send to
- * this one's monitoring server, naming their plans.
+ * @throws OpsCrewError `PHASE_PRECONDITION`, before any change, while other deployed environments
+ * send to this one's monitoring server, naming their plans.
  */
 export async function monitoringDisable(
   deps: PhaseDeps,
@@ -56,24 +55,10 @@ export async function monitoringDisable(
   }
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const { where } = monitoring;
-  if (where.kind !== "shared") {
-    const senders = await senderPlans(deps, plan);
-    if (senders.length > 0) {
-      const commands = await Promise.all(
-        senders.map(
-          async (sender) =>
-            `\`opscrew addon disable monitoring${await commandFlags(deps.paths.root, sender.environment?.name ?? "prod", sender.app.key)}\``,
-        ),
-      );
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `Other environments send their figures and logs to this environment's monitoring: ${senders.map(planFile).join(", ")}. Nothing was changed.`,
-        {
-          hint: `Turn monitoring off there first (${commands.join(", ")}, each followed by \`opscrew provision\` with the same options), then run this command again.`,
-        },
-      );
-    }
-  }
+  await requireNoSenders(deps, plan, {
+    to: "this environment's monitoring",
+    again: "this command",
+  });
   const server = where.kind === "server" ? where.server : undefined;
   const servers = (plan.servers ?? []).filter((s) => s.name !== server);
   const network =

@@ -36,6 +36,7 @@ import {
 import { OWN_SERVER_MEMORY_TOLERANCE } from "../design/sizing";
 import { commandFlags } from "../environments/choice";
 import { allocateNetwork, type KeyMaker, type NetworkHostFacts } from "../network";
+import { otherServer } from "../network/owner";
 import { providerProfile } from "../providers";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { planFile } from "../runners/words";
@@ -98,6 +99,17 @@ export interface MonitoringEnableOptions {
 
 /** The retention's options with their flags (`--metrics-days`, `--logs-days`). */
 const RETENTION_FLAGS = { metricsDays: "--metrics-days", logsDays: "--logs-days" } as const;
+
+/** The options given, as the flags that give them again: ` --on app --metrics-days 30`. */
+export function enableFlags(options: Omit<MonitoringEnableOptions, "services">): string {
+  return [
+    options.on === undefined ? "" : ` --on ${options.on}`,
+    options.newServer === true ? " --new-server" : "",
+    ...(["metricsDays", "logsDays"] as const).map((field) =>
+      options[field] === undefined ? "" : ` ${RETENTION_FLAGS[field]} ${options[field]}`,
+    ),
+  ].join("");
+}
 
 /**
  * Stops unless the retention asked for is within the plan's bounds, and this environment keeps
@@ -483,7 +495,7 @@ async function sharedStackServer(
     ADDON_PHASE,
   );
   const entry = ownerPlan.servers?.find((server) => server.name === owner.server) as ExtraServer;
-  const words = `server ${owner.server} of ${owner.plan}`;
+  const words = otherServer(owner);
   if (!isCloud(entry.target)) {
     return { ...stackOf(ownServerOf(entry, facts), words, facts.diskFreeBytes / GIB), facts };
   }
@@ -828,15 +840,9 @@ export async function monitoringEnable(
   if (!estimate.fits) {
     const addons = where.kind === "server" ? monitoringLimits(draft, where.server) : [];
     const first = monitoringOf(plan) === undefined && where.kind !== "shared";
-    const asked = `${options.on === undefined ? "" : ` --on ${options.on}`}${options.newServer === true ? " --new-server" : ""}`;
     // The command again, with the retention that fits for `field` and the other as given.
     const again = (field: keyof typeof RETENTION_FLAGS, days: number) =>
-      `${command}${asked}${(["metricsDays", "logsDays"] as const)
-        .map((f) => {
-          const value = f === field ? days : options[f];
-          return value === undefined ? "" : ` ${RETENTION_FLAGS[f]} ${value}`;
-        })
-        .join("")}`;
+      `${command}${enableFlags({ ...options, [field]: days })}`;
     const advice: RetentionAdvice = {
       file: where.kind === "shared" ? where.owner.plan : planFile(plan),
       ...(first ? { command: again } : {}),

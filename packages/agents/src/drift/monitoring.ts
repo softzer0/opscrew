@@ -6,75 +6,17 @@
  */
 import { type HostFacts, inspectHost } from "@opscrew/connector-ssh-host";
 import { errorText, isUserFacingError, listText, sha256Hex } from "@opscrew/core";
-import {
-  type AlloyDestinations,
-  IMAGES,
-  type MonitoringStackInput,
-  renderAlloyCompose,
-  renderMonitoringStack,
-} from "@opscrew/iac-templates";
-import {
-  APP_SERVER,
-  type DeployPlan,
-  type MonitoringSettings,
-  monitoringOf,
-  monitoringServerName,
-  networkInterface,
-} from "@opscrew/plan-schema";
+import { IMAGES, renderMonitoringStack } from "@opscrew/iac-templates";
+import { type DeployPlan, monitoringOf, monitoringServerName } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { senderPlans } from "../monitoring/repository";
+import { stoppedServices } from "../monitoring/status";
+import { joinedOn } from "../network/owner";
+import { monitoringAlloy, stackAddresses } from "../provision/monitoring";
 import { appServers } from "../shared/servers";
 import { serverShell } from "../status/servers";
 import { AREA_TITLES, type HostDifference } from "./host";
 import { namedDifferences, type ServersDriftOptions } from "./servers";
-
-/** The private address on `plan`'s network of its member `server`, with that network's others. */
-function networkOf(plan: DeployPlan, server: string): MonitoringStackInput["networks"] {
-  const network = plan.network;
-  const self = network?.members.find((m) => m.name === server);
-  if (network === undefined || self === undefined) return [];
-  return [
-    {
-      address: self.address,
-      servers: network.members.filter((m) => m.name !== server).map((m) => m.address),
-      devices: network.devices.map((d) => d.address),
-    },
-  ];
-}
-
-/**
- * The stack's input as provision builds it: the owner's network first, then each sender's (its
- * outside member), the senders in the order given; Grafana on the private addresses when any
- * network has devices.
- */
-export function monitoringStackInput(
-  owner: DeployPlan,
-  senders: readonly DeployPlan[],
-): MonitoringStackInput {
-  const networks = [
-    ...networkOf(owner, monitoringServerName(owner) as string),
-    ...senders.flatMap((sender) => networkOf(sender, monitoringServerName(sender) as string)),
-  ];
-  return {
-    settings: monitoringOf(owner) as MonitoringSettings,
-    networks,
-    plan: owner,
-  };
-}
-
-/** Where the Alloy on `server` sends: the stack's front, and from the app's server Grafana Cloud. */
-function alloyDestinations(plan: DeployPlan, server: string): AlloyDestinations {
-  const stack = monitoringServerName(plan) as string;
-  const own = monitoringOf(plan)?.where.kind !== "shared" && stack === server;
-  const address = own
-    ? "front"
-    : (plan.network?.members.find((m) => m.name === stack)?.address ?? "front");
-  const grafana = plan.observability?.grafanaCloud;
-  return {
-    ...(server === APP_SERVER && grafana?.enabled ? { grafanaCloud: grafana } : {}),
-    monitoring: { address },
-  };
-}
 
 /**
  * A difference in the host step `step`, which provision puts back. Its title is read when used:
@@ -99,11 +41,8 @@ export function alloyDifferences(
       ),
     ];
   }
-  const destinations = alloyDestinations(plan, server);
-  const wanted = [
-    ...(destinations.grafanaCloud === undefined ? [] : ["grafanaCloud"]),
-    "monitoring",
-  ];
+  const planned = monitoringAlloy(plan, server);
+  const wanted = planned.destinations ?? [];
   const sends = facts.alloy?.destinations ?? [];
   const out: string[] = [];
   if (wanted.join(" ") !== sends.join(" ")) {
@@ -115,31 +54,33 @@ export function alloyDifferences(
           );
     out.push(`It sends to ${words(sends)}, and the plan says ${words(wanted)}.`);
   }
-  if (alloy.composeSha256 !== sha256Hex(renderAlloyCompose(plan, server, destinations))) {
+  if (alloy.composeSha256 !== sha256Hex(planned.files["compose.yaml"] as string)) {
     out.push("Its Compose file was edited, or the plan changed since the last provision.");
   }
   if (!alloy.running) out.push("It is not running.");
   return out.map((detail) => stepDifference("alloy", detail));
 }
 
-/** How the stack on its server differs from the `monitoring` step rendered from `input`. */
+/**
+ * How the stack on its server differs from the `monitoring` step provision renders from the
+ * owner's plan and `senders`.
+ */
 export function stackDifferences(
-  input: MonitoringStackInput,
+  owner: DeployPlan,
+  senders: readonly DeployPlan[],
   facts: Pick<HostFacts, "monitoring">,
 ): HostDifference[] {
   const stack = facts.monitoring;
   if (stack === undefined) {
     return [stepDifference("monitoring", "The monitoring stack is not on this server.")];
   }
-  const rendered = renderMonitoringStack(input);
+  const rendered = renderMonitoringStack(owner, stackAddresses(owner, senders));
   const missing = rendered.filter((file) => stack.files[file.path] === undefined);
   const changed = rendered.filter(
     (file) =>
       stack.files[file.path] !== undefined && stack.files[file.path] !== sha256Hex(file.content),
   );
-  const stopped = ["prometheus", "loki", "grafana", "front"].filter(
-    (service) => !stack.containers.some((c) => c.name.includes(`-${service}-`) && c.running),
-  );
+  const stopped = stoppedServices(stack.containers);
   return [
     ...(missing.length === 0
       ? []
@@ -186,15 +127,8 @@ export async function monitoringDrift(
       );
       const found = alloyDifferences(plan, name, facts);
       if (name === stack) {
-        const senders = (await senderPlans(deps, plan)).filter((sender) => {
-          const member = sender.network?.members.find(
-            (m) => m.name === monitoringServerName(sender),
-          );
-          return (
-            member !== undefined && facts.wireguardInterfaces.includes(networkInterface(member))
-          );
-        });
-        found.push(...stackDifferences(monitoringStackInput(plan, senders), facts));
+        const senders = (await senderPlans(deps, plan)).filter((s) => joinedOn(s, facts));
+        found.push(...stackDifferences(plan, senders, facts));
       }
       differences.push(...namedDifferences(plan, name, found));
     } catch (error) {

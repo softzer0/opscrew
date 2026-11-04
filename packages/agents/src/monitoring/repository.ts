@@ -13,7 +13,9 @@ import {
 import { repositoryEnvironments } from "../apps/names";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { otherServer } from "../network/owner";
 import { planFile } from "../runners/words";
+import { hasDeployment } from "../shared/server-address";
 
 /** Every designed plan of the repository's apps and environments. */
 async function repositoryPlans(deps: Pick<PhaseDeps, "paths">): Promise<DeployPlan[]> {
@@ -48,12 +50,35 @@ export async function senderPlans(
   });
 }
 
-/** The plan files of the environments that send to the monitoring server of `ownerPlan`. */
-export async function monitoringSenders(
+/**
+ * Stops while other environments with a live deployment send their figures and logs to `plan`'s
+ * monitoring (`to`; a destroyed or never deployed one sends nothing), naming their plans, with
+ * `after` said before "Nothing was changed.", and the command that turns monitoring off in each;
+ * `again` is what to run once they have. Nothing for a plan that sends to another's.
+ * @throws OpsCrewError `PHASE_PRECONDITION`.
+ */
+export async function requireNoSenders(
   deps: Pick<PhaseDeps, "paths">,
-  ownerPlan: DeployPlan,
-): Promise<string[]> {
-  return (await senderPlans(deps, ownerPlan)).map(planFile);
+  plan: DeployPlan,
+  text: { to: string; after?: string; again: string },
+): Promise<void> {
+  const where = monitoringOf(plan)?.where;
+  if (where === undefined || where.kind === "shared") return;
+  const senders = (await senderPlans(deps, plan)).filter(hasDeployment);
+  if (senders.length === 0) return;
+  const commands = await Promise.all(
+    senders.map(
+      async (sender) =>
+        `\`opscrew addon disable monitoring${await commandFlags(deps.paths.root, sender.environment?.name ?? "prod", sender.app.key)}\``,
+    ),
+  );
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `Other environments send their figures and logs to ${text.to}: ${senders.map(planFile).join(", ")}.${text.after === undefined ? "" : ` ${text.after}`} Nothing was changed.`,
+    {
+      hint: `Turn monitoring off there first (${commands.join(", ")}, each followed by \`opscrew provision\` with the same options), then run ${text.again} again.`,
+    },
+  );
 }
 
 /**
@@ -72,7 +97,7 @@ export async function readOwnerPlan(
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `This environment sends to server ${owner.server} of ${owner.plan}, but ${plan === undefined ? "that plan is gone" : "that plan no longer runs it as its monitoring server"}. ${end}`,
+    `This environment sends to ${otherServer(owner)}, but ${plan === undefined ? "that plan is gone" : "that plan no longer runs it as its monitoring server"}. ${end}`,
     {
       hint: `Run \`opscrew addon disable monitoring${flag}\` and then \`opscrew addon enable monitoring${flag}\`, which uses the repository's monitoring server or plans a new one.`,
     },

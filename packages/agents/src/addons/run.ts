@@ -23,6 +23,7 @@ import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { monitoringDisable } from "../monitoring/disable";
 import {
+  enableFlags,
   type MonitoringChange,
   type MonitoringServices,
   monitoringEnable,
@@ -671,13 +672,8 @@ async function runAddonChange(
     preflight: async ({ ownRun, remote }) => {
       // One of each per server: another app's add-on is refused here, before anything changes.
       if (ownRun) addonPlan(addon, after, ownRun);
-      const shell = async () => remote ?? (await deployUserShell(deps, after, services));
       if (kind === "grafana-cloud" && monitoringOf(after) !== undefined) {
-        await requireMonitoringAlloy(
-          deps,
-          ownRun,
-          ownRun === undefined ? await shell() : undefined,
-        );
+        await requireMonitoringAlloy(deps, ownRun, remote);
         // The Alloy on Postgres's server reads it with the monitoring login, whose password only
         // provision sets on the server: one made here would never reach the login.
         if (
@@ -693,12 +689,8 @@ async function runAddonChange(
         }
       }
       if (!enabling) return;
-      const reading = await readServer(
-        deps,
-        await shell(),
-        after.app.name,
-        kind === "grafana-cloud",
-      );
+      const shell = remote ?? (await deployUserShell(deps, after, services));
+      const reading = await readServer(deps, shell, after.app.name, kind === "grafana-cloud");
       intro.push(
         memoryLine(after, kind, {
           memoryMb: reading.memoryMb,
@@ -849,13 +841,7 @@ export async function addonEnable(
       ...(logsDays === undefined ? {} : { logsDays }),
       ...(services?.monitoring === undefined ? {} : { services: services.monitoring }),
     });
-    const asked = [
-      on === undefined ? "" : ` --on ${on}`,
-      newServer === true ? " --new-server" : "",
-      metricsDays === undefined ? "" : ` --metrics-days ${metricsDays}`,
-      logsDays === undefined ? "" : ` --logs-days ${logsDays}`,
-    ].join("");
-    return monitoringResult(deps, change, `${command}${asked}`);
+    return monitoringResult(deps, change, `${command}${enableFlags(options)}`);
   }
   requireDeployedServer(plan, kind, command, true);
   if (kind === "grafana-cloud") {

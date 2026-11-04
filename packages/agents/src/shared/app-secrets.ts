@@ -27,6 +27,12 @@ export const MonitoringValuesSchema = z.strictObject({
     .string()
     .regex(/^[A-Za-z0-9]{16,128}$/)
     .optional(),
+  /**
+   * The login may be on a Postgres of this environment with a password not kept yet: set before
+   * its grant is applied, replaced by `postgresPassword` once Alloy runs with it, so turning
+   * monitoring off removes the login either way.
+   */
+  login: z.literal(true).optional(),
   /** The other environment's plan file, its monitoring server, and this network's interface there. */
   owner: z.strictObject({ plan: z.string(), server: z.string(), interface: z.string() }).optional(),
 });
