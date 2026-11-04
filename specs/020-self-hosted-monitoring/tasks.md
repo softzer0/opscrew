@@ -226,11 +226,11 @@ network above all).
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T2009 [US1] [US4] [US5] [US6] [US7] Turning it on and off: settings, sizing, the estimate, the repository's server, in `packages/agents/src/monitoring/`
+- [x] T2009 [US1] [US4] [US5] [US6] [US7] Turning it on and off: settings, sizing, the estimate, the repository's server, in `packages/agents/src/monitoring/`
   - Owns:
     - `packages/agents/src/monitoring/**` except `status.ts` (+ tests, `__fixtures__/**`);
     - `packages/agents/src/shared/memory.ts`;
-    - `packages/agents/src/design/{servers.ts,kept-edits.ts,sizing.ts,placement-edits.ts,placement.ts,own-servers.ts}` and `serverMemoryText` in `design/components.ts` (+ tests; the last four added at the lead's decision during the task: keeping monitoring across a re-design, and sizing for the stack);
+    - `packages/agents/src/design/{servers.ts,kept-edits.ts,sizing.ts,placement-edits.ts,placement.ts,own-servers.ts}` `serverMemoryText` in `design/components.ts`, and passing the monitoring settings through `design/{options.ts,run.ts}` to the sizing (+ tests; the last six added at the lead's decision during the task: keeping monitoring across a re-design, and sizing for the stack);
     - in `packages/agents/src/addons/run.ts`, only the dispatch of `monitoring` to
       `monitoringEnable` and `monitoringDisable`.
   - Reads: plan.md "9."; spec US1, US4–US7; data-model.md; research.md R3, R7 (S2); `addons/estimate.ts`, `design/servers.ts`, `network/allocate.ts`, 013's app list
