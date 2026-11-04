@@ -20,9 +20,21 @@ const PUBLIC_UDP_PORTS = new Set(["443"]);
  * True when the plan asks for the provider's automated backups of the server it creates; never
  * for a server the user owns (or a Portainer target, which has no server).
  */
-function planWantsBackups(deployPlan: Pick<DeployPlan, "target">): boolean {
-  const { target } = deployPlan;
-  return (target.provider === "hetzner" || target.provider === "digitalocean") && target.backups;
+function planWantsBackups(target: { provider: string; backups?: boolean }): boolean {
+  return (
+    (target.provider === "hetzner" || target.provider === "digitalocean") && target.backups === true
+  );
+}
+
+/**
+ * True when the plan asks for backups of the server at `address`: an extra server's module
+ * (`module.server_<name>`) follows its own entry in `servers` (the monitoring server keeps none),
+ * the app's server and a move's old copy the plan's target.
+ */
+function serverWantsBackups(deployPlan: DeployPlan, address: string): boolean {
+  const name = /^module.server_([^.]+)./.exec(address)?.[1];
+  const extra = deployPlan.servers?.find((server) => server.name === name);
+  return planWantsBackups(extra?.target ?? deployPlan.target);
 }
 
 /** Flattens `planned_values` (root and child modules) and merges `after_unknown` from changes. */
@@ -365,7 +377,7 @@ function providerPolicies(
         ),
       );
     }
-    if (planWantsBackups(deployPlan)) {
+    if (serverWantsBackups(deployPlan, server.address)) {
       const backups = server.values.backups === true;
       results.push(
         result(

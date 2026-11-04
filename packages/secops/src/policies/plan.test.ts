@@ -307,6 +307,49 @@ describe("evaluatePlanPolicies", () => {
     ).toBe(false);
   });
 
+  it("checks each extra server's backups against its own entry in the plan", () => {
+    const withExtra = (wanted: boolean) => {
+      const json = planJson({ backups: true });
+      json.planned_values.root_module.child_modules.push({
+        address: "module.server_monitoring",
+        resources: [
+          {
+            address: "module.server_monitoring.hcloud_server.this",
+            mode: "managed",
+            type: "hcloud_server",
+            name: "this",
+            values: {
+              name: "shop-monitoring",
+              server_type: "cx23",
+              location: "nbg1",
+              backups: false,
+              delete_protection: true,
+              rebuild_protection: true,
+            },
+          },
+        ],
+      });
+      json.resource_changes.push({
+        address: "module.server_monitoring.hcloud_server.this",
+        change: { actions: ["create"], after_unknown: { firewall_ids: true, ssh_keys: [true] } },
+      });
+      const extra = {
+        name: "monitoring",
+        target: {
+          provider: "hetzner" as const,
+          mode: "vps-compose" as const,
+          location: "nbg1",
+          serverType: "cx23",
+          backups: wanted,
+        },
+      };
+      return evaluatePlanPolicies(json, { ...deployPlan({ backups: true }), servers: [extra] });
+    };
+    // The monitoring server keeps no backups by design, while the app's server has them.
+    expect(failed(withExtra(false))).toEqual([]);
+    expect(failed(withExtra(true))).toEqual(["backups-for-critical-data"]);
+  });
+
   it("flags an unproxied app record", () => {
     expect(failed(evaluatePlanPolicies(planJson({ proxiedRecord: false }), deployPlan()))).toEqual([
       "dns-proxied",
