@@ -377,7 +377,7 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2014 [P] [US1] [US3] [US6] [US8] The CLI, MCP and the plugin's skill
+- [x] T2014 [P] [US1] [US3] [US6] [US8] The CLI, MCP and the plugin's skill
   - Owns: `packages/cli/src/commands/{addon.ts,status.ts}` (+ tests), `packages/mcp-server/src/tools/addons.ts` (+ test, fixtures), `plugin/skills/opscrew-troubleshoot/**`
   - Reads: plan.md "14."; contracts/monitoring.md "CLI and MCP"; spec US8
   - Depends: T2011, T2012
