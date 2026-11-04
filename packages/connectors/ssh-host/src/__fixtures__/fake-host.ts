@@ -11,6 +11,7 @@ import {
   ADDON_KINDS,
   ALLOY_DESTINATIONS_FILE,
   ALLOY_POSTGRES_HOST_FILE,
+  ALLOY_SECRET_FILES,
   addonDir,
   APP_RECORDS_DIR,
   AUTO_UPGRADES_FILE,
@@ -413,12 +414,10 @@ export class FakeHost implements RemoteExec {
   runnerPrepared = false;
   /** Folders the add-on steps made (their data folders, and the add-on's own folder). */
   madeDirs = new Set<string>();
-  /** How often each add-on's Compose project was brought up. */
+  /** How often each add-on's or the monitoring stack's Compose project was brought up. */
   addonUps = new Map<string, number>();
   /** Owner, group and mode (`stat -c '%u:%g:%a'`) of the files a step set them for. */
   fileModes = new Map<string, string>();
-  /** Each `docker compose up` of an add-on or the monitoring stack: whether it recreated the containers. */
-  composeUps: { project: string; recreate: boolean }[] = [];
 
   // failure injection
   /** Script names that exit non-zero (with an `opscrew:` message). */
@@ -1055,7 +1054,7 @@ export class FakeHost implements RemoteExec {
       for (const [path, content] of [...this.files].sort(([a], [b]) => a.localeCompare(b))) {
         const name = path.slice(alloy.length + 1);
         if (!path.startsWith(`${alloy}/`) || name.includes("/") || name.startsWith(".")) continue;
-        if (name === "grafana_cloud_credential" || name === "postgres_monitor_credential") continue;
+        if (ALLOY_SECRET_FILES.some((file) => file === name)) continue;
         lines.push(`alloyfile ${name} ${sha256(content)}`);
       }
       const host = this.files.get(`${alloy}/${ALLOY_POSTGRES_HOST_FILE}`);
@@ -2040,8 +2039,6 @@ export class FakeHost implements RemoteExec {
     }
     if (!this.users.has("deploy")) return fail("The deploy user is missing, so OpsCrew cannot set up the monitoring stack.");
     const dir = p.DIR ?? "";
-    // Decided before anything is written: a file edited on the server counts too.
-    const recreate = !this.stackFilesOk(p);
     this.madeDirs.add(dir);
     for (const sub of FakeHost.words(p.DIRS)) this.madeDirs.add(`${dir}/${sub}`);
     const credential = `${dir}/${p.CREDENTIAL}`;
@@ -2051,10 +2048,9 @@ export class FakeHost implements RemoteExec {
       const b64 = lines[index] ?? "";
       if (b64 === "") return fail(`The monitoring stack's file ${path} did not arrive on standard input, so OpsCrew stopped.`);
       this.files.set(`${dir}/${path}`, Buffer.from(b64, "base64").toString("utf8"));
-      this.fileModes.set(`${dir}/${path}`, "1000:1000:644");
     }
     const project = p.PROJECT ?? "";
-    this.composeUps.push({ project, recreate });
+    this.addonUps.set(project, (this.addonUps.get(project) ?? 0) + 1);
     if (!this.running(project)) {
       for (const service of ["front", "grafana", "loki", "prometheus"]) {
         this.containers.push({ name: `${project}-${service}-1`, project, ports: "" });
@@ -2343,7 +2339,7 @@ export class FakeHost implements RemoteExec {
       if (sha256(this.files.get(`${dir}/${entry.slice(0, at)}`) ?? "") !== entry.slice(at + 1)) return false;
     }
     if (FakeHost.words(p.SECRET_FILES).some((file) => !this.files.get(`${dir}/${file}`))) return false;
-    if (p.POSTGRES_HOST && !this.files.get(`${dir}/postgres_monitor_credential`)?.includes(`@${p.POSTGRES_HOST}:5432/`)) return false;
+    if (p.POSTGRES_HOST && this.files.get(`${dir}/${ALLOY_POSTGRES_HOST_FILE}`)?.trimEnd() !== p.POSTGRES_HOST) return false;
     if (FakeHost.words(p.STALE_FILES).some((file) => this.files.has(`${dir}/${file}`))) return false;
     if (p.DESTINATIONS && this.files.get(`${dir}/${ALLOY_DESTINATIONS_FILE}`)?.trimEnd() !== p.DESTINATIONS) return false;
     if (FakeHost.words(p.DATA_DIRS).some((data) => !this.madeDirs.has(`${dir}/${data}`))) return false;
@@ -2357,8 +2353,9 @@ export class FakeHost implements RemoteExec {
     const [first = "", second = "", key = ""] = input.split("\n");
     const hub = p.TEMPLATED === "config.yml";
     // Alloy reads Grafana Cloud's token, then the monitoring login's password, each when it writes its file.
-    const cloud = FakeHost.words(p.SECRET_FILES).includes("grafana_cloud_credential");
-    const postgres = FakeHost.words(p.SECRET_FILES).includes("postgres_monitor_credential");
+    const [cloudFile, postgresFile] = ALLOY_SECRET_FILES;
+    const cloud = FakeHost.words(p.SECRET_FILES).includes(cloudFile);
+    const postgres = FakeHost.words(p.SECRET_FILES).includes(postgresFile);
     const token = hub ? second : name === "alloy.apply" && !cloud ? "" : first;
     const pgpw = cloud ? second : first;
     if (name === "alloy.apply") {
@@ -2373,14 +2370,11 @@ export class FakeHost implements RemoteExec {
     }
     this.madeDirs.add(dir);
     for (const data of FakeHost.words(p.DATA_DIRS)) this.madeDirs.add(`${dir}/${data}`);
-    // The files the containers read, before the step writes them (see READ_FILES).
-    const reads = () => FakeHost.words(p.READ_FILES).map((file) => this.files.get(`${dir}/${file}`) ?? "").join("\0");
-    const before = reads();
     if (name === "alloy.apply") {
-      if (cloud) this.files.set(`${dir}/grafana_cloud_credential`, token);
+      if (cloud) this.files.set(`${dir}/${cloudFile}`, token);
       if (postgres) {
         this.files.set(
-          `${dir}/postgres_monitor_credential`,
+          `${dir}/${postgresFile}`,
           `postgresql://opscrew_monitor:${pgpw}@${p.POSTGRES_HOST}:5432/postgres?sslmode=disable`,
         );
         this.files.set(`${dir}/${ALLOY_POSTGRES_HOST_FILE}`, `${p.POSTGRES_HOST}\n`);
@@ -2403,8 +2397,6 @@ export class FakeHost implements RemoteExec {
       this.files.set(`${dir}/${file}`, file === p.TEMPLATED ? content.replaceAll(p.PLACEHOLDER ?? "", token) : content);
     }
     const project = p.PROJECT ?? "";
-    const listed = this.files.get(`${dir}/.opscrew-files`)?.trimEnd() === p.MANIFEST;
-    this.composeUps.push({ project, recreate: reads() !== before || !listed });
     this.files.set(`${dir}/.opscrew-files`, `${p.MANIFEST}\n`);
     if (!this.running(project)) this.containers.push({ name: `${project}-main-1`, project, ports: "" });
     this.volumes.set(project, 1);

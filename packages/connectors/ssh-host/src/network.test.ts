@@ -7,6 +7,7 @@ import {
   applyApproved,
   cloudServer,
   desiredFor,
+  hostRecord,
   provision,
   SH_AVAILABLE,
   SHOP_PROJECT,
@@ -16,7 +17,6 @@ import {
 } from "./__fixtures__/helpers";
 import { ShellHarness } from "./__fixtures__/shell-harness";
 import { RECORD_PATH } from "./constants";
-import { HostRecordSchema } from "./facts";
 import { hostPlanHash } from "./hash";
 import { inspectHost, networkInspectScript } from "./inspect";
 import {
@@ -124,11 +124,6 @@ function removalPlan(otherInterfaces: string, iface = "wg-opscrew0"): HostPlan {
     findings: [],
     deleteData: false,
   };
-}
-
-/** The host record the fake holds. */
-function record(fake: FakeHost) {
-  return HostRecordSchema.parse(JSON.parse(fake.files.get(RECORD_PATH) ?? "{}"));
 }
 
 describe("the network step's parameters", () => {
@@ -751,7 +746,7 @@ describe("applying the network on a server OpsCrew created (root through Docker)
       "key wg-opscrew0",
       "start wg-opscrew0",
     ]);
-    expect(record(fake).networks).toEqual({ "wg-opscrew0": "shop" });
+    expect(hostRecord(fake).networks).toEqual({ "wg-opscrew0": "shop" });
     // Applied again, it is in place, and the key is not sent.
     const again = await applyApproved(fake, plan, {
       rootImage: IMAGE,
@@ -965,7 +960,7 @@ describe("the network on a server the user owns", () => {
       address: "10.200.7.1/24",
       peers: [],
     });
-    const held = record(fake);
+    const held = hostRecord(fake);
     fake.files.set(
       RECORD_PATH,
       JSON.stringify({ ...held, networks: { ...held.networks, "wg-opscrew1": "blog" } }),
@@ -991,7 +986,7 @@ describe("the network on a server the user owns", () => {
     await applyApproved(fake, teardown, { command: "opscrew destroy" });
     expect(fake.wireguard.has("wg-opscrew0")).toBe(false);
     expect(fake.files.get(NETWORK_DROP_IN)).toBe(networkDropIn(["wg-opscrew1"]));
-    expect(record(fake).networks).toEqual({ "wg-opscrew1": "blog" });
+    expect(hostRecord(fake).networks).toEqual({ "wg-opscrew1": "blog" });
     expect(fake.ufwRules.map((rule) => rule.comment)).not.toContain("opscrew-network");
   });
 
@@ -1004,7 +999,7 @@ describe("the network on a server the user owns", () => {
       { secrets: { wireguardKey: APP_KEY } },
     );
     // The app went, its network stayed (a teardown that stopped before it).
-    const held = record(fake);
+    const held = hostRecord(fake);
     const teardown = planTeardown(
       await inspectHost(fake),
       { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
@@ -1015,7 +1010,7 @@ describe("the network on a server the user owns", () => {
       steps: teardown.steps.filter((step) => step.id !== "network"),
     };
     await applyApproved(fake, withoutNetwork, { command: "opscrew destroy" });
-    expect(record(fake).networks).toEqual(held.networks);
+    expect(hostRecord(fake).networks).toEqual(held.networks);
     expect(fake.wireguard.has("wg-opscrew0")).toBe(true);
     const undo = planUndo(
       await inspectHost(fake),
@@ -1076,7 +1071,7 @@ describe("planNetworkRemoval", () => {
 
   it("removes one app's interface, its filter first, and keeps the other's", async () => {
     const fake = await twoNetworks();
-    expect(record(fake).networks).toEqual({ "wg-opscrew0": "shop", "wg-opscrew1": "blog" });
+    expect(hostRecord(fake).networks).toEqual({ "wg-opscrew0": "shop", "wg-opscrew1": "blog" });
 
     const plan = planNetworkRemoval(await inspectHost(fake), leaving, COMMAND);
     expect(plan).toMatchObject({ purpose: "setup", app: "blog", findings: [] });
@@ -1094,7 +1089,7 @@ describe("planNetworkRemoval", () => {
     expect(fake.wireguard.has("wg-opscrew1")).toBe(false);
     expect(fake.wireguard.has("wg-opscrew0")).toBe(true);
     expect(fake.files.get(NETWORK_DROP_IN)).toBe(networkDropIn(["wg-opscrew0"]));
-    expect(record(fake).networks).toEqual({ "wg-opscrew0": "shop" });
+    expect(hostRecord(fake).networks).toEqual({ "wg-opscrew0": "shop" });
 
     // Once it is gone, both steps are in place.
     const again = planNetworkRemoval(await inspectHost(fake), leaving, COMMAND);
@@ -1120,7 +1115,7 @@ describe("planNetworkRemoval", () => {
       'The WireGuard interface wg-opscrew0 on this server is the private network of the OpsCrew app "shop", so OpsCrew does not remove it for "blog". Nothing was changed.',
     );
     // blog's own interface, once the record no longer names it, is refused too (fail closed).
-    const held = record(fake);
+    const held = hostRecord(fake);
     fake.files.set(RECORD_PATH, JSON.stringify({ ...held, networks: { "wg-opscrew0": "shop" } }));
     await expect(applyApproved(fake, taking("wg-opscrew1", ["wg-opscrew0"]))).rejects.toThrow(
       'The WireGuard interface wg-opscrew1 on this server is no OpsCrew app\'s private network on record, so OpsCrew does not remove it for "blog". Nothing was changed.',

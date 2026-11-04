@@ -97,6 +97,9 @@ export const StackPathSchema = z
     message: "must be a path in the stack's folder such as grafana/dashboards/servers.json",
   });
 
+/** A file `renderAddon` renders, at the root of the add-on's folder (`compose.yaml`). */
+export const AddonFileNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+
 /** A pinned Portainer CE version. */
 export const PortainerVersionSchema = z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, {
   message: "must be a pinned version such as 2.33.1",
@@ -150,12 +153,17 @@ export const PublicKeyLineSchema = z
   .string()
   .regex(PUBLIC_KEY_RE, { message: "must be one OpenSSH public key line" });
 
-/** A rendered Compose file: non-empty text without NUL bytes, at most 16 KiB. */
-export const ComposeTextSchema = z
-  .string()
-  .min(1)
-  .max(MAX_COMPOSE_BYTES)
-  .refine((text) => !text.includes("\0"), { message: "must not contain NUL bytes" });
+/** A rendered file's text: non-empty, without NUL bytes, at most `max` bytes. */
+export function textUpTo(max: number) {
+  return z
+    .string()
+    .min(1)
+    .max(max)
+    .refine((text) => !text.includes("\0"), { message: "must not contain NUL bytes" });
+}
+
+/** A rendered Compose file: at most 16 KiB. */
+export const ComposeTextSchema = textUpTo(MAX_COMPOSE_BYTES);
 
 /** A Cloudflare Tunnel id (a UUID; not secret). */
 export const TunnelIdSchema = z.string().regex(/^[0-9A-Fa-f-]{8,64}$/, {

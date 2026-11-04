@@ -1,15 +1,16 @@
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost } from "./__fixtures__/fake-host";
 import {
   applyApproved,
   DEPLOY_KEY,
   desiredFor,
+  hostRecord,
   planFor,
   portainerDesired,
   portainerPassword,
   provision,
+  rejection,
   removeApp,
   SHOP_PROJECT,
   SHOP_REPOSITORY,
@@ -20,27 +21,12 @@ import {
 } from "./__fixtures__/helpers";
 import { applyHostPlan, HostApplyError } from "./apply";
 import { DOCKER_DAEMON_JSON } from "./constants";
-import { HostRecordSchema } from "./facts";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
 import { planHost, planPortainer, planTeardown, planUndo } from "./plan";
 import type { HostPlan } from "./types";
 
 const STEP_SCRIPTS = /\.(check|apply|verify)$|^deadman\./;
-
-function record(fake: FakeHost) {
-  return HostRecordSchema.parse(JSON.parse(fake.files.get("/etc/opscrew/host.json") ?? "null"));
-}
-
-async function rejection(promise: Promise<unknown>): Promise<OpsCrewError> {
-  try {
-    await promise;
-  } catch (error) {
-    if (error instanceof OpsCrewError) return error;
-    throw error;
-  }
-  throw new Error("expected a rejection");
-}
 
 describe("applyHostPlan on a fresh server", () => {
   it("prepares the server, records previous values first, and a re-run changes nothing", async () => {
@@ -108,7 +94,7 @@ describe("applyHostPlan on a fresh server", () => {
     });
 
     // The record holds the previous value of each step, written before the step's change.
-    const host = record(fake);
+    const host = hostRecord(fake);
     expect(host).toMatchObject({ apps: ["shop"], opscrewVersion: "1.4.0" });
     expect(host.changes.map((entry) => entry.step)).toEqual(plan.steps.map((step) => step.id));
     expect(host.changes.find((entry) => entry.step === "runtime-dirs")?.previous).toEqual({
@@ -188,7 +174,7 @@ describe("applyHostPlan on a fresh server", () => {
     await provision(fake);
     expect(fake.packages.get("docker-ce")).toMatch(/^5:29\./);
     expect(fake.files.has("/etc/apt/sources.list.d/docker.sources")).toBe(false);
-    expect(record(fake).changes[0]?.previous).toEqual({
+    expect(hostRecord(fake).changes[0]?.previous).toEqual({
       engine: "5:27.3.1-1~ubuntu.24.04~noble",
       repository: "present",
     });
@@ -367,9 +353,9 @@ describe("claims", () => {
   it("shares the host record with the other apps on the server", async () => {
     const fake = new FakeHost();
     await provision(fake, desiredFor(fake, { app: "blog", hostnames: ["blog.example.com"] }));
-    const before = record(fake).changes;
+    const before = hostRecord(fake).changes;
     await provision(fake);
-    expect(record(fake)).toMatchObject({ apps: ["blog", "shop"], changes: before });
+    expect(hostRecord(fake)).toMatchObject({ apps: ["blog", "shop"], changes: before });
   });
 });
 
@@ -386,7 +372,7 @@ describe("host record", () => {
       disable: { deleteData: false },
     });
     await applyApproved(fake, off);
-    expect(record(fake).apps).toEqual(["shop"]);
+    expect(hostRecord(fake).apps).toEqual(["shop"]);
   });
 });
 
@@ -396,7 +382,7 @@ describe("ufw default policies", () => {
     fake.ufwDefaults = { incoming: "allow", outgoing: "allow", routed: "reject" };
     await provision(fake);
     expect(fake.ufwDefaults).toMatchObject({ incoming: "deny", outgoing: "allow" });
-    expect(record(fake).changes.find((entry) => entry.step === "ufw")?.previous).toMatchObject({
+    expect(hostRecord(fake).changes.find((entry) => entry.step === "ufw")?.previous).toMatchObject({
       defaultIncoming: "allow",
       defaultOutgoing: "allow",
       defaultRouted: "reject",
@@ -642,7 +628,9 @@ describe("resuming after an interruption", () => {
       "app-dirs",
       "app-record",
     ]);
-    const upgrades = record(fake).changes.filter((entry) => entry.step === "unattended-upgrades");
+    const upgrades = hostRecord(fake).changes.filter(
+      (entry) => entry.step === "unattended-upgrades",
+    );
     expect(upgrades).toHaveLength(1);
   });
 
@@ -660,7 +648,7 @@ describe("resuming after an interruption", () => {
     expect(fake.files.get("/etc/ssh/sshd_config.d/10-opscrew.conf")).toContain(
       "PasswordAuthentication no",
     );
-    expect(record(fake).changes.filter((entry) => entry.step === "sshd")).toHaveLength(1);
+    expect(hostRecord(fake).changes.filter((entry) => entry.step === "sshd")).toHaveLength(1);
   });
 });
 
@@ -743,12 +731,12 @@ describe("teardown", () => {
     expect(JSON.parse(fake.files.get("/etc/opscrew/apps/shop.json") ?? "{}").state).toBe(
       "data-kept",
     );
-    expect(record(fake).apps).toEqual([]);
+    expect(hostRecord(fake).apps).toEqual([]);
     // Host settings stay: deploy user, SSH, firewall.
     expect(fake.users.has("deploy")).toBe(true);
     expect(fake.ufwActive).toBe(true);
     expect(
-      record(fake)
+      hostRecord(fake)
         .changes.filter((entry) => entry.purpose === "teardown")
         .map((entry) => entry.step),
     ).toEqual(["app-dirs", "edge", "portainer", "app-record"]);

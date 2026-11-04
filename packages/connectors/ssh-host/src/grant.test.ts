@@ -1,23 +1,30 @@
 import { canonicalJson } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
-import { FakeHost } from "./__fixtures__/fake-host";
 import {
   applyApproved,
   cloudServer,
-  provision,
+  MONITOR_GRANT,
+  onlyStep,
+  ownServer,
+  rejection,
   SH_AVAILABLE,
+  scriptsFor,
   shSyntax,
 } from "./__fixtures__/helpers";
 import { ShellHarness } from "./__fixtures__/shell-harness";
 import { HostApplyError } from "./apply";
-import { GRANT_KINDS, type GrantParams, GrantParamsSchema, grantEngine } from "./grant";
+import {
+  GRANT_KINDS,
+  type GrantParams,
+  GrantParamsSchema,
+  grantEngine,
+  MONITOR_LOGIN,
+} from "./grant";
 import { inspectHost } from "./inspect";
 import { planGrant } from "./plan";
 import { dockerRootCommand } from "./privilege";
 import { asDeployUser, asRoot, pipedScript } from "./shell";
-import { stepScripts } from "./steps";
-import type { HostPlan, HostStep } from "./types";
 
 const IMAGE = `caddy:2.11.7-alpine@sha256:${"0".repeat(63)}1`;
 const COMMAND = "opscrew vpn grant";
@@ -38,20 +45,10 @@ function grant(overrides: Partial<GrantParams> = {}): GrantParams {
   };
 }
 
-function scriptsOf(params: GrantParams) {
-  const step: HostStep = { id: "grant", title: "Grant", state: "change", scope: "app", params };
-  const plan: HostPlan = {
-    schemaVersion: 1,
-    purpose: "setup",
-    app: "shop",
-    steps: [step],
-    findings: [],
-  };
-  return stepScripts(plan, step);
-}
+const scriptsOf = (params: GrantParams) => scriptsFor({ id: "grant", params });
 
 describe("the grant step's parameters", () => {
-  it("refuse a login the database or the app already uses, a bad name, kind or service", () => {
+  it("refuse a login the database or the app already uses, a bad name, kind or service, and a monitoring login but Postgres's opscrew_monitor", () => {
     for (const params of [
       grant({ login: "app" }),
       grant({ login: "root" }),
@@ -61,10 +58,17 @@ describe("the grant step's parameters", () => {
       grant({ login: "a".repeat(33) }),
       { ...grant(), kind: "valkey" },
       grant({ service: "db;rm" }),
+      { ...MONITOR_GRANT, kind: "mysql" },
+      { ...MONITOR_GRANT, kind: "mongodb" },
+      { ...MONITOR_GRANT, login: "laptop" },
+      // No device login takes the monitoring login's name.
+      grant({ login: MONITOR_LOGIN }),
+      grant({ login: MONITOR_LOGIN, access: "full" }),
     ]) {
       expect(GrantParamsSchema.safeParse(params).success, JSON.stringify(params)).toBe(false);
     }
     expect(GrantParamsSchema.safeParse(grant({ login: "work-laptop_2" })).success).toBe(true);
+    expect(GrantParamsSchema.safeParse(MONITOR_GRANT).success).toBe(true);
   });
 });
 
@@ -118,22 +122,38 @@ describe("the grant step's statements (research R6a)", { timeout: 120_000 }, () 
       `a.updateUser("laptop", { pwd: "<password>", roles: [{ role: "readWrite", db: "app" }, { role: "dbAdmin", db: "app" }] });`,
     );
     expect(mongo.drop).toBe(`a.dropUser("laptop");`);
+
+    // The monitoring login: anything more than LOGIN, 3 connections and pg_monitor is "other".
+    for (const part of [
+      "r.rolconnlimit <> 3",
+      "pg_has_role(r.oid, 'app', 'MEMBER')",
+      "pg_has_role(r.oid, 'pg_read_all_data', 'MEMBER')",
+      "NOT pg_has_role(r.oid, 'pg_monitor', 'MEMBER')",
+      "WHERE r.rolname = 'opscrew_monitor'",
+    ]) {
+      expect(grantEngine(MONITOR_GRANT).state).toContain(part);
+    }
   });
 
-  it("match their snapshot for every kind and access, and its removal", () => {
+  it("match their snapshot for every kind and access, and its removal, and the monitoring login's", () => {
     const all: Record<string, string> = {};
-    for (const kind of GRANT_KINDS) {
-      for (const params of [
+    for (const params of [
+      ...GRANT_KINDS.flatMap((kind) => [
         grant({ kind }),
         grant({ kind, access: "full" }),
         grant({ kind, remove: true }),
-      ]) {
-        const name = `${kind} ${params.remove ? "removal" : params.access}`;
-        const scripts = scriptsOf(params);
-        all[`${name} check`] = scripts.check;
-        all[`${name} apply`] = scripts.apply;
-        all[`${name} verify`] = scripts.verify;
-      }
+      ]),
+      MONITOR_GRANT,
+      { ...MONITOR_GRANT, remove: true },
+    ]) {
+      const name =
+        params.access === "monitor"
+          ? `monitor${params.remove ? " removal" : ""}`
+          : `${params.kind} ${params.remove ? "removal" : params.access}`;
+      const scripts = scriptsOf(params);
+      all[`${name} check`] = scripts.check;
+      all[`${name} apply`] = scripts.apply;
+      all[`${name} verify`] = scripts.verify;
     }
     expect(all).toMatchSnapshot();
     for (const [name, script] of Object.entries(all)) {
@@ -159,6 +179,10 @@ describe("the grant step's statements (research R6a)", { timeout: 120_000 }, () 
       `if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; printf '%s\\n' "$ACCESS"; } | client >/dev/null; then`,
     ]);
     expect(scriptsOf(grant({ remove: true })).secrets).toBeUndefined();
+    expect(scriptsOf(MONITOR_GRANT).secrets).toEqual({
+      names: ["monitoringPostgresPassword"],
+      required: true,
+    });
   });
 });
 
@@ -210,6 +234,29 @@ exit 0`;
       expect(h.run(scripts.verify).status).toBe(0);
       expect(h.run(scripts.check).stdout).toContain("state=in-place");
       expect(h.run(scriptsOf(grant({ access: "full" })).check).stdout).toContain("state=change");
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("makes the monitoring login with its attributes and pg_monitor only, in place once the engine reads it so", () => {
+    const h = harness();
+    try {
+      const scripts = scriptsOf(MONITOR_GRANT);
+      expect(h.run(scripts.check).stdout).toContain("state=change");
+      const pw = password("monitor");
+      expect(h.run(scripts.apply, `${pw}\n`).status).toBe(0);
+      expect(sent(h).at(-1)).toBe(
+        [
+          "SET client_min_messages = error;",
+          `CREATE ROLE "opscrew_monitor" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT CONNECTION LIMIT 3 PASSWORD '${pw}';`,
+          `GRANT pg_monitor TO "opscrew_monitor";`,
+        ].join("\n"),
+      );
+      expect(h.calls().join("\n")).not.toContain(pw);
+      h.write("/state/state", "opscrew-login=monitor\n");
+      expect(h.run(scripts.check).stdout).toContain("state=in-place");
+      expect(h.run(scripts.verify).status).toBe(0);
     } finally {
       h.dispose();
     }
@@ -275,8 +322,7 @@ exit 0`;
 
 describe("planning and applying a grant", () => {
   it("is one step, planned as a change, without the password in the plan", async () => {
-    const fake = new FakeHost();
-    await provision(fake);
+    const fake = await ownServer();
     const plan = planGrant(await inspectHost(fake), { app: "shop", grant: grant() }, COMMAND);
     expect(plan.findings).toEqual([]);
     expect(plan.steps).toEqual([
@@ -301,8 +347,7 @@ describe("planning and applying a grant", () => {
   });
 
   it("sends the password on stdin only, runs as deploy, and leaves it out of errors", async () => {
-    const fake = new FakeHost();
-    await provision(fake);
+    const fake = await ownServer();
     const pw = password();
     const plan = planGrant(await inspectHost(fake), { app: "shop", grant: grant() }, COMMAND);
     expect(canonicalJson(plan)).not.toContain(pw);
@@ -329,18 +374,48 @@ describe("planning and applying a grant", () => {
       COMMAND,
     );
     fake.echoStdinOn = "grant.apply";
-    const error = await applyApproved(fake, full, {
-      command: COMMAND,
-      secrets: { grantPassword: pw },
-    }).catch((caught: unknown) => caught);
+    const error = await rejection(
+      applyApproved(fake, full, { command: COMMAND, secrets: { grantPassword: pw } }),
+    );
     expect(error).toBeInstanceOf(HostApplyError);
-    expect(String((error as Error).message)).not.toContain(pw);
-    expect(String((error as Error).message)).toContain("[REDACTED");
+    expect(error.message).not.toContain(pw);
+    expect(error.message).toContain("[REDACTED");
+  });
+
+  it("makes the monitoring login with the monitoring password, never in the plan or an error", async () => {
+    const fake = await ownServer();
+    const pw = password("monitor");
+    const plan = planGrant(await inspectHost(fake), { app: "shop", grant: MONITOR_GRANT }, COMMAND);
+    const step = onlyStep(plan);
+    expect(step.title).toBe(
+      `Let OpsCrew's monitoring read the statistics of db (PostgreSQL) with its own login "opscrew_monitor"`,
+    );
+    expect(step.reason).toContain("at most 3 connections and the pg_monitor role only");
+    expect(canonicalJson(plan)).not.toContain(pw);
+    const missing = await rejection(
+      applyApproved(fake, plan, { command: COMMAND, secrets: { grantPassword: pw } }),
+    );
+    expect(missing.message).toBe(
+      "Applying this plan needs the password of the monitoring login to Postgres, and none was supplied.",
+    );
+    const secrets = { monitoringPostgresPassword: pw };
+    await applyApproved(fake, plan, { command: COMMAND, secrets });
+    const apply = fake.calls.find((call) => call.name === "grant.apply");
+    expect(apply).toMatchObject({ asUser: "deploy", input: `${pw}\n` });
+    expect(apply?.command).not.toContain(pw);
+    expect(fake.databaseLogins.get("shop/db/opscrew_monitor")).toBe("monitor");
+
+    // A failing apply that echoes its stdin: the error shows no password.
+    fake.databaseLogins.clear();
+    fake.echoStdinOn = "grant.apply";
+    const error = await rejection(applyApproved(fake, plan, { command: COMMAND, secrets }));
+    expect(error).toBeInstanceOf(HostApplyError);
+    expect(error.message).not.toContain(pw);
+    expect(error.message).toContain("[REDACTED");
   });
 
   it("is refused without the password, or with one that is not letters and digits", async () => {
-    const fake = new FakeHost();
-    await provision(fake);
+    const fake = await ownServer();
     const plan = planGrant(await inspectHost(fake), { app: "shop", grant: grant() }, COMMAND);
     await expect(applyApproved(fake, plan, { command: COMMAND })).rejects.toThrow(
       "Applying this plan needs the password of the device's database login, and none was supplied.",

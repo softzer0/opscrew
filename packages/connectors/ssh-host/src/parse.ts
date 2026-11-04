@@ -29,7 +29,7 @@ import {
 } from "./facts";
 import type { NetworkFilterRule } from "./network-filter";
 import { runnerUnitText } from "./runner-unit";
-import { ServiceNameSchema, StackPathSchema } from "./types";
+import { AddonFileNameSchema, ServiceNameSchema, StackPathSchema } from "./types";
 
 /** Output of one inspection section: its text and the exit code of its command. */
 export interface Section {
@@ -748,7 +748,7 @@ export function parseMonitoring(text: string): {
     if (kind === "alloy") {
       destinations = ALLOY_DESTINATIONS.filter((destination) => rest.includes(destination));
     }
-    if (kind === "alloyfile" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(path) && hash.test(sum)) {
+    if (kind === "alloyfile" && AddonFileNameSchema.safeParse(path).success && hash.test(sum)) {
       alloyFiles[path] = sum;
     }
     if (kind === "alloypg" && ServiceNameSchema.safeParse(path).success) postgresHost = path;

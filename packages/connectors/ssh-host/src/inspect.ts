@@ -6,6 +6,7 @@ import {
   ADDON_PROJECTS,
   ALLOY_DESTINATIONS_FILE,
   ALLOY_POSTGRES_HOST_FILE,
+  ALLOY_SECRET_FILES,
   APP_RECORDS_DIR,
   APPS_DIR,
   addonDir,
@@ -21,7 +22,6 @@ import {
   HOST_SYSCTL_KEYS,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
-  POSTGRES_MONITOR_CREDENTIAL,
   READY_FLAG,
   RECORD_PATH,
   RUNNERS_DIR,
@@ -281,9 +281,6 @@ monitor() {
   echo "$1 $state \${sum:--} $data -"
 }
 ${ADDON_KINDS.map((kind) => `monitor ${kind} ${addonDir(kind, "root")}`).join("\n")}`;
-
-/** Alloy's secret files, which inspection never hashes. */
-const ALLOY_SECRET_FILES = ["grafana_cloud_credential", POSTGRES_MONITOR_CREDENTIAL];
 
 /**
  * The monitoring stack in its folder, on a server the user owns or one OpsCrew created: `stack`,

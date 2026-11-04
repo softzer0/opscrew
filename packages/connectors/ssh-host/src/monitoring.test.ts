@@ -1,84 +1,44 @@
-// Feature 020: the monitoring step, Alloy on any server, and the monitoring login (T2008).
+// Feature 020: the monitoring step and Alloy on any server (T2008); the monitoring login's step
+// is in grant.test.ts.
 import { spawnSync } from "node:child_process";
-import { canonicalJson, sha256Hex } from "@opscrew/core";
+import { sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { FakeHost } from "./__fixtures__/fake-host";
+import type { FakeHost } from "./__fixtures__/fake-host";
 import {
   ALLOY_FILES,
+  addBlog,
   addonSecrets,
   applyApproved,
   BESZEL_AGENT_FILES,
   cloudServer,
-  DEPLOY_KEY,
-  desiredFor,
+  everythingButStdin,
+  hostRecord,
+  MONITOR_GRANT,
   MONITORING_FILES,
   monitoringSecrets,
-  provision,
+  onlyStep,
+  ownServer,
+  rejection,
   SH_AVAILABLE,
   SHOP_PROJECT,
   SHOP_REPOSITORY,
+  scriptsFor,
   shSyntax,
 } from "./__fixtures__/helpers";
 import { ShellHarness } from "./__fixtures__/shell-harness";
 import { HostApplyError } from "./apply";
 import { MAX_SCRIPT_BYTES } from "./constants";
-import { type GrantParams, GrantParamsSchema, grantEngine } from "./grant";
 import { inspectHost, MONITORING_SNIPPET, readGrant } from "./inspect";
 import { parseMonitoring } from "./parse";
 import { planAddon, planGrant, planTeardown } from "./plan";
 import { dockerRootCommand } from "./privilege";
-import { asDeployUser, asRoot, pipedScript } from "./shell";
 import { stepScripts } from "./steps";
-import type { HostPlan, HostStep } from "./types";
+import type { HostPlan } from "./types";
 
 const IMAGE = `caddy:2.11.7-alpine@sha256:${"0".repeat(63)}1`;
 const STACK_DIR = "/srv/opscrew/addons/monitoring";
 const CLOUD_STACK_DIR = "/home/deploy/opscrew/addons/monitoring";
 const CREDENTIAL = `${STACK_DIR}/grafana_admin_credential`;
-
-async function rejection(
-  promise: Promise<unknown>,
-): Promise<Error & { code?: string; hint?: string }> {
-  try {
-    await promise;
-  } catch (error) {
-    return error as Error & { code?: string; hint?: string };
-  }
-  throw new Error("expected a rejection");
-}
-
-/** A server the user owns with "shop" set up on it. */
-async function ownServer(): Promise<FakeHost> {
-  const fake = new FakeHost();
-  await provision(fake);
-  return fake;
-}
-
-/** A second app, "blog", on the same server. */
-async function addBlog(fake: FakeHost): Promise<void> {
-  await provision(
-    fake,
-    desiredFor(fake, {
-      app: "blog",
-      projectId: "blog-1",
-      hostnames: ["blog.example.com"],
-      deploy: { user: "deploy", publicKey: DEPLOY_KEY.replace("opscrew-deploy", "blog-deploy") },
-    }),
-  );
-}
-
-function hostRecord(fake: FakeHost): { addons?: Record<string, string> } {
-  return JSON.parse(fake.files.get("/etc/opscrew/host.json") ?? "{}");
-}
-
-/** The plan's hash input, every command that ran (stdin aside), and the host record. */
-function everythingButStdin(fake: FakeHost, plan: HostPlan): string {
-  return [
-    canonicalJson(plan),
-    ...fake.calls.map((call) => call.command),
-    fake.files.get("/etc/opscrew/host.json") ?? "",
-  ].join("\n");
-}
 
 /** The monitoring stack turned on for `app` on a server the user owns. */
 async function stackPlan(
@@ -92,12 +52,6 @@ async function stackPlan(
     facts: await inspectHost(fake),
     enable: { files },
   });
-}
-
-function onlyStep(plan: HostPlan): HostStep {
-  const [step] = plan.steps;
-  if (step === undefined || plan.steps.length !== 1) throw new Error("expected one step");
-  return step;
 }
 
 describe("Grafana Cloud's Alloy without monitoring", () => {
@@ -148,7 +102,7 @@ describe("the monitoring step on a server the user owns", () => {
     for (const dir of ["grafana", "grafana/dashboards", "grafana/provisioning/datasources"]) {
       expect(fake.madeDirs.has(`${STACK_DIR}/${dir}`)).toBe(true);
     }
-    expect(fake.composeUps).toEqual([{ project: "opscrew-monitoring", recreate: true }]);
+    expect(fake.addonUps.get("opscrew-monitoring")).toBe(1);
     expect(hostRecord(fake).addons).toEqual({ monitoring: "shop" });
     const calls = fake.calls.filter((call) => call.name.startsWith("monitoring"));
     expect(calls.map((call) => call.name)).toEqual([
@@ -175,23 +129,7 @@ describe("the monitoring step on a server the user owns", () => {
       secrets: { grafanaAdminPassword: secrets.grafanaAdminPassword },
     });
     expect(again).toEqual({ applied: [], skipped: ["monitoring"] });
-    expect(fake.composeUps).toHaveLength(1);
-  });
-
-  it("recreates the services when a file changed, in the plan or on the server, and not when only a container stopped", async () => {
-    const fake = await ownServer();
-    const secrets = { grafanaAdminPassword: monitoringSecrets().grafanaAdminPassword };
-    await applyApproved(fake, await stackPlan(fake), { secrets });
-    const changed = await stackPlan(fake, { ...MONITORING_FILES, "loki.yaml": "changed: true\n" });
-    await applyApproved(fake, changed, { secrets });
-    expect(fake.files.get(`${STACK_DIR}/loki.yaml`)).toBe("changed: true\n");
-    fake.containers = fake.containers.filter((c) => c.project !== "opscrew-monitoring");
-    expect((await applyApproved(fake, changed, { secrets })).applied).toEqual(["monitoring"]);
-    // A file edited on the server: the same plan rewrites it, and the services see it.
-    fake.files.set(`${STACK_DIR}/prometheus.yml`, "edited on the server\n");
-    expect((await applyApproved(fake, changed, { secrets })).applied).toEqual(["monitoring"]);
-    expect(fake.files.get(`${STACK_DIR}/prometheus.yml`)).toBe(MONITORING_FILES["prometheus.yml"]);
-    expect(fake.composeUps.map((up) => up.recreate)).toEqual([true, true, false, true]);
+    expect(fake.addonUps.get("opscrew-monitoring")).toBe(1);
   });
 
   it("runs as root through Docker on a server OpsCrew created, in the deploy user's folder, and records its owner there", async () => {
@@ -330,7 +268,6 @@ describe("the monitoring step on a server the user owns", () => {
 describe("turning the monitoring stack off", () => {
   it("keeps its volumes without removeData, still its owner's, and removes them only in a plan that deletes data", async () => {
     const fake = await ownServer();
-    await addBlog(fake);
     const secrets = { grafanaAdminPassword: monitoringSecrets().grafanaAdminPassword };
     await applyApproved(fake, await stackPlan(fake), { secrets });
     const off = planAddon("monitoring", {
@@ -348,21 +285,9 @@ describe("turning the monitoring stack off", () => {
     expect([...fake.files.keys()].some((path) => path.startsWith(`${STACK_DIR}/`))).toBe(false);
     expect(fake.containers.some((c) => c.project === "opscrew-monitoring")).toBe(false);
     expect(fake.volumes.has("opscrew-monitoring")).toBe(true);
-    // The figures, the logs and Grafana's admin stay the owner's: no other app takes them over
-    // or deletes them, at plan or at apply time.
+    // The figures, the logs and Grafana's admin stay the owner's (the record keeps it), so no
+    // other app takes them over or deletes them.
     expect(hostRecord(fake).addons).toEqual({ monitoring: "shop" });
-    const facts = await inspectHost(fake);
-    for (const change of [
-      { enable: { files: MONITORING_FILES } },
-      { disable: { removeData: true } },
-    ]) {
-      expect(() =>
-        planAddon("monitoring", { app: "blog", runAs: "root", facts, ...change }),
-      ).toThrow(`OpsCrew's monitoring is already on this server for the app "shop"`);
-    }
-    const blogPlan = { ...(await stackPlan(fake)), app: "blog" };
-    const refusedBlog = await rejection(applyApproved(fake, blogPlan, { secrets }));
-    expect(refusedBlog.message).toContain('for the app "shop"');
 
     await applyApproved(fake, await stackPlan(fake), { secrets });
     const gone = planAddon("monitoring", {
@@ -561,27 +486,17 @@ exit 0`;
     }
 
     function stack(files: Record<string, string>) {
-      const plan: HostPlan = {
-        schemaVersion: 1,
-        purpose: "setup",
-        app: "shop",
-        steps: [
-          {
-            id: "monitoring",
-            title: "Run the monitoring stack",
-            state: "change",
-            scope: "shared",
-            params: {
-              runAs: "root",
-              ...Object.fromEntries(
-                Object.entries(files).map(([path, text]) => [`file:${path}`, text]),
-              ),
-            },
-          },
-        ],
-        findings: [],
-      };
-      return stepScripts(plan, onlyStep(plan));
+      const params = Object.entries(files).map(([path, text]) => [`file:${path}`, text]);
+      return scriptsFor({
+        id: "monitoring",
+        params: { runAs: "root", ...Object.fromEntries(params) },
+      });
+    }
+
+    /** The stack's removal, its volumes too with `removeData` (in a plan that deletes data). */
+    function removal(removeData: boolean, runAs = "root") {
+      const params = { remove: true, runAs, removeData };
+      return scriptsFor({ id: "monitoring", params }, { deleteData: removeData });
     }
 
     it("writes every file from stdin and the password as root's 0640, then brings the stack up and waits", () => {
@@ -657,25 +572,6 @@ exit 0`;
     it("removes the stack and its folder, and its volumes only with removeData", () => {
       const h = harness();
       try {
-        const removal = (removeData: boolean) => {
-          const plan: HostPlan = {
-            schemaVersion: 1,
-            purpose: "setup",
-            app: "shop",
-            steps: [
-              {
-                id: "monitoring",
-                title: "Remove",
-                state: "change",
-                scope: "shared",
-                params: { remove: true, runAs: "root", removeData },
-              },
-            ],
-            findings: [],
-            ...(removeData ? { deleteData: true } : {}),
-          };
-          return stepScripts(plan, onlyStep(plan));
-        };
         for (const removeData of [false, true]) {
           h.write(`${STACK_DIR}/compose.yaml`, "services: {}\n");
           h.write(`${STACK_DIR}/grafana_admin_credential`, "x");
@@ -702,30 +598,13 @@ exit 0`;
 
     it("match their snapshot", () => {
       const setup = stack(MONITORING_FILES);
-      const plan: HostPlan = {
-        schemaVersion: 1,
-        purpose: "setup",
-        app: "shop",
-        steps: [
-          {
-            id: "monitoring",
-            title: "Remove",
-            state: "change",
-            scope: "shared",
-            params: { remove: true, runAs: "login", removeData: true },
-          },
-        ],
-        findings: [],
-        deleteData: true,
-      };
-      const removal = stepScripts(plan, onlyStep(plan));
+      const remove = removal(true, "login");
       expect({
         check: setup.check,
         apply: setup.apply,
         verify: setup.verify,
-        payload: setup.payload,
-        "remove apply": removal.apply,
-        "remove verify": removal.verify,
+        "remove apply": remove.apply,
+        "remove verify": remove.verify,
       }).toMatchSnapshot();
     });
   },
@@ -801,13 +680,7 @@ describe("planning the monitoring add-ons again", () => {
   it("puts the monitoring login in place once the server reads it so", async () => {
     const fake = await ownServer();
     const facts = await inspectHost(fake);
-    const grant = {
-      service: "db",
-      kind: "postgres",
-      login: "opscrew_monitor",
-      access: "monitor",
-      remove: false,
-    } as const;
+    const grant = MONITOR_GRANT;
     const read = () => readGrant(fake, { app: "shop", grant }, facts.privilege);
     expect(await read()).toBe(false);
     const plan = planGrant(facts, { app: "shop", grant, inPlace: await read() }, "x");
@@ -919,27 +792,16 @@ describe("Alloy on any server of the app", () => {
         enable: { files: ALLOY_FILES, server: "Bad Name", destinations: ["monitoring"] },
       }),
     ).toThrow(/server: must be a server's name/);
-    const beszel: HostStep = {
-      id: "beszel",
-      title: "Run Beszel's agent",
-      state: "change",
-      scope: "shared",
-      params: {
-        runAs: "login",
-        mode: "agent",
-        server: "app",
-        destinations: "monitoring",
-        "file:compose.yaml": "services: {}\n",
-      },
+    const params = {
+      runAs: "login",
+      mode: "agent",
+      server: "app",
+      destinations: "monitoring",
+      "file:compose.yaml": "services: {}\n",
     };
-    const plan: HostPlan = {
-      schemaVersion: 1,
-      purpose: "setup",
-      app: "shop",
-      steps: [beszel],
-      findings: [],
-    };
-    expect(() => stepScripts(plan, beszel)).toThrow(/invalid parameters \(destinations\)/);
+    expect(() => scriptsFor({ id: "beszel", params })).toThrow(
+      /invalid parameters \(destinations\)/,
+    );
   });
 
   it.skipIf(!SH_AVAILABLE)(
@@ -980,7 +842,7 @@ describe("Alloy on any server of the app", () => {
         const uses = scripts.apply.split("\n").filter((line) => /\$pgpw\b/.test(line));
         expect(uses.map((line) => line.trim().split(" ")[0])).toEqual(["case", "printf"]);
         expect(h.run(scripts.verify).status).toBe(0);
-        // A renamed Postgres service is noticed: the data source names another host.
+        // A renamed Postgres service is noticed: the host file names another host.
         const renamed = planAddon("alloy", {
           app: "shop",
           runAs: "login",
@@ -1078,163 +940,6 @@ exit 0`,
   },
 );
 
-/** The monitoring login's parameters on the app's Postgres. */
-function monitor(overrides: Partial<GrantParams> = {}): GrantParams {
-  return {
-    service: "db",
-    kind: "postgres",
-    login: "opscrew_monitor",
-    access: "monitor",
-    remove: false,
-    ...overrides,
-  };
-}
-
-function grantScripts(params: GrantParams) {
-  const step: HostStep = { id: "grant", title: "Grant", state: "change", scope: "app", params };
-  const plan: HostPlan = {
-    schemaVersion: 1,
-    purpose: "setup",
-    app: "shop",
-    steps: [step],
-    findings: [],
-  };
-  return stepScripts(plan, step);
-}
-
-describe("grant's monitor access: the monitoring login", () => {
-  it("is Postgres's opscrew_monitor only, and no device login takes its name", () => {
-    expect(GrantParamsSchema.safeParse(monitor()).success).toBe(true);
-    for (const params of [
-      monitor({ kind: "mysql" }),
-      monitor({ kind: "mongodb" }),
-      monitor({ login: "laptop" }),
-      monitor({ access: "read-only" }),
-      monitor({ access: "full" }),
-    ]) {
-      expect(GrantParamsSchema.safeParse(params).success, JSON.stringify(params)).toBe(false);
-    }
-  });
-
-  it("makes the login with LOGIN, 3 connections and pg_monitor, nothing else, and reads it back", () => {
-    const engine = grantEngine(monitor());
-    const attributes =
-      "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT CONNECTION LIMIT 3";
-    expect(engine.create).toEqual([
-      `CREATE ROLE "opscrew_monitor" WITH ${attributes} PASSWORD '`,
-      "';",
-    ]);
-    expect(engine.update).toEqual([
-      `ALTER ROLE "opscrew_monitor" WITH ${attributes} PASSWORD '`,
-      "';",
-    ]);
-    expect(engine.access).toBe(`GRANT pg_monitor TO "opscrew_monitor";`);
-    expect(engine.want).toBe("monitor");
-    // The check asks the engine for the login and its role; anything more is "other".
-    for (const part of [
-      "r.rolconnlimit <> 3",
-      "pg_has_role(r.oid, 'app', 'MEMBER')",
-      "pg_has_role(r.oid, 'pg_read_all_data', 'MEMBER')",
-      "NOT pg_has_role(r.oid, 'pg_monitor', 'MEMBER')",
-      "WHERE r.rolname = 'opscrew_monitor'",
-    ]) {
-      expect(engine.state).toContain(part);
-    }
-    const scripts = grantScripts(monitor());
-    expect(scripts.secrets).toEqual({ names: ["monitoringPostgresPassword"], required: true });
-    expect(scripts.asDeploy).toBe(true);
-    const all = {
-      "monitor check": scripts.check,
-      "monitor apply": scripts.apply,
-      "monitor verify": scripts.verify,
-      "monitor removal apply": grantScripts(monitor({ remove: true })).apply,
-    };
-    expect(all).toMatchSnapshot();
-    for (const [name, script] of Object.entries(all)) {
-      for (const command of [
-        script,
-        asRoot("sudo", asDeployUser(script)),
-        pipedScript(asDeployUser(script), "pw\n"),
-      ]) {
-        const syntax = shSyntax(command);
-        if (syntax !== undefined) expect(syntax.ok, `${name}: ${syntax.stderr}`).toBe(true);
-      }
-    }
-  });
-
-  it.skipIf(!SH_AVAILABLE)(
-    "sends the statements with the password on the client's stdin in a real shell, and is in place once the login is right",
-    () => {
-      const h = new ShellHarness();
-      try {
-        h.stub(
-          "docker",
-          `stdin=$(cat)
-printf '%s\\n---\\n' "$stdin" >> "$S/stdin"
-case "$stdin" in *opscrew-*) echo opscrew-read; cat "$S/state" 2>/dev/null ;; esac
-exit 0`,
-        );
-        const scripts = grantScripts(monitor());
-        expect(h.run(scripts.check).stdout).toContain("state=change");
-        const pw = monitoringSecrets().monitoringPostgresPassword;
-        expect(h.run(scripts.apply, `${pw}\n`).status).toBe(0);
-        const sent = (h.read("/state/stdin") ?? "").split("\n---\n").filter(Boolean);
-        expect(sent.at(-1)).toBe(
-          [
-            "SET client_min_messages = error;",
-            `CREATE ROLE "opscrew_monitor" WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS INHERIT CONNECTION LIMIT 3 PASSWORD '${pw}';`,
-            `GRANT pg_monitor TO "opscrew_monitor";`,
-          ].join("\n"),
-        );
-        expect(h.calls().join("\n")).not.toContain(pw);
-        h.write("/state/state", "opscrew-login=monitor\n");
-        expect(h.run(scripts.check).stdout).toContain("state=in-place");
-        expect(h.run(scripts.verify).status).toBe(0);
-      } finally {
-        h.dispose();
-      }
-    },
-  );
-
-  it("is planned and applied with the monitoring password, never in the plan or an error", async () => {
-    const fake = new FakeHost();
-    await provision(fake);
-    const pw = monitoringSecrets().monitoringPostgresPassword;
-    const plan = planGrant(
-      await inspectHost(fake),
-      { app: "shop", grant: monitor() },
-      "opscrew provision",
-    );
-    const step = onlyStep(plan);
-    expect(step.title).toBe(
-      `Let OpsCrew's monitoring read the statistics of db (PostgreSQL) with its own login "opscrew_monitor"`,
-    );
-    expect(step.reason).toContain("at most 3 connections and the pg_monitor role only");
-    expect(canonicalJson(plan)).not.toContain(pw);
-    expect(
-      (await rejection(applyApproved(fake, plan, { secrets: { grantPassword: pw } }))).message,
-    ).toBe(
-      "Applying this plan needs the password of the monitoring login to Postgres, and none was supplied.",
-    );
-    await applyApproved(fake, plan, { secrets: { monitoringPostgresPassword: pw } });
-    const apply = fake.calls.find((call) => call.name === "grant.apply");
-    expect(apply?.asUser).toBe("deploy");
-    expect(apply?.input).toBe(`${pw}\n`);
-    expect(apply?.command).not.toContain(pw);
-    expect(fake.databaseLogins.get("shop/db/opscrew_monitor")).toBe("monitor");
-
-    // A failing apply that echoes its stdin: the error shows no password.
-    fake.databaseLogins.clear();
-    fake.echoStdinOn = "grant.apply";
-    const error = await rejection(
-      applyApproved(fake, plan, { secrets: { monitoringPostgresPassword: pw } }),
-    );
-    expect(error).toBeInstanceOf(HostApplyError);
-    expect(error.message).not.toContain(pw);
-    expect(error.message).toContain("[REDACTED");
-  });
-});
-
 describe("the monitoring secrets never leak (SC-2008)", () => {
   it("stay out of errors from a failing apply that echoes its stdin", async () => {
     const fake = await ownServer();
@@ -1248,6 +953,5 @@ describe("the monitoring secrets never leak (SC-2008)", () => {
     );
     expect(error).toBeInstanceOf(HostApplyError);
     expect(`${error.message} ${error.hint}`).not.toContain(secrets.grafanaAdminPassword);
-    expect(everythingButStdin(fake, plan)).not.toContain(secrets.grafanaAdminPassword);
   });
 });

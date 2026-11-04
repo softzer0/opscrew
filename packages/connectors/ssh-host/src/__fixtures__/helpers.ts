@@ -1,14 +1,17 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: Compose interpolation in stand-in files.
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
-import { sha256Hex } from "@opscrew/core";
+import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { applyHostPlan } from "../apply";
-import { BESZEL_TOKEN_PLACEHOLDER } from "../constants";
+import { BESZEL_TOKEN_PLACEHOLDER, RECORD_PATH } from "../constants";
+import { HostRecordSchema } from "../facts";
+import type { GrantParams } from "../grant";
 import { hostPlanHash } from "../hash";
 import { inspectHost } from "../inspect";
 import { planHost, planTeardown } from "../plan";
-import type { ApplyOptions, DesiredHost, DesiredRunner, HostPlan } from "../types";
+import { stepScripts } from "../steps";
+import type { ApplyOptions, DesiredHost, DesiredRunner, HostPlan, HostStep } from "../types";
 import { FakeHost, wgPublicKey } from "./fake-host";
 
 /** A synthetic OpenSSH public key line (public keys are not secrets). */
@@ -186,6 +189,84 @@ export async function provision(
   const result = await applyApproved(fake, plan, options);
   return { plan, result };
 }
+
+/** A server the user owns with "shop" set up on it. */
+export async function ownServer(): Promise<FakeHost> {
+  const fake = new FakeHost();
+  await provision(fake);
+  return fake;
+}
+
+/** A second app, "blog", on the same server. */
+export async function addBlog(fake: FakeHost): Promise<void> {
+  await provision(
+    fake,
+    desiredFor(fake, {
+      app: "blog",
+      projectId: "blog-1",
+      hostnames: ["blog.example.com"],
+      deploy: { user: "deploy", publicKey: DEPLOY_KEY.replace("opscrew-deploy", "blog-deploy") },
+    }),
+  );
+}
+
+/** The host record the fake holds. */
+export function hostRecord(fake: FakeHost) {
+  return HostRecordSchema.parse(JSON.parse(fake.files.get(RECORD_PATH) ?? "null"));
+}
+
+/** The OpsCrewError `promise` rejects with; any other error is thrown again. */
+export async function rejection(promise: Promise<unknown>): Promise<OpsCrewError> {
+  try {
+    await promise;
+  } catch (error) {
+    if (error instanceof OpsCrewError) return error;
+    throw error;
+  }
+  throw new Error("expected a rejection");
+}
+
+/** The plan's hash input, every command that ran (stdin aside), and the host record. */
+export function everythingButStdin(fake: FakeHost, plan: HostPlan): string {
+  return [
+    canonicalJson(plan),
+    ...fake.calls.map((call) => call.command),
+    fake.files.get(RECORD_PATH) ?? "",
+  ].join("\n");
+}
+
+/** The only step of a one-step plan. */
+export function onlyStep(plan: HostPlan): HostStep {
+  const [step] = plan.steps;
+  if (step === undefined || plan.steps.length !== 1) throw new Error("expected one step");
+  return step;
+}
+
+/** The scripts of `step` alone in a setup plan of "shop" (`deleteData`: a plan that deletes data). */
+export function scriptsFor(
+  step: Pick<HostStep, "id" | "params">,
+  options: { deleteData?: boolean } = {},
+) {
+  const full: HostStep = { title: step.id, state: "change", scope: "shared", ...step };
+  const plan: HostPlan = {
+    schemaVersion: 1,
+    purpose: "setup",
+    app: "shop",
+    steps: [full],
+    findings: [],
+    ...(options.deleteData === true ? { deleteData: true } : {}),
+  };
+  return stepScripts(plan, full);
+}
+
+/** The monitoring login on the app's Postgres (`grant`'s access `monitor`). */
+export const MONITOR_GRANT: GrantParams = {
+  service: "db",
+  kind: "postgres",
+  login: "opscrew_monitor",
+  access: "monitor",
+  remove: false,
+};
 
 /**
  * Removes the app from the server with an approved teardown (its data too, by default), from the

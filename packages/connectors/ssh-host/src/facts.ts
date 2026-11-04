@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ALLOY_DESTINATIONS, RUNTIME_FILE_NAMES } from "./constants";
-import { AccessModeSchema, HostStepIdSchema, StackPathSchema } from "./types";
+import { AccessModeSchema, AddonFileNameSchema, HostStepIdSchema, StackPathSchema } from "./types";
 
 /** Version written to the host record (`opscrewVersion`). */
 export const HOST_ADAPTER_VERSION = "0.1.0";
@@ -469,7 +469,7 @@ export const HostFactsSchema = z.object({
   alloy: z
     .object({
       destinations: z.array(z.enum(ALLOY_DESTINATIONS)),
-      files: z.record(z.string(), z.string().regex(/^[0-9a-f]{64}$/)).default({}),
+      files: z.record(AddonFileNameSchema, z.string().regex(/^[0-9a-f]{64}$/)).default({}),
       postgresHost: z.string().optional(),
     })
     .optional(),

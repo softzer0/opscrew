@@ -5,7 +5,7 @@
  * `verify` that proves the change took effect. Parameters are validated here and shell-quoted by
  * `buildScript`; secrets never appear in a script, they arrive on stdin.
  */
-import { OpsCrewError, sha256Hex } from "@opscrew/core";
+import { OpsCrewError, sha256Hex, upperFirst } from "@opscrew/core";
 import { z } from "zod";
 import {
   ADDON_NAMES,
@@ -15,6 +15,7 @@ import {
   ALLOY_DESTINATIONS,
   ALLOY_DESTINATIONS_FILE,
   ALLOY_POSTGRES_HOST_FILE,
+  ALLOY_SECRET_FILES,
   APP_RECORDS_DIR,
   APT_LOG,
   AUTO_UPGRADES_FILE,
@@ -44,7 +45,6 @@ import {
   PORTAINER_DIR,
   PORTAINER_PORT,
   PORTAINER_PROJECT,
-  POSTGRES_MONITOR_CREDENTIAL,
   READY_FLAG,
   RECORD_PATH,
   RUNNERS_DIR,
@@ -117,6 +117,7 @@ import {
 import {
   type AccessMode,
   AccessModeSchema,
+  AddonFileNameSchema,
   AppNameSchema,
   ComposeTextSchema,
   DesiredRunnerSchema,
@@ -133,6 +134,7 @@ import {
   StackPathSchema,
   spaceList,
   TunnelIdSchema,
+  textUpTo,
 } from "./types";
 import {
   dockerBackendCheck,
@@ -1585,10 +1587,7 @@ function grantScripts(plan: HostPlan, step: HostStep): StepScripts {
   if (!AppNameSchema.safeParse(plan.app).success) throw invalid(step, "the plan names no app");
   const engine = grantEngine(p);
   const monitor = p.access === "monitor";
-  // The login at the start of a sentence, and within one.
-  const [Login, login] = monitor
-    ? ["OpsCrew's monitoring login", "OpsCrew's monitoring login"]
-    : ["The device's login", "the device's login"];
+  const login = monitor ? "OpsCrew's monitoring login" : "the device's login";
   return scripts({
     name: "grant",
     params: {
@@ -1646,8 +1645,8 @@ if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; print
 fi
 pw=''`,
     failed: p.remove
-      ? `${Login} is still in the database.`
-      : `${Login} does not have the planned access.`,
+      ? `${upperFirst(login)} is still in the database.`
+      : `${upperFirst(login)} does not have the planned access.`,
     rewrite: rewrite === true,
     secrets: p.remove
       ? undefined
@@ -2616,15 +2615,11 @@ read_others "$k"
 // ---------------------------------------------------------------------------------------------
 // beszel and alloy: the monitoring add-ons, run as the deploy user (feature 017)
 
-/** A file `renderAddon` renders, at the root of the add-on's folder. */
-const AddonFileNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
-
 /** The files the step writes itself; a rendered file may not take their names. */
 const OWN_ADDON_FILES = new Set([
   "hub.env",
   "agent.env",
-  "grafana_cloud_credential",
-  POSTGRES_MONITOR_CREDENTIAL,
+  ...ALLOY_SECRET_FILES,
   "data",
   "agent_data",
 ]);
@@ -2701,9 +2696,7 @@ interface AddonVariant {
   /** The files the step writes from stdin, which must be there (non-empty). */
   secretFiles: string[];
   /** Alloy's files of another variant, removed by the apply (a secret no longer used). */
-  staleFiles: string[];
-  /** Alloy's destinations, written to `ALLOY_DESTINATIONS_FILE` ("" for none: the file stays out). */
-  destinations: string;
+  staleFiles?: string[];
   /** Folders the containers write, bind-mounted, the deploy user's. */
   dataDirs: string[];
   /** The rendered file whose token placeholder the step fills in ("" for none). */
@@ -2734,23 +2727,20 @@ const refuse = (what: string, product: string) =>
 function alloyVariant(p: AddonSettings): AddonVariant {
   const cloud = p.destinations === undefined || p.destinations.includes("grafanaCloud");
   const postgres = p.postgresHost !== undefined;
-  const files: [string, boolean][] = [
-    ["grafana_cloud_credential", cloud],
-    [POSTGRES_MONITOR_CREDENTIAL, postgres],
-  ];
+  const [cloudFile, postgresFile] = ALLOY_SECRET_FILES;
   const lines = <T>(on: boolean, ...items: T[]): T[] => (on ? items : []);
   return {
     secrets: [
       ...lines<SecretName>(cloud, "grafanaCloudToken"),
       ...lines<SecretName>(postgres, "monitoringPostgresPassword"),
     ],
-    secretFiles: files.filter(([, used]) => used).map(([name]) => name),
+    secretFiles: [...lines(cloud, cloudFile), ...lines(postgres, postgresFile)],
     staleFiles: [
-      ...files.filter(([, used]) => !used).map(([name]) => name),
+      ...lines(!cloud, cloudFile),
+      ...lines(!postgres, postgresFile),
       ...lines(p.destinations === undefined, ALLOY_DESTINATIONS_FILE),
       ...lines(!postgres, ALLOY_POSTGRES_HOST_FILE),
     ],
-    destinations: p.destinations?.join(" ") ?? "",
     dataDirs: ["data"],
     templated: "",
     read: [
@@ -2765,10 +2755,10 @@ function alloyVariant(p: AddonSettings): AddonVariant {
       ),
     ].join("\n"),
     write: [
-      ...lines(cloud, `printf '%s' "$token" | put "$DIR/grafana_cloud_credential"`, "token=''"),
+      ...lines(cloud, `printf '%s' "$token" | put "$DIR/${cloudFile}"`, "token=''"),
       ...lines(
         postgres,
-        `printf 'postgresql://${MONITOR_LOGIN}:%s@%s:5432/postgres?sslmode=disable' "$pgpw" "$POSTGRES_HOST" | put "$DIR/${POSTGRES_MONITOR_CREDENTIAL}"`,
+        `printf 'postgresql://${MONITOR_LOGIN}:%s@%s:5432/postgres?sslmode=disable' "$pgpw" "$POSTGRES_HOST" | put "$DIR/${postgresFile}"`,
         "pgpw=''",
         // The host again, apart from the secret, for inspection.
         `printf '%s\\n' "$POSTGRES_HOST" | put "$DIR/${ALLOY_POSTGRES_HOST_FILE}" 0644`,
@@ -2796,8 +2786,6 @@ function addonVariant(kind: AddonKind, p: AddonSettings): AddonVariant {
     return {
       secrets: ["beszelToken"],
       secretFiles: ["agent.env"],
-      staleFiles: [],
-      destinations: "",
       dataDirs: ["agent_data"],
       templated: "",
       read: `${readLines(["token"])}
@@ -2808,8 +2796,6 @@ case "$token" in ''|*[!A-Za-z0-9-]*) token=''; ${refuse("Beszel agent token", "B
   return {
     secrets: ["beszelPassword", "beszelToken", "beszelHubKey"],
     secretFiles: ["hub.env", "agent.env", "config.yml", "data/id_ed25519"],
-    staleFiles: [],
-    destinations: "",
     dataDirs: ["data", "agent_data"],
     templated: "config.yml",
     read: `${readLines(["pw", "token", "key"])}
@@ -2856,7 +2842,6 @@ files_ok() {
   [ -f "$DIR/.opscrew-files" ] && [ "$(cat "$DIR/.opscrew-files")" = "$MANIFEST" ] || return 1
   for entry in $PLAIN; do [ "$(sum_of "$DIR/\${entry%%:*}")" = "\${entry#*:}" ] || return 1; done
   for f in $SECRET_FILES; do [ -s "$DIR/$f" ] || return 1; done
-  [ -z "$POSTGRES_HOST" ] || grep -qF "@$POSTGRES_HOST:5432/" "$DIR/${POSTGRES_MONITOR_CREDENTIAL}" || return 1
   [ -z "$POSTGRES_HOST" ] || [ "$(cat "$DIR/${ALLOY_POSTGRES_HOST_FILE}" 2>/dev/null)" = "$POSTGRES_HOST" ] || return 1
   for f in $STALE_FILES; do [ ! -e "$DIR/$f" ] && [ ! -L "$DIR/$f" ] || return 1; done
   [ -z "$DESTINATIONS" ] || [ "$(cat "$DIR/${ALLOY_DESTINATIONS_FILE}" 2>/dev/null)" = "$DESTINATIONS" ] || return 1
@@ -2889,9 +2874,6 @@ function addonScripts(
   if ((p.mode === "hub") !== (p.hubKey !== undefined)) throw invalid(step, "hubKey");
   if ((p.server === undefined) !== (p.destinations === undefined)) throw invalid(step, "server");
   if (kind !== "alloy" && p.server !== undefined) throw invalid(step, "destinations");
-  if (p.destinations !== undefined && new Set(p.destinations).size !== p.destinations.length) {
-    throw invalid(step, "destinations");
-  }
   // Postgres's figures go to the monitoring stack only.
   if (p.postgresHost !== undefined && p.destinations?.includes("monitoring") !== true) {
     throw invalid(step, "postgresHost");
@@ -2925,8 +2907,8 @@ function addonScripts(
       TEMPLATED: variant.templated,
       PLACEHOLDER: BESZEL_TOKEN_PLACEHOLDER,
       SECRET_FILES: variant.secretFiles.join(" "),
-      STALE_FILES: variant.staleFiles.join(" "),
-      DESTINATIONS: variant.destinations,
+      STALE_FILES: (variant.staleFiles ?? []).join(" "),
+      DESTINATIONS: p.destinations?.join(" ") ?? "",
       POSTGRES_HOST: p.postgresHost ?? "",
       DATA_DIRS: variant.dataDirs.join(" "),
       // Every file the step writes that its containers read: the rendered ones and the secrets.
@@ -2995,11 +2977,7 @@ done`,
  */
 const STACK_FILE_RULES: FileRules = {
   name: StackPathSchema,
-  text: z
-    .string()
-    .min(1)
-    .max(MAX_STACK_FILE_BYTES)
-    .refine((text) => !text.includes("\0")),
+  text: textUpTo(MAX_STACK_FILE_BYTES),
   reserved: new Set([GRAFANA_ADMIN_CREDENTIAL]),
 };
 
@@ -3102,6 +3080,13 @@ printf '%s\\n' "$MANIFEST" | put "$DIR/.opscrew-files"`,
   });
 }
 
+/** The last lines of the add-ons' and the monitoring stack's removals. */
+const ADDON_PARENTS_CLEANUP = `# The add-ons' parent goes too once it is empty, and on a server the user owns OpsCrew's root.
+if [ -d "$PARENT" ] && [ -z "$(ls -A "$PARENT")" ]; then rmdir "$PARENT"; fi
+if [ "$RUN_AS" = root ] && [ -d "$ADDONS_ROOT" ] && [ -z "$(ls -A "$ADDONS_ROOT")" ]; then
+  rmdir "$ADDONS_ROOT"
+fi`;
+
 /**
  * Removes the monitoring stack: `docker compose down`, then its folder (its password file
  * included); its volumes (the figures, the logs and Grafana's own data) only with `removeData`,
@@ -3132,11 +3117,7 @@ function monitoringRemoveScripts(plan: HostPlan, step: HostStep): StepScripts {
   [ ! -e "$DIR" ] && [ ! -L "$DIR" ]`,
     apply: `remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" "$REMOVE_DATA"
 rm -rf "$DIR"
-# The add-ons' parent goes too once it is empty, and on a server the user owns OpsCrew's root.
-if [ -d "$PARENT" ] && [ -z "$(ls -A "$PARENT")" ]; then rmdir "$PARENT"; fi
-if [ "$RUN_AS" = root ] && [ -d "$ADDONS_ROOT" ] && [ -z "$(ls -A "$ADDONS_ROOT")" ]; then
-  rmdir "$ADDONS_ROOT"
-fi`,
+${ADDON_PARENTS_CLEANUP}`,
     failed: "The monitoring stack is still on the server.",
     doing: p.removeData
       ? "removing the monitoring stack and its data"
@@ -3194,11 +3175,7 @@ elif [ -d "$DIR" ]; then
   if [ -z "$(ls -A "$DIR")" ]; then rmdir "$DIR"; fi
 fi
 if [ -n "$MASK" ]; then rm -f "$MASK"; fi
-# The add-ons' parent goes too once it is empty, and on a server the user owns OpsCrew's root.
-if [ -d "$PARENT" ] && [ -z "$(ls -A "$PARENT")" ]; then rmdir "$PARENT"; fi
-if [ "$RUN_AS" = root ] && [ -d "$ADDONS_ROOT" ] && [ -z "$(ls -A "$ADDONS_ROOT")" ]; then
-  rmdir "$ADDONS_ROOT"
-fi`,
+${ADDON_PARENTS_CLEANUP}`,
     failed: `${what} is still on the server.`,
     doing: `removing ${what}`,
     timeoutMs: 5 * MINUTE,

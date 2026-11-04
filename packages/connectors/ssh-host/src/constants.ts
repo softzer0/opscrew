@@ -221,6 +221,15 @@ export const GRAFANA_ADMIN_CREDENTIAL = "grafana_admin_credential";
  */
 export const POSTGRES_MONITOR_CREDENTIAL = "postgres_monitor_credential";
 
+/**
+ * Alloy's secret files, which inspection never hashes: Grafana Cloud's token, then the monitoring
+ * login's data source.
+ */
+export const ALLOY_SECRET_FILES = [
+  "grafana_cloud_credential",
+  POSTGRES_MONITOR_CREDENTIAL,
+] as const;
+
 /** Where an Alloy sends: Grafana Cloud, the self-hosted monitoring stack, or both. */
 export const ALLOY_DESTINATIONS = ["grafanaCloud", "monitoring"] as const;
 export type AlloyDestination = (typeof ALLOY_DESTINATIONS)[number];

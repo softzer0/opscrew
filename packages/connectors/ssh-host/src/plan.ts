@@ -2,7 +2,14 @@
  * Pure planning: from inspected facts to a host plan of fixed steps, each in place, to change or
  * blocked, plus blocking findings. No I/O; the plan holds no secrets.
  */
-import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
+import {
+  canonicalJson,
+  listText,
+  OpsCrewError,
+  plural,
+  sha256Hex,
+  upperFirst,
+} from "@opscrew/core";
 import { z } from "zod";
 import { addonTaken, keyFingerprint, ownerGone } from "./addons";
 import {
@@ -2980,7 +2987,12 @@ const AddonEnableSchemas = {
     files: AddonFilesSchema,
     /** With destinations (feature 020): the server Alloy runs on, `app` or an extra server. */
     server: ServerNameSchema.optional(),
-    destinations: z.array(z.enum(ALLOY_DESTINATIONS)).min(1).optional(),
+    /** Where it sends: each once, in `ALLOY_DESTINATIONS` order. */
+    destinations: z
+      .array(z.enum(ALLOY_DESTINATIONS))
+      .min(1)
+      .transform((list) => ALLOY_DESTINATIONS.filter((name) => list.includes(name)))
+      .optional(),
     /** On Postgres's server, with monitoring: the Postgres service's name on the app's network. */
     postgresHost: ServiceNameSchema.optional(),
   }),
@@ -3072,15 +3084,16 @@ export function planAddon<K extends AddonPlanKind>(
         )
       : "";
   requireAppName(app);
+  const facts = options.facts === undefined ? undefined : parseFacts(options.facts);
   // The monitoring stack runs as root everywhere, so the host record names its owner everywhere.
   if (kind !== "check-key" && (runAs === "root" || kind === "monitoring")) {
-    if (options.facts === undefined) {
+    if (facts === undefined) {
       throw new OpsCrewError(
         "INVALID_INPUT",
         "Planning an add-on on your server needs its inspected facts.",
       );
     }
-    const record = parseFacts(options.facts).record;
+    const record = facts.record;
     const owner = record?.addons?.[kind as AddonKind];
     if (owner !== undefined && owner !== app) {
       const gone = ownerGone(kind as AddonKind, owner, record?.apps ?? []);
@@ -3113,7 +3126,6 @@ export function planAddon<K extends AddonPlanKind>(
       "Make the plan again with OpsCrew; if this keeps happening, report it.",
     );
     item = addonStep(kind, app, runAs, repository, settings);
-    const facts = options.facts === undefined ? undefined : parseFacts(options.facts);
     if (options.secretsChanged === true) {
       if (kind === "alloy" || kind === "beszel") {
         item = { ...item, params: { ...item.params, rewrite: true } };
@@ -3157,14 +3169,10 @@ type AddonSettings =
       postgresHost?: string;
     };
 
-/** `files` by name, each as its SHA-256. */
-function fileHashes(files: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(Object.entries(files).map(([name, text]) => [name, sha256Hex(text)]));
-}
-
 /** True when `found` holds exactly the hashes of `planned`. */
 function sameFiles(found: Record<string, string>, planned: Record<string, string>): boolean {
-  return canonicalJson(found) === canonicalJson(fileHashes(planned));
+  const hashes = Object.entries(planned).map(([name, text]) => [name, sha256Hex(text)]);
+  return canonicalJson(found) === canonicalJson(Object.fromEntries(hashes));
 }
 
 /** True when the Compose project has containers and every one of them runs. */
@@ -3236,23 +3244,23 @@ function alloyText(
   postgresHost: string | undefined,
 ): { title: string; secrets: string } {
   const cloud = destinations.includes("grafanaCloud");
-  const to = [
+  const to = listText([
     ...(destinations.includes("monitoring") ? ["OpsCrew's monitoring"] : []),
     ...(cloud ? ["your Grafana Cloud stack"] : []),
-  ].join(" and ");
+  ]);
   const postgres = postgresHost === undefined ? "" : ` and Postgres's (${postgresHost})`;
-  const login = "monitoring login's password to Postgres, inside its data source,";
-  const secrets = cloud
-    ? `Its Grafana Cloud token${postgresHost === undefined ? " is" : ` and the ${login} are`}`
-    : postgresHost === undefined
-      ? ""
-      : `The ${login} is`;
+  const secrets = [
+    ...(cloud ? ["its Grafana Cloud token"] : []),
+    ...(postgresHost === undefined
+      ? []
+      : ["the monitoring login's password to Postgres, inside its data source,"]),
+  ];
   return {
     title: `Run Grafana Alloy as the deploy user on the server "${server}", sending its figures${postgres}, and the logs of "${app}" (masked), to ${to}`,
     secrets:
-      secrets === ""
+      secrets.length === 0
         ? "It needs no secret."
-        : `${secrets} written at apply time to files only the deploy user can read, never part of this plan.`,
+        : `${upperFirst(listText(secrets))} ${secrets.length > 1 ? "are" : "is"} written at apply time to files only the deploy user can read, never part of this plan.`,
   };
 }
 
@@ -3279,11 +3287,7 @@ function addonStep(
     Object.entries(enable.files).map(([name, content]) => [`${ADDON_FILE_PARAM}${name}`, content]),
   );
   if (addon === "monitoring") return monitoringStep(runAs, files);
-  // Alloy's destinations in ALLOY_DESTINATIONS order, each once.
-  const destinations =
-    enable.destinations === undefined
-      ? undefined
-      : ALLOY_DESTINATIONS.filter((name) => enable.destinations?.includes(name));
+  const { destinations } = enable;
   const params: HostStep["params"] = {
     runAs,
     ...(enable.mode === undefined ? {} : { mode: enable.mode }),

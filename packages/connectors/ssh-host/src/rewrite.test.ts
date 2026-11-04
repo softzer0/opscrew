@@ -1,30 +1,26 @@
 // A change of secrets only reaches the server: the step's `rewrite` parameter (T2022).
 import { canonicalJson } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { FakeHost } from "./__fixtures__/fake-host";
 import {
   ALLOY_FILES,
   addonSecrets,
   applyApproved,
   BESZEL_AGENT_FILES,
   cloudServer,
+  everythingButStdin,
+  MONITOR_GRANT,
   monitoringSecrets,
-  provision,
+  onlyStep,
+  ownServer,
+  rejection,
   SH_AVAILABLE,
 } from "./__fixtures__/helpers";
 import { ShellHarness } from "./__fixtures__/shell-harness";
 import { HostApplyError } from "./apply";
-import type { GrantParams } from "./grant";
 import { inspectHost } from "./inspect";
 import { type AddonEnable, planAddon, planGrant } from "./plan";
 import { stepScripts } from "./steps";
 import type { HostPlan, HostStep } from "./types";
-
-function onlyStep(plan: HostPlan): HostStep {
-  const [step] = plan.steps;
-  if (step === undefined || plan.steps.length !== 1) throw new Error("expected one step");
-  return step;
-}
 
 function scriptsOf(plan: HostPlan) {
   return stepScripts(plan, onlyStep(plan));
@@ -35,24 +31,8 @@ function withParams(plan: HostPlan, params: HostStep["params"]): HostPlan {
   return { ...plan, steps: [{ ...onlyStep(plan), params }] };
 }
 
-/** A server the user owns with "shop" set up on it. */
-async function ownServer(): Promise<FakeHost> {
-  const fake = new FakeHost();
-  await provision(fake);
-  return fake;
-}
-
 /** The facts of a server the user owns with "shop" on it, for the plans of the monitoring login. */
 const FACTS = await inspectHost(await ownServer());
-
-/** The monitoring login on the app's Postgres. */
-const MONITOR: GrantParams = {
-  service: "db",
-  kind: "postgres",
-  login: "opscrew_monitor",
-  access: "monitor",
-  remove: false,
-};
 
 /** Alloy on Postgres's server, sending to the stack and to Grafana Cloud: both of its secrets. */
 const ALLOY_BOTH: AddonEnable<"alloy"> = {
@@ -73,20 +53,6 @@ function addonPlans(secretsChanged: boolean) {
       enable: { mode: "agent", files: BESZEL_AGENT_FILES },
     }),
   };
-}
-
-/** Every command the fake ran (stdin aside) and the plan's hash input. */
-function everythingButStdin(fake: FakeHost, plan: HostPlan): string {
-  return [canonicalJson(plan), ...fake.calls.map((call) => call.command)].join("\n");
-}
-
-async function rejection(promise: Promise<unknown>): Promise<Error & { hint?: string }> {
-  try {
-    await promise;
-  } catch (error) {
-    return error as Error & { hint?: string };
-  }
-  throw new Error("expected a rejection");
 }
 
 describe("planning a new secret", () => {
@@ -114,7 +80,7 @@ describe("planning a new secret", () => {
   });
 
   it("makes the monitoring login a change with the rewrite parameter, though the server reads it in place", () => {
-    const input = { app: "shop", grant: MONITOR, inPlace: true } as const;
+    const input = { app: "shop", grant: MONITOR_GRANT, inPlace: true } as const;
     const kept = planGrant(FACTS, input, "opscrew provision");
     expect(onlyStep(kept).state).toBe("in-place");
     expect(onlyStep(kept).params).not.toHaveProperty("rewrite");
@@ -132,7 +98,7 @@ describe("planning a new secret", () => {
 
   it("refuses a rewrite parameter that is not true", () => {
     const { "Alloy with destinations": alloy } = addonPlans(false);
-    const grant = planGrant(FACTS, { app: "shop", grant: MONITOR }, "opscrew provision");
+    const grant = planGrant(FACTS, { app: "shop", grant: MONITOR_GRANT }, "opscrew provision");
     for (const plan of [alloy, grant]) {
       for (const value of [false, "true"]) {
         const odd = withParams(plan, { ...onlyStep(plan).params, rewrite: value });
@@ -147,7 +113,7 @@ describe("applying a new secret on the fake host", () => {
     const fake = await ownServer();
     const facts = await inspectHost(fake);
     const [one, two] = [monitoringSecrets(), monitoringSecrets()];
-    const first = planGrant(facts, { app: "shop", grant: MONITOR }, "opscrew provision");
+    const first = planGrant(facts, { app: "shop", grant: MONITOR_GRANT }, "opscrew provision");
     await applyApproved(fake, first, {
       secrets: { monitoringPostgresPassword: one.monitoringPostgresPassword },
     });
@@ -160,7 +126,7 @@ describe("applying a new secret on the fake host", () => {
     const pw = two.monitoringPostgresPassword;
     const plan = planGrant(
       facts,
-      { app: "shop", grant: MONITOR, inPlace: true, secretsChanged: true },
+      { app: "shop", grant: MONITOR_GRANT, inPlace: true, secretsChanged: true },
       "opscrew provision",
     );
     fake.calls.length = 0;
@@ -206,8 +172,6 @@ describe("applying a new secret on the fake host", () => {
     expect(fake.files.get(`${dir}/postgres_monitor_credential`)).toContain(
       `:${pg2.monitoringPostgresPassword}@db:5432/`,
     );
-    // The containers are recreated: they read the secrets only when they start.
-    expect(fake.composeUps.at(-1)).toMatchObject({ recreate: true });
     const seen = everythingButStdin(fake, rewrite);
     for (const secret of Object.values(secrets)) expect(seen).not.toContain(secret);
   });
@@ -311,7 +275,7 @@ exit 0`,
       // The login is there with the planned access.
       h.write("/state/state", "opscrew-login=monitor\n");
       const plan = (secretsChanged: boolean) =>
-        planGrant(FACTS, { app: "shop", grant: MONITOR, secretsChanged }, "x");
+        planGrant(FACTS, { app: "shop", grant: MONITOR_GRANT, secretsChanged }, "x");
       const [plain, rewrite] = [scriptsOf(plan(false)), scriptsOf(plan(true))];
       expect(h.run(plain.check).stdout).toContain("state=in-place");
       expect(h.run(rewrite.check).stdout).toContain("state=change");

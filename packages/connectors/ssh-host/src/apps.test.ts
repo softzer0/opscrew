@@ -2,17 +2,19 @@
  * Several OpsCrew apps on one server (feature 013, US5): one record per app, the host record that
  * lists them, the shared parts set up once, and conflicts refused before any change.
  */
-import { OpsCrewError, sha256Hex } from "@opscrew/core";
+import { sha256Hex } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { deployApp, FakeHost } from "./__fixtures__/fake-host";
 import {
   applyApproved,
   DEPLOY_KEY,
   desiredFor,
+  hostRecord,
   planFor,
   portainerDesired,
   portainerPassword,
   provision,
+  rejection,
   removeApp,
   SHOP_PROJECT,
   SHOP_REPOSITORY,
@@ -21,7 +23,7 @@ import {
   tunnelDesired,
   tunnelToken,
 } from "./__fixtures__/helpers";
-import { AppRecordSchema, HostRecordSchema } from "./facts";
+import { AppRecordSchema } from "./facts";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
 import { planHost, planTeardown, planUndo } from "./plan";
@@ -52,10 +54,6 @@ function blogTunnel(fake: FakeHost, tunnelId = TUNNEL_ID): DesiredHost {
   return blog(fake, { access: "tunnel", tunnel: { compose: TUNNEL_COMPOSE, tunnelId } });
 }
 
-function hostRecord(fake: FakeHost) {
-  return HostRecordSchema.parse(JSON.parse(fake.files.get("/etc/opscrew/host.json") ?? "null"));
-}
-
 function appRecord(fake: FakeHost, app: string) {
   const text = fake.files.get(`/etc/opscrew/apps/${app}.json`);
   return text === undefined ? undefined : AppRecordSchema.parse(JSON.parse(text));
@@ -75,16 +73,6 @@ async function withTwo(): Promise<FakeHost> {
   await provision(fake, blog(fake));
   deployApp(fake, "blog");
   return fake;
-}
-
-async function rejection(promise: Promise<unknown>): Promise<OpsCrewError> {
-  try {
-    await promise;
-  } catch (error) {
-    if (error instanceof OpsCrewError) return error;
-    throw error;
-  }
-  throw new Error("expected a rejection");
 }
 
 describe("a fresh server and the first app", () => {

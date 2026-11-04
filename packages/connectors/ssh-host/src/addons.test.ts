@@ -1,8 +1,8 @@
 // Feature 017: the scheduled check's key and the Beszel and Grafana Alloy add-ons (T1706).
 import { describe, expect, it } from "vitest";
-import { FakeHost } from "./__fixtures__/fake-host";
 import {
   ALLOY_FILES,
+  addBlog,
   addonSecrets,
   applyApproved,
   BESZEL_AGENT_FILES,
@@ -12,7 +12,11 @@ import {
   DEPLOY_KEY,
   desiredFor,
   ed25519PublicKey,
+  everythingButStdin,
+  hostRecord,
+  ownServer,
   provision,
+  rejection,
   SHOP_PROJECT,
   SHOP_REPOSITORY,
   TUNNEL_COMPOSE,
@@ -25,55 +29,10 @@ import { checkKeyLine } from "./constants";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
 import { type AddonEnable, planAddon, planHost, planTeardown } from "./plan";
-import type { HostPlan } from "./types";
 
 const BESZEL_DIR = "/srv/opscrew/addons/beszel";
 const ALLOY_DIR = "/srv/opscrew/addons/alloy";
 const HUB = BESZEL_HUB;
-
-async function rejection(
-  promise: Promise<unknown>,
-): Promise<Error & { code?: string; hint?: string }> {
-  try {
-    await promise;
-  } catch (error) {
-    return error as Error & { code?: string; hint?: string };
-  }
-  throw new Error("expected a rejection");
-}
-
-/** A server the user owns with "shop" set up on it. */
-async function ownServer(): Promise<FakeHost> {
-  const fake = new FakeHost();
-  await provision(fake);
-  return fake;
-}
-
-/** A second app, "blog", on the same server. */
-async function addBlog(fake: FakeHost): Promise<void> {
-  await provision(
-    fake,
-    desiredFor(fake, {
-      app: "blog",
-      projectId: "blog-1",
-      hostnames: ["blog.example.com"],
-      deploy: { user: "deploy", publicKey: DEPLOY_KEY.replace("opscrew-deploy", "blog-deploy") },
-    }),
-  );
-}
-
-function hostRecord(fake: FakeHost): { addons?: Record<string, string> } {
-  return JSON.parse(fake.files.get("/etc/opscrew/host.json") ?? "{}");
-}
-
-/** Every text of the plan and of the commands that ran (stdin aside), and the host record. */
-function everythingButStdin(fake: FakeHost, plan: HostPlan): string {
-  return [
-    JSON.stringify(plan),
-    ...fake.calls.map((call) => call.command),
-    fake.files.get("/etc/opscrew/host.json") ?? "",
-  ].join("\n");
-}
 
 /** The test project's repository, as the check key's comment names it. */
 const REPOSITORY = "acme/shop";
