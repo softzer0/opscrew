@@ -34,6 +34,7 @@ import {
   UrlPathSchema,
 } from "./enums";
 import { AbsolutePathSchema } from "./facts";
+import { isOutsideMember, monitoringOf } from "./monitoring";
 import { checkPlacement, MoveSchema, NetworkSchema } from "./placement";
 
 /** Services that conflict with a self-hosted Postgres container. */
@@ -500,6 +501,7 @@ export const ObservabilityCheckSchema = z.strictObject({
 export const ADDON_MEMORY_DEFAULTS = {
   beszel: { hub: 128, agent: 64, proxy: 32 },
   grafanaCloud: { alloy: 256, proxy: 32 },
+  monitoring: { prometheus: 512, loki: 384, grafana: 384, front: 64, alloy: 384, proxy: 48 },
 } as const;
 
 /** Beszel's hub public key, as the hub shows it: `ssh-ed25519 AAAA…` (public, not a secret). */
@@ -616,14 +618,70 @@ export const GrafanaCloudSchema = z
     }
   });
 
+/** The monitoring stack's front, where Alloy pushes, on each of the server's private addresses. */
+export const MONITORING_PUSH_PORT = 9091;
+/** Grafana's port, on 127.0.0.1 and each of the monitoring server's private addresses. */
+export const MONITORING_GRAFANA_PORT = 3000;
+/** The default name of the extra server that holds the monitoring stack. */
+export const MONITORING_SERVER = "monitoring";
+
 /**
- * `plan.observability`: the scheduled check, and the Beszel and Grafana Cloud add-ons. Every part
- * is optional and off unless design or the user turns it on.
+ * Where the monitoring stack runs (`observability.monitoring.where`): on an extra server of this
+ * plan (`server`), on the app's server (`app`), or on another plan's monitoring server this
+ * environment sends to (`shared`: the owner's plan file and its server's name).
+ */
+export const MonitoringWhereSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("server"), server: ServerNameSchema }),
+  z.strictObject({ kind: z.literal("app") }),
+  z.strictObject({
+    kind: z.literal("shared"),
+    owner: z.strictObject({ plan: RepoPathSchema, server: ServerNameSchema }),
+  }),
+]);
+
+/**
+ * Self-hosted monitoring (`observability.monitoring`): Prometheus, Loki and Grafana on a server of
+ * the user's own, which every monitored server pushes to through Alloy. With `where.kind` "shared",
+ * `versions` and `retention` are the owner's, copied into this plan; design keeps them in step.
+ */
+export const MonitoringSchema = z.strictObject({
+  enabled: z.boolean().default(false),
+  where: MonitoringWhereSchema,
+  /** The pinned versions; with Grafana Cloud on, `alloy` equals `grafanaCloud.version`. */
+  versions: z.strictObject({
+    prometheus: PinnedVersionSchema,
+    loki: PinnedVersionSchema,
+    grafana: PinnedVersionSchema,
+    alloy: PinnedVersionSchema,
+  }),
+  retention: z.strictObject({
+    metricsDays: z.int().min(1).max(90).default(15),
+    logsDays: z.int().min(1).max(30).default(7),
+    /** Prometheus's size cap, set by design: 80% of the disk left after the logs' estimate. */
+    metricsMaxGb: z.int().min(1),
+  }),
+  /** The containers' memory limits in MB. */
+  memoryMb: z
+    .strictObject({
+      prometheus: z.int().positive().default(ADDON_MEMORY_DEFAULTS.monitoring.prometheus),
+      loki: z.int().positive().default(ADDON_MEMORY_DEFAULTS.monitoring.loki),
+      grafana: z.int().positive().default(ADDON_MEMORY_DEFAULTS.monitoring.grafana),
+      front: z.int().positive().default(ADDON_MEMORY_DEFAULTS.monitoring.front),
+      alloy: z.int().positive().default(ADDON_MEMORY_DEFAULTS.monitoring.alloy),
+      proxy: z.int().positive().default(ADDON_MEMORY_DEFAULTS.monitoring.proxy),
+    })
+    .prefault({}),
+});
+
+/**
+ * `plan.observability`: the scheduled check, and the Beszel, Grafana Cloud and monitoring add-ons.
+ * Every part is optional and off unless design or the user turns it on.
  */
 export const ObservabilitySchema = z.strictObject({
   check: ObservabilityCheckSchema.optional(),
   beszel: BeszelSchema.optional(),
   grafanaCloud: GrafanaCloudSchema.optional(),
+  monitoring: MonitoringSchema.optional(),
 });
 
 /**
@@ -651,6 +709,62 @@ function checkObservability(plan: DeployPlanFields, ctx: z.RefinementCtx): void 
       message:
         "must be false with the localhost target: GitHub can't reach your computer, so the scheduled check could never see the app; set observability.check.enabled to false",
     });
+  }
+  checkMonitoring(plan, ctx);
+}
+
+/**
+ * Monitoring's rules, when it is on: only on a server, its extra server a member of the network
+ * that runs no service, a shared one's outside member on the network, and one Alloy version.
+ */
+function checkMonitoring(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  const monitoring = monitoringOf(plan);
+  if (monitoring === undefined) return;
+  const issue = (path: string[], message: string) =>
+    ctx.addIssue({ code: "custom", path: ["observability", "monitoring", ...path], message });
+  if (!onOneServer(plan.target.provider)) {
+    issue(
+      ["enabled"],
+      "can be true only on a server: Prometheus, Loki and Grafana run on a server OpsCrew deploys to (a cloud server or your own), which a Portainer, localhost, Cloudflare or GitHub Pages target is not; set observability.monitoring.enabled to false, or choose a server target",
+    );
+    return;
+  }
+  const { where } = monitoring;
+  const servers = (plan.servers ?? []).map((server) => server.name);
+  const members = plan.network?.members ?? [];
+  if (where.kind === "server") {
+    if (!servers.includes(where.server)) {
+      issue(
+        ["where", "server"],
+        `names no server of the plan: "${where.server}"; add it to servers (opscrew addon enable monitoring does), or name one of servers`,
+      );
+    } else {
+      if (plan.services.some((service) => service.server === where.server)) {
+        issue(
+          ["where", "server"],
+          `is "${where.server}", which runs services: the monitoring server holds only the monitoring stack; move those services (services[].server) to another server, or name a server of its own`,
+        );
+      }
+      if (!members.some((member) => member.name === where.server)) {
+        issue(
+          ["where", "server"],
+          `is "${where.server}", which is not on the private network: the servers send to it there; add it to network.members (run opscrew design)`,
+        );
+      }
+    }
+  }
+  if (where.kind === "shared" && !members.some((member) => isOutsideMember(plan, member))) {
+    issue(
+      ["where", "owner", "server"],
+      `is "${where.owner.server}", which is not on this plan's network as the monitoring server of ${where.owner.plan}: add it to network.members under that name, which must not be app or one of servers (opscrew addon enable monitoring does)`,
+    );
+  }
+  const grafanaCloud = plan.observability?.grafanaCloud;
+  if (grafanaCloud?.enabled === true && monitoring.versions.alloy !== grafanaCloud.version) {
+    issue(
+      ["versions", "alloy"],
+      `must equal observability.grafanaCloud.version (${grafanaCloud.version}): one Alloy on each server sends to both; set both to the same version`,
+    );
   }
 }
 
@@ -1717,3 +1831,5 @@ export type Observability = NonNullable<DeployPlan["observability"]>;
 export type BeszelSettings = NonNullable<Observability["beszel"]>;
 /** Grafana Cloud's settings with their defaults filled in. */
 export type GrafanaCloudSettings = NonNullable<Observability["grafanaCloud"]>;
+/** Self-hosted monitoring's settings with their defaults filled in. */
+export type MonitoringSettings = z.output<typeof MonitoringSchema>;

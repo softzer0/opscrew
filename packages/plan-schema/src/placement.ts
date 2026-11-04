@@ -6,6 +6,8 @@
 import { z } from "zod";
 import { APP_SERVER, ComponentNameSchema, type PlanService } from "./components";
 import { IsoDateTimeSchema, onOneServer, type SelfHostedServiceKind } from "./enums";
+import { isOutsideMember, monitoringOf } from "./monitoring";
+import type { MonitoringSettings } from "./plan";
 
 /** A device's name on an app's network (`network.devices[].name`). */
 export const DeviceNameSchema = z
@@ -65,10 +67,13 @@ export const NetworkSchema = z.strictObject({
     message:
       "must be a /24 network inside 10.200.0.0/13 with its last number 0, such as 10.200.4.0/24",
   }),
-  /** One per server: `app` and each extra server. */
+  /**
+   * One per server: `app` and each extra server, and, when this plan sends to another plan's
+   * monitoring server, that server (the outside member, {@link isOutsideMember}).
+   */
   members: z.array(
     z.strictObject({
-      /** `app` or an extra server's name. */
+      /** `app`, an extra server's name, or the outside member's (`owner.server`). */
       name: z.string(),
       address: z.ipv4(),
       /** The UDP port it listens on; it names the interface ({@link networkInterface}). */
@@ -125,6 +130,8 @@ export const MoveSchema = z.strictObject({
 
 /** The private network, with its defaults filled in. */
 export type Network = z.output<typeof NetworkSchema>;
+/** A server on the private network, with its address, port and public key. */
+export type NetworkMember = Network["members"][number];
 /** A service's move between the app's servers. */
 export type Move = z.output<typeof MoveSchema>;
 
@@ -175,6 +182,7 @@ interface PlacementFields {
   network?: Network;
   move?: Move;
   retarget?: unknown;
+  observability?: { monitoring?: MonitoringSettings | undefined } | undefined;
 }
 
 /** How a refusal names a target that has no place for extra servers. */
@@ -192,9 +200,10 @@ function orList(items: readonly string[]): string {
 
 /**
  * The plan's rules across `servers`, `services[].server`, `network` and `move`: extra servers and
- * the network only on a cloud or own target, every server named once and running a service, the
- * network holding every server with its address, devices and grants that fit, a move between two
- * servers of the plan, and no `retarget` with extra servers.
+ * the network only on a cloud or own target, every server named once and running a service (but the
+ * monitoring server), the network holding every server (and a shared monitoring server, the outside
+ * member) with its address, devices and grants that fit, a move between two servers of the plan,
+ * and no `retarget` with extra servers.
  */
 export function checkPlacement(plan: PlacementFields, ctx: z.RefinementCtx): void {
   const issue = (path: (string | number)[], message: string) =>
@@ -238,8 +247,11 @@ export function checkPlacement(plan: PlacementFields, ctx: z.RefinementCtx): voi
       `names no server of the plan: "${service.server}"; ${instead} leave server out to run the service on the app's server`,
     );
   }
+  const monitoring = monitoringOf(plan)?.where;
   for (const [i, { name }] of servers.entries()) {
     if (servicesOn(plan, name).length > 0 || move?.from === name) continue;
+    // The monitoring server holds only the monitoring stack.
+    if (monitoring?.kind === "server" && monitoring.server === name) continue;
     issue(
       ["servers", i],
       `runs no enabled service: place a service on ${name} (services[].server), or remove the server (it is deleted at the next provision, after your approval)`,
@@ -295,8 +307,9 @@ function checkNetwork(
   const expected = [APP_SERVER, ...servers];
   const everyServer = servers.length > 0 ? `${APP_SERVER} and ${servers.join(", ")}` : APP_SERVER;
   const members = new Set<string>();
-  for (const [i, { name }] of network.members.entries()) {
-    if (!expected.includes(name)) {
+  for (const [i, member] of network.members.entries()) {
+    const { name } = member;
+    if (!expected.includes(name) && !isOutsideMember(plan, member)) {
       const which =
         servers.length > 0
           ? `"${APP_SERVER}" or the name of one of servers (${servers.join(", ")})`
@@ -351,7 +364,7 @@ function checkNetwork(
         `"${device.name}" is already the name of another device; give each its own`,
       );
     }
-    if (expected.includes(device.name)) {
+    if (expected.includes(device.name) || members.has(device.name)) {
       issue(
         ["network", "devices", i, "name"],
         `"${device.name}" is the name of a server of the app; give the device another name, such as "laptop"`,

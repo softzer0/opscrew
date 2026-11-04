@@ -29,6 +29,7 @@ export {
   serializeArtifact,
   writeArtifact,
 } from "./io";
+export { isOutsideMember, monitoringOf, monitoringServerName } from "./monitoring";
 export {
   DeviceNameSchema,
   GRANTABLE_KINDS,
@@ -36,6 +37,7 @@ export {
   type Move,
   MoveSchema,
   type Network,
+  type NetworkMember,
   NetworkSchema,
   networkInterface,
   serverOfService,
