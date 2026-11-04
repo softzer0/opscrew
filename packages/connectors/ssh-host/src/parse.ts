@@ -5,6 +5,8 @@
  */
 import { sha256Hex } from "@opscrew/core";
 import {
+  ALLOY_DESTINATIONS,
+  type AlloyDestination,
   APPS_DIR,
   DATA_DIR,
   HASHED_RUNTIME_FILES,
@@ -27,6 +29,7 @@ import {
 } from "./facts";
 import type { NetworkFilterRule } from "./network-filter";
 import { runnerUnitText } from "./runner-unit";
+import { StackPathSchema } from "./types";
 
 /** Output of one inspection section: its text and the exit code of its command. */
 export interface Section {
@@ -707,6 +710,34 @@ export function parseAddons(text: string): Map<string, AddonLine> {
     });
   }
   return addons;
+}
+
+/**
+ * The monitoring section (see `MONITORING_SNIPPET`): `stack` when the stack's folder holds its
+ * Compose file, `file <path> <sha256>` for each of its files, and `alloy <destination>…` when the
+ * server has Alloy. Lines that are not one of these, a path outside the stack's folder and an
+ * unknown destination are left out.
+ */
+export function parseMonitoring(text: string): {
+  stack: boolean;
+  files: Record<string, string>;
+  alloy?: AlloyDestination[];
+} {
+  const files: Record<string, string> = {};
+  let stack = false;
+  let alloy: AlloyDestination[] | undefined;
+  for (const line of linesOf(text)) {
+    const [kind, ...rest] = line.split(/\s+/);
+    if (kind === "stack") stack = true;
+    const [path = "", sum = ""] = rest;
+    if (kind === "file" && StackPathSchema.safeParse(path).success && /^[0-9a-f]{64}$/.test(sum)) {
+      files[path] = sum;
+    }
+    if (kind === "alloy") {
+      alloy = ALLOY_DESTINATIONS.filter((destination) => rest.includes(destination));
+    }
+  }
+  return alloy === undefined ? { stack, files } : { stack, files, alloy };
 }
 
 /**

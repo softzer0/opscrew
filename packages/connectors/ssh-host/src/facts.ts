@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { RUNTIME_FILE_NAMES } from "./constants";
-import { AccessModeSchema, HostStepIdSchema } from "./types";
+import { ALLOY_DESTINATIONS, RUNTIME_FILE_NAMES } from "./constants";
+import { AccessModeSchema, HostStepIdSchema, StackPathSchema } from "./types";
 
 /** Version written to the host record (`opscrewVersion`). */
 export const HOST_ADAPTER_VERSION = "0.1.0";
@@ -53,8 +53,18 @@ export const HostRecordSchema = z.object({
   apps: z.array(z.string()),
   opscrewVersion: z.string(),
   changes: z.array(HostRecordEntrySchema),
-  /** The app that turned each add-on on (one of each per server); absent while it is off. */
-  addons: z.object({ beszel: z.string().optional(), alloy: z.string().optional() }).optional(),
+  /**
+   * The app that turned each add-on on (one of each per server); absent while it is off. The
+   * host plan's app names the environment too (`<app>-<env>` outside prod), so `monitoring` says
+   * which app and environment own the stack.
+   */
+  addons: z
+    .object({
+      beszel: z.string().optional(),
+      alloy: z.string().optional(),
+      monitoring: z.string().optional(),
+    })
+    .optional(),
   /**
    * The app whose private network each of OpsCrew's WireGuard interfaces is, by interface, so a
    * second app's network never touches the first one's.
@@ -435,8 +445,24 @@ export const HostFactsSchema = z.object({
   portainer: AddonSchema,
   /** The monitoring add-ons in their folders of /srv/opscrew/addons (which app has each: `record`). */
   addons: z
-    .object({ beszel: AddonSchema, alloy: AddonSchema })
-    .default({ beszel: NO_ADDON, alloy: NO_ADDON }),
+    .object({ beszel: AddonSchema, alloy: AddonSchema, monitoring: AddonSchema })
+    .default({ beszel: NO_ADDON, alloy: NO_ADDON, monitoring: NO_ADDON }),
+  /**
+   * The monitoring stack (project `opscrew-monitoring`), in its folder on a server the user owns
+   * or one OpsCrew created: its containers, and the SHA-256 of each of its files by path in the
+   * folder (never its password file). Absent when neither its folder nor a container is there.
+   */
+  monitoring: z
+    .object({
+      containers: z.array(z.object({ name: z.string(), running: z.boolean() })),
+      files: z.record(StackPathSchema, z.string().regex(/^[0-9a-f]{64}$/)),
+    })
+    .optional(),
+  /**
+   * This server's Grafana Alloy (feature 017's add-on, or one with destinations): where it sends.
+   * An Alloy whose step named no destinations sends to Grafana Cloud only. Absent without Alloy.
+   */
+  alloy: z.object({ destinations: z.array(z.enum(ALLOY_DESTINATIONS)) }).optional(),
   /** Each app's GitHub Actions runner whose folder exists (see {@link runnerOf}). */
   runners: z.array(RunnerSchema).default([]),
   /** Docker's firewall and OpsCrew's web filter. */

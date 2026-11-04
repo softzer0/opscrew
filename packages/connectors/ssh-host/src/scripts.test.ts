@@ -1166,8 +1166,9 @@ esac`,
           expect(mode(`${dir}/${file}`), file).toBe(0o600);
         }
       }
+      // A first start: every file the containers read is new, so they are (re)created with them.
       expect(h.calls()).toContain(
-        `docker compose -p opscrew-beszel -f ${h.posix(dir)}/compose.yaml up -d --remove-orphans --quiet-pull`,
+        `docker compose -p opscrew-beszel -f ${h.posix(dir)}/compose.yaml up -d --remove-orphans --quiet-pull --force-recreate`,
       );
       expect(h.run(on.verify).status).toBe(0);
       expect(h.run(on.check).stdout).toContain("state=in-place");

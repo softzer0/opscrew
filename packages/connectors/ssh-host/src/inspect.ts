@@ -4,6 +4,7 @@ import { canonicalJson, isRecord, OpsCrewError } from "@opscrew/core";
 import {
   ADDON_KINDS,
   ADDON_PROJECTS,
+  ALLOY_DESTINATIONS_FILE,
   APP_RECORDS_DIR,
   APPS_DIR,
   addonDir,
@@ -14,6 +15,7 @@ import {
   DOCKER_DAEMON_JSON_PATH,
   EDGE_DIR,
   FAIL2BAN_JAIL_PATH,
+  GRAFANA_ADMIN_CREDENTIAL,
   HASHED_RUNTIME_FILES,
   HOST_SYSCTL_KEYS,
   PORTAINER_DIR,
@@ -63,6 +65,7 @@ import {
   parseDpkg,
   parseFree,
   parseIpv4Routes,
+  parseMonitoring,
   parseNetworkState,
   parseNsswitchPasswd,
   parseOpensshVersion,
@@ -276,6 +279,26 @@ monitor() {
 ${ADDON_KINDS.map((kind) => `monitor ${kind} ${addonDir(kind, "root")}`).join("\n")}`;
 
 /**
+ * The monitoring stack in its folder, on a server the user owns or one OpsCrew created: `stack`,
+ * then the SHA-256 of each of its files (never its password file, and not OpsCrew's own
+ * dot-files). Then this server's Alloy and where it sends: an Alloy without OpsCrew's
+ * destinations file is feature 017's, which sends to Grafana Cloud only. Never follows a link.
+ */
+export const MONITORING_SNIPPET = `for d in ${addonDir("monitoring", "root")} ${addonDir("monitoring", "login")}; do
+  if [ -L "$d" ] || [ ! -f "$d/compose.yaml" ]; then continue; fi
+  echo stack
+  find "$d" -type f ! -name ${GRAFANA_ADMIN_CREDENTIAL} ! -name '.*' | while IFS= read -r f; do
+    echo "file \${f#"$d"/} $(sha256sum "$f" | cut -d ' ' -f 1)"
+  done
+  break
+done
+for d in ${addonDir("alloy", "root")} ${addonDir("alloy", "login")}; do
+  if [ -L "$d" ] || [ ! -f "$d/compose.yaml" ]; then continue; fi
+  if [ -f "$d/${ALLOY_DESTINATIONS_FILE}" ]; then echo "alloy $(cat "$d/${ALLOY_DESTINATIONS_FILE}")"; else echo 'alloy grafanaCloud'; fi
+  break
+done`;
+
+/**
  * Each app's GitHub Actions runner in its folder of /srv/runners: whether it registered, the
  * state of deploy's user service `opscrew-runner-<app>.service`, its version, and the label and
  * repository OpsCrew registered it with (in its own `.opscrew-runner`: the runner's `.runner`
@@ -460,6 +483,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
     `for u in sshd ufw ssh-firewall; do printf '%s %s\\n' "$u" "$(systemctl is-active "opscrew-undo-$u.timer" 2>/dev/null)"; done`,
   ],
   ["addons", ADDONS_SNIPPET],
+  ["monitoring", MONITORING_SNIPPET],
   ["runners", RUNNERS_SNIPPET],
   ["web-filter", WEB_FILTER_SNIPPET],
   ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
@@ -691,6 +715,10 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
   const containers = parseContainers(ok(sections, "containers"));
   const volumeProjects = [...new Set(linesOf(ok(sections, "volumes")))];
   const addons = parseAddons(text("addons"));
+  const monitoring = parseMonitoring(text("monitoring"));
+  const stackContainers = containers
+    .filter((container) => container.project === ADDON_PROJECTS.monitoring)
+    .map(({ name, running }) => ({ name, running }));
   const deployKeys = linesOf(ok(sections, "deploy-keys")).filter((line) => !line.startsWith("#"));
   const checkLine = new RegExp(CHECK_KEY_LINE_RE);
   const addon = (name: string, project: string) => {
@@ -831,7 +859,12 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
     addons: {
       beszel: addon("beszel", ADDON_PROJECTS.beszel),
       alloy: addon("alloy", ADDON_PROJECTS.alloy),
+      monitoring: addon("monitoring", ADDON_PROJECTS.monitoring),
     },
+    ...(monitoring.stack || stackContainers.length > 0
+      ? { monitoring: { containers: stackContainers, files: monitoring.files } }
+      : {}),
+    ...(monitoring.alloy === undefined ? {} : { alloy: { destinations: monitoring.alloy } }),
     runners: parseRunners(text("runners")),
     webFilter: {
       ...dockerFirewall({

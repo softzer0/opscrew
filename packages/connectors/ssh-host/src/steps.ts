@@ -12,6 +12,8 @@ import {
   ADDON_PROJECTS,
   ADDONS_ROOT,
   type AddonKind,
+  ALLOY_DESTINATIONS,
+  ALLOY_DESTINATIONS_FILE,
   APP_RECORDS_DIR,
   APT_LOG,
   AUTO_UPGRADES_FILE,
@@ -32,6 +34,8 @@ import {
   EMPTY_MASK,
   FAIL2BAN_JAIL_PATH,
   fail2banJail,
+  GRAFANA_ADMIN_CREDENTIAL,
+  MAX_STACK_FILE_BYTES,
   MIN_DOCKER_MAJOR,
   MODULI_FILTER,
   maskFilePath,
@@ -39,6 +43,7 @@ import {
   PORTAINER_DIR,
   PORTAINER_PORT,
   PORTAINER_PROJECT,
+  POSTGRES_MONITOR_CREDENTIAL,
   READY_FLAG,
   RECORD_PATH,
   RUNNERS_DIR,
@@ -64,7 +69,7 @@ import {
   WEB_RULES,
 } from "./constants";
 import type { AppRecord } from "./facts";
-import { GrantParamsSchema, grantEngine } from "./grant";
+import { GrantParamsSchema, grantEngine, MONITOR_LOGIN } from "./grant";
 import {
   DOCKER_POOLS,
   hostAddress,
@@ -122,7 +127,9 @@ import {
   ProjectIdSchema,
   RepositoryNameSchema,
   type SecretName,
+  ServerNameSchema,
   ServiceNameSchema,
+  StackPathSchema,
   spaceList,
   TunnelIdSchema,
 } from "./types";
@@ -165,6 +172,11 @@ export interface StepScripts {
    * without them.
    */
   secrets?: { names: readonly SecretName[]; required: boolean };
+  /**
+   * Plan text the apply script reads from stdin after its secrets, too large for the script
+   * itself: the monitoring stack's files, one line of base64 each. Never a secret.
+   */
+  payload?: string;
   /** The GitHub runner token the apply script reads from stdin, fetched when the step runs. */
   runnerToken?: "registration" | "remove";
   /**
@@ -1543,15 +1555,21 @@ extra | while IFS= read -r rule; do ufw --force delete allow $rule >/dev/null; d
 // grant: a device's own login to a database (see grant.ts)
 
 /**
- * `grant`: makes, updates or removes a device's login with research R6a's statements, through
- * `docker compose exec` as the deploy user. The login's password is the first line of standard
- * input; only builtins see it on the way to the client's standard input. The check asks the
- * engine whether the login exists with the planned access.
+ * `grant`: makes, updates or removes a device's login with research R6a's statements, or OpsCrew's
+ * monitoring login with research R7's (access `monitor`), through `docker compose exec` as the
+ * deploy user. The login's password is the first line of standard input; only builtins see it on
+ * the way to the client's standard input. The check asks the engine whether the login exists with
+ * the planned access.
  */
 function grantScripts(plan: HostPlan, step: HostStep): StepScripts {
   const p = params(step, GrantParamsSchema);
   if (!AppNameSchema.safeParse(plan.app).success) throw invalid(step, "the plan names no app");
   const engine = grantEngine(p);
+  const monitor = p.access === "monitor";
+  // The login at the start of a sentence, and within one.
+  const [Login, login] = monitor
+    ? ["OpsCrew's monitoring login", "OpsCrew's monitoring login"]
+    : ["The device's login", "the device's login"];
   return scripts({
     name: "grant",
     params: {
@@ -1609,13 +1627,17 @@ if ! { printf '%s\\n' "$PRELUDE"; printf '%s%s%s\\n' "$pre" "$pw" "$post"; print
 fi
 pw=''`,
     failed: p.remove
-      ? "The device's login is still in the database."
-      : "The device's login does not have the planned access.",
-    secrets: p.remove ? undefined : { names: ["grantPassword"], required: true },
+      ? `${Login} is still in the database.`
+      : `${Login} does not have the planned access.`,
+    secrets: p.remove
+      ? undefined
+      : { names: [monitor ? "monitoringPostgresPassword" : "grantPassword"], required: true },
     asDeploy: true,
     doing: p.remove
-      ? `removing the device's login from ${p.service}`
-      : `giving the device's login access to ${p.service}`,
+      ? `removing ${login} from ${p.service}`
+      : monitor
+        ? `setting up ${login} in ${p.service}`
+        : `giving ${login} access to ${p.service}`,
     timeoutMs: 2 * MINUTE,
   });
 }
@@ -2582,6 +2604,7 @@ const OWN_ADDON_FILES = new Set([
   "hub.env",
   "agent.env",
   "grafana_cloud_credential",
+  POSTGRES_MONITOR_CREDENTIAL,
   "data",
   "agent_data",
 ]);
@@ -2589,17 +2612,34 @@ const OWN_ADDON_FILES = new Set([
 /** The prefix of the step parameters that hold the rendered files (`file:compose.yaml`). */
 export const ADDON_FILE_PARAM = "file:";
 
-/** The rendered files in a step's parameters, sorted by name; each within the Compose text cap. */
-function addonFiles(step: HostStep): [string, string][] {
+/** What a step's rendered files may be: their names, their text, and the names the step keeps. */
+interface FileRules {
+  name: z.ZodType<string>;
+  text: z.ZodType<string>;
+  reserved: ReadonlySet<string>;
+}
+
+/** An add-on's files: at the root of its folder, each within the Compose text cap. */
+const ADDON_FILE_RULES: FileRules = {
+  name: AddonFileNameSchema,
+  text: ComposeTextSchema,
+  reserved: OWN_ADDON_FILES,
+};
+
+/**
+ * The rendered files in a step's parameters (`file:<name>`), sorted by name, each as `rules`
+ * allow, with a `compose.yaml` among them.
+ */
+function addonFiles(step: HostStep, rules: FileRules = ADDON_FILE_RULES): [string, string][] {
   const files = Object.entries(step.params)
     .filter(([key]) => key.startsWith(ADDON_FILE_PARAM))
     .map(([key, content]): [string, unknown] => [key.slice(ADDON_FILE_PARAM.length), content])
     .sort(([a], [b]) => a.localeCompare(b));
   for (const [name, content] of files) {
-    if (!AddonFileNameSchema.safeParse(name).success || OWN_ADDON_FILES.has(name)) {
+    if (!rules.name.safeParse(name).success || rules.reserved.has(name)) {
       throw invalid(step, `file name ${name}`);
     }
-    if (!ComposeTextSchema.safeParse(content).success) throw invalid(step, `file ${name}`);
+    if (!rules.text.safeParse(content).success) throw invalid(step, `file ${name}`);
   }
   if (!files.some(([name]) => name === "compose.yaml")) throw invalid(step, "compose.yaml");
   return files as [string, string][];
@@ -2622,13 +2662,27 @@ const AddonParams = z.object({
   email: EmailSchema.optional(),
   /** Beszel's hub mode only: the hub's public key (not secret), the agent's `KEY`. */
   hubKey: HubPublicKeySchema.optional(),
+  /** Alloy with destinations only (feature 020): the server it runs on, `app` or an extra one. */
+  server: ServerNameSchema.optional(),
+  /** Alloy with destinations only: where it sends, space-separated in `ALLOY_DESTINATIONS` order. */
+  destinations: spaceList.pipe(z.array(z.enum(ALLOY_DESTINATIONS)).min(1)).optional(),
+  /**
+   * Alloy on Postgres's server, with monitoring: the Postgres service's name on the app's network,
+   * the host of the monitoring login's data source.
+   */
+  postgresHost: ServiceNameSchema.optional(),
 });
+type AddonSettings = z.infer<typeof AddonParams>;
 
 /** What differs between the add-ons and Beszel's modes. */
 interface AddonVariant {
   secrets: SecretName[];
   /** The files the step writes from stdin, which must be there (non-empty). */
   secretFiles: string[];
+  /** Alloy's files of another variant, removed by the apply (a secret no longer used). */
+  staleFiles: string[];
+  /** Alloy's destinations, written to `ALLOY_DESTINATIONS_FILE` ("" for none: the file stays out). */
+  destinations: string;
   /** Folders the containers write, bind-mounted, the deploy user's. */
   dataDirs: string[];
   /** The rendered file whose token placeholder the step fills in ("" for none). */
@@ -2646,20 +2700,60 @@ function readLines(names: string[]): string {
   ].join("\n");
 }
 
-function addonVariant(kind: AddonKind, mode: "hub" | "agent" | undefined): AddonVariant {
-  const refuse = (what: string, product: string) =>
-    `fail 'No valid ${what} arrived on standard input, so ${product} was not set up.'`;
-  if (kind === "alloy") {
-    return {
-      secrets: ["grafanaCloudToken"],
-      secretFiles: ["grafana_cloud_credential"],
-      dataDirs: ["data"],
-      templated: "",
-      read: `${readLines(["token"])}
-case "$token" in ''|*[!A-Za-z0-9+/=_.-]*) token=''; ${refuse("Grafana Cloud token", "Grafana Alloy")} ;; esac`,
-      write: `printf '%s' "$token" | put "$DIR/grafana_cloud_credential"
-token=''
-# Alloy reads the app's masking file, which the deploy job writes; until then, one that never
+const refuse = (what: string, product: string) =>
+  `fail 'No valid ${what} arrived on standard input, so ${product} was not set up.'`;
+
+/**
+ * Alloy's secrets and files: feature 017's step (no destinations) sends to Grafana Cloud with its
+ * token. With destinations, the token only for Grafana Cloud, and on Postgres's server the
+ * monitoring login's whole data source (research R7 "Postgres": Alloy reads it as one secret).
+ * The password is letters and digits only, so it goes into the URL as it is. A secret file or
+ * destinations file another variant wrote goes.
+ */
+function alloyVariant(p: AddonSettings): AddonVariant {
+  const cloud = p.destinations === undefined || p.destinations.includes("grafanaCloud");
+  const postgres = p.postgresHost !== undefined;
+  const files: [string, boolean][] = [
+    ["grafana_cloud_credential", cloud],
+    [POSTGRES_MONITOR_CREDENTIAL, postgres],
+  ];
+  const lines = <T>(on: boolean, ...items: T[]): T[] => (on ? items : []);
+  return {
+    secrets: [
+      ...lines<SecretName>(cloud, "grafanaCloudToken"),
+      ...lines<SecretName>(postgres, "monitoringPostgresPassword"),
+    ],
+    secretFiles: files.filter(([, used]) => used).map(([name]) => name),
+    staleFiles: [
+      ...files.filter(([, used]) => !used).map(([name]) => name),
+      ...lines(p.destinations === undefined, ALLOY_DESTINATIONS_FILE),
+    ],
+    destinations: p.destinations?.join(" ") ?? "",
+    dataDirs: ["data"],
+    templated: "",
+    read: [
+      readLines([...lines(cloud, "token"), ...lines(postgres, "pgpw")]),
+      ...lines(
+        cloud,
+        `case "$token" in ''|*[!A-Za-z0-9+/=_.-]*) token=''; ${refuse("Grafana Cloud token", "Grafana Alloy")} ;; esac`,
+      ),
+      ...lines(
+        postgres,
+        `case "$pgpw" in ''|*[!A-Za-z0-9]*) pgpw=''; ${refuse("password of the monitoring login", "Grafana Alloy")} ;; esac`,
+      ),
+    ].join("\n"),
+    write: [
+      ...lines(cloud, `printf '%s' "$token" | put "$DIR/grafana_cloud_credential"`, "token=''"),
+      ...lines(
+        postgres,
+        `printf 'postgresql://${MONITOR_LOGIN}:%s@%s:5432/postgres?sslmode=disable' "$pgpw" "$POSTGRES_HOST" | put "$DIR/${POSTGRES_MONITOR_CREDENTIAL}"`,
+        "pgpw=''",
+      ),
+      ...lines(
+        p.destinations !== undefined,
+        `printf '%s\\n' "$DESTINATIONS" | put "$DIR/${ALLOY_DESTINATIONS_FILE}"`,
+      ),
+      `# Alloy reads the app's masking file, which the deploy job writes; until then, one that never
 # matches. The app's folder may not be there before the first deploy.
 appdir=$(dirname "$MASK")
 if [ -L "$appdir" ] || [ -L "$MASK" ]; then fail "$appdir holds a symbolic link; OpsCrew does not follow it."; fi
@@ -2668,12 +2762,18 @@ if [ ! -d "$appdir" ]; then
   if [ -n "$owner" ]; then chown "$owner" "$appdir"; fi
 fi
 if [ ! -e "$MASK" ]; then printf '%s' "$EMPTY_MASK" | put "$MASK"; fi`,
-    };
-  }
-  if (mode === "agent") {
+    ].join("\n"),
+  };
+}
+
+function addonVariant(kind: AddonKind, p: AddonSettings): AddonVariant {
+  if (kind === "alloy") return alloyVariant(p);
+  if (p.mode === "agent") {
     return {
       secrets: ["beszelToken"],
       secretFiles: ["agent.env"],
+      staleFiles: [],
+      destinations: "",
       dataDirs: ["agent_data"],
       templated: "",
       read: `${readLines(["token"])}
@@ -2684,6 +2784,8 @@ case "$token" in ''|*[!A-Za-z0-9-]*) token=''; ${refuse("Beszel agent token", "B
   return {
     secrets: ["beszelPassword", "beszelToken", "beszelHubKey"],
     secretFiles: ["hub.env", "agent.env", "config.yml", "data/id_ed25519"],
+    staleFiles: [],
+    destinations: "",
     dataDirs: ["data", "agent_data"],
     templated: "config.yml",
     read: `${readLines(["pw", "token", "key"])}
@@ -2701,28 +2803,38 @@ printf 'TOKEN=%s\\nKEY=%s\\n' "$token" "$HUB_KEY" | put "$DIR/agent.env"`,
   };
 }
 
-/** Shell helpers of the add-on scripts. */
-const MONITOR_HELPERS = `compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
+/**
+ * Shell helpers of the add-on scripts and the monitoring stack's: its Compose project, a file's
+ * SHA-256, writing a file or a folder for `$owner` (the deploy user when the step runs as root),
+ * and whether every service runs.
+ */
+const COMPOSE_HELPERS = `compose() { docker compose -p "$PROJECT" -f "$DIR/compose.yaml" "$@"; }
 sum_of() { sha256sum "$1" 2>/dev/null | cut -d ' ' -f 1; }
-ids() { printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u "$USER_NAME")" "$(id -g "$USER_NAME")"; }
 put() {
   if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
   write_file "$1" "\${2:-0600}" "$owner"
 }
 own_dir() {
   if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
-  install -d -m 0700 "$1"
+  install -d -m "\${2:-0700}" "$1"
   if [ -n "$owner" ]; then chown "$owner" "$1"; fi
 }
 all_running() {
   want=$(compose config --services 2>/dev/null | sort) || return 1
   have=$(compose ps --services --status running 2>/dev/null | sort) || return 1
   [ -n "$want" ] && [ "$want" = "$have" ]
-}
+}`;
+
+/** Shell helpers of the add-on scripts. */
+const MONITOR_HELPERS = `${COMPOSE_HELPERS}
+ids() { printf 'OPSCREW_DEPLOY_UID=%s\\nOPSCREW_DEPLOY_GID=%s\\n' "$(id -u "$USER_NAME")" "$(id -g "$USER_NAME")"; }
 files_ok() {
   [ -f "$DIR/.opscrew-files" ] && [ "$(cat "$DIR/.opscrew-files")" = "$MANIFEST" ] || return 1
   for entry in $PLAIN; do [ "$(sum_of "$DIR/\${entry%%:*}")" = "\${entry#*:}" ] || return 1; done
   for f in $SECRET_FILES; do [ -s "$DIR/$f" ] || return 1; done
+  [ -z "$POSTGRES_HOST" ] || grep -qF "@$POSTGRES_HOST:5432/" "$DIR/${POSTGRES_MONITOR_CREDENTIAL}" || return 1
+  for f in $STALE_FILES; do [ ! -e "$DIR/$f" ] && [ ! -L "$DIR/$f" ] || return 1; done
+  [ -z "$DESTINATIONS" ] || [ "$(cat "$DIR/${ALLOY_DESTINATIONS_FILE}" 2>/dev/null)" = "$DESTINATIONS" ] || return 1
   for d in $DATA_DIRS; do [ -d "$DIR/$d" ] && [ ! -L "$DIR/$d" ] || return 1; done
   [ -z "$MASK" ] || [ -f "$MASK" ] || return 1
   [ "$(cat "$DIR/.env" 2>/dev/null)" = "$(ids)" ]
@@ -2732,11 +2844,17 @@ files_ok() {
  * `beszel` and `alloy`: the files `renderAddon` rendered (`file:<name>` parameters), the secrets
  * from stdin, the `.env` with the deploy user's ids and the data folders, all the deploy user's
  * (the rendered files without a secret 0644, the others 0600, folders 0700), then
- * `docker compose up -d` until every container runs. As root
+ * `docker compose up -d` until every container runs, with `--force-recreate` only when a file the
+ * containers read changed (a running container sees a new file only when recreated). As root
  * on a server the user owns (in `/srv/opscrew/addons/<name>`), as the deploy user on one OpsCrew
- * created (in `/home/deploy/opscrew/addons/<name>`).
+ * created (in `/home/deploy/opscrew/addons/<name>`). Alloy on any server of the app (feature
+ * 020) names the server and its destinations, and on Postgres's server the Postgres host.
  */
-function addonScripts(plan: HostPlan, step: HostStep, kind: AddonKind): StepScripts {
+function addonScripts(
+  plan: HostPlan,
+  step: HostStep,
+  kind: Exclude<AddonKind, "monitoring">,
+): StepScripts {
   if (plan.purpose !== "setup" || step.params.remove === true) {
     return addonRemoveScripts(plan, step, kind);
   }
@@ -2744,8 +2862,17 @@ function addonScripts(plan: HostPlan, step: HostStep, kind: AddonKind): StepScri
   if ((kind === "beszel") !== (p.mode !== undefined)) throw invalid(step, "mode");
   if ((p.mode === "hub") !== (p.email !== undefined)) throw invalid(step, "email");
   if ((p.mode === "hub") !== (p.hubKey !== undefined)) throw invalid(step, "hubKey");
+  if ((p.server === undefined) !== (p.destinations === undefined)) throw invalid(step, "server");
+  if (kind !== "alloy" && p.server !== undefined) throw invalid(step, "destinations");
+  if (p.destinations !== undefined && new Set(p.destinations).size !== p.destinations.length) {
+    throw invalid(step, "destinations");
+  }
+  // Postgres's figures go to the monitoring stack only.
+  if (p.postgresHost !== undefined && p.destinations?.includes("monitoring") !== true) {
+    throw invalid(step, "postgresHost");
+  }
   const files = addonFiles(step);
-  const variant = addonVariant(kind, p.mode);
+  const variant = addonVariant(kind, p);
   const what = p.mode === "agent" ? "Beszel's agent" : ADDON_NAMES[kind].runs;
   const templated = files.find(([name]) => name === variant.templated);
   if (variant.templated !== "" && !templated?.[1].includes(BESZEL_TOKEN_PLACEHOLDER)) {
@@ -2773,7 +2900,12 @@ function addonScripts(plan: HostPlan, step: HostStep, kind: AddonKind): StepScri
       TEMPLATED: variant.templated,
       PLACEHOLDER: BESZEL_TOKEN_PLACEHOLDER,
       SECRET_FILES: variant.secretFiles.join(" "),
+      STALE_FILES: variant.staleFiles.join(" "),
+      DESTINATIONS: variant.destinations,
+      POSTGRES_HOST: p.postgresHost ?? "",
       DATA_DIRS: variant.dataDirs.join(" "),
+      // Every file the step writes that its containers read: the rendered ones and the secrets.
+      READ_FILES: [...new Set([...files.map(([name]) => name), ...variant.secretFiles])].join(" "),
       WHAT: what,
     },
     helpers: MONITOR_HELPERS,
@@ -2790,7 +2922,12 @@ fi
 ${variant.read}
 own_dir "$DIR"
 for d in $DATA_DIRS; do own_dir "$DIR/$d"; done
+# The files the containers read, as they are before this apply writes them: a changed one
+# reaches a running container only when Compose recreates it.
+read_sums() { for f in $READ_FILES; do printf '%s:%s\\n' "$f" "$(sum_of "$DIR/$f")"; done; }
+before=$(read_sums)
 ${variant.write}
+for f in $STALE_FILES; do rm -f "$DIR/$f"; done
 # The containers run as the deploy user: Compose reads its ids from .env.
 ids | put "$DIR/.env"
 for entry in $FILES; do
@@ -2804,8 +2941,15 @@ for entry in $FILES; do
   fi
 done
 token=''
+# Recreated only when a file changed now, or since the last start that went through: the list
+# of files is written once the containers run them.
+recreate=''
+if [ "$(read_sums)" != "$before" ] || [ "$(cat "$DIR/.opscrew-files" 2>/dev/null)" != "$MANIFEST" ]; then
+  recreate=--force-recreate
+fi
+# shellcheck disable=SC2086 # recreate is empty or one flag.
+compose up -d --remove-orphans --quiet-pull $recreate >/dev/null 2>&1 || fail "$WHAT did not start (docker compose up failed)."
 printf '%s\\n' "$MANIFEST" | put "$DIR/.opscrew-files"
-compose up -d --remove-orphans --quiet-pull >/dev/null 2>&1 || fail "$WHAT did not start (docker compose up failed)."
 i=0
 until all_running; do
   i=$((i + 1))
@@ -2813,9 +2957,165 @@ until all_running; do
   sleep 2
 done`,
     failed: `${what} is not running as planned.`,
-    secrets: { names: variant.secrets, required: true },
+    ...(variant.secrets.length > 0 ? { secrets: { names: variant.secrets, required: true } } : {}),
     doing: `starting ${what}`,
     timeoutMs: 10 * MINUTE,
+  });
+}
+
+/**
+ * The monitoring stack's files: by path in its folder, each non-empty text without NUL bytes
+ * within its cap, never its password file's name.
+ */
+const STACK_FILE_RULES: FileRules = {
+  name: StackPathSchema,
+  text: z
+    .string()
+    .min(1)
+    .max(MAX_STACK_FILE_BYTES)
+    .refine((text) => !text.includes("\0")),
+  reserved: new Set([GRAFANA_ADMIN_CREDENTIAL]),
+};
+
+/** The folders the stack's files are in, each after its parent (`grafana`, `grafana/dashboards`). */
+function stackDirs(paths: readonly string[]): string[] {
+  const dirs = paths.flatMap((path) => {
+    const parts = path.split("/").slice(0, -1);
+    return parts.map((_, index) => parts.slice(0, index + 1).join("/"));
+  });
+  return [...new Set(dirs)].sort();
+}
+
+/** Shell helpers of the monitoring stack's scripts. */
+const STACK_HELPERS = `${COMPOSE_HELPERS}
+sums_ok() {
+  for entry in $MANIFEST; do [ "$(sum_of "$DIR/\${entry%%:*}")" = "\${entry#*:}" ] || return 1; done
+}
+files_ok() {
+  [ -f "$DIR/.opscrew-files" ] && [ "$(cat "$DIR/.opscrew-files")" = "$MANIFEST" ] || return 1
+  sums_ok || return 1
+  c="$DIR/$CREDENTIAL"
+  [ -s "$c" ] && [ ! -L "$c" ] && [ "$(stat -c '%u:%g:%a' "$c")" = 0:0:640 ]
+}`;
+
+/**
+ * `monitoring` (feature 020): the stack's files as rendered (`file:<path>` parameters, compared by
+ * their SHA-256), the deploy user's (folders 0755, files 0644: each service reads them as its
+ * image's own user), and Grafana's admin password from stdin in a root-only file Grafana reads
+ * through its group 0 (`root:root 0640`, research R7 S3). The files reach the server on stdin
+ * after the password, so the dashboards need not fit in the script. Then
+ * `docker compose up -d --wait`: the stack's services have healthchecks. It always runs as root,
+ * for the password file (through Docker on a server OpsCrew created); `runAs` names the server's
+ * kind, which sets its folder (`addonDir`). The check is the files' hashes, the password file and
+ * every service running.
+ */
+function monitoringScripts(plan: HostPlan, step: HostStep): StepScripts {
+  if (plan.purpose !== "setup" || step.params.remove === true) {
+    return monitoringRemoveScripts(plan, step);
+  }
+  const { runAs } = params(step, z.object({ runAs: RunAsSchema }));
+  const files = addonFiles(step, STACK_FILE_RULES);
+  const paths = files.map(([path]) => path);
+  const dir = addonDir("monitoring", runAs);
+  return scripts({
+    name: "monitoring",
+    params: {
+      DIR: dir,
+      PARENT: dir.slice(0, dir.lastIndexOf("/")),
+      RUN_AS: runAs,
+      USER_NAME: "deploy",
+      PROJECT: ADDON_PROJECTS.monitoring,
+      CREDENTIAL: GRAFANA_ADMIN_CREDENTIAL,
+      PATHS: paths.join(" "),
+      DIRS: stackDirs(paths).join(" "),
+      MANIFEST: files.map(([path, content]) => `${path}:${sha256Hex(content)}`).join(" "),
+    },
+    helpers: STACK_HELPERS,
+    verify: `  files_ok || return 1
+  all_running`,
+    snapshot: `if [ -e "$DIR/compose.yaml" ]; then echo prev.installed=true; else echo prev.installed=false; fi`,
+    apply: `umask 077
+getent passwd "$USER_NAME" >/dev/null 2>&1 || fail "The $USER_NAME user is missing, so OpsCrew cannot set up the monitoring stack."
+owner="$(id -u "$USER_NAME"):$(id -g "$USER_NAME")"
+pw=''
+IFS= read -r pw || true
+case "$pw" in ''|*[!A-Za-z0-9_-]*) pw=''; ${refuse("Grafana admin password", "the monitoring stack")} ;; esac
+# On a server the user owns the add-ons' parent is root's; on one OpsCrew created, the deploy user's.
+if [ "$RUN_AS" = root ]; then
+  install -d -m 0700 "$PARENT"
+else
+  for d in "$(dirname "$PARENT")" "$PARENT"; do own_dir "$d"; done
+fi
+own_dir "$DIR"
+for d in $DIRS; do own_dir "$DIR/$d" 0755; done
+# A rewritten file reaches a running service only when Compose recreates it: decided before
+# anything is written, so a file edited on the server counts too. The list of files is written
+# once the stack is up, so a failed start recreates it the next time.
+recreate=''
+files_ok || recreate=--force-recreate
+# Grafana (user 472, group 0) reads its password through its group.
+if [ -L "$DIR/$CREDENTIAL" ]; then fail "$DIR/$CREDENTIAL is a symbolic link; OpsCrew does not follow it."; fi
+printf '%s' "$pw" | write_file "$DIR/$CREDENTIAL" 0640 0:0
+pw=''
+# Then the files, one line of base64 each, in the order of $PATHS. None holds a secret.
+for path in $PATHS; do
+  b64=''
+  IFS= read -r b64 || true
+  [ -n "$b64" ] || fail "The monitoring stack's file $path did not arrive on standard input, so OpsCrew stopped."
+  printf '%s' "$b64" | base64 -d | put "$DIR/$path" 0644
+done
+sums_ok || fail "The monitoring stack's files on the server are not the planned ones, so OpsCrew stopped."
+# shellcheck disable=SC2086 # recreate is empty or one flag.
+compose up -d --wait --wait-timeout 300 --remove-orphans --quiet-pull $recreate >/dev/null 2>&1 || fail "The monitoring stack was not up and healthy within five minutes (docker compose up --wait failed). See docker compose -p $PROJECT ps and logs on the server."
+printf '%s\\n' "$MANIFEST" | put "$DIR/.opscrew-files"`,
+    failed: "The monitoring stack is not running as planned.",
+    secrets: { names: ["grafanaAdminPassword"], required: true },
+    payload: files.map(([, content]) => `${base64(content)}\n`).join(""),
+    doing: "starting the monitoring stack",
+    timeoutMs: 15 * MINUTE,
+  });
+}
+
+/**
+ * Removes the monitoring stack: `docker compose down`, then its folder (its password file
+ * included); its volumes (the figures, the logs and Grafana's own data) only with `removeData`,
+ * which only a plan that deletes data may have (approved with allowDestroy and the typed name).
+ * Volumes that stay are still their owner's: the check says so (`addon.history=kept`, as for
+ * Beszel's history), and the host record keeps the owner until it removes them.
+ */
+function monitoringRemoveScripts(plan: HostPlan, step: HostStep): StepScripts {
+  const p = params(
+    step,
+    z.object({ remove: z.literal(true), runAs: RunAsSchema, removeData: z.boolean() }),
+  );
+  if (p.removeData && plan.deleteData !== true) throw invalid(step, "removeData");
+  const dir = addonDir("monitoring", p.runAs);
+  return scripts({
+    name: "monitoring.remove",
+    params: {
+      DIR: dir,
+      PARENT: dir.slice(0, dir.lastIndexOf("/")),
+      PROJECT: ADDON_PROJECTS.monitoring,
+      REMOVE_DATA: p.removeData,
+      ADDONS_ROOT,
+      RUN_AS: p.runAs,
+    },
+    helpers: PROJECT_HELPERS,
+    snapshot: `if [ "$REMOVE_DATA" != true ] && [ -n "$(label_ids volume "$PROJECT")" ]; then echo addon.history=kept; fi`,
+    verify: `  project_gone "$PROJECT" "$REMOVE_DATA" || return 1
+  [ ! -e "$DIR" ] && [ ! -L "$DIR" ]`,
+    apply: `remove_project "$PROJECT" "$DIR/compose.yaml" "$DIR" "$REMOVE_DATA"
+rm -rf "$DIR"
+# The add-ons' parent goes too once it is empty, and on a server the user owns OpsCrew's root.
+if [ -d "$PARENT" ] && [ -z "$(ls -A "$PARENT")" ]; then rmdir "$PARENT"; fi
+if [ "$RUN_AS" = root ] && [ -d "$ADDONS_ROOT" ] && [ -z "$(ls -A "$ADDONS_ROOT")" ]; then
+  rmdir "$ADDONS_ROOT"
+fi`,
+    failed: "The monitoring stack is still on the server.",
+    doing: p.removeData
+      ? "removing the monitoring stack and its data"
+      : "removing the monitoring stack",
+    timeoutMs: 5 * MINUTE,
   });
 }
 
@@ -3228,6 +3528,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return portainerScripts(plan, step);
     case "check-key":
       return checkKeyScripts(step);
+    case "monitoring":
+      return monitoringScripts(plan, step);
     case "beszel":
     case "alloy":
       return addonScripts(plan, step, id);

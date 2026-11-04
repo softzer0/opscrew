@@ -1,6 +1,6 @@
 /**
- * Shared by the add-on planner and the apply: the refusal when another app has the add-on, and
- * the check key's fingerprint.
+ * Shared by the add-on planner and the apply: the refusal when another app has the add-on, when
+ * its owner counts as gone, and the check key's fingerprint.
  */
 import { createHash } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
@@ -13,10 +13,11 @@ import { ADDON_NAMES, type AddonKind } from "./constants";
  */
 export function addonTaken(kind: AddonKind, owner: string, gone: boolean): OpsCrewError {
   const { name, command } = ADDON_NAMES[kind];
-  const what =
-    kind === "beszel"
-      ? "Beszel already shows every container on this server."
-      : "Its Alloy already sends this server's metrics.";
+  const what = {
+    beszel: "Beszel already shows every container on this server.",
+    alloy: "Its Alloy already sends this server's metrics.",
+    monitoring: "Its Prometheus, Loki and Grafana already keep the figures and logs sent here.",
+  }[kind];
   return new OpsCrewError(
     "PHASE_PRECONDITION",
     `${name} is already on this server for the app "${owner}", and a server has only one, so OpsCrew changes nothing.`,
@@ -26,6 +27,15 @@ export function addonTaken(kind: AddonKind, owner: string, gone: boolean): OpsCr
         : `${what} To move it to this app, run \`opscrew addon disable ${command}\` in the project of "${owner}" first, then run this command again.`,
     },
   );
+}
+
+/**
+ * `owner`, the app that turned the add-on on, is no longer set up on the server (`apps`, the host
+ * record's), so another app may turn the add-on off. Never for the monitoring stack: a monitoring
+ * server sets up no app at all, and the stack and its data stay its owner's only.
+ */
+export function ownerGone(kind: AddonKind, owner: string, apps: readonly string[]): boolean {
+  return kind !== "monitoring" && !apps.includes(owner);
 }
 
 /**

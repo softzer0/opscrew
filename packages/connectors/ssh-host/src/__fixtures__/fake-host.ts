@@ -9,6 +9,7 @@ import type { CommandResult, RemoteExec, RemoteRunOptions } from "@opscrew/contr
 import { sha256Hex as sha256 } from "@opscrew/core";
 import {
   ADDON_KINDS,
+  ALLOY_DESTINATIONS_FILE,
   addonDir,
   APP_RECORDS_DIR,
   AUTO_UPGRADES_FILE,
@@ -19,6 +20,7 @@ import {
   EDGE_DIR,
   EDGE_PROJECT,
   FAIL2BAN_JAIL_PATH,
+  GRAFANA_ADMIN_CREDENTIAL,
   HASHED_RUNTIME_FILES,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
@@ -412,6 +414,10 @@ export class FakeHost implements RemoteExec {
   madeDirs = new Set<string>();
   /** How often each add-on's Compose project was brought up. */
   addonUps = new Map<string, number>();
+  /** Owner, group and mode (`stat -c '%u:%g:%a'`) of the files a step set them for. */
+  fileModes = new Map<string, string>();
+  /** Each `docker compose up` of an add-on or the monitoring stack: whether it recreated the containers. */
+  composeUps: { project: string; recreate: boolean }[] = [];
 
   // failure injection
   /** Script names that exit non-zero (with an `opscrew:` message). */
@@ -983,6 +989,7 @@ export class FakeHost implements RemoteExec {
         }),
       ].join("\n"),
     );
+    add("monitoring", this.monitoringLines());
     add("runners", this.runnerLines());
     const fileLine = (name: string, path: string) => {
       const content = this.files.get(path);
@@ -1018,6 +1025,33 @@ export class FakeHost implements RemoteExec {
       ].join("\n"),
     );
     return sectionsOutput(sections);
+  }
+
+  /**
+   * The monitoring section as `MONITORING_SNIPPET` prints it: the stack's files (never its
+   * password file or dot-files) in its first folder with a Compose file, then Alloy's destinations.
+   */
+  private monitoringLines(): string {
+    const lines: string[] = [];
+    const found = (kind: "monitoring" | "alloy") =>
+      (["root", "login"] as const)
+        .map((runAs) => addonDir(kind, runAs))
+        .find((dir) => this.files.has(`${dir}/compose.yaml`));
+    const stack = found("monitoring");
+    if (stack !== undefined) {
+      lines.push("stack");
+      for (const [path, content] of [...this.files].sort(([a], [b]) => a.localeCompare(b))) {
+        if (!path.startsWith(`${stack}/`)) continue;
+        const name = path.slice(stack.length + 1);
+        if (name === GRAFANA_ADMIN_CREDENTIAL || name.split("/").some((part) => part.startsWith("."))) continue;
+        lines.push(`file ${name} ${sha256(content)}`);
+      }
+    }
+    const alloy = found("alloy");
+    if (alloy !== undefined) {
+      lines.push(`alloy ${this.files.get(`${alloy}/${ALLOY_DESTINATIONS_FILE}`)?.trim() ?? "grafanaCloud"}`);
+    }
+    return lines.join("\n");
   }
 
   /** `iptables-save`: the given text plus Docker's DOCKER-USER and OpsCrew's chain. */
@@ -1940,8 +1974,93 @@ export class FakeHost implements RemoteExec {
       case "beszel.remove.verify":
       case "alloy.remove.verify":
         return this.verify(this.addonRemovedOk(p), p);
+
+      // the monitoring stack, always as root
+      case "monitoring.check":
+        return this.check(this.stackOk(p), { installed: this.files.has(`${p.DIR}/compose.yaml`) });
+      case "monitoring.apply":
+        return this.stackApply(p, input);
+      case "monitoring.verify":
+        return this.verify(this.stackOk(p), p);
+      case "monitoring.remove.check": {
+        // Volumes that stay are still the owner's (see monitoringRemoveScripts).
+        const checked = this.check(this.stackRemovedOk(p));
+        return p.REMOVE_DATA !== "true" && this.volumes.has(p.PROJECT ?? "")
+          ? result(`addon.history=kept\n${checked.stdout}`)
+          : checked;
+      }
+      case "monitoring.remove.apply": {
+        const dir = p.DIR ?? "";
+        this.removeProject(p.PROJECT ?? "", p.REMOVE_DATA === "true");
+        for (const path of [...this.files.keys()]) if (path.startsWith(`${dir}/`)) this.files.delete(path);
+        for (const path of [...this.madeDirs]) if (path === dir || path.startsWith(`${dir}/`)) this.madeDirs.delete(path);
+        return result();
+      }
+      case "monitoring.remove.verify":
+        return this.verify(this.stackRemovedOk(p), p);
     }
     throw new Error(`fake host: unknown script ${name}`);
+  }
+
+  /** The stack's files match the plan's and its password file is root's 0640 (`files_ok`). */
+  private stackFilesOk(p: Record<string, string>): boolean {
+    const dir = p.DIR ?? "";
+    if (this.files.get(`${dir}/.opscrew-files`)?.trimEnd() !== p.MANIFEST) return false;
+    for (const entry of FakeHost.words(p.MANIFEST)) {
+      const at = entry.indexOf(":");
+      if (sha256(this.files.get(`${dir}/${entry.slice(0, at)}`) ?? "") !== entry.slice(at + 1)) return false;
+    }
+    const credential = `${dir}/${p.CREDENTIAL}`;
+    return Boolean(this.files.get(credential)) && this.fileModes.get(credential) === "0:0:640";
+  }
+
+  /** The stack's files are as planned, and it runs. */
+  private stackOk(p: Record<string, string>): boolean {
+    return this.stackFilesOk(p) && this.running(p.PROJECT ?? "");
+  }
+
+  /** The stack's apply: the password, then its files from stdin in the order of PATHS, then up. */
+  private stackApply(p: Record<string, string>, input: string): CommandResult {
+    const [pw = "", ...lines] = input.split("\n");
+    if (!/^[A-Za-z0-9_-]+$/.test(pw)) {
+      return fail("No valid Grafana admin password arrived on standard input, so the monitoring stack was not set up.");
+    }
+    if (!this.users.has("deploy")) return fail("The deploy user is missing, so OpsCrew cannot set up the monitoring stack.");
+    const dir = p.DIR ?? "";
+    // Decided before anything is written: a file edited on the server counts too.
+    const recreate = !this.stackFilesOk(p);
+    this.madeDirs.add(dir);
+    for (const sub of FakeHost.words(p.DIRS)) this.madeDirs.add(`${dir}/${sub}`);
+    const credential = `${dir}/${p.CREDENTIAL}`;
+    this.files.set(credential, pw);
+    this.fileModes.set(credential, "0:0:640");
+    for (const [index, path] of FakeHost.words(p.PATHS).entries()) {
+      const b64 = lines[index] ?? "";
+      if (b64 === "") return fail(`The monitoring stack's file ${path} did not arrive on standard input, so OpsCrew stopped.`);
+      this.files.set(`${dir}/${path}`, Buffer.from(b64, "base64").toString("utf8"));
+      this.fileModes.set(`${dir}/${path}`, "1000:1000:644");
+    }
+    const project = p.PROJECT ?? "";
+    this.composeUps.push({ project, recreate });
+    if (!this.running(project)) {
+      for (const service of ["front", "grafana", "loki", "prometheus"]) {
+        this.containers.push({ name: `${project}-${service}-1`, project, ports: "" });
+      }
+    }
+    this.volumes.set(project, 3);
+    this.files.set(`${dir}/.opscrew-files`, `${p.MANIFEST}\n`);
+    return result();
+  }
+
+  /** The stack is gone: its folder and containers, and its volumes when its data goes. */
+  private stackRemovedOk(p: Record<string, string>): boolean {
+    const dir = p.DIR ?? "";
+    const project = p.PROJECT ?? "";
+    return (
+      ![...this.files.keys(), ...this.madeDirs].some((path) => path === dir || path.startsWith(`${dir}/`)) &&
+      !this.running(project) &&
+      !(p.REMOVE_DATA === "true" && this.volumes.has(project))
+    );
   }
 
   /** The `network-filter` step's end state holds (see its `verify_state`). */
@@ -2211,6 +2330,9 @@ export class FakeHost implements RemoteExec {
       if (sha256(this.files.get(`${dir}/${entry.slice(0, at)}`) ?? "") !== entry.slice(at + 1)) return false;
     }
     if (FakeHost.words(p.SECRET_FILES).some((file) => !this.files.get(`${dir}/${file}`))) return false;
+    if (p.POSTGRES_HOST && !this.files.get(`${dir}/postgres_monitor_credential`)?.includes(`@${p.POSTGRES_HOST}:5432/`)) return false;
+    if (FakeHost.words(p.STALE_FILES).some((file) => this.files.has(`${dir}/${file}`))) return false;
+    if (p.DESTINATIONS && this.files.get(`${dir}/${ALLOY_DESTINATIONS_FILE}`)?.trimEnd() !== p.DESTINATIONS) return false;
     if (FakeHost.words(p.DATA_DIRS).some((data) => !this.madeDirs.has(`${dir}/${data}`))) return false;
     if (p.MASK && !this.files.has(p.MASK)) return false;
     return this.files.get(`${dir}/.env`) === this.deployIds() && this.running(p.PROJECT ?? "");
@@ -2221,9 +2343,14 @@ export class FakeHost implements RemoteExec {
     const dir = p.DIR ?? "";
     const [first = "", second = "", key = ""] = input.split("\n");
     const hub = p.TEMPLATED === "config.yml";
-    const token = hub ? second : first;
+    // Alloy reads Grafana Cloud's token, then the monitoring login's password, each when it writes its file.
+    const cloud = FakeHost.words(p.SECRET_FILES).includes("grafana_cloud_credential");
+    const postgres = FakeHost.words(p.SECRET_FILES).includes("postgres_monitor_credential");
+    const token = hub ? second : name === "alloy.apply" && !cloud ? "" : first;
+    const pgpw = cloud ? second : first;
     if (name === "alloy.apply") {
-      if (!/^[A-Za-z0-9+/=_.-]+$/.test(token)) return fail("No valid Grafana Cloud token arrived on standard input, so Grafana Alloy was not set up.");
+      if (cloud && !/^[A-Za-z0-9+/=_.-]+$/.test(token)) return fail("No valid Grafana Cloud token arrived on standard input, so Grafana Alloy was not set up.");
+      if (postgres && !/^[A-Za-z0-9]+$/.test(pgpw)) return fail("No valid password of the monitoring login arrived on standard input, so Grafana Alloy was not set up.");
     } else if (hub) {
       if (!/^[A-Za-z0-9_-]+$/.test(first)) return fail("No valid Beszel dashboard password arrived on standard input, so Beszel was not set up.");
       if (!/^[0-9a-f]{48}$/.test(token)) return fail("No valid Beszel agent token arrived on standard input, so Beszel was not set up.");
@@ -2233,8 +2360,19 @@ export class FakeHost implements RemoteExec {
     }
     this.madeDirs.add(dir);
     for (const data of FakeHost.words(p.DATA_DIRS)) this.madeDirs.add(`${dir}/${data}`);
+    // The files the containers read, before the step writes them (see READ_FILES).
+    const reads = () => FakeHost.words(p.READ_FILES).map((file) => this.files.get(`${dir}/${file}`) ?? "").join("\0");
+    const before = reads();
     if (name === "alloy.apply") {
-      this.files.set(`${dir}/grafana_cloud_credential`, token);
+      if (cloud) this.files.set(`${dir}/grafana_cloud_credential`, token);
+      if (postgres) {
+        this.files.set(
+          `${dir}/postgres_monitor_credential`,
+          `postgresql://opscrew_monitor:${pgpw}@${p.POSTGRES_HOST}:5432/postgres?sslmode=disable`,
+        );
+      }
+      if (p.DESTINATIONS) this.files.set(`${dir}/${ALLOY_DESTINATIONS_FILE}`, `${p.DESTINATIONS}\n`);
+      for (const stale of FakeHost.words(p.STALE_FILES)) this.files.delete(`${dir}/${stale}`);
       if (p.MASK && !this.files.has(p.MASK)) this.files.set(p.MASK, p.EMPTY_MASK ?? "");
     } else if (hub) {
       this.files.set(`${dir}/data/id_ed25519`, Buffer.from(key, "base64").toString("utf8"));
@@ -2250,8 +2388,10 @@ export class FakeHost implements RemoteExec {
       const content = Buffer.from(entry.slice(at + 1), "base64").toString("utf8");
       this.files.set(`${dir}/${file}`, file === p.TEMPLATED ? content.replaceAll(p.PLACEHOLDER ?? "", token) : content);
     }
-    this.files.set(`${dir}/.opscrew-files`, `${p.MANIFEST}\n`);
     const project = p.PROJECT ?? "";
+    const listed = this.files.get(`${dir}/.opscrew-files`)?.trimEnd() === p.MANIFEST;
+    this.composeUps.push({ project, recreate: reads() !== before || !listed });
+    this.files.set(`${dir}/.opscrew-files`, `${p.MANIFEST}\n`);
     if (!this.running(project)) this.containers.push({ name: `${project}-main-1`, project, ports: "" });
     this.volumes.set(project, 1);
     this.addonUps.set(project, (this.addonUps.get(project) ?? 0) + 1);

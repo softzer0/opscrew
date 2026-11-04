@@ -4,12 +4,14 @@
  */
 import { canonicalJson, listText, OpsCrewError, plural, sha256Hex } from "@opscrew/core";
 import { z } from "zod";
-import { addonTaken, keyFingerprint } from "./addons";
+import { addonTaken, keyFingerprint, ownerGone } from "./addons";
 import {
   ADDON_KINDS,
   ADDON_NAMES,
   ADDON_PROJECTS,
   type AddonKind,
+  ALLOY_DESTINATIONS,
+  type AlloyDestination,
   APPS_DIR,
   addonDir,
   appDirs,
@@ -142,6 +144,8 @@ import {
   PublicKeyLineSchema,
   RepositoryNameSchema,
   RepositoryUrlSchema,
+  ServerNameSchema,
+  ServiceNameSchema,
   sameRepository,
 } from "./types";
 import { sortedNetworks, WEB_FILTER_SERVICE, webFilterFileHashes } from "./web-filter";
@@ -1958,18 +1962,23 @@ export function planTeardown(
     );
   }
   // The add-ons the app turned on (or left without a record, with the last app); Beszel's
-  // history only with the app's data.
+  // history and the monitoring stack's volumes only with the app's data.
   for (const kind of ADDON_KINDS) {
     const fact = f.addons[kind];
     const owner = f.record?.addons?.[kind];
     const keepData = kind === "beszel" && !deleteData;
     const present =
       fact.installed ||
-      fact.dataVolume ||
-      (!keepData && fact.secretFile) ||
-      f.containers.some((container) => container.project === ADDON_PROJECTS[kind]);
+      f.containers.some((container) => container.project === ADDON_PROJECTS[kind]) ||
+      (kind === "monitoring"
+        ? deleteData && fact.dataVolume
+        : fact.dataVolume || (!keepData && fact.secretFile));
     if (present && (owner === app || (owner === undefined && last))) {
-      steps.push(addonRemoval(kind, app, "root", keepData));
+      steps.push(
+        kind === "monitoring"
+          ? monitoringRemoval("root", deleteData)
+          : addonRemoval(kind, app, "root", keepData),
+      );
     }
   }
   // The project's check key goes with the last app; another repository's stays.
@@ -2678,6 +2687,10 @@ export function planPublicSsh(
  * apply passes it as the `grantPassword` secret. Whether the login already has that access is
  * known only on the server, so the step is planned as a change and its check skips it when it is
  * in place. Findings say to run `command` again once fixed.
+ *
+ * Access `monitor` (feature 020) is OpsCrew's monitoring login `opscrew_monitor` on Postgres:
+ * `LOGIN`, at most 3 connections and `pg_monitor`, its password passed as the
+ * `monitoringPostgresPassword` secret.
  */
 export function planGrant(
   facts: HostFacts,
@@ -2692,12 +2705,19 @@ export function planGrant(
     "This is a problem in OpsCrew; please report it.",
   );
   const engine = grantEngine(p);
+  const exec = `through docker compose -p ${input.app} exec as the deploy user`;
+  const stdin =
+    "Its password reaches the database only while this plan is applied, on standard input (never in this plan or on a command line). The app's own login is not touched.";
   const title = p.remove
     ? `Remove the login "${p.login}" from ${p.service} (${engine.title})`
-    : `Give the login "${p.login}" ${p.access === "read-only" ? "read-only" : "full"} access to ${p.service} (${engine.title})`;
+    : p.access === "monitor"
+      ? `Let OpsCrew's monitoring read the statistics of ${p.service} (${engine.title}) with its own login "${p.login}"`
+      : `Give the login "${p.login}" ${p.access === "read-only" ? "read-only" : "full"} access to ${p.service} (${engine.title})`;
   const reason = p.remove
-    ? `The login and what it owns are removed with fixed statements, through docker compose -p ${input.app} exec as the deploy user. The app's own login is not touched.`
-    : `The login is made or updated with fixed statements, through docker compose -p ${input.app} exec as the deploy user, ${p.access === "read-only" ? "with read-only access" : "with read and write access to all the app's data, never control of the database server"}. Its password reaches the database only while this plan is applied, on standard input (never in this plan or on a command line). The app's own login is not touched.`;
+    ? `The login and what it owns are removed with fixed statements, ${exec}. The app's own login is not touched.`
+    : p.access === "monitor"
+      ? `The login is made or updated with fixed statements, ${exec}, with LOGIN, at most 3 connections and the pg_monitor role only: it reads the database server's statistics, never the app's data. ${stdin}`
+      : `The login is made or updated with fixed statements, ${exec}, ${p.access === "read-only" ? "with read-only access" : "with read and write access to all the app's data, never control of the database server"}. ${stdin}`;
   const item = networkStep("grant", title, { ...p }, found[0], false, reason);
   return networkPlan(input.app, [item], found);
 }
@@ -2862,10 +2882,18 @@ const AddonEnableSchemas = {
     }),
     z.strictObject({ files: AddonFilesSchema, mode: z.literal("agent") }),
   ]),
-  alloy: z.strictObject({ files: AddonFilesSchema }),
+  alloy: z.strictObject({
+    files: AddonFilesSchema,
+    /** With destinations (feature 020): the server Alloy runs on, `app` or an extra server. */
+    server: ServerNameSchema.optional(),
+    destinations: z.array(z.enum(ALLOY_DESTINATIONS)).min(1).optional(),
+    /** On Postgres's server, with monitoring: the Postgres service's name on the app's network. */
+    postgresHost: ServiceNameSchema.optional(),
+  }),
+  monitoring: z.strictObject({ files: AddonFilesSchema }),
 } as const;
 
-/** The kinds `planAddon` plans: the check's key, and the monitoring add-ons. */
+/** The kinds `planAddon` plans: the check's key, and the monitoring add-ons and stack. */
 export type AddonPlanKind = "check-key" | AddonKind;
 
 /** What `planAddon` turns on for each kind. */
@@ -2886,12 +2914,24 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  *   everything of it goes, except Beszel's history with `keepData`; without it the plan has
  *   `deleteData` (a destroying plan: approve it with allowDestroy and the typed app name), unless
  *   only Beszel's agent ran there (`disable.mode: "agent"`), which keeps no history.
+ * - `alloy` on any server of the app (feature 020): also its `server` and `destinations`
+ *   (`grafanaCloud`, `monitoring`), with the Grafana Cloud token only for Grafana Cloud, and on
+ *   Postgres's server `postgresHost`, the Postgres service's name: the step writes the monitoring
+ *   login's whole data source from `monitoringPostgresPassword`. Without them, feature 017's step.
+ * - `monitoring` (feature 020): the stack's files as `renderMonitoringStack` renders them, by
+ *   path in its folder (`grafana/dashboards/servers.json`), each within 256 KiB, with Grafana's
+ *   admin password supplied at apply as `grafanaAdminPassword`. It runs as root on every server
+ *   (through Docker on one OpsCrew created: apply with `rootImage`), for the password file. Off,
+ *   its containers and folder go; its Docker volumes only with `disable.removeData`, which makes
+ *   the plan `deleteData`.
  *
- * `runAs: "login"` on a server OpsCrew created (the deploy user, no root, no host record);
- * `"root"` on a server the user owns, where `facts` (from `inspectHost`) name the app that turned
- * each add-on on: planning it for another app is refused, naming that app; only turning it off
- * is allowed once that app is no longer set up on the server. Apply it with `applyHostPlan` like
- * any host plan.
+ * `runAs: "login"` on a server OpsCrew created (the deploy user, no root, no host record, except
+ * for `monitoring`); `"root"` on a server the user owns. `facts` (from `inspectHost`) name the app
+ * that turned each add-on on, needed with `"root"` and for `monitoring`: planning it for another
+ * app is refused, naming that app; only turning it off is allowed once that app is no longer set
+ * up on the server (never for `monitoring`, whose server may set up no app: only the app named in
+ * the record changes it, so plan it with that app's name). Apply it with `applyHostPlan` like any
+ * host plan.
  *
  * `connector` adds the Cloudflare Tunnel connector that serves Beszel's dashboard at its subdomain
  * on a server OpsCrew created, as `planPortainer`'s does (its token supplied at apply as
@@ -2906,7 +2946,7 @@ export function planAddon<K extends AddonPlanKind>(
     /** `check-key` only: the project's GitHub repository, `owner/repo`. */
     repository?: string;
     enable?: AddonEnable<K>;
-    disable?: { keepData?: boolean; mode?: "hub" | "agent" };
+    disable?: { keepData?: boolean; mode?: "hub" | "agent"; removeData?: boolean };
     connector?: AddonConnector;
   },
 ): HostPlan {
@@ -2927,7 +2967,8 @@ export function planAddon<K extends AddonPlanKind>(
         )
       : "";
   requireAppName(app);
-  if (kind !== "check-key" && runAs === "root") {
+  // The monitoring stack runs as root everywhere, so the host record names its owner everywhere.
+  if (kind !== "check-key" && (runAs === "root" || kind === "monitoring")) {
     if (options.facts === undefined) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -2937,7 +2978,7 @@ export function planAddon<K extends AddonPlanKind>(
     const record = parseFacts(options.facts).record;
     const owner = record?.addons?.[kind as AddonKind];
     if (owner !== undefined && owner !== app) {
-      const gone = !(record?.apps ?? []).includes(owner);
+      const gone = ownerGone(kind as AddonKind, owner, record?.apps ?? []);
       if (!gone || disable === undefined) throw addonTaken(kind as AddonKind, owner, gone);
     }
   }
@@ -2947,10 +2988,18 @@ export function planAddon<K extends AddonPlanKind>(
     if (keepData && kind !== "beszel") {
       throw new OpsCrewError("INVALID_INPUT", "Only Beszel keeps data when it is turned off.");
     }
+    if (disable.removeData === true && kind !== "monitoring") {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "Only the monitoring stack's data is removed on its own when it is turned off.",
+      );
+    }
     item =
       kind === "check-key"
         ? checkKeyRemoval(runAs, repository)
-        : addonRemoval(kind as AddonKind, app, runAs, keepData, disable.mode === "agent");
+        : kind === "monitoring"
+          ? monitoringRemoval(runAs, disable.removeData === true)
+          : addonRemoval(kind as AddonKind, app, runAs, keepData, disable.mode === "agent");
   } else {
     item = addonStep(
       kind,
@@ -2974,10 +3023,11 @@ export function planAddon<K extends AddonPlanKind>(
       item,
     ],
     findings: [],
-    ...(kind === "beszel" &&
-    disable !== undefined &&
-    disable.keepData !== true &&
-    disable.mode !== "agent"
+    ...((kind === "beszel" &&
+      disable !== undefined &&
+      disable.keepData !== true &&
+      disable.mode !== "agent") ||
+    (kind === "monitoring" && disable?.removeData === true)
       ? { deleteData: true }
       : {}),
   };
@@ -2989,7 +3039,73 @@ export function planAddon<K extends AddonPlanKind>(
 /** Any kind's validated settings. */
 type AddonSettings =
   | { publicKey: string }
-  | { files: Record<string, string>; mode?: "hub" | "agent"; email?: string; hubKey?: string };
+  | {
+      files: Record<string, string>;
+      mode?: "hub" | "agent";
+      email?: string;
+      hubKey?: string;
+      server?: string;
+      destinations?: AlloyDestination[];
+      postgresHost?: string;
+    };
+
+/** The monitoring stack's step: its files by path in its folder, as root (see `planAddon`). */
+function monitoringStep(runAs: RunAs, files: HostStep["params"]): HostStep {
+  return step(
+    "monitoring",
+    "Run the monitoring stack: Prometheus, Loki and Grafana, behind a front that takes only the servers' pushes",
+    "change",
+    { runAs, ...files },
+    `It runs as its own Compose project ${ADDON_PROJECTS.monitoring} in ${addonDir("monitoring", runAs)}, each service as its image's own user, and keeps the figures and logs in the project's Docker volumes. Grafana's admin password is written at apply time to a file only root and Grafana can read, never part of this plan.`,
+  );
+}
+
+/**
+ * The step that removes the monitoring stack: its containers and folder, and its Docker volumes
+ * only with `removeData` (the plan then deletes data).
+ */
+function monitoringRemoval(runAs: RunAs, removeData: boolean): HostStep {
+  return step(
+    "monitoring",
+    removeData
+      ? "Remove the monitoring stack and its data: the figures, the logs and Grafana's own"
+      : "Remove the monitoring stack (its data stays in its Docker volumes)",
+    "change",
+    { remove: true, runAs, removeData },
+    `Its Compose project ${ADDON_PROJECTS.monitoring}, and ${addonDir("monitoring", runAs)} with everything in it, Grafana's password file included.${removeData ? " Its Docker volumes go too, so the figures and logs it kept cannot be brought back." : ""}`,
+  );
+}
+
+/**
+ * The title and the secrets' sentence of Alloy with destinations (feature 020): what it sends
+ * from the server, where, and which secrets it writes.
+ */
+function alloyText(
+  app: string,
+  server: string,
+  destinations: readonly AlloyDestination[],
+  postgresHost: string | undefined,
+): { title: string; secrets: string } {
+  const cloud = destinations.includes("grafanaCloud");
+  const to = [
+    ...(destinations.includes("monitoring") ? ["OpsCrew's monitoring"] : []),
+    ...(cloud ? ["your Grafana Cloud stack"] : []),
+  ].join(" and ");
+  const postgres = postgresHost === undefined ? "" : ` and Postgres's (${postgresHost})`;
+  const login = "monitoring login's password to Postgres, inside its data source,";
+  const secrets = cloud
+    ? `Its Grafana Cloud token${postgresHost === undefined ? " is" : ` and the ${login} are`}`
+    : postgresHost === undefined
+      ? ""
+      : `The ${login} is`;
+  return {
+    title: `Run Grafana Alloy as the deploy user on the server "${server}", sending its figures${postgres}, and the logs of "${app}" (masked), to ${to}`,
+    secrets:
+      secrets === ""
+        ? "It needs no secret."
+        : `${secrets} written at apply time to files only the deploy user can read, never part of this plan.`,
+  };
+}
 
 /** The step that turns an add-on on, from its validated settings. */
 function addonStep(
@@ -3013,13 +3129,26 @@ function addonStep(
   const files = Object.fromEntries(
     Object.entries(enable.files).map(([name, content]) => [`${ADDON_FILE_PARAM}${name}`, content]),
   );
+  if (addon === "monitoring") return monitoringStep(runAs, files);
+  // Alloy's destinations in ALLOY_DESTINATIONS order, each once.
+  const destinations =
+    enable.destinations === undefined
+      ? undefined
+      : ALLOY_DESTINATIONS.filter((name) => enable.destinations?.includes(name));
   const params: HostStep["params"] = {
     runAs,
     ...(enable.mode === undefined ? {} : { mode: enable.mode }),
     ...(enable.email === undefined ? {} : { email: enable.email }),
     ...(enable.hubKey === undefined ? {} : { hubKey: enable.hubKey }),
+    ...(enable.server === undefined ? {} : { server: enable.server }),
+    ...(destinations === undefined ? {} : { destinations: destinations.join(" ") }),
+    ...(enable.postgresHost === undefined ? {} : { postgresHost: enable.postgresHost }),
     ...files,
   };
+  const sending =
+    addon === "alloy" && destinations !== undefined
+      ? alloyText(app, enable.server ?? "", destinations, enable.postgresHost)
+      : undefined;
   const secrets =
     addon === "alloy"
       ? "Its Grafana Cloud token is"
@@ -3034,10 +3163,10 @@ function addonStep(
         : "Run Beszel's agent as the deploy user, connected out to your Beszel hub";
   return step(
     addon,
-    title,
+    sending?.title ?? title,
     "change",
     params,
-    `${ADDON_NAMES[addon].runs} runs as its own Compose project ${ADDON_PROJECTS[addon]} in ${dir}, and reads Docker only through OpsCrew's read-only proxy. ${secrets} written at apply time to files only the deploy user can read, never part of this plan.`,
+    `${ADDON_NAMES[addon].runs} runs as its own Compose project ${ADDON_PROJECTS[addon]} in ${dir}, and reads Docker only through OpsCrew's read-only proxy. ${sending?.secrets ?? `${secrets} written at apply time to files only the deploy user can read, never part of this plan.`}`,
   );
 }
 

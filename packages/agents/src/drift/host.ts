@@ -115,6 +115,7 @@ export const AREA_TITLES: Readonly<Record<HostStepId, string>> = {
   "check-key": "The scheduled check's key",
   beszel: "Beszel",
   alloy: "Grafana Alloy",
+  monitoring: "OpsCrew's monitoring stack",
 };
 
 const RUNTIME_FILES_TITLE = "OpsCrew's runtime files of the app";
@@ -670,6 +671,7 @@ function stepDetails(facts: HostFacts, step: HostStep, app: string, applied?: Ho
     case "check-key":
     case "beszel":
     case "alloy":
+    case "monitoring":
       return [];
   }
 }

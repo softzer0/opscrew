@@ -6,7 +6,7 @@
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { canonicalJson, isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
 import { z } from "zod";
-import { addonTaken, isOpensshPrivateKey } from "./addons";
+import { addonTaken, isOpensshPrivateKey, ownerGone } from "./addons";
 import { ADDON_KINDS, type AddonKind, DEFAULT_DEAD_MAN_SECONDS } from "./constants";
 import {
   assumedApps,
@@ -133,6 +133,19 @@ const SECRET_CHECKS: Record<
     needs: "the password of the device's database login",
     valid: (value) => /^[A-Za-z0-9]{16,128}$/.test(value),
     invalid: "The database login's password must be 16 to 128 letters and digits.",
+  },
+  grafanaAdminPassword: {
+    label: "grafana-admin-password",
+    needs: "Grafana's admin password",
+    valid: (value) => /^[A-Za-z0-9_-]{16,128}$/.test(value),
+    invalid: "Grafana's admin password must be 16 to 128 letters, digits, dashes and underscores.",
+  },
+  monitoringPostgresPassword: {
+    label: "monitoring-postgres-password",
+    needs: "the password of the monitoring login to Postgres",
+    // Letters and digits only: it goes into the data source's URL and the statements as it is.
+    valid: (value) => /^[A-Za-z0-9]{16,128}$/.test(value),
+    invalid: "The monitoring login's password must be 16 to 128 letters and digits.",
   },
 };
 
@@ -514,12 +527,14 @@ async function runStep(ctx: Context, step: HostStep, scripts: StepScripts): Prom
   if (scripts.preApply !== undefined) {
     await runOk(ctx, wrap(ctx, step, scripts.preApply), scripts.timeoutMs, scripts.doing);
   }
-  const input =
+  const secrets =
     scripts.runnerToken !== undefined
       ? `${await fetchRunnerToken(ctx, scripts.runnerToken)}\n`
       : scripts.secrets
         ? stdinOf(scripts.secrets.names, ctx.secrets)
         : undefined;
+  // The plan's text too large for the script follows the secrets (the monitoring stack's files).
+  const input = scripts.payload === undefined ? secrets : `${secrets ?? ""}${scripts.payload}`;
   if (scripts.deadMan !== undefined) {
     await guardedApply(ctx, step, scripts, scripts.deadMan, input);
   } else {
@@ -768,7 +783,7 @@ export async function applyHostPlan(
       if (!isAddon(step.id)) continue;
       const owner = ctx.recorder.addonOwner(step.id);
       if (owner === undefined || owner === valid.app) continue;
-      const gone = !ctx.recorder.apps.includes(owner);
+      const gone = ownerGone(step.id, owner, ctx.recorder.apps);
       if (!gone || !isRemoval(valid, step)) throw addonTaken(step.id, owner, gone);
     }
     // Another app's private network is never changed by this app's plan.

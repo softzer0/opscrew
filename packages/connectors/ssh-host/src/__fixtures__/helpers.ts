@@ -236,6 +236,29 @@ export const ALLOY_FILES = {
   "config.alloy": 'local.file "token" {\n  filename = "/etc/alloy/grafana_cloud_credential"\n  is_secret = true\n}\n',
 };
 
+/**
+ * Small stand-ins for `renderMonitoringStack` (T2004 and T2005 render the real ones): files at
+ * the root of the stack's folder and in its subfolders.
+ */
+export const MONITORING_FILES = {
+  "compose.yaml":
+    "name: opscrew-monitoring\nservices:\n  prometheus: {}\n  loki: {}\n  grafana:\n    volumes: [./grafana_admin_credential:/run/opscrew/grafana_admin_credential:ro]\n  front: {}\n",
+  "prometheus.yml": "storage:\n  tsdb:\n    out_of_order_time_window: 4h\n",
+  "loki.yaml": "auth_enabled: false\n",
+  Caddyfile: "{\n\tadmin off\n}\n",
+  "grafana/provisioning/datasources/opscrew.yaml": "apiVersion: 1\ndatasources: []\n",
+  "grafana/provisioning/dashboards/opscrew.yaml": "apiVersion: 1\nproviders: []\n",
+  "grafana/dashboards/servers.json": '{"uid":"opscrew-servers","panels":[]}\n',
+};
+
+/** The monitoring step's secrets, made at runtime (never committed). */
+export function monitoringSecrets() {
+  return {
+    grafanaAdminPassword: randomBytes(18).toString("base64url"),
+    monitoringPostgresPassword: randomBytes(16).toString("hex"),
+  };
+}
+
 /** An OpenSSH Ed25519 public key line (`ssh-ed25519 <base64>`) made at runtime. */
 export function ed25519PublicKey(): string {
   const raw = Buffer.from(

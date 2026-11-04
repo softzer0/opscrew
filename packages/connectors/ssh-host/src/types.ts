@@ -8,10 +8,10 @@ export const HOST_PLAN_SCHEMA_VERSION = 1;
 /**
  * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs`, `app-record`,
  * `github-runner`, `tunnel-connector`, `network`, `network-filter` and `grant` are the app's own;
- * `edge` only appears in a teardown (the edge goes with the last app). `check-key`, `beszel` and
- * `alloy` are planned by `planAddon` (and removed by a teardown), `network` and `network-filter`
- * by `planNetwork` (and removed by a teardown or an undo), `public-ssh` by `planPublicSsh` and
- * `grant` by `planGrant`.
+ * `edge` only appears in a teardown (the edge goes with the last app). `check-key`, `monitoring`,
+ * `beszel` and `alloy` are planned by `planAddon` (and removed by a teardown), `network` and
+ * `network-filter` by `planNetwork` (and removed by a teardown or an undo), `public-ssh` by
+ * `planPublicSsh` and `grant` by `planGrant`.
  */
 export const HOST_STEP_IDS = [
   "package-repair",
@@ -37,6 +37,7 @@ export const HOST_STEP_IDS = [
   "tunnel-connector",
   "portainer",
   "check-key",
+  "monitoring",
   "beszel",
   "alloy",
   "grant",
@@ -79,6 +80,22 @@ export type AccessMode = z.infer<typeof AccessModeSchema>;
 export const ServiceNameSchema = z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,62}$/, {
   message: "must be a Compose service name",
 });
+
+/** One of the app's servers, as plan-schema names it: `app`, or an extra server's name. */
+export const ServerNameSchema = z.string().regex(/^[a-z][a-z0-9-]{0,14}$/, {
+  message: "must be a server's name such as app or monitoring",
+});
+
+/**
+ * A file of the monitoring stack, by its path in the stack's folder (`compose.yaml`,
+ * `grafana/dashboards/servers.json`): names of letters, digits, `.`, `_` and `-` that start with a
+ * letter or digit, at most five deep, so never `..` or a dot-file.
+ */
+export const StackPathSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}){0,4}$/, {
+    message: "must be a path in the stack's folder such as grafana/dashboards/servers.json",
+  });
 
 /** A pinned Portainer CE version. */
 export const PortainerVersionSchema = z.string().regex(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?$/, {
@@ -415,6 +432,17 @@ export interface ApplySecrets {
    * reaches the database only on standard input, inside the login's statements.
    */
   grantPassword?: string;
+  /**
+   * Grafana's admin password (`monitoring`): 16 to 128 letters, digits, `-` and `_`. The step
+   * writes it to the stack's root-only password file, which Grafana reads through its group.
+   */
+  grafanaAdminPassword?: string;
+  /**
+   * The password of the Postgres monitoring login `opscrew_monitor` (`grant` with access
+   * `monitor`, and `alloy` on Postgres's server): 16 to 128 letters and digits, so it goes into
+   * the data source's URL as it is.
+   */
+  monitoringPostgresPassword?: string;
 }
 
 export type SecretName = keyof ApplySecrets;

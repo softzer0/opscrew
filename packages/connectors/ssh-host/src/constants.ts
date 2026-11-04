@@ -163,8 +163,11 @@ export const PORTAINER_REPOSITORY = "portainer/portainer-ce";
 /** Portainer listens only on the server itself. */
 export const PORTAINER_PORT = 9443;
 
-/** OpsCrew's monitoring add-ons (feature 017), each one per server. */
-export const ADDON_KINDS = ["beszel", "alloy"] as const;
+/**
+ * OpsCrew's monitoring add-ons, each one per server: Beszel and Grafana Alloy (feature 017), and
+ * the self-hosted monitoring stack (feature 020).
+ */
+export const ADDON_KINDS = ["beszel", "alloy", "monitoring"] as const;
 export type AddonKind = (typeof ADDON_KINDS)[number];
 
 /** The parent of the add-ons' folders on a server the user owns (root's, 0700). */
@@ -174,7 +177,8 @@ export const CLOUD_ADDONS_DIR = "/home/deploy/opscrew/addons";
 
 /**
  * An add-on's folder: its Compose file and configuration as `renderAddon` renders them, its
- * secret files and its data, all the deploy user's (the add-on's containers run as that user).
+ * secret files and its data, all the deploy user's (the add-on's containers run as that user;
+ * the monitoring stack's run as their images' own users, and its Grafana password file is root's).
  * `runAs: "root"` is a server the user owns, `"login"` one OpsCrew created.
  */
 export function addonDir(kind: AddonKind, runAs: "root" | "login"): string {
@@ -190,13 +194,39 @@ export const ADDON_NAMES: Readonly<
 > = {
   beszel: { name: "Beszel", runs: "Beszel", command: "beszel" },
   alloy: { name: "Grafana Cloud (Grafana Alloy)", runs: "Grafana Alloy", command: "grafana-cloud" },
+  monitoring: {
+    name: "OpsCrew's monitoring",
+    runs: "the monitoring stack",
+    command: "monitoring",
+  },
 };
 
 /** Each add-on's Compose project, on every server. */
 export const ADDON_PROJECTS: Readonly<Record<AddonKind, string>> = {
   beszel: "opscrew-beszel",
   alloy: "opscrew-alloy",
+  monitoring: "opscrew-monitoring",
 };
+
+/**
+ * Grafana's admin password in the monitoring stack's folder: root's, `0640`, read by Grafana
+ * (user 472, group 0) through its group. Not `…password`: the redactor would take the Compose
+ * file's mount line for a labelled secret.
+ */
+export const GRAFANA_ADMIN_CREDENTIAL = "grafana_admin_credential";
+
+/**
+ * The whole Postgres data source of the monitoring login, beside Alloy's Compose file, the deploy
+ * user's `0600` (Alloy runs as that user).
+ */
+export const POSTGRES_MONITOR_CREDENTIAL = "postgres_monitor_credential";
+
+/** Where an Alloy sends: Grafana Cloud, the self-hosted monitoring stack, or both. */
+export const ALLOY_DESTINATIONS = ["grafanaCloud", "monitoring"] as const;
+export type AlloyDestination = (typeof ALLOY_DESTINATIONS)[number];
+
+/** The file in Alloy's folder that names its destinations (not secret; inspection reads it). */
+export const ALLOY_DESTINATIONS_FILE = ".opscrew-destinations";
 
 /** The text in Beszel's rendered `config.yml` that the host step replaces with the agent token. */
 // biome-ignore lint/suspicious/noTemplateCurlyInString: the placeholder is literal text.
@@ -318,6 +348,12 @@ export const SUPPORTED_ARCH = ["amd64", "arm64"] as const;
  * and Linux limits a single argument to 128 KiB; two base64 Compose files must fit with room.
  */
 export const MAX_COMPOSE_BYTES = 16 * 1024;
+
+/**
+ * Largest file of the monitoring stack the adapter accepts (its dashboards). Its files reach the
+ * server on the apply's standard input, not in the script, so they need not fit in one argument.
+ */
+export const MAX_STACK_FILE_BYTES = 256 * 1024;
 
 /** Largest script the adapter sends (well under Linux's 128 KiB per-argument limit). */
 export const MAX_SCRIPT_BYTES = 100 * 1024;

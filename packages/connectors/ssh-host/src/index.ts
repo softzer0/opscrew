@@ -17,11 +17,16 @@
  * devices reach what Docker publishes on the private address; `readWireGuard` reads the
  * network's peers and `readNetworkFilter` its filter. `planPublicSsh` closes or opens public SSH
  * on such a server, and `planGrant` gives a device its own login to one of the app's databases.
+ * Self-hosted monitoring (feature 020): `planAddon("monitoring")` runs the stack (Prometheus, Loki,
+ * Grafana and its front) as root on any server, Grafana's password in a root-only file; `alloy`
+ * runs on any server of the app with its destinations; and `planGrant`'s `monitor` access makes
+ * the Postgres login `opscrew_monitor` (`MONITOR_LOGIN`) that Alloy reads Postgres's figures with.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md`,
  * `specs/015-environments-runners/contracts/runners.md`,
- * `specs/017-observability/contracts/observability.md` and
- * `specs/018-split-placement/contracts/split-placement.md`.
+ * `specs/017-observability/contracts/observability.md`,
+ * `specs/018-split-placement/contracts/split-placement.md` and
+ * `specs/020-self-hosted-monitoring/contracts/monitoring.md`.
  */
 
 export { applyHostPlan, HostApplyError } from "./apply";
@@ -61,7 +66,7 @@ export {
   runnerOf,
   tunnelOf,
 } from "./facts";
-export { type GrantParams, GrantParamsSchema } from "./grant";
+export { type GrantParams, GrantParamsSchema, MONITOR_LOGIN } from "./grant";
 export { hostPlanHash } from "./hash";
 export { inspectHost, inspectRunners, probePrivilege } from "./inspect";
 export { localExec } from "./local";
