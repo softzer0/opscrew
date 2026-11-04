@@ -58,7 +58,7 @@ services:
       - --storage.tsdb.retention.size=24GB
       - --web.enable-remote-write-receiver
     environment:
-      GOMEMLIMIT: 409MiB
+      GOMEMLIMIT: 153MiB
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus:/prometheus
@@ -72,8 +72,8 @@ services:
     networks:
       - stack
     read_only: true
-    mem_limit: 512m
-    memswap_limit: 512m
+    mem_limit: 192m
+    memswap_limit: 192m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -113,7 +113,7 @@ services:
     image: <pin:IMAGES.grafana>
     restart: unless-stopped
     environment:
-      GOMEMLIMIT: 307MiB
+      GOMEMLIMIT: 332MiB
       GF_SECURITY_ADMIN_PASSWORD: $$__file{/run/opscrew/grafana_admin_credential}
       GF_SECURITY_DISABLE_GRAVATAR: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -154,8 +154,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    mem_limit: 384m
-    memswap_limit: 384m
+    mem_limit: 416m
+    memswap_limit: 416m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -170,7 +170,7 @@ services:
     restart: unless-stopped
     user: 65534:65534
     environment:
-      GOMEMLIMIT: 51MiB
+      GOMEMLIMIT: 76MiB
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     healthcheck:
@@ -195,8 +195,8 @@ services:
       - /config:uid=65534,gid=65534,mode=0700
     cap_add:
       - NET_BIND_SERVICE
-    mem_limit: 64m
-    memswap_limit: 64m
+    mem_limit: 96m
+    memswap_limit: 96m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -419,7 +419,7 @@ services:
       - --storage.tsdb.retention.size=24GB
       - --web.enable-remote-write-receiver
     environment:
-      GOMEMLIMIT: 409MiB
+      GOMEMLIMIT: 153MiB
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus:/prometheus
@@ -433,8 +433,8 @@ services:
     networks:
       - stack
     read_only: true
-    mem_limit: 512m
-    memswap_limit: 512m
+    mem_limit: 192m
+    memswap_limit: 192m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -474,7 +474,7 @@ services:
     image: <pin:IMAGES.grafana>
     restart: unless-stopped
     environment:
-      GOMEMLIMIT: 307MiB
+      GOMEMLIMIT: 332MiB
       GF_SECURITY_ADMIN_PASSWORD: $$__file{/run/opscrew/grafana_admin_credential}
       GF_SECURITY_DISABLE_GRAVATAR: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -517,8 +517,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    mem_limit: 384m
-    memswap_limit: 384m
+    mem_limit: 416m
+    memswap_limit: 416m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -533,7 +533,7 @@ services:
     restart: unless-stopped
     user: 65534:65534
     environment:
-      GOMEMLIMIT: 51MiB
+      GOMEMLIMIT: 76MiB
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     healthcheck:
@@ -559,8 +559,8 @@ services:
       - /config:uid=65534,gid=65534,mode=0700
     cap_add:
       - NET_BIND_SERVICE
-    mem_limit: 64m
-    memswap_limit: 64m
+    mem_limit: 96m
+    memswap_limit: 96m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -783,7 +783,7 @@ services:
       - --storage.tsdb.retention.size=24GB
       - --web.enable-remote-write-receiver
     environment:
-      GOMEMLIMIT: 409MiB
+      GOMEMLIMIT: 153MiB
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus:/prometheus
@@ -797,8 +797,8 @@ services:
     networks:
       - stack
     read_only: true
-    mem_limit: 512m
-    memswap_limit: 512m
+    mem_limit: 192m
+    memswap_limit: 192m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -838,7 +838,7 @@ services:
     image: <pin:IMAGES.grafana>
     restart: unless-stopped
     environment:
-      GOMEMLIMIT: 307MiB
+      GOMEMLIMIT: 332MiB
       GF_SECURITY_ADMIN_PASSWORD: $$__file{/run/opscrew/grafana_admin_credential}
       GF_SECURITY_DISABLE_GRAVATAR: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -880,8 +880,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    mem_limit: 384m
-    memswap_limit: 384m
+    mem_limit: 416m
+    memswap_limit: 416m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -896,7 +896,7 @@ services:
     restart: unless-stopped
     user: 65534:65534
     environment:
-      GOMEMLIMIT: 51MiB
+      GOMEMLIMIT: 76MiB
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     healthcheck:
@@ -921,8 +921,8 @@ services:
       - /config:uid=65534,gid=65534,mode=0700
     cap_add:
       - NET_BIND_SERVICE
-    mem_limit: 64m
-    memswap_limit: 64m
+    mem_limit: 96m
+    memswap_limit: 96m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -1145,7 +1145,7 @@ services:
       - --storage.tsdb.retention.size=24GB
       - --web.enable-remote-write-receiver
     environment:
-      GOMEMLIMIT: 409MiB
+      GOMEMLIMIT: 153MiB
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus:/prometheus
@@ -1159,8 +1159,8 @@ services:
     networks:
       - stack
     read_only: true
-    mem_limit: 512m
-    memswap_limit: 512m
+    mem_limit: 192m
+    memswap_limit: 192m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -1200,7 +1200,7 @@ services:
     image: <pin:IMAGES.grafana>
     restart: unless-stopped
     environment:
-      GOMEMLIMIT: 307MiB
+      GOMEMLIMIT: 332MiB
       GF_SECURITY_ADMIN_PASSWORD: $$__file{/run/opscrew/grafana_admin_credential}
       GF_SECURITY_DISABLE_GRAVATAR: "true"
       GF_USERS_ALLOW_SIGN_UP: "false"
@@ -1241,8 +1241,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp
-    mem_limit: 384m
-    memswap_limit: 384m
+    mem_limit: 416m
+    memswap_limit: 416m
     security_opt:
       - no-new-privileges:true
     logging:
@@ -1257,7 +1257,7 @@ services:
     restart: unless-stopped
     user: 65534:65534
     environment:
-      GOMEMLIMIT: 51MiB
+      GOMEMLIMIT: 76MiB
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     healthcheck:
@@ -1280,8 +1280,8 @@ services:
       - /config:uid=65534,gid=65534,mode=0700
     cap_add:
       - NET_BIND_SERVICE
-    mem_limit: 64m
-    memswap_limit: 64m
+    mem_limit: 96m
+    memswap_limit: 96m
     security_opt:
       - no-new-privileges:true
     logging:

@@ -126,12 +126,12 @@ describe("plan.observability.monitoring", () => {
 
   it("keeps the memory defaults the spike measured", () => {
     expect(ADDON_MEMORY_DEFAULTS.monitoring).toEqual({
-      prometheus: 512,
+      prometheus: 192,
       loki: 384,
-      grafana: 384,
-      front: 64,
-      alloy: 384,
-      proxy: 48,
+      grafana: 416,
+      front: 96,
+      alloy: 256,
+      proxy: 32,
     });
     expect(ADDON_MEMORY_DEFAULTS.grafanaCloud).toEqual({ alloy: 256, proxy: 32 });
   });

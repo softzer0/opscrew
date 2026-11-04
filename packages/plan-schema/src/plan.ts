@@ -501,7 +501,9 @@ export const ObservabilityCheckSchema = z.strictObject({
 export const ADDON_MEMORY_DEFAULTS = {
   beszel: { hub: 128, agent: 64, proxy: 32 },
   grafanaCloud: { alloy: 256, proxy: 32 },
-  monitoring: { prometheus: 512, loki: 384, grafana: 384, front: 64, alloy: 384, proxy: 48 },
+  // The spike's hour with three servers sending (020 research.md R7, S2): about 1.5 times each peak;
+  // Prometheus doubled, since the hour ended before its first block compaction.
+  monitoring: { prometheus: 192, loki: 384, grafana: 416, front: 96, alloy: 256, proxy: 32 },
 } as const;
 
 /** Beszel's hub public key, as the hub shows it: `ssh-ed25519 AAAA…` (public, not a secret). */
