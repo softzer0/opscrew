@@ -437,7 +437,7 @@ network above all).
 
 ## Phase 6: Wave 5 (parallel)
 
-- [ ] T2016 [P] The Docker pass (`OPSCREW_DOCKER_TESTS=1`), in `packages/cli/test/e2e/monitoring.test.ts` (+ support)
+- [x] T2016 [P] The Docker pass (`OPSCREW_DOCKER_TESTS=1`), in `packages/cli/test/e2e/monitoring.test.ts` (+ support)
   - Owns: `packages/cli/test/e2e/monitoring.test.ts`, `packages/cli/test/e2e/monitoring-support.ts`, and fixture apps under `packages/cli/test/e2e/__fixtures__/monitoring/**`
   - Reads: plan.md "15."; spec SC-2003–SC-2005; 018's `network.test.ts` for the harness
   - Depends: T2004, T2005, T2006, T2007
@@ -476,7 +476,7 @@ network above all).
   - Noted at merge: `catalogs()` in `monitoring/enable.ts` repeats design's private `extraCatalogs`; `pinnedVersion` in `monitoring/settings.ts` repeats the one in `addons/settings.ts` (T2009).
   - Noted at merge: `monitoringOwner` (T2010) reads an owner's paths back from `owner.plan`; any similar code in T2009, T2011 or T2012 should use it.
   - Noted at merge: `escapeRegExp` is a private one-liner in `addons/alloy.ts`, `docker/stacks.ts` and `edge/vercel-routing.ts` (T2006).
-  - Noted at merge: `pinnedTag` in `workflow/__fixtures__/plans.ts` repeats `pinnedVersion`'s tag slicing (T2007).
+  - Noted at merge: `pinnedTag` in `workflow/__fixtures__/plans.ts` and `imageVersion` in `cli/test/e2e/monitoring-support.ts` repeat `pinnedVersion`'s tag slicing (T2007, T2016); the Docker pass repeats `grant.ts`'s monitor-login SQL because `grantEngine` isn't exported (T2016).
   - Noted at merge: the add-on project names (`opscrew-beszel`, `opscrew-monitoring`) are plain strings in `addons/alloy.ts` (T2006).
   - Noted at merge: `GO_MEMORY_SHARE` is defined in both `monitoring/compose.ts` and `addons/alloy.ts`; `MonitoringStackInput.networks[].servers`/`devices` are unused by the stack (T2004).
 - [ ] T2020 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync. A patch version (0.2.1): plans without monitoring render byte-identical, so no project has to be redone. Only a minor version (0.3.0) if the feature ends up changing files that existing projects must redo (`docs/releasing.md` 1.).
