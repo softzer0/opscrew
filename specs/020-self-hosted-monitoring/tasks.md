@@ -339,7 +339,7 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2012 [P] [US3] [US6] Status, open, verify, secure and drift, in `packages/agents/src/{monitoring/status.ts,addons/status.ts,status,verify,secure,drift}`
+- [x] T2012 [P] [US3] [US6] Status, open, verify, secure and drift, in `packages/agents/src/{monitoring/status.ts,addons/status.ts,status,verify,secure,drift}`
   - Owns: `packages/agents/src/monitoring/status.ts` (+ test); in `packages/agents/src/addons/status.ts` the monitoring branches; the monitoring parts of `packages/agents/src/{status,verify,secure,drift}/**` (+ tests, fixtures, snapshots)
   - Reads: plan.md "12."; spec US3, US6; 017's `addons/status.ts` (`ADDON_CONTAINERS_COMMAND`, `addonOpen`)
   - Depends: T2004, T2008, T2009, T2010
