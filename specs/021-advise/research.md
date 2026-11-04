@@ -278,3 +278,102 @@ to check against v1.21.3 in the spike), a Haiku code map.
 7. **The spike (T2101) tries it on Alloy v1.21.3:** two app files and the shared file in one folder,
    a reload by SIGHUP, a bad file on reload, labels prefixed, the validation command inside the
    pinned image, and one app's destination down while the other's works.
+
+## R5. The spike (T2101, 2026-11-04)
+
+### S1. Resizing at Hetzner through OpsCrew's module
+
+**How:** OpsCrew's own `hetzner-vps` module (no `keep_disk`, so the provider's default) with
+OpenTofu 1.13.1 and the hcloud provider 1.70, a throwaway server in nbg1, twice: cx23 → cx33,
+then back to cx23 (first run), and cx23 → cx33 with port 22 probed every 2 seconds (second run).
+Both servers were deleted, with their key and firewall.
+
+- **A move up works in place:** the IaC plan shows one in-place change (`server_type`); the
+  provider switches the server off, changes the type, and starts it again. Both addresses (IPv4 and
+  IPv6) stay.
+- **The downtime:** about 55 seconds offline (the apply took 33 seconds, then the boot). In the
+  first run the apply took 141 seconds, right after the first boot, likely while the server was
+  still busy with its first updates: so "one to three minutes".
+- **The disk grows with the type** (40 → 80 GB) and the filesystem follows at boot (cloud-init's
+  growpart): nothing to do by hand.
+- **No way back:** cx33 → cx23 is refused, "cannot change type because the selected server_type has
+  not sufficient disk space (invalid_server_type)", **and the server is left switched off**: the
+  provider shuts it down before it asks for the change and doesn't start it again when that fails.
+  Design never offers a smaller disk to a deployed server (`keptTypeText`), but a plan edited by
+  hand reaches the provider today.
+- **So:** the "larger" proposal says it is one way (the disk grows; Hetzner can't make it smaller)
+  and that the app is offline one to three minutes; the "smaller" rule keeps to types with at least
+  the current type's disk; provision refuses a smaller disk before any change (T2114).
+- **Smaller is rare at Hetzner:** within a line each smaller type has a smaller disk, and another
+  line with the same disk costs more (OpsCrew's static catalogue: cx43, 160 GB, €15.99; cpx32, 160
+  GB, €35.49). The common saving is the cost rule's: a cheaper type with at least the same CPUs,
+  memory and disk (cpx22 at €19.49 → cx33 at €8.49, both 80 GB). The rule stays, tested on
+  catalogue fakes; the guide says why it seldom fires.
+- **DigitalOcean** (research R1.1, not run): `resize_disk` defaults to true in its provider, and a
+  grown disk never shrinks, so the same rules hold; T2114 covers both.
+
+### S2. The history queries
+
+**How:** 14 days of figures at Alloy's 15-second interval, made to known patterns and backfilled
+with `promtool tsdb create-blocks-from openmetrics` into the pinned Prometheus (v3.15.1), which then
+ran under the stack's limits (192 MB, `GOMEMLIMIT` 153 MiB). Three servers of one app: `app` (14
+days; CPU, memory and load high 2 hours a day, the disk losing 1 GB a day, web and worker deployed
+daily, the worker near its limit 10 minutes a day with 3 OOM kills), `db` (5 days, Postgres
+restarted 4 times), `monitoring` (14 days, quiet). 020's Docker pass already proved that Alloy
+sends these metrics with the `app`, `env`, `server` (and `service`) labels; a real restart was
+checked separately (below).
+
+**The queries, settled** (`SEL` is `app="…",env="…"`, `BY` is `app, env, server`; each answered
+the expected value):
+
+| Figure | Query | Answer |
+|---|---|---|
+| `days` | `max by (BY) ((time() - min_over_time(timestamp(node_memory_MemTotal_bytes{SEL})[14d:1h])) / 86400)` | app 14.0, db 5.0 |
+| `cpuP95` | `quantile_over_time(0.95, (1 - avg by (BY) (rate(node_cpu_seconds_total{SEL,mode="idle"}[5m])))[14d:5m])` | app 0.85 |
+| `memoryP95` | `quantile_over_time(0.95, (1 - max by (BY) (node_memory_MemAvailable_bytes{SEL}) / max by (BY) (node_memory_MemTotal_bytes{SEL}))[14d:5m])` | app 0.90 |
+| `loadOverCpus` | `avg_over_time((max by (BY) (node_load15{SEL}) > bool on (BY) count by (BY) (node_cpu_seconds_total{SEL,mode="idle"}))[14d:5m])` | app 0.083 (2 h of 24) |
+| `diskFullInDays` | `max by (BY) (node_filesystem_avail_bytes{SEL,mountpoint="/"}) / max by (BY) (-deriv(node_filesystem_avail_bytes{SEL,mountpoint="/"}[7d]) > 0) / 86400` | app 16.0; no answer for a disk that isn't filling |
+| a container's p95 | `quantile_over_time(0.95, (max by (BY, service) (container_memory_working_set_bytes{SEL}))[14d:5m])` | web 450 MB |
+| a container's maximum | `max by (BY, service) (max_over_time(container_memory_working_set_bytes{SEL}[14d]))` | worker 255 MB |
+| a container's limit | `max by (BY, service) (container_spec_memory_limit_bytes{SEL} > 0)` | each its limit |
+| restarts | `sum by (BY, service) (changes(container_start_time_seconds{SEL}[14d]))` | postgres 4, web and worker 0 |
+| OOM kills | `sum by (BY, service) (increase(container_oom_events_total{SEL}[14d]))` | worker 3 |
+
+- **Fast and light:** each query answered in 50 ms or less (110 ms for the deploy-counting variant
+  below), twice, with Prometheus at 64 MiB of its 192 MB and never killed. The backfill made 168
+  two-hour blocks, a harder case than a server's compacted ones. One command with all the queries,
+  as `monitoringStatus` runs its own, stays well inside a time limit of 30 seconds.
+- **Restarts are counted per container, so deploys don't count:** each container keeps its
+  `container_id`, so `changes` over each series counts the restarts of that container, and a deploy
+  starts a new series. Counting changes of the start time per service, as the containers dashboard
+  does, counted the 13 daily deploys as restarts. **Checked on real Docker** with the pinned Alloy
+  (v1.21.3) and 020's cAdvisor settings: a container restarted 6 times by its restart policy kept
+  its cgroup id and showed 7 distinct start times.
+- **OOM kills are kept by Alloy** (`container_oom_events_total`, 020): a container killed for memory
+  is a clearer sign than its maximum near the limit; the rule uses both.
+- **The instant queries (a limit, the disk) need fresh figures:** Prometheus looks back 5 minutes,
+  so a server whose figures stopped gives no limit and no disk projection; advise lists it as not
+  read.
+- **The 7-day rule reads `days`** with an hour's precision.
+
+### S3. GitHub and Cloudflare with the test tokens
+
+- **Dependabot alerts off** (all three test repositories; GitHub's default for a private
+  repository): `GET /repos/{o}/{r}/dependabot/alerts` answers 403 "Dependabot alerts are disabled
+  for this repository.", whatever the token's permissions. **Turned on** for a moment on one
+  repository (the test token has Administration: write), a token without "Dependabot alerts: read"
+  gets 403 "Resource not accessible by personal access token". Turned off again afterwards.
+  - So the connector tells three answers apart: the alerts; **off** (the message says disabled),
+    which becomes a proposal to turn them on (the repository's Settings, Code security); **no
+    permission**, which becomes a "not read" line naming "Dependabot alerts: read".
+  - The founder added "Dependabot alerts: Read" to the test token on 2026-11-05: with alerts turned
+    on for a moment, it read them (200, none open). The test repositories keep alerts off, so the
+    live pass sees "off"; a list of real alerts is tested on fixtures from GitHub's documented
+    answer.
+- **Dependabot's pull requests** are read without the alerts: one test repository has one open
+  (version updates run with alerts off).
+- **The check's issues:** label `opscrew-check` (017's `CHECK_LABEL`). GitHub's `since` filters by
+  the last update, not the opening, so the connector keeps the issues opened since the date itself.
+- **The token's expiry header** reads `2026-11-27 17:25:14 UTC`, not ISO 8601: the connector
+  converts it. Both test tokens send it.
+- **Cloudflare:** all three test tokens answered `status: active` and no `expires_on` (none set).

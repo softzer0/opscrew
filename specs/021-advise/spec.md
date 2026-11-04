@@ -72,7 +72,8 @@ changes, nothing else does; `opscrew provision` shows the resize and applies it 
 
 **Acceptance Scenarios**:
 
-1. **Given** a proposal the plan holds (a server type, backups, the scheduled check), **When** the
+1. **Given** a proposal the plan holds (a server type, a container's memory limit, backups, the
+   scheduled check), **When** the
    user runs `opscrew advise --apply <id>`, **Then** only the plan changes, the summary shows the
    change and the new monthly price, and it says to run `opscrew provision`.
 2. **Given** a proposal applied through another command (monitoring, `retarget`, Dependabot's pull
@@ -104,9 +105,13 @@ saving.
    next smaller type at the same provider and location (R3, the thresholds in the plan), **Then** it
    proposes that type, with the monthly saving, and says the disk stays as it is.
 2. **Given** p95 memory above 85% of the server, or the 15-minute load above the CPUs for most of
-   the period, **Then** it proposes the smallest type that brings them under, with the added price.
-3. **Given** a container whose memory reached its limit or restarted repeatedly, **Then** it says
-   which, with the numbers.
+   the period, **Then** it proposes the smallest type that brings them under, with the added price,
+   and says the app is offline one to three minutes and that the move is one way (the disk grows,
+   and neither provider makes it smaller).
+3. **Given** a container whose memory reached its limit (its maximum at 95% of it, or killed for
+   memory), **Then** it says which, with the numbers, and proposes a higher limit in the plan (the
+   web process's, a worker's or a service's `memoryMb`) when the server has room for it, or a
+   larger server when it hasn't. Restarts are US6's.
 4. **Given** the disk's trend reaches full within 30 days, **Then** it says when, and proposes a
    larger type (the only way to grow the disk today) or cleaning up images.
 5. **Given** a server type that can't go smaller because its disk would shrink, **Then** it doesn't
@@ -173,7 +178,8 @@ and when the same server costs less elsewhere.
 
 1. **Given** open Dependabot alerts on the repository, **Then** it reports how many, by severity,
    and the open Dependabot pull requests that would fix them; with a token lacking "Dependabot
-   alerts: read", it says which permission to add instead.
+   alerts: read", it says which permission to add instead. With the alerts off on the repository
+   (GitHub's default for a private one), it proposes turning them on.
 2. **Given** pending security updates on a server, or a reboot required, **Then** it says so, with
    how to apply them (they install automatically; the reboot is the user's call).
 3. **Given** `opscrew secure`'s findings from its host checks, **Then** it lists the failing ones,
@@ -190,13 +196,11 @@ and when the same server costs less elsewhere.
 
 **Acceptance Scenarios**:
 
-1. **Given** a Postgres taking most of the app server's memory or CPU (p95) while the server is
-   short, **Then** it proposes giving the database a server of its own (018), priced, as an
+1. **Given** a Postgres taking most of the app server's memory (p95 of its container) while the
+   server is short, **Then** it proposes giving the database a server of its own (018), priced, as an
    alternative to a larger server.
 2. **Given** a disk filling with the app's uploads while the plan keeps files on the server,
    **Then** it proposes object storage, priced where the provider has a price.
-3. **Given** the app uses a cache client that the plan doesn't run, **Then** it says design can add
-   one.
 
 ---
 
@@ -258,7 +262,8 @@ and when the same server costs less elsewhere.
 
 **Applying**
 - **FR-2109**: `opscrew advise --apply <id>` MUST write only the plan for proposals the plan holds
-  (server type, backups, the scheduled check), after reading the environment again; and print the
+  (server type, a container's memory limit, backups, the scheduled check), after reading the
+  environment again; and print the
   command for the others. It MUST refuse an unknown or no longer valid id before any change.
 - **FR-2110**: Applying MUST go through `opscrew provision`'s plan and hash-bound approval; advise
   never applies anything itself.
@@ -312,3 +317,5 @@ The lead's defaults, for the founder to change:
 - AWS and the hyperscalers' managed services (024).
 - Block volumes to grow a disk without a larger server.
 - A model's judgment on the app's code.
+- A cache the app's code uses but the plan doesn't run: design adds one when analysis finds the
+  client.

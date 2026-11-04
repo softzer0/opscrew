@@ -30,16 +30,17 @@ for the ones the plan holds, and `opscrew provision` applies them as always.
 - **Connectors gain read calls:** GitHub (Dependabot alerts, Dependabot's open pull requests, the
   check's issues since a date, the token's expiry header), Cloudflare (the token's verify answer
   with `expires_on`).
-- **The spike (T2101, lead):**
-  - **S1, resizing at Hetzner through OpsCrew's own flow:** a throwaway server moved one type up
-    with `opscrew provision`: the downtime, whether the address stays, whether the disk grows (the
-    module sets no `keep_disk`, so the provider's default applies), and whether it can then go back
-    down. The answer decides the "smaller" rule's disk check and the proposal's wording.
-  - **S2, the history queries on a real stack** (the Docker pass's harness, T2016): each query of
-    plan.md 3. answers with a value per server and container, within a time limit, and the 7-day
-    rule can read how much history there is.
-  - **S3, GitHub with the test token:** Dependabot alerts and pull requests on the throwaway
-    repository, and the answer when the token lacks "Dependabot alerts: read" (403's message).
+- **The spike (T2101, research R5):**
+  - **S1, resizing at Hetzner through OpsCrew's module:** a move up keeps both addresses, grows the
+    disk with the type (the filesystem follows at boot), and can't be undone: Hetzner refuses a
+    type with a smaller disk, and the failed attempt leaves the server switched off. So the
+    "larger" proposal says it is one way, the "smaller" rule keeps to types with at least the
+    current disk, and provision refuses a smaller disk before any change (T2114).
+  - **S2, the history queries:** settled on 14 days of backfilled figures in the pinned
+    Prometheus under the stack's limits (plan.md 3.); restarts per container checked on real
+    Docker with the pinned Alloy.
+  - **S3, GitHub with the test tokens:** three answers for Dependabot alerts (the alerts, off, no
+    permission), the expiry header's own date format, and the check's issues filtered by opening.
 - **Tests:** unit tests over each rule with fixture readings (thresholds at their edges, the
   "never shrink on one reading" rule, prices against the catalogue fakes); connector tests with
   `fetch` fakes; the history parser on recorded answers; the CLI and MCP with fakes; a gated live
@@ -76,6 +77,7 @@ packages/agents/src/advise/
   rules/size.ts, rules/cost.ts       sizing and cost rules with prices (T2105)
   rules/reliability.ts, rules/upkeep.ts, rules/components.ts   (T2106)
   readings.ts, run.ts, apply.ts      gathering, ordering, applying (T2107)
+packages/agents/src/provision/disk-guard.ts   refusing a smaller disk before the IaC plan (T2114)
 packages/cli/src/commands/advise.ts  the command (T2108)
 packages/mcp-server/src/tools/advise.ts   opscrew_advise (T2108)
 plugin/skills/opscrew-troubleshoot   when to suggest advise (T2108)
@@ -109,38 +111,44 @@ S1–S3 above; one line per question in research.md "R5". ADR 0025 records R3 as
 
 `readHistory(deps, plan)`: only when monitoring is on; on the stack's server (the owner's for a
 sender, through `monitoringOwner`), fixed instant queries through Prometheus inside its container,
-as `monitoringStatus` runs them, audited as `remote-exec`, answers parsed with zod. Per `app`, `env`,
-`server` of this environment:
-- `days`: how far back the figures go (`(time() - min_over_time(timestamp(node_load1)[14d:1h]))`);
-- `cpuP95`: `quantile_over_time(0.95, (1 - avg by (app, env, server) (rate(node_cpu_seconds_total{mode="idle"}[5m])))[14d:5m])`;
-- `memoryP95`: `quantile_over_time(0.95, (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)[14d:5m])`;
-- `loadOverCpus`: the share of the period the 15-minute load passed the CPUs;
-- `diskFullInDays`: from `predict_linear(node_filesystem_avail_bytes{mountpoint="/"}[7d], …)`;
-- per container (`service`): the p95 and the maximum of its working set against its limit, and its
-  restarts (`changes` of its start time, as the containers dashboard counts them).
-The exact queries are settled by S2.
+as `monitoringStatus` runs them (one command, the queries separated by markers), audited as
+`remote-exec`, answers parsed with zod. Per `app`, `env`, `server` of this environment, the queries
+of research R5 (S2), each checked against known figures:
+- `days` (how far back the figures go), `cpuP95`, `memoryP95`, `loadOverCpus` (the share of the
+  period the 15-minute load passed the CPUs), `diskFullInDays` (from the last 7 days' trend; no
+  answer for a disk that isn't filling);
+- per container (`service`): the p95 and the maximum of its working set, its current limit, its
+  restarts (per container, so a deploy isn't one; the containers dashboard counts deploys too), and
+  its OOM kills.
+A server whose figures stopped answers no limit and no disk projection: listed as not read.
 
 ### 4. The rules (T2105, T2106)
 
 Each rule is `(readings) => Proposal[]`, pure, tested on fixtures at the thresholds' edges.
 - **size:** larger (memory p95 > 85% of the server, or the load above the CPUs for 25% of the
-  period, or a container at its limit), smaller (history ≥ 7 days, and the next smaller type at the
-  same provider and location holds the p95 CPU and memory with 40% headroom, and its disk is not
-  smaller than the current one; never on one reading), the disk (full within 30 days, or ≥ 85%
-  now). The target type is the cheapest from the catalogue that meets the need; prices from
-  `pricedOffer`.
+  period), smaller (history ≥ 7 days, and a smaller type at the same provider and location holds
+  the p95 CPU and memory with 40% headroom, and its disk is not smaller than the current type's;
+  never on one reading), the disk (full within 30 days, or ≥ 85% now). The target type is the
+  cheapest from the catalogue that meets the need; prices from `pricedOffer`. A larger type says
+  what S1 found: the app offline one to three minutes (R5), the same addresses, and no way back to
+  the current type (its disk grows).
 - **cost:** over budget (the environment's monthly price against `budgetMonthly`, naming which other
   proposals bring it under); a cheaper type with at least the same CPUs, memory and disk in the same
   region; the other provider cheaper for the same need (names `opscrew retarget`).
 - **reliability:** backups off with important or critical data; the check off for prod; check flaps
   (3 or more issues opened in 14 days); restart loops (3 or more in 14 days, or the count on one
   reading).
+- **a container at its limit** (its maximum at 95% of it, or an OOM kill): a higher limit in the
+  plan (`memory-limit`: 1.5 times, rounded up to 64 MB) when the server's p95 memory plus the raise
+  stays under 85%, otherwise a larger server that holds both.
 - **upkeep and security:** Dependabot alerts by severity, with their open pull requests (or the
-  missing permission); pending security updates and a required reboot; `secure`'s failing host
+  missing permission, or the alerts off: a proposal to turn them on in the repository's settings);
+  pending security updates and a required reboot; `secure`'s failing host
   checks, most severe first; GitHub and Cloudflare tokens expiring within 30 days.
-- **components:** Postgres's share of a short server's memory or CPU (p95 of its container) above
-  50%, proposing its own server (018) priced; a filling disk while the plan keeps uploads on the
-  server, proposing object storage; a cache client detected without a cache, pointing to design.
+- **components:** Postgres's share of a short server's memory (p95 of its container) above 50%,
+  proposing its own server (018) priced; a filling disk while the plan keeps uploads on the server,
+  proposing object storage. (A cache the code uses is design's: it adds one when analysis finds
+  the client.)
 - **Targets:** the user's own server, Portainer and this computer get no resize or price proposals;
   Cloudflare's hosting and GitHub Pages only upkeep.
 
@@ -152,9 +160,21 @@ Each rule is `(readings) => Proposal[]`, pure, tested on fixtures at the thresho
   `basis`: `history` with days or `one-reading`, `notRead`).
 - `applyProposal(deps, plan, id)`: reads again, finds the proposal by id (refusing an unknown or no
   longer valid one, naming the current ids), and for a plan proposal writes the plan through its
-  writer (the server's `serverType`, its `backups`, `observability.check.enabled`); prints the new
+  writer (the server's `serverType`, a container's `memoryMb`, the server's `backups`,
+  `observability.check.enabled`); prints the new
   monthly price and "run `opscrew provision`". A command proposal prints its command.
 - The audit log holds only reads (and the plan write with `--apply`).
+
+### 5b. Provision refuses a smaller disk (T2114)
+
+Research R5 (S1): Hetzner refuses a type with a smaller disk only after the provider has switched
+the server off, and leaves it off. Design already never offers such a type to a deployed server;
+a plan edited by hand would still reach the provider. So provision, before its IaC plan, compares
+each deployed server's type with the plan's (design's `appServerChange`, `deployedExtraServers`,
+`extraServerChanges`) and the two disks in the provider's catalogue (`resolveCatalog`), and
+refuses a smaller one before any change. Known edges, not guarded: a first apply that failed after
+creating the server (no `lastApplyAt` yet; the server is new and empty), and `terraform.tfvars.json`
+left by a `--plan-only` run older than the guard.
 
 ### 6. Surfaces (T2108), the guide (T2109)
 
@@ -177,8 +197,8 @@ duration (SC-2101). The resize path (SC-2102) uses the type S1 confirms.
 
 ## Order
 
-T2101 (lead) → T2102 → wave 1 {T2103, T2104, T2105, T2106} → wave 2 {T2107} → wave 3 {T2108, T2109,
-T2110} → T2111 (live runs, lead) → T2112 (simplify, lead) → T2113 (release, lead).
+T2101 (lead) → T2102 → wave 1 {T2103, T2104, T2105, T2106, T2114} → wave 2 {T2107} → wave 3
+{T2108, T2109, T2110} → T2111 (live runs, lead) → T2112 (simplify, lead) → T2113 (release, lead).
 
 ## Complexity Tracking
 

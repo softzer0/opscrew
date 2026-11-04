@@ -32,7 +32,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
 
 ## Phase 1: Foundation
 
-- [ ] T2101 The spike and the ADR (lead): research.md R5, and `docs/adr/0025-advise.md` from Proposed to its final text.
+- [x] T2101 The spike and the ADR (lead): research.md R5, and `docs/adr/0025-advise.md` from Proposed to its final text.
   - **S1:** a throwaway Hetzner server moved one type up the way OpsCrew's module does it (the
     provider's default disk behaviour), timed: the downtime, whether the address stays, whether the
     disk grows, and whether it can go back down.
@@ -63,11 +63,14 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Reads: research.md R1.4, R1.5, R5 (S3); contracts/advise.md "connectors"
   - Depends: T2101
   - Accept:
-    - GitHub: `dependabotAlerts(owner, repo)` (open alerts with severity, package and link; a 403
-      becomes a plain error naming "Dependabot alerts: read"); `dependabotPulls(owner, repo)` (open
-      pull requests by `dependabot[bot]`); `issuesSince(owner, repo, label, since)` (opened and
-      closed); `tokenExpiry()` (the `GitHub-Authentication-Token-Expiration` header as an ISO date,
-      `undefined` without one). Responses parsed with zod.
+    - GitHub: `dependabotAlerts(owner, repo)`: `on` with the open alerts (severity, package and
+      link), `off` for GitHub's 403 "Dependabot alerts are disabled for this repository.", and any
+      other 403 a plain error naming "Dependabot alerts: Read" (R5, S3); `dependabotPulls(owner,
+      repo)` (open pull requests by `dependabot[bot]`); `issuesSince(owner, repo, label, since)`
+      (opened since the date, kept by `created_at`: GitHub's `since` is the last update);
+      `tokenExpiry()` (the `GitHub-Authentication-Token-Expiration` header, `2026-11-27 17:25:14
+      UTC` in the form GitHub sends it, as ISO 8601; `undefined` without one). Responses parsed
+      with zod.
     - Cloudflare: `verifyToken()` with `status` and `expiresOn` when the answer has it.
     - `fetch` fakes only; no token in errors or logs (leak test).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github --filter=@opscrew/connector-cloudflare`
@@ -80,7 +83,8 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Accept:
     - `readHistory(deps, plan)`: `undefined` without monitoring; otherwise one `ServerHistory` per
       server of the environment, from fixed queries on the stack's server (the owner's for a
-      sender), audited as `remote-exec`, answers parsed with zod; the queries as S2 settled them.
+      sender), audited as `remote-exec`, answers parsed with zod; the queries of R5 (S2) as they
+      are, OOM kills included.
     - A server without enough figures has `days` below 7; a query that fails is reported, not
       fatal.
     - Tests on recorded answers; no address in output.
@@ -92,8 +96,11 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Reads: plan.md "4."; data-model.md "The thresholds"; research.md R1.1, R1.2, R5 (S1); `design/{sizing,options,cost,servers}.ts` and the catalogues
   - Depends: T2102
   - Accept:
+    - **a container at its limit** (`containerAtLimit`, or an OOM kill): a `memory-limit` plan
+      change (`limitRaise`, rounded up to 64 MB) when the server has room, otherwise a larger server
+      that holds it.
     - **size:** larger (memory p95 above `memoryHigh`, the load above the CPUs for `loadHighShare`
-      of the period, a container at `containerAtLimit`), the cheapest type that brings them under;
+      of the period), the cheapest type that brings them under;
       smaller only with `minHistoryDaysToShrink` days and the next smaller type holding the p95 with
       `shrinkHeadroom`, never a smaller disk than the current one; the disk (`diskFullDays`,
       `diskHigh`); on one reading, no smaller server and every figure-based reason says so.
@@ -114,14 +121,31 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Accept:
     - **reliability:** backups off with important or critical data (priced), the check off for prod,
       check flaps (`checkFlaps`), restart loops (`restarts`), each with its figures and command.
-    - **upkeep and security:** Dependabot alerts by severity with their pull requests, or the missing
-      permission; pending security updates and a required reboot; `secure`'s failing host checks,
+    - **upkeep and security:** Dependabot alerts by severity with their pull requests, the missing
+      permission (a "not read" line), or the alerts off (a proposal to turn them on); pending
+      security updates and a required reboot; `secure`'s failing host checks,
       most severe first; GitHub and Cloudflare tokens within `tokenDays` (`now` within 7).
-    - **components:** Postgres above `databaseShare` of a short server (its own server, priced), a
-      filling disk with uploads on the server (object storage), a cache client without a cache
-      (design).
+    - **components:** Postgres above `databaseShare` of a short server's memory (its own server,
+      priced), a filling disk with uploads on the server (object storage).
     - Cloudflare's hosting and GitHub Pages get only the upkeep proposals.
     - Tests at each threshold's edges.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T2114 [P] Provision refuses a smaller disk, in `packages/agents/src/provision/`
+  - Owns: `packages/agents/src/provision/disk-guard.ts` (+ test) and its call in `provision/run.ts`
+  - Reads: research.md R5 (S1); `design/server-changes.ts` (`appServerChange`, `deployedExtraServers`, `extraServerChanges`), `design/run.ts` (`resolveCatalog`), `design/options.ts` (how design already keeps a type for its disk)
+  - Depends: T2101
+  - Accept:
+    - Before its IaC plan, provision compares each deployed Hetzner or DigitalOcean server's type
+      with the plan's (the app's and the extra servers'); when the new type's disk (the catalogue,
+      live or static) is smaller than the current one's, it refuses before any change, for example:
+      "Server app can't move from cx33 (80 GB disk) to cx23 (40 GB): Hetzner Cloud can't make a
+      server's disk smaller, and the attempt would leave the server switched off. Set its
+      serverType back to cx33, or pick a type with at least 80 GB of disk. Nothing was changed."
+    - A larger disk, the same disk, a type the catalogue doesn't know (said as a warning, not
+      refused), a new server and a replaced one (another location) are not refused.
+    - Tests with catalogue fakes; nothing reaches the IaC engine when refused.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
@@ -159,12 +183,13 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Effort: high
 
 - [ ] T2109 [P] [US1] The guide page, in `docs/guide/advise.md`
-  - Owns: `docs/guide/advise.md`, `docs/guide/index.md`, the links in `docs/guide/{logs-and-status,monitoring}.md`
+  - Owns: `docs/guide/advise.md`, `docs/guide/index.md`, the links in `docs/guide/{logs-and-status,monitoring}.md`, the GitHub permission line in `docs/guide/security.md`
   - Reads: spec.md; plan.md; data-model.md "The thresholds"; the other guide pages for tone
   - Depends: T2107
   - Accept: what advise reads; each kind of proposal with its threshold; history and one reading;
-    applying (`--apply`, then provision); the permissions it uses (Dependabot alerts: read); what it
-    doesn't do. Linked from the index and the two pages.
+    applying (`--apply`, then provision); that a larger server is one way and why a smaller one is
+    rare (research R5, S1); the permissions it uses (Dependabot alerts: Read, also in
+    `security.md`'s list); what it doesn't do. Linked from the index and the two pages.
   - Verify: `pnpm lint`
   - Effort: medium
 
@@ -185,5 +210,5 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
 
 ## Dependencies
 
-T2101 → T2102 → {T2103, T2104, T2105, T2106} → T2107 → {T2108, T2109, T2110} → T2111 → T2112 →
-T2113. T2103 needs only T2101 and can start with T2102.
+T2101 → T2102 → {T2103, T2104, T2105, T2106, T2114} → T2107 → {T2108, T2109, T2110} → T2111 →
+T2112 → T2113. T2103 and T2114 need only T2101 and can start with T2102.

@@ -20,11 +20,13 @@ Nothing new is stored: advise reads, and `--apply` writes only fields the plan a
 | Change | Field |
 |---|---|
 | `server-type` | `target.serverType` (app) or `servers[].target.serverType` |
+| `memory-limit` | `app.memoryMb` (the web process), `workers[].memoryMb` or `services[].memoryMb` (research R5, S2) |
 | `backups` | `target.backups` or `servers[].target.backups` |
 | `check` | `observability.check.enabled` |
 
 Every other proposal names a command (`opscrew addon enable monitoring`, `opscrew retarget`,
-`opscrew design`, merging Dependabot's pull requests, replacing a token).
+`opscrew design`, merging Dependabot's pull requests, turning Dependabot alerts on in the
+repository's settings, replacing a token).
 
 ## The report
 
@@ -42,12 +44,13 @@ server unreachable, prices static).
 | `memoryHigh` | 0.85 | larger server |
 | `loadHighShare` | 0.25 | larger server: the 15-minute load above the CPUs for this share of the period |
 | `shrinkHeadroom` | 0.4 | smaller: the p95 fits the smaller type with this headroom |
-| `containerAtLimit` | 0.95 | a container's maximum against its limit |
+| `containerAtLimit` | 0.95 | a container's maximum against its limit; any OOM kill in the period counts too |
+| `limitRaise` | 1.5 | the proposed limit: 1.5 times the current one, rounded up to 64 MB; the server has room when its p95 memory plus the raise stays under `memoryHigh` |
 | `diskHigh` | 0.85 | now |
-| `diskFullDays` | 30 (7 for `now`) | the disk's projection |
-| `restarts` | 3 in 14 days | a restart loop |
+| `diskFullDays`, `diskFullDaysNow` | 30, 7 | the disk's projection: `soon`, `now` |
+| `restarts` | 3 in 14 days | a restart loop: restarts of one container (a deploy starts a new one and isn't counted) |
 | `checkFlaps` | 3 issues in 14 days | a flapping health check |
-| `tokenDays` | 30 (7 for `now`) | a token's expiry |
-| `databaseShare` | 0.5 | Postgres's share of a short server |
+| `tokenDays`, `tokenDaysNow` | 30, 7 | a token's expiry: `soon`, `now` |
+| `databaseShare` | 0.5 | Postgres's share of a short server's memory (p95 of its container) |
 
-The spike (T2101) may adjust them; the guide states the final values.
+Settled by the spike (research R5); the guide states them.

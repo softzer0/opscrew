@@ -15,6 +15,7 @@ export interface Reason { text: string; figure?: string; basis: Basis }
 export interface ProposalPrice { before: number; after: number; currency: "EUR" | "USD"; source: "live" | "static"; asOf?: string }
 export type PlanChange =
   | { kind: "server-type"; server: string; serverType: string }
+  | { kind: "memory-limit"; container: { kind: "web" } | { kind: "worker" | "service"; name: string }; memoryMb: number }
   | { kind: "backups"; server: string; enabled: true }
   | { kind: "check"; enabled: true };
 export interface Proposal {
@@ -26,9 +27,9 @@ export const ProposalSchema: z.ZodType<Proposal>;           // for the CLI's --j
 export const THRESHOLDS: Readonly<{ ... }>;                  // data-model.md
 export interface ServerHistory {                             // T2104 fills
   days: number; cpuP95?: number; memoryP95?: number; loadOverCpus?: number; diskFullInDays?: number;
-  containers: { service: string; memoryP95?: number; memoryMax?: number; limit?: number; restarts?: number }[];
+  containers: { service: string; memoryP95?: number; memoryMax?: number; limit?: number; restarts?: number; oomKills?: number }[];
 }
-export interface Readings { ... }                            // per server now/history, plan, requirements, prices, upkeep, check, notRead
+export interface Readings { at: string; ... }                // `at`: when read (deps.clock, ISO); per server now/history, plan, requirements, prices, upkeep, check, notRead
 export interface AdviceReport { proposals: Proposal[]; basis: Record<string, Basis>; checked: string[]; notRead: string[] }
 ```
 
@@ -47,14 +48,20 @@ applyProposal(deps, plan, id): Promise<{ plan: DeployPlan; summary: string } | {
 
 ```ts
 // @opscrew/connector-github
-dependabotAlerts(owner, repo): Promise<{ severity: "critical" | "high" | "medium" | "low"; package: string; url: string }[]>;
-// throws OpsCrewError("PERMISSION_DENIED", …) naming "Dependabot alerts: read" on 403
+dependabotAlerts(owner, repo): Promise<
+  | { state: "on"; alerts: { severity: "critical" | "high" | "medium" | "low"; package: string; url: string }[] }
+  | { state: "off" }                             // 403 "Dependabot alerts are disabled for this repository."
+>;
+// any other 403 throws OpsCrewError("CREDENTIALS_INVALID", …) through the connector's missing-permission
+// helper, naming "Dependabot alerts: Read" (R5, S3); GITHUB_TOKEN_PERMISSIONS lists it as optional
 dependabotPulls(owner, repo): Promise<{ number: number; title: string; createdAt: string; url: string }[]>;
 issuesSince(owner, repo, label, since): Promise<{ number: number; createdAt: string; closedAt?: string }[]>;
-tokenExpiry(): Promise<string | undefined>;   // from GitHub-Authentication-Token-Expiration, ISO date
+// opened since `since`: GitHub's own `since` filters by the last update, so the connector filters again
+tokenExpiry(): Promise<string | undefined>;   // GitHub-Authentication-Token-Expiration ("2026-11-27 17:25:14 UTC") as ISO 8601
 
 // @opscrew/connector-cloudflare
-verifyToken(): Promise<{ status: "active" | "disabled" | "expired"; expiresOn?: string }>;
+verifyToken(): Promise<CloudflareTokenCheck>;   // the existing CredentialCheck plus status? and expiresOn?
+// an account-owned token is verified through the zone list: no expiry, listed as not read
 ```
 
 ## CLI and MCP (T2108)
