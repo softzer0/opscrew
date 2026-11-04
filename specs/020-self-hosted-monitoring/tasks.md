@@ -265,7 +265,7 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2010 [P] [US3] [US5] The network: the monitoring member's filter rules and the outside member, in `packages/agents/src/network/`
+- [x] T2010 [P] [US3] [US5] The network: the monitoring member's filter rules and the outside member, in `packages/agents/src/network/`
   - Owns: `packages/agents/src/network/**` (+ tests, `__fixtures__/**`)
   - Reads: plan.md "10."; data-model.md "A sender"; 018's plan.md "7.", research R5a; `shared/server-record.ts`
   - Depends: T2002
