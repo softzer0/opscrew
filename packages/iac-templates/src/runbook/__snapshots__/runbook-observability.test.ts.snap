@@ -1,0 +1,64 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`the runbook's self-hosted monitoring > renders the stack on its own server (snapshot) 1`] = `
+"## Self-hosted monitoring
+
+Prometheus 3.15.1, Loki 3.7.9 and Grafana 13.3.0 run on its own server \`monitoring\`. Grafana Alloy 1.21.3 on each of
+this environment's servers sends them the server's and its containers' figures, Caddy's and Postgres's where they run, and
+the app's log lines, masked on the server before they leave it. None of it is reachable from the internet.
+
+- **Open Grafana** with \`opscrew addon open monitoring\`: it gives Grafana's private address when this computer is a device
+  on the private network, or else keeps an SSH tunnel open to http://localhost:3000. Log in as \`admin\` with
+  \`monitoring.grafanaAdminPassword\` in \`~/.opscrew/projects/shop-0123456789ab/generated_values.json\` on the machine that set the stack up (never in this repository), or in its recovery copy.
+- **The dashboards** are in Grafana's folder OpsCrew: servers, containers, HTTP traffic, Caddy, Postgres and logs, each with
+  the app, the environment and the server to choose. They are read-only: save a changed one as a copy.
+- **Figures are kept 30 days** (at most 24 GB) **and logs 7 days.** \`opscrew addon status\` shows the stack's
+  containers, the disk they take, and when each server's last figures and log line arrived; a server silent for more than
+  5 minutes is flagged with what to check.
+- **Alerts** stay with the scheduled check: the stack sends none.
+- **Turn it off** with \`opscrew addon disable monitoring\`, then \`opscrew provision\`, which removes what every server runs for monitoring, then deletes server \`monitoring\`, with its figures and logs, only after you type its name. It is refused while other environments send to it.
+
+"
+`;
+
+exports[`the runbook's self-hosted monitoring > renders the stack on the app's server (snapshot) 1`] = `
+"## Self-hosted monitoring
+
+Prometheus 3.15.1, Loki 3.7.9 and Grafana 13.3.0 run on the app's server. Grafana Alloy 1.21.3 on each of
+this environment's servers sends them the server's and its containers' figures, Caddy's and Postgres's where they run, and
+the app's log lines, masked on the server before they leave it. None of it is reachable from the internet.
+
+- **Open Grafana** with \`opscrew addon open monitoring\`: it gives Grafana's private address when this computer is a device
+  on the private network, or else keeps an SSH tunnel open to http://localhost:3000. Log in as \`admin\` with
+  \`monitoring.grafanaAdminPassword\` in \`~/.opscrew/projects/shop-0123456789ab/generated_values.json\` on the machine that set the stack up (never in this repository), or in its recovery copy.
+- **The dashboards** are in Grafana's folder OpsCrew: servers, containers, HTTP traffic, Caddy, Postgres and logs, each with
+  the app, the environment and the server to choose. They are read-only: save a changed one as a copy.
+- **Figures are kept 30 days** (at most 24 GB) **and logs 7 days.** \`opscrew addon status\` shows the stack's
+  containers, the disk they take, and when each server's last figures and log line arrived; a server silent for more than
+  5 minutes is flagged with what to check.
+- **Alerts** stay with the scheduled check: the stack sends none.
+- **Turn it off** with \`opscrew addon disable monitoring\`, then \`opscrew provision\`, which removes what every server runs for monitoring, and the stack; the stack's figures and logs are deleted only after you type the confirmation it asks for.
+
+"
+`;
+
+exports[`the runbook's self-hosted monitoring > renders the stack on the repository's monitoring server (snapshot) 1`] = `
+"## Self-hosted monitoring
+
+Prometheus 3.15.1, Loki 3.7.9 and Grafana 13.3.0 run on the repository's monitoring server \`monitoring\`, which the environment of \`opscrew/plan.yaml\` owns. Grafana Alloy 1.21.3 on each of
+this environment's servers sends them the server's and its containers' figures, Caddy's and Postgres's where they run, and
+the app's log lines, masked on the server before they leave it. None of it is reachable from the internet.
+
+- **Open Grafana** with \`opscrew addon open monitoring\`: it gives Grafana's private address when this computer is a device
+  on the private network, or else keeps an SSH tunnel open to http://localhost:3000. Log in as \`admin\` with
+  \`monitoring.grafanaAdminPassword\` in the generated values of the environment of \`opscrew/plan.yaml\`, on the machine that set the stack up (never in this repository), or in its recovery copy.
+- **The dashboards** are in Grafana's folder OpsCrew: servers, containers, HTTP traffic, Caddy, Postgres and logs, each with
+  the app, the environment and the server to choose. They are read-only: save a changed one as a copy.
+- **Figures are kept 30 days** (at most 24 GB) **and logs 7 days.** \`opscrew addon status\` shows the stack's
+  containers, the disk they take, and when each server's last figures and log line arrived; a server silent for more than
+  5 minutes is flagged with what to check.
+- **Alerts** stay with the scheduled check: the stack sends none.
+- **Turn it off** with \`opscrew addon disable monitoring\`, then \`opscrew provision\`, which removes this environment's agents and takes the monitoring server off this environment's network; the server and the other environments' data stay.
+
+"
+`;

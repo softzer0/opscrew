@@ -77,6 +77,9 @@ Portainer (`npx opscrew provision` on a server you already have). From then on,
 open instead of starting an SSH tunnel, when this computer is on the network and the app's server
 is one OpsCrew created.
 
+With [self-hosted monitoring](monitoring.md) on, `npx opscrew addon open monitoring` likewise gives
+you Grafana's private address on the monitoring server.
+
 A device reaches the servers' SSH and these dashboards, nothing else: the app's databases and
 caches answer a device only when you [grant it access](database-access.md).
 

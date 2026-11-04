@@ -135,7 +135,8 @@ the reason.
 
 Grafana Cloud gets the server's figures, not each container's. Grafana's container collector needs
 privileged access to the server and a writable Docker socket, which OpsCrew doesn't give an add-on.
-Each container's CPU and memory are in `npx opscrew status`, and over time in [Beszel](beszel.md).
+Each container's CPU and memory are in `npx opscrew status`, and over time in [Beszel](beszel.md)
+or [self-hosted monitoring](monitoring.md), which can run next to Grafana Cloud with the same Alloy.
 
 ## Turn it off
 

@@ -6,7 +6,8 @@ OpsCrew can add it to a server it deploys to: one it created on Hetzner Cloud or
 [server you already have](own-server.md). It is off until you turn it on.
 
 `npx opscrew status` already shows the figures of the moment. Turn Beszel on when you want charts
-and history.
+and history. For logs too, and dashboards across all your servers, see
+[self-hosted monitoring](monitoring.md).
 
 ## Two ways to run it
 

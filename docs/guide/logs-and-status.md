@@ -91,7 +91,8 @@ Each deploy starts new containers, and each container keeps up to 30 MB of logs 
 line of the output gives the time of the oldest line shown.
 
 For more history, [Grafana Cloud](grafana-cloud.md) keeps 14 days of your app's lines on its free
-tier.
+tier, and [self-hosted monitoring](monitoring.md) keeps them on your own server for as long as you
+set.
 
 ### Secrets are masked
 
@@ -213,7 +214,8 @@ When the [scheduled check](alerts.md) is on, `status` also reads its state from 
 ## What it can't do
 
 - **History:** `status` shows this moment only, and `logs` only what the containers still keep. For
-  charts over days, use [Beszel](beszel.md) or [Grafana Cloud](grafana-cloud.md).
+  charts over days, use [Beszel](beszel.md), [Grafana Cloud](grafana-cloud.md) or
+  [self-hosted monitoring](monitoring.md).
 - **Search across days, or across apps:** `logs` reads one app and environment at a time.
 - **Request logs of a static site,** on GitHub Pages or on Cloudflare's hosting.
 - **The host's disk in a Portainer:** neither Docker nor Portainer gives it.

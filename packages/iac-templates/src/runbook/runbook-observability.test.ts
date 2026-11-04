@@ -1,6 +1,7 @@
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
+import { withPlacement } from "../catalog/__fixtures__/plans";
 import { cloudflarePlan, pagesPlan, ssrPlan } from "../serverless/__fixtures__/plans";
 import { inEnvironment, localhostPlan } from "../workflow/__fixtures__/plans";
 import { renderLocalRunbook, renderRunbook, renderSiteRunbook } from "./index";
@@ -212,6 +213,15 @@ describe("the runbook's add-ons", () => {
     expect(text).toContain("The data\nalready in Grafana Cloud stays in your account.");
   });
 
+  it("has no monitoring section without monitoring", () => {
+    const text = renderRunbook(
+      observed(testPlan({ domain: "example.com" }), { beszel, grafanaCloud: grafana }),
+      ctx,
+    ).content;
+    expect(text).not.toContain("## Self-hosted monitoring");
+    expect(text).not.toContain("grafanaAdminPassword");
+  });
+
   it("never shows the server's address", () => {
     const text = renderRunbook(
       observed(testPlan({ provider: "own", domain: "example.com" }), {
@@ -222,5 +232,95 @@ describe("the runbook's add-ons", () => {
       ctx,
     ).content;
     expect(text).not.toContain(IPV4);
+  });
+});
+
+describe("the runbook's self-hosted monitoring", () => {
+  const versions = { prometheus: "3.15.1", loki: "3.7.9", grafana: "13.3.0", alloy: "1.21.3" };
+  const retention = { metricsDays: 30, logsDays: 7, metricsMaxGb: 24 };
+  const monitoring = (where: object) => ({
+    monitoring: { enabled: true, where, versions, retention },
+  });
+
+  /** The owner: the stack on its extra server `monitoring` (placed through `db`, then freed). */
+  function ownerPlan(): DeployPlan {
+    const placed = withPlacement(testPlan({ domain: "example.com" }), {
+      servers: { monitoring: "hetzner" },
+      placed: { db: "monitoring" },
+    });
+    return observed(
+      { ...placed, services: placed.services.map(({ server: _, ...service }) => service) },
+      monitoring({ kind: "server", server: "monitoring" }),
+    );
+  }
+
+  /** A sender: its network's outside member is the owner's server `monitoring`. */
+  function senderPlan(): DeployPlan {
+    const plan = withPlacement(testPlan({ domain: "example.com" }), {});
+    const [app] = plan.network?.members ?? [];
+    if (plan.network === undefined || app === undefined) throw new Error("no network");
+    return observed(
+      {
+        ...plan,
+        network: {
+          ...plan.network,
+          members: [app, { ...app, name: "monitoring", address: "10.200.4.9", port: 51821 }],
+        },
+      },
+      monitoring({ kind: "shared", owner: { plan: "opscrew/plan.yaml", server: "monitoring" } }),
+    );
+  }
+
+  const cases = {
+    "on its own server": ownerPlan,
+    "on the app's server": () =>
+      observed(testPlan({ domain: "example.com" }), monitoring({ kind: "app" })),
+    "on the repository's monitoring server": senderPlan,
+  };
+
+  /** The runbook's monitoring section, up to the next section. */
+  const section = (plan: DeployPlan) => {
+    const text = renderRunbook(plan, ctx).content;
+    const start = text.indexOf("## Self-hosted monitoring");
+    expect(start).toBeGreaterThan(-1);
+    const end = text.indexOf("\n## ", start + 1);
+    return text.slice(start, end === -1 ? undefined : end + 1);
+  };
+
+  for (const [label, plan] of Object.entries(cases)) {
+    it(`renders the stack ${label} (snapshot)`, () => {
+      const text = section(plan());
+      expect(text).toMatchSnapshot();
+      expect(text).toContain("`opscrew addon open monitoring`: it gives Grafana's private address");
+      expect(text).toContain("http://localhost:3000");
+      expect(text).toContain("servers, containers, HTTP traffic, Caddy, Postgres and logs");
+      expect(text).toContain("**Figures are kept 30 days** (at most 24 GB) **and logs 7 days.**");
+      expect(text).toContain("the stack sends none");
+      expect(text).toContain("`opscrew addon disable monitoring`, then `opscrew provision`");
+      expect(text).not.toContain(IPV4);
+    });
+  }
+
+  it("names the password's file, and the owner's for a sender", () => {
+    expect(section(ownerPlan())).toContain(
+      "`monitoring.grafanaAdminPassword` in `~/.opscrew/projects/shop-0123456789ab/generated_values.json`",
+    );
+    const sender = section(senderPlan());
+    expect(sender).toContain("the generated values of the environment of `opscrew/plan.yaml`");
+    expect(sender).toContain("the server and the other environments' data stay");
+  });
+
+  it("names this environment in its commands", () => {
+    const text = section(
+      observed(
+        inEnvironment(testPlan({ domain: "example.com" }), { name: "staging" }),
+        monitoring({ kind: "app" }),
+      ),
+    );
+    expect(text).toContain("`opscrew addon open monitoring --env staging`");
+    expect(text).toContain("`opscrew addon status --env staging`");
+    expect(text).toContain(
+      "`opscrew addon disable monitoring --env staging`, then `opscrew provision --env staging`",
+    );
   });
 });

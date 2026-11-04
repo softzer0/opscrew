@@ -1,4 +1,4 @@
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, MONITORING_GRAFANA_PORT, monitoringOf } from "@opscrew/plan-schema";
 import { CHECK_LABEL, CHECK_WORKFLOW_FILE, checkDiskVia } from "../check";
 import { BESZEL_PORT, beszelHostname, tunnelMode } from "../tunnel";
 import { opscrew, runbookFolders } from "./shared";
@@ -107,5 +107,56 @@ export function addonSections(
       "",
     );
   }
-  return lines;
+  return [...lines, ...monitoringSection(plan, home, environments)];
+}
+
+/**
+ * "Self-hosted monitoring", when the plan has it on: where the stack runs, how to open Grafana and
+ * where its password is (named by its file, never the value), the dashboards, the retention, the
+ * status, and turning it off. Nothing without monitoring.
+ */
+function monitoringSection(
+  plan: DeployPlan,
+  home: string,
+  environments: readonly string[] | undefined,
+): string[] {
+  const monitoring = monitoringOf(plan);
+  if (monitoring === undefined) return [];
+  const { where, versions, retention } = monitoring;
+  const command = (words: string) => `\`${opscrew(plan, words, environments)}\``;
+  const stack =
+    where.kind === "app"
+      ? "on the app's server"
+      : where.kind === "server"
+        ? `on its own server \`${where.server}\``
+        : `on the repository's monitoring server \`${where.owner.server}\`, which the environment of \`${where.owner.plan}\` owns`;
+  const password =
+    where.kind === "shared"
+      ? `in the generated values of the environment of \`${where.owner.plan}\`, on the machine that set the stack up`
+      : `in \`${home}/generated_values.json\` on the machine that set the stack up`;
+  const off =
+    where.kind === "shared"
+      ? "removes this environment's agents and takes the monitoring server off this environment's network; the server and the other environments' data stay."
+      : where.kind === "app"
+        ? "removes what every server runs for monitoring, and the stack; the stack's figures and logs are deleted only after you type the confirmation it asks for."
+        : `removes what every server runs for monitoring, then deletes server \`${where.server}\`, with its figures and logs, only after you type its name. It is refused while other environments send to it.`;
+  return [
+    "## Self-hosted monitoring",
+    "",
+    `Prometheus ${versions.prometheus}, Loki ${versions.loki} and Grafana ${versions.grafana} run ${stack}. Grafana Alloy ${versions.alloy} on each of`,
+    "this environment's servers sends them the server's and its containers' figures, Caddy's and Postgres's where they run, and",
+    "the app's log lines, masked on the server before they leave it. None of it is reachable from the internet.",
+    "",
+    `- **Open Grafana** with ${command("addon open monitoring")}: it gives Grafana's private address when this computer is a device`,
+    `  on the private network, or else keeps an SSH tunnel open to http://localhost:${MONITORING_GRAFANA_PORT}. Log in as \`admin\` with`,
+    `  \`monitoring.grafanaAdminPassword\` ${password} (never in this repository), or in its recovery copy.`,
+    "- **The dashboards** are in Grafana's folder OpsCrew: servers, containers, HTTP traffic, Caddy, Postgres and logs, each with",
+    "  the app, the environment and the server to choose. They are read-only: save a changed one as a copy.",
+    `- **Figures are kept ${retention.metricsDays} days** (at most ${retention.metricsMaxGb} GB) **and logs ${retention.logsDays} days.** ${command("addon status")} shows the stack's`,
+    "  containers, the disk they take, and when each server's last figures and log line arrived; a server silent for more than",
+    "  5 minutes is flagged with what to check.",
+    "- **Alerts** stay with the scheduled check: the stack sends none.",
+    `- **Turn it off** with ${command("addon disable monitoring")}, then ${command("provision")}, which ${off}`,
+    "",
+  ];
 }
