@@ -544,7 +544,7 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
-- [ ] T2025 The stack's input, the owner helpers and drift's copies (after T2022, T2023, T2024), across iac-templates and agents
+- [x] T2025 The stack's input, the owner helpers and drift's copies (after T2022, T2023, T2024), across iac-templates and agents
   - Owns: `packages/iac-templates/src/monitoring/{index,compose}.ts` (the input's shape) and its tests; agents `network/owner.ts` (+ test), `network/__fixtures__/plans.ts`, `provision/monitoring.ts` (+ test), `drift/monitoring.ts`, `vpn/monitoring.ts`, `destroy/monitoring.ts`, `monitoring/{disable,repository,estimate}.ts`, `monitoring/{shared,monitoring}.test.ts`, `addons/run.ts`; `packages/cli/test/e2e/monitoring.test.ts` (its input call); `monitoring/enable.ts` for `enableFlags` and the owner wording; `monitoring/status.test.ts`'s call sites of the stack input
   - Accept (iac-templates finding 1; agents findings 1, 2, 3, 7, 8, 9, 13's `repository.ts`, 15, 17's destroy item):
     - `renderMonitoringStack(plan, addresses)`: the stack reads `monitoringOf(plan)`; the
@@ -565,7 +565,7 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents && pnpm turbo run typecheck --filter=opscrew`
   - Effort: high
 
-- [ ] T2026 [P] Simplify the host adapter's tests and source (after T2022), in `packages/connectors/ssh-host/**`
+- [x] T2026 [P] Simplify the host adapter's tests and source (after T2022), in `packages/connectors/ssh-host/**`
   - Owns: `packages/connectors/ssh-host/**`
   - Accept (the ssh-host reviewer's findings 1, 2, 5–14): the monitor grant cases folded into
     `grant.test.ts`; the copied test helpers moved to `__fixtures__/helpers.ts`; the fake's recreate
@@ -577,7 +577,7 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
   - Effort: high
 
 - [ ] T2027 [P] The tests' shared fixtures (after T2025), in agents and the CLI's test harnesses
-  - Owns: agents `{vpn,retarget,destroy,provision}/monitoring.test.ts`, `monitoring/status.test.ts`; `packages/cli/test/{e2e,live}/monitoring*.ts`
+  - Owns: agents `{vpn,retarget,destroy,provision}/monitoring.test.ts`, `monitoring/status.test.ts`; `packages/cli/test/{e2e,live}/monitoring*.ts`; the hand-built owner wording at `monitoring/enable.ts` (~328), to use `otherServer` (found at T2025)
   - Accept (agents findings 14 for the Docker pass, 16, and the `opscrew-alloy` note): one
     `networked(plan, facts?)` fixture (added by T2025) used by the five tests; `MONITORING_VERSIONS`
     for the pins; `catalog()`/`deployed` shared; the Docker pass's `imageVersion` gone; the live
