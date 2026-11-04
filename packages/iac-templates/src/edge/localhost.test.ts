@@ -181,9 +181,9 @@ describe("the edge on this computer", () => {
   it("serves Caddy without HTTP/3, whose UDP port it does not publish, and nothing for ACME", () => {
     const caddyfile = edge(shop).configs?.caddyfile?.content ?? "";
     expect(caddyfile).toContain(
-      "\n# No HTTP/3: the edge on this computer publishes no UDP port.\n{\n\tservers {\n\t\tprotocols h1 h2\n\t}\n}\n\nimport /etc/caddy/sites/*.caddy\n",
+      "\n# No HTTP/3: the edge on this computer publishes no UDP port.\n# Caddy's figures per hostname: the `metrics` handler below, on the edge's network only.\n{\n\tservers {\n\t\tprotocols h1 h2\n\t}\n\tmetrics {\n\t\tper_host\n\t}\n}\n\nimport /etc/caddy/sites/*.caddy\n",
     );
-    // The only global options.
+    // The only global options, with Caddy's figures (on every Caddy edge).
     expect(caddyfile.match(/^\{$/gm)).toHaveLength(1);
     expect(caddyfile).not.toMatch(/acme|email/);
   });

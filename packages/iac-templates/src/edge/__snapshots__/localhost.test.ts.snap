@@ -67,7 +67,7 @@ volumes:
 # OpsCrew's shared edge on this computer (Compose project opscrew-edge), in front of
 # every OpsCrew app there: Caddy and kamal-proxy. It listens on 127.0.0.1 only.
 name: opscrew-edge
-x-opscrew-edge-version: 2026102302
+x-opscrew-edge-version: 2026110401
 x-opscrew-edge-proxy: caddy
 services:
   kamal-proxy:
@@ -118,7 +118,7 @@ services:
       start_period: 30s
       start_interval: 1s
     labels:
-      dev.opscrew.caddyfile-sha256: 2709b11e2a5b667bb0f2071019a06d4795d5736e86fe4be86950816909a38aba
+      dev.opscrew.caddyfile-sha256: 635fe2cb8d334fcc2b6ca4c1f2fadafdcee706d2af985833c986fa0e31a41576
     depends_on:
       - kamal-proxy
     security_opt: *a1
@@ -134,13 +134,22 @@ configs:
     content: |
       # OpsCrew's shared edge: each OpsCrew app on this server has its site in /srv/edge/sites/<app>.caddy.
       # No HTTP/3: the edge on this computer publishes no UDP port.
+      # Caddy's figures per hostname: the \`metrics\` handler below, on the edge's network only.
       {
       	servers {
       		protocols h1 h2
       	}
+      	metrics {
+      		per_host
+      	}
       }
 
       import /etc/caddy/sites/*.caddy
+
+      # Caddy's figures, which Alloy reads with monitoring on: on the edge's internal network only (this port is never published).
+      http://:9180 {
+      	metrics
+      }
 
       # Requests for any other hostname are refused.
       http:// {
@@ -254,7 +263,7 @@ volumes:
 # OpsCrew's shared edge on this computer (Compose project opscrew-edge), in front of
 # every OpsCrew app there: nginx and kamal-proxy. It listens on 127.0.0.1 only.
 name: opscrew-edge
-x-opscrew-edge-version: 2026102302
+x-opscrew-edge-version: 2026110401
 x-opscrew-edge-proxy: nginx
 services:
   kamal-proxy:
@@ -445,7 +454,7 @@ exports[`snapshots > two localhost environments of the app on one caddy edge 1`]
 # OpsCrew's shared edge on this computer (Compose project opscrew-edge), in front of
 # every OpsCrew app there: Caddy and kamal-proxy. It listens on 127.0.0.1 only.
 name: opscrew-edge
-x-opscrew-edge-version: 2026102302
+x-opscrew-edge-version: 2026110401
 x-opscrew-edge-proxy: caddy
 services:
   kamal-proxy:
@@ -496,7 +505,7 @@ services:
       start_period: 30s
       start_interval: 1s
     labels:
-      dev.opscrew.caddyfile-sha256: 2709b11e2a5b667bb0f2071019a06d4795d5736e86fe4be86950816909a38aba
+      dev.opscrew.caddyfile-sha256: 635fe2cb8d334fcc2b6ca4c1f2fadafdcee706d2af985833c986fa0e31a41576
     depends_on:
       - kamal-proxy
     security_opt: *a1
@@ -512,13 +521,22 @@ configs:
     content: |
       # OpsCrew's shared edge: each OpsCrew app on this server has its site in /srv/edge/sites/<app>.caddy.
       # No HTTP/3: the edge on this computer publishes no UDP port.
+      # Caddy's figures per hostname: the \`metrics\` handler below, on the edge's network only.
       {
       	servers {
       		protocols h1 h2
       	}
+      	metrics {
+      		per_host
+      	}
       }
 
       import /etc/caddy/sites/*.caddy
+
+      # Caddy's figures, which Alloy reads with monitoring on: on the edge's internal network only (this port is never published).
+      http://:9180 {
+      	metrics
+      }
 
       # Requests for any other hostname are refused.
       http:// {
@@ -600,7 +618,7 @@ exports[`snapshots > two localhost environments of the app on one nginx edge 1`]
 # OpsCrew's shared edge on this computer (Compose project opscrew-edge), in front of
 # every OpsCrew app there: nginx and kamal-proxy. It listens on 127.0.0.1 only.
 name: opscrew-edge
-x-opscrew-edge-version: 2026102302
+x-opscrew-edge-version: 2026110401
 x-opscrew-edge-proxy: nginx
 services:
   kamal-proxy:

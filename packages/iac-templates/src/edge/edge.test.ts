@@ -13,7 +13,9 @@ import {
 } from "../runtime";
 import { CONNECTOR_MEMORY_MB, TUNNEL_ORIGIN_PORT } from "../tunnel";
 import type { RenderedFile } from "../types";
+import { withMonitoring } from "../workflow/__fixtures__/plans";
 import {
+  CADDY_METRICS_PORT,
   EDGE_MEMORY_MB,
   EDGE_UPSTREAM,
   EDGE_VERSION,
@@ -103,11 +105,11 @@ describe("the edge's Compose project", () => {
     ]);
     expect(caddy.configs).toEqual([{ source: "caddyfile", target: "/etc/caddy/Caddyfile" }]);
     expect(doc.configs.caddyfile.content).toContain("\nimport /etc/caddy/sites/*.caddy\n");
-    // No global options. In particular no `auto_https ignore_loaded_certs`: with it Caddy would
-    // also ask Let's Encrypt for the hostnames an origin certificate serves, and without it Caddy
-    // skips only the names a loaded certificate covers, so every other hostname keeps its ACME
-    // certificate (checked with the pinned Caddy, 2.11.7).
-    expect(doc.configs.caddyfile.content).not.toMatch(/^\{/m);
+    // No global options but Caddy's figures. In particular no `auto_https ignore_loaded_certs`:
+    // with it Caddy would also ask Let's Encrypt for the hostnames an origin certificate serves,
+    // and without it Caddy skips only the names a loaded certificate covers, so every other
+    // hostname keeps its ACME certificate (checked with the pinned Caddy, 2.11.7).
+    expect(doc.configs.caddyfile.content).toContain("\n{\n\tmetrics {\n\t\tper_host\n\t}\n}\n");
     expect(doc.configs.caddyfile.content).not.toContain("auto_https");
     expect(caddy.labels).toEqual({
       "dev.opscrew.caddyfile-sha256": sha256Hex(doc.configs.caddyfile.content),
@@ -123,7 +125,7 @@ describe("the edge's Compose project", () => {
     // certificate's client authentication Caddy also answers 421 to a Host other than the name
     // the connection was made for. Checked against the pinned Caddy (2.11.7).
     expect(content).toContain(
-      "\nimport /etc/caddy/sites/*.caddy\n\n# Requests for any other hostname are refused.\nhttp:// {\n\tabort\n}\nhttps:// {\n\tabort\n}\n",
+      "\n}\n\n# Requests for any other hostname are refused.\nhttp:// {\n\tabort\n}\nhttps:// {\n\tabort\n}\n",
     );
     // After the sites: Caddy runs the first of two sites without a hostname, and an app without a
     // domain yet is served on `:80` for every hostname.
@@ -171,9 +173,107 @@ describe("the edge's Compose project", () => {
         renderEdgeCompose(plan).content.replace(`${EDGE_VERSION_KEY}: ${EDGE_VERSION}\n`, ""),
     );
     expect({ version: EDGE_VERSION, sha256: sha256Hex(files.join("\n")) }).toEqual({
-      version: 2026102302,
-      sha256: "c928a1a1ac893e8d00a40899d53ab4e38ca9d29477d5983b0fb317fa50ecec4f",
+      version: 2026110401,
+      sha256: "a827e2528e6543bb570c0aeec419635fdda85e1b0bdf3c4547bebf573927c62d",
     });
+  });
+});
+
+describe("Caddy's figures, on every Caddy edge", () => {
+  const ranges = ["173.245.48.0/20", "2400:cb00::/32"];
+  const edgeOf = (plan: DeployPlan, r: readonly string[] = []) =>
+    parse(renderEdgeCompose(plan, r).content) as ReturnType<typeof edge>;
+  const caddyfileOf = (plan: DeployPlan, r: readonly string[] = []) =>
+    edgeOf(plan, r).configs.caddyfile.content;
+  const metricsSite = [
+    "import /etc/caddy/sites/*.caddy",
+    "",
+    "# Caddy's figures, which Alloy reads with monitoring on: on the edge's internal network only (this port is never published).",
+    `http://:${CADDY_METRICS_PORT} {`,
+    "\tmetrics",
+    "}",
+    "",
+    "# Requests for any other hostname are refused.",
+  ].join("\n");
+
+  it("adds `metrics { per_host }` to the global options, after Cloudflare's addresses", () => {
+    expect(caddyfileOf(shop, ranges)).toBe(
+      [
+        "# OpsCrew's shared edge: each OpsCrew app on this server has its site in /srv/edge/sites/<app>.caddy.",
+        "# Requests from Cloudflare's addresses carry the visitor's in CF-Connecting-IP.",
+        "# Caddy's figures per hostname: the `metrics` handler below, on the edge's network only.",
+        "{",
+        "\tservers {",
+        "\t\ttrusted_proxies static 173.245.48.0/20 2400:cb00::/32",
+        "\t\tclient_ip_headers CF-Connecting-IP",
+        "\t}",
+        "\tmetrics {",
+        "\t\tper_host",
+        "\t}",
+        "}",
+        "",
+        metricsSite,
+        "http:// {",
+        "\tabort",
+        "}",
+        "https:// {",
+        "\tabort",
+        "}",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("has the global options hold only the figures when Caddy trusts no Cloudflare address", () => {
+    expect(caddyfileOf(tunnelled)).toContain(
+      "\n{\n\tmetrics {\n\t\tper_host\n\t}\n}\n\nimport /etc/caddy/sites/*.caddy\n",
+    );
+  });
+
+  it("serves the figures on the metrics port with only `metrics`, before the catch-all sites", () => {
+    for (const plan of [shop, filtered, tunnelled]) {
+      const content = caddyfileOf(plan, ranges);
+      expect(content).toContain(`\n${metricsSite}\n`);
+      expect(content.match(/^http:\/\/:\d+ \{$/gm)).toEqual([`http://:${CADDY_METRICS_PORT} {`]);
+    }
+    expect(CADDY_METRICS_PORT).toBe(9180);
+  });
+
+  it("never publishes the metrics port, and keeps Caddy's name and network for Alloy", () => {
+    for (const plan of [shop, filtered, tunnelled]) {
+      const doc = edgeOf(plan);
+      const caddy = doc.services.caddy as Service;
+      expect(JSON.stringify(caddy.ports)).not.toContain(String(CADDY_METRICS_PORT));
+      expect(caddy.expose).toBeUndefined();
+      expect(caddy.networks).toEqual(["opscrew-edge"]);
+      expect(doc.networks).toEqual({ "opscrew-edge": { external: true } });
+    }
+  });
+
+  it("leaves observe_catchall_hosts off: hosts nobody configured are never a label", () => {
+    expect(caddyfileOf(shop, ranges)).not.toContain("observe_catchall_hosts");
+  });
+
+  it("is the same edge with or without monitoring, so the server's apps never swap it", () => {
+    for (const plan of [shop, filtered, tunnelled]) {
+      expect(renderEdgeCompose(withMonitoring(plan), ranges)).toEqual(
+        renderEdgeCompose(plan, ranges),
+      );
+    }
+  });
+
+  it("gives nginx edges nothing of it", () => {
+    for (const plan of [shop, filtered, tunnelled]) {
+      const nginx = DeployPlanSchema.parse({ ...plan, target: { ...plan.target, edge: "nginx" } });
+      const content = renderEdgeCompose(withMonitoring(nginx), ranges).content;
+      expect(content).not.toContain(String(CADDY_METRICS_PORT));
+      expect(content).not.toMatch(/\bmetrics\b/);
+      expect(Object.keys(edgeOf(withMonitoring(nginx)).services)).toEqual([
+        "kamal-proxy",
+        "nginx",
+        "certbot",
+      ]);
+    }
   });
 });
 
@@ -285,7 +385,7 @@ describe("the visitor's address behind Cloudflare's proxy, on Caddy", () => {
     const doc = parse(renderEdgeCompose(shop, ranges).content) as ReturnType<typeof edge>;
     const content = doc.configs.caddyfile.content;
     expect(content).toContain(
-      "\n# Requests from Cloudflare's addresses carry the visitor's in CF-Connecting-IP.\n{\n\tservers {\n\t\ttrusted_proxies static 173.245.48.0/20 2400:cb00::/32\n\t\tclient_ip_headers CF-Connecting-IP\n\t}\n}\n\nimport /etc/caddy/sites/*.caddy\n",
+      "\n# Requests from Cloudflare's addresses carry the visitor's in CF-Connecting-IP.\n# Caddy's figures per hostname: the `metrics` handler below, on the edge's network only.\n{\n\tservers {\n\t\ttrusted_proxies static 173.245.48.0/20 2400:cb00::/32\n\t\tclient_ip_headers CF-Connecting-IP\n\t}\n\tmetrics {\n\t\tper_host\n\t}\n}\n\nimport /etc/caddy/sites/*.caddy\n",
     );
     expect(doc.services.caddy?.labels).toEqual({
       "dev.opscrew.caddyfile-sha256": sha256Hex(content),

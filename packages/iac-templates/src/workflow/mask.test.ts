@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { hostListKind } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema, hostListKind } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { GRAFANA_CLOUD, observabilityPlan } from "../addons/__fixtures__/plans";
-import { inEnvironment } from "./__fixtures__/plans";
-import { maskFileScript, renderWorkflow } from "./index";
+import { renderRuntimeFiles } from "../runtime";
+import { inEnvironment, splitPlan, withMonitoring } from "./__fixtures__/plans";
+import { DEPLOY_SECRETS, maskFileScript, renderWorkflow } from "./index";
 
 const grafana = (o: Parameters<typeof testPlan>[0] = {}) =>
   observabilityPlan({ grafanaCloud: GRAFANA_CLOUD }, o);
@@ -163,5 +165,150 @@ describe("the masking script outside the deploy (a service's move, T1811)", () =
 
   it("is empty without Grafana Cloud", () => {
     expect(maskFileScript(testPlan())).toBe("");
+  });
+});
+
+describe("the masking file on every server (monitoring on)", () => {
+  type Step = { name?: string; run?: string };
+  const stepRun = (plan: DeployPlan, name: string): string => {
+    const doc = parse(renderWorkflow(plan, testContext()).content) as {
+      jobs: { deploy: { steps: Step[] } };
+    };
+    const step = doc.jobs.deploy.steps.find((s) => s.name === name);
+    if (step?.run === undefined) throw new Error(`no step ${name}`);
+    return step.run;
+  };
+  const DATA = "Update the services on the server data";
+  const BOX = "Update the services on the server box-2";
+  const UPLOAD = "Upload runtime files and environment";
+  const split = () => withMonitoring(splitPlan());
+  const splitGrafana = () =>
+    DeployPlanSchema.parse({ ...splitPlan(), observability: { grafanaCloud: GRAFANA_CLOUD } });
+
+  /** Runs a step's masking script with `env`, and returns the pattern it built. */
+  async function maskOf(run: string, env: Record<string, string>): Promise<string> {
+    const result = await new NodeCommandRunner().run("bash", ["-s"], {
+      env: { ...process.env, ...env },
+      input: `set -euo pipefail\n${maskScript(run)}\nprintf '%s' "$mask"`,
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).toBe("");
+    return result.stdout;
+  }
+
+  it("writes mask.re on the app's server without Grafana Cloud, from app.env as 017 does", () => {
+    const plan = withMonitoring(testPlan());
+    const run = stepRun(plan, UPLOAD);
+    expect(maskScript(run)).toBe(maskScript(renderWorkflow(grafana(), testContext()).content));
+    expect(run).toContain(
+      `printf '%s' "$mask" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/mask.re'`,
+    );
+    expect(maskFileScript(plan)).toBe(maskFileScript(grafana()));
+  });
+
+  it("writes mask.re on each extra server, owner-only, after its env files and before its services start", () => {
+    for (const [name, last] of [
+      [DATA, "docs.env"],
+      [BOX, "orders.env"],
+    ] as const) {
+      const all = stepRun(split(), name).split("\n");
+      const envFile = all.findIndex((line) => line.includes(`cat > /srv/apps/shop/${last}'`));
+      const mask = all.findIndex((line) => line.includes("cat > /srv/apps/shop/mask.re"));
+      const remote = all.findIndex((line) => line.includes("sh -s <<'REMOTE'"));
+      expect(envFile).toBeGreaterThan(0);
+      expect(mask).toBeGreaterThan(envFile);
+      expect(remote).toBeGreaterThan(mask);
+      expect(all[mask]).toBe(
+        `printf '%s' "$mask" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/mask.re'`,
+      );
+    }
+  });
+
+  it("builds each extra server's pattern from the env files that server receives", async () => {
+    const values = {
+      OPSCREW_SERVICE_DB_ENV: `POSTGRES_PASSWORD=${fakeSecret("github-token", "db")}\nPOSTGRES_USER=app\n`,
+      OPSCREW_SERVICE_DOCS_ENV: `MONGO_INITDB_ROOT_PASSWORD=${fakeSecret("github-token", "docs")}`,
+      OPSCREW_SERVICE_ORDERS_ENV: `MYSQL_PASSWORD=${fakeSecret("github-token", "orders")}\n`,
+      OPSCREW_APP_ENV: `SECRET_KEY=${fakeSecret("github-token", "app")}\n`,
+    };
+    type Name = keyof typeof values;
+    const names = Object.keys(values) as Name[];
+    const value = (name: Name) => values[name].split("\n")[0]?.split("=")[1] ?? "";
+    const expected: [string, readonly Name[]][] = [
+      [DATA, ["OPSCREW_SERVICE_DB_ENV", "OPSCREW_SERVICE_DOCS_ENV"]],
+      [BOX, ["OPSCREW_SERVICE_ORDERS_ENV"]],
+    ];
+    for (const [step, has] of expected) {
+      const mask = await maskOf(stepRun(split(), step), values);
+      expect(mask.startsWith("(") && mask.endsWith(")")).toBe(true);
+      for (const name of names) {
+        expect(mask.includes(value(name)), `${step}: ${name}`).toBe(has.includes(name));
+      }
+      expect(mask.split("|")).toHaveLength(has.length);
+      expect(stepRun(split(), step)).not.toContain(DEPLOY_SECRETS.appEnv);
+    }
+    // The workflow names the secrets only; their values reach the server at run time.
+    const content = renderWorkflow(split(), testContext()).content;
+    for (const name of names) expect(content).not.toContain(value(name));
+  });
+
+  it("writes it on the app's server from the server's own runner, and on the extra servers over SSH", () => {
+    const content = renderWorkflow(
+      inEnvironment(split(), { runner: "server" }),
+      testContext(),
+    ).content;
+    expect(content).toContain(`printf '%s' "$mask" | (umask 077 && cat > "$dir"/mask.re)`);
+    expect(content.match(/'umask 077 && cat > \/srv\/apps\/shop\/mask\.re'/g)).toHaveLength(2);
+  });
+
+  it("keeps a moving service's old copy's values in its server's mask while it still runs there", async () => {
+    // `orders` moves from box-2, where it ran alone, to the app's server; not switched yet.
+    const moving = withMonitoring(
+      DeployPlanSchema.parse({
+        ...splitPlan(),
+        services: splitPlan().services.map(({ server, ...service }) =>
+          service.name === "orders" ? service : { ...service, server },
+        ),
+        move: { service: "orders", from: "box-2", to: "app", step: "deployed", copy: "dump" },
+      }),
+    );
+    const doc = parse(renderWorkflow(moving, testContext()).content) as {
+      jobs: { deploy: { steps: (Step & { env?: Record<string, string> })[] } };
+    };
+    const step = doc.jobs.deploy.steps.find((s) => s.name === BOX);
+    expect(step?.env).toHaveProperty("OPSCREW_SERVICE_ORDERS_ENV");
+    const run = step?.run ?? "";
+    // Its env file is no longer written there: only the old copy, which keeps its own, runs.
+    expect(run).not.toContain("cat > /srv/apps/shop/orders.env");
+    expect(run).toContain("# Grafana Alloy's masking file: orders.env's values as");
+    const password = fakeSecret("github-token", "orders");
+    const mask = await maskOf(run, { OPSCREW_SERVICE_ORDERS_ENV: `MYSQL_PASSWORD=${password}\n` });
+    expect(mask).toBe(`(${password})`);
+  });
+
+  it("is never a file in the repository", () => {
+    const paths = [
+      ...renderRuntimeFiles(split(), testContext()).map((file) => file.path),
+      renderWorkflow(split(), testContext()).path,
+    ];
+    expect(paths.length).toBeGreaterThan(1);
+    expect(paths.filter((path) => path.endsWith("mask.re"))).toEqual([]);
+  });
+
+  it("leaves every workflow byte-identical without monitoring, Grafana Cloud's included", () => {
+    for (const plan of [
+      testPlan(),
+      splitPlan(),
+      grafana(),
+      splitGrafana(),
+      inEnvironment(splitPlan(), { runner: "server" }),
+    ]) {
+      expect(renderWorkflow(withMonitoring(plan, { enabled: false }), testContext())).toEqual(
+        renderWorkflow(plan, testContext()),
+      );
+    }
+    for (const name of [DATA, BOX]) {
+      expect(stepRun(splitGrafana(), name)).not.toContain("mask.re");
+    }
   });
 });

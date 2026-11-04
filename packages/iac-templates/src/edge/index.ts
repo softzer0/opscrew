@@ -57,7 +57,7 @@ export function appDir(plan: DeployPlan): string {
  * A deploy replaces the server's edge only with a larger one, or with the other proxy. Change it
  * with every change of the edge's Compose file; a test fails until it is changed.
  */
-export const EDGE_VERSION = 2026102302;
+export const EDGE_VERSION = 2026110401;
 
 /** The key of {@link EDGE_VERSION} in the edge's Compose file (a Compose extension field). */
 export const EDGE_VERSION_KEY = "x-opscrew-edge-version";
@@ -69,8 +69,8 @@ export const EDGE_PROXY_KEY = "x-opscrew-edge-proxy";
 export const EDGE_UPSTREAM = "kamal-proxy:80";
 
 /**
- * The port of Caddy's metrics site, with monitoring on: on the edge's internal network only, never
- * published, scraped by Alloy on the edge's server.
+ * The port of Caddy's metrics site on every Caddy edge: on the edge's internal network only, never
+ * published, scraped by Alloy on the edge's server with monitoring on.
  */
 export const CADDY_METRICS_PORT = 9180;
 
@@ -164,33 +164,49 @@ export function originPullPem(plan: DeployPlan): string {
 /**
  * Caddy's main configuration: with Cloudflare's `ranges`, global options that take the client's
  * address from `CF-Connecting-IP` on requests from them; on this computer (`local`), global
- * options without HTTP/3, whose UDP port the edge does not publish there; then the apps' site
- * files, then {@link CATCH_ALL_SITES}.
+ * options without HTTP/3, whose UDP port the edge does not publish there; on every edge, Caddy's
+ * figures per hostname (`observe_catchall_hosts` stays off: hosts nobody configured would be an
+ * unbounded label). Then the apps' site files, the site on {@link CADDY_METRICS_PORT} that serves
+ * only the figures, and {@link CATCH_ALL_SITES}. The figures are on with or without monitoring, so
+ * every app on a server renders the same edge.
  */
 function caddyfile(ranges: readonly string[], local: boolean): string {
-  const servers = (comment: string, options: readonly string[]) => [
-    comment,
-    "{",
-    "\tservers {",
-    ...options.map((option) => `\t\t${option}`),
-    "\t}",
-    "}",
-    "",
-  ];
+  const comments: string[] = [];
+  const options: string[] = [];
+  const option = (comment: string, name: string, lines: readonly string[]) => {
+    comments.push(comment);
+    options.push(`\t${name} {`, ...lines.map((line) => `\t\t${line}`), "\t}");
+  };
+  if (ranges.length > 0) {
+    option(
+      "# Requests from Cloudflare's addresses carry the visitor's in CF-Connecting-IP.",
+      "servers",
+      [`trusted_proxies static ${ranges.join(" ")}`, "client_ip_headers CF-Connecting-IP"],
+    );
+  }
+  if (local) {
+    option("# No HTTP/3: the edge on this computer publishes no UDP port.", "servers", [
+      "protocols h1 h2",
+    ]);
+  }
+  option(
+    "# Caddy's figures per hostname: the `metrics` handler below, on the edge's network only.",
+    "metrics",
+    ["per_host"],
+  );
   return [
     "# OpsCrew's shared edge: each OpsCrew app on this server has its site in /srv/edge/sites/<app>.caddy.",
-    ...(ranges.length === 0
-      ? []
-      : servers("# Requests from Cloudflare's addresses carry the visitor's in CF-Connecting-IP.", [
-          `trusted_proxies static ${ranges.join(" ")}`,
-          "client_ip_headers CF-Connecting-IP",
-        ])),
-    ...(local
-      ? servers("# No HTTP/3: the edge on this computer publishes no UDP port.", [
-          "protocols h1 h2",
-        ])
-      : []),
+    ...comments,
+    "{",
+    ...options,
+    "}",
+    "",
     `import ${CADDY_SITES}/*.caddy`,
+    "",
+    "# Caddy's figures, which Alloy reads with monitoring on: on the edge's internal network only (this port is never published).",
+    `http://:${CADDY_METRICS_PORT} {`,
+    "\tmetrics",
+    "}",
     "",
     ...CATCH_ALL_SITES,
   ].join("\n");
@@ -229,7 +245,8 @@ const CADDY_HEALTHCHECK = {
 /**
  * Caddy, reading each app's site file from `/srv/edge/sites` and its origin certificate from
  * `/srv/edge/tls/<app>`, and trusting Cloudflare's `ranges` for the visitor's address (never on
- * this computer, which Cloudflare does not reach).
+ * this computer, which Cloudflare does not reach). It serves its figures on
+ * {@link CADDY_METRICS_PORT}, which only the edge's network reaches: the port is not published.
  */
 function caddyEdge(plan: DeployPlan, ranges: readonly string[]) {
   const local = plan.target.provider === "localhost";

@@ -6,7 +6,7 @@ import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { type RuntimeContext, renderCaddyfile } from "../runtime";
-import { renderEdgeCompose } from "./index";
+import { CADDY_METRICS_PORT, renderEdgeCompose } from "./index";
 
 /*
  * Checks the shared edge's Caddy configuration with `caddy validate` in the pinned Caddy image: the
@@ -205,6 +205,23 @@ describe.skipIf(reason !== undefined)("caddy validate (OPSCREW_DOCKER_TESTS=1)",
     expect(probe.stdout).toContain("\nLocation: https://example.com/a?b=1\n");
     expect(probe.stdout).toContain("\nLocation: https://www.example.com/c\n");
     expect(probe.stdout).toContain("unknown: 52"); // Empty reply: Caddy aborted the request.
+  }, 300_000);
+
+  // On every Caddy edge; with monitoring on, Alloy scrapes them from the edge's network.
+  it("serves Caddy's figures per hostname on the metrics port", () => {
+    const plan = named("shop", { provider: "own", access: "tunnel", domain: "shop.example.com" });
+    const ask = '-H "Host: shop.example.com" http://127.0.0.1/';
+    const figures = `http://127.0.0.1:${CADDY_METRICS_PORT}/metrics`;
+    const probe = probeCaddy(
+      {
+        "/etc/caddy/Caddyfile": mainCaddyfile(plan),
+        "/etc/caddy/sites/shop.caddy": renderCaddyfile(plan, ctx).content,
+      },
+      figures,
+      `curl -sS -o /dev/null ${ask}; curl -sS ${figures} | grep '^caddy_http_requests_total'`,
+    );
+    expect(probe.status, probe.stderr).toBe(0);
+    expect(probe.stdout).toMatch(/^caddy_http_requests_total\{[^}]*host="shop\.example\.com"/m);
   }, 300_000);
 
   it("accepts the edge with a tunnelled app, and with an app without a domain", () => {

@@ -6,6 +6,7 @@ import {
   type DeployPlan,
   type ExtraServer,
   isServerlessTarget,
+  monitoringOf,
   type PlanService,
   servicesOn,
 } from "@opscrew/plan-schema";
@@ -374,21 +375,39 @@ function envFileWrites(envFiles: readonly EnvFile[], dir: string, on: On): strin
 const HOST_LIST_NAMES =
   "ALLOWED_HOSTS|?*_ALLOWED_HOSTS|CSRF_TRUSTED_ORIGINS|?*_CSRF_TRUSTED_ORIGINS";
 
+/** The app's env file on the app's server, from its deploy secret. */
+const APP_ENV_FILE: EnvFile = { file: "app.env", secret: DEPLOY_SECRETS.appEnv };
+
 /**
- * With Grafana Cloud on (`observability.grafanaCloud.enabled`), the masking file Grafana Alloy
- * reads: `mask.re` in the app's folder `dir`, written in place (Alloy follows the file, not a
- * rename) on the stdin of a command `on` the machine, owner-only as `app.env`, right after it. It
- * holds every value of `app.env` of 8 characters or more (each line of a multi-line value, as the
- * redactor's literals) except the host lists ({@link HOST_LIST_NAMES}), longest first (RE2's
- * alternation takes the first that matches, so a value that begins another can't leave the rest
- * of it unmasked), escaped and joined as one RE2 alternation in a capture group (Alloy's
- * `stage.replace` masks only groups), or `[^\s\S]`, which never matches, when there is none.
- * Nothing without Grafana Cloud.
+ * The masking file Grafana Alloy reads on `server`: on the app's server with Grafana Cloud on
+ * (`observability.grafanaCloud.enabled`) or monitoring on, from `app.env`; on an extra server with
+ * monitoring on, from the env files it receives (`envFiles`). It is `mask.re` in the app's folder
+ * `dir`, written in place (Alloy follows the file, not a rename) on the stdin of a command `on` the
+ * machine, owner-only as the env files, right after them. It holds every value of those env files
+ * of 8 characters or more (each line of a multi-line value, as the redactor's literals) except the
+ * host lists ({@link HOST_LIST_NAMES}), longest first (RE2's alternation takes the first that
+ * matches, so a value that begins another can't leave the rest of it unmasked), escaped and joined
+ * as one RE2 alternation in a capture group (Alloy's `stage.replace` masks only groups), or
+ * `[^\s\S]`, which never matches, when there is none. Nothing on a server Alloy doesn't run on.
  */
-function maskFileWrite(plan: DeployPlan, dir: string, on: On): string[] {
-  if (plan.observability?.grafanaCloud?.enabled !== true) return [];
+function maskFileWrite(
+  plan: DeployPlan,
+  server: string,
+  envFiles: readonly EnvFile[],
+  dir: string,
+  on: On,
+): string[] {
+  const monitored = monitoringOf(plan) !== undefined;
+  const grafanaCloud = server === APP_SERVER && plan.observability?.grafanaCloud?.enabled === true;
+  if (!monitored && !grafanaCloud) return [];
+  const secrets = envFiles.map((env) => `"\${${env.secret}:-}"`);
+  // One env file is read as it is; several are joined, one after the other.
+  const values =
+    secrets.length === 1 ? secrets.join("") : `"$(printf '%s\\n' ${secrets.join(" ")})"`;
+  const names = envFiles.map((env) => env.file);
+  const files = names.length === 1 ? `${names[0]}'s values` : `the values of ${names.join(", ")}`;
   return [
-    "# Grafana Alloy's masking file: app.env's values as one RE2 alternation, longest first.",
+    `# Grafana Alloy's masking file: ${files} as one RE2 alternation, longest first.`,
     "parts=",
     "while IFS= read -r line; do",
     '  [[ "$line" == [A-Za-z_]*=* ]] || continue',
@@ -409,7 +428,7 @@ function maskFileWrite(plan: DeployPlan, dir: string, on: On): string[] {
     "  while IFS= read -r part; do",
     "    if (( ${#part} >= 8 )); then parts+=\"${#part}\"$'\\t'\"$part\"$'\\n'; fi",
     '  done <<< "$value"',
-    `done <<< "\${${DEPLOY_SECRETS.appEnv}:-}"`,
+    `done <<< ${values}`,
     "mask=\"$(printf '%s' \"$parts\" | sort -rn | cut -f2- | sed 's/[][\\.*+?(){}|^$]/\\\\&/g' | paste -sd '|' -)\"",
     'if [[ -n "$mask" ]]; then mask="($mask)"; else mask=\'[^\\s\\S]\'; fi',
     `printf '%s' "$mask" | ${on(`umask 077 && cat > ${dir}/mask.re`)}`,
@@ -419,11 +438,11 @@ function maskFileWrite(plan: DeployPlan, dir: string, on: On): string[] {
 /**
  * The deploy's masking script ({@link maskFileWrite}) as a bash script that runs on the app's
  * server, in its folder, from the `app.env` there: for a change of the app's settings outside the
- * deploy (a service's move between the app's servers). Empty without Grafana Cloud.
+ * deploy (a service's move between the app's servers). Empty without Grafana Cloud or monitoring.
  */
 export function maskFileScript(plan: DeployPlan): string {
   const dir = appDir(plan);
-  const lines = maskFileWrite(plan, dir, HERE);
+  const lines = maskFileWrite(plan, APP_SERVER, [APP_ENV_FILE], dir, HERE);
   if (lines.length === 0) return "";
   const script = [
     "set -euo pipefail",
@@ -636,7 +655,7 @@ function sshDeploy(
     `    ${OVER_SSH(`mkdir -p ${dir}`)}`,
     `    scp -r "\${ssh_opts[@]}" ${upload.files.join(" ")} "deploy@\${HOST}:${dir}/"`,
     ...envFileWrites(upload.envFiles, dir, OVER_SSH),
-    ...maskFileWrite(plan, dir, OVER_SSH).map((line) => `    ${line}`),
+    ...maskFileWrite(plan, APP_SERVER, [APP_ENV_FILE], dir, OVER_SSH).map((line) => `    ${line}`),
     ...(upload.edgeFiles.originTls
       ? originTlsUpload(plan, `${EDGE_DIR}/tls/${plan.app.name}`, OVER_SSH)
       : []),
@@ -682,7 +701,9 @@ function extraServerHost(plan: DeployPlan, server: ExtraServer): string {
  *    ({@link serversFile}), with an SSH config of its own, which leaves the machine user's alone;
  * 2. per server, over SSH as `deploy` ({@link extraServerHost}, on its port from
  *    `ctx.serverSshPorts`): its Compose file ({@link renderServerCompose}'s) as `compose.yaml` in the
- *    app's folder, its services' settings folders and env files, then {@link serverCommands}
+ *    app's folder, its services' settings folders and env files, with monitoring on the masking
+ *    file ({@link maskFileWrite}) from the env values of every service running there (a moving
+ *    service's old copy's too, until its switch), then {@link serverCommands}
  *    (pull, start and wait, the published-port repair, the services' one-time setup).
  */
 function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
@@ -710,6 +731,9 @@ function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
       checkSshPort(port);
       const services = servicesOn(plan, server.name);
       const envFiles = serviceEnvFiles(services);
+      // The mask also holds a moving service's old copy's values while it still runs there.
+      const maskFiles = serviceEnvFiles(servicesRunningOn(plan, server.name));
+      const mask = maskFileWrite(plan, server.name, maskFiles, dir, OVER_SSH);
       const folders = services
         .map((service) => `${runtimeDir(plan)}/services/${service.name}`)
         .filter((folder) => rendered.some((path) => path.startsWith(`${folder}/`)));
@@ -717,7 +741,7 @@ function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
         `- name: Update the services on the server ${server.name}`,
         "  env:",
         `    HOST: ${extraServerHost(plan, server)}`,
-        ...envFileEnv(plan, envFiles),
+        ...envFileEnv(plan, mask.length > 0 ? maskFiles : envFiles),
         "  run: |",
         "    set -euo pipefail",
         `    ssh_opts=(-i ${serversFile("key")} -o UserKnownHostsFile=${serversFile("known_hosts")} -F ${serversFile("config")} ${SSH_OPTS_BASE}${portOption(port)})`,
@@ -729,6 +753,7 @@ function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
               `    scp -r "\${ssh_opts[@]}" ${folders.join(" ")} "deploy@\${HOST}:${dir}/services/"`,
             ]),
         ...envFileWrites(envFiles, dir, OVER_SSH),
+        ...mask.map((line) => `    ${line}`),
         `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'`,
         ...remote(serverCommands(plan, server.name, initStepsFor(plan, server.name))),
       ];
@@ -817,7 +842,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
     '    mkdir -p "$dir"',
     `    cp -r ${upload.files.join(" ")} "$dir"/`,
     ...envFileWrites(upload.envFiles, '"$dir"', HERE),
-    ...maskFileWrite(plan, '"$dir"', HERE).map((line) => `    ${line}`),
+    ...maskFileWrite(plan, APP_SERVER, [APP_ENV_FILE], '"$dir"', HERE).map((line) => `    ${line}`),
     ...(upload.edgeFiles.originTls ? [tls, ...originTlsUpload(plan, '"$tls"', HERE)] : []),
   ];
   return {
@@ -958,10 +983,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   checkRunnerReachesServers(plan);
 
   // The services on the app's server; each extra server's get their env files in its own step.
-  const envFiles = [
-    { file: "app.env", secret: DEPLOY_SECRETS.appEnv },
-    ...serviceEnvFiles(servicesOn(plan, APP_SERVER)),
-  ];
+  const envFiles = [APP_ENV_FILE, ...serviceEnvFiles(servicesOn(plan, APP_SERVER))];
   const upload: Upload = {
     env: [
       ...envFileEnv(plan, envFiles),
