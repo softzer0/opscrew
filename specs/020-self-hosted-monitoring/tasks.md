@@ -294,6 +294,9 @@ network above all).
   - Reads: plan.md "11."; spec US1, US4, US5, US7; data-model.md "Secrets kept apart"; 018's `provision/network.ts`, `provision/servers.ts`
   - Depends: T2004, T2006, T2007, T2008, T2009, T2010
   - Notes from wave 1:
+    - T2010's review: drop the outside member when a sender's owner changes (`allocateNetwork`
+      keeps a member by name only, with the old server's port and key); never pass Grafana's or
+      the front's port in the filter's `published` list (the schema refuses a duplicate port).
     - T2010: for a sender, the monitoring server's `network` and `network-filter` steps come from
       `networkSteps(plan, owner.server, facts)`; turning off or leaving uses `networkRemovalSteps`,
       planned through a small new ssh-host planner for one interface (`planNetworkRemoval`: today

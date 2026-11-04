@@ -344,7 +344,9 @@ first.
 - **FR-2014**: only the two receiving paths MUST answer on the network, and only to the network's
   servers. Grafana MUST answer only devices (and the tunnel). Neither query API is reachable from
   the network.
-- **FR-2015**: app servers' filters MUST NOT admit the monitoring server to any of their ports.
+- **FR-2015**: app servers' filters MUST NOT admit the monitoring server to any of their published
+  ports. SSH on the private network stays as 018 opened it, to every member, and a login still needs
+  a key.
 - **FR-2016**: Grafana MUST start with Prometheus and Loki as its data sources and OpsCrew's
   dashboards, provisioned from files and replaced whenever OpsCrew's version of one changes. The
   user's own dashboards are kept.

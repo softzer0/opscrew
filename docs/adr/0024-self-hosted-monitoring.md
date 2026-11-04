@@ -38,7 +38,9 @@ containers, HTTP traffic, Postgres and Caddy.
   - Grafana answers only devices and the SSH tunnel.
   - Prometheus's and Loki's query APIs are reachable only from Grafana, on the stack's own Docker
     network.
-  - App servers never admit the monitoring server.
+  - App servers never admit the monitoring server to their services' ports. SSH on the private
+    network stays as 018 opened it, to every member: the monitoring server can reach a member's
+    SSH, as any member can, and a login still needs a key.
 - **D5. OpsCrew renders its own dashboards** (Apache-2.0): servers, containers, HTTP traffic, Caddy,
   Postgres and logs. They are provisioned read-only, and the user's own dashboards are kept.
 - **D6. Retention by time, with a size cap for figures,** estimated at design. Alerts stay with
