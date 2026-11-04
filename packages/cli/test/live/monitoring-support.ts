@@ -43,22 +43,29 @@ export const CLOSED_PORTS = [
   5432,
 ] as const;
 
-/** A server by the labels its figures and lines carry in the stack. */
+/**
+ * A server by the labels its figures and lines carry in the stack, and whether it sends log lines:
+ * only a server running the app's containers does (the monitoring server sends figures only).
+ */
 export interface ServerLabels {
   app: string;
   env: string;
   server: string;
+  logs: boolean;
 }
 
 /** Every server of `plan`'s environment by its labels: the app's server, then each extra one. */
 export function planServers(
-  plan: Pick<DeployPlan, "app" | "environment" | "servers">,
+  plan: Pick<DeployPlan, "app" | "environment" | "servers"> & Partial<Pick<DeployPlan, "services">>,
 ): ServerLabels[] {
   const env = plan.environment?.name ?? "prod";
+  const runsServices = (name: string) =>
+    (plan.services ?? []).some((service) => service.enabled && service.server === name);
   return ["app", ...(plan.servers ?? []).map((server) => server.name)].map((server) => ({
     app: plan.app.name,
     env,
     server,
+    logs: server === "app" || runsServices(server),
   }));
 }
 
@@ -90,18 +97,24 @@ export function serverKey(labels: ServerLabels): string {
 }
 
 /**
- * The servers of `expected` whose figures or logs the stack has not received (or that it flags
- * silent), in `stdout`, the output of `opscrew addon status --json`; each as {@link serverKey}.
- * All of them when the status holds no reading of the stack.
+ * The servers of `expected` whose figures (or, for a server running the app's containers, logs)
+ * the stack has not received, or that it flags silent, in `stdout`, the output of
+ * `opscrew addon status --json`; each as {@link serverKey} with what is missing. All of them when
+ * the status holds no reading of the stack.
  */
 export function withoutData(stdout: string, expected: readonly ServerLabels[]): string[] {
   const servers = StatusSchema.parse(JSON.parse(stdout)).monitoring?.reading?.servers ?? [];
-  const received = new Set(
-    servers
-      .filter((s) => s.lastFigures !== undefined && s.lastLog !== undefined && !s.silent)
-      .map(serverKey),
-  );
-  return expected.map(serverKey).filter((key) => !received.has(key));
+  return expected.flatMap((labels) => {
+    const key = serverKey(labels);
+    const server = servers.find((s) => serverKey({ ...s, logs: false }) === key);
+    if (server === undefined) return [`${key} (not listed)`];
+    const missing = [
+      ...(server.lastFigures === undefined ? ["no figures"] : []),
+      ...(labels.logs && server.lastLog === undefined ? ["no log line"] : []),
+      ...(server.silent ? ["silent"] : []),
+    ];
+    return missing.length === 0 ? [] : [`${key} (${missing.join(", ")})`];
+  });
 }
 
 /**

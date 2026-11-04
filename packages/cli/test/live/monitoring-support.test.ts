@@ -14,11 +14,14 @@ describe("planServers", () => {
     expect(
       planServers({
         app: { name: "shop" } as never,
-        servers: [{ name: "monitoring" }] as never,
+        servers: [{ name: "data" }, { name: "monitoring" }] as never,
+        services: [{ name: "db", enabled: true, server: "data" }] as never,
       }),
     ).toEqual([
-      { app: "shop", env: "prod", server: "app" },
-      { app: "shop", env: "prod", server: "monitoring" },
+      { app: "shop", env: "prod", server: "app", logs: true },
+      { app: "shop", env: "prod", server: "data", logs: true },
+      // The monitoring server runs none of the app's containers, so it sends figures only.
+      { app: "shop", env: "prod", server: "monitoring", logs: false },
     ]);
   });
 
@@ -28,19 +31,19 @@ describe("planServers", () => {
         app: { name: "shop-staging" } as never,
         environment: { name: "staging" } as never,
       }),
-    ).toEqual([{ app: "shop-staging", env: "staging", server: "app" }]);
+    ).toEqual([{ app: "shop-staging", env: "staging", server: "app", logs: true }]);
   });
 });
 
 describe("withoutData", () => {
   const expected = [
-    { app: "shop", env: "prod", server: "app" },
-    { app: "shop", env: "prod", server: "monitoring" },
-    { app: "shop-staging", env: "staging", server: "app" },
+    { app: "shop", env: "prod", server: "app", logs: true },
+    { app: "shop", env: "prod", server: "monitoring", logs: false },
+    { app: "shop-staging", env: "staging", server: "app", logs: true },
   ];
   const at = "2026-11-04T10:00:00.000Z";
 
-  it("names each server without figures, without logs, or flagged silent", () => {
+  it("names what each server lacks: figures, a log line where the app runs, or flagged silent", () => {
     const status = {
       addons: [],
       monitoring: {
@@ -54,6 +57,7 @@ describe("withoutData", () => {
               lastLog: at,
               silent: false,
             },
+            // No log line: none expected from the monitoring server.
             { app: "shop", env: "prod", server: "monitoring", lastFigures: at, silent: false },
             { app: "shop-staging", env: "staging", server: "app", lastLog: at, silent: true },
           ],
@@ -61,9 +65,15 @@ describe("withoutData", () => {
       },
     };
     expect(withoutData(JSON.stringify(status), expected)).toEqual([
-      "shop/prod/monitoring",
-      "shop-staging/staging/app",
+      "shop-staging/staging/app (no figures, silent)",
     ]);
+    const noLog = { ...status.monitoring.reading.servers[0], lastLog: undefined };
+    expect(
+      withoutData(
+        JSON.stringify({ monitoring: { reading: { servers: [noLog] } } }),
+        expected.slice(0, 1),
+      ),
+    ).toEqual(["shop/prod/app (no log line)"]);
   });
 
   it("names a server the stack doesn't list, and every server without a reading", () => {
@@ -84,7 +94,7 @@ describe("withoutData", () => {
       },
     };
     expect(withoutData(JSON.stringify(one), expected.slice(0, 2))).toEqual([
-      "shop/prod/monitoring",
+      "shop/prod/monitoring (not listed)",
     ]);
     expect(withoutData(JSON.stringify({ addons: [], monitoring: {} }), expected)).toHaveLength(3);
     expect(withoutData(JSON.stringify({ addons: [] }), expected)).toHaveLength(3);
