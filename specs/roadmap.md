@@ -5,9 +5,9 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–019 ([019 rollback](019-rollback/), released as 0.2.0 on 2026-11-01). Now: 020, planned
-in [020-self-hosted-monitoring](020-self-hosted-monitoring/) on 2026-11-01; implementation started on
-the founder's go-ahead on 2026-11-04.
+Done: 000–020. [020 self-hosted monitoring](020-self-hosted-monitoring/) was built on 2026-11-04 and
+passed its live pass on the final code; its release waits for the founder. Next: 021 advise, which
+waits for the founder's go-ahead.
 
 ## 019 Rollback
 
@@ -65,8 +65,8 @@ them closed when something else on the app's server is compromised. The lead's s
 
 ## 020 Self-hosted monitoring
 
-Planned: [spec](020-self-hosted-monitoring/spec.md), [plan](020-self-hosted-monitoring/plan.md),
-[tasks](020-self-hosted-monitoring/tasks.md) and ADR 0024 (2026-11-01). The sketch below is the
+Done (2026-11-04): [spec](020-self-hosted-monitoring/spec.md), [plan](020-self-hosted-monitoring/plan.md),
+[tasks](020-self-hosted-monitoring/tasks.md), ADR 0024, and the guide page `docs/guide/monitoring.md`. The sketch below is the
 roadmap's, kept as the founder's input.
 
 A private, self-hosted monitoring stack, opt-in (founder, 2026-10-18). Feature 017 left it out
