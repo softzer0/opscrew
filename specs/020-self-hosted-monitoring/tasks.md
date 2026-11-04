@@ -474,6 +474,7 @@ network above all).
 - [ ] T2018 The live runs (lead): T2017's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2019 The simplify pass (lead): `/simplify` (or reviewers by area) over the whole feature's diff; real findings become tasks.
   - Noted at merge: `catalogs()` in `monitoring/enable.ts` repeats design's private `extraCatalogs`; `pinnedVersion` in `monitoring/settings.ts` repeats the one in `addons/settings.ts` (T2009).
+  - Noted at merge: `drift/monitoring.ts` has its own `monitoringStackInput`; switch it to T2011's export. `monitoringDrift` inspects each server a second time, apart from `serversDrift` (T2012).
   - Noted at merge: `monitoringOwner` (T2010) reads an owner's paths back from `owner.plan`; any similar code in T2009, T2011 or T2012 should use it.
   - Noted at merge: `escapeRegExp` is a private one-liner in `addons/alloy.ts`, `docker/stacks.ts` and `edge/vercel-routing.ts` (T2006).
   - Noted at merge: `pinnedTag` in `workflow/__fixtures__/plans.ts` and `imageVersion` in `cli/test/e2e/monitoring-support.ts` repeat `pinnedVersion`'s tag slicing (T2007, T2016); the Docker pass repeats `grant.ts`'s monitor-login SQL because `grantEngine` isn't exported (T2016).
