@@ -5,8 +5,8 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–020. [020 self-hosted monitoring](020-self-hosted-monitoring/) was built on 2026-11-04 and
-passed its live pass on the final code; its release waits for the founder. Next: 021 advise, which
+Done: 000–020. [020 self-hosted monitoring](020-self-hosted-monitoring/) was built on 2026-11-04,
+passed its live pass on the final code, and was released as 0.2.1 the same day. Next: 021 advise, which
 waits for the founder's go-ahead.
 
 ## 019 Rollback

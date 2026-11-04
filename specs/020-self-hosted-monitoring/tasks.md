@@ -585,7 +585,7 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm turbo run typecheck --filter=opscrew`
   - Effort: medium
 
-- [ ] T2020 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync. A patch version (0.2.1): plans without monitoring render byte-identical, so no project has to be redone. Only a minor version (0.3.0) if the feature ends up changing files that existing projects must redo (`docs/releasing.md` 1.).
+- [x] T2020 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync. A patch version (0.2.1): plans without monitoring render byte-identical, so no project has to be redone. Only a minor version (0.3.0) if the feature ends up changing files that existing projects must redo (`docs/releasing.md` 1.).
 
 ## Dependencies
 
