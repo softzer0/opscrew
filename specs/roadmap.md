@@ -6,8 +6,8 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
 Done: 000–020. [020 self-hosted monitoring](020-self-hosted-monitoring/) was built on 2026-11-04,
-passed its live pass on the final code, and was released as 0.2.1 the same day. Next: 021 advise, which
-waits for the founder's go-ahead.
+passed its live pass on the final code, and was released as 0.2.1 the same day. Now: 021 advise, started on
+the founder's go-ahead on 2026-11-04 ([021-advise](021-advise/)).
 
 ## 019 Rollback
 
@@ -114,6 +114,17 @@ It changes nothing itself: each proposal is applied through the existing flows (
 hash-bound approval). Deterministic first (thresholds on the figures); a model only for the
 judgment it adds. Placed by the lead after the figures exist and before AWS, so AWS's
 managed-service choices reuse the same advice; the founder can move it.
+
+## Later, if users ask: monitoring for several apps on one of the user's own servers
+
+A server runs one Grafana Alloy, rendered from one app's plan, so a second OpsCrew app on the same
+own server is refused Grafana Cloud and the self-hosted monitoring (017, 020). The founder asked
+for it on 2026-11-04 and left the call to the lead, who left it out of 021: it needs several
+OpsCrew apps on one own server with more than one wanting monitoring, the first app's monitoring
+already shows the whole server, Beszel shows every container, and the change would rework the
+Alloy path just released in 0.2.1. A design that works (one Alloy per server, a configuration
+folder with one file per app, written by that app's own repository) is in
+[021's research R4](021-advise/research.md).
 
 ## 022 Preview environments per pull request
 

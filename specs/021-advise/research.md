@@ -198,3 +198,83 @@ USD), `uptime` (`best-effort`, `standard`, `high`), `dataCriticality` (`none`, `
    what detection and design already know.
 7. **Not here:** Grafana Cloud's history (it needs a second token with read scopes) and Beszel's
    (no documented API); AWS (024); acting on its own or on a schedule.
+
+## R4. Dropped from 021: one Alloy for several apps on the user's own server
+
+**Dropped the same day** (the founder left the call to the lead): it is rare (several OpsCrew apps
+on one own server, more than one wanting monitoring), the first app's monitoring already shows the
+whole server and Beszel every container, and it would rework the Alloy path just released. Kept
+here for when users ask; the roadmap lists it under "Later, if users ask".
+
+Added to 021 by the founder on 2026-11-04: today a server runs one Grafana Alloy, rendered from one
+app's plan, so a second OpsCrew app on the same own server is refused Grafana Cloud and the
+self-hosted monitoring (017, 020). He asked for it lifted within one repository and across
+repositories. Research the same day: a Sonnet agent on Alloy's official docs (the "latest" pages,
+to check against v1.21.3 in the spike), a Haiku code map.
+
+### R4.1 Alloy's configuration folders and modules
+
+- **A folder as the configuration:** `alloy run <dir>` loads every `*.alloy` file in it (not nested
+  folders) as one source; component labels must be unique across the files, and blocks such as
+  `logging` must not repeat. Load order isn't stated. Source:
+  https://grafana.com/docs/alloy/latest/reference/cli/run/
+- **Errors:** a bad configuration at start stops Alloy; on a reload Alloy "continues functioning in
+  the last valid state". Whether one bad file is skipped alone is unconfirmed: expect all or
+  nothing.
+- **Reloading:** `POST /-/reload` or SIGHUP; `run` doesn't watch the folder. `import.file` watches
+  its path (fsnotify, polling every minute as a fallback). Source:
+  https://grafana.com/docs/alloy/latest/reference/config-blocks/import.file/
+- **Modules:** `import.file` takes a file or a folder (a folder is one module); a module holds only
+  `declare` and `import` blocks; arguments in (`argument.x.value`) and exports out work both ways.
+  Source: https://grafana.com/docs/alloy/latest/get-started/modules/
+- **Fan-out:** `forward_to` is a list of receivers, each metric to every receiver; several
+  `prometheus.remote_write` components each keep their own WAL.
+- **Secrets:** `local.file` with `is_secret = true` keeps the value out of the UI; whether it stays
+  redacted when passed into a module is unconfirmed.
+- **Several Alloys on one host:** not documented; each would need its own listen address and
+  storage path.
+
+### R4.2 What OpsCrew has (code map)
+
+- **The rule:** ssh-host's `addonTaken` refuses a second app's `alloy`, `beszel` or `monitoring`
+  at plan time (`plan.ts`) and at apply time (`apply.ts`), with the owner recorded in
+  `/etc/opscrew/host.json`'s `addons` (one app each); agents' `monitoringEnable` refuses it first on
+  the user's own servers (`inspectOwnServers`). Specs: 017 data-model ("one of each per server"),
+  020 spec (edge case and assumption).
+- **What is per app in Alloy's configuration** (`iac-templates/src/addons/alloy.ts`): the logs'
+  Compose project filter, the masking file (`/srv/apps/<app>/mask.re`), the `app`/`env`/`server`
+  labels, the per-container figures (the app's project and OpsCrew's own), the Postgres data
+  source; and the writers (Grafana Cloud's token file, the monitoring stack's address).
+- **What is per server:** the unix exporter, cAdvisor, the read-only Docker proxy, the Compose
+  project `opscrew-alloy` (its folder, its networks: the edge's, the monitoring push network,
+  `<app>_internal` for Postgres), the memory limit.
+- **Shared things OpsCrew already handles:** the edge (one per server, a version stamp so an older
+  app never downgrades it, removed with the last app), each app's WireGuard interface (an owner per
+  interface in `host.json`'s `networks`, refused to other apps).
+- **Beszel:** one agent per server, refused for a second app too; it already shows every container
+  on the server.
+
+### R4.3 Lead decisions for part 2
+
+1. **One Alloy per server, owned by the server.** Its configuration is a folder: a shared
+   `server.alloy` (the exporters and the Docker discovery, no writers) and one `app-<key>.alloy` per
+   app, written only by that app's provision, with every component label prefixed by the app's key.
+2. **Each app's file is self-contained:** its logs (its own Compose project), its masking (its own
+   `mask.re`), its containers' figures, the server's figures read from the shared exporters, its
+   Postgres where it runs there, Caddy's figures for its own hostnames, and its own writers
+   (Grafana Cloud with its own token file, or its monitoring stack). No file names another app, so
+   one repository never needs another's plan, values or secrets. Within one repository and across
+   repositories work the same way.
+3. **The shared parts carry a version stamp,** as the edge does: the newer OpsCrew writes them, an
+   older one keeps them. The Compose file's networks and memory limit are assembled on the server
+   from what each app's part declares (a small needs file per app), so no repository writes another
+   app's networks.
+4. **A bad file never breaks the others:** the step checks the whole folder with Alloy's own
+   validation before it reloads, and refuses (changing nothing) when it fails.
+5. **Ownership:** `host.json` lists the apps that have a part; each changes or removes only its own;
+   the shared parts and the container go with the last part.
+6. **Beszel stays one per server:** it already shows every container; a second app's request says
+   so.
+7. **The spike (T2101) tries it on Alloy v1.21.3:** two app files and the shared file in one folder,
+   a reload by SIGHUP, a bad file on reload, labels prefixed, the validation command inside the
+   pinned image, and one app's destination down while the other's works.
