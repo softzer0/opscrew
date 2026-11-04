@@ -5,9 +5,9 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–019 ([019 rollback](019-rollback/), released as 0.2.0 on 2026-11-01). Next: 020, planned
-in [020-self-hosted-monitoring](020-self-hosted-monitoring/) on 2026-11-01; implementation waits for
-the founder's go-ahead.
+Done: 000–019 ([019 rollback](019-rollback/), released as 0.2.0 on 2026-11-01). Now: 020, planned
+in [020-self-hosted-monitoring](020-self-hosted-monitoring/) on 2026-11-01; implementation started on
+the founder's go-ahead on 2026-11-04.
 
 ## 019 Rollback
 

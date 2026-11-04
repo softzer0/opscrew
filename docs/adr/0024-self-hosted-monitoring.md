@@ -1,7 +1,8 @@
 # ADR 0024: Self-hosted monitoring, pushed by Alloy to one server per repository
 
-**Status**: Proposed (2026-11-01, feature 020). The founder set the scope on 2026-10-18 and made it
-a feature of its own on 2026-10-30; the design is the lead's. The spike (T2001) may amend it.
+**Status**: Accepted (2026-11-04, feature 020). The founder set the scope on 2026-10-18 and made it
+a feature of its own on 2026-10-30; the design is the lead's, amended by the spike (T2001, research
+R7).
 
 ## Context
 
@@ -17,6 +18,9 @@ containers, HTTP traffic, Postgres and Caddy.
   - Every monitored server runs Alloy, which 017 already pins. It sends the server's figures,
     cAdvisor's container figures, the masked logs, and Caddy's and Postgres's figures where they
     run.
+  - cAdvisor runs inside Alloy on the cgroups only, unprivileged. Its Docker integration needs
+    `/var/lib/docker` or containerd's socket, both root-level, so containers are named through
+    Docker's container list over 017's read-only proxy instead.
   - No node-exporter, cAdvisor or postgres_exporter containers, and no list of targets on the
     monitoring server.
   - With Grafana Cloud on, the same Alloy sends to both.
@@ -46,6 +50,9 @@ containers, HTTP traffic, Postgres and Caddy.
 - Each monitored server gives Alloy its memory, shown with its price share at design.
 - Any device on any of the repository's networks can see every environment's dashboards. Grafana
   has one login.
+- No per-container disk or network figures: cAdvisor reads them from places that need root.
+- With Grafana Cloud on too, a monitoring server down for hours delays Grafana Cloud's logs once
+  the agent's queue for the stack fills.
 - `retarget` refuses an environment with monitoring on until 023.
 - Grafana and Loki are AGPL-3.0. OpsCrew renders configuration for the official, unmodified images
   and never links them into the CLI.
@@ -54,6 +61,7 @@ containers, HTTP traffic, Postgres and Caddy.
 
 - **Pull with exporters:** two or three more containers per server, and a target list on the
   monitoring server that changes with every server.
+- **A separate cAdvisor container:** the same code, with the same root-level needs.
 - **A monitoring network of its own:** a second WireGuard interface on every server, and a second
   configuration on every device.
 - **grafana.com's community dashboards:** their licence couldn't be confirmed.

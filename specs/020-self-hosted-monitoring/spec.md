@@ -102,8 +102,8 @@ makes the stack useful on day one.
 6. **Logs:** the lines by app, environment and service, searchable by text. Masked values show as
    OpsCrew's markers.
 7. **Given** the user changes one of OpsCrew's dashboards, **Then** Grafana asks them to save it as
-   a copy. OpsCrew's own are restored on each provision, and the user's copies and their own
-   dashboards are kept.
+   a copy. OpsCrew's own are replaced whenever OpsCrew's version of one changes, and the user's
+   copies and their own dashboards are kept.
 8. **Given** the edge is nginx or the user's own proxy, **Then** design says HTTP traffic and Caddy
    need Caddy, and those two dashboards say so instead of showing empty panels.
 
@@ -276,7 +276,9 @@ first.
 - **The monitoring server is down:** each agent keeps what it couldn't send on its own disk for a
   bounded time, and sends it when the server is back. `addon status` says how long that is.
 - **An app server with no room for the agent:** design refuses, naming the larger server type.
-- **Grafana Cloud is on too:** one agent on the app's server sends to both.
+- **Grafana Cloud is on too:** one agent on the app's server sends to both. When the monitoring
+  server is down for hours, the agent's queue for it fills and Grafana Cloud's logs wait too, until
+  the oldest are dropped; `addon status` flags the silent server long before.
 - **Beszel is on too:** both run; they don't share anything.
 - **Postgres on an extra server:** the agent on that server reads it.
 - **MySQL, MariaDB, MongoDB and the other services:** their containers are on the Containers
@@ -343,8 +345,8 @@ first.
   the network.
 - **FR-2015**: app servers' filters MUST NOT admit the monitoring server to any of their ports.
 - **FR-2016**: Grafana MUST start with Prometheus and Loki as its data sources and OpsCrew's
-  dashboards, provisioned from files and restored on each provision. The user's own dashboards are
-  kept.
+  dashboards, provisioned from files and replaced whenever OpsCrew's version of one changes. The
+  user's own dashboards are kept.
 - **FR-2017**: Grafana's admin password MUST be generated and kept with the generated values and the
   recovery copy. Sign-up, anonymous access, usage reports, update checks and news MUST be off.
 - **FR-2018**: OpsCrew's dashboards MUST be its own (Apache-2.0), one each for servers, containers,

@@ -160,13 +160,16 @@ network above all).
   - Accept:
     - **`renderAlloyConfig(plan, server, destinations)` and `renderAlloyCompose`** as plan.md 6.:
       - sources per server;
-      - cAdvisor as S1 settles, with the proxy's allow-list extended only by the paths S1 names;
+      - cAdvisor on the cgroups only, named through `discovery.docker` limited to the app's and
+        OpsCrew's projects (research R7, S1), with the proxy's allow-list unchanged;
       - the Caddy scrape on the edge's server;
       - the Postgres exporter on Postgres's server, its data source from a secret file;
       - the `app`, `env` and `server` labels on everything;
       - masking unchanged;
       - fan-out after masking, with sampling only on Grafana Cloud's branch;
-      - the stack's writers to the given address.
+      - the stack's writers to the given address, with the queue and retry settings of plan.md 6.;
+      - Caddy's `server` label as `caddy_server`, its metrics handler dropped;
+      - every scrape at 15 s, and Alloy's HTTP server on `127.0.0.1`.
     - **Snapshots:**
       - monitoring only on the app's server;
       - monitoring on an extra server with Postgres;
@@ -191,7 +194,7 @@ network above all).
       - with monitoring on, the deploy job writes it on the app's server, and the extra servers'
         upload step writes it on each extra server;
       - each from the values that server receives;
-      - root-only, never in the repository.
+      - readable only by the deploy user (`0600`, as 017 writes it), never in the repository.
     - **Without monitoring,** the edge's and every workflow's snapshots are unchanged. That covers
       Grafana Cloud-only plans too.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
@@ -204,12 +207,12 @@ network above all).
   - Accept:
     - **`monitoring` step,** as plan.md 8.:
       - check, apply, verify and removal;
-      - Grafana's password from stdin into a root-only file with S3's owner;
+      - Grafana's password from stdin into a `root:root 0640` file (research R7, S3);
       - volumes removed only with `removeData`;
       - the host record's owner;
       - ownership conflicts refused as `addonTaken` refuses them.
-    - **`alloy` step:** `server` and destinations in its params; the Postgres password from stdin
-      to a root-only file. Today's Grafana Cloud plan text is unchanged.
+    - **`alloy` step:** `server` and destinations in its params; the Postgres password from stdin,
+      written as the whole data source into a file only the deploy user reads (`0600`). Today's Grafana Cloud plan text is unchanged.
     - **`grant`'s `monitor`,** Postgres only:
       - creates or updates `opscrew_monitor` with `pg_monitor`;
       - its check reads the login and the role;
@@ -239,6 +242,8 @@ network above all).
         the smallest type that fits);
       - creates the network when absent;
       - with an existing repository server, uses `shared` unless `--new-server`;
+      - for `shared`, copies the owner's `versions` and `retention` into the sender's plan, and
+        design refuses a sender whose copies differ from its owner's, naming the owner's plan;
       - `--on app` checks 4 GB and the fit;
       - one of the user's own servers, set as the monitoring server in the plan, is checked against
         its facts' memory instead of sized.

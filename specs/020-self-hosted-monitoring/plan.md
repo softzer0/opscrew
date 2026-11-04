@@ -1,9 +1,10 @@
 # Implementation Plan: Self-hosted monitoring
 
 **Branch**: `main` | **Date**: 2026-11-01 | **Spec**: `specs/020-self-hosted-monitoring/spec.md`
-**Research**: `specs/020-self-hosted-monitoring/research.md` (R1–R6; the spike adds R7)
+**Research**: `specs/020-self-hosted-monitoring/research.md` (R1–R6, and the spike's R7)
 
-The founder asked for the plan on 2026-11-01. Implementation starts only on his go-ahead.
+The founder asked for the plan on 2026-11-01 and gave the go-ahead on 2026-11-04. The spike
+(T2001, research R7) changed Design 4–9; the sections below include its results.
 
 ## Summary
 
@@ -51,9 +52,10 @@ private network. Every monitored server pushes to it through one Grafana Alloy.
 
 - **Stack:** the same as 000–019. **No new npm dependency.**
 - **New images, pinned by digest in `pins.ts`:**
-  - `prom/prometheus` (3.15), `grafana/loki` (3.7) and `grafana/grafana` (13.3);
+  - `prom/prometheus` (3.15.1), `grafana/loki` (3.7.9) and `grafana/grafana` (13.3.0);
   - Alloy moves to 1.21.3.
   - The front is the Caddy image already pinned.
+  - cAdvisor stays inside Alloy (research R7, S1): no separate container.
 - **No new provider API:** the monitoring server is more of 018's extra-server modules, and its
   prices come from the catalogues design already reads.
 - **The spike (T2001, lead, local Docker),** results in research.md R7, before wave 1:
@@ -105,7 +107,8 @@ private network. Every monitored server pushes to it through one Grafana Alloy.
 - **IV (secrets):**
   - **Grafana's admin password and the Postgres monitoring password:** generated, kept with the
     generated values (0600, recovery copy). They reach their server only on standard input, into
-    root-only files.
+    files only their reader can open: Grafana's `root:root 0640` (Grafana's group 0), Alloy's
+    data source the deploy user's `0600`.
   - **Logs:** masked before they leave each server.
   - **The monitoring server's public address:** in this computer's state only, as every server's.
 - **V (deterministic first):** sizing, prices, the disk estimate, every renderer, the dashboards and
@@ -203,46 +206,69 @@ design goes into this plan before wave 1. ADR 0024 records D1–D6 of research R
   - the receiving addresses: one per network the server is a member of, with the members
     (servers) and devices of each;
   - whether devices exist.
-- **Output:** the files under `opscrew/addons/monitoring/`:
-  - **`compose.yaml`** (project `opscrew-monitoring`), every service `hardened()` with its limit
-    and its data on a named volume:
+- **Output:** the files under `opscrew/addons/monitoring/` (research R7 "The stack"; the spike's
+  working files are the model):
+  - **`compose.yaml`** (project `opscrew-monitoring`), every service `hardened()` with
+    `cap_drop: ALL`, `read_only`, the image's own user, its limit (`mem_limit` and
+    `memswap_limit`), `GOMEMLIMIT` at 80% of it, and its data on a named volume:
+    - **Two networks:** `stack`, `internal: true` (no route out), for all four; and a second one
+      for the two services that publish a port, `front` and `grafana`. Prometheus and Loki are
+      only on `stack`.
     - **`prometheus`:**
       - `--web.enable-remote-write-receiver`;
       - `--storage.tsdb.retention.time=<metricsDays>d` and `--storage.tsdb.retention.size=<metricsMaxGb>GB`;
-      - no published port.
-    - **`loki`:** `-config.file`, no published port.
+      - a healthcheck on `/-/ready`; no published port.
+    - **`loki`:** `-config.file`, a tmpfs `/tmp` (without it retention silently deletes nothing),
+      no published port, no healthcheck (its image has no shell or `wget`).
     - **`grafana`:**
       - published on `127.0.0.1:<grafana port>`, and on each private address when devices exist;
-      - `GF_*` hardening (research R4, S3);
-      - the admin password from its root-only file (S3).
+      - the `GF_*` settings of research R7 (S3), the two `GRAFANA_COM` URLs and
+        `GF_PLUGINS_DISABLE_PLUGINS` included;
+      - the admin password as `GF_SECURITY_ADMIN_PASSWORD=$$__file{<path>}`, never `__FILE`
+        (which starts with the password `admin` when the file can't be read);
+      - a tmpfs `/tmp`, and a healthcheck on `/api/health`.
     - **`front`** (Caddy):
       - published on each private address at `MONITORING_PUSH_PORT`;
-      - `POST /api/v1/write` goes to `prometheus:9090`, `POST /loki/api/v1/push` to `loki:3100`;
+      - `POST /api/v1/write` goes to `prometheus:9090`, `POST /loki/api/v1/push` to `loki:3100`,
+        each rewritten to the exact path;
       - everything else answers 403;
-      - `admin off`, and a request body cap.
-  - **`prometheus.yml`:** no scrape jobs; external labels none (Alloy sets `app`, `env`, `server`).
+      - `admin off`, and `request_body { max_size 8MiB }`;
+      - user 65534 with `cap_add: NET_BIND_SERVICE` and tmpfs `/data` and `/config` owned by it,
+        as 017's proxy;
+      - a healthcheck that checks both upstreams' readiness, so `up --wait` means the stack is up.
+  - **`prometheus.yml`:** no scrape jobs and no external labels (Alloy sets `app`, `env`,
+    `server`); `storage.tsdb.out_of_order_time_window: 4h`, so figures an agent kept through an
+    outage are accepted late.
   - **`loki.yaml`** (S4):
     - `auth_enabled: false`, schema v13, tsdb, a 24-hour index;
-    - compactor retention with `retention_period: <logsDays × 24>h`;
+    - compactor retention with `retention_period: <logsDays × 24>h`, and
+      `reject_old_samples_max_age` the same;
+    - `discover_service_name: []` (no extra `service_name` label), `analytics.reporting_enabled:
+      false`;
     - ingestion limits sized to the small server.
   - **`grafana/provisioning/datasources/opscrew.yaml`:** Prometheus `opscrew-prometheus` and Loki
-    `opscrew-loki`, `editable: false`.
-  - **`grafana/provisioning/dashboards/opscrew.yaml`** (`allowUiUpdates: false`), and
-    `grafana/dashboards/*.json` from T2005.
+    `opscrew-loki`, `editable: false`, `prune: true`.
+  - **`grafana/provisioning/dashboards/opscrew.yaml`** (`allowUiUpdates: false`, folder "OpsCrew"),
+    and `grafana/dashboards/*.json` from T2005.
 - **The header comment** of each file says which plan generated it and how to regenerate it.
 - With `kind: "app"` and no network, there are no private addresses: Grafana only on `127.0.0.1`,
   and no front.
 
 ### 5. The dashboards (T2005)
-- **One module per dashboard, rendering Grafana JSON** (`schemaVersion` from S3):
-  - **servers:** CPU, load, memory, disk use and free space, network in and out;
-  - **containers:** CPU, memory against its limit, restarts;
-  - **http:** requests, 4xx and 5xx shares, p50 and p95 per `host`;
+- **One module per dashboard, rendering classic Grafana JSON at `schemaVersion` 42** (S3), with
+  the series research R7 names:
+  - **servers:** CPU, load, memory, disk use and free space, network in and out (cAdvisor's root
+    cgroup, `container_network_*_bytes_total` by `interface`);
+  - **containers:** CPU, working set against its limit (`container_spec_memory_limit_bytes`),
+    restarts (`changes` of the highest `container_start_time_seconds` per `service`, R7 S1);
+  - **http:** requests, 4xx and 5xx shares, p50 and p95 per `host`, from
+    `caddy_http_request_duration_seconds` (R7 S5);
   - **caddy:** in flight, process memory and CPU, errors;
   - **postgres:** connections against `max_connections`, transactions, cache hit ratio, size,
-    deadlocks, the oldest running query;
+    deadlocks, the oldest running query (R7 "Postgres");
   - **logs:** a logs panel and a volume panel, filtered by `app`, `env`, `service` and a text box.
-- **Variables:** `app`, `env` and `server`, from label values, multi-select with "All".
+- **Variables:** `app`, `env` and `server`, from label values, multi-select with "All" and
+  `allValue: ".+"` (Loki refuses a selector whose only matcher is `=~".*"`).
 - **Stable uids** (`opscrew-servers`, …).
 - **The labels contract,** in contracts/monitoring.md, is what T2006's Alloy sends: every series
   has `app`, `env` and `server`; containers also `service`; Caddy also `host`.
@@ -252,38 +278,61 @@ design goes into this plan before wave 1. ADR 0024 records D1–D6 of research R
   - the JSON parses;
   - uids are unique;
   - every panel uses one of the two data source uids;
-  - every label a query uses is in the contract.
+  - every label a query uses is in the contract, or is one of the series' own (`container`,
+    `container_id`, `caddy_server`, `code`, `method`, `handler`, `datname`, `state`, `interface`,
+    `cpu`, `mode`, `mountpoint`, `device`, `fstype`, `le`).
 - **http and caddy with another edge:** with nginx or the user's own proxy, these two dashboards
   hold a text panel saying they need Caddy.
 
 ### 6. Alloy (T2006)
 `renderAlloyConfig(plan, server, destinations)`, where `server` is `"app"` or an extra server's
 name, and `destinations` is `{ grafanaCloud?, monitoring? }`.
+Research R7 "The collector" is the source; the spike's working `config.alloy` is the model.
 - **Sources, on every server:**
   - **logs:** the app's Compose project's containers on that server, through the proxy, labelled
     `app`, `env`, `server`, `service`;
   - **with monitoring:**
-    - `prometheus.exporter.unix` with the collectors for the servers dashboard;
-    - `prometheus.exporter.cadvisor` as S1 settles, `docker_only`, keeping the Compose service
-      label;
+    - `prometheus.exporter.unix` with the collectors for the servers dashboard (CPU, load,
+      memory, filesystems), and a keep-list;
+    - **containers:** `prometheus.exporter.cadvisor` on the cgroups only (S1: `docker_host` at a
+      socket that doesn't exist, `docker_only`, the cgroup allow-list, `enabled_metrics`), named
+      through `discovery.docker` over the proxy: one scrape target per container, keeping only
+      its own series (`keepequal` on the id from the cgroup path), labelled `service`,
+      `container` and `container_id`. `discovery.docker` is limited to the app's Compose project
+      and OpsCrew's own projects (the edge, the add-ons);
+    - **the server's network:** cAdvisor's root cgroup (`id="/"`), without `lo`, `veth*`, `br-*`,
+      `docker*` and `wg*`;
   - **with Grafana Cloud only:** today's four figures, unchanged.
 - **On the edge's server, with monitoring:** a scrape of Caddy's metrics listener (T2007) on the
-  edge's network, every 15 seconds.
-- **On Postgres's server, with monitoring:** `prometheus.exporter.postgres`, its data source from
-  a root-only file read as a secret, with the `opscrew_monitor` login.
-- **Masking:** unchanged, on every server.
+  edge's network. Caddy's `server` label becomes `caddy_server` before OpsCrew's `server` is set,
+  and the metrics handler's own requests (`handler="metrics"`) are dropped.
+- **On Postgres's server, with monitoring:** `prometheus.exporter.postgres` with the `database`
+  and `stat_database` collectors and a keep-list, its whole data source read from a file
+  (`local.file`, `is_secret = true`), logging in as `opscrew_monitor`.
+- **Every scrape** sets `scrape_interval = "15s"` (Alloy's default is 60 s).
+- **Masking:** unchanged, on every server; with monitoring the known-values file is read through
+  `/rootfs` (the mount below). With monitoring on, the sampling moves out of
+  `loki.process "mask"` into a process of its own on Grafana Cloud's branch (S7); without
+  monitoring the file is today's.
 - **The pipeline,** after masking:
   - fan out to the stack's `loki.write`;
-  - and through sampling to Grafana Cloud's (S7).
+  - and through sampling to Grafana Cloud's.
   - Figures go to both `prometheus.remote_write`s, Grafana Cloud's through today's allow-list.
 - **The stack's writers:** `http://<the monitoring server's private address on this network>:<push
-  port>/…`, with no auth (the filter and the front stand guard); the WAL as S7 settles.
+  port>/…`, with no auth (the filter and the front stand guard). The remote write has
+  `queue_config { max_shards = 1 }`, and `loki.write` has `max_backoff_period = "30s"` and
+  `max_backoff_retries = 40`: with them a 10-minute outage lost nothing (S7).
 - **Every series** gets `app`, `env` and `server`.
+- **Alloy's HTTP server** listens on `127.0.0.1:12345` only, and cAdvisor's targets are scraped
+  there.
 - **`renderAlloyCompose`:**
-  - the cAdvisor mounts from S1;
+  - with monitoring, the mounts `/:/rootfs:ro` and `/sys:/sys:ro` (S1) instead of 017's
+    `/host/root` and `/host/sys`; no `privileged`, no `/var/lib/docker`;
   - joins the edge's network on the edge's server, and the app's network on Postgres's server,
     only with monitoring;
-  - the memory limit from `monitoring.memoryMb.alloy` when monitoring is on.
+  - the memory limits from `monitoring.memoryMb.alloy` and `.proxy` when monitoring is on.
+- **The proxy's allow-list is unchanged:** cAdvisor and `discovery.docker` call only paths it
+  already passes.
 - **Byte-identical without monitoring:** a Grafana Cloud-only plan renders the same files as today
   (snapshots).
 
@@ -304,18 +353,21 @@ name, and `destinations` is `{ grafanaCloud?, monitoring? }`.
   - **Params:** the rendered files (by hash) and `removeData`.
   - **Apply:**
     - write the files under `opscrew/addons/monitoring`;
-    - write Grafana's password from standard input into a root-only file, with the owner S3 gives;
+    - write Grafana's password from standard input into a file `root:root 0640` (Grafana reads it
+      through its group 0; S3);
     - `docker compose up -d --wait --remove-orphans`.
   - **Check:** the files' hashes and the containers running.
   - **Removal:** `docker compose down`, then the folder; the volumes only with `removeData`.
   - **The host record** says which app and environment own it.
 - **The `alloy` step on any server:**
   - params gain `server` and the destinations;
-  - secrets gain `monitoringPostgresPassword` (on stdin, to a root-only file);
+  - secrets gain `monitoringPostgresPassword` (on stdin); the step writes the whole data source
+    (`postgresql://opscrew_monitor:<password>@<host>:5432/postgres?sslmode=disable`) into a file
+    only the deploy user can read (`0600`), since Alloy runs as that user;
   - the Grafana Cloud token stays as it is.
 - **The `grant` step gains `access: "monitor"`, Postgres only:** it creates or updates
-  `opscrew_monitor` with `LOGIN`, the password, and `GRANT pg_monitor`. Its check asks the engine
-  for the login and the role.
+  `opscrew_monitor` with `LOGIN`, `CONNECTION LIMIT 3`, the password, and `GRANT pg_monitor`. Its
+  check asks the engine for the login and the role.
 - **Inspection facts:** the monitoring stack's containers and its files' hashes, and each server's
   Alloy destinations, for drift and status.
 - **`ApplyOptions.secrets`** gains `grafanaAdminPassword` and `monitoringPostgresPassword`.
@@ -337,8 +389,9 @@ name, and `destinations` is `{ grafanaCloud?, monitoring? }`.
   - **The network:** created when absent (018's `allocateNetwork`), with the server as a member.
     For `shared`, the outside member (T2010).
   - **The estimate,** `estimate.ts`:
-    - series per server: the node figures, plus about 150 per container, plus Caddy and Postgres;
-    - figures over the retention, at 15-second intervals and 2 bytes a sample;
+    - series per server (research R7): 5 per vCPU + 7 for the server, 5 per container + 2 for the
+      network, about 80 per hostname on the edge's server, and 40 on Postgres's;
+    - figures over the retention, at 15-second intervals and the bytes per sample S2 measured;
     - the log volume over the retention, read as 017's `grafanaEstimate` reads it;
     - summed over every sending environment for a shared server;
     - `metricsMaxGb` is 80% of the disk left after logs;

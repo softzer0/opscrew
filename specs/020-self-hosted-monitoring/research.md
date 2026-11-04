@@ -14,7 +14,7 @@ holds the lead's decisions, which the spec builds on. The spike (T2001) adds R7.
 | Project | Latest stable (2026-11-01) | Image | Licence | Source |
 |---|---|---|---|---|
 | Prometheus | 3.15.1 (2026-10-21) | `prom/prometheus` (also on quay.io) | Apache-2.0 | https://github.com/prometheus/prometheus/releases |
-| Loki | 3.7.0 | `grafana/loki:3.7.0` | AGPL-3.0 | https://grafana.com/docs/loki/latest/setup/install/docker/ |
+| Loki | 3.7.9 (2026-10-20; first read as 3.7.0, corrected in R7) | `grafana/loki:3.7.9` | AGPL-3.0 | https://grafana.com/docs/loki/latest/setup/install/docker/ |
 | Grafana OSS | 13.3.0 (2026-10-27) | `grafana/grafana` | AGPL-3.0 | https://github.com/grafana/grafana/releases |
 | Grafana Alloy | 1.21.3 (2026-10-28) | `grafana/alloy` (017 pins 1.21.2) | Apache-2.0 | https://github.com/grafana/alloy/releases |
 | node_exporter | 1.12.1 (2026-07-14) | `quay.io/prometheus/node-exporter` | Apache-2.0 | https://github.com/prometheus/node_exporter/releases |
@@ -177,3 +177,200 @@ holds the lead's decisions, which the spec builds on. The spike (T2001) adds R7.
    limits.
 9. **Not on Portainer, localhost or the server-less targets:** design says why, as for 017's
    add-ons.
+
+## R7. The spike (T2001, 2026-11-04)
+
+Run on local Docker (Docker Desktop on Windows, engine 29.9.2, cgroup v2), by two agents: the stack
+(Prometheus, Loki, Grafana, the front) and the collector (Alloy, cAdvisor, Caddy, Postgres). The
+memory run (S2) used both. The images are the pinned ones (T2003): Prometheus 3.15.1, Loki 3.7.9,
+Grafana 13.3.0, Alloy 1.21.3, and OpsCrew's Caddy 2.11.7.
+
+### The stack
+
+- **Prometheus under OpsCrew's hardening** (read-only root, `cap_drop: ALL`, no new privileges):
+  runs as the image's user 65534, and a new named volume takes that owner. No tmpfs is needed.
+- **Prometheus refuses late samples:** remote-written samples more than about an hour behind the
+  newest answer `400 out of bounds`, and Alloy drops a batch on a 400. With
+  `storage.tsdb.out_of_order_time_window: 4h` in `prometheus.yml`, samples 90 and 180 minutes old
+  were accepted and 300 minutes old refused. So `prometheus.yml` sets the window to match Alloy's
+  WAL (S7).
+- **S4, Loki 3.7.9** (3.7.0 the same) runs as 10001, and the new volume takes that owner. It
+  starts, takes a push (204), and answers `query_range` directly and through Grafana.
+  - **Retention needs a writable `/tmp`:** with a read-only root the compactor never deletes
+    anything ("failed to create marker writer … read-only file system"), silently until data
+    expires. With a tmpfs `/tmp`, retention 1 h and a 1-minute compaction, a stream pushed 49 h
+    old was deleted (its index table and chunk files gone), a 3 h old one too, and a fresh one kept.
+  - `retention_period` has no multiple-of-24 h rule: 1 h was accepted and applied. Only the
+    schema's index period must be 24 h (tsdb, v13).
+  - `reject_old_samples_max_age` refuses older lines at push (8 days old: 400; 6 days: accepted).
+    Kept equal to the retention.
+  - Loki adds a `service_name` label copied from `service`. `limits_config.discover_service_name:
+    []` turns it off, which keeps the labels exactly the contract's.
+  - `analytics.reporting_enabled: false` stops Loki's usage reports.
+- **S3, Grafana 13.3.0:**
+  - **Release notes:** one breaking change, `[marketplace]` renamed `[plugins_marketplace]` (not
+    used here), and a fix for Classic dashboards turning into v2 JSON when a provisioned dashboard
+    is saved. From 13.0: `grafana-cli` and `grafana-server` are gone (use `grafana cli`).
+  - **Provisioning from files works:** the two data sources (`opscrew-prometheus`, `opscrew-loki`,
+    `editable: false`, read-only in Grafana) query over the stack's network. With the dashboard
+    provider's `allowUiUpdates: false`, the UI says the dashboard "cannot be saved from the Grafana
+    UI because it has been provisioned" and offers only a copy, and the classic API answers `400
+    Cannot save provisioned dashboard`. The user's copies and own dashboards survived a container
+    recreate and a re-provision. A file removed removes its dashboard within 30 seconds.
+  - **One gap:** an admin's `PUT` on the new `/apis/dashboard.grafana.app/…` API does overwrite a
+    provisioned dashboard, and neither the 30-second sync nor a restart restores it. Only a change
+    to the file's content does.
+  - **`schemaVersion`:** Grafana 13.3's Classic export writes 42. File-provisioned classic JSON
+    stays classic; even schemaVersion 27 with a `graph` panel loads and is migrated. OpsCrew
+    renders classic JSON at 42.
+  - **Variables:** multi-select with "All" needs `allValue: ".+"`, since Loki refuses a selector
+    whose only matcher is `=~".*"`.
+  - **The admin password file:** Grafana runs as 472 with group 0.
+    - `GF_SECURITY_ADMIN_PASSWORD__FILE` (the image's `run.sh`) on a file it can't read logs
+      "Permission denied" and starts with the default password `admin`: it fails open. It also
+      leaves the password in `/proc/1/environ`.
+    - `GF_SECURITY_ADMIN_PASSWORD=$__file{<path>}` (Grafana reads it itself) exits 1 on a file it
+      can't read: it fails closed, and nothing stays in the environment.
+    - root:root `0640` works (read through group 0); so does 472:0 `0400`.
+    - The password is used only when the admin is first created: a different one in the file later
+      changes nothing. `grafana cli … admin reset-admin-password --password-from-stdin` inside the
+      container resets it.
+  - **Defaults:** sign-up and organisation creation are off, and anonymous access is off. Open by
+    default: Grafana's own `/metrics` (200 without a login) and public dashboards. Both are turned
+    off.
+  - **Phone-home,** watched with a capture in Grafana's network namespace:
+    - with the defaults, 160 DNS lookups of grafana.com in 145 s: the plugin preinstaller (five
+      apps), version lookups for every bundled plugin, the update check, the signing key;
+    - with the settings below, none at start;
+    - opening the "Add new connection" and "Plugins" pages still made Grafana's backend fetch the
+      catalogue and ~230 logos from grafana.com, even with the plugin admin off. Pointing
+      `GF_GRAFANA_COM_URL` and `GF_GRAFANA_COM_API_URL` at a closed local port stopped it: a
+      15-page walk then made no external connection.
+    - **The settings:** `GF_ANALYTICS_REPORTING_ENABLED`, `_CHECK_FOR_UPDATES`,
+      `_CHECK_FOR_PLUGIN_UPDATES`, `_FEEDBACK_LINKS_ENABLED`, `GF_NEWS_NEWS_FEED_ENABLED`,
+      `GF_PLUGINS_PLUGIN_ADMIN_ENABLED`, `GF_SNAPSHOTS_EXTERNAL_ENABLED`,
+      `GF_PUBLIC_DASHBOARDS_ENABLED`, `GF_METRICS_ENABLED`, `GF_AUTH_ANONYMOUS_ENABLED`,
+      `GF_USERS_ALLOW_SIGN_UP`, `GF_USERS_ALLOW_ORG_CREATE` all `false`;
+      `GF_SECURITY_DISABLE_GRAVATAR`, `GF_PLUGINS_PREINSTALL_DISABLED`,
+      `GF_PLUGINS_PUBLIC_KEY_RETRIEVAL_DISABLED` `true`; the two `GRAFANA_COM` URLs at
+      `http://127.0.0.1:9`.
+  - **Memory:** Grafana 13.3 starts each bundled data source that has a backend as a process of its
+    own (14, at 25–40 MB each): 346–350 MiB idle, and OOM-killed at 256 MB on first start. With
+    `GF_PLUGINS_DISABLE_PLUGINS` listing the twelve OpsCrew doesn't use, 199–205 MiB idle and about
+    300 MiB after a walk through the UI.
+  - Grafana needs a tmpfs `/tmp` (its plugins' Unix sockets).
+- **The front** (the pinned Caddy):
+  - `admin off`, two POST-only matchers rewritten to the exact upstream path, everything else
+    `respond 403`. 25 refusals checked: other methods on the push paths, the query and label APIs,
+    `/metrics`, admin, delete and read APIs, OTLP, `..` and `%2f` traversals. Variants that clean to
+    `/api/v1/write` reach only the write handler.
+  - **Body cap 8 MiB:** 7 MiB passes and 9 MiB answers 413. Alloy's batches stay under 1 MiB on the
+    wire (remote write sends at most 2,000 samples a request, `loki.write` 1 MiB of lines before
+    snappy). A cap too small would lose data, because Alloy drops a batch on a 4xx.
+  - Runs as 65534 with `cap_add: NET_BIND_SERVICE` (the image's binary carries it as a file
+    capability, as for 017's proxy) and tmpfs `/data` and `/config` owned by 65534.
+  - Its healthcheck checks both upstreams' readiness, since Loki's image has no shell or `wget`.
+  - A real Alloy push from two senders (two environments) arrived in both Prometheus and Loki.
+- **Isolation:** Prometheus and Loki are only on the stack's internal network (no route out); the
+  front and Grafana are also on a second network that publishes their ports. From there,
+  `prometheus:9090` and `loki:3100` don't resolve, and the front's query paths answer 403.
+- **S6:** all four pinned indexes list linux/amd64 and linux/arm64. Loki's newest 3.7 is 3.7.9
+  (2026-10-20), not 3.7.0 as R1 says; the others are the newest of their lines.
+
+### The collector
+
+- **S1, cAdvisor inside Alloy.** Alloy vendors a fork of cAdvisor 0.60.5.
+  - **Its Docker integration can't work unprivileged:** to build a container it reads the
+    container's read-write layer, from `/var/lib/docker/image/<driver>/layerdb/…` (root-only, and
+    it would expose every volume) or, with the containerd image store, through containerd's socket
+    (root-equivalent). Docker 29 uses the containerd store on new installs: a fresh Ubuntu 24.04
+    server at Hetzner reported `overlayfs`. A separate cAdvisor container runs the same code.
+  - **What works:** cAdvisor on the cgroups only (`docker_host` at a socket that doesn't exist,
+    `docker_only`, `raw_cgroup_prefix_allowlist = ["/docker/", "/system.slice/docker-"]`,
+    `enabled_metrics = ["cpu", "memory", "oom_event", "network"]`), with names from
+    `discovery.docker` through 017's proxy: one scrape target per container reads cAdvisor's output
+    and keeps only its own series (`keepequal` on the id taken from the cgroup path). Series carry
+    `service`, `container` and `container_id`, with the right CPU, working set, limit and start
+    time.
+  - **Mounts:** `/:/rootfs:ro` and `/sys:/sys:ro` (cAdvisor's paths are fixed), plus the proxy's
+    socket. No `privileged`, no `/var/lib/docker`, `/var/run`, `/dev/disk` or containerd socket.
+    Lost: per-container filesystem, disk I/O and network figures, and the image label. No dashboard
+    uses them.
+  - **The proxy needs no new path:** cAdvisor and `discovery.docker` call only `_ping`, `version`,
+    `info`, `containers/json`, `networks` and `containers/{id}/json`.
+  - **The server's network:** the unix exporter's `netdev` sees only Alloy's own bridge. cAdvisor's
+    root cgroup reads the host's `/proc/1/net/dev` through `/rootfs`:
+    `container_network_{receive,transmit}_bytes_total{id="/"}`, dropping `lo`, `veth*`, `br-*`,
+    `docker*` and `wg*`.
+  - **Restarts:** `changes((max by (app, env, server, service) (container_start_time_seconds))
+    [$__range:15s])` counted one restart and one recreate. A deploy counts as one.
+  - **Checked on a real server** (Hetzner cx23, Ubuntu 24.04, Docker 29.9.3, cgroup v2 with
+    systemd): cgroups are `/system.slice/docker-<id>.scope`; all five test containers were named
+    with their service, their limits and CPU were right, and the server's `eth0` traffic showed.
+    The local runs had cgroup v1.
+  - **Alloy's HTTP server listens on `127.0.0.1`** and scrapes cAdvisor there, so the app's
+    containers on the networks Alloy joins can't reach its API.
+  - **Memory:** `keepequal`'s cost grows with containers × containers: 63 MiB more than an info
+    series at 32 containers, small at a server's usual 8–12. `discovery.docker` is limited to the
+    app's Compose project and OpsCrew's own (edge, add-ons), which also keeps other containers on
+    a shared server from getting this app's labels.
+- **S5, Caddy's figures** (the pinned edge with kamal-proxy 0.10.2, `metrics { per_host }`, and
+  `http://:9180 { metrics }` on the edge's network only):
+  - **Series:** `caddy_http_requests_total{handler,host,server}`,
+    `caddy_http_request_duration_seconds_{bucket,sum,count}{code,handler,host,method,server}`,
+    `caddy_http_requests_in_flight`, `caddy_http_request_errors_total` (only after a handler
+    error), `process_*`, `go_*`. 311 series unfiltered for one host; 78 kept.
+  - **Caddy's own `server` label** (`srv0` for :443, `srv1` for :80, `srv2` for :9180) clashes with
+    OpsCrew's: sent as is, HTTP series kept `server="srv0"`. Alloy copies it to `caddy_server` and
+    drops `server` before adding OpsCrew's.
+  - **The metrics site's own scrapes are counted,** as `handler="metrics", host="_other"`: Alloy
+    drops them.
+  - **Unknown hosts** are aborted by the catch-all sites and never counted. `host` is the Host
+    header as sent, port included when the client gives one.
+  - **No double counting:** one handler per request; the summed `_count` equals
+    `requests_total` equals the requests sent. Requests per host: `sum by (host)
+    (rate(caddy_http_request_duration_seconds_count{handler!="metrics"}[5m]))`; error shares the
+    same with `code=~"4.."` or `"5.."`; p50 and p95 by `histogram_quantile` over `sum by (host, le)`.
+- **S7, one Alloy, two destinations** (a second Loki and Prometheus standing in for Grafana Cloud):
+  - **Sampling moves:** out of 017's `loki.process "mask"` into its own process on Grafana Cloud's
+    branch, after the fan-out that follows `loki.secretfilter`. In two minutes the stack got 124 of
+    124 lines, "Grafana Cloud" 55. Masking held on both branches. Only with monitoring on; a Grafana
+    Cloud-only plan keeps today's file.
+  - **The known-values file must be one capture group** `(…)`, as 017's deploy writes it; without
+    the parentheses nothing is masked.
+  - **A 2-minute stop** of the stack: afterwards it had every sample (from the WAL) and every line,
+    about 20 s after it came back.
+  - **A 10-minute stop with Alloy's defaults** lost data: one log batch ran out of retries at about
+    6.5 minutes, and a reshard of the remote write (1 → 19 shards) during the outage dropped 718
+    queued samples.
+  - **With `queue_config { max_shards = 1 }`** on the stack's remote write **and `loki.write`'s
+    `max_backoff_period = "30s"`, `max_backoff_retries = 40`:** every sample and every line of a
+    10-minute stop arrived within 20–40 s of the return.
+  - **What bounds a longer gap:** the WAL keeps figures up to `max_keepalive_time` (default 8 h;
+    about 1 MB after 25 minutes). `loki.write` keeps lines in memory only (its WAL is experimental),
+    bounded by retries × backoff per batch (40 × 30 s, about 20 minutes) and its queue.
+  - **A dead destination can stall the live one:** once the failing `loki.write`'s in-memory queue
+    (10 MiB) fills, the source stops reading, so Grafana Cloud's logs stall too, until batches are
+    dropped. At a typical server's log rate that takes hours. Accepted and documented: the
+    settings that change it are experimental, and a second masking chain would double the work.
+- **Postgres** (the pinned `postgres:17-alpine`): `opscrew_monitor` with `LOGIN`, `CONNECTION
+  LIMIT 3` and `GRANT pg_monitor` only; reading an app table gave "permission denied".
+  - The file Alloy reads must hold the whole data source (`postgresql://opscrew_monitor:…@…`), read
+    by `local.file` with `is_secret = true`. A password-only file passed through `string.format`
+    fails, and its error printed the password. Alloy logs the data source with the password
+    removed.
+  - **Collectors:** `["database", "stat_database"]`, with the default and settings figures on.
+    Everything on is 562 series; 40 kept.
+  - **Series:** `pg_stat_database_numbackends` against `pg_settings_max_connections`;
+    `pg_stat_database_xact_commit` + `_xact_rollback`; `_blks_hit` / (`_blks_hit` + `_blks_read`);
+    `pg_database_size_bytes`; `pg_stat_database_deadlocks`; the oldest query
+    `max(pg_stat_activity_max_tx_duration{state="active"})`.
+- **Series per server** (the full list kept with the spike's files): the unix exporter 5 per CPU +
+  7; cAdvisor 5 per container, plus 2 per physical interface; Caddy 78 for one host; Postgres 40. A
+  2-vCPU server with 8 containers, the edge and Postgres sends about 180 series, roughly 30 MB over
+  15 days. R3's "about 150 per container" was wrong by thirty times.
+- **Scrape interval:** Alloy's default is 60 s, so every scrape sets `15s`.
+- **Alloy's memory** (32 containers): logs and the unix exporter 96 MiB; with Grafana Cloud too 107;
+  with Postgres and Caddy 117; with cAdvisor 161–234. At 017's 256 MB limit it ran at 200–242 MiB,
+  held down by the garbage collector, so monitoring needs a larger limit (S2). 017's proxy used 27
+  of its 32 MiB.
