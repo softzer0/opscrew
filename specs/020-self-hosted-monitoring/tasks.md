@@ -555,6 +555,8 @@ approval is safer); exporting `grantEngine` for the Docker pass's one SQL line.
     - `postgresOn` imported from iac-templates in provision and the estimate (a second
       Postgres's server now counts its 40 series); `monitoringSenders` gone;
     - the `networked(plan, facts?)` test fixture added to `network/__fixtures__/plans.ts` for T2027.
+    - from T2024: drift calls `stoppedServices` from `monitoring/status.ts`; the owner wording at
+      `enable.ts` (~486) uses the shared one (`enable.ts` is in this task's Owns for that line).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents && pnpm turbo run typecheck --filter=opscrew`
   - Effort: high
 
