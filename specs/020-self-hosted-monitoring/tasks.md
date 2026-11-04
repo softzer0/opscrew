@@ -47,7 +47,7 @@ network above all).
 
 ## Phase 1: Foundation
 
-- [ ] T2001 The spike and the ADR (lead): research.md R7, and `docs/adr/0024-self-hosted-monitoring.md` from Proposed to its final text.
+- [x] T2001 The spike and the ADR (lead): research.md R7, and `docs/adr/0024-self-hosted-monitoring.md` from Proposed to its final text.
   - **The spike** (plan.md Technical Context, S1–S7), on local Docker with the pinned Alloy and the
     candidate Prometheus, Loki, Grafana and Caddy images.
   - **The results:** one line per question in research.md "R7": what was run, and what was seen.
@@ -63,7 +63,7 @@ network above all).
     A finding that changes a design goes into plan.md before wave 1.
   - **The ADR** records D1–D6 as the lead decides them.
 
-- [ ] T2002 The contract: `observability.monitoring`, the outside member, rules, helpers and the stubs, in `packages/plan-schema/**` and the stub modules
+- [x] T2002 The contract: `observability.monitoring`, the outside member, rules, helpers and the stubs, in `packages/plan-schema/**` and the stub modules
   - Owns:
     - `packages/plan-schema/**` (+ tests, fixtures, and the generated `schemas/plan.schema.json`);
     - the stubs, with their exports and nothing else: `packages/iac-templates/src/monitoring/index.ts`,
