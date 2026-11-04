@@ -395,7 +395,7 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: high
 
-- [ ] T2015 [P] [US2] [US3] [US6] [US7] The guide and the runbook
+- [x] T2015 [P] [US2] [US3] [US6] [US7] The guide and the runbook
   - Owns: `docs/guide/monitoring.md`, `docs/guide/index.md`, the links in `docs/guide/{logs-and-status,beszel,grafana-cloud,private-network}.md`, `packages/iac-templates/src/runbook/observability.ts` (+ test, snapshots)
   - Reads: spec.md; plan.md; the other guide pages for tone
   - Depends: T2009, T2012
@@ -466,6 +466,7 @@ network above all).
     - each step recorded as the coverage page records them ("N of M steps");
     - cleanup that deletes every server even when a step fails;
     - `docs/e2e.md` says how to run it.
+  - Check at merge of T2011 and T2014 (written into the guide before they merged, by T2015): `docs/guide/monitoring.md`'s note that Alloy starts at the provision after a new app's first deploy, the CLI flags (`--on server` included), the "From Claude Code" text, and the runbook's typed confirmation for the stack's data.
   - Verify: `pnpm turbo run typecheck --filter=opscrew` (the live run is T2018's)
   - Effort: high
 
