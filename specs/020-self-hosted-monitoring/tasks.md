@@ -87,7 +87,7 @@ network above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema && pnpm turbo run typecheck --filter=@opscrew/iac-templates --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2003 [P] Pins: Prometheus, Loki and Grafana by digest, Alloy to 1.21.3, in `packages/iac-templates/src/pins.ts`
+- [x] T2003 [P] Pins: Prometheus, Loki and Grafana by digest, Alloy to 1.21.3, in `packages/iac-templates/src/pins.ts`
   - Owns: `packages/iac-templates/src/{pins.ts,pins.test.ts,pin-snapshots.ts,pin-snapshots.test.ts}`, `packages/iac-templates/scripts/update-pins.mjs`, `packages/iac-templates/src/__snapshots__/**` (updated by the test run only)
   - Reads: plan.md "3."; research.md R1, R7 (S6)
   - Depends: T2001
