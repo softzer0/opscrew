@@ -258,7 +258,7 @@ design goes into this plan before wave 1. ADR 0024 records D1–D6 of research R
 - **The front always runs.** It is also on a network named `MONITORING_PUSH_NETWORK`
   (`opscrew-monitoring-push`, set with `name:`), which the Alloy on the stack's own server joins to
   push to `front` by name. That covers `kind: "app"` with no network too.
-- **Grafana's password file** is `grafana_admin_credential` in `MONITORING_DIR` (not `…password`:
+- **Grafana's password file** is `grafana_admin_credential` in the stack's folder (`opscrew/addons/monitoring`) (not `…password`:
   the redactor would take the mount line for a labelled secret, as 017's Grafana Cloud file), mounted
   at `/run/opscrew/grafana_admin_credential`.
 

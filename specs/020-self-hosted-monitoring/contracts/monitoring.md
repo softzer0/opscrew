@@ -58,14 +58,14 @@ export interface MonitoringStackInput {
   plan: DeployPlan;                        // the owner's, for headers and labels
 }
 export function renderMonitoringStack(input: MonitoringStackInput): { path: string; content: string }[];
-export const MONITORING_DIR = "opscrew/addons/monitoring";
 export const MONITORING_PUSH_NETWORK = "opscrew-monitoring-push";   // the front by name, for the stack's own server's Alloy
 
 // T2005
 export interface DashboardQuery { dashboard: string; panel: string; datasource: "prometheus" | "loki"; expr: string }
 export const DASHBOARD_QUERIES: readonly DashboardQuery[];
 export function renderDashboards(options: { caddy: boolean }): { uid: string; file: string; json: string }[];
-export const MONITORING_LABELS = ["app", "env", "server", "service", "host"] as const;
+// The labels contract (app, env, server; service on containers; host on HTTP figures) is checked
+// by dashboards.test.ts (T2023 moved MONITORING_LABELS there; MONITORING_DIR had no user).
 
 // T2006
 export interface AlloyDestinations { grafanaCloud?: GrafanaCloudSettings; monitoring?: { address: string } }
