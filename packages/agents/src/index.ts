@@ -1,5 +1,6 @@
 export * from "./adapt";
 export * from "./addons";
+export * from "./advise";
 export * from "./analyze";
 export * from "./apps";
 export * from "./check";

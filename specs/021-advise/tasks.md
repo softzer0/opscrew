@@ -43,7 +43,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - A finding that changes a design goes into plan.md before wave 1; the thresholds in data-model.md
     are confirmed or changed.
 
-- [ ] T2102 The types and the stubs, in `packages/agents/src/advise/`
+- [x] T2102 The types and the stubs, in `packages/agents/src/advise/`
   - Owns: `packages/agents/src/advise/{types.ts,index.ts}` (+ tests), the stubs `advise/{history,run,apply}.ts` and `advise/rules/{size,cost,reliability,upkeep,components}.ts` with their exports only, and the export line in `packages/agents/src/index.ts`
   - Reads: plan.md "1."; data-model.md; contracts/advise.md
   - Depends: T2101
