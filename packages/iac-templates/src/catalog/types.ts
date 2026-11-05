@@ -104,6 +104,11 @@ export interface ServiceSpec {
   entrypoint?: (ctx: ServiceContext) => string[] | undefined;
   /** The container's hostname, for a service whose data is named after it (RabbitMQ). */
   hostname?: boolean;
+  /**
+   * How long Docker waits after SIGTERM before it kills the service, for one whose clean stop
+   * takes longer than Compose's 10 seconds (Neo4j): a move copies its stopped volumes.
+   */
+  stopGraceSeconds?: number;
   /** The service's own settings, secrets by reference. */
   environment: (ctx: ServiceContext) => Record<string, string>;
   healthcheck: (ctx: ServiceContext) => ServiceHealthcheck;

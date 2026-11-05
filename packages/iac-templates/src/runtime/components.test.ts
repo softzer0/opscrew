@@ -204,6 +204,12 @@ describe("the services on a server", () => {
     ]);
   });
 
+  it("waits for Neo4j's clean stop, which takes longer than Compose's 10 seconds", () => {
+    const all = services(withServices([{ kind: "neo4j" }, { kind: "mysql" }]));
+    expect(all.neo4j?.stop_grace_period).toBe("60s");
+    expect(all.mysql?.stop_grace_period).toBeUndefined();
+  });
+
   it("refuses a version OpsCrew does not pin", () => {
     expect(() => renderCompose(withServices([{ kind: "mysql", version: "9.7" }]))).toThrow(
       "asks for MySQL 9.7",

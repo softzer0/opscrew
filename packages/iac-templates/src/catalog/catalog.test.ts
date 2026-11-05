@@ -839,6 +839,7 @@ describe("the search and analytics engines' settings", () => {
       NEO4J_server_memory_pagecache_size: "512m",
     });
     expect(neo4j.dataDir).toEqual({ data: "/data", logs: "/logs" });
+    expect(neo4j.stopGraceSeconds).toBe(60);
     expect(neo4j.healthcheck(only("neo4j")).test.slice(0, 3)).toEqual(["CMD", "bash", "-c"]);
   });
 

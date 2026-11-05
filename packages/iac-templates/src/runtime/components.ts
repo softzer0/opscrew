@@ -262,6 +262,9 @@ export function renderServices(
         : {}),
       ...(address === undefined ? {} : { ports: [`${address}:${spec.port}:${spec.port}`] }),
       healthcheck: healthcheck(spec.healthcheck(ctx)),
+      ...(spec.stopGraceSeconds === undefined
+        ? {}
+        : { stop_grace_period: `${spec.stopGraceSeconds}s` }),
       ...memoryLimit(service.memoryMb),
       ...(spec.ulimits === undefined
         ? {}

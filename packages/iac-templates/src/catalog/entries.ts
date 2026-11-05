@@ -1311,6 +1311,9 @@ const NEO4J: ServiceSpec = {
   port: 7687,
   // The image declares both as volumes.
   dataDir: { data: "/data", logs: "/logs" },
+  // Its clean stop took 10.5 seconds on an empty database (T2306, local Docker), so Compose's 10
+  // killed it; the checkpoint grows with the data.
+  stopGraceSeconds: 60,
   environment: (ctx) => {
     const third = `${Math.floor(ctx.service.memoryMb / 3)}m`;
     return {
