@@ -51,6 +51,30 @@ describe("dockerClient: containers", () => {
     });
   });
 
+  it("mounts through Docker's Mounts, and Docker refuses a bound folder that isn't there", async () => {
+    const fake = new FakeDocker();
+    fake.images.add(IMAGE);
+    fake.addFolder("/srv/data/example-app/postgres");
+    const docker = dockerClient(fake);
+    const mounts = [
+      { type: "volume", source: "example-data", target: "/data", readOnly: true },
+      { type: "bind", source: "/srv/data/example-app/postgres", target: "/pg" },
+    ] as const;
+    const id = await docker.createContainer({ image: IMAGE, mounts });
+    expect(fake.containers.get(id)).toMatchObject({ binds: [], mounts });
+    expect(fake.volumes.has("example-data")).toBe(true);
+    await expect(
+      docker.createContainer({
+        image: IMAGE,
+        mounts: [{ type: "bind", source: "/srv/data/example-app/redis", target: "/data" }],
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: expect.stringContaining("bind source path does not exist"),
+    });
+    expect(fake.folders.has("/srv/data/example-app/redis")).toBe(false);
+  });
+
   it("lists containers, running or not, by labels", async () => {
     const fake = new FakeDocker();
     fake.images.add(IMAGE);
@@ -75,10 +99,59 @@ describe("dockerClient: containers", () => {
           "com.docker.compose.project": "example-app",
           "com.docker.compose.service": "web",
         },
+        mounts: [],
       },
     ]);
     expect(fake.calls.at(-1)).toContain("all=1");
     expect(await docker.listContainers(["com.docker.compose.service"])).toHaveLength(1);
+  });
+
+  it("reports each container's mounts: named volumes, bound folders and others", async () => {
+    const fake = new FakeDocker();
+    fake.images.add(IMAGE);
+    const docker = dockerClient(fake);
+    await docker.createContainer({
+      image: IMAGE,
+      labels: { "com.docker.compose.project": "example-app" },
+      binds: [
+        "example-app_data:/var/lib/data",
+        "/srv/data/example-app/postgres:/var/lib/postgresql/data:ro",
+      ],
+    });
+    const [container] = await docker.listContainers(["com.docker.compose.project=example-app"]);
+    expect(container?.mounts).toEqual([
+      {
+        type: "volume",
+        name: "example-app_data",
+        source: "/var/lib/docker/volumes/example-app_data/_data",
+        destination: "/var/lib/data",
+      },
+      {
+        type: "bind",
+        source: "/srv/data/example-app/postgres",
+        destination: "/var/lib/postgresql/data",
+      },
+    ]);
+
+    const raw = answering(
+      200,
+      JSON.stringify([
+        {
+          Id: "abc",
+          Names: ["/example-app-web-1"],
+          Image: IMAGE,
+          State: "running",
+          Labels: {},
+          Mounts: [{ Type: "tmpfs", Destination: "/run", Mode: "", RW: true }],
+        },
+        { Id: "def", Names: null, Image: IMAGE, State: "created", Labels: null },
+      ]),
+    );
+    const listed = await dockerClient(raw).listContainers([]);
+    expect(listed.map((entry) => entry.mounts)).toEqual([
+      [{ type: "tmpfs", source: "", destination: "/run" }],
+      [],
+    ]);
   });
 
   it("starts, waits for, reads the logs of and removes a container", async () => {

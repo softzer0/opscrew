@@ -7,6 +7,7 @@ export {
   type FakeContainer,
   FakeDocker,
   type FakeFile,
+  type FakeMount,
   type FakeRun,
   type FakeVolume,
 } from "./fake-docker";

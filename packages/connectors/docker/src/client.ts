@@ -12,6 +12,19 @@ export interface DockerContainer {
   /** Docker's state: `created`, `running`, `exited`… */
   state: string;
   labels: Record<string, string>;
+  mounts: ContainerMount[];
+}
+
+/** One mount of a container, as {@link DockerClient.listContainers} reports it. */
+export interface ContainerMount {
+  /** `volume` (a named volume), `bind` (a folder on the server), or another, such as `tmpfs`. */
+  type: "volume" | "bind" | (string & {});
+  /** A named volume's name. */
+  name?: string;
+  /** Where the data is on the server: a volume's folder in Docker's storage, or a bound folder. */
+  source: string;
+  /** Where the container sees it. */
+  destination: string;
 }
 
 /** What {@link DockerClient.createContainer} creates. */
@@ -23,8 +36,22 @@ export interface ContainerSpec {
   labels?: Record<string, string>;
   /** Volume mounts, `volume:/path` or `volume:/path:ro`. */
   binds?: readonly string[];
+  /**
+   * Mounts by Docker's `Mounts` API. Unlike `binds`, Docker refuses a bound folder that doesn't
+   * exist rather than creating it (a named volume is still created).
+   */
+  mounts?: readonly MountSpec[];
   /** The network it joins (`none` for none); Docker's default bridge when omitted. */
   network?: string;
+}
+
+/** One of {@link ContainerSpec.mounts}: a named volume or a folder on the server, at `target`. */
+export interface MountSpec {
+  type: "volume" | "bind";
+  /** The volume's name, or the folder's absolute path. */
+  source: string;
+  target: string;
+  readOnly?: boolean;
 }
 
 /** A volume as {@link DockerClient.listVolumes} reports it. */
@@ -102,6 +129,16 @@ const ContainerList = z.array(
     Image: z.string(),
     State: z.string(),
     Labels,
+    Mounts: z
+      .array(
+        z.object({
+          Type: z.string(),
+          Name: z.string().optional(),
+          Source: z.string().default(""),
+          Destination: z.string(),
+        }),
+      )
+      .nullish(),
   }),
 );
 const Created = z.object({ Id: z.string() });
@@ -228,6 +265,12 @@ export function dockerClient(transport: DockerTransport): DockerClient {
         image: container.Image,
         state: container.State,
         labels: container.Labels ?? {},
+        mounts: (container.Mounts ?? []).map((mount) => ({
+          type: mount.Type,
+          ...(mount.Name === undefined ? {} : { name: mount.Name }),
+          source: mount.Source,
+          destination: mount.Destination,
+        })),
       }));
     },
 
@@ -240,7 +283,16 @@ export function dockerClient(transport: DockerTransport): DockerClient {
         Cmd: spec.cmd,
         Env: Object.entries(spec.env ?? {}).map(([name, value]) => `${name}=${value}`),
         Labels: spec.labels ?? {},
-        HostConfig: { Binds: spec.binds ?? [], NetworkMode: spec.network },
+        HostConfig: {
+          Binds: spec.binds ?? [],
+          Mounts: spec.mounts?.map((mount) => ({
+            Type: mount.type,
+            Source: mount.source,
+            Target: mount.target,
+            ReadOnly: mount.readOnly ?? false,
+          })),
+          NetworkMode: spec.network,
+        },
       };
       const query = spec.name === undefined ? "" : `?name=${encodeURIComponent(spec.name)}`;
       const created = await json(

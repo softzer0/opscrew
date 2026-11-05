@@ -20,12 +20,23 @@ export interface FakeContainer {
   cmd: string[];
   env: string[];
   labels: Record<string, string>;
+  /** `HostConfig.Binds`, as given. */
   binds: string[];
+  /** `HostConfig.Mounts`, as given. */
+  mounts: FakeMount[];
   network?: string;
   state: "created" | "running" | "exited";
   exitCode: number;
   stdout: string;
   stderr: string;
+}
+
+/** One of `HostConfig.Mounts`: a named volume, or a host folder bound in. */
+export interface FakeMount {
+  type: string;
+  source: string;
+  target: string;
+  readOnly?: boolean;
 }
 
 /** How a container's command ends when it starts. */
@@ -35,8 +46,9 @@ export interface FakeRun {
   stderr?: string;
 }
 
+/** A mount of either kind: a volume's name or a host folder's absolute path, at `target`. */
 interface Mount {
-  volume: string;
+  source: string;
   target: string;
   readOnly: boolean;
 }
@@ -44,12 +56,20 @@ interface Mount {
 const ROOT: FakeFile = { type: "dir", mode: 0o755, uid: 0, gid: 0 };
 
 /**
- * An in-memory Docker Engine API for tests: containers, volumes and images, with archives as real
- * tar streams. A started container runs to its end at once: the carrier's commands (emptying a
- * volume, hashing it) are built in, and `onStart` answers any other.
+ * An in-memory Docker Engine API for tests: containers, volumes, host folders and images, with
+ * archives as real tar streams. A started container runs to its end at once: the carrier's
+ * commands (emptying, hashing and measuring what it mounts, and `test ! -L`) are built in, and
+ * `onStart` answers any other.
  */
 export class FakeDocker implements DockerTransport {
   readonly volumes = new Map<string, FakeVolume>();
+  /**
+   * The host's folders by absolute path. A `Binds` entry of a missing one creates it; a bind in
+   * `Mounts` is refused, as Docker does.
+   */
+  readonly folders = new Map<string, FakeVolume>();
+  /** The host paths that are symbolic links. */
+  readonly symlinks = new Set<string>();
   readonly containers = new Map<string, FakeContainer>();
   readonly images = new Set<string>();
   /** Images whose pull fails, as a registry answers for one it doesn't know. */
@@ -86,6 +106,18 @@ export class FakeDocker implements DockerTransport {
     return volume;
   }
 
+  /** Adds a host folder at `path` holding `files`, as {@link addVolume} does for a volume. */
+  addFolder(path: string, files: Record<string, FakeFile> = {}): FakeVolume {
+    const folder = { labels: {}, files: new Map([["", { ...ROOT }], ...Object.entries(files)]) };
+    this.folders.set(path, folder);
+    return folder;
+  }
+
+  /** What a bind's source names: a host folder for an absolute path, else a volume. */
+  private storage(source: string): FakeVolume | undefined {
+    return source.startsWith("/") ? this.folders.get(source) : this.volumes.get(source);
+  }
+
   async request(request: DockerRequest): Promise<DockerResponse> {
     this.calls.push(`${request.method} ${request.path}`);
     const failure = this.failures.findIndex(
@@ -117,6 +149,16 @@ export class FakeDocker implements DockerTransport {
             Image: container.image,
             State: container.state,
             Labels: container.labels,
+            Mounts: mounts(container).map((mount) =>
+              mount.source.startsWith("/")
+                ? { Type: "bind", Source: mount.source, Destination: mount.target }
+                : {
+                    Type: "volume",
+                    Name: mount.source,
+                    Source: `/var/lib/docker/volumes/${mount.source}/_data`,
+                    Destination: mount.target,
+                  },
+            ),
           })),
       );
     }
@@ -155,12 +197,9 @@ export class FakeDocker implements DockerTransport {
     if (method === "DELETE" && volume !== undefined) return this.removeVolume(volume);
     if (method === "GET" && path === "/system/df") {
       return json(200, {
-        Volumes: [...this.volumes].map(([name, { files }]) => ({
+        Volumes: [...this.volumes].map(([name, volume]) => ({
           Name: name,
-          UsageData: {
-            Size: [...files.values()].reduce((total, file) => total + (file.data?.length ?? 0), 0),
-            RefCount: this.users(name).length,
-          },
+          UsageData: { Size: bytes(volume), RefCount: this.users(name).length },
         })),
       });
     }
@@ -170,6 +209,18 @@ export class FakeDocker implements DockerTransport {
 
   private create(name: string | undefined, spec: CreateBody): DockerResponse {
     if (!this.images.has(spec.Image)) return json(404, { message: `No such image: ${spec.Image}` });
+    const given = (spec.HostConfig?.Mounts ?? []).map((mount) => ({
+      type: mount.Type,
+      source: mount.Source,
+      target: mount.Target,
+      ...(mount.ReadOnly === undefined ? {} : { readOnly: mount.ReadOnly }),
+    }));
+    const missing = given.find((mount) => mount.type === "bind" && !this.folders.has(mount.source));
+    if (missing !== undefined) {
+      return json(400, {
+        message: `invalid mount config for type "bind": bind source path does not exist: ${missing.source}`,
+      });
+    }
     const id = (this.nextId++).toString(16).padStart(64, "0");
     const container: FakeContainer = {
       id,
@@ -178,6 +229,7 @@ export class FakeDocker implements DockerTransport {
       env: spec.Env ?? [],
       labels: spec.Labels ?? {},
       binds: spec.HostConfig?.Binds ?? [],
+      mounts: given,
       state: "created",
       exitCode: 0,
       stdout: "",
@@ -185,8 +237,10 @@ export class FakeDocker implements DockerTransport {
     };
     if (name !== undefined) container.name = name;
     if (spec.HostConfig?.NetworkMode !== undefined) container.network = spec.HostConfig.NetworkMode;
-    for (const { volume } of mounts(container)) {
-      if (!this.volumes.has(volume)) this.addVolume(volume);
+    for (const { source } of mounts(container)) {
+      if (this.storage(source) !== undefined) continue;
+      if (source.startsWith("/")) this.addFolder(source);
+      else this.addVolume(source);
     }
     this.containers.set(id, container);
     return json(201, { Id: id, Warnings: [] });
@@ -237,11 +291,20 @@ export class FakeDocker implements DockerTransport {
     }
   }
 
-  /** The carrier's commands: `find /data -mindepth 1 -delete`, and the hashing script. */
+  /**
+   * The carrier's commands: `test ! -L <mount>/<name>` (that the host path is no link), and on
+   * what is mounted at /data: `find /data -mindepth 1 -delete`, the hashing script, `du -sb /data`.
+   */
   private builtIn(container: FakeContainer): FakeRun {
     const [program, ...args] = container.cmd;
+    if (program === "test" && args[0] === "!" && args[1] === "-L") {
+      const path = args[2] ?? "";
+      const mount = mounts(container).find((candidate) => path.startsWith(`${candidate.target}/`));
+      const host = mount === undefined ? "" : mount.source + path.slice(mount.target.length);
+      return { exitCode: this.symlinks.has(host) ? 1 : 0 };
+    }
     const data = mounts(container).find((mount) => mount.target === "/data");
-    const volume = data === undefined ? undefined : this.volumes.get(data.volume);
+    const volume = data === undefined ? undefined : this.storage(data.source);
     if (volume === undefined) return { exitCode: 0 };
     if (program === "find" && args.join(" ") === "/data -mindepth 1 -delete") {
       for (const path of [...volume.files.keys()]) if (path !== "") volume.files.delete(path);
@@ -250,12 +313,15 @@ export class FakeDocker implements DockerTransport {
     if (program === "sh" && args[1]?.includes("sha256sum")) {
       return { exitCode: 0, stdout: `${digest(volume)}  -\n` };
     }
+    if (program === "du" && args.join(" ") === "-sb /data") {
+      return { exitCode: 0, stdout: `${bytes(volume)}\t/data\n` };
+    }
     return { exitCode: 0 };
   }
 
   private readArchive(container: FakeContainer, path: string): DockerResponse {
     const mount = mounts(container).find((candidate) => candidate.target === path);
-    const volume = mount === undefined ? undefined : this.volumes.get(mount.volume);
+    const volume = mount === undefined ? undefined : this.storage(mount.source);
     if (volume === undefined) {
       return json(404, { message: `Could not find the file ${path} in container ${container.id}` });
     }
@@ -290,7 +356,7 @@ export class FakeDocker implements DockerTransport {
     for (const { name, ...file } of parseTar(archive)) {
       const [top = "", ...rest] = name.replace(/\/$/, "").split("/");
       const mount = mounts(container).find((candidate) => candidate.target === `/${top}`);
-      const volume = mount === undefined ? undefined : this.volumes.get(mount.volume);
+      const volume = mount === undefined ? undefined : this.storage(mount.source);
       if (mount === undefined || volume === undefined) continue;
       if (mount.readOnly) {
         return json(403, { message: `mounted volume is marked read-only: ${mount.target}` });
@@ -330,7 +396,7 @@ export class FakeDocker implements DockerTransport {
 
   private users(volume: string): string[] {
     return [...this.containers.values()]
-      .filter((container) => mounts(container).some((mount) => mount.volume === volume))
+      .filter((container) => mounts(container).some((mount) => mount.source === volume))
       .map((container) => container.id);
   }
 }
@@ -340,14 +406,25 @@ interface CreateBody {
   Cmd?: string[];
   Env?: string[];
   Labels?: Record<string, string>;
-  HostConfig?: { Binds?: string[]; NetworkMode?: string };
+  HostConfig?: {
+    Binds?: string[];
+    Mounts?: { Type: string; Source: string; Target: string; ReadOnly?: boolean }[];
+    NetworkMode?: string;
+  };
 }
 
+/** A container's `Binds` and `Mounts` alike. */
 function mounts(container: FakeContainer): Mount[] {
-  return container.binds.map((bind) => {
-    const [volume = "", target = "", options = ""] = bind.split(":");
-    return { volume, target, readOnly: options.split(",").includes("ro") };
+  const binds = container.binds.map((bind) => {
+    const [source = "", target = "", options = ""] = bind.split(":");
+    return { source, target, readOnly: options.split(",").includes("ro") };
   });
+  const given = container.mounts.map(({ source, target, readOnly }) => ({
+    source,
+    target,
+    readOnly: readOnly === true,
+  }));
+  return [...binds, ...given];
 }
 
 /** True when `labels` has every `key` or `key=value` of the request's `label` filter. */
@@ -357,6 +434,11 @@ function matches(labels: Record<string, string>, query: URLSearchParams): boolea
     const at = filter.indexOf("=");
     return at === -1 ? filter in labels : labels[filter.slice(0, at)] === filter.slice(at + 1);
   });
+}
+
+/** The size of a volume's or folder's files, as `system/df` and `du -sb` count it. */
+function bytes(volume: FakeVolume): number {
+  return [...volume.files.values()].reduce((total, file) => total + (file.data?.length ?? 0), 0);
 }
 
 /** One SHA-256 over every path's type, mode, owner, size, content and link target. */

@@ -142,20 +142,19 @@ describe("dialStdioTransport", () => {
   it("copies a volume between two hosts, streamed both ways, and the digests match", async () => {
     const hosts = [new FakeDocker(), new FakeDocker()];
     for (const fake of hosts) fake.images.add("busybox:test");
-    const data = Buffer.alloc(3 * 1024 * 1024, 1);
     hosts[0]?.addVolume("example-app_data", {
-      big: { type: "file", mode: 0o600, uid: 999, gid: 999, data },
+      big: { type: "file", mode: 0o600, uid: 999, gid: 999, data: Buffer.alloc(3 << 20, 1) },
     });
     hosts[1]?.addVolume("example-copy");
+    const data = { kind: "volume", name: "example-app_data" } as const;
+    const copy = { kind: "volume", name: "example-copy" } as const;
     const transports = hosts.map((fake) => dialStdioTransport(dialer(serving(fake)).open));
     const [source, target] = transports.map((transport) =>
       volumeCarrier(dockerClient(transport), "busybox:test"),
     );
     if (source === undefined || target === undefined) throw new Error("no carriers");
-    await target.writeVolume("example-copy", await source.readVolume("example-app_data"));
-    expect(await target.volumeDigest("example-copy")).toBe(
-      await source.volumeDigest("example-app_data"),
-    );
+    await target.writeVolume(copy, await source.readVolume(data));
+    expect(await target.volumeDigest(copy)).toBe(await source.volumeDigest(data));
     for (const transport of transports) await transport.close?.();
   });
 

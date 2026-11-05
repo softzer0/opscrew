@@ -4,14 +4,16 @@
  * and the transport over `docker system dial-stdio` (the Docker API of a server, over SSH).
  */
 
-export { sweepCarriers, type VolumeCarrier, volumeCarrier } from "./carrier";
+export { type CarrierSource, sweepCarriers, type VolumeCarrier, volumeCarrier } from "./carrier";
 export {
   type ContainerLogs,
+  type ContainerMount,
   type ContainerSpec,
   DockerApiError,
   type DockerClient,
   type DockerContainer,
   type DockerVolume,
   dockerClient,
+  type MountSpec,
 } from "./client";
 export { dialStdioTransport } from "./dial-stdio";
