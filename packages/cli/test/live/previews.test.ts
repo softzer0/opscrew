@@ -16,7 +16,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import { parseDotenv, readServerAddresses } from "@opscrew/agents";
+import { readServerAddresses } from "@opscrew/agents";
 import { githubEnvironment, previewWorkflowPath } from "@opscrew/iac-templates";
 import { afterAll, describe, expect } from "vitest";
 import {
@@ -424,7 +424,11 @@ describe.skipIf(MISSING.length > 0)(
     async function previewSecrets(pull: Pull): Promise<string> {
       const shell = await envs.shell(PREVIEW_ENV);
       const text = await shell.ok(`cat ${previewDir(previewApp, pull.number)}/secrets.env`);
-      const values = [...parseDotenv(text).values()].filter((value) => value.length >= 8);
+      // `<name>=<value>` lines, names such as `postgres-password` (no dotenv names).
+      const values = text
+        .split(/\r?\n/)
+        .map((line) => line.slice(line.indexOf("=") + 1))
+        .filter((value) => value.length >= 8);
       for (const value of values) run.scrubber.add(value, "preview-generated-value");
       if (values.length === 0) {
         run.findings.push(
@@ -809,10 +813,11 @@ describe.skipIf(MISSING.length > 0)(
           log(
             `observed: ${refusal.what}: exit ${answer.exitCode}, ${answer.reply === undefined ? "no answer line" : `${answer.reply.state} ${answer.reply.detail}`}`,
           );
-          expect(answer, `the preview key's ${refusal.what}`).toEqual({
-            exitCode: 2,
-            reply: { state: "refused", detail: refusal.detail },
-          });
+          expect(answer, `the preview key's ${refusal.what}`).toEqual(
+            refusal.detail === undefined
+              ? { exitCode: 255, reply: undefined }
+              : { exitCode: 2, reply: { state: "refused", detail: refusal.detail } },
+          );
         }
         expect(
           await shell.ok(serverStateCommand(previewApp)),

@@ -351,7 +351,11 @@ export interface KeyRefusal {
   what: string;
   /** The request (SSH's command); none: a terminal (`ssh -tt` without a command). */
   request?: string;
-  detail: "request" | "number" | "image" | "command";
+  /**
+   * The refusal's detail; `undefined` when OpenSSH refuses it before the command runs (a terminal:
+   * `restrict` allows none, and the client then closes the session with exit 255).
+   */
+  detail: "request" | "number" | "image" | "command" | undefined;
 }
 
 /**
@@ -374,7 +378,7 @@ export function keyRefusals(number: number): KeyRefusal[] {
       request: `up ${number} ghcr.io/opscrew-e2e/not-the-app@sha256:${digest} ${commit}`,
       detail: "image",
     },
-    { what: "a terminal", detail: "request" },
+    { what: "a terminal", detail: undefined },
   ];
 }
 

@@ -335,7 +335,7 @@ describe("the restricted key", () => {
       ["down 0", "number"],
       ["down 8a", "number"],
       [`up 8 ghcr.io/opscrew-e2e/not-the-app@sha256:${"0".repeat(64)} ${"0".repeat(40)}`, "image"],
-      [undefined, "request"],
+      [undefined, undefined],
     ]);
     // Each but the separator's is made only of what the contract lets through to its next check.
     for (const { request } of refusals.filter((r) => r.request !== "list; id")) {
