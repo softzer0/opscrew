@@ -216,6 +216,9 @@ When the [scheduled check](alerts.md) is on, `status` also reads its state from 
 - **History:** `status` shows this moment only, and `logs` only what the containers still keep. For
   charts over days, use [Beszel](beszel.md), [Grafana Cloud](grafana-cloud.md) or
   [self-hosted monitoring](monitoring.md).
+- **Say what to change:** [`opscrew advise`](advise.md) reads the same figures, with 14 days of
+  history when self-hosted monitoring is on, and proposes a larger or cheaper server, a higher
+  memory limit or a fix for the disk, priced.
 - **Search across days, or across apps:** `logs` reads one app and environment at a time.
 - **Request logs of a static site,** on GitHub Pages or on Cloudflare's hosting.
 - **The host's disk in a Portainer:** neither Docker nor Portainer gives it.

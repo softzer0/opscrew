@@ -182,7 +182,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs`
   - Effort: high
 
-- [ ] T2109 [P] [US1] The guide page, in `docs/guide/advise.md`
+- [x] T2109 [P] [US1] The guide page, in `docs/guide/advise.md`
   - Owns: `docs/guide/advise.md`, `docs/guide/index.md`, the links in `docs/guide/{logs-and-status,monitoring}.md`, the GitHub permission line in `docs/guide/security.md`
   - Reads: spec.md; plan.md; data-model.md "The thresholds"; the other guide pages for tone
   - Depends: T2107

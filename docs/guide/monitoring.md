@@ -278,6 +278,8 @@ plans of your next `npx opscrew provision`.
 
 ## What it doesn't do
 
+- **Say what to change:** that is [`opscrew advise`](advise.md), which reads 14 days of the stack's
+  figures to propose a larger or smaller server, a higher memory limit or a fix for the disk.
 - **Alerts:** the stack sends none. The [scheduled check](alerts.md) stays the alert path: it checks
   your app from GitHub and opens an issue when something fails, the monitoring server's disk
   included.

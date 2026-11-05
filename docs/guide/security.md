@@ -116,6 +116,7 @@ Give `GITHUB_TOKEN` (or `GH_TOKEN`) a fine-grained token for your app's reposito
 - Variables: Read and write, for the scheduled check (OpsCrew pauses it while it moves or removes
   an app), for moving an app to another target, and for [`opscrew rollback`](rollback.md) (it
   pauses an environment's deploys after a rollback)
+- Dependabot alerts: Read (optional, for [`opscrew advise`](advise.md#the-permissions-it-uses))
 
 GitHub's container registry may not accept a fine-grained token. Where OpsCrew reads it
 ([`opscrew promote`](environments.md#the-registry-token-for-promote) and

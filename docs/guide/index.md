@@ -39,6 +39,7 @@ an app yet.
 ## Once your app runs
 
 - [Your app's logs and resource figures](logs-and-status.md)
+- [Advice on size, cost and upkeep](advise.md)
 - [Alerts: the scheduled check](alerts.md)
 - [When a deploy fails, and how to recover](when-a-deploy-fails.md)
 - [Rolling back a release](rollback.md)
