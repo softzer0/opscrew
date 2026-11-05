@@ -406,7 +406,9 @@ export function leftoversCommand(app: string, number: number): string {
     `if [ -e ${DATA_DIR}/${name} ]; then echo data; fi`,
     `if [ -e ${EDGE_DIR}/sites/${name}.caddy ]; then echo site; fi`,
     `if routes="$(docker compose -p ${EDGE_PROJECT} -f ${EDGE_DIR}/compose.yaml exec -T kamal-proxy kamal-proxy list < /dev/null 2> /dev/null)"; then`,
-    `  if printf '%s\\n' "$routes" | grep -qw -- ${name}; then echo route; fi`,
+    // kamal-proxy colours its list even without a terminal: drop the colour codes, whose last
+    // letter would otherwise touch the name, before matching it as a word.
+    `  if printf '%s\\n' "$routes" | sed "s/$(printf '\\033')\\[[0-9;]*m//g" | grep -qw -- ${name}; then echo route; fi`,
     "else",
     "  echo route-unreadable",
     "fi",
