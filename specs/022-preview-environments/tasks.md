@@ -42,7 +42,7 @@ retention above all).
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2202 [P] The schema and the paths, in `packages/plan-schema/` and `packages/core/`
+- [x] T2202 [P] The schema and the paths, in `packages/plan-schema/` and `packages/core/`
   - Owns: `packages/plan-schema/src/**` (+ tests), `packages/core/src/paths.ts`,
     `packages/core/src/index.ts` (+ their tests)
   - Reads: plan.md "1."; data-model.md "plan.environment.previews", "Architecture", "Paths"
@@ -54,13 +54,14 @@ retention above all).
       `dns.zone` and no `dns.domain` (the one exception to "a Cloudflare plan has a domain"); a plan
       without `previews` parses exactly as before (tests over the existing fixtures).
     - Another environment's `deploySource.source` naming a preview environment is refused.
-    - The architecture's `app.seedCommand` (optional string).
+    - The architecture's `facts.build.seedCommand` and `seedNote` (optional), beside the release
+      command's fields.
     - `resolveProjectPaths` gains `previewKey` for an environment.
     - Exports from both packages' roots.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/core`
   - Effort: high
 
-- [ ] T2203 [P] [US4] Seed commands, in `packages/detect/`
+- [x] T2203 [P] [US4] Seed commands, in `packages/detect/`
   - Owns: `packages/detect/src/seed.ts`, `packages/detect/src/seed/**` (+ tests), the wiring in
     `packages/detect/src/detect.ts` and the export in `packages/detect/src/index.ts`
   - Reads: research.md R1.8, R2.7; `packages/detect/src/release.ts` and `release/**` (the pattern
@@ -80,7 +81,7 @@ retention above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect`
   - Effort: medium
 
-- [ ] T2206 [P] [US1] The previews host plan, in `packages/connectors/ssh-host/`
+- [x] T2206 [P] [US1] The previews host plan, in `packages/connectors/ssh-host/`
   - Owns: `packages/connectors/ssh-host/src/**` (+ tests)
   - Reads: plan.md "5."; data-model.md "On the preview server"; contracts/opscrew-preview.md;
     `planAddon` and the check key (`constants.ts`, `plan.ts`), `deployKeyStep`, `inspect.ts`
@@ -190,7 +191,7 @@ retention above all).
       connector's `listDnsRecords`); a second preview environment for the app. A base on the zone
       apex is allowed, with a line saying every name without its own record reaches the preview
       server.
-    - The seed: the architecture's `app.seedCommand` offered for confirmation; `--seed` and
+    - The seed: the architecture's `facts.build.seedCommand` offered for confirmation (its `seedNote` shown when there is none); `--seed` and
       `--no-seed`; none found says so.
     - The values come from `.env.<name>` as `env add` offers env files; prod's `.env` never.
     - The environment's requirements default to `dataCriticality: none`, `uptime: best-effort`.
@@ -198,7 +199,6 @@ retention above all).
       `servers` and turns the add-ons off with a line each.
     - `env remove` of a preview environment also deletes its preview workflow and its committed
       recipe folder.
-    - Analyze writes `app.seedCommand` from detection.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
@@ -270,7 +270,8 @@ retention above all).
   - Depends: T2209, T2210
   - Accept:
     - `env add --previews [--cap n | --size type] [--lifetime days] [--domain name] [--seed cmd |
-      --no-seed]`, refusing `--runner`/`--build` other than `github` with previews.
+      --no-seed]`, refusing `--runner`/`--build` other than `github` with previews, and `--cap`
+      with `--size` (design lets a size win over a cap).
     - `opscrew preview list|logs <n>|destroy <n> [--confirm pr-<n>]`, with `--env` and `--app` as
       every command, `--json` for `list`.
     - MCP `opscrew_preview_list` (read-only, `readOnlyHint`), with `environment` and `app`.
@@ -316,6 +317,8 @@ retention above all).
 ## Phase 7: Finish
 
 - [ ] T2215 Simplify (lead): a review of the feature's diff for reuse and simplicity; findings
-  become tasks here.
+  become tasks here. Known so far: one helper in plan-schema for the preview workflow's path
+  (T2205's renderer and T2208's `env remove` each name it); the `.sequelizerc` reading shared by
+  release and seed detection.
 
 - [ ] T2216 Release (lead): `docs/releasing.md`.

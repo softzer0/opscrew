@@ -45,7 +45,7 @@ starts, updates or removes the app `<app>-pr-<n>` (`<app>` is the preview enviro
 - **No change in `@opscrew/contracts`.** Approval kinds stay the same: the IaC plan is `iac-apply`,
   the recipe a `host-apply` plan marked as deleting data, so the existing gate already requires
   `allowDestroy` and the typed `<app>-<env>`.
-- **`plan-schema`** gains `environment.previews` and the architecture's `app.seedCommand`; a
+- **`plan-schema`** gains `environment.previews` and the architecture's `facts.build.seedCommand`; a
   preview environment's plan has `dns.zone` but no `dns.domain` (its base lives in
   `previews.domain`), so no hostname check, site, verify or runbook ever aims at prod's name.
   `core/paths` gains the preview key's path.
@@ -94,7 +94,7 @@ starts, updates or removes the app `<app>-pr-<n>` (`<app>` is the preview enviro
 ## Project Structure
 
 ```text
-packages/plan-schema/src/          environment.previews, refinements, app.seedCommand (T2202)
+packages/plan-schema/src/          environment.previews, refinements, facts.build.seedCommand (T2202)
 packages/core/src/paths.ts         the preview key's path (T2202)
 packages/detect/src/seed*.ts       seed commands (T2203)
 packages/iac-templates/src/previews/   the recipe renderer and the opscrew-preview script (T2204)
@@ -130,7 +130,8 @@ check, monitoring, signing and deploy tags off; `dns.provider: cloudflare` with 
 preview environment. The plan schema's "a Cloudflare plan has a domain" rule gains this one
 exception.
 
-`app.seedCommand` in the architecture (from detection), next to the release command.
+`facts.build.seedCommand` and `seedNote` in the architecture (written by detection), next to the
+release command.
 `core/paths`: `previewKey` (`~/.opscrew/projects/<id>/environments/<env>/preview_key[.pub]`).
 
 ### 2. The spike and the ADR (T2201, lead)
@@ -255,12 +256,12 @@ or the size (the other computed: each preview's memory is the sum of the memory 
 renders for the app and its on-server services, plus the edge's and the system's share `sizeFor`
 already reserves), the base domain (refusing an app without a Cloudflare zone and a record already
 at `*.<base>` read through the Cloudflare connector, and saying so when the base is the zone apex),
-the seed (the detected `app.seedCommand`, confirmed; `--seed <cmd>` or `--no-seed`), the lifetime,
+the seed (the detected `facts.build.seedCommand`, confirmed; `--seed <cmd>` or `--no-seed`), the lifetime,
 and the values file `.env.<name>` (offered as `env add` offers env files; prod's `.env` never).
 Requirements for the environment default to `dataCriticality: none` and `uptime: best-effort`, so
 backups and uptime proposals don't apply. Design shows the server's monthly cost and the budget
 warning as for any environment. `env remove` of a preview environment deletes its preview workflow
-and its committed recipe too. Analyze writes `app.seedCommand` from `detectSeed`.
+and its committed recipe too. Detection writes the seed command into the facts, as it does the release command.
 
 ### 7. Provisioning previews (T2209)
 

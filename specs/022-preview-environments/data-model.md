@@ -28,7 +28,8 @@ environment can't be promoted from a preview environment. One preview environmen
 
 ## Architecture (plan-schema, T2202; detect, T2203)
 
-`app.seedCommand?: string`: the seed command detection found, run from the repository root like the
+`facts.build.seedCommand?: string` and `facts.build.seedNote?: string`, beside `releaseCommand` and
+`releaseNote`: the seed command detection found (or why there is none), run from the repository root like the
 release command (`cd <dir> && …` for an app in a folder).
 
 ## Paths (core, T2202)
