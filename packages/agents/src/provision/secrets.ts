@@ -535,7 +535,8 @@ async function requireOtherSecretsApart(
   const where = `${owner}/${repo}`;
   /** Each environment that could leak, named and with the command that provisions it. */
   const repository: { text: string; run: string }[] = [];
-  const open: { text: string; run: string; githubEnv: string }[] = [];
+  /** `userRules`: it has a rule of the user's, so provision leaves its rules alone. */
+  const open: { text: string; run: string; githubEnv: string; userRules: boolean }[] = [];
   const readable: string[] = [];
   const anyWorkflow = "any workflow, a pull request's included, can read";
   for (const other of await otherPlans(deps.paths, plan)) {
@@ -566,7 +567,10 @@ async function requireOtherSecretsApart(
     }
     const githubEnv = githubEnvironment(other.plan) as string;
     const view = await api.getEnvironment(owner, repo, githubEnv);
-    if (view !== undefined && view.branchPolicy === null) open.push({ ...named, githubEnv });
+    if (view !== undefined && view.branchPolicy === null) {
+      const userRules = view.reviewers.length > 0 || view.waitTimer > 0;
+      open.push({ ...named, githubEnv, userRules });
+    }
   }
   const again = `${command}${await commandFlags(root, environment, app)}`;
   const one = (list: readonly unknown[]) => list.length === 1;
@@ -583,11 +587,15 @@ async function requireOtherSecretsApart(
   if (open.length > 0) {
     const its = one(open) ? "its" : "their";
     const githubEnvs = listText(open.map((e) => e.githubEnv));
+    const settings = `https://github.com/${where}/settings/environments`;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `A pull request could read the deploy key of ${listText(open.map((e) => e.text))}: ${one(open) ? "the GitHub environment" : "the GitHub environments"} ${githubEnvs} that ${one(open) ? "holds" : "hold"} ${its} deploy secrets ${one(open) ? "lets" : "let"} every branch deploy, a pull request's included. Nothing was changed.`,
       {
-        hint: `Run ${listText(open.map((e) => e.run))} again and accept ${its} branch rule, or let only ${its} branch deploy to ${githubEnvs} in https://github.com/${where}/settings/environments; then run \`${again}\` again.`,
+        // Provision adds the branch rule only where the user set no rule.
+        hint: open.some((e) => e.userRules)
+          ? `Let only ${its} branch deploy to ${githubEnvs} in ${settings} (OpsCrew changes no rule of an environment that has rules of yours); then run \`${again}\` again.`
+          : `Run ${listText(open.map((e) => e.run))} again and accept ${its} branch rule, or let only ${its} branch deploy to ${githubEnvs} in ${settings}; then run \`${again}\` again.`,
       },
     );
   }
@@ -600,8 +608,10 @@ const CUSTOM_BRANCHES: BranchPolicy = { protectedBranches: false, customBranchPo
 /**
  * The rules of the GitHub environment `view` that holds the deploy secrets of the plan's
  * environment, where GitHub enforces them (FR-1521), after a `github-settings` approval naming
- * each change. Only in an environment OpsCrew created (`created`); a user's own is left as it is,
- * and the user is told so.
+ * each change. Only in an environment OpsCrew created (`created`), or one it did not create that has
+ * no rule at all (GitHub creates `production` itself at prod's first deploy), which gets only the
+ * branch rule and is not recorded as created. One with any rule of the user's is left as it is, and
+ * the user is told so.
  * - The branch rule (`capability.branchPolicies`): only the branch its workflow runs on may deploy
  *   (`workflowBranch`: the branch it follows, or the default branch for a promoted environment),
  *   as custom branch policies with that branch, where the environment still lets every branch
@@ -635,7 +645,10 @@ async function setEnvironmentRules(
   const promoted = plan.environment?.deploySource?.from === "promote";
   // The branch whose runs deploy.
   const branch = workflowBranch(plan, defaultBranch);
-  if (!input.created) {
+  // Every branch may deploy, no required reviewer, no wait timer: nothing of the user's to change.
+  const ruleless =
+    view.branchPolicy === null && view.reviewers.length === 0 && view.waitTimer === 0;
+  if (!input.created && !ruleless) {
     deps.reporter.info(
       `OpsCrew did not create the GitHub environment ${env}, so it changes none of its rules. To let only ${branch} deploy to it, or to have each deploy wait for a reviewer, set its rules yourself in ${settings}.`,
     );
@@ -648,7 +661,13 @@ async function setEnvironmentRules(
       (view.branchPolicy.customBranchPolicies &&
         (await api.listDeploymentBranches(owner, repo, env)).length === 0));
   let reviewer: EnvironmentReviewer | undefined;
-  if (capability.reviewers && promoted && view.reviewers.length === 0 && !input.declined) {
+  if (
+    capability.reviewers &&
+    input.created &&
+    promoted &&
+    view.reviewers.length === 0 &&
+    !input.declined
+  ) {
     const account = deps.interactive ? await api.account(owner) : undefined;
     if (account?.type === "User") {
       reviewer = { type: "User", id: account.id };
@@ -678,7 +697,7 @@ async function setEnvironmentRules(
     kind: "github-settings",
     title: `Set the rules of the GitHub environment ${env} in ${where}`,
     details: [
-      `OpsCrew created ${env} for the deploy secrets of ${name}, and changes only these of its rules:`,
+      `${input.created ? `OpsCrew created ${env}` : `${env} has no rules yet, so OpsCrew uses it`} for the deploy secrets of ${name}, and changes only these of its rules:`,
       ...changes.map((change) => `  ${change}`),
     ].join("\n"),
   });

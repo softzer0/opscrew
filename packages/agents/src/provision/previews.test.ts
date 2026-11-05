@@ -494,6 +494,30 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
     expect(existsSync(join(app.root, RECIPE, "bin/opscrew-preview"))).toBe(true);
   });
 
+  it("says to set the branch rule in the settings when the GitHub environment has rules of the user's", async () => {
+    const app = await appWithPreviews();
+    const { github } = app;
+    // GitHub made `production` itself, and the user gave it a wait timer but no branch rule.
+    github.environments.set("production", new Map());
+    github.rules.set("production", {
+      name: "production",
+      waitTimer: 5,
+      preventSelfReview: false,
+      reviewers: [],
+      branchPolicy: null,
+      canAdminsBypass: true,
+    });
+    await runProvision(await app.deps(), { services: app.services() });
+    await app.merge();
+    expect(github.rules.get("production")?.branchPolicy).toBeNull();
+    const preview = await app.deps("preview");
+    await expect(runProvision(preview, { services: app.services() })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      hint: "Let only its branch deploy to production in https://github.com/acme/shop/settings/environments (OpsCrew changes no rule of an environment that has rules of yours); then run `opscrew provision --env preview` again.",
+    });
+    expect(github.environments.has("preview")).toBe(false);
+  });
+
   it("refuses while a GitHub environment lets every branch deploy, or another app keeps repository secrets; a prod-only app then places them apart", async () => {
     const app = await appWithPreviews();
     const { github, root } = app;

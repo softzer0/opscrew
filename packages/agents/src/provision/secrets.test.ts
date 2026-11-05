@@ -601,10 +601,43 @@ describe.skipIf(!findExecutable("git"))("the rules of GitHub environments (FR-15
     ).toBeUndefined();
   });
 
-  it("changes no rule of a GitHub environment the user made, and says so", async () => {
+  it("gives a rule-less GitHub environment OpsCrew didn't create only the branch rule, and doesn't record it as created", async () => {
+    const app = await appInProd();
+    app.github.reviewersWork = true;
+    // GitHub made staging itself when a deploy workflow named it: every branch may deploy.
+    app.github.environments.set("staging", new Map());
+    const { staging, run } = await provisionStaging(app, promotedStagingOf(app.prod), {
+      interactive: true,
+    });
+    await run();
+
+    expect(rulesRequest(staging)?.kind).toBe("github-settings");
+    expect(rulesRequest(staging)?.details).toBe(
+      [
+        "staging has no rules yet, so OpsCrew uses it for the deploy secrets of staging, and changes only these of its rules:",
+        "  Deployment branches: only main, the default branch. A workflow run on any other branch cannot deploy to staging or read its secrets.",
+      ].join("\n"),
+    );
+    expect(app.github.rules.get("staging")).toMatchObject({ reviewers: [], branchPolicy: CUSTOM });
+    expect(app.github.deploymentBranches.get("staging")).toEqual(["main"]);
+    expect(staging.reporter.text()).not.toContain("did not create");
+    expect(
+      JSON.parse(await readFile(staging.paths.files.deploySecrets, "utf8")).createdEnvironment,
+    ).toBeUndefined();
+  });
+
+  it("changes no rule of a GitHub environment the user made and gave a rule, and says so", async () => {
     const app = await appInProd();
     app.github.reviewersWork = true;
     app.github.environments.set("staging", new Map());
+    app.github.rules.set("staging", {
+      name: "staging",
+      waitTimer: 5,
+      preventSelfReview: false,
+      reviewers: [],
+      branchPolicy: null,
+      canAdminsBypass: true,
+    });
     const { staging, run } = await provisionStaging(app, promotedStagingOf(app.prod), {
       interactive: true,
     });

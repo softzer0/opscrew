@@ -127,6 +127,8 @@ npx opscrew provision --env preview
 
 Add `--app <key>` in a repository with [several apps](several-apps.md). Once a repository has
 previews, every app's environments, prod-only apps included, keep their deploy secrets this way.
+If that GitHub environment has rules of yours (a required reviewer or a wait timer), OpsCrew leaves
+its rules alone, so let only its branch deploy to it in **Settings → Environments** instead.
 
 **On a GitHub Free private repository**, GitHub enforces no branch rules on environments (see
 [On a Free private repository](environments.md#on-a-free-private-repository)). There, any workflow,

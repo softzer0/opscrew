@@ -195,7 +195,7 @@ repository supports, instead of assuming it. It creates a throwaway GitHub envir
 reviewer and a wait timer, and reads back which of them GitHub kept. Then it deletes the throwaway
 environment. If the delete fails, the error names the environment so you can remove it in
 Settings → Environments. The check never touches your other environments, and OpsCrew never changes
-the rules of an environment it did not create. That check is a change in your repository's
+a rule you set. That check is a change in your repository's
 settings, so OpsCrew asks first (`--yes` approves it in scripts).
 
 - **Where GitHub environments work**, the environment's deploy secrets go into a GitHub environment
@@ -216,8 +216,10 @@ Where GitHub enforces branch rules, OpsCrew gives each GitHub environment it cre
 approval, the rule that only one branch may deploy to it: the branch the environment follows, or
 for a promoted environment your default branch, where `opscrew promote` starts its workflow. Where
 GitHub enforces required reviewers, it offers one for an environment that is promoted to. You can
-add more rules yourself in **Settings → Environments**; OpsCrew keeps them, and never changes the
-rules of a GitHub environment you made.
+add more rules yourself in **Settings → Environments**; OpsCrew keeps them. A GitHub environment
+OpsCrew didn't create but that has no rule at all, such as the `production` environment GitHub
+creates by itself at prod's first deploy, gets the same branch rule after your approval; one you gave
+any rule stays exactly as it is.
 
 ### On a Free private repository
 
