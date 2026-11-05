@@ -2198,7 +2198,8 @@ The steps:
    off to on`, the monthly price and `opscrew provision`, and change only that field of the plan
    (and the plan's `updatedAt`); `advise --apply size.app.larger` the same for
    `target.serverType`, from `cx23` to the type of step 3. Hetzner's server must still be `cx23` without backups. Then `provision` until done, each
-   plan approved by its hash, and its pull request deployed if it opened one. The time and the
+   plan approved by its hash, and its pull request, which holds only the plan and the
+   infrastructure's variables, merged; no deploy runs. The time and the
    longest stretch the page `/` didn't answer with the database's time are logged. The app must
    answer again, Hetzner must report the new type with backups on, and no ballast container may
    run (it had no restart policy, and the resize restarted the server).

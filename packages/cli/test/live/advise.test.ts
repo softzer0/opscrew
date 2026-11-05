@@ -405,7 +405,15 @@ describe.skipIf(MISSING.length > 0)(
         let outage = 0;
         try {
           await envs.provision("prod", "the larger server and backups");
-          await run.deploy("the larger server and backups");
+          // Provision applied the resize itself: the pull request holds only the plan and the
+          // infrastructure's variables, so no deploy runs (a change that needs one shows here).
+          const merged = await run.mergeDeploySetup("the larger server and backups");
+          expect(merged, "provision's pull request").toBeDefined();
+          const changed = await run.git("diff", "--name-only", `${merged}^1`, `${merged}`);
+          expect(changed.split("\n").sort(), "the files the pull request changed").toEqual([
+            "opscrew/infra/prod/terraform.tfvars.json",
+            "opscrew/plan.yaml",
+          ]);
         } finally {
           outage = await watch.stop();
         }
