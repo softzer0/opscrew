@@ -4,6 +4,57 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.3] - 2026-11-05
+
+Nothing to redo for an app without previews: your plans keep working as they are.
+
+### Added
+
+- **Preview environments: a link for every pull request.**
+  - `opscrew env add preview --previews --domain <zone>` sets them up once on a small server of
+    their own (at Hetzner, at DigitalOcean, or a server you already have that runs nothing else),
+    and `opscrew provision --env preview` creates it. From then on, every pull request from a
+    branch of your repository that changes the app gets its own preview: built and started when it
+    opens, updated on each push, removed with its data and images when it is closed or merged. A
+    comment on the pull request gives its address, and "View deployment" opens it.
+  - Previews live on a Cloudflare domain used only for them, at `pr-<number>-<random>.<domain>`,
+    behind Cloudflare's proxy with one Cloudflare Origin CA certificate: no public certificate ever
+    names a preview, so its address can't be guessed or read from certificate logs. The preview
+    server accepts web traffic only from Cloudflare.
+  - Each preview runs its own databases and services, empty, then your release command, then your
+    seed command once (found for Prisma, Rails, Laravel, Knex, Sequelize, AdonisJS and a
+    `db:seed` script; `--seed` or `--no-seed`). Its passwords are made on the preview server;
+    your values for previews come from `.env.preview` (test keys only).
+  - You approve the previews' setup once, by its hash, typing `<app>-preview` to accept that each
+    preview's data is deleted without asking again. The preview server itself enforces what you
+    approved: the only key GitHub gets can run one command there, which checks every request, so a
+    pull request that edits its workflow still can't go further.
+  - Forks, Dependabot and drafts get no preview. At most 3 run at once by default (`--cap`); one
+    without a push for 7 days is removed (`--lifetime`).
+  - `opscrew preview list`, `opscrew preview logs <n>` and `opscrew preview destroy <n>`;
+    `opscrew destroy --env preview` removes the server, the record, the certificate and every
+    preview.
+
+  See [Previews: a link for every pull request](docs/guide/previews.md).
+- **Names nobody can guess for your other environments.** `opscrew env add <env>` now suggests
+  `<env>-<random>.<zone>` when your app is behind Cloudflare's proxy, and `--hostname <name>` puts
+  an environment on any name, another domain included. See
+  [dev, staging and prod](docs/guide/environments.md).
+- **The Claude Code plugin** knows previews: the read-only `opscrew_preview_list` tool, and when to
+  suggest them.
+
+### Changed
+
+- Once a repository has previews, every app's deploy secrets must sit where a pull request can't
+  read them: `opscrew provision --env preview` refuses until they do and names the command that
+  moves them. A GitHub environment that has no rule at all, such as the `production` one GitHub
+  creates by itself at your first deploy, now gets OpsCrew's branch rule after your approval; one
+  with rules of yours stays as it is.
+- `opscrew provision --env preview` refuses a `.env.preview` that git would commit; add `.env.*`
+  to your `.gitignore`.
+- Every deploy workflow now always deletes its intermediate images, and pull requests' images older
+  than 31 days, even with image retention off. Run `opscrew provision` to have it.
+
 ## [0.2.2] - 2026-11-05
 
 Nothing to redo: your plans keep working as they are.
@@ -317,6 +368,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.3]: https://github.com/softzer0/opscrew/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/softzer0/opscrew/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/softzer0/opscrew/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/softzer0/opscrew/compare/v0.1.3...v0.2.0
