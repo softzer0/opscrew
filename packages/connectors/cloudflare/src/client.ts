@@ -249,6 +249,21 @@ export interface OriginCertificate {
   expiresOn: string;
 }
 
+/** One of the zone's edge certificate packs (`universal`, `advanced` and the like). */
+export interface CertificatePack {
+  id: string;
+  type: string;
+  hosts: string[];
+  /** `active`, `pending_validation`, `pending_issuance` and the like. */
+  status: string;
+}
+
+/** The zone's advanced certificate packs: how many it may have and how many it has. */
+export interface CertificatePackQuota {
+  allocated: number;
+  used: number;
+}
+
 /** A client certificate uploaded for per-hostname Authenticated Origin Pulls. */
 export interface HostnameClientCertificate {
   id: string;
@@ -499,6 +514,21 @@ const IdResultSchema = z.looseObject({ id: z.string().min(1) });
 
 const ZoneSettingSchema = z.looseObject({ value: z.string(), editable: z.boolean() });
 
+const CertificatePackQuotaSchema = z.looseObject({
+  advanced: z
+    .looseObject({ allocated: z.number().int().min(0), used: z.number().int().min(0) })
+    .optional(),
+});
+
+const TotalTlsSchema = z.looseObject({ enabled: z.boolean() });
+
+const CertificatePackSchema = z.looseObject({
+  id: z.string().min(1),
+  type: z.string(),
+  hosts: z.array(z.string()),
+  status: z.string(),
+});
+
 /** `GET …/workers/scripts/{name}/versions`: the message is the `workers/message` annotation. */
 const WorkerVersionsSchema = z.looseObject({
   items: z
@@ -685,6 +715,11 @@ const TUNNEL_HINTS: FailHints = {
 /** Hints for origin certificates and per-hostname Authenticated Origin Pulls. */
 const CERTIFICATE_HINTS: FailHints = {
   auth: `Origin certificates and Authenticated Origin Pulls need the token permission "Zone → SSL and Certificates → Edit" for this zone. Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
+};
+
+/** Hints for reading the zone's edge certificate packs and Total TLS. */
+const EDGE_CERTIFICATE_HINTS: FailHints = {
+  auth: `Reading the zone's edge certificates needs the token permission "Zone → SSL and Certificates → Read" for this zone (Edit includes it). Edit the token at ${CLOUDFLARE_TOKEN_PAGE}; then set CLOUDFLARE_API_TOKEN.`,
 };
 
 /** Hints for the zone's settings. */
@@ -1368,6 +1403,45 @@ export class CloudflareClient {
       hints: CERTIFICATE_HINTS,
     });
     this.#parseWrite(IdResultSchema, answer.body.result, what);
+  }
+
+  /**
+   * The zone's advanced certificate pack quota (`GET /zones/{id}/ssl/certificate_packs/quota`):
+   * 0 and 0 when the answer has no `advanced`. Read-only.
+   */
+  async certificatePackQuota(zoneId: string): Promise<CertificatePackQuota> {
+    const quota = await this.#call(
+      `/zones/${encodeURIComponent(zoneId)}/ssl/certificate_packs/quota`,
+      CertificatePackQuotaSchema,
+      "read the zone's certificate pack quota",
+      { hints: EDGE_CERTIFICATE_HINTS },
+    );
+    return { allocated: quota.advanced?.allocated ?? 0, used: quota.advanced?.used ?? 0 };
+  }
+
+  /** Whether the zone's Total TLS is on (`GET /zones/{id}/acm/total_tls`). Read-only. */
+  async totalTls(zoneId: string): Promise<{ enabled: boolean }> {
+    const totalTls = await this.#call(
+      `/zones/${encodeURIComponent(zoneId)}/acm/total_tls`,
+      TotalTlsSchema,
+      "read the zone's Total TLS setting",
+      { hints: EDGE_CERTIFICATE_HINTS },
+    );
+    return { enabled: totalTls.enabled };
+  }
+
+  /**
+   * Every certificate pack of the zone, whatever its status
+   * (`GET /zones/{id}/ssl/certificate_packs?status=all`). Follows pagination. Read-only.
+   */
+  async listCertificatePacks(zoneId: string): Promise<CertificatePack[]> {
+    const packs = await this.#all(
+      `/zones/${encodeURIComponent(zoneId)}/ssl/certificate_packs`,
+      CertificatePackSchema,
+      "list the zone's certificate packs",
+      { perPage: 50, filter: { status: "all" }, hints: EDGE_CERTIFICATE_HINTS },
+    );
+    return packs.map((p) => ({ id: p.id, type: p.type, hosts: p.hosts, status: p.status }));
   }
 
   /**
