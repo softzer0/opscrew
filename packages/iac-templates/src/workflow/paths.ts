@@ -1,4 +1,9 @@
-import { cleanRepoPath, type DeployPlan, workflowPathFor } from "@opscrew/plan-schema";
+import {
+  cleanRepoPath,
+  type DeployPlan,
+  previewWorkflowPathFor,
+  workflowPathFor,
+} from "@opscrew/plan-schema";
 import { serverlessTarget } from "../serverless/site";
 import type { RenderContext } from "../types";
 
@@ -26,8 +31,8 @@ function within(dir: string, path: string): boolean {
  */
 const DEPLOY_WORKFLOWS = workflowPathFor().replace(/\.yml$/, "*.yml");
 
-/** Every app's preview workflow (`previewWorkflowPath`): `.github/workflows/opscrew-preview*.yml`. */
-const PREVIEW_WORKFLOWS = ".github/workflows/opscrew-preview*.yml";
+/** Every app's preview workflow (`previewWorkflowPathFor`): `.github/workflows/opscrew-preview*.yml`. */
+const PREVIEW_WORKFLOWS = previewWorkflowPathFor().replace(/\.yml$/, "*.yml");
 
 /**
  * The `paths` filter of a deploy workflow's push trigger, in GitHub's syntax (`*`, `**`, a `!`

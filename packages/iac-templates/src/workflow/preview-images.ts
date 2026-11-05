@@ -1,5 +1,5 @@
 import type { AppEnvironment } from "../runtime-dir";
-import { registryCode } from "./retention";
+import { PULL_TAG, REACH, registryCode } from "./retention";
 import { DIGEST_REF_PATTERN, planFilePath } from "./shared";
 
 /**
@@ -30,7 +30,7 @@ export function previewImagesScript(plan: AppEnvironment): string {
  */
 function previewPrunable(versions, children, open, number, running) {
   const pullOf = (tag) => {
-    const match = /^(?:build-)?pr-([1-9][0-9]{0,5})-[0-9a-f]{40}$/.exec(tag);
+    const match = /${PULL_TAG}/.exec(tag);
     return match ? Number(match[1]) : undefined;
   };
   const goes = (v) => {
@@ -41,19 +41,7 @@ function previewPrunable(versions, children, open, number, running) {
     if (pull !== number) return false;
     return v.tags.every((tag) => tag.startsWith("build-")) || (running !== null && v.digest !== running);
   };
-  const reach = (digests) => {
-    const seen = new Set(digests);
-    const queue = [...digests];
-    while (queue.length > 0) {
-      for (const digest of children[queue.pop()] || []) {
-        if (!seen.has(digest)) {
-          seen.add(digest);
-          queue.push(digest);
-        }
-      }
-    }
-    return seen;
-  };
+  ${REACH}
   // Every tagged version that stays, and the running image, keep what they list.
   const kept = reach([
     ...versions.filter((v) => v.tags.length > 0 && !goes(v)).map((v) => v.digest),
@@ -84,15 +72,8 @@ async function main() {
   try {
     const base = await packageVersions();
     const { versions, children } = await readPackage(base, running === null ? [] : [running]);
-    const open = [];
-    for (let page = 1; ; page++) {
-      const batch = await read(
-        await github("GET", "/repos/" + owner + "/" + repo + "/pulls?state=open&per_page=100&page=" + page),
-        "The GitHub pull requests API",
-      );
-      for (const pull of batch) open.push(pull.number);
-      if (batch.length < 100) break;
-    }
+    const pulls = await pages("/repos/" + owner + "/" + repo + "/pulls?state=open", "The GitHub pull requests API");
+    const open = pulls.map((pull) => pull.number);
     const ids = new Set(previewPrunable(versions, children, open, number, running));
     console.log("The package has " + versions.length + " image versions; deleting " + ids.size + " of pull requests' images.");
     deleting = true;

@@ -11,6 +11,7 @@ import {
   githubEnvironmentFor,
   infraDirFor,
   parseArtifact,
+  previewWorkflowPathFor,
   serializeArtifact,
   workflowPathFor,
 } from "./index";
@@ -56,6 +57,8 @@ describe("the names derived from an app's key", () => {
     expect(ghcrImageFor("Acme/Shop", "docs")).toBe("ghcr.io/acme/shop/docs");
     expect(appBranch("opscrew/prepare-deploy", "docs")).toBe("opscrew/prepare-deploy-docs");
     expect(appBranch("opscrew/deploy-setup", "docs")).toBe("opscrew/deploy-setup-docs");
+    expect(previewWorkflowPathFor()).toBe(".github/workflows/opscrew-preview.yml");
+    expect(previewWorkflowPathFor("docs")).toBe(".github/workflows/opscrew-preview-docs.yml");
   });
 });
 

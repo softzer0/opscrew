@@ -208,7 +208,7 @@ function sqliteSeal(plan: DeployPlan): string[] {
  * final image: Buildpacks, Railpack, and the user's own Dockerfile when the plan has cron jobs or
  * SQLite.
  */
-export function sealsImage(plan: DeployPlan): boolean {
+function sealsImage(plan: DeployPlan): boolean {
   const builder = plan.app.build?.builder;
   return (
     builder === "buildpacks" ||

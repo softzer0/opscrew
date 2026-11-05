@@ -1,8 +1,8 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript templates.
 import { describe, expect, it } from "vitest";
-import { testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
+import { testCloudflare, testContext } from "../__fixtures__/plans";
+import { previewPlan } from "../previews/__fixtures__/plans";
 import type { RenderedFile } from "../types";
-import { previewPlan } from "../workflow/__fixtures__/previews";
 import { renderInfra } from "./index";
 
 const context = () => testContext({ cloudflare: testCloudflare() });
@@ -82,17 +82,5 @@ describe("the preview environment's root", () => {
     expect(() => renderInfra(previewPlan(), testContext())).toThrow(
       "A Cloudflare zone id is required to render DNS for this plan.",
     );
-  });
-
-  it("leaves every other root as it was: the app's records, with their variables", () => {
-    const main = file(
-      renderInfra(testPlan({ domain: "shop.example.com" }), context()).map((f) => ({
-        ...f,
-        path: f.path.replace("/prod/", "/preview/"),
-      })),
-      "main.tf",
-    );
-    expect(dnsBlock(main)).toContain("  domain      = var.domain\n");
-    expect(dnsBlock(main)).toContain("  caa_issuers = var.caa_issuers\n");
   });
 });

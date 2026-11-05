@@ -4,7 +4,7 @@
  * pull request's preview there within the bounds the host plan's approval names.
  */
 import type { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import type { DeployPlan, Previews } from "@opscrew/plan-schema";
 import { initStepsFor } from "../catalog";
 import { wrongTarget } from "../providers";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
@@ -13,8 +13,8 @@ import type { RenderedFile } from "../types";
 import { planFilePath } from "../workflow/shared";
 import { rollbackCommands, switchCommands } from "../workflow/switch";
 import {
-  PREVIEW_SECRET_FORMATS,
   PREVIEW_SECRET_NAME,
+  PREVIEW_SECRET_PLACEHOLDER,
   type PreviewSecretFormat,
   previewScript,
 } from "./script";
@@ -32,10 +32,7 @@ const NUMBER_TOKEN = "xnumbx";
 const NUMBER = "@N@";
 
 /** Every `@SECRET:<name>:<format>@` placeholder in a text. */
-const SECRET_PLACEHOLDERS = new RegExp(
-  `@SECRET:([A-Za-z][A-Za-z0-9_-]*):(${PREVIEW_SECRET_FORMATS.join("|")})@`,
-  "g",
-);
+const SECRET_PLACEHOLDERS = new RegExp(PREVIEW_SECRET_PLACEHOLDER, "g");
 
 /**
  * The placeholder of a value the preview server generates once per preview, in `format`:
@@ -130,7 +127,8 @@ function checkEnv(env: PreviewEnvTemplates): void {
     if (placeholders.length !== text.split("@SECRET:").length - 1) {
       throw badTemplate(file, "holds an @SECRET: placeholder the server can't fill");
     }
-    for (const [, name = "", format = ""] of placeholders) {
+    for (const [placeholder, format = ""] of placeholders) {
+      const [, name = ""] = placeholder.split(":");
       if (!PREVIEW_SECRET_NAME.test(name)) {
         throw badTemplate(file, `names a generated value ${name}, which is too long`);
       }
@@ -163,8 +161,7 @@ const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
  * `settings.env`, the bounds `opscrew-preview` reads (it sources the file): each value checked to
  * be digits or of `[a-z0-9._/-]` before it is written.
  */
-function settingsFile(plan: DeployPlan, o: PreviewRecipeOptions): string {
-  const { previews } = previewEnvironment(plan);
+function settingsFile(plan: DeployPlan, previews: Previews, o: PreviewRecipeOptions): string {
   if (!IMAGE_NAME.test(o.imageName)) {
     throw wrongTarget(`The image name ${JSON.stringify(o.imageName)} is not a GHCR image's.`);
   }
@@ -210,7 +207,7 @@ function settingsFile(plan: DeployPlan, o: PreviewRecipeOptions): string {
 export function renderPreviewRecipe(plan: DeployPlan, o: PreviewRecipeOptions): RenderedFile[] {
   const { previews } = previewEnvironment(plan);
   checkEnv(o.env);
-  const settings = settingsFile(plan, o);
+  const settings = settingsFile(plan, previews, o);
   const template = previewTemplatePlan(plan);
   const seed = typeof previews.seed === "string" ? { seed: previews.seed } : {};
   const runtime = runtimeDir(template);

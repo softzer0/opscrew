@@ -77,8 +77,6 @@ export interface RunResult {
   status: number | null;
   stdout: string;
   stderr: string;
-  /** The last line of stdout. */
-  last: string;
 }
 
 /** A fake preview server in a new temporary folder, with `plan`'s recipe installed. */
@@ -172,13 +170,7 @@ export class PreviewServer {
       input: o.stdin ?? "",
       encoding: "utf8",
     });
-    const stdout = result.stdout ?? "";
-    return {
-      status: result.status,
-      stdout,
-      stderr: result.stderr ?? "",
-      last: stdout.trimEnd().split("\n").at(-1) ?? "",
-    };
+    return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }
 
   /** `up <n> <image> <commit>` through the preview key, with the token on stdin. */

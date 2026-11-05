@@ -49,6 +49,7 @@ function variables(
   pieces: TunnelPieces | undefined,
   extras: readonly ExtraServerCall[],
   checkKey: boolean,
+  zone: ZoneUse | undefined,
 ): VariableSpec[] {
   const specs: VariableSpec[] = [APP_NAME_VARIABLE];
   const tunnel = tunnelMode(plan);
@@ -75,7 +76,6 @@ function variables(
       ...keyVariables(checkKey),
     );
   }
-  const zone = zoneUse(plan);
   if (zone !== undefined) specs.push(...zoneVariables(zone));
   return [...specs, ...(pieces?.variables ?? [])];
 }
@@ -95,10 +95,10 @@ function mainTf(
   extras: readonly ExtraServerCall[],
   providers: readonly ProviderText[],
   checkKey: boolean,
+  zone: ZoneUse | undefined,
 ): string {
   const lines = [rootHeader(plan), ""];
   for (const provider of providers) lines.push(...providerBlock(provider));
-  const zone = zoneUse(plan);
   if (zone !== undefined) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
   lines.push(...(extras.length > 0 ? OWN_NOTE_WITH_EXTRAS : OWN_NOTE));
   if (!tunnelMode(plan)) lines.push("#", ...ADDRESS_NOTE);
@@ -168,8 +168,8 @@ export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
       ...providers.map((provider) => provider.terraformProvider),
       ...(zone !== undefined ? [CLOUDFLARE_PROVIDER] : []),
     ]),
-    main: mainTf(plan, pieces, extras, providers, checkKey),
-    variables: variablesTf(plan, variables(plan, pieces, extras, checkKey)),
+    main: mainTf(plan, pieces, extras, providers, checkKey, zone),
+    variables: variablesTf(plan, variables(plan, pieces, extras, checkKey, zone)),
     outputs: outputsTf(plan, pieces, extras),
     tfvars: {
       app_name: plan.app.name,

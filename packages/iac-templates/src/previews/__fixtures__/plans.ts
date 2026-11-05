@@ -16,7 +16,13 @@ export const IMAGE_NAME = "ghcr.io/example-org/example-app";
 export const REPOSITORY = "example-org/example-app";
 
 export interface PreviewPlanOptions {
-  /** The app's name (default `shop-preview`). */
+  /** The server's provider (default Hetzner). */
+  provider?: "hetzner" | "digitalocean" | "own";
+  /** A further app's key (default none: the first app). */
+  key?: string;
+  /** `environment.secrets` (default none). */
+  secrets?: "environment";
+  /** The app's name (default `shop-preview`, or `<key>-preview`). */
   name?: string;
   /** Postgres (`db`) on the server (default true). */
   postgres?: boolean;
@@ -36,15 +42,20 @@ export interface PreviewPlanOptions {
   strategy?: "rolling" | "recreate";
 }
 
-/** A preview environment's plan for `shop`: Postgres, a worker, a cron job, a release command and a seed. */
+/**
+ * A preview environment's plan, as design writes it (ADR 0026): the environment `preview` of
+ * `shop` on Hetzner, with Postgres, a worker, a cron job, a release command and a seed, previews at
+ * `pr-<n>.shop.example.com` in the zone example.com, DNS only, with no domain of its own.
+ */
 export function previewPlan(o: PreviewPlanOptions = {}): DeployPlan {
-  const base = testPlan({ postgres: o.postgres ?? true });
+  const base = testPlan({ provider: o.provider ?? "hetzner", postgres: o.postgres ?? true });
   const processes = o.processes ?? true;
   return DeployPlanSchema.parse({
     ...base,
     app: {
       ...base.app,
-      name: o.name ?? "shop-preview",
+      ...(o.key === undefined ? {} : { key: o.key }),
+      name: o.name ?? `${o.key ?? "shop"}-preview`,
       ...(o.release === null ? {} : { releaseCommand: o.release ?? "npm run migrate" }),
     },
     target: { ...base.target, ...(o.edge === undefined ? {} : { edge: o.edge }) },
@@ -58,6 +69,7 @@ export function previewPlan(o: PreviewPlanOptions = {}): DeployPlan {
       : { workers: [], cron: [] },
     environment: {
       name: "preview",
+      ...(o.secrets === undefined ? {} : { secrets: o.secrets }),
       deploySource: { from: "main" },
       runner: "github",
       previews: {
@@ -68,6 +80,9 @@ export function previewPlan(o: PreviewPlanOptions = {}): DeployPlan {
       },
     },
     dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
+    // The environment's own folder and workflow file (infraDirFor, workflowPathFor).
+    infra: {},
+    cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: { ...base.security, httpAllowedFrom: "any" },
   });
 }

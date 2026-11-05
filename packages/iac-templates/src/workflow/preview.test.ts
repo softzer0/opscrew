@@ -10,8 +10,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { ACTIONS } from "../pins";
+import { previewPlan } from "../previews/__fixtures__/plans";
 import { withBuild } from "./__fixtures__/plans";
-import { previewPlan } from "./__fixtures__/previews";
 import { pushPaths } from "./paths";
 import { previewWorkflowPath, renderPreviewWorkflow } from "./preview";
 

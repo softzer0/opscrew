@@ -45,6 +45,14 @@ export function workflowPathFor(app?: string, env?: string): string {
 }
 
 /**
+ * The preview workflow of an app: `.github/workflows/opscrew-preview[-<key>].yml` (the first
+ * app's: `opscrew-preview.yml`).
+ */
+export function previewWorkflowPathFor(app?: string): string {
+  return `.github/workflows/opscrew-preview${app === undefined ? "" : `-${app}`}.yml`;
+}
+
+/**
  * The infrastructure root of an app's environment: `opscrew/infra/prod` for the first app's prod,
  * `opscrew/infra/<env>` for its other environments, `opscrew/infra/<key>` and
  * `opscrew/infra/<key>-<env>` for a further app.

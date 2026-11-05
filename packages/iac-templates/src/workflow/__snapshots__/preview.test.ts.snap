@@ -354,6 +354,15 @@ jobs:
                   "X-GitHub-Api-Version": "2022-11-28",
                 },
               });
+            const pages = async (path, what, field) => {
+              const all = [];
+              for (let page = 1; ; page++) {
+                const body = await read(await github("GET", path + (path.includes("?") ? "&" : "?") + "per_page=100&page=" + page), what);
+                const batch = field === undefined ? body : body[field];
+                all.push(...batch);
+                if (batch.length < 100) return all;
+              }
+            };
             const packageVersions = async () => {
               const user = await read(await github("GET", "/users/" + owner), "The GitHub users API");
               return (
@@ -363,14 +372,12 @@ jobs:
             };
             // The package's versions, and what each tagged or protected one lists.
             const survey = async (base, protect) => {
-              const versions = [];
-              for (let page = 1; ; page++) {
-                const batch = await read(await github("GET", base + "?per_page=100&page=" + page), "The GitHub packages API");
-                for (const v of batch) {
-                  versions.push({ id: v.id, digest: v.name, tags: v.metadata.container.tags, created: v.created_at });
-                }
-                if (batch.length < 100) break;
-              }
+              const versions = (await pages(base, "The GitHub packages API")).map((v) => ({
+                id: v.id,
+                digest: v.name,
+                tags: v.metadata.container.tags,
+                created: v.created_at,
+              }));
               const basic = Buffer.from(process.env.GITHUB_ACTOR + ":" + token).toString("base64");
               const scope = "repository:" + owner + "/" + name + ":pull";
               const login = await read(
@@ -429,15 +436,8 @@ jobs:
             try {
               const base = await packageVersions();
               const { versions, children } = await readPackage(base, running === null ? [] : [running]);
-              const open = [];
-              for (let page = 1; ; page++) {
-                const batch = await read(
-                  await github("GET", "/repos/" + owner + "/" + repo + "/pulls?state=open&per_page=100&page=" + page),
-                  "The GitHub pull requests API",
-                );
-                for (const pull of batch) open.push(pull.number);
-                if (batch.length < 100) break;
-              }
+              const pulls = await pages("/repos/" + owner + "/" + repo + "/pulls?state=open", "The GitHub pull requests API");
+              const open = pulls.map((pull) => pull.number);
               const ids = new Set(previewPrunable(versions, children, open, number, running));
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + " of pull requests' images.");
               deleting = true;
@@ -596,6 +596,15 @@ jobs:
                   "X-GitHub-Api-Version": "2022-11-28",
                 },
               });
+            const pages = async (path, what, field) => {
+              const all = [];
+              for (let page = 1; ; page++) {
+                const body = await read(await github("GET", path + (path.includes("?") ? "&" : "?") + "per_page=100&page=" + page), what);
+                const batch = field === undefined ? body : body[field];
+                all.push(...batch);
+                if (batch.length < 100) return all;
+              }
+            };
             const packageVersions = async () => {
               const user = await read(await github("GET", "/users/" + owner), "The GitHub users API");
               return (
@@ -605,14 +614,12 @@ jobs:
             };
             // The package's versions, and what each tagged or protected one lists.
             const survey = async (base, protect) => {
-              const versions = [];
-              for (let page = 1; ; page++) {
-                const batch = await read(await github("GET", base + "?per_page=100&page=" + page), "The GitHub packages API");
-                for (const v of batch) {
-                  versions.push({ id: v.id, digest: v.name, tags: v.metadata.container.tags, created: v.created_at });
-                }
-                if (batch.length < 100) break;
-              }
+              const versions = (await pages(base, "The GitHub packages API")).map((v) => ({
+                id: v.id,
+                digest: v.name,
+                tags: v.metadata.container.tags,
+                created: v.created_at,
+              }));
               const basic = Buffer.from(process.env.GITHUB_ACTOR + ":" + token).toString("base64");
               const scope = "repository:" + owner + "/" + name + ":pull";
               const login = await read(
@@ -671,15 +678,8 @@ jobs:
             try {
               const base = await packageVersions();
               const { versions, children } = await readPackage(base, running === null ? [] : [running]);
-              const open = [];
-              for (let page = 1; ; page++) {
-                const batch = await read(
-                  await github("GET", "/repos/" + owner + "/" + repo + "/pulls?state=open&per_page=100&page=" + page),
-                  "The GitHub pull requests API",
-                );
-                for (const pull of batch) open.push(pull.number);
-                if (batch.length < 100) break;
-              }
+              const pulls = await pages("/repos/" + owner + "/" + repo + "/pulls?state=open", "The GitHub pull requests API");
+              const open = pulls.map((pull) => pull.number);
               const ids = new Set(previewPrunable(versions, children, open, number, running));
               console.log("The package has " + versions.length + " image versions; deleting " + ids.size + " of pull requests' images.");
               deleting = true;

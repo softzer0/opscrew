@@ -11,7 +11,6 @@ import {
   TOKEN,
   VALUES,
 } from "./__fixtures__/server";
-import { START_FAILURES } from "./script";
 
 /*
  * opscrew-preview under sh against a fake preview server (shims for docker, kamal-proxy and flock):
@@ -328,10 +327,6 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
         expect(s.state("docker.log"), step).not.toContain("docker ran seed");
         noLeak(s, [result]);
       }
-      // The start script prints these lines when those steps fail.
-      expect(Object.values(START_FAILURES).every((line) => line.startsWith("::error::"))).toBe(
-        true,
-      );
     });
 
     it("refuses a new preview at the cap, counted under the recipe's lock, and changes nothing", () => {

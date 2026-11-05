@@ -3,7 +3,6 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
-import { MANIFEST_ACCEPT } from "../registry";
 import {
   inEnvironment,
   jobYaml,
@@ -12,15 +11,23 @@ import {
   withBuild,
   withPlan,
 } from "./__fixtures__/plans";
+import {
+  at,
+  commit,
+  digest,
+  type FakeProcess,
+  type Fetch,
+  ids,
+  LATER,
+  load,
+  push,
+  registry,
+  type Version,
+  version,
+} from "./__fixtures__/registry";
 import { renderWorkflow } from "./index";
 import { retentionScript } from "./retention";
 
-interface Version {
-  id: number;
-  digest: string;
-  tags: string[];
-  created: string;
-}
 type Prunable = (
   versions: Version[],
   children: Record<string, string[]>,
@@ -30,62 +37,9 @@ type Prunable = (
   environments: string[],
   previewsBefore: number,
 ) => number[];
-type FakeProcess = { env: Record<string, string>; exitCode?: number };
-type Fetch = (
-  url: string,
-  init?: { method?: string; headers?: Record<string, string> },
-) => Promise<{
-  ok: boolean;
-  status: number;
-  json: () => Promise<unknown>;
-}>;
-
-/** `hour` hours into October 2026, in milliseconds. */
-const at = (hour: number) => Date.UTC(2026, 9, 1) + hour * 3_600_000;
-/** November 2026: after every version the tests make, so none of them is recent. */
-const LATER = Date.UTC(2026, 10, 1);
-
-/**
- * Runs `script` (the step's program) with fakes, its clock (`Date.now()`) at `now` (default
- * {@link LATER}); returns `prunable` and `main`.
- */
-function load(
-  script: string,
-  fakes: { process?: FakeProcess; fetch?: Fetch; log?: string[]; now?: number } = {},
-) {
-  const console = { log: (line: string) => fakes.log?.push(line) };
-  const now = fakes.now ?? LATER;
-  const FakeDate = class extends Date {
-    static override now() {
-      return now;
-    }
-  };
-  // The workflow runs this text with Node.js; here it gets fake globals instead. Its waits pass
-  // at once.
-  const setTimeout = (resolve: () => void) => resolve();
-  const factory = new Function(
-    "process",
-    "fetch",
-    "console",
-    "Date",
-    "setTimeout",
-    `${script.replace(/main\(\);\s*$/, "")}\nreturn { prunable, main };`,
-  );
-  return factory(fakes.process, fakes.fetch, console, FakeDate, setTimeout) as {
-    prunable: Prunable;
-    main: () => Promise<void>;
-  };
-}
 
 /** The app's environments the `prunable` tests have, unless a test names others. */
 const ENVIRONMENTS = ["prod", "staging", "qa", "eu-staging"];
-
-/** The repository's workflows, as GitHub lists them: prod's and staging's OpsCrew deploy ones. */
-const WORKFLOWS = [
-  { name: "OpsCrew deploy", state: "active" },
-  { name: "OpsCrew deploy (staging)", state: "active" },
-  { name: "CI", state: "active" },
-];
 
 /** The server plan of the environment `name` (prod's for `prod`). */
 const planOf = (name: string) =>
@@ -97,7 +51,7 @@ const planOf = (name: string) =>
  * unless `previewsBefore` says so.
  */
 function selection(environment: string) {
-  const loaded = load(retentionScript(planOf(environment))).prunable;
+  const loaded = load<Prunable>(retentionScript(planOf(environment)), "prunable").select;
   return (
     versions: Version[],
     children: Record<string, string[]>,
@@ -110,38 +64,6 @@ function selection(environment: string) {
 }
 
 const prunable = selection("prod");
-
-const commit = (n: number) => n.toString(16).padStart(40, "0");
-/** A digest starting with `prefix`, filled with `fill`. */
-const digest = (prefix: string, fill: string) => `sha256:${prefix.padEnd(64, fill)}`;
-let nextId = 1;
-/** A package version created `hour` hours into October 2026 (ids grow in listing order). */
-const version = (d: string, tags: string[], hour: number): Version => ({
-  id: nextId++,
-  digest: d,
-  tags,
-  created: new Date(at(hour)).toISOString(),
-});
-/**
- * A sealed push of commit `hour`: the tagged index plus its two untagged children (the platform
- * image and the attestation manifest), as GHCR lists them.
- */
-function push(c: string, hour: number, tags: string[] = [commit(hour)]) {
-  const index = version(digest(c, "0"), tags, hour);
-  const image = version(digest(c, "1"), [], hour);
-  const attestation = version(digest(c, "2"), [], hour);
-  return {
-    index,
-    image,
-    attestation,
-    versions: [index, image, attestation],
-    children: { [index.digest]: [image.digest, attestation.digest] },
-  };
-}
-
-function ids(versions: Version[]) {
-  return versions.map((v) => v.id).sort((a, b) => a - b);
-}
 
 describe("prunable", () => {
   const pushes = ["a", "b", "c", "d", "e"].map((c, i) => push(c, i + 1));
@@ -472,89 +394,6 @@ describe("the retention step's program", () => {
   const RUNNING = `ghcr.io/acme/shop@${digest("e", "0")}`;
   const PREVIOUS = `ghcr.io/acme/shop@${digest("d", "0")}`;
 
-  /** A fake GitHub API and registry for `pushes` of package `acme/<pkg>` (default `acme/shop`). */
-  function github(o: {
-    /** The package's name: the repository's, or a further app's `<repo>/<key>`. */
-    pkg?: string;
-    type?: "User" | "Organization";
-    pushes: { versions: Version[]; children: Record<string, string[]> }[];
-    failManifest?: boolean;
-    /** How many manifest reads answer 404 first, as when another environment's deploy deletes. */
-    goneManifests?: number;
-    failDelete?: number[];
-    goneDelete?: number[];
-    /** The repository's workflows (default: prod's and staging's OpsCrew deploy workflows). */
-    workflows?: { name: string; state: string }[];
-  }) {
-    const calls: string[] = [];
-    const listed = o.pushes.flatMap((p) => p.versions);
-    const children: Record<string, string[]> = Object.assign(
-      {},
-      ...o.pushes.map((p) => p.children),
-    );
-    const owner = o.type === "Organization" ? "orgs" : "users";
-    const pkg = o.pkg ?? "shop";
-    const fetch: Fetch = async (url, init = {}) => {
-      const method = init.method ?? "GET";
-      calls.push(`${method} ${url}`);
-      const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
-      const notFound = { ok: false, status: 404, json: async () => ({}) };
-      if (url === "https://api.github.com/repos/acme/shop/actions/workflows?per_page=100&page=1") {
-        expect(init.headers?.Authorization).toBe("Bearer token-placeholder");
-        return ok({ workflows: o.workflows ?? WORKFLOWS });
-      }
-      if (url === "https://api.github.com/users/acme") return ok({ type: o.type ?? "User" });
-      const base = `https://api.github.com/${owner}/acme/packages/container/${encodeURIComponent(pkg)}/versions`;
-      const page = new RegExp(`^${base}\\?per_page=100&page=(\\d+)$`).exec(url);
-      if (page) {
-        expect(init.headers?.Authorization).toBe("Bearer token-placeholder");
-        const n = Number(page[1]);
-        return ok(
-          listed.slice((n - 1) * 100, n * 100).map((v) => ({
-            id: v.id,
-            name: v.digest,
-            created_at: v.created,
-            metadata: { package_type: "container", container: { tags: v.tags } },
-          })),
-        );
-      }
-      if (url.startsWith("https://ghcr.io/token?")) {
-        expect(url).toBe(`https://ghcr.io/token?service=ghcr.io&scope=repository:acme/${pkg}:pull`);
-        expect(init.headers?.Authorization).toBe(
-          `Basic ${Buffer.from("octocat:token-placeholder").toString("base64")}`,
-        );
-        return ok({ token: "registry-placeholder" });
-      }
-      const manifest = new RegExp(
-        `^https://ghcr\\.io/v2/acme/${pkg}/manifests/(sha256:[0-9a-f]{64})$`,
-      ).exec(url);
-      if (manifest) {
-        if (o.failManifest) return { ok: false, status: 500, json: async () => ({}) };
-        if ((o.goneManifests ?? 0) > 0) {
-          o.goneManifests = (o.goneManifests ?? 0) - 1;
-          return notFound;
-        }
-        expect(init.headers?.Authorization).toBe("Bearer registry-placeholder");
-        // The same manifest types OpsCrew's own registry lookups ask for.
-        expect(init.headers?.Accept).toBe(MANIFEST_ACCEPT);
-        const list = children[manifest[1] ?? ""];
-        return ok(
-          list === undefined ? { layers: [] } : { manifests: list.map((d) => ({ digest: d })) },
-        );
-      }
-      const del = new RegExp(`^${base}/(\\d+)$`).exec(url);
-      if (del && method === "DELETE") {
-        const id = Number(del[1]);
-        if (o.goneDelete?.includes(id)) return notFound;
-        return o.failDelete?.includes(id)
-          ? { ok: false, status: 403, json: async () => ({}) }
-          : { ok: true, status: 204, json: async () => ({}) };
-      }
-      return notFound;
-    };
-    return { fetch, calls, deleted: () => calls.filter((c) => c.startsWith("DELETE")) };
-  }
-
   const env = (extra: Record<string, string> = {}) => ({
     TOKEN: "token-placeholder",
     GITHUB_REPOSITORY: "Acme/Shop",
@@ -576,7 +415,7 @@ describe("the retention step's program", () => {
 
   /** Runs `main` of prod's program (or `text`), its clock at `now` (default {@link LATER}). */
   async function runMain(
-    api: ReturnType<typeof github>,
+    api: ReturnType<typeof registry>,
     extra: Record<string, string> = {},
     o: { text?: string; now?: number } = {},
   ) {
@@ -588,7 +427,7 @@ describe("the retention step's program", () => {
       log,
       ...(o.now === undefined ? {} : { now: o.now }),
     };
-    await load(o.text ?? script, fakes).main();
+    await load(o.text ?? script, "prunable", fakes).main();
     return { exitCode: process.exitCode, log };
   }
 
@@ -606,7 +445,7 @@ describe("the retention step's program", () => {
   it("deletes only staging's older images in staging's workflow, never prod's", async () => {
     // Both environments followed main and built the same commits 1 to 5.
     const staged = [1, 2, 3, 4, 5].map((n) => push(`f${n}`, n, [`${commit(n)}-staging`]));
-    const api = github({ pushes: [...pushes, ...staged] });
+    const api = registry({ pushes: [...pushes, ...staged] });
     const running = staged[4]?.index.digest;
     const result = await runMain(
       api,
@@ -620,7 +459,7 @@ describe("the retention step's program", () => {
   });
 
   it("deletes what prunable selects through the user's packages API", async () => {
-    const api = github({ pushes });
+    const api = registry({ pushes });
     const result = await runMain(api);
     expect(result.exitCode).toBeUndefined();
     expect(api.deleted()).toEqual(
@@ -634,7 +473,7 @@ describe("the retention step's program", () => {
     // Another environment's build pushed its platform manifest a minute ago, its index not yet.
     const pushing = version(digest("6", "4"), [], 10 - 1 / 60);
     const stale = version(digest("6", "5"), [], 10 - 31 / 60);
-    const api = github({ pushes: [...pushes, { versions: [pushing, stale], children: {} }] });
+    const api = registry({ pushes: [...pushes, { versions: [pushing, stale], children: {} }] });
     const result = await runMain(api, {}, { now: at(10) });
     expect(result.exitCode).toBeUndefined();
     expect(api.deleted()).toEqual(
@@ -646,7 +485,7 @@ describe("the retention step's program", () => {
     // The package as GitHub lists it after prod was promoted twice from staging.
     const prodRuns = push("a", 1, [commit(1), "opscrew-prod"]);
     const prodBefore = push("b", 2, [commit(2), "opscrew-prod-previous"]);
-    const api = github({ pushes: [prodRuns, prodBefore, c, push("d", 4), push("e", 5)] });
+    const api = registry({ pushes: [prodRuns, prodBefore, c, push("d", 4), push("e", 5)] });
     const result = await runMain(api);
     expect(result.exitCode).toBeUndefined();
     expect(api.deleted()).toEqual(c.versions.map((v) => `DELETE ${base}/${v.id}`));
@@ -657,7 +496,7 @@ describe("the retention step's program", () => {
     // staging's workflow file was deleted: its labels keep nothing any more.
     const stagingRan = push("a", 1, [commit(1), "opscrew-staging"]);
     const prodBefore = push("b", 2, [commit(2), "opscrew-prod-previous"]);
-    const api = github({
+    const api = registry({
       pushes: [stagingRan, prodBefore, c, push("d", 4), push("e", 5)],
       workflows: [
         { name: "OpsCrew deploy", state: "active" },
@@ -677,7 +516,7 @@ describe("the retention step's program", () => {
     const stagingRuns = push("a", 1, [commit(1), "opscrew-staging"]);
     // qa is the first app's environment: in docs's package its label is a stray one.
     const qaLabel = push("b", 2, [commit(2), "opscrew-qa"]);
-    const api = github({
+    const api = registry({
       pkg: "shop/docs",
       pushes: [stagingRuns, qaLabel, c, push("d", 4), push("e", 5)],
       workflows: [
@@ -705,7 +544,7 @@ describe("the retention step's program", () => {
   });
 
   it("deletes nothing in a further app's workflow when no workflow names that app", async () => {
-    const api = github({ pkg: "shop/docs", pushes });
+    const api = registry({ pkg: "shop/docs", pushes });
     const result = await runMain(api, {}, { text: program(ofApp(serverPlan(), "docs")) });
     expect(result.exitCode).toBe(1);
     expect(api.deleted()).toEqual([]);
@@ -715,7 +554,7 @@ describe("the retention step's program", () => {
   });
 
   it("deletes nothing when the workflows cannot be listed", async () => {
-    const api = github({ pushes });
+    const api = registry({ pushes });
     const failing: Fetch = async (url, init) =>
       url.includes("/actions/workflows")
         ? { ok: false, status: 403, json: async () => ({}) }
@@ -728,7 +567,7 @@ describe("the retention step's program", () => {
 
   it("deletes nothing when no workflow names an OpsCrew environment", async () => {
     // Every deploy workflow's name was edited: no environment's labels could be kept.
-    const api = github({
+    const api = registry({
       pushes,
       workflows: [
         { name: "Deploy", state: "active" },
@@ -745,7 +584,7 @@ describe("the retention step's program", () => {
   });
 
   it("uses the organization's packages API for an organization", async () => {
-    const api = github({ type: "Organization", pushes });
+    const api = registry({ type: "Organization", pushes });
     expect((await runMain(api)).exitCode).toBeUndefined();
     expect(api.deleted()[0]).toMatch(/^DELETE https:\/\/api\.github\.com\/orgs\/acme\//);
   });
@@ -754,7 +593,7 @@ describe("the retention step's program", () => {
     const many = Array.from({ length: 40 }, (_, i) =>
       push((10 + i).toString(16), i, [commit(100 + i)]),
     );
-    const api = github({ pushes: many });
+    const api = registry({ pushes: many });
     const last = many.at(-1)?.index.digest;
     await runMain(api, { IMAGE: `ghcr.io/acme/shop@${last}`, PREVIOUS: "" });
     expect(api.calls.filter((c) => c.includes("/versions?per_page=100"))).toHaveLength(2);
@@ -763,10 +602,10 @@ describe("the retention step's program", () => {
 
   it("deletes only the intermediate images without KEEP", async () => {
     const intermediate = push("9", 5, [`build-${commit(5)}`]);
-    const api = github({ pushes: [...pushes, intermediate] });
+    const api = registry({ pushes: [...pushes, intermediate] });
     const process: FakeProcess = { env: env() };
     delete process.env.KEEP;
-    await load(script, { process, fetch: api.fetch, log: [] }).main();
+    await load(script, "prunable", { process, fetch: api.fetch, log: [] }).main();
     expect(api.deleted()).toEqual(intermediate.versions.map((v) => `DELETE ${base}/${v.id}`));
   });
 
@@ -774,12 +613,12 @@ describe("the retention step's program", () => {
     const old = push("9", 1, [`pr-7-${commit(1)}`]);
     const intermediate = push("8", 1, [`build-pr-7-${commit(1)}`]);
     const young = push("7", 24 * 20, [`pr-9-${commit(2)}`]);
-    const api = github({ pushes: [...pushes, old, intermediate, young] });
+    const api = registry({ pushes: [...pushes, old, intermediate, young] });
     const process: FakeProcess = { env: env() };
     delete process.env.KEEP;
     // November 2nd: October 1st's images are 32 days old, October 21st's 12.
     const now = Date.UTC(2026, 10, 2);
-    await load(script, { process, fetch: api.fetch, log: [], now }).main();
+    await load(script, "prunable", { process, fetch: api.fetch, log: [], now }).main();
     expect(api.deleted().sort()).toEqual(
       [...old.versions, ...intermediate.versions].map((v) => `DELETE ${base}/${v.id}`).sort(),
     );
@@ -789,7 +628,7 @@ describe("the retention step's program", () => {
     ["a previous image that is not a digest", { PREVIOUS: "unknown" }],
     ["no running image", { IMAGE: "" }],
   ])("deletes nothing and fails with %s", async (_, extra) => {
-    const api = github({ pushes });
+    const api = registry({ pushes });
     const result = await runMain(api, extra);
     expect(result.exitCode).toBe(1);
     expect(api.calls).toEqual([]);
@@ -799,7 +638,7 @@ describe("the retention step's program", () => {
   });
 
   it("deletes nothing when a manifest cannot be read", async () => {
-    const api = github({ pushes, failManifest: true });
+    const api = registry({ pushes, failManifest: true });
     const result = await runMain(api);
     expect(result.exitCode).toBe(1);
     expect(api.deleted()).toEqual([]);
@@ -807,7 +646,7 @@ describe("the retention step's program", () => {
   });
 
   it("reads the package again when a version goes while it reads it, then deletes as usual", async () => {
-    const api = github({ pushes, goneManifests: 1 });
+    const api = registry({ pushes, goneManifests: 1 });
     const result = await runMain(api);
     expect(result.exitCode).toBeUndefined();
     expect(result.log).toContain(
@@ -817,7 +656,7 @@ describe("the retention step's program", () => {
   });
 
   it("deletes nothing when a 404 stays after three reads", async () => {
-    const api = github({ pushes, goneManifests: 1000 });
+    const api = registry({ pushes, goneManifests: 1000 });
     const result = await runMain(api);
     expect(result.exitCode).toBe(1);
     expect(api.deleted()).toEqual([]);
@@ -826,7 +665,7 @@ describe("the retention step's program", () => {
 
   it("counts a version another environment's deploy deleted first as deleted", async () => {
     const gone = a.index.id;
-    const api = github({ pushes, goneDelete: [gone] });
+    const api = registry({ pushes, goneDelete: [gone] });
     const result = await runMain(api);
     expect(result.exitCode).toBeUndefined();
     expect(result.log).toContain(`Already deleted: ${a.index.digest} (${commit(1)})`);
@@ -834,7 +673,7 @@ describe("the retention step's program", () => {
 
   it("goes on when a deletion fails, and fails the step", async () => {
     const refused = a.index.id;
-    const api = github({ pushes, failDelete: [refused] });
+    const api = registry({ pushes, failDelete: [refused] });
     const result = await runMain(api);
     expect(api.deleted()).toHaveLength(9);
     expect(result.exitCode).toBe(1);

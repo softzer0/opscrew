@@ -10,7 +10,32 @@ import {
 } from "./shared";
 
 /** How many days a pull request's image stays before every deploy workflow's prune deletes it. */
-export const PREVIEW_IMAGE_DAYS = 31;
+const PREVIEW_IMAGE_DAYS = 31;
+
+/**
+ * A pull request's image tag in the image programs, `pr-<n>-<commit>` or its intermediate
+ * `build-pr-<n>-<commit>`, the number its group.
+ */
+export const PULL_TAG = "^(?:build-)?pr-([1-9][0-9]{0,5})-[0-9a-f]{40}$";
+
+/**
+ * The JavaScript the image programs' selections share, inside them (indented for it, beside their
+ * `children` parameter): `reach(digests)`, the digests, everything they list, and what that lists
+ * in turn.
+ */
+export const REACH = `const reach = (digests) => {
+    const seen = new Set(digests);
+    const queue = [...digests];
+    while (queue.length > 0) {
+      for (const digest of children[queue.pop()] || []) {
+        if (!seen.has(digest)) {
+          seen.add(digest);
+          queue.push(digest);
+        }
+      }
+    }
+    return seen;
+  };`;
 
 /**
  * The JavaScript the image programs share, inside their `main` (indented for it), for the app's
@@ -20,7 +45,8 @@ export const PREVIEW_IMAGE_DAYS = 31;
  * `readPackage(base, protect)`, the versions and what each tagged or protected one lists, read again
  * while a version goes during the reading; and `deleteVersions(base, versions, ids)`, which deletes
  * those `ids` and returns how many GitHub did not delete. They read `GITHUB_REPOSITORY`,
- * `GITHUB_ACTOR` and `TOKEN`.
+ * `GITHUB_ACTOR` and `TOKEN`. `pages(path, what, field)` reads every page of a GitHub API list
+ * (`what` names the API in errors; `field`, when given, is the answer's list).
  */
 export function registryCode(plan: AppEnvironment): string {
   const key = plan.app.key;
@@ -43,6 +69,15 @@ export function registryCode(plan: AppEnvironment): string {
         "X-GitHub-Api-Version": "2022-11-28",
       },
     });
+  const pages = async (path, what, field) => {
+    const all = [];
+    for (let page = 1; ; page++) {
+      const body = await read(await github("GET", path + (path.includes("?") ? "&" : "?") + "per_page=100&page=" + page), what);
+      const batch = field === undefined ? body : body[field];
+      all.push(...batch);
+      if (batch.length < 100) return all;
+    }
+  };
   const packageVersions = async () => {
     const user = await read(await github("GET", "/users/" + owner), "The GitHub users API");
     return (
@@ -52,14 +87,12 @@ export function registryCode(plan: AppEnvironment): string {
   };
   // The package's versions, and what each tagged or protected one lists.
   const survey = async (base, protect) => {
-    const versions = [];
-    for (let page = 1; ; page++) {
-      const batch = await read(await github("GET", base + "?per_page=100&page=" + page), "The GitHub packages API");
-      for (const v of batch) {
-        versions.push({ id: v.id, digest: v.name, tags: v.metadata.container.tags, created: v.created_at });
-      }
-      if (batch.length < 100) break;
-    }
+    const versions = (await pages(base, "The GitHub packages API")).map((v) => ({
+      id: v.id,
+      digest: v.name,
+      tags: v.metadata.container.tags,
+      created: v.created_at,
+    }));
     const basic = Buffer.from(process.env.GITHUB_ACTOR + ":" + token).toString("base64");
     const scope = "repository:" + owner + "/" + name + ":pull";
     const login = await read(
@@ -177,7 +210,7 @@ export function retentionScript(plan: AppEnvironment): string {
 function prunable(versions, children, keep, protect, recent, environments, previewsBefore) {
   const commit = (tag) => /^${own("[0-9a-f]{40}")}$/.test(tag);
   const build = (tag) => /^build-${own("[0-9a-f]{40}")}$/.test(tag);
-  const pull = (tag) => /^(?:build-)?pr-[1-9][0-9]{0,5}-[0-9a-f]{40}$/.test(tag);
+  const pull = (tag) => /${PULL_TAG}/.test(tag);
   const oldPull = (v) => v.tags.length > 0 && v.tags.every(pull) && Date.parse(v.created) < previewsBefore;
   const labels = new Set(environments.flatMap((env) => ["opscrew-" + env, "opscrew-" + env + "-previous"]));
   const label = (tag) => labels.has(tag);
@@ -204,16 +237,8 @@ function prunable(versions, children, keep, protect, recent, environments, previ
   }
 
   // Everything a kept version lists, and what that lists in turn, stays.
-  const reachable = new Set(kept);
-  const queue = [...kept];
-  while (queue.length > 0) {
-    for (const digest of children[queue.pop()] || []) {
-      if (!reachable.has(digest)) {
-        reachable.add(digest);
-        queue.push(digest);
-      }
-    }
-  }
+  ${REACH}
+  const reachable = reach(kept);
   const goes = (v) => !reachable.has(v.digest);
   const listedByDeleted = listed(versions.filter((v) => v.tags.length > 0 && goes(v)).map((v) => v.digest));
   // Another environment's build pushes its platform manifests and attestations untagged, moments
@@ -250,16 +275,10 @@ async function main() {
     // The app's environments: each has its OpsCrew deploy workflow, named "${workflow}" (prod)
     // or "${workflow} (<env>)".
     const environments = [];
-    for (let page = 1; ; page++) {
-      const batch = await read(
-        await github("GET", "/repos/" + owner + "/" + repo + "/actions/workflows?per_page=100&page=" + page),
-        "The GitHub workflows API",
-      );
-      for (const w of batch.workflows) {
-        const match = /^${workflow}(?: \(([a-z][a-z0-9-]*)\))?$/.exec(w.name);
-        if (match && w.state !== "deleted") environments.push(match[1] || "prod");
-      }
-      if (batch.workflows.length < 100) break;
+    const workflows = await pages("/repos/" + owner + "/" + repo + "/actions/workflows", "The GitHub workflows API", "workflows");
+    for (const w of workflows) {
+      const match = /^${workflow}(?: \(([a-z][a-z0-9-]*)\))?$/.exec(w.name);
+      if (match && w.state !== "deleted") environments.push(match[1] || "prod");
     }
     // None found means the workflows were renamed: no environment's labels could be kept.
     if (environments.length === 0) {

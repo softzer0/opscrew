@@ -15,8 +15,8 @@ import {
   testServices,
 } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
+import { previewPlan } from "../previews/__fixtures__/plans";
 import type { RenderContext, RenderedFile } from "../types";
-import { previewPlan } from "../workflow/__fixtures__/previews";
 import { splitPlan } from "./__fixtures__/servers";
 import { MOVE_LAYOUTS, moveLayout, renderInfra, tfvars } from "./index";
 

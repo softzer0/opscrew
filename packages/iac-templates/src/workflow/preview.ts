@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are bash and GitHub Actions syntax, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan, Previews } from "@opscrew/plan-schema";
+import { type DeployPlan, type Previews, previewWorkflowPathFor } from "@opscrew/plan-schema";
 import type { RenderContext, RenderedFile } from "../types";
 import { buildJob, buildReads } from "./build";
 import { checkSshPort, sshKeySetup, sshOptsLine } from "./index";
@@ -54,8 +54,7 @@ function previewsOf(plan: DeployPlan): Previews {
  * app's `opscrew-preview-<key>.yml`.
  */
 export function previewWorkflowPath(plan: Pick<DeployPlan, "app">): string {
-  const key = plan.app.key;
-  return `.github/workflows/opscrew-preview${key === undefined ? "" : `-${key}`}.yml`;
+  return previewWorkflowPathFor(plan.app.key);
 }
 
 /** Escapes `text` for bash's double quotes, leaving `$name` references to expand. */

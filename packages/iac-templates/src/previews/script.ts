@@ -13,6 +13,12 @@ export const PREVIEW_SECRET_FORMATS = ["hex32", "hex64", "b64k32", "gk"] as cons
 /** One of {@link PREVIEW_SECRET_FORMATS}. */
 export type PreviewSecretFormat = (typeof PREVIEW_SECRET_FORMATS)[number];
 
+/**
+ * Every `@SECRET:<name>:<format>@` placeholder (an extended regular expression, for JavaScript and
+ * `grep -E`), the format its group.
+ */
+export const PREVIEW_SECRET_PLACEHOLDER = `@SECRET:[A-Za-z][A-Za-z0-9_-]*:(${PREVIEW_SECRET_FORMATS.join("|")})@`;
+
 /** A generated value's name in a placeholder: a letter, then letters, digits, `_` or `-`. */
 export const PREVIEW_SECRET_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
@@ -20,7 +26,7 @@ export const PREVIEW_SECRET_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
  * How `opscrew-preview` tells which step of the start script failed: the start of the line that
  * step prints (`switchCommands`' messages); any other failure is the step `start`.
  */
-export const START_FAILURES = {
+const START_FAILURES = {
   release: "::error::The release command (app.releaseCommand in ",
   edge: "::error::OpsCrew's shared edge on the server ",
   health: "::error::The new version did not pass its health check ",
@@ -106,13 +112,7 @@ finish() {
 
 # The registry login goes when the script ends; an error nobody expected fails the step it was in.
 on_exit() {
-  if [ -n "$docker_config" ]; then rm -rf "$docker_config"; fi
-  if [ -z "$finished" ]; then
-    finished=1
-    if [ -n "$log_as" ]; then record failed; fi
-    echo "opscrew-preview: failed $step"
-    exit 4
-  fi
+  if [ -z "$finished" ]; then finish failed "$step" 4; fi
 }
 trap on_exit EXIT
 
@@ -260,7 +260,7 @@ fill() {
     umask 077
     touch "$P/secrets.env"
     printf 's|@N@|%s|g\\n' "$n" > "$script"
-    for placeholder in $(grep -rhoE '@SECRET:[A-Za-z][A-Za-z0-9_-]*:(${PREVIEW_SECRET_FORMATS.join("|")})@' "$RECIPE/template" | sort -u); do
+    for placeholder in $(grep -rhoE '${PREVIEW_SECRET_PLACEHOLDER}' "$RECIPE/template" | sort -u); do
       rest="\${placeholder#@SECRET:}"
       name="\${rest%%:*}"
       format="\${rest#*:}"
@@ -316,8 +316,7 @@ up_preview() {
   digest="\${image#"$IMAGE_NAME@"}"
   log_as=up
   enter
-  created="$(field "$P" created "")"
-  if [ -z "$created" ]; then created="$(date +%s)"; fi
+  created="$(field "$P" created "$(date +%s)")"
   # The steps' output can quote data (the seed's): owner-only, as the release command's log.
   (umask 077 && : > "$P/up.log")
   fill

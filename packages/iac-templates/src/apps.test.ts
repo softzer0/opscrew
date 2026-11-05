@@ -265,9 +265,7 @@ describe("a further app's server workflow", () => {
         '  const name = repo + "/docs";',
       ].join("\n"),
     );
-    expect(prune).toContain(
-      '"/repos/" + owner + "/" + repo + "/actions/workflows?per_page=100&page="',
-    );
+    expect(prune).toContain('"/repos/" + owner + "/" + repo + "/actions/workflows"');
     expect(prune).toContain("/^OpsCrew deploy docs(?: \\(([a-z][a-z0-9-]*)\\))?$/.exec(w.name)");
   });
 
