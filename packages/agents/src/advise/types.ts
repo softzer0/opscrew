@@ -65,7 +65,11 @@ export interface Proposal {
   title: string;
   reasons: Reason[];
   price?: ProposalPrice;
-  apply: { kind: "plan"; change: PlanChange } | { kind: "command"; command: string };
+  /** A plan edit, a command to run, or, with nothing to type, what to do by hand. */
+  apply:
+    | { kind: "plan"; change: PlanChange }
+    | { kind: "command"; command: string }
+    | { kind: "manual"; text: string };
 }
 
 const BasisSchema = z.discriminatedUnion("kind", [
@@ -121,6 +125,7 @@ export const ProposalSchema: z.ZodType<Proposal> = z.object({
   apply: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("plan"), change: PlanChangeSchema }),
     z.object({ kind: z.literal("command"), command: z.string().min(1) }),
+    z.object({ kind: z.literal("manual"), text: z.string().min(1) }),
   ]),
 });
 
@@ -222,6 +227,11 @@ export interface Readings {
   check?: IssueDates[];
   /** What couldn't be read, each with why. */
   notRead: string[];
+  /**
+   * What every `opscrew` command a proposal names adds: ` --app …`/` --env …` from commandFlags,
+   * empty for the default; T2107 fills it.
+   */
+  flags: string;
 }
 
 /** What `opscrew advise` reports. */

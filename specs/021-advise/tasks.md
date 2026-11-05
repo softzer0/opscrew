@@ -114,7 +114,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2106 [P] [US6] [US7] [US8] The reliability, upkeep, security and component rules, in `packages/agents/src/advise/rules/{reliability,upkeep,components}.ts`
+- [x] T2106 [P] [US6] [US7] [US8] The reliability, upkeep, security and component rules, in `packages/agents/src/advise/rules/{reliability,upkeep,components}.ts`
   - Owns: `packages/agents/src/advise/rules/{reliability,upkeep,components}.ts` (+ tests, fixtures)
   - Reads: plan.md "4."; data-model.md; research.md R1.4–R1.6; `secops` host checks; 018's `services[].server`
   - Depends: T2102

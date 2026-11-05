@@ -166,7 +166,7 @@ and when the same server costs less elsewhere.
 3. **Given** the scheduled check opened and closed its issue 3 times or more in 14 days, **Then** it
    reports a flapping health check, with the dates, and what to look at.
 4. **Given** a container restarted 3 times or more in 14 days (or its count says so on one
-   reading), **Then** it reports a restart loop, with `opscrew logs --failed` to see why.
+   reading), **Then** it reports a restart loop, with `opscrew logs --service <service>` to see why.
 
 ---
 

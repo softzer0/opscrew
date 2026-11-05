@@ -436,6 +436,17 @@ export const HOST_CHECKS: readonly HostCheck[] = [
   pendingSecurityUpdates,
 ];
 
+/** The start of the message of a check whose command could not run. */
+const COULD_NOT_RUN = "Could not run the check: ";
+
+/**
+ * True for a result {@link runHostChecks} gave because the check's command could not run: a
+ * `warn` whose message carries the error (which may name the server), not a finding.
+ */
+export function couldNotRun(result: CheckResult): boolean {
+  return result.message.startsWith(COULD_NOT_RUN);
+}
+
 /**
  * Runs every host check over `remote`. A check whose command fails to run is reported as `warn`
  * with the reason instead of stopping the others.
@@ -455,7 +466,7 @@ export async function runHostChecks(
         title: hostCheck.title,
         severity: hostCheck.severity,
         status: "warn",
-        message: `Could not run the check: ${error instanceof Error ? error.message : String(error)}`,
+        message: `${COULD_NOT_RUN}${error instanceof Error ? error.message : String(error)}`,
         target: remote.host,
       });
     }

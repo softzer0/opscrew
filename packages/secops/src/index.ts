@@ -26,6 +26,7 @@ export {
   CERTIFICATE_WARN_DAYS,
   certbotFailureCommand,
   certificateHostChecks,
+  couldNotRun,
   DISK_HIGH_PERCENT,
   DISK_WARN_PERCENT,
   daysLeft,

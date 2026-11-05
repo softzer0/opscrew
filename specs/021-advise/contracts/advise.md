@@ -21,7 +21,7 @@ export type PlanChange =
 export interface Proposal {
   id: string; category: ProposalCategory; urgency: Urgency; server?: string;
   title: string; reasons: Reason[]; price?: ProposalPrice;
-  apply: { kind: "plan"; change: PlanChange } | { kind: "command"; command: string };
+  apply: { kind: "plan"; change: PlanChange } | { kind: "command"; command: string } | { kind: "manual"; text: string };
 }
 export const ProposalSchema: z.ZodType<Proposal>;           // for the CLI's --json and MCP
 export const THRESHOLDS: Readonly<{ ... }>;                  // data-model.md
@@ -30,7 +30,7 @@ export interface ServerHistory {                             // T2104 fills
   notRead?: string[];                                        // a query that failed, figures that stopped (no address)
   containers: { service: string; memoryP95?: number; memoryMax?: number; limit?: number; restarts?: number; oomKills?: number }[];
 }
-export interface Readings { at: string; ... }                // `at`: when read (deps.clock, ISO); per server now/history, plan, requirements, prices, upkeep, check, notRead
+export interface Readings { at: string; flags: string; ... } // `at`: when read (deps.clock, ISO); `flags`: commandFlags; per server now/history, plan, requirements, prices, upkeep, check, notRead
 export interface AdviceReport { proposals: Proposal[]; basis: Record<string, Basis>; checked: string[]; notRead: string[] }
 ```
 

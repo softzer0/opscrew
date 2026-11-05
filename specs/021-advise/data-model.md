@@ -6,14 +6,14 @@ Nothing new is stored: advise reads, and `--apply` writes only fields the plan a
 
 | Field | Type | Rule |
 |---|---|---|
-| `id` | string | Stable across runs for the same finding: `<category>.<server or "env">.<what>`, e.g. `size.app.larger`, `reliability.env.backups`, `upkeep.env.github-token`. |
+| `id` | string | Stable across runs for the same finding: `<category>.<server or "env">.<what>`, e.g. `size.app.larger`, `reliability.app.backups`, `upkeep.env.github-token`. |
 | `category` | `size` \| `cost` \| `reliability` \| `upkeep` \| `security` \| `components` \| `moving` | |
-| `urgency` | `now` \| `soon` \| `when-convenient` | `now`: about to break (disk full within 7 days, memory at its limit, a token expiring within 7 days, a reboot pending for security updates). `soon`: security findings, a disk within 30 days, over budget. The rest `when-convenient`. |
+| `urgency` | `now` \| `soon` \| `when-convenient` | `now`: about to break (disk full within 7 days, memory at its limit, a token expiring within 7 days, a reboot pending for security updates). `soon`: security findings (Dependabot alerts off included), a disk within 30 days, a short server, a restart loop, a flapping check, over budget. The rest `when-convenient`. |
 | `server` | string? | The plan's name (`app` or an extra server) when it concerns one. |
 | `title` | string | One line, the change. |
 | `reasons` | `{ text, figure?, basis }[]` | `basis`: `{ kind: "history", days }` or `{ kind: "one-reading", at }`, or `{ kind: "plan" }` / `{ kind: "account" }` for facts not measured. |
 | `price` | `{ before, after, currency, source: "live" \| "static", asOf? }`? | Monthly, net. Absent when nothing changes in price. |
-| `apply` | `{ kind: "plan", change }` \| `{ kind: "command", command }` | `change`: one of the plan edits below. |
+| `apply` | `{ kind: "plan", change }` \| `{ kind: "command", command }` \| `{ kind: "manual", text }` | `change`: one of the plan edits below; `command`: a real command, with the environment's `--app`/`--env` flags; `manual`: what to do where there is nothing to type. |
 
 **Plan edits `--apply` can make:**
 

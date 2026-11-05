@@ -86,20 +86,17 @@ function cheapestFirst(a: ComputeOffer, b: ComputeOffer): number {
 }
 
 /**
- * The smallest server type of `catalog` in `location` for a server that runs only `services` (and
- * `addons`): the cheapest available x86 type that is not deprecated, whose memory holds what
- * {@link extraServerNeed} asks for and whose disk has at least `minDiskGb`; `undefined` when none
- * does.
+ * The cheapest of `offers` in `location` for a server that needs `need`: available x86 types that
+ * are not deprecated, whose memory and vCPUs hold it and whose disk has at least `minDiskGb`;
+ * `undefined` when none does.
  */
-export async function sizeExtraServer(
-  catalog: ComputeCatalog,
+export function cheapestServerOffer(
+  offers: readonly ComputeOffer[],
   location: string,
-  services: readonly PlanService[],
+  need: { memoryMb: number; vcpus: number },
   minDiskGb = 0,
-  addons: readonly MemoryLimit[] = [],
-): Promise<ComputeOffer | undefined> {
-  const need = extraServerNeed(services, addons);
-  return (await catalog.listOffers(location))
+): ComputeOffer | undefined {
+  return offers
     .filter(
       (offer) =>
         offer.location === location &&
@@ -111,6 +108,21 @@ export async function sizeExtraServer(
         offer.diskGb >= minDiskGb,
     )
     .sort(cheapestFirst)[0];
+}
+
+/**
+ * The smallest server type of `catalog` in `location` for a server that runs only `services` (and
+ * `addons`): {@link cheapestServerOffer} for what {@link extraServerNeed} asks for.
+ */
+export async function sizeExtraServer(
+  catalog: ComputeCatalog,
+  location: string,
+  services: readonly PlanService[],
+  minDiskGb = 0,
+  addons: readonly MemoryLimit[] = [],
+): Promise<ComputeOffer | undefined> {
+  const need = extraServerNeed(services, addons);
+  return cheapestServerOffer(await catalog.listOffers(location), location, need, minDiskGb);
 }
 
 /** {@link designCloudServer}'s input. */

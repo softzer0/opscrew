@@ -105,7 +105,7 @@ const proposals: Proposal[] = [
     urgency: "soon",
     title: "Turn on Dependabot alerts",
     reasons: [{ text: "Dependabot alerts are off", basis: { kind: "account" } }],
-    apply: { kind: "command", command: "Settings, Code security: Dependabot alerts" },
+    apply: { kind: "manual", text: "Turn them on in the repository's Settings, Code security" },
   },
   {
     id: "cost.app.cheaper",
@@ -148,7 +148,7 @@ describe("ProposalSchema", () => {
     expect(kinds((p) => p.urgency).size).toBe(3);
     expect(new Set(proposals.flatMap((p) => p.reasons.map((r) => r.basis.kind))).size).toBe(4);
     expect(kinds((p) => (p.apply.kind === "plan" ? p.apply.change.kind : undefined)).size).toBe(4);
-    expect(kinds((p) => p.apply.kind).size).toBe(2);
+    expect(kinds((p) => p.apply.kind).size).toBe(3);
   });
 
   const malformed: [string, unknown][] = [
@@ -167,6 +167,7 @@ describe("ProposalSchema", () => {
     ["a price without a source", { ...larger, price: { before: 1, after: 2, currency: "EUR" } }],
     ["an unknown apply", { ...larger, apply: { kind: "shell", command: "rm" } }],
     ["a command apply without a command", { ...larger, apply: { kind: "command" } }],
+    ["a manual apply without text", { ...larger, apply: { kind: "manual", text: "" } }],
     [
       "an unknown plan change",
       { ...larger, apply: { kind: "plan", change: { kind: "region", region: "nbg1" } } },

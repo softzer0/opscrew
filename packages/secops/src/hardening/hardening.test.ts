@@ -1,6 +1,7 @@
 import type { CommandResult, CommandRunner, RemoteExec } from "@opscrew/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  couldNotRun,
   HOST_CHECKS,
   probePorts,
   probeSshPasswordAuth,
@@ -130,8 +131,11 @@ describe("runHostChecks", () => {
     const results = await runHostChecks(
       remote({ "systemctl is-active fail2ban": new Error("connection reset") }),
     );
-    expect(results.find((r) => r.id === "fail2ban")).toMatchObject({ status: "warn" });
+    const fail2ban = results.find((r) => r.id === "fail2ban");
+    expect(fail2ban).toMatchObject({ status: "warn" });
     expect(results).toHaveLength(HOST_CHECKS.length);
+    // Told apart from a check that ran, as advise lists it as not read.
+    expect(results.filter(couldNotRun)).toEqual([fail2ban]);
   });
 
   it("flags unfinished setup and stopped services", async () => {
