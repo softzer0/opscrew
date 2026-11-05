@@ -18,7 +18,8 @@ import { MODULE_FILES } from "../generated/modules";
 import { previewPlan } from "../previews/__fixtures__/plans";
 import type { RenderContext, RenderedFile } from "../types";
 import { splitPlan } from "./__fixtures__/servers";
-import { MOVE_LAYOUTS, moveLayout, renderInfra, tfvars } from "./index";
+import { ADDRESS_PAIRS, movePlan, type SideName, sideTarget } from "./__fixtures__/sides";
+import { MOVE_LAYOUTS, type MoveLayoutName, moveLayout, renderInfra, tfvars } from "./index";
 
 describe("renderInfra on a Portainer target", () => {
   it("renders the Portainer root (portainer.test.ts), never a server root: none here", () => {
@@ -319,6 +320,52 @@ const validatedPlans = {
   "own server preview environment on dev's server below the app's zone": () =>
     previewPlan({ provider: "own", server: "dev", appZone: true }),
 };
+/**
+ * The roots of the moves with an address side, by label: every layout of every such move (DNS
+ * only), and a Portainer side's records adopted. A root that renders the same files as an earlier
+ * one is left out.
+ */
+function addressLayouts(): [string, RenderedFile[]][] {
+  const roots = new Map<string, [string, RenderedFile[]]>();
+  const add = (label: string, files: RenderedFile[]) => {
+    const key = files
+      .filter((f) => f.path.includes("/prod/"))
+      .map((f) => f.content)
+      .join("\0");
+    if (!roots.has(key)) roots.set(key, [label, files]);
+  };
+  const render = (
+    layout: MoveLayoutName,
+    from: SideName,
+    to: SideName,
+    adoptRecords?: RenderContext["adoptRecords"],
+  ) => {
+    const plan = movePlan(to, { proxied: false });
+    const previous = sideTarget(from, { records: adoptRecords === undefined });
+    return renderInfra(
+      plan,
+      ctx({
+        cloudflare: cloudflare(),
+        layout: moveLayout(layout, previous, plan.target),
+        ...(adoptRecords === undefined ? {} : { adoptRecords }),
+      }),
+    );
+  };
+  for (const [from, to] of ADDRESS_PAIRS) {
+    for (const layout of MOVE_LAYOUTS) {
+      add(`the ${layout} layout from ${from} to ${to}`, render(layout, from, to));
+    }
+  }
+  const ids = { a: "a".repeat(32), aaaa: "b".repeat(32), www: "c".repeat(32) };
+  for (const to of ["hetzner", "own", "portainer"] as const) {
+    add(
+      `the switched layout from portainer to ${to}, adopting the records`,
+      render("switched", "portainer", to, ids),
+    );
+  }
+  return [...roots.values()];
+}
+
 /** Context for the validated plans, with the account's one-time PIN login method. */
 const validatedContext = () =>
   ctx({
@@ -517,6 +564,20 @@ describe.skipIf(!runIt)("rendered HCL validates (integration)", () => {
           300_000,
         );
       }
+    }
+
+    // Every layout of the moves with an address side (a server the user owns, Portainer), DNS
+    // only (the AAAA record's condition names each address), and a Portainer side's records
+    // adopted: each different root once, in the same folder as the moves between cloud servers.
+    for (const [label, files] of addressLayouts()) {
+      it.skipIf(!engine)(
+        `validates ${label} with ${name}`,
+        async (test) => {
+          layoutRoot ??= mkdtemp(join(tmpdir(), `opscrew-infra-${name}-layouts-`));
+          await initAndValidate(test, name, bin, await layoutRoot, files);
+        },
+        300_000,
+      );
     }
   }
 });

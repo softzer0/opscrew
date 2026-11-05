@@ -219,17 +219,137 @@ describe("renderInfra for a Portainer target, redeploy mode cloudflare", () => {
   });
 });
 
+describe("renderInfra for a Portainer target, web mode caddy with the records OpsCrew manages", () => {
+  const plan = portainerTestPlan({
+    web: { mode: "caddy", records: true },
+    www: true,
+    proxied: false,
+  });
+  // The records need the zone only: no tunnel, so no account id.
+  const ctx = testContext({ cloudflare: testCloudflare() });
+  const files = renderInfra(plan, ctx);
+  const main = file(files, "prod/main.tf");
+
+  it("points the app's records at the environment's public address", () => {
+    expect(paths(files)).toEqual([
+      "opscrew/infra/prod/versions.tf",
+      "opscrew/infra/prod/main.tf",
+      "opscrew/infra/prod/variables.tf",
+      "opscrew/infra/prod/outputs.tf",
+      "opscrew/infra/prod/terraform.tfvars.json",
+      "opscrew/infra/modules/cloudflare-dns/main.tf",
+      "opscrew/infra/modules/cloudflare-dns/outputs.tf",
+      "opscrew/infra/modules/cloudflare-dns/variables.tf",
+      "opscrew/infra/modules/cloudflare-dns/versions.tf",
+    ]);
+    expect(main).toContain(
+      [
+        'module "dns" {',
+        '  source = "../modules/cloudflare-dns"',
+        "",
+        "  zone_id     = var.cloudflare_zone_id",
+        "  domain      = var.domain",
+        "  ipv4        = var.server_ipv4",
+        "  ipv6        = var.server_ipv6",
+        "  ipv6_record = var.server_ipv6 != null",
+        "  proxied     = var.proxied",
+        "  www         = var.www",
+        "  caa_issuers = var.caa_issuers",
+        "}",
+      ].join("\n"),
+    );
+    expect(main).not.toMatch(/module "(tunnel|portainer_tunnel|access)"|hcloud|digitalocean/);
+    expect(file(files, "prod/outputs.tf")).toBe(
+      [
+        file(files, "prod/outputs.tf").split("\n\n")[0],
+        "",
+        'output "url" {',
+        "  value = module.dns.url",
+        "}",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("keeps the address out of committed files: TF_VAR_server_ipv4 and TF_VAR_server_ipv6", () => {
+    const variables = file(files, "prod/variables.tf");
+    expect(variables).toContain(
+      'variable "server_ipv4" {\n  description = "Public IPv4 address of your Portainer environment. OpsCrew passes it as TF_VAR_server_ipv4 from .opscrew/server.json; it is never written to a committed file."\n  type        = string\n}',
+    );
+    expect(variables).toMatch(/variable "server_ipv6" \{\n[^}]*\n {2}default {5}= null\n\}/);
+    expect(variables).not.toContain("cloudflare_account_id");
+    // Caddy in the app's stack gets the certificates: its authorities in CAA (DNS only).
+    expect(tfvars(plan, ctx)).toEqual({
+      app_name: "shop",
+      domain: "shop.example.com",
+      cloudflare_zone_id: testCloudflare().zoneId,
+      proxied: false,
+      www: true,
+      caa_issuers: ["letsencrypt.org", "sectigo.com"],
+    });
+    expect(main).toContain("TF_VAR_server_ipv4 and TF_VAR_server_ipv6");
+  });
+
+  it("adds the webhook's tunnel and Access with redeploy mode cloudflare", () => {
+    const both = portainerTestPlan({
+      web: { mode: "caddy", records: true },
+      redeploy: "cloudflare",
+    });
+    const bothFiles = renderInfra(both, accountCtx());
+    const bothMain = file(bothFiles, "prod/main.tf");
+    expect(bothMain).toMatch(/module "dns" \{[^}]*ipv4 += var\.server_ipv4\n/);
+    expect(bothMain).toContain('module "portainer_tunnel" {');
+    expect(bothMain).toContain('module "access" {');
+    expect(file(bothFiles, "prod/outputs.tf")).toContain(
+      'output "url" {\n  value = module.dns.url\n}',
+    );
+    expect(Object.keys(tfvars(both, accountCtx()))).toEqual([
+      "app_name",
+      "domain",
+      "cloudflare_zone_id",
+      "proxied",
+      "www",
+      "caa_issuers",
+      "cloudflare_account_id",
+      "portainer_hostname",
+    ]);
+    expect(checkDialect(bothFiles)).toEqual([]);
+  });
+
+  it("renders no records while they are the user's, or without a domain on Cloudflare", () => {
+    for (const p of [
+      portainerTestPlan({ web: { mode: "caddy", records: false } }),
+      portainerTestPlan({ web: { mode: "caddy", records: true }, dnsProvider: "none" }),
+    ]) {
+      expect(renderInfra(p, accountCtx())).toEqual([]);
+    }
+  });
+
+  it("is dialect-neutral and matches the snapshot", () => {
+    expect(checkDialect(files)).toEqual([]);
+    expect(rootFiles(files)).toMatchSnapshot();
+  });
+});
+
 describe("renderInfra for a Portainer target refuses", () => {
-  it("a move layout (a Portainer target never moves)", () => {
+  it("a move layout with a Portainer side served through a Cloudflare Tunnel", () => {
     const refusal = expect.objectContaining({
       code: "PHASE_PRECONDITION",
-      message: expect.stringContaining("not to an app in your existing Portainer"),
+      message: expect.stringContaining("a Portainer environment without a Cloudflare Tunnel"),
       hint: expect.stringContaining("bug in OpsCrew"),
     });
-    const plan = portainerTestPlan();
-    const layout = moveLayout("rename", testTarget("hetzner"), testTarget("digitalocean"));
-    expect(() => renderInfra(plan, accountCtx({ layout }))).toThrow(refusal);
-    expect(() => moveLayout("both", testTarget("hetzner"), plan.target)).toThrow(refusal);
+    for (const plan of [
+      portainerTestPlan({ web: { mode: "tunnel" } }),
+      portainerTestPlan({ web: { mode: "caddy", records: true }, redeploy: "cloudflare" }),
+    ]) {
+      expect(() => moveLayout("both", testTarget("hetzner"), plan.target)).toThrow(refusal);
+      expect(() => moveLayout("both", plan.target, testTarget("hetzner"))).toThrow(refusal);
+    }
+  });
+
+  it("records without the Cloudflare zone id", () => {
+    const plan = portainerTestPlan({ web: { mode: "caddy", records: true } });
+    expect(() => renderInfra(plan, testContext())).toThrow(/Cloudflare zone id is required/);
   });
 
   it("a tunnel without the Cloudflare zone or account id", () => {
@@ -264,6 +384,10 @@ const validated = {
     portainerTestPlan({ web: { mode: "tunnel" }, redeploy: "cloudflare" }),
   "proxy + cloudflare": () =>
     portainerTestPlan({ web: { mode: "proxy", port: 8080 }, redeploy: "cloudflare" }),
+  "caddy with records + updater": () =>
+    portainerTestPlan({ web: { mode: "caddy", records: true }, www: true, proxied: false }),
+  "caddy with records + cloudflare": () =>
+    portainerTestPlan({ web: { mode: "caddy", records: true }, redeploy: "cloudflare" }),
 };
 const validatedContext = () => testContext({ cloudflare: testCloudflareAccount() });
 

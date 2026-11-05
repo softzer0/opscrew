@@ -1,8 +1,20 @@
-import { APP_SERVER, type CloudDeployTarget, type DeployPlan } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type CloudDeployTarget,
+  type DeployPlan,
+  type OwnDeployTarget,
+  type PortainerDeployTarget,
+} from "@opscrew/plan-schema";
 import { MODULE_FILES } from "../generated/modules";
 import { webOnlyFromCloudflare } from "../predicates";
-import { cloudTarget, PROVIDER_TEXT, type ProviderText, type VariablePrefix } from "../providers";
-import type { RenderContext, RenderedFile, ServerModule } from "../types";
+import {
+  cloudTarget,
+  PROVIDER_TEXT,
+  type ProviderText,
+  type VariablePrefix,
+  wrongTarget,
+} from "../providers";
+import type { InfraLayout, LayoutSide, RenderContext, RenderedFile, ServerModule } from "../types";
 import {
   dnsModule,
   previewsCertificatePack,
@@ -27,6 +39,7 @@ import { ownRoot } from "./own";
 import { portainerRoot } from "./portainer";
 import { pagesRoot, workersRoot } from "./serverless";
 import {
+  addressVariables,
   checkKeyArgument,
   type ExtraServerCall,
   extraServerCalls,
@@ -51,6 +64,7 @@ export {
 export { appServerVariables, extraServerVariables } from "./servers";
 export {
   type BucketProvider,
+  PREVIOUS_BUCKET_PROFILE,
   type ProviderBucket,
   providerBucket,
   renderStorage,
@@ -60,10 +74,12 @@ export {
 const OPEN_TO_ALL = ["0.0.0.0/0", "::/0"];
 
 /** Added to `main.tf` below the header while a move is in progress (a layout is given). */
-const MOVE_NOTE = [
-  "# A move to another provider is in progress: `opscrew retarget` manages these files until the",
-  "# move is finished (`opscrew retarget --finish`) or aborted (`opscrew retarget --abort`).",
-].join("\n");
+function moveNote(to: "provider" | "server"): string {
+  return [
+    `# A move to another ${to} is in progress: \`opscrew retarget\` manages these files until the`,
+    "# move is finished (`opscrew retarget --finish`) or aborted (`opscrew retarget --abort`).",
+  ].join("\n");
+}
 
 /** CIDRs allowed to reach ports 80/443: Cloudflare's ranges when proxied and restricted. */
 function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[] {
@@ -72,21 +88,37 @@ function httpAllowedCidrs(plan: DeployPlan, ctx: RenderContext): string[] {
   return OPEN_TO_ALL;
 }
 
-/** A server module call of the root module. */
+/** A server module call of the root module: a side OpsCrew creates. */
 interface ServerCall {
-  module: ServerModule;
+  kind: "module";
+  slot: ServerModule;
   target: CloudDeployTarget;
   /** Prefix of the server's own root variables (`location`, `server_type`, …). */
   prefix: VariablePrefix;
   provider: ProviderText;
 }
 
+/**
+ * A side OpsCrew does not create during a move (a server the user owns, a Portainer
+ * environment): the address the DNS records point at, `var.<prefix>server_ipv4`/`_ipv6`.
+ */
+interface AddressCall {
+  kind: "address";
+  slot: ServerModule;
+  prefix: "" | "previous_";
+  target: OwnDeployTarget | PortainerDeployTarget;
+}
+
 /** What the root module contains, resolved from `ctx.layout` (or the plan's target). */
 interface RootShape {
-  /** `module "server"` first, then `module "server_previous"`. */
+  /** Every side: the `server` slot first, then `server_previous`. */
+  sides: (ServerCall | AddressCall)[];
+  /** The sides that are server modules. */
   servers: ServerCall[];
-  /** The server the DNS module and the `server_*` outputs follow. */
-  live: ServerCall;
+  /** The sides that are addresses. */
+  addresses: AddressCall[];
+  /** The side the DNS module and the `server_*` outputs follow. */
+  live: ServerCall | AddressCall;
   moved?: { from: ServerModule; to: ServerModule };
   /** The plan's extra cloud servers, `module "server_<name>"` each. */
   extras: ExtraServerCall[];
@@ -96,24 +128,33 @@ interface RootShape {
   moving: boolean;
 }
 
+/** The HCL expressions of a side's addresses. */
+function addressesOf(side: ServerCall | AddressCall): { ipv4: string; ipv6: string } {
+  return side.kind === "module"
+    ? { ipv4: `module.${side.slot}.ipv4_address`, ipv6: `module.${side.slot}.ipv6_address` }
+    : { ipv4: `var.${side.prefix}server_ipv4`, ipv6: `var.${side.prefix}server_ipv6` };
+}
+
 /**
  * Resolves the root module's layout. Without `ctx.layout` this is `module "server"` for
  * `plan.target` and its provider; the plan's extra cloud servers and their providers come after.
- * Only servers OpsCrew creates have a cloud root: throws for a plan for any other target, and for
- * layouts the engines would reject.
+ * Without a layout only servers OpsCrew creates have this root: throws for a plan for any other
+ * target, and for layouts the engines would reject.
  */
 function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
-  const target = cloudTarget(plan.target);
-  const layout = ctx.layout ?? { server: target, live: "server", providers: [target.provider] };
-  const servers: ServerCall[] = [];
-  const call = (module: ServerModule, server: CloudDeployTarget, prefix: VariablePrefix) =>
-    servers.push({ module, target: server, prefix, provider: PROVIDER_TEXT[server.provider] });
-  if (layout.server) call("server", layout.server, "");
-  if (layout.previous) call("server_previous", layout.previous, "previous_");
-  if (servers.length === 0) {
-    throw new Error("The infrastructure layout has no server module to render.");
-  }
-  const live = servers.find((s) => s.module === layout.live);
+  const layout = ctx.layout ?? plainLayout(plan);
+  const call = (slot: ServerModule, side: LayoutSide | undefined): (ServerCall | AddressCall)[] => {
+    if (side === undefined) return [];
+    const prefix = slot === "server" ? "" : "previous_";
+    if (side.provider === "own" || side.provider === "portainer") {
+      return [{ kind: "address", slot, prefix, target: side }];
+    }
+    return [{ kind: "module", slot, target: side, prefix, provider: PROVIDER_TEXT[side.provider] }];
+  };
+  const sides = [...call("server", layout.server), ...call("server_previous", layout.previous)];
+  const servers = sides.filter((side): side is ServerCall => side.kind === "module");
+  const addresses = sides.filter((side): side is AddressCall => side.kind === "address");
+  const live = sides.find((side) => side.slot === layout.live);
   if (!live) {
     throw new Error(
       `The infrastructure layout points DNS at module "${layout.live}", which it does not render.`,
@@ -121,17 +162,18 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   }
   const { moved } = layout;
   if (moved) {
-    const declared = new Set(servers.map((s) => s.module));
+    const declared = new Set(servers.map((s) => s.slot));
     if (moved.from === moved.to || declared.has(moved.from) || !declared.has(moved.to)) {
       throw new Error(
         `The infrastructure layout cannot move module.${moved.from} to module.${moved.to}: a moved block needs the destination module and no module at the source address.`,
       );
     }
   }
-  if (layout.server && layout.previous?.provider === layout.server.provider) {
+  const [first, second] = servers;
+  if (second !== undefined && first?.target.provider === second.target.provider) {
     // Both modules name their resources after the app; on one provider they would collide.
     throw new Error(
-      `The infrastructure layout renders two ${layout.server.provider} servers; a move needs two different providers.`,
+      `The infrastructure layout renders two ${first.target.provider} servers; a move needs two different providers.`,
     );
   }
   const extras = extraServerCalls(plan);
@@ -144,7 +186,9 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
     }
   }
   return {
+    sides,
     servers,
+    addresses,
     live,
     moved,
     extras,
@@ -153,19 +197,77 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
   };
 }
 
+/** The layout of a root without a move: `plan.target` as `module "server"`. */
+function plainLayout(plan: DeployPlan): InfraLayout {
+  const target = cloudTarget(plan.target);
+  return { server: target, live: "server", providers: [target.provider] };
+}
+
+/**
+ * The DNS module's `ipv6_record` while the root has an address side: the AAAA record exists only
+ * while every address side has IPv6 (a server module always has), so the switch between two sides
+ * only updates the records. `false` behind OpsCrew's web filter while a side is a server the user
+ * owns (published on IPv4 only, as in its own root). None with server modules alone: the module's
+ * default (on).
+ */
+function ipv6Record(plan: DeployPlan, shape: RootShape): string | undefined {
+  if (shape.addresses.length === 0) return undefined;
+  if (webOnlyFromCloudflare(plan) && shape.addresses.some((a) => a.target.provider === "own")) {
+    return "false";
+  }
+  return shape.addresses.map((a) => `${addressesOf(a).ipv6} != null`).join(" && ");
+}
+
+/**
+ * The `import` blocks adopting the app's DNS records into `module "dns"` (`ctx.adoptRecords`),
+ * for a Portainer side whose records are still the user's. Throws when such a side has no ids:
+ * the DNS module would otherwise create the records a second time.
+ */
+function adoptingImports(shape: RootShape, ctx: RenderContext): string[] {
+  const ids = ctx.adoptRecords;
+  if (ids === undefined) {
+    const users = shape.addresses.some(
+      ({ target }) =>
+        target.provider === "portainer" &&
+        !(target.web.mode === "caddy" && target.web.records === true),
+    );
+    if (users) {
+      throw wrongTarget(
+        "The app's DNS records on Cloudflare are still yours (the Portainer target's web.records is not true), and OpsCrew has no ids to adopt them, so it did not render records that would duplicate them.",
+      );
+    }
+    return [];
+  }
+  const block = (to: string, id: string) => [
+    "import {",
+    `  to = module.dns.cloudflare_dns_record.${to}`,
+    `  id = "${ctx.cloudflare?.zoneId}/${id}"`,
+    "}",
+    "",
+  ];
+  return [
+    "# The app's DNS records were yours: OpsCrew adopts them into the DNS module, so that the move",
+    "# switches them in place. Importing a record changes nothing in Cloudflare.",
+    ...block("a", ids.a),
+    ...(ids.aaaa === undefined ? [] : block("aaaa[0]", ids.aaaa)),
+    ...(ids.www === undefined ? [] : block("www[0]", ids.www)),
+  ];
+}
+
 function mainTf(
   plan: DeployPlan,
   shape: RootShape,
+  ctx: RenderContext,
   pieces: TunnelPieces | undefined,
   checkKey: boolean,
 ): string {
   const lines = [rootHeader(plan), ""];
-  if (shape.moving) lines.push(MOVE_NOTE, "");
+  if (shape.moving) lines.push(moveNote(shape.addresses.length > 0 ? "server" : "provider"), "");
   for (const provider of shape.providers) lines.push(...providerBlock(provider));
   const zone = serverZoneUse(plan);
   if (zone !== undefined) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
   for (const server of shape.servers) {
-    const previous = server.module === "server_previous";
+    const previous = server.slot === "server_previous";
     lines.push(
       ...moduleBlock({
         comment: previous
@@ -173,7 +275,7 @@ function mainTf(
               `# The previous ${server.provider.serverNoun}, kept until the move is finished or aborted.`,
             ]
           : [],
-        name: server.module,
+        name: server.slot,
         source: server.provider.module,
         args: [
           ...server.provider.moduleArguments({ prefix: server.prefix }),
@@ -183,7 +285,7 @@ function mainTf(
       }),
     );
   }
-  const app = shape.servers.find((server) => server.module === "server");
+  const app = shape.servers.find((server) => server.slot === "server");
   lines.push(...extraServerModules(plan, shape.extras, app?.target.provider, checkKey));
   if (shape.moved) {
     const { from, to } = shape.moved;
@@ -197,13 +299,17 @@ function mainTf(
     );
   }
   if (zone !== undefined) {
-    const live = shape.live.module;
-    lines.push(...dnsModule(zone, `module.${live}.ipv4_address`, `module.${live}.ipv6_address`));
+    const { ipv4, ipv6 } = addressesOf(shape.live);
+    lines.push(...dnsModule(zone, ipv4, ipv6, ipv6Record(plan, shape)));
+    lines.push(...adoptingImports(shape, ctx));
   }
   lines.push(...(previewsCertificatePack(plan)?.main ?? []));
   if (pieces) lines.push(...pieces.main);
   return lines.join("\n");
 }
+
+/** Whether the root holds servers OpsCrew creates: the deploy key and SSH networks are theirs. */
+const hasModules = (shape: RootShape) => shape.servers.length + shape.extras.length > 0;
 
 function variables(
   plan: DeployPlan,
@@ -213,16 +319,23 @@ function variables(
 ): VariableSpec[] {
   const base: VariableSpec[] = [
     APP_NAME_VARIABLE,
-    ...shape.servers.flatMap((server) =>
-      serverVariables(server, server.module === "server_previous" ? "previous" : undefined),
-    ),
+    ...shape.sides.flatMap((side) => {
+      const previous = side.slot === "server_previous";
+      if (side.kind === "module") return serverVariables(side, previous ? "previous" : undefined);
+      const noun = side.target.provider === "own" ? "server" : "Portainer environment";
+      return addressVariables(side.prefix, `${previous ? "the previous" : "your"} ${noun}`);
+    }),
     ...shape.extras.flatMap((extra) => serverVariables(extra, extra.name)),
-    ...keyVariables(checkKey),
-    {
-      name: "http_allowed_cidrs",
-      type: "list(string)",
-      description: "Networks allowed to reach ports 80 and 443.",
-    },
+    ...(hasModules(shape) ? keyVariables(checkKey) : []),
+    ...(shape.servers.length > 0
+      ? [
+          {
+            name: "http_allowed_cidrs",
+            type: "list(string)",
+            description: "Networks allowed to reach ports 80 and 443.",
+          },
+        ]
+      : []),
   ];
   const zone = serverZoneUse(plan);
   if (zone === undefined) return base;
@@ -230,21 +343,23 @@ function variables(
 }
 
 /**
- * `output "servers"`: every server module's addresses and id, keyed by the server's provider. A
- * move always goes to another provider, so OpsCrew tells the old server from the new one by
- * provider, whichever module holds each and whichever layout was applied last.
+ * `output "servers"`: every server module's addresses and id, keyed by the server's provider; none
+ * without a server module. During a move OpsCrew tells the server being replaced from the new one
+ * by provider, whichever module holds each and whichever layout was applied last; the addresses of
+ * the other sides are its own (`.opscrew/server.json`).
  */
 function serversOutput(shape: RootShape): string[] {
+  if (shape.servers.length === 0) return [];
   return [
     "# Every server by provider. During a move to another provider, OpsCrew tells the server being",
     "# replaced from the new one by their providers.",
     'output "servers" {',
     "  value = {",
-    ...shape.servers.flatMap(({ module, target }) => [
+    ...shape.servers.flatMap(({ slot, target }) => [
       `    ${target.provider} = {`,
-      `      ipv4 = module.${module}.ipv4_address`,
-      `      ipv6 = module.${module}.ipv6_address`,
-      `      id   = module.${module}.server_id`,
+      `      ipv4 = module.${slot}.ipv4_address`,
+      `      ipv6 = module.${slot}.ipv6_address`,
+      `      id   = module.${slot}.server_id`,
       "    }",
     ]),
     "  }",
@@ -254,19 +369,22 @@ function serversOutput(shape: RootShape): string[] {
 }
 
 function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undefined): string {
-  const live = shape.live.module;
+  const { live } = shape;
+  const { ipv4, ipv6 } = addressesOf(live);
   // A preview environment serves no address of its own: its url is the server's.
-  const url =
-    serverZoneUse(plan) === "records"
-      ? "module.dns.url"
-      : `"http://\${module.${live}.ipv4_address}"`;
+  const url = serverZoneUse(plan) === "records" ? "module.dns.url" : `"http://\${${ipv4}}"`;
   return [
     rootHeader(plan),
     "",
-    ...output("server_ipv4", `module.${live}.ipv4_address`),
-    ...output("server_ipv6", `module.${live}.ipv6_address`),
-    ...output("server_id", `module.${live}.server_id`),
-    ...output("server_name", `module.${live}.server_name`),
+    ...output("server_ipv4", ipv4),
+    ...output("server_ipv6", ipv6),
+    // Only a server OpsCrew creates has an id and a name.
+    ...(live.kind === "module"
+      ? [
+          ...output("server_id", `module.${live.slot}.server_id`),
+          ...output("server_name", `module.${live.slot}.server_name`),
+        ]
+      : []),
     ...output("url", url),
     ...serversOutput(shape),
     ...extraServersOutput(shape.extras),
@@ -276,7 +394,7 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
 }
 
 /**
- * The root module of servers OpsCrew creates: `plan.target` as `module "server"`, or the servers
+ * The root module of servers OpsCrew creates: `plan.target` as `module "server"`, or the sides
  * of `ctx.layout` during a move.
  */
 function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
@@ -286,8 +404,8 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   for (const { prefix, target } of [...shape.servers, ...shape.extras]) {
     Object.assign(values, serverTfvars(prefix, target));
   }
-  Object.assign(values, keyTfvars(plan, ctx));
-  values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
+  if (hasModules(shape)) Object.assign(values, keyTfvars(plan, ctx));
+  if (shape.servers.length > 0) values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
   const checkKey = ctx.checkKeyLine !== undefined;
   const zone = serverZoneUse(plan);
   return {
@@ -295,7 +413,7 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
       ...shape.providers.map((provider) => provider.terraformProvider),
       ...(zone !== undefined ? [CLOUDFLARE_PROVIDER] : []),
     ]),
-    main: mainTf(plan, shape, pieces, checkKey),
+    main: mainTf(plan, shape, ctx, pieces, checkKey),
     variables: variablesTf(plan, variables(plan, shape, pieces, checkKey)),
     outputs: outputsTf(plan, shape, pieces),
     tfvars: {
@@ -312,9 +430,9 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
 }
 
 /**
- * The root module for the plan: a Portainer target's (none when it needs no Cloudflare Tunnel), a
- * server the user owns, Cloudflare's hosting, GitHub Pages, or servers OpsCrew creates (with a move
- * layout, always this one).
+ * The root module for the plan: a Portainer target's (none when it needs neither a Cloudflare
+ * Tunnel nor its records), a server the user owns, Cloudflare's hosting, GitHub Pages, or servers
+ * OpsCrew creates (with a move layout, always this one).
  */
 function rootModule(plan: DeployPlan, ctx: RenderContext): RootFiles | undefined {
   if (ctx.layout === undefined) {
@@ -333,9 +451,11 @@ function rootModule(plan: DeployPlan, ctx: RenderContext): RootFiles | undefined
  * `opscrew destroy` or `opscrew retarget --finish` lift them with `-var …=false` without editing
  * committed files. DigitalOcean has no delete protection, so its servers have no such variable.
  * With `ctx.layout`, each server module's target is written under its own variables (`previous_*`
- * for `module "server_previous"`). For a server the user owns, the server's addresses are never
- * written: the CLI supplies `server_ipv4`/`server_ipv6` as `TF_VAR_*`. A Portainer target never
- * writes Portainer's address (`TF_VAR_portainer_origin`) and has `{}` when it has no root module.
+ * for `module "server_previous"`). For a server the user owns or a Portainer environment, the
+ * addresses are never written: the CLI supplies `server_ipv4`/`server_ipv6` (and
+ * `previous_server_ipv4`/`previous_server_ipv6` in a move) as `TF_VAR_*`. A Portainer target
+ * never writes Portainer's address (`TF_VAR_portainer_origin`) and has `{}` when it has no root
+ * module.
  */
 export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unknown> {
   return rootModule(plan, ctx)?.tfvars ?? {};
@@ -356,10 +476,18 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  * With `plan.network`, the app's server module gets the network's port too. An app on a server
  * the user owns gets the same extra server modules in its own root.
  *
- * With `ctx.layout` (a move to another provider) it renders the layout's server modules
- * (`module "server"`, `module "server_previous"`), its `moved` block, every listed provider's
+ * With `ctx.layout` (a move) it renders the layout's sides: a cloud side as its server module
+ * (`module "server"`, `module "server_previous"`), a server the user owns or a Portainer
+ * environment as the address variables of its slot (`server_ipv4`/`server_ipv6`,
+ * `previous_server_ipv4`/`previous_server_ipv6`, supplied as `TF_VAR_*` and never written to
+ * `terraform.tfvars.json`). It renders the layout's `moved` block, every listed provider's
  * requirement, provider block and vendored module, and DNS and the `server_*` outputs from the
- * live module.
+ * live side (no `server_id`/`server_name` for an address; `servers` lists only server modules).
+ * The deploy key, SSH and web networks are declared only with a server module. With an address
+ * side the DNS module's AAAA record exists only while every address has IPv6 (never behind the
+ * web filter of a server the user owns), so `both` and `switched` differ only in the records'
+ * addresses: the switch updates them in place. A Portainer side whose records are still the
+ * user's needs `ctx.adoptRecords`, which adds `import` blocks adopting them into `module "dns"`.
  *
  * A Portainer subdomain adds `module "tunnel"` (`cloudflare-tunnel`) and `module "access"`
  * (`cloudflare-access`) with the outputs `tunnel_id`, `tunnel_token` (sensitive) and
@@ -378,12 +506,12 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  *   `deploy_service_token_client_id` and `deploy_service_token_client_secret` (sensitive), plus
  *   `portainer_url` with a Portainer subdomain.
  *
- * For a Portainer target (`target.provider === "portainer"`) the root module has only Cloudflare
+ * For a Portainer target (`target.provider === "portainer"`) the root module has Cloudflare
  * Tunnels: the app's for web mode `tunnel`, and in redeploy mode `cloudflare` one and Access for
  * Portainer's webhook hostname (Portainer's address from `TF_VAR_portainer_origin`). OpsCrew
- * creates no DNS record for web modes `proxy` and `caddy`, so a plan that needs neither tunnel
- * renders no files at all. Only servers OpsCrew creates move: a move layout for a server the user
- * owns, a Portainer target or a server-less target throws.
+ * creates no DNS record for web modes `proxy` and `caddy`, except in web mode `caddy` with
+ * `records` (`module "dns"` to the environment's public address, `TF_VAR_server_ipv4` and
+ * `TF_VAR_server_ipv6`, output `url`); a plan that needs none of these renders no files at all.
  *
  * On Cloudflare's hosting (`cloudflare-workers`) the root module has only `module "worker"`
  * (`cloudflare-workers`): the Worker's shell, its `workers.dev` and preview switches, and one

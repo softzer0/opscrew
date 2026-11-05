@@ -24,6 +24,7 @@ import {
   versionsTf,
 } from "./hcl";
 import {
+  addressVariables,
   type ExtraServerCall,
   extraServerCalls,
   extraServerModules,
@@ -59,24 +60,7 @@ function variables(
   zone: ZoneUse | undefined,
 ): VariableSpec[] {
   const specs: VariableSpec[] = [APP_NAME_VARIABLE];
-  const tunnel = tunnelMode(plan);
-  if (!tunnel) {
-    specs.push(
-      {
-        name: "server_ipv4",
-        type: "string",
-        description:
-          "Public IPv4 address of your server. OpsCrew passes it as TF_VAR_server_ipv4 from .opscrew/server.json; it is never written to a committed file.",
-      },
-      {
-        name: "server_ipv6",
-        type: "string",
-        description:
-          "Public IPv6 address of your server, or null when it has none (no AAAA record). OpsCrew passes it as TF_VAR_server_ipv6 from .opscrew/server.json; it is never written to a committed file.",
-        default: "null",
-      },
-    );
-  }
+  if (!tunnelMode(plan)) specs.push(...addressVariables("", "your server"));
   if (extras.length > 0) {
     specs.push(
       ...extras.flatMap((extra) => serverVariables(extra, extra.name)),

@@ -121,6 +121,30 @@ export function serverVariables(
   return specs.map((spec) => ({ ...spec, name: `${prefix}${spec.name}` }));
 }
 
+/**
+ * The variables of a server OpsCrew does not create, which the DNS records point at:
+ * `<prefix>server_ipv4` and `<prefix>server_ipv6` (null without IPv6). The CLI passes them as
+ * `TF_VAR_*` from `.opscrew/server.json`; they are never written to a committed file. `what`
+ * names the server in the descriptions, for example `your server`.
+ */
+export function addressVariables(prefix: "" | "previous_", what: string): VariableSpec[] {
+  const passed = (name: string) =>
+    `OpsCrew passes it as TF_VAR_${name} from .opscrew/server.json; it is never written to a committed file.`;
+  return [
+    {
+      name: `${prefix}server_ipv4`,
+      type: "string",
+      description: `Public IPv4 address of ${what}. ${passed(`${prefix}server_ipv4`)}`,
+    },
+    {
+      name: `${prefix}server_ipv6`,
+      type: "string",
+      description: `Public IPv6 address of ${what}, or null when it has none (no AAAA record). ${passed(`${prefix}server_ipv6`)}`,
+      default: "null",
+    },
+  ];
+}
+
 /** A server's own variable values (`delete_protection` keeps its default). */
 export function serverTfvars(
   prefix: VariablePrefix,

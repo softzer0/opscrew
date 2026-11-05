@@ -8,7 +8,9 @@ import {
   accessArguments,
   accountId,
   DEPLOY_TOKEN_OUTPUTS,
+  dnsModule,
   tunnelArguments,
+  type ZoneUse,
   zoneTfvars,
   zoneVariables,
 } from "./cloudflare";
@@ -25,6 +27,7 @@ import {
   variablesTf,
   versionsTf,
 } from "./hcl";
+import { addressVariables } from "./servers";
 
 /** Where the app's stack connector sends the app's hostnames: Caddy on the stack's network. */
 const APP_ORIGIN = '"http://caddy:80"';
@@ -38,6 +41,8 @@ interface Shape {
   appTunnel: boolean;
   /** `module "portainer_tunnel"` and `module "access"`: the webhook behind Access. */
   webhook: boolean;
+  /** `module "dns"`: the app's records, which OpsCrew manages (web mode `caddy`, `records`). */
+  dns: boolean;
 }
 
 function shape(plan: DeployPlan): Shape {
@@ -46,7 +51,14 @@ function shape(plan: DeployPlan): Shape {
   return {
     appTunnel: cloudflare && target.web.mode === "tunnel",
     webhook: cloudflare && target.redeploy === "cloudflare",
+    dns: cloudflare && target.web.mode === "caddy" && target.web.records === true,
   };
+}
+
+/** What the root needs from the zone: the domain for the app's tunnel, its records, or neither. */
+function zoneUse(s: Shape): ZoneUse {
+  if (s.appTunnel) return "domain";
+  return s.dns ? "records" : "zone";
 }
 
 /**
@@ -71,15 +83,29 @@ export function portainerWebhookHostname(plan: DeployPlan): string | undefined {
 }
 
 function mainTf(plan: DeployPlan, s: Shape): string {
-  const lines = [
-    rootHeader(plan),
-    "",
-    ...CLOUDFLARE_PROVIDER_BLOCK,
-    "# Your existing Portainer: OpsCrew creates no server and changes nothing on the host, and the",
-    "# app's own DNS records stay yours. This configuration has only Cloudflare Tunnels: the one",
-    "# that serves the app, or the one that lets the deploy workflow reach Portainer's webhook",
-    "# behind Cloudflare Access, or both.",
-  ];
+  const lines = [rootHeader(plan), "", ...CLOUDFLARE_PROVIDER_BLOCK];
+  if (s.dns) {
+    lines.push(
+      "# Your existing Portainer: OpsCrew creates no server and changes nothing on the host. The app's",
+      "# DNS records point at the environment's public address, where Caddy in the app's stack serves",
+      ...(s.webhook
+        ? [
+            "# it, and a Cloudflare Tunnel lets the deploy workflow reach Portainer's webhook behind",
+            "# Cloudflare Access.",
+          ]
+        : ["# it."]),
+      "#",
+      "# The environment's public address is never committed: OpsCrew passes it from its local state",
+      "# (.opscrew/server.json) as TF_VAR_server_ipv4 and TF_VAR_server_ipv6.",
+    );
+  } else {
+    lines.push(
+      "# Your existing Portainer: OpsCrew creates no server and changes nothing on the host, and the",
+      "# app's own DNS records stay yours. This configuration has only Cloudflare Tunnels: the one",
+      "# that serves the app, or the one that lets the deploy workflow reach Portainer's webhook",
+      "# behind Cloudflare Access, or both.",
+    );
+  }
   if (s.webhook) {
     lines.push(
       "#",
@@ -88,6 +114,11 @@ function mainTf(plan: DeployPlan, s: Shape): string {
     );
   }
   lines.push("");
+  if (s.dns) {
+    lines.push(
+      ...dnsModule("records", "var.server_ipv4", "var.server_ipv6", "var.server_ipv6 != null"),
+    );
+  }
   if (s.appTunnel) {
     const www = plan.dns.www;
     lines.push(
@@ -156,13 +187,16 @@ function mainTf(plan: DeployPlan, s: Shape): string {
 function variables(s: Shape): VariableSpec[] {
   const specs: VariableSpec[] = [
     APP_NAME_VARIABLE,
-    ...zoneVariables(s.appTunnel ? "domain" : "zone"),
-    {
+    ...(s.dns ? addressVariables("", "your Portainer environment") : []),
+    ...zoneVariables(zoneUse(s)),
+  ];
+  if (s.appTunnel || s.webhook) {
+    specs.push({
       name: "cloudflare_account_id",
       type: "string",
       description: "Cloudflare account id (the tunnels and Access belong to it).",
-    },
-  ];
+    });
+  }
   if (s.webhook) {
     specs.push(
       {
@@ -186,6 +220,7 @@ function variables(s: Shape): VariableSpec[] {
 
 function outputsTf(plan: DeployPlan, s: Shape): string {
   const lines = [rootHeader(plan), ""];
+  if (s.dns) lines.push(...output("url", "module.dns.url"));
   if (s.appTunnel) {
     lines.push(
       ...output("url", '"https://${var.domain}"'),
@@ -210,18 +245,21 @@ function tfvars(plan: DeployPlan, ctx: RenderContext, s: Shape): Record<string, 
   // Never Portainer's address: it reaches the engine only as TF_VAR_portainer_origin.
   return {
     app_name: plan.app.name,
-    ...zoneTfvars(plan, ctx, s.appTunnel ? "domain" : "zone"),
-    cloudflare_account_id: accountId(ctx),
+    ...zoneTfvars(plan, ctx, zoneUse(s)),
+    ...(s.appTunnel || s.webhook ? { cloudflare_account_id: accountId(ctx) } : {}),
     ...(s.webhook ? { portainer_hostname: portainerWebhookHostname(plan) } : {}),
   };
 }
 
 /**
  * The root module of a Portainer target, or `undefined` when the plan needs none. OpsCrew creates
- * no server, changes nothing on the host and creates no DNS record for web modes `proxy` and
- * `caddy` (those work with any DNS; `opscrew provision` says which record to create). Web mode
- * `tunnel` gets `module "tunnel"` to Caddy in the app's stack (outputs `url`, `tunnel_id`,
- * `tunnel_token`). Redeploy mode `cloudflare` gets
+ * no server and changes nothing on the host. Web modes `proxy` and `caddy` work with any DNS
+ * (`opscrew provision` says which record to create), so OpsCrew creates no DNS record for them,
+ * except in web mode `caddy` with `records` (OpsCrew manages them since a move adopted them):
+ * `module "dns"` points the app's records at the environment's public address, the variables
+ * `server_ipv4`/`server_ipv6` supplied as `TF_VAR_*` from `.opscrew/server.json` (never in
+ * `terraform.tfvars.json`); output `url`. Web mode `tunnel` gets `module "tunnel"` to Caddy in the
+ * app's stack (outputs `url`, `tunnel_id`, `tunnel_token`). Redeploy mode `cloudflare` gets
  * `module "portainer_tunnel"` (Portainer's hostname, only the webhook paths, to the sensitive
  * variable `portainer_origin` supplied as `TF_VAR_portainer_origin`) and `module "access"` with a
  * Service Auth policy for the deploy workflow's service token (outputs `portainer_hostname`,
@@ -230,10 +268,10 @@ function tfvars(plan: DeployPlan, ctx: RenderContext, s: Shape): Record<string, 
  */
 export function portainerRoot(plan: DeployPlan, ctx: RenderContext): RootFiles | undefined {
   const s = shape(plan);
-  if (!s.appTunnel && !s.webhook) return undefined;
+  if (!s.appTunnel && !s.webhook && !s.dns) return undefined;
   if (!ctx.cloudflare?.zoneId) {
     throw new Error(
-      "A Cloudflare zone id is required to render the Cloudflare Tunnel for this plan.",
+      "A Cloudflare zone id is required to render the Cloudflare Tunnel or DNS records for this plan.",
     );
   }
   return {
@@ -242,6 +280,10 @@ export function portainerRoot(plan: DeployPlan, ctx: RenderContext): RootFiles |
     variables: variablesTf(plan, variables(s)),
     outputs: outputsTf(plan, s),
     tfvars: tfvars(plan, ctx, s),
-    modules: ["cloudflare-tunnel", ...(s.webhook ? ["cloudflare-access"] : [])],
+    modules: [
+      ...(s.dns ? ["cloudflare-dns"] : []),
+      ...(s.appTunnel || s.webhook ? ["cloudflare-tunnel"] : []),
+      ...(s.webhook ? ["cloudflare-access"] : []),
+    ],
   };
 }

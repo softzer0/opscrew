@@ -448,7 +448,7 @@ describe("renderInfra move layouts", () => {
       renderInfra(plan, testContext({ cloudflare: testCloudflare(), layout }));
     const providers = ["hetzner", "digitalocean"] as const;
     expect(attempt({ previous: from, live: "server", providers })).toThrow(/module "server"/);
-    expect(attempt({ live: "server", providers })).toThrow(/no server module/);
+    expect(attempt({ live: "server", providers })).toThrow(/module "server"/);
     expect(
       attempt({
         server: to,

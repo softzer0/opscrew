@@ -1,4 +1,9 @@
-import type { CloudDeployTarget, CloudProvider } from "@opscrew/plan-schema";
+import type {
+  CloudDeployTarget,
+  CloudProvider,
+  OwnDeployTarget,
+  PortainerDeployTarget,
+} from "@opscrew/plan-schema";
 
 /** Category of a rendered file, used for diff summaries and approvals. */
 export type RenderedFileKind = "infra" | "runtime" | "workflow" | "docker" | "doc";
@@ -98,11 +103,18 @@ export interface RenderContext {
    */
   otherAppDirs?: readonly string[] | undefined;
   /**
-   * Which server modules the root module contains during a move to another provider
-   * (`opscrew retarget`), from `moveLayout`. Without it the root module deploys `plan.target` as
-   * `module "server"`.
+   * Which sides the root module contains during a move (`opscrew retarget`), from `moveLayout`.
+   * Without it the root module deploys `plan.target` as `module "server"`.
    */
   layout?: InfraLayout;
+  /**
+   * During a move with a Portainer side whose DNS records are still the user's (`web.records`
+   * not true): the Cloudflare ids of those records, which the move's root adopts into
+   * `module "dns"` with `import` blocks. `a` is the domain's A record, `aaaa` its AAAA record and
+   * `www` the `www.` CNAME, each only when it exists and the root renders that record. The agents
+   * read them through the Cloudflare connector.
+   */
+  adoptRecords?: { a: string; aaaa?: string; www?: string } | undefined;
   /**
    * The app's server hosts this app alone (always so on a cloud server) and the app's private
    * network has devices: Beszel's hub and Portainer's web UI, whose files every app on a server
@@ -113,21 +125,30 @@ export interface RenderContext {
 }
 
 /**
- * Server modules of the root module while a deployment moves to another provider. Only servers
- * OpsCrew creates move, so its servers and providers are cloud ones.
+ * The sides of the root module while a deployment moves (`opscrew retarget`). Each slot holds a
+ * side: a server OpsCrew creates is its server module; a server the user owns and a Portainer
+ * environment are an address, `server_ipv4`/`server_ipv6` in the `server` slot and
+ * `previous_server_ipv4`/`previous_server_ipv6` in the `server_previous` slot, which the CLI
+ * passes as `TF_VAR_*` (never in `terraform.tfvars.json`).
  */
 export interface InfraLayout {
-  /** `module "server"` and the target it deploys; absent when the configuration has none. */
-  server?: CloudDeployTarget;
-  /** `module "server_previous"`: the server being replaced. */
-  previous?: CloudDeployTarget;
+  /** The `server` slot and the target it holds; absent when the configuration has none. */
+  server?: LayoutSide;
+  /** The `server_previous` slot: the side being replaced. */
+  previous?: LayoutSide;
   /** A `moved` block for the moves-only plans (rename before creating, rename back on abort). */
   moved?: { from: ServerModule; to: ServerModule };
-  /** The module the DNS module and the `server_*` outputs follow (the one that gets traffic). */
+  /** The slot the DNS module and the `server_*` outputs follow (the one that gets traffic). */
   live: ServerModule;
   /** Every provider whose `required_providers` entry, provider block and module are rendered. */
   providers: readonly CloudProvider[];
 }
 
-/** The two server module names a root module can contain. */
+/**
+ * A side of a move: a server OpsCrew creates, a server the user owns (public mode) or a Portainer
+ * environment without a Cloudflare Tunnel.
+ */
+export type LayoutSide = CloudDeployTarget | OwnDeployTarget | PortainerDeployTarget;
+
+/** The two slots of a root module during a move, named after their server modules. */
 export type ServerModule = "server" | "server_previous";

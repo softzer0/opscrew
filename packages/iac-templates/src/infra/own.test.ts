@@ -375,16 +375,24 @@ describe("renderInfra with Portainer on an OpsCrew-created server", () => {
 });
 
 describe("renderInfra move layouts", () => {
-  it("refuses a move that involves a server the user owns", () => {
-    const own = testPlan({ provider: "own" }).target;
+  it("refuses a move with a server the user owns reached through a Cloudflare Tunnel", () => {
+    const own = testPlan({ provider: "own", access: "tunnel", domain: "example.com" }).target;
     const refusal = expect.objectContaining({
       code: "PHASE_PRECONDITION",
-      message: expect.stringContaining("not to a server you already own"),
+      message: expect.stringContaining("a server you own in public mode"),
     });
     expect(() => moveLayout("both", testTarget("hetzner"), own)).toThrow(refusal);
-    const layout = moveLayout("finish", testTarget("digitalocean"), testTarget("hetzner"));
-    expect(() => renderInfra(testPlan({ provider: "own" }), testContext({ layout }))).toThrow(
-      refusal,
+    expect(() => moveLayout("both", own, testTarget("hetzner"))).toThrow(refusal);
+  });
+
+  it("renders a server the user owns as the address of its slot", () => {
+    const plan = testPlan({ provider: "own", domain: "example.com" });
+    const layout = moveLayout("finish", testTarget("digitalocean"), plan.target);
+    const main = file(
+      renderInfra(plan, testContext({ cloudflare: testCloudflare(), layout })),
+      "prod/main.tf",
     );
+    expect(main).toMatch(/^ {2}ipv4 += var\.server_ipv4$/m);
+    expect(main).not.toContain('module "server"');
   });
 });

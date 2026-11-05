@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { wrongTarget } from "../providers";
 import type { RenderContext, RenderedFile } from "../types";
 import { planFilePath } from "../workflow/shared";
 import { accountId } from "./cloudflare";
@@ -14,14 +15,16 @@ import {
   variablesTf,
   versionsTf,
 } from "./hcl";
+import type { MoveLayoutName } from "./layouts";
 
 /** The object storage OpsCrew creates a bucket for through the `storage` root. */
 export type BucketProvider = "r2" | "digitalocean" | "hetzner";
 
+/** A bucket of the plan (`storage.objectStorage`, `retarget.from.objectStorage`). */
+type ObjectStorage = NonNullable<NonNullable<DeployPlan["storage"]>["objectStorage"]>;
+
 /** The plan's bucket at a provider. */
-export type ProviderBucket = NonNullable<NonNullable<DeployPlan["storage"]>["objectStorage"]> & {
-  provider: BucketProvider;
-};
+export type ProviderBucket = ObjectStorage & { provider: BucketProvider };
 
 /** The plan's bucket at a provider, or undefined (no object storage, or Garage next to the app). */
 export function providerBucket(plan: Pick<DeployPlan, "storage">): ProviderBucket | undefined {
@@ -29,6 +32,26 @@ export function providerBucket(plan: Pick<DeployPlan, "storage">): ProviderBucke
   if (storage === undefined || storage.provider === "garage") return undefined;
   return storage as ProviderBucket;
 }
+
+/** A bucket at a cloud provider's S3-compatible storage, which a move can take along. */
+type S3Bucket = ProviderBucket & { provider: "digitalocean" | "hetzner" };
+
+/** `bucket` when it is at Hetzner or DigitalOcean; throws {@link wrongTarget} otherwise. */
+function s3Bucket(bucket: ObjectStorage | undefined): S3Bucket {
+  if (bucket?.provider !== "hetzner" && bucket?.provider !== "digitalocean") {
+    throw wrongTarget(
+      "A bucket moves only between Hetzner Object Storage and DigitalOcean Spaces, and both the bucket being left and the new one must be there.",
+    );
+  }
+  return bucket as S3Bucket;
+}
+
+/**
+ * The profile of the shared credentials file (`AWS_SHARED_CREDENTIALS_FILE`) the provider of the
+ * bucket being left reads its key from during a move: the other provider's key is in the
+ * engine's `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+ */
+export const PREVIOUS_BUCKET_PROFILE = "opscrew-previous";
 
 const AWS_PROVIDER: ProviderRequirement = {
   name: "aws",
@@ -40,18 +63,19 @@ const AWS_PROVIDER: ProviderRequirement = {
 const S3_SERVICES = {
   digitalocean: {
     name: "DigitalOcean Spaces",
-    endpoint: "https://${var.region}.digitaloceanspaces.com",
-    regionDescription: "Spaces region of the bucket, for example fra1.",
-    providerRegion: [
+    endpoint: (region: string) => `https://\${var.${region}}.digitaloceanspaces.com`,
+    regionDescription: (what: string) => `Spaces region of ${what}, for example fra1.`,
+    providerRegion: (_region: string) => [
       "  # Spaces creates buckets only with us-east-1 here; the endpoint picks the real region.",
       '  region = "us-east-1"',
     ],
   },
   hetzner: {
     name: "Hetzner Object Storage",
-    endpoint: "https://${var.region}.your-objectstorage.com",
-    regionDescription: "Hetzner Object Storage location of the bucket, for example fsn1.",
-    providerRegion: ["  region = var.region"],
+    endpoint: (region: string) => `https://\${var.${region}}.your-objectstorage.com`,
+    regionDescription: (what: string) =>
+      `Hetzner Object Storage location of ${what}, for example fsn1.`,
+    providerRegion: (region: string) => [`  region = var.${region}`],
   },
 } as const;
 
@@ -123,20 +147,67 @@ function r2Main(cors: boolean, deleteData: boolean): string[] {
   ];
 }
 
-function s3Main(
-  service: (typeof S3_SERVICES)[keyof typeof S3_SERVICES],
-  cors: boolean,
-  deleteData: boolean,
-): string[] {
-  const { comment, lifecycle } = guard(deleteData);
+/**
+ * What an S3 storage root holds: the bucket as `this` (the app's) and as `previous` (the bucket
+ * being left during a move), the endpoints of the default `aws` provider and of its `previous`
+ * alias, and a `moved` block renaming the bucket between the two in the state.
+ */
+interface S3Shape {
+  current?: S3Bucket;
+  previous?: S3Bucket;
+  /** The bucket whose service the default `aws` provider reaches. */
+  provider?: S3Bucket;
+  /** The bucket whose service the `aws.previous` provider reaches. */
+  alias?: S3Bucket;
+  moved?: { from: "this" | "previous"; to: "this" | "previous"; cors: boolean };
+}
+
+/**
+ * The storage root of layout `name` of a move from bucket `old` to bucket `next` (as the infra
+ * root's layouts, {@link MoveLayoutName}). A bucket a layout no longer holds keeps its provider,
+ * which deletes it; `moved` blocks rename a bucket only in roots that do not declare its old name.
+ */
+function moveShape(name: MoveLayoutName, next: S3Bucket, old: S3Bucket): S3Shape {
+  switch (name) {
+    case "rename":
+      return { previous: old, alias: old, moved: { from: "this", to: "previous", cors: old.cors } };
+    case "both":
+    case "switched":
+      return { current: next, previous: old, provider: next, alias: old };
+    case "finish":
+      return { current: next, provider: next, alias: old };
+    case "abort-remove":
+      return { previous: old, provider: next, alias: old };
+    case "abort-rename":
+      return {
+        current: old,
+        provider: old,
+        moved: { from: "previous", to: "this", cors: old.cors },
+      };
+  }
+}
+
+/** The `provider "aws"` block reaching `bucket`'s service; `previous` makes it the alias. */
+function s3Provider(bucket: S3Bucket, previous: boolean): string[] {
+  const service = S3_SERVICES[bucket.provider];
+  const region = previous ? "previous_region" : "region";
   return [
-    "# OpsCrew never creates storage keys: the provider reads yours from the AWS_ACCESS_KEY_ID and",
-    "# AWS_SECRET_ACCESS_KEY environment variables, so it is never stored in files, plans or state.",
+    ...(previous
+      ? [
+          "# The provider of the bucket being left, until the move is finished or aborted. It reads that",
+          `# service's key from the ${PREVIOUS_BUCKET_PROFILE} profile of the shared credentials file`,
+          "# (AWS_SHARED_CREDENTIALS_FILE), so it is never stored in files, plans or state either.",
+        ]
+      : [
+          "# OpsCrew never creates storage keys: the provider reads yours from the AWS_ACCESS_KEY_ID and",
+          "# AWS_SECRET_ACCESS_KEY environment variables, so it is never stored in files, plans or state.",
+        ]),
     'provider "aws" {',
-    ...service.providerRegion,
+    ...(previous ? ['  alias   = "previous"', `  profile = "${PREVIOUS_BUCKET_PROFILE}"`, ""] : []),
+    ...service.providerRegion(region),
     "",
     "  endpoints {",
-    `    s3 = "${service.endpoint}"`,
+    `    s3 = "${service.endpoint(region)}"`,
     "  }",
     "",
     `  # ${service.name} speaks S3 but is not AWS: no AWS account, region or key checks.`,
@@ -146,10 +217,20 @@ function s3Main(
     "  skip_region_validation      = true",
     "  skip_requesting_account_id  = true",
     "}",
-    "",
+  ];
+}
+
+/** The bucket `slot` and, with `cors`, its CORS rule. */
+function s3Resources(slot: "this" | "previous", cors: boolean, deleteData: boolean): string[] {
+  const { comment, lifecycle } = guard(deleteData);
+  const previous = slot === "previous";
+  return [
+    ...(previous ? ["# The bucket being left, kept until the move is finished or aborted."] : []),
     ...comment,
-    'resource "aws_s3_bucket" "this" {',
-    "  bucket = var.bucket",
+    `resource "aws_s3_bucket" "${slot}" {`,
+    ...(previous
+      ? ["  provider = aws.previous", "  bucket   = var.previous_bucket"]
+      : ["  bucket = var.bucket"]),
     "",
     "  # Deletes the files with the bucket. The provider reads it from the state when the bucket is",
     "  # destroyed, so it is set from the start; only a destroy you allowed ever uses it.",
@@ -160,8 +241,10 @@ function s3Main(
       ? [
           "",
           CORS_COMMENT,
-          'resource "aws_s3_bucket_cors_configuration" "this" {',
-          "  bucket = aws_s3_bucket.this.id",
+          `resource "aws_s3_bucket_cors_configuration" "${slot}" {`,
+          ...(previous
+            ? ["  provider = aws.previous", "  bucket   = aws_s3_bucket.previous.id"]
+            : ["  bucket = aws_s3_bucket.this.id"]),
           "",
           "  cors_rule {",
           '    allowed_headers = ["*"]',
@@ -175,6 +258,78 @@ function s3Main(
         ]
       : []),
   ];
+}
+
+/** The `moved` blocks renaming the bucket (and its CORS rule) in the state. */
+function movedBlocks({ from, to, cors }: NonNullable<S3Shape["moved"]>): string[] {
+  const block = (type: string) => [
+    "moved {",
+    `  from = ${type}.${from}`,
+    `  to   = ${type}.${to}`,
+    "}",
+  ];
+  return [
+    to === "previous"
+      ? "# The app's bucket becomes the bucket being left in the state; nothing changes at the provider."
+      : "# The bucket being left is the app's bucket again in the state; nothing changes at the provider.",
+    ...block("aws_s3_bucket"),
+    ...(cors ? ["", ...block("aws_s3_bucket_cors_configuration")] : []),
+  ];
+}
+
+/** `parts` in order, each after a blank line but the first; empty parts are left out. */
+function sections(...parts: readonly (readonly string[])[]): string[] {
+  return parts
+    .filter((part) => part.length > 0)
+    .flatMap((part, i) => (i === 0 ? part : ["", ...part]));
+}
+
+function s3Main(shape: S3Shape, deleteData: boolean): string[] {
+  return sections(
+    shape.provider ? s3Provider(shape.provider, false) : [],
+    shape.alias ? s3Provider(shape.alias, true) : [],
+    shape.current ? s3Resources("this", shape.current.cors, deleteData) : [],
+    shape.previous ? s3Resources("previous", shape.previous.cors, deleteData) : [],
+    shape.moved ? movedBlocks(shape.moved) : [],
+  );
+}
+
+/** The variables of an S3 root and their values. */
+function s3Variables(shape: S3Shape): { specs: VariableSpec[]; values: Record<string, unknown> } {
+  const specs: VariableSpec[] = [];
+  const values: Record<string, unknown> = {};
+  const add = (spec: VariableSpec, value: unknown) => {
+    specs.push(spec);
+    values[spec.name] = value;
+  };
+  if (shape.current) {
+    add(
+      { name: "bucket", type: "string", description: "Name of the bucket." },
+      shape.current.bucket,
+    );
+  }
+  if (shape.provider) {
+    const description = S3_SERVICES[shape.provider.provider].regionDescription("the bucket");
+    add({ name: "region", type: "string", description }, shape.provider.region);
+  }
+  if (shape.previous) {
+    add(
+      { name: "previous_bucket", type: "string", description: "Name of the bucket being left." },
+      shape.previous.bucket,
+    );
+  }
+  if (shape.alias) {
+    const service = S3_SERVICES[shape.alias.provider];
+    add(
+      {
+        name: "previous_region",
+        type: "string",
+        description: service.regionDescription("the bucket being left"),
+      },
+      shape.alias.region,
+    );
+  }
+  return { specs, values };
 }
 
 /**
@@ -207,39 +362,58 @@ export function storageRootDir(plan: Pick<DeployPlan, "app" | "infra" | "environ
  * `deleteData` (`opscrew destroy --delete-data`) it is rendered without it, for the destroy plan
  * the user approves. The aws provider's bucket always has `force_destroy`, which the provider reads
  * from the state when the bucket is destroyed; R2 deletes only an empty bucket.
- * Deterministic; contains no secrets.
+ *
+ * While the bucket moves (`plan.retarget.from.objectStorage`, the bucket being left, between
+ * Hetzner and DigitalOcean), the root holds both buckets: the new one (`storage.objectStorage`) as
+ * `aws_s3_bucket.this` through the default `aws` provider, and the one being left as
+ * `aws_s3_bucket.previous` (variables `previous_bucket`, `previous_region`) with `prevent_destroy`,
+ * through the `aws.previous` provider at its own service's endpoint, which reads that service's key
+ * from the {@link PREVIOUS_BUCKET_PROFILE} profile of the shared credentials file. `layout` picks
+ * the move's step as the infra root's layouts do (default `both`): `rename` holds only the bucket
+ * being left, renamed from `this` in the state; `finish` only the new bucket (the old one is
+ * deleted through its provider); `abort-remove` only the bucket being left (the new one is
+ * deleted); `abort-rename` the bucket being left as `this` again, at its own endpoint. Without a
+ * bucket being left, `layout` changes nothing. Deterministic; contains no secrets.
  */
 export function renderStorage(
   plan: DeployPlan,
   ctx: RenderContext,
-  options: { deleteData?: boolean } = {},
+  options: { deleteData?: boolean; layout?: MoveLayoutName } = {},
 ): RenderedFile[] {
   const deleteData = options.deleteData === true;
+  const old = plan.retarget?.from.objectStorage;
   const storage = providerBucket(plan);
-  if (storage === undefined) return [];
-  const variables: VariableSpec[] = [
-    { name: "bucket", type: "string", description: "Name of the bucket." },
-  ];
-  const values: Record<string, unknown> = { bucket: storage.bucket };
+  if (old === undefined && storage === undefined) return [];
   let main: string[];
   let provider: ProviderRequirement;
-  if (storage.provider === "r2") {
-    variables.push({
-      name: "cloudflare_account_id",
-      type: "string",
-      description: "Cloudflare account id (R2 buckets belong to the account).",
-    });
-    values.cloudflare_account_id = accountId(ctx);
+  let variables: VariableSpec[];
+  let values: Record<string, unknown>;
+  let cors: boolean;
+  if (old === undefined && storage?.provider === "r2") {
+    variables = [
+      { name: "bucket", type: "string", description: "Name of the bucket." },
+      {
+        name: "cloudflare_account_id",
+        type: "string",
+        description: "Cloudflare account id (R2 buckets belong to the account).",
+      },
+    ];
+    values = { bucket: storage.bucket, cloudflare_account_id: accountId(ctx) };
     main = r2Main(storage.cors, deleteData);
     provider = CLOUDFLARE_PROVIDER;
+    cors = storage.cors;
   } else {
-    const service = S3_SERVICES[storage.provider];
-    variables.push({ name: "region", type: "string", description: service.regionDescription });
-    values.region = storage.region;
-    main = s3Main(service, storage.cors, deleteData);
+    const bucket = s3Bucket(storage);
+    const shape =
+      old === undefined
+        ? { current: bucket, provider: bucket }
+        : moveShape(options.layout ?? "both", bucket, s3Bucket(old));
+    ({ specs: variables, values } = s3Variables(shape));
+    main = s3Main(shape, deleteData);
     provider = AWS_PROVIDER;
+    cors = shape.current?.cors === true || shape.previous?.cors === true;
   }
-  if (storage.cors) {
+  if (cors) {
     variables.push({
       name: "cors_origins",
       type: "list(string)",

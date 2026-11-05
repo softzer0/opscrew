@@ -100,13 +100,15 @@ export const CAA_ISSUERS = {
 };
 
 /**
- * The CAA issuers of the app's domain, from the plan's edge. None for an app on the zone apex (or
- * a zone not yet known), since CAA there would bind every name in the zone (FR-1430).
+ * The CAA issuers of the app's domain, from the plan's edge (Caddy in the app's stack for a
+ * Portainer target in web mode `caddy`). None for an app on the zone apex (or a zone not yet
+ * known), since CAA there would bind every name in the zone (FR-1430).
  */
 function caaIssuers(plan: DeployPlan): string[] {
   const { dns, target } = plan;
-  if (dns.zone === undefined || dns.domain === dns.zone || !("edge" in target)) return [];
-  return CAA_ISSUERS[target.edge];
+  if (dns.zone === undefined || dns.domain === dns.zone) return [];
+  if ("edge" in target) return CAA_ISSUERS[target.edge];
+  return target.provider === "portainer" && target.web.mode === "caddy" ? CAA_ISSUERS.caddy : [];
 }
 
 /**

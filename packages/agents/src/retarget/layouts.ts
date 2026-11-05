@@ -19,12 +19,18 @@ export function previousTarget(move: Pick<Retarget, "from">): CloudDeployTarget 
 /**
  * The root variable that lifts the delete protection of `module` in `layout`
  * (`delete_protection` for `module "server"`, `previous_delete_protection` for
- * `module "server_previous"`), or `undefined` when the layout has no such module or its provider
- * has no delete protection: the variable is then not declared and must never be passed.
+ * `module "server_previous"`), or `undefined` when the layout has no such module (a side that is
+ * the user's own server or Portainer is an address, not a module) or its provider has no delete
+ * protection: the variable is then not declared and must never be passed.
  */
 export function protectionVariable(layout: InfraLayout, module: ServerModule): string | undefined {
   const target = module === "server" ? layout.server : layout.previous;
-  if (target === undefined || !providerProfile(target.provider).deleteProtection) {
+  // Only a server OpsCrew created has a module, and so delete protection, in the root.
+  if (
+    target === undefined ||
+    (target.provider !== "hetzner" && target.provider !== "digitalocean") ||
+    !providerProfile(target.provider).deleteProtection
+  ) {
     return undefined;
   }
   return module === "server" ? "delete_protection" : "previous_delete_protection";

@@ -10,7 +10,8 @@ import { afterEach, describe, expect, it, type TestContext, vi } from "vitest";
 import { testCloudflareAccount, testContext, testPlan } from "../__fixtures__/plans";
 import type { RenderedFile } from "../types";
 import { CLOUDFLARE_PROVIDER } from "./hcl";
-import { renderStorage } from "./storage";
+import { MOVE_LAYOUTS, type MoveLayoutName } from "./layouts";
+import { PREVIOUS_BUCKET_PROFILE, renderStorage } from "./storage";
 
 type StorageProvider = "r2" | "digitalocean" | "hetzner" | "garage";
 
@@ -39,6 +40,41 @@ function storagePlan(
     },
   });
 }
+
+type S3Provider = "digitalocean" | "hetzner";
+
+/**
+ * A plan moving from `from` to the other cloud provider with its bucket: `shop-uploads` there is
+ * `plan.storage.objectStorage`, and the bucket being left, `shop-files` at `from`, is
+ * `plan.retarget.from.objectStorage`.
+ */
+function movingPlan(from: S3Provider, o: { cors?: boolean; fromCors?: boolean } = {}): DeployPlan {
+  const plan = storagePlan(from === "hetzner" ? "digitalocean" : "hetzner", { cors: o.cors });
+  const old = storagePlan(from, { cors: o.fromCors });
+  const bucket = old.storage?.objectStorage;
+  return DeployPlanSchema.parse({
+    ...plan,
+    retarget: {
+      from: { target: old.target, objectStorage: { ...bucket, bucket: "shop-files" } },
+      step: "created",
+      startedAt: "2026-11-05T12:00:00.000Z",
+    },
+  });
+}
+
+const ENDPOINTS = {
+  digitalocean: (region: string) => `https://\${var.${region}}.digitaloceanspaces.com`,
+  hetzner: (region: string) => `https://\${var.${region}}.your-objectstorage.com`,
+} as const;
+
+/** A resource or provider block of `main.tf` (from its first line to its closing brace). */
+function block(main: string, header: string): string | undefined {
+  const start = main.indexOf(`${header} {\n`);
+  return start < 0 ? undefined : main.slice(start, main.indexOf("\n}\n", start) + 2);
+}
+
+/** The `provider "aws"` blocks of `main.tf`. */
+const awsProviders = (main: string) => main.match(/^provider "aws" \{$[\s\S]*?^\}$/gm) ?? [];
 
 const ctx = () => testContext({ cloudflare: testCloudflareAccount() });
 
@@ -217,8 +253,9 @@ describe("renderStorage", () => {
       vi.stubEnv("AWS_ACCESS_KEY_ID", keyId);
       vi.stubEnv("AWS_SECRET_ACCESS_KEY", secret);
       vi.stubEnv("TF_VAR_storage_secret_access_key", secret);
-      for (const provider of PROVIDERS) {
-        for (const file of renderStorage(storagePlan(provider), ctx())) {
+      const plans = [...PROVIDERS.map((provider) => storagePlan(provider)), movingPlan("hetzner")];
+      for (const plan of plans) {
+        for (const file of renderStorage(plan, ctx())) {
           expect(file.content, file.path).not.toContain(keyId);
           expect(file.content, file.path).not.toContain(secret);
           // No key argument, variable or output that could carry one into a plan or the state.
@@ -226,6 +263,164 @@ describe("renderStorage", () => {
         }
       }
     });
+  });
+});
+
+describe("renderStorage while the bucket moves to another provider", () => {
+  const ORIGINS = ["https://example.com", "https://www.example.com"];
+  const resources = (main: string) =>
+    [...main.matchAll(/^resource "(\w+)" "(\w+)"/gm)].map((m) => `${m[1]}.${m[2]}`);
+  const moves = (main: string) =>
+    [...main.matchAll(/^moved \{\n {2}from = (\S+)\n {2}to {3}= (\S+)\n\}$/gm)].map(
+      (m) => `${m[1]} -> ${m[2]}`,
+    );
+  const endpoints = (main: string) =>
+    awsProviders(main).map((provider) => /^ {4}s3 = "([^"]+)"$/m.exec(provider)?.[1]);
+
+  for (const from of ["hetzner", "digitalocean"] as const) {
+    const to = from === "hetzner" ? "digitalocean" : "hetzner";
+
+    it(`keeps the bucket being left at ${from} beside the new one, behind a provider of its own`, () => {
+      const plan = movingPlan(from);
+      const files = renderStorage(plan, ctx());
+      const main = content(files, "main.tf");
+      expect(endpoints(main)).toEqual([
+        ENDPOINTS[to]("region"),
+        ENDPOINTS[from]("previous_region"),
+      ]);
+      const [current, previous] = awsProviders(main);
+      expect(current).not.toMatch(/alias|profile/);
+      expect(previous).toContain(
+        'provider "aws" {\n  alias   = "previous"\n  profile = "opscrew-previous"\n',
+      );
+      expect(resources(main)).toEqual([
+        "aws_s3_bucket.this",
+        "aws_s3_bucket_cors_configuration.this",
+        "aws_s3_bucket.previous",
+        "aws_s3_bucket_cors_configuration.previous",
+      ]);
+      const old = block(main, 'resource "aws_s3_bucket" "previous"') ?? "";
+      expect(old).toContain("  provider = aws.previous\n  bucket   = var.previous_bucket\n");
+      expect(old).toContain("  force_destroy = true\n");
+      expect(old).toContain("  lifecycle {\n    prevent_destroy = true\n  }\n}");
+      expect(block(main, 'resource "aws_s3_bucket_cors_configuration" "previous"')).toContain(
+        "  provider = aws.previous\n  bucket   = aws_s3_bucket.previous.id\n",
+      );
+      expect(moves(main)).toEqual([]);
+      expect(tfvarsOf(files)).toEqual({
+        bucket: "shop-uploads",
+        region: REGIONS[to],
+        previous_bucket: "shop-files",
+        previous_region: REGIONS[from],
+        cors_origins: ORIGINS,
+      });
+      // The layouts with both buckets render this same root.
+      expect(renderStorage(plan, ctx(), { layout: "both" })).toEqual(files);
+      expect(renderStorage(plan, ctx(), { layout: "switched" })).toEqual(files);
+    });
+  }
+
+  it("renames the bucket being left in moves-only roots, and keeps a deleted bucket's provider", () => {
+    const plan = movingPlan("hetzner");
+    const render = (layout: MoveLayoutName) => renderStorage(plan, ctx(), { layout });
+    const main = (layout: MoveLayoutName) => content(render(layout), "main.tf");
+    const previous = ["aws_s3_bucket.previous", "aws_s3_bucket_cors_configuration.previous"];
+    const current = ["aws_s3_bucket.this", "aws_s3_bucket_cors_configuration.this"];
+    const renamed = [
+      "aws_s3_bucket.this -> aws_s3_bucket.previous",
+      "aws_s3_bucket_cors_configuration.this -> aws_s3_bucket_cors_configuration.previous",
+    ];
+    const newEndpoint = ENDPOINTS.digitalocean("region");
+    const oldEndpoint = ENDPOINTS.hetzner("previous_region");
+
+    // rename: only the bucket being left, renamed from the app's bucket in the state.
+    expect(resources(main("rename"))).toEqual(previous);
+    expect(moves(main("rename"))).toEqual(renamed);
+    expect(endpoints(main("rename"))).toEqual([oldEndpoint]);
+    expect(tfvarsOf(render("rename"))).toEqual({
+      previous_bucket: "shop-files",
+      previous_region: "fsn1",
+      cors_origins: ORIGINS,
+    });
+    // finish: the new bucket, and the old one's provider until the old one is deleted.
+    expect(resources(main("finish"))).toEqual(current);
+    expect(moves(main("finish"))).toEqual([]);
+    expect(endpoints(main("finish"))).toEqual([newEndpoint, oldEndpoint]);
+    expect(tfvarsOf(render("finish"))).toEqual({
+      bucket: "shop-uploads",
+      region: "fra1",
+      previous_region: "fsn1",
+      cors_origins: ORIGINS,
+    });
+    // abort-remove: the old bucket, and the new one's provider until the new one is deleted.
+    expect(resources(main("abort-remove"))).toEqual(previous);
+    expect(moves(main("abort-remove"))).toEqual([]);
+    expect(endpoints(main("abort-remove"))).toEqual([newEndpoint, oldEndpoint]);
+    // abort-rename: the old bucket is the app's again, at its own provider's endpoint.
+    expect(resources(main("abort-rename"))).toEqual(current);
+    expect(moves(main("abort-rename"))).toEqual(
+      renamed.map((move) => move.split(" -> ").reverse().join(" -> ")),
+    );
+    expect(endpoints(main("abort-rename"))).toEqual([ENDPOINTS.hetzner("region")]);
+    expect(tfvarsOf(render("abort-rename"))).toEqual({
+      bucket: "shop-files",
+      region: "fsn1",
+      cors_origins: ORIGINS,
+    });
+    // Every bucket a root renders is out of reach of a plan.
+    for (const layout of ["rename", "finish", "abort-remove", "abort-rename"] as const) {
+      const text = main(layout);
+      expect(text.match(/prevent_destroy = true/g), layout).toHaveLength(1);
+    }
+  });
+
+  it("gives the bucket being left a CORS rule only when it had one", () => {
+    const main = content(
+      renderStorage(movingPlan("hetzner", { fromCors: false }), ctx()),
+      "main.tf",
+    );
+    expect(main).toContain('resource "aws_s3_bucket_cors_configuration" "this"');
+    expect(main).not.toContain('resource "aws_s3_bucket_cors_configuration" "previous"');
+    const renamed = content(
+      renderStorage(movingPlan("hetzner", { fromCors: false }), ctx(), { layout: "rename" }),
+      "main.tf",
+    );
+    expect(renamed).not.toContain("aws_s3_bucket_cors_configuration");
+    const neither = renderStorage(movingPlan("hetzner", { cors: false, fromCors: false }), ctx());
+    for (const file of neither) expect(file.content, file.path).not.toMatch(/cors/i);
+  });
+
+  it("drops prevent_destroy from both buckets only in the root that deletes the data", () => {
+    const main = content(
+      renderStorage(movingPlan("digitalocean"), ctx(), { deleteData: true }),
+      "main.tf",
+    );
+    expect(main).not.toContain("prevent_destroy");
+    expect(main.match(/force_destroy = true/g)).toHaveLength(2);
+  });
+
+  it("renders the plain root when no bucket is left, whatever the layout", () => {
+    const plan = storagePlan("hetzner");
+    expect(renderStorage(plan, ctx(), { layout: "rename" })).toEqual(renderStorage(plan, ctx()));
+  });
+
+  it("refuses to move a bucket that is not at Hetzner or DigitalOcean", () => {
+    const plan = movingPlan("hetzner");
+    const r2 = DeployPlanSchema.parse({ ...plan, storage: storagePlan("r2").storage });
+    expect(() => renderStorage(r2, ctx())).toThrow(
+      expect.objectContaining({ code: "PHASE_PRECONDITION" }),
+    );
+  });
+
+  it("is dialect-neutral and matches the snapshots", () => {
+    for (const layout of ["both", "rename", "abort-rename"] as const) {
+      const files = renderStorage(movingPlan("hetzner"), ctx(), { layout });
+      const tf = files.filter((f) => f.path.endsWith(".tf"));
+      expect(checkDialect(tf.map((f) => ({ path: f.path, content: f.content })))).toEqual([]);
+      for (const name of ["main.tf", "variables.tf"]) {
+        expect(content(files, name)).toMatchSnapshot(`${layout}, ${name}`);
+      }
+    }
   });
 });
 
@@ -238,15 +433,99 @@ const NETWORK_ERROR =
 // Not a credential: a placeholder of the right shape, so the provider configures without a network.
 const PLACEHOLDER_TOKEN = "0".repeat(40);
 
+/** What `planOffline` planned: the plan's output and the saved plan as JSON. */
+interface Planned {
+  stdout: string;
+  stderr: string;
+  shown: string;
+}
+
 describe.skipIf(!runIt)("the storage root validates and plans (integration)", () => {
   for (const name of ["tofu", "terraform"] as const) {
     const engine = detected.find((d) => d.name === name && d.supported);
     if (runIt && !engine)
       console.warn(`[iac-templates] skipping ${name}: no usable ${name} binary`);
     const bin = engine?.binary ?? name;
-    // Every provider renders the same file names, so one folder per engine downloads each
-    // provider once; each test overwrites the root and runs init again.
+    // Every root renders the same file names, so one folder per engine downloads each provider
+    // once; each test overwrites the root and runs init again.
     let root: Promise<string> | undefined;
+    const folder = () => {
+      root ??= mkdtemp(join(tmpdir(), `opscrew-storage-${name}-`));
+      return root;
+    };
+
+    /**
+     * Writes `files`, then initialises (a local state named `label`), validates, checks the format
+     * and plans the root offline (nothing refreshed) with `env`.
+     */
+    async function planOffline(
+      test: TestContext,
+      files: readonly RenderedFile[],
+      label: string,
+      env: NodeJS.ProcessEnv,
+    ): Promise<Planned> {
+      const dir = await folder();
+      for (const file of files) {
+        const target = join(dir, file.path);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, file.content);
+      }
+      const cwd = join(dir, "opscrew/infra/storage");
+      const runner = new NodeCommandRunner();
+      const init = await runner.run(
+        bin,
+        [
+          "init",
+          "-input=false",
+          "-no-color",
+          `-backend-config=path=${join(dir, `${label}.tfstate`)}`,
+          "-reconfigure",
+        ],
+        { cwd, env },
+      );
+      if (init.exitCode !== 0 && NETWORK_ERROR.test(init.stdout + init.stderr)) {
+        test.skip(`${name} could not download the providers (network needed)`);
+      }
+      expect(init.exitCode, init.stdout + init.stderr).toBe(0);
+      const validate = await runner.run(bin, ["validate", "-no-color"], { cwd, env });
+      expect(validate.exitCode, validate.stdout + validate.stderr).toBe(0);
+      const fmt = await runner.run(bin, ["fmt", "-check", "-no-color"], { cwd });
+      expect(
+        fmt.exitCode,
+        `not formatted as ${name} fmt writes it:\n${fmt.stdout}${fmt.stderr}`,
+      ).toBe(0);
+      const planFile = join(dir, `${label}.tfplan`);
+      const plan = await runner.run(
+        bin,
+        ["plan", "-input=false", "-no-color", "-refresh=false", "-lock=false", `-out=${planFile}`],
+        { cwd, env },
+      );
+      expect(plan.exitCode, plan.stdout + plan.stderr).toBe(0);
+      const shown = await runner.run(bin, ["show", "-json", "-no-color", planFile], { cwd, env });
+      expect(shown.exitCode, shown.stderr).toBe(0);
+      return { stdout: plan.stdout, stderr: plan.stderr, shown: shown.stdout };
+    }
+
+    /** The engine's environment with made-up keys, which no output may show. */
+    function keys(label: string): { env: NodeJS.ProcessEnv; secrets: string[] } {
+      const keyId = fakeSecret("aws-access-key-id", `${name}-${label}`);
+      const secret = fakeSecret("aws-secret-access-key", `${name}-${label}`);
+      return {
+        env: {
+          ...process.env,
+          CLOUDFLARE_API_TOKEN: PLACEHOLDER_TOKEN,
+          AWS_ACCESS_KEY_ID: keyId,
+          AWS_SECRET_ACCESS_KEY: secret,
+        },
+        secrets: [keyId, secret],
+      };
+    }
+
+    const expectNoSecret = (planned: Planned, secrets: readonly string[]) => {
+      for (const output of [planned.stdout, planned.stderr, planned.shown]) {
+        for (const secret of secrets) expect(output).not.toContain(secret);
+      }
+    };
 
     for (const provider of PROVIDERS) {
       // Plans offline (placeholder credentials, local state, nothing refreshed): the bucket and its
@@ -255,75 +534,107 @@ describe.skipIf(!runIt)("the storage root validates and plans (integration)", ()
       it.skipIf(!engine)(
         `validates and plans the ${provider} root with ${name} without the key in the plan`,
         async (test: TestContext) => {
-          root ??= mkdtemp(join(tmpdir(), `opscrew-storage-${name}-`));
-          const dir = await root;
-          for (const file of renderStorage(storagePlan(provider), ctx())) {
-            const target = join(dir, file.path);
-            await mkdir(dirname(target), { recursive: true });
-            await writeFile(target, file.content);
-          }
-          const cwd = join(dir, "opscrew/infra/storage");
-          const keyId = fakeSecret("aws-access-key-id", `${name}-${provider}`);
-          const secret = fakeSecret("aws-secret-access-key", `${name}-${provider}`);
-          const env = {
-            ...process.env,
-            CLOUDFLARE_API_TOKEN: PLACEHOLDER_TOKEN,
-            AWS_ACCESS_KEY_ID: keyId,
-            AWS_SECRET_ACCESS_KEY: secret,
-          };
-          const runner = new NodeCommandRunner();
-          const init = await runner.run(
-            bin,
-            [
-              "init",
-              "-input=false",
-              "-no-color",
-              `-backend-config=path=${join(dir, `${provider}.tfstate`)}`,
-              "-reconfigure",
-            ],
-            { cwd, env },
-          );
-          if (init.exitCode !== 0 && NETWORK_ERROR.test(init.stdout + init.stderr)) {
-            test.skip(`${name} could not download the providers (network needed)`);
-          }
-          expect(init.exitCode, init.stdout + init.stderr).toBe(0);
-          const validate = await runner.run(bin, ["validate", "-no-color"], { cwd, env });
-          expect(validate.exitCode, validate.stdout + validate.stderr).toBe(0);
-          const fmt = await runner.run(bin, ["fmt", "-check", "-no-color"], { cwd });
-          expect(
-            fmt.exitCode,
-            `not formatted as ${name} fmt writes it:\n${fmt.stdout}${fmt.stderr}`,
-          ).toBe(0);
-
-          const planFile = join(dir, `${provider}.tfplan`);
-          const plan = await runner.run(
-            bin,
-            [
-              "plan",
-              "-input=false",
-              "-no-color",
-              "-refresh=false",
-              "-lock=false",
-              `-out=${planFile}`,
-            ],
-            { cwd, env },
-          );
-          expect(plan.exitCode, plan.stdout + plan.stderr).toBe(0);
-          const bucket = provider === "r2" ? "cloudflare_r2_bucket" : "aws_s3_bucket";
-          expect(plan.stdout).toContain(`${bucket}.this`);
-          expect(plan.stdout).toContain('"https://www.example.com"');
-          const shown = await runner.run(bin, ["show", "-json", "-no-color", planFile], {
-            cwd,
+          const { env, secrets } = keys(provider);
+          const planned = await planOffline(
+            test,
+            renderStorage(storagePlan(provider), ctx()),
+            provider,
             env,
-          });
-          expect(shown.exitCode, shown.stderr).toBe(0);
-          for (const output of [plan.stdout, plan.stderr, shown.stdout]) {
-            expect(output).not.toContain(keyId);
-            expect(output).not.toContain(secret);
-          }
+          );
+          const bucket = provider === "r2" ? "cloudflare_r2_bucket" : "aws_s3_bucket";
+          expect(planned.stdout).toContain(`${bucket}.this`);
+          expect(planned.stdout).toContain('"https://www.example.com"');
+          expectNoSecret(planned, secrets);
         },
         600_000,
       );
     }
+
+    /**
+     * {@link keys}, plus the made-up keys of the bucket being left in a shared credentials file
+     * (its provider's profile), as during a move.
+     */
+    async function movingKeys(
+      label: string,
+    ): Promise<{ env: NodeJS.ProcessEnv; secrets: string[] }> {
+      const { env, secrets } = keys(label);
+      const credentials = join(await folder(), `${label}.credentials`);
+      const previous = [
+        fakeSecret("aws-access-key-id", `${name}-${label}-previous`),
+        fakeSecret("aws-secret-access-key", `${name}-${label}-previous`),
+      ];
+      await writeFile(
+        credentials,
+        `[${PREVIOUS_BUCKET_PROFILE}]\naws_access_key_id = ${previous[0]}\naws_secret_access_key = ${previous[1]}\n`,
+      );
+      return {
+        env: { ...env, AWS_SHARED_CREDENTIALS_FILE: credentials },
+        secrets: [...secrets, ...previous],
+      };
+    }
+
+    // During a move the bucket being left has a provider of its own, which reads that service's
+    // key from a profile of the shared credentials file: made-up keys there too, and no key in the
+    // plan.
+    for (const layout of MOVE_LAYOUTS) {
+      it.skipIf(!engine)(
+        `validates and plans the ${layout} root of a moving bucket with ${name} without a key in the plan`,
+        async (test: TestContext) => {
+          const { env, secrets } = await movingKeys(`move-${layout}`);
+          const files = renderStorage(movingPlan("hetzner"), ctx(), { layout });
+          const planned = await planOffline(test, files, `move-${layout}`, env);
+          for (const [, type, slot] of content(files, "main.tf").matchAll(
+            /^resource "(\w+)" "(\w+)"/gm,
+          )) {
+            expect(planned.stdout).toContain(`${type}.${slot} will be created`);
+          }
+          expectNoSecret(planned, secrets);
+        },
+        600_000,
+      );
+    }
+
+    // The rename over the state of the app's bucket before the move (`aws_s3_bucket.this` at the
+    // default provider): the bucket moves to `aws_s3_bucket.previous` and its own provider, and
+    // nothing is created or deleted.
+    it.skipIf(!engine)(
+      `plans the rename over the old bucket's state with ${name}: a move, nothing created or deleted`,
+      async (test: TestContext) => {
+        const label = "rename-over-state";
+        const registry = name === "tofu" ? "registry.opentofu.org" : "registry.terraform.io";
+        const state = {
+          version: 4,
+          terraform_version: "1.6.0",
+          serial: 1,
+          lineage: "3f1c1f0e-0000-4000-8000-000000000001",
+          outputs: {},
+          resources: [
+            {
+              mode: "managed",
+              type: "aws_s3_bucket",
+              name: "this",
+              provider: `provider["${registry}/hashicorp/aws"]`,
+              instances: [
+                {
+                  schema_version: 0,
+                  attributes: { id: "shop-files", bucket: "shop-files", force_destroy: true },
+                  sensitive_attributes: [],
+                },
+              ],
+            },
+          ],
+        };
+        await writeFile(join(await folder(), `${label}.tfstate`), JSON.stringify(state));
+        const { env, secrets } = await movingKeys(label);
+        const files = renderStorage(movingPlan("hetzner", { fromCors: false }), ctx(), {
+          layout: "rename",
+        });
+        const planned = await planOffline(test, files, label, env);
+        expect(planned.stdout).toContain("# (moved from aws_s3_bucket.this)");
+        expect(planned.stdout).toMatch(/Plan: 0 to add, \d+ to change, 0 to destroy/);
+        expectNoSecret(planned, secrets);
+      },
+      600_000,
+    );
   }
 });
