@@ -204,8 +204,8 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
 
 ## Phase 5: Live, simplify, release (lead)
 
-- [ ] T2111 The live runs (lead): T2110's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
-- [ ] T2112 The simplify pass (lead): reviewers by area over the whole feature's diff; real findings become tasks.
+- [x] T2111 The live runs (lead): T2110's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
+- [x] T2112 The simplify pass (lead): reviewers by area over the whole feature's diff; real findings become tasks.
 
   The findings, by files (behaviour unchanged unless said):
 

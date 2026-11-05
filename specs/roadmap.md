@@ -5,9 +5,10 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–020. [020 self-hosted monitoring](020-self-hosted-monitoring/) was built on 2026-11-04,
-passed its live pass on the final code, and was released as 0.2.1 the same day. Now: 021 advise, started on
-the founder's go-ahead on 2026-11-04 ([021-advise](021-advise/)).
+Done: 000–021. [021 advise](021-advise/) was built on 2026-11-04 and 2026-11-05 and passed its live
+pass on the final code; its release waits for the founder. [020 self-hosted
+monitoring](020-self-hosted-monitoring/) was released as 0.2.1 on 2026-11-04. Next: 022 preview
+environments, which waits for the founder's go-ahead.
 
 ## 019 Rollback
 
@@ -94,6 +95,10 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   the hosted control plane. On AWS (024), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
+
+Done (2026-11-05): [spec](021-advise/spec.md), [plan](021-advise/plan.md),
+[tasks](021-advise/tasks.md), ADR 0025, and the guide pages `docs/guide/advise.md` and
+`docs/guide/retarget.md`. The sketch below is the roadmap's, kept as the founder's input.
 
 `opscrew advise` (founder, 2026-10-18: "analyze the current setup and then propose what to change
 and how to scale"). It reads the live deployment (017's resource figures, and their history when
