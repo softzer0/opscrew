@@ -10,6 +10,9 @@ each environment runs its own copies: its own containers and databases, with the
 A change can then be tried somewhere first, and the live site is never the first place it runs. When
 it works in staging, you promote exactly that image to prod: nothing is rebuilt.
 
+A preview environment goes one step earlier: every pull request gets its own copy of the app at
+its own address, before anything is merged. See [Previews](previews.md).
+
 ## Prod is the default environment
 
 Every app starts with one environment, `prod`. Its files are `opscrew/plan.yaml`, `.opscrew/` and

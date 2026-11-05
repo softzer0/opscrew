@@ -27,7 +27,7 @@ Where it deploys:
 - **Cloudflare, with no server, for static and server-rendered sites:** see [Host your site on Cloudflare](docs/guide/cloudflare-hosting.md). Free for static files.
 - **GitHub Pages, for static sites in public repositories:** see [Publish your site on GitHub Pages](docs/guide/github-pages.md). Free, without custom headers or commercial use.
 
-One app can have several environments, such as dev on your computer, staging on a small server and prod on the live one, and a tested image moves to prod unchanged: see [dev, staging and prod](docs/guide/environments.md). Deploy jobs can also run on the server itself or on your computer: see [Self-hosted runners](docs/guide/runners.md).
+One app can have several environments, such as dev on your computer, staging on a small server and prod on the live one, and a tested image moves to prod unchanged: see [dev, staging and prod](docs/guide/environments.md). Every pull request can get its own preview at its own address, on one small server of its own: see [Previews](docs/guide/previews.md). Deploy jobs can also run on the server itself or on your computer: see [Self-hosted runners](docs/guide/runners.md).
 
 DNS goes through Cloudflare, optionally. AWS, Google Cloud, Azure and Contabo come next.
 

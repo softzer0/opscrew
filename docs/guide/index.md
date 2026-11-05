@@ -12,6 +12,7 @@ an app yet.
 - [Publish your site on GitHub Pages](github-pages.md)
 - [Moving your app to another cloud provider](retarget.md)
 - [dev, staging and prod: environments](environments.md)
+- [Previews: a link for every pull request](previews.md)
 - [Several apps in one repository](several-apps.md)
 - [A server of its own for a service: split placement](split-placement.md)
 - [Your devices on the private network](private-network.md)
