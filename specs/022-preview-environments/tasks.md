@@ -608,8 +608,8 @@ then T2233, then T2234.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2233 [US10] Previews under the app's zone, in `packages/agents/`
-  - Owns: `packages/agents/src/**` (+ tests)
+- [ ] T2233 [US10] Previews under the app's zone, in `packages/agents/`; and two fixes found in T2232
+  - Owns: `packages/agents/src/**`, `packages/iac-templates/src/previews/**` (+ tests)
   - Depends: T2230, T2231, T2232
   - Reads: research R7.1 and R7.3 (2), plan.md "12." B
   - Accept:
@@ -632,7 +632,16 @@ then T2233, then T2234.
     - **`verify` and `drift`:** the pack active and Total TLS off, each a check with a plain fix.
     - **`destroy --env <preview>`:** says that ACM stays on until the user turns it off in the
       dashboard.
-  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+    - **Found in T2232, the shared edge file:** previews on another environment's server render the
+      edge's Compose file and Caddy's settings from the host's plan, not their own, so the host's
+      deploys and a preview's `up` stop replacing each other's `/srv/edge/compose.yaml` and
+      restarting Caddy. Today the ports differ (`0.0.0.0:` with the web filter) and so do
+      Cloudflare's trusted ranges. A test shows that the host's edge files and the recipe's are
+      equal.
+    - **Found in T2232, a host gaining a private network:** the host's own provision refuses to add
+      a private network, devices, granted services or dashboards on its server while a preview
+      environment names it, with the same words as the previews' refusal.
+  - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
   - Effort: high
 
 - [ ] T2234 [US9] [US10] The CLI, the guide, the skill and the live pass for the opt-ins
