@@ -6,8 +6,8 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
 Done: 000–021. [021 advise](021-advise/) was built on 2026-11-04 and 2026-11-05, passed its live
-pass on the final code, and was released as 0.2.2 on 2026-11-05. Next: 022 preview environments,
-which waits for the founder's go-ahead.
+pass on the final code, and was released as 0.2.2 on 2026-11-05. 022 preview environments
+started on 2026-11-05 with the founder's go-ahead: [022-preview-environments](022-preview-environments/).
 
 ## 019 Rollback
 
@@ -131,6 +131,9 @@ folder with one file per app, written by that app's own repository) is in
 [021's research R4](021-advise/research.md).
 
 ## 022 Preview environments per pull request
+
+Started 2026-11-05: [research](022-preview-environments/research.md). The sketch below is the
+roadmap's, kept as the founder's input.
 
 Founder agreed, 2026-10-23. A short-lived environment per pull request: created when it opens,
 updated on each push, destroyed on close or merge, at `pr-<n>.<domain>`.
