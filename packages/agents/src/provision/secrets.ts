@@ -7,7 +7,13 @@ import type {
   EnvironmentView,
 } from "@opscrew/connector-github";
 import type { PhaseName } from "@opscrew/contracts";
-import { errorText, OpsCrewError, readTextIfExists, writeFileAtomic } from "@opscrew/core";
+import {
+  errorText,
+  listText,
+  OpsCrewError,
+  readTextIfExists,
+  writeFileAtomic,
+} from "@opscrew/core";
 import {
   CHECK_SECRETS,
   DEPLOY_SECRETS,
@@ -28,13 +34,17 @@ import {
   isServerlessProvider,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { environmentText } from "../apps/names";
+import { otherPlans } from "../check/files";
 import type { PhaseDeps } from "../context";
 import { workflowBranch } from "../environments/branches";
+import { commandFlags } from "../environments/choice";
 import {
   type AppEnvironment,
   assembleAppEnv,
   dotenvLine,
   type GeneratedValues,
+  hasDeployment,
   randomPassword,
   readValidJson,
   type StorageLogin,
@@ -256,7 +266,23 @@ export function serviceEnvSecrets(
   plan: DeployPlan,
   environment: Pick<AppEnvironment, "values">,
 ): Record<string, string> {
-  const secrets: Record<string, string> = {};
+  return Object.fromEntries(
+    Object.entries(serviceEnvFiles(plan, environment)).map(([name, text]) => [
+      serviceEnvSecret(name),
+      text,
+    ]),
+  );
+}
+
+/**
+ * `<name>.env` of every running service, by the service's name: the catalog's `environment(ctx)`
+ * with `environment`'s values (a preview environment's placeholders for its env templates).
+ */
+export function serviceEnvFiles(
+  plan: DeployPlan,
+  environment: Pick<AppEnvironment, "values">,
+): Record<string, string> {
+  const files: Record<string, string> = {};
   for (const service of plan.services.filter((s) => s.enabled)) {
     const values = environment.values.services[service.name] ?? {};
     const env = serviceSpec(service.kind).environment({
@@ -281,9 +307,9 @@ export function serviceEnvSecrets(
       },
     });
     const lines = Object.entries(env).map(([name, value]) => dotenvLine(name, value));
-    secrets[serviceEnvSecret(service.name)] = `${lines.join("\n")}\n`;
+    files[service.name] = `${lines.join("\n")}\n`;
   }
-  return secrets;
+  return files;
 }
 
 /**
@@ -329,8 +355,10 @@ export function secretsEnvironment(plan: DeployPlan): string | undefined {
 
 /**
  * Where the deploy secrets of the plan's environment live, checked at each of its provisions once
- * the app has more than one environment (a prod-only app keeps its repository secrets and its plan
- * as they are, with no check). After a `github-settings` approval, `environmentCapability` creates
+ * the app has more than one environment or any app of the repository has a preview environment,
+ * whose pull requests' workflows could read repository secrets (a prod-only app of a repository
+ * without previews keeps its repository secrets and its plan as they are, with no check). After a
+ * `github-settings` approval, `environmentCapability` creates
  * a throwaway GitHub environment (`opscrew-probe-<8 random hex>`) with test rules, reads it back
  * and deletes it; no existing environment is changed. Where environments work, the environment's
  * own GitHub environment holds its deploy secrets (created when missing; one the user or GitHub
@@ -347,11 +375,29 @@ export async function checkSecretsPlacement(
   plan: DeployPlan,
   run: { command: string; phase: Extract<PhaseName, "provision" | "dns">; planOnly: boolean },
 ): Promise<DeployPlan> {
+  return (await placeDeploySecrets(deps, github, plan, run)).plan;
+}
+
+/**
+ * {@link checkSecretsPlacement}, with whether GitHub enforces branch rules on the repository's
+ * environments (`branchRules`; absent when nothing was checked). A preview environment (ADR 0026)
+ * is refused right after the check, before any change, while GitHub enforces them and a pull
+ * request could read another environment's deploy secrets ({@link requireOtherSecretsApart}); its
+ * own GitHub environment gets no branch rule (each pull request deploys there) and no reviewer.
+ * `readable` names the sites' secrets pull requests can read anyway, for the host plan's text.
+ */
+export async function placeDeploySecrets(
+  deps: PhaseDeps,
+  github: GitHubSetup,
+  plan: DeployPlan,
+  run: { command: string; phase: Extract<PhaseName, "provision" | "dns">; planOnly: boolean },
+): Promise<{ plan: DeployPlan; branchRules?: boolean; readable?: string[] }> {
   // A named environment is never the only one: prod is always there.
   const several =
     plan.environment?.name !== undefined ||
-    (await environmentsOf(deps.paths.root, deps.paths.app)).length > 1;
-  if (!several) return plan;
+    (await environmentsOf(deps.paths.root, deps.paths.app)).length > 1 ||
+    (await otherPlans(deps.paths, plan)).some((o) => o.plan.environment?.previews !== undefined);
+  if (!several) return { plan };
   const { api, owner, repo } = github;
   const where = `${owner}/${repo}`;
   const name = plan.environment?.name ?? "prod";
@@ -372,7 +418,7 @@ export async function checkSecretsPlacement(
         `A plan-only run changes nothing at GitHub, so it does not check where the deploy secrets of ${name} live: this plan shows them as repository secrets${plan.environment?.name === undefined ? "" : ` named ${prefixed}`}. \`${run.command}\` checks it before it stores them.`,
       );
     }
-    return plan;
+    return { plan };
   }
   const approval = await deps.approvals.request({
     kind: "github-settings",
@@ -409,6 +455,11 @@ export async function checkSecretsPlacement(
       "created with test rules to read back what GitHub enforces, then deleted",
     );
   }
+  const previews = plan.environment?.previews !== undefined;
+  const readable =
+    previews && capability.branchPolicies
+      ? await requireOtherSecretsApart(deps, github, plan, run.command)
+      : [];
   const secrets = capability.environments ? "environment" : "prefixed";
   let kept: { view: EnvironmentView; created: boolean; declined: boolean } | undefined;
   if (secrets === "environment") {
@@ -437,7 +488,8 @@ export async function checkSecretsPlacement(
       ? `${where} supports GitHub environments: the deploy secrets of ${name} live in the GitHub environment ${githubEnv}, and its build values are repository secrets.`
       : `${where} does not support GitHub environments (GitHub Free has them only in public repositories), so the deploy secrets of ${name} are repository secrets named ${prefixed}.`,
   );
-  if (kept !== undefined) {
+  // A preview environment's GitHub environment serves every pull request: no branch rule.
+  if (kept !== undefined && !previews) {
     await setEnvironmentRules(deps, github, plan, {
       ...kept,
       capability,
@@ -445,7 +497,7 @@ export async function checkSecretsPlacement(
       audit: providerCall,
     });
   }
-  if (!capability.reviewers) {
+  if (!capability.reviewers && !previews) {
     deps.reporter.info(
       `GitHub enforces no required reviewers in ${where} (a private repository has them only on GitHub Enterprise), so OpsCrew's approval guards against mistakes, not against someone with write access to the repository: they can start the deploy workflow of ${name} themselves.`,
     );
@@ -458,7 +510,88 @@ export async function checkSecretsPlacement(
         : `The deploy secrets of ${name} move from the GitHub environment ${githubEnv} to repository secrets; the approval of the deploy secrets lists the move.`,
     );
   }
-  return withSecrets(secrets);
+  return { plan: withSecrets(secrets), branchRules: capability.branchPolicies, readable };
+}
+
+/**
+ * Refuses the preview environment of `plan` (FR-2209, ADR 0026 D4) while a pull request's workflow
+ * could read the deploy secrets of another environment, of any app of the repository, that was set
+ * up (`hasDeployment`): they are repository secrets (provisioning that environment again moves
+ * them into a GitHub environment only its branch can use), or its GitHub environment lets every
+ * branch deploy (its deployment branch policy, read from GitHub). Called where GitHub enforces
+ * branch rules on environments; stops before any change. Another preview environment is left out:
+ * its key is meant for pull requests and runs only its preview command. A site's secrets are
+ * repository secrets OpsCrew never moves, so they stop nothing: a GitHub Pages site without any is
+ * left out, and the others are returned as lines for the previews host plan's text.
+ */
+async function requireOtherSecretsApart(
+  deps: PhaseDeps,
+  github: GitHubSetup,
+  plan: DeployPlan,
+  command: string,
+): Promise<string[]> {
+  const { root, app, environment } = deps.paths;
+  const { api, owner, repo } = github;
+  const where = `${owner}/${repo}`;
+  /** Each environment that could leak, named and with the command that provisions it. */
+  const repository: { text: string; run: string }[] = [];
+  const open: { text: string; run: string; githubEnv: string }[] = [];
+  const readable: string[] = [];
+  const anyWorkflow = "any workflow, a pull request's included, can read";
+  for (const other of await otherPlans(deps.paths, plan)) {
+    if (!hasDeployment(other.plan) || other.plan.environment?.previews !== undefined) continue;
+    const at = { app: other.paths.app, environment: other.paths.environment };
+    const named = {
+      text: at.app === app ? at.environment : environmentText(at),
+      run: `\`opscrew provision${await commandFlags(root, at.environment, at.app)}\``,
+    };
+    const provider = other.plan.target.provider;
+    if (provider === "cloudflare-workers") {
+      readable.push(
+        `The Cloudflare token of ${named.text} is a repository secret: ${anyWorkflow} it.`,
+      );
+      continue;
+    }
+    if (provider === "github-pages") {
+      if (deploySecretNamesFor(other.plan).length > 0) {
+        readable.push(
+          `The site values of ${named.text} are repository secrets: ${anyWorkflow} them.`,
+        );
+      }
+      continue;
+    }
+    if (other.plan.environment?.secrets !== "environment") {
+      repository.push(named);
+      continue;
+    }
+    const githubEnv = githubEnvironment(other.plan) as string;
+    const view = await api.getEnvironment(owner, repo, githubEnv);
+    if (view !== undefined && view.branchPolicy === null) open.push({ ...named, githubEnv });
+  }
+  const again = `${command}${await commandFlags(root, environment, app)}`;
+  const one = (list: readonly unknown[]) => list.length === 1;
+  if (repository.length > 0) {
+    const its = one(repository) ? "its" : "their";
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `A pull request could read the deploy key of ${listText(repository.map((e) => e.text))}: ${its} deploy secrets are repository secrets, which every workflow in ${where} can read, a pull request's included. Nothing was changed.`,
+      {
+        hint: `Run ${listText(repository.map((e) => e.run))} first, which ${one(repository) ? "moves" : "move"} ${its} secrets into a GitHub environment only ${its} branch can use, then run \`${again}\` again.`,
+      },
+    );
+  }
+  if (open.length > 0) {
+    const its = one(open) ? "its" : "their";
+    const githubEnvs = listText(open.map((e) => e.githubEnv));
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `A pull request could read the deploy key of ${listText(open.map((e) => e.text))}: ${one(open) ? "the GitHub environment" : "the GitHub environments"} ${githubEnvs} that ${one(open) ? "holds" : "hold"} ${its} deploy secrets ${one(open) ? "lets" : "let"} every branch deploy, a pull request's included. Nothing was changed.`,
+      {
+        hint: `Run ${listText(open.map((e) => e.run))} again and accept ${its} branch rule, or let only ${its} branch deploy to ${githubEnvs} in https://github.com/${where}/settings/environments; then run \`${again}\` again.`,
+      },
+    );
+  }
+  return readable;
 }
 
 /** Custom branch policies: only the branches added with `addDeploymentBranch` may deploy. */
@@ -883,6 +1016,8 @@ export async function setDeploySecrets(
      * secrets as the repository secret `<prefix>CHECK_SERVER` (a move re-points it).
      */
     checkServer?: string;
+    /** What the approval says of the values instead of the app environment's names. */
+    about?: string;
   } = {},
 ): Promise<void> {
   const { api, owner } = github;
@@ -924,7 +1059,8 @@ export async function setDeploySecrets(
                 ]
               : []),
           ]),
-      `The app environment contains: ${variableNames.length > 0 ? variableNames.join(", ") : "no variables"}.`,
+      options.about ??
+        `The app environment contains: ${variableNames.length > 0 ? variableNames.join(", ") : "no variables"}.`,
       ...(stale.length > 0
         ? [
             stale.some((place) => !place.name.endsWith("_ENV"))

@@ -1,4 +1,4 @@
-import { OpsCrewError } from "@opscrew/core";
+import { OpsCrewError, toPosixRelative } from "@opscrew/core";
 import {
   type DeployPlan,
   readArtifact,
@@ -8,6 +8,7 @@ import {
 import type { PhaseDeps } from "../context";
 import { parseHostName } from "../domain/common";
 import { insideDomain, recordRequirements } from "../domain/project";
+import { commandFlags } from "../environments/choice";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { runPhaseFlow } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
@@ -29,6 +30,17 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
   const { domain: requested, ...rest } = options;
   let plan = await readArtifact("plan", deps.paths.files.plan);
   requireNoMoveInProgress(plan);
+  const previews = plan.environment?.previews;
+  if (previews !== undefined) {
+    const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The ${deps.paths.environment} environment is a preview environment, which has no hostname of its own: its previews are at pr-<number>.${previews.domain}, under the wildcard record \`opscrew provision${flags}\` manages. Nothing was changed.`,
+      {
+        hint: `To give the previews another base, set environment.previews.domain in ${toPosixRelative(deps.paths.root, deps.paths.files.plan)}, then run \`opscrew provision${flags}\`.`,
+      },
+    );
+  }
   const raw = requested ?? plan.dns.domain;
   if (!raw?.trim()) {
     throw new OpsCrewError("INVALID_INPUT", "No domain to set up.", {

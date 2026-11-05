@@ -5,6 +5,8 @@ import {
   appVariables,
   type GeneratedSecret,
   isClientExposedEnvName,
+  type PreviewSecretFormat,
+  previewSecret,
   serviceSpec,
   siteHosts,
 } from "@opscrew/iac-templates";
@@ -86,25 +88,44 @@ export const FRAMEWORK_ENV: Readonly<
     string,
     {
       fixed: Readonly<Record<string, string>>;
-      generated: Readonly<Record<string, () => string>>;
+      generated: Readonly<Record<string, PreviewSecretFormat>>;
     }
   >
 > = {
-  rails: {
-    fixed: { RAILS_ENV: "production" },
-    generated: { SECRET_KEY_BASE: () => randomBytes(64).toString("hex") },
-  },
+  rails: { fixed: { RAILS_ENV: "production" }, generated: { SECRET_KEY_BASE: "hex64" } },
   laravel: {
     fixed: { APP_ENV: "production", APP_DEBUG: "false", LOG_CHANNEL: "stderr" },
     // `php artisan key:generate`'s format for the default cipher, AES-256-CBC.
-    generated: { APP_KEY: () => `base64:${randomBytes(32).toString("base64")}` },
+    generated: { APP_KEY: "b64k32" },
   },
 };
 
 const FIXED_VALUES = new Map(Object.values(FRAMEWORK_ENV).flatMap((f) => Object.entries(f.fixed)));
-const GENERATORS = new Map(
+const GENERATED_FORMATS = new Map(
   Object.values(FRAMEWORK_ENV).flatMap((f) => Object.entries(f.generated)),
 );
+
+/**
+ * A new random value in `format`, as a preview server makes one: 32 or 64 random bytes as hex,
+ * `base64:` and 32 random bytes in base64 (Laravel's key), or `GK` and 12 random bytes as hex.
+ */
+function randomValue(format: PreviewSecretFormat): string {
+  switch (format) {
+    case "hex32":
+      return randomBytes(32).toString("hex");
+    case "hex64":
+      return randomBytes(64).toString("hex");
+    case "b64k32":
+      return `base64:${randomBytes(32).toString("base64")}`;
+    case "gk":
+      return `GK${randomBytes(12).toString("hex")}`;
+  }
+}
+
+/** A catalog secret's format as a value's format: a Garage key id, or 32 random bytes as hex. */
+function secretFormat(format: GeneratedSecret["format"] | undefined): PreviewSecretFormat {
+  return format === "garage-key-id" ? "gk" : "hex32";
+}
 
 /** The fixed production value of a {@link FRAMEWORK_ENV} setting (`RAILS_ENV`), else undefined. */
 export function fixedProductionValue(name: string): string | undefined {
@@ -401,6 +422,16 @@ export interface AssembleAppEnvOptions {
   previous?: GeneratedValues;
   /** The user's key for the plan's provider bucket, and R2's endpoint (see {@link StorageLogin}). */
   storage?: StorageLogin;
+  /**
+   * A preview environment's env templates instead of values (ADR 0026): each value OpsCrew would
+   * generate is the preview server's placeholder in the format it needs (`previewSecret`: a
+   * service's secret as `<service>-<secret>`, an app variable by its name), never recorded in
+   * `generated`; the user's own values from `dotenvText` stay out of `appEnv`, in
+   * {@link AppEnvironment.preview}, and never replace a generated value or fixed setting. A
+   * missing value is listed there instead of stopping the run. `previous` and `password` are not
+   * read.
+   */
+  previewTemplates?: boolean;
 }
 
 /** Generated values to keep between runs (stored privately, never committed or logged). */
@@ -452,13 +483,11 @@ export interface AppEnvironment {
      */
     services: Record<string, Record<string, string>>;
   };
-}
-
-/** A new secret in the catalog's format: 32 random bytes as hex, or a Garage key ID. */
-function newSecret(format: GeneratedSecret["format"]): string {
-  return format === "garage-key-id"
-    ? `GK${randomBytes(12).toString("hex")}`
-    : randomBytes(32).toString("hex");
+  /**
+   * With `previewTemplates` only: the user's own app values by name, which `appEnv` leaves out
+   * (the preview server's `values.env`), and the required variables without a value.
+   */
+  preview?: { values: Record<string, string>; missing: string[] };
 }
 
 /**
@@ -469,13 +498,16 @@ function newSecret(format: GeneratedSecret["format"]): string {
  * domain or the server's address; the fixed settings of {@link FRAMEWORK_ENV}). A generated value
  * or fixed setting the env file of a non-interactive run sets wins, and is not stored as generated.
  * An optional variable (the code has a default) without a value is left unset instead of stopping
- * the run. Values are never logged.
+ * the run. Values are never logged. With `previewTemplates`, a preview environment's env templates
+ * instead (see there).
  * @throws OpsCrewError `INVALID_INPUT` when a required value is missing in a non-interactive run.
  */
 export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<AppEnvironment> {
   const { plan } = options;
+  const templates = options.previewTemplates === true;
   const local = parseDotenv(options.dotenvText ?? "");
   const app = new Map<string, string>();
+  const own = new Map<string, string>();
   const build = new Map<string, string>();
   const buildSecrets = new Map<string, string>();
   const missing: string[] = [];
@@ -485,21 +517,24 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
   const generatedEnv: Record<string, string> = {};
   const generated: GeneratedValues = { env: generatedEnv };
 
-  // Each running service's secrets: generated once, then kept (Postgres's as `dbPassword`).
+  // Each running service's secrets: generated once, then kept (Postgres's as `dbPassword`); for
+  // preview templates, the server's placeholder.
   const secrets: Record<string, Record<string, string>> = {};
   const secret = (service: PlanService, name: string): string => {
     const known = secrets[service.name]?.[name];
     if (known !== undefined) return known;
+    const format = serviceSpec(service.kind).secrets.find((s) => s.name === name)?.format;
     let value: string;
-    if (service.kind === "postgres" && name === "password") {
+    if (templates) {
+      value = previewSecret(`${service.name}-${name}`, secretFormat(format));
+    } else if (service.kind === "postgres" && name === "password") {
       value = options.previous?.dbPassword ?? newPassword();
       generated.dbPassword = value;
     } else {
-      const format = serviceSpec(service.kind).secrets.find((s) => s.name === name)?.format;
       value =
         options.previous?.services?.[service.name]?.[name] ??
         options.password?.() ??
-        newSecret(format ?? "hex32");
+        randomValue(secretFormat(format));
       generated.services ??= {};
       generated.services[service.name] = { ...generated.services[service.name], [name]: value };
     }
@@ -536,8 +571,12 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
           });
     const fixed = derived ? FIXED_VALUES.get(variable.name) : undefined;
     // The file of a non-interactive run holds production values; the local `.env` of an
-    // interactive run holds development ones (`APP_ENV=local`), so it never overrides a default.
-    const userValue = options.ask ? undefined : local.get(variable.name);
+    // interactive run holds development ones (`APP_ENV=local`), so it never overrides a default,
+    // nor a preview's values file, whose generated values the preview server makes.
+    const userValue = options.ask || templates ? undefined : local.get(variable.name);
+    const format = GENERATED_FORMATS.get(variable.name);
+    /** The value is the user's own, which preview templates keep apart. */
+    let users = false;
     let value: string | undefined;
     if (serviceUrl !== undefined) {
       value = serviceUrl;
@@ -549,9 +588,12 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       }
     } else if (fixed !== undefined) {
       value = userValue ?? fixed;
+    } else if (variable.source === "generated" && templates) {
+      value = previewSecret(variable.name, format ?? "hex32");
     } else if (variable.source === "generated") {
       // An injected source wins, so a caller that cannot know new values (drift) sees its marker.
-      const generate = options.password ?? GENERATORS.get(variable.name) ?? randomPassword;
+      const generate =
+        options.password ?? (format === undefined ? randomPassword : () => randomValue(format));
       value = userValue ?? options.previous?.env?.[variable.name] ?? generate();
       if (userValue === undefined) generatedEnv[variable.name] = value;
     } else if (options.ask) {
@@ -567,6 +609,7 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       else if ("value" in answer) value = answer.value;
     } else {
       value = local.get(variable.name);
+      users = true;
     }
     if (value === undefined) {
       (optional ? defaulted : missing).push(variable.name);
@@ -578,11 +621,11 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
       }
       (variable.secret ? buildSecrets : build).set(variable.name, value);
     } else {
-      app.set(variable.name, value);
+      (users && templates ? own : app).set(variable.name, value);
     }
   }
 
-  if (missing.length > 0 && !options.ask) {
+  if (missing.length > 0 && !options.ask && !templates) {
     throw new OpsCrewError(
       "INVALID_INPUT",
       `Production values are missing for: ${missing.join(", ")}.`,
@@ -596,20 +639,23 @@ export async function assembleAppEnv(options: AssembleAppEnvOptions): Promise<Ap
     [...values.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([n, v]) => format(n, v));
   const buildLines = (values: Map<string, string>) =>
     `${sortedLines(values, (n, v) => `${n}=${v}`).join("\n")}\n`;
+  const sorted = (entries: Iterable<[string, string]>) =>
+    Object.fromEntries([...entries].sort(([a], [b]) => a.localeCompare(b)));
   const allBuild = [...build.entries(), ...buildSecrets.entries()];
   return {
     appEnv: `${sortedLines(app, dotenvLine).join("\n")}\n`,
     buildEnv: buildLines(build),
     buildSecrets: buildLines(buildSecrets),
-    names: [...new Set([...app.keys(), ...allBuild.map(([name]) => name)])].sort(),
+    names: [...new Set([...app.keys(), ...own.keys(), ...allBuild.map(([name]) => name)])].sort(),
     defaulted,
     unresolved,
     generated,
     values: {
-      app: Object.fromEntries([...app.entries()].sort(([a], [b]) => a.localeCompare(b))),
-      build: Object.fromEntries(allBuild.sort(([a], [b]) => a.localeCompare(b))),
+      app: sorted(app.entries()),
+      build: sorted(allBuild),
       ...(db !== undefined ? { db } : {}),
       services: secrets,
     },
+    ...(templates ? { preview: { values: sorted(own.entries()), missing } } : {}),
   };
 }

@@ -456,6 +456,8 @@ export async function prepareOwnServer(
     phase: OwnHostPhase;
     /** The command a stop says to run again, for example `opscrew portainer enable`. */
     command: string;
+    /** The connection and inspection made earlier in this run (a preview environment's). */
+    inspected?: { session: OwnServerSession; facts: HostFacts };
   },
 ): Promise<OwnServerRun> {
   const { plan } = input;
@@ -467,11 +469,13 @@ export async function prepareOwnServer(
   // Behind Cloudflare's proxy the firewall needs Cloudflare's current ranges; read them first, so
   // a failure stops before anything is changed.
   const webSources = await ownWebSources(deps, plan, input.services.cloudflare);
-  const { session, facts } = await connectAndInspectOwnServer(deps, {
-    hostKey: input.options.hostKey,
-    services: { ...own, host },
-    phase: input.phase,
-  });
+  const { session, facts } =
+    input.inspected ??
+    (await connectAndInspectOwnServer(deps, {
+      hostKey: input.options.hostKey,
+      services: { ...own, host },
+      phase: input.phase,
+    }));
   if ((facts.arch === "amd64" || facts.arch === "arm64") && facts.arch !== target.arch) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

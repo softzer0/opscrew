@@ -139,6 +139,7 @@ import {
   previewEdits,
   previewMemoryText,
   previewPlan,
+  previewStorageLine,
   previewsLine,
   requirePreviewsFit,
 } from "./previews";
@@ -327,6 +328,9 @@ interface DesignInputs {
   facts: ProjectFacts;
   requirements: Requirements;
 }
+
+/** How the components' line about a planned bucket starts (`designComponents`' storage text). */
+const BUCKET_LINE = "Object storage for the app's files, in the private bucket ";
 
 /** Collects warnings: redacted, sent to the reporter and kept for the result. */
 function warner(deps: PhaseDeps, warnings: string[]): (text: string) => void {
@@ -1205,14 +1209,20 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   // The components, with each one's memory on the chosen server (SC-1308); with extra servers,
   // each server's memory follows it in the placement's lines.
   const serverMb = chosen.target.memoryGb * 1024;
+  // A preview environment plans no bucket at a provider (`previewPlan`): this line says so in
+  // place of the bucket's own.
+  const bucketLine = previews === undefined ? undefined : previewStorageLine(fresh, name);
   const componentLines = [
     // Copied from a source, the components are its plan's, not those designed from the code here.
     ...(source !== undefined
       ? [copiedComponentsLine(plan, source.name)]
       : [
           ...preview.lines.filter(
-            (line) => !off.some((name) => line.startsWith(`Cron job ${name} (`)),
+            (line) =>
+              !off.some((name) => line.startsWith(`Cron job ${name} (`)) &&
+              !(bucketLine !== undefined && line.startsWith(BUCKET_LINE)),
           ),
+          ...(bucketLine !== undefined ? [bucketLine] : []),
           ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),
         ]),
     ...(inPortainer || serverless !== undefined || servers.length > 0

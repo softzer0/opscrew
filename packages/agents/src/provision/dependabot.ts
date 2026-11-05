@@ -17,6 +17,7 @@ import {
   type DeployPlan,
   environmentsOf,
   type ProjectFacts,
+  readArtifact,
   readOptionalArtifact,
 } from "@opscrew/plan-schema";
 import { parse } from "yaml";
@@ -76,6 +77,20 @@ async function javaBuildOf(
 }
 
 /**
+ * The environments of the app `key` (`environmentsOf`) whose runtime folders Dependabot watches:
+ * all but a preview environment, which has no runtime folder (its previews' files are its recipe).
+ */
+async function watchedEnvironments(root: string, key: string | undefined): Promise<string[]> {
+  const repository = resolveProjectPaths(root, { env: {} });
+  const names: string[] = [];
+  for (const name of await environmentsOf(root, key)) {
+    const plan = await readArtifact("plan", appPaths(repository, key, name).files.plan);
+    if (plan.environment?.previews === undefined) names.push(name);
+  }
+  return names;
+}
+
+/**
  * The repository's apps other than `plan`'s (`appsOf`), each with its analysed facts, its prod
  * plan, a Java app's build tool and its environments; an app not analysed and designed yet has no
  * entries.
@@ -93,7 +108,7 @@ async function otherApps(root: string, plan: DeployPlan): Promise<DependabotApp[
       facts: analysis.facts,
       plan: prod,
       javaBuild: await javaBuildOf(root, analysis.facts, prod),
-      environments: await environmentsOf(root, key),
+      environments: await watchedEnvironments(root, key),
     });
   }
   return others;
@@ -141,7 +156,7 @@ export async function dependabotStep(
   plan: DeployPlan,
 ): Promise<DependabotStep> {
   const java = await javaBuildOf(root, facts, plan);
-  const environments = await environmentsOf(root, plan.app.key);
+  const environments = await watchedEnvironments(root, plan.app.key);
   const others = await otherApps(root, plan);
   const file = renderDependabot(facts, plan, java, environments, others);
   for (const path of DEPENDABOT_FILES) {

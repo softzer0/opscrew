@@ -23,6 +23,7 @@ import {
   type DeployBranch,
   localDeployBranch,
   type PublishResult,
+  previewsNext,
   publishDeploySetup,
 } from "./publish";
 import { withCloudflareZone } from "./render";
@@ -267,6 +268,20 @@ export function mergeDeploysNote(
   return storedNow
     ? `OpsCrew stored the deploy secrets in GitHub Actions again. If you changed a value, the running app gets it on its next deploy: run ${posix.basename(plan.cicd.workflowPath)} on ${base} in GitHub Actions, or push a commit.`
     : undefined;
+}
+
+/**
+ * {@link mergeDeploysNote} for a preview environment, which never deploys by itself: what the next
+ * pull request gets once the preview workflow is merged (or already is, when nothing was
+ * published and no pull request is open).
+ */
+export function previewsMergeNote(plan: DeployPlan, published: PublishResult): string {
+  const { base, branch, prUrl } = published;
+  if (prUrl) return `Once ${prUrl} is merged, ${previewsNext(plan)}.`;
+  if (published.published && branch !== base) {
+    return `Once ${branch} is merged into ${base}, ${previewsNext(plan)}.`;
+  }
+  return `Previews are set up: ${previewsNext(plan)}.`;
 }
 
 /**

@@ -294,6 +294,9 @@ async function zoneAccount(
  * tunnel permissions only with a tunnel. The app's hostnames are checked only in web mode `tunnel`
  * (in `proxy` and `caddy` mode the user's own record there is expected), the webhook's hostname
  * (`portainer-<app>.<zone>`) in redeploy mode `cloudflare`.
+ *
+ * A preview environment (`environment.previews`, a zone and no domain) checks its wildcard
+ * `*.<previews.domain>` in the zone that holds the previews' base.
  */
 export async function setupCloudflare(
   deps: PhaseDeps,
@@ -301,7 +304,9 @@ export async function setupCloudflare(
   services: ProvisionServices,
   options: { foreignRecords?: "stop" | "report" } = {},
 ): Promise<CloudflareSetup | undefined> {
-  if (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined) return undefined;
+  const previews = plan.environment?.previews;
+  const domain = previews?.domain ?? plan.dns.domain;
+  if (plan.dns.provider !== "cloudflare" || domain === undefined) return undefined;
   const portainer = portainerCloudflare(plan);
   // In the user's Portainer only a tunnel, the stack Caddy's origin TLS or an R2 bucket (it
   // belongs to the zone's account) needs it.
@@ -326,7 +331,6 @@ export async function setupCloudflare(
 
   const check = await api.verifyToken();
   if (!check.ok) throw invalid("Cloudflare", check.message, requirement);
-  const domain = plan.dns.domain;
   try {
     const zone = await api.findZone(domain);
     if (!zone) {
@@ -338,7 +342,12 @@ export async function setupCloudflare(
         },
       );
     }
-    const appHosts = plan.dns.www ? [domain, `www.${domain}`] : [domain];
+    const appHosts =
+      previews !== undefined
+        ? [`*.${domain}`]
+        : plan.dns.www
+          ? [domain, `www.${domain}`]
+          : [domain];
     const hosts =
       portainer === undefined
         ? [...appHosts, ...tunnelHosts(plan, zone.name)]
@@ -367,7 +376,10 @@ export async function setupCloudflare(
           ].join("\n"),
         ),
         {
-          hint: "Delete these records in the Cloudflare dashboard (DNS → Records) if they belong to a host you no longer use, or pick another hostname with `opscrew dns --domain <hostname>`, then run OpsCrew again.",
+          hint:
+            previews !== undefined
+              ? "Delete these records in the Cloudflare dashboard (DNS → Records) if they belong to a host you no longer use, or give the previews another base (environment.previews.domain in the environment's plan.yaml), then run OpsCrew again."
+              : "Delete these records in the Cloudflare dashboard (DNS → Records) if they belong to a host you no longer use, or pick another hostname with `opscrew dns --domain <hostname>`, then run OpsCrew again.",
         },
       );
     }

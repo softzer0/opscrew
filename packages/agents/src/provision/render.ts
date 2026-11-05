@@ -2,10 +2,14 @@ import { join } from "node:path";
 import { exists, listText, OpsCrewError, toPosixRelative } from "@opscrew/core";
 import {
   additionsPath,
+  type PreviewEnvTemplates,
   type RenderedFile,
   type RenderedFileKind,
   type RuntimeContext,
   renderDeployment,
+  renderInfra,
+  renderPreviewRecipe,
+  renderPreviewWorkflow,
   renderServerCompose,
   renderStorage,
   renderTunnelConnectorCompose,
@@ -14,6 +18,7 @@ import {
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
+  ghcrImageFor,
   isServerlessProvider,
   otherAppDirs,
   type Requirements,
@@ -25,6 +30,7 @@ import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
 import { readEnvironmentRequirements } from "../environments/requirements";
 import { previewLocalStack } from "../localhost/stack";
+import { previewEnvironment } from "../previews/setup";
 import {
   diffRenderedFiles,
   ensureDeployKey,
@@ -187,12 +193,37 @@ async function ownServerSshPorts(
  * mode, or a Portainer subdomain), the tunnel connector's Compose file
  * (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server) and, with origin TLS on a
  * server, `pull.pem`, the client certificate (`values`) the site trusts.
+ *
+ * A preview environment (ADR 0026) has no app of its own and no deploy workflow: its root (the
+ * server and the wildcard record), the preview workflow and the recipe (`renderPreviewRecipe`)
+ * with its env templates `previews`, without values.
+ * @throws OpsCrewError `INTERNAL` for a preview environment without `previews`.
  */
 export function deploymentFiles(
   plan: DeployPlan,
   ctx: RuntimeContext,
   values: OriginTlsValues = {},
+  previews?: PreviewEnvTemplates,
 ): RenderedFile[] {
+  if (plan.environment?.previews !== undefined) {
+    if (previews === undefined) {
+      throw new OpsCrewError(
+        "INTERNAL",
+        "OpsCrew rendered a preview environment without its env templates.",
+        { hint: "This is a bug in OpsCrew; please report it." },
+      );
+    }
+    const repository = `${ctx.github.owner}/${ctx.github.repo}`;
+    return [
+      ...renderInfra(plan, ctx),
+      renderPreviewWorkflow(plan, ctx),
+      ...renderPreviewRecipe(plan, {
+        repository,
+        imageName: ghcrImageFor(repository, plan.app.key),
+        env: previews,
+      }),
+    ];
+  }
   const files = [
     ...renderDeployment(plan, ctx),
     ...(plan.servers ?? []).map((server) => renderServerCompose(plan, server.name)),
@@ -371,6 +402,9 @@ export async function previewDeploymentFiles(
       ...(checkKeyLine !== undefined ? { checkKeyLine } : {}),
     }),
     values,
+    plan.environment?.previews === undefined
+      ? undefined
+      : (await previewEnvironment(deps, plan)).templates,
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);
   return {

@@ -598,3 +598,92 @@ describe("assembleAppEnv: the services' variables from the catalog (FR-1314)", (
     );
   });
 });
+
+describe("assembleAppEnv: a preview environment's env templates (ADR 0026)", () => {
+  const ENV: Env = [
+    { name: "DATABASE_URL", secret: true, source: "derived" },
+    { name: "APP_ENV", secret: false, source: "derived" },
+    { name: "APP_KEY", secret: true, source: "generated" },
+    { name: "SECRET_KEY_BASE", secret: true, source: "generated" },
+    { name: "CRON_SECRET", secret: true, source: "generated" },
+    { name: "STRIPE_SECRET_KEY", secret: true, source: "user" },
+    { name: "MAIL_FROM", secret: false, source: "user" },
+    { name: "SENTRY_DSN", secret: true, source: "user", optional: true },
+    { name: "NEXT_PUBLIC_STRIPE_KEY", secret: false, source: "user" },
+  ];
+
+  it("holds placeholders in each format and no value, keeping the user's values apart", async () => {
+    const stripe = fakeSecret("stripe-live-key");
+    const key = `base64:${Buffer.from(fakeSecret("generic-password")).toString("base64")}`;
+    const result = await assembleAppEnv({
+      plan: plan(ENV),
+      // The file's own key and setting never replace what the preview server makes.
+      dotenvText: `STRIPE_SECRET_KEY=${stripe}\nNEXT_PUBLIC_STRIPE_KEY=pk_test_x\nAPP_KEY=${key}\nAPP_ENV=local\nMAIL_FROM="Shop <shop@example.com>"\n`,
+      previewTemplates: true,
+      previous: { dbPassword: "an-earlier-password" },
+      password: () => "never",
+    });
+    expect(parseDotenv(result.appEnv)).toEqual(
+      new Map([
+        ["APP_ENV", "production"],
+        ["APP_KEY", "@SECRET:APP_KEY:b64k32@"],
+        ["CRON_SECRET", "@SECRET:CRON_SECRET:hex32@"],
+        ["DATABASE_URL", "postgresql://app:@SECRET:db-password:hex32@@db:5432/app"],
+        ["SECRET_KEY_BASE", "@SECRET:SECRET_KEY_BASE:hex64@"],
+      ]),
+    );
+    expect(result.values.services).toEqual({ db: { password: "@SECRET:db-password:hex32@" } });
+    expect(result.preview).toEqual({
+      values: { MAIL_FROM: "Shop <shop@example.com>", STRIPE_SECRET_KEY: stripe },
+      missing: [],
+    });
+    expect(result.buildEnv).toBe("NEXT_PUBLIC_STRIPE_KEY=pk_test_x\n");
+    expect(result.defaulted).toEqual(["SENTRY_DSN"]);
+    // Nothing is generated or kept on this computer.
+    expect(result.generated).toEqual({ env: {} });
+    for (const text of [stripe, key, "an-earlier-password", "never"]) {
+      expect(result.appEnv).not.toContain(text);
+    }
+  });
+
+  it("lists the required values the file lacks instead of stopping", async () => {
+    const result = await assembleAppEnv({ plan: plan(ENV), previewTemplates: true });
+    expect(result.preview).toEqual({
+      values: {},
+      missing: ["STRIPE_SECRET_KEY", "MAIL_FROM", "NEXT_PUBLIC_STRIPE_KEY"],
+    });
+  });
+
+  it("gives Garage's key id its own format", async () => {
+    const result = await assembleAppEnv({
+      plan: DeployPlanSchema.parse({
+        ...plan([{ name: "AWS_ACCESS_KEY_ID", secret: true, source: "derived" }]),
+        services: [
+          {
+            kind: "garage",
+            version: "2.4",
+            memoryMb: 64,
+            reason: "The app stores files.",
+            licence: "test",
+          },
+        ],
+        storage: {
+          objectStorage: {
+            provider: "garage",
+            bucket: "mysite-uploads",
+            region: "garage",
+            expected: { storageGb: 10, egressGbPerMonth: 50 },
+            price: { monthly: 0, currency: "USD", source: "test", checkedOn: "2026-10-19" },
+          },
+        },
+      }),
+      previewTemplates: true,
+    });
+    expect(result.values.app.AWS_ACCESS_KEY_ID).toBe("@SECRET:garage-key-id:gk@");
+    expect(result.values.services.garage).toEqual({
+      "rpc-secret": "@SECRET:garage-rpc-secret:hex32@",
+      "key-id": "@SECRET:garage-key-id:gk@",
+      "secret-key": "@SECRET:garage-secret-key:hex32@",
+    });
+  });
+});

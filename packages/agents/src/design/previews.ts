@@ -1,6 +1,8 @@
 import type { ComputeCatalog, ComputeOffer } from "@opscrew/contracts";
 import { listText, OpsCrewError, plural } from "@opscrew/core";
+import { providerBucket } from "@opscrew/iac-templates";
 import type { DeployPlan, Previews, ProjectFacts } from "@opscrew/plan-schema";
+import { storageVariableKind } from "../shared/app-env";
 import {
   type AppMemoryInput,
   appMemoryLimits,
@@ -114,10 +116,38 @@ export function requirePreviewsFit(
 }
 
 /**
+ * The app's object storage in a preview environment: no bucket at a provider (a bucket's key would
+ * be every preview's, and provision would ask for it), so the variables that point the app at its
+ * bucket are the user's own, from the environment's values file. Garage, a service of the preview
+ * server, stays: each preview runs its own.
+ */
+function previewStorage(plan: DeployPlan): Pick<DeployPlan, "storage" | "app"> {
+  if (providerBucket(plan) === undefined) return { storage: plan.storage, app: plan.app };
+  const { objectStorage: _bucket, ...storage } = plan.storage ?? {};
+  const env = plan.app.env.map((variable) =>
+    variable.source === "derived" && storageVariableKind(variable.name) !== undefined
+      ? { ...variable, source: "user" as const }
+      : variable,
+  );
+  return { storage, app: { ...plan.app, env } };
+}
+
+/**
+ * The line design says for a preview environment of an app with a bucket at a provider (see
+ * {@link previewPlan}); `undefined` without one.
+ */
+export function previewStorageLine(designed: DeployPlan, name: string): string | undefined {
+  const bucket = providerBucket(designed);
+  if (bucket === undefined) return undefined;
+  return `Previews get no bucket: each preview uses the object storage .env.${name} names (for example a test bucket of yours), not ${bucket.bucket}.`;
+}
+
+/**
  * The plan of a preview environment, from the one design made for it: a DNS-only Cloudflare zone
  * without a hostname of its own (its base is `previews.domain`, data-model.md), open to everyone
- * on ports 80 and 443, no signing and no deploy tags, and the detected seed command when its
- * `previews` set none (`null` when detection found none).
+ * on ports 80 and 443, no signing and no deploy tags, no bucket at a provider (its storage
+ * variables come from the values file, {@link previewStorageLine}), and the detected seed command
+ * when its `previews` set none (`null` when detection found none).
  */
 export function previewPlan(plan: DeployPlan, zone: string, facts: ProjectFacts): DeployPlan {
   const { environment } = plan;
@@ -126,6 +156,7 @@ export function previewPlan(plan: DeployPlan, zone: string, facts: ProjectFacts)
   const seed = previews?.seed === undefined ? (facts.build.seedCommand ?? null) : previews.seed;
   return {
     ...plan,
+    ...previewStorage(plan),
     ...(environment === undefined || previews === undefined
       ? {}
       : { environment: { ...environment, previews: { ...previews, seed } } }),

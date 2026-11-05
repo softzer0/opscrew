@@ -5,6 +5,7 @@ import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { previewProject } from "../previews/__fixtures__/plan";
 import { DEPLOY_SETUP_BRANCH } from "../provision/publish";
 import { ADDRESS_MAY_BE_PUBLIC_NOTE, runProvision } from "../provision/run";
 import type { ProvisionServices } from "../provision/types";
@@ -354,5 +355,21 @@ describe.skipIf(!findExecutable("git"))("runDns", () => {
     const { deps, services } = await setup({ deployed: false });
     await runDns(deps, { domain: "shop.example.com", services });
     expect(deps.reporter.text()).not.toContain(ADDRESS_MAY_BE_PUBLIC_NOTE);
+  });
+});
+
+describe("opscrew dns in a preview environment", () => {
+  it("refuses plainly before any change: previews have no hostname of their own", async () => {
+    const { deps, plan } = await previewProject({ answer: () => true });
+    const before = await readFile(deps.paths.files.plan, "utf8");
+    await expect(runDns(deps, { domain: "preview.example.com" })).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        "The preview environment is a preview environment, which has no hostname of its own: its previews are at pr-<number>.shop.example.com, under the wildcard record `opscrew provision --env preview` manages. Nothing was changed.",
+      hint: "To give the previews another base, set environment.previews.domain in opscrew/environments/preview/plan.yaml, then run `opscrew provision --env preview`.",
+    });
+    expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
+    expect(plan.environment?.previews?.domain).toBe("shop.example.com");
+    expect((deps.approvalHandler as ScriptedApprovalHandler).requests).toEqual([]);
   });
 });

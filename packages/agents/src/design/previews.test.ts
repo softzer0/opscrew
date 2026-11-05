@@ -1,21 +1,38 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { FetchLike } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { DeployPlanSchema, type MonitoringSettings } from "@opscrew/plan-schema";
+import {
+  DeployPlanSchema,
+  type MonitoringSettings,
+  readArtifact,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { stringify } from "yaml";
+import { addEnvironment } from "../environments";
 import { SYSTEM_RESERVE_MB } from "../shared/memory";
 import {
+  createTestPhaseDeps,
   euCatalog,
   MemoryCatalog,
+  makeFacts,
   makeRequirements,
   nextPostgresFacts,
   offer,
+  TOKEN,
   testPlan,
 } from "../testing";
 import { readPlanWithEdits } from "./placement-edits";
-import { previewCapacity, previewEdits, previewMemoryText } from "./previews";
+import {
+  previewCapacity,
+  previewEdits,
+  previewMemoryText,
+  previewPlan,
+  previewStorageLine,
+} from "./previews";
+import { runDesign } from "./run";
 import { type Sizing, sizeFor } from "./sizing";
 
 const PREVIEWS = { cap: 3, lifetimeDays: 7, domain: "shop.example.com", seed: null };
@@ -151,6 +168,136 @@ describe("previewEdits", () => {
       edits: { servers: [], placed: {} },
       lines: ["The self-hosted monitoring is off: it watches prod's servers, not previews."],
     });
+  });
+});
+
+describe("previewPlan's object storage", () => {
+  const bucket = {
+    provider: "hetzner",
+    bucket: "shop-uploads",
+    region: "fsn1",
+    expected: { storageGb: 10, egressGbPerMonth: 50 },
+    price: { monthly: 0, currency: "EUR", source: "test", checkedOn: "2026-10-19" },
+  };
+  const derived = (name: string, secret = false) => ({ name, secret, source: "derived" as const });
+
+  it("plans no bucket at a provider: the storage variables come from the values file", () => {
+    const base = testPlan();
+    const designed = DeployPlanSchema.parse({
+      ...base,
+      app: {
+        ...base.app,
+        env: [
+          ...base.app.env,
+          derived("AWS_ACCESS_KEY_ID", true),
+          derived("AWS_SECRET_ACCESS_KEY", true),
+          derived("S3_BUCKET"),
+        ],
+      },
+      storage: { objectStorage: bucket },
+    });
+    const plan = previewPlan(designed, "example.com", makeFacts());
+    expect(plan.storage?.objectStorage).toBeUndefined();
+    const sources = Object.fromEntries(plan.app.env.map((v) => [v.name, v.source]));
+    expect(sources).toMatchObject({
+      AWS_ACCESS_KEY_ID: "user",
+      AWS_SECRET_ACCESS_KEY: "user",
+      S3_BUCKET: "user",
+      DATABASE_URL: "derived",
+    });
+    expect(previewStorageLine(designed, "preview")).toBe(
+      "Previews get no bucket: each preview uses the object storage .env.preview names (for example a test bucket of yours), not shop-uploads.",
+    );
+    expect(previewStorageLine(plan, "preview")).toBeUndefined();
+  });
+
+  it("keeps Garage, which each preview runs for itself", () => {
+    const base = testPlan();
+    const designed = DeployPlanSchema.parse({
+      ...base,
+      services: [
+        ...base.services,
+        { kind: "garage", version: "2.4", memoryMb: 64, reason: "Files.", licence: "test" },
+      ],
+      storage: { objectStorage: { ...bucket, provider: "garage", region: "garage" } },
+    });
+    const plan = previewPlan(designed, "example.com", makeFacts());
+    expect(plan.storage).toEqual(designed.storage);
+    expect(previewStorageLine(designed, "preview")).toBeUndefined();
+  });
+});
+
+describe("designing a preview environment of an app with a bucket", () => {
+  /** Cloudflare's API with the zone example.com (id z1) and no DNS record. */
+  const fetch: FetchLike = async (input) => {
+    const url = new URL(String(input));
+    const ok = (result: unknown) =>
+      new Response(JSON.stringify({ success: true, errors: [], messages: [], result }), {
+        headers: { "content-type": "application/json" },
+      });
+    if (url.pathname.endsWith("/zones")) {
+      const found = url.searchParams.get("name") === "example.com";
+      return ok(
+        found ? [{ id: "z1", name: "example.com", status: "active", name_servers: [] }] : [],
+      );
+    }
+    if (url.pathname.endsWith("/zones/z1/dns_records")) return ok([]);
+    throw new Error(`unrouted ${url.pathname}`);
+  };
+
+  it("plans no bucket, and says where a preview's object storage comes from instead of the bucket's line", async () => {
+    const prod = await createTestPhaseDeps();
+    const facts = nextPostgresFacts({
+      name: "shop",
+      services: [
+        { kind: "postgres", evidence: ["dependency:pg"] },
+        { kind: "s3", evidence: ["dependency:@aws-sdk/client-s3"] },
+      ],
+      objectStorage: {
+        client: "@aws-sdk/client-s3",
+        presignedUploads: false,
+        variables: ["S3_BUCKET"],
+      },
+    });
+    await writeArtifact("architecture", prod.paths.files.architecture, {
+      schemaVersion: 1,
+      generatedAt: "2026-11-05T10:00:00.000Z",
+      generator: { tool: "opscrew", version: "0.0.0-test" },
+      facts,
+      summary: "A shop.",
+      risks: [],
+      aiEnriched: false,
+    });
+    await writeArtifact(
+      "requirements",
+      prod.paths.files.requirements,
+      makeRequirements({
+        domain: "shop.example.com",
+        dnsProvider: "cloudflare",
+        keepExternalServices: { s3: false },
+      }),
+    );
+    await runDesign(prod, { catalog: euCatalog() });
+    const bucket = (await readArtifact("plan", prod.paths.files.plan)).storage?.objectStorage;
+    expect(bucket?.provider).toBe("r2");
+
+    const preview = await createTestPhaseDeps({
+      root: prod.paths.root,
+      env: { ...prod.env, CLOUDFLARE_API_TOKEN: TOKEN },
+      fetch,
+      environment: "preview",
+    });
+    const { design } = await addEnvironment(preview, {
+      previews: true,
+      answers: {},
+      design: { catalog: euCatalog() },
+    });
+    expect(design.plan.storage?.objectStorage).toBeUndefined();
+    const said = preview.reporter.text();
+    expect(said).toContain(
+      `Previews get no bucket: each preview uses the object storage .env.preview names (for example a test bucket of yours), not ${bucket?.bucket}.`,
+    );
+    expect(said).not.toContain("Object storage for the app's files, in the private bucket");
   });
 });
 

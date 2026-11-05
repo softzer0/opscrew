@@ -6,12 +6,14 @@ import { exists, isUserFacingError, listText, OpsCrewError, plural } from "@opsc
 import {
   additionsPath,
   checkEnvironmentKey,
+  previewRecipeDir,
   renderStorage,
   usesTunnel,
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
+  ghcrImageFor,
   isServerlessProvider,
   readArtifact,
 } from "@opscrew/plan-schema";
@@ -37,6 +39,14 @@ import { localPlanFile } from "../localhost/plan";
 import { provisionLocalhost } from "../localhost/provision";
 import { finishMove, recordSwitchedMove, runMove } from "../move";
 import { cloudConnectorRemoval } from "../portainer/run";
+import { ensurePreviewKey } from "../previews/keys";
+import {
+  applyPreviewsHostPlan,
+  previewDeploySecrets,
+  previewEnvironment,
+  requirePreviewValues,
+  requireServerForPreviews,
+} from "../previews/setup";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import {
   applyCloudRunner,
@@ -76,7 +86,8 @@ import {
   writePlanIfChanged,
 } from "../shared";
 import { deployPauseOf, pinnedText, readableDeployPause } from "../shared/deploy-pause";
-import { hostPlanFile } from "../shared/host-plan";
+import { boundHostAdapter, hostPlanFile } from "../shared/host-plan";
+import { connectAndInspectOwnServer } from "../shared/own-server";
 import { runPhase } from "../shared/phase-status";
 import { extraCloudProviders } from "../shared/servers";
 import { connectorFirst, type HostChangeResult, tunnelChange } from "../shared/tunnel-connections";
@@ -127,8 +138,8 @@ import {
 } from "./render";
 import {
   buildAppEnvironment,
-  checkSecretsPlacement,
   deploySecrets,
+  placeDeploySecrets,
   type ServerReach,
   setDeploySecrets,
 } from "./secrets";
@@ -142,6 +153,7 @@ import {
   removedOwnServers,
   requireDesignedPlacement,
   requirePublicSshForRemoval,
+  serverForNetwork,
   serverHostPlans,
   withPlacement,
 } from "./servers";
@@ -159,6 +171,7 @@ import {
   mergeDeploysNote,
   type ProvisionPhase,
   pausedMergeNote,
+  previewsMergeNote,
   provisionEngine,
   publicOutputs,
   publishDeployment,
@@ -446,6 +459,15 @@ async function provisionFlow(
   requireDesignedPlacement(plan, command);
   // An extra own server is taken off only while public SSH reaches it.
   await requirePublicSshForRemoval(deps, plan, command);
+  // A preview environment (ADR 0026): its env templates, and its own values from `.env.<env>`,
+  // which must hold every value the app needs, before any change.
+  const previews = plan.environment?.previews !== undefined;
+  const previewEnv = previews ? await previewEnvironment(deps, plan) : undefined;
+  /** The command again for this environment, as the preview steps name it. */
+  const again = previews
+    ? `${command}${await commandFlags(root, deps.paths.environment, deps.paths.app)}`
+    : command;
+  if (previewEnv !== undefined) requirePreviewValues(deps, previewEnv, again);
   const profile = providerProfile(planProvider(plan));
   // The providers of the extra servers OpsCrew creates, besides the app server's.
   const extraProviders = extraCloudProviders(plan, profile.id);
@@ -517,10 +539,12 @@ async function provisionFlow(
     services,
   );
   // What the server runs now (read-only, over SSH as deploy): its proxy, and the app's origin
-  // certificate and client-certificate requirement, which the origin TLS clean-up waits for.
+  // certificate and client-certificate requirement, which the origin TLS clean-up waits for. A
+  // preview environment serves no hostname behind Cloudflare's proxy, so it has no origin TLS and
+  // no part in OpsCrew's shared rules in the zone.
   const served = await readServerEdge(deps, beforeApply(plan), services);
   const tls =
-    cloudflare === undefined
+    cloudflare === undefined || previews
       ? undefined
       : await planOriginTls(deps, {
           plan,
@@ -540,21 +564,23 @@ async function provisionFlow(
   // OpsCrew's shared Cloudflare change (also the removal of this app's hostnames from a zone it
   // no longer uses), with the app's origin TLS and the zone's minimum TLS, planned read-only now
   // (it stops on its findings) and applied before the infrastructure plan.
-  const shared = await planSharedCloudflare(deps, {
-    services,
-    plan,
-    cloudflare,
-    command,
-    tls: { ...(tls !== undefined ? { tls: tls.desired } : {}), minTls: true },
-    ...(tls !== undefined
-      ? {
-          notes: originTlsNotes(tls, {
-            workflow: posix.basename(plan.cicd.workflowPath),
-            branch: workflowBranch(plan, github.defaultBranch),
-          }),
-        }
-      : {}),
-  });
+  const shared = previews
+    ? undefined
+    : await planSharedCloudflare(deps, {
+        services,
+        plan,
+        cloudflare,
+        command,
+        tls: { ...(tls !== undefined ? { tls: tls.desired } : {}), minTls: true },
+        ...(tls !== undefined
+          ? {
+              notes: originTlsNotes(tls, {
+                workflow: posix.basename(plan.cicd.workflowPath),
+                branch: workflowBranch(plan, github.defaultBranch),
+              }),
+            }
+          : {}),
+      });
   if (tls !== undefined && shared?.main !== undefined) {
     await keepCertificateRequest(deps, tls, shared.main.plan);
   }
@@ -567,8 +593,26 @@ async function provisionFlow(
   const approveHash = saved.apply;
   // `--plan-only` commits nothing.
   const commits = !(options.planOnly && approveHash === undefined);
-  // Where the deploy secrets live, before anything is rendered (a plan-only run asks GitHub nothing).
-  plan = await checkSecretsPlacement(deps, github, plan, { command, phase, planOnly: !commits });
+  // A preview environment on the user's own server: inspected now, before any change at GitHub,
+  // and refused when the server holds another app; its preparation below goes on from this.
+  const inspected =
+    previews && ownServer
+      ? await connectAndInspectOwnServer(deps, {
+          hostKey: options.hostKey,
+          services: { ...services.own, host: boundHostAdapter(services.own?.host) },
+          phase,
+        })
+      : undefined;
+  if (inspected !== undefined) requireServerForPreviews(inspected.facts, plan.app.name, again);
+  // Where the deploy secrets live, before anything is rendered (a plan-only run asks GitHub
+  // nothing); a preview environment is refused here while a pull request could read another
+  // environment's deploy secrets.
+  const placed = await placeDeploySecrets(deps, github, plan, {
+    command,
+    phase,
+    planOnly: !commits,
+  });
+  plan = placed.plan;
   const deployBranch = await deployBranchFor(deps, {
     git,
     github,
@@ -591,6 +635,13 @@ async function provisionFlow(
   const { engine, env: engineEnv } = await provisionEngine(deps, plan, options);
   const deployKey = await ensureDeployKey(deps.paths, deps.redactor);
   if (deployKey.created) deps.reporter.info("Created a dedicated SSH deploy key for this project.");
+  // A preview environment's deploy key stays here; GitHub gets only its preview key.
+  const previewKey = previews ? await ensurePreviewKey(deps.paths, deps.redactor) : undefined;
+  if (previewKey?.created) {
+    deps.reporter.info(
+      "Created the preview key, which the preview server lets run only its preview command; it is the only key of that server GitHub gets.",
+    );
+  }
   // The scheduled check's key (the repository's), where the check reads the disk over SSH.
   const repository = `${github.owner}/${github.repo}`;
   const checkKey = await environmentCheckKey(deps, plan);
@@ -635,6 +686,7 @@ async function provisionFlow(
       deployKeyFile: deployKey.privateKeyFile,
       phase,
       command,
+      ...(inspected !== undefined ? { inspected } : {}),
     });
     // The server's proxy, which every OpsCrew app on it shares: another one is refused while other
     // apps are there, and planned with its interruption while this app is alone (FR-1440, FR-1444).
@@ -789,12 +841,15 @@ async function provisionFlow(
     ...(keyLine !== undefined ? { checkKeyLine: keyLine } : {}),
     dashboardsOnNetwork: dashboardsOnNetwork(plan, ownRun?.facts),
   });
-  // Dependabot's configuration comes with the workflow and runtime files it watches (FR-1221).
-  const dependabot = await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
+  // Dependabot's configuration comes with the workflow and runtime files it watches (FR-1221); a
+  // preview environment has no runtime files for it.
+  const dependabot = previews
+    ? undefined
+    : await deploySetupDependabot(deps, plan, { writes: approveHash === undefined });
   // The scheduled check's files, rendered from every app's and environment's plan.
   const check = await deploySetupCheck(deps, plan, github);
   const files = [
-    ...deploymentFiles(plan, ctx, site.values),
+    ...deploymentFiles(plan, ctx, site.values, previewEnv?.templates),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
     ...check.files,
   ];
@@ -845,9 +900,8 @@ async function provisionFlow(
   // user's next to OpsCrew's, and a client certificate near its end.
   for (const note of edgeNotes) deps.reporter.warn(note);
   const approvalNotes = [...(extras.approvalNotes ?? []), ...edgeNotes];
-  for (const warning of tlsWarnings(plan, cloudflare, shared?.main?.plan, deps.clock)) {
-    deps.reporter.warn(warning);
-  }
+  const warnings = previews ? [] : tlsWarnings(plan, cloudflare, shared?.main?.plan, deps.clock);
+  for (const warning of warnings) deps.reporter.warn(warning);
 
   // 5. Plan → policies → approval → apply. A plan that deletes the tunnel (for example when
   // plan.yaml no longer has a Portainer subdomain) is applied only after the connector on the
@@ -1191,17 +1245,56 @@ async function provisionFlow(
   for (const run of extraOwn) ownReach.push(await extraOwnReach(deps, run));
   const serverReach = [...cloudReach, ...ownReach];
 
+  // 7e. A preview environment: the previews' recipe on its server, the standing approval GitHub
+  // Actions acts under (plan.md "7."), its own host plan approved by its hash with the typed name.
+  let previewsHost: HostPlanOutcome | undefined;
+  if (previewEnv !== undefined && previewKey !== undefined) {
+    previewsHost = await applyPreviewsHostPlan(deps, plan, {
+      server: await serverForNetwork(deps, { ...serverPlansInput, plan }, APP_SERVER),
+      recipe: files.filter((file) => file.path.startsWith(`${previewRecipeDir(plan)}/`)),
+      env: previewEnv,
+      key: previewKey,
+      repository,
+      imageName: ghcrImageFor(repository, plan.app.key),
+      branchRules: placed.branchRules,
+      readable: placed.readable ?? [],
+      command: again,
+      phase,
+    });
+    if (previewsHost.approval) {
+      approvals.push(approvalEntry(previewsHost.approval));
+      plan = record(previewsHost.applied || host?.applied === true);
+      await writePlanIfChanged(deps, persisted(plan));
+    }
+  }
+
   // The app's settings on its server say where a moving service is: a window that already switched
   // them drives the secrets below (never the old copy's address again), and `switched` is saved
   // only once the secret holds the new one.
   const unrecorded = plan;
   if (options.secrets !== false) plan = await recordSwitchedMove(deps, plan, services);
 
-  // 8–9. Production environment and GitHub Actions secrets
+  // 8–9. Production environment and GitHub Actions secrets; a preview environment's workflow gets
+  // only the server's address and host key, the preview key and the build values.
   const secretsStored = await deploySecretsStep(deps, {
     store: options.secrets !== false,
     plan,
     save: async () => {
+      if (previewEnv !== undefined && previewKey !== undefined) {
+        const build = previewEnv.build.names;
+        await setDeploySecrets(
+          deps,
+          github,
+          plan,
+          previewDeploySecrets({ ...secretsTarget, key: previewKey, env: previewEnv }),
+          build,
+          phase,
+          {
+            about: `The SSH key is the preview key, which can run only the preview command on the preview server; the environment's deploy key stays on this computer. The previews' build values: ${build.length > 0 ? build.join(", ") : "none"}.`,
+          },
+        );
+        return;
+      }
       // R2's key is a token the user limits to the bucket, so it comes now that the bucket exists.
       const key =
         bucket === undefined
@@ -1300,7 +1393,10 @@ async function provisionFlow(
     ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
   });
   plan = published.plan;
-  const merge = mergeDeploysNote(plan, published.published, options.secrets !== false);
+  // No first deploy for a preview environment: its previews come from pull requests.
+  const merge = previews
+    ? previewsMergeNote(plan, published.published)
+    : mergeDeploysNote(plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
   const pausedNote = await pausedMergeNote(deps, plan, pinned);
   if (pausedNote !== undefined) deps.reporter.info(pausedNote);
@@ -1331,6 +1427,9 @@ async function provisionFlow(
     ...(host !== undefined ? { hostPlanHash: host.hash, hostApplied: host.applied } : {}),
     ...(machines.length > 0 ? { runnerHostPlanHashes: machines.map((m) => m.hash) } : {}),
     ...(serverPlans.length > 0 ? { serverHostPlanHashes: serverPlans.map((p) => p.hash) } : {}),
+    ...(previewsHost !== undefined
+      ? { previewsHostPlanHash: previewsHost.hash, previewsApplied: previewsHost.applied }
+      : {}),
     outputs: publicOutputs(applied.outputs),
     branch: published.published.branch,
     base: published.published.base,

@@ -323,6 +323,12 @@ export interface ProvisionResult {
    */
   serverHostPlanHashes?: string[];
   /**
+   * A preview environment: the hash of the host plan that installs the previews' recipe (its file
+   * is `.opscrew/plans/host-<hash>.json`), and whether this run applied it.
+   */
+  previewsHostPlanHash?: string;
+  previewsApplied?: boolean;
+  /**
    * The user's Portainer: the stack plan's SHA-256 hash (its file is
    * `.opscrew/plans/stack-<hash>.json`). With `--plan-only` it is the hash to approve.
    */
