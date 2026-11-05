@@ -155,7 +155,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 ## Phase 4: Wave 3 (parallel)
 
 - [ ] T2309 [US1] [US2] [US3] Start, steps, window and switch
-  - Owns: `packages/agents/src/retarget/{start,steps,window,switch,run,session,servers,layouts,types,texts,plans}.ts` (+ tests)
+  - Owns: `packages/agents/src/retarget/{start,steps,window,switch,run,session,servers,layouts,types,texts,plans,server-ops}.ts` (+ tests), and the phase type in `packages/agents/src/provision/own.ts`
   - Depends: T2305, T2306, T2307, T2308
   - Accept:
     - The steps (plan.md "2."), and the window (plan.md "3."), with `--empty` and the summary's
@@ -164,6 +164,33 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
     - The workflow pull request stop.
     - Every refusal of plan.md "4." and the spec's edge cases, before any change.
     - The DNS switch for every pair.
+    - Found in T2307:
+      - `recordMoveServers` (servers.ts) merges into `server.json`'s `retarget` object instead of
+        replacing it, so the sides' `fromOwn` and `fromPortainer` slots survive (or calls
+        `recordMoveAddress`).
+      - `RetargetServices` gains `own` and `runnerGitHub`, passed to `ownSide`.
+      - `OwnHostPhase` (provision/own.ts) includes `retarget`, so own host plans are audited as the
+        move's.
+      - A move to the user's server takes `--host-key` in a script. The password-logins hint names
+        what the move offers, not `provision --password-logins`.
+      - `requireNoProxySwitch` is shared with provision, and the move refuses a proxy switch on a
+        server other apps share.
+      - `startEdge` reloads Caddy on a shared edge, so certificates for the moved hostnames are
+        tried again right after the switch.
+      - The health check addresses the app's container (`<app>-app-1`), not the `app` alias, which is
+        ambiguous on an edge network several apps share (server-ops).
+      - No server address in the window's errors and hints (server-ops' messages, ssh's stderr
+        line); the sides' wording ("your new server") everywhere.
+      - `remoteFor` (session.ts) takes the port, and the sides' own `remoteOf` (sides/ssh.ts) goes.
+    - Found in T2308:
+      - `RetargetServices` gains `portainer`; step `deployed` stores `portainerDeploySecrets` for a
+        Portainer side.
+      - Postgres goes through `sides/postgres.ts` on every side (`dumpPostgres`, `ensureDumpVolume`,
+        the carrier copy of `moveDumpVolume(app)`, `restorePostgres`, `removeDumpVolume` on both
+        sides afterwards and on rollback); its password is registered with the redactor.
+      - server-ops' `withoutData` also drops `pg_dump: detail:` and `hint:` lines, which can quote
+        rows (`move` uses it too).
+      - A move between two Portainer environments is refused (one deploy branch, one webhook).
     - A leak test.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
@@ -177,6 +204,14 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
       - own, by a teardown host plan;
       - Portainer, by a stack teardown.
     - `--abort` removes the new side the same way.
+    - Found in T2308: after a move from Portainer, `--finish` deletes the Portainer deploy branch the
+      old side used.
+    - From T2307's review: `finish.ts` and `abort.ts` call `side.remove` instead of keeping their own
+      copies of the cloud removal (`finishFlags`, `removeNewServer`), which now live in
+      `sides/cloud.ts`.
+    - Found in T2307: the old cloud side's snapshot id is read back with `takeSnapshotBeforeDelete`
+      (`SideStop` doesn't carry it), and the abort's bookkeeping is recorded inside the `confirm`
+      wrapper (`remove` has no `beforeApply` hook).
     - SC-2304: never a server of the user's, Portainer or its environment.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
@@ -209,7 +244,8 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Depends: T2311
   - Accept:
     - plan.md "7.". The old member leaves only at `--finish`.
-    - Monitoring on the app server copied, and on its own server kept.
+    - Monitoring on the app server copied, and on its own server kept. Found in T2307: the sides'
+      `stopServices` and `startServices` cover the monitoring stack's project.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
@@ -219,6 +255,8 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Accept:
     - `--to own|portainer|<site host>`, `--answers`, `--empty` (repeatable), `--keep-bucket`, and
       `--confirm` for both names.
+    - Found in T2308: `RetargetApprovalHandler` handles a `stack-apply` teardown with `--approve` and
+      `--confirm`, as it handles `iac-apply` deletions.
     - `opscrew_status` shows the step for every target.
     - The e2e with fakes covers each pair.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs`

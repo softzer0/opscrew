@@ -169,7 +169,8 @@ The new app server joins the private network, Postgres stays where it is, and th
 - A Cloudflare Tunnel on either side (an own server reached through one, Portainer's tunnel
   modes), and Portainer behind the user's own proxy with Cloudflare DNS: refused for now. Switching
   between a tunnel and address records needs two changes with an outage between them.
-- Two different Portainer instances: refused (one Portainer token).
+- Two Portainer environments, on one Portainer or two: refused (one deploy branch and webhook, one
+  Portainer token).
 
 ## Requirements *(mandatory)*
 
@@ -178,7 +179,8 @@ The new app server joins the private network, Postgres stays where it is, and th
 **Targets**
 - **FR-2301**: `opscrew retarget` MUST move an app between any two server targets: Hetzner,
   DigitalOcean, the user's own server and the user's Portainer. That includes two servers of the
-  user's and two Portainer environments. A move within one cloud provider stays refused.
+  user's. A move within one cloud provider, and one between two Portainer environments (one deploy
+  branch and webhook), stay refused.
 - **FR-2302**: A new own server MUST be named, inspected and set up through the own-server host plan
   (approved by hash). An old own server MUST keep everything but the app at `--finish`.
 - **FR-2303**: A new Portainer MUST get its stacks through stack plans approved by hash. An old

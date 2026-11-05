@@ -291,10 +291,12 @@ never runs, they stay "not tested live" on the coverage page.
 
 ## Later, not yet placed
 
-- **Moves between a site and a server, and moves through a Cloudflare Tunnel** (lead, 2026-11-05,
-  from 023's plan): `retarget` moves between any two server targets and between site hosts. A site
-  becoming a server app (or back) changes its whole design. A tunnel on either side needs two DNS
-  changes with an outage between them. Both stay refused with the steps to do them by hand.
+- **Moves between a site and a server, through a Cloudflare Tunnel, or between two Portainer
+  environments** (lead, 2026-11-05, from 023's plan): `retarget` moves between any two server
+  targets and between site hosts. A site becoming a server app (or back) changes its whole design.
+  A tunnel on either side needs two DNS changes with an outage between them. Two Portainer
+  environments would share one deploy branch and webhook. All three stay refused with the steps to
+  do them by hand.
 - **A password in front of an environment** (founder, 2026-11-05, from 022): HTTP basic
   authentication in the Caddy site (a bcrypt hash made on the user's computer; the health route
   left open), opt-in per environment, because a login can break what calls the app (webhooks,
