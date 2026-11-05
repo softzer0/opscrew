@@ -78,6 +78,7 @@ describe("e2eOverlay", () => {
   it("writes JavaScript that compiles, a seed of the rows, a migration and the marker", async () => {
     const files = e2eOverlay(await exampleIndex());
     expect(Object.keys(files).sort()).toEqual([
+      ".gitignore.fixture",
       MARKER_FILE,
       "index.js",
       "migrations/20261105000000_create_e2e_rows.js",

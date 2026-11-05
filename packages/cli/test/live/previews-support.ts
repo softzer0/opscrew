@@ -92,6 +92,9 @@ export function e2eOverlay(exampleIndex: string): Record<string, string> {
     "",
   ].join("\n");
   return {
+    // The example ignores `.env` only; previews' values go in `.env.preview`, so every environment's
+    // values file stays out of git, as the guide says.
+    ".gitignore.fixture": "node_modules\n.env\n.env.*\n",
     "index.js": `${exampleIndex.slice(0, at)}${route}${exampleIndex.slice(at)}`,
     [MARKER_FILE]: markerJson("main"),
     "migrations/20261105000000_create_e2e_rows.js": [

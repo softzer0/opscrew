@@ -216,9 +216,31 @@ export const CHANGE_FILE = "opscrew-e2e-change.txt";
 export async function readGeneratedValues(
   paths: Pick<ReturnType<typeof resolveProjectPaths>, "projectHomeDir">,
 ): Promise<string[] | undefined> {
+  return (await readGeneratedEntries(paths))?.map(([, value]) => value);
+}
+
+/**
+ * {@link readGeneratedValues} with where each value sits in the file (`env.APP_KEYS`): a name,
+ * never a value, so a leak report can say which one leaked.
+ */
+export async function readGeneratedEntries(
+  paths: Pick<ReturnType<typeof resolveProjectPaths>, "projectHomeDir">,
+): Promise<[string, string][] | undefined> {
   const file = join(paths.projectHomeDir, "generated_values.json");
   if (!existsSync(file)) return undefined;
-  return generatedSecrets(JSON.parse(await readFile(file, "utf8")));
+  const json: unknown = JSON.parse(await readFile(file, "utf8"));
+  return generatedSecrets(json).map((value) => [pathOfString(json, value) ?? "?", value]);
+}
+
+/** The dotted path of the first string equal to `value` in `json`. */
+function pathOfString(json: unknown, value: string, at = ""): string | undefined {
+  if (json === value) return at;
+  if (json === null || typeof json !== "object") return undefined;
+  for (const [key, child] of Object.entries(json)) {
+    const found = pathOfString(child, value, at === "" ? key : `${at}.${key}`);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }
 
 /** What the leak search reads of one app: its git history, its pull requests and its audit log. */
@@ -670,7 +692,7 @@ export class LiveRun {
    * given); none kept is a finding when the plan has a service.
    */
   async rememberGeneratedValues(environment?: string, app?: string): Promise<void> {
-    const values = await readGeneratedValues(this.paths(environment, app));
+    const values = await readGeneratedEntries(this.paths(environment, app));
     if (values === undefined) {
       if (generatesValues(await this.readPlan(environment, app))) {
         this.findings.push(
@@ -679,7 +701,7 @@ export class LiveRun {
       }
       return;
     }
-    for (const value of values) this.scrubber.add(value, "generated-value");
+    for (const [path, value] of values) this.scrubber.add(value, `generated-value ${path}`);
   }
 
   // -------------------------------------------------------------------------------------------
