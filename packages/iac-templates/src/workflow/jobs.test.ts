@@ -161,7 +161,14 @@ describe("the jobs after the deploy", () => {
       "label",
     ]);
     const nothing = withPlan(serverPlan(), { imageRetention: { enabled: false } });
-    expect(Object.keys(jobs(nothing))).toEqual(["paused", "build", "verify", "deploy", "label"]);
+    expect(Object.keys(jobs(nothing))).toEqual([
+      "paused",
+      "build",
+      "verify",
+      "deploy",
+      "prune",
+      "label",
+    ]);
   });
 
   it("matches the snapshot with every option off", () => {

@@ -122,14 +122,18 @@ function portOption(port: number | undefined): string {
  * server's sshd port, and known_hosts holds the bare SSH hostname. On a runner machine the options
  * name the job's own known hosts and SSH config ({@link sshFile}) too.
  */
-function sshOptsLine(port: number | undefined, tunnel: boolean, machine: boolean): string {
+export function sshOptsLine(port: number | undefined, tunnel: boolean, machine: boolean): string {
   const portOpt = tunnel ? "" : portOption(port);
   const known = machine ? ` -o UserKnownHostsFile=${sshFile(machine, "known_hosts")}` : "";
   const config = machine ? ` -F ${sshFile(machine, "config")}` : "";
   return `ssh_opts=(-i ${sshFile(machine, "opscrew")}${known}${config} ${SSH_OPTS_BASE}${portOpt})`;
 }
 
-function checkSshPort(port: number | undefined): void {
+/**
+ * Checks the SSH port a workflow connects to.
+ * @throws Error when it is not a whole number from 1 to 65535.
+ */
+export function checkSshPort(port: number | undefined): void {
   if (port === undefined) return;
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(
@@ -575,6 +579,27 @@ function rollbackStep(
   ];
 }
 
+/**
+ * The step that writes the environment's SSH key and the server's pinned known hosts (its deploy
+ * secrets) where {@link sshOptsLine} reads them ({@link sshFile}); its `run:` script ends with
+ * these lines, so a caller may append more.
+ */
+export function sshKeySetup(plan: DeployPlan, machine: boolean): string[] {
+  const file = (name: string) => sshFile(machine, name);
+  return [
+    "- name: Configure SSH with the pinned host key",
+    "  env:",
+    `    SSH_KEY: ${secret(plan, DEPLOY_SECRETS.sshKey)}`,
+    `    KNOWN_HOSTS: ${secret(plan, DEPLOY_SECRETS.knownHosts)}`,
+    "  run: |",
+    "    set -euo pipefail",
+    `    install -m 700 -d ${machine ? '"$RUNNER_TEMP/opscrew-ssh"' : "~/.ssh"}`,
+    `    printf '%s\\n' "$SSH_KEY" > ${file("opscrew")}`,
+    `    chmod 600 ${file("opscrew")}`,
+    `    printf '%s\\n' "$KNOWN_HOSTS" > ${file("known_hosts")}`,
+  ];
+}
+
 /** What the upload brings: the env files, the runtime files and the edge's files. */
 interface Upload {
   /** The `env:` lines of the env files' and the origin certificate's secrets. */
@@ -634,16 +659,7 @@ function sshDeploy(
   const dir = appDir(plan);
   const setup = [
     ...(tunnelHost === undefined ? [] : installCloudflaredStep(machine)),
-    "- name: Configure SSH with the pinned host key",
-    "  env:",
-    `    SSH_KEY: ${secret(plan, DEPLOY_SECRETS.sshKey)}`,
-    `    KNOWN_HOSTS: ${secret(plan, DEPLOY_SECRETS.knownHosts)}`,
-    "  run: |",
-    "    set -euo pipefail",
-    `    install -m 700 -d ${machine ? '"$RUNNER_TEMP/opscrew-ssh"' : "~/.ssh"}`,
-    `    printf '%s\\n' "$SSH_KEY" > ${file("opscrew")}`,
-    `    chmod 600 ${file("opscrew")}`,
-    `    printf '%s\\n' "$KNOWN_HOSTS" > ${file("known_hosts")}`,
+    ...sshKeySetup(plan, machine),
     ...sshConfig,
     "- name: Upload runtime files and environment",
     "  env:",

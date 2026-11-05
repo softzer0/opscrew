@@ -253,7 +253,11 @@ describe("a further app's server workflow", () => {
 
   it("keeps the old images of the app's own package only, by the app's workflows", () => {
     const prune =
-      stepOf(flow, "prune", "Keep the newest 10 images and delete older ones").run ?? "";
+      stepOf(
+        flow,
+        "prune",
+        "Keep the newest 10 images; delete older, intermediate and old pull request images",
+      ).run ?? "";
     expect(prune).toContain(
       [
         '  const [owner, repo] = process.env.GITHUB_REPOSITORY.toLowerCase().split("/");',

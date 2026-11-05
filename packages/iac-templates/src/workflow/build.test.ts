@@ -212,8 +212,11 @@ describe("an own Dockerfile with cron jobs", () => {
   it("deletes the intermediate image after the deploy, as for Buildpacks and Railpack", () => {
     const keepAll = (p: DeployPlan) => withPlan(p, { imageRetention: { enabled: false } });
     const prune = (p: DeployPlan) => parse(rendered(keepAll(p))).jobs.prune;
-    expect(prune(cron)?.steps[0]?.name).toBe("Delete the intermediate build images");
-    expect(prune(planFor("own-dockerfile"))).toBeUndefined();
+    expect(prune(cron)?.steps[0]?.name).toBe("Delete intermediate and old pull request images");
+    // Without a seal there is no intermediate, but the job still deletes old pull request images.
+    expect(prune(planFor("own-dockerfile"))?.steps[0]?.name).toBe(
+      "Delete intermediate and old pull request images",
+    );
   });
 
   it("builds as before when no cron job is enabled", () => {
@@ -742,7 +745,7 @@ describe.skipIf(!bashWorks())("the build scripts in bash", { timeout: 60_000 }, 
       );
       const keepAll = withPlan(own, { imageRetention: { enabled: false } });
       expect(parse(rendered(keepAll)).jobs.prune?.steps[0]?.name).toBe(
-        "Delete the intermediate build images",
+        "Delete intermediate and old pull request images",
       );
       const both = sealOf(withProcesses(own, { cron: [NIGHTLY] })).split("\n");
       expect(both.slice(1, 4)).toEqual([

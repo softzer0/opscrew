@@ -28,6 +28,7 @@ type Prunable = (
   protect: string[],
   recent: number,
   environments: string[],
+  previewsBefore: number,
 ) => number[];
 type FakeProcess = { env: Record<string, string>; exitCode?: number };
 type Fetch = (
@@ -92,7 +93,8 @@ const planOf = (name: string) =>
 
 /**
  * `prunable` of `environment`'s program, with no version recent unless `recent` says so, for
- * {@link ENVIRONMENTS} unless `environments` says otherwise.
+ * {@link ENVIRONMENTS} unless `environments` says otherwise, and no pull request's image old
+ * unless `previewsBefore` says so.
  */
 function selection(environment: string) {
   const loaded = load(retentionScript(planOf(environment))).prunable;
@@ -103,7 +105,8 @@ function selection(environment: string) {
     protect: string[],
     recent = LATER,
     environments = ENVIRONMENTS,
-  ) => loaded(versions, children, keep, protect, recent, environments);
+    previewsBefore = 0,
+  ) => loaded(versions, children, keep, protect, recent, environments, previewsBefore);
 }
 
 const prunable = selection("prod");
@@ -404,6 +407,64 @@ describe("prunable with two environments that follow main (T1515's live run)", (
     expect(
       prodPrunable(all, listed, undefined, [newest(prod)], recent).sort((x, y) => x - y),
     ).toEqual(ids(intermediate.versions));
+  });
+});
+
+describe("prunable with pull requests' images (022)", () => {
+  const pr = (n: number, c: number) => `pr-${n}-${commit(c)}`;
+  const prod = [1, 2, 3].map((n) => push(`a${n}`, n));
+  /** Pull request 7's image of commit 4 and its intermediate, ten days into October. */
+  const pull = push("c1", 240, [pr(7, 4)]);
+  const intermediate = version(digest("c2", "0"), [`build-${pr(7, 4)}`], 240);
+  /** Pull request 9's image of commit 5, twenty days into October. */
+  const young = push("c3", 480, [pr(9, 5)]);
+  const all = [...prod, pull, young];
+  const versions = [...all.flatMap((p) => p.versions), intermediate];
+  const children = Object.assign({}, ...all.map((p) => p.children));
+  const running = [prod[2]?.index.digest ?? ""];
+  /** Fifteen days into October: pull request 7's images are older, 9's newer. */
+  const before = at(360);
+
+  it("deletes pull requests' images older than previewsBefore with what they list, retention on or off", () => {
+    for (const keep of [undefined, 10]) {
+      const deleted = prunable(versions, children, keep, running, LATER, ENVIRONMENTS, before);
+      expect(deleted.sort((x, y) => x - y)).toEqual(ids([...pull.versions, intermediate]));
+    }
+  });
+
+  it("keeps them all while none is older than previewsBefore", () => {
+    for (const keep of [undefined, 10]) {
+      expect(prunable(versions, children, keep, running, LATER, ENVIRONMENTS, at(0))).toEqual([]);
+    }
+  });
+
+  it("never deletes another tag for being old: the environments' images, yours, a look-alike", () => {
+    const yours = push("d1", 0, [pr(7, 6), "latest"]);
+    const lookalikes = [
+      "pr-7-abc",
+      `pr-0-${commit(1)}`,
+      `pr-1234567-${commit(1)}`,
+      "preview-7",
+    ].map((tag, i) => version(digest(`e${i}`, "0"), [tag], 0));
+    const staging = push("d2", 0, [`${commit(70)}-staging`]);
+    const old = [...yours.versions, ...lookalikes, ...staging.versions];
+    const listed = { ...children, ...yours.children, ...staging.children };
+    const deleted = prunable(
+      [...versions, ...old],
+      listed,
+      undefined,
+      running,
+      LATER,
+      ENVIRONMENTS,
+      before,
+    );
+    expect(deleted.sort((x, y) => x - y)).toEqual(ids([...pull.versions, intermediate]));
+  });
+
+  it("keeps a pull request's old image a kept index lists", () => {
+    const listsIt = { ...children, [prod[2]?.index.digest ?? ""]: [pull.index.digest] };
+    const deleted = prunable(versions, listsIt, undefined, running, LATER, ENVIRONMENTS, before);
+    expect(deleted).toEqual([intermediate.id]);
   });
 });
 
@@ -709,6 +770,21 @@ describe("the retention step's program", () => {
     expect(api.deleted()).toEqual(intermediate.versions.map((v) => `DELETE ${base}/${v.id}`));
   });
 
+  it("deletes pull requests' images created more than 31 days ago, also without KEEP", async () => {
+    const old = push("9", 1, [`pr-7-${commit(1)}`]);
+    const intermediate = push("8", 1, [`build-pr-7-${commit(1)}`]);
+    const young = push("7", 24 * 20, [`pr-9-${commit(2)}`]);
+    const api = github({ pushes: [...pushes, old, intermediate, young] });
+    const process: FakeProcess = { env: env() };
+    delete process.env.KEEP;
+    // November 2nd: October 1st's images are 32 days old, October 21st's 12.
+    const now = Date.UTC(2026, 10, 2);
+    await load(script, { process, fetch: api.fetch, log: [], now }).main();
+    expect(api.deleted().sort()).toEqual(
+      [...old.versions, ...intermediate.versions].map((v) => `DELETE ${base}/${v.id}`).sort(),
+    );
+  });
+
   it.each([
     ["a previous image that is not a digest", { PREVIOUS: "unknown" }],
     ["no running image", { IMAGE: "" }],
@@ -794,19 +870,14 @@ describe("the retention job", () => {
     expect(jobs(plan).prune.steps[0].env.KEEP).toBe("25");
   });
 
-  it("when off, runs only to delete Buildpacks' and Railpack's intermediate images", () => {
+  it("when off, still runs to delete intermediate images and old pull request images", () => {
     const off = withPlan(serverPlan(), { imageRetention: { enabled: false } });
-    expect(jobs(off).prune).toBeUndefined();
-    expect(Object.keys(jobs(withBuild(off, "own-dockerfile")))).toEqual([
-      "paused",
-      "build",
-      "verify",
-      "deploy",
-      "label",
-    ]);
-    for (const builder of ["buildpacks", "railpack"] as const) {
+    expect(jobs(serverPlan()).prune.steps[0].name).toBe(
+      "Keep the newest 10 images; delete older, intermediate and old pull request images",
+    );
+    for (const builder of ["own-dockerfile", "buildpacks", "railpack"] as const) {
       const prune = jobs(withBuild(off, builder)).prune;
-      expect(prune.steps[0].name).toBe("Delete the intermediate build images");
+      expect(prune.steps[0].name).toBe("Delete intermediate and old pull request images");
       expect(prune.steps[0].env.KEEP).toBeUndefined();
     }
     const railpack = renderWorkflow(withBuild(off, "railpack"), testContext()).content;

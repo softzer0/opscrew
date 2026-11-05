@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { usesCloudflare } from "../predicates";
 import type { RenderContext } from "../types";
 import { moduleBlock, sensitiveOutput, type VariableSpec } from "./hcl";
 
@@ -21,10 +22,21 @@ export function accountId(ctx: RenderContext): string {
 
 /**
  * What a root module needs from the app's Cloudflare zone: `records` (the DNS module: the domain,
- * the proxy and `www.`), `domain` (the domain: an app served through a tunnel, or on a server-less
- * target) or `zone` (the zone id only).
+ * the proxy and `www.`), `previews` (the DNS module: a preview environment's wildcard record under
+ * its base name), `domain` (the domain: an app served through a tunnel, or on a server-less target)
+ * or `zone` (the zone id only).
  */
-export type ZoneUse = "records" | "domain" | "zone";
+export type ZoneUse = "records" | "previews" | "domain" | "zone";
+
+/**
+ * The records a server's root module points at the server: a preview environment's wildcard
+ * (`previews`: `environment.previews`, whose plan has a zone and no domain), the app's domain on
+ * Cloudflare (`records`), or none.
+ */
+export function serverZoneUse(plan: DeployPlan): "records" | "previews" | undefined {
+  if (plan.environment?.previews !== undefined) return "previews";
+  return usesCloudflare(plan) ? "records" : undefined;
+}
 
 /** The `www` root variable. */
 export const WWW_VARIABLE: VariableSpec = {
@@ -36,7 +48,13 @@ export const WWW_VARIABLE: VariableSpec = {
 /** The zone's root variables for `use`, in the order every root declares them. */
 export function zoneVariables(use: ZoneUse): VariableSpec[] {
   const specs: VariableSpec[] = [];
-  if (use !== "zone") {
+  if (use === "previews") {
+    specs.push({
+      name: "preview_domain",
+      type: "string",
+      description: "Base name of the previews: each one is pr-<number>.<base>.",
+    });
+  } else if (use !== "zone") {
     specs.push({ name: "domain", type: "string", description: "Hostname of the app." });
   }
   specs.push({ name: "cloudflare_zone_id", type: "string", description: "Cloudflare zone id." });
@@ -61,7 +79,8 @@ export function zoneTfvars(
   use: ZoneUse,
 ): Record<string, unknown> {
   const values: Record<string, unknown> = {};
-  if (use !== "zone") values.domain = plan.dns.domain;
+  if (use === "previews") values.preview_domain = plan.environment?.previews?.domain;
+  else if (use !== "zone") values.domain = plan.dns.domain;
   values.cloudflare_zone_id = ctx.cloudflare?.zoneId ?? "";
   if (use === "records") {
     values.proxied = plan.dns.proxied;
@@ -90,20 +109,33 @@ function caaIssuers(plan: DeployPlan): string[] {
   return CAA_ISSUERS[target.edge];
 }
 
-/** `module "dns"` pointing the app's records at `ipv4` and `ipv6` (HCL expressions). */
-export function dnsModule(ipv4: string, ipv6: string, ipv6Record?: string): string[] {
+/**
+ * `module "dns"` pointing the records of `use` at `ipv4` and `ipv6` (HCL expressions): the app's
+ * domain with its proxy, `www.` and CAA settings, or a preview environment's wildcard `*.<base>`,
+ * DNS only, without `www.` or CAA (the preview server's Caddy gets each preview's certificate).
+ */
+export function dnsModule(
+  use: "records" | "previews",
+  ipv4: string,
+  ipv6: string,
+  ipv6Record?: string,
+): string[] {
+  const previews = use === "previews";
   return moduleBlock({
+    comment: previews
+      ? ["# The previews' wildcard record, DNS only: each preview is pr-<number>.<base>."]
+      : [],
     name: "dns",
     source: "cloudflare-dns",
     args: [
       ["zone_id", "var.cloudflare_zone_id"],
-      ["domain", "var.domain"],
+      ["domain", previews ? '"*.${var.preview_domain}"' : "var.domain"],
       ["ipv4", ipv4],
       ["ipv6", ipv6],
       ...(ipv6Record === undefined ? [] : [["ipv6_record", ipv6Record] as const]),
-      ["proxied", "var.proxied"],
-      ["www", "var.www"],
-      ["caa_issuers", "var.caa_issuers"],
+      ["proxied", previews ? "false" : "var.proxied"],
+      ["www", previews ? "false" : "var.www"],
+      ["caa_issuers", previews ? "[]" : "var.caa_issuers"],
     ],
   });
 }

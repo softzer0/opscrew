@@ -1,9 +1,9 @@
 import { APP_SERVER, type CloudDeployTarget, type DeployPlan } from "@opscrew/plan-schema";
 import { MODULE_FILES } from "../generated/modules";
-import { usesCloudflare, webOnlyFromCloudflare } from "../predicates";
+import { webOnlyFromCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText, type VariablePrefix } from "../providers";
 import type { RenderContext, RenderedFile, ServerModule } from "../types";
-import { dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
+import { dnsModule, serverZoneUse, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
   APP_NAME_VARIABLE,
   besideInfraDir,
@@ -156,7 +156,8 @@ function mainTf(
   const lines = [rootHeader(plan), ""];
   if (shape.moving) lines.push(MOVE_NOTE, "");
   for (const provider of shape.providers) lines.push(...providerBlock(provider));
-  if (usesCloudflare(plan)) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
+  const zone = serverZoneUse(plan);
+  if (zone !== undefined) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
   for (const server of shape.servers) {
     const previous = server.module === "server_previous";
     lines.push(
@@ -189,9 +190,9 @@ function mainTf(
       "",
     );
   }
-  if (usesCloudflare(plan)) {
+  if (zone !== undefined) {
     const live = shape.live.module;
-    lines.push(...dnsModule(`module.${live}.ipv4_address`, `module.${live}.ipv6_address`));
+    lines.push(...dnsModule(zone, `module.${live}.ipv4_address`, `module.${live}.ipv6_address`));
   }
   if (pieces) lines.push(...pieces.main);
   return lines.join("\n");
@@ -216,8 +217,9 @@ function variables(
       description: "Networks allowed to reach ports 80 and 443.",
     },
   ];
-  if (!usesCloudflare(plan)) return base;
-  return [...base, ...zoneVariables("records"), ...(pieces?.variables ?? [])];
+  const zone = serverZoneUse(plan);
+  if (zone === undefined) return base;
+  return [...base, ...zoneVariables(zone), ...(pieces?.variables ?? [])];
 }
 
 /**
@@ -246,7 +248,11 @@ function serversOutput(shape: RootShape): string[] {
 
 function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | undefined): string {
   const live = shape.live.module;
-  const url = usesCloudflare(plan) ? "module.dns.url" : `"http://\${module.${live}.ipv4_address}"`;
+  // A preview environment serves no address of its own: its url is the server's.
+  const url =
+    serverZoneUse(plan) === "records"
+      ? "module.dns.url"
+      : `"http://\${module.${live}.ipv4_address}"`;
   return [
     rootHeader(plan),
     "",
@@ -275,22 +281,23 @@ function cloudRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   Object.assign(values, keyTfvars(plan, ctx));
   values.http_allowed_cidrs = httpAllowedCidrs(plan, ctx);
   const checkKey = ctx.checkKeyLine !== undefined;
+  const zone = serverZoneUse(plan);
   return {
     versions: versionsTf(plan, [
       ...shape.providers.map((provider) => provider.terraformProvider),
-      ...(usesCloudflare(plan) ? [CLOUDFLARE_PROVIDER] : []),
+      ...(zone !== undefined ? [CLOUDFLARE_PROVIDER] : []),
     ]),
     main: mainTf(plan, shape, pieces, checkKey),
     variables: variablesTf(plan, variables(plan, shape, pieces, checkKey)),
     outputs: outputsTf(plan, shape, pieces),
     tfvars: {
       ...values,
-      ...(usesCloudflare(plan) ? zoneTfvars(plan, ctx, "records") : {}),
+      ...(zone !== undefined ? zoneTfvars(plan, ctx, zone) : {}),
       ...(pieces?.tfvars ?? {}),
     },
     modules: [
       ...shape.providers.map((provider) => provider.module),
-      ...(usesCloudflare(plan) ? ["cloudflare-dns"] : []),
+      ...(zone !== undefined ? ["cloudflare-dns"] : []),
       ...(pieces?.modules ?? []),
     ],
   };
@@ -379,10 +386,15 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  * module's GitHub Pages mode (`cloudflare-dns/github-pages`), DNS only: an apex domain's A and AAAA
  * records, or a subdomain's CNAME, to GitHub Pages, and `www.` when on; output `url`. GitHub's
  * domain verification record is in a root of its own ({@link renderPagesVerification}).
+ *
+ * A preview environment's root (`environment.previews`: a zone, no domain) gets its server as
+ * usual and, in place of the app's records, `module "dns"` with the previews' wildcard
+ * `*.${var.preview_domain}`, DNS only, without `www.` or CAA; its `url` output is the server's
+ * address.
  */
 export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
   const portainer = ctx.layout === undefined && plan.target.provider === "portainer";
-  if (!portainer && usesCloudflare(plan) && !ctx.cloudflare?.zoneId) {
+  if (!portainer && serverZoneUse(plan) !== undefined && !ctx.cloudflare?.zoneId) {
     throw new Error("A Cloudflare zone id is required to render DNS for this plan.");
   }
   const root = rootModule(plan, ctx);

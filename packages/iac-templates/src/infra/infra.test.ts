@@ -16,6 +16,7 @@ import {
 } from "../__fixtures__/plans";
 import { MODULE_FILES } from "../generated/modules";
 import type { RenderContext, RenderedFile } from "../types";
+import { previewPlan } from "../workflow/__fixtures__/previews";
 import { splitPlan } from "./__fixtures__/servers";
 import { MOVE_LAYOUTS, moveLayout, renderInfra, tfvars } from "./index";
 
@@ -311,6 +312,9 @@ const validatedPlans = {
   "hetzner with a network and no extra server": () => splitPlan({ device: true }),
   "own server plus a hetzner db": () =>
     splitPlan({ app: { provider: "own" }, servers: [{ name: "db-1", provider: "hetzner" }] }),
+  "hetzner preview environment": () => previewPlan(),
+  "digitalocean preview environment": () => previewPlan({ provider: "digitalocean" }),
+  "own server preview environment": () => previewPlan({ provider: "own" }),
 };
 /** Context for the validated plans, with the account's one-time PIN login method. */
 const validatedContext = () =>
@@ -333,7 +337,9 @@ async function initAndValidate(
     await writeFile(target, file.content);
   }
   const runner = new NodeCommandRunner();
-  const cwd = join(root, "opscrew/infra/prod");
+  // The root module's folder: its main.tf, outside the vendored modules.
+  const main = files.find((f) => f.path.endsWith("/main.tf") && !f.path.includes("/modules/"));
+  const cwd = join(root, dirname(main?.path ?? ""));
   const init = await runner.run(bin, ["init", "-backend=false", "-input=false", "-no-color"], {
     cwd,
   });

@@ -47,4 +47,5 @@ export * from "./serverless";
 export * from "./tunnel";
 export * from "./types";
 export * from "./workflow";
+export { previewWorkflowPath, renderPreviewWorkflow } from "./workflow/preview";
 export { FAILED_DEPLOY_DIR } from "./workflow/switch";

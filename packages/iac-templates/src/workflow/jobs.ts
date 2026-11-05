@@ -2,7 +2,7 @@
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { ACTIONS, TOOLS } from "../pins";
 import type { RenderContext } from "../types";
-import { buildJob, sealsImage } from "./build";
+import { buildJob } from "./build";
 import { pausedJob, unpaused } from "./pause";
 import { retentionScript } from "./retention";
 import {
@@ -333,10 +333,10 @@ function deployTagsJob(plan: DeployPlan): string[] {
 /**
  * Image retention (FR-1229), after a healthy deploy, holding `packages: write` and `actions: read`
  * (to list the app's environments by their workflows): deletes the environment's intermediate
- * `build-<commit tag>` versions a seal build leaves ({@link sealsImage}) and, with
- * `cicd.imageRetention.enabled`, every version with its commit tag but the newest `keep`, never
- * the running or the previous image, one an existing environment's label tags, nor another
- * environment's builds (see {@link retentionScript}).
+ * `build-<commit tag>` versions a seal build leaves, pull requests' images older than 31 days (the
+ * preview workflow's) and, with `cicd.imageRetention.enabled`, every version with its commit tag
+ * but the newest `keep`, never the running or the previous image, one an existing environment's
+ * label tags, nor another environment's builds (see {@link retentionScript}).
  */
 function retentionJob(plan: DeployPlan): string[] {
   const { enabled, keep } = plan.cicd.imageRetention;
@@ -347,7 +347,7 @@ function retentionJob(plan: DeployPlan): string[] {
     if: AFTER_BUILT_DEPLOY,
     permissions: ["actions: read", "packages: write"],
     steps: [
-      `- name: ${enabled ? `Keep the newest ${keep} images and delete older ones` : "Delete the intermediate build images"}`,
+      `- name: ${enabled ? `Keep the newest ${keep} images; delete older, intermediate and old pull request images` : "Delete intermediate and old pull request images"}`,
       "  shell: node {0}",
       "  env:",
       "    TOKEN: ${{ secrets.GITHUB_TOKEN }}",
@@ -362,8 +362,8 @@ function retentionJob(plan: DeployPlan): string[] {
 
 /**
  * The jobs after `build` and `deploy`, each with only the permission it needs: signing
- * (`supplyChain.sign`), the deploy tag (`cicd.deployTags.enabled`), image retention (for
- * `cicd.imageRetention.enabled`, or to delete the intermediate images of a seal build) and the
+ * (`supplyChain.sign`), the deploy tag (`cicd.deployTags.enabled`), image retention (always: with
+ * retention off it still deletes intermediate images and pull requests' old ones) and the
  * environment's image labels ({@link labelJob}). A promoted environment builds nothing, so it only
  * labels: the workflow of the environment that builds signs, tags and prunes. A rollback dispatch
  * builds nothing either, so it too only labels.
@@ -373,7 +373,8 @@ export function afterDeployJobs(plan: DeployPlan): string[] {
   return [
     ...(plan.supplyChain.sign ? ["", ...signJob()] : []),
     ...(plan.cicd.deployTags.enabled ? ["", ...deployTagsJob(plan)] : []),
-    ...(plan.cicd.imageRetention.enabled || sealsImage(plan) ? ["", ...retentionJob(plan)] : []),
+    "",
+    ...retentionJob(plan),
     "",
     ...labelJob(plan),
   ];

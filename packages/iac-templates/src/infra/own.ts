@@ -4,7 +4,7 @@ import { usesCloudflare } from "../predicates";
 import type { ProviderText } from "../providers";
 import { tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderContext } from "../types";
-import { dnsModule, zoneTfvars, zoneVariables } from "./cloudflare";
+import { dnsModule, serverZoneUse, type ZoneUse, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
   APP_NAME_VARIABLE,
   CLOUDFLARE_PROVIDER,
@@ -75,8 +75,18 @@ function variables(
       ...keyVariables(checkKey),
     );
   }
-  if (usesCloudflare(plan)) specs.push(...zoneVariables(tunnel ? "domain" : "records"));
+  const zone = zoneUse(plan);
+  if (zone !== undefined) specs.push(...zoneVariables(zone));
   return [...specs, ...(pieces?.variables ?? [])];
+}
+
+/**
+ * What the root needs from the Cloudflare zone: the domain in tunnel mode, otherwise the records
+ * it points at the server ({@link serverZoneUse}); none without either.
+ */
+function zoneUse(plan: DeployPlan): ZoneUse | undefined {
+  if (tunnelMode(plan)) return usesCloudflare(plan) ? "domain" : undefined;
+  return serverZoneUse(plan);
 }
 
 function mainTf(
@@ -88,14 +98,16 @@ function mainTf(
 ): string {
   const lines = [rootHeader(plan), ""];
   for (const provider of providers) lines.push(...providerBlock(provider));
-  if (usesCloudflare(plan)) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
+  const zone = zoneUse(plan);
+  if (zone !== undefined) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
   lines.push(...(extras.length > 0 ? OWN_NOTE_WITH_EXTRAS : OWN_NOTE));
   if (!tunnelMode(plan)) lines.push("#", ...ADDRESS_NOTE);
   lines.push("");
   lines.push(...extraServerModules(plan, extras, undefined, checkKey));
-  if (usesCloudflare(plan) && !tunnelMode(plan)) {
+  if (zone === "records" || zone === "previews") {
     lines.push(
       ...dnsModule(
+        zone,
         "var.server_ipv4",
         "var.server_ipv6",
         // Behind OpsCrew's web filter the site is published on IPv4 only: no AAAA record.
@@ -147,15 +159,14 @@ function outputsTf(
  */
 export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
   const pieces = tunnelPieces(plan, ctx);
-  const cloudflare = usesCloudflare(plan);
-  const tunnel = tunnelMode(plan);
+  const zone = zoneUse(plan);
   const extras = extraServerCalls(plan);
   const providers = [...new Set(extras.map((extra) => extra.provider))];
   const checkKey = ctx.checkKeyLine !== undefined;
   return {
     versions: versionsTf(plan, [
       ...providers.map((provider) => provider.terraformProvider),
-      ...(cloudflare ? [CLOUDFLARE_PROVIDER] : []),
+      ...(zone !== undefined ? [CLOUDFLARE_PROVIDER] : []),
     ]),
     main: mainTf(plan, pieces, extras, providers, checkKey),
     variables: variablesTf(plan, variables(plan, pieces, extras, checkKey)),
@@ -164,12 +175,12 @@ export function ownRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
       app_name: plan.app.name,
       ...Object.assign({}, ...extras.map((extra) => serverTfvars(extra.prefix, extra.target))),
       ...(extras.length > 0 ? keyTfvars(plan, ctx) : {}),
-      ...(cloudflare ? zoneTfvars(plan, ctx, tunnel ? "domain" : "records") : {}),
+      ...(zone !== undefined ? zoneTfvars(plan, ctx, zone) : {}),
       ...(pieces?.tfvars ?? {}),
     },
     modules: [
       ...providers.map((provider) => provider.module),
-      ...(cloudflare && !tunnel ? ["cloudflare-dns"] : []),
+      ...(zone === "records" || zone === "previews" ? ["cloudflare-dns"] : []),
       ...(pieces?.modules ?? []),
     ],
   };

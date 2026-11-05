@@ -100,8 +100,19 @@ export const RAILPACK_USER = "10001:10001";
 const uses = (key: keyof typeof ACTIONS) => `  uses: ${ACTIONS[key]}`;
 
 /**
+ * The tag the build gives the image of `commit` (a shell or GitHub Actions expression of one): the
+ * environment's commit tag ({@link environmentTag}), or in a preview environment's workflow the
+ * pull request's `pr-<number>-<commit>` (the number is GitHub's, so safe in a script).
+ */
+function commitTag(plan: DeployPlan, commit: string): string {
+  return plan.environment?.previews === undefined
+    ? environmentTag(commit, environmentName(plan))
+    : `pr-\${{ github.event.pull_request.number }}-${commit}`;
+}
+
+/**
  * `name` (`ghcr.io/<owner>/<repo>`, a further app's `…/<key>`: {@link imageSubpath}) and `image`
- * (`<name>:<commit tag>`, {@link environmentTag}), lower case as GHCR needs. On the environment's
+ * (`<name>:<commit tag>`, {@link commitTag}), lower case as GHCR needs. On the environment's
  * own runner without bash 4's `${…,,}` (macOS's bash 3.2), with `tr`.
  */
 function imageName(plan: DeployPlan): string[] {
@@ -115,7 +126,7 @@ function imageName(plan: DeployPlan): string[] {
         ? `repo="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"`
         : 'repo="${GITHUB_REPOSITORY,,}"',
       `echo "name=${name}" >> "$GITHUB_OUTPUT"`,
-      `echo "image=${name}:${environmentTag("${GITHUB_SHA}", environmentName(plan))}" >> "$GITHUB_OUTPUT"`,
+      `echo "image=${name}:${commitTag(plan, "${GITHUB_SHA}")}" >> "$GITHUB_OUTPUT"`,
     ]),
   ];
 }
@@ -126,7 +137,7 @@ function imageName(plan: DeployPlan): string[] {
  * it for its own.
  */
 function intermediateImage(plan: DeployPlan): string {
-  return `\${{ steps.image.outputs.name }}:build-${environmentTag("${{ github.sha }}", environmentName(plan))}`;
+  return `\${{ steps.image.outputs.name }}:build-${commitTag(plan, "${{ github.sha }}")}`;
 }
 
 const SETUP_BUILDX = [
@@ -446,7 +457,7 @@ function buildpacksSteps(plan: DeployPlan): string[] {
       // pack writes a file instead when the folder is missing.
       'report="$RUNNER_TEMP/pack-report"',
       'mkdir -p "$report"',
-      `pack build "$NAME:build-${environmentTag("$GITHUB_SHA", environmentName(plan))}" --path ${JSON.stringify(context)} \\`,
+      `pack build "$NAME:build-${commitTag(plan, "$GITHUB_SHA")}" --path ${JSON.stringify(context)} \\`,
       `  --builder ${IMAGES.paketoBuilder.ref} \\`,
       `  --run-image ${IMAGES.paketoRun.ref} \\`,
       `  ${arrayArgs(plan, "settings")} --publish --cache-image "$NAME:${environmentTag("buildcache", environmentName(plan))}" --report-output-dir "$report"`,
@@ -547,7 +558,7 @@ function railpackSteps(plan: DeployPlan): string[] {
 
 /** Checks the final digest and records `<name>@<digest>` as `ref`, which every deploy uses. */
 function record(plan: DeployPlan): string[] {
-  const tag = environmentTag("$GITHUB_SHA", environmentName(plan));
+  const tag = commitTag(plan, "$GITHUB_SHA");
   return [
     "- id: final",
     "  name: Record the image digest",
@@ -632,7 +643,12 @@ export function buildReads(plan: DeployPlan): string[] {
  * in one `build-push-action` build with a mode=max provenance and an SBOM. Outputs: `image`, the final
  * index digest reference, and `tag`, `<name>:<commit tag>` (the commit for prod, `<commit>-<env>`
  * for another environment: {@link environmentTag}). Then the optional report-only scan. A rollback
- * dispatch skips it: its image exists already.
+ * dispatch skips it: its image exists already. `condition` replaces that `if:` (the preview
+ * workflow's).
+ *
+ * In a preview environment's workflow (`environment.previews`) the pull request's build is tagged
+ * `pr-<number>-<commit>`, its intermediate `build-pr-<number>-<commit>` and its Buildpacks cache
+ * `buildcache-<env>` ({@link commitTag}).
  *
  * With `environment.build` `runner` it runs on the environment's own runner ({@link buildRunner}),
  * every step with bash, and with the same steps in forms macOS's bash 3.2 and Git Bash run; pack
@@ -640,7 +656,7 @@ export function buildReads(plan: DeployPlan): string[] {
  * first moves the Docker settings into the job's temp folder ({@link OWN_DOCKER_CONFIG}), and its
  * checkout keeps the job's token out of the runner's kept workspace.
  */
-export function buildJob(plan: DeployPlan): string[] {
+export function buildJob(plan: DeployPlan, condition = `\${{ !${ROLLING_BACK} }}`): string[] {
   const builder = plan.app.build?.builder;
   const steps =
     builder === "buildpacks"
@@ -652,7 +668,7 @@ export function buildJob(plan: DeployPlan): string[] {
   return job({
     id: "build",
     name: "Build the image",
-    if: `\${{ !${ROLLING_BACK} }}`,
+    if: condition,
     runsOn: buildRunner(plan),
     shell: own ? "bash" : undefined,
     permissions: ["contents: read", "packages: write"],

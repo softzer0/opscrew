@@ -519,11 +519,27 @@ export interface Job {
   permissions: readonly string[];
   /** `name: ${{ … }}` lines. */
   outputs?: readonly string[];
-  environment?: string;
+  /**
+   * The GitHub environment: its name, or with its `url` (the deployment's "View deployment") or
+   * `deployment: false` (its secrets only, no deployment).
+   */
+  environment?: string | { name: string; url?: string; deployment?: false };
   runsOn?: string;
   /** The shell of every `run:` step (`defaults.run.shell`); GitHub's default when absent. */
   shell?: string;
   steps: readonly string[];
+}
+
+/** A job's `environment:` lines ({@link Job}'s `environment`); none without one. */
+function environmentLines(environment: Job["environment"]): string[] {
+  if (environment === undefined) return [];
+  if (typeof environment === "string") return [`    environment: ${environment}`];
+  return [
+    "    environment:",
+    `      name: ${environment.name}`,
+    ...(environment.url === undefined ? [] : [`      url: ${environment.url}`]),
+    ...(environment.deployment === false ? ["      deployment: false"] : []),
+  ];
 }
 
 /** Renders `job` as YAML lines under `jobs:`. */
@@ -540,7 +556,7 @@ export function job(j: Job): string[] {
     ...(needs === undefined ? [] : [`    needs: ${needs}`]),
     ...(j.if === undefined ? [] : [`    if: ${j.if}`]),
     `    runs-on: ${j.runsOn ?? "ubuntu-latest"}`,
-    ...(j.environment === undefined ? [] : [`    environment: ${j.environment}`]),
+    ...environmentLines(j.environment),
     ...(j.shell === undefined ? [] : ["    defaults:", "      run:", `        shell: ${j.shell}`]),
     ...(j.permissions.length === 0
       ? ["    permissions: {}"]
