@@ -12,7 +12,7 @@
  * prod unchanged throughout (SC-2205), prod's destroy and the leak search (SC-2204).
  */
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { parseDotenv, readServerAddresses } from "@opscrew/agents";
@@ -51,6 +51,7 @@ import {
   MARKER_FILE,
   markerJson,
   PREVIEW_ENV,
+  PREVIEW_VALUE,
   PREVIEWS_E2E_VARIABLES,
   PREVIEWS_EXAMPLE,
   PREVIEWS_GATE,
@@ -468,6 +469,12 @@ describe.skipIf(MISSING.length > 0)(
             },
             overlay,
           });
+          // The app reads the preview value, so prod is asked for one too: a value that isn't a preview's.
+          await appendFile(
+            join(run.work, "production.env"),
+            `${PREVIEW_VALUE}=prod
+`,
+          );
         } finally {
           await rm(overlay, { recursive: true, force: true });
         }
@@ -519,7 +526,7 @@ describe.skipIf(MISSING.length > 0)(
         run.hostnames.push(`*.${base}`);
         // The previews' own values: `.env.preview` in the checkout, which init's .gitignore keeps
         // out of every commit.
-        const value = randomBytes(16).toString("hex");
+        const value = `preview-${randomBytes(16).toString("hex")}`;
         run.scrubber.add(value, "preview-value");
         await writeFile(join(run.repo, `.env.${PREVIEW_ENV}`), previewValues(value));
         const ignored = await run.runner.run(

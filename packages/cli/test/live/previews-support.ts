@@ -83,9 +83,9 @@ export function e2eOverlay(exampleIndex: string): Record<string, string> {
     `router.get("${E2E_PATH}", async (ctx) => {`,
     '  const rows = await db("e2e_rows").orderBy("id").pluck("label");',
     '  ctx.set("Cache-Control", "no-store");',
-    // Whether the app got the preview value (never the value). Its default in the code makes it
-    // optional, so prod, which has none, needs no value for it.
-    `  const previewValue = (process.env.${PREVIEW_VALUE} ?? "") === "" ? "unset" : "set";`,
+    // Whether the app got the preview's value (never the value): OpsCrew asks every environment for
+    // each value the app reads, so prod gets `prod` and a preview `preview-<random>`.
+    `  const previewValue = (process.env.${PREVIEW_VALUE} ?? "").startsWith("preview-") ? "set" : "unset";`,
     "  ctx.body = { marker: e2eMarker.marker, rows, previewValue };",
     "});",
     "",
