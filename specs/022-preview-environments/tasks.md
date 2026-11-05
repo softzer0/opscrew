@@ -301,7 +301,7 @@ retention above all).
 
 ## Phase 6: Live
 
-- [ ] T2213 [US2] [US3] [US5] The live pass, in `packages/cli/test/live/`
+- [x] T2213 [US2] [US3] [US5] The live pass, in `packages/cli/test/live/`
   - Owns: `packages/cli/test/live/previews*.ts` (+ offline tests of its support code), `docs/e2e.md`
     "Previews", `docs/e2e-coverage.md` row
   - Reads: plan.md "10."; `packages/cli/test/live/advise*.ts` (the harness's pattern)
