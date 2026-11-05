@@ -91,7 +91,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2105 [P] [US3] [US4] [US5] The size and cost rules, with prices, in `packages/agents/src/advise/rules/{size,cost}.ts`
+- [x] T2105 [P] [US3] [US4] [US5] The size and cost rules, with prices, in `packages/agents/src/advise/rules/{size,cost}.ts`
   - Owns: `packages/agents/src/advise/rules/{size,cost}.ts` (+ tests, fixtures)
   - Reads: plan.md "4."; data-model.md "The thresholds"; research.md R1.1, R1.2, R5 (S1); `design/{sizing,options,cost,servers}.ts` and the catalogues
   - Depends: T2102

@@ -127,11 +127,15 @@ A server whose figures stopped answers no limit and no disk projection: listed a
 Each rule is `(readings) => Proposal[]`, pure, tested on fixtures at the thresholds' edges.
 - **size:** larger (memory p95 > 85% of the server, or the load above the CPUs for 25% of the
   period), smaller (history ≥ 7 days, and a smaller type at the same provider and location holds
-  the p95 CPU and memory with 40% headroom, and its disk is not smaller than the current type's;
-  never on one reading), the disk (full within 30 days, or ≥ 85% now). The target type is the
-  cheapest from the catalogue that meets the need; prices from `pricedOffer`. A larger type says
-  what S1 found: the app offline one to three minutes (R5), the same addresses, and no way back to
-  the current type (its disk grows).
+  the p95 CPU and memory with 40% headroom and the containers' limits as design sizes them (not
+  the interview's users band, which the figures replace), and its disk is not smaller than the
+  current type's; never on one reading), the disk (full within 30 days, or ≥ 85% now; with a
+  larger proposal, one type for both). The target type is the cheapest from the catalogue that
+  meets the need; prices from `pricedOffer`. A larger type says what S1 found: the app offline one
+  to three minutes at Hetzner (R5), about a minute per GB of disk in use at DigitalOcean (R1.1),
+  the same addresses, and no way back to the current type (its disk grows). A short server with no
+  larger type in the price list (or not resizable by OpsCrew) still gets the proposal, unpriced,
+  naming what it needs.
 - **cost:** over budget (the environment's monthly price against `budgetMonthly`, naming which other
   proposals bring it under); a cheaper type with at least the same CPUs, memory and disk in the same
   region; the other provider cheaper for the same need (names `opscrew retarget`).
