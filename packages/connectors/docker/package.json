@@ -1,0 +1,20 @@
+{
+  "name": "@opscrew/connector-docker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Docker Engine API adapter: a typed subset over an injected transport (SSH dial-stdio or Portainer's proxy), and the volume carrier a move copies volumes with.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@opscrew/contracts": "workspace:*",
+    "@opscrew/core": "workspace:*",
+    "zod": "^4.6.5"
+  }
+}

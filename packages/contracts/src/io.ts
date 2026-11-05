@@ -1,3 +1,5 @@
+import type { Duplex, Readable } from "node:stream";
+
 /** Result of running an external command. */
 export interface CommandResult {
   exitCode: number;
@@ -48,6 +50,58 @@ export interface RemoteRunOptions {
   onLine?: (stream: "stdout" | "stderr", line: string) => void;
   /** Stops the command (a followed log). */
   signal?: AbortSignal;
+}
+
+/**
+ * A child process whose stdin and stdout are one byte stream, such as `ssh … docker system
+ * dial-stdio` (the Docker API over SSH). Started by {@link StreamRunner.open}.
+ */
+export interface StreamProcess {
+  /** The process's stdout as the readable side and its stdin as the writable side. */
+  readonly stream: Duplex;
+  /** Settles when the process exits: its exit code and the end of its stderr (bounded). */
+  readonly exit: Promise<{ exitCode: number; stderr: string }>;
+  /** Ends the process. */
+  kill(): void;
+}
+
+/**
+ * Starts a binary without a shell and hands back its stdin and stdout as one stream. Injected
+ * like {@link CommandRunner}, so tests replace it with a fake.
+ */
+export interface StreamRunner {
+  open(
+    command: string,
+    args: readonly string[],
+    options?: { env?: Record<string, string | undefined>; signal?: AbortSignal },
+  ): StreamProcess;
+}
+
+/** One request to the Docker Engine API (feature 023). */
+export interface DockerRequest {
+  method: "GET" | "HEAD" | "POST" | "PUT" | "DELETE";
+  /** The API path with its query and without a version prefix, such as `/containers/json?all=1`. */
+  path: string;
+  headers?: Record<string, string>;
+  /** A JSON body as text, or an archive as a stream (sent chunked). */
+  body?: string | Readable;
+  signal?: AbortSignal;
+}
+
+/** The answer to a {@link DockerRequest}; `body` streams, and the caller reads or drains it. */
+export interface DockerResponse {
+  status: number;
+  headers: Record<string, string>;
+  body: Readable;
+}
+
+/**
+ * Carries Docker Engine API requests to one Docker host: over SSH (`docker system dial-stdio`) or
+ * through Portainer's Docker proxy. `close` ends the connection when there is one.
+ */
+export interface DockerTransport {
+  request(request: DockerRequest): Promise<DockerResponse>;
+  close?(): Promise<void>;
 }
 
 /** The subset of the WHATWG `fetch` signature OpsCrew uses. Injected into every HTTP client. */

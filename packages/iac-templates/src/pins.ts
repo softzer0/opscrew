@@ -70,6 +70,17 @@ export const IMAGES = {
     ref: "curlimages/curl:8.23.0@sha256:11e64e28c5f58c8d93ee95fcf22ac055f48b0bc440e0ce7d8013bbb5ad6aa8ac",
   },
   /**
+   * The carrier a move mounts each volume in, to read, empty, write and hash it (read from the
+   * registry 2026-11-05).
+   */
+  busybox: {
+    ref: "busybox:1.38.0@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4",
+  },
+  /** Copies a bucket to another provider's storage during a move (read from the registry 2026-11-05). */
+  rclone: {
+    ref: "rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5",
+  },
+  /**
    * The small Linux (glibc, CA certificates, no shell) that runs the Linux pack and Railpack CLIs
    * on a self-hosted runner that is not Linux, through Docker (read from the registry 2026-10-22).
    */

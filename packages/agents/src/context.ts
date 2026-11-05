@@ -5,6 +5,7 @@ import type {
   CommandRunner,
   FetchLike,
   Reporter,
+  StreamRunner,
 } from "@opscrew/contracts";
 import type {
   ApprovalGate,
@@ -28,6 +29,11 @@ export interface PhaseDeps {
   state: ProjectStateStore;
   costs: CostLedger;
   runner: CommandRunner;
+  /**
+   * Starts a binary with its stdin and stdout as one stream (`ssh … docker system dial-stdio` for a
+   * move's Docker API). Absent, a move uses core's `NodeStreamRunner`.
+   */
+  streams?: StreamRunner;
   fetch: FetchLike;
   env: Record<string, string | undefined>;
   clock: Clock;
