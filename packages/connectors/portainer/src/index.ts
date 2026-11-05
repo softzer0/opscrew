@@ -23,6 +23,7 @@ export {
   type PortainerClient,
   type PortainerClientDeps,
   type PortainerEnvironment,
+  type ProxyEnvironmentKind,
   portainerClient,
 } from "./client";
 export { type ContainerFigures, type ContainerLogLine, sinceAfter } from "./docker";
@@ -45,9 +46,12 @@ export {
   inspectCertificate,
   type PinnedRequest,
   type PinnedRequestInit,
+  type PinnedStream,
+  type PinnedStreamInit,
   PortainerCertificateError,
   type PortainerEndpoint,
   pinnedRequest,
+  pinnedStream,
   type TlsConnect,
 } from "./pinned";
 export {

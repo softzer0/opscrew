@@ -1,0 +1,124 @@
+import { Readable } from "node:stream";
+import { OpsCrewError, Redactor } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
+import { describe, expect, it } from "vitest";
+import { portainerClient } from "./client";
+import type { PinnedRequest, PinnedStream, PinnedStreamInit } from "./pinned";
+
+const endpoint = { url: "https://nas.lan:9443", certFingerprint: `SHA256:${"AB".repeat(32)}` };
+const token = fakeSecret("hcloud-token", "portainer-api-key");
+
+const noRequest: PinnedRequest = () => Promise.reject(new Error("no buffered request expected"));
+
+function proxySetup(stream: PinnedStream) {
+  const redactor = new Redactor();
+  const client = portainerClient(endpoint, token, { request: noRequest, stream, redactor });
+  return { client, redactor };
+}
+
+describe("dockerProxyTransport", () => {
+  it("sends Docker requests below the environment's proxy with X-API-Key, streaming both ways", async () => {
+    const seen: PinnedStreamInit[] = [];
+    const answer = Readable.from([Buffer.from("tar bytes")]);
+    const { client } = proxySetup(async (init) => {
+      seen.push(init);
+      return { status: 200, headers: { "content-type": "application/x-tar" }, body: answer };
+    });
+    const transport = client.dockerProxyTransport(3);
+    const upload = Readable.from([Buffer.from("archive")]);
+    const signal = new AbortController().signal;
+    const response = await transport.request({
+      method: "PUT",
+      path: "/containers/abc/archive?path=%2F",
+      headers: { "Content-Type": "application/x-tar" },
+      body: upload,
+      signal,
+    });
+    expect(response).toEqual({
+      status: 200,
+      headers: { "content-type": "application/x-tar" },
+      body: answer,
+    });
+    expect(seen[0]?.method).toBe("PUT");
+    expect(seen[0]?.path).toBe("/api/endpoints/3/docker/containers/abc/archive?path=%2F");
+    expect(seen[0]?.headers["X-API-Key"]).toBe(token);
+    expect(seen[0]?.headers["Content-Type"]).toBe("application/x-tar");
+    expect(seen[0]?.headers["User-Agent"]).toMatch(/^opscrew-connector-portainer\//);
+    expect(seen[0]?.body).toBe(upload);
+    expect(seen[0]?.signal).toBe(signal);
+    // A status other than 2xx is the caller's to read: Docker's error body streams back.
+    await transport.request({ method: "HEAD", path: "/containers/abc/archive?path=%2Fdata" });
+    expect(seen[1]?.body).toBeUndefined();
+  });
+
+  it("refuses an environment id or a path that could leave the proxy, before sending", async () => {
+    const seen: PinnedStreamInit[] = [];
+    const { client } = proxySetup(async (init) => {
+      seen.push(init);
+      return { status: 200, headers: {}, body: Readable.from([]) };
+    });
+    expect(() => client.dockerProxyTransport(0)).toThrow(/positive whole numbers/);
+    const transport = client.dockerProxyTransport(3);
+    for (const path of ["containers/json", "/../../users", "/containers/x/../../../api"]) {
+      await expect(transport.request({ method: "GET", path }), path).rejects.toThrow(
+        /Docker API path/,
+      );
+    }
+    expect(seen).toEqual([]);
+  });
+
+  it("never puts the token in an error (leak test)", async () => {
+    const { client } = proxySetup(async () => {
+      // A failure that echoes the token, as a broken proxy might.
+      throw new OpsCrewError("PROVIDER_ERROR", `Portainer failed with key ${token}.`, {
+        hint: `Check ${token}.`,
+      });
+    });
+    const error = (await client
+      .dockerProxyTransport(3)
+      .request({ method: "GET", path: "/containers/json" })
+      .catch((caught: unknown) => caught)) as OpsCrewError;
+    expect(error).toBeInstanceOf(OpsCrewError);
+    expect(`${error.message} ${error.hint} ${error.stack}`).not.toContain(token);
+    expect(error.message).toContain("[REDACTED:PORTAINER_API_KEY]");
+  });
+});
+
+describe("environmentKind", () => {
+  function kindSetup(environment: unknown, status = 200) {
+    const paths: string[] = [];
+    const request: PinnedRequest = async (init) => {
+      paths.push(init.path);
+      expect(init.headers["X-API-Key"]).toBe(token);
+      return { status, body: JSON.stringify(environment) };
+    };
+    const client = portainerClient(endpoint, token, { request });
+    return { client, paths };
+  }
+
+  it("reads Portainer's environment type and edge mode", async () => {
+    const cases: Array<[unknown, string]> = [
+      [{ Id: 3, Type: 1, URL: "unix:///var/run/docker.sock" }, "socket"],
+      [{ Id: 3, Type: 1, URL: "npipe:////./pipe/docker_engine" }, "socket"],
+      [{ Id: 3, Type: 1, URL: "tcp://10.0.0.5:2376" }, "other"],
+      [{ Id: 3, Type: 2, URL: "tcp://10.0.0.5:9001" }, "agent"],
+      [{ Id: 3, Type: 4, URL: "", Edge: { AsyncMode: false } }, "edge"],
+      [{ Id: 3, Type: 4, Edge: { AsyncMode: true } }, "edge-async"],
+      [{ Id: 3, Type: 7, Edge: null }, "edge"],
+      [{ Id: 3, Type: 5, URL: "https://kubernetes.default.svc" }, "other"],
+      [{ Id: 3, Type: 3 }, "other"],
+    ];
+    for (const [environment, kind] of cases) {
+      const { client, paths } = kindSetup(environment);
+      expect(await client.environmentKind(3), JSON.stringify(environment)).toBe(kind);
+      expect(paths).toEqual(["/api/endpoints/3"]);
+    }
+  });
+
+  it("names a missing access plainly, without the token", async () => {
+    const { client } = kindSetup({ message: "Access denied to resource" }, 403);
+    const error = (await client.environmentKind(3).catch((caught: unknown) => caught)) as Error;
+    expect(error.message).toMatch(/HTTP 403/);
+    expect(error.message).not.toContain(token);
+  });
+});

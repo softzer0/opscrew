@@ -1,8 +1,9 @@
 import { createHash, X509Certificate } from "node:crypto";
 import http from "node:http";
 import { isIP } from "node:net";
-import type { Duplex } from "node:stream";
+import type { Duplex, Readable } from "node:stream";
 import tls from "node:tls";
+import type { DockerResponse } from "@opscrew/contracts";
 import { durationText, OpsCrewError } from "@opscrew/core";
 import { normalizeCertFingerprint } from "./fingerprint";
 
@@ -36,6 +37,23 @@ export interface PinnedResponse {
 
 /** Sends one request to the pinned Portainer endpoint (tests inject a fake). */
 export type PinnedRequest = (init: PinnedRequestInit) => Promise<PinnedResponse>;
+
+/** One streaming request to Portainer: no fixed timeout, only `signal` stops it. */
+export interface PinnedStreamInit {
+  method: "GET" | "HEAD" | "POST" | "PUT" | "DELETE";
+  /** Path and query below Portainer's address (`/api/…`). */
+  path: string;
+  headers: Readonly<Record<string, string>>;
+  /** Text (sent with its length), or a stream (sent chunked). */
+  body?: string | Readable;
+  signal?: AbortSignal;
+}
+
+/**
+ * Sends one streaming request to the pinned Portainer endpoint; the answer's body streams and the
+ * caller reads or drains it (tests inject a fake).
+ */
+export type PinnedStream = (init: PinnedStreamInit) => Promise<DockerResponse>;
 
 /** `tls.connect`, injectable for tests. */
 export type TlsConnect = (options: tls.ConnectionOptions) => tls.TLSSocket;
@@ -211,6 +229,21 @@ export function pinnedRequest(
   return (init) => send(target, connect, state, init);
 }
 
+/**
+ * The streaming request function for a Portainer endpoint, pinned like {@link pinnedRequest}: a
+ * stream body goes chunked, the answer's body is handed back as it arrives, and nothing but the
+ * connection's TLS handshake has a time limit (a 1 GiB volume takes minutes).
+ */
+export function pinnedStream(
+  endpoint: PortainerEndpoint,
+  deps: { connect?: TlsConnect } = {},
+): PinnedStream {
+  const target = parsePortainerEndpoint(endpoint);
+  const connect = deps.connect ?? tls.connect;
+  const state: PinState = {};
+  return (init) => stream(target, connect, state, init);
+}
+
 interface PinState {
   /** PEM of the pinned certificate as Portainer presented it. */
   ca?: string;
@@ -226,9 +259,7 @@ function send(
   state: PinState,
   init: PinnedRequestInit,
 ): Promise<PinnedResponse> {
-  if (!init.path.startsWith("/api/")) {
-    return Promise.reject(new OpsCrewError("INTERNAL", "Portainer paths start with /api/."));
-  }
+  if (!init.path.startsWith("/api/")) return Promise.reject(notApiPath());
   return new Promise<PinnedResponse>((resolve, reject) => {
     let settled = false;
     const finish = (error: unknown, response?: PinnedResponse) => {
@@ -238,32 +269,11 @@ function send(
       if (error !== undefined) reject(toTransportError(error));
       else resolve(response as PinnedResponse);
     };
-    const headers: Record<string, string> = {
-      ...init.headers,
-      Host: target.hostHeader,
-      Connection: "close",
-    };
+    const headers: Record<string, string> = { ...init.headers };
     if (init.body !== undefined) {
       headers["Content-Length"] = String(Buffer.byteLength(init.body, "utf8"));
     }
-    const options: http.RequestOptions = {
-      host: target.host,
-      port: target.port,
-      method: init.method,
-      path: `${target.basePath}${init.path}`,
-      headers,
-    };
-    if (target.protocol === "https:") {
-      options.createConnection = (_options, oncreate) => {
-        connectPinned(target, connect, state).then(
-          (socket) => oncreate(null, socket as Duplex),
-          (error: Error) => oncreate(error, undefined as unknown as Duplex),
-        );
-        return undefined;
-      };
-    } else {
-      options.agent = false;
-    }
+    const options = requestOptions(target, connect, state, init.method, init.path, headers);
     const request = http.request(options, (response) => {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -291,6 +301,75 @@ function send(
     request.on("error", (error) => finish(error));
     request.end(init.body);
   });
+}
+
+function stream(
+  target: PortainerTarget,
+  connect: TlsConnect,
+  state: PinState,
+  init: PinnedStreamInit,
+): Promise<DockerResponse> {
+  if (!init.path.startsWith("/api/")) return Promise.reject(notApiPath());
+  return new Promise<DockerResponse>((resolve, reject) => {
+    const { body, signal } = init;
+    const headers: Record<string, string> = { ...init.headers };
+    if (typeof body === "string") {
+      headers["Content-Length"] = String(Buffer.byteLength(body, "utf8"));
+    } else if (body !== undefined) {
+      headers["Transfer-Encoding"] = "chunked";
+    }
+    const options = requestOptions(target, connect, state, init.method, init.path, headers);
+    if (signal !== undefined) options.signal = signal;
+    const request = http.request(options, (response) => {
+      const flat: Record<string, string> = {};
+      for (const [name, value] of Object.entries(response.headers)) {
+        if (value !== undefined) flat[name] = Array.isArray(value) ? value.join(", ") : value;
+      }
+      resolve({ status: response.statusCode ?? 0, headers: flat, body: response });
+    });
+    // An abort is passed on as it is; other failures become plain errors without the address.
+    request.on("error", (error) => reject(signal?.aborted ? error : toTransportError(error)));
+    if (body === undefined || typeof body === "string") {
+      request.end(body);
+    } else {
+      body.once("error", (error) => request.destroy(error));
+      body.pipe(request);
+    }
+  });
+}
+
+function notApiPath(): OpsCrewError {
+  return new OpsCrewError("INTERNAL", "Portainer paths start with /api/.");
+}
+
+/** One request's options: a connection checked against the pin (HTTPS), never a shared agent. */
+function requestOptions(
+  target: PortainerTarget,
+  connect: TlsConnect,
+  state: PinState,
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+): http.RequestOptions {
+  const options: http.RequestOptions = {
+    host: target.host,
+    port: target.port,
+    method,
+    path: `${target.basePath}${path}`,
+    headers: { ...headers, Host: target.hostHeader, Connection: "close" },
+  };
+  if (target.protocol === "https:") {
+    options.createConnection = (_options, oncreate) => {
+      connectPinned(target, connect, state).then(
+        (socket) => oncreate(null, socket as Duplex),
+        (error: Error) => oncreate(error, undefined as unknown as Duplex),
+      );
+      return undefined;
+    };
+  } else {
+    options.agent = false;
+  }
+  return options;
 }
 
 class TimeoutError extends Error {

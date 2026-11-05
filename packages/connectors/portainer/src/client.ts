@@ -1,3 +1,4 @@
+import type { DockerTransport } from "@opscrew/contracts";
 import { OpsCrewError, parseAnswer, Redactor } from "@opscrew/core";
 import { z } from "zod";
 import {
@@ -17,10 +18,12 @@ import {
   type PinnedRequest,
   type PinnedRequestInit,
   type PinnedResponse,
+  type PinnedStream,
   PortainerCertificateError,
   type PortainerEndpoint,
   parsePortainerEndpoint,
   pinnedRequest,
+  pinnedStream,
 } from "./pinned";
 import { checkKey, fingerprint, WEBHOOK_FINGERPRINT_NAME } from "./values";
 
@@ -105,6 +108,13 @@ export interface VolumeSummary {
   name: string;
   project?: string;
 }
+
+/**
+ * How Portainer reaches an environment's Docker, from its `Type` and address: the Docker socket
+ * of Portainer's own host, the Portainer Agent, an Edge Agent (standard, or async with no live
+ * Docker proxy), or anything else (Docker's API over TCP, Kubernetes, Azure).
+ */
+export type ProxyEnvironmentKind = "socket" | "agent" | "edge" | "edge-async" | "other";
 
 /** A registry entry (its password is never returned by Portainer, nor kept). */
 export interface RegistrySummary {
@@ -192,6 +202,14 @@ export interface PortainerClient {
   currentUser(): Promise<PortainerUser>;
   /** `GET /api/endpoints`. */
   listEnvironments(): Promise<PortainerEnvironment[]>;
+  /** `GET /api/endpoints/{id}`: how Portainer reaches the environment's Docker. */
+  environmentKind(environmentId: number): Promise<ProxyEnvironmentKind>;
+  /**
+   * Docker's API on the environment through Portainer's proxy (`/api/endpoints/{id}/docker/…`),
+   * streaming both ways with no fixed timeout. Answers come back with any status; errors never
+   * name the token.
+   */
+  dockerProxyTransport(environmentId: number): DockerTransport;
   /** `GET /api/endpoints/{id}/docker/info`. */
   dockerInfo(environmentId: number): Promise<DockerInfo>;
   /** `GET /api/endpoints/{id}/docker/containers/json?all=1` (an administrator sees all). */
@@ -302,6 +320,8 @@ export interface PortainerClientDeps {
   request?: PinnedRequest;
   /** Shared redactor; a private one is used when omitted. The token is always registered. */
   redactor?: Redactor;
+  /** The streaming request function; defaults to {@link pinnedStream} for the endpoint. */
+  stream?: PinnedStream;
   /** Per-request timeout (default {@link PORTAINER_REQUEST_TIMEOUT_MS}). */
   timeoutMs?: number;
   /**
@@ -334,6 +354,7 @@ export function portainerClient(
   const redactor = deps.redactor ?? new Redactor();
   redactor.addLiteral(token, "PORTAINER_API_KEY");
   const request = deps.request ?? pinnedRequest(endpoint);
+  const stream = deps.stream ?? pinnedStream(endpoint);
   const timeoutMs = deps.timeoutMs ?? PORTAINER_REQUEST_TIMEOUT_MS;
   if (deps.valueKey !== undefined) checkKey(deps.valueKey);
   const stackSchema = stackSchemaFor(deps.valueKey);
@@ -487,6 +508,39 @@ export function portainerClient(
           swarm: endpoint.Snapshots[0].Swarm,
         }),
       }));
+    },
+    async environmentKind(environmentId) {
+      const environment = await get(
+        `/api/endpoints/${id(environmentId)}`,
+        environmentSchema,
+        "show the environment",
+        "use the environment",
+      );
+      return proxyEnvironmentKind(environment);
+    },
+    dockerProxyTransport(environmentId) {
+      const prefix = `/api/endpoints/${id(environmentId)}/docker`;
+      return {
+        async request(docker) {
+          // The path stays below the environment's proxy: no relative segments.
+          const route = docker.path.split("?", 1)[0] ?? "";
+          if (!route.startsWith("/") || route.split("/").some((part) => /^\.\.?$/.test(part))) {
+            throw new OpsCrewError(
+              "INTERNAL",
+              "A Docker API path starts with / and has no . or .. segment.",
+            );
+          }
+          return stream({
+            method: docker.method,
+            path: `${prefix}${docker.path}`,
+            headers: { ...docker.headers, "User-Agent": USER_AGENT, "X-API-Key": token },
+            ...(docker.body !== undefined && { body: docker.body }),
+            ...(docker.signal !== undefined && { signal: docker.signal }),
+          }).catch((error: unknown) => {
+            throw redactError(error, redactor);
+          });
+        },
+      };
     },
     dockerInfo,
     async listContainers(environmentId) {
@@ -971,6 +1025,30 @@ const endpointSchema = z.object({
     .nullable()
     .optional(),
 });
+/** `GET /api/endpoints/{id}`: the type, the address, and the Edge Agent's mode. */
+const environmentSchema = z.object({
+  Type: z.int(),
+  URL: z.string().optional(),
+  Edge: z.object({ AsyncMode: z.boolean().optional() }).nullable().optional(),
+});
+
+/** Types 1 Docker, 2 Agent on Docker, 4 and 7 Edge Agent (Docker, Kubernetes); see the type. */
+function proxyEnvironmentKind(
+  environment: z.output<typeof environmentSchema>,
+): ProxyEnvironmentKind {
+  switch (environment.Type) {
+    case 1:
+      return /^(unix|npipe):\/\//.test(environment.URL ?? "") ? "socket" : "other";
+    case 2:
+      return "agent";
+    case 4:
+    case 7:
+      return environment.Edge?.AsyncMode === true ? "edge-async" : "edge";
+    default:
+      return "other";
+  }
+}
+
 const dockerInfoSchema = z.object({
   Architecture: z.string().optional(),
   ServerVersion: z.string().optional(),
