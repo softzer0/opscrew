@@ -63,7 +63,17 @@ export interface PlacementEdits {
    * network, so it is read with them and put back once they are designed.
    */
   monitoring?: MonitoringSettings;
+  /**
+   * A preview environment's add-ons plan.yaml turns on, which it never runs: read turned off, for
+   * design to say so.
+   */
+  addonsOff?: PreviewAddon[];
 }
+
+/** The add-ons of `observability` a preview environment never runs (plan-schema's rules). */
+const PREVIEW_ADDONS = ["beszel", "grafanaCloud", "check"] as const;
+/** One of {@link PREVIEW_ADDONS}. */
+export type PreviewAddon = (typeof PREVIEW_ADDONS)[number];
 
 /** {@link readPlanWithEdits}'s result. */
 export interface PlanWithEdits {
@@ -125,7 +135,25 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
     ? others.observability
     : {};
   const monitoring = MonitoringSchema.safeParse(block).data;
-  const rest = monitoring === undefined ? others : { ...others, observability };
+  // A preview environment never runs these add-ons: one turned on by hand is read turned off.
+  const previews = isRecord(others.environment) && others.environment.previews !== undefined;
+  const addonsOff = previews
+    ? PREVIEW_ADDONS.filter((name) => {
+        const addon = observability[name];
+        return isRecord(addon) && addon.enabled === true;
+      })
+    : [];
+  for (const name of addonsOff) {
+    observability[name] = { ...(observability[name] as Record<string, unknown>), enabled: false };
+  }
+  const read =
+    monitoring === undefined && block !== undefined
+      ? { ...observability, monitoring: block }
+      : observability;
+  const rest =
+    monitoring === undefined && addonsOff.length === 0
+      ? others
+      : { ...others, observability: read };
   const placed: Record<string, string> = {};
   const issues: { path: string; message: string }[] = [];
   const services = Array.isArray(rest.services)
@@ -179,6 +207,7 @@ export async function readPlanWithEdits(file: string): Promise<PlanWithEdits | u
       ...(edits.data.network === undefined ? {} : { network: edits.data.network }),
       ...(edits.data.move === undefined ? {} : { move: edits.data.move }),
       ...(monitoring === undefined ? {} : { monitoring }),
+      ...(addonsOff.length === 0 ? {} : { addonsOff }),
     },
   };
 }

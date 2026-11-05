@@ -51,6 +51,23 @@ export interface Sizing {
   services: PlanService[];
   /** Services the app keeps using outside the server (sorted in schema order). */
   externalServices: ServiceKind[];
+  /** A preview server's: how many previews it holds at once, each with `components`' limits. */
+  previewCap?: number;
+}
+
+/**
+ * A preview server's sizing ({@link sizeFor}'s for one preview): `cap` previews, each with the
+ * memory limits of the app and its services, next to the edge and the system's reserve.
+ */
+export function previewSizing(sizing: Sizing, cap: number): Sizing {
+  const limitsMb = sizing.limitsMb * cap;
+  return {
+    ...sizing,
+    limitsMb,
+    // Never below one preview's floor (`sizeFor`: the services' smallest servers among it).
+    memoryGb: Math.max(sizing.memoryGb, (limitsMb + sizing.edgeMb + SYSTEM_RESERVE_MB) / 1024),
+    previewCap: cap,
+  };
 }
 
 /**

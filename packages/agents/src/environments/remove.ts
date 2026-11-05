@@ -9,11 +9,17 @@ import { resolveEnvironment } from "./choice";
 import { environmentDeployed } from "./list";
 import { environmentPaths } from "./paths";
 
+/** The preview workflow of the app `app` (a further app's key): `opscrew-preview[-<app>].yml`. */
+function previewWorkflowPath(app: string | undefined): string {
+  return `.github/workflows/opscrew-preview${app === undefined ? "" : `-${app}`}.yml`;
+}
+
 /**
  * `opscrew env remove <name>`: removes the files of the environment `deps.paths` belong to: its
  * folders in the app's `environments/` (`opscrew/`, `.opscrew/` and the project's OpsCrew home,
  * a further app's under `apps/<key>/`), its infrastructure roots (`infraDirFor`, its storage
- * root) and its deploy workflow (`workflowPathFor`). Only those OpsCrew names after the
+ * root) and its deploy workflow (`workflowPathFor`), and a preview environment's preview workflow
+ * (its recipe is in its folder). Only those OpsCrew names after the
  * environment: a folder the plan was pointed to by hand stays. Returns what was removed
  * (repository paths relative to the root).
  * @throws OpsCrewError `INVALID_INPUT` for prod or an unknown environment, and
@@ -68,6 +74,8 @@ export async function removeEnvironment(
     infraDir,
     storageRootDir({ ...plan, infra: { ...plan.infra, dir: infraDir } }),
     workflowPathFor(paths.app, name),
+    // A preview environment's workflow; its rendered recipe is in its folder of the app's.
+    ...(plan.environment?.previews === undefined ? [] : [previewWorkflowPath(paths.app)]),
   ].map((path) => join(paths.root, path));
   const removed: string[] = [];
   // The plan's folder goes last: until it is gone the environment is listed, so a removal that

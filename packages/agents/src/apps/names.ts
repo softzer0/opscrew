@@ -21,13 +21,20 @@ export interface AppEnvironmentPlan {
 
 /**
  * Every environment of every app in the repository `paths` belong to (`appsOf`, then each app's
- * `environmentsOf`), each with its plan: an app's prod is listed before it has a plan.
+ * `environmentsOf`), each with its plan: an app's prod is listed before it has a plan. `except`
+ * is left out, its plan unread (design may be completing one that is not valid as a whole yet).
  */
-export async function repositoryEnvironments(paths: ProjectPaths): Promise<AppEnvironmentPlan[]> {
+export async function repositoryEnvironments(
+  paths: ProjectPaths,
+  except?: Pick<AppEnvironmentPlan, "app" | "environment">,
+): Promise<AppEnvironmentPlan[]> {
   const found: AppEnvironmentPlan[] = [];
   for (const { key } of await appsOf(paths.root)) {
     const names = await environmentsOf(paths.root, key);
     for (const environment of names.includes("prod") ? names : ["prod", ...names]) {
+      if (except !== undefined && key === except.app && environment === except.environment) {
+        continue;
+      }
       const plan = await readOptionalArtifact("plan", appPaths(paths, key, environment).files.plan);
       found.push({
         ...(key === undefined ? {} : { app: key }),
@@ -57,9 +64,7 @@ async function othersOf(
   ) {
     return [];
   }
-  return (await repositoryEnvironments(paths)).filter(
-    (other) => other.app !== candidate.app || other.environment !== candidate.environment,
-  );
+  return repositoryEnvironments(paths, candidate);
 }
 
 /** An app's environment in a sentence: `the first app's prod`, `the app docs's environment qa`. */

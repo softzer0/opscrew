@@ -12,6 +12,7 @@ import {
   serviceOf,
 } from "@opscrew/plan-schema";
 import { type Components, memoryText } from "./components";
+import { previewMemoryText } from "./previews";
 import {
   containersText,
   OWN_SERVER_MEMORY_TOLERANCE,
@@ -123,6 +124,8 @@ export interface OwnServerOptionInput {
   components?: Components;
   /** The server's proxy (`target.edge`), whose memory the sizing counts; Caddy by default. */
   edge?: EdgeProxy;
+  /** A preview server's cap: its memory line counts that many previews. */
+  previewCap?: number;
 }
 
 export interface OwnServerDesign {
@@ -231,7 +234,14 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
         : "";
   const summary = [
     `Your own server (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${containers} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.${served}`,
-    memoryText(sizing.components, server.memoryGb * 1024, sizing.edgeMb),
+    input.previewCap === undefined
+      ? memoryText(sizing.components, server.memoryGb * 1024, sizing.edgeMb)
+      : previewMemoryText(
+          sizing.components,
+          input.previewCap,
+          server.memoryGb * 1024,
+          sizing.edgeMb,
+        ),
     OWN_SERVER_PRICE_NOTE,
     OWN_SERVER_BACKUPS_NOTE,
   ].join(" ");

@@ -347,6 +347,14 @@ describe("environment.previews", () => {
     );
   });
 
+  it("refuses an nginx edge: each preview's site is a Caddy site", async () => {
+    const issue = await refused((p) => {
+      (p.target as { edge?: string }).edge = "nginx";
+    });
+    expect(issue.path).toBe("target.edge");
+    expect(issue.message).toContain('must be "caddy" with previews');
+  });
+
   it("refuses previews in prod's plan", async () => {
     const plan = await previewPlan((p) => {
       p.app.name = "acme-web";

@@ -27,8 +27,9 @@ import {
   pricedOffer,
   priceLabel,
 } from "./cost";
+import { previewMemoryText } from "./previews";
 import { keptTypeText, type ServerSize } from "./server-changes";
-import { containersText, regionLocations, type Sizing, sizeFor } from "./sizing";
+import { containersText, previewSizing, regionLocations, type Sizing, sizeFor } from "./sizing";
 import { type DesignWording, designWording } from "./wording";
 
 export interface BuildDesignOptionsInput {
@@ -45,6 +46,8 @@ export interface BuildDesignOptionsInput {
   deployed?: ServerSize;
   /** The self-hosted monitoring, whose containers on the app's server the sizing counts. */
   monitoring?: MonitoringSettings;
+  /** A preview server's cap: it is sized for this many previews at once (`previewSizing`). */
+  previewCap?: number;
 }
 
 /** Option tiers, in display order. */
@@ -109,7 +112,8 @@ export async function buildDesignOptionSet(
   const { profile } = wording;
   const region = requestedRegion(requirements);
   if (region === undefined) throw new Error(`${provider} requirements need a region.`);
-  const sizing = sizeFor(facts, requirements, input.components, input.edge, input.monitoring);
+  const app = sizeFor(facts, requirements, input.components, input.edge, input.monitoring);
+  const sizing = input.previewCap === undefined ? app : previewSizing(app, input.previewCap);
   const locations = regionLocations(region, provider);
   const backups = requirements.dataCriticality !== "none";
 
@@ -342,12 +346,14 @@ function toOption(
     `One ${offer.id} ${wording.summaryNoun} (${offer.vcpus} ${offer.cpuType} vCPU, ${offer.memoryGb} GB memory, ${offer.diskGb} GB disk) in ${place} (${offer.location}) running ${containersText(sizing)} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.`,
     `${price}.`,
     backups ? "Automated backups are on." : "Automated backups are off.",
-    memoryText(
-      { ...sizing.components, observability: { monitoring: sizing.monitoring } },
-      serverMb,
-      sizing.edgeMb,
-      cost.monthly,
-    ),
+    sizing.previewCap === undefined
+      ? memoryText(
+          { ...sizing.components, observability: { monitoring: sizing.monitoring } },
+          serverMb,
+          sizing.edgeMb,
+          cost.monthly,
+        )
+      : previewMemoryText(sizing.components, sizing.previewCap, serverMb, sizing.edgeMb),
   ].join(" ");
 
   const tradeoffs = [

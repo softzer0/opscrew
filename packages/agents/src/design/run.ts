@@ -107,12 +107,7 @@ import {
 } from "./components";
 import { convertMoney, EXCHANGE_RATE_NOTE, priceLabel } from "./cost";
 import { keptEdits } from "./kept-edits";
-import {
-  buildDesignOptionSet,
-  type DesignOptionSet,
-  lowHeadroomText,
-  minimumMonthlyCost,
-} from "./options";
+import { buildDesignOptionSet, lowHeadroomText, minimumMonthlyCost } from "./options";
 import {
   buildOwnServerOption,
   mayHavePublicIpv4,
@@ -138,6 +133,15 @@ import {
   portainerChoiceProblem,
   portainerDesignChoice,
 } from "./portainer";
+import {
+  type PreviewDesignInput,
+  previewCapacity,
+  previewEdits,
+  previewMemoryText,
+  previewPlan,
+  previewsLine,
+  requirePreviewsFit,
+} from "./previews";
 import { releaseCommandNote } from "./release";
 import { resolveRuntime } from "./runtime-version";
 import { applied, appServerChange, deployedAppServer } from "./server-changes";
@@ -150,7 +154,7 @@ import {
   serverlessDeployLine,
   serverlessSecretWarnings,
 } from "./serverless";
-import { ownServerMemory, type ServerApp } from "./sizing";
+import { ownServerMemory, regionLocations, type ServerApp, sizeFor } from "./sizing";
 import { checkSqliteFolder, sqliteOwnerWarning } from "./storage";
 import { keptDeploy } from "./strategy";
 import { designWording } from "./wording";
@@ -180,8 +184,10 @@ export interface RunDesignOptions extends PlacementOptions {
    */
   environment?: Pick<
     NonNullable<DeployPlan["environment"]>,
-    "deploySource" | "runner" | "runnerHost" | "build"
+    "deploySource" | "runner" | "runnerHost" | "build" | "previews"
   >;
+  /** A new preview environment's Cloudflare zone and chosen server type (`opscrew env add`). */
+  preview?: PreviewDesignInput;
   /**
    * A new environment's `cicd.branch` (`opscrew env add --branch`), written into its first plan;
    * a later design keeps the plan's own.
@@ -364,16 +370,20 @@ export async function previewDesignOptions(
     );
     if (block !== undefined) warner(deps, warnings)(`${block.message} ${block.hint}`);
   }
+  // Every preview runs on the preview server, without placement or monitoring.
+  const previews = previous?.environment?.previews;
   return priceOptions(deps, inputs, options.catalog, warnings, options.ownServer, {
     previous,
     shared: source?.plan,
     localhost: { services: options.localhost, environment: previous ?? {} },
-    ...(read === undefined
-      ? {}
-      : {
-          placed: read.edits.placed,
-          ...(read.edits.monitoring === undefined ? {} : { monitoring: read.edits.monitoring }),
-        }),
+    ...(previews !== undefined
+      ? { previews: { cap: previews.cap } }
+      : read === undefined
+        ? {}
+        : {
+            placed: read.edits.placed,
+            ...(read.edits.monitoring === undefined ? {} : { monitoring: read.edits.monitoring }),
+          }),
   });
 }
 
@@ -460,6 +470,7 @@ async function priceOwnServer(
   designed: Designed,
   onApp: Components,
   edge: EdgeProxy,
+  previewCap: number | undefined,
 ): Promise<DesignPreview> {
   const say = (text: string) => deps.redactor.redact(text);
   const warn = warner(deps, warnings);
@@ -473,6 +484,7 @@ async function priceOwnServer(
     serving,
     components: onApp,
     edge,
+    ...(previewCap === undefined ? {} : { previewCap }),
   });
   for (const warning of own.warnings) warn(warning);
   const { option } = own;
@@ -585,6 +597,11 @@ interface PlanBasis {
   placed?: Readonly<Record<string, string>>;
   /** The self-hosted monitoring plan.yaml has: its containers on the app's server are sized for. */
   monitoring?: MonitoringSettings;
+  /**
+   * A preview environment's cap, or the server type chosen for it (`opscrew env add --size`),
+   * whose memory gives the cap: the server is sized for that many previews.
+   */
+  previews?: { cap: number; serverType?: string | undefined };
 }
 
 /** A preview, with the catalogue a server OpsCrew creates was priced from. */
@@ -592,6 +609,8 @@ type PricedPreview = DesignPreview & {
   catalog?: ComputeCatalog;
   /** Why an option keeps the deployed server's type, by option id (`buildDesignOptionSet`). */
   kept?: ReadonlyMap<string, string>;
+  /** A preview server OpsCrew creates: the cap it was sized for. */
+  previewCap?: number;
 };
 
 /**
@@ -758,6 +777,7 @@ async function priceOptions(
       designed,
       components,
       edge,
+      basis.previews?.cap,
     );
   }
   const provider = requestedProvider(requirements);
@@ -780,18 +800,34 @@ async function priceOptions(
   }
   // The app's deployed server keeps its disk.
   const deployed = deployedAppServer(previous, provider);
-  let set: DesignOptionSet;
-  try {
-    set = await buildDesignOptionSet({
+  const { previews } = basis;
+  // A preview server is sized for its cap, or holds as many previews as the chosen type does.
+  const optionSet = async (from: ComputeCatalog) => {
+    const sized =
+      previews === undefined
+        ? undefined
+        : await previewCapacity(
+            from,
+            previews,
+            sizeFor(facts, requirements, components, edge),
+            regionLocations(region, provider),
+          );
+    const options = await buildDesignOptionSet({
       facts,
       requirements,
-      catalog,
+      catalog: sized?.catalog ?? from,
       now,
       components,
       edge,
       deployed,
       ...(monitoring === undefined ? {} : { monitoring }),
+      ...(sized === undefined ? {} : { previewCap: sized.cap }),
     });
+    return { options, cap: sized?.cap };
+  };
+  let set: Awaited<ReturnType<typeof optionSet>>;
+  try {
+    set = await optionSet(catalog);
   } catch (error) {
     // A live catalogue that fails half-way falls back to the static table; sizing errors do not.
     if (override !== undefined || isStatic) throw error;
@@ -802,18 +838,9 @@ async function priceOptions(
     warn(
       `Could not read live prices from ${wording.name} (${reason}). Using the price list dated ${fallback.date} instead; prices are estimates.`,
     );
-    set = await buildDesignOptionSet({
-      facts,
-      requirements,
-      catalog,
-      now,
-      components,
-      edge,
-      deployed,
-      ...(monitoring === undefined ? {} : { monitoring }),
-    });
+    set = await optionSet(catalog);
   }
-  const designOptions = set.options;
+  const designOptions = set.options.options;
   const priceSource = designOptions.every((option) => option.cost.source === "live")
     ? "live"
     : "static";
@@ -845,7 +872,8 @@ async function priceOptions(
     requirements,
     ...designed,
     catalog,
-    kept: set.kept,
+    kept: set.options.kept,
+    ...(set.cap === undefined ? {} : { previewCap: set.cap }),
   };
 }
 
@@ -868,7 +896,16 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     return undefined;
   });
   const previous = read?.plan;
-  const edits: PlacementEdits = read?.edits ?? { servers: [], placed: {} };
+  // A preview environment: its plan's settings, else the new one's (`opscrew env add --previews`).
+  // Every preview runs on its one server, so the servers plan.yaml names and the add-ons go.
+  const previews = previous?.environment?.previews ?? options.environment?.previews;
+  const zone = previous?.dns.zone ?? options.preview?.zone;
+  if (previews !== undefined && zone === undefined) {
+    throw new Error("A preview environment's design needs its Cloudflare zone.");
+  }
+  const collapsed =
+    previews === undefined || read === undefined ? undefined : previewEdits(read.edits);
+  const edits: PlacementEdits = collapsed?.edits ?? read?.edits ?? { servers: [], placed: {} };
   requirePlacementTarget(edits, inputs.requirements);
   if (previous !== undefined) {
     requireSameProvider(
@@ -907,8 +944,22 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     },
     placed: edits.placed,
     ...(edits.monitoring === undefined ? {} : { monitoring: edits.monitoring }),
+    ...(previews === undefined
+      ? {}
+      : { previews: { cap: previews.cap, serverType: options.preview?.serverType } }),
   });
   const { facts, requirements, priceSource, components } = preview;
+  // A new preview environment on a chosen server type takes the cap that type holds.
+  const named =
+    options.environment?.previews === undefined || preview.previewCap === undefined
+      ? options
+      : {
+          ...options,
+          environment: {
+            ...options.environment,
+            previews: { ...options.environment.previews, cap: preview.previewCap },
+          },
+        };
   const designOptions = preview.options;
   const budget = requirements.budgetMonthly;
   const now = deps.clock.now();
@@ -978,13 +1029,17 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
    * saying them) and the previous plan's settings kept.
    */
   const ownPlan = (designed: DeployPlan, edits = sharedEdits) => {
+    // A preview environment's plan has its shape before the previous plan's settings are kept
+    // (the schema's rules), and its seed after them.
+    const shaped = (plan: DeployPlan) =>
+      previews === undefined ? plan : previewPlan(plan, zone as string, facts);
     const edited = keptEdits(
-      prodPlan === undefined ? designed : environmentNames(designed, prodPlan, name, options),
+      shaped(prodPlan === undefined ? designed : environmentNames(designed, prodPlan, name, named)),
       previous,
       edits,
     );
     const plan = previous ? keepPlanSettings(edited.plan, previous, requirements) : edited.plan;
-    return { plan, lines: edited.lines };
+    return { plan: shaped(plan), lines: edited.lines };
   };
   const { plan: own, lines: ownLines } = ownPlan(fresh);
   // Where the shared parts come from, now that the plan's target (on this computer, where its
@@ -1044,8 +1099,19 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const servers = plan.servers ?? [];
   // What runs on the app's server: the services placed elsewhere run on theirs.
   const onApp = onAppServer(plan);
-  // On the user's own server, its memory must hold this app next to the other OpsCrew apps there.
-  if (chosen.target.provider === "own") {
+  // A preview server holds its cap of previews, each with the app's containers.
+  const planPreviews = plan.environment?.previews;
+  const cap = planPreviews?.cap;
+  const onAppMb = appMemoryMb(onApp) * (cap ?? 1);
+  if (chosen.target.provider === "own" && cap !== undefined) {
+    requirePreviewsFit(
+      chosen.target.memoryGb * 1024,
+      cap,
+      appMemoryMb(onApp),
+      edgeMemoryMb(edgeProxy(plan)),
+    );
+  } else if (chosen.target.provider === "own") {
+    // On the user's own server, its memory must hold this app next to the other OpsCrew apps.
     const memory = ownServerMemory(
       chosen.target.memoryGb * 1024,
       appMemoryMb(onApp),
@@ -1061,6 +1127,12 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   }
   // A value the user set where design follows analysis is kept, and said with what it found.
   for (const line of keptLines) reporter.info(say(line));
+  // What the previews are, and what a preview environment left out of plan.yaml.
+  const previewLines = [
+    ...(planPreviews === undefined ? [] : [previewsLine(planPreviews)]),
+    ...(collapsed?.lines ?? []),
+  ].map(say);
+  for (const line of previewLines) reporter.info(line);
   if (previous) {
     for (const warning of serverChangeWarnings(
       previous,
@@ -1145,14 +1217,18 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
         ]),
     ...(inPortainer || serverless !== undefined || servers.length > 0
       ? []
-      : [memoryText(plan, serverMb, edgeMb, ownsServer ? undefined : chosen.cost.monthly)]),
+      : [
+          cap === undefined
+            ? memoryText(plan, serverMb, edgeMb, ownsServer ? undefined : chosen.cost.monthly)
+            : previewMemoryText(plan, cap, serverMb, edgeMb),
+        ]),
   ].map(say);
   for (const line of componentLines) reporter.info(line);
   // Each server, the total, each hop's delay, what has no login and a move's window.
   const placementLines = placement.lines.map(say);
   for (const line of placementLines) reporter.info(line);
   for (const warning of placement.warnings) warn(warning);
-  const headroom = memoryHeadroom(serverMb, appMemoryMb(onApp), edgeMb);
+  const headroom = memoryHeadroom(serverMb, onAppMb, edgeMb);
   if (!ownsServer && serverless === undefined && headroom.low) {
     warn(lowHeadroomText(chosen.target.serverType, headroom.free));
   }
@@ -1203,6 +1279,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     priceSource,
     warnings,
     lines: [
+      ...previewLines,
       ...buildLines,
       ...componentLines,
       ...placementLines,

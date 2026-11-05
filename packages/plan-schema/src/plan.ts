@@ -1293,7 +1293,7 @@ function checkRunnerBuild(
 }
 
 /** The longest app name of a preview environment: `<app.name>-pr-999999` fits in 41 characters. */
-const PREVIEW_APP_NAME_MAX = 31;
+export const PREVIEW_APP_NAME_MAX = 31;
 
 /**
  * The rules of a preview environment (`environment.previews`, ADR 0026): a named environment
@@ -1314,6 +1314,12 @@ function checkPreviews(
     issue(
       ["environment", "previews"],
       "is only for a named environment: prod's plan can't hold previews; add a preview environment with opscrew env add preview --previews",
+    );
+  }
+  if ("edge" in plan.target && plan.target.edge !== "caddy") {
+    issue(
+      ["target", "edge"],
+      `must be "caddy" with previews: each preview's site is a Caddy site that gets its own certificate; set target.edge to "caddy"`,
     );
   }
   if (plan.target.provider === "own" && plan.target.access === "tunnel") {

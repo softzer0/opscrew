@@ -1,4 +1,10 @@
-import { ensureStateDir, errorMessage, OpsCrewError, toPosixRelative } from "@opscrew/core";
+import {
+  ensureStateDir,
+  errorMessage,
+  OpsCrewError,
+  type ProjectPaths,
+  toPosixRelative,
+} from "@opscrew/core";
 import {
   cloudflareEdgeCoverage,
   type DeployPlan,
@@ -48,6 +54,7 @@ import {
   requireBranch,
 } from "./branches";
 import { environmentPaths } from "./paths";
+import { addPreviewEnvironment } from "./previews";
 import { writeEnvironmentRequirements } from "./requirements";
 import { requireMachineFits, runnerChoice } from "./runner";
 import { followedBranches, matchedBranches } from "./setup";
@@ -64,7 +71,10 @@ export type EnvironmentQuestionId =
   | "from"
   | "runner"
   | "runnerHost"
-  | "build";
+  | "build"
+  | "cap"
+  | "seed"
+  | "lifetime";
 
 /** One question of `opscrew env add` (same shape as a `Question`). */
 export interface EnvironmentQuestion extends Omit<Question, "id"> {
@@ -102,6 +112,15 @@ export interface AddEnvironmentOptions {
    * its shell and host adapter (fakes in tests).
    */
   ownServer?: { hostKey?: string; services?: OwnServerServices };
+  /**
+   * A preview environment (`--previews`, one per app): its answers are then `provider` (Hetzner,
+   * DigitalOcean or `own`), `region`, `cap` (3 by default) or `size` (a server type, whose memory
+   * gives the cap; it wins over `cap`), `domain` (the base of `pr-<number>.<domain>`, prod's
+   * hostname by default), `seed` (a command, `none` or `false` for none; the detected one by
+   * default), `lifetime` (days, 7 by default) and a server's `server.*` follow-ups. See
+   * `addPreviewEnvironment`.
+   */
+  previews?: boolean;
 }
 
 /** What {@link addEnvironment} wrote: the environment's requirements, and its design. */
@@ -423,27 +442,30 @@ function setupDefaults(
   });
 }
 
+/** What `opscrew env add` reads before it asks anything. */
+export interface AddContext {
+  /** The new environment's name. */
+  name: string;
+  /** The app's environments. */
+  environments: string[];
+  /** The app's flag in the commands OpsCrew names (`appFlag`). */
+  app: string;
+  prodPaths: ProjectPaths;
+  /** Prod's plan, which the new environment is named after (`<app>-<env>`). */
+  prodPlan: DeployPlan;
+  /** Prod's answers. */
+  base: Requirements;
+  facts: ProjectFacts;
+}
+
 /**
- * `opscrew env add <name>` for the environment `deps.paths` belong to: asks only its own questions
- * ({@link environmentQuestions}, defaults filling what `answers` leaves out), with prod's
- * connection as the default for a server the user owns or a Portainer and the interview's
- * follow-ups for another one; checks its runner (`runnerChoice`: a runner machine of the project
- * with the server's CPU when it builds there, never the environment's own server) and the branch
- * it follows (`requireBranch`). An environment named like a branch of the repository (FR-1537:
- * `develop` for dev) gets the setup question first in an interactive run, promotion first
- * preselected, and in a script a note naming the branches, the answers deciding. Writes its own
- * answers (only those that differ from prod's) and how OpsCrew reaches its server; inspects a
- * server the user owns over SSH, as `opscrew design` does; then designs it (`runDesign`, which
- * shows its monthly cost). Nothing is written when an answer is invalid, apart from a runner
- * machine that does not fit the user's own server, which only its inspection shows.
- * @throws OpsCrewError `INVALID_INPUT` for prod or an invalid answer, `PHASE_PRECONDITION` when
- * the environment exists or prod's plan, whose app name it is named after (`<app>-<env>`), does
- * not yet.
+ * The new environment's name, the app's environments and prod's plan, answers and facts, once
+ * the name is free: not prod, not one of the app's environments, and no other app's or
+ * environment's name (FR-1615).
+ * @throws OpsCrewError `INVALID_INPUT` for prod, `PHASE_PRECONDITION` when the environment exists
+ * or prod's plan does not yet.
  */
-export async function addEnvironment(
-  deps: PhaseDeps,
-  options: AddEnvironmentOptions = {},
-): Promise<AddEnvironmentResult> {
+async function addContext(deps: PhaseDeps): Promise<AddContext> {
   const { paths } = deps;
   const name = paths.environment;
   if (name === "prod") {
@@ -479,6 +501,34 @@ export async function addEnvironment(
   );
   const base = await readArtifact("requirements", paths.files.shared.requirementsBase);
   const { facts } = await readArtifact("architecture", paths.files.architecture);
+  return { name, environments, app, prodPaths, prodPlan, base, facts };
+}
+
+/**
+ * `opscrew env add <name>` for the environment `deps.paths` belong to: asks only its own questions
+ * ({@link environmentQuestions}, defaults filling what `answers` leaves out), with prod's
+ * connection as the default for a server the user owns or a Portainer and the interview's
+ * follow-ups for another one; checks its runner (`runnerChoice`: a runner machine of the project
+ * with the server's CPU when it builds there, never the environment's own server) and the branch
+ * it follows (`requireBranch`). An environment named like a branch of the repository (FR-1537:
+ * `develop` for dev) gets the setup question first in an interactive run, promotion first
+ * preselected, and in a script a note naming the branches, the answers deciding. Writes its own
+ * answers (only those that differ from prod's) and how OpsCrew reaches its server; inspects a
+ * server the user owns over SSH, as `opscrew design` does; then designs it (`runDesign`, which
+ * shows its monthly cost). Nothing is written when an answer is invalid, apart from a runner
+ * machine that does not fit the user's own server, which only its inspection shows.
+ * @throws OpsCrewError `INVALID_INPUT` for prod or an invalid answer, `PHASE_PRECONDITION` when
+ * the environment exists or prod's plan, whose app name it is named after (`<app>-<env>`), does
+ * not yet.
+ */
+export async function addEnvironment(
+  deps: PhaseDeps,
+  options: AddEnvironmentOptions = {},
+): Promise<AddEnvironmentResult> {
+  const context = await addContext(deps);
+  if (options.previews === true) return addPreviewEnvironment(deps, context, options);
+  const { paths } = deps;
+  const { name, environments, app, prodPaths, prodPlan, base, facts } = context;
   const runnerHosts = (await listRunnerHosts(deps)).map((machine) => machine.name);
   const ask = options.answers === undefined ? options.ask : undefined;
   const proposal = await branchProposal(deps, name, environments);
