@@ -333,7 +333,7 @@ Three read-only reviewers (iac-templates; agents and ssh-host; schema, detect, C
 went over `04c52441..HEAD`. No change below alters behaviour, a refusal, an approval, the
 script's contract or what is redacted; snapshots may change only where a test fixture does.
 
-- [ ] T2217 [P] Simplify iac-templates, and one helper for the preview workflow's path
+- [x] T2217 [P] Simplify iac-templates, and one helper for the preview workflow's path
   - Owns: `packages/iac-templates/src/**` (+ tests, fixtures, snapshots), `packages/plan-schema/src/apps.ts` (+ its test)
   - Accept:
     - `previewWorkflowPathFor(key)` in plan-schema's apps.ts beside `workflowPathFor`;
@@ -351,7 +351,7 @@ script's contract or what is redacted; snapshots may change only where a test fi
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/plan-schema`
   - Effort: medium
 
-- [ ] T2218 Simplify agents and ssh-host
+- [x] T2218 Simplify agents and ssh-host
   - Owns: `packages/agents/src/**`, `packages/connectors/ssh-host/src/**` (+ tests),
     `packages/plan-schema/src/environments.ts`, `environments.test.ts`, `previews.test.ts`,
     `packages/plan-schema/src/__fixtures__/**`
@@ -383,7 +383,7 @@ script's contract or what is redacted; snapshots may change only where a test fi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-ssh-host --filter=@opscrew/plan-schema`
   - Effort: high
 
-- [ ] T2219 [P] Simplify detection, and the guide
+- [x] T2219 [P] Simplify detection, and the guide
   - Owns: `packages/detect/src/**` (+ tests, fixtures), `docs/guide/previews.md`
   - Accept:
     - seed.test.ts writes the folder case in memory (the on-disk fixture goes); `detectSeed` and
@@ -395,7 +395,7 @@ script's contract or what is redacted; snapshots may change only where a test fi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect && pnpm lint`
   - Effort: medium
 
-- [ ] T2220 Simplify the CLI, MCP and the live harness
+- [x] T2220 Simplify the CLI, MCP and the live harness
   - Owns: `packages/cli/src/**`, `packages/cli/test/live/**`, `packages/mcp-server/src/**` (+ tests)
   - Depends: T2218
   - Accept:
