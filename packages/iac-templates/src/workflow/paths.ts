@@ -26,6 +26,9 @@ function within(dir: string, path: string): boolean {
  */
 const DEPLOY_WORKFLOWS = workflowPathFor().replace(/\.yml$/, "*.yml");
 
+/** Every app's preview workflow (`previewWorkflowPath`): `.github/workflows/opscrew-preview*.yml`. */
+const PREVIEW_WORKFLOWS = ".github/workflows/opscrew-preview*.yml";
+
 /**
  * The `paths` filter of a deploy workflow's push trigger, in GitHub's syntax (`*`, `**`, a `!`
  * pattern leaves out what the patterns before it matched, and the last pattern a path matches
@@ -37,7 +40,7 @@ const DEPLOY_WORKFLOWS = workflowPathFor().replace(/\.yml$/, "*.yml");
  * An app whose folder is the repository root reads nearly everything, so its filter starts from
  * every path and leaves out what its run never reads: OpsCrew's own files (`opscrew/**`: the
  * infrastructure, the reports, the other environments' and apps' files), every other deploy
- * workflow, and the folders of the repository's other apps (`ctx.otherAppDirs`) that are not
+ * workflow, every preview workflow, and the folders of the repository's other apps (`ctx.otherAppDirs`) that are not
  * within one of its shared folders. Its shared folders and `reads` then come back.
  */
 export function pushPaths(
@@ -57,6 +60,7 @@ export function pushPaths(
       "**",
       "!opscrew/**",
       `!${DEPLOY_WORKFLOWS}`,
+      `!${PREVIEW_WORKFLOWS}`,
       ...apart.map((dir) => `!${inFolder(dir)}`),
       ...always,
     ]),

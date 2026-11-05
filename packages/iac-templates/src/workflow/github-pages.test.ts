@@ -66,6 +66,7 @@ describe("renderGithubPagesWorkflow", () => {
           "**",
           "!opscrew/**",
           "!.github/workflows/opscrew-deploy*.yml",
+          "!.github/workflows/opscrew-preview*.yml",
           ".github/workflows/opscrew-deploy.yml",
         ],
       },

@@ -135,6 +135,7 @@ describe("renderCloudflareWorkersWorkflow", () => {
           "**",
           "!opscrew/**",
           "!.github/workflows/opscrew-deploy*.yml",
+          "!.github/workflows/opscrew-preview*.yml",
           "opscrew/cloudflare/wrangler.jsonc",
           ".github/workflows/opscrew-deploy.yml",
         ],

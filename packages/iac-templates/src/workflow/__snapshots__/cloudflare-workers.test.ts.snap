@@ -451,6 +451,7 @@ on:
       - "**"
       - "!opscrew/**"
       - "!.github/workflows/opscrew-deploy*.yml"
+      - "!.github/workflows/opscrew-preview*.yml"
       - "opscrew/cloudflare/wrangler.jsonc"
       - "opscrew/cloudflare/headers-entry.js"
       - ".github/workflows/opscrew-deploy.yml"
@@ -807,6 +808,7 @@ on:
       - "**"
       - "!opscrew/**"
       - "!.github/workflows/opscrew-deploy*.yml"
+      - "!.github/workflows/opscrew-preview*.yml"
       - "opscrew/cloudflare/wrangler.jsonc"
       - ".github/workflows/opscrew-deploy.yml"
   workflow_dispatch: {}

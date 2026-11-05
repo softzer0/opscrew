@@ -14,6 +14,7 @@ on:
       - "**"
       - "!opscrew/**"
       - "!.github/workflows/opscrew-deploy*.yml"
+      - "!.github/workflows/opscrew-preview*.yml"
       - ".github/workflows/opscrew-deploy.yml"
   workflow_dispatch: {}
 
@@ -196,6 +197,7 @@ on:
       - "**"
       - "!opscrew/**"
       - "!.github/workflows/opscrew-deploy*.yml"
+      - "!.github/workflows/opscrew-preview*.yml"
       - ".github/workflows/opscrew-deploy.yml"
   workflow_dispatch: {}
 

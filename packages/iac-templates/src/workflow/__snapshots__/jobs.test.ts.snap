@@ -93,6 +93,7 @@ on:
       - "**"
       - "!opscrew/**"
       - "!.github/workflows/opscrew-deploy*.yml"
+      - "!.github/workflows/opscrew-preview*.yml"
       - "Dockerfile"
       - "opscrew/runtime/compose.yaml"
       - "opscrew/runtime/edge/**"

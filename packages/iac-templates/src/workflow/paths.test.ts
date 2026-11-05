@@ -418,6 +418,7 @@ describe("two apps in one repository", () => {
         "**",
         "!opscrew/**",
         "!.github/workflows/opscrew-deploy*.yml",
+        "!.github/workflows/opscrew-preview*.yml",
         "!sites/docs/**",
         "sites/docs/brand",
         "sites/docs/brand/**",
@@ -427,6 +428,7 @@ describe("two apps in one repository", () => {
         ".github/workflows/opscrew-deploy.yml",
       ]);
       expect(runs(root.flow, ["sites/docs/src/index.md", docs.flow.path])).toBe(false);
+      expect(runs(root.flow, [".github/workflows/opscrew-preview.yml"])).toBe(false);
       expect(runs(docs.flow, ["sites/docs/src/index.md"])).toBe(true);
       expect(runs(root.flow, ["src/server.ts"])).toBe(true);
       expect(runs(docs.flow, ["src/server.ts", root.flow.path])).toBe(false);

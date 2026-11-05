@@ -109,10 +109,11 @@ describe("deploymentRenderContext and the repository's other apps", () => {
       "sites/docs",
     ]);
     const filter = await pushFilter(deps, plan);
-    expect(filter.slice(0, 4)).toEqual([
+    expect(filter.slice(0, 5)).toEqual([
       "**",
       "!opscrew/**",
       "!.github/workflows/opscrew-deploy*.yml",
+      "!.github/workflows/opscrew-preview*.yml",
       "!sites/docs/**",
     ]);
 

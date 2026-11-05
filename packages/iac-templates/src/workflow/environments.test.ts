@@ -98,6 +98,7 @@ describe("a workflow per environment", () => {
           "**",
           "!opscrew/**",
           "!.github/workflows/opscrew-deploy*.yml",
+          "!.github/workflows/opscrew-preview*.yml",
           "Dockerfile",
           "opscrew/environments/staging/runtime/compose.yaml",
           "opscrew/environments/staging/runtime/edge/**",
