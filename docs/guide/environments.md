@@ -33,7 +33,9 @@ before anything is created:
   same server, beside prod (no extra cost); in [your Portainer](portainer-target.md), another stack.
   `dev` defaults to [this computer](localhost.md), which costs nothing.
 - **Its size**, from the number of people who will use it each month.
-- **Its hostname**, by default `staging.<your domain>`. Every environment needs its own hostname.
+- **Its hostname.** Every environment needs its own. When prod's DNS goes through Cloudflare's
+  proxy, OpsCrew suggests a name nobody can guess, such as `staging-k3x9q7m2ab.example.com`;
+  otherwise `staging.<your domain>`. See [Hidden addresses](#hidden-addresses).
 - **Where it gets new versions:** built and deployed on each push to a branch (your repository's
   default branch, or the one you name with `--branch`), or promoted from another environment. See
   [Two setups](#two-setups-promotion-first-or-a-branch-per-environment) and
@@ -57,6 +59,7 @@ npx opscrew env add qa --target hetzner --runner host --runner-host home --build
 |---|---|
 | `--target <provider>` | where it runs: `hetzner`, `digitalocean`, `own`, `portainer` or `localhost` |
 | `--from <source>` | `main`, or the environment it is promoted from |
+| `--hostname <name>` | its hostname, instead of the suggested one: any name, also in another domain your Cloudflare token covers; see [Hidden addresses](#hidden-addresses) |
 | `--branch <name>` | with `--from main`: the branch whose pushes build and deploy it (by default your repository's default branch); see [`--branch`](#--branch) |
 | `--runner <where>` | where its deploy job runs: `github`, `server`, `local` or `host` |
 | `--runner-host <name>` | with `--runner host`: the runner machine (by default the project's only one) |
@@ -75,6 +78,39 @@ An environment's name is 1 to 16 lower-case letters, digits or hyphens, starting
 few names are reserved: `prod` (it is the plan without a name), `production`, `storage` and names
 starting with `storage-`, names with `service` as one of their hyphen-separated parts (such as
 `db-service`), and the names Windows reserves for devices (`con`, `nul`, `com1` and the like).
+
+### Hidden addresses
+
+A staging or dev site that anyone can find gets visited, indexed and probed. A name like
+`staging.example.com` is easy to guess, and even a random name is found within minutes when it has
+a certificate of its own: every certificate a public authority issues is published in Certificate
+Transparency logs that anyone can search.
+
+Behind Cloudflare's proxy, a name one level below your zone has no certificate of its own: visitors
+get Cloudflare's certificate, which names only the zone and `*.<zone>`. So when prod's DNS goes
+through the proxy (the default on Cloudflare), `env add` suggests `<environment>-<random>.<zone>`,
+with 10 random letters and digits, for example `staging-k3x9q7m2ab.example.com`. Nobody finds it
+without the link. Keep the suggestion, type another name, or give one with `--hostname`:
+
+```bash
+npx opscrew env add staging --hostname staging.example.com
+npx opscrew env add staging --hostname staging-k3x9q7m2ab.example.net
+```
+
+Any name works, also in another domain your Cloudflare token covers. To stay hidden behind the
+proxy, it must be one level below its zone (`<name>.example.net`, not `<name>.app.example.net`).
+When prod's DNS is DNS only, or its name is two levels below the zone, every environment's name
+gets a certificate of its own, so `env add` suggests the plain name and says that anyone can find
+it. prod's hostname doesn't change.
+
+**A separate domain for every environment but prod** keeps more apart than names. A site can set
+cookies for its whole domain, which browsers then send to every name under it, prod's included. So
+a staging site on `example.com` can set or read cookies that prod's site relies on, and on a domain
+of its own it can't. [Previews](previews.md#addresses-nobody-can-guess) get a domain of their own
+too.
+
+A hidden address isn't a login: anyone with the link can open the site, and a link leaks through
+chats, referrer headers and browser sync. Keep test data in environments other than prod.
 
 ## Working with several environments
 

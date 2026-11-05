@@ -350,7 +350,10 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   design; promote refuses a target that lacks its source's services.
   `opscrew_env_list` shows them: where each runs, how it gets new versions, where its deploy job
   runs and whether it is deployed. To add one, ask the user its few questions (where it runs, the
-  user's computer `localhost` included; its size; its hostname; whether it is built on each push
+  user's computer `localhost` included; its size; its hostname, answer `domain`: when prod is
+  behind Cloudflare's proxy the default is a name nobody can guess, `<name>-<random>.<zone>`, and
+  any other name works, also in another domain the Cloudflare token covers, hidden only one level
+  below its zone; a domain of its own keeps prod's cookies apart too; whether it is built on each push
   to main or promoted from another environment; where its deploy job runs: `github`, `server`,
   `local` or `host`, a runner machine with `runnerHost`; where its image is built: `build`
   `github` or `runner`) and call `opscrew_env_add` with `name` and `answers`; it designs it and
@@ -363,11 +366,16 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   `npx opscrew provision --env staging`. Removing one stays in the terminal:
   `npx opscrew destroy --env <name>`, then `opscrew_env_remove`.
 - **Previews of pull requests.** Suggest them when a team reviews pull requests and the app runs
-  on a server with its domain on Cloudflare: each pull request from a branch of the repository
-  gets its own copy of the app at `https://pr-<number>.<hostname>`, built and deployed by GitHub
-  Actions on a small server of its own, and removed with its data when the pull request closes.
-  Setup is in the user's terminal: `npx opscrew env add preview --previews` (optional `--cap <n>`
-  or `--size <type>`, `--lifetime <days>`, `--domain <name>`, `--seed <command>` or `--no-seed`,
+  on a server: each pull request from a branch of the repository gets its own copy of the app at
+  an address nobody can guess, `https://pr-<number>-<random>.<domain>`, built and deployed by
+  GitHub Actions on a small server of its own, and removed with its data when the pull request
+  closes. Previews need a domain of their own: a Cloudflare zone used only for previews, never the
+  app's (`npx opscrew domain buy <name>` buys one, about $10 a year), behind Cloudflare's proxy
+  with one wildcard record and one Cloudflare Origin CA certificate, so no public certificate names
+  a preview, there is no weekly certificate limit, and the server's web ports accept only
+  Cloudflare. Setup is in the user's terminal: `npx opscrew env add preview --previews --domain
+  <zone>` (no default; optional `--cap <n>` or `--size <type>`, `--lifetime <days>`, `--seed
+  <command>` or `--no-seed`,
   `--target own` for a server they have with nothing else on it) designs it and shows its monthly
   cost; then `npx opscrew provision --env preview`, where the user approves the plans by their
   hashes and types `<app>-preview`: a standing approval for GitHub Actions to create, update and
@@ -382,9 +390,11 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   earlier version; the logs say why); the cap is reached (close or merge another pull request
   with one, or wait until one is idle for its lifetime; nothing running was stopped); the server
   refused a request outside the recipe, was busy, could not be reached, or the preview did not
-  answer within 3 minutes (its first certificate can take longer); the image did not build; or
-  the preview was removed. Previews never run for forks or Dependabot, have no login in front
-  of them (their addresses are public), and are not for sites without a server, a Portainer or
+  answer within 3 minutes; the image did not build; or
+  the preview was removed. Previews never run for forks or Dependabot and have no login in front
+  of them: a hidden address protects against guessing and certificate logs, not against a shared
+  link, referrer headers, or, on a public repository, the pull request's comment and "View
+  deployment". They are not for sites without a server, a Portainer or
   this computer; each runs its own empty databases (seeded when there is a seed), never prod's
   data.
 - **Promotion.** An environment promoted from another (for example prod from staging) gets no

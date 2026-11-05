@@ -20,7 +20,7 @@ export function registerPreviewTools(
     {
       title: "List the previews",
       description:
-        "List the previews of pull requests in a preview environment, read from its preview server: each preview's pull request number, address (https://pr-<number>.<name>), state (running; running with a failed seed; failed), commit and age, and how many run against the cap. Reads the server read-only and changes nothing. Pass the preview environment as environment (opscrew_env_list names it). Removing a preview stays in the user's terminal: `npx opscrew preview destroy <n>` (the user types pr-<n>); its logs are `npx opscrew preview logs <n>`.",
+        "List the previews of pull requests in a preview environment, read from its preview server: each preview's pull request number, address (https://pr-<number>-<random>.<domain>, an address nobody can guess, on the preview domain), state (running; running with a failed seed; failed), commit and age, and how many run against the cap. Reads the server read-only and changes nothing. Pass the preview environment as environment (opscrew_env_list names it). Removing a preview stays in the user's terminal: `npx opscrew preview destroy <n>` (the user types pr-<n>); its logs are `npx opscrew preview logs <n>`.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },

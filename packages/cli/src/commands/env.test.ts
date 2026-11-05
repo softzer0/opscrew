@@ -42,6 +42,16 @@ class DefaultPrompts implements UiPrompts {
   }
 }
 
+const PREVIEW_DOMAIN_QUESTION = "Which domain should previews use?";
+
+/** The defaults, and example.net for the preview domain, which has none. */
+class PreviewDomainPrompts extends DefaultPrompts {
+  override async text(options: { message: string; initialValue?: string }) {
+    const answer = await super.text(options);
+    return options.message.startsWith(PREVIEW_DOMAIN_QUESTION) ? "example.net" : answer;
+  }
+}
+
 /**
  * git whose GitHub `origin` has `branches`: `ls-remote` lists a ref when it is one of them, and
  * every other command succeeds with no output.
@@ -256,6 +266,15 @@ describe("opscrew env add", () => {
     expect(ctx.output).toContain("opscrew provision --env staging");
   });
 
+  it("takes its hostname from --hostname", async () => {
+    project = await prodApp();
+    const ctx = projectContext(project);
+    const args = ["staging", "--from", "prod", "--hostname", "staging.example.org"];
+    expect(await run(ctx, "env", "add", ...args), ctx.errors).toBe(0);
+    const plan = await readArtifact("plan", planFile(project.root, "staging"));
+    expect(plan.dns.domain).toBe("staging.example.org");
+  });
+
   it("takes the runner machine and the build from its flags", async () => {
     project = await prodApp();
     const unknown = projectContext(project);
@@ -339,7 +358,8 @@ describe("opscrew env add", () => {
   describe("--previews", () => {
     const API = "https://api.cloudflare.com/client/v4";
 
-    /** Cloudflare's API with the zone example.com and no record at the wildcard's name. */
+    /** Cloudflare's API with the app's zone example.com and the preview zone example.net, empty. */
+    const ZONES: Record<string, string> = { "example.com": "z1", "example.net": "z2" };
     const cloudflare: FetchLike = async (input) => {
       const url = new URL(String(input));
       const ok = (result: unknown) =>
@@ -347,12 +367,11 @@ describe("opscrew env add", () => {
           headers: { "content-type": "application/json" },
         });
       if (url.href.startsWith(`${API}/zones?`)) {
-        const found = url.searchParams.get("name") === "example.com";
-        return ok(
-          found ? [{ id: "z1", name: "example.com", status: "active", name_servers: [] }] : [],
-        );
+        const name = url.searchParams.get("name") ?? "";
+        const id = ZONES[name];
+        return ok(id === undefined ? [] : [{ id, name, status: "active", name_servers: [] }]);
       }
-      if (url.href.startsWith(`${API}/zones/z1/dns_records`)) return ok([]);
+      if (/^\/client\/v4\/zones\/z[12]\/dns_records$/.test(url.pathname)) return ok([]);
       return new Response("unavailable in tests", { status: 503 });
     };
 
@@ -374,25 +393,38 @@ describe("opscrew env add", () => {
     it("in a script, designs the preview environment from its flags, named preview by default", async () => {
       const ctx = await previewsApp();
       const args = ["--previews", "--cap", "2", "--lifetime", "5", "--seed", "npm run db:seed"];
-      expect(await run(ctx, "env", "add", ...args), ctx.errors).toBe(0);
+      expect(await run(ctx, "env", "add", ...args)).toBe(2);
+      expect(ctx.errors).toContain("Previews need a domain of their own on Cloudflare");
+      expect(ctx.errors).toContain("opscrew domain buy");
+      expect(await exists(planFile(ctx.cwd, "preview"))).toBe(false);
+      expect(await run(ctx, "env", "add", ...args, "--domain", "example.net"), ctx.errors).toBe(0);
       const plan = await readArtifact("plan", planFile(ctx.cwd, "preview"));
       expect(plan.environment?.previews).toEqual({
         cap: 2,
         lifetimeDays: 5,
-        domain: "shop.example.com",
+        domain: "example.net",
         seed: "npm run db:seed",
       });
       expect(ctx.output).toContain("opscrew provision --env preview");
       expect(ctx.output + ctx.errors).not.toContain(TOKEN);
     });
 
+    it("refuses the app's own domain for previews", async () => {
+      const ctx = await previewsApp();
+      expect(await run(ctx, "env", "add", "--previews", "--domain", "previews.example.com")).toBe(
+        2,
+      );
+      expect(ctx.errors).toContain("is in your app's own domain example.com");
+      expect(await exists(planFile(ctx.cwd, "preview"))).toBe(false);
+    });
+
     it("takes --domain, --no-seed and --size, whose memory gives the cap", async () => {
       const ctx = await previewsApp();
-      const args = ["--previews", "--domain", "previews.example.com", "--no-seed"];
+      const args = ["--previews", "--domain", "example.net", "--no-seed"];
       expect(await run(ctx, "env", "add", "review", ...args, "--size", "cx43"), ctx.errors).toBe(0);
       const plan = await readArtifact("plan", planFile(ctx.cwd, "review"));
       expect(plan.environment?.previews).toMatchObject({
-        domain: "previews.example.com",
+        domain: "example.net",
         seed: null,
       });
       expect(plan.target).toMatchObject({ serverType: "cx43" });
@@ -404,6 +436,7 @@ describe("opscrew env add", () => {
         [["--previews", "--cap", "2", "--size", "cx33"], "--cap and --size don't go together"],
         [["--previews", "--runner", "server"], "--runner server is not available with --previews"],
         [["--previews", "--build", "runner"], "--build runner is not available with --previews"],
+        [["--previews", "--hostname", "x.example.net"], "--hostname doesn't go with --previews"],
         [["staging", "--cap", "2", "--no-seed"], "--cap and --no-seed go only with --previews"],
         [[], "Name the environment to add."],
       ];
@@ -417,13 +450,15 @@ describe("opscrew env add", () => {
     });
 
     it("in a terminal, asks only what previews need and its flags leave open", async () => {
-      const prompts = new DefaultPrompts();
+      const prompts = new PreviewDomainPrompts();
       const ctx = await previewsApp({ interactive: true, prompts });
       const args = ["env", "add", "--previews", "--size", "cx43", "--no-seed"];
       expect(await run(ctx, ...args), ctx.errors).toBe(0);
       const asked = prompts.messages.join("\n");
       expect(asked).toContain("Where should the preview environment's previews run?");
-      expect(asked).toContain("Under which name should previews get their addresses");
+      expect(asked).toContain(PREVIEW_DOMAIN_QUESTION);
+      const plan = await readArtifact("plan", planFile(ctx.cwd, "preview"));
+      expect(plan.environment?.previews?.domain).toBe("example.net");
       expect(asked).not.toContain("How many previews may run at once?");
       expect(asked).not.toContain("fill a new preview's database");
       expect(asked).not.toContain("get new versions");

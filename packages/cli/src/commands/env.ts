@@ -40,6 +40,8 @@ interface AddFlags extends RunnerFlags {
   branch?: string;
   option?: string;
   hostKey?: string;
+  /** `--hostname`: the environment's hostname, answer `domain` (not with `--previews`). */
+  hostname?: string;
   /** `--previews`, with `--cap`, `--size`, `--lifetime`, `--domain` and `--seed` or `--no-seed`. */
   previews?: boolean;
   cap?: string;
@@ -55,7 +57,8 @@ const PREVIEW_FLAGS = ["cap", "size", "lifetime", "domain", "seed"] as const;
 /**
  * Refuses, before anything is asked, flags that don't go together: a previews flag without
  * `--previews`; with it, `--cap` and `--size` together (the server type's memory gives the cap)
- * and a runner or build other than GitHub's (a pull request's code runs in the job).
+ * and a runner or build other than GitHub's (a pull request's code runs in the job), and `--hostname`
+ * (each preview gets its own address in `--domain`).
  */
 function checkPreviewFlags(flags: AddFlags, command: string): void {
   const given = PREVIEW_FLAGS.filter((key) => flags[key] !== undefined).map((key) =>
@@ -67,6 +70,13 @@ function checkPreviewFlags(flags: AddFlags, command: string): void {
       "INVALID_INPUT",
       `${listText(given)} ${given.length === 1 ? "goes" : "go"} only with --previews. Nothing was changed.`,
       { hint: `To set up previews of pull requests, run \`${command} --previews\`.` },
+    );
+  }
+  if (flags.hostname !== undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "--hostname doesn't go with --previews: each preview gets its own address in the domain --domain gives. Nothing was changed.",
+      { hint: `Leave --hostname out, for example \`${command} --previews --domain <name>\`.` },
     );
   }
   if (flags.cap !== undefined && flags.size !== undefined) {
@@ -94,6 +104,7 @@ function flagAnswers(flags: AddFlags): InterviewAnswers {
     ...(flags.size === undefined ? {} : { size: flags.size.trim() }),
     ...(flags.lifetime === undefined ? {} : { lifetime: flags.lifetime.trim() }),
     ...(flags.domain === undefined ? {} : { domain: flags.domain.trim() }),
+    ...(flags.hostname === undefined ? {} : { domain: flags.hostname.trim() }),
     ...(flags.seed === undefined ? {} : { seed: flags.seed === false ? false : flags.seed.trim() }),
     ...(flags.target === undefined ? {} : { provider: flags.target }),
     ...(flags.from === undefined ? {} : { from: flags.from.trim() }),
@@ -334,6 +345,10 @@ export function register(program: Command, ctx: CliContext): void {
       "Choose this design option without asking (ids are listed by the command)",
     )
     .option(
+      "--hostname <name>",
+      "The environment's hostname: any name, also in another domain your Cloudflare token covers (default: the suggested one, behind Cloudflare's proxy <name>-<random>.<prod's domain>, which nobody can guess)",
+    )
+    .option(
       "--previews",
       "A preview environment: one preview of the app per pull request, built and deployed by GitHub Actions on a server of its own (--target hetzner, digitalocean or own; default prod's provider)",
     )
@@ -348,7 +363,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--domain <name>",
-      "With --previews: the name previews get their addresses under (pr-<number>.<name>), in a Cloudflare zone of yours (default: prod's hostname)",
+      "With --previews: a domain used only for previews, a Cloudflare zone of yours, where each preview gets an address nobody can guess (pr-<number>-<random>.<name>); no default, and not the app's own domain (`opscrew domain buy <name>` buys one)",
     )
     .option(
       "--seed <command>",

@@ -36,7 +36,7 @@ afterEach(async () => {
 });
 
 /**
- * The tool on prod and a preview environment (previews under shop.example.com), its server's
+ * The tool on prod and a preview environment (previews in the zone example.net), its server's
  * deploy shell answering every command with `stdout` and `exitCode` (the commands are kept).
  */
 async function connect(stdout: string, exitCode = 0) {
@@ -101,8 +101,8 @@ describe("opscrew_preview_list", () => {
   it("returns the previews as text and structured content, changing nothing", async () => {
     const { client, commands, paths } = await connect(
       [
-        `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST}`,
-        "9 failed - - - -",
+        `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST} pr-42-a1b2c3d4e5.example.net`,
+        "9 failed - - - - -",
         "opscrew-preview: listed 2/3",
       ].join("\n"),
     );
@@ -111,14 +111,19 @@ describe("opscrew_preview_list", () => {
     expect(result.isError, text).toBeFalsy();
     expect(commands).toEqual(["/srv/apps/shop-preview/bin/opscrew-preview list"]);
     expect(text).toContain("Previews: 2 of at most 3.");
-    expect(text).toContain("pr-42: https://pr-42.shop.example.com, running, commit 0123456");
-    expect(text).toContain("pr-9: https://pr-9.shop.example.com, failed");
+    expect(text).toContain("pr-42: https://pr-42-a1b2c3d4e5.example.net, running, commit 0123456");
+    expect(text).toContain("pr-9: no address yet, failed");
     expect(result.structuredContent).toMatchObject({
       count: 2,
       cap: 3,
       previews: [
-        { number: 42, state: "running", commit: COMMIT, address: "https://pr-42.shop.example.com" },
-        { number: 9, state: "failed", address: "https://pr-9.shop.example.com" },
+        {
+          number: 42,
+          state: "running",
+          commit: COMMIT,
+          address: "https://pr-42-a1b2c3d4e5.example.net",
+        },
+        { number: 9, state: "failed" },
       ],
     });
     expect(await readFile(paths.files.plan, "utf8")).toBe(before);

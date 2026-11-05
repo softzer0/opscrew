@@ -2,10 +2,11 @@
  * The live test of feature 022 (docs/e2e.md "Previews", plan.md "10."), with
  * `OPSCREW_E2E_PREVIEWS=1`: `examples/koa-knex` (Postgres, Knex migrations) with a seed, a page of
  * the seeded rows and a marker each pull request changes, added in the throwaway copy only, as
- * prod at Hetzner behind Cloudflare; then `env add preview --previews --cap 1 --lifetime 1`, the
- * secrets check, `provision --env preview` with the recipe approved by its hash and the typed
- * `<app>-preview`, and the deploy-setup pull request merged. Pull request A gets its preview
- * (address, A's commit, the seeded rows, `noindex`, the comment, the list, its deployment), a push
+ * prod at Hetzner behind Cloudflare; then `env add preview --previews --cap 1 --lifetime 1
+ * --domain <OPSCREW_E2E_PREVIEW_DOMAIN>`, the secrets check, `provision --env preview` with the
+ * recipe approved by its hash and the typed `<app>-preview`, and the deploy-setup pull request
+ * merged. Pull request A gets its preview (an address `pr-<n>-<random>.<zone>` served through
+ * Cloudflare only, A's commit, the seeded rows, `noindex`, the comment, the list, its deployment), a push
  * updates it with its generated passwords kept, B gets the cap comment, the restricted key is
  * refused everything outside the contract with nothing changed, closing A removes everything of
  * its preview, a push to B gives B its preview; then `preview destroy`, `destroy --env preview`,
@@ -15,16 +16,18 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import { parseDotenv } from "@opscrew/agents";
+import { parseDotenv, readServerAddresses } from "@opscrew/agents";
 import { githubEnvironment, previewWorkflowPath } from "@opscrew/iac-templates";
 import { afterAll, describe, expect } from "vitest";
 import {
   api,
   type CloudflareZone,
+  canConnect,
   DEPLOY_WORKFLOW,
   GITHUB_API,
   httpRequest,
   minutes,
+  retryDelete,
   sleep,
   waitFor,
 } from "./cloud";
@@ -55,6 +58,7 @@ import {
   PREVIEWS_E2E_VARIABLES,
   PREVIEWS_EXAMPLE,
   PREVIEWS_GATE,
+  previewAddressPattern,
   previewComments,
   previewDir,
   previewList,
@@ -76,6 +80,8 @@ const MISSING = missingVariables(process.env, PREVIEWS_GATE, PREVIEWS_E2E_VARIAB
 /** Always this example: Postgres, a release command, and a seed the throwaway copy adds. */
 const SETTINGS = { ...serverSettings(process.env), app: PREVIEWS_EXAMPLE };
 const GHCR_READ_TOKEN = process.env.OPSCREW_E2E_GHCR_READ_TOKEN?.trim() ?? "";
+/** The previews' own domain: a Cloudflare zone of the token's used for nothing else. */
+const PREVIEW_DOMAIN = process.env.OPSCREW_E2E_PREVIEW_DOMAIN?.trim().toLowerCase() ?? "";
 
 if (process.env[PREVIEWS_GATE] === "1" && MISSING.length > 0) {
   console.warn(
@@ -83,12 +89,16 @@ if (process.env[PREVIEWS_GATE] === "1" && MISSING.length > 0) {
   );
 }
 
-/** A pull request of the run: its number, branch and head commit. */
+/**
+ * A pull request of the run: its number, branch and head commit, and its preview's address once
+ * its comment gave it (`https://pr-<n>-<random>.<zone>`, kept for the preview's updates).
+ */
 interface Pull {
   name: string;
   number: number;
   branch: string;
   head: string;
+  address?: string;
 }
 
 /** What prod's unchanged state is compared by (SC-2205). */
@@ -121,10 +131,12 @@ describe.skipIf(MISSING.length > 0)(
     const pulls: Pull[] = [];
     /** Every preview run the pass waited for: the leak search reads their logs. */
     const previewRuns: number[] = [];
-    /** The preview environment's app name (`<app>-preview`), base name and workflow file. */
+    /** The preview environment's app name (`<app>-preview`), preview zone and workflow file. */
     let previewApp = "";
     let base = "";
     let workflow = "";
+    /** The preview zone in Cloudflare, once step 2 found it: the cleanup removes its wildcard. */
+    let previewZone: CloudflareZone | undefined;
     let prodBefore: ProdState | undefined;
     let pullA: Pull | undefined;
     let pullB: Pull | undefined;
@@ -133,7 +145,12 @@ describe.skipIf(MISSING.length > 0)(
       | { preview: ReturnType<typeof previewList>["previews"][number] | undefined; secrets: string }
       | undefined;
 
-    const address = (pull: Pull) => `https://pr-${pull.number}.${base}`;
+    const address = (pull: Pull) => {
+      if (pull.address === undefined) {
+        throw new Error(`No comment gave pull request ${pull.name}'s preview address yet.`);
+      }
+      return pull.address;
+    };
     const pullOf = (pull: Pull | undefined) => {
       if (pull === undefined) throw new Error("An earlier step opened no such pull request.");
       return pull;
@@ -181,11 +198,46 @@ describe.skipIf(MISSING.length > 0)(
     // -------------------------------------------------------------------------------------------
     // The app's page.
 
-    /** `<origin>/e2e`: the marker, the seeded rows and the `X-Robots-Tag` header. */
-    async function page(origin: string): Promise<ReturnType<typeof e2ePage> & { robots: string }> {
+    /**
+     * `<origin>/e2e`: the marker, the seeded rows, the `X-Robots-Tag` header and whether Cloudflare
+     * answered (its `cf-ray` header).
+     */
+    async function page(
+      origin: string,
+    ): Promise<ReturnType<typeof e2ePage> & { robots: string; viaCloudflare: boolean }> {
       const answer = await httpRequest(`${origin}${E2E_PATH}`, { timeoutMs: 15_000 });
       if (answer.status !== 200) throw new Error(`${origin}${E2E_PATH} answered ${answer.status}.`);
-      return { ...e2ePage(answer.body), robots: String(answer.headers["x-robots-tag"] ?? "") };
+      return {
+        ...e2ePage(answer.body),
+        robots: String(answer.headers["x-robots-tag"] ?? ""),
+        viaCloudflare: answer.headers["cf-ray"] !== undefined,
+      };
+    }
+
+    /**
+     * The preview server's own address refuses web connections from this computer: its firewall
+     * lets only Cloudflare reach ports 80 and 443. The address is read as the harness reads it and
+     * never printed.
+     */
+    /** The wildcard records `*.<zone>` in the preview zone. */
+    async function wildcardRecords() {
+      const zone = previewZone;
+      if (zone === undefined) throw new Error("Step 2 found no preview zone.");
+      return (await run.cloudflare.zoneRecords(zone)).filter((r) => r.name === `*.${zone.name}`);
+    }
+
+    async function expectOnlyCloudflareServed(): Promise<void> {
+      const ipv4 = (await readServerAddresses(envs.paths(PREVIEW_ENV))).deployment?.ipv4;
+      if (ipv4 === undefined) throw new Error("OpsCrew recorded no preview server.");
+      for (const port of [80, 443]) {
+        expect(
+          await canConnect(ipv4, port),
+          `the preview server's port ${port} reached from this computer`,
+        ).toBe(false);
+      }
+      log(
+        "observed: the preview server's web ports refuse this computer (only Cloudflare gets in)",
+      );
     }
 
     /** Waits up to 5 minutes until the pull request's preview serves `marker`. */
@@ -294,12 +346,18 @@ describe.skipIf(MISSING.length > 0)(
       return state;
     }
 
+    /**
+     * The comment says the preview runs the head commit at `pr-<n>-<random>.<zone>`, the same
+     * address as before once it had one; the pull request keeps it.
+     */
     async function expectRunningComment(pull: Pull): Promise<void> {
-      expect(await comment(pull), `the comment on pull request ${pull.name}`).toEqual({
+      const said = await comment(pull);
+      expect(said, `the comment on pull request ${pull.name}`).toEqual({
         state: "running",
-        address: address(pull),
+        address: pull.address ?? expect.stringMatching(previewAddressPattern(pull.number, base)),
         commit: pull.head.slice(0, 12),
       });
+      if (said.state === "running") pull.address = said.address;
     }
 
     /** `opscrew preview list --env preview --json`. */
@@ -499,10 +557,18 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "2. env add preview --previews --cap 1 --lifetime 1 with the detected seed, the secrets check, provision --env preview with the recipe approved by its hash and the typed name, the deploy-setup pull request merged; prod unchanged (SC-2205)",
+      "2. env add preview --previews --cap 1 --lifetime 1 --domain <the preview zone> with the detected seed, the secrets check, provision --env preview with the recipe approved by its hash and the typed name, the deploy-setup pull request merged; prod unchanged (SC-2205)",
       minutes(75),
       async () => {
         const prodPlan = planHash(await run.readPlan());
+        const zone = await run.cloudflare.zoneOf(PREVIEW_DOMAIN);
+        if (zone.name !== PREVIEW_DOMAIN) {
+          throw new Error(
+            `OPSCREW_E2E_PREVIEW_DOMAIN is a name inside the Cloudflare zone ${zone.name}; set it to a zone of its own, used only for previews.`,
+          );
+        }
+        // Set before env add, so the cleanup removes the wildcard record whatever happens next.
+        previewZone = zone;
         await run.opscrewOk(
           "env",
           "add",
@@ -512,6 +578,8 @@ describe.skipIf(MISSING.length > 0)(
           "1",
           "--lifetime",
           "1",
+          "--domain",
+          PREVIEW_DOMAIN,
         );
         const plan = await envs.designed(PREVIEW_ENV);
         previewApp = plan.app.name;
@@ -520,14 +588,12 @@ describe.skipIf(MISSING.length > 0)(
         expect(previews, "the preview environment's previews").toMatchObject({
           cap: 1,
           lifetimeDays: 1,
-          domain: run.appHost,
+          domain: PREVIEW_DOMAIN,
         });
         expect(previews.seed ?? "", "the seed command detection found").toContain("knex seed:run");
         base = previews.domain;
         workflow = posix.basename(previewWorkflowPath(plan));
         expect(planHash(await run.readPlan()), "prod's plan hash after env add").toBe(prodPlan);
-        // The wildcard record is the run's (its hostname is the run's own): the cleanup removes it.
-        run.hostnames.push(`*.${base}`);
         // The previews' own values: `.env.preview` in the checkout, which init's .gitignore keeps
         // out of every commit.
         const value = `preview-${randomBytes(16).toString("hex")}`;
@@ -635,7 +701,7 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     run.step(
-      "3. pull request A gets its preview: the comment's address and commit, A's marker served with the seeded rows and noindex, the list, its deployment; the preview value on the server; its image in GHCR (SC-2201)",
+      "3. pull request A gets its preview: the comment's address (pr-<n>-<random>.<zone>) and commit, A's marker served through Cloudflare only with the seeded rows and noindex, the list, its deployment; the preview value on the server; its image in GHCR (SC-2201)",
       minutes(45),
       async () => {
         const a = await openPull("a", "a-1");
@@ -645,6 +711,8 @@ describe.skipIf(MISSING.length > 0)(
         const served = await serving(a, "a-1");
         expect(served.rows, "preview A's rows: the seed's").toEqual([...SEED_ROWS]);
         expect(served.robots, "preview A's X-Robots-Tag header").toContain("noindex");
+        expect(served.viaCloudflare, "preview A answered through Cloudflare (cf-ray)").toBe(true);
+        await expectOnlyCloudflareServed();
         const list = await listed();
         expect(list, "opscrew preview list").toMatchObject({
           count: 1,
@@ -823,9 +891,8 @@ describe.skipIf(MISSING.length > 0)(
         await envs.destroy(PREVIEW_ENV);
         await envs.expectNothingLeft(PREVIEW_ENV);
         if (record !== undefined) await envs.expectSecretsGone(PREVIEW_ENV, record);
-        const records = await run.cloudflare.zoneRecords(run.zone as CloudflareZone);
         expect(
-          records.filter((r) => r.name === `*.${base}`).map((r) => r.type),
+          (await wildcardRecords()).map((r) => r.type),
           "the previews' wildcard records left",
         ).toEqual([]);
       },
@@ -899,9 +966,29 @@ describe.skipIf(MISSING.length > 0)(
     );
 
     // The harness's cleanup: destroy if needed (the previews' environment, then prod), Hetzner's
-    // API by the apps' labels, GitHub's environments and secrets, Cloudflare (the wildcard
-    // record among the run's hostnames), then the repository's reset.
-    envs.registerCleanup();
+    // API by the apps' labels, GitHub's environments and secrets, Cloudflare, then the wildcard
+    // record in the preview zone (a finished destroy must have removed it), then the
+    // repository's reset.
+    envs.registerCleanup({
+      last: async (attempt) => {
+        const zone = previewZone;
+        if (zone === undefined) return;
+        await attempt("remove the previews' wildcard record", async () => {
+          const problems: string[] = [];
+          for (const record of await wildcardRecords()) {
+            const what = `${record.type} ${record.name}`;
+            const removed = await retryDelete(() =>
+              run.cloudflare.call("DELETE", `/zones/${zone.id}/dns_records/${record.id}`),
+            );
+            if (!removed) problems.push(`Cloudflare did not delete ${what}`);
+            else if (envs.destroyed.has(PREVIEW_ENV)) {
+              problems.push(`destroy left ${what}; the cleanup removed it`);
+            }
+          }
+          return problems;
+        });
+      },
+    });
     // Registered after the harness's cleanup, so it runs before it: while the preview server may
     // still run, each of the run's pull requests still open is closed and its preview run awaited
     // (its remove job takes the preview down and deletes its images), so no preview run starts

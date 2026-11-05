@@ -21,6 +21,7 @@ import {
   PREVIEWS_E2E_VARIABLES,
   PREVIEWS_EXAMPLE,
   PREVIEWS_GATE,
+  previewAddressPattern,
   previewComments,
   previewList,
   previewRunProblem,
@@ -49,7 +50,7 @@ function previewRun(conclusion: string, jobs: [string, string][]) {
 }
 
 describe("the gate", () => {
-  it("needs the gate, the environments test's variables and the GHCR read token", () => {
+  it("needs the gate, the environments test's variables, the GHCR read token and the preview domain", () => {
     expect(missingVariables({}, PREVIEWS_GATE, PREVIEWS_E2E_VARIABLES)).toEqual([
       "OPSCREW_E2E_PREVIEWS=1",
       "OPSCREW_E2E_HCLOUD_TOKEN",
@@ -58,7 +59,26 @@ describe("the gate", () => {
       "OPSCREW_E2E_CLOUDFLARE_TOKEN",
       "OPSCREW_E2E_DOMAIN",
       "OPSCREW_E2E_GHCR_READ_TOKEN",
+      "OPSCREW_E2E_PREVIEW_DOMAIN",
     ]);
+  });
+});
+
+describe("previewAddressPattern", () => {
+  it("takes the pull request's number, 10 random lower-case letters and digits, in the zone", () => {
+    const pattern = previewAddressPattern(7, "example.net");
+    expect(pattern.test("https://pr-7-a1b2c3d4e5.example.net")).toBe(true);
+    for (const address of [
+      "https://pr-7.example.net",
+      "https://pr-7-a1b2c3d4e.example.net",
+      "https://pr-7-A1B2C3D4E5.example.net",
+      "https://pr-17-a1b2c3d4e5.example.net",
+      "https://pr-7-a1b2c3d4e5.shop.example.net",
+      "https://pr-7-a1b2c3d4e5.exampleXnet",
+      "http://pr-7-a1b2c3d4e5.example.net",
+    ]) {
+      expect(pattern.test(address), address).toBe(false);
+    }
   });
 });
 
@@ -176,16 +196,16 @@ describe("previewComments and commentState", () => {
   it("reads each state the pass waits for", () => {
     expect(
       commentState(
-        `${MARKER}\n\nThe preview of this pull request runs at https://pr-7.e2e-x.example.com (commit \`${SHA.slice(0, 12)}\`).`,
+        `${MARKER}\n\nThe preview of this pull request runs at https://pr-7-a1b2c3d4e5.example.net (commit \`${SHA.slice(0, 12)}\`).`,
       ),
     ).toEqual({
       state: "running",
-      address: "https://pr-7.e2e-x.example.com",
+      address: "https://pr-7-a1b2c3d4e5.example.net",
       commit: SHA.slice(0, 12),
     });
     expect(
       commentState(
-        `${MARKER}\n\nThe preview of this pull request runs at https://pr-7.e2e-x.example.com (commit \`unknown\`), but its seed command failed, so its data may be missing.`,
+        `${MARKER}\n\nThe preview of this pull request runs at https://pr-7-a1b2c3d4e5.example.net (commit \`unknown\`), but its seed command failed, so its data may be missing.`,
       ),
     ).toMatchObject({ state: "seed-failed", commit: "unknown" });
     expect(
@@ -253,12 +273,14 @@ describe("deploymentStatus", () => {
     expect(
       deploymentStatus([
         { state: "inactive", environment_url: "" },
-        { state: "success", environment_url: "https://pr-7.e2e-x.example.com" },
+        { state: "success", environment_url: "https://pr-7-a1b2c3d4e5.example.net" },
       ]),
     ).toEqual({ state: "inactive", url: "" });
     expect(
-      deploymentStatus([{ state: "success", environment_url: "https://pr-7.e2e-x.example.com" }]),
-    ).toEqual({ state: "success", url: "https://pr-7.e2e-x.example.com" });
+      deploymentStatus([
+        { state: "success", environment_url: "https://pr-7-a1b2c3d4e5.example.net" },
+      ]),
+    ).toEqual({ state: "success", url: "https://pr-7-a1b2c3d4e5.example.net" });
     expect(deploymentStatus([])).toBeUndefined();
   });
 });
@@ -274,7 +296,7 @@ describe("previewList", () => {
           createdAt: "2026-11-05T10:00:00.000Z",
           updatedAt: "2026-11-05T10:05:00.000Z",
           digest: `sha256:${"b".repeat(64)}`,
-          address: "https://pr-7.e2e-x.example.com",
+          address: "https://pr-7-a1b2c3d4e5.example.net",
         },
       ],
       count: 1,

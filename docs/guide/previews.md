@@ -1,10 +1,10 @@
 # Previews: a link for every pull request
 
 A change is easiest to judge running. With previews, every pull request that changes your app gets
-its own copy of the app, at its own address, with its own data:
+its own copy of the app, at its own address nobody can guess, with its own data:
 
 ```text
-https://pr-42.shop.example.com
+https://pr-42-k3x9q7m2ab.example.net
 ```
 
 GitHub Actions builds it when the pull request opens, updates it on each push and removes it, with
@@ -21,10 +21,14 @@ are.
 
 ## Setting up previews
 
-Previews need an app with a domain on [Cloudflare](cloudflare.md). Then:
+Previews need a domain of their own on [Cloudflare](cloudflare.md): a zone used only for previews,
+not your app's domain. If your app runs at `shop.example.com`, previews could use `example.net`. A
+domain costs about $10 a year, and [`opscrew domain buy`](domains.md) buys one and sets it up in
+your Cloudflare account. See [Addresses nobody can guess](#addresses-nobody-can-guess) for why.
+Then:
 
 ```bash
-npx opscrew env add preview --previews
+npx opscrew env add preview --previews --domain example.net
 ```
 
 OpsCrew asks only what previews need:
@@ -36,8 +40,9 @@ OpsCrew asks only what previews need:
 - **How many run at once:** the cap, 3 by default (1 to 20). The server's size follows from the
   memory each preview needs, the app and its own services. Or you pick the size and the cap
   follows.
-- **Their addresses:** `pr-<number>.<your app's hostname>` by default, or under another name in a
-  Cloudflare zone of yours.
+- **Their domain**, if `--domain` didn't give it: there's no default. OpsCrew refuses your app's own
+  domain, a name inside another zone, and a zone that already has web records (A, AAAA or CNAME),
+  because the previews' wildcard record and certificate cover every name in it.
 - **Their data:** the seed command OpsCrew found in your app (for example
   `php artisan db:seed --force`), to confirm, another command, or none. See
   [Data and seeds](#data-and-seeds).
@@ -49,16 +54,16 @@ The previews' own values come from `.env.preview`, never from prod's `.env`. See
 In scripts, pass the answers as flags:
 
 ```bash
-npx opscrew env add preview --previews --cap 2 --lifetime 3 --no-seed
-npx opscrew env add preview --previews --target own --domain preview.example.com --seed "npm run seed"
+npx opscrew env add preview --previews --domain example.net --cap 2 --lifetime 3 --no-seed
+npx opscrew env add preview --previews --domain example.net --target own --seed "npm run seed"
 ```
 
 | Flag | What it answers |
 |---|---|
+| `--domain <name>` | the previews' own domain, a Cloudflare zone used only for previews; a script must give it |
 | `--cap <n>` | how many previews run at once (the server's size follows) |
 | `--size <type>` | the new server's type instead (the cap follows); not on a server you already have |
 | `--lifetime <days>` | how many days without a push before a preview is removed |
-| `--domain <name>` | the name previews' addresses go under, in a Cloudflare zone of yours |
 | `--seed <command>` | the command that fills a new preview's database, once |
 | `--no-seed` | no seed: each preview starts with empty databases |
 | `--target <provider>` | where they run: `hetzner`, `digitalocean` or `own` |
@@ -72,8 +77,10 @@ Then provision the environment:
 npx opscrew provision --env preview
 ```
 
-It shows the plans: the server and one wildcard DNS record, then the preview recipe on the server.
-You approve each by its hash, as any plan. The preview workflow arrives in the deploy-setup pull
+It shows the plans: the server, one wildcard DNS record and the previews' certificate (see
+[Addresses nobody can guess](#addresses-nobody-can-guess)), then the preview recipe on the server.
+You approve each by its hash, as any plan. The Cloudflare token needs **Zone → SSL and
+Certificates → Edit** to make the certificate. The preview workflow arrives in the deploy-setup pull
 request, as every workflow does. There is no first deploy: previews come from pull requests.
 
 ## The one approval you give
@@ -85,7 +92,7 @@ same-repository pull requests within these bounds without asking again, and that
 data is deleted when it ends. Then it lists every bound:
 
 - the cap and the idle lifetime;
-- the address pattern, `pr-<number>.<base>`;
+- the address pattern, `pr-<number>-<random>.<domain>`;
 - the only image a preview may run: your app's own image, pinned by its digest;
 - what each preview runs: its services, their memory limits and networks, its site on the server's
   reverse proxy, and the scripts that start it and put the previous version back;
@@ -169,27 +176,42 @@ its state:
 The comment never holds a secret or a log line. For the logs, run `opscrew preview logs <number>`.
 The pull request's **View deployment** button opens the preview too.
 
-## Addresses and certificates
+## Addresses nobody can guess
 
-Each preview's address is `pr-<number>.<your app's hostname>`, or under the name you gave with
-`--domain`. Provision creates one DNS record for all of them, the wildcard `*.<hostname>`, pointing
-at the preview server. It is **DNS only**, not proxied by Cloudflare, even when prod is: for an app
-on a subdomain the names are two levels below your zone, which Cloudflare's free certificate doesn't
-cover. Provision
-refuses when the zone already has a record at that wildcard.
+Each preview's address is `pr-<number>-<random>.<domain>`, for example
+`pr-42-k3x9q7m2ab.example.net`: the pull request's number first, so you can tell previews apart,
+then 10 random letters and digits. The preview server draws them when it creates the preview and
+keeps them for its updates, so the address stays the same while the pull request is open. A pull
+request reopened after its preview was removed gets a new address.
 
-When your app runs on the zone's apex (`example.com` itself), the wildcard is `*.example.com`, so
-every name in the zone without its own record reaches the preview server, which answers none of
-them. Setup says so; `--domain preview.example.com` keeps previews under a name of their own.
+**A domain of their own, behind Cloudflare's proxy.** Provision creates one DNS record for every
+preview, the wildcard `*.<domain>`, proxied by Cloudflare, and one Cloudflare Origin CA certificate
+for `*.<domain>`, which the preview server serves every preview with. So:
 
-The preview server gets each preview's certificate from Let's Encrypt. Let's Encrypt issues at most
-**50 new certificates a week per registered domain**. When that runs out, the server falls back to
-ZeroSSL. A team that opens more previews than that a week should give previews a base name under
-another domain, with `--domain`.
+- **No public certificate names a preview.** Every certificate a public authority issues, Let's
+  Encrypt's included, is published in Certificate Transparency logs that anyone can search within
+  minutes, so a random name with a certificate of its own would be found anyway. Visitors get
+  Cloudflare's certificate, which names only the domain and `*.<domain>`, and the Origin CA
+  certificate on the server comes from Cloudflare's private authority, which publishes nothing.
+- **No weekly certificate limit.** No preview needs a certificate of its own, so a team can open
+  as many previews a week as it likes.
+- **The server stays out of sight.** DNS gives Cloudflare's addresses, not the preview server's,
+  and the server's firewall lets only Cloudflare reach its web ports.
 
-**Previews are public.** Anyone with the address can open them; there is no login in front. They
-tell search engines not to index them (`X-Robots-Tag: noindex`). The preview server's address is
-visible in DNS; it holds nothing of prod's.
+That is why previews need a domain used for nothing else: behind its proxy, Cloudflare's
+certificate would name your app's domain on every preview, and the wildcard would answer for every
+name of the zone that has no record of its own.
+
+**What hidden addresses protect against:** someone guessing a preview's address from its pull
+request's number, and someone finding it in certificate logs or by scanning the server.
+
+**What they don't protect against:** anyone who has the link. Previews have no login in front, so
+an address shared in a chat, sent to a third-party script in a `Referer` header, or synced by a
+browser opens the preview. On a **public repository**, the pull request's comment and its **View
+deployment** button show the address to everyone who can read the pull request. Treat a preview as
+"anyone with the link": keep test data and [test keys](#the-preview-values-test-keys-only) in it,
+never real users' data. Previews also tell search engines not to index them
+(`X-Robots-Tag: noindex`).
 
 ## Data and seeds
 

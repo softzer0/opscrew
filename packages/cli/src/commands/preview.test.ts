@@ -17,10 +17,13 @@ import { projectContext, run, type TempProject } from "../ui/__fixtures__/harnes
 const HCLOUD_TOKEN = fakeSecret("hcloud-token", "previews");
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const DIGEST = `sha256:${"ab".repeat(32)}`;
+/** The addresses of previews 42 and 7: the number, then a random part, in the preview zone. */
+const HOST_42 = "pr-42-a1b2c3d4e5.example.net";
+const HOST_7 = "pr-7-f6g7h8i9j0.example.net";
 /** Previews 42 (running, created 2026-10-10, updated 2026-10-11) and 7 (failed), cap 3. */
 const LIST_OUTPUT = [
-  `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST}`,
-  `7 failed ${COMMIT} 1791590400 1791590400 ${DIGEST}`,
+  `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST} ${HOST_42}`,
+  `7 failed ${COMMIT} 1791590400 1791590400 ${DIGEST} ${HOST_7}`,
   "opscrew-preview: listed 2/3",
 ].join("\n");
 const COMMAND = "/srv/apps/shop-preview/bin/opscrew-preview";
@@ -84,10 +87,8 @@ describe("opscrew preview list", () => {
     expect(await run(ctx, "preview", "list", "--env", "preview"), ctx.errors).toBe(0);
     expect(commands).toEqual([`${COMMAND} list`]);
     expect(ctx.output).toContain("Previews: 2 of at most 3.");
-    expect(ctx.output).toContain(
-      "  pr-42: https://pr-42.shop.example.com, running, commit 0123456",
-    );
-    expect(ctx.output).toContain("  pr-7: https://pr-7.shop.example.com, failed");
+    expect(ctx.output).toContain(`  pr-42: https://${HOST_42}, running, commit 0123456`);
+    expect(ctx.output).toContain(`  pr-7: https://${HOST_7}, failed`);
     expectNoLeak(ctx.output + ctx.errors);
   });
 
@@ -99,7 +100,7 @@ describe("opscrew preview list", () => {
       count: 2,
       cap: 3,
       previews: [
-        { number: 42, state: "running", address: "https://pr-42.shop.example.com" },
+        { number: 42, state: "running", address: `https://${HOST_42}` },
         { number: 7, state: "failed" },
       ],
     });

@@ -18,14 +18,24 @@ import { parseJsonOr } from "./support";
 export const PREVIEWS_GATE = "OPSCREW_E2E_PREVIEWS";
 
 /**
- * The variables of the test besides its gate: the environments test's, and the classic
+ * The variables of the test besides its gate: the environments test's, the classic
  * `read:packages` token the test lists the pull requests' images in GitHub Container Registry
- * with (GitHub's packages API refuses fine-grained tokens, research R5, S2).
+ * with (GitHub's packages API refuses fine-grained tokens, research R5, S2), and the previews'
+ * domain: a Cloudflare zone of the token's used only for previews (research R6).
  */
 export const PREVIEWS_E2E_VARIABLES = [
   ...ENVIRONMENT_E2E_VARIABLES,
   "OPSCREW_E2E_GHCR_READ_TOKEN",
+  "OPSCREW_E2E_PREVIEW_DOMAIN",
 ] as const;
+
+/**
+ * The address pull request `number`'s preview gets in the preview zone `zone`:
+ * `https://pr-<n>-<random>.<zone>`, the random part 10 lower-case letters and digits.
+ */
+export function previewAddressPattern(number: number, zone: string): RegExp {
+  return new RegExp(`^https://pr-${number}-[a-z0-9]{10}\\.${zone.replaceAll(".", "\\.")}$`);
+}
 
 /** The example: Koa with Postgres and Knex migrations (its release command), deployed live before. */
 export const PREVIEWS_EXAMPLE = "koa-knex";

@@ -2253,10 +2253,11 @@ The steps:
 1. **Prod:** the example goes to `main`, then prod's design (as for
    [environments](#environments-and-promotion)), `adapt`, `provision` until done and the first
    deploy. Prod's `/e2e` must answer the marker `main`, no row and no preview value.
-2. **Previews set up:** `env add preview --previews --cap 1 --lifetime 1`; the plan must have the
-   cap, the lifetime, prod's hostname as the base and the detected `knex seed:run`, and prod's plan
-   hash must not change. The run's wildcard `*.<the run's hostname>` joins the hostnames the
-   cleanup removes. `.env.preview`, with `E2E_PREVIEW_VALUE` set to a random value, is written in
+2. **Previews set up:** `OPSCREW_E2E_PREVIEW_DOMAIN` must be a Cloudflare zone of its own (not a
+   name inside one); then `env add preview --previews --cap 1 --lifetime 1 --domain <that zone>`;
+   the plan must have the cap, the lifetime, the preview zone as its domain and the detected
+   `knex seed:run`, and prod's plan hash must not change. From here the cleanup removes the
+   wildcard record `*.<preview zone>`. `.env.preview`, with `E2E_PREVIEW_VALUE` set to a random value, is written in
    the throwaway checkout, where it must be gitignored; it is never committed. `provision --env
    preview` then runs until done: `--plan-only`, then every `--approve <hash>` a run prints (the
    previews host plan's refusal prints its own), with `--confirm <app>-preview` (the recipe
@@ -2279,10 +2280,12 @@ The steps:
    have no branch rule. Prod must be unchanged (below).
 3. **Pull request A:** a branch changing the marker, and its pull request. The preview workflow's
    run must succeed (the build, the deploy and the report; no removal). The one comment on it must
-   say the preview runs at `https://pr-<n>.<the run's hostname>` on A's head commit;
-   `https://pr-<n>…/e2e` must serve A's marker, the three seeded rows, the preview value set and
-   `X-Robots-Tag: noindex`; `opscrew preview list --json` must list it running on A's commit, 1 of
-   at most 1. When the previews' GitHub environment exists, the pull request's deployment must be
+   say the preview runs at `https://pr-<n>-<random>.<preview zone>` (10 of `[a-z0-9]`) on A's head
+   commit; that address's `/e2e` must serve A's marker, the three seeded rows, the preview value
+   set and `X-Robots-Tag: noindex`, through Cloudflare (the answer has a `cf-ray` header); the
+   preview server's own address (read from OpsCrew's record, never printed) must refuse TCP
+   connections from this computer on ports 80 and 443, since its firewall lets only Cloudflare in; `opscrew preview list --json` must list it running on A's commit, 1 of
+   at most 1, at the comment's address. When the previews' GitHub environment exists, the pull request's deployment must be
    `success` with the preview's address as its URL ("View deployment"); otherwise the pass logs
    that there is none. Over SSH with the environment's deploy key, the preview must have its
    containers, folder, Caddy site and kamal-proxy route on the server. Its image must be in GitHub
@@ -2290,7 +2293,7 @@ The steps:
    The values the server generated for it (`secrets.env`) are read, never shown, for the leak
    search.
 4. **A push to A:** the new marker served, still exactly the seeded rows (the seed ran once), the
-   comment and the list on the new commit, the same creation time, another image, and the same
+   comment (at the same address) and the list on the new commit, the same creation time, another image, and the same
    generated passwords (the SHA-256 of its `secrets.env`).
 5. **Pull request B at the cap:** its run must fail at the deploy and still report; its comment
    must say the server already runs 1 preview, its limit of 1. The list must hold only A, which
@@ -2314,7 +2317,7 @@ The steps:
    the server and an empty list. B is then closed: its run's removal finds nothing and succeeds,
    the comment says removed, and its images go. `opscrew destroy --env preview --confirm
    <app>-preview --no-snapshot`: nothing of the preview server at Hetzner (by its labels), its
-   GitHub secrets and environment gone, and no wildcard record left in the zone.
+   GitHub secrets and environment gone, and no wildcard record left in the preview zone.
 10. **Prod unchanged** (SC-2205), checked after step 2 and here: `opscrew/plan.yaml`, and where
     GitHub keeps prod's deploy secrets with their names, are as noted in step 2; `provision --env
     prod --plan-only` plans no change (nothing to approve); the site answers through Cloudflare;
@@ -2334,17 +2337,19 @@ cleanup has removed the GitHub environments. Then any image tag of the pass's pu
 in GitHub Container Registry is a problem that fails the run (delete those versions in the
 repository's package settings). Then the cleanup of environments: `opscrew destroy` of the
 preview environment and of prod if needed, Hetzner's API by both apps' labels, GitHub's
-environments and deploy secrets, Cloudflare (the wildcard record with the run's other hostnames),
-and the repository's reset, which deletes the branches.
+environments and deploy secrets, Cloudflare (the run's hostnames), the wildcard record in the
+preview zone (left after a finished destroy, it is a problem), and the repository's reset, which deletes the branches.
 
 **If a run was interrupted**, close the pass's pull requests (`e2e: preview a`, `e2e: preview b`)
 before deleting the preview server, so their removal deletes their images; then delete by hand what
-the environments test lists, and the `*.<the run's hostname>` record.
+the environments test lists, and the `*.<preview zone>` record (the next run's `env add` refuses
+the zone while it has one).
 
 | Variable | What it is |
 |---|---|
 | `OPSCREW_E2E_PREVIEWS` | `1` runs this test. |
 | `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for environments. Without any of them the test is skipped with a message naming it. Any GitHub plan: the pass follows where provision places the previews' secrets; the "View deployment" checks run only where GitHub keeps the previews' GitHub environment (a public repository, or a paid plan). |
+| `OPSCREW_E2E_PREVIEW_DOMAIN` | Needed: a Cloudflare zone of the token's used only for previews, with no A, AAAA or CNAME record (for example a cheap domain bought for this). The token also needs Zone → SSL and Certificates → Edit on it, for the previews' Origin CA certificate. |
 | `OPSCREW_E2E_GHCR_READ_TOKEN` | Needed: the classic `read:packages` token of [the builders](#the-builders). The pass lists the app's image versions with it (GitHub's packages API refuses a fine-grained token). |
 | `OPSCREW_E2E_REGION` | Optional, as above. |
 
@@ -2353,13 +2358,13 @@ pnpm --filter opscrew build
 cd packages/cli
 OPSCREW_E2E_PREVIEWS=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
   OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_GHCR_READ_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… \
-  OPSCREW_E2E_DOMAIN=e2e.example.com npx vitest run test/live/previews.test.ts
+  OPSCREW_E2E_DOMAIN=e2e.example.com OPSCREW_E2E_PREVIEW_DOMAIN=example.net \n  npx vitest run test/live/previews.test.ts
 ```
 
 Not measured yet: about 1.5 hours, with two small servers (prod's and the preview server) for
 that time (a few cents), two or three deploy runs and six preview runs, most with a build (about
-40 Actions minutes in a private repository), and two Let's Encrypt certificates for names under the
-run's own hostname.
+40 Actions minutes in a private repository). The previews need no Let's Encrypt certificate: the
+preview server serves one Cloudflare Origin CA certificate for the preview zone.
 
 ## Price tables
 
