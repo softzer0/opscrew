@@ -12,6 +12,7 @@ import { posix } from "node:path";
 import { APPS_DIR, EDGE_DIR, EDGE_PROJECT } from "@opscrew/iac-templates";
 import { z } from "zod";
 import { ENVIRONMENT_E2E_VARIABLES } from "./environments-support";
+import { parseJsonOr } from "./support";
 
 /** The test's gate. */
 export const PREVIEWS_GATE = "OPSCREW_E2E_PREVIEWS";
@@ -129,12 +130,9 @@ const E2ePageSchema = z.object({
 
 /** What {@link E2E_PATH} answered: the marker and the seeded rows; throws on anything else. */
 export function e2ePage(body: string): z.infer<typeof E2ePageSchema> {
-  let json: unknown;
-  try {
-    json = JSON.parse(body);
-  } catch {
+  const json = parseJsonOr(body, () => {
     throw new Error(`${E2E_PATH} did not answer JSON.`);
-  }
+  });
   const page = E2ePageSchema.safeParse(json);
   if (!page.success) throw new Error(`${E2E_PATH} answered JSON without a marker and rows.`);
   return page.data;
@@ -317,12 +315,9 @@ const PreviewListSchema = z.object({
 
 /** The previews `opscrew preview list --json` printed; throws when it printed anything else. */
 export function previewList(stdout: string): z.infer<typeof PreviewListSchema> {
-  let json: unknown;
-  try {
-    json = JSON.parse(stdout);
-  } catch {
+  const json = parseJsonOr(stdout, () => {
     throw new Error("opscrew preview list --json did not print JSON.");
-  }
+  });
   return PreviewListSchema.parse(json);
 }
 
@@ -370,33 +365,6 @@ export function keyRefusals(number: number): KeyRefusal[] {
       detail: "image",
     },
     { what: "a terminal", detail: "request" },
-  ];
-}
-
-/**
- * `ssh`'s arguments for the deploy user's login on the preview server with the preview key: the
- * request as the command, or with none a terminal (`-tt`).
- */
-export function previewKeySshArgs(
-  login: { host: string; keyFile: string; knownHostsFile: string },
-  request: string | undefined,
-): string[] {
-  return [
-    "-i",
-    login.keyFile,
-    "-o",
-    "IdentitiesOnly=yes",
-    "-o",
-    "BatchMode=yes",
-    "-o",
-    "StrictHostKeyChecking=yes",
-    "-o",
-    `UserKnownHostsFile=${login.knownHostsFile}`,
-    "-o",
-    "ConnectTimeout=15",
-    ...(request === undefined ? ["-tt"] : []),
-    `deploy@${login.host}`,
-    ...(request === undefined ? [] : [request]),
   ];
 }
 

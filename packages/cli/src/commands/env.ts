@@ -5,6 +5,7 @@ import {
   type EnvironmentSummary,
   type InterviewAnswers,
   listEnvironments,
+  previewRunnerRefusal,
   removeEnvironment,
   setEnvironment,
 } from "@opscrew/agents";
@@ -80,7 +81,7 @@ function checkPreviewFlags(flags: AddFlags, command: string): void {
     if (value === undefined || value === "github") continue;
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `Previews are built and deployed on GitHub's machines only, never on a runner of yours: a pull request's code runs in the job, so --${flag} ${value} is not available with --previews. Nothing was changed.`,
+      `${previewRunnerRefusal(flag, value)} Nothing was changed.`,
       { hint: `Leave --${flag} out, then run \`${command} --previews\` again.` },
     );
   }

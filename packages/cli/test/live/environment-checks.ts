@@ -474,14 +474,17 @@ export class AppEnvironments {
     }
   }
 
-  /** `deploy`'s SSH login to the environment's server, with OpsCrew's deploy key and known hosts. */
-  async shell(environment = "prod"): Promise<RootShell> {
+  /**
+   * `deploy`'s SSH login to the environment's server, with OpsCrew's deploy key (or `keyFile`) and
+   * known hosts.
+   */
+  async shell(environment = "prod", keyFile?: string): Promise<RootShell> {
     const paths = this.paths(environment);
     const host = (await readServerAddresses(paths)).deployment?.ipv4;
     if (host === undefined) throw new Error(`OpsCrew recorded no server for ${environment}.`);
     return new RootShell(this.run.runner, {
       host,
-      keyFile: paths.files.deployKey,
+      keyFile: keyFile ?? paths.files.deployKey,
       knownHostsFile: paths.files.knownHosts,
       env: this.run.env,
       user: "deploy",

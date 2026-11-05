@@ -15,7 +15,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, posix } from "node:path";
-import { parseDotenv, readServerAddresses } from "@opscrew/agents";
+import { parseDotenv } from "@opscrew/agents";
 import { githubEnvironment, previewWorkflowPath } from "@opscrew/iac-templates";
 import { afterAll, describe, expect } from "vitest";
 import {
@@ -57,7 +57,6 @@ import {
   PREVIEWS_GATE,
   previewComments,
   previewDir,
-  previewKeySshArgs,
   previewList,
   previewRunProblem,
   previewsPlanProblems,
@@ -129,8 +128,10 @@ describe.skipIf(MISSING.length > 0)(
     let prodBefore: ProdState | undefined;
     let pullA: Pull | undefined;
     let pullB: Pull | undefined;
-    /** Preview A after its creation: its record's times and digest, its secrets' digest. */
-    let firstA: { createdAt?: string; digest?: string; secrets: string } | undefined;
+    /** Preview A after its creation: its listed record, its secrets' digest. */
+    let firstA:
+      | { preview: ReturnType<typeof previewList>["previews"][number] | undefined; secrets: string }
+      | undefined;
 
     const address = (pull: Pull) => `https://pr-${pull.number}.${base}`;
     const pullOf = (pull: Pull | undefined) => {
@@ -267,18 +268,21 @@ describe.skipIf(MISSING.length > 0)(
       log(`preview run ${found.id} (${what}) ended ${found.conclusion}, as expected`);
     }
 
-    /** The one preview comment on the pull request, by what it says. */
-    async function comment(pull: Pull): Promise<CommentState> {
+    /** The pull request's comments, as GitHub lists them. */
+    async function pullComments(pull: Pull): Promise<unknown> {
       const got = await run.github.call(
         "GET",
         `${repo()}/issues/${pull.number}/comments?per_page=100`,
       );
       if (got.status !== 200) {
-        throw new Error(
-          `Could not read pull request ${pull.name}'s comments (HTTP ${got.status}).`,
-        );
+        throw new Error(`pull request ${pull.name}'s comments unread (HTTP ${got.status})`);
       }
-      const bodies = previewComments(got.json, previewApp);
+      return got.json;
+    }
+
+    /** The one preview comment on the pull request, by what it says. */
+    async function comment(pull: Pull): Promise<CommentState> {
+      const bodies = previewComments(await pullComments(pull), previewApp);
       expect(bodies.length, `the preview comments on pull request ${pull.name}`).toBe(1);
       const body = bodies[0] as string;
       const state = commentState(body);
@@ -658,13 +662,7 @@ describe.skipIf(MISSING.length > 0)(
           (await imageTags([a.number])).length,
           "preview A's images in GitHub Container Registry",
         ).toBeGreaterThan(0);
-        firstA = {
-          ...(list.previews[0]?.createdAt === undefined
-            ? {}
-            : { createdAt: list.previews[0].createdAt }),
-          ...(list.previews[0]?.digest === undefined ? {} : { digest: list.previews[0].digest }),
-          secrets: await previewSecrets(a),
-        };
+        firstA = { preview: list.previews[0], secrets: await previewSecrets(a) };
       },
     );
 
@@ -686,9 +684,9 @@ describe.skipIf(MISSING.length > 0)(
         expect(preview, "preview A in the list after the push").toMatchObject({
           state: "running",
           commit: a.head,
-          createdAt: first.createdAt,
+          createdAt: first.preview?.createdAt,
         });
-        expect(preview?.digest, "preview A's image after the push").not.toBe(first.digest);
+        expect(preview?.digest, "preview A's image after the push").not.toBe(first.preview?.digest);
         expect(
           await previewSecrets(a),
           "preview A's generated passwords after the push (their digest)",
@@ -723,19 +721,9 @@ describe.skipIf(MISSING.length > 0)(
       minutes(10),
       async () => {
         const b = pullOf(pullB);
-        const paths = envs.paths(PREVIEW_ENV);
-        const host = (await readServerAddresses(paths)).deployment?.ipv4;
-        if (host === undefined) throw new Error("OpsCrew recorded no preview server.");
-        const login = {
-          host,
-          keyFile: paths.files.previewKey,
-          knownHostsFile: paths.files.knownHosts,
-        };
+        const key = await envs.shell(PREVIEW_ENV, envs.paths(PREVIEW_ENV).files.previewKey);
         const ssh = async (what: string, request: string | undefined) => {
-          const result = await run.runner.run("ssh", previewKeySshArgs(login, request), {
-            env: run.env,
-            timeoutMs: minutes(1),
-          });
+          const result = await key.run(request, minutes(1));
           run.outputs.set(
             run.scrub(`#${run.outputs.size + 1} ssh with the preview key: ${what}`),
             `${result.stdout}\n${result.stderr}`,
@@ -781,13 +769,11 @@ describe.skipIf(MISSING.length > 0)(
         await waitFor(
           `${address(a)} no longer serving`,
           minutes(2),
-          async () =>
-            (await page(address(a)).then(
-              () => false,
+          () =>
+            page(address(a)).then(
+              () => undefined,
               () => true,
-            ))
-              ? true
-              : undefined,
+            ),
           10_000,
         );
       },
@@ -869,17 +855,14 @@ describe.skipIf(MISSING.length > 0)(
         const known = run.scrubber.entries();
         const secrets = known.filter(({ label }) => !label.startsWith("server-"));
         for (const pull of pulls) {
-          const got = await run.github.call(
-            "GET",
-            `${repo()}/issues/${pull.number}/comments?per_page=100`,
-          );
-          if (got.status !== 200) {
-            problems.push(`pull request ${pull.name}'s comments unread (HTTP ${got.status})`);
+          let comments: { body?: string | null }[] | undefined;
+          try {
+            comments = (await pullComments(pull)) as typeof comments;
+          } catch (error) {
+            problems.push(error instanceof Error ? error.message : String(error));
             continue;
           }
-          const text = ((got.json as { body?: string | null }[] | undefined) ?? [])
-            .map((c) => c.body ?? "")
-            .join("\n");
+          const text = (comments ?? []).map((c) => c.body ?? "").join("\n");
           const found = leakedLabels(text, known);
           if (found.length > 0) {
             problems.push(`the comments on pull request ${pull.name} contain: ${found.join(", ")}`);

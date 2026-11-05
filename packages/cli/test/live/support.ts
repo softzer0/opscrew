@@ -261,6 +261,15 @@ export function blockedByCloudflare(answer: {
   );
 }
 
+/** `text` parsed as JSON, or what `otherwise` gives (or throws) when it is not JSON. */
+export function parseJsonOr(text: string, otherwise: () => unknown): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return otherwise();
+  }
+}
+
 /**
  * What is wrong with one version of `.opscrew/cloudflare.json` for the leak search: it must hold
  * only the zone's id, hostnames and phases (OpsCrew's schema, unknown keys refused), and none of
@@ -271,13 +280,7 @@ export function cloudflareRecordProblems(
   known: readonly { label: string; value: string }[],
 ): string[] {
   const problems: string[] = [];
-  let json: unknown;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    json = undefined;
-  }
-  if (!SharedRecordSchema.safeParse(json).success) {
+  if (!SharedRecordSchema.safeParse(parseJsonOr(text, () => undefined)).success) {
     problems.push(".opscrew/cloudflare.json holds more than the zone's id, hostnames and phases");
   }
   const found = leakedLabels(text, known);

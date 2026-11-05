@@ -10,11 +10,17 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { recordServerAddress } from "@opscrew/agents";
-import { forbiddenFetch, ScriptedRunner, SERVER_IPV4, testPlan } from "@opscrew/agents/testing";
+import {
+  forbiddenFetch,
+  previewTestPlan,
+  ScriptedRunner,
+  SERVER_IPV4,
+  testPlan,
+} from "@opscrew/agents/testing";
 import type { RemoteExec } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveMcpDeps } from "../deps";
 import { registerDeployTools } from "./deploy";
@@ -40,23 +46,7 @@ async function connect(stdout: string, exitCode = 0) {
   const base = testPlan({ deployed: true });
   await writeArtifact("plan", resolveProjectPaths(dir, { env }).files.plan, base);
   const paths = resolveProjectPaths(dir, { env, environment: "preview" });
-  await writeArtifact(
-    "plan",
-    paths.files.plan,
-    DeployPlanSchema.parse({
-      ...base,
-      app: { ...base.app, name: "shop-preview" },
-      environment: {
-        name: "preview",
-        deploySource: { from: "main" },
-        runner: "github",
-        previews: { cap: 3, lifetimeDays: 7, domain: "shop.example.com", seed: null },
-      },
-      infra: { ...base.infra, dir: "opscrew/infra/preview" },
-      dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
-      cicd: { ...base.cicd, workflowPath: ".github/workflows/opscrew-deploy-preview.yml" },
-    }),
-  );
+  await writeArtifact("plan", paths.files.plan, previewTestPlan());
   await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
   await mkdir(path.dirname(paths.files.deployKey), { recursive: true });
   await writeFile(paths.files.deployKey, "placeholder\n");

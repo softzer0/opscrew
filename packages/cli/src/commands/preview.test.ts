@@ -5,11 +5,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { recordServerAddress } from "@opscrew/agents";
-import { ScriptedApprovalHandler, SERVER_IPV4, testPlan } from "@opscrew/agents/testing";
+import { previewTestPlan, ScriptedApprovalHandler, SERVER_IPV4 } from "@opscrew/agents/testing";
 import type { RemoteExec } from "@opscrew/contracts";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { servicesOf } from "../deps";
 import { withEnvironments } from "../ui/__fixtures__/environments";
@@ -26,30 +25,6 @@ const LIST_OUTPUT = [
 ].join("\n");
 const COMMAND = "/srv/apps/shop-preview/bin/opscrew-preview";
 
-/** The preview environment's plan beside prod, as design makes it (previews under shop.example.com). */
-function previewPlan(): DeployPlan {
-  const base = testPlan({ deployed: true });
-  return DeployPlanSchema.parse({
-    ...base,
-    app: { ...base.app, name: "shop-preview" },
-    environment: {
-      name: "preview",
-      deploySource: { from: "main" },
-      runner: "github",
-      previews: { cap: 3, lifetimeDays: 7, domain: "shop.example.com", seed: null },
-    },
-    infra: { ...base.infra, dir: "opscrew/infra/preview" },
-    dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
-    security: { ...base.security, httpAllowedFrom: "any" },
-    supplyChain: { ...base.supplyChain, sign: false },
-    cicd: {
-      ...base.cicd,
-      workflowPath: ".github/workflows/opscrew-deploy-preview.yml",
-      deployTags: { enabled: false, release: false },
-    },
-  });
-}
-
 let project: TempProject | undefined;
 afterEach(async () => {
   await project?.cleanup();
@@ -64,7 +39,7 @@ async function previewProject(
   answer: (command: string) => { exitCode: number; stdout: string; stderr?: string },
   options: { interactive?: boolean; approvals?: ScriptedApprovalHandler } = {},
 ) {
-  project = await withEnvironments({ preview: previewPlan() });
+  project = await withEnvironments({ preview: previewTestPlan() });
   project.env.HCLOUD_TOKEN = HCLOUD_TOKEN;
   const paths = resolveProjectPaths(project.root, { env: project.env, environment: "preview" });
   await recordServerAddress(paths, { ipv4: SERVER_IPV4 });

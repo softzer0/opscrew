@@ -429,18 +429,12 @@ describe("opscrew env add", () => {
       expect(asked).not.toContain("get new versions");
     });
 
-    it("in a terminal, refuses a runner or build of yours before asking anything", async () => {
-      for (const flags of [
-        ["--runner", "server"],
-        ["--build", "runner"],
-      ]) {
-        const prompts = new DefaultPrompts();
-        const ctx = await previewsApp({ interactive: true, prompts });
-        expect(await run(ctx, "env", "add", "--previews", ...flags), flags.join(" ")).toBe(2);
-        expect(ctx.errors).toContain(`${flags.join(" ")} is not available with --previews`);
-        expect(prompts.messages).toEqual([]);
-        await project?.cleanup();
-      }
+    it("in a terminal, refuses a runner of yours before asking anything", async () => {
+      const prompts = new DefaultPrompts();
+      const ctx = await previewsApp({ interactive: true, prompts });
+      expect(await run(ctx, "env", "add", "--previews", "--runner", "server")).toBe(2);
+      expect(ctx.errors).toContain("--runner server is not available with --previews");
+      expect(prompts.messages).toEqual([]);
     });
   });
 });

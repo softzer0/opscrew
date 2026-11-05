@@ -22,7 +22,6 @@ import {
   PREVIEWS_EXAMPLE,
   PREVIEWS_GATE,
   previewComments,
-  previewKeySshArgs,
   previewList,
   previewRunProblem,
   previewsPlanProblems,
@@ -320,18 +319,6 @@ describe("the restricted key", () => {
     for (const { request } of refusals.filter((r) => r.request !== "list; id")) {
       expect(request ?? "", String(request)).toMatch(/^[a-z0-9._/@: -]*$/);
     }
-  });
-
-  it("logs in as deploy with the preview key: the request as the command, or a terminal", () => {
-    const login = { host: "192.0.2.10", keyFile: "/k/preview_key", knownHostsFile: "/k/known" };
-    const args = previewKeySshArgs(login, "gc");
-    expect(args.slice(0, 2)).toEqual(["-i", "/k/preview_key"]);
-    expect(args).toContain("IdentitiesOnly=yes");
-    expect(args).toContain("UserKnownHostsFile=/k/known");
-    expect(args.slice(-2)).toEqual(["deploy@192.0.2.10", "gc"]);
-    expect(args).not.toContain("-tt");
-    const terminal = previewKeySshArgs(login, undefined);
-    expect(terminal.slice(-2)).toEqual(["-tt", "deploy@192.0.2.10"]);
   });
 });
 

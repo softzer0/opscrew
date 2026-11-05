@@ -1759,8 +1759,11 @@ export class RootShell {
     return this.options.user ?? "root";
   }
 
-  /** Runs `command` as the user; resolves with the result (exit code 255: SSH itself failed). */
-  run(command: string, timeoutMs = minutes(2)): Promise<CommandResult> {
+  /**
+   * Runs `command` as the user, or with none asks for a terminal (`-tt`); resolves with the result
+   * (exit code 255: SSH itself failed).
+   */
+  run(command: string | undefined, timeoutMs = minutes(2)): Promise<CommandResult> {
     return this.runner.run(
       "ssh",
       [
@@ -1778,8 +1781,9 @@ export class RootShell {
         "ConnectTimeout=15",
         "-o",
         "ServerAliveInterval=15",
+        ...(command === undefined ? ["-tt"] : []),
         `${this.user}@${this.options.host}`,
-        command,
+        ...(command === undefined ? [] : [command]),
       ],
       { env: this.options.env, timeoutMs },
     );
