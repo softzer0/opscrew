@@ -808,7 +808,7 @@ export function parsePreviews(text: string): HostFacts["previews"] {
   for (const line of linesOf(text)) {
     const [kind = "", app = "", first = "", second = ""] = line.split(" ");
     if (kind === "recipe" && AppNameSchema.safeParse(app).success) {
-      recipes.set(app, { app, files: {}, values: false, cron: [], numbers: [] });
+      recipes.set(app, { app, files: {}, values: false, tls: false, cron: [], numbers: [] });
     }
     const recipe = recipes.get(app);
     if (recipe === undefined) continue;
@@ -820,6 +820,7 @@ export function parsePreviews(text: string): HostFacts["previews"] {
       recipe.files[first] = second;
     }
     if (kind === "values") recipe.values = true;
+    if (kind === "tls") recipe.tls = true;
     if (kind === "cron") recipe.cron.push(line.slice(`cron ${app} `.length));
     if (kind === "preview" && /^[1-9][0-9]{0,5}$/.test(first)) recipe.numbers.push(Number(first));
   }

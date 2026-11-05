@@ -488,7 +488,8 @@ export const HostFactsSchema = z.object({
    * command (`bin/opscrew-preview`), by app, with the SHA-256 of each recipe file by path (never
    * its values, log or dot-files), whether its values file is there (never read), the deploy
    * user's cron lines that run its cleanup, and its previews' pull request numbers (the folders
-   * `/srv/apps/<app>-pr-<n>`), in order.
+   * `/srv/apps/<app>-pr-<n>`), in order; `tls`: the previews' certificate and key
+   * (`/srv/edge/tls/<app>/origin.pem` and `origin.key`) are both there (never read).
    */
   previews: z
     .array(
@@ -496,6 +497,7 @@ export const HostFactsSchema = z.object({
         app: z.string(),
         files: z.record(RecipePathSchema, z.string().regex(/^[0-9a-f]{64}$/)),
         values: z.boolean(),
+        tls: z.boolean(),
         cron: z.array(z.string()),
         numbers: z.array(z.number().int().positive()),
       }),

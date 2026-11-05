@@ -24,7 +24,8 @@
  * `planNetworkRemoval` takes one network's interface off a server, such as the monitoring server
  * another environment owns once this one stops sending to it.
  * Preview environments (feature 022): `planAddon("previews")` installs a preview environment's
- * recipe in `/srv/apps/<app>`, its values (supplied at apply as `previewValues`), the preview key
+ * recipe in `/srv/apps/<app>`, its values (supplied at apply as `previewValues`), the previews'
+ * Origin CA certificate in `/srv/edge/tls/<app>` (supplied at apply as `previewTls`), the key
  * (`previewKeyLine`, which can run only the recipe's `opscrew-preview`) and the deploy user's cron
  * line for idle previews, in a plan that deletes data; `inspectHost` lists each recipe's previews.
  * See `specs/009-own-server/contracts/host-adapter.md`,

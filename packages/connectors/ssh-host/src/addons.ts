@@ -48,6 +48,27 @@ export function isOpensshPrivateKey(text: string): boolean {
   );
 }
 
+/** PEM text within 16 KiB: `blocks` armoured as `label` around base64. Not parsed further. */
+function isPem(text: string, label: string, blocks: "one" | "some"): boolean {
+  const block = `-----BEGIN ${label}-----\\r?\\n[A-Za-z0-9+/=\\r\\n]+-----END ${label}-----\\r?\\n?`;
+  return (
+    text.length <= 16 * 1024 &&
+    new RegExp(blocks === "one" ? `^${block}$` : `^(?:${block})+$`).test(text)
+  );
+}
+
+/** A PEM certificate (with any chain after it), as Cloudflare's Origin CA issues it. */
+export function isPemCertificate(text: string): boolean {
+  return isPem(text, "CERTIFICATE", "some");
+}
+
+/** A PEM private key: PKCS #8 (`PRIVATE KEY`), or an `EC` or `RSA` one. */
+export function isPemPrivateKey(text: string): boolean {
+  return ["PRIVATE KEY", "EC PRIVATE KEY", "RSA PRIVATE KEY"].some((label) =>
+    isPem(text, label, "one"),
+  );
+}
+
 /** OpenSSH's SHA-256 fingerprint of a public key (`<type> <base64> [comment]`): `SHA256:…`. */
 export function keyFingerprint(publicKey: string): string {
   const blob = Buffer.from(publicKey.trim().split(/\s+/)[1] ?? "", "base64");

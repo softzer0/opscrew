@@ -3265,12 +3265,14 @@ fi`;
  * `/srv/apps/<app>`: the recipe's files (`file:<path>` parameters, compared by their SHA-256,
  * `bin/opscrew-preview` 0755, the others 0644, files of an earlier recipe removed), `values.env`
  * (0600) from the preview values on stdin, which must have exactly the names the plan lists, the
- * preview key's line (`previewKeyLine`; the app's lines, by its forced command or the comment,
- * replaced) and the deploy user's cron line for idle previews (`previewCronLine`, a line of this
- * recipe's replaced). The files reach the server on stdin after the values. As root (a server the
- * user owns) cron is installed first when it is missing. Removed (`remove`), the key lines go
- * first, then the cron line; a preview the plan does not list stops it there; then each listed
- * preview goes through `opscrew-preview down <n>`, then the folder. Previews end with their data,
+ * previews' Origin CA certificate and key from stdin in `/srv/edge/tls/<app>` (0700: `origin.pem`
+ * 0644, `origin.key` 0600), the preview key's line (`previewKeyLine`; the app's lines, by its
+ * forced command or the comment, replaced) and the deploy user's cron line for idle previews
+ * (`previewCronLine`, a line of this recipe's replaced). The files reach the server on stdin after
+ * the values and the certificate. As root (a server the user owns) cron is installed first when
+ * it is missing. Removed (`remove`), the key lines go first, then the cron line; a preview the
+ * plan does not list stops it there; then each listed preview goes through
+ * `opscrew-preview down <n>`, then the folder and the certificate's. Previews end with their data,
  * so only a plan that deletes data may hold the step.
  */
 function previewsScripts(plan: HostPlan, step: HostStep): StepScripts {
@@ -3281,6 +3283,7 @@ function previewsScripts(plan: HostPlan, step: HostStep): StepScripts {
   const p = params(step, z.object({ runAs: RunAsSchema, repository: RepositoryNameSchema }));
   const shared = {
     DIR: appDirs(app.data).app,
+    TLS_DIR: `${EDGE_DIR}/tls/${app.data}`,
     USER_NAME: "deploy",
     COMMAND_FILE: PREVIEW_COMMAND_FILE,
     // The app's preview key lines, by their forced command (whatever the repository is called
@@ -3308,6 +3311,7 @@ unlisted() {
   read_tab || return 1
   [ "$(cron_count)" = 0 ] || return 1
   [ ! -e "$DIR" ] && [ ! -L "$DIR" ] || return 1
+  [ ! -e "$TLS_DIR" ] && [ ! -L "$TLS_DIR" ] || return 1
   [ -z "$(unlisted)" ] || return 1
   for n in $NUMBERS; do [ ! -e "$DIR-pr-$n" ] && [ ! -L "$DIR-pr-$n" ] || return 1; done`,
       apply: `k=$(keys_file)
@@ -3336,9 +3340,9 @@ for n in $NUMBERS; do
     fail "The preview pr-$n is still on the server, and the command that removes it ($DIR/$COMMAND_FILE) is gone."
   fi
 done
-# Then the recipe, its values included.
-rm -rf "$DIR"`,
-      failed: "The previews, their recipe, key or cleanup are still on the server.",
+# Then the recipe, its values included, and the previews' certificate.
+rm -rf "$DIR" "$TLS_DIR"`,
+      failed: "The previews, their recipe, certificate, key or cleanup are still on the server.",
       asDeploy: true,
       doing: "removing the previews",
       timeoutMs: (5 + 11 * numbers.length) * MINUTE,
@@ -3372,6 +3376,10 @@ rm -rf "$DIR"`,
   [ -x "$DIR/$COMMAND_FILE" ] || return 1
   v="$DIR/values.env"
   [ -f "$v" ] && [ ! -L "$v" ] && [ "$(stat -c %a "$v")" = 600 ] || return 1
+  [ -d "$TLS_DIR" ] && [ ! -L "$TLS_DIR" ] || return 1
+  [ -s "$TLS_DIR/origin.pem" ] && [ ! -L "$TLS_DIR/origin.pem" ] || return 1
+  c="$TLS_DIR/origin.key"
+  [ -s "$c" ] && [ ! -L "$c" ] && [ "$(stat -c %a "$c")" = 600 ] || return 1
   k=$(keys_file)
   [ -f "$k" ] && [ ! -L "$k" ] || return 1
   [ "$(grep -cE "$KEY_RE" "$k")" = 1 ] || return 1
@@ -3393,6 +3401,19 @@ if [ "\${names% }" != "$VALUE_NAMES" ]; then
   values=''
   fail "The preview values supplied are not the ones this plan lists, so OpsCrew changed nothing."
 fi
+# Then the previews' certificate and its key, one line of base64 each.
+cert=''
+key=''
+IFS= read -r cert || true
+IFS= read -r key || true
+case "$(printf '%s' "$cert" | base64 -d 2>/dev/null)" in
+  "-----BEGIN CERTIFICATE-----"*) ;;
+  *) values=''; key=''; fail "The previews' certificate did not arrive on standard input, so OpsCrew changed nothing." ;;
+esac
+case "$(printf '%s' "$key" | base64 -d 2>/dev/null)" in
+  "-----BEGIN "*"PRIVATE KEY-----"*) ;;
+  *) values=''; key=''; fail "The previews' certificate key did not arrive on standard input, so OpsCrew changed nothing." ;;
+esac
 # The recipe's files, one line of base64 each in the order of $PATHS, none of them secret.
 if [ -L "$DIR" ]; then fail "$DIR is a symbolic link; OpsCrew does not follow it."; fi
 install -d -m 0750 "$DIR"
@@ -3414,6 +3435,12 @@ stale_files | while IFS= read -r f; do rm -f "$DIR/$f"; done
 find "$DIR" -mindepth 1 -type d -empty -delete
 if [ -n "$values" ]; then printf '%s\\n' "$values"; fi | put "$DIR/values.env" 0600
 values=''
+# The previews' certificate for the edge, which reads it as the deploy user.
+if [ -L "$TLS_DIR" ]; then fail "$TLS_DIR is a symbolic link; OpsCrew does not follow it."; fi
+install -d -m 0700 "$TLS_DIR"
+printf '%s' "$cert" | base64 -d | put "$TLS_DIR/origin.pem" 0644
+printf '%s' "$key" | base64 -d | put "$TLS_DIR/origin.key" 0600
+key=''
 # The preview key, which can run only the preview command; a line with its comment is replaced.
 if [ -L "$h/.ssh" ]; then fail "$h/.ssh is a symbolic link; OpsCrew does not follow it."; fi
 install -d -m 0700 "$h/.ssh"
@@ -3433,9 +3460,10 @@ if [ "$(cron_count)" != 1 ] || ! printf '%s\\n' "$tab" | grep -qxF "$CRON_LINE";
     printf '%s\\n' "$CRON_LINE"
   } | crontab - || fail "OpsCrew could not write the deploy user's crontab."
 fi`,
-    failed: "The preview recipe, its key or its cleanup is not on the server as planned.",
+    failed:
+      "The preview recipe, its certificate, its key or its cleanup is not on the server as planned.",
     rewrite: q.rewrite === true,
-    secrets: { names: ["previewValues"], required: true },
+    secrets: { names: ["previewValues", "previewTls"], required: true },
     payload: files.map(([, content]) => `${base64(content)}\n`).join(""),
     asDeploy: true,
     ...(p.runAs === "root" ? { preApply: applyScript("previews.cron", {}, "", CRON_INSTALL) } : {}),

@@ -354,7 +354,8 @@ fi`;
 /**
  * Each preview environment's recipe (feature 022), an app folder in /srv/apps with the preview
  * command: the SHA-256 of each of its files (never `values.env`, `previews.log` or dot-files),
- * whether `values.env` is there (never read), the deploy user's cron lines that run its cleanup
+ * whether `values.env` is there (never read), whether the previews' certificate and key are in
+ * `/srv/edge/tls/<app>` (never read), the deploy user's cron lines that run its cleanup
  * (deploy's crontab, read as root or as deploy itself), and its previews, the folders
  * `/srv/apps/<app>-pr-<n>`. Never follows a symbolic link.
  */
@@ -373,6 +374,8 @@ if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
       echo "file $app \${f#./} $(sha256sum "$d/\${f#./}" | cut -d ' ' -f 1)"
     done
     if [ -f "$d/values.env" ] && [ ! -L "$d/values.env" ]; then echo "values $app"; fi
+    t="${EDGE_DIR}/tls/$app"
+    if [ ! -L "$t" ] && [ -f "$t/origin.pem" ] && [ -f "$t/origin.key" ]; then echo "tls $app"; fi
     printf '%s\\n' "$tab" | grep -E "[[:space:]]$d/${PREVIEW_COMMAND_FILE} gc$" | sed "s|^|cron $app |"
     for p in "$d"-pr-*; do
       n=\${p#"$d"-pr-}

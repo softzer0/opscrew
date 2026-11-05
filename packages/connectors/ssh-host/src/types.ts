@@ -474,6 +474,11 @@ export interface ApplySecrets {
    * writes it to `/srv/apps/<app>/values.env`, which only the deploy user can read.
    */
   previewValues?: string;
+  /**
+   * The previews' Cloudflare Origin CA certificate and its private key, PEM (`previews`): the
+   * step writes them to `/srv/edge/tls/<app>/origin.pem` (0644) and `origin.key` (0600).
+   */
+  previewTls?: { certificate: string; key: string };
 }
 
 export type SecretName = keyof ApplySecrets;

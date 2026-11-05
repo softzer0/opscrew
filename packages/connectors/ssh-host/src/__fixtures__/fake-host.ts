@@ -2062,6 +2062,7 @@ export class FakeHost implements RemoteExec {
           `recipe ${app}`,
           ...this.recipeFiles(dir).map((name) => `file ${app} ${name} ${sha256(this.files.get(`${dir}/${name}`) ?? "")}`),
           ...(this.files.has(`${dir}/values.env`) ? [`values ${app}`] : []),
+          ...(this.files.has(`/srv/edge/tls/${app}/origin.pem`) && this.files.has(`/srv/edge/tls/${app}/origin.key`) ? [`tls ${app}`] : []),
           ...(this.crontab ?? []).filter((line) => line.endsWith(` ${dir}/${PREVIEW_COMMAND_FILE} gc`)).map((line) => `cron ${app} ${line}`),
           ...[...this.dirs.keys()].flatMap((path) => {
             const n = preview.exec(path)?.[1];
@@ -2097,6 +2098,8 @@ export class FakeHost implements RemoteExec {
         !this.dirs.has(dir) &&
         this.recipeFiles(dir).length === 0 &&
         !this.files.has(`${dir}/values.env`) &&
+        !this.files.has(`${p.TLS_DIR}/origin.pem`) &&
+        !this.files.has(`${p.TLS_DIR}/origin.key`) &&
         numbers.every((n) => !this.dirs.has(`${dir}-pr-${n}`)) &&
         unlisted.length === 0;
       if (name.endsWith(".check")) return this.check(ok);
@@ -2115,6 +2118,8 @@ export class FakeHost implements RemoteExec {
         }
       }
       this.removeDir(dir);
+      this.files.delete(`${p.TLS_DIR}/origin.pem`);
+      this.files.delete(`${p.TLS_DIR}/origin.key`);
       return result();
     }
     const manifest = FakeHost.words(p.MANIFEST).map((entry) => [entry.slice(0, entry.indexOf(":")), entry.slice(entry.indexOf(":") + 1)]);
@@ -2123,6 +2128,8 @@ export class FakeHost implements RemoteExec {
       this.recipeFiles(dir).join(" ") === [...FakeHost.words(p.PATHS)].sort().join(" ") &&
       this.files.has(`${dir}/values.env`) &&
       this.fileModes.get(`${dir}/values.env`) === "600" &&
+      this.files.has(`${p.TLS_DIR}/origin.pem`) &&
+      this.fileModes.get(`${p.TLS_DIR}/origin.key`) === "600" &&
       deploy.keys.filter((key) => comment.test(key)).length === 1 &&
       deploy.keys.includes(p.LINE ?? "") &&
       tab.filter((line) => cron.test(line)).length === 1 &&
@@ -2130,7 +2137,12 @@ export class FakeHost implements RemoteExec {
     if (name.endsWith(".check")) return p.REWRITE === "true" ? this.check(false) : this.check(ok);
     if (name.endsWith(".verify")) return this.verify(ok, p);
     if (!this.cron) return fail("This server has no crontab command, so OpsCrew cannot add the hourly cleanup of idle previews.");
-    const [valuesB64 = "", ...lines] = input.split("\n");
+    const [valuesB64 = "", certB64 = "", keyB64 = "", ...lines] = input.split("\n");
+    const certificate = Buffer.from(certB64, "base64").toString("utf8");
+    const key = Buffer.from(keyB64, "base64").toString("utf8");
+    if (!certificate.startsWith("-----BEGIN CERTIFICATE-----")) {
+      return fail("The previews' certificate did not arrive on standard input, so OpsCrew changed nothing.");
+    }
     const values = Buffer.from(valuesB64, "base64").toString("utf8").replace(/\n$/, "");
     const names = values === "" ? [] : values.split("\n").map((line) => line.slice(0, line.indexOf("=")));
     if (names.join(" ") !== (p.VALUE_NAMES ?? "")) {
@@ -2145,7 +2157,11 @@ export class FakeHost implements RemoteExec {
     for (const stale of this.recipeFiles(dir)) if (!paths.includes(stale)) this.files.delete(`${dir}/${stale}`);
     this.files.set(`${dir}/values.env`, values === "" ? "" : `${values}\n`);
     this.fileModes.set(`${dir}/values.env`, "600");
-    deploy.keys = [...deploy.keys.filter((key) => !comment.test(key)), p.LINE ?? ""];
+    this.files.set(`${p.TLS_DIR}/origin.pem`, certificate);
+    this.fileModes.set(`${p.TLS_DIR}/origin.pem`, "644");
+    this.files.set(`${p.TLS_DIR}/origin.key`, key);
+    this.fileModes.set(`${p.TLS_DIR}/origin.key`, "600");
+    deploy.keys =[...deploy.keys.filter((key) => !comment.test(key)), p.LINE ?? ""];
     this.crontab = [...tab.filter((line) => !cron.test(line)), p.CRON_LINE ?? ""];
     return result();
   }

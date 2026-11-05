@@ -6,7 +6,13 @@
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { canonicalJson, isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
 import { z } from "zod";
-import { addonTaken, isOpensshPrivateKey, ownerGone } from "./addons";
+import {
+  addonTaken,
+  isOpensshPrivateKey,
+  isPemCertificate,
+  isPemPrivateKey,
+  ownerGone,
+} from "./addons";
 import {
   ADDON_KINDS,
   type AddonKind,
@@ -74,19 +80,18 @@ const PASSWORD_RE = /^[\x20-\x7e]{12,128}$/;
 const RUNNER_TOKEN_RE = /^[A-Za-z0-9_-]{16,512}$/;
 
 /**
- * How each secret is checked before anything is sent, what an invalid one says, and what a step
+ * How a secret is checked before anything is sent, what an invalid one says, and what a step
  * needs supplied (`needs`, for the refusal when a required secret is missing).
  */
-const SECRET_CHECKS: Record<
-  SecretName,
-  {
-    label: string;
-    needs: string;
-    valid: (value: string) => boolean;
-    invalid: string;
-    hint?: string;
-  }
-> = {
+interface SecretCheck<K extends SecretName> {
+  label: string;
+  needs: string;
+  valid: (value: NonNullable<ApplySecrets[K]>) => boolean;
+  invalid: string;
+  hint?: string;
+}
+
+const SECRET_CHECKS: { [K in SecretName]: SecretCheck<K> } = {
   tunnelToken: {
     label: "tunnel-token",
     needs: "the tunnel token",
@@ -161,6 +166,13 @@ const SECRET_CHECKS: Record<
       "The preview values must be lines of NAME=value, each name once, at most 64 KiB in all.",
     hint: "Check the preview environment's values file (.env.<environment>), then try again.",
   },
+  previewTls: {
+    label: "preview-tls",
+    needs: "the previews' certificate and its key",
+    valid: (value) => isPemCertificate(value.certificate) && isPemPrivateKey(value.key),
+    invalid: "The previews' certificate must be a PEM certificate and its key a PEM private key.",
+    hint: "Set up the preview environment again with OpsCrew to make a new certificate.",
+  },
 };
 
 /**
@@ -179,6 +191,40 @@ function isPreviewValues(text: string): boolean {
   );
 }
 
+/**
+ * Registers the supplied secret `name` with `redactor` (each preview value also on its own; of the
+ * previews' certificate, its key and each of its lines), then checks it.
+ */
+function checkSecret<K extends SecretName>(
+  name: K,
+  secrets: ApplySecrets,
+  redactor: Redactor,
+): void {
+  const supplied = secrets[name];
+  if (supplied === undefined) return;
+  const value: NonNullable<ApplySecrets[K]> = supplied;
+  const check: SecretCheck<K> = SECRET_CHECKS[name];
+  const valid = check.valid(value);
+  if (typeof value === "string") {
+    redactor.addLiteral(value, check.label);
+    if (name === "previewValues") {
+      for (const text of previewValueTexts(value)) redactor.addLiteral(text, check.label);
+    }
+  } else {
+    // Each line too: a failed script's detail joins its last lines.
+    for (const text of [value.key, ...value.key.split(/\r?\n/)]) {
+      redactor.addLiteral(text, check.label);
+    }
+  }
+  if (!valid) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      check.invalid,
+      check.hint === undefined ? {} : { hint: check.hint },
+    );
+  }
+}
+
 /** Each preview value, the text after the first `=` of each line (so each is redacted alone). */
 function previewValueTexts(text: string): string[] {
   return text.split("\n").map((line) => line.slice(line.indexOf("=") + 1));
@@ -186,15 +232,19 @@ function previewValueTexts(text: string): string[] {
 
 /**
  * What goes on stdin for a step's secrets: one line each, in order; the Beszel hub's key and the
- * preview values (several lines) as their base64. Undefined when none is supplied.
+ * preview values (several lines) as their base64, the previews' certificate and key as two lines
+ * of base64. Undefined when none is supplied.
  */
 function stdinOf(names: readonly SecretName[], secrets: ApplySecrets): string | undefined {
   if (names.every((name) => secrets[name] === undefined)) return undefined;
+  const b64 = (text: string) => Buffer.from(text, "utf8").toString("base64");
   const lines = names.map((name) => {
+    if (name === "previewTls") {
+      const tls = secrets.previewTls;
+      return `${b64(tls?.certificate ?? "")}\n${b64(tls?.key ?? "")}`;
+    }
     const value = secrets[name] ?? "";
-    return name === "beszelHubKey" || name === "previewValues"
-      ? Buffer.from(value, "utf8").toString("base64")
-      : value;
+    return name === "beszelHubKey" || name === "previewValues" ? b64(value) : value;
   });
   return `${lines.join("\n")}\n`;
 }
@@ -748,20 +798,7 @@ export async function applyHostPlan(
   const redactor = new Redactor();
   const secrets = opts.secrets ?? {};
   for (const name of Object.keys(SECRET_CHECKS) as SecretName[]) {
-    const value = secrets[name];
-    if (value === undefined) continue;
-    const check = SECRET_CHECKS[name];
-    redactor.addLiteral(value, check.label);
-    if (name === "previewValues") {
-      for (const text of previewValueTexts(value)) redactor.addLiteral(text, check.label);
-    }
-    if (!check.valid(value)) {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        check.invalid,
-        check.hint === undefined ? {} : { hint: check.hint },
-      );
-    }
+    checkSecret(name, secrets, redactor);
   }
 
   // Build every script first: bad parameters fail before anything changes.

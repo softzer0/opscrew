@@ -3049,15 +3049,17 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  *   standing approval CI acts under. Its `files` as `renderPreviewRecipe` renders them, by path in
  *   `/srv/apps/<app>` (`bin/opscrew-preview`, `template/compose.yaml`), each within 64 KiB, and
  *   `values.env` from the preview values supplied at apply as `previewValues` (the plan lists only
- *   their `valueNames`); the preview key `publicKey` of `repository` as `previewKeyLine` (the
- *   app's lines, by its forced command or the comment, replaced); and the deploy user's cron line
- *   for idle previews
+ *   their `valueNames`); the previews' Cloudflare Origin CA certificate and key supplied at apply
+ *   as `previewTls`, in `/srv/edge/tls/<app>` (`origin.pem` 0644, `origin.key` 0600; the plan
+ *   says only that it is installed); the preview key `publicKey` of `repository` as
+ *   `previewKeyLine` (the app's lines, by its forced command or the comment, replaced); and the
+ *   deploy user's cron line for idle previews
  *   (`previewCronLine`), with cron installed first on a server the user owns. With `facts`, it is
  *   refused while they show another app on the server, and it is in place when they show all of
- *   it as planned, unless `secretsChanged` (the values changed). Off (`facts` needed), the key
- *   line goes, then the cron line, then each preview the facts list through
- *   `opscrew-preview down <n>`, then the folder. Either way the plan is `deleteData`: previews
- *   end with their data.
+ *   it as planned, unless `secretsChanged` (the values or the certificate changed). Off (`facts`
+ *   needed), the key line goes, then the cron line, then each preview the facts list through
+ *   `opscrew-preview down <n>`, then the folder and the certificate's. Either way the plan is
+ *   `deleteData`: previews end with their data.
  *
  * `runAs: "login"` on a server OpsCrew created (the deploy user, no root, no host record, except
  * for `monitoring`); `"root"` on a server the user owns. `facts` (from `inspectHost`) name the app
@@ -3089,7 +3091,8 @@ export function planAddon<K extends AddonPlanKind>(
     connector?: AddonConnector;
     /**
      * Beszel's, Alloy's or the previews': a secret the step writes is new on this computer (a
-     * rotated token, a new password of the monitoring login, changed preview values). The step is
+     * rotated token, a new password of the monitoring login, changed preview values or a new
+     * certificate of the previews). The step is
      * a change with the `rewrite` parameter, even when the facts show it running as planned, and
      * its check never skips it.
      */
@@ -3205,6 +3208,7 @@ function previewsPlan(
   options: { enable: unknown; off: boolean; secretsChanged: boolean },
 ): HostPlan {
   const dir = appDirs(app).app;
+  const tlsDir = `${EDGE_DIR}/tls/${app}`;
   const command = previewCommand(app);
   const comment = previewKeyComment(repository, app);
   const recipe = facts?.previews.find((item) => item.app === app);
@@ -3226,10 +3230,10 @@ function previewsPlan(
     const previews = numbers.length === 0 ? "" : ` (${listText(numbers.map((n) => `pr-${n}`))})`;
     item = step(
       "previews",
-      `Remove the previews of "${app}"${previews} with their data, their recipe and values, the preview key of ${repository} and the hourly cleanup`,
+      `Remove the previews of "${app}"${previews} with their data, their recipe, values and certificate, the preview key of ${repository} and the hourly cleanup`,
       "change",
       { remove: true, runAs, repository, numbers: numbers.join(" ") },
-      `The app's preview key lines (forced command ${command}, or comment ${comment}) go first, so no new preview starts, then the cleanup's cron line; a preview this plan does not list stops it there; then each listed preview goes through "${command} down <n>", then ${dir} with everything in it.`,
+      `The app's preview key lines (forced command ${command}, or comment ${comment}) go first, so no new preview starts, then the cleanup's cron line; a preview this plan does not list stops it there; then each listed preview goes through "${command} down <n>", then ${dir} with everything in it, and the previews' certificate in ${tlsDir}.`,
       "app",
     );
     if (recipe === undefined && keys.length === 0 && broken.length === 0) {
@@ -3248,7 +3252,7 @@ function previewsPlan(
     const names = settings.valueNames.length === 0 ? "none" : listText(settings.valueNames);
     item = step(
       "previews",
-      `Let pull requests of ${repository} run previews of "${app}" on this server: the recipe in ${dir}, a key (${keyFingerprint(publicKey)}) that can run only ${command}, and an hourly cleanup of idle previews`,
+      `Let pull requests of ${repository} run previews of "${app}" on this server: the recipe in ${dir}, the previews' Cloudflare Origin CA certificate in ${tlsDir}, a key (${keyFingerprint(publicKey)}) that can run only ${command}, and an hourly cleanup of idle previews`,
       "change",
       {
         runAs,
@@ -3262,13 +3266,14 @@ function previewsPlan(
           ]),
         ),
       },
-      `The recipe's files go to ${dir}, and the preview values (${names}) to its values.env, which only the deploy user can read; the values are supplied at apply time, never part of this plan. The key's line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only ${command}, which creates, updates and deletes previews within the recipe's bounds; the app's other preview key lines (that command, or the comment ${comment}) are replaced. The deploy user's crontab runs "${command} gc" at minute ${cron.split(" ")[0]} of every hour${runAs === "root" ? ", with cron installed first when it is missing" : ""}. Each preview's data is deleted when it ends.`,
+      `The recipe's files go to ${dir}, and the preview values (${names}) to its values.env, which only the deploy user can read; the certificate goes to ${tlsDir}/origin.pem and its private key to origin.key, which only the deploy user can read; the values, the certificate and its key are supplied at apply time, never part of this plan. The key's line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only ${command}, which creates, updates and deletes previews within the recipe's bounds; the app's other preview key lines (that command, or the comment ${comment}) are replaced. The deploy user's crontab runs "${command} gc" at minute ${cron.split(" ")[0]} of every hour${runAs === "root" ? ", with cron installed first when it is missing" : ""}. Each preview's data is deleted when it ends.`,
       "app",
     );
     if (options.secretsChanged) {
       item = { ...item, params: { ...item.params, rewrite: true } };
     } else if (
       recipe?.values === true &&
+      recipe.tls &&
       sameFiles(recipe.files, settings.files) &&
       keys.length === 1 &&
       keys[0] === previewKeyLine(publicKey, repository, app) &&

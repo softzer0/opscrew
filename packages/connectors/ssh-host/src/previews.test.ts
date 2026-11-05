@@ -1,7 +1,8 @@
 // Feature 022: the preview environment's host plan (T2206): its recipe, values, key and cleanup.
 import { randomBytes } from "node:crypto";
-import { statSync } from "node:fs";
+import { rmSync, statSync } from "node:fs";
 import { canonicalJson, sha256Hex } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
 import { FakeHost } from "./__fixtures__/fake-host";
 import {
@@ -45,6 +46,20 @@ const RECIPE = {
   "template/compose.yaml": "services:\n  web:\n    image: ghcr.io/acme/shop\n",
   [`template/edge/sites/${APP}-pr-@N@.caddy`]: "pr-@N@.shop.example.com {\n}\n",
 };
+
+const TLS_DIR = `/srv/edge/tls/${APP}`;
+
+/** A PEM certificate's shape around random base64, made at runtime. */
+function fakeCertificate(): string {
+  const body = randomBytes(600)
+    .toString("base64")
+    .match(/.{1,64}/g)
+    ?.join("\n");
+  return `-----BEGIN CERTIFICATE-----\n${body}\n-----END CERTIFICATE-----\n`;
+}
+
+/** The previews' Origin CA certificate and key, made at runtime. */
+const TLS = { certificate: fakeCertificate(), key: fakeSecret("private-key-pem") };
 
 /** The preview values, made at runtime. */
 function previewValues(): string {
@@ -133,6 +148,10 @@ describe('planAddon("previews")', () => {
     expect(step.reason).toContain(`minute ${previewCronLine(APP).split(" ")[0]} of every hour`);
     expect(step.reason).toContain("cron installed first");
     expect(step.reason).toContain("never part of this plan");
+    // The plan says the certificate is installed, and holds no PEM.
+    expect(step.title).toContain(`the previews' Cloudflare Origin CA certificate in ${TLS_DIR}`);
+    expect(step.reason).toContain(`${TLS_DIR}/origin.pem`);
+    expect(canonicalJson(plan)).not.toContain("-----BEGIN");
     expect(onlyStep(previewsPlan({ runAs: "login" })).reason).not.toContain("cron installed");
   });
 
@@ -185,14 +204,16 @@ describe('planAddon("previews")', () => {
   it("is refused by the apply in a plan that does not delete data, before anything runs", async () => {
     const fake = await previewServer();
     const on = previewsPlan({ facts: await inspectHost(fake) });
-    await applyApproved(fake, on, { secrets: { previewValues: previewValues() } });
+    await applyApproved(fake, on, { secrets: { previewTls: TLS, previewValues: previewValues() } });
     const off = previewsPlan({ facts: await inspectHost(fake), off: true });
     for (const plan of [on, off]) {
       expect(onlyStep(plan).state).toBe("change");
       const { deleteData: _, ...sneaky } = plan;
       fake.calls.length = 0;
       const refused = await rejection(
-        applyApproved(fake, sneaky, { secrets: { previewValues: previewValues() } }),
+        applyApproved(fake, sneaky, {
+          secrets: { previewTls: TLS, previewValues: previewValues() },
+        }),
       );
       expect(refused.code).toBe("INVALID_INPUT");
       expect(refused.message).toContain("deleteData");
@@ -205,12 +226,37 @@ describe('planAddon("previews")', () => {
     const plan = previewsPlan({ facts: await inspectHost(fake) });
     fake.calls.length = 0;
     for (const previewValues of ["not a line\n", "A=1\nA=2\n", `A=${"x".repeat(64 * 1024)}`]) {
-      const refused = await rejection(applyApproved(fake, plan, { secrets: { previewValues } }));
+      const refused = await rejection(
+        applyApproved(fake, plan, { secrets: { previewTls: TLS, previewValues } }),
+      );
       expect(refused.code).toBe("INVALID_INPUT");
       expect(refused.message).toContain("NAME=value");
     }
     const missing = await rejection(applyApproved(fake, plan));
     expect(missing.message).toContain("needs the preview values");
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("checks the previews' certificate and key as PEM before anything is sent, and needs them", async () => {
+    const fake = await previewServer();
+    const plan = previewsPlan({ facts: await inspectHost(fake) });
+    fake.calls.length = 0;
+    for (const previewTls of [
+      { certificate: TLS.key, key: TLS.key },
+      { certificate: TLS.certificate, key: TLS.certificate },
+      { certificate: `${TLS.certificate}junk\n`, key: TLS.key },
+      { certificate: TLS.certificate, key: "" },
+    ]) {
+      const refused = await rejection(
+        applyApproved(fake, plan, { secrets: { previewTls, previewValues: previewValues() } }),
+      );
+      expect(refused.code).toBe("INVALID_INPUT");
+      expect(refused.message).toContain("PEM certificate and its key a PEM private key");
+    }
+    const missing = await rejection(
+      applyApproved(fake, plan, { secrets: { previewValues: previewValues() } }),
+    );
+    expect(missing.message).toContain("needs the previews' certificate and its key");
     expect(fake.calls).toEqual([]);
   });
 });
@@ -223,7 +269,9 @@ describe("previews on a server the user owns", () => {
     const values = previewValues();
     const plan = previewsPlan({ facts: await inspectHost(fake), key });
     fake.calls.length = 0;
-    const result = await applyApproved(fake, plan, { secrets: { previewValues: values } });
+    const result = await applyApproved(fake, plan, {
+      secrets: { previewTls: TLS, previewValues: values },
+    });
     expect(result).toEqual({ applied: ["previews"], skipped: [] });
     const calls = fake.calls.filter((call) => call.name.startsWith("previews"));
     expect(calls.map((call) => [call.name, call.asUser ?? "root"])).toEqual([
@@ -236,7 +284,15 @@ describe("previews on a server the user owns", () => {
     // The values on stdin first (one line of base64), then the recipe's files.
     const input = calls.find((call) => call.name === "previews.apply")?.input ?? "";
     expect(input.split("\n")[0]).toBe(Buffer.from(values).toString("base64"));
+    // Then the certificate and its key, a line of base64 each.
+    expect(input.split("\n").slice(1, 3)).toEqual(
+      [TLS.certificate, TLS.key].map((text) => Buffer.from(text).toString("base64")),
+    );
     expect(fake.files.get(`${DIR}/values.env`)).toBe(values);
+    expect(fake.files.get(`${TLS_DIR}/origin.pem`)).toBe(TLS.certificate);
+    expect(fake.files.get(`${TLS_DIR}/origin.key`)).toBe(TLS.key);
+    expect(everythingButStdin(fake, plan)).not.toContain(TLS.key.split("\n")[1]);
+    expect(canonicalJson(plan)).not.toContain(TLS.key.split("\n")[1]);
     expect(fake.files.get(`${DIR}/bin/opscrew-preview`)).toBe(COMMAND);
     expect(fake.users.get("deploy")?.keys).toContain(previewKeyLine(key, REPOSITORY, APP));
     expect(fake.crontab).toEqual([previewCronLine(APP)]);
@@ -254,6 +310,7 @@ describe("previews on a server the user owns", () => {
           Object.entries(RECIPE).map(([path, text]) => [path, sha256Hex(text)]),
         ),
         values: true,
+        tls: true,
         cron: [previewCronLine(APP)],
         numbers: [],
       },
@@ -269,8 +326,16 @@ describe("previews on a server the user owns", () => {
     expect(onlyStep(rewrite)).toMatchObject({ state: "change", params: { rewrite: true } });
     expect(hostPlanHash(rewrite)).not.toBe(hostPlanHash(same));
     const next = previewValues();
-    await applyApproved(fake, rewrite, { secrets: { previewValues: next } });
+    const renewed = { certificate: fakeCertificate(), key: fakeSecret("private-key-pem") };
+    await applyApproved(fake, rewrite, { secrets: { previewTls: renewed, previewValues: next } });
     expect(fake.files.get(`${DIR}/values.env`)).toBe(next);
+    expect(fake.files.get(`${TLS_DIR}/origin.key`)).toBe(renewed.key);
+
+    // A missing key file is a change.
+    fake.files.delete(`${TLS_DIR}/origin.key`);
+    const noKey = await inspectHost(fake);
+    expect(noKey.previews[0]?.tls).toBe(false);
+    expect(onlyStep(previewsPlan({ facts: noKey, key })).state).toBe("change");
 
     // A changed recipe, or another key, is a change too.
     const changed = { ...RECIPE, "settings.env": `APP=${APP}\nCAP=5\nLIFETIME_DAYS=7\n` };
@@ -283,7 +348,7 @@ describe("previews on a server the user owns", () => {
     const key = ed25519PublicKey();
     const install = async () =>
       applyApproved(fake, previewsPlan({ facts: await inspectHost(fake), key }), {
-        secrets: { previewValues: previewValues() },
+        secrets: { previewTls: TLS, previewValues: previewValues() },
       });
     const state = async () => onlyStep(previewsPlan({ facts: await inspectHost(fake), key })).state;
     await install();
@@ -309,10 +374,26 @@ describe("previews on a server the user owns", () => {
     const value = randomBytes(12).toString("hex");
     fake.failScripts.set("previews.apply", `the server printed ${value} back`);
     const refused = await rejection(
-      applyApproved(fake, plan, { secrets: { previewValues: `API_KEY=${value}\nMODE=preview\n` } }),
+      applyApproved(fake, plan, {
+        secrets: { previewTls: TLS, previewValues: `API_KEY=${value}\nMODE=preview\n` },
+      }),
     );
     expect(refused.message).toContain("the server printed");
     expect(refused.message).not.toContain(value);
+  });
+
+  it("redacts the certificate's key, whole or a line of it, in what the apply reports", async () => {
+    const fake = await previewServer();
+    const plan = previewsPlan({ facts: await inspectHost(fake) });
+    const line = TLS.key.split("\n")[2] ?? "";
+    for (const printed of [TLS.key, line]) {
+      fake.failScripts.set("previews.apply", `the server printed ${printed}`);
+      const refused = await rejection(
+        applyApproved(fake, plan, { secrets: { previewTls: TLS, previewValues: previewValues() } }),
+      );
+      expect(refused.message).toContain("the server printed");
+      expect(refused.message).not.toContain(line);
+    }
   });
 
   it("keeps the preview key through the deploy-key step, which writes exactly the apps' deploy keys", async () => {
@@ -321,7 +402,7 @@ describe("previews on a server the user owns", () => {
     await applyApproved(
       fake,
       previewsPlan({ facts: await inspectHost(fake), key, valueNames: [] }),
-      { secrets: { previewValues: "" } },
+      { secrets: { previewTls: TLS, previewValues: "" } },
     );
     expect(fake.files.get(`${DIR}/values.env`)).toBe("");
     const desired = desiredFor(fake, { app: APP, hostnames: [] });
@@ -336,7 +417,7 @@ describe("previews on a server the user owns", () => {
     const fake = await previewServer();
     const key = ed25519PublicKey();
     await applyApproved(fake, previewsPlan({ facts: await inspectHost(fake), key }), {
-      secrets: { previewValues: previewValues() },
+      secrets: { previewTls: TLS, previewValues: previewValues() },
     });
     addPreview(fake, 42);
     addPreview(fake, 7);
@@ -352,8 +433,9 @@ describe("previews on a server the user owns", () => {
     expect(off.deleteData).toBe(true);
     const step = onlyStep(off);
     expect(step.title).toBe(
-      `Remove the previews of "${APP}" (pr-7 and pr-42) with their data, their recipe and values, the preview key of ${REPOSITORY} and the hourly cleanup`,
+      `Remove the previews of "${APP}" (pr-7 and pr-42) with their data, their recipe, values and certificate, the preview key of ${REPOSITORY} and the hourly cleanup`,
     );
+    expect(step.reason).toContain(`the previews' certificate in ${TLS_DIR}`);
     expect(step.params).toEqual({
       remove: true,
       runAs: "root",
@@ -363,6 +445,7 @@ describe("previews on a server the user owns", () => {
     expect((await applyApproved(fake, off)).applied).toEqual(["previews"]);
     expect(fake.previewDowns).toEqual([`${APP} 7`, `${APP} 42`]);
     expect([...fake.files.keys()].some((path) => path.startsWith(`${DIR}/`))).toBe(false);
+    expect([...fake.files.keys()].some((path) => path.startsWith(`${TLS_DIR}/`))).toBe(false);
     expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY, check]);
     expect(fake.crontab).toEqual(["0 3 * * * /usr/local/bin/backup"]);
 
@@ -383,7 +466,9 @@ describe("previews on a server the user owns", () => {
     });
     const plan = previewsPlan({ runAs: "login", facts: await inspectHost(fake) });
     fake.calls.length = 0;
-    const result = await applyApproved(fake, plan, { secrets: { previewValues: previewValues() } });
+    const result = await applyApproved(fake, plan, {
+      secrets: { previewTls: TLS, previewValues: previewValues() },
+    });
     expect(result.applied).toEqual(["previews"]);
     expect(fake.names()).toEqual(["previews.check", "previews.apply", "previews.verify"]);
     expect(fake.calls.every((call) => !call.sudo && call.asUser === undefined)).toBe(true);
@@ -413,8 +498,9 @@ esac`,
   const scriptsOf = (plan: HostPlan) => stepScripts(plan, onlyStep(plan));
   /** Under the harness's root, as the scripts see a path there. */
   const rooted = (h: ShellHarness, text: string) => text.replaceAll("/srv/", `${h.root}/srv/`);
-  const stdin = (values: string, plan: HostPlan) =>
-    `${Buffer.from(values).toString("base64")}\n${scriptsOf(plan).payload ?? ""}`;
+  const b64 = (text: string) => Buffer.from(text).toString("base64");
+  const stdin = (values: string, plan: HostPlan, tls = TLS) =>
+    `${b64(values)}\n${b64(tls.certificate)}\n${b64(tls.key)}\n${scriptsOf(plan).payload ?? ""}`;
 
   it("writes the recipe, the values, the key line and the cron line, replacing only their own", () => {
     const key = ed25519PublicKey();
@@ -443,12 +529,17 @@ esac`,
       for (const [path, text] of Object.entries(RECIPE))
         expect(h.read(`${DIR}/${path}`)).toBe(text);
       expect(h.read(`${DIR}/values.env`)).toBe(values);
+      expect(h.read(`${TLS_DIR}/origin.pem`)).toBe(TLS.certificate);
+      expect(h.read(`${TLS_DIR}/origin.key`)).toBe(TLS.key);
       // Git Bash keeps no Unix modes.
       if (process.platform !== "win32") {
-        const mode = (path: string) => statSync(h.native(`${DIR}/${path}`)).mode & 0o777;
-        expect([mode("bin/opscrew-preview"), mode("settings.env"), mode("values.env")]).toEqual([
-          0o755, 0o644, 0o600,
-        ]);
+        const mode = (path: string) => statSync(h.native(path)).mode & 0o777;
+        expect(
+          ["bin/opscrew-preview", "settings.env", "values.env"].map((f) => mode(`${DIR}/${f}`)),
+        ).toEqual([0o755, 0o644, 0o600]);
+        expect(
+          [TLS_DIR, `${TLS_DIR}/origin.pem`, `${TLS_DIR}/origin.key`].map((f) => mode(f)),
+        ).toEqual([0o700, 0o644, 0o600]);
       }
       expect(h.exists(`${DIR}/template/old`)).toBe(false);
       expect(h.read(`${DIR}/previews.log`)).toBe("a line\n");
@@ -460,6 +551,10 @@ esac`,
       );
       expect(h.run(scripts.verify).status).toBe(0);
       expect(h.run(scripts.check).stdout).toContain("state=in-place");
+      // Without the certificate's key the step is a change.
+      rmSync(h.native(`${TLS_DIR}/origin.key`));
+      expect(h.run(scripts.verify).status).not.toBe(0);
+      expect(h.run(scripts.check).stdout).toContain("state=change");
       // With new values the check never skips the step.
       const rewrite = scriptsOf(previewsPlan({ runAs: "login", key, secretsChanged: true }));
       expect(h.run(rewrite.check).stdout).toContain("state=change");
@@ -478,6 +573,17 @@ esac`,
         expect(refused.stderr).toContain("not the ones this plan lists");
         expect(h.exists(DIR)).toBe(false);
         expect(h.exists(KEYS)).toBe(false);
+      }
+      // Nor without the certificate or its key.
+      for (const [tls, what] of [
+        [{ certificate: "", key: TLS.key }, "certificate did not arrive"],
+        [{ certificate: TLS.certificate, key: "" }, "certificate key did not arrive"],
+      ] as const) {
+        const refused = h.run(scriptsOf(plan).apply, stdin("API_KEY=x\nMODE=y\n", plan, tls));
+        expect(refused.status).not.toBe(0);
+        expect(refused.stderr).toContain(what);
+        expect(h.exists(DIR)).toBe(false);
+        expect(h.exists(TLS_DIR)).toBe(false);
       }
       // No values at all: an empty values file.
       const none = previewsPlan({ runAs: "login", valueNames: [] });
@@ -514,6 +620,7 @@ esac`,
       expect(removed.status, removed.stderr).toBe(0);
       expect(h.read("/srv/apps/downs.log")).toBe("down 7\ndown 42\n");
       expect(h.exists(DIR)).toBe(false);
+      expect(h.exists(TLS_DIR)).toBe(false);
       expect(h.exists(`/srv/apps/${APP}-pr-42`)).toBe(false);
       expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}\n`);
       expect(h.read("/state/crontab")).toBe("0 3 * * * backup\n");
@@ -614,6 +721,11 @@ esac`,
     try {
       for (const [path, text] of Object.entries(RECIPE)) h.write(`${DIR}/${path}`, text);
       h.write(`${DIR}/values.env`, "A=1\n");
+      h.write(`${TLS_DIR}/origin.pem`, TLS.certificate);
+      h.write(`${TLS_DIR}/origin.key`, TLS.key);
+      // Only the key: no certificate for that one.
+      for (const [path, text] of Object.entries(RECIPE)) h.write(`/srv/apps/blog/${path}`, text);
+      h.write("/srv/edge/tls/blog/origin.key", TLS.key);
       h.write(`${DIR}/previews.log`, "a line\n");
       h.write(`${DIR}/.lock`, "");
       h.write(`/srv/apps/${APP}-pr-42/compose.yaml`, "x\n");
@@ -623,13 +735,16 @@ esac`,
       h.write("/state/crontab", `0 3 * * * backup\n${rooted(h, previewCronLine(APP))}\n`);
       const run = h.run(buildScript("previews.inspect", {}, PREVIEWS_SNIPPET, { tolerant: true }));
       expect(run.status, run.stderr).toBe(0);
+      const files = Object.fromEntries(
+        Object.entries(RECIPE).map(([path, text]) => [path, sha256Hex(text)]),
+      );
       expect(parsePreviews(run.stdout.replaceAll(`${h.root}/srv/`, "/srv/"))).toEqual([
+        { app: "blog", files, values: false, tls: false, cron: [], numbers: [] },
         {
           app: APP,
-          files: Object.fromEntries(
-            Object.entries(RECIPE).map(([path, text]) => [path, sha256Hex(text)]),
-          ),
+          files,
           values: true,
+          tls: true,
           cron: [previewCronLine(APP)],
           numbers: [42],
         },
