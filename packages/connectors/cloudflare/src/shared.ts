@@ -187,8 +187,13 @@ const NAMED_OTHERS = 3;
 
 /** A hostname OpsCrew writes into an expression: lower-case labels joined by dots. */
 const HOSTNAME = /^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/;
-/** The hostname set at the start of an OpsCrew expression: quoted names, separated by spaces. */
-const HOST_SET = /^\(http\.host in \{("[a-z0-9.-]+"(?: "[a-z0-9.-]+")*)\}\)/;
+/**
+ * {@link HOSTNAME}, or a wildcard name: one leftmost `*.` label followed by one. A wildcard has
+ * no origin pull setting of its own, and a rule matches it with `ends_with(http.host, ".<name>")`.
+ */
+const HOSTNAME_OR_WILDCARD = /^(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+$/;
+/** The names in an OpsCrew expression's hostname condition: a wildcard's suffix, or a quoted name. */
+const CONDITION_NAMES = /ends_with\(http\.host, "\.([a-z0-9.-]+)"\)|"([a-z0-9.-]+)"/g;
 
 /** What `inspectShared` read. */
 export interface SharedFacts {
@@ -285,7 +290,9 @@ export interface SharedRecord {
 }
 
 const HostnameList = z.array(z.string().regex(HOSTNAME));
-const Hostnames = HostnameList.optional();
+/** Rule and origin certificate hostnames, which may be wildcards. */
+const NameList = z.array(z.string().regex(HOSTNAME_OR_WILDCARD));
+const Hostnames = NameList.optional();
 const Id = z.string().min(1);
 const Sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 
@@ -313,7 +320,7 @@ export const SharedRecordSchema: z.ZodType<SharedRecord> = z.strictObject({
       origin: z
         .strictObject({
           id: Id,
-          hostnames: HostnameList,
+          hostnames: NameList,
           expiresAt: z.iso.datetime(),
           sha256: Sha256,
           superseded: z.array(Id),
@@ -476,10 +483,9 @@ export class SharedApplyError extends OpsCrewError {
 
 /**
  * Reads the zone's plan and the entrypoint rulesets of OpsCrew's phases (the redirect phase only
- * with `redirect`); with `tls`, the zone's origin and client
- * certificates and the origin pull settings of the proxied hostnames and of those the record's
- * client certificate is on or leaving; with `minTls`, the zone's minimum
- * TLS version and its proxied A, AAAA and CNAME records; and, when `access` is set, the account's
+ * with `redirect`); with `tls`, the zone's origin and client certificates and the origin pull
+ * settings of the proxied hostnames (a wildcard has none) and of those the record's client
+ * certificate is on or leaving; with `minTls`, the zone's minimum TLS version and its proxied A, AAAA and CNAME records; and, when `access` is set, the account's
  * Zero Trust organization and its one-time PIN login method. A TLS read the token may not make
  * (HTTP 403) leaves its facts out and names the permission in `deniedTls`. Read-only.
  */
@@ -536,7 +542,7 @@ export async function inspectShared(
   if (opts.tls) {
     const mine = opts.tls.record?.tls?.client;
     const hostnames = sortedUnique([
-      ...appHostnames(opts.tls.proxied),
+      ...appHostnames(opts.tls.proxied).filter((h) => !isWildcard(h)),
       ...(mine?.enabled ?? []),
       ...(mine?.retiring ?? []),
     ]);
@@ -593,7 +599,11 @@ export function planShared(
     );
   }
   const hostnames = Object.fromEntries(
-    REFS.map((ref) => [ref, appHostnames(desired.hostnames[ref] ?? [])]),
+    REFS.map((ref) => [
+      ref,
+      // No wildcard in the www redirect: its target drops a leading `www.`, which a wildcard lacks.
+      appHostnames(desired.hostnames[ref] ?? [], ref !== "opscrew-www-redirect"),
+    ]),
   ) as Record<SharedRuleRef, string[]>;
   // Origin TLS and the zone's minimum TLS go first: the apply's order (contract "Order of the apply").
   const tls: TlsPlan = desired.tls
@@ -694,6 +704,8 @@ function planTls(facts: SharedFacts, want: DesiredTls, previous: TlsRecord | und
     );
   }
   const proxied = appHostnames(want.proxied);
+  // Per-hostname origin pulls are for plain names only: a wildcard has no setting of its own.
+  const pulled = proxied.filter((h) => !isWildcard(h));
   const listed = (id: string) => read.origin.some((c) => c.id === id);
   // The record follows what Cloudflare lists.
   const recorded = kept.client;
@@ -708,12 +720,12 @@ function planTls(facts: SharedFacts, want: DesiredTls, previous: TlsRecord | und
   const holds = (hostname: string) =>
     client !== undefined && heldBy(read.aop, hostname) === client.id;
   const enabled = client ? sortedUnique([...client.enabled, ...client.retiring]).filter(holds) : [];
-  const retiring = enabled.filter((h) => !proxied.includes(h));
+  const retiring = enabled.filter((h) => !pulled.includes(h));
   const tls: TlsRecord = {
     ...(origin ? { origin } : {}),
     ...(client ? { client: { ...client, enabled, retiring } } : {}),
   };
-  const claimed = proxied.filter((hostname) => {
+  const claimed = pulled.filter((hostname) => {
     const holder = heldBy(read.aop, hostname);
     return holder !== undefined && holder !== client?.id;
   });
@@ -721,14 +733,14 @@ function planTls(facts: SharedFacts, want: DesiredTls, previous: TlsRecord | und
 
   const changes: SharedChange[] = [];
   let sha256 = client?.sha256;
-  if (want.client && proxied.length > 0 && want.client.sha256 !== sha256) {
+  if (want.client && pulled.length > 0 && want.client.sha256 !== sha256) {
     if (sha256 !== undefined) throw clientCertificateDiffers();
     sha256 = want.client.sha256;
     changes.push({ kind: "upload-client-certificate", sha256 });
   }
   const uploading = changes.length > 0;
   if (sha256 !== undefined) {
-    const enable = proxied.filter((h) => uploading || !isOn(read.aop, h, client?.id));
+    const enable = pulled.filter((h) => uploading || !isOn(read.aop, h, client?.id));
     if (enable.length > 0) {
       changes.push({ kind: "enable-client-certificate", hostnames: enable, sha256 });
     }
@@ -752,7 +764,7 @@ function planTls(facts: SharedFacts, want: DesiredTls, previous: TlsRecord | und
   const { served } = want;
   const disable = served ? retiring.filter((h) => !served.requiring.includes(h)) : [];
   if (disable.length > 0) changes.push({ kind: "disable-client-certificate", hostnames: disable });
-  if (client !== undefined && proxied.length === 0 && disable.length === retiring.length) {
+  if (client !== undefined && pulled.length === 0 && disable.length === retiring.length) {
     changes.push({ kind: "delete-client-certificate", id: client.id });
   }
   if (served && origin) {
@@ -881,14 +893,19 @@ function sharedPlanHash(plan: Pick<SharedPlan, "zoneId" | "accountId" | "changes
   return sha256Hex(canonicalJson({ zoneId, accountId, changes, expect }));
 }
 
-/** The app's hostnames: lower case, unique, sorted; anything that is not a hostname is refused. */
-function appHostnames(hostnames: readonly string[]): string[] {
+/**
+ * The app's hostnames: lower case, unique, sorted; anything that is not a hostname (or, with
+ * `wildcards`, a wildcard name) is refused.
+ */
+function appHostnames(hostnames: readonly string[], wildcards = true): string[] {
   const names = [...new Set(hostnames.map(normalizeHostName))].sort();
-  const invalid = names.filter((name) => !HOSTNAME.test(name));
+  const pattern = wildcards ? HOSTNAME_OR_WILDCARD : HOSTNAME;
+  const invalid = names.filter((name) => !pattern.test(name));
   if (invalid.length > 0) {
+    const wildcard = wildcards ? ", after at most one leading `*.`" : "";
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `${listText(invalid.map((name) => JSON.stringify(name)))} cannot go into a Cloudflare rule: a hostname has only letters, digits, hyphens and dots.`,
+      `${listText(invalid.map((name) => JSON.stringify(name)))} cannot go into a Cloudflare rule: a hostname has only letters, digits, hyphens and dots${wildcard}.`,
       { hint: "Check the app's domain and hostnames, then run the command again." },
     );
   }
@@ -903,7 +920,7 @@ function ruleBody(ref: SharedRuleRef, hostnames: readonly string[]): CloudflareR
   return {
     ref,
     description: template.description,
-    expression: `(http.host in {${hostnames.map((h) => `"${h}"`).join(" ")}})${template.suffix}`,
+    expression: `${hostCondition(hostnames)}${template.suffix}`,
     action: template.action,
     ...(template.parameters ? { action_parameters: structuredClone(template.parameters) } : {}),
     enabled: true,
@@ -914,13 +931,34 @@ function ownRule(ref: SharedRuleRef, entrypoint: EntrypointRuleset | undefined) 
   return entrypoint?.rules.find((rule) => rule.ref === ref);
 }
 
-/** The hostname set of an OpsCrew expression, or undefined when the rest is not the template's. */
+function isWildcard(hostname: string): boolean {
+  return hostname.startsWith("*.");
+}
+
+/**
+ * The condition an OpsCrew expression starts with: `(http.host in {"a" "b"})` for plain names; a
+ * wildcard `*.<name>` adds `ends_with(http.host, ".<name>")`, joined with `or`.
+ */
+function hostCondition(hostnames: readonly string[]): string {
+  const plain = hostnames.filter((h) => !isWildcard(h));
+  const parts = [
+    ...(plain.length > 0 ? [`http.host in {${plain.map((h) => `"${h}"`).join(" ")}}`] : []),
+    ...hostnames.filter(isWildcard).map((h) => `ends_with(http.host, "${h.slice(1)}")`),
+  ];
+  return `(${parts.join(" or ")})`;
+}
+
+/** The hostnames of an OpsCrew expression, or undefined when it is not one the template writes. */
 function hostnamesOf(ref: SharedRuleRef, rule: RulesetRule): string[] | undefined {
-  const match = HOST_SET.exec(rule.expression);
-  if (!match?.[1] || rule.expression.slice(match[0].length) !== TEMPLATES[ref].suffix) {
-    return undefined;
-  }
-  return [...new Set(match[1].slice(1, -1).split('" "'))].sort();
+  const { expression } = rule;
+  const { suffix } = TEMPLATES[ref];
+  if (!expression.endsWith(suffix)) return undefined;
+  const condition = expression.slice(0, expression.length - suffix.length);
+  const hostnames = [...condition.matchAll(CONDITION_NAMES)].map((m) =>
+    m[1] !== undefined ? `*.${m[1]}` : (m[2] as string),
+  );
+  if (hostnames.length === 0 || hostCondition(hostnames) !== condition) return undefined;
+  return sortedUnique(hostnames);
 }
 
 /** How OpsCrew's rule differs from its template, apart from its hostnames (none: as written). */

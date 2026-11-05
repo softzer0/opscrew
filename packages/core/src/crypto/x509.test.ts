@@ -269,6 +269,7 @@ describe("localCaCertificate and signedLeafCertificate", () => {
     expect(sign({ hostnames: ["a.localhost", "A.localhost"] })).toThrow(
       /"A\.localhost" is not a lower-case hostname, so it cannot go in a certificate\./,
     );
+    expect(sign({ hostnames: ["*.a.localhost"] })).toThrow(/is not a lower-case hostname/);
     expect(() =>
       localCaCertificate(createPublicKey(caKey), { commonName: "x", days: 1, now }),
     ).toThrow(/not an ECDSA P-256 private key/);
@@ -365,7 +366,13 @@ describe("buildCsr", () => {
     for (const bad of [
       "App.example.com",
       "bücher.example",
-      "*.example.com",
+      "*example.com",
+      "a.*.example.com",
+      "*.*.example.com",
+      "**.example.com",
+      "*",
+      "*.",
+      "*.-a.example",
       "a_b.example.com",
       "a..b",
       "-a.example.com",
@@ -382,6 +389,20 @@ describe("buildCsr", () => {
     expect(csr([long])).not.toThrow();
     expect(csr([`a${long}`])).toThrow(/at most 64 characters; a{53}\.example\.com has 65/);
     expect(csr(["app.example.com", `a${long}`])).not.toThrow();
+  });
+
+  it("names a wildcard (one leftmost *. label) as the common name and a SAN", () => {
+    const names = ["*.previews.example", "previews.example"];
+    const der = derOf(buildCsr({ key: key.privateKey, hostnames: names }));
+    for (const name of names) {
+      expect(der.includes(Buffer.concat([Buffer.of(0x82, name.length), Buffer.from(name)]))).toBe(
+        true,
+      );
+    }
+    // The common name (a UTF8String) is the wildcard.
+    expect(
+      der.includes(Buffer.concat([Buffer.of(0x0c, 18), Buffer.from(names[0] as string)])),
+    ).toBe(true);
   });
 
   it("refuses a key that is not P-256, without repeating it", () => {

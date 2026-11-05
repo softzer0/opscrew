@@ -43,6 +43,9 @@ export const MAX_CSR_HOSTNAMES = 100;
 const MAX_COMMON_NAME = 64;
 /** A lower-case ASCII hostname: labels of letters, digits and inner hyphens, joined by dots. */
 const HOSTNAME = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
+/** {@link HOSTNAME}, or one leftmost `*.` label followed by one (a wildcard name). */
+const HOSTNAME_OR_WILDCARD =
+  /^(?:\*\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$/;
 
 const OID = {
   commonName: "2.5.4.3",
@@ -120,11 +123,16 @@ function dnsNames(hostnames: readonly string[]): Uint8Array {
 }
 
 /**
- * Refuses a hostname that is not lower-case ASCII, and a common name (by default the first
- * hostname) longer than RFC 5280 allows.
+ * Refuses a hostname that is not lower-case ASCII (matching `pattern`), and a common name (by
+ * default the first hostname) longer than RFC 5280 allows.
  */
-function checkHostnames(commonName: string, hostnames: readonly string[], what: string): void {
-  const invalid = hostnames.find((name) => !HOSTNAME.test(name));
+function checkHostnames(
+  commonName: string,
+  hostnames: readonly string[],
+  what: string,
+  pattern: RegExp = HOSTNAME,
+): void {
+  const invalid = hostnames.find((name) => !pattern.test(name));
   if (invalid !== undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -195,7 +203,8 @@ function certificate(
 /**
  * A PKCS#10 certificate request (PEM) for `hostnames`, signed with `key` (PKCS#8 PEM of a P-256
  * key): the common name is the first hostname, and a subjectAltName extension request lists every
- * hostname. Refuses an empty list or more than {@link MAX_CSR_HOSTNAMES}.
+ * hostname, which may be a wildcard name (`*.example.com`: one leftmost `*.` label). Refuses an
+ * empty list or more than {@link MAX_CSR_HOSTNAMES}.
  */
 export function buildCsr(input: { key: string; hostnames: readonly string[] }): string {
   const { hostnames } = input;
@@ -207,7 +216,7 @@ export function buildCsr(input: { key: string; hostnames: readonly string[] }): 
       { hint: `Split the hostnames into groups of at most ${MAX_CSR_HOSTNAMES}.` },
     );
   }
-  checkHostnames(first, hostnames, "a certificate request");
+  checkHostnames(first, hostnames, "a certificate request", HOSTNAME_OR_WILDCARD);
   const { privateKey, spki } = p256Key(input.key);
   const extensions = sequence(extension(OID.subjectAltName, false, dnsNames(hostnames)));
   const attributes = implicitTag(0, sequence(oid(OID.extensionRequest), set(extensions)), true);

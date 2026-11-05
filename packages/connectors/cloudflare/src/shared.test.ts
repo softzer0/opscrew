@@ -727,6 +727,54 @@ describe("findings", () => {
     ]);
   });
 
+  it("matches a wildcard with ends_with in the probe and strict-TLS rules, and reads it back", async () => {
+    const zone = new FakeZone();
+    const names = ["*.previews.example", "previews.example"];
+    const condition =
+      '(http.host in {"previews.example"} or ends_with(http.host, ".previews.example"))';
+    const { plan, result } = await deploy(zone, { hostnames: both(names) });
+    expect(plan.changes).toMatchObject([
+      { kind: "create-entrypoint", rule: { expression: `${condition} and (${PATHS})` } },
+      { kind: "create-entrypoint", rule: { expression: condition } },
+    ]);
+    expect(result.record.hostnames).toEqual(both(names));
+    // Read back from the zone: nothing to change, and another app's plain name goes in beside it.
+    expect((await planFor(zone, { hostnames: both(names) }, result.record)).changes).toEqual([]);
+    const other = await deploy(zone, { hostnames: both(B) });
+    expect(other.plan.changes).toMatchObject([
+      { kind: "update-hostnames", add: B, remove: [] },
+      { kind: "update-hostnames", add: B, remove: [] },
+    ]);
+    expect(zone.opscrewRule(CONFIG)?.expression).toBe(
+      '(http.host in {"api.example.com" "previews.example"} or ends_with(http.host, ".previews.example"))',
+    );
+    const wildcardOnly = await deploy(new FakeZone(), {
+      hostnames: { [TLS]: ["*.previews.example"] },
+    });
+    expect(wildcardOnly.plan.changes).toMatchObject([
+      { rule: { expression: '(ends_with(http.host, ".previews.example"))' } },
+    ]);
+  });
+
+  it("refuses a wildcard in the www redirect and a malformed one anywhere", async () => {
+    const facts = await inspectShared(clientFor(new FakeZone()), {
+      zoneId: ZONE_ID,
+      accountId: ACCOUNT_ID,
+      access: false,
+      redirect: true,
+    });
+    const plan = (hostnames: SharedDesired["hostnames"]) => async () =>
+      planShared(facts, { hostnames }, undefined);
+    const www = await rejection(plan({ [WWW]: ["*.www.example.com"] })());
+    expect(www.message).toBe(
+      '"*.www.example.com" cannot go into a Cloudflare rule: a hostname has only letters, digits, hyphens and dots.',
+    );
+    for (const bad of ["a.*.example.com", "*.*.example.com", "*example.com", "*.com"]) {
+      const error = await rejection(plan({ [TLS]: [bad] })());
+      expect(error.message, bad).toMatch(/after at most one leading `\*\.`\.$/);
+    }
+  });
+
   it("refuses a hostname that cannot go into an expression, and a record of another zone", async () => {
     const facts = await inspectShared(clientFor(new FakeZone()), {
       zoneId: ZONE_ID,
@@ -1248,9 +1296,24 @@ describe("SharedRecordSchema", () => {
   });
 
   type TlsRecord = ReturnType<typeof withTls>;
+  it("reads a wildcard (one leftmost `*.` label) in the rules and the origin certificate", () => {
+    const record = withTls();
+    const names = ["*.previews.example", "previews.example"];
+    const read = {
+      ...record,
+      hostnames: both(names),
+      tls: { origin: { ...record.tls.origin, hostnames: names } },
+    };
+    expect(SharedRecordSchema.parse(read)).toEqual(read);
+  });
+
   it.each<[string, (record: TlsRecord) => void]>([
     ["an origin hostname that is not lower case", (r) => (r.tls.origin.hostnames = ["Shop.a.b"])],
-    ["an origin hostname that is a wildcard", (r) => (r.tls.origin.hostnames = ["*.example.com"])],
+    ["an origin wildcard below the left", (r) => (r.tls.origin.hostnames = ["a.*.example.com"])],
+    ["an origin wildcard of two labels", (r) => (r.tls.origin.hostnames = ["*.*.example.com"])],
+    ["an origin wildcard inside a label", (r) => (r.tls.origin.hostnames = ["*example.com"])],
+    ["an enabled hostname that is a wildcard", (r) => (r.tls.client.enabled = ["*.example.com"])],
+    ["a rule wildcard below the left", (r) => (r.hostnames[BLOCK] = ["a.*.example.com"])],
     ["an enabled hostname that is not a name", (r) => (r.tls.client.enabled = ["shop"])],
     [
       "a retiring hostname that is not lower case",
@@ -2196,6 +2259,53 @@ describe("origin TLS and the zone's minimum TLS", () => {
       expect(error).not.toBeInstanceOf(SharedApplyError);
     }
     expect(zone.writes()).toEqual([]);
+  });
+
+  it("makes one origin certificate for a wildcard and its zone, never reading or setting the wildcard's origin pulls", async () => {
+    const names = ["*.previews.example", "previews.example"];
+    const zone = new FakeZone();
+    const m = material(names);
+    // Previews: no client certificate.
+    const desired: SharedDesired = {
+      hostnames: { [TLS]: names },
+      tls: { proxied: names, origin: { csr: m.csr } },
+    };
+    const plan = await tlsPlan(zone, desired);
+    expect(plan.findings).toEqual([]);
+    expect(plan.changes.slice(0, 1)).toEqual([
+      { kind: "create-origin-certificate", hostnames: names, csrSha256: sha256Hex(m.csr) },
+    ]);
+    expect(kinds(plan).slice(1)).toEqual(["create-entrypoint"]);
+    const result = await applyTls(zone, plan);
+    expect(result.record.tls?.origin?.hostnames).toEqual(names);
+    expect(result.record.tls).not.toHaveProperty("client");
+    // The plain name's setting is read (to see no other app holds it); the wildcard's never.
+    expect(zone.calls.filter((c) => c.path.startsWith(`${AOP}/`)).map((c) => c.path)).toEqual([
+      `${AOP}/certificates?page=1&per_page=50`,
+      `${AOP}/previews.example`,
+    ]);
+    expect(writesSince(zone, 0).filter((c) => c.path.startsWith(AOP))).toEqual([]);
+    expect((await tlsPlan(zone, desired, result.record)).changes).toEqual([]);
+
+    // With a client certificate (an app's own hostnames beside a wildcard), only plain names get one.
+    const names2 = ["*.shop.example.com", ...A];
+    const withClient = material(names2);
+    const other = new FakeZone();
+    const mixed = await tlsPlan(other, wanted(withClient, names2));
+    expect(mixed.changes.slice(0, 3)).toEqual([
+      { kind: "upload-client-certificate", sha256: withClient.sha256 },
+      { kind: "enable-client-certificate", hostnames: A, sha256: withClient.sha256 },
+      {
+        kind: "create-origin-certificate",
+        hostnames: names2,
+        csrSha256: sha256Hex(withClient.csr),
+      },
+    ]);
+    const reads = other.calls.filter((c) => c.path.startsWith(`${AOP}/`)).map((c) => c.path);
+    expect(reads).toEqual([
+      `${AOP}/certificates?page=1&per_page=50`,
+      ...A.map((h) => `${AOP}/${h}`),
+    ]);
   });
 
   it("keeps every key out of the plan, its hash and the errors, and the CSR's text out of the hash", async () => {
