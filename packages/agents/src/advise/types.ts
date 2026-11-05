@@ -178,6 +178,11 @@ export interface ServerHistory {
     restarts?: number;
     oomKills?: number;
   }[];
+  /**
+   * What couldn't be read, in plain words for the report: a query that failed (its figure is then
+   * absent), or figures that stopped (then no limit and no disk trend).
+   */
+  notRead?: string[];
 }
 
 /** One server's readings: the moment `status` reads, and its history when the stack has one. */

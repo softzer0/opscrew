@@ -76,7 +76,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-github --filter=@opscrew/connector-cloudflare`
   - Effort: high
 
-- [ ] T2104 [P] [US3] The 14-day history from the self-hosted stack, in `packages/agents/src/advise/history.ts`
+- [x] T2104 [P] [US3] The 14-day history from the self-hosted stack, in `packages/agents/src/advise/history.ts`
   - Owns: `packages/agents/src/advise/history.ts` (+ test, `advise/__fixtures__/**`)
   - Reads: plan.md "3."; research.md R1.7, R5 (S2); 020's `monitoring/status.ts` (how its fixed commands reach Prometheus) and `network/owner.ts`
   - Depends: T2102

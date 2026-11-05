@@ -1,0 +1,127 @@
+{
+  "figures": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "other", "env": "prod", "server": "app" }, "value": [1793793600, "1793793000"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "app" }, "value": [1793793600, "1793793580"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data" }, "value": [1793793600, "1793793585"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring" }, "value": [1793793600, "1793793590"] }
+      ]
+    }
+  },
+  "days": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app" }, "value": [1793793600, "14"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data" }, "value": [1793793600, "5"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring" }, "value": [1793793600, "14"] }
+      ]
+    }
+  },
+  "cpuP95": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app" }, "value": [1793793600, "0.85"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data" }, "value": [1793793600, "0.12"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring" }, "value": [1793793600, "NaN"] }
+      ]
+    }
+  },
+  "memoryP95": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app" }, "value": [1793793600, "0.9"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data" }, "value": [1793793600, "0.35"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring" }, "value": [1793793600, "0.5"] }
+      ]
+    }
+  },
+  "loadOverCpus": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app" }, "value": [1793793600, "0.08333333333333333"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data" }, "value": [1793793600, "0"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring" }, "value": [1793793600, "0"] }
+      ]
+    }
+  },
+  "diskFullInDays": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app" }, "value": [1793793600, "16"] }
+      ]
+    }
+  },
+  "containerP95": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "web" }, "value": [1793793600, "471859200"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "worker" }, "value": [1793793600, "201326592"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data", "service": "db" }, "value": [1793793600, "268435456"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring", "service": "prometheus" }, "value": [1793793600, "67108864"] }
+      ]
+    }
+  },
+  "containerMax": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "web" }, "value": [1793793600, "524288000"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "worker" }, "value": [1793793600, "267386880"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data", "service": "db" }, "value": [1793793600, "314572800"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring", "service": "prometheus" }, "value": [1793793600, "100663296"] }
+      ]
+    }
+  },
+  "containerLimit": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "web" }, "value": [1793793600, "805306368"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "worker" }, "value": [1793793600, "268435456"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data", "service": "db" }, "value": [1793793600, "536870912"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring", "service": "prometheus" }, "value": [1793793600, "201326592"] }
+      ]
+    }
+  },
+  "restarts": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "web" }, "value": [1793793600, "0"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "worker" }, "value": [1793793600, "0"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data", "service": "db" }, "value": [1793793600, "4"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring", "service": "prometheus" }, "value": [1793793600, "0"] }
+      ]
+    }
+  },
+  "oomKills": {
+    "status": "success",
+    "data": {
+      "resultType": "vector",
+      "result": [
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "web" }, "value": [1793793600, "0"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "app", "service": "worker" }, "value": [1793793600, "3.0000231481481483"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "data", "service": "db" }, "value": [1793793600, "0"] },
+        { "metric": { "app": "shop", "env": "prod", "server": "monitoring", "service": "prometheus" }, "value": [1793793600, "0"] }
+      ]
+    }
+  }
+}

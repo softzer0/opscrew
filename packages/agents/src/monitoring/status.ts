@@ -22,7 +22,7 @@ import { serverShell } from "../status/servers";
 import { readOwnerPlan, senderPlans } from "./repository";
 
 /** A server whose last figures are older than this is silent (US6 #5). */
-const SILENT_AFTER_MS = 5 * 60_000;
+export const SILENT_AFTER_MS = 5 * 60_000;
 
 /** One of the stack's containers: its state, health and memory. */
 export interface MonitoringContainer extends AddonContainer {
@@ -88,7 +88,7 @@ export async function monitoringStack(deps: PhaseDeps, plan: DeployPlan): Promis
 }
 
 /** The `env` label of a plan's figures and lines. */
-function envLabel(plan: DeployPlan): string {
+export function envLabel(plan: DeployPlan): string {
   return plan.environment?.name ?? "prod";
 }
 
@@ -120,12 +120,18 @@ const PROMETHEUS = `${CONTAINER_PREFIX}prometheus-1`;
 const FRONT = `${CONTAINER_PREFIX}front-1`;
 const VOLUMES = [`${MONITORING_PROJECT}_prometheus`, `${MONITORING_PROJECT}_loki`];
 
+/** The command part that asks the stack's Prometheus, inside its container, the instant `query`. */
+export function prometheusQuery(query: string): string {
+  return `docker exec ${PROMETHEUS} wget -q -O - 'http://127.0.0.1:9090/api/v1/query?query=${encodeURIComponent(query)}'`;
+}
+
 /** The newest figures of each server: when `node_load1` last arrived, by its labels. */
-const FIGURES_QUERY = "max by (app, env, server) (timestamp(node_load1))";
+export const FIGURES_QUERY = "max by (app, env, server) (timestamp(node_load1))";
 /** The lines of each server per minute over Loki's default range, the last hour. */
 const LOGS_QUERY = 'sum by (app, env, server) (count_over_time({app=~".+"}[1m]))';
 
-const marker = (name: string) => `echo '==opscrew-monitoring:${name}'`;
+/** The command that prints the marker of section `name` (lower-case letters), for {@link sections}. */
+export const marker = (name: string) => `echo '==opscrew-monitoring:${name}'`;
 
 /**
  * The read-only command `monitoringStatus` runs on the stack's server, fixed text only: the
@@ -141,7 +147,7 @@ export const MONITORING_STATUS_COMMAND = [
   marker("memory"),
   "docker stats --no-stream --format '{{.Name}}|{{.MemUsage}}'",
   marker("figures"),
-  `docker exec ${PROMETHEUS} wget -q -O - 'http://127.0.0.1:9090/api/v1/query?query=${encodeURIComponent(FIGURES_QUERY)}'`,
+  prometheusQuery(FIGURES_QUERY),
   "echo",
   marker("logs"),
   `docker exec ${FRONT} wget -q -O - 'http://loki:3100/loki/api/v1/query_range?query=${encodeURIComponent(LOGS_QUERY)}&step=60'`,
@@ -152,7 +158,7 @@ export const MONITORING_STATUS_COMMAND = [
 ].join("; ");
 
 /** The command's output, by section. */
-function sections(stdout: string): Record<string, string[]> {
+export function sections(stdout: string): Record<string, string[]> {
   const out: Record<string, string[]> = {};
   let current: string[] | undefined;
   for (const line of stdout.split(/\r?\n/).map((text) => text.trim())) {
@@ -226,7 +232,7 @@ const LogsAnswerSchema = z.object({
 });
 
 /** The JSON of a section's only line through `schema`; `undefined` when it does not fit. */
-function answer<T>(lines: string[] | undefined, schema: z.ZodType<T>): T | undefined {
+export function answer<T>(lines: string[] | undefined, schema: z.ZodType<T>): T | undefined {
   if (lines?.length !== 1) return undefined;
   try {
     const parsed = schema.safeParse(JSON.parse(lines[0] as string));

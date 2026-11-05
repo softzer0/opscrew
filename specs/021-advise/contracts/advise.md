@@ -27,6 +27,7 @@ export const ProposalSchema: z.ZodType<Proposal>;           // for the CLI's --j
 export const THRESHOLDS: Readonly<{ ... }>;                  // data-model.md
 export interface ServerHistory {                             // T2104 fills
   days: number; cpuP95?: number; memoryP95?: number; loadOverCpus?: number; diskFullInDays?: number;
+  notRead?: string[];                                        // a query that failed, figures that stopped (no address)
   containers: { service: string; memoryP95?: number; memoryMax?: number; limit?: number; restarts?: number; oomKills?: number }[];
 }
 export interface Readings { at: string; ... }                // `at`: when read (deps.clock, ISO); per server now/history, plan, requirements, prices, upkeep, check, notRead
@@ -35,7 +36,7 @@ export interface AdviceReport { proposals: Proposal[]; basis: Record<string, Bas
 
 ```ts
 // T2104
-readHistory(deps, plan): Promise<Record<string, ServerHistory> | undefined>;   // undefined without monitoring
+readHistory(deps, plan, services?): Promise<Record<string, ServerHistory> | undefined>;   // undefined without monitoring; services: test seam, as monitoringStatus
 // T2105, T2106: pure
 sizeRules(readings): Proposal[]; costRules(readings): Proposal[];
 reliabilityRules(readings): Proposal[]; upkeepRules(readings): Proposal[]; componentRules(readings): Proposal[];
