@@ -78,29 +78,36 @@ describe("environment.previews", () => {
     expect(plan.environment?.previews).toEqual({
       cap: 3,
       lifetimeDays: 7,
-      domain: "app.example.com",
+      domain: "example-previews.com",
     });
     expect(plan.dns.domain).toBeUndefined();
-    expect(plan.dns.zone).toBe("example.com");
+    expect(plan.dns.zone).toBe("example-previews.com");
+    expect(plan.dns.proxied).toBe(true);
+    expect(plan.security.httpAllowedFrom).toBe("cloudflare");
     expect(parseArtifact("plan", serializeArtifact("plan", plan), "plan.yaml")).toEqual(plan);
     const seeded = DeployPlanSchema.parse(
       await previewPlan((p) => {
-        p.environment.previews = { cap: 5, lifetimeDays: 14, domain: "example.com", seed: null };
+        p.environment.previews = {
+          cap: 5,
+          lifetimeDays: 14,
+          domain: "example-previews.com",
+          seed: null,
+        };
       }),
     );
     expect(seeded.environment?.previews?.seed).toBeNull();
     expect(parseArtifact("plan", serializeArtifact("plan", seeded), "plan.yaml")).toEqual(seeded);
   });
 
-  it("allows previews on the zone's apex and on a server you own", async () => {
-    const apex = await previewPlan((p) => {
-      p.environment.previews.domain = "example.com";
-    });
-    expect(DeployPlanSchema.safeParse(apex).success).toBe(true);
+  it("allows previews on a server you own, open to Cloudflare by default", async () => {
     const own = await previewPlan((p) => {
       p.target = { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" };
     });
     expect(DeployPlanSchema.safeParse(own).success).toBe(true);
+    const byDefault = await previewPlan((p) => {
+      delete p.security.httpAllowedFrom;
+    });
+    expect(DeployPlanSchema.parse(byDefault).security.httpAllowedFrom).toBe("cloudflare");
   });
 
   it("parses every plan without previews as before: a Cloudflare plan still needs a domain", async () => {
@@ -258,9 +265,9 @@ describe("environment.previews", () => {
     expect(DeployPlanSchema.safeParse(off).success).toBe(true);
   });
 
-  it("refuses DNS other than a DNS-only Cloudflare zone without a domain", async () => {
+  it("refuses DNS other than a proxied Cloudflare zone without a domain, open to Cloudflare only", async () => {
     const none = await refused((p) => {
-      p.dns = { provider: "none", proxied: false, www: false };
+      p.dns = { provider: "none", proxied: true, www: false };
     });
     expect(none.path).toBe("dns.provider");
     expect(none.message).toContain('must be "cloudflare" with previews');
@@ -270,22 +277,37 @@ describe("environment.previews", () => {
     expect(noZone).toEqual({
       path: "dns.zone",
       message:
-        "is required with previews: the Cloudflare zone the wildcard record *.app.example.com goes in; set dns.zone to it",
+        "is required with previews: the Cloudflare zone the wildcard record *.example-previews.com goes in; set dns.zone to it",
     });
     const domain = await refused((p) => {
-      p.dns.domain = "app.example.com";
+      p.dns.domain = "app.example-previews.com";
     });
     expect(domain).toEqual({
       path: "dns.domain",
       message:
-        "must be absent with previews: a preview environment serves no hostname of its own, only pr-<number>.app.example.com; remove dns.domain",
+        "must be absent with previews: a preview environment serves no hostname of its own, only pr-<number>-<random>.example-previews.com; remove dns.domain",
     });
-    const proxied = await refused((p) => {
-      p.dns.proxied = true;
-      p.security.httpAllowedFrom = "cloudflare";
+    const dnsOnly = await refused((p) => {
+      p.dns.proxied = false;
     });
-    expect(proxied.path).toBe("dns.proxied");
-    expect(proxied.message).toContain("set dns.proxied to false");
+    expect(dnsOnly).toEqual({
+      path: "dns.proxied",
+      message:
+        "must be true with previews: behind Cloudflare's proxy a preview's name is in no public certificate, so nobody finds it without the link; set dns.proxied to true",
+    });
+    for (const target of [
+      undefined,
+      { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" },
+    ]) {
+      const open = await refused((p) => {
+        if (target !== undefined) p.target = target;
+        p.security.httpAllowedFrom = "any";
+      });
+      expect(open).toEqual({
+        path: "security.httpAllowedFrom",
+        message: `must be "cloudflare" with previews: the preview server's web ports accept only Cloudflare, so nobody reaches a preview around the proxy; set security.httpAllowedFrom to "cloudflare"`,
+      });
+    }
     const www = await refused((p) => {
       p.dns.www = true;
     });
@@ -293,14 +315,19 @@ describe("environment.previews", () => {
     expect(www.message).toContain("set dns.www to false");
   });
 
-  it("refuses a base outside the zone", async () => {
-    for (const domain of ["app.example.org", "notexample.com"]) {
+  it("refuses a base other than the zone itself, inside it or not", async () => {
+    for (const domain of [
+      "pr.example-previews.com",
+      "app.example.org",
+      "notexample-previews.com",
+    ]) {
       const issue = await refused((p) => {
         p.environment.previews.domain = domain;
       });
       expect(issue).toEqual({
         path: "environment.previews.domain",
-        message: `must be example.com or a name inside it: the wildcard record *.${domain} goes in your Cloudflare zone example.com; use a name ending in .example.com`,
+        message:
+          "must be the zone itself (example-previews.com): previews get a Cloudflare zone of their own, used for nothing else; set environment.previews.domain to example-previews.com, or dns.zone to your preview zone",
       });
     }
   });
@@ -341,7 +368,7 @@ describe("environment.previews", () => {
   it("refuses previews in prod's plan", async () => {
     const plan = await previewPlan((p) => {
       p.app.name = "acme-web";
-      p.environment = { previews: { domain: "app.example.com" } };
+      p.environment = { previews: { domain: "example-previews.com" } };
     });
     expect(issues(DeployPlanSchema.safeParse(plan))).toEqual([
       {

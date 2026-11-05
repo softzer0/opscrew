@@ -2,8 +2,8 @@ import type { DeployPlan } from "../index";
 
 /**
  * The preview environment `name` beside `prod` as data-model.md shows it: the app `<app>-<name>`,
- * previews at `pr-<number>.app.example.com`, the Cloudflare zone without a hostname of its own, DNS
- * only, open to everyone, nothing deployed.
+ * previews at `pr-<number>-<random>.example-previews.com`, a Cloudflare zone of its own without a
+ * hostname, behind the proxy, open to Cloudflare only, nothing deployed.
  */
 export function previewPlanOf(prod: DeployPlan, name = "preview"): DeployPlan {
   const { deployment: _deployment, ...plan } = prod;
@@ -14,10 +14,10 @@ export function previewPlanOf(prod: DeployPlan, name = "preview"): DeployPlan {
       name,
       deploySource: { from: "main" },
       runner: "github",
-      previews: { cap: 3, lifetimeDays: 7, domain: "app.example.com" },
+      previews: { cap: 3, lifetimeDays: 7, domain: "example-previews.com" },
     },
-    dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
-    security: { ...prod.security, httpAllowedFrom: "any" },
+    dns: { provider: "cloudflare", zone: "example-previews.com", proxied: true, www: false },
+    security: { ...prod.security, httpAllowedFrom: "cloudflare" },
     deployment: {},
   };
 }

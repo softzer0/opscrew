@@ -372,7 +372,7 @@ function boundedInt(min: number, max: number, message: string) {
 
 /**
  * `plan.environment.previews`: a preview environment, which runs one app per pull request,
- * `<app.name>-pr-<number>` at `pr-<number>.<domain>`, on its own server (ADR 0026). Absent for every
+ * `<app.name>-pr-<number>` at `pr-<number>-<random>.<domain>`, on its own server (ADR 0026). Absent for every
  * other environment.
  */
 export const PreviewsSchema = z.strictObject({
@@ -388,7 +388,7 @@ export const PreviewsSchema = z.strictObject({
     30,
     "must be a whole number of days from 1 to 30: a preview not updated this long is removed",
   ).default(7),
-  /** The base name: previews are `pr-<number>.<domain>`. Design sets the app's prod hostname. */
+  /** The preview zone, a Cloudflare zone of its own: previews are `pr-<number>-<random>.<domain>`. */
   domain: FqdnSchema,
   /**
    * The command that seeds a new preview's database once, or `null` for none. Absent until design
@@ -1299,7 +1299,7 @@ export const PREVIEW_APP_NAME_MAX = 31;
  * The rules of a preview environment (`environment.previews`, ADR 0026): a named environment
  * following main on a server OpsCrew deploys to over SSH, built and deployed from GitHub's
  * machines; one server, nothing else on it (no add-ons, check, monitoring, signing or deploy
- * tags); a DNS-only Cloudflare zone holding the wildcard record, with no hostname of its own; and
+ * tags); a Cloudflare zone of its own behind the proxy, with no hostname of its own; and
  * an app name short enough for each preview's.
  */
 function checkPreviews(
@@ -1319,13 +1319,13 @@ function checkPreviews(
   if ("edge" in plan.target && plan.target.edge !== "caddy") {
     issue(
       ["target", "edge"],
-      `must be "caddy" with previews: each preview's site is a Caddy site that gets its own certificate; set target.edge to "caddy"`,
+      `must be "caddy" with previews: each preview's site is a Caddy site; set target.edge to "caddy"`,
     );
   }
   if (plan.target.provider === "own" && plan.target.access === "tunnel") {
     issue(
       ["target", "access"],
-      `must be "public" with previews: previews need a server with a public address, as GitHub's runners connect to it over SSH and Let's Encrypt reaches it for each preview's certificate; set target.access to "public" for a server the internet reaches, or choose a cloud server`,
+      `must be "public" with previews: previews need a server with a public address, as GitHub's runners connect to it over SSH; set target.access to "public" for a server the internet reaches, or choose a cloud server`,
     );
   }
   const { provider } = plan.target;
@@ -1395,8 +1395,9 @@ function checkPreviews(
 }
 
 /**
- * A preview environment's DNS: a DNS-only Cloudflare zone, without a domain or `www.` alias, that
- * holds the base name (`previews.domain`) and so the wildcard record `*.<base>`.
+ * A preview environment's DNS: a Cloudflare zone of its own (`previews.domain` is `dns.zone`) behind
+ * the proxy, open to Cloudflare only, without a domain or `www.` alias; its one record is the
+ * proxied wildcard `*.<zone>`.
  */
 function checkPreviewDns(
   previews: Previews,
@@ -1416,22 +1417,28 @@ function checkPreviewDns(
       ["dns", "zone"],
       `is required with previews: the Cloudflare zone the wildcard record *.${previews.domain} goes in; set dns.zone to it`,
     );
-  } else if (previews.domain !== dns.zone && !previews.domain.endsWith(`.${dns.zone}`)) {
+  } else if (previews.domain !== dns.zone) {
     issue(
       ["environment", "previews", "domain"],
-      `must be ${dns.zone} or a name inside it: the wildcard record *.${previews.domain} goes in your Cloudflare zone ${dns.zone}; use a name ending in .${dns.zone}`,
+      `must be the zone itself (${dns.zone}): previews get a Cloudflare zone of their own, used for nothing else; set environment.previews.domain to ${dns.zone}, or dns.zone to your preview zone`,
     );
   }
   if (dns.domain !== undefined) {
     issue(
       ["dns", "domain"],
-      `must be absent with previews: a preview environment serves no hostname of its own, only pr-<number>.${previews.domain}; remove dns.domain`,
+      `must be absent with previews: a preview environment serves no hostname of its own, only pr-<number>-<random>.${previews.domain}; remove dns.domain`,
     );
   }
-  if (dns.proxied) {
+  if (!dns.proxied) {
     issue(
       ["dns", "proxied"],
-      "must be false with previews: the wildcard record is DNS only, and the preview server gets each preview's certificate itself; set dns.proxied to false",
+      "must be true with previews: behind Cloudflare's proxy a preview's name is in no public certificate, so nobody finds it without the link; set dns.proxied to true",
+    );
+  }
+  if (plan.security.httpAllowedFrom === "any") {
+    issue(
+      ["security", "httpAllowedFrom"],
+      `must be "cloudflare" with previews: the preview server's web ports accept only Cloudflare, so nobody reaches a preview around the proxy; set security.httpAllowedFrom to "cloudflare"`,
     );
   }
   if (dns.www) {
@@ -1820,7 +1827,9 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
     plan.target.access === "public" &&
     plan.dns.provider === "cloudflare" &&
     plan.dns.proxied &&
-    plan.security.httpAllowedFrom === "any"
+    plan.security.httpAllowedFrom === "any" &&
+    // A preview environment has its own refusal.
+    environment?.previews === undefined
   ) {
     // Docker-published ports bypass the server's firewall: behind the proxy only OpsCrew's
     // filter for Cloudflare's addresses keeps visitors from going around Cloudflare.
