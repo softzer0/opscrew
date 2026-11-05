@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: HCL interpolation, not JavaScript templates.
 import { describe, expect, it } from "vitest";
 import { testCloudflare, testContext } from "../__fixtures__/plans";
-import { previewPlan } from "../previews/__fixtures__/plans";
+import { APP_ZONE_BASE, previewPlan } from "../previews/__fixtures__/plans";
 import type { RenderedFile } from "../types";
 import { renderInfra } from "./index";
 
@@ -91,6 +91,58 @@ describe("the preview environment's root", () => {
     );
     const own = file(renderInfra(previewPlan({ provider: "own" }), context()), "outputs.tf");
     expect(own).toContain('output "url" {\n  value = "http://${var.server_ipv4}"\n}');
+  });
+
+  it("keeps the root of previews in a zone of their own as it was, with no certificate pack", () => {
+    for (const provider of ["hetzner", "own"] as const) {
+      const files = renderInfra(previewPlan({ provider }), context());
+      expect(file(files, "main.tf")).not.toContain("cloudflare_certificate_pack");
+      expect(file(files, "main.tf")).toMatchSnapshot(`${provider} main.tf`);
+      expect(file(files, "outputs.tf")).toMatchSnapshot(`${provider} outputs.tf`);
+    }
+  });
+
+  it("orders the advanced certificate pack for the zone and *.<domain> below the app's zone", () => {
+    for (const provider of ["hetzner", "digitalocean", "own"] as const) {
+      const files = renderInfra(previewPlan({ provider, appZone: true }), context());
+      const main = file(files, "main.tf");
+      expect(main).toContain(
+        [
+          'resource "cloudflare_certificate_pack" "previews" {',
+          "  zone_id               = var.cloudflare_zone_id",
+          '  type                  = "advanced"',
+          '  hosts                 = ["example.net", "*.${var.preview_domain}"]',
+          '  certificate_authority = "lets_encrypt"',
+          '  validation_method     = "txt"',
+          "  validity_days         = 90",
+          "",
+          "  lifecycle {",
+          "    create_before_destroy = true",
+          "  }",
+          "}",
+        ].join("\n"),
+      );
+      expect(file(files, "outputs.tf")).toContain(
+        'output "previews_certificate_pack_id" {\n  value = cloudflare_certificate_pack.previews.id\n}',
+      );
+      expect(JSON.parse(file(files, "terraform.tfvars.json")).preview_domain).toBe(APP_ZONE_BASE);
+    }
+  });
+
+  it("renders previews on another environment's server as an own target's root: DNS only", () => {
+    const shared = renderInfra(previewPlan({ provider: "own", server: "dev" }), context());
+    const own = renderInfra(previewPlan({ provider: "own" }), context());
+    expect(shared).toEqual(own);
+    const main = file(shared, "main.tf");
+    expect(main).not.toMatch(/^(module "server|resource )/m);
+    expect(dnsBlock(main)).toContain(
+      "  ipv4        = var.server_ipv4\n  ipv6        = var.server_ipv6\n",
+    );
+    // The host's addresses come from the CLI as TF_VAR_*, never from a committed file.
+    const tfvars = JSON.parse(file(shared, "terraform.tfvars.json"));
+    expect(tfvars).not.toHaveProperty("server_ipv4");
+    expect(tfvars).not.toHaveProperty("server_ipv6");
+    expect(file(shared, "variables.tf")).toContain('variable "server_ipv4" {');
   });
 
   it("refuses to render it without the zone's id", () => {

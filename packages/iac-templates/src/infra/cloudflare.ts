@@ -3,7 +3,7 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
 import type { RenderContext } from "../types";
-import { moduleBlock, sensitiveOutput, type VariableSpec } from "./hcl";
+import { moduleBlock, output, sensitiveOutput, type VariableSpec } from "./hcl";
 
 /** The Cloudflare account the tunnels, Access, R2 buckets and Workers belong to. */
 export function accountId(ctx: RenderContext): string {
@@ -52,7 +52,7 @@ export function zoneVariables(use: ZoneUse): VariableSpec[] {
     specs.push({
       name: "preview_domain",
       type: "string",
-      description: "The previews' own zone: each one is pr-<number>-<random>.<zone>.",
+      description: "The previews' domain: each one is pr-<number>-<random>.<domain>.",
     });
   } else if (use !== "zone") {
     specs.push({ name: "domain", type: "string", description: "Hostname of the app." });
@@ -142,6 +142,40 @@ export function dnsModule(
       ["caa_issuers", previews ? "[]" : "var.caa_issuers"],
     ],
   });
+}
+
+/**
+ * The preview root's advanced certificate pack, for previews below the app's zone
+ * (`previews.domain` below `dns.zone`): Universal SSL covers one level only, so the edge needs a
+ * certificate for `*.<domain>`. Its `main.tf` resource and `outputs.tf` output; none for previews
+ * in a zone of their own.
+ */
+export function previewsCertificatePack(
+  plan: DeployPlan,
+): { main: string[]; outputs: string[] } | undefined {
+  const zone = plan.dns.zone;
+  const domain = plan.environment?.previews?.domain;
+  if (domain === undefined || domain === zone) return undefined;
+  return {
+    main: [
+      "# Universal SSL covers one level below the zone: this advanced pack covers the previews'",
+      "# names. A pack can't change in place, so a new one is ordered before the old one goes.",
+      'resource "cloudflare_certificate_pack" "previews" {',
+      "  zone_id               = var.cloudflare_zone_id",
+      '  type                  = "advanced"',
+      `  hosts                 = ["${zone}", "*.\${var.preview_domain}"]`,
+      '  certificate_authority = "lets_encrypt"',
+      '  validation_method     = "txt"',
+      "  validity_days         = 90",
+      "",
+      "  lifecycle {",
+      "    create_before_destroy = true",
+      "  }",
+      "}",
+      "",
+    ],
+    outputs: output("previews_certificate_pack_id", "cloudflare_certificate_pack.previews.id"),
+  };
 }
 
 /** The arguments of a `cloudflare-tunnel` module call named `name` (an HCL expression). */

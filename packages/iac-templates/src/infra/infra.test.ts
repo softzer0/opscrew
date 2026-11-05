@@ -315,6 +315,9 @@ const validatedPlans = {
   "hetzner preview environment": () => previewPlan(),
   "digitalocean preview environment": () => previewPlan({ provider: "digitalocean" }),
   "own server preview environment": () => previewPlan({ provider: "own" }),
+  "hetzner preview environment below the app's zone": () => previewPlan({ appZone: true }),
+  "own server preview environment on dev's server below the app's zone": () =>
+    previewPlan({ provider: "own", server: "dev", appZone: true }),
 };
 /** Context for the validated plans, with the account's one-time PIN login method. */
 const validatedContext = () =>

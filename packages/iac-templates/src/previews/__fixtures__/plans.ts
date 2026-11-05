@@ -40,7 +40,14 @@ export interface PreviewPlanOptions {
   edge?: "caddy" | "nginx";
   /** The deploy's strategy (default rolling). */
   strategy?: "rolling" | "recreate";
+  /** Previews under the app's zone, at {@link APP_ZONE_BASE} in `example.net` (default false). */
+  appZone?: boolean;
+  /** The environment whose server the previews share (`previews.server`; needs `provider: "own"`). */
+  server?: string;
 }
+
+/** The previews' name below the app's zone `example.net` (`appZone`). */
+export const APP_ZONE_BASE = `previews.${BASE}`;
 
 /**
  * A preview environment's plan, as design writes it (ADR 0026): the environment `preview` of
@@ -74,7 +81,8 @@ export function previewPlan(o: PreviewPlanOptions = {}): DeployPlan {
       deploySource: { from: "main" },
       runner: "github",
       previews: {
-        domain: BASE,
+        domain: o.appZone ? APP_ZONE_BASE : BASE,
+        ...(o.server === undefined ? {} : { server: { environment: o.server } }),
         ...(o.cap === undefined ? {} : { cap: o.cap }),
         ...(o.lifetimeDays === undefined ? {} : { lifetimeDays: o.lifetimeDays }),
         seed: o.seed === undefined ? "npm run seed" : o.seed,

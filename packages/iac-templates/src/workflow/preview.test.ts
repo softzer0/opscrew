@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { ACTIONS } from "../pins";
-import { previewPlan } from "../previews/__fixtures__/plans";
+import { APP_ZONE_BASE, previewPlan } from "../previews/__fixtures__/plans";
 import { withBuild } from "./__fixtures__/plans";
 import { pushPaths } from "./paths";
 import { previewWorkflowPath, renderPreviewWorkflow } from "./preview";
@@ -358,6 +358,31 @@ describe("the deploy job's answer from the preview server", { timeout: 30_000 },
     expect(await answer("", 255)).toEqual({ state: "unreachable", detail: "", url: "" });
   });
 
+  it("matches an address several labels deep below the app's zone, every dot literal", async () => {
+    const deep =
+      step(workflow(previewPlan({ secrets: "environment", appZone: true })).jobs.deploy, "up")
+        .run ?? "";
+    const address = `pr-42-a1b2c3d4e5.${APP_ZONE_BASE}`;
+    const read = async (out: string) => (await bash(fakes, deep, env(out, 0))).outputs;
+    expect(await read(`opscrew-preview: running ${address}`)).toEqual({
+      state: "running",
+      detail: address,
+      url: `https://${address}`,
+    });
+    for (const other of [
+      ADDRESS,
+      "pr-42-a1b2c3d4e5.previewsxexample.net",
+      "pr-42-a1b2c3d4e5.previews.examplexnet",
+      `pr-42-a1b2c3d4e5.x.${APP_ZONE_BASE}`,
+    ]) {
+      expect(await read(`opscrew-preview: running ${other}`), other).toEqual({
+        state: "error",
+        detail: "",
+        url: "",
+      });
+    }
+  });
+
   it("checks the health path at the address the server answered", async () => {
     const run = await bash(fakes, up, env(`opscrew-preview: running ${ADDRESS}`, 0));
     expect(run.calls).toBe(`https://${ADDRESS}/api/health\n`);
@@ -472,6 +497,15 @@ describe("the preview's comment", { timeout: 30_000 }, () => {
     const { body } = await comment(state, detail);
     expect(body?.startsWith(`${marker}\n\n`)).toBe(true);
     expect(body).toContain(text);
+  });
+
+  it("links an address several labels deep below the app's zone, and no look-alike", async () => {
+    const plan = previewPlan({ secrets: "environment", appZone: true });
+    const script = step(workflow(plan).jobs.report, "Update the preview's comment").run;
+    const deep = `pr-42-a1b2c3d4e5.${APP_ZONE_BASE}`;
+    expect((await comment("running", deep, { script })).body).toContain(`runs at https://${deep}`);
+    const alike = "pr-42-a1b2c3d4e5.previewsxexample.net";
+    expect((await comment("running", alike, { script })).body).not.toContain("https://pr-42");
   });
 
   it("names the commands for this app's environment", async () => {

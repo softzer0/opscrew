@@ -3,6 +3,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
+  APP_ZONE_BASE,
   BASE,
   directPreview,
   envFor,
@@ -173,6 +174,15 @@ describe("renderPreviewRecipe", () => {
       if (!path.startsWith("template/")) continue;
       expect(content.split("@R@").length, path).toBe(content.split(`pr-@N@-@R@.${BASE}`).length);
     }
+  });
+
+  it("puts a domain below the app's zone, several labels deep, in BASE and the preview's address", () => {
+    const files = recipe(previewPlan({ appZone: true }));
+    expect(files["settings.env"]).toContain(`\nBASE=${APP_ZONE_BASE}\n`);
+    expect(files["template/edge/sites/shop-preview-pr-@N@.caddy"]).toContain(
+      `\npr-@N@-@R@.${APP_ZONE_BASE} {\n`,
+    );
+    expect(files["template/start.sh"]).toContain(`--host pr-@N@-@R@.${APP_ZONE_BASE} `);
   });
 
   it("serves each preview with the Origin CA certificate the previews host plan installs, and X-Robots-Tag noindex", () => {

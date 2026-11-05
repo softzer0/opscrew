@@ -4,7 +4,14 @@ import { usesCloudflare } from "../predicates";
 import type { ProviderText } from "../providers";
 import { tunnelMode, webFilterMode } from "../tunnel";
 import type { RenderContext } from "../types";
-import { dnsModule, serverZoneUse, type ZoneUse, zoneTfvars, zoneVariables } from "./cloudflare";
+import {
+  dnsModule,
+  previewsCertificatePack,
+  serverZoneUse,
+  type ZoneUse,
+  zoneTfvars,
+  zoneVariables,
+} from "./cloudflare";
 import {
   APP_NAME_VARIABLE,
   CLOUDFLARE_PROVIDER,
@@ -115,6 +122,7 @@ function mainTf(
       ),
     );
   }
+  lines.push(...(previewsCertificatePack(plan)?.main ?? []));
   if (pieces) lines.push(...pieces.main);
   return lines.join("\n");
 }
@@ -145,6 +153,7 @@ function outputsTf(
     );
   }
   lines.push(...extraServersOutput(extras));
+  lines.push(...(previewsCertificatePack(plan)?.outputs ?? []));
   if (pieces) lines.push(...pieces.outputs);
   return lines.join("\n");
 }

@@ -3,7 +3,13 @@ import { MODULE_FILES } from "../generated/modules";
 import { webOnlyFromCloudflare } from "../predicates";
 import { cloudTarget, PROVIDER_TEXT, type ProviderText, type VariablePrefix } from "../providers";
 import type { RenderContext, RenderedFile, ServerModule } from "../types";
-import { dnsModule, serverZoneUse, zoneTfvars, zoneVariables } from "./cloudflare";
+import {
+  dnsModule,
+  previewsCertificatePack,
+  serverZoneUse,
+  zoneTfvars,
+  zoneVariables,
+} from "./cloudflare";
 import {
   APP_NAME_VARIABLE,
   besideInfraDir,
@@ -194,6 +200,7 @@ function mainTf(
     const live = shape.live.module;
     lines.push(...dnsModule(zone, `module.${live}.ipv4_address`, `module.${live}.ipv6_address`));
   }
+  lines.push(...(previewsCertificatePack(plan)?.main ?? []));
   if (pieces) lines.push(...pieces.main);
   return lines.join("\n");
 }
@@ -263,6 +270,7 @@ function outputsTf(plan: DeployPlan, shape: RootShape, pieces: TunnelPieces | un
     ...output("url", url),
     ...serversOutput(shape),
     ...extraServersOutput(shape.extras),
+    ...(previewsCertificatePack(plan)?.outputs ?? []),
     ...(pieces?.outputs ?? []),
   ].join("\n");
 }
@@ -390,7 +398,10 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  * A preview environment's root (`environment.previews`: a zone, no domain) gets its server as
  * usual, its web ports open to Cloudflare only, and, in place of the app's records, `module "dns"`
  * with the previews' wildcard `*.${var.preview_domain}` through Cloudflare's proxy, without `www.`
- * or CAA; its `url` output is the server's address.
+ * or CAA; its `url` output is the server's address. With `previews.domain` below `dns.zone` it
+ * also orders `cloudflare_certificate_pack.previews` (output `previews_certificate_pack_id`). On
+ * a server the user owns, or another environment's (`previews.server`), it is an own target's
+ * root: DNS only, the wildcard to `server_ipv4`/`server_ipv6` from `TF_VAR_*`.
  */
 export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
   const portainer = ctx.layout === undefined && plan.target.provider === "portainer";

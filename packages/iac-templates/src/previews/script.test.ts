@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { statSync, utimesSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
-import { BASE, directPreview, IMAGE_NAME, previewPlan } from "./__fixtures__/plans";
+import { APP_ZONE_BASE, BASE, directPreview, IMAGE_NAME, previewPlan } from "./__fixtures__/plans";
 import {
   commit,
   image,
@@ -303,6 +303,25 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
         expect.stringMatching(logLine("up", 42, "key", "seed-failed")),
         expect.stringMatching(logLine("up", 42, "key", "running")),
       ]);
+    });
+
+    it("gives a preview below the app's zone its address several labels deep", () => {
+      const s = server(
+        previewPlan({
+          postgres: false,
+          processes: false,
+          release: null,
+          seed: null,
+          appZone: true,
+        }),
+      );
+      const result = s.up(42);
+      const host = `pr-42-${s.previewFields(42).random}.${APP_ZONE_BASE}`;
+      only(result, `running ${host}`, 0);
+      expect(s.state("routes/shop-preview-pr-42")).toContain(` ${host}\n`);
+      expect(s.read(`${s.work}/srv/edge/sites/shop-preview-pr-42.caddy`)).toContain(
+        `\n${host} {\n`,
+      );
     });
 
     it("gives each preview an address of its own, kept by its updates and forgotten by down", () => {
