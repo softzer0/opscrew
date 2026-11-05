@@ -318,7 +318,7 @@ retention above all).
 
 ## Phase 7: Finish
 
-- [ ] T2215 Simplify (lead): a review of the feature's diff for reuse and simplicity; findings
+- [x] T2215 Simplify (lead): a review of the feature's diff for reuse and simplicity; findings
   become tasks here. Known so far: one helper in plan-schema for the preview workflow's path
   (T2205's renderer and T2208's `env remove` each name it); the `.sequelizerc` reading shared by
   release and seed detection; the runner/build refusal sentence in both the CLI and agents; the
@@ -326,5 +326,82 @@ retention above all).
   The make-once Ed25519 key file in three copies (`ensureDeployKey`, `ensureCheckKey`,
   `ensurePreviewKey`): one `ensureKeyPair`. Design's preview filter that drops the planned bucket's
   line by its opening words (`design/run.ts`, from `components.ts`).
+
+### Simplify tasks (from T2215's review, 2026-11-05)
+
+Three read-only reviewers (iac-templates; agents and ssh-host; schema, detect, CLI, MCP, docs)
+went over `04c52441..HEAD`. No change below alters behaviour, a refusal, an approval, the
+script's contract or what is redacted; snapshots may change only where a test fixture does.
+
+- [ ] T2217 [P] Simplify iac-templates, and one helper for the preview workflow's path
+  - Owns: `packages/iac-templates/src/**` (+ tests, fixtures, snapshots), `packages/plan-schema/src/apps.ts` (+ its test)
+  - Accept:
+    - `previewWorkflowPathFor(key)` in plan-schema's apps.ts beside `workflowPathFor`;
+      `previewWorkflowPath` and `paths.ts`'s pattern use it.
+    - One `reach(digests)` beside `registryCode` for the "what an index lists" walk of
+      preview-images.ts and retention.ts; one `pages(path, what)` for their page loops.
+    - One registry test fixture (`workflow/__fixtures__/registry.ts`) for preview-images and
+      retention tests; one `previewPlan` fixture (`previews/__fixtures__/plans.ts` gains the
+      options of `workflow/__fixtures__/previews.ts`, which goes).
+    - script.ts: `on_exit` calls `finish`; `field`'s default used for `created`.
+    - The pull request tag pattern and the secret placeholder pattern each written once.
+    - Drop: `RunResult.last`, the `START_FAILURES` export and its redundant assertion, the
+      exports of `sealsImage` and `PREVIEW_IMAGE_DAYS`, the infra test that repeats snapshots.
+    - Small: own.ts's zone check once; `settingsFile` takes `previews` from its caller.
+  - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/plan-schema`
+  - Effort: medium
+
+- [ ] T2218 Simplify agents and ssh-host
+  - Owns: `packages/agents/src/**`, `packages/connectors/ssh-host/src/**` (+ tests),
+    `packages/plan-schema/src/environments.ts`, `environments.test.ts`, `previews.test.ts`,
+    `packages/plan-schema/src/__fixtures__/**`
+  - Depends: T2217
+  - Accept:
+    - plan-schema exposes the preview environments' names it already collects in
+      `environmentsOf`; environments/previews.ts and provision/dependabot.ts use it.
+    - drift/previews.ts uses `previewRecipeDir` and `toPosixRelative`.
+    - One `previewCommand(app)` (ssh-host, from `PREVIEW_COMMAND_FILE`, exported) for the five
+      copies of `/srv/apps/<app>/bin/opscrew-preview`; one constant for the names a recipe
+      leaves out (`values.env`, `previews.log`); the pointless `helpers` alias and the second
+      "each name once" check go.
+    - One helper for verify's report-each-check loop; `previewChecks` reads `ctx.flag`; the logs
+      sentence built once.
+    - One `answersWithDefaults` in environments/add.ts; one usable-server-type filter.
+    - `previewEdits` returns only its lines; render.ts's unreachable INTERNAL guard goes;
+      credentials.ts's two near-identical hints become one; remote.ts's `NUMBER` exported once,
+      `commandFlags` only on error.
+    - One `ensureKeyPair` for the deploy, check and preview keys.
+    - environments/remove.ts uses `previewWorkflowPathFor`.
+    - design's bucket-line filter keyed on something sturdier than the line's opening words.
+    - The runner/build refusal sentence exported once for the CLI to reuse; the preview test
+      plan exported from agents' testing entry.
+    - Tests that repeat another's assertion go (setup.test.ts's message and other-app refusal,
+      design/previews.test.ts's "left out" lines); plan-schema's preview test plan built once.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-ssh-host --filter=@opscrew/plan-schema`
+  - Effort: high
+
+- [ ] T2219 [P] Simplify detection, and the guide
+  - Owns: `packages/detect/src/**` (+ tests, fixtures), `docs/guide/previews.md`
+  - Accept:
+    - seed.test.ts writes the folder case in memory (the on-disk fixture goes); `detectSeed` and
+      its types not exported; `read` required; the `.sequelizerc` reading shared with release.
+    - The guide's "Changing the recipe": edit `environment.previews` in
+      `opscrew/environments/preview/plan.yaml`, then `design` (it resizes the server for a new
+      cap), then `provision`, as design's own hint says; "What previews don't do" keeps only what
+      the page doesn't already say; the seed retry said once.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect && pnpm lint`
+  - Effort: medium
+
+- [ ] T2220 Simplify the CLI, MCP and the live harness
+  - Owns: `packages/cli/src/**`, `packages/cli/test/live/**`, `packages/mcp-server/src/**` (+ tests)
+  - Depends: T2218
+  - Accept:
+    - The CLI's runner/build refusal reuses agents' sentence; CLI and MCP tests use agents' exported
+      preview test plan; env.test.ts's terminal refusal test keeps one flag.
+    - Live harness: the preview key's SSH through `envs.shell` (an optional key file) instead of
+      `previewKeySshArgs`; one `commentBodies(pull)`; one `parseJsonOr` in support.ts for the
+      three JSON parsers; the two small tidy-ups (`page(...).then`, `list.previews[0]` whole).
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: medium
 
 - [ ] T2216 Release (lead): `docs/releasing.md`.
