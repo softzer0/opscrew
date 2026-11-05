@@ -280,6 +280,13 @@ never runs, they stay "not tested live" on the coverage page.
 
 ## Later, not yet placed
 
+- **A password in front of an environment** (founder, 2026-11-05, from 022): HTTP basic
+  authentication in the Caddy site (a bcrypt hash made on the user's computer; the health route
+  left open), opt-in per environment, because a login can break what calls the app (webhooks,
+  OAuth callbacks, API and mobile clients). 022 gave previews and the other environments hidden
+  addresses instead (022 research R6). Cloudflare Access in front of Cloudflare-hosted sites
+  belongs here too.
+
 - **Snapshots and restores as commands** (lead, 2026-10-31, from the failed-deploy guide page):
   today a snapshot is taken only by `destroy`, and a restore is done by hand in the provider's
   console or from a database dump.

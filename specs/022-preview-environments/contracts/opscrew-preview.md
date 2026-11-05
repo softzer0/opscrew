@@ -34,13 +34,13 @@ script's own lines; the last line is always `opscrew-preview: <state> <detail>`:
 
 | Exit | State | Detail | When |
 |---|---|---|---|
-| 0 | `running` | `pr-<n>.<base>` | `up` succeeded (created or updated) |
+| 0 | `running` | `pr-<n>-<random>.<base>` | `up` succeeded (created or updated) |
 | 0 | `removed` | `<n>` | `down` succeeded, or there was nothing to remove |
 | 0 | `listed` | `<count>/<cap>` | `list` |
 | 2 | `refused` | one of `request`, `number`, `image`, `commit`, `token`, `command` | the request breaks a rule above; nothing was changed |
 | 3 | `cap` | `<count>/<cap>` | a new preview while `count` previews exist and `count >= CAP` |
 | 4 | `failed` | one of `pull`, `release`, `start`, `health`, `edge` | `up` failed at that step; on an update the rollback script put the previous image back, on a creation nothing is routed |
-| 5 | `seed-failed` | `pr-<n>.<base>` | the preview runs but its seed command failed; the next `up` tries the seed again |
+| 5 | `seed-failed` | `pr-<n>-<random>.<base>` | the preview runs but its seed command failed; the next `up` tries the seed again |
 | 6 | `busy` | `<seconds>` | a lock was held longer than 600 seconds |
 
 Two requests differ: `gc`, which only cron runs, prints nothing when it succeeds (each removal goes
@@ -48,7 +48,7 @@ to `previews.log`) and its `failed` line to stderr when a removal fails, leaving
 folder for the next run; `logs` ends `listed <n>`, or `removed <n>` when there is no such preview.
 
 `list` prints, before its last line, one line per preview:
-`<n> <state> <commit> <created> <updated> <digest>` where `state` is `running`, `seed-failed` or
+`<n> <state> <commit> <created> <updated> <digest> <address>` where `state` is `running`, `seed-failed` or
 `failed`, times are seconds since 1970 and `digest` is the image's `sha256:` value.
 
 ## Rules the script keeps
@@ -66,3 +66,10 @@ folder for the next run; `logs` ends `listed <n>`, or `removed <n>` when there i
 - `down` can be repeated and finishes a removal a cancelled run left half done.
 - Every `up`, `down` and `gc` appends one line to `/srv/apps/<app>/previews.log`: the time, the
   request's command and number, the caller (`key` or `local`), and the state.
+
+## The address (US8, added 2026-11-05)
+
+A preview's address is `pr-<n>-<random>.<base>`, `<base>` being the previews' own zone and
+`<random>` 10 characters of `[a-z0-9]` the script draws from `/dev/urandom` when it creates the
+preview, keeps in `.preview` and reuses on every update; `down` forgets it. `list` prints it last
+on each line (`-` when unknown).

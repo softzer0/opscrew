@@ -37,15 +37,15 @@ designs them and shows their monthly cost before anything is created:
   server the user already has with a public address and nothing else on it.
 - **How many at once:** the cap, 3 by default. The server's size follows from the memory each
   preview needs (the app and its services), or the user picks the size and the cap follows.
-- **Their addresses:** `pr-<n>.<app's hostname>` by default, or under another name in a Cloudflare
-  zone the user has (`--domain`).
+- **Their domain:** a Cloudflare zone used only for previews (`--domain`); each preview is
+  `pr-<n>-<random>.<that domain>` (User Story 8).
 - **Their data:** the seed command OpsCrew found (for example `php artisan db:seed --force`), to
   confirm, another command, or none.
 - **The app's own values for previews:** from `.env.preview` (test keys), never from prod's `.env`.
 - **How long an idle preview lives:** 7 days without a push by default.
 
-Then `opscrew provision --env preview` shows the plans: the server and one wildcard DNS record, and
-the preview recipe on the server. The user approves them by their hashes, as any plan, and types
+Then `opscrew provision --env preview` shows the plans: the server and one proxied wildcard DNS
+record, and the preview recipe on the server with its Origin CA certificate. The user approves them by their hashes, as any plan, and types
 `<app>-preview` to confirm that every preview's own data is deleted, without asking again, when its
 pull request closes or it is idle too long. The deploy-setup pull request adds the preview workflow.
 
@@ -53,8 +53,8 @@ pull request closes or it is idle too long. The deploy-setup pull request adds t
 rests on.
 
 **Independent Test**: on the example app with a domain, `opscrew env add preview --previews` then
-`opscrew provision --env preview`: the server exists, `*.<hostname>` points at it (DNS only), the
-recipe and the restricted key are on it, the workflow is in the deploy-setup pull request, and
+`opscrew provision --env preview`: the server exists, `*.<preview domain>` points at it through
+Cloudflare's proxy, the recipe, its certificate and the restricted key are on it, the workflow is in the deploy-setup pull request, and
 prod's plan, state and site are unchanged.
 
 **Acceptance Scenarios**:
@@ -63,15 +63,15 @@ prod's plan, state and site are unchanged.
    `opscrew env add preview --previews`, **Then** OpsCrew designs a preview environment, asking
    only the questions above, and shows the monthly cost of its server against the budget.
 2. **Given** that design, **When** the user runs `opscrew provision --env preview`, **Then** they
-   see an IaC plan (the server and `*.<hostname>`, not proxied) and a host plan (the edge, the
+   see an IaC plan (the server and `*.<preview domain>`, proxied) and a host plan (the edge, the
    recipe with every bound in plain words, the `opscrew-preview` command, its restricted key and the
    cleanup timer), each approved by its hash, with the typed confirmation `<app>-preview`.
 3. **Then** the pull request's job gets only the restricted key, the server's address and its host
    key, in GitHub environment `preview`; the preview server's unrestricted key never leaves the
    user's computer.
 4. **Then** the preview workflow arrives in the deploy-setup pull request, as every workflow does.
-5. **Given** an app without a domain on Cloudflare, or a zone that already has a wildcard record at
-   that name, **Then** it refuses before any change and says what to do.
+5. **Given** an app without a domain on Cloudflare, a preview domain that is the app's own zone,
+   or one that holds other web records, **Then** it refuses before any change and says what to do.
 6. **Given** `--target own` naming a server another environment or app runs on, **Then** it
    refuses: a pull request's code would run beside it.
 
@@ -81,7 +81,7 @@ prod's plan, state and site are unchanged.
 
 A teammate opens a pull request that changes the app. Without anyone running anything, GitHub
 Actions builds the image, starts the preview, and a comment on the pull request gives its address:
-`https://pr-42.shop.example.com`. Each push updates it. When the pull request is merged or closed,
+`https://pr-42-x8k2q9m3d7.shop-previews.dev`. Each push updates it. When the pull request is merged or closed,
 the preview, its data and its images are removed, and the comment says so.
 
 **Why this priority**: it is the feature.
@@ -219,16 +219,46 @@ server, the record, the GitHub secrets and the GitHub environment are gone, and 
 The plugin's skill knows previews: how to set them up, what the comment means, and how to list
 them. The MCP server offers `opscrew_preview_list`, read-only.
 
+---
+
+### User Story 8 - Addresses nobody can guess (Priority: P1)
+
+Added by the founder on 2026-11-05 (research R6): `pr-42.shop.example.com` can be guessed, and a
+name with its own public certificate is published anyway. Previews live on a domain of their own,
+at `pr-<n>-<random>.<preview domain>`, behind Cloudflare's proxy, so no certificate ever names
+them; other environments get a suggested `<env>-<random>` name the same way. Nothing asks for a
+password, so webhooks and sign-in callbacks keep working.
+
+**Why this priority**: unreleased work and pull requests' code shouldn't be found by guessing or
+by reading certificate logs.
+
+**Independent Test**: set up previews on a preview domain: a preview's address has the pull
+request's number and 10 random characters; Certificate Transparency logs hold no certificate
+naming it; the preview server answers web requests only from Cloudflare. `env add staging` on a
+proxied app suggests `staging-<random>.<zone>`.
+
+**Acceptance Scenarios**:
+
+1. **Given** `env add preview --previews`, **Then** OpsCrew asks for the previews' domain (a
+   Cloudflare zone of its own; `--domain` in a script), refusing the app's own zone and a zone
+   with other web records, and pointing to `opscrew domain buy` when the user has none.
+2. **Then** provision creates one proxied wildcard record `*.<zone>` and one Cloudflare Origin CA
+   certificate for it, installed on the preview server by the approved host plan; the preview
+   server's web ports accept only Cloudflare.
+3. **When** a pull request gets its preview, **Then** its address is `pr-<n>-<random>.<zone>`,
+   the random part drawn on the server at creation and kept for every update; the comment, the
+   health check and "View deployment" use it.
+4. **Given** `env add staging` for an app behind Cloudflare's proxy with a name one level below
+   its zone, **Then** OpsCrew suggests `staging-<random>.<zone>`, which the user can accept or
+   replace; where the name would get its own public certificate, it says so and suggests the plain
+   name.
+
 ### Edge Cases
 
-- **The app on the zone's apex:** the wildcard is `*.<zone>`, so every name without its own record
-  reaches the preview server, which answers none of them. Setup says so and offers `--domain`.
-- **Prod behind Cloudflare's proxy:** previews are DNS only; their addresses would be two labels
-  below the zone, which the free certificate doesn't cover. The preview server's address is public;
-  it holds nothing of prod's.
-- **Let's Encrypt's limit** of 50 new certificates a week per registered domain: Caddy falls back
-  to ZeroSSL; the guide says a team opening more previews than that a week should use another base
-  name's domain.
+- **No preview domain yet:** setup refuses and points to `opscrew domain buy` (or adding a domain
+  the user has to Cloudflare).
+- **A public repository:** the pull request's comment, and its "View deployment", show the address
+  to everyone; setup and the guide say hidden addresses then protect only against guessing.
 - **Several apps in one repository:** each app has its own preview environment and server in this
   version; a pull request touching two apps gets two previews.
 - **Split placement (018):** a preview runs every service on the preview server.
@@ -255,11 +285,11 @@ them. The MCP server offers `opscrew_preview_list`, read-only.
 **Setting up**
 - **FR-2201**: `opscrew env add <name> --previews` MUST design a preview environment (one per app):
   its target (Hetzner or DigitalOcean server, or the user's own server with a public address), its
-  size and cap, its hostname base, its seed command, its lifetime, and the values file
+  size and cap, its preview domain (US8), its seed command, its lifetime, and the values file
   `.env.<name>`; and show the server's monthly cost against the budget.
 - **FR-2202**: It MUST refuse a server any other environment or app runs on, Portainer, this
-  computer, Cloudflare's hosting and GitHub Pages, an app without a Cloudflare zone, and a zone with
-  a wildcard record at the chosen name, before any change.
+  computer, Cloudflare's hosting and GitHub Pages, an app without a Cloudflare zone, and a preview
+  domain that is the app's own zone or holds other web records (FR-2224), before any change.
 - **FR-2203**: The size and cap MUST follow from the memory each preview needs (the app and the
   services the recipe runs) plus the edge; the user sets one and design computes the other.
 - **FR-2204**: The seed command MUST default to the detected one (Prisma, Rails, Laravel, Knex,
@@ -267,7 +297,7 @@ them. The MCP server offers `opscrew_preview_list`, read-only.
   is found.
 
 **The standing approval**
-- **FR-2205**: `opscrew provision --env <preview>` MUST create the server and one DNS-only wildcard
+- **FR-2205**: `opscrew provision --env <preview>` MUST create the server and one proxied wildcard
   record through the IaC plan, and install the recipe, the `opscrew-preview` command, its
   restricted key and the cleanup timer through a host plan; each approved by its hash, with the
   typed confirmation `<app>-<env>` that previews' data is deleted without asking again. The
@@ -333,6 +363,20 @@ them. The MCP server offers `opscrew_preview_list`, read-only.
 - **FR-2223**: The guide MUST gain a previews page: setup, the standing approval and its bounds,
   what pull requests get one, data, the cap and cleanup, the commands, and what previews don't do.
 
+**Addresses nobody can guess (US8)**
+- **FR-2224**: A preview environment MUST use a Cloudflare zone of its own as its domain (not the
+  app's zone, no other web records in it), behind Cloudflare's proxy, with one wildcard record and
+  one Origin CA certificate for `*.<zone>` (its key supplied to the server at apply, never in a
+  plan); the preview server's web ports MUST accept only Cloudflare.
+- **FR-2225**: Each preview's address MUST be `pr-<n>-<random>.<zone>`, with 10 random lower-case
+  letters and digits drawn on the preview server at creation and kept for its updates; `up` MUST
+  answer it, and the workflow MUST use it for the comment, the health check and the deployment URL.
+- **FR-2226**: `env add` for another environment MUST suggest `<env>-<random>.<zone>` when the
+  app's DNS is proxied with a name one level below the zone, and say so when the name would be
+  public (its own certificate); the user's own name wins.
+- **FR-2227**: The guide MUST say what hidden addresses protect against and what they don't (a
+  shared link, a public repository's comments).
+
 ### Key Entities
 
 - **Preview environment:** an environment with `previews` set; one per app.
@@ -359,15 +403,16 @@ The lead's defaults, for the founder to change:
 - **Automatic for every same-repository pull request** that changes the app; drafts wait until they
   are ready for review. No label needed.
 - **Cap 3, lifetime 7 days.**
-- **Addresses `pr-<n>.<app's hostname>`, DNS only,** with Let's Encrypt certificates on the preview
-  server.
-- **Previews are public** (with `noindex`): anyone with the address can open them.
+- **Addresses `pr-<n>-<random>.<preview domain>`,** behind Cloudflare's proxy, on a domain used only
+  for previews.
+- **No password in front of an environment** in this feature (roadmap, later); previews send
+  `noindex`.
 - **One preview server per app.**
 
 ## Out of scope
 
 - Previews for pull requests from forks.
-- A login in front of previews.
+- A password, or Cloudflare Access, in front of an environment (roadmap, later).
 - Previews on Cloudflare's hosting, GitHub Pages, Portainer or this computer.
 - Previews of several apps wired to each other.
 - Copies of prod's data, or of any other environment's.

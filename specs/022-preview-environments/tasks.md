@@ -428,4 +428,90 @@ script's contract or what is redacted; snapshots may change only where a test fi
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
 
+### Addresses nobody can guess (US8, research R6, plan.md "11.")
+
+Added by the founder on 2026-11-05: previews on a domain of their own behind Cloudflare's proxy at
+`pr-<n>-<random>.<zone>`; other environments get a suggested `<env>-<random>` name; no password
+(later).
+
+- [x] T2222 [P] [US8] The preview plan behind the proxy, in `packages/plan-schema/`
+  - Owns: `packages/plan-schema/src/**` (+ tests, regenerated schemas)
+  - Accept: a preview plan's `dns` must be proxied (the `proxied: false` rule becomes `proxied:
+    true`), `previews.domain` must equal `dns.zone`, and `security.httpAllowedFrom` must be
+    `cloudflare`; each with a plain message; plans without previews parse as before.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema`
+  - Effort: medium
+
+- [x] T2224 [P] [US8] The previews' Origin CA certificate on the preview server, in `packages/connectors/ssh-host/`
+  - Owns: `packages/connectors/ssh-host/src/**` (+ tests)
+  - Accept: `planAddon("previews")` takes `previewTls: { certificate, key }` at apply (never in the
+    plan or its hash; the plan says a certificate is installed), checked as PEM, written to
+    `/srv/edge/tls/<app>/origin.pem` (0644) and `origin.key` (0600); part of `secretsChanged`;
+    `disable` removes them; the redactor gets the key; facts say whether they are there.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host`
+  - Effort: medium
+
+- [x] T2223 [US8] Hidden preview names in the recipe, the script, the workflow and the root, in `packages/iac-templates/`
+  - Owns: `packages/iac-templates/src/**` (+ tests, snapshots, fixtures)
+  - Depends: T2222
+  - Accept:
+    - The preview root's `dns` module makes `*.<zone>` proxied (web ports from Cloudflare, as a
+      proxied app's root already does).
+    - Each preview's Caddy site is `pr-<n>-<random>.<zone>` with `tls` on the Origin CA files in
+      `/srv/edge/tls/<app>/` (no automatic HTTPS for it); the equality test covers the new
+      placeholder.
+    - The script draws `<random>` (10 of `[a-z0-9]`, `/dev/urandom`) at creation, keeps it in
+      `.preview`, reuses it on updates, answers `running pr-<n>-<random>.<zone>`; `list` prints the
+      address; the contract file is updated by the lead.
+    - The workflow takes the address from `up`'s detail (checked against
+      `^pr-<n>-[a-z0-9]{10}\.<zone>$`) for the comment, the health check and the deployment URL.
+  - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
+  - Effort: high
+
+- [x] T2225 [US8] Hidden addresses in agents: the preview domain, the certificate, the suggested names
+  - Owns: `packages/agents/src/**` (+ tests)
+  - Depends: T2222, T2223, T2224, T2227
+  - Accept:
+    - `env add --previews` asks for the preview domain (`--domain` in a script; no default),
+      refuses the app's own zone and a zone with other A, AAAA or CNAME records (Cloudflare
+      connector), points to `opscrew domain buy` when there is none, and designs the plan of T2222.
+    - Provision makes the Origin CA certificate for `*.<zone>` and `<zone>` with the existing
+      origin-TLS code (key local, kept with the generated values, redacted) and hands it to the
+      previews host plan at apply as `previewTls`; nothing of it in a plan, GitHub, a log or the
+      repository (leak test).
+    - `env add <env>` suggests `<env>-<random>.<zone>` (10 random characters, injected randomness)
+      when the app's DNS is proxied with a name one level below the zone, otherwise says the name
+      would be public and suggests the plain one; a given hostname wins.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
+- [x] T2227 [US8] A wildcard name in the Origin CA path, in `packages/core/` and `packages/connectors/cloudflare/`
+  - Owns: `packages/core/src/crypto/**` (+ tests), `packages/connectors/cloudflare/src/**` (+ tests)
+  - Why (found by T2225): `buildCsr` and the shared Cloudflare plan (`appHostnames`, the record's
+    `tls.origin.hostnames`) refuse `*.<zone>`, and `inspectShared` reads per-hostname
+    Authenticated Origin Pulls for every proxied name; previews need one Origin CA certificate for
+    `*.<zone>` and `<zone>` through the same approved shared plan, with no client certificate.
+  - Accept: `buildCsr` accepts a leading `*.` label (one, leftmost, followed by a valid name); the
+    shared plan's TLS hostnames and its record accept `*.<name>`; per-hostname origin pulls are
+    neither read nor set for a wildcard name; any rule expression built from the proxied hostnames
+    covers a wildcard correctly (say how, or leave wildcards out where the rule doesn't apply); plain
+    names behave exactly as before (existing tests and snapshots unchanged).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/connector-cloudflare`
+  - Effort: medium
+
+- [x] T2226 [US8] The CLI, the guide, the skill and the live pass for hidden addresses
+  - Owns: `packages/cli/src/**`, `packages/cli/test/live/**` (+ tests), `packages/mcp-server/src/**` (+ tests),
+    `plugin/skills/opscrew-deploy/**`, `docs/guide/environments.md`, `docs/guide/previews.md`, `docs/e2e.md`
+  - Depends: T2225, T2227
+  - Accept: `env add --previews --domain <zone>` (no default; refused in a script without it), `env add
+    <env> --hostname <name>` (any name in a Cloudflare zone of the token, the suggested one by default),
+    the CLI and MCP preview tests on the new address form (`list`'s 7th field, zone `example.net`); the
+    previews page's addresses section rewritten (a domain of its own, the proxy and the Origin CA
+    certificate, what hidden addresses protect against and what they don't, public repositories),
+    the environments page's hidden addresses; the skill says the same; the live pass uses the
+    preview zone `OPSCREW_E2E_PREVIEW_DOMAIN` and checks the address's form and that the preview
+    server answers web requests only through Cloudflare.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew && node plugin/validate.mjs && pnpm lint`
+  - Effort: medium
+
 - [ ] T2216 Release (lead): `docs/releasing.md`.

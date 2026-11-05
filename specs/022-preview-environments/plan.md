@@ -10,8 +10,8 @@ The founder gave the go-ahead on 2026-11-05. A cross-artefact review (2026-11-05
 ## Summary
 
 A preview environment is an environment with `previews` set. `opscrew env add preview --previews`
-designs it; `opscrew provision --env preview` creates its server and a DNS-only wildcard record
-(IaC plan), installs the preview recipe (host plan), both approved by hash, the host plan with the
+designs it; `opscrew provision --env preview` creates its server and a proxied wildcard record on
+the previews' own domain (IaC plan; section 11), installs the preview recipe (host plan), both approved by hash, the host plan with the
 typed confirmation that covers deleting previews' data, and commits the rendered recipe (without
 values) in the deploy-setup pull request. A new workflow, `opscrew-preview[-<app key>].yml`, builds
 each same-repository pull request on GitHub's machines and calls the server's `opscrew-preview`
@@ -341,6 +341,32 @@ that two tasks add are merged by the lead.
 |---|---|---|
 | A forced-command script on the server | A pull request runs its own workflow file, so only the server can hold the bounds of a standing approval (R1.1, R1.6). | Bounds checked in the workflow can be edited by the pull request. |
 | Two keys for one server | The unrestricted key must never be in GitHub. | One key in GitHub would give every pull request root on the preview server (docker group). |
-| A DNS-only wildcard | No Cloudflare token in a pull request's job (R1.4), and no paid certificate for names below the app's hostname. | Per-preview records need a zone-wide token in CI; proxied names need Advanced Certificate Manager or first-level names that clash across apps. |
+| A proxied wildcard on a domain of the previews' own (section 11) | No Cloudflare token in a pull request's job (R1.4), and no certificate that names a preview (R6). | Per-preview records need a zone-wide token in CI; DNS-only names each get a public certificate, which publishes them. |
 | Templates with placeholders | Per-preview files must come from the approved recipe, not from the request. | Rendering on the server would need OpsCrew's renderer there. |
 | A GitHub environment with no branch rule | Each pull request keeps its own "View deployment" (R5, S1). | Prefixed repository secrets alone work, but the pull request then has only the comment's link. |
+
+## 11. Addresses nobody can guess (US8, research R6; added 2026-11-05)
+
+No new dependency.
+
+- **Plan (T2222):** a preview plan's `dns` is proxied (`proxied: true`), with `previews.domain`
+  equal to `dns.zone` (a zone of its own) and `security.httpAllowedFrom: cloudflare`; the
+  `proxied: false` refinement goes. Plans without previews are unchanged.
+- **The server and the recipe (T2223):** the preview root's `dns` module makes `*.<zone>` proxied;
+  each preview's Caddy site is `pr-<n>-<random>.<zone>` with `tls <origin.pem> <origin.key>` from
+  `/srv/edge/tls/<app>/` (no automatic HTTPS); the script draws the random part (10 of `[a-z0-9]`
+  from `/dev/urandom`) when it creates a preview, keeps it in `.preview`, and answers `running
+  pr-<n>-<random>.<zone>`; `list` shows it. The workflow takes the address from `up`'s detail for
+  the comment, the health check and the deployment URL.
+- **The certificate (T2224, T2225):** provision makes an Origin CA certificate for `*.<zone>` and
+  `<zone>` with the existing origin-TLS code (key made locally, kept in the environment's
+  generated values); the previews host plan takes the certificate and key at apply
+  (`previewTls`, never in the plan, part of `secretsChanged`) and writes them to
+  `/srv/edge/tls/<app>/` (key 0600); off removes them.
+- **Design (T2225):** `env add --previews` asks for the preview domain (a script passes
+  `--domain`), refuses the app's own zone and a zone with other A, AAAA or CNAME records, and
+  points to `opscrew domain buy`; `env add <env>` suggests `<env>-<random>.<zone>` (10 random
+  characters, injected randomness) when the app's DNS is proxied and the name one level below the
+  zone, otherwise says the name would be public and suggests the plain one.
+- **Surfaces (T2226):** the CLI's flags and prompts, the guide's previews page (addresses), the
+  environments page (hidden addresses), the skill, and the live pass on a preview zone.

@@ -336,3 +336,40 @@ each with a workflow whose job used one GitHub environment `spike-preview` with
   again (pull requests still open when the user destroys previews) are deleted by every deploy
   workflow's image cleanup, which deletes `pr-*` versions older than 31 days: no preview lives
   longer than 30 days without an update, so none of them is still in use.
+
+## R6. Hidden addresses (founder, 2026-11-05)
+
+The founder asked, after reading that `pr-42.shop.example.com` can be guessed: names nobody can
+guess, for previews and for the other environments, and no password for now (a password can break
+what calls the app: webhooks, OAuth callbacks, API and mobile clients; it goes on the roadmap as a
+later option).
+
+**What makes a name hidden.** Every certificate a public CA issues is published in Certificate
+Transparency logs (searchable within minutes), so a random name with its own Let's Encrypt
+certificate is found anyway. Behind Cloudflare's proxy the name is never in a certificate:
+visitors get Cloudflare's free Universal SSL certificate, which names the zone and `*.<zone>`
+only (R1.4), and the server holds a Cloudflare Origin CA certificate, from a private CA that
+publishes nothing (R2.5). So a random name one level below a zone, proxied, stays unknown unless
+someone shares the link. Leaks remain possible (chats, referrer headers to third-party scripts,
+browser sync, passive DNS, and on a public repository the pull request's comment itself): this is
+"anyone with the link" protection, said so in the guide.
+
+Lead decisions (superseding R3.6 for previews):
+1. **Previews on a domain of their own,** a Cloudflare zone used only for previews (for example
+   `shop-previews.dev`, about $10 a year; `opscrew domain buy` can buy one): one proxied wildcard
+   `*.<zone>` to the preview server, one Origin CA certificate for `*.<zone>` on it, made at
+   provision with the user's Cloudflare token and installed by the previews host plan (its key never
+   in a plan). The zone must hold no other web records, and can't be the app's own zone. No Let's
+   Encrypt certificate per preview, so no weekly limit; the server's address stays hidden, and its
+   web ports accept only Cloudflare.
+2. **Each preview's name is `pr-<n>-<random>.<zone>`:** the pull request's number first, so people
+   tell previews apart, then 10 random lower-case letters and digits the preview server draws from
+   `/dev/urandom` when it creates the preview and keeps for its updates. `up` answers the name;
+   the workflow's comment, health check and deployment URL use it.
+3. **Other environments (dev, staging, a custom one):** `env add` suggests `<env>-<random>.<zone>`
+   (10 random characters) instead of `<env>.<zone>` when the app's DNS goes through Cloudflare's
+   proxy (the default) with a name one level below the zone; the user can keep the suggestion,
+   type another name, or pass `--hostname`. Where the name would get its own public certificate
+   (DNS only, or a name two levels deep), `env add` says it would be visible and suggests the plain
+   name. Prod is unchanged.
+4. **No password** in this feature (roadmap, later).

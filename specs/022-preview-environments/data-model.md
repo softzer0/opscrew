@@ -82,3 +82,13 @@ crontab of deploy
 
 One record in the preview environment's IaC root: `*.<previews.domain>` → the preview server's
 IPv4 (and IPv6 when the server has one), DNS only, no CAA.
+
+## Hidden addresses (US8)
+
+- A preview plan: `dns: { provider: cloudflare, zone: <preview zone>, proxied: true }`,
+  `previews.domain` equal to the zone, `security.httpAllowedFrom: cloudflare`.
+- DNS: one proxied record `*.<preview zone>` to the preview server.
+- On the preview server: `/srv/edge/tls/<app>/origin.pem` and `origin.key` (0600), the Origin CA
+  certificate for `*.<zone>` and `<zone>`; each preview's `.preview` keeps its random part.
+- A preview's address: `pr-<n>-<random>.<zone>`, `<random>` 10 of `[a-z0-9]`.
+- Another environment's suggested hostname: `<env>-<random>.<zone>` (10 random characters).
