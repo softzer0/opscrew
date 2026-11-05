@@ -201,6 +201,32 @@ describe('planAddon("previews")', () => {
     expect(() => previewsPlan({ facts: ownFacts })).toThrow(/"blog-staging"/);
   });
 
+  it("allows the one app whose server the user chose to share, and no other", async () => {
+    const fake = new FakeHost();
+    await provision(fake, desiredFor(fake, { app: "shop-dev", hostnames: [] }));
+    const facts = await inspectHost(fake);
+    const shared = (shares: string) =>
+      planAddon("previews", {
+        app: APP,
+        runAs: "root",
+        repository: REPOSITORY,
+        facts,
+        shares,
+        enable: { files: RECIPE, publicKey: ed25519PublicKey(), valueNames: [] },
+      });
+    expect(onlyStep(shared("shop-dev")).state).toBe("change");
+    expect(() => shared("shop-staging")).toThrow(/This server also holds "shop-dev"/);
+    expect(() =>
+      planAddon("alloy", {
+        app: APP,
+        runAs: "root",
+        facts,
+        shares: "shop-dev",
+        disable: {},
+      }),
+    ).toThrow(/Only previews share/);
+  });
+
   it("is refused by the apply in a plan that does not delete data, before anything runs", async () => {
     const fake = await previewServer();
     const on = previewsPlan({ facts: await inspectHost(fake) });

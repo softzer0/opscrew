@@ -3056,7 +3056,8 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  *   deploy user's cron line for idle previews
  *   (`previewCronLine`), with cron installed first on a server the user owns. With `facts`, it is
  *   refused while they show another app on the server, and it is in place when they show all of
- *   it as planned, unless `secretsChanged` (the values or the certificate changed). Off (`facts`
+ *   it as planned, unless `secretsChanged` (the values or the certificate changed); `shares`
+ *   names the one app whose server the user chose to share with previews, allowed beside them. Off (`facts`
  *   needed), the key line goes, then the cron line, then each preview the facts list through
  *   `opscrew-preview down <n>`, then the folder and the certificate's. Either way the plan is
  *   `deleteData`: previews end with their data.
@@ -3097,6 +3098,11 @@ export function planAddon<K extends AddonPlanKind>(
      * its check never skips it.
      */
     secretsChanged?: boolean;
+    /**
+     * `previews` only: the app of the environment whose server the user chose to share with
+     * previews (`shop-dev`), which the facts may show beside the previews; never another.
+     */
+    shares?: string;
   },
 ): HostPlan {
   const { app, runAs, enable, disable, connector } = options;
@@ -3116,6 +3122,12 @@ export function planAddon<K extends AddonPlanKind>(
         )
       : "";
   requireAppName(app);
+  if (options.shares !== undefined) {
+    if (kind !== "previews") {
+      throw new OpsCrewError("INVALID_INPUT", "Only previews share another app's server.");
+    }
+    requireAppName(options.shares);
+  }
   const facts = options.facts === undefined ? undefined : parseFacts(options.facts);
   // The monitoring stack runs as root everywhere, so the host record names its owner everywhere.
   if (kind !== "check-key" && kind !== "previews" && (runAs === "root" || kind === "monitoring")) {
@@ -3147,6 +3159,7 @@ export function planAddon<K extends AddonPlanKind>(
       enable,
       off: disable !== undefined,
       secretsChanged: options.secretsChanged === true,
+      ...(options.shares !== undefined ? { shares: options.shares } : {}),
     });
   }
   let item: HostStep;
@@ -3205,7 +3218,7 @@ function previewsPlan(
   runAs: RunAs,
   repository: string,
   facts: HostFacts | undefined,
-  options: { enable: unknown; off: boolean; secretsChanged: boolean },
+  options: { enable: unknown; off: boolean; secretsChanged: boolean; shares?: string },
 ): HostPlan {
   const dir = appDirs(app).app;
   const tlsDir = `${EDGE_DIR}/tls/${app}`;
@@ -3246,7 +3259,7 @@ function previewsPlan(
       "The previews' settings are not valid",
       "Make the plan again with OpsCrew; if this keeps happening, report it.",
     );
-    if (facts !== undefined) refuseOtherApps(facts, app);
+    if (facts !== undefined) refuseOtherApps(facts, app, options.shares);
     const publicKey = keyId(settings.publicKey);
     const cron = previewCronLine(app);
     const names = settings.valueNames.length === 0 ? "none" : listText(settings.valueNames);
@@ -3299,9 +3312,10 @@ function previewsPlan(
 /**
  * Refuses a preview environment on a server that `facts` show holds another app (its record, its
  * folders in /srv/apps or /srv/data, or its runner): pull requests' code runs on a preview server.
- * `app` and its previews (`<app>-pr-<n>`) are its own.
+ * `app` and its previews (`<app>-pr-<n>`) are its own; `shares` is the app whose server the
+ * user chose to share with previews.
  */
-function refuseOtherApps(facts: HostFacts, app: string): void {
+function refuseOtherApps(facts: HostFacts, app: string, shares?: string): void {
   const own = new RegExp(`^${app}(-pr-[1-9][0-9]{0,5})?$`);
   const folders = facts.dirs.flatMap((dir) => {
     const parent = dir.path.slice(0, dir.path.lastIndexOf("/"));
@@ -3316,7 +3330,7 @@ function refuseOtherApps(facts: HostFacts, app: string): void {
       ...facts.runners.map((runner) => runner.app),
     ]),
   ]
-    .filter((name) => !own.test(name))
+    .filter((name) => !own.test(name) && name !== shares)
     .sort();
   if (others.length > 0) {
     throw new OpsCrewError(
