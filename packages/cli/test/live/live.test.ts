@@ -34,7 +34,6 @@ import {
   type CloudflareZone,
   deleteHetznerApp,
   GitHubRepo,
-  HETZNER_API,
   hetznerAppLeft,
   minutes,
   retryDelete,
@@ -51,6 +50,7 @@ import {
 import { CLI, EXAMPLES, isExample } from "./harness";
 import { observabilityPass, retargetPause } from "./observability-checks";
 import { OBSERVABILITY_GATE, observabilitySettings } from "./observability-support";
+import { rebootHetzner } from "./split-checks";
 import {
   type AppRules,
   appRules,
@@ -177,8 +177,6 @@ async function materializeApp(app: E2eApp, dest: string): Promise<void> {
   }
 }
 
-const hetzner = (method: string, path: string, body?: unknown) =>
-  api(HETZNER_API, E2E.hcloudToken as string, method, path, body);
 const digitalocean = (method: string, path: string, body?: unknown) =>
   api(DIGITALOCEAN_API, E2E.digitaloceanToken as string, method, path, body);
 
@@ -208,21 +206,7 @@ const HETZNER: LiveProvider = {
   token: E2E.hcloudToken,
   tokenVar: "HCLOUD_TOKEN",
   unprotect: unprotectHetznerRoot,
-  async reboot(appName, ipv4) {
-    const selector = encodeURIComponent(`managed-by=opscrew,app=${appName}`);
-    const listed = await hetzner("GET", `/servers?label_selector=${selector}`);
-    const servers =
-      (listed.json as { servers?: { id: number; public_net: { ipv4?: { ip: string } | null } }[] })
-        .servers ?? [];
-    const server = servers.find((item) => item.public_net.ipv4?.ip === ipv4);
-    if (server === undefined) {
-      throw new Error("Hetzner lists no server of the app at the address OpsCrew recorded.");
-    }
-    const rebooted = await hetzner("POST", `/servers/${server.id}/actions/reboot`);
-    if (rebooted.status !== 201) {
-      throw new Error(`Hetzner did not reboot the server (HTTP ${rebooted.status}).`);
-    }
-  },
+  reboot: (appName, ipv4) => rebootHetzner(E2E.hcloudToken as string, appName, ipv4),
   apiCleanup: (appName) => deleteHetznerApp(E2E.hcloudToken as string, appName),
   async expectNothingLeft(appName) {
     expect(

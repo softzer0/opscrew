@@ -10,7 +10,6 @@ export {
   CloudflareError,
   type CloudflareIdentityProvider,
   type CloudflareRuleInput,
-  type CloudflareTokenCheck,
   type EntrypointRuleset,
   type HostnameAop,
   type HostnameClientCertificate,

@@ -8,13 +8,9 @@
 import { type AdviceReport, type Proposal, ProposalSchema, THRESHOLDS } from "@opscrew/agents";
 import type { ComputeOffer, ProviderExtras } from "@opscrew/contracts";
 import { z } from "zod";
-import { ENVIRONMENT_E2E_VARIABLES } from "./environments-support";
 
 /** The test's gate. */
 export const ADVISE_GATE = "OPSCREW_E2E_ADVISE";
-
-/** What the pass needs besides its gate: the Hetzner pass's variables (the app is behind Cloudflare). */
-export const ADVISE_VARIABLES = ENVIRONMENT_E2E_VARIABLES;
 
 /** Hetzner's smallest type, which a move up resizes in place (research R5, S1). */
 export const SMALLEST_TYPE = "cx23";

@@ -361,6 +361,29 @@ export async function deleteHetznerApp(token: string, app: string): Promise<void
   }
 }
 
+/** A server OpsCrew created for an app, as Hetzner lists it (the fields the passes read). */
+export interface HetznerAppServer {
+  id: number;
+  server_type?: { name?: string };
+  /** Set only while backups are on. */
+  backup_window?: string | null;
+  public_net: { ipv4?: { ip: string } | null };
+}
+
+/** The servers OpsCrew created for `app` at Hetzner, by the app's labels. */
+export async function hetznerAppServers(token: string, app: string): Promise<HetznerAppServer[]> {
+  const listed = await api(
+    HETZNER_API,
+    token,
+    "GET",
+    `/servers?label_selector=${appSelector(app)}`,
+  );
+  if (listed.status !== 200) {
+    throw new Error(`Could not list the app's Hetzner servers (HTTP ${listed.status}).`);
+  }
+  return (listed.json as { servers?: HetznerAppServer[] } | undefined)?.servers ?? [];
+}
+
 /** The inbound rules of the firewalls OpsCrew created for `app` at Hetzner. */
 export async function hetznerAppFirewallRules(
   token: string,

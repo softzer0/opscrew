@@ -221,7 +221,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2117 [P] Connectors, templates, the live harness and the skill
+- [x] T2117 [P] Connectors, templates, the live harness and the skill
   - Owns: `packages/connectors/cloudflare/src/**`, `packages/connectors/github/src/github.ts`, `packages/iac-templates/src/infra/servers.ts` (+ test), `packages/cli/test/live/**`, `plugin/skills/opscrew-troubleshoot/**`
   - Accept: `verifyToken`'s failing answers carry no `status`/`expiresOn` (advise lists such a token as not read) and `CloudflareTokenCheck` leaves the index unless imported; `serverTfvars` uses `serverVariableNames`; one exported Hetzner listing by the app's labels in the live harness, used by its three callers; the advise pass uses `ENVIRONMENT_E2E_VARIABLES` and searches its audit lines for addresses; the skill's trigger said once, and the resize warning taken from the proposal.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/connector-github --filter=@opscrew/iac-templates --filter=opscrew && node plugin/validate.mjs`

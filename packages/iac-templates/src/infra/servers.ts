@@ -126,9 +126,10 @@ export function serverTfvars(
   prefix: VariablePrefix,
   target: ServerSettings,
 ): Record<string, unknown> {
+  const names = serverVariableNames(prefix);
   return {
-    [`${prefix}location`]: target.location,
-    [`${prefix}server_type`]: target.serverType,
+    [names.location]: target.location,
+    [names.serverType]: target.serverType,
     [`${prefix}image`]: target.image,
     [`${prefix}backups`]: target.backups,
   };

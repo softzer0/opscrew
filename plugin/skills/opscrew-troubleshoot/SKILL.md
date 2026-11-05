@@ -51,21 +51,20 @@ Cloudflare. Secrets in log lines arrive masked; never try to recover them.
    - **It started with the latest release:** see "A release that deploys fine but is wrong" below.
 4. If the server does not answer, say so and suggest `npx opscrew verify` in a terminal; it checks
    the app from the outside.
-5. When status shows memory high or near a limit, a filling disk, or load above the CPUs, call
-   `opscrew_advise` for what to change: see "What to change: advise" below.
+5. For what to change, see "What to change: advise" below.
 
 ## What to change: advise
 
 Call `opscrew_advise` (read only, with `app` and `environment` when the repository has several)
 when the user asks "is it the right size?", "why is it slow?", "can it cost less?" or "what should
-I change?", and after `opscrew_status` shows high memory, a container at its memory limit or a
-filling disk. It reads the servers' figures, the plan, the interview's budget, the providers'
+I change?", and after `opscrew_status` shows high memory, a container at its memory limit, a
+filling disk or load above the CPUs. It reads the servers' figures, the plan, the interview's budget, the providers'
 prices, Dependabot and the tokens' expiry, and lists proposals, the most urgent first (now, soon,
 when convenient). Each has an id, its reasons with their figures (over 14 days with self-hosted
 monitoring, else one reading), its monthly price before and after, and how to apply it.
 
-- Explain each proposal with its figures and its price; for a larger server, say the app is
-  offline one to three minutes and that the move is one way (the disk grows and can't shrink).
+- Explain each proposal with its figures and its price, and pass on the proposal's own warning
+  (offline time, one way).
 - **Applying stays in the terminal.** For a proposal whose apply is `Apply: opscrew advise --apply
   <id>`, the user runs `npx opscrew advise --apply <id>` (with the `--app`/`--env` it shows): it
   changes only `opscrew/plan.yaml`, then `npx opscrew provision` shows the change and applies it

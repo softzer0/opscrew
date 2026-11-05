@@ -182,10 +182,10 @@ export interface CloudflareZone {
 }
 
 /**
- * {@link CloudflareClient.verifyToken}'s answer, with the token's status and expiry (ISO 8601)
- * when Cloudflare's verify answer gives them (an expiry only when one is set).
+ * {@link CloudflareClient.verifyToken}'s answer; a usable token's answer has its status and expiry
+ * (ISO 8601) when Cloudflare's verify answer gives them (an expiry only when one is set).
  */
-export interface CloudflareTokenCheck extends CredentialCheck {
+interface CloudflareTokenCheck extends CredentialCheck {
   status?: "active" | "disabled" | "expired";
   expiresOn?: string;
 }
@@ -1131,8 +1131,8 @@ export class CloudflareClient {
   }
 
   /**
-   * Checks the token works, with its status and expiry when Cloudflare's verify answer gives
-   * them. Falls back to listing zones for account-owned tokens.
+   * Checks the token works, with its status and expiry when it does and Cloudflare's verify answer
+   * gives them. Falls back to listing zones for account-owned tokens.
    */
   async verifyToken(): Promise<CloudflareTokenCheck> {
     if (!this.#token) {
@@ -1168,13 +1168,11 @@ export class CloudflareClient {
       return {
         ok: false,
         message: `The Cloudflare token was rejected. ${permissionHint()}`,
-        ...token,
       };
     }
     return {
       ok: false,
       message: `Cloudflare could not verify the token: ${body.errors.map((e) => e.message).join("; ") || `HTTP ${status}`}.`,
-      ...token,
     };
   }
 

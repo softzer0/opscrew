@@ -31,7 +31,6 @@ export const GITHUB_API = "https://api.github.com";
  * Issues (the check's open alerts) are needed only with the scheduled check; Actions above covers
  * reading the check workflow's state. Variables pause the check, and pause deploys while an app
  * moves to another target or is rolled back.
- * Dependabot alerts: Read is optional: `opscrew advise` reads the open alerts with it.
  */
 export const GITHUB_TOKEN_PERMISSIONS = [
   "Contents: Read and write",

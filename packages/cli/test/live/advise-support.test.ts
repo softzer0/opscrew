@@ -3,7 +3,6 @@ import type { Proposal } from "@opscrew/agents";
 import { describe, expect, it } from "vitest";
 import {
   ADVISE_GATE,
-  ADVISE_VARIABLES,
   adviceReport,
   BALLAST_LABEL,
   BALLAST_REACHED,
@@ -17,6 +16,7 @@ import {
   tokenDue,
   unexpectedNotRead,
 } from "./advise-support";
+import { ENVIRONMENT_E2E_VARIABLES } from "./environments-support";
 import { missingVariables } from "./support";
 
 /** A cx23-sized `/proc/meminfo` (about 3.7 GiB) with `availableMb` available. */
@@ -41,9 +41,9 @@ const backups: Proposal = {
 
 describe("the gate", () => {
   it("is skipped without the gate or one of the Hetzner pass's variables", () => {
-    expect(missingVariables({}, ADVISE_GATE, ADVISE_VARIABLES)).toEqual([
+    expect(missingVariables({}, ADVISE_GATE, ENVIRONMENT_E2E_VARIABLES)).toEqual([
       "OPSCREW_E2E_ADVISE=1",
-      ...ADVISE_VARIABLES,
+      ...ENVIRONMENT_E2E_VARIABLES,
     ]);
   });
 });

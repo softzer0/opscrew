@@ -1,5 +1,5 @@
 /** The shared harness of the live tests on a throwaway server (own server and Portainer). */
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -64,6 +64,44 @@ export const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url))
 export const CLI = join(REPO_ROOT, "packages/cli/dist/opscrew.js");
 export const EXAMPLES = join(REPO_ROOT, "examples");
 
+/** The newest modification time of the files under the packages' `src` folders (connectors too). */
+function newestSourceMtime(): number {
+  let newest = 0;
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else newest = Math.max(newest, statSync(path).mtimeMs);
+    }
+  };
+  const packages = join(REPO_ROOT, "packages");
+  for (const name of readdirSync(packages)) {
+    const dirs =
+      name === "connectors" ? readdirSync(join(packages, name)).map((c) => join(name, c)) : [name];
+    for (const dir of dirs) {
+      const src = join(packages, dir, "src");
+      if (existsSync(src)) walk(src);
+    }
+  }
+  return newest;
+}
+
+let cliChecked = false;
+
+/**
+ * Fails at once when the built CLI is missing or older than the code (a stale bundle would fail a
+ * pass only after minutes of deploying). Walks the sources once per run.
+ */
+function expectBuiltCli(): void {
+  expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
+  if (cliChecked) return;
+  expect(
+    statSync(CLI).mtimeMs >= newestSourceMtime(),
+    "the built CLI is older than the code: run pnpm --filter opscrew build",
+  ).toBe(true);
+  cliChecked = true;
+}
+
 /** Whether `name` is a folder under `examples/` (a plain name, never a path). */
 export function isExample(name: string): boolean {
   const dir = join(EXAMPLES, name);
@@ -99,7 +137,7 @@ export async function plannedProject(env: Record<string, string | undefined>): P
   repo: string;
   opscrew: (...args: string[]) => Promise<{ exitCode: number; stdout: string; output: string }>;
 }> {
-  expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
+  expectBuiltCli();
   const runner = new NodeCommandRunner();
   const work = await mkdtemp(join(tmpdir(), "opscrew-e2e-domain-"));
   const repo = join(work, "repo");
@@ -667,7 +705,7 @@ export class LiveRun {
     files?: Readonly<Record<string, string>>;
   }): Promise<void> {
     const { settings } = this.options;
-    expect(existsSync(CLI), "build the CLI first: pnpm --filter opscrew build").toBe(true);
+    expectBuiltCli();
     const folders = options.folders ?? { ".": settings.app };
     for (const example of Object.values(folders)) {
       if (!isExample(example)) {

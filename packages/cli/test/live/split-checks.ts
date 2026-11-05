@@ -26,6 +26,7 @@ import {
   type GitHubRepo,
   HETZNER_API,
   hetznerAppLeft,
+  hetznerAppServers,
   httpRequest,
   minutes,
   RootShell,
@@ -81,17 +82,12 @@ function hetzner(token: string) {
 
 /** Reboots the Hetzner server of `app` at `ipv4` (found by the app's labels and its address). */
 export async function rebootHetzner(token: string, app: string, ipv4: string): Promise<void> {
-  const call = hetzner(token);
-  const selector = encodeURIComponent(`managed-by=opscrew,app=${app}`);
-  const listed = await call("GET", `/servers?label_selector=${selector}`);
-  const servers =
-    (listed.json as { servers?: { id: number; public_net: { ipv4?: { ip: string } | null } }[] })
-      .servers ?? [];
+  const servers = await hetznerAppServers(token, app);
   const server = servers.find((item) => item.public_net.ipv4?.ip === ipv4);
   if (server === undefined) {
     throw new Error("Hetzner lists no server of the app at the address OpsCrew recorded.");
   }
-  const rebooted = await call("POST", `/servers/${server.id}/actions/reboot`);
+  const rebooted = await hetzner(token)("POST", `/servers/${server.id}/actions/reboot`);
   if (rebooted.status !== 201) {
     throw new Error(`Hetzner did not reboot the server (HTTP ${rebooted.status}).`);
   }

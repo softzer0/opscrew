@@ -21,7 +21,6 @@ import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import {
   ADVISE_GATE,
-  ADVISE_VARIABLES,
   adviceReport,
   BALLAST_REACHED,
   BALLAST_RUNNING,
@@ -38,13 +37,14 @@ import {
   URGENCY_HEADINGS,
   unexpectedNotRead,
 } from "./advise-support";
-import { api, HETZNER_API, minutes, waitFor } from "./cloud";
+import { hetznerAppServers, minutes, waitFor } from "./cloud";
 import { AppEnvironments, designProd } from "./environment-checks";
+import { ENVIRONMENT_E2E_VARIABLES } from "./environments-support";
 import { type CliRun, LiveRun, serverSettings } from "./harness";
 import { waitForDatabasePage, watchOutage } from "./split-checks";
 import { duration, leakedLabels, missingVariables } from "./support";
 
-const MISSING = missingVariables(process.env, ADVISE_GATE, ADVISE_VARIABLES);
+const MISSING = missingVariables(process.env, ADVISE_GATE, ENVIRONMENT_E2E_VARIABLES);
 /** The default example: its Postgres holds the data the interview marks important. */
 const SETTINGS = { ...serverSettings(process.env), app: "nextjs-postgres" };
 /** The proposals the pass makes happen, by id. */
@@ -98,24 +98,10 @@ describe.skipIf(MISSING.length > 0)(
 
     /** The app's one server at Hetzner, by OpsCrew's labels. */
     async function hetznerServer(): Promise<HetznerServer> {
-      const selector = encodeURIComponent(`managed-by=opscrew,app=${envs.app()}`);
-      const listed = await api(
-        HETZNER_API,
-        SETTINGS.hcloudToken,
-        "GET",
-        `/servers?label_selector=${selector}`,
-      );
-      const servers =
-        (
-          listed.json as
-            | { servers?: { server_type?: { name?: string }; backup_window?: string | null }[] }
-            | undefined
-        )?.servers ?? [];
+      const servers = await hetznerAppServers(SETTINGS.hcloudToken, envs.app());
       const [server] = servers;
-      if (listed.status !== 200 || server === undefined || servers.length !== 1) {
-        throw new Error(
-          `Hetzner lists ${servers.length} servers of the app (HTTP ${listed.status}).`,
-        );
+      if (server === undefined || servers.length !== 1) {
+        throw new Error(`Hetzner lists ${servers.length} servers of the app.`);
       }
       // Hetzner gives a backup window only while backups are on.
       return { type: server.server_type?.name ?? "", backups: server.backup_window != null };
@@ -475,7 +461,7 @@ describe.skipIf(MISSING.length > 0)(
           if (found.length > 0)
             problems.push(`the output of ${label} contains: ${found.join(", ")}`);
         }
-        const audited = leakedLabels(adviseAudit.join("\n"), run.scrubber.entries());
+        const audited = leakedLabels(adviseAudit.join("\n"), addresses);
         if (audited.length > 0) {
           problems.push(`advise's audit entries contain: ${audited.join(", ")}`);
         }

@@ -64,7 +64,7 @@ describe("CloudflareClient", () => {
     expect(check).not.toHaveProperty("expiresOn");
   });
 
-  it("says an expired token is expired, without the token", async () => {
+  it("rejects an expired token without its status or expiry, and without the token", async () => {
     const { fetch } = fakeFetch({
       "/user/tokens/verify": ok({
         id: "t1",
@@ -74,11 +74,9 @@ describe("CloudflareClient", () => {
       "/zones": fail(403, [{ code: 9109, message: "Unauthorized" }]),
     });
     const check = await new CloudflareClient({ token: TOKEN, fetch, sleep: noSleep }).verifyToken();
-    expect(check).toMatchObject({
-      ok: false,
-      status: "expired",
-      expiresOn: "2026-10-01T00:00:00Z",
-    });
+    expect(check.ok).toBe(false);
+    expect(check).not.toHaveProperty("status");
+    expect(check).not.toHaveProperty("expiresOn");
     expect(JSON.stringify(check)).not.toContain(TOKEN);
   });
 
