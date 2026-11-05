@@ -7,7 +7,7 @@ import {
   type StackPlan,
   stackPlanHash,
 } from "@opscrew/connector-portainer";
-import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
+import type { ApprovalRecord, PhaseName, ResourceChange } from "@opscrew/contracts";
 import {
   isUserFacingError,
   listText,
@@ -142,7 +142,7 @@ async function forgetLocalStackFiles(deps: PhaseDeps): Promise<void> {
  * The stack teardown plan in plain English, shown before its `stack-apply` approval: every
  * change, its state and reason, then the hash. A teardown sends no value or token.
  */
-function describeTeardown(plan: StackPlan, hash: string, environment?: string): string {
+export function describeTeardown(plan: StackPlan, hash: string, environment?: string): string {
   const count = (state: string) => plan.changes.filter((change) => change.state === state).length;
   const where = environment === undefined ? "" : ` (environment "${environment}")`;
   const lines = [
@@ -160,7 +160,7 @@ function describeTeardown(plan: StackPlan, hash: string, environment?: string): 
 }
 
 /** The stack teardown plan, approved by its hash but not applied yet. */
-interface ApprovedTeardown {
+export interface ApprovedTeardown {
   plan: StackPlan;
   hash: string;
   approval: ApprovalRecord;
@@ -171,7 +171,7 @@ interface ApprovedTeardown {
  * `stack-apply` by its hash with `allowDestroy` and the typed app name, and checked. Nothing is
  * changed here: {@link applyTeardown} applies it.
  */
-async function approveTeardown(
+export async function approveTeardown(
   deps: PhaseDeps,
   input: {
     plan: StackPlan;
@@ -179,6 +179,8 @@ async function approveTeardown(
     name: string;
     intro: readonly string[];
     refused: string;
+    /** What to do after a refusal (default: run `opscrew destroy` again). */
+    hint?: string;
   },
 ): Promise<ApprovedTeardown> {
   const { plan, name } = input;
@@ -199,7 +201,7 @@ async function approveTeardown(
   });
   if (!approval.approved) {
     throw new OpsCrewError("APPROVAL_REFUSED", `${input.refused}${refusalReason(approval)}`, {
-      hint: SHOWS_PLAN_AGAIN,
+      hint: input.hint ?? SHOWS_PLAN_AGAIN,
     });
   }
   await deps.approvals.assertApprovedStackPlan(hash, { allowDestroy: true });
@@ -211,7 +213,7 @@ async function approveTeardown(
  * plan; its approval is checked again first). What OpsCrew still has afterwards is recorded, also
  * when the apply stopped part-way. Audited by the plan's hash only.
  */
-async function applyTeardown(
+export async function applyTeardown(
   deps: PhaseDeps,
   approved: ApprovedTeardown,
   input: {
@@ -220,6 +222,10 @@ async function applyTeardown(
     name: string;
     afterFailure: string;
     wait?: Parameters<typeof applyStackPlan>[2]["wait"];
+    /** The command's phase in the audit log (default `provision`). */
+    phase?: PhaseName;
+    /** Where what is left is recorded (default: `.opscrew/server.json` → `portainer`). */
+    save?: (connection: PortainerConnection) => Promise<void>;
   },
 ): Promise<{ applied: string[]; connection: PortainerConnection }> {
   const { plan, hash } = approved;
@@ -235,11 +241,16 @@ async function applyTeardown(
       hash,
       // A teardown sends no value: nothing but names and ids leaves this computer.
       options: { secrets: { env: {} }, ...(input.wait !== undefined ? { wait: input.wait } : {}) },
-      phase: "provision",
+      phase: input.phase ?? "provision",
       teardown: true,
       // What is left is still OpsCrew's, also after a failure part-way.
       record: async (created) => {
-        connection = await recordConnection(deps, connection, { created });
+        if (input.save === undefined) {
+          connection = await recordConnection(deps, connection, { created });
+        } else {
+          connection = { ...connection, created };
+          await input.save(connection);
+        }
       },
     });
     return { applied: result.applied, connection };
