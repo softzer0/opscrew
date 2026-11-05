@@ -313,7 +313,7 @@ retention above all).
   - Verify: `pnpm turbo run typecheck --filter=opscrew` (the live run is T2214's)
   - Effort: high
 
-- [ ] T2214 Live runs (lead): T2213's pass on the final code, recorded in `docs/e2e-coverage.md`;
+- [x] T2214 Live runs (lead): T2213's pass on the final code, recorded in `docs/e2e-coverage.md`;
   each finding becomes a task here.
 
 ## Phase 7: Finish

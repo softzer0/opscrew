@@ -5,9 +5,10 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–021. [021 advise](021-advise/) was built on 2026-11-04 and 2026-11-05, passed its live
-pass on the final code, and was released as 0.2.2 on 2026-11-05. 022 preview environments
-started on 2026-11-05 with the founder's go-ahead: [022-preview-environments](022-preview-environments/).
+Done: 000–022. [022 preview environments](022-preview-environments/) was built on 2026-11-05,
+with addresses nobody can guess on a domain of their own (the founder's change that day), and
+passed its live pass on the final code. Next: 023 retarget anywhere, which waits for the founder's
+go-ahead.
 
 ## 019 Rollback
 
@@ -132,10 +133,12 @@ folder with one file per app, written by that app's own repository) is in
 
 ## 022 Preview environments per pull request
 
-Started 2026-11-05: [research](022-preview-environments/research.md),
+Done (2026-11-05): [research](022-preview-environments/research.md),
 [spec](022-preview-environments/spec.md), [plan](022-preview-environments/plan.md),
-[tasks](022-preview-environments/tasks.md), ADR 0026 and constitution 1.7.0 (the standing approval).
-The sketch below is the roadmap's, kept as the founder's input.
+[tasks](022-preview-environments/tasks.md), ADR 0026, constitution 1.7.0 (the standing approval), and
+the guide page `docs/guide/previews.md`. Previews live on a Cloudflare zone of their own at
+`pr-<n>-<random>.<zone>` (research R6). The sketch below is the roadmap's, kept as the founder's
+input.
 
 Founder agreed, 2026-10-23. A short-lived environment per pull request: created when it opens,
 updated on each push, destroyed on close or merge, at `pr-<n>.<domain>`.
