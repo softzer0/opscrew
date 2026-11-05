@@ -552,7 +552,9 @@ describe.skipIf(MISSING.length > 0)(
             "prod",
             "prod's secrets into a GitHub environment only main may use",
           );
-          await run.deploy("prod's deploy workflow in its GitHub environment");
+          // Prod's deploy job already runs in `production`, so moving its secrets there changes
+          // only opscrew/plan.yaml, which no deploy reads: the merge starts no deploy.
+          await run.mergeDeploySetup("prod's secrets placed in its GitHub environment");
           await run.waitForHealth();
           const record = await envs.expectSecretsPlaced("prod");
           const github =
