@@ -375,6 +375,9 @@ script's contract or what is redacted; snapshots may change only where a test fi
     - design's bucket-line filter keyed on something sturdier than the line's opening words.
     - The runner/build refusal sentence exported once for the CLI to reuse; the preview test
       plan exported from agents' testing entry.
+    - Found live (T2214 run 3): `provision --env <preview>` refuses, before reading it, a values
+      file `.env.<env>` that git doesn't ignore (`git check-ignore`), saying to add `.env.*` to
+      `.gitignore`; a test. (The one behaviour change in this task.)
     - Tests that repeat another's assertion go (setup.test.ts's message and other-app refusal,
       design/previews.test.ts's "left out" lines); plan-schema's preview test plan built once.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-ssh-host --filter=@opscrew/plan-schema`
