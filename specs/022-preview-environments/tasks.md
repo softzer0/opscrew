@@ -514,4 +514,4 @@ Added by the founder on 2026-11-05: previews on a domain of their own behind Clo
   - Verify: `pnpm turbo run typecheck test --filter=opscrew && node plugin/validate.mjs && pnpm lint`
   - Effort: medium
 
-- [ ] T2216 Release (lead): `docs/releasing.md`.
+- [x] T2216 Release (lead): `docs/releasing.md`.
