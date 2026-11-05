@@ -4,6 +4,44 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.2] - 2026-11-05
+
+Nothing to redo: your plans keep working as they are.
+
+### Added
+
+- **`opscrew advise`: is the app the right size, can it cost less, is anything about to break.**
+  - It reads each server's figures, with 14 days of history when
+    [self-hosted monitoring](docs/guide/monitoring.md) is on, your plan and the interview's budget,
+    the providers' live prices, the repository's Dependabot alerts and pull requests, the scheduled
+    check's issues, `opscrew secure`'s host checks, and when your GitHub and Cloudflare tokens
+    expire. It only reads: nothing changes on any server, account or repository.
+  - It lists what it would change, the most urgent first (now, soon, when convenient), each with its
+    figures, the monthly price before and after, and how to apply it: a larger or cheaper server, a
+    higher memory limit for a container, a fix for a filling disk, backups, the scheduled check, a
+    restart loop or a flapping check, Dependabot alerts, a reboot or security updates waiting, a
+    token about to expire, Postgres on a server of its own, object storage.
+  - It never proposes a smaller server on one reading, or with fewer than 7 days of history.
+  - `opscrew advise --apply <id>` writes one field of `opscrew/plan.yaml` (a server's type, a
+    container's memory limit, backups or the scheduled check), and `opscrew provision` applies it
+    once you approve its hash. For the other proposals it prints the command to run, or what to do
+    by hand. `--json` prints the proposals as JSON.
+  - To have the Dependabot alerts read, give your GitHub token "Dependabot alerts: Read"; without
+    it, advise says so and gives the rest of its advice.
+
+  See [Advice on size, cost and upkeep](docs/guide/advise.md).
+- **The Claude Code plugin** gives Claude advise's proposals through the read-only `opscrew_advise`
+  tool when you ask "is it the right size?" or "can it cost less?". Applying one stays in your
+  terminal.
+- **A guide page for `opscrew retarget`:**
+  [Moving your app to another cloud provider](docs/guide/retarget.md).
+
+### Fixed
+
+- **`opscrew provision` refuses a server type with a smaller disk than the server has,** before
+  changing anything, even in a plan edited by hand. Before, Hetzner Cloud refused such a change
+  only after switching the server off, and left it off.
+
 ## [0.2.1] - 2026-11-04
 
 Nothing to redo: your plans keep working as they are. The first deploy after your next
@@ -279,6 +317,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.2]: https://github.com/softzer0/opscrew/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/softzer0/opscrew/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/softzer0/opscrew/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/softzer0/opscrew/compare/v0.1.2...v0.1.3
