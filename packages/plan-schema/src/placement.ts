@@ -181,7 +181,6 @@ interface PlacementFields {
   services: readonly PlanService[];
   network?: Network;
   move?: Move;
-  retarget?: unknown;
   observability?: { monitoring?: MonitoringSettings | undefined } | undefined;
 }
 
@@ -202,8 +201,8 @@ function orList(items: readonly string[]): string {
  * The plan's rules across `servers`, `services[].server`, `network` and `move`: extra servers and
  * the network only on a cloud or own target, every server named once and running a service (but the
  * monitoring server), the network holding every server (and a shared monitoring server, the outside
- * member) with its address, devices and grants that fit, a move between two servers of the plan,
- * and no `retarget` with extra servers.
+ * member) with its address, devices and grants that fit, and a move between two servers of the
+ * plan.
  */
 export function checkPlacement(plan: PlacementFields, ctx: z.RefinementCtx): void {
   const issue = (path: (string | number)[], message: string) =>
@@ -288,12 +287,6 @@ export function checkPlacement(plan: PlacementFields, ctx: z.RefinementCtx): voi
         `must differ from move.from ("${move.from}"): a move takes a service to another server`,
       );
     }
-  }
-  if (plan.retarget !== undefined && servers.length > 0) {
-    issue(
-      ["retarget"],
-      "is refused for an app with extra servers: moving it to another provider is not available yet; place every service on the app's server (remove services[].server and servers), then move it",
-    );
   }
 }
 

@@ -122,7 +122,14 @@ export const PortainerWebSchema = z.discriminatedUnion("mode", [
     /** The host port the app is published on. */
     port: PortSchema,
   }),
-  z.strictObject({ mode: z.literal("caddy") }),
+  z.strictObject({
+    mode: z.literal("caddy"),
+    /**
+     * True once OpsCrew manages the app's DNS records (a move adopted them); absent: they are
+     * the user's.
+     */
+    records: z.boolean().optional(),
+  }),
 ]);
 
 /**
@@ -985,8 +992,8 @@ function checkCloudflareEdgeNames(plan: DeployPlanFields, ctx: z.RefinementCtx):
 
 /**
  * The rules of a Portainer target: what Cloudflare serves (the tunnel, the webhook behind Access)
- * needs a domain on Cloudflare, Caddy's certificates need a domain, a move to or from Portainer is
- * not available, and OpsCrew never installs Portainer CE next to an existing Portainer.
+ * needs a domain on Cloudflare, Caddy's certificates need a domain, and OpsCrew never installs
+ * Portainer CE next to an existing Portainer.
  */
 function checkPortainerTarget(
   target: z.output<typeof PortainerTargetSchema>,
@@ -1018,13 +1025,6 @@ function checkPortainerTarget(
       path: ["target", "web", "mode"],
       message:
         'can be "caddy" only with a domain (dns.domain): Caddy gets the certificates for that name; without one, use "proxy"',
-    });
-  }
-  if (plan.retarget !== undefined) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["retarget"],
-      message: "moving an app to or from an existing Portainer is not available",
     });
   }
   if (plan.portainer !== undefined) {
@@ -1068,8 +1068,8 @@ export function cleanRepoPath(path: string): string {
  * The rules of the server-less targets, Cloudflare's hosting and GitHub Pages: the site answers on
  * a domain on Cloudflare (behind Cloudflare's proxy on Cloudflare, DNS-only on GitHub Pages, with
  * `www` only at the zone's apex), nothing in the plan needs a server or an image, the uploaded
- * folder is never the app's folder itself, a server-rendered app handles its own not-found pages,
- * and the app does not move to or from a server.
+ * folder is never the app's folder itself, and a server-rendered app handles its own not-found
+ * pages.
  */
 function checkServerlessTarget(
   target: z.output<typeof CloudflareWorkersTargetSchema> | z.output<typeof GithubPagesTargetSchema>,
@@ -1184,12 +1184,6 @@ function checkServerlessTarget(
     issue(
       ["supplyChain", "sign"],
       `must be false with ${name}: cosign signs the app's image, and ${name} builds no image`,
-    );
-  }
-  if (plan.retarget !== undefined) {
-    issue(
-      ["retarget"],
-      `moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere`,
     );
   }
 }
@@ -1552,10 +1546,12 @@ export const DeploySettingsSchema = z.strictObject({
 });
 
 /**
- * A move to another provider in progress (`opscrew retarget`). `plan.target` is already the new
- * target; `plan.deployment` describes the deployment that receives traffic (the old server until
- * the DNS switch). The servers' addresses are never committed: OpsCrew keeps them in its local
- * state (`.opscrew/server.json`). Moves to or from a server the user owns are not available.
+ * A move to another target in progress (`opscrew retarget`): between two server targets (a cloud
+ * server, the user's own server, the user's Portainer) or two site targets (Cloudflare's hosting,
+ * GitHub Pages). `plan.target` is already the new target; `plan.deployment` describes the
+ * deployment that receives traffic (the old side until the DNS switch). The servers' addresses
+ * are never committed: OpsCrew keeps them in its local state (`.opscrew/server.json`). This
+ * computer never moves.
  */
 export const RetargetSchema = z.strictObject({
   /**
@@ -1563,12 +1559,31 @@ export const RetargetSchema = z.strictObject({
    * restores (the move may change the strategy and the builder for the new server).
    */
   from: z.strictObject({
-    target: CloudTargetSchema,
+    target: z.discriminatedUnion("provider", [
+      CloudTargetSchema,
+      OwnTargetSchema,
+      PortainerTargetSchema,
+      CloudflareWorkersTargetSchema,
+      GithubPagesTargetSchema,
+    ]),
     deploy: DeploySettingsSchema.prefault({}),
     build: AppBuildSchema.optional(),
+    /**
+     * The bucket being left. Present only when the bucket moves: `plan.storage.objectStorage` is
+     * then the new one, and this one is deleted at `--finish`.
+     */
+    objectStorage: StorageSchema.shape.objectStorage.unwrap().optional(),
+    /** The old app server's member of the private network, which leaves it at `--finish`. */
+    member: NetworkSchema.shape.members.element.optional(),
   }),
   /** Last completed step. */
   step: z.enum(["started", "renamed", "created", "deployed", "migrated", "switched"]),
+  /**
+   * What starts empty on the new side instead of being copied: services on the app's server by
+   * name, `app` for the app's own volumes, and `monitoring` for self-hosted monitoring on the
+   * app's server.
+   */
+  empty: z.array(z.string()).default(() => []),
   /** Set while OpsCrew keeps the old server's app stopped (maintenance window, after the switch). */
   oldAppStoppedAt: IsoDateTimeSchema.optional(),
   /** Present once `opscrew retarget --abort` began: its last completed step. */
@@ -1860,13 +1875,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
         'must be "cloudflare" when your own server serves the site directly behind Cloudflare\'s proxy (only OpsCrew\'s filter then keeps visitors from reaching the server around Cloudflare); to let everyone reach the server, set dns.proxied to false (DNS only), or use a Cloudflare Tunnel (target.access "tunnel")',
     });
   }
-  if (plan.retarget !== undefined && plan.target.provider === "own") {
-    ctx.addIssue({
-      code: "custom",
-      path: ["retarget"],
-      message: "moving an app to or from a server you already own is not available",
-    });
-  }
+  if (plan.retarget !== undefined) checkRetarget(plan.retarget, plan, ctx);
   if (plan.target.provider === "portainer") checkPortainerTarget(plan.target, plan, ctx);
   if (plan.target.provider === "localhost") checkLocalhostTarget(plan, ctx);
   if (isServerlessTarget(plan.target)) checkServerlessTarget(plan.target, plan, ctx);
@@ -1938,6 +1947,50 @@ function checkComponents(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
 }
 
 /**
+ * The rules of a move: what starts empty is an enabled service on the app's server, `app` (the
+ * app's own volumes) or `monitoring` while it runs on the app's server, as only the app's server
+ * moves.
+ */
+function checkRetarget(
+  retarget: NonNullable<DeployPlanFields["retarget"]>,
+  plan: DeployPlanFields,
+  ctx: z.RefinementCtx,
+): void {
+  for (const [i, name] of retarget.empty.entries()) {
+    const issue = (message: string) =>
+      ctx.addIssue({ code: "custom", path: ["retarget", "empty", i], message });
+    const remove = `remove "${name}" from retarget.empty`;
+    const service = plan.services.find((s) => s.name === name);
+    if (service !== undefined) {
+      if (!service.enabled) {
+        issue(
+          `names the service "${name}", which is turned off and has nothing to copy; ${remove}`,
+        );
+      } else if (service.server !== undefined) {
+        issue(
+          `names the service "${name}", which runs on the extra server ${service.server} and stays there: only the app's server moves; ${remove}`,
+        );
+      }
+    } else if (name === "monitoring") {
+      if (monitoringOf(plan)?.where.kind !== "app") {
+        issue(
+          `can be "monitoring" only while self-hosted monitoring runs on the app's server (observability.monitoring.where.kind "app"): on its own server it stays where it is; ${remove}`,
+        );
+      }
+    } else if (name !== "app") {
+      const names = plan.services
+        .filter((s) => s.enabled && s.server === undefined)
+        .map((s) => s.name);
+      const services =
+        names.length > 0 ? `a service on the app's server (${names.join(", ")}), ` : "";
+      issue(
+        `names no service of the plan: "${name}"; name ${services}app for the app's own volumes, or monitoring while it runs on the app's server`,
+      );
+    }
+  }
+}
+
+/**
  * Ubuntu 24.04 LTS image name per cloud provider, used when `target.image` is omitted. A server the
  * user owns has no image: OpsCrew never installs its operating system.
  */
@@ -1996,7 +2049,10 @@ export const DeployPlanSchema = DeployPlanObjectSchema.transform((plan) => {
       : {
           retarget: {
             ...plan.retarget,
-            from: { ...plan.retarget.from, target: withImage(plan.retarget.from.target) },
+            from: {
+              ...plan.retarget.from,
+              target: withTargetDefaults(plan.retarget.from.target),
+            },
           },
         }),
     security: {

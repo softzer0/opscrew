@@ -6,6 +6,7 @@ import { requireNoSharedPreviews } from "../previews/host";
 import { providerProfile } from "../providers";
 import { runPhase } from "../shared/phase-status";
 import { moveProvider } from "../shared/vps-target";
+import { previousCloud } from "./layouts";
 import { type MoveSession, moveBase, moveOf, openSession, warnUnusedApproval } from "./session";
 import { startMove } from "./start";
 import { createStep, deployStep, renameStep } from "./steps";
@@ -59,7 +60,7 @@ async function continueMove(
   }
   return openSession(deps, current, {
     command: RUN_COMMAND,
-    providers: [move.from.target.provider, moveProvider(plan.target)],
+    providers: [previousCloud(move).provider, moveProvider(plan.target)],
     services,
     ...(options.engine !== undefined ? { engine: options.engine } : {}),
     ...(options.approvePlanHash !== undefined ? { approvePlanHash: options.approvePlanHash } : {}),

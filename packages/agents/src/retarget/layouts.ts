@@ -1,10 +1,18 @@
-import type { InfraLayout, ServerModule } from "@opscrew/iac-templates";
+import { cloudTarget, type InfraLayout, type ServerModule } from "@opscrew/iac-templates";
 import type { CloudDeployTarget, Retarget } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 
+/**
+ * The old server's cloud target (`plan.retarget.from.target`). Until the move's sides cover the
+ * user's own server and Portainer, every move starts from a server OpsCrew created.
+ */
+export function previousCloud(move: Pick<Retarget, "from">): CloudDeployTarget {
+  return cloudTarget(move.from.target) as CloudDeployTarget;
+}
+
 /** The old server's target (`plan.retarget.from.target`) with its image filled in. */
 export function previousTarget(move: Pick<Retarget, "from">): CloudDeployTarget {
-  const target = move.from.target;
+  const target = previousCloud(move);
   return { ...target, image: target.image ?? providerProfile(target.provider).defaultImage };
 }
 

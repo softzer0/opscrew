@@ -9,6 +9,7 @@ import {
   updateServerAddresses,
 } from "../shared";
 import { moveProvider } from "../shared/vps-target";
+import { previousCloud } from "./layouts";
 import { moveOf } from "./session";
 
 /**
@@ -104,7 +105,7 @@ export async function loadMoveServers(
   if (from === undefined || next === undefined) {
     const read = await outputs().catch(() => undefined);
     if (read !== undefined) {
-      from ??= serverOfProvider(read, move.from.target.provider);
+      from ??= serverOfProvider(read, previousCloud(move).provider);
       next ??= serverOfProvider(read, moveProvider(plan.target));
     }
   }

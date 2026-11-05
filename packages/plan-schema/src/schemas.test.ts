@@ -675,18 +675,6 @@ describe("DeployPlan target on a server the user owns", () => {
     }
   });
 
-  it("refuses a move to or from a server the user owns", async () => {
-    const plan = await validPlan();
-    const move = { from: { target: plan.target }, step: "started", startedAt: plan.createdAt };
-    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, target: own, retarget: move }))).toEqual([
-      "retarget",
-    ]);
-    const fromOwn = { ...move, from: { target: own } };
-    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, retarget: fromOwn }))).toContain(
-      "retarget.from.target.provider",
-    );
-  });
-
   it("accepts provider own in the requirements and design options", async () => {
     const requirements = parseArtifact(
       "requirements",
@@ -1043,7 +1031,10 @@ describe("DeployPlan target on an existing Portainer", () => {
       environmentId: number;
       arch: "amd64" | "arm64";
       redeploy: "updater" | "cloudflare";
-      web: { mode: "tunnel" } | { mode: "proxy"; port: number } | { mode: "caddy" };
+      web:
+        | { mode: "tunnel" }
+        | { mode: "proxy"; port: number }
+        | { mode: "caddy"; records?: boolean | undefined };
     }>();
     for (const variant of [
       target({ arch: "arm64", redeploy: "cloudflare" }),
@@ -1191,16 +1182,8 @@ describe("DeployPlan target on an existing Portainer", () => {
     );
   });
 
-  it("refuses a move to or from Portainer, and installing another Portainer", async () => {
+  it("refuses installing another Portainer", async () => {
     const plan = await validPlan();
-    const move = { from: { target: plan.target }, step: "started", startedAt: plan.createdAt };
-    const to = DeployPlanSchema.safeParse({ ...plan, target: target(), retarget: move });
-    expect(pathsOf(to)).toEqual(["retarget"]);
-    expect(to.error?.issues[0]?.message).toContain("existing Portainer");
-    const fromPortainer = { ...move, from: { target: target() } };
-    expect(pathsOf(DeployPlanSchema.safeParse({ ...plan, retarget: fromPortainer }))).toContain(
-      "retarget.from.target.provider",
-    );
     const ce = { enabled: true, version: "2.33.1" };
     expect(
       pathsOf(DeployPlanSchema.safeParse({ ...plan, target: target(), portainer: ce })),
@@ -1801,8 +1784,8 @@ describe("DeployPlan reverse proxy and upload limit", () => {
       step: "started",
       startedAt: plan.createdAt,
     };
-    expect(DeployPlanSchema.parse({ ...plan, retarget: move }).retarget?.from.target.edge).toBe(
-      "nginx",
+    expect(DeployPlanSchema.parse({ ...plan, retarget: move }).retarget?.from.target).toMatchObject(
+      { edge: "nginx" },
     );
   });
 
@@ -1865,7 +1848,7 @@ describe("DeployPlan retarget", () => {
       },
     });
     expect(cloud(moving.target).image).toBe("ubuntu-24-04-x64");
-    expect(moving.retarget?.from.target.image).toBe("ubuntu-24.04");
+    expect(moving.retarget?.from.target).toMatchObject({ image: "ubuntu-24.04" });
     // The deploy settings an abort restores: the defaults when the move did not record them.
     expect(moving.retarget?.from.deploy).toEqual({ strategy: "rolling", drainSeconds: 30 });
     expect(moving.retarget?.step).toBe("renamed");

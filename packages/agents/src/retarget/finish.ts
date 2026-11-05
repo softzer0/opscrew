@@ -18,7 +18,7 @@ import { describeChanges, trackedFiles } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { moveProvider } from "../shared/vps-target";
-import { previousTarget } from "./layouts";
+import { previousCloud, previousTarget } from "./layouts";
 import { clearPending } from "./pending";
 import { liftMoveProtection, moveRemoval, previewMoveRemoval, removeMoveServer } from "./removal";
 import { endMoveServers, unknownOldServer } from "./servers";
@@ -281,7 +281,7 @@ export async function finishRetarget(
   return runPhase(deps, "retarget", async () => {
     const session = await openSession(deps, plan, {
       command: FINISH_COMMAND,
-      providers: [move.from.target.provider, moveProvider(plan.target)],
+      providers: [previousCloud(move).provider, moveProvider(plan.target)],
       services: options.services ?? {},
       oldServerOptional: true,
       ...(options.engine !== undefined ? { engine: options.engine } : {}),

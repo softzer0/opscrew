@@ -1164,6 +1164,7 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
       retarget: {
         from: { target: cloudTarget(from.target), deploy: from.deploy },
         step: "deployed",
+        empty: [],
         startedAt: NOW,
       },
     };

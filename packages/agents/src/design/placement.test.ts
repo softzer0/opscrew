@@ -359,6 +359,7 @@ describe("design refuses what it cannot place, before any change", () => {
       retarget: {
         from: { target: cloudTarget(plan.target), deploy: plan.deploy },
         step: "renamed",
+        empty: [],
         startedAt: "2026-10-12T09:00:00.000Z",
       },
     });

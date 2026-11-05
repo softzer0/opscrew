@@ -15,7 +15,7 @@ import { providerProfile, vpsConnector } from "../providers";
 import { describeChanges } from "../shared";
 import { runPhase } from "../shared/phase-status";
 import { moveProvider } from "../shared/vps-target";
-import { previousTarget } from "./layouts";
+import { previousCloud, previousTarget } from "./layouts";
 import { clearPending } from "./pending";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { liftMoveProtection, moveRemoval, previewMoveRemoval, removeMoveServer } from "./removal";
@@ -184,7 +184,7 @@ async function pointDnsBack(
   const { deps, plan } = session;
   const move = moveOf(session);
   if (!managedDns(plan) || stepBefore(move.step, "deployed")) return undefined;
-  const old = providerWords(move.from.target.provider);
+  const old = providerWords(previousCloud(move).provider);
   deps.reporter.step(`Checking that the DNS records of ${plan.dns.domain} point to the old server`);
   const files = await useLayout(session, "both");
   const input: InfraPlanInput = {
@@ -354,7 +354,7 @@ export async function abortRetarget(
   }
   if (move.step === "switched") {
     const to = providerWords(moveProvider(plan.target));
-    const from = move.from.target.provider;
+    const from = previousCloud(move).provider;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `Traffic already goes to the new ${to.noun} on ${to.name}, so the move can no longer be aborted. Nothing was changed.`,
@@ -379,7 +379,7 @@ export async function abortRetarget(
     }
     const session = await openSession(deps, plan, {
       command: ABORT_COMMAND,
-      providers: [move.from.target.provider, moveProvider(plan.target)],
+      providers: [previousCloud(move).provider, moveProvider(plan.target)],
       services,
       ...(options.engine !== undefined ? { engine: options.engine } : {}),
       ...(options.approvePlanHash !== undefined

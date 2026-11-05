@@ -651,21 +651,6 @@ describe("the plan's rules for the server-less targets", () => {
       ]);
     },
   );
-
-  it.each(targets)("%s does not move to or from a server yet", async (name, target) => {
-    const plan = await serverPlan();
-    const move = { from: { target: plan.target }, step: "started", startedAt: plan.createdAt };
-    const to = DeployPlanSchema.safeParse(await serverlessPlan(target, { retarget: move }));
-    expect(issues(to)).toEqual([
-      {
-        path: "retarget",
-        message: `moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere`,
-      },
-    ]);
-    const from = { ...move, from: { target } };
-    const back = DeployPlanSchema.safeParse({ ...plan, retarget: from });
-    expect(issues(back)?.map((i) => i.path)).toContain("retarget.from.target.provider");
-  });
 });
 
 describe("onServer: the runners that deploy on or to a server", () => {

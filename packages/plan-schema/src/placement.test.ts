@@ -427,21 +427,14 @@ describe("the extra servers", () => {
     ]);
   });
 
-  it("refuses a move to another target together with extra servers", async () => {
+  it("moves an app with extra servers to another target", async () => {
     const plan = await serverPlan();
     const retarget = {
       from: { target: plan.target },
       step: "started",
       startedAt: addedAt,
     };
-    expect(issues(DeployPlanSchema.safeParse(await splitPlan({ retarget })))).toEqual([
-      {
-        path: "retarget",
-        message:
-          "is refused for an app with extra servers: moving it to another provider is not available yet; place every service on the app's server (remove services[].server and servers), then move it",
-      },
-    ]);
-    expect(DeployPlanSchema.safeParse({ ...plan, retarget }).success).toBe(true);
+    expect(DeployPlanSchema.safeParse(await splitPlan({ retarget })).success).toBe(true);
   });
 });
 

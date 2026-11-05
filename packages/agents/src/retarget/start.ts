@@ -435,6 +435,7 @@ export async function startMove(
       ...(plan.app.build === undefined ? {} : { build: plan.app.build }),
     },
     step: "started",
+    empty: [],
     startedAt: deps.clock.now().toISOString(),
   };
   // The old server's address goes to the local state, never into opscrew/plan.yaml.

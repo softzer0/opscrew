@@ -26,7 +26,7 @@ const STEP_WORDS: Record<Retarget["step"], string> = {
 export function retargetStatusLine(plan: DeployPlan): string | undefined {
   const move = plan.retarget;
   if (move === undefined) return undefined;
-  const from = providerProfile(move.from.target.provider).displayName;
+  const from = providerProfile(moveProvider(move.from.target)).displayName;
   const to = providerProfile(moveProvider(plan.target)).displayName;
   let state: string;
   let next: string;

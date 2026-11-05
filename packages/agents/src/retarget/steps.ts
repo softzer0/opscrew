@@ -18,6 +18,7 @@ import { originTlsSecret } from "../provision/origin-tls";
 import { continuesHint, planStop, readyNewServer, serverOfProvider } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { moveProvider } from "../shared/vps-target";
+import { previousCloud } from "./layouts";
 import { planThenApply } from "./plans";
 import { serverOps, stopService, waitAppHealthy } from "./server-ops";
 import {
@@ -87,7 +88,7 @@ const DRIFT_HINT = `The infrastructure no longer matches what OpsCrew applied. R
 export async function renameStep(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps } = session;
   const move = moveOf(session);
-  const old = providerWords(move.from.target.provider);
+  const old = providerWords(previousCloud(move).provider);
   deps.reporter.step(
     `Renaming the current ${old.noun} in the infrastructure state (nothing changes in your cloud)`,
   );
@@ -157,7 +158,7 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
   const { deps } = session;
   const move = moveOf(session);
   const fresh = providerWords(moveProvider(session.plan.target));
-  const old = providerWords(move.from.target.provider);
+  const old = providerWords(previousCloud(move).provider);
   deps.reporter.step(`Creating the new ${fresh.noun} on ${fresh.name}`);
   const files = await useLayout(session, "both");
   const outcome = await planThenApply(session, {
@@ -205,7 +206,7 @@ export async function storeDeploySecrets(
 ): Promise<void> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  const provider = which === "new" ? moveProvider(plan.target) : move.from.target.provider;
+  const provider = which === "new" ? moveProvider(plan.target) : previousCloud(move).provider;
   const pinned = await pinHost(session, host, provider);
   // The bucket stays where it is (FR-1332): the app keeps its key (`startMove` checked it is known).
   const key =

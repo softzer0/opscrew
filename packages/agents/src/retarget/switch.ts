@@ -15,6 +15,7 @@ import {
 } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { moveProvider } from "../shared/vps-target";
+import { previousCloud } from "./layouts";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { serverOps, startService, stopService } from "./server-ops";
 import { oldServer } from "./servers";
@@ -193,7 +194,7 @@ async function switchManagedDns(
   const { deps, plan } = session;
   const move = moveOf(session);
   const fresh = providerWords(moveProvider(plan.target));
-  const old = providerWords(move.from.target.provider);
+  const old = providerWords(previousCloud(move).provider);
   deps.reporter.step(`Planning the switch of ${plan.dns.domain} to the new ${fresh.noun}`);
   const files = await useLayout(session, "switched");
   const input: InfraPlanInput = {
@@ -277,7 +278,7 @@ async function switchByHand(
     if (window !== "done") return window;
   }
   const fresh = providerWords(moveProvider(plan.target));
-  const old = providerWords(move.from.target.provider);
+  const old = providerWords(previousCloud(move).provider);
   const records = manualRecords(plan, next);
   const url = publicUrl(plan, next.ipv4);
   if (options.dnsSwitched === true) {
@@ -433,7 +434,7 @@ async function settleSwitch(
   const move = moveOf(session);
   const next = newServer(session);
   const fresh = providerWords(moveProvider(plan.target));
-  const old = providerWords(move.from.target.provider);
+  const old = providerWords(previousCloud(move).provider);
   const ops = serverOps(plan, deps.redactor);
   const edge = edgeProxy(plan);
   const { label } = EDGE_PROXIES[edge];
@@ -513,7 +514,7 @@ async function settleSwitch(
 export async function completeSwitch(session: MoveSession): Promise<RetargetResult> {
   const { deps, plan } = session;
   const fresh = providerWords(moveProvider(plan.target));
-  const old = providerWords(moveOf(session).from.target.provider);
+  const old = providerWords(previousCloud(moveOf(session)).provider);
   const site = await settleSwitch(
     session,
     ({ problem, hint }) =>
@@ -542,7 +543,7 @@ export async function completeSwitch(session: MoveSession): Promise<RetargetResu
  */
 export async function requireSwitchSettled(session: MoveSession): Promise<void> {
   const fresh = providerWords(moveProvider(session.plan.target));
-  const old = providerWords(moveOf(session).from.target.provider);
+  const old = providerWords(previousCloud(moveOf(session)).provider);
   await settleSwitch(
     session,
     ({ problem, hint }) =>

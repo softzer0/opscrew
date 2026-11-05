@@ -13,6 +13,7 @@ function moving(abort?: NonNullable<Retarget["abort"]>["step"]): DeployPlan {
     retarget: {
       from: { target: cloudTarget(from.target), deploy: from.deploy },
       step: "deployed",
+      empty: [],
       startedAt: "2026-10-12T09:00:00.000Z",
       ...(abort !== undefined ? { abort: { step: abort } } : {}),
     },

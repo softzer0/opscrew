@@ -171,7 +171,7 @@ export function registerStatusTool(
           plan?.retarget === undefined
             ? undefined
             : {
-                from: plan.retarget.from.target.provider,
+                from: moveProvider(plan.retarget.from.target),
                 to: moveProvider(plan.target),
                 step: plan.retarget.step,
                 abortStep: plan.retarget.abort?.step,
