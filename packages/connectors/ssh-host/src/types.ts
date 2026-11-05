@@ -9,9 +9,9 @@ export const HOST_PLAN_SCHEMA_VERSION = 1;
  * Host steps in the order a setup plan runs them. `deploy-key`, `app-dirs`, `app-record`,
  * `github-runner`, `tunnel-connector`, `network`, `network-filter` and `grant` are the app's own;
  * `edge` only appears in a teardown (the edge goes with the last app). `check-key`, `monitoring`,
- * `beszel` and `alloy` are planned by `planAddon` (and removed by a teardown), `network` and
- * `network-filter` by `planNetwork` (and removed by a teardown or an undo), `public-ssh` by
- * `planPublicSsh` and `grant` by `planGrant`.
+ * `beszel` and `alloy` are planned by `planAddon` (and removed by a teardown), `previews` by
+ * `planAddon` alone, `network` and `network-filter` by `planNetwork` (and removed by a teardown or
+ * an undo), `public-ssh` by `planPublicSsh` and `grant` by `planGrant`.
  */
 export const HOST_STEP_IDS = [
   "package-repair",
@@ -37,6 +37,7 @@ export const HOST_STEP_IDS = [
   "tunnel-connector",
   "portainer",
   "check-key",
+  "previews",
   "monitoring",
   "beszel",
   "alloy",
@@ -96,6 +97,22 @@ export const StackPathSchema = z
   .regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}(\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}){0,4}$/, {
     message: "must be a path in the stack's folder such as grafana/dashboards/servers.json",
   });
+
+/**
+ * A file of a preview recipe, by its path in the recipe's folder (`bin/opscrew-preview`,
+ * `template/edge/sites/shop-preview-pr-@N@.caddy`): names of letters, digits, `@`, `.`, `_` and
+ * `-` that start with a letter, digit or `@`, at most six deep, so never `..` or a dot-file.
+ */
+export const RecipePathSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9@][A-Za-z0-9@._-]{0,99}(\/[A-Za-z0-9@][A-Za-z0-9@._-]{0,99}){0,5}$/, {
+    message: "must be a path in the recipe's folder such as template/compose.yaml",
+  });
+
+/** An environment variable's name, as a preview value's (`DATABASE_URL`). */
+export const EnvNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/, {
+  message: "must be an environment variable's name such as API_KEY",
+});
 
 /** A file `renderAddon` renders, at the root of the add-on's folder (`compose.yaml`). */
 export const AddonFileNameSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
@@ -451,6 +468,12 @@ export interface ApplySecrets {
    * the data source's URL as it is.
    */
   monitoringPostgresPassword?: string;
+  /**
+   * A preview environment's values (`previews`): the text of its `values.env`, one `NAME=value`
+   * per line (empty for none), with exactly the names the plan lists, in that order. The step
+   * writes it to `/srv/apps/<app>/values.env`, which only the deploy user can read.
+   */
+  previewValues?: string;
 }
 
 export type SecretName = keyof ApplySecrets;

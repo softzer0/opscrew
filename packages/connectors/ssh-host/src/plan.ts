@@ -35,6 +35,10 @@ import {
   PORTAINER_PORT,
   PORTAINER_PROJECT,
   PORTAINER_REPOSITORY,
+  previewCommand,
+  previewCronLine,
+  previewKeyComment,
+  previewKeyLine,
   RUNNERS_DIR,
   runnerDir,
   runnerUnit,
@@ -143,6 +147,7 @@ import {
   type DesiredRunnerHost,
   DesiredRunnerHostSchema,
   DesiredRunnerSchema,
+  EnvNameSchema,
   HOST_PLAN_SCHEMA_VERSION,
   type HostFinding,
   type HostPlan,
@@ -2997,10 +3002,20 @@ const AddonEnableSchemas = {
     postgresHost: ServiceNameSchema.optional(),
   }),
   monitoring: z.strictObject({ files: AddonFilesSchema }),
+  previews: z.strictObject({
+    files: AddonFilesSchema,
+    publicKey: PublicKeyLineSchema,
+    valueNames: z
+      .array(EnvNameSchema)
+      .refine((names) => new Set(names).size === names.length, { message: "must name each once" }),
+  }),
 } as const;
 
-/** The kinds `planAddon` plans: the check's key, and the monitoring add-ons and stack. */
-export type AddonPlanKind = "check-key" | AddonKind;
+/**
+ * The kinds `planAddon` plans: the check's key, the monitoring add-ons and stack, and a preview
+ * environment's recipe.
+ */
+export type AddonPlanKind = "check-key" | "previews" | AddonKind;
 
 /** What `planAddon` turns on for each kind. */
 export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSchemas)[K]>;
@@ -3030,6 +3045,19 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  *   (through Docker on one OpsCrew created: apply with `rootImage`), for the password file. Off,
  *   its containers and folder go; its Docker volumes only with `disable.removeData`, which makes
  *   the plan `deleteData`.
+ * - `previews` (feature 022): a preview environment's recipe for `app` (its own app name), the
+ *   standing approval CI acts under. Its `files` as `renderPreviewRecipe` renders them, by path in
+ *   `/srv/apps/<app>` (`bin/opscrew-preview`, `template/compose.yaml`), each within 64 KiB, and
+ *   `values.env` from the preview values supplied at apply as `previewValues` (the plan lists only
+ *   their `valueNames`); the preview key `publicKey` of `repository` as `previewKeyLine` (the
+ *   app's lines, by its forced command or the comment, replaced); and the deploy user's cron line
+ *   for idle previews
+ *   (`previewCronLine`), with cron installed first on a server the user owns. With `facts`, it is
+ *   refused while they show another app on the server, and it is in place when they show all of
+ *   it as planned, unless `secretsChanged` (the values changed). Off (`facts` needed), the key
+ *   line goes, then the cron line, then each preview the facts list through
+ *   `opscrew-preview down <n>`, then the folder. Either way the plan is `deleteData`: previews
+ *   end with their data.
  *
  * `runAs: "login"` on a server OpsCrew created (the deploy user, no root, no host record, except
  * for `monitoring`); `"root"` on a server the user owns. `facts` (from `inspectHost`) name the app
@@ -3054,15 +3082,16 @@ export function planAddon<K extends AddonPlanKind>(
     app: string;
     runAs: RunAs;
     facts?: HostFacts;
-    /** `check-key` only: the project's GitHub repository, `owner/repo`. */
+    /** `check-key` and `previews` only: the project's GitHub repository, `owner/repo`. */
     repository?: string;
     enable?: AddonEnable<K>;
     disable?: { keepData?: boolean; mode?: "hub" | "agent"; removeData?: boolean };
     connector?: AddonConnector;
     /**
-     * Beszel's or Alloy's: a secret the step writes is new on this computer (a rotated token, a
-     * new password of the monitoring login). The step is a change with the `rewrite` parameter,
-     * even when the facts show it running as planned, and its check never skips it.
+     * Beszel's, Alloy's or the previews': a secret the step writes is new on this computer (a
+     * rotated token, a new password of the monitoring login, changed preview values). The step is
+     * a change with the `rewrite` parameter, even when the facts show it running as planned, and
+     * its check never skips it.
      */
     secretsChanged?: boolean;
   },
@@ -3075,7 +3104,7 @@ export function planAddon<K extends AddonPlanKind>(
     throw new OpsCrewError("INVALID_INPUT", "Only Beszel's dashboard has a tunnel connector.");
   }
   const repository =
-    kind === "check-key"
+    kind === "check-key" || kind === "previews"
       ? parseInput(
           RepositoryNameSchema,
           options.repository,
@@ -3086,7 +3115,7 @@ export function planAddon<K extends AddonPlanKind>(
   requireAppName(app);
   const facts = options.facts === undefined ? undefined : parseFacts(options.facts);
   // The monitoring stack runs as root everywhere, so the host record names its owner everywhere.
-  if (kind !== "check-key" && (runAs === "root" || kind === "monitoring")) {
+  if (kind !== "check-key" && kind !== "previews" && (runAs === "root" || kind === "monitoring")) {
     if (facts === undefined) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -3100,18 +3129,25 @@ export function planAddon<K extends AddonPlanKind>(
       if (!gone || disable === undefined) throw addonTaken(kind as AddonKind, owner, gone);
     }
   }
+  const keepData = disable?.keepData === true;
+  if (keepData && kind !== "beszel") {
+    throw new OpsCrewError("INVALID_INPUT", "Only Beszel keeps data when it is turned off.");
+  }
+  if (disable?.removeData === true && kind !== "monitoring") {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "Only the monitoring stack's data is removed on its own when it is turned off.",
+    );
+  }
+  if (kind === "previews") {
+    return previewsPlan(app, runAs, repository, facts, {
+      enable,
+      off: disable !== undefined,
+      secretsChanged: options.secretsChanged === true,
+    });
+  }
   let item: HostStep;
   if (disable !== undefined) {
-    const keepData = disable.keepData === true;
-    if (keepData && kind !== "beszel") {
-      throw new OpsCrewError("INVALID_INPUT", "Only Beszel keeps data when it is turned off.");
-    }
-    if (disable.removeData === true && kind !== "monitoring") {
-      throw new OpsCrewError(
-        "INVALID_INPUT",
-        "Only the monitoring stack's data is removed on its own when it is turned off.",
-      );
-    }
     item =
       kind === "check-key"
         ? checkKeyRemoval(runAs, repository)
@@ -3154,6 +3190,136 @@ export function planAddon<K extends AddonPlanKind>(
   // Validate now so bad files or settings fail before anything is approved.
   for (const step of plan.steps) stepScripts(plan, step);
   return plan;
+}
+
+/**
+ * `planAddon("previews")` (see there): the one-step plan that installs a preview environment's
+ * recipe, key and cleanup (`enable`), or removes them with every preview (`off`). It always
+ * deletes data.
+ */
+function previewsPlan(
+  app: string,
+  runAs: RunAs,
+  repository: string,
+  facts: HostFacts | undefined,
+  options: { enable: unknown; off: boolean; secretsChanged: boolean },
+): HostPlan {
+  const dir = appDirs(app).app;
+  const command = previewCommand(app);
+  const comment = previewKeyComment(repository, app);
+  const recipe = facts?.previews.find((item) => item.app === app);
+  // The app's preview key lines: by their forced command (whatever the repository is called now),
+  // or by the comment. In OpsCrew's form they are `previewKeys`; any other is among `keys`.
+  const ours = (line: string) =>
+    line.includes(`command="${command}"`) || line.endsWith(` ${comment}`);
+  const keys = (facts?.deployUser?.previewKeys ?? []).filter(ours);
+  const broken = (facts?.deployUser?.keys ?? []).filter(ours);
+  let item: HostStep;
+  if (options.off) {
+    if (facts === undefined) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        "Removing previews needs the server's inspected facts, which list the previews.",
+      );
+    }
+    const numbers = recipe?.numbers ?? [];
+    const previews = numbers.length === 0 ? "" : ` (${listText(numbers.map((n) => `pr-${n}`))})`;
+    item = step(
+      "previews",
+      `Remove the previews of "${app}"${previews} with their data, their recipe and values, the preview key of ${repository} and the hourly cleanup`,
+      "change",
+      { remove: true, runAs, repository, numbers: numbers.join(" ") },
+      `The app's preview key lines (forced command ${command}, or comment ${comment}) go first, so no new preview starts, then the cleanup's cron line; a preview this plan does not list stops it there; then each listed preview goes through "${command} down <n>", then ${dir} with everything in it.`,
+      "app",
+    );
+    if (recipe === undefined && keys.length === 0 && broken.length === 0) {
+      item = { ...item, state: "in-place", reason: "Already removed." };
+    }
+  } else {
+    const settings = parseInput(
+      AddonEnableSchemas.previews,
+      options.enable,
+      "The previews' settings are not valid",
+      "Make the plan again with OpsCrew; if this keeps happening, report it.",
+    );
+    if (facts !== undefined) refuseOtherApps(facts, app);
+    const publicKey = keyId(settings.publicKey);
+    const cron = previewCronLine(app);
+    const names = settings.valueNames.length === 0 ? "none" : listText(settings.valueNames);
+    item = step(
+      "previews",
+      `Let pull requests of ${repository} run previews of "${app}" on this server: the recipe in ${dir}, a key (${keyFingerprint(publicKey)}) that can run only ${command}, and an hourly cleanup of idle previews`,
+      "change",
+      {
+        runAs,
+        repository,
+        publicKey,
+        valueNames: settings.valueNames.join(" "),
+        ...Object.fromEntries(
+          Object.entries(settings.files).map(([path, text]) => [
+            `${ADDON_FILE_PARAM}${path}`,
+            text,
+          ]),
+        ),
+      },
+      `The recipe's files go to ${dir}, and the preview values (${names}) to its values.env, which only the deploy user can read; the values are supplied at apply time, never part of this plan. The key's line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only ${command}, which creates, updates and deletes previews within the recipe's bounds; the app's other preview key lines (that command, or the comment ${comment}) are replaced. The deploy user's crontab runs "${command} gc" at minute ${cron.split(" ")[0]} of every hour${runAs === "root" ? ", with cron installed first when it is missing" : ""}. Each preview's data is deleted when it ends.`,
+      "app",
+    );
+    if (options.secretsChanged) {
+      item = { ...item, params: { ...item.params, rewrite: true } };
+    } else if (
+      recipe?.values === true &&
+      sameFiles(recipe.files, settings.files) &&
+      keys.length === 1 &&
+      keys[0] === previewKeyLine(publicKey, repository, app) &&
+      broken.length === 0 &&
+      sameList(recipe.cron, [cron])
+    ) {
+      item = { ...item, state: "in-place", reason: "Already set." };
+    }
+  }
+  const plan: HostPlan = {
+    schemaVersion: HOST_PLAN_SCHEMA_VERSION,
+    purpose: "setup",
+    app,
+    steps: [item],
+    findings: [],
+    deleteData: true,
+  };
+  // Validate now so bad files or settings fail before anything is approved.
+  stepScripts(plan, item);
+  return plan;
+}
+
+/**
+ * Refuses a preview environment on a server that `facts` show holds another app (its record, its
+ * folders in /srv/apps or /srv/data, or its runner): pull requests' code runs on a preview server.
+ * `app` and its previews (`<app>-pr-<n>`) are its own.
+ */
+function refuseOtherApps(facts: HostFacts, app: string): void {
+  const own = new RegExp(`^${app}(-pr-[1-9][0-9]{0,5})?$`);
+  const folders = facts.dirs.flatMap((dir) => {
+    const parent = dir.path.slice(0, dir.path.lastIndexOf("/"));
+    return dir.kind !== "absent" && (parent === APPS_DIR || parent === DATA_DIR)
+      ? [dir.path.slice(parent.length + 1)]
+      : [];
+  });
+  const others = [
+    ...new Set([
+      ...otherActiveApps(facts.apps, app).map((record) => record.app),
+      ...folders,
+      ...facts.runners.map((runner) => runner.app),
+    ]),
+  ]
+    .filter((name) => !own.test(name))
+    .sort();
+  if (others.length > 0) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `This server also holds ${listText(others.map((name) => `"${name}"`))}, and a preview server runs nothing but its previews (pull requests' code runs there), so OpsCrew does not set previews up on it.`,
+      { hint: "Give the preview environment a server of its own, then run this command again." },
+    );
+  }
 }
 
 /** Any kind's validated settings. */

@@ -29,7 +29,13 @@ import {
 } from "./facts";
 import type { NetworkFilterRule } from "./network-filter";
 import { runnerUnitText } from "./runner-unit";
-import { AddonFileNameSchema, ServiceNameSchema, StackPathSchema } from "./types";
+import {
+  AddonFileNameSchema,
+  AppNameSchema,
+  RecipePathSchema,
+  ServiceNameSchema,
+  StackPathSchema,
+} from "./types";
 
 /** Output of one inspection section: its text and the exit code of its command. */
 export interface Section {
@@ -790,6 +796,36 @@ export function parseRunners(text: string): RunnerFact[] {
       },
     ];
   });
+}
+
+/**
+ * The previews section (see `PREVIEWS_SNIPPET`): `recipe <app>`, then for that app `file <app>
+ * <path> <sha256>`, `values <app>`, `cron <app> <line>` and `preview <app> <n>` lines. Lines of an
+ * app without its `recipe` line, and odd paths or numbers, are ignored.
+ */
+export function parsePreviews(text: string): HostFacts["previews"] {
+  const recipes = new Map<string, HostFacts["previews"][number]>();
+  for (const line of linesOf(text)) {
+    const [kind = "", app = "", first = "", second = ""] = line.split(" ");
+    if (kind === "recipe" && AppNameSchema.safeParse(app).success) {
+      recipes.set(app, { app, files: {}, values: false, cron: [], numbers: [] });
+    }
+    const recipe = recipes.get(app);
+    if (recipe === undefined) continue;
+    if (
+      kind === "file" &&
+      RecipePathSchema.safeParse(first).success &&
+      /^[0-9a-f]{64}$/.test(second)
+    ) {
+      recipe.files[first] = second;
+    }
+    if (kind === "values") recipe.values = true;
+    if (kind === "cron") recipe.cron.push(line.slice(`cron ${app} `.length));
+    if (kind === "preview" && /^[1-9][0-9]{0,5}$/.test(first)) recipe.numbers.push(Number(first));
+  }
+  return [...recipes.values()]
+    .map((recipe) => ({ ...recipe, numbers: [...recipe.numbers].sort((a, b) => a - b) }))
+    .sort((a, b) => a.app.localeCompare(b.app));
 }
 
 /** The filter table of `iptables-save` (or `ip6tables-save`) output: its chain and rule lines. */

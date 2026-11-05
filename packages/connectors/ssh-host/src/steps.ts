@@ -37,6 +37,7 @@ import {
   FAIL2BAN_JAIL_PATH,
   fail2banJail,
   GRAFANA_ADMIN_CREDENTIAL,
+  MAX_RECIPE_FILE_BYTES,
   MAX_STACK_FILE_BYTES,
   MIN_DOCKER_MAJOR,
   MODULI_FILTER,
@@ -45,6 +46,12 @@ import {
   PORTAINER_DIR,
   PORTAINER_PORT,
   PORTAINER_PROJECT,
+  PREVIEW_COMMAND_FILE,
+  PREVIEW_KEY_LINE_RE,
+  previewCommand,
+  previewCronLine,
+  previewKeyComment,
+  previewKeyLine,
   READY_FLAG,
   RECORD_PATH,
   RUNNERS_DIR,
@@ -121,12 +128,14 @@ import {
   AppNameSchema,
   ComposeTextSchema,
   DesiredRunnerSchema,
+  EnvNameSchema,
   HostnameSchema,
   type HostPlan,
   type HostStep,
   type HostStepId,
   PortainerVersionSchema,
   ProjectIdSchema,
+  RecipePathSchema,
   RepositoryNameSchema,
   type SecretName,
   ServerNameSchema,
@@ -456,7 +465,8 @@ const DeployKeysParams = z.object({
 /**
  * `deploy-key` (setup and teardown): the deploy user's authorized_keys holds exactly the deploy
  * keys of the apps on the server, so a removed app's key or an old key stops working. The
- * scheduled check's key in OpsCrew's form (`check-key`, which can run only `df`) stays.
+ * scheduled check's key in OpsCrew's form (`check-key`, which can run only `df`) and a preview
+ * environment's key (`previews`, which can run only its preview command) stay.
  */
 function deployKeyScripts(step: HostStep): StepScripts {
   const p = params(step, DeployKeysParams);
@@ -467,13 +477,13 @@ function deployKeyScripts(step: HostStep): StepScripts {
       USER_NAME: p.user,
       KEYS_B64: base64(keys),
       KEYS_SHA256: sha256Hex(keys),
-      CHECK_RE: CHECK_KEY_LINE_RE,
+      KEEP_RE: `${CHECK_KEY_LINE_RE}|${PREVIEW_KEY_LINE_RE}`,
     },
     helpers: `user_home() { getent passwd "$USER_NAME" | cut -d: -f6; }`,
     verify: `  getent passwd "$USER_NAME" >/dev/null 2>&1 || return 1
   home=$(user_home)
   [ -f "$home/.ssh/authorized_keys" ] && [ ! -L "$home/.ssh/authorized_keys" ] || return 1
-  [ "$(grep -vE "$CHECK_RE" "$home/.ssh/authorized_keys" | sha256sum | cut -d ' ' -f 1)" = "$KEYS_SHA256" ]`,
+  [ "$(grep -vE "$KEEP_RE" "$home/.ssh/authorized_keys" | sha256sum | cut -d ' ' -f 1)" = "$KEYS_SHA256" ]`,
     apply: `getent passwd "$USER_NAME" >/dev/null 2>&1 || fail "The $USER_NAME user is missing; OpsCrew creates it first."
 home=$(user_home)
 if [ -z "$home" ] || [ "$home" = / ]; then fail "The $USER_NAME user has no home directory."; fi
@@ -483,11 +493,12 @@ keys="$home/.ssh/authorized_keys"
 if [ -L "$keys" ]; then fail "$keys is a symbolic link; OpsCrew does not follow it."; fi
 # OpsCrew created this user: its keys file holds exactly the deploy keys of the apps on the
 # server, so an old deploy key, or the key of an app that was removed, stops working. The
-# scheduled check's key, which can run only df, is not an app's: it stays.
-check=$(grep -E "$CHECK_RE" "$keys" 2>/dev/null) || check=''
+# scheduled check's key, which can run only df, and a preview key, which can run only its
+# preview command, are not an app's: they stay.
+kept=$(grep -E "$KEEP_RE" "$keys" 2>/dev/null) || kept=''
 {
   printf '%s' "$KEYS_B64" | base64 -d
-  if [ -n "$check" ]; then printf '%s\\n' "$check"; fi
+  if [ -n "$kept" ]; then printf '%s\\n' "$kept"; fi
 } | write_file "$keys" 0600 "$USER_NAME:$USER_NAME"`,
     failed: "The deploy user does not have the planned deploy keys after the change.",
     doing: "writing the deploy user's keys",
@@ -2536,12 +2547,25 @@ rm -f "$DIR/admin_password"`,
 const BareKeySchema = z.string().regex(/^[a-z0-9@.-]+ [A-Za-z0-9+/]+={0,3}$/);
 
 /**
- * ERE for the lines of authorized_keys with exactly the repository's check key comment
- * (`opscrew-check:<owner>/<repo>`), whatever their options.
+ * ERE for the lines of authorized_keys with exactly `comment` (the repository's check key comment
+ * `opscrew-check:<owner>/<repo>`, or a preview key's), whatever their options.
  */
-function checkCommentRe(repository: string): string {
-  return `[[:space:]]${checkKeyComment(repository).replaceAll(".", "\\.")}$`;
+function commentRe(comment: string): string {
+  return `[[:space:]]${comment.replaceAll(".", "\\.")}$`;
 }
+
+/**
+ * Shell helpers of the restricted keys' scripts, which run as the deploy user: its
+ * authorized_keys, and its lines other than those with `$KEY_RE` in `$others`. `read_others`
+ * runs in the script's own shell, so a failed read stops it before any write.
+ */
+const KEY_HELPERS = `keys_file() { printf '%s/.ssh/authorized_keys' "$(getent passwd "$USER_NAME" | cut -d: -f6)"; }
+read_others() {
+  others=''
+  if [ -f "$1" ]; then
+    others=$(grep -vE "$KEY_RE" "$1") || [ $? -eq 1 ] || fail "OpsCrew could not read $1, so it changed nothing."
+  fi
+}`;
 
 /**
  * `check-key`: the deploy user's authorized_keys holds one line with the repository's check
@@ -2553,17 +2577,10 @@ function checkCommentRe(repository: string): string {
 function checkKeyScripts(step: HostStep): StepScripts {
   const remove = step.params.remove === true;
   const p = params(step, z.object({ runAs: RunAsSchema, repository: RepositoryNameSchema }));
-  // `read_others` runs in the script's own shell, so a failed read stops it before any write.
-  const helpers = `keys_file() { printf '%s/.ssh/authorized_keys' "$(getent passwd "$USER_NAME" | cut -d: -f6)"; }
-read_others() {
-  others=''
-  if [ -f "$1" ]; then
-    others=$(grep -vE "$COMMENT_RE" "$1") || [ $? -eq 1 ] || fail "OpsCrew could not read $1, so it changed nothing."
-  fi
-}`;
+  const helpers = KEY_HELPERS;
   const shared = {
     USER_NAME: "deploy",
-    COMMENT_RE: checkCommentRe(p.repository),
+    KEY_RE: commentRe(checkKeyComment(p.repository)),
     RUN_AS: p.runAs,
   };
   if (remove) {
@@ -2572,10 +2589,10 @@ read_others() {
       params: shared,
       helpers,
       verify: `  k=$(keys_file)
-  [ ! -f "$k" ] || ! grep -qE "$COMMENT_RE" "$k"`,
+  [ ! -f "$k" ] || ! grep -qE "$KEY_RE" "$k"`,
       apply: `k=$(keys_file)
 if [ -L "$k" ]; then fail "$k is a symbolic link; OpsCrew does not follow it."; fi
-if [ -f "$k" ] && grep -qE "$COMMENT_RE" "$k"; then
+if [ -f "$k" ] && grep -qE "$KEY_RE" "$k"; then
   read_others "$k"
   if [ -n "$others" ]; then printf '%s\\n' "$others"; fi | write_file "$k" 0600
 fi`,
@@ -2592,7 +2609,7 @@ fi`,
     helpers,
     verify: `  k=$(keys_file)
   [ -f "$k" ] && [ ! -L "$k" ] || return 1
-  [ "$(grep -cE "$COMMENT_RE" "$k")" = 1 ] || return 1
+  [ "$(grep -cE "$KEY_RE" "$k")" = 1 ] || return 1
   grep -qxF "$LINE" "$k"`,
     apply: `h=$(getent passwd "$USER_NAME" | cut -d: -f6)
 if [ -z "$h" ] || [ "$h" = / ]; then fail "The $USER_NAME user has no home directory."; fi
@@ -2627,11 +2644,15 @@ const OWN_ADDON_FILES = new Set([
 /** The prefix of the step parameters that hold the rendered files (`file:compose.yaml`). */
 export const ADDON_FILE_PARAM = "file:";
 
-/** What a step's rendered files may be: their names, their text, and the names the step keeps. */
+/**
+ * What a step's rendered files may be: their names, their text, the names the step keeps, and the
+ * file that must be among them.
+ */
 interface FileRules {
   name: z.ZodType<string>;
   text: z.ZodType<string>;
   reserved: ReadonlySet<string>;
+  required: string;
 }
 
 /** An add-on's files: at the root of its folder, each within the Compose text cap. */
@@ -2639,11 +2660,12 @@ const ADDON_FILE_RULES: FileRules = {
   name: AddonFileNameSchema,
   text: ComposeTextSchema,
   reserved: OWN_ADDON_FILES,
+  required: "compose.yaml",
 };
 
 /**
  * The rendered files in a step's parameters (`file:<name>`), sorted by name, each as `rules`
- * allow, with a `compose.yaml` among them.
+ * allow, with the required one (`compose.yaml` for the add-ons) among them.
  */
 function addonFiles(step: HostStep, rules: FileRules = ADDON_FILE_RULES): [string, string][] {
   const files = Object.entries(step.params)
@@ -2656,7 +2678,7 @@ function addonFiles(step: HostStep, rules: FileRules = ADDON_FILE_RULES): [strin
     }
     if (!rules.text.safeParse(content).success) throw invalid(step, `file ${name}`);
   }
-  if (!files.some(([name]) => name === "compose.yaml")) throw invalid(step, "compose.yaml");
+  if (!files.some(([name]) => name === rules.required)) throw invalid(step, rules.required);
   return files as [string, string][];
 }
 
@@ -2979,6 +3001,7 @@ const STACK_FILE_RULES: FileRules = {
   name: StackPathSchema,
   text: textUpTo(MAX_STACK_FILE_BYTES),
   reserved: new Set([GRAFANA_ADMIN_CREDENTIAL]),
+  required: "compose.yaml",
 };
 
 /** The folders the stack's files are in, each after its parent (`grafana`, `grafana/dashboards`). */
@@ -3179,6 +3202,246 @@ ${ADDON_PARENTS_CLEANUP}`,
     failed: `${what} is still on the server.`,
     doing: `removing ${what}`,
     timeoutMs: 5 * MINUTE,
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// previews: a preview environment's recipe, its restricted key and its cleanup (feature 022)
+
+/**
+ * A preview recipe's files: by path in its folder, each non-empty text without NUL bytes within
+ * its cap, the preview command among them; never the values file or the command's log.
+ */
+const RECIPE_FILE_RULES: FileRules = {
+  name: RecipePathSchema,
+  text: textUpTo(MAX_RECIPE_FILE_BYTES),
+  reserved: new Set(["values.env", "previews.log"]),
+  required: PREVIEW_COMMAND_FILE,
+};
+
+/** A preview's pull request number, as the preview command accepts it. */
+const PreviewNumberSchema = z.string().regex(/^[1-9][0-9]{0,5}$/);
+
+/**
+ * Shell helpers of the previews step, which runs as the deploy user: its keys, its crontab in
+ * `$tab` (none is empty, and so is a server without the crontab command; anything else unreadable
+ * fails) and how many of its lines run this recipe's cleanup.
+ */
+const PREVIEW_HELPERS = `${KEY_HELPERS}
+read_tab() {
+  tab=''
+  command -v crontab >/dev/null 2>&1 || return 0
+  if tab=$(crontab -l 2>&1); then return 0; fi
+  case "$tab" in "no crontab for "*) tab=''; return 0 ;; esac
+  return 1
+}
+cron_count() { printf '%s\\n' "$tab" | grep -cE "$CRON_RE"; }
+put() {
+  if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
+  write_file "$1" "$2"
+}
+sums_ok() {
+  for entry in $MANIFEST; do [ "$(sha256sum "$DIR/\${entry%%:*}" 2>/dev/null | cut -d ' ' -f 1)" = "\${entry#*:}" ] || return 1; done
+}
+# Files in the recipe's folder that the plan does not name: the values, the command's log and its
+# dot-files (its lock) aside.
+stale_files() {
+  (cd "$DIR" && find . -type f ! -name '.*' ! -path ./values.env ! -path ./previews.log) | while IFS= read -r f; do
+    f=\${f#./}
+    case " $PATHS " in *" $f "*) ;; *) printf '%s\\n' "$f" ;; esac
+  done
+}`;
+
+/** As root on a server the user owns, before the step: cron, which a minimal Debian lacks. */
+const CRON_INSTALL = `if ! command -v crontab >/dev/null 2>&1; then
+  apt_get update || fail "apt-get update failed, so OpsCrew did not install cron; see ${APT_LOG} on the server."
+  apt_get install cron || fail "cron could not be installed; see ${APT_LOG} on the server."
+  systemctl enable --now cron.service >/dev/null 2>&1 || fail "OpsCrew could not start cron (systemctl enable --now cron.service)."
+fi`;
+
+/**
+ * `previews` (feature 022), as the deploy user in the preview environment's app folder
+ * `/srv/apps/<app>`: the recipe's files (`file:<path>` parameters, compared by their SHA-256,
+ * `bin/opscrew-preview` 0755, the others 0644, files of an earlier recipe removed), `values.env`
+ * (0600) from the preview values on stdin, which must have exactly the names the plan lists, the
+ * preview key's line (`previewKeyLine`; the app's lines, by its forced command or the comment,
+ * replaced) and the deploy user's cron line for idle previews (`previewCronLine`, a line of this
+ * recipe's replaced). The files reach the server on stdin after the values. As root (a server the
+ * user owns) cron is installed first when it is missing. Removed (`remove`), the key lines go
+ * first, then the cron line; a preview the plan does not list stops it there; then each listed
+ * preview goes through `opscrew-preview down <n>`, then the folder. Previews end with their data,
+ * so only a plan that deletes data may hold the step.
+ */
+function previewsScripts(plan: HostPlan, step: HostStep): StepScripts {
+  if (plan.purpose !== "setup") throw invalid(step, "purpose");
+  if (plan.deleteData !== true) throw invalid(step, "deleteData");
+  const app = AppNameSchema.safeParse(plan.app);
+  if (!app.success) throw invalid(step, "app");
+  const p = params(step, z.object({ runAs: RunAsSchema, repository: RepositoryNameSchema }));
+  const shared = {
+    DIR: appDirs(app.data).app,
+    USER_NAME: "deploy",
+    COMMAND_FILE: PREVIEW_COMMAND_FILE,
+    // The app's preview key lines, by their forced command (whatever the repository is called
+    // now) or by this repository's comment (a line not in OpsCrew's form).
+    KEY_RE: `command="${previewCommand(app.data)}"|${commentRe(previewKeyComment(p.repository, app.data))}`,
+    CRON_RE: `[[:space:]]${previewCommand(app.data)} gc$`,
+  };
+  if (step.params.remove === true) {
+    const { numbers } = params(step, z.object({ numbers: words(PreviewNumberSchema) }));
+    return scripts({
+      name: "previews.remove",
+      params: { ...shared, NUMBERS: numbers.join(" ") },
+      helpers: `${PREVIEW_HELPERS}
+# The previews on the server that this plan does not list (started after it was made).
+unlisted() {
+  for p in "$DIR"-pr-*; do
+    n=\${p#"$DIR"-pr-}
+    case "$n" in ''|0*|*[!0-9]*) continue ;; esac
+    if [ ! -d "$p" ] || [ -L "$p" ]; then continue; fi
+    case " $NUMBERS " in *" $n "*) ;; *) printf 'pr-%s\\n' "$n" ;; esac
+  done
+}`,
+      verify: `  k=$(keys_file)
+  [ ! -f "$k" ] || ! grep -qE "$KEY_RE" "$k" || return 1
+  read_tab || return 1
+  [ "$(cron_count)" = 0 ] || return 1
+  [ ! -e "$DIR" ] && [ ! -L "$DIR" ] || return 1
+  [ -z "$(unlisted)" ] || return 1
+  for n in $NUMBERS; do [ ! -e "$DIR-pr-$n" ] && [ ! -L "$DIR-pr-$n" ] || return 1; done`,
+      apply: `k=$(keys_file)
+if [ -L "$k" ]; then fail "$k is a symbolic link; OpsCrew does not follow it."; fi
+# The key goes first, so no new request arrives, then the hourly cleanup.
+if [ -f "$k" ] && grep -qE "$KEY_RE" "$k"; then
+  read_others "$k"
+  if [ -n "$others" ]; then printf '%s\\n' "$others"; fi | write_file "$k" 0600
+fi
+read_tab || fail "OpsCrew could not read the deploy user's crontab, so it did not remove the cleanup of idle previews."
+if [ "$(cron_count)" != 0 ]; then
+  rest=$(printf '%s\\n' "$tab" | grep -vE "$CRON_RE") || rest=''
+  if [ -n "$rest" ]; then printf '%s\\n' "$rest"; fi | crontab - || fail "OpsCrew could not write the deploy user's crontab."
+fi
+# A preview this plan does not list started after it was made: its data was never approved for
+# removal, so nothing more goes. No new preview can start now.
+late=$(unlisted)
+if [ -n "$late" ]; then
+  fail "A preview started after this plan was made ($(printf '%s' "$late" | tr '\\n' ' ')), so OpsCrew removed only the preview key and the cleanup. Make the plan again."
+fi
+# Each preview with its data, through the recipe's command as the deploy key runs it.
+for n in $NUMBERS; do
+  if [ -x "$DIR/$COMMAND_FILE" ]; then
+    out=$("$DIR/$COMMAND_FILE" down "$n" </dev/null 2>&1) || fail "OpsCrew could not remove the preview pr-$n ($(printf '%s\\n' "$out" | tail -n 1))."
+  elif [ -e "$DIR-pr-$n" ]; then
+    fail "The preview pr-$n is still on the server, and the command that removes it ($DIR/$COMMAND_FILE) is gone."
+  fi
+done
+# Then the recipe, its values included.
+rm -rf "$DIR"`,
+      failed: "The previews, their recipe, key or cleanup are still on the server.",
+      asDeploy: true,
+      doing: "removing the previews",
+      timeoutMs: (5 + 11 * numbers.length) * MINUTE,
+    });
+  }
+  const q = params(
+    step,
+    z.object({
+      publicKey: BareKeySchema,
+      valueNames: words(EnvNameSchema).refine((names) => new Set(names).size === names.length, {
+        message: "must name each value once",
+      }),
+      ...RewriteParams.shape,
+    }),
+  );
+  const files = addonFiles(step, RECIPE_FILE_RULES);
+  const paths = files.map(([path]) => path);
+  return scripts({
+    name: "previews",
+    params: {
+      ...shared,
+      LINE: previewKeyLine(q.publicKey, p.repository, app.data),
+      CRON_LINE: previewCronLine(app.data),
+      VALUE_NAMES: q.valueNames.join(" "),
+      PATHS: paths.join(" "),
+      DIRS: stackDirs(paths).join(" "),
+      MANIFEST: files.map(([path, content]) => `${path}:${sha256Hex(content)}`).join(" "),
+    },
+    helpers: PREVIEW_HELPERS,
+    verify: `  [ -d "$DIR" ] && [ ! -L "$DIR" ] || return 1
+  sums_ok || return 1
+  [ -z "$(stale_files)" ] || return 1
+  [ -x "$DIR/$COMMAND_FILE" ] || return 1
+  v="$DIR/values.env"
+  [ -f "$v" ] && [ ! -L "$v" ] && [ "$(stat -c %a "$v")" = 600 ] || return 1
+  k=$(keys_file)
+  [ -f "$k" ] && [ ! -L "$k" ] || return 1
+  [ "$(grep -cE "$KEY_RE" "$k")" = 1 ] || return 1
+  grep -qxF "$LINE" "$k" || return 1
+  read_tab || return 1
+  [ "$(cron_count)" = 1 ] || return 1
+  printf '%s\\n' "$tab" | grep -qxF "$CRON_LINE"`,
+    apply: `umask 077
+h=$(getent passwd "$USER_NAME" | cut -d: -f6)
+if [ -z "$h" ] || [ "$h" = / ]; then fail "The $USER_NAME user has no home directory."; fi
+command -v crontab >/dev/null 2>&1 || fail "This server has no crontab command, so OpsCrew cannot add the hourly cleanup of idle previews. Install the cron package, then try again."
+# The values first, checked against the names this plan lists before anything is written.
+b64=''
+IFS= read -r b64 || true
+values=$(printf '%s' "$b64" | base64 -d 2>/dev/null) || { b64=''; fail "The preview values did not arrive on standard input, so OpsCrew changed nothing."; }
+b64=''
+names=$(printf '%s\\n' "$values" | sed -n 's/=.*//p' | tr '\\n' ' ')
+if [ "\${names% }" != "$VALUE_NAMES" ]; then
+  values=''
+  fail "The preview values supplied are not the ones this plan lists, so OpsCrew changed nothing."
+fi
+# The recipe's files, one line of base64 each in the order of $PATHS, none of them secret.
+if [ -L "$DIR" ]; then fail "$DIR is a symbolic link; OpsCrew does not follow it."; fi
+install -d -m 0750 "$DIR"
+for d in $DIRS; do
+  if [ -L "$DIR/$d" ]; then fail "$DIR/$d is a symbolic link; OpsCrew does not follow it."; fi
+  install -d -m 0755 "$DIR/$d"
+done
+for path in $PATHS; do
+  b64=''
+  IFS= read -r b64 || true
+  [ -n "$b64" ] || fail "The recipe's file $path did not arrive on standard input, so OpsCrew stopped."
+  mode=0644
+  if [ "$path" = "$COMMAND_FILE" ]; then mode=0755; fi
+  printf '%s' "$b64" | base64 -d | put "$DIR/$path" "$mode"
+done
+sums_ok || fail "The recipe's files on the server are not the planned ones, so OpsCrew stopped."
+# Files of an earlier recipe that this one does not have go, and so do folders left empty.
+stale_files | while IFS= read -r f; do rm -f "$DIR/$f"; done
+find "$DIR" -mindepth 1 -type d -empty -delete
+if [ -n "$values" ]; then printf '%s\\n' "$values"; fi | put "$DIR/values.env" 0600
+values=''
+# The preview key, which can run only the preview command; a line with its comment is replaced.
+if [ -L "$h/.ssh" ]; then fail "$h/.ssh is a symbolic link; OpsCrew does not follow it."; fi
+install -d -m 0700 "$h/.ssh"
+k="$h/.ssh/authorized_keys"
+if [ -L "$k" ]; then fail "$k is a symbolic link; OpsCrew does not follow it."; fi
+read_others "$k"
+{
+  if [ -n "$others" ]; then printf '%s\\n' "$others"; fi
+  printf '%s\\n' "$LINE"
+} | write_file "$k" 0600
+# The hourly cleanup of idle previews; a line of this recipe's is replaced.
+read_tab || fail "OpsCrew could not read the deploy user's crontab, so it did not add the cleanup of idle previews."
+if [ "$(cron_count)" != 1 ] || ! printf '%s\\n' "$tab" | grep -qxF "$CRON_LINE"; then
+  rest=$(printf '%s\\n' "$tab" | grep -vE "$CRON_RE") || rest=''
+  {
+    if [ -n "$rest" ]; then printf '%s\\n' "$rest"; fi
+    printf '%s\\n' "$CRON_LINE"
+  } | crontab - || fail "OpsCrew could not write the deploy user's crontab."
+fi`,
+    failed: "The preview recipe, its key or its cleanup is not on the server as planned.",
+    rewrite: q.rewrite === true,
+    secrets: { names: ["previewValues"], required: true },
+    payload: files.map(([, content]) => `${base64(content)}\n`).join(""),
+    asDeploy: true,
+    ...(p.runAs === "root" ? { preApply: applyScript("previews.cron", {}, "", CRON_INSTALL) } : {}),
+    doing: "installing the preview recipe",
+    timeoutMs: 10 * MINUTE,
   });
 }
 
@@ -3466,12 +3729,13 @@ const LOGIN_STEPS: ReadonlySet<HostStepId> = new Set([
   "tunnel-connector",
   "github-runner",
   "check-key",
+  "previews",
   "beszel",
   "alloy",
 ]);
 
 /**
- * How a step's scripts run: the Portainer, tunnel connector, runner, check key and add-on steps
+ * How a step's scripts run: the Portainer, tunnel connector, runner, check key, previews and add-on steps
  * for Hetzner and DigitalOcean run as the login (the deploy user); everything else as root.
  */
 export function runAsOf(step: HostStep): RunAs {
@@ -3531,6 +3795,8 @@ export function stepScripts(plan: HostPlan, step: HostStep): StepScripts {
       return portainerScripts(plan, step);
     case "check-key":
       return checkKeyScripts(step);
+    case "previews":
+      return previewsScripts(plan, step);
     case "monitoring":
       return monitoringScripts(plan, step);
     case "beszel":

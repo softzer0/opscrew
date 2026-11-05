@@ -14,6 +14,7 @@ import {
   ALLOY_SECRET_FILES,
   addonDir,
   APP_RECORDS_DIR,
+  APPS_DIR,
   AUTO_UPGRADES_FILE,
   BACKUP_DIR,
   CHECK_KEY_LINE_RE,
@@ -26,6 +27,8 @@ import {
   HASHED_RUNTIME_FILES,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
+  PREVIEW_COMMAND_FILE,
+  PREVIEW_KEY_LINE_RE,
   READY_FLAG,
   RECORD_PATH,
   RUNNERS_DIR,
@@ -61,8 +64,8 @@ export function fakeJump(proto: string, port: string | number): string {
 
 const JUMPS = [fakeJump("tcp", 80), fakeJump("tcp", 443), fakeJump("udp", 443)];
 
-/** The scheduled check's key line in OpsCrew's form (the deploy-key step keeps it). */
-const CHECK_LINE = new RegExp(CHECK_KEY_LINE_RE);
+/** The scheduled check's and the preview keys' lines in OpsCrew's form (the deploy-key step keeps them). */
+const CHECK_LINE = new RegExp(`${CHECK_KEY_LINE_RE}|${PREVIEW_KEY_LINE_RE}`);
 
 export const OS_PRESETS = {
   "ubuntu-22.04": {
@@ -397,6 +400,12 @@ export class FakeHost implements RemoteExec {
   dockerRestarts = 0;
   dockerReloads = 0;
   tunnelRecreates = 0;
+  /** The crontab command is there (cron is installed). */
+  cron = true;
+  /** The deploy user's crontab, line by line; null when it has none. */
+  crontab: string[] | null = null;
+  /** The previews `opscrew-preview down` removed, as `<app> <n>`, in order. */
+  previewDowns: string[] = [];
   /** Pending dead-man switches: step -> restore. */
   timers = new Map<string, () => void>();
   armedSeconds: number[] = [];
@@ -545,6 +554,10 @@ export class FakeHost implements RemoteExec {
     if (/^grant\.(check|apply|verify)$/.test(name)) {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
       return this.grantScript(name, params, input ?? "");
+    }
+    if (/^previews(\.remove)?\.(check|apply|verify)$/.test(name)) {
+      if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
+      return this.previewsScript(name, params, input ?? "");
     }
     if (/^check-key(\.remove)?\.(check|apply|verify)$/.test(name)) {
       if (!deploy) throw new Error(`fake host: ${name} must run as deploy`);
@@ -991,6 +1004,7 @@ export class FakeHost implements RemoteExec {
     );
     add("monitoring", this.monitoringLines());
     add("runners", this.runnerLines());
+    add("previews", this.previewLines());
     const fileLine = (name: string, path: string) => {
       const content = this.files.get(path);
       return `file ${name} ${content === undefined ? "-" : sha256(content)}`;
@@ -2010,8 +2024,130 @@ export class FakeHost implements RemoteExec {
       }
       case "monitoring.remove.verify":
         return this.verify(this.stackRemovedOk(p), p);
+
+      // the previews step's root part on a server the user owns
+      case "previews.cron.apply":
+        if (!root) throw new Error("fake host: previews.cron.apply must run as root");
+        this.cron = true;
+        return result();
     }
     throw new Error(`fake host: unknown script ${name}`);
+  }
+
+  /** The recipe folder's files the step manages: not the values, the log or dot-files. */
+  private recipeFiles(dir: string): string[] {
+    return [...this.files.keys()]
+      .filter((path) => path.startsWith(`${dir}/`))
+      .map((path) => path.slice(dir.length + 1))
+      .filter((name) => name !== "values.env" && name !== "previews.log")
+      .filter((name) => !name.split("/").some((part) => part.startsWith(".")))
+      .sort();
+  }
+
+  /**
+   * The previews section as `PREVIEWS_SNIPPET` prints it: each app folder with the preview
+   * command, its files' SHA-256, its values file, its cron lines and its previews' folders.
+   */
+  private previewLines(): string {
+    const command = new RegExp(`^${APPS_DIR}/([a-z0-9-]+)/${PREVIEW_COMMAND_FILE}$`);
+    const apps = [...this.files.keys()]
+      .map((path) => command.exec(path)?.[1])
+      .filter((app): app is string => app !== undefined)
+      .sort();
+    return apps
+      .flatMap((app) => {
+        const dir = `${APPS_DIR}/${app}`;
+        const preview = new RegExp(`^${dir}-pr-([1-9][0-9]{0,5})$`);
+        return [
+          `recipe ${app}`,
+          ...this.recipeFiles(dir).map((name) => `file ${app} ${name} ${sha256(this.files.get(`${dir}/${name}`) ?? "")}`),
+          ...(this.files.has(`${dir}/values.env`) ? [`values ${app}`] : []),
+          ...(this.crontab ?? []).filter((line) => line.endsWith(` ${dir}/${PREVIEW_COMMAND_FILE} gc`)).map((line) => `cron ${app} ${line}`),
+          ...[...this.dirs.keys()].flatMap((path) => {
+            const n = preview.exec(path)?.[1];
+            return n === undefined ? [] : [`preview ${app} ${n}`];
+          }),
+        ];
+      })
+      .join("\n");
+  }
+
+  /**
+   * The previews step's scripts, as the deploy user: the recipe's files from stdin after the
+   * values (base64, with exactly the planned names), the key line and the cron line; removed,
+   * the key line, the cron line, each listed preview through its command, then the folder.
+   */
+  private previewsScript(name: string, p: Record<string, string>, input: string): CommandResult {
+    const deploy = this.users.get("deploy");
+    if (deploy === undefined) return fail("The deploy user has no home directory.");
+    const dir = p.DIR ?? "";
+    const comment = new RegExp((p.KEY_RE ?? "").replace("[[:space:]]", "\\s"));
+    const cron = new RegExp((p.CRON_RE ?? "").replace("[[:space:]]", "\\s"));
+    const tab = this.crontab ?? [];
+    const numbers = FakeHost.words(p.NUMBERS);
+    if (name.startsWith("previews.remove")) {
+      const preview = new RegExp(`^${dir}-pr-([1-9][0-9]{0,5})$`);
+      const unlisted = [...this.dirs.keys()].flatMap((path) => {
+        const n = preview.exec(path)?.[1];
+        return n === undefined || numbers.includes(n) ? [] : [`pr-${n}`];
+      });
+      const ok =
+        !deploy.keys.some((key) => comment.test(key)) &&
+        !tab.some((line) => cron.test(line)) &&
+        !this.dirs.has(dir) &&
+        this.recipeFiles(dir).length === 0 &&
+        !this.files.has(`${dir}/values.env`) &&
+        numbers.every((n) => !this.dirs.has(`${dir}-pr-${n}`)) &&
+        unlisted.length === 0;
+      if (name.endsWith(".check")) return this.check(ok);
+      if (name.endsWith(".verify")) return this.verify(ok, p);
+      deploy.keys = deploy.keys.filter((key) => !comment.test(key));
+      if (this.crontab !== null) this.crontab = tab.filter((line) => !cron.test(line));
+      if (unlisted.length > 0) {
+        return fail(`A preview started after this plan was made (${unlisted.join(" ")}), so OpsCrew removed only the preview key and the cleanup. Make the plan again.`);
+      }
+      for (const n of numbers) {
+        if (this.files.has(`${dir}/${p.COMMAND_FILE}`)) {
+          this.previewDowns.push(`${dir.slice(APPS_DIR.length + 1)} ${n}`);
+          this.removeDir(`${dir}-pr-${n}`);
+        } else if (this.dirs.has(`${dir}-pr-${n}`)) {
+          return fail(`The preview pr-${n} is still on the server, and the command that removes it (${dir}/${p.COMMAND_FILE}) is gone.`);
+        }
+      }
+      this.removeDir(dir);
+      return result();
+    }
+    const manifest = FakeHost.words(p.MANIFEST).map((entry) => [entry.slice(0, entry.indexOf(":")), entry.slice(entry.indexOf(":") + 1)]);
+    const ok =
+      manifest.every(([path, sum]) => sha256(this.files.get(`${dir}/${path}`) ?? "") === sum) &&
+      this.recipeFiles(dir).join(" ") === [...FakeHost.words(p.PATHS)].sort().join(" ") &&
+      this.files.has(`${dir}/values.env`) &&
+      this.fileModes.get(`${dir}/values.env`) === "600" &&
+      deploy.keys.filter((key) => comment.test(key)).length === 1 &&
+      deploy.keys.includes(p.LINE ?? "") &&
+      tab.filter((line) => cron.test(line)).length === 1 &&
+      tab.includes(p.CRON_LINE ?? "");
+    if (name.endsWith(".check")) return p.REWRITE === "true" ? this.check(false) : this.check(ok);
+    if (name.endsWith(".verify")) return this.verify(ok, p);
+    if (!this.cron) return fail("This server has no crontab command, so OpsCrew cannot add the hourly cleanup of idle previews.");
+    const [valuesB64 = "", ...lines] = input.split("\n");
+    const values = Buffer.from(valuesB64, "base64").toString("utf8").replace(/\n$/, "");
+    const names = values === "" ? [] : values.split("\n").map((line) => line.slice(0, line.indexOf("=")));
+    if (names.join(" ") !== (p.VALUE_NAMES ?? "")) {
+      return fail("The preview values supplied are not the ones this plan lists, so OpsCrew changed nothing.");
+    }
+    const paths = FakeHost.words(p.PATHS);
+    for (const [index, path] of paths.entries()) {
+      const b64 = lines[index] ?? "";
+      if (b64 === "") return fail(`The recipe's file ${path} did not arrive on standard input, so OpsCrew stopped.`);
+      this.files.set(`${dir}/${path}`, Buffer.from(b64, "base64").toString("utf8"));
+    }
+    for (const stale of this.recipeFiles(dir)) if (!paths.includes(stale)) this.files.delete(`${dir}/${stale}`);
+    this.files.set(`${dir}/values.env`, values === "" ? "" : `${values}\n`);
+    this.fileModes.set(`${dir}/values.env`, "600");
+    deploy.keys = [...deploy.keys.filter((key) => !comment.test(key)), p.LINE ?? ""];
+    this.crontab = [...tab.filter((line) => !cron.test(line)), p.CRON_LINE ?? ""];
+    return result();
   }
 
   /** The stack's files match the plan's and its password file is root's 0640 (`files_ok`). */
@@ -2425,7 +2561,7 @@ export class FakeHost implements RemoteExec {
   private checkKeyScript(name: string, p: Record<string, string>): CommandResult {
     const deploy = this.users.get("deploy");
     if (deploy === undefined) return fail("The deploy user has no home directory.");
-    const comment = new RegExp((p.COMMENT_RE ?? "").replace("[[:space:]]", "\\s"));
+    const comment = new RegExp((p.KEY_RE ?? "").replace("[[:space:]]", "\\s"));
     const ours = (key: string) => comment.test(key);
     const remove = name.startsWith("check-key.remove");
     const ok = remove

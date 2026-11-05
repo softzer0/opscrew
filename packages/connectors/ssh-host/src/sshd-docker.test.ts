@@ -3,15 +3,19 @@
  * `ubuntu:24.04` container with `openssh-server`, each drop-in passes `sshd -t`, and a modern
  * client logs in. With an ECDSA host key pinned, the ECDSA host key is still offered and a client
  * that knows only that key logs in. ECDSA and RSA-2048 user keys still work, an RSA-2048 host key
- * is still offered, and sshd reads the filtered moduli through ModuliFile. It pulls the image and
+ * is still offered, and sshd reads the filtered moduli through ModuliFile. A preview key the
+ * previews step installed runs only the preview command (feature 022). It pulls the image and
  * installs packages, so it runs only with OPSCREW_DOCKER_TESTS=1.
  */
 import { spawnSync } from "node:child_process";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MODULI_FILTER, SSHD_MODULI, SSHD_MODULI_FILE, sshdDropIn } from "./constants";
+import { planAddon } from "./plan";
+import { stepScripts } from "./steps";
 
 function skipReason(): string | undefined {
   if (process.env.OPSCREW_DOCKER_TESTS !== "1") return "set OPSCREW_DOCKER_TESTS=1 to run it";
@@ -117,6 +121,153 @@ describe.skipIf(reason !== undefined)("the sshd drop-in on ubuntu:24.04", () => 
       expect(out).toContain("ecdsa modern client: ok");
       expect(out).toMatch(/ecdsa host keys: ecdsa-sha2-nistp256 ssh-ed25519 ssh-rsa\n/);
       expect(out).toContain("ecdsa ECDSA-pinned client: ok");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * An Ed25519 key pair made at runtime: the public key line and the private key in OpenSSH's own
+ * format (unencrypted), which the ssh client reads.
+ */
+function opensshKeyPair(): { publicKey: string; privateKey: string } {
+  const pair = generateKeyPairSync("ed25519");
+  const pub = Buffer.from(pair.publicKey.export({ format: "jwk" }).x ?? "", "base64url");
+  const seed = Buffer.from(pair.privateKey.export({ format: "jwk" }).d ?? "", "base64url");
+  const u32 = (value: number) => {
+    const bytes = Buffer.alloc(4);
+    bytes.writeUInt32BE(value);
+    return bytes;
+  };
+  const field = (bytes: Buffer | string) => {
+    const data = Buffer.from(bytes);
+    return Buffer.concat([u32(data.length), data]);
+  };
+  const blob = Buffer.concat([field("ssh-ed25519"), field(pub)]);
+  const check = randomBytes(4);
+  let inner = Buffer.concat([
+    check,
+    check,
+    field("ssh-ed25519"),
+    field(pub),
+    field(Buffer.concat([seed, pub])),
+    field(""),
+  ]);
+  for (let pad = 1; inner.length % 8 !== 0; pad++) {
+    inner = Buffer.concat([inner, Buffer.from([pad])]);
+  }
+  const body = Buffer.concat([
+    Buffer.from("openssh-key-v1\0"),
+    field("none"),
+    field("none"),
+    field(""),
+    u32(1),
+    field(blob),
+    field(inner),
+  ]);
+  const armoured = body.toString("base64").replace(/.{70}/g, "$&\n");
+  return {
+    publicKey: `ssh-ed25519 ${blob.toString("base64")}`,
+    privateKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n${armoured}\n-----END OPENSSH PRIVATE KEY-----\n`,
+  };
+}
+
+/** A stand-in for the preview command: it prints what it was asked and how. */
+const PREVIEW_COMMAND = `#!/bin/sh
+printf 'orig=%s\\n' "\${SSH_ORIGINAL_COMMAND-unset}"
+printf 'args=%s\\n' "$#"
+if [ -t 0 ]; then echo tty=yes; else echo tty=no; fi
+printf 'stdin=%s\\n' "$(head -c 200)"
+echo 'opscrew-preview: listed 0/3'
+`;
+
+const PREVIEW_SCRIPT = `set -eu
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq >/dev/null
+apt-get install -y -qq --no-install-recommends openssh-server openssh-client cron procps >/dev/null
+useradd --create-home --shell /bin/bash deploy
+install -d -m 0755 /run/sshd
+install -d -m 0755 -o deploy -g deploy /srv/apps
+install -m 0600 /t/pk /root/pk
+# The previews step as OpsCrew applies it on a server it created: as deploy, with the values and
+# the recipe on stdin.
+runuser -u deploy -- sh /t/apply.sh < /t/stdin
+runuser -u deploy -- sh /t/verify.sh && echo "verify: ok"
+echo "cron: $(crontab -u deploy -l)"
+install -m 0644 /t/dropin.conf /etc/ssh/sshd_config.d/10-opscrew.conf
+sshd -t
+/usr/sbin/sshd -p 2222
+o="-i /root/pk -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/root/kh -p 2222"
+printf 'tok3n\\n' | ssh $o deploy@127.0.0.1 'up 42 img 0123' 2>&1 | sed 's/^/up: /'
+ssh $o deploy@127.0.0.1 'id; cat /etc/passwd' </dev/null 2>&1 | sed 's/^/cmd: /'
+ssh $o -tt deploy@127.0.0.1 list </dev/null 2>&1 | tr -d '\\r' | sed 's/^/tty: /'
+if ssh $o -W 127.0.0.1:2222 deploy@127.0.0.1 </dev/null >/root/fwd 2>&1; then echo "forwarding: allowed"; else echo "forwarding: refused"; fi
+sed 's/^/fwd: /' /root/fwd
+`;
+
+describe.skipIf(reason !== undefined)("the preview key on ubuntu:24.04", () => {
+  it("runs only the preview command, which sees the request and stdin; no terminal, no forwarding", {
+    timeout: 300_000,
+  }, () => {
+    const dir = mkdtempSync(join(tmpdir(), "opscrew-preview-key-"));
+    try {
+      const { publicKey, privateKey } = opensshKeyPair();
+      const plan = planAddon("previews", {
+        app: "shop-preview",
+        runAs: "login",
+        repository: "acme/shop",
+        enable: {
+          files: { "bin/opscrew-preview": PREVIEW_COMMAND },
+          publicKey,
+          valueNames: ["MODE"],
+        },
+      });
+      const [step] = plan.steps;
+      if (step === undefined) throw new Error("no step");
+      const scripts = stepScripts(plan, step);
+      writeFileSync(join(dir, "pk"), privateKey);
+      writeFileSync(join(dir, "apply.sh"), scripts.apply);
+      writeFileSync(join(dir, "verify.sh"), scripts.verify);
+      writeFileSync(
+        join(dir, "stdin"),
+        `${Buffer.from("MODE=preview\n").toString("base64")}\n${scripts.payload ?? ""}`,
+      );
+      writeFileSync(join(dir, "dropin.conf"), sshdDropIn({ ...login, moduliFile: false }));
+      writeFileSync(join(dir, "check.sh"), PREVIEW_SCRIPT);
+      const run = spawnSync(
+        "docker",
+        [
+          "run",
+          "--rm",
+          "--label",
+          "opscrew-test=preview-key",
+          "-v",
+          `${dir}:/t:ro`,
+          "ubuntu:24.04",
+          "sh",
+          "/t/check.sh",
+        ],
+        { encoding: "utf8", env: { ...process.env, MSYS_NO_PATHCONV: "1" } },
+      );
+      const out = run.stdout;
+      expect(run.status, `${out}\n${run.stderr}`).toBe(0);
+      expect(out).toContain("verify: ok");
+      expect(out).toMatch(
+        /cron: \d+ \* \* \* \* \/srv\/apps\/shop-preview\/bin\/opscrew-preview gc/,
+      );
+      // The request arrives in SSH_ORIGINAL_COMMAND, the command's own arguments are empty, and
+      // stdin (the registry token) reaches it.
+      expect(out).toContain("up: orig=up 42 img 0123\nup: args=0\nup: tty=no\nup: stdin=tok3n\n");
+      // Whatever the key asks, only the preview command runs.
+      expect(out).toContain("cmd: orig=id; cat /etc/passwd\ncmd: args=0");
+      expect(out).not.toMatch(/uid=\d+|root:x:0:0/);
+      // No terminal: sshd refuses the pty (and a client that insists on one gives up).
+      expect(out).toContain("tty: PTY allocation request failed");
+      expect(out).not.toContain("tty=yes");
+      // No forwarding.
+      expect(out).toContain("forwarding: refused");
+      expect(out).toMatch(/fwd: .*(administratively prohibited|open failed)/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

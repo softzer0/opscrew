@@ -7,7 +7,12 @@ import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { canonicalJson, isPlanHash, OpsCrewError, Redactor } from "@opscrew/core";
 import { z } from "zod";
 import { addonTaken, isOpensshPrivateKey, ownerGone } from "./addons";
-import { ADDON_KINDS, type AddonKind, DEFAULT_DEAD_MAN_SECONDS } from "./constants";
+import {
+  ADDON_KINDS,
+  type AddonKind,
+  DEFAULT_DEAD_MAN_SECONDS,
+  MAX_PREVIEW_VALUES_BYTES,
+} from "./constants";
 import {
   assumedApps,
   HOST_ADAPTER_VERSION,
@@ -44,6 +49,7 @@ import {
   type ApplyOptions,
   type ApplyResult,
   type ApplySecrets,
+  EnvNameSchema,
   type HostPlan,
   HostPlanSchema,
   type HostStep,
@@ -147,17 +153,48 @@ const SECRET_CHECKS: Record<
     valid: (value) => /^[A-Za-z0-9]{16,128}$/.test(value),
     invalid: "The monitoring login's password must be 16 to 128 letters and digits.",
   },
+  previewValues: {
+    label: "preview-values",
+    needs: "the preview values",
+    valid: isPreviewValues,
+    invalid:
+      "The preview values must be lines of NAME=value, each name once, at most 64 KiB in all.",
+    hint: "Check the preview environment's values file (.env.<environment>), then try again.",
+  },
 };
 
 /**
- * What goes on stdin for a step's secrets: one line each, in order; the Beszel hub's key (several
- * lines) as its base64. Undefined when none is supplied.
+ * `NAME=value` lines (the last one may end without a newline), each name once, within
+ * {@link MAX_PREVIEW_VALUES_BYTES}; empty for no values.
+ */
+function isPreviewValues(text: string): boolean {
+  if (Buffer.byteLength(text, "utf8") > MAX_PREVIEW_VALUES_BYTES) return false;
+  if (text === "") return true;
+  const lines = text.replace(/\n$/, "").split("\n");
+  const names = lines.map((line) => line.slice(0, line.indexOf("=")));
+  return (
+    lines.every((line) => line.includes("=") && !/[\r\0]/.test(line)) &&
+    names.every((name) => EnvNameSchema.safeParse(name).success) &&
+    new Set(names).size === names.length
+  );
+}
+
+/** Each preview value, the text after the first `=` of each line (so each is redacted alone). */
+function previewValueTexts(text: string): string[] {
+  return text.split("\n").map((line) => line.slice(line.indexOf("=") + 1));
+}
+
+/**
+ * What goes on stdin for a step's secrets: one line each, in order; the Beszel hub's key and the
+ * preview values (several lines) as their base64. Undefined when none is supplied.
  */
 function stdinOf(names: readonly SecretName[], secrets: ApplySecrets): string | undefined {
   if (names.every((name) => secrets[name] === undefined)) return undefined;
   const lines = names.map((name) => {
     const value = secrets[name] ?? "";
-    return name === "beszelHubKey" ? Buffer.from(value, "utf8").toString("base64") : value;
+    return name === "beszelHubKey" || name === "previewValues"
+      ? Buffer.from(value, "utf8").toString("base64")
+      : value;
   });
   return `${lines.join("\n")}\n`;
 }
@@ -715,6 +752,9 @@ export async function applyHostPlan(
     if (value === undefined) continue;
     const check = SECRET_CHECKS[name];
     redactor.addLiteral(value, check.label);
+    if (name === "previewValues") {
+      for (const text of previewValueTexts(value)) redactor.addLiteral(text, check.label);
+    }
     if (!check.valid(value)) {
       throw new OpsCrewError(
         "INVALID_INPUT",

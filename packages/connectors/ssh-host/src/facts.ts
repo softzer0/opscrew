@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { ALLOY_DESTINATIONS, RUNTIME_FILE_NAMES } from "./constants";
-import { AccessModeSchema, AddonFileNameSchema, HostStepIdSchema, StackPathSchema } from "./types";
+import {
+  AccessModeSchema,
+  AddonFileNameSchema,
+  HostStepIdSchema,
+  RecipePathSchema,
+  StackPathSchema,
+} from "./types";
 
 /** Version written to the host record (`opscrewVersion`). */
 export const HOST_ADAPTER_VERSION = "0.1.0";
@@ -379,13 +385,15 @@ export const HostFactsSchema = z.object({
   /**
    * The deploy user: its groups, and the lines of its authorized_keys other than the
    * scheduled checks' keys in OpsCrew's form (`CHECK_KEY_LINE_RE`), whose repositories
-   * (`owner/repo`) are `checkKeys`.
+   * (`owner/repo`) are `checkKeys`, and the preview keys in OpsCrew's form
+   * (`PREVIEW_KEY_LINE_RE`), whose whole lines are `previewKeys`.
    */
   deployUser: z
     .object({
       groups: z.array(z.string()),
       keys: z.array(z.string()),
       checkKeys: z.array(z.string()).optional(),
+      previewKeys: z.array(z.string()).optional(),
     })
     .nullable(),
   packages: z.object({
@@ -475,6 +483,24 @@ export const HostFactsSchema = z.object({
     .optional(),
   /** Each app's GitHub Actions runner whose folder exists (see {@link runnerOf}). */
   runners: z.array(RunnerSchema).default([]),
+  /**
+   * Each preview environment's recipe (feature 022): an app folder in /srv/apps with the preview
+   * command (`bin/opscrew-preview`), by app, with the SHA-256 of each recipe file by path (never
+   * its values, log or dot-files), whether its values file is there (never read), the deploy
+   * user's cron lines that run its cleanup, and its previews' pull request numbers (the folders
+   * `/srv/apps/<app>-pr-<n>`), in order.
+   */
+  previews: z
+    .array(
+      z.object({
+        app: z.string(),
+        files: z.record(RecipePathSchema, z.string().regex(/^[0-9a-f]{64}$/)),
+        values: z.boolean(),
+        cron: z.array(z.string()),
+        numbers: z.array(z.number().int().positive()),
+      }),
+    )
+    .default([]),
   /** Docker's firewall and OpsCrew's web filter. */
   webFilter: WebFilterFactsSchema,
   /**

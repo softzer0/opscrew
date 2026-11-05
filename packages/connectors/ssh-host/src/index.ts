@@ -23,6 +23,10 @@
  * the Postgres login `opscrew_monitor` (`MONITOR_LOGIN`) that Alloy reads Postgres's figures with.
  * `planNetworkRemoval` takes one network's interface off a server, such as the monitoring server
  * another environment owns once this one stops sending to it.
+ * Preview environments (feature 022): `planAddon("previews")` installs a preview environment's
+ * recipe in `/srv/apps/<app>`, its values (supplied at apply as `previewValues`), the preview key
+ * (`previewKeyLine`, which can run only the recipe's `opscrew-preview`) and the deploy user's cron
+ * line for idle previews, in a plan that deletes data; `inspectHost` lists each recipe's previews.
  * See `specs/009-own-server/contracts/host-adapter.md`,
  * `specs/013-component-model/contracts/components.md`,
  * `specs/015-environments-runners/contracts/runners.md`,
@@ -46,6 +50,7 @@ export {
   MIN_DOCKER_MAJOR,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
+  previewKeyLine,
   RUNNERS_DIR,
   type RuntimeFileName,
   runnerDir,

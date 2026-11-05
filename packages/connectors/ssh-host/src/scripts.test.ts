@@ -293,6 +293,27 @@ async function everyPlan(): Promise<HostPlan[]> {
       "opscrew destroy",
     ),
   );
+  // A preview environment's recipe (feature 022), on as root and off as the deploy login.
+  const previews = new FakeHost();
+  previews.files.set("/srv/apps/shop-preview/bin/opscrew-preview", "#!/bin/sh\n");
+  const preview = { app: "shop-preview", repository: "acme/shop" };
+  plans.push(
+    planAddon("previews", {
+      ...preview,
+      runAs: "root",
+      enable: {
+        files: { "bin/opscrew-preview": "#!/bin/sh\n" },
+        publicKey: ed25519PublicKey(),
+        valueNames: ["API_KEY"],
+      },
+    }),
+    planAddon("previews", {
+      ...preview,
+      runAs: "login",
+      facts: await inspectHost(previews),
+      disable: {},
+    }),
+  );
   return plans;
 }
 
@@ -322,6 +343,7 @@ describe("generated scripts", () => {
         "setup/tunnel-connector",
         "setup/portainer",
         "setup/check-key",
+        "setup/previews",
         "setup/beszel",
         "setup/alloy",
         "teardown/check-key",
@@ -373,8 +395,8 @@ describe("generated scripts", () => {
       for (const [key, script] of scripts) {
         const alone = shSyntax(script);
         if (alone && !alone.ok) failures.push(`${key}: ${alone.stderr}`);
-        // The runner's and the check key's scripts also run as deploy from root.
-        const asDeploy = /github-runner|check-key/.test(key)
+        // The runner's, the check key's and the previews' scripts also run as deploy from root.
+        const asDeploy = /github-runner|check-key|previews/.test(key)
           ? [asRoot("sudo", asDeployUser(script))]
           : [];
         for (const command of [

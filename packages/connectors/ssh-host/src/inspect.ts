@@ -22,6 +22,8 @@ import {
   HOST_SYSCTL_KEYS,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
+  PREVIEW_COMMAND_FILE,
+  PREVIEW_KEY_LINE_RE,
   READY_FLAG,
   RECORD_PATH,
   RUNNERS_DIR,
@@ -74,6 +76,7 @@ import {
   parseOpensshVersion,
   parseOsRelease,
   parsePairs,
+  parsePreviews,
   parseRunners,
   parseRuntimeFiles,
   parseSs,
@@ -347,6 +350,37 @@ if [ -n "$uid" ] && [ -d "${RUNNERS_DIR}" ] && [ ! -L "${RUNNERS_DIR}" ]; then
   done
 fi`;
 
+/**
+ * Each preview environment's recipe (feature 022), an app folder in /srv/apps with the preview
+ * command: the SHA-256 of each of its files (never `values.env`, `previews.log` or dot-files),
+ * whether `values.env` is there (never read), the deploy user's cron lines that run its cleanup
+ * (deploy's crontab, read as root or as deploy itself), and its previews, the folders
+ * `/srv/apps/<app>-pr-<n>`. Never follows a symbolic link.
+ */
+export const PREVIEWS_SNIPPET = `${APP_NAME_FN}
+tab=''
+if [ "$(id -u)" = 0 ]; then tab=$(crontab -u deploy -l 2>/dev/null) || tab=''
+elif [ "$(id -un)" = deploy ]; then tab=$(crontab -l 2>/dev/null) || tab=''
+fi
+if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
+  for d in "${APPS_DIR}"/*; do
+    app=\${d##*/}
+    app_name "$app" || continue
+    if [ -L "$d" ] || [ -L "$d/bin" ] || [ -L "$d/${PREVIEW_COMMAND_FILE}" ] || [ ! -f "$d/${PREVIEW_COMMAND_FILE}" ]; then continue; fi
+    echo "recipe $app"
+    (cd "$d" && find . -type f ! -name '.*' ! -path ./values.env ! -path ./previews.log) | while IFS= read -r f; do
+      echo "file $app \${f#./} $(sha256sum "$d/\${f#./}" | cut -d ' ' -f 1)"
+    done
+    if [ -f "$d/values.env" ] && [ ! -L "$d/values.env" ]; then echo "values $app"; fi
+    printf '%s\\n' "$tab" | grep -E "[[:space:]]$d/${PREVIEW_COMMAND_FILE} gc$" | sed "s|^|cron $app |"
+    for p in "$d"-pr-*; do
+      n=\${p#"$d"-pr-}
+      case "$n" in ''|0*|*[!0-9]*) continue ;; esac
+      if [ -d "$p" ] && [ ! -L "$p" ]; then echo "preview $app $n"; fi
+    done
+  done
+fi`;
+
 /** OpsCrew's web filter: its files' SHA-256 and its unit's state. */
 const WEB_FILTER_SNIPPET = `for f in script:${WEB_FILTER_SCRIPT} unit:${WEB_FILTER_UNIT} dropin:${WEB_FILTER_DROP_IN}; do
   if [ -f "\${f#*:}" ]; then echo "file \${f%%:*} $(sha256sum "\${f#*:}" | cut -d ' ' -f 1)"; else echo "file \${f%%:*} -"; fi
@@ -500,6 +534,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["addons", ADDONS_SNIPPET],
   ["monitoring", MONITORING_SNIPPET],
   ["runners", RUNNERS_SNIPPET],
+  ["previews", PREVIEWS_SNIPPET],
   ["web-filter", WEB_FILTER_SNIPPET],
   ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
   ["ssh-connection", `${SSH_FIREWALL_FUNCTIONS}\nssh_connection`],
@@ -736,6 +771,7 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
     .map(({ name, running }) => ({ name, running }));
   const deployKeys = linesOf(ok(sections, "deploy-keys")).filter((line) => !line.startsWith("#"));
   const checkLine = new RegExp(CHECK_KEY_LINE_RE);
+  const previewLine = new RegExp(PREVIEW_KEY_LINE_RE);
   const addon = (name: string, project: string) => {
     const found = addons.get(name);
     return {
@@ -830,12 +866,13 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
       deploy.exit === 0
         ? {
             groups: linesOf(deploy.text).flatMap((line) => line.split(/\s+/)),
-            keys: deployKeys.filter((line) => !checkLine.test(line)),
+            keys: deployKeys.filter((line) => !checkLine.test(line) && !previewLine.test(line)),
             checkKeys: deployKeys
               .filter((line) => checkLine.test(line))
               .map((line) =>
                 line.slice(line.lastIndexOf(CHECK_KEY_COMMENT) + CHECK_KEY_COMMENT.length),
               ),
+            previewKeys: deployKeys.filter((line) => previewLine.test(line)),
           }
         : null,
     packages: {
@@ -887,6 +924,7 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
       : {}),
     ...(monitoring.alloy === undefined ? {} : { alloy: monitoring.alloy }),
     runners: parseRunners(text("runners")),
+    previews: parsePreviews(text("previews")),
     webFilter: {
       ...dockerFirewall({
         daemonJson: section(sections, "docker-daemon"),

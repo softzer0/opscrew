@@ -1,3 +1,5 @@
+import { sha256Hex } from "@opscrew/core";
+
 /** The parent of each app's folder: its Compose project and env files (see {@link appDirs}). */
 export const APPS_DIR = "/srv/apps";
 /** The parent of each app's data folder. */
@@ -280,6 +282,58 @@ export function checkKeyLine(publicKey: string, repository: string): string {
 
 /** ERE for a check key line in OpsCrew's form, of any repository: the deploy-key step keeps it. */
 export const CHECK_KEY_LINE_RE = `^restrict,command="${CHECK_KEY_COMMAND}" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
+
+/**
+ * A preview environment's command (feature 022), in its recipe folder `/srv/apps/<app>`: the
+ * preview key's forced command, and what the deploy user's cron runs for idle previews.
+ */
+export function previewCommand(app: string): string {
+  return `${appDirs(app).app}/bin/opscrew-preview`;
+}
+
+/** The recipe file that is the preview command, the only one written runnable (0755). */
+export const PREVIEW_COMMAND_FILE = "bin/opscrew-preview";
+
+/**
+ * The comment that marks a preview environment's key in the deploy user's authorized_keys,
+ * followed by its repository and app (`opscrew-preview:<owner>/<repo>:<app>`).
+ */
+export const PREVIEW_KEY_COMMENT = "opscrew-preview:";
+
+/** The preview key's comment for a repository (`owner/repo`) and a preview environment's app. */
+export function previewKeyComment(repository: string, app: string): string {
+  return `${PREVIEW_KEY_COMMENT}${repository}:${app}`;
+}
+
+/**
+ * A preview environment's key line in authorized_keys: `restrict` turns off terminals and
+ * forwarding, and whatever it asks, the server runs only the app's preview command, which reads
+ * the request from `SSH_ORIGINAL_COMMAND`. `publicKey` is `<type> <base64>`.
+ */
+export function previewKeyLine(publicKey: string, repository: string, app: string): string {
+  return `restrict,command="${previewCommand(app)}" ${publicKey} ${previewKeyComment(repository, app)}`;
+}
+
+/** ERE for a preview key line in OpsCrew's form, of any app: the deploy-key step keeps it. */
+export const PREVIEW_KEY_LINE_RE = `^restrict,command="${APPS_DIR}/[a-z0-9][a-z0-9-]*/bin/opscrew-preview" [^ ]+ [^ ]+ ${PREVIEW_KEY_COMMENT}[^ ]+$`;
+
+/**
+ * The deploy user's cron line that removes a preview environment's idle previews, hourly at a
+ * minute from the app's name (1 to 59, so apps on one server spread out and none runs at 0).
+ */
+export function previewCronLine(app: string): string {
+  const minute = 1 + (Number.parseInt(sha256Hex(app).slice(0, 8), 16) % 59);
+  return `${minute} * * * * ${previewCommand(app)} gc`;
+}
+
+/**
+ * Largest file of a preview recipe the adapter accepts. Its files reach the server on the apply's
+ * standard input, not in the script.
+ */
+export const MAX_RECIPE_FILE_BYTES = 64 * 1024;
+
+/** Largest set of preview values (`values.env`) the adapter accepts. */
+export const MAX_PREVIEW_VALUES_BYTES = 64 * 1024;
 
 /** Seconds before the server undoes an SSH or firewall change on its own. */
 export const DEFAULT_DEAD_MAN_SECONDS = 180;
