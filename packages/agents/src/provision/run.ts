@@ -39,7 +39,12 @@ import { localPlanFile } from "../localhost/plan";
 import { provisionLocalhost } from "../localhost/provision";
 import { finishMove, recordSwitchedMove, runMove } from "../move";
 import { cloudConnectorRemoval } from "../portainer/run";
-import { requireNoForeignPreviews, requireNoSharedPreviews } from "../previews/host";
+import { appZoneDomain, requireAppZonePreviews, waitForPreviewsPack } from "../previews/app-zone";
+import {
+  requireNoForeignPreviews,
+  requireNoNetworkBesidePreviews,
+  requireNoSharedPreviews,
+} from "../previews/host";
 import { ensurePreviewKey } from "../previews/keys";
 import { previewShell } from "../previews/remote";
 import {
@@ -50,6 +55,7 @@ import {
   requireIgnoredValues,
   requirePreviewValues,
   requireServerForPreviews,
+  staleSharedEdge,
 } from "../previews/setup";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import {
@@ -168,6 +174,7 @@ import {
   cloudflarePlanHashes,
   planSharedCloudflare,
   readCloudflareRecord,
+  sharedCloudflareClient,
 } from "./shared-cloudflare";
 import {
   currentOutputs,
@@ -449,6 +456,12 @@ async function provisionFlow(
       true,
     );
   }
+  // Nor a private network on it: a preview's containers would reach what it connects.
+  await requireNoNetworkBesidePreviews(
+    deps.paths,
+    plan,
+    `${command}${await commandFlags(root, deps.paths.environment, deps.paths.app)}`,
+  );
 
   // 1–2. Preconditions and credentials. A promoted environment's plan must have its source's
   // build, components and port (FR-1539), and every environment serves hostnames of its own; a
@@ -515,6 +528,16 @@ async function provisionFlow(
   });
   for (const warning of diskWarnings) deps.reporter.warn(warning);
   const cloudflare = await setupCloudflare(deps, plan, services);
+  // Previews below the app's zone (FR-2231): the zone checked again, read-only, before any plan.
+  const belowZone = appZoneDomain(plan);
+  if (belowZone !== undefined && cloudflare !== undefined) {
+    await requireAppZonePreviews(deps.paths, sharedCloudflareClient(deps, services), {
+      zoneId: cloudflare.zoneId,
+      zone: cloudflare.zoneName,
+      domain: belowZone,
+      again,
+    });
+  }
   const github = await setupGitHub(deps, git, services);
   // A rollback pins the environment (ADR 0023): a move's deploy and window need its deploys, and
   // what this run merges deploys only once the pin ends. Only a move needs the variable read; the
@@ -903,7 +926,14 @@ async function provisionFlow(
   // The scheduled check's files, rendered from every app's and environment's plan.
   const check = await deploySetupCheck(deps, plan, github);
   const files = [
-    ...deploymentFiles(plan, ctx, site.values, previewEnv?.templates),
+    ...deploymentFiles(
+      plan,
+      ctx,
+      site.values,
+      previewEnv === undefined
+        ? undefined
+        : { templates: previewEnv.templates, host: sharedRun?.server.plan },
+    ),
     ...(dependabot?.action === "write" ? [dependabot.file] : []),
     ...check.files,
   ];
@@ -927,6 +957,9 @@ async function provisionFlow(
           refused: `OpsCrew applied the Cloudflare changes you approved (${cloudflareApplied.join("; ")}); it wrote no files and created nothing else. Run \`${command}\` again to finish.`,
         },
   );
+  // Another environment's previews on this server hold its edge in their recipe (spec.md US9).
+  const staleEdge = await staleSharedEdge(deps.paths, plan, files);
+  if (staleEdge !== undefined) deps.reporter.warn(staleEdge);
 
   // 4b. The app's bucket (the `storage` root): its own plan, approved by its hash, before the
   // infrastructure plan.
@@ -1482,6 +1515,22 @@ async function provisionFlow(
   }
   // A service moving between the app's servers continues once everything else is set up.
   if (plan.move !== undefined) await runMove(deps, { plan, services });
+  // Previews below the app's zone answer once Cloudflare issues their pack (FR-2232).
+  if (belowZone !== undefined && cloudflare !== undefined) {
+    await waitForPreviewsPack(
+      deps,
+      sharedCloudflareClient(deps, services),
+      {
+        zoneId: cloudflare.zoneId,
+        domain: belowZone,
+        verifyCommand: `opscrew verify${await commandFlags(root, deps.paths.environment, deps.paths.app)}`,
+      },
+      {
+        ...(services.now !== undefined ? { now: services.now } : {}),
+        ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
+      },
+    );
+  }
   return {
     ...(applied.planHash ? { planHash: applied.planHash } : {}),
     ...storageHash,

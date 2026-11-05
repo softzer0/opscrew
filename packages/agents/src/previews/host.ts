@@ -344,11 +344,50 @@ function hostProblem(plan: DeployPlan, host: string): string | undefined {
   if (edgeProxy(plan) !== "caddy") {
     return `${host}'s server runs nginx as its proxy, and previews are served by Caddy, which every app on a server shares.`;
   }
-  const reach = privateNetworkReach(plan);
-  if (reach.length > 0) {
-    return `${host}'s server is on a private network, and a preview's containers there could reach ${listText(reach)} without escaping anything: traffic within the server passes no firewall. Turn ${reach.length === 1 ? "it" : "them"} off on ${host} first, or give the previews a server of their own.`;
-  }
-  return undefined;
+  return privateNetworkProblem(plan, host);
+}
+
+/**
+ * Why previews can't share `host`'s server while its plan puts it on a private network (what
+ * {@link privateNetworkReach} lists, with what a command is `adding`), or `undefined` when it
+ * puts it on none.
+ */
+function privateNetworkProblem(
+  plan: DeployPlan,
+  host: string,
+  adding: readonly string[] = [],
+): string | undefined {
+  const reach = [...new Set([...privateNetworkReach(plan), ...adding])];
+  if (reach.length === 0) return undefined;
+  return `${host}'s server is on a private network, and a preview's containers there could reach ${listText(reach)} without escaping anything: traffic within the server passes no firewall. Turn ${reach.length === 1 ? "it" : "them"} off on ${host} first, or give the previews a server of their own.`;
+}
+
+/**
+ * Refuses a command of the environment `paths` belong to (provision, `vpn add`, `vpn grant`, an
+ * add-on or Portainer on) when `plan`, as it would apply it, puts its server on a private network
+ * (other servers, devices, granted services, dashboards), or the command is `adding` something
+ * there (a phrase such as `device laptop`), while the app's preview environment names that server
+ * (FR-2228), with the words of the previews' own refusal: a preview's containers would reach
+ * them. Removals never come here.
+ * @throws OpsCrewError `PHASE_PRECONDITION`, before any change.
+ */
+export async function requireNoNetworkBesidePreviews(
+  paths: ProjectPaths,
+  plan: DeployPlan,
+  again: string,
+  adding: readonly string[] = [],
+): Promise<void> {
+  const shared = await sharedPreviewsOn(paths, paths.environment);
+  if (shared === undefined) return;
+  const why = privateNetworkProblem(plan, paths.environment, adding);
+  if (why === undefined) return;
+  const remove = hasDeployment(shared.plan)
+    ? `\`opscrew destroy${await commandFlags(paths.root, shared.name, paths.app)}\``
+    : `\`opscrew env remove ${shared.name}${await appFlag(paths.root, paths.app)}\``;
+  throw refusal(
+    why,
+    `To put that on ${paths.environment}'s server anyway, remove the previews of ${shared.name} first with ${remove}; then run \`${again}\` again.`,
+  );
 }
 
 /** How a dashboard published on the private network is named in a refusal. */

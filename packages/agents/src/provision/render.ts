@@ -201,25 +201,38 @@ async function ownServerSshPorts(
  * (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server) and, with origin TLS on a
  * server, `pull.pem`, the client certificate (`values`) the site trusts.
  *
- * A preview environment (ADR 0026), rendered with its env templates `previews` (without values),
- * has no app of its own and no deploy workflow: its root (the server and the wildcard record), the
- * preview workflow and the recipe (`renderPreviewRecipe`).
+ * A preview environment (ADR 0026), rendered with its env templates `previews.templates` (without
+ * values), has no app of its own and no deploy workflow: its root (the server and the wildcard
+ * record), the preview workflow and the recipe (`renderPreviewRecipe`). On another environment's
+ * server, the recipe's edge files are those of that environment's plan, `previews.host`, with the
+ * same Cloudflare ranges its deploys trust.
  */
 export function deploymentFiles(
   plan: DeployPlan,
   ctx: RuntimeContext,
   values: OriginTlsValues = {},
-  previews?: PreviewEnvTemplates,
+  previews?: { templates: PreviewEnvTemplates; host?: DeployPlan | undefined },
 ): RenderedFile[] {
   if (previews !== undefined) {
     const repository = `${ctx.github.owner}/${ctx.github.repo}`;
+    const { host } = previews;
     return [
       ...renderInfra(plan, ctx),
       renderPreviewWorkflow(plan, ctx),
       ...renderPreviewRecipe(plan, {
         repository,
         imageName: ghcrImageFor(repository, plan.app.key),
-        env: previews,
+        env: previews.templates,
+        ...(host === undefined
+          ? {}
+          : {
+              host: {
+                plan: host,
+                ...(ctx.cloudflareRanges !== undefined
+                  ? { cloudflareRanges: ctx.cloudflareRanges }
+                  : {}),
+              },
+            }),
       }),
     ];
   }
@@ -392,6 +405,9 @@ export async function previewDeploymentFiles(
     `${github.owner}/${github.repo}`,
     options.createDeployKey !== false,
   );
+  // On another environment's server, the recipe's edge is that environment's (`previewServer`).
+  const shared =
+    plan.environment?.previews?.server === undefined ? undefined : await previewServer(deps, plan);
   const files = deploymentFiles(
     plan,
     await deploymentRenderContext(deps, {
@@ -409,7 +425,10 @@ export async function previewDeploymentFiles(
     values,
     plan.environment?.previews === undefined
       ? undefined
-      : (await previewEnvironment(deps, plan)).templates,
+      : {
+          templates: (await previewEnvironment(deps, plan)).templates,
+          host: shared?.plan,
+        },
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);
   return {

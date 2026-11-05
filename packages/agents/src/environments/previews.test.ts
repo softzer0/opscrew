@@ -14,6 +14,7 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
+import { appPaths } from "../apps/list";
 import { runDesign } from "../design/run";
 import { sharedServerWarning } from "../previews/host";
 import { readOwnServer, readServerAddresses, updateServerAddresses } from "../shared";
@@ -27,6 +28,7 @@ import {
   makeRequirements,
   nextPostgresFacts,
   PREVIEW_ZONE,
+  previewTestPlan,
   sharedPreviewTestPlan,
   type TestPhaseDeps,
   TOKEN,
@@ -42,11 +44,23 @@ const SEED = "npx prisma db seed";
 /** The preview domain the tests answer: a zone of its own. */
 const PREVIEWS = { domain: PREVIEW_ZONE };
 
+/** A DNS record as the fakes list it. */
+type FakeRecord = { type: string; name: string; content: string; comment?: string };
+
+/** The app's zone as Cloudflare answers for it (previews below it, US10). */
+interface AppZoneFake {
+  /** `advanced.allocated` of its pack quota: 0 without ACM (default 10). */
+  allocated?: number;
+  /** Total TLS on (default off). */
+  totalTls?: boolean;
+  records?: FakeRecord[];
+}
+
 /**
- * A fake Cloudflare API: the app's zone `ZONE` (id z1) and the preview zone (id z2), which holds
- * `records`.
+ * A fake Cloudflare API: the app's zone `ZONE` (id z1, as `app` has it) and the preview zone (id
+ * z2), which holds `records`.
  */
-function cloudflare(records: { type: string; name: string; content: string }[] = []) {
+function cloudflare(records: FakeRecord[] = [], app: AppZoneFake = {}) {
   const asked: string[] = [];
   const zones: Record<string, string> = { [ZONE]: "z1", [PREVIEW_ZONE]: "z2" };
   const fetch: FetchLike = async (input) => {
@@ -64,6 +78,13 @@ function cloudflare(records: { type: string; name: string; content: string }[] =
     }
     if (path === "/zones/z2/dns_records") {
       return ok(records.map((record, i) => ({ id: `r${i}`, ttl: 1, ...record })));
+    }
+    if (path === "/zones/z1/ssl/certificate_packs/quota") {
+      return ok({ advanced: { allocated: app.allocated ?? 10, used: 0 } });
+    }
+    if (path === "/zones/z1/acm/total_tls") return ok({ enabled: app.totalTls ?? false });
+    if (path === "/zones/z1/dns_records") {
+      return ok((app.records ?? []).map((record, i) => ({ id: `a${i}`, ttl: 1, ...record })));
     }
     throw new Error(`unrouted ${path}`);
   };
@@ -85,6 +106,7 @@ async function prodApp(
     facts?: ProjectFacts;
     requirements?: Requirements;
     records?: Parameters<typeof cloudflare>[0];
+    appZone?: AppZoneFake;
     plan?: DeployPlan;
   } = {},
 ): Promise<App> {
@@ -105,7 +127,7 @@ async function prodApp(
   );
   if (options.plan === undefined) await runDesign(prod, { catalog: euCatalog() });
   else await writeArtifact("plan", prod.paths.files.plan, options.plan);
-  const api = cloudflare(options.records);
+  const api = cloudflare(options.records, options.appZone);
   const preview = await createTestPhaseDeps({
     root: prod.paths.root,
     env: { ...prod.env, CLOUDFLARE_API_TOKEN: TOKEN },
@@ -927,5 +949,216 @@ describe("addEnvironment with previews on another environment's server (US9)", (
     );
     expect(preview.reporter.text()).not.toContain(HOST_IPV4);
     expect(await readFile(preview.paths.files.plan, "utf8")).not.toContain(HOST_IPV4);
+  });
+});
+
+describe("addEnvironment with previews below the app's zone (US10)", () => {
+  const BELOW = `previews.${ZONE}`;
+  const COOKIES = `a cookie your app sets for the whole domain (Domain=${ZONE}) reaches every preview, where a pull request's code can read it, and a preview can set such cookies for your app too.`;
+  const ACM = `need Cloudflare's Advanced Certificate Manager on ${ZONE}, a paid add-on you turn on in Cloudflare's dashboard, which shows its price`;
+
+  it("--app-zone: warns of ACM and cookies, checks the zone read-only and designs previews in the app's zone", async () => {
+    const { prod, preview, asked } = await prodApp({
+      appZone: {
+        records: [
+          { type: "A", name: DOMAIN, content: "203.0.113.20" },
+          // OpsCrew's own and the pack's validation records are no reason to refuse.
+          {
+            type: "A",
+            name: `*.${BELOW}`,
+            content: "203.0.113.21",
+            comment: "Managed by OpsCrew",
+          },
+          { type: "TXT", name: `_acme-challenge.${BELOW}`, content: "validation" },
+        ],
+      },
+    });
+    const prodBytes = await readFile(prod.paths.files.plan, "utf8");
+    const result = await addEnvironment(preview, {
+      previews: true,
+      appZone: true,
+      answers: { domain: BELOW },
+      design: { catalog: euCatalog() },
+    });
+    const { plan } = result.design;
+    expect(plan.environment?.previews?.domain).toBe(BELOW);
+    expect(plan.dns).toEqual({ provider: "cloudflare", zone: ZONE, proxied: true, www: false });
+    const said = preview.reporter.text();
+    expect(said).toContain(ACM);
+    expect(said).toContain(COOKIES);
+    expect(said).not.toContain(TOKEN);
+    expect(asked).toEqual(
+      expect.arrayContaining([
+        "/zones/z1/ssl/certificate_packs/quota",
+        "/zones/z1/acm/total_tls",
+        "/zones/z1/dns_records?page=1&per_page=100",
+      ]),
+    );
+    expect(await readFile(prod.paths.files.plan, "utf8")).toBe(prodBytes);
+  });
+
+  it("without --app-zone in a script, refuses as before and names --app-zone", async () => {
+    const { preview, asked } = await prodApp();
+    const error = await failure(
+      addEnvironment(preview, { previews: true, answers: { domain: BELOW } }),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toContain(`${BELOW} is in your app's own domain ${ZONE}`);
+    expect(error.hint).toContain(`add --app-zone to put the previews below ${ZONE}`);
+    expect(asked).toEqual([]);
+    expect(await nothingWritten(preview)).toBe(true);
+  });
+
+  it("never takes the app's zone itself, even with --app-zone", async () => {
+    const { preview } = await prodApp();
+    const error = await failure(
+      addEnvironment(preview, { previews: true, appZone: true, answers: { domain: ZONE } }),
+    );
+    expect(error.message).toContain(`${ZONE} is in your app's own domain ${ZONE}`);
+    expect(error.hint).not.toContain("--app-zone");
+  });
+
+  it("asks a confirmation after the warning, no by default; declined, nothing is written", async () => {
+    const { preview, asked: calls } = await prodApp();
+    const asked: EnvironmentQuestion[][] = [];
+    const ask = (yes: boolean) => async (questions: EnvironmentQuestion[]) => {
+      asked.push(questions);
+      return questions[0]?.id === "appZone" ? { appZone: yes } : { domain: BELOW };
+    };
+    const error = await failure(addEnvironment(preview, { previews: true, ask: ask(false) }));
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toBe(`The previews were not set up below ${ZONE}. Nothing was changed.`);
+    expect(asked[1]).toEqual([
+      expect.objectContaining({ id: "appZone", kind: "confirm", default: false }),
+    ]);
+    expect(asked[1]?.[0]?.help).toContain(COOKIES);
+    expect(preview.reporter.text()).toContain(ACM);
+    expect(calls.filter((path) => path.startsWith("/zones/z1"))).toEqual([]);
+    expect(await nothingWritten(preview)).toBe(true);
+
+    const yes = await prodApp();
+    const result = await addEnvironment(yes.preview, {
+      previews: true,
+      ask: ask(true),
+      design: { catalog: euCatalog() },
+    });
+    expect(result.design.plan.environment?.previews?.domain).toBe(BELOW);
+  });
+
+  it.each<[string, AppZoneFake, string, string]>([
+    [
+      "a zone without ACM",
+      { allocated: 0 },
+      `Previews below ${ZONE} need Cloudflare's Advanced Certificate Manager on ${ZONE} for the certificate of *.${BELOW}, and it is off there.`,
+      `Turn on Advanced Certificate Manager, a paid add-on, in the Cloudflare dashboard (${ZONE} → SSL/TLS → Edge Certificates)`,
+    ],
+    [
+      "Total TLS on",
+      { totalTls: true },
+      `Total TLS is on for ${ZONE}: it gives each proxied name a certificate of its own, and every public certificate is published, so each preview's name would be too.`,
+      `Turn Total TLS off in the Cloudflare dashboard (${ZONE} → SSL/TLS → Edge Certificates)`,
+    ],
+    [
+      "records at or below the domain",
+      {
+        records: [
+          { type: "CNAME", name: `docs.${BELOW}`, content: "docs.host.example.org" },
+          { type: "TXT", name: BELOW, content: "v=spf1 -all" },
+          { type: "A", name: `other${BELOW}`, content: "203.0.113.30" },
+        ],
+      },
+      `${ZONE} already has docs.${BELOW} (CNAME) and ${BELOW} (TXT) at or below ${BELOW}, and previews take every name there`,
+      `Delete them in the Cloudflare dashboard (${ZONE} → DNS → Records) if nothing uses them, or choose another name below ${ZONE} for the previews`,
+    ],
+  ])("refuses %s before any change, with the dashboard steps", async (_case, zone, said, hint) => {
+    const { preview } = await prodApp({ appZone: zone });
+    const error = await failure(
+      addEnvironment(preview, { previews: true, appZone: true, answers: { domain: BELOW } }),
+    );
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain(said);
+    expect(error.message).toMatch(/Nothing was changed\.$/);
+    expect(error.hint).toContain(hint);
+    expect(error.hint).toContain("then run `opscrew env add preview --previews` again.");
+    // Names and types only, never a record's content; never the token.
+    for (const text of [error.message, error.hint ?? "", preview.reporter.text()]) {
+      expect(text).not.toContain("docs.host.example.org");
+      expect(text).not.toContain("v=spf1");
+      expect(text).not.toContain(TOKEN);
+    }
+    expect(await nothingWritten(preview)).toBe(true);
+  });
+
+  it("refuses the preview domain of another app's preview environment", async () => {
+    const app = await prodApp();
+    const { root } = app.prod.paths;
+    await writeArtifact("app", join(root, "opscrew", "apps", "docs", "app.yaml"), {
+      schemaVersion: 1,
+      dir: "docs",
+    });
+    const shopPreview = previewTestPlan();
+    const { dir: _dir, ...infra } = shopPreview.infra;
+    const { workflowPath: _workflow, ...cicd } = shopPreview.cicd;
+    const docsPreview = DeployPlanSchema.parse({
+      ...shopPreview,
+      app: { ...shopPreview.app, key: "docs", name: "docs-preview" },
+      infra,
+      cicd,
+      environment: {
+        ...shopPreview.environment,
+        previews: { ...shopPreview.environment?.previews, domain: BELOW },
+      },
+      dns: { ...shopPreview.dns, zone: ZONE },
+    });
+    await writeArtifact(
+      "plan",
+      appPaths(app.prod.paths, "docs", "preview").files.plan,
+      docsPreview,
+    );
+    const error = await failure(
+      addEnvironment(app.preview, { previews: true, appZone: true, answers: { domain: BELOW } }),
+    );
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toBe(
+      `${BELOW} is ${BELOW}, the previews' domain of the app docs's environment preview, and two preview environments can't share names. Nothing was changed.`,
+    );
+    expect(await nothingWritten(app.preview)).toBe(true);
+  });
+
+  it("refuses a domain that is an environment's hostname, or a parent of one", async () => {
+    const app = await prodApp();
+    const is = await failure(
+      addEnvironment(app.preview, { previews: true, appZone: true, answers: { domain: DOMAIN } }),
+    );
+    expect(is.code).toBe("INVALID_INPUT");
+    expect(is.message).toBe(
+      `${DOMAIN} is ${DOMAIN}, the first app's prod's hostname, and previews take every name below ${DOMAIN}. Nothing was changed.`,
+    );
+    expect(is.hint).toBe(
+      `Choose another name below ${ZONE} for the previews, then run \`opscrew env add preview --previews\` again.`,
+    );
+
+    // A staging environment served DNS only at a name below the preview domain.
+    const prodPlan = await readArtifact("plan", app.prod.paths.files.plan);
+    const staging = environmentPaths(app.prod.paths, "staging");
+    await writeArtifact(
+      "plan",
+      staging.files.plan,
+      DeployPlanSchema.parse({
+        ...prodPlan,
+        app: { ...prodPlan.app, name: "shop-staging" },
+        environment: { name: "staging" },
+        infra: { ...prodPlan.infra, dir: "opscrew/infra/staging" },
+        cicd: { ...prodPlan.cicd, workflowPath: ".github/workflows/opscrew-deploy-staging.yml" },
+        dns: { ...prodPlan.dns, domain: `app.${BELOW}`, proxied: false, www: false },
+      }),
+    );
+    const parent = await failure(
+      addEnvironment(app.preview, { previews: true, appZone: true, answers: { domain: BELOW } }),
+    );
+    expect(parent.message).toContain(
+      `${BELOW} is a parent of app.${BELOW}, the first app's environment staging's hostname`,
+    );
+    expect(await nothingWritten(app.preview)).toBe(true);
   });
 });

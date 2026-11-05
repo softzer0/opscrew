@@ -1,4 +1,4 @@
-import { readArtifact } from "@opscrew/plan-schema";
+import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   COMMIT,
@@ -8,7 +8,13 @@ import {
   LIST_OUTPUT,
   previewProject,
 } from "../previews/__fixtures__/plan";
-import { PREVIEW_ZONE } from "../testing";
+import {
+  appZonePreviewTestPlan,
+  BELOW_ZONE,
+  certificateFetch,
+  PREVIEW_ZONE,
+  TOKEN,
+} from "../testing";
 import type { TlsConnect } from "./net";
 import { runVerify } from "./run";
 
@@ -55,6 +61,48 @@ describe("verify --env <preview>", () => {
     expect(result.checks[3]?.remediation).toContain("opscrew preview logs 7 --env preview");
     // Nothing recorded in plan.yaml: previews come and go.
     expect(await readArtifact("plan", deps.paths.files.plan)).toEqual(plan);
+  });
+
+  it("below the app's zone, checks the previews' certificate and Total TLS, read-only, each with its fix", async () => {
+    const { deps } = await previewProject({ env: { CLOUDFLARE_API_TOKEN: TOKEN } });
+    await writeArtifact("plan", deps.paths.files.plan, appZonePreviewTestPlan());
+    const asked: string[] = [];
+    const cloudflare = certificateFetch(async () => new Response("ok", { status: 200 }), {
+      totalTls: true,
+    });
+    const shell = fakeShell(() => ({ exitCode: 0, stdout: "opscrew-preview: listed 0/3\n" }));
+    const result = await runVerify(deps, {
+      remote: shell.remote,
+      tlsConnect,
+      fetch: async (input, init) => {
+        asked.push(`${init?.method ?? "GET"} ${String(input)}`);
+        return cloudflare.fetch(input, init);
+      },
+    });
+    expect(result.checks.map((c) => `${c.status} ${c.title}`)).toEqual([
+      "pass The preview server answers and lists its previews",
+      `pass The previews' certificate for *.${BELOW_ZONE} is active`,
+      `fail Total TLS is off for ${PREVIEW_ZONE}`,
+    ]);
+    expect(result.checks[2]?.remediation).toBe(
+      `Turn Total TLS off in the Cloudflare dashboard (${PREVIEW_ZONE} → SSL/TLS → Edge Certificates).`,
+    );
+    expect(result.passed).toBe(false);
+    expect(result.url).toBe(`https://pr-<number>-<random>.${BELOW_ZONE}`);
+    expect(asked.every((call) => call.startsWith("GET "))).toBe(true);
+    expect(deps.reporter.text()).not.toContain(TOKEN);
+    expect(JSON.stringify(result.checks)).not.toContain(TOKEN);
+  });
+
+  it("below the app's zone without a Cloudflare token, fails the certificate's check saying so", async () => {
+    const { deps } = await previewProject({ env: { CLOUDFLARE_API_TOKEN: undefined } });
+    await writeArtifact("plan", deps.paths.files.plan, appZonePreviewTestPlan());
+    const shell = fakeShell(() => ({ exitCode: 0, stdout: "opscrew-preview: listed 0/3\n" }));
+    const result = await runVerify(deps, { remote: shell.remote, tlsConnect });
+    const check = result.checks.find((c) => c.id === "previews-certificate");
+    expect(check).toMatchObject({ status: "fail", remediation: expect.stringContaining("token") });
+    expect(check?.message).toContain("CLOUDFLARE_API_TOKEN");
+    expect(result.passed).toBe(false);
   });
 
   it("fails when the preview server does not answer, saying what to do", async () => {

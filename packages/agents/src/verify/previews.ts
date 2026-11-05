@@ -2,7 +2,8 @@
  * `opscrew verify --env <preview>` (FR-2221, plan.md 8.): a preview environment has no hostname
  * of its own, so verify checks its server (it answers and lists its previews through the preview
  * command) and each running preview's address as the server lists it (`pr-<n>-<random>.<zone>`:
- * the certificate Cloudflare's proxy serves there, and its health endpoint). It
+ * the certificate Cloudflare's proxy serves there, and its health endpoint); below the app's zone,
+ * also the previews' advanced certificate pack and Total TLS (`appZoneChecks`). It
  * writes no runbook and records nothing in plan.yaml: previews come and go with pull requests.
  */
 import type { CheckResult } from "@opscrew/contracts";
@@ -10,8 +11,10 @@ import { errorText, isUserFacingError, plural } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { defaultTcpConnect } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { appZoneChecks, appZoneDomain } from "../previews/app-zone";
 import { listPreviews, type Preview, type PreviewList } from "../previews/list";
 import { requirePreviews } from "../previews/remote";
+import { sharedCloudflareClient } from "../provision/shared-cloudflare";
 import { checkResult, summarizeChecks } from "../shared";
 import { checkHealth, checkTls, reportChecks, type VerifyCheckContext } from "./checks";
 import { defaultDnsResolver, defaultTlsConnect } from "./net";
@@ -81,6 +84,36 @@ function serverCheck(list: PreviewList | undefined, error: unknown): CheckResult
 }
 
 /**
+ * The checks of previews below the app's zone (`appZoneChecks`) through the Cloudflare token's
+ * client, read-only; one failed check when the token is missing or Cloudflare refuses.
+ */
+async function zoneChecks(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: RunVerifyOptions & { flag: string },
+): Promise<CheckResult[]> {
+  try {
+    // The client drift uses; without a token, its `CREDENTIALS_MISSING` is the failed check.
+    const client = sharedCloudflareClient({ ...deps, fetch: options.fetch ?? deps.fetch }, {});
+    return await appZoneChecks(client, plan, `opscrew provision${options.flag}`);
+  } catch (error) {
+    if (!isUserFacingError(error)) throw error;
+    return [
+      checkResult(
+        "previews-certificate",
+        "The previews' certificate is active and Total TLS is off",
+        "high",
+        "fail",
+        errorText(error),
+        {
+          ...(error.hint !== undefined ? { remediation: error.hint } : {}),
+        },
+      ),
+    ];
+  }
+}
+
+/**
  * Verifies a preview environment (see the module's comment), marks `verify`, and returns its
  * checks; `url` is the previews' address pattern, `https://pr-<number>-<random>.<zone>`. Read-only.
  */
@@ -113,6 +146,10 @@ export async function verifyPreviews(
     flag: options.flag,
   };
   const checks = [serverCheck(list, failure)];
+  // Below the app's zone: the previews' certificate pack and Total TLS (FR-2232).
+  if (appZoneDomain(plan) !== undefined) {
+    checks.push(...(await zoneChecks(deps, plan, options)));
+  }
   for (const p of list?.previews ?? []) checks.push(...(await previewChecks(p, ctx)));
   const shown = checks.map((check) => ({
     ...check,

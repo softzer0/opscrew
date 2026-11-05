@@ -19,6 +19,7 @@ import {
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { hasPublicAddress } from "../network";
+import { requireNoNetworkBesidePreviews } from "../previews/host";
 import { applyNetworkPlans, type NetworkServer } from "../provision/network";
 import {
   approveAndApplyHostPlan,
@@ -356,6 +357,10 @@ export async function vpnGrant(
   requireOwnLogin(service, device);
   const server = serverOfService(before, service.name);
   requireReachable(before, server, service.name);
+  // Never beside previews another environment runs on this server: they would reach the service.
+  await requireNoNetworkBesidePreviews(deps.paths, before, command, [
+    `${service.name} for device ${device}`,
+  ]);
   const existing = network.grants.find((g) => g.device === device && g.service === service.name);
   // A grant already made with full access was confirmed then.
   if (access === "full" && existing?.access !== "full") {

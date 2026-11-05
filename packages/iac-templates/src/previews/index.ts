@@ -6,6 +6,8 @@
 import type { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan, Previews } from "@opscrew/plan-schema";
 import { initStepsFor } from "../catalog";
+import { renderEdgeCompose } from "../edge";
+import { usesCloudflare } from "../predicates";
 import { wrongTarget } from "../providers";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { artefactsFolder, runtimeDir } from "../runtime-dir";
@@ -76,6 +78,13 @@ export interface PreviewRecipeOptions {
   /** The image every preview runs, `ghcr.io/<owner>/<repo>[/<app key>]` (`ghcrImageFor`). */
   imageName: string;
   env: PreviewEnvTemplates;
+  /**
+   * Previews on another environment's server (`previews.server`): that environment's plan and
+   * Cloudflare's IP ranges, so the recipe's edge Compose file (with Caddy's global settings) is the
+   * one that environment's deploys put in `/srv/edge`. The ranges count only when the host's plan
+   * has a Cloudflare domain, as for its deploys.
+   */
+  host?: { plan: DeployPlan; cloudflareRanges?: readonly string[] };
 }
 
 /** A preview environment's environment, or a bug: only a preview environment has a recipe. */
@@ -215,7 +224,8 @@ function settingsFile(plan: DeployPlan, previews: Previews, o: PreviewRecipeOpti
  *   site, served with the Origin CA certificate in `/srv/edge/tls/<app>/` and sending
  *   `X-Robots-Tag: noindex`), `start.sh` and `rollback.sh` (the deploy's start and rollback
  *   scripts) and `env/app.env` and `env/<service>.env` from `o.env`, with `@N@` in the number's
- *   place and the address `pr-@N@-@R@.<base>`, `@R@` the preview's random part;
+ *   place and the address `pr-@N@-@R@.<base>`, `@R@` the preview's random part; on another
+ *   environment's server (`o.host`) the edge's Compose file is that environment's;
  * - `bin/opscrew-preview` (0755), the command that enforces it.
  * Filled with a number, a random part and values, `template/` is what OpsCrew renders for
  * `<app>-pr-<number>` at `pr-<number>-<random>.<base>`.
@@ -229,9 +239,21 @@ export function renderPreviewRecipe(plan: DeployPlan, o: PreviewRecipeOptions): 
   const template = previewTemplatePlan(plan);
   const seed = typeof previews.seed === "string" ? { seed: previews.seed } : {};
   const runtime = runtimeDir(template);
+  // On another environment's server, the edge is the host's: its deploys and a preview's `up`
+  // then put the same file in /srv/edge.
+  const { host } = o;
+  const hostEdge =
+    host === undefined
+      ? undefined
+      : renderEdgeCompose(host.plan, usesCloudflare(host.plan) ? host.cloudflareRanges : []);
+  const edgePath = `${runtime}/edge/compose.yaml`;
   const rendered = [
     renderCompose(template, seed),
-    ...renderRuntimeFiles(template),
+    ...renderRuntimeFiles(template).map((file) =>
+      hostEdge !== undefined && file.path === edgePath
+        ? { ...file, content: hostEdge.content }
+        : file,
+    ),
     ...renderEdgeSite(template, { preview: { app: plan.app.name } }),
   ].map((file) => ({ path: file.path.slice(runtime.length + 1), content: file.content }));
   const script = (lines: readonly string[]) => `${lines.join("\n")}\n`;

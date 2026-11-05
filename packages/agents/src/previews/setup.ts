@@ -15,6 +15,7 @@ import {
   exists,
   listText,
   OpsCrewError,
+  type ProjectPaths,
   plural,
   readTextIfExists,
   sha256Hex,
@@ -27,11 +28,13 @@ import {
   previewRecipeDir,
   previewTemplatePlan,
   type RenderedFile,
+  runtimeDir,
   webOnlyFromCloudflare,
 } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, type Previews, readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
 import { environmentPaths } from "../environments/paths";
 import type { NetworkServer } from "../provision/network";
 import { previewTlsOf, readOriginTlsValues } from "../provision/origin-tls";
@@ -50,6 +53,7 @@ import {
   previewServerAddress,
   requireHostApps,
   shareableHost,
+  sharedPreviewsOn,
   sharedServerReach,
   sharedServerWarning,
 } from "./host";
@@ -177,6 +181,35 @@ export function requireServerForPreviews(facts: HostFacts, app: string, command:
     `Your server holds ${listText(others.map((name) => `"${name}"`))}, and previews run pull requests' code: it would run beside ${one ? "it" : "them"}, so previews need a server with nothing else on it. Nothing on it was changed.`,
     { hint: `Give the preview environment a server of its own, then run \`${command}\` again.` },
   );
+}
+
+/**
+ * In the provision of the environment `paths` belong to, whose rendered `files` come from `plan`:
+ * when the app's preview environment runs on its server and the edge file it renders differs from
+ * the one the previews' committed recipe holds (which a preview's start puts back in
+ * `/srv/edge`), the warning to provision the preview environment again; `undefined` otherwise.
+ */
+export async function staleSharedEdge(
+  paths: ProjectPaths,
+  plan: DeployPlan,
+  files: readonly RenderedFile[],
+): Promise<string | undefined> {
+  const shared = await sharedPreviewsOn(paths, paths.environment);
+  if (shared === undefined) return undefined;
+  const edge = files.find((file) => file.path === `${runtimeDir(plan)}/edge/compose.yaml`);
+  const recipe = await readTextIfExists(
+    join(paths.root, previewRecipeDir(shared.plan), "template", "edge", "compose.yaml"),
+  );
+  // A Windows checkout's CRLF line ends are the same text.
+  if (
+    edge === undefined ||
+    recipe === undefined ||
+    recipe.replaceAll("\r\n", "\n") === edge.content
+  ) {
+    return undefined;
+  }
+  const flags = await commandFlags(paths.root, shared.name, paths.app);
+  return `${paths.environment}'s edge changes, and the previews of ${shared.name} on its server still hold the old one in their recipe, which a preview's start puts back: run \`opscrew provision${flags}\` after this, so the previews' recipe follows.`;
 }
 
 /** Another environment's server as provision reaches it ({@link prepareSharedServer}). */

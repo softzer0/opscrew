@@ -5,6 +5,7 @@ import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { destroyLocalhost } from "../localhost/destroy";
+import { acmStaysOn, appZoneDomain } from "../previews/app-zone";
 import { requireNoSharedPreviews } from "../previews/host";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider, providerBucket } from "../provision";
@@ -492,13 +493,29 @@ function remainingAfterDestroy(input: {
  * A server the user owns is never deleted, rebuilt or snapshotted: see `destroyOwnServer` (the
  * Cloudflare resources, then a teardown host plan, then optionally the undo host plan). The
  * server-less targets have their own flows: `destroyCloudflareWorkers` and `destroyGithubPages`.
+ *
+ * Previews below the app's zone: their pack goes with the root, and Advanced Certificate Manager
+ * stays on, which the result's `remaining` and the reporter say (spec.md US10 #4).
  */
 export async function runDestroy(
   deps: PhaseDeps,
   options: DestroyOptions = {},
 ): Promise<DestroyResult> {
-  const services = options.services ?? {};
   const plan = await readArtifact("plan", deps.paths.files.plan);
+  const result = await destroyDeployment(deps, plan, options);
+  if (appZoneDomain(plan) === undefined) return result;
+  const acm = acmStaysOn(plan.dns.zone as string);
+  deps.reporter.info(acm);
+  return { ...result, remaining: [...result.remaining, acm] };
+}
+
+/** {@link runDestroy} of the deployment of `plan`, by its target. */
+async function destroyDeployment(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: DestroyOptions,
+): Promise<DestroyResult> {
+  const services = options.services ?? {};
   // 0. Never during a move: it has its own deletions (`opscrew retarget --finish` / `--abort`).
   if (plan.retarget !== undefined) throw moveInProgress(plan);
   // Nor while other environments send to this one's monitoring server.

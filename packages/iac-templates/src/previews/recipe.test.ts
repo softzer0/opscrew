@@ -2,6 +2,9 @@ import { OpsCrewError } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { CF_RANGES, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
+import { renderDeployment } from "../render";
+import { runtimeDir } from "../runtime-dir";
 import {
   APP_ZONE_BASE,
   BASE,
@@ -195,6 +198,60 @@ describe("renderPreviewRecipe", () => {
     );
     expect(site.match(/\ttls /g)).toHaveLength(1);
     expect(site).not.toContain("client_auth");
+  });
+
+  describe("on another environment's server", () => {
+    const plan = previewPlan({ provider: "own", server: "dev" });
+    const options = {
+      repository: REPOSITORY,
+      imageName: IMAGE_NAME,
+      env: envFor(previewTemplatePlan(plan)),
+    };
+    /** The edge's Compose file of `files`, at `path`. */
+    const edgeOf = (files: { path: string; content: string }[], path: string) =>
+      files.find((file) => file.path === path)?.content;
+    const EDGE = `${DIR}/template/edge/compose.yaml`;
+
+    it("holds the edge files the host's deploys put in /srv/edge, byte for byte", () => {
+      // dev's name is DNS only, its web ports open to everyone; the previews' own plan has the
+      // web filter.
+      const dev = testPlan({ provider: "own", domain: "dev.example.com" });
+      const host: DeployPlan = { ...dev, dns: { ...dev.dns, proxied: false } };
+      const deployed = renderDeployment(
+        host,
+        testContext({ cloudflare: testCloudflare(), cloudflareRanges: CF_RANGES }),
+      );
+      const shared = renderPreviewRecipe(plan, {
+        ...options,
+        host: { plan: host, cloudflareRanges: CF_RANGES },
+      });
+      const edge = edgeOf(shared, EDGE);
+      expect(edge).toBe(edgeOf(deployed, `${runtimeDir(host)}/edge/compose.yaml`));
+      expect(edge).not.toContain("0.0.0.0:");
+      expect(edge).toContain(CF_RANGES[0]);
+      // On a server of their own, the edge follows the previews' plan, with the web filter.
+      const own = renderPreviewRecipe(plan, options);
+      expect(edgeOf(own, EDGE)).toContain("0.0.0.0:443");
+      // Nothing else of the recipe changes.
+      const rest = (files: { path: string; content: string }[]) =>
+        files.filter((file) => file.path !== EDGE);
+      expect(rest(shared)).toEqual(rest(own));
+    });
+
+    it("trusts no Cloudflare range when the host's plan has no Cloudflare domain, as its deploys don't", () => {
+      const host = testPlan({ provider: "own" });
+      const edge = edgeOf(
+        renderPreviewRecipe(plan, {
+          ...options,
+          host: { plan: host, cloudflareRanges: CF_RANGES },
+        }),
+        EDGE,
+      );
+      expect(edge).toBe(
+        edgeOf(renderDeployment(host, testContext()), `${runtimeDir(host)}/edge/compose.yaml`),
+      );
+      expect(edge).not.toContain(CF_RANGES[0]);
+    });
   });
 
   describe("filled with a number and values, is what OpsCrew renders for <app>-pr-<number>", () => {

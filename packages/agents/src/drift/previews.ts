@@ -14,10 +14,36 @@ import { appDir, IMAGES, previewRecipeDir } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { appZoneChecks, appZoneDomain } from "../previews/app-zone";
 import { previewServer } from "../previews/host";
+import { sharedCloudflareClient } from "../provision/shared-cloudflare";
+import type { ProvisionServices } from "../provision/types";
 import { serverShell } from "../status/servers";
 import { AREA_TITLES, type HostDifference } from "./host";
 import type { ServersDriftOptions } from "./servers";
+import type { CloudflareRuleDifference } from "./types";
+
+/**
+ * Previews below the app's zone (FR-2232): the previews' certificate pack not active, or Total TLS
+ * on, each a difference in the zone with its fix (`appZoneChecks`, read-only). None for previews in
+ * a zone of their own.
+ */
+export async function appZoneDrift(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: Pick<ProvisionServices, "sharedCloudflare">,
+): Promise<CloudflareRuleDifference[]> {
+  if (appZoneDomain(plan) === undefined) return [];
+  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+  const checks = await appZoneChecks(
+    sharedCloudflareClient(deps, services),
+    plan,
+    `opscrew provision${flag}`,
+  );
+  return checks
+    .filter((check) => check.status !== "pass")
+    .map((check) => ({ title: check.message, detail: check.remediation ?? "" }));
+}
 
 /**
  * The committed recipe's files by path, each with the SHA-256 of its text (LF line ends);

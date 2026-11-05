@@ -10,6 +10,8 @@ import { exists, OpsCrewError } from "@opscrew/core";
 import { portainerHostname, renderPortainerCompose, usesTunnel } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
+import { requireNoNetworkBesidePreviews } from "../previews/host";
 import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import {
@@ -567,6 +569,12 @@ async function enable(deps: PhaseDeps, options: PortainerEnableOptions): Promise
   if (pending !== undefined && !sameSettings(pending.settings, after.portainer ?? null)) {
     throw optionsDiffer();
   }
+  // Never its web UI on the private address beside previews another environment runs here.
+  await requireNoNetworkBesidePreviews(
+    deps.paths,
+    after,
+    `opscrew portainer enable${await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app)}`,
+  );
   return runChange(deps, { command: "enable", before, after, deleteData: false }, options);
 }
 

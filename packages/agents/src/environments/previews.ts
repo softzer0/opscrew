@@ -31,6 +31,7 @@ import {
   SERVER_FIELDS,
 } from "../interview/own-server";
 import { buildQuestions, type InterviewAnswers } from "../interview/questions";
+import { appZoneWarning, requireAppZonePreviews } from "../previews/app-zone";
 import {
   requireHostApps,
   shareableHost,
@@ -113,7 +114,7 @@ export function previewQuestions(
     {
       id: "domain",
       prompt: "Which domain should previews use? A domain of their own, on Cloudflare.",
-      help: `Each preview gets an address nobody can guess, pr-<number>-<random>.<domain>, behind Cloudflare's proxy. Use a domain used only for previews, not your app's: a second domain costs about $10 a year, and ${BUY} buys one.`,
+      help: `Each preview gets an address nobody can guess, pr-<number>-<random>.<domain>, behind Cloudflare's proxy. Use a domain used only for previews, not your app's: a second domain costs about $10 a year, and ${BUY} buys one. A name below your app's domain works too, with Cloudflare's paid Advanced Certificate Manager, after a warning.`,
       kind: "text",
       required: true,
     },
@@ -144,6 +145,18 @@ function shareQuestion(host: string, warning: string): EnvironmentQuestion {
   return {
     id: "share",
     prompt: `Run the previews on ${host}'s server?`,
+    help: warning,
+    kind: "confirm",
+    default: false,
+    required: true,
+  };
+}
+
+/** The confirmation of previews below the app's zone `zone`, which defaults to no. */
+function appZoneQuestion(zone: string, warning: string): EnvironmentQuestion {
+  return {
+    id: "appZone",
+    prompt: `Put the previews below ${zone}?`,
     help: warning,
     kind: "confirm",
     default: false,
@@ -191,7 +204,12 @@ function seedOf(answers: InterviewAnswers): string | null {
  * not a name inside one, and without A, AAAA or CNAME records, which would serve something else
  * beside the proxied wildcard `*.<zone>`. The refusals name `opscrew domain buy` for a domain of
  * its own. Records are named by name and type only, never their content.
- * @throws OpsCrewError `INVALID_INPUT` for the app's own zone, `CREDENTIALS_MISSING` without a
+ *
+ * A name below the app's zone (spec.md US10) only with the opt-in (`optIn.appZone`, or the
+ * confirmation `optIn.ask` asks, which defaults to no), after the warning, and once
+ * `requireAppZonePreviews` finds the zone ready for it; then the app's zone is the preview zone.
+ * @throws OpsCrewError `INVALID_INPUT` for the app's own zone (or a name in it without the
+ * opt-in), `APPROVAL_REFUSED` when the confirmation is declined, `CREDENTIALS_MISSING` without a
  * Cloudflare token, `PHASE_PRECONDITION` for a domain that is no zone of the token's or a zone
  * with such records.
  */
@@ -200,20 +218,56 @@ async function previewZone(
   domain: string,
   prodPlan: DeployPlan,
   command: string,
+  optIn: Pick<AddEnvironmentOptions, "appZone" | "ask">,
 ): Promise<string> {
   const again = `then run \`${command}\` again`;
   const { dns } = prodPlan;
   const appZone =
     dns.zone ?? (dns.domain === undefined ? undefined : likelyCloudflareZone(dns.domain));
-  if (appZone !== undefined && (domain === appZone || domain.endsWith(`.${appZone}`))) {
+  const inAppZone = appZone !== undefined && (domain === appZone || domain.endsWith(`.${appZone}`));
+  const below = inAppZone && domain !== appZone;
+  if (inAppZone && (!below || (optIn.appZone !== true && optIn.ask === undefined))) {
     throw refuse(
       "INVALID_INPUT",
       `${domain} is in your app's own domain ${appZone}, and previews need a domain of their own: behind its proxy Cloudflare would name the app's domain on every preview, and a preview's records would sit beside the app's.`,
-      `Give a domain used only for previews with --domain (${BUY} buys one), ${again}.`,
+      below
+        ? `Give a domain used only for previews with --domain (${BUY} buys one), or add --app-zone to put the previews below ${appZone} with Cloudflare's paid Advanced Certificate Manager, ${again}.`
+        : `Give a domain used only for previews with --domain (${BUY} buys one), ${again}.`,
     );
   }
   const connector = cloudflareConnector(deps);
   const client = connector.client;
+  if (below) {
+    // The opt-in (FR-2231): the warning both ways; without --app-zone, a confirmation too.
+    const warning = appZoneWarning(domain, appZone);
+    deps.reporter.warn(warning);
+    if (optIn.appZone !== true && optIn.ask !== undefined) {
+      const confirmed = await optIn.ask([appZoneQuestion(appZone, warning)]);
+      if (confirmed.appZone !== true) {
+        throw new OpsCrewError(
+          "APPROVAL_REFUSED",
+          `The previews were not set up below ${appZone}. Nothing was changed.`,
+          { hint: `Run \`${command}\` again with a domain of the previews' own, or confirm.` },
+        );
+      }
+    }
+    if (client === undefined) throw missing("Cloudflare", connector.credentials);
+    const zone = await client.findZone(domain);
+    if (zone?.name !== appZone) {
+      throw refuse(
+        "PHASE_PRECONDITION",
+        `Previews below ${appZone} go in its Cloudflare zone, and no Cloudflare zone your token sees is ${appZone}.`,
+        `Give the Cloudflare token access to ${appZone}, ${again}.`,
+      );
+    }
+    await requireAppZonePreviews(deps.paths, client, {
+      zoneId: zone.id,
+      zone: zone.name,
+      domain,
+      again: command,
+    });
+    return zone.name;
+  }
   if (client === undefined) throw missing("Cloudflare", connector.credentials);
   const zone = await client.findZone(domain);
   if (zone === undefined) {
@@ -259,6 +313,9 @@ async function previewZone(
  * inspection) and, in design, a cap that doesn't fit what the host leaves; the warning is printed,
  * picked interactively a confirmation that defaults to no follows, and the plan is an own target's
  * with `previews.server`, with nothing of the host's address or logins recorded here.
+ *
+ * Previews below the app's zone (FR-2231, `appZone` or the confirmation): see
+ * {@link previewZone}.
  */
 export async function addPreviewEnvironment(
   deps: PhaseDeps,
@@ -381,7 +438,10 @@ export async function addPreviewEnvironment(
     );
   }
   const previews = parsed.data;
-  const zone = await previewZone(deps, previews.domain, prodPlan, command);
+  const zone = await previewZone(deps, previews.domain, prodPlan, command, {
+    ...(options.appZone !== undefined ? { appZone: options.appZone } : {}),
+    ...(ask !== undefined ? { ask } : {}),
+  });
   const requirements = answersToRequirements(
     {
       ...rest,

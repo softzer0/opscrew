@@ -78,7 +78,8 @@ export type EnvironmentQuestionId =
   | "cap"
   | "seed"
   | "lifetime"
-  | "share";
+  | "share"
+  | "appZone";
 
 /** One question of `opscrew env add` (same shape as a `Question`). */
 export interface EnvironmentQuestion extends Omit<Question, "id"> {
@@ -131,6 +132,12 @@ export interface AddEnvironmentOptions {
    * "Where should previews run?" offers each eligible environment's server, with a confirmation.
    */
   shareServer?: string;
+  /**
+   * With `previews` and a preview domain below the app's Cloudflare zone, `--app-zone`: the
+   * scripted opt-in to previews there (spec.md US10); the warning about ACM and cookies is
+   * printed. Interactively, such a domain asks a confirmation that defaults to no instead.
+   */
+  appZone?: boolean;
   /**
    * Draws a whole number below `max` for the random part of the suggested hostname (default:
    * node's `crypto.randomInt`).

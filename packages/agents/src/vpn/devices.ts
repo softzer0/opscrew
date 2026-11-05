@@ -18,6 +18,7 @@ import {
   type WireGuardKeyPair,
   x25519KeyPair,
 } from "../network";
+import { requireNoNetworkBesidePreviews } from "../previews/host";
 import { applyNetworkPlans, type NetworkServer } from "../provision/network";
 import {
   outcomeSummary,
@@ -223,6 +224,8 @@ export async function vpnAdd(
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   // Running it again with `--approve` must plan the same: never `--again` (a new key) or `--qr`.
   const command = `opscrew vpn add ${device}${flag}${options.thisComputer === true ? " --this-computer" : ""}`;
+  // Never beside previews another environment runs on this server: they would reach the device.
+  await requireNoNetworkBesidePreviews(deps.paths, plan, command, [`device ${device}`]);
   const servers = await reachableServers(deps, plan, services);
   const endpoints = await publicEndpoints(deps, plan);
   const monitoring = await sharedMonitoringServer(deps, plan, services);

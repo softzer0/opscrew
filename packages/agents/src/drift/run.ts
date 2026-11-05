@@ -32,7 +32,7 @@ import {
 } from "./infra";
 import { monitoringDrift } from "./monitoring";
 import { portainerDrift } from "./portainer";
-import { previewRecipeDrift } from "./previews";
+import { appZoneDrift, previewRecipeDrift } from "./previews";
 import { namedDifferences, type ServersDriftOptions, serversDrift } from "./servers";
 import { siteDrift } from "./site";
 import type { DriftOptions, DriftReport } from "./types";
@@ -111,7 +111,11 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
         : `Checking your ${cloud}${usesCloudflare ? " and Cloudflare" : ""} access`,
   );
   if (sharedHost === undefined) await checkProvider(deps, provider, services);
-  const cloudflareRules = await cloudflareRulesDrift(deps, services);
+  const rules = await cloudflareRulesDrift(deps, services);
+  // Previews below the app's zone: their certificate pack and Total TLS, in the same zone.
+  const zone = await appZoneDrift(deps, plan, services);
+  const cloudflareRules =
+    rules === undefined && zone.length === 0 ? undefined : [...(rules ?? []), ...zone];
   deps.reporter.step("Comparing the generated files with what OpsCrew renders from the plan");
   const preview = await previewDeploymentFiles(deps, {
     services,

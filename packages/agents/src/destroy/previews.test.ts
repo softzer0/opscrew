@@ -16,6 +16,7 @@ import { previewProject } from "../previews/__fixtures__/plan";
 import { deploySecretNames } from "../provision/secrets";
 import { ensureStatePassphrase, recordOwnServer } from "../shared";
 import {
+  appZonePreviewTestPlan,
   ED25519_FINGERPRINT,
   FakeDestroyGitHub,
   FakeHostServer,
@@ -26,6 +27,7 @@ import {
   OWN_IPV4,
   OwnEngine,
   ownRunner,
+  PREVIEW_ZONE,
   PUBLIC_CHANGES,
   preparedServerFacts,
   projectRunner,
@@ -85,6 +87,33 @@ describe.skipIf(!findExecutable("git"))(
       expect(result.remaining).toContain(
         "The images of the previews that were still running (ghcr.io/acme/shop:pr-*): the deploy workflows' image cleanup deletes them within 31 days.",
       );
+      expect(result.remaining.join("\n")).not.toContain("Advanced Certificate Manager");
+    });
+
+    it("below the app's zone, says that Advanced Certificate Manager stays on", async () => {
+      const project = await previewProject({ env: { HCLOUD_TOKEN: fakeSecret("hcloud-token") } });
+      const { deps } = project;
+      await writeArtifact("plan", deps.paths.files.plan, appZonePreviewTestPlan());
+      deps.runner = projectRunner();
+      await ensureStatePassphrase(deps.paths);
+      await mkdir(dirname(tfstateFile(deps.paths)), { recursive: true });
+      await writeFile(tfstateFile(deps.paths), '{"version":4,"resources":[]}\n');
+      await mkdir(join(deps.paths.root, project.plan.infra.dir), { recursive: true });
+      await writeFile(deps.paths.files.knownHosts, `${SERVER_IPV4} ${HOST_KEY}\n`);
+      const result = await runDestroy(deps, {
+        services: {
+          engine: async () => new ScriptedDestroyEngine(),
+          provider: { configured: true, verify: async () => ({ ok: true, message: "ok" }) },
+          servers: new FakeServers(),
+          cloudflare: fakeCloudflare(),
+          github: new FakeDestroyGitHub(),
+          sleep: async () => undefined,
+        },
+        snapshot: false,
+      });
+      const acm = `Advanced Certificate Manager stays on for ${PREVIEW_ZONE}, and Cloudflare bills it until you turn it off in the Cloudflare dashboard (${PREVIEW_ZONE} → SSL/TLS → Edge Certificates), once nothing else of yours uses it.`;
+      expect(result.remaining.at(-1)).toBe(acm);
+      expect(deps.reporter.text()).toContain(acm);
     });
   },
 );

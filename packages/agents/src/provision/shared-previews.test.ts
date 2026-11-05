@@ -20,6 +20,7 @@ import {
 } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
+import { renderEdgeCompose, runtimeDir } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -327,6 +328,21 @@ describe.skipIf(!findExecutable("git"))("provisioning previews on dev's server (
         own,
       );
 
+      // The recipe's edge is dev's, byte for byte: dev's deploys and a preview's `up` put the same
+      // /srv/edge/compose.yaml (web ports as dev's plan has them, not the previews' web filter).
+      const recipeEdge = await readFile(
+        join(root, "opscrew/environments/preview/previews/template/edge/compose.yaml"),
+        "utf8",
+      );
+      const devPlanNow = await readArtifact("plan", app.dev.files.plan);
+      expect(recipeEdge).toBe(renderEdgeCompose(devPlanNow).content);
+      expect(recipeEdge).not.toContain("0.0.0.0:");
+      if (!own) {
+        // dev's own deploy files, as its provision committed them.
+        const devEdge = join(root, runtimeDir(devPlanNow), "edge", "compose.yaml");
+        expect(recipeEdge).toBe(await readFile(devEdge, "utf8"));
+      }
+
       // Nothing of dev's server is recorded for the preview environment; dev's state is as it was.
       expect(await readServerAddresses(preview.paths)).toEqual({ schemaVersion: 1 });
       expect(existsSync(preview.paths.files.knownHosts)).toBe(false);
@@ -371,6 +387,35 @@ describe.skipIf(!findExecutable("git"))("provisioning previews on dev's server (
       expect(await readServerAddresses(again.paths)).toEqual({ schemaVersion: 1 });
     },
   );
+
+  it("dev's provision says to provision the previews again when its edge no longer matches their recipe's", async () => {
+    const app = await sharedApp(false);
+    const preview = await app.deps("preview");
+    const engine = new OwnEngine(PUBLIC_CHANGES, { url: `https://${PREVIEW_ZONE}` });
+    await runProvision(preview, { services: app.services(async () => engine) });
+    await app.merge();
+    const devEngine = async () =>
+      new FakeEngine({
+        outputs: { server_ipv4: HOST_IPV4, server_id: "4712", server_name: "shop-dev" },
+      });
+    const STALE =
+      "dev's edge changes, and the previews of preview on its server still hold the old one in their recipe, which a preview's start puts back: run `opscrew provision --env preview` after this, so the previews' recipe follows.";
+    // Their recipe holds dev's edge: nothing to say.
+    const same = await app.deps("dev");
+    await runProvision(same, { services: app.services(devEngine) });
+    expect(same.reporter.text()).not.toContain(STALE);
+    await app.merge();
+    // The recipe from before dev's edge changed.
+    const recipeEdge = join(
+      app.root,
+      "opscrew/environments/preview/previews/template/edge/compose.yaml",
+    );
+    await writeFile(recipeEdge, `${await readFile(recipeEdge, "utf8")}# an older edge\n`);
+    await app.git(app.root, "commit", "-q", "-am", "An older edge in the previews' recipe");
+    const changed = await app.deps("dev");
+    await runProvision(changed, { services: app.services(devEngine) });
+    expect(changed.reporter.text()).toContain(STALE);
+  });
 
   it("drift plans the root with dev's address, compares the files, and leaves dev's server to dev", async () => {
     const app = await sharedApp(false);
@@ -460,6 +505,38 @@ describe.skipIf(!findExecutable("git"))("provisioning previews on dev's server (
       ),
     });
     expect(engine.plans).toEqual([]);
+    expect(app.server.applies).toEqual([]);
+  });
+
+  it("dev's own provision refuses a private network on its server while the preview environment names it", async () => {
+    const app = await sharedApp(false);
+    const devPlan = await readArtifact("plan", app.dev.files.plan);
+    const { network } = allocateNetwork(devPlan, {}, testKeyMaker("shop-dev"));
+    const prefix = network.range.split(".").slice(0, 3).join(".");
+    const laptop = {
+      name: "laptop",
+      address: `${prefix}.100`,
+      publicKey: testKeyPair("laptop").publicKey,
+      addedAt: "2026-10-30T10:00:00.000Z",
+    };
+    await writeArtifact(
+      "plan",
+      app.dev.files.plan,
+      withNetwork(devPlan, { ...network, devices: [laptop] }),
+    );
+    const dev = await app.deps("dev");
+    const engine = new FakeEngine();
+    await expect(
+      runProvision(dev, { services: app.services(async () => engine) }),
+    ).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      // The words of the previews' own refusal.
+      message:
+        "dev's server is on a private network, and a preview's containers there could reach your device without escaping anything: traffic within the server passes no firewall. Turn it off on dev first, or give the previews a server of their own. Nothing was changed.",
+      hint: "To put that on dev's server anyway, remove the previews of preview first with `opscrew env remove preview`; then run `opscrew provision --env dev` again.",
+    });
+    expect(engine.calls).toEqual([]);
+    expect(requestsOf(dev)).toEqual([]);
     expect(app.server.applies).toEqual([]);
   });
 

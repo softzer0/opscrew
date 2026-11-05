@@ -36,6 +36,7 @@ import {
   type TunnelledChangeServices,
 } from "../portainer/change";
 import { CLOUD_TUNNEL_DIR } from "../portainer/settings";
+import { requireNoNetworkBesidePreviews } from "../previews/host";
 import { setupCloudflare } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
 import { monitoringAlloy } from "../provision/monitoring";
@@ -867,6 +868,8 @@ export async function addonEnable(
     kind === "beszel"
       ? await beszelInput(deps, plan, options)
       : await grafanaInput(deps, plan, options);
+  // Never a dashboard on the private address beside previews another environment runs here.
+  await requireNoNetworkBesidePreviews(deps.paths, input.after, command);
   return runAddonChange(
     deps,
     {
