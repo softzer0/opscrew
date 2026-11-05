@@ -204,7 +204,7 @@ retention above all).
 
 ## Phase 4: Wave 3 (parallel)
 
-- [ ] T2209 [US1] [US3] Provisioning previews, in `packages/agents/`
+- [x] T2209 [US1] [US3] Provisioning previews, in `packages/agents/`
   - Owns: `packages/agents/src/provision/**`, `packages/agents/src/shared/app-env.ts`,
     `packages/agents/src/previews/{setup,keys,index}.ts` (+ tests), its export lines in
     `packages/agents/src/index.ts`
@@ -263,7 +263,7 @@ retention above all).
 
 ## Phase 5: Wave 4 (parallel)
 
-- [ ] T2211 [US1] [US6] [US7] The CLI, the MCP tool and the plugin
+- [x] T2211 [US1] [US6] [US7] The CLI, the MCP tool and the plugin
   - Owns: `packages/cli/src/commands/{env,preview}*.ts`, `packages/cli/src/commands/index.ts`
     (+ tests), `packages/mcp-server/src/**` (+ tests), `plugin/skills/opscrew-deploy/**`
   - Reads: plan.md "9."; spec.md US1, US6, US7
@@ -283,7 +283,7 @@ retention above all).
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs`
   - Effort: high
 
-- [ ] T2212 [US1] The guide page
+- [x] T2212 [US1] The guide page
   - Owns: `docs/guide/previews.md`, links in `docs/guide/environments.md`, `docs/guide/index.md`
     and `README.md`'s feature list
   - Reads: spec.md; plan.md; ADR 0026; `docs/guide/environments.md` (style and depth)
@@ -321,6 +321,10 @@ retention above all).
 - [ ] T2215 Simplify (lead): a review of the feature's diff for reuse and simplicity; findings
   become tasks here. Known so far: one helper in plan-schema for the preview workflow's path
   (T2205's renderer and T2208's `env remove` each name it); the `.sequelizerc` reading shared by
-  release and seed detection.
+  release and seed detection; the runner/build refusal sentence in both the CLI and agents; the
+  preview test plan built inline in CLI and MCP tests (export agents' fixture from its testing entry).
+  The make-once Ed25519 key file in three copies (`ensureDeployKey`, `ensureCheckKey`,
+  `ensurePreviewKey`): one `ensureKeyPair`. Design's preview filter that drops the planned bucket's
+  line by its opening words (`design/run.ts`, from `components.ts`).
 
 - [ ] T2216 Release (lead): `docs/releasing.md`.
