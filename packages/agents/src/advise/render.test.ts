@@ -23,7 +23,7 @@ const LARGER: Proposal = {
       figure: "91.2% of 4 GB",
       basis: { kind: "history", days: 14 },
     },
-    { text: "The app is offline one to three minutes.", basis: { kind: "plan" } },
+    { text: "The app is offline one to three minutes", basis: { kind: "plan" } },
   ],
   price: { before: 3.49, after: 5.49, currency: "EUR", source: "live" },
   apply: { kind: "plan", change: { kind: "server-type", server: "app", serverType: "cx33" } },
@@ -37,7 +37,7 @@ const REBOOT: Proposal = {
   title: "Restart server app to finish its security updates",
   reasons: [
     {
-      text: "Security updates wait for a restart.",
+      text: "Security updates wait for a restart",
       figure: "3 updates",
       basis: { kind: "one-reading", at: AT },
     },
@@ -87,7 +87,7 @@ describe("renderAdviceReport", () => {
         "Soon:",
         "  Move server app to a cx33 [size.app.larger]",
         "    - Memory in use is above 85% of the server (91.2% of 4 GB, over 14 days)",
-        "    - The app is offline one to three minutes.",
+        "    - The app is offline one to three minutes",
         "    Price: €3.49 → €5.49 a month (live prices)",
         "    Apply: opscrew advise --apply size.app.larger --env staging",
         "",
@@ -150,13 +150,13 @@ describe("renderAdviceReport", () => {
     expect(text.split("\n").at(-1)).toBe("Checked: the plan and server app's figures.");
   });
 
-  it("gives a reason's figure only when its text doesn't already say it", () => {
+  it("adds a reason's figure after its text, with the basis of a measured one", () => {
     const token: Proposal = {
       ...REBOOT,
       reasons: [
         {
-          text: "The GitHub token expires on 2026-11-07, in 3 days.",
-          figure: "3 days",
+          text: "The GitHub token expires on 2026-11-07",
+          figure: "in 3 days",
           basis: { kind: "account" },
         },
         {
@@ -167,7 +167,7 @@ describe("renderAdviceReport", () => {
       ],
     };
     const text = renderAdviceReport(report({ proposals: [token] }), "", SUGGEST);
-    expect(text).toContain("    - The GitHub token expires on 2026-11-07, in 3 days.\n");
+    expect(text).toContain("    - The GitHub token expires on 2026-11-07 (in 3 days)\n");
     expect(text).toContain("    - The disk is filling (full in 20 days, over 14 days)\n");
   });
 });

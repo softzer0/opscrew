@@ -35,7 +35,7 @@ function dependabotProposals({ upkeep }: Readings): Proposal[] {
         title: "Turn on Dependabot alerts for the repository",
         reasons: [
           {
-            text: "Dependabot alerts are off for the repository (GitHub's default for a private one), so nobody is told when a package the app uses has a known vulnerability.",
+            text: "Dependabot alerts are off for the repository (GitHub's default for a private one), so nobody is told when a package the app uses has a known vulnerability",
             basis: { kind: "account" },
           },
         ],
@@ -60,14 +60,12 @@ function dependabotProposals({ upkeep }: Readings): Proposal[] {
       title: `Fix ${plural(alerts.length, "Dependabot alert")}: ${listText(groups.map((g) => `${g.count} ${g.severity}`))}`,
       reasons: [
         ...groups.map((group) => ({
-          text: `${group.count} ${group.severity} ${group.count === 1 ? "alert" : "alerts"}, in ${listText(group.packages.sort())}.`,
-          figure: `${group.count} ${group.severity}`,
+          text: `${group.count} ${group.severity} ${group.count === 1 ? "alert" : "alerts"}, in ${listText(group.packages.sort())}`,
           basis: { kind: "account" as const },
         })),
         // Dependabot's pull requests, which may or may not update the alerts' packages.
         ...pulls.map((pull) => ({
           text: `Dependabot has a pull request open, #${pull.number} "${pull.title}": ${pull.url}`,
-          figure: `#${pull.number}`,
           basis: { kind: "account" as const },
         })),
       ],
@@ -82,9 +80,6 @@ function dependabotProposals({ upkeep }: Readings): Proposal[] {
     },
   ];
 }
-
-/** The disk is the size rules' (the updates and the reboot are warnings, never failing here). */
-const REPORTED_ELSEWHERE = new Set(["disk-usage"]);
 
 /**
  * A server's required reboot, pending security updates and failing host checks. A check's message
@@ -106,7 +101,7 @@ function hostProposals(readings: Readings, server: string, results: CheckResult[
       title: `Reboot server ${server} to finish its security updates`,
       reasons: [
         {
-          text: "Security updates were installed that need a reboot. The app's containers start again on their own.",
+          text: "Security updates were installed that need a reboot. The app's containers start again on their own",
           basis,
         },
       ],
@@ -128,8 +123,7 @@ function hostProposals(readings: Readings, server: string, results: CheckResult[
       title: `Let server ${server} install its ${plural(Number(count), "security update")}`,
       reasons: [
         {
-          text: `${plural(Number(count), "security update")} ${count === "1" ? "is" : "are"} waiting.`,
-          figure: count,
+          text: `${plural(Number(count), "security update")} ${count === "1" ? "is" : "are"} waiting`,
           basis,
         },
       ],
@@ -141,8 +135,9 @@ function hostProposals(readings: Readings, server: string, results: CheckResult[
       },
     });
   }
+  // The disk is the size rules' (the updates and the reboot are warnings, never failing here).
   const failing = results
-    .filter((r) => r.status === "fail" && !REPORTED_ELSEWHERE.has(r.id))
+    .filter((r) => r.status === "fail" && r.id !== "disk-usage")
     .sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity));
   if (failing.length > 0) {
     proposals.push({
@@ -152,7 +147,7 @@ function hostProposals(readings: Readings, server: string, results: CheckResult[
       server,
       title: `Fix ${plural(failing.length, "failing host check")} on server ${server}`,
       reasons: failing.map((r) => ({
-        text: `The check "${r.title}" failed.`,
+        text: `The check "${r.title}" failed`,
         figure: r.severity,
         basis,
       })),
@@ -186,8 +181,6 @@ function tokenProposals(readings: Readings): Proposal[] {
     const token = TOKENS[service];
     const date = expiresAt.slice(0, 10);
     const days = Math.floor(left);
-    const figure = days === 0 ? "today" : plural(days, "day");
-    const when = days === 0 ? figure : `in ${figure}`;
     const uses = `The ${token.name} token OpsCrew uses (${token.variable})`;
     return [
       {
@@ -200,10 +193,10 @@ function tokenProposals(readings: Readings): Proposal[] {
             : `Replace the ${token.name} token before it expires on ${date}`,
         reasons: [
           left < 0
-            ? { text: `${uses} expired on ${date}.`, basis: { kind: "account" } }
+            ? { text: `${uses} expired on ${date}`, basis: { kind: "account" } }
             : {
-                text: `${uses} expires on ${date}, ${when}.`,
-                figure,
+                text: `${uses} expires on ${date}`,
+                figure: days === 0 ? "today" : `in ${plural(days, "day")}`,
                 basis: { kind: "account" },
               },
         ],

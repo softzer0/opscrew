@@ -7,8 +7,10 @@ import { makeRequirements, ownPlan, testPlan } from "../../testing";
 import { pagesTestPlan } from "../../testing/pages";
 import { sitePlan } from "../../testing/serverless";
 import { type Readings, type ServerReadings, THRESHOLDS } from "../types";
-import { AT, GB, history, MB, reading, readingsOf } from "./__fixtures__/rule-readings";
+import { AT, GB, history, MB, reading, readingsOf, validated } from "./__fixtures__/rule-readings";
 import { componentRules } from "./components";
+
+const rules = validated(componentRules);
 
 /** The app's server (4 GB) at `memory` (p95), Postgres's container at `postgresGb` (p95). */
 function shortServer(memory: number, postgresGb: number): Record<string, ServerReadings> {
@@ -32,7 +34,7 @@ describe("componentRules: Postgres on its own server", () => {
       servers: shortServer(0.9, 2.1),
       flags: " --env staging",
     });
-    expect(componentRules(readings)).toEqual([
+    expect(rules(readings)).toEqual([
       {
         id: "components.app.database-server",
         category: "components",
@@ -41,22 +43,22 @@ describe("componentRules: Postgres on its own server", () => {
         title: "Give Postgres (db) a server of its own, a cx23",
         reasons: [
           {
-            text: "Postgres (db) used 53% of server app's memory at the 95th percentile, 2.1 GB of 4.0 GB.",
-            figure: "53%",
+            text: "Postgres (db) takes over 50% of server app's memory at the 95th percentile",
+            figure: "52.5% of 4.0 GB",
             basis: { kind: "history", days: 14 },
           },
           {
-            text: "Server app's memory was 90% in use at the 95th percentile, above 85%: this is the other way to a larger server.",
-            figure: "90%",
+            text: "A server of its own for Postgres is the other way to a larger one: server app's memory in use at the 95th percentile is above 85%",
+            figure: "90% of 4.0 GB",
             basis: { kind: "history", days: 14 },
           },
           {
-            text: "Provision copies its data to the new server; the app is offline about 2 minutes, plus a minute for every 100 MB.",
+            text: "Provision copies its data to the new server; the app is offline about 2 minutes, plus a minute for every 100 MB",
             basis: { kind: "plan" },
           },
         ],
-        // Each cx23: €5.49 + IPv4 €0.50 + backups €1.10.
-        price: { before: 7.09, after: 14.18, currency: "EUR", source: "live", asOf: AT },
+        // Each cx23: €5.49 + IPv4 €0.50 + backups €1.10. Live prices carry no date.
+        price: { before: 7.09, after: 14.18, currency: "EUR", source: "live" },
         apply: {
           kind: "manual",
           text: "Add a server db (servers in opscrew/plan.yaml) and set server: db on the Postgres service, then run `opscrew design --env staging` and `opscrew provision --env staging`",
@@ -67,12 +69,19 @@ describe("componentRules: Postgres on its own server", () => {
 
   it("proposes nothing at exactly the share, at exactly 85% of memory, or without history", () => {
     const at = (memory: number, postgresGb: number) =>
-      componentRules(readingsOf(testPlan(), { servers: shortServer(memory, postgresGb) }));
+      rules(readingsOf(testPlan(), { servers: shortServer(memory, postgresGb) }));
     expect(at(0.9, 4 * THRESHOLDS.databaseShare)).toEqual([]);
     expect(at(THRESHOLDS.memoryHigh, 3)).toEqual([]);
     expect(at(0.86, 2.1)).toHaveLength(1);
+    // Just above both thresholds, the figures never read at them.
+    const [edge] = at(0.8501, 4 * 0.501);
+    expect(edge?.reasons.map((r) => r.figure)).toEqual([
+      "50.1% of 4.0 GB",
+      "85.1% of 4.0 GB",
+      undefined,
+    ]);
     const once = { app: { now: reading({ memory: 0.95 }) } };
-    expect(componentRules(readingsOf(testPlan(), { servers: once }))).toEqual([]);
+    expect(rules(readingsOf(testPlan(), { servers: once }))).toEqual([]);
   });
 
   it("sizes the server as design does: Grafana Alloy's containers on it push it to a cx33", () => {
@@ -102,7 +111,7 @@ describe("componentRules: Postgres on its own server", () => {
         }),
       },
     };
-    const [proposal] = componentRules(readingsOf(plan, { servers }));
+    const [proposal] = rules(readingsOf(plan, { servers }));
     expect(proposal?.title).toBe("Give Postgres (primary-database) a server of its own, a cx33");
     // cx23 €7.09 with backups; cx33 €8.49 + €0.50 + backups €1.70.
     expect(proposal?.price).toMatchObject({ before: 7.09, after: 17.78 });
@@ -112,13 +121,13 @@ describe("componentRules: Postgres on its own server", () => {
       ),
     });
     const without = { ...plan, observability: {} };
-    const [smaller] = componentRules(readingsOf(without, { servers }));
+    const [smaller] = rules(readingsOf(without, { servers }));
     expect(smaller?.title).toBe("Give Postgres (primary-database) a server of its own, a cx23");
   });
 
   it("prices the new server without backups when the interview says the data doesn't matter", () => {
     const requirements = makeRequirements({ dataCriticality: "none" });
-    const [proposal] = componentRules(
+    const [proposal] = rules(
       readingsOf(testPlan(), { servers: shortServer(0.9, 2.1), requirements }),
     );
     // The app's cx23 keeps its backups (€7.09); the new cx23 is €5.99.
@@ -126,7 +135,7 @@ describe("componentRules: Postgres on its own server", () => {
   });
 
   it("proposes it without a price when the catalogue has none", () => {
-    const [proposal] = componentRules(
+    const [proposal] = rules(
       readingsOf(testPlan(), { servers: shortServer(0.9, 2.1), prices: [] }),
     );
     expect(proposal?.title).toBe("Give Postgres (db) a server of its own");
@@ -135,8 +144,8 @@ describe("componentRules: Postgres on its own server", () => {
 
   it("proposes nothing for Postgres already elsewhere or on the user's own server", () => {
     const { plan: split } = networked(splitPlan());
-    expect(componentRules(readingsOf(split, { servers: shortServer(0.9, 3) }))).toEqual([]);
-    expect(componentRules(readingsOf(ownPlan(), { servers: shortServer(0.9, 3) }))).toEqual([]);
+    expect(rules(readingsOf(split, { servers: shortServer(0.9, 3) }))).toEqual([]);
+    expect(rules(readingsOf(ownPlan(), { servers: shortServer(0.9, 3) }))).toEqual([]);
   });
 });
 
@@ -162,7 +171,7 @@ function garagePlan(): DeployPlan {
 }
 
 function filling(server: ServerReadings, overrides: Partial<Readings> = {}) {
-  return componentRules(
+  return rules(
     readingsOf(garagePlan(), {
       servers: { app: server },
       requirements: makeRequirements(),
@@ -188,12 +197,12 @@ describe("componentRules: object storage", () => {
         title: "Keep the app's files in Hetzner Object Storage instead of on server app",
         reasons: [
           {
-            text: "Server app's disk is full in 30 days at the pace of the last 7 days.",
-            figure: "30 days",
+            text: "Server app's disk is filling at the pace of the last 7 days",
+            figure: "full in 30 days",
             basis: { kind: "history", days: 14 },
           },
           {
-            text: `The app keeps its files in Garage on server app. Hetzner Object Storage keeps them off it, priced for 10 GB stored and 50 GB sent a month (storage.objectStorage.expected). ${hetzner.note}`,
+            text: `The app keeps its files in Garage on server app. Hetzner Object Storage keeps them off it, priced for 10 GB stored and 50 GB sent a month (storage.objectStorage.expected). ${hetzner.note?.slice(0, -1)}`,
             basis: { kind: "plan" },
           },
         ],
@@ -222,8 +231,8 @@ describe("componentRules: object storage", () => {
 
   it(`proposes it on one reading at ${THRESHOLDS.diskHigh * 100}% full, not below`, () => {
     expect(filling({ now: reading({ disk: THRESHOLDS.diskHigh }) })[0]?.reasons[0]).toEqual({
-      text: "Server app's disk is 85% full.",
-      figure: "85%",
+      text: "Server app's disk is nearly full",
+      figure: "85% in use",
       basis: { kind: "one-reading", at: AT },
     });
     expect(filling({ now: reading({ disk: 0.84 }) })).toEqual([]);
@@ -232,9 +241,9 @@ describe("componentRules: object storage", () => {
   it("proposes nothing without Garage, without the interview or with nowhere else to go", () => {
     const full = { app: { now: reading({ disk: 0.95 }) } };
     expect(
-      componentRules(readingsOf(testPlan(), { servers: full, requirements: makeRequirements() })),
+      rules(readingsOf(testPlan(), { servers: full, requirements: makeRequirements() })),
     ).toEqual([]);
-    expect(componentRules(readingsOf(garagePlan(), { servers: full }))).toEqual([]);
+    expect(rules(readingsOf(garagePlan(), { servers: full }))).toEqual([]);
     const own = makeRequirements({ provider: "own", region: undefined });
     expect(filling({ now: reading({ disk: 0.95 }) }, { requirements: own })).toEqual([]);
   });
@@ -244,7 +253,7 @@ describe("componentRules: targets", () => {
   it("proposes nothing for Cloudflare's hosting or GitHub Pages", () => {
     for (const plan of [sitePlan(), pagesTestPlan()]) {
       const servers = { app: { now: reading({ disk: 0.95 }) } };
-      expect(componentRules(readingsOf(plan, { servers }))).toEqual([]);
+      expect(rules(readingsOf(plan, { servers }))).toEqual([]);
     }
   });
 });

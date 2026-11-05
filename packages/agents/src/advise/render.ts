@@ -19,17 +19,11 @@ function basisWords(basis: Basis): string | undefined {
   return undefined;
 }
 
-/**
- * `- why (figure, over 14 days)`: the figure (unless the text already says it) and its basis, when
- * it has them.
- */
+/** `- why (figure, over 14 days)`: the figure and its basis, when it has them. */
 function reasonLine(reason: Reason): string {
-  const said = reason.figure !== undefined && reason.text.includes(reason.figure);
-  const notes = [said ? undefined : reason.figure, basisWords(reason.basis)].filter(
-    (n) => n !== undefined,
-  );
+  const notes = [reason.figure, basisWords(reason.basis)].filter((n) => n !== undefined);
   if (notes.length === 0) return `    - ${reason.text}`;
-  return `    - ${reason.text.replace(/\.$/, "")} (${notes.join(", ")})`;
+  return `    - ${reason.text} (${notes.join(", ")})`;
 }
 
 /** `€3.49 → €5.49 a month (live prices)`, or the static prices with their date. */

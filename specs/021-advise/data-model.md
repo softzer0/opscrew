@@ -34,6 +34,9 @@ repository's settings, replacing a token).
 `one-reading`), `checked` (what was read), `notRead` (what couldn't be, with why: no permission, a
 server unreachable, prices static).
 
+Reasons: the `text` states the claim without a final full stop; the `figure` holds the measured or
+priced number once, or is absent; the report prints `text (figure, basis)`.
+
 ## The thresholds (`THRESHOLDS`, in code and in the guide)
 
 | Name | Value | Used by |

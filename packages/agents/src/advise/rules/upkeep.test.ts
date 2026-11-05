@@ -6,8 +6,17 @@ import { testPlan } from "../../testing";
 import { pagesTestPlan } from "../../testing/pages";
 import { sitePlan } from "../../testing/serverless";
 import { type Readings, THRESHOLDS } from "../types";
-import { AT, afterAt, hostCheck, readingsOf, SERVER_ADDRESS } from "./__fixtures__/rule-readings";
+import {
+  AT,
+  afterAt,
+  hostCheck,
+  readingsOf,
+  SERVER_ADDRESS,
+  validated,
+} from "./__fixtures__/rule-readings";
 import { upkeepRules } from "./upkeep";
+
+const rules = validated(upkeepRules);
 
 const REPO = "https://github.com/example/example-app";
 
@@ -37,32 +46,22 @@ describe("upkeepRules: Dependabot", () => {
       },
       pulls: [pull(12, "Bump lodash from 4.17.20 to 4.17.21"), pull(14, "Bump ws from 8.0 to 8.1")],
     });
-    expect(upkeepRules(readings)).toEqual([
+    expect(rules(readings)).toEqual([
       {
         id: "security.env.dependabot-alerts",
         category: "security",
         urgency: "soon",
         title: "Fix 4 Dependabot alerts: 1 critical, 2 high and 1 medium",
         reasons: [
-          {
-            text: "1 critical alert, in lodash.",
-            figure: "1 critical",
-            basis: { kind: "account" },
-          },
-          {
-            text: "2 high alerts, in express and lodash.",
-            figure: "2 high",
-            basis: { kind: "account" },
-          },
-          { text: "1 medium alert, in ws.", figure: "1 medium", basis: { kind: "account" } },
+          { text: "1 critical alert, in lodash", basis: { kind: "account" } },
+          { text: "2 high alerts, in express and lodash", basis: { kind: "account" } },
+          { text: "1 medium alert, in ws", basis: { kind: "account" } },
           {
             text: `Dependabot has a pull request open, #12 "Bump lodash from 4.17.20 to 4.17.21": ${REPO}/pull/12`,
-            figure: "#12",
             basis: { kind: "account" },
           },
           {
             text: `Dependabot has a pull request open, #14 "Bump ws from 8.0 to 8.1": ${REPO}/pull/14`,
-            figure: "#14",
             basis: { kind: "account" },
           },
         ],
@@ -75,7 +74,7 @@ describe("upkeepRules: Dependabot", () => {
   });
 
   it("points to the alerts on GitHub when no pull request fixes them", () => {
-    const [proposal] = upkeepRules(
+    const [proposal] = rules(
       upkeep({ dependabot: { state: "on", alerts: [alert("low", "debug", 9)] } }),
     );
     expect(proposal?.title).toBe("Fix 1 Dependabot alert: 1 low");
@@ -86,9 +85,7 @@ describe("upkeepRules: Dependabot", () => {
   });
 
   it("proposes turning the alerts on when they are off", () => {
-    expect(
-      upkeepRules(upkeep({ dependabot: { state: "off" }, pulls: [pull(3, "Bump a")] })),
-    ).toEqual([
+    expect(rules(upkeep({ dependabot: { state: "off" }, pulls: [pull(3, "Bump a")] }))).toEqual([
       {
         id: "security.env.dependabot-off",
         category: "security",
@@ -96,7 +93,7 @@ describe("upkeepRules: Dependabot", () => {
         title: "Turn on Dependabot alerts for the repository",
         reasons: [
           {
-            text: "Dependabot alerts are off for the repository (GitHub's default for a private one), so nobody is told when a package the app uses has a known vulnerability.",
+            text: "Dependabot alerts are off for the repository (GitHub's default for a private one), so nobody is told when a package the app uses has a known vulnerability",
             basis: { kind: "account" },
           },
         ],
@@ -109,8 +106,8 @@ describe("upkeepRules: Dependabot", () => {
   });
 
   it("proposes nothing without alerts, or when they couldn't be read", () => {
-    expect(upkeepRules(upkeep({ dependabot: { state: "on", alerts: [] } }))).toEqual([]);
-    expect(upkeepRules(upkeep({ pulls: [pull(3, "Bump a")] }))).toEqual([]);
+    expect(rules(upkeep({ dependabot: { state: "on", alerts: [] } }))).toEqual([]);
+    expect(rules(upkeep({ pulls: [pull(3, "Bump a")] }))).toEqual([]);
   });
 });
 
@@ -131,7 +128,7 @@ describe("upkeepRules: the servers' updates and host checks", () => {
 
   it("reports a required reboot (now) and pending security updates (soon)", () => {
     const readings = upkeep({ hostChecks: { app: [updates(3), reboot, pass("ufw")] } });
-    expect(upkeepRules(readings)).toEqual([
+    expect(rules(readings)).toEqual([
       {
         id: "security.app.reboot",
         category: "security",
@@ -140,7 +137,7 @@ describe("upkeepRules: the servers' updates and host checks", () => {
         title: "Reboot server app to finish its security updates",
         reasons: [
           {
-            text: "Security updates were installed that need a reboot. The app's containers start again on their own.",
+            text: "Security updates were installed that need a reboot. The app's containers start again on their own",
             basis: { kind: "one-reading", at: AT },
           },
         ],
@@ -156,11 +153,7 @@ describe("upkeepRules: the servers' updates and host checks", () => {
         server: "app",
         title: "Let server app install its 3 security updates",
         reasons: [
-          {
-            text: "3 security updates are waiting.",
-            figure: "3",
-            basis: { kind: "one-reading", at: AT },
-          },
+          { text: "3 security updates are waiting", basis: { kind: "one-reading", at: AT } },
         ],
         apply: {
           kind: "manual",
@@ -177,9 +170,9 @@ describe("upkeepRules: the servers' updates and host checks", () => {
       severity: "medium",
       message: "unattended-upgrades is disabled.",
     });
-    const proposals = upkeepRules(upkeep({ hostChecks: { app: [updates(1), off] } }));
+    const proposals = rules(upkeep({ hostChecks: { app: [updates(1), off] } }));
     const proposal = proposals.find((p) => p.id === "security.app.updates");
-    expect(proposal?.reasons[0]?.text).toBe("1 security update is waiting.");
+    expect(proposal?.reasons[0]?.text).toBe("1 security update is waiting");
     expect(proposal?.apply).toEqual({
       kind: "manual",
       text: "Turn automatic updates back on, as root on the server: `systemctl enable --now unattended-upgrades`",
@@ -208,7 +201,7 @@ describe("upkeepRules: the servers' updates and host checks", () => {
       },
     });
     const basis = { kind: "one-reading", at: AT };
-    expect(upkeepRules({ ...readings, flags: " --env staging" })).toEqual([
+    expect(rules({ ...readings, flags: " --env staging" })).toEqual([
       {
         id: "security.app.host-checks",
         category: "security",
@@ -217,16 +210,16 @@ describe("upkeepRules: the servers' updates and host checks", () => {
         title: "Fix 3 failing host checks on server app",
         reasons: [
           {
-            text: 'The check "Docker API is not exposed over TCP" failed.',
+            text: 'The check "Docker API is not exposed over TCP" failed',
             figure: "critical",
             basis,
           },
           {
-            text: 'The check "SSH allows keys only, no root login" failed.',
+            text: 'The check "SSH allows keys only, no root login" failed',
             figure: "high",
             basis,
           },
-          { text: 'The check "Host firewall (ufw) is enabled" failed.', figure: "medium", basis },
+          { text: 'The check "Host firewall (ufw) is enabled" failed', figure: "medium", basis },
         ],
         apply: { kind: "command", command: "opscrew secure --env staging" },
       },
@@ -244,7 +237,7 @@ describe("upkeepRules: the servers' updates and host checks", () => {
     const readings = upkeep({
       hostChecks: { app: [failed("reboot-required"), failed("security-updates")] },
     });
-    expect(upkeepRules(readings)).toEqual([]);
+    expect(rules(readings)).toEqual([]);
   });
 
   it("never shows the server's address, from a check's message or its target", () => {
@@ -259,7 +252,7 @@ describe("upkeepRules: the servers' updates and host checks", () => {
       ...result,
       message: `${result.message} (${SERVER_ADDRESS})`,
     });
-    const proposals = upkeepRules(
+    const proposals = rules(
       upkeep({ hostChecks: { app: [named(updates(2)), named(reboot), failing] } }),
     );
     expect(proposals.map((p) => p.id)).toEqual([
@@ -279,7 +272,7 @@ describe("upkeepRules: tokens", () => {
         { service: "cloudflare", expiresAt: afterAt(THRESHOLDS.tokenDaysNow) },
       ],
     });
-    expect(upkeepRules(readings)).toEqual([
+    expect(rules(readings)).toEqual([
       {
         id: "upkeep.env.github-token",
         category: "upkeep",
@@ -287,8 +280,8 @@ describe("upkeepRules: tokens", () => {
         title: "Replace the GitHub token before it expires on 2026-12-05",
         reasons: [
           {
-            text: "The GitHub token OpsCrew uses (GITHUB_TOKEN) expires on 2026-12-05, in 30 days.",
-            figure: "30 days",
+            text: "The GitHub token OpsCrew uses (GITHUB_TOKEN) expires on 2026-12-05",
+            figure: "in 30 days",
             basis: { kind: "account" },
           },
         ],
@@ -304,8 +297,8 @@ describe("upkeepRules: tokens", () => {
         title: "Replace the Cloudflare token before it expires on 2026-11-12",
         reasons: [
           {
-            text: "The Cloudflare token OpsCrew uses (CLOUDFLARE_API_TOKEN) expires on 2026-11-12, in 7 days.",
-            figure: "7 days",
+            text: "The Cloudflare token OpsCrew uses (CLOUDFLARE_API_TOKEN) expires on 2026-11-12",
+            figure: "in 7 days",
             basis: { kind: "account" },
           },
         ],
@@ -319,28 +312,28 @@ describe("upkeepRules: tokens", () => {
 
   it("goes from now to soon just past 7 days, and says nothing just past 30", () => {
     const after = (days: number) =>
-      upkeepRules(upkeep({ tokens: [{ service: "github", expiresAt: afterAt(days, 1) }] }));
+      rules(upkeep({ tokens: [{ service: "github", expiresAt: afterAt(days, 1) }] }));
     expect(after(THRESHOLDS.tokenDaysNow)[0]?.urgency).toBe("soon");
     expect(after(THRESHOLDS.tokenDays)).toEqual([]);
   });
 
   it("says today when less than a day is left", () => {
-    const [proposal] = upkeepRules(
+    const [proposal] = rules(
       upkeep({ tokens: [{ service: "github", expiresAt: afterAt(0, 3_600_000) }] }),
     );
     expect(proposal?.reasons[0]).toMatchObject({
-      text: "The GitHub token OpsCrew uses (GITHUB_TOKEN) expires on 2026-11-05, today.",
+      text: "The GitHub token OpsCrew uses (GITHUB_TOKEN) expires on 2026-11-05",
       figure: "today",
     });
   });
 
   it("says when a token has already expired", () => {
-    const [proposal] = upkeepRules(
+    const [proposal] = rules(
       upkeep({ tokens: [{ service: "cloudflare", expiresAt: afterAt(-2) }] }),
     );
     expect(proposal?.urgency).toBe("now");
     expect(proposal?.reasons[0]?.text).toBe(
-      "The Cloudflare token OpsCrew uses (CLOUDFLARE_API_TOKEN) expired on 2026-11-03.",
+      "The Cloudflare token OpsCrew uses (CLOUDFLARE_API_TOKEN) expired on 2026-11-03",
     );
   });
 });
@@ -356,7 +349,7 @@ describe("upkeepRules: targets", () => {
           hostChecks: {},
         },
       });
-      expect(upkeepRules(readings).map((p) => p.id)).toEqual([
+      expect(rules(readings).map((p) => p.id)).toEqual([
         "security.env.dependabot-off",
         "upkeep.env.github-token",
       ]);

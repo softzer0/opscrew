@@ -1,8 +1,21 @@
-/** What advise's rules share; not exported from the package. */
+/**
+ * What advise's rules share; not exported from the package.
+ *
+ * A reason's `text` states its claim, without a closing full stop; its `figure`, when it has one,
+ * holds the measured or priced number once, and the report adds it after the text in parentheses.
+ */
 import type { ComputeOffer } from "@opscrew/contracts";
-import { APP_SERVER, type CloudProvider, type CostEstimate } from "@opscrew/plan-schema";
-import { convertMoney, pricedOffer } from "../../design/cost";
+import { plural } from "@opscrew/core";
+import {
+  APP_SERVER,
+  type CloudProvider,
+  type CostEstimate,
+  type DeployPlan,
+  type ExtraServer,
+} from "@opscrew/plan-schema";
+import { convertMoney, costFor } from "../../design/cost";
 import { providerProfile } from "../../providers";
+import type { ResourceReading } from "../../status";
 import {
   type Basis,
   type PriceList,
@@ -10,21 +23,39 @@ import {
   type ProposalPrice,
   type Readings,
   type Reason,
+  type ServerHistory,
   type ServerReadings,
   THRESHOLDS,
   type Urgency,
 } from "../types";
 
-/**
- * `85.1%`: a share above a threshold, to a tenth and rounded up, so it never reads at or under
- * the threshold it passed (the 1e-9 keeps float noise, such as 0.07 × 1000, from adding a tenth).
- */
-export function percentAbove(share: number): string {
-  return `${Math.ceil(share * 1000 - 1e-9) / 10}%`;
-}
-
 /** A fact of the plan or the catalogue, not a measured figure. */
 export const PLAN: Basis = { kind: "plan" };
+
+/** Figures over `history`'s days. */
+export function historyBasis(history: Pick<ServerHistory, "days">): Basis {
+  return { kind: "history", days: history.days };
+}
+
+/** A figure of the one reading `now`. */
+export function readingBasis(now: Pick<ResourceReading, "takenAt">): Basis {
+  return { kind: "one-reading", at: now.takenAt };
+}
+
+/** A sentence written elsewhere, as a reason's text: without its closing full stop. */
+export function withoutStop(sentence: string): string {
+  return sentence.replace(/\.$/, "");
+}
+
+/** The plan's servers by name: the app's, then the extra ones. */
+export function planTargets(
+  plan: Pick<DeployPlan, "target" | "servers">,
+): { name: string; target: DeployPlan["target"] | ExtraServer["target"] }[] {
+  return [
+    { name: APP_SERVER, target: plan.target },
+    ...(plan.servers ?? []).map(({ name, target }) => ({ name, target })),
+  ];
+}
 
 /** A server OpsCrew created, with its type's offer where it runs when the prices list it. */
 export interface CloudServer {
@@ -48,12 +79,7 @@ export function isPriced(server: CloudServer): server is PricedServer {
 
 /** The plan's servers OpsCrew created (the app's, then the extra ones), each with its prices. */
 export function cloudServers(readings: Pick<Readings, "plan" | "prices">): CloudServer[] {
-  const { plan } = readings;
-  const targets = [
-    { name: APP_SERVER, target: plan.target },
-    ...(plan.servers ?? []).map(({ name, target }) => ({ name, target })),
-  ];
-  return targets.flatMap(({ name, target }) => {
+  return planTargets(readings.plan).flatMap(({ name, target }) => {
     if (target.provider !== "hetzner" && target.provider !== "digitalocean") return [];
     const { provider, location, serverType, backups } = target;
     const prices = serverPrices(readings, target);
@@ -105,7 +131,7 @@ export function serverCost(
   backups: boolean,
 ): CostEstimate {
   const { backupPercent } = providerProfile(provider);
-  return pricedOffer(offer, list.extras, { backups, backupPercent }).cost;
+  return costFor(offer, list.extras, { backups, backupPercent });
 }
 
 /** Live when every price is; otherwise static, dated by the oldest static one. */
@@ -133,18 +159,17 @@ function typeChangeReasons(server: PricedServer, offer: ComputeOffer): Reason[] 
   const { displayName, serverNoun } = providerProfile(server.provider);
   const offline =
     server.provider === "digitalocean"
-      ? `The app is offline while ${displayName} resizes the ${serverNoun}: about a minute per GB of disk in use, often less; its addresses stay the same.`
-      : `The app is offline one to three minutes while ${displayName} restarts the ${serverNoun} on its new type; its addresses stay the same.`;
+      ? `The app is offline while ${displayName} resizes the ${serverNoun}: about a minute per GB of disk in use, often less; its addresses stay the same`
+      : `The app is offline one to three minutes while ${displayName} restarts the ${serverNoun} on its new type; its addresses stay the same`;
   const from = server.prices.offer.diskGb;
-  const disk: Reason =
+  const disk =
     offer.diskGb > from
-      ? {
-          text: `The change is one way: the disk grows from ${from} GB to ${offer.diskGb} GB, and ${displayName} can't make it smaller again.`,
-          figure: `${from} GB to ${offer.diskGb} GB`,
-          basis: PLAN,
-        }
-      : { text: `The disk stays ${from} GB.`, basis: PLAN };
-  return [{ text: offline, basis: PLAN }, disk];
+      ? `The change is one way: the disk grows from ${from} GB to ${offer.diskGb} GB, and ${displayName} can't make it smaller again`
+      : `The disk stays ${from} GB`;
+  return [
+    { text: offline, basis: PLAN },
+    { text: disk, basis: PLAN },
+  ];
 }
 
 /**
@@ -174,7 +199,7 @@ export function typeChange(
  * The price list of the server's provider and location, and its type's offer in it; `undefined`
  * when the catalogue wasn't read there or doesn't have the type.
  */
-export function serverPrices(
+function serverPrices(
   readings: Pick<Readings, "prices">,
   target: { provider: string; location: string; serverType: string },
 ): { list: PriceList; offer: ComputeOffer } | undefined {
@@ -183,6 +208,14 @@ export function serverPrices(
   );
   const offer = list?.offers.find((candidate) => candidate.id === target.serverType);
   return list === undefined || offer === undefined ? undefined : { list, offer };
+}
+
+/**
+ * `85.1%`: a share above a threshold, to a tenth and rounded up, so it never reads at or under
+ * the threshold it passed (the 1e-9 keeps float noise, such as 0.07 × 1000, from adding a tenth).
+ */
+export function percentAbove(share: number): string {
+  return `${Math.ceil(share * 1000 - 1e-9) / 10}%`;
 }
 
 /** `53%`: a share as a whole percent. */
@@ -202,20 +235,19 @@ export function diskFilling(
   const reasons: Reason[] = [];
   const days = history?.diskFullInDays;
   if (history !== undefined && days !== undefined && days <= THRESHOLDS.diskFullDays) {
-    const rounded = `${Math.round(days)} days`;
     reasons.push({
-      text: `Server ${server}'s disk is full in ${rounded} at the pace of the last 7 days.`,
-      figure: rounded,
-      basis: { kind: "history", days: history.days },
+      text: `Server ${server}'s disk is filling at the pace of the last 7 days`,
+      figure: `full in ${plural(Math.round(days), "day")}`,
+      basis: historyBasis(history),
     });
   }
   const disk = now.server?.disk;
   const share = disk === undefined ? 0 : disk.usedBytes / (disk.usedBytes + disk.freeBytes);
   if (share >= THRESHOLDS.diskHigh) {
     reasons.push({
-      text: `Server ${server}'s disk is ${percent(share)} full.`,
-      figure: percent(share),
-      basis: { kind: "one-reading", at: now.takenAt },
+      text: `Server ${server}'s disk is nearly full`,
+      figure: `${percent(share)} in use`,
+      basis: readingBasis(now),
     });
   }
   if (reasons.length === 0) return undefined;

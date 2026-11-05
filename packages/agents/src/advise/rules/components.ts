@@ -3,15 +3,27 @@
  * server of its own (018), priced; a filling disk while Garage keeps the app's files on it gets a
  * provider's object storage, priced. A cache is design's to add, not advise's.
  */
+import type { ComputeOffer } from "@opscrew/contracts";
 import { STORAGE_NAMES } from "@opscrew/iac-templates";
 import { APP_SERVER, serviceOf } from "@opscrew/plan-schema";
-import { convertMoney, pricedOffer, roundCents } from "../../design/cost";
+import { convertMoney, roundCents } from "../../design/cost";
 import { cheapestServerOffer, extraServerNeed } from "../../design/servers";
 import { storageOffers } from "../../design/storage";
 import { sizeText } from "../../retarget/texts";
 import { monitoringLimits } from "../../shared/memory";
 import { type Proposal, type Readings, THRESHOLDS } from "../types";
-import { diskFilling, percent, serverPrices } from "./shared";
+import {
+  cloudServers,
+  diskFilling,
+  historyBasis,
+  isPriced,
+  PLAN,
+  percent,
+  percentAbove,
+  priceSource,
+  serverCost,
+  withoutStop,
+} from "./shared";
 
 /** The component proposals: Postgres on its own server, object storage. */
 export function componentRules(readings: Readings): Proposal[] {
@@ -29,38 +41,37 @@ const DATABASE_SERVER = "db";
  */
 function databaseServerProposals(readings: Readings): Proposal[] {
   const { plan, flags } = readings;
-  const { target } = plan;
-  if (target.provider !== "hetzner" && target.provider !== "digitalocean") return [];
+  const app = cloudServers(readings).find((s) => s.name === APP_SERVER);
+  if (app === undefined) return [];
   const postgres = serviceOf(plan, "postgres");
   if (postgres === undefined || (postgres.server ?? APP_SERVER) !== APP_SERVER) return [];
-  const app = readings.servers[APP_SERVER];
-  const history = app?.history;
-  const total = app?.now.server?.memory.totalBytes;
+  const read = readings.servers[APP_SERVER];
+  const history = read?.history;
+  const total = read?.now.server?.memory.totalBytes;
   const used = history?.containers.find((c) => c.service === postgres.name)?.memoryP95;
   if (history?.memoryP95 === undefined || total === undefined || used === undefined) return [];
   const share = used / total;
   if (history.memoryP95 <= THRESHOLDS.memoryHigh || share <= THRESHOLDS.databaseShare) return [];
 
-  const prices = serverPrices(readings, target);
   const need = extraServerNeed([postgres], monitoringLimits(plan, DATABASE_SERVER));
-  const own =
-    prices === undefined
-      ? undefined
-      : cheapestServerOffer(prices.list.offers, target.location, need);
+  let own: ComputeOffer | undefined;
   let price: Proposal["price"];
-  if (prices !== undefined && own !== undefined) {
-    const before = pricedOffer(prices.offer, prices.list.extras, { backups: target.backups }).cost;
-    const backups = readings.requirements?.dataCriticality !== "none";
-    const added = pricedOffer(own, prices.list.extras, { backups }).cost;
-    price = {
-      before: before.monthly.amount,
-      after: roundCents(before.monthly.amount + added.monthly.amount),
-      currency: before.monthly.currency,
-      source: before.source === "live" && added.source === "live" ? "live" : "static",
-      asOf: added.asOf,
-    };
+  if (isPriced(app)) {
+    const { offer, list } = app.prices;
+    own = cheapestServerOffer(list.offers, app.location, need);
+    if (own !== undefined) {
+      const before = serverCost(app.provider, offer, list, app.backups);
+      const backups = readings.requirements?.dataCriticality !== "none";
+      const added = serverCost(app.provider, own, list, backups);
+      price = {
+        before: before.monthly.amount,
+        after: roundCents(before.monthly.amount + added.monthly.amount),
+        currency: before.monthly.currency,
+        ...priceSource([before, added]),
+      };
+    }
   }
-  const basis = { kind: "history" as const, days: history.days };
+  const basis = historyBasis(history);
   return [
     {
       id: `components.${APP_SERVER}.database-server`,
@@ -70,18 +81,18 @@ function databaseServerProposals(readings: Readings): Proposal[] {
       title: `Give Postgres (${postgres.name}) a server of its own${own === undefined ? "" : `, a ${own.id}`}`,
       reasons: [
         {
-          text: `Postgres (${postgres.name}) used ${percent(share)} of server ${APP_SERVER}'s memory at the 95th percentile, ${sizeText(used)} of ${sizeText(total)}.`,
-          figure: percent(share),
+          text: `Postgres (${postgres.name}) takes over ${percent(THRESHOLDS.databaseShare)} of server ${APP_SERVER}'s memory at the 95th percentile`,
+          figure: `${percentAbove(share)} of ${sizeText(total)}`,
           basis,
         },
         {
-          text: `Server ${APP_SERVER}'s memory was ${percent(history.memoryP95)} in use at the 95th percentile, above ${percent(THRESHOLDS.memoryHigh)}: this is the other way to a larger server.`,
-          figure: percent(history.memoryP95),
+          text: `A server of its own for Postgres is the other way to a larger one: server ${APP_SERVER}'s memory in use at the 95th percentile is above ${percent(THRESHOLDS.memoryHigh)}`,
+          figure: `${percentAbove(history.memoryP95)} of ${sizeText(total)}`,
           basis,
         },
         {
-          text: "Provision copies its data to the new server; the app is offline about 2 minutes, plus a minute for every 100 MB.",
-          basis: { kind: "plan" },
+          text: "Provision copies its data to the new server; the app is offline about 2 minutes, plus a minute for every 100 MB",
+          basis: PLAN,
         },
       ],
       ...(price === undefined ? {} : { price }),
@@ -104,13 +115,15 @@ function objectStorageProposals(readings: Readings): Proposal[] {
   const server = garage.server ?? APP_SERVER;
   const read = readings.servers[server];
   const filling = read === undefined ? undefined : diskFilling(server, read);
+  if (filling === undefined) return [];
   // The cheapest that keeps the files off the server.
   const offer = storageOffers(requirements, storage.expected).find((o) => o.provider !== "garage");
-  if (filling === undefined || offer === undefined) return [];
+  if (offer === undefined) return [];
   const name = STORAGE_NAMES[offer.provider];
   const { storageGb, egressGbPerMonth } = storage.expected;
   const { monthly, currency } = storage.price;
   const before = convertMoney({ amount: monthly, currency }, offer.price.currency).amount;
+  const note = offer.price.note === undefined ? "" : `. ${withoutStop(offer.price.note)}`;
   return [
     {
       id: `components.${server}.object-storage`,
@@ -121,8 +134,8 @@ function objectStorageProposals(readings: Readings): Proposal[] {
       reasons: [
         ...filling.reasons,
         {
-          text: `The app keeps its files in Garage on server ${server}. ${name} keeps them off it, priced for ${storageGb} GB stored and ${egressGbPerMonth} GB sent a month (storage.objectStorage.expected).${offer.price.note === undefined ? "" : ` ${offer.price.note}`}`,
-          basis: { kind: "plan" },
+          text: `The app keeps its files in Garage on server ${server}. ${name} keeps them off it, priced for ${storageGb} GB stored and ${egressGbPerMonth} GB sent a month (storage.objectStorage.expected)${note}`,
+          basis: PLAN,
         },
       ],
       price: {

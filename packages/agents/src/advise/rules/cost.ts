@@ -10,7 +10,7 @@ import { cheapestServerOffer } from "../../design/servers";
 import { designWording } from "../../design/wording";
 import { providerProfile } from "../../providers";
 import { hasExtraServers } from "../../shared/servers";
-import type { Proposal, Readings } from "../types";
+import type { Proposal, Readings, Reason } from "../types";
 import {
   type CloudServer,
   cloudServers,
@@ -25,8 +25,12 @@ import {
   serverCost,
   sizeOf,
   typeChange,
+  withoutStop,
 } from "./shared";
 import { sizeRules } from "./size";
+
+/** Prices compared across currencies, at design's fixed rate. */
+const EXCHANGE_RATE: Reason = { text: withoutStop(EXCHANGE_RATE_NOTE), basis: PLAN };
 
 /** A cheaper type where `server` runs with at least its CPUs, memory and disk (US5-2). */
 function cheaperType(server: PricedServer): Proposal[] {
@@ -46,7 +50,6 @@ function cheaperType(server: PricedServer): Proposal[] {
       reasons: [
         {
           text: `${offer.id} has at least the CPUs, memory and disk of ${current.id}, for less`,
-          figure: `${offerText(offer)} against ${offerText(current)}`,
           basis: PLAN,
         },
       ],
@@ -97,13 +100,11 @@ function otherProvider(readings: Readings, app: PricedServer | undefined): Propo
       title: `Move the app to ${there}: ${offerText(best.offer)} in ${place}`,
       reasons: [
         {
-          text: `The same server costs less at ${there}: ${formatMoney(best.cost.monthly)} a month for ${best.offer.id}, against ${formatMoney(before.monthly)} for ${current.id} at ${designWording(app.provider).name}`,
-          figure: `${formatMoney(before.monthly)} to ${formatMoney(best.cost.monthly)} a month`,
+          text: `The same server costs less at ${there}: ${best.offer.id} there against ${current.id} at ${designWording(app.provider).name}`,
+          figure: `${formatMoney(best.cost.monthly)} against ${formatMoney(before.monthly)} a month`,
           basis: PLAN,
         },
-        ...(before.monthly.currency === best.cost.monthly.currency
-          ? []
-          : [{ text: EXCHANGE_RATE_NOTE, basis: PLAN }]),
+        ...(before.monthly.currency === best.cost.monthly.currency ? [] : [EXCHANGE_RATE]),
         {
           text: `\`${command}\` moves the app with a short maintenance window: it creates the new server, copies the data and switches the domain, and \`--finish\` deletes the old server`,
           basis: PLAN,
@@ -141,7 +142,7 @@ function overBudget(
       { amount: price.before - price.after, currency: price.currency },
       budget.currency,
     );
-    return total - saved.amount <= budget.amount ? [{ proposal, saved }] : [];
+    return total - saved.amount <= budget.amount ? [{ proposal, price, saved }] : [];
   });
   const first = under[0];
   const money = (amount: number) => formatMoney({ amount, currency: budget.currency });
@@ -154,11 +155,11 @@ function overBudget(
       title: `The servers cost ${money(roundCents(total - budget.amount))} a month above your budget`,
       reasons: [
         {
-          text: `The servers OpsCrew created cost ${money(total)} a month; the budget you gave in the interview is ${formatMoney(budget)}`,
-          figure: `${money(total)} against ${formatMoney(budget)}`,
+          text: "The servers OpsCrew created cost more than the budget you gave in the interview",
+          figure: `${money(total)} against ${formatMoney(budget)} a month`,
           basis: PLAN,
         },
-        ...(converted ? [{ text: EXCHANGE_RATE_NOTE, basis: PLAN }] : []),
+        ...(converted ? [EXCHANGE_RATE] : []),
         under.length > 0
           ? {
               text: `Each of these proposals brings them under it: ${under.map(({ proposal, saved }) => `${proposal.id} (saves ${formatMoney(saved)})`).join(", ")}`,
@@ -176,7 +177,7 @@ function overBudget(
               before: total,
               after: roundCents(total - first.saved.amount),
               currency: budget.currency,
-              ...priceSource([...costs, ...(first.proposal.price ? [first.proposal.price] : [])]),
+              ...priceSource([...costs, first.price]),
             },
           }),
       apply: {

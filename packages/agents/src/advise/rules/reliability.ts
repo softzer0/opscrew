@@ -3,16 +3,18 @@
  * off for prod, a check that keeps failing and recovering, and a container restarting in a loop.
  */
 import { listText, plural } from "@opscrew/core";
-import {
-  APP_SERVER,
-  type CloudProvider,
-  type DeployPlan,
-  isServerlessProvider,
-} from "@opscrew/plan-schema";
-import { pricedOffer } from "../../design/cost";
+import { isServerlessProvider } from "@opscrew/plan-schema";
 import { logParts } from "../../logs/parts";
-import { type Proposal, type ProposalPrice, type Readings, THRESHOLDS } from "../types";
-import { serverPrices } from "./shared";
+import { type Proposal, type Readings, THRESHOLDS } from "../types";
+import {
+  cloudServers,
+  historyBasis,
+  isPriced,
+  PLAN,
+  priceChange,
+  readingBasis,
+  serverCost,
+} from "./shared";
 
 /**
  * `opscrew logs` for the container `service` on `server`: `--service` with the part's name when
@@ -38,28 +40,23 @@ export function reliabilityRules(readings: Readings): Proposal[] {
   ];
 }
 
-/** A server OpsCrew created, by its plan name. */
-interface CloudServer {
-  name: string;
-  target: { provider: CloudProvider; location: string; serverType: string; backups: boolean };
-}
-
-/** The app's servers on Hetzner Cloud or DigitalOcean, the app's first. */
-function cloudServers(plan: DeployPlan): CloudServer[] {
-  const servers = [{ name: APP_SERVER, target: plan.target }, ...(plan.servers ?? [])];
-  return servers.flatMap(({ name, target }) =>
-    target.provider === "hetzner" || target.provider === "digitalocean" ? [{ name, target }] : [],
-  );
-}
-
-/** Each server without automated backups while the interview says the data is important. */
+/**
+ * Each server without automated backups while the interview says the data is important, priced
+ * without and with them when the prices list its type.
+ */
 function backupProposals(readings: Readings): Proposal[] {
   const criticality = readings.requirements?.dataCriticality;
   if (criticality !== "important" && criticality !== "critical") return [];
-  return cloudServers(readings.plan)
-    .filter((server) => !server.target.backups)
-    .map(({ name, target }): Proposal => {
-      const price = backupsPrice(readings, target);
+  return cloudServers(readings)
+    .filter((server) => !server.backups)
+    .map((server): Proposal => {
+      const { name, provider } = server;
+      const price = isPriced(server)
+        ? priceChange(
+            serverCost(provider, server.prices.offer, server.prices.list, false),
+            serverCost(provider, server.prices.offer, server.prices.list, true),
+          )
+        : undefined;
       return {
         id: `reliability.${name}.backups`,
         category: "reliability",
@@ -68,34 +65,14 @@ function backupProposals(readings: Readings): Proposal[] {
         title: `Turn on automated backups for server ${name}`,
         reasons: [
           {
-            text: `The interview says the app's data is ${criticality}, and server ${name} has no automated backups: a broken disk or a wrong command would lose it.`,
-            figure: criticality,
-            basis: { kind: "plan" },
+            text: `The interview says the app's data is ${criticality}, and server ${name} has no automated backups: a broken disk or a wrong command would lose it`,
+            basis: PLAN,
           },
         ],
         ...(price === undefined ? {} : { price }),
         apply: { kind: "plan", change: { kind: "backups", server: name, enabled: true } },
       };
     });
-}
-
-/** The server's monthly price without and with backups; none when its type has no price. */
-function backupsPrice(
-  readings: Readings,
-  target: CloudServer["target"],
-): ProposalPrice | undefined {
-  const prices = serverPrices(readings, target);
-  if (prices === undefined) return undefined;
-  const { list, offer } = prices;
-  const without = pricedOffer(offer, list.extras, { backups: false }).cost;
-  const withBackups = pricedOffer(offer, list.extras, { backups: true }).cost;
-  return {
-    before: without.monthly.amount,
-    after: withBackups.monthly.amount,
-    currency: withBackups.monthly.currency,
-    source: withBackups.source,
-    asOf: withBackups.asOf,
-  };
 }
 
 /** The scheduled check off for prod, where GitHub can reach the app. */
@@ -111,8 +88,8 @@ function checkProposals({ plan }: Readings): Proposal[] {
       title: "Turn on the scheduled check for prod",
       reasons: [
         {
-          text: "The scheduled check is off for prod, so nobody is told when the app stops answering. It runs in the repository's GitHub Actions and opens an issue when the app fails; it adds no server cost.",
-          basis: { kind: "plan" },
+          text: "The scheduled check is off for prod, so nobody is told when the app stops answering. It runs in the repository's GitHub Actions and opens an issue when the app fails; it adds no server cost",
+          basis: PLAN,
         },
       ],
       apply: { kind: "plan", change: { kind: "check", enabled: true } },
@@ -132,9 +109,13 @@ function flapProposals({ check = [], flags }: Readings): Proposal[] {
       title: "Find out why the app keeps failing its scheduled check",
       reasons: [
         {
-          text: `The scheduled check opened its issue ${check.length} times in ${THRESHOLDS.historyDays} days, on ${listText(days)}: the app stopped answering and came back each time. Look at the app's logs around those dates, and at \`opscrew status${flags}\` for a server short of memory or disk.`,
-          figure: plural(check.length, "issue"),
+          text: `The scheduled check opened its issue on ${listText(days)}: the app stopped answering and came back each time`,
+          figure: `${plural(check.length, "issue")} in ${THRESHOLDS.historyDays} days`,
           basis: { kind: "account" },
+        },
+        {
+          text: `Look at the app's logs around those dates, and at \`opscrew status${flags}\` for a server short of memory or disk`,
+          basis: PLAN,
         },
       ],
       apply: {
@@ -155,31 +136,25 @@ function restartProposals(readings: Readings): Proposal[] {
       ? history.containers.map(({ service, restarts = 0 }) => ({
           service,
           restarts,
-          when: `in ${plural(Math.round(history.days), "day")}; deploys don't count, as each starts a new container`,
-          basis: { kind: "history" as const, days: history.days },
+          text: "Its container keeps restarting; deploys don't count, as each starts a new container",
+          basis: historyBasis(history),
         }))
       : now.containers.map(({ service, restarts }) => ({
           service,
           restarts,
-          when: "since it was last deployed",
-          basis: { kind: "one-reading" as const, at: now.takenAt },
+          text: "Its container has kept restarting since it was last deployed",
+          basis: readingBasis(now),
         }));
     return counts
       .filter((count) => count.restarts >= THRESHOLDS.restarts)
       .map(
-        ({ service, restarts, when, basis }): Proposal => ({
+        ({ service, restarts, text, basis }): Proposal => ({
           id: `reliability.${server}.restart-loop-${service}`,
           category: "reliability",
           urgency: "soon",
           server,
           title: `Find out why ${service} keeps restarting on server ${server}`,
-          reasons: [
-            {
-              text: `Its container restarted ${restarts} times ${when}.`,
-              figure: plural(restarts, "restart"),
-              basis,
-            },
-          ],
+          reasons: [{ text, figure: plural(restarts, "restart"), basis }],
           apply: { kind: "command", command: logsCommand(readings, server, service) },
         }),
       );

@@ -3,35 +3,37 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { makeRequirements, offer, ownPlan, portainerPlan, testPlan } from "../../testing";
 import { sitePlan } from "../../testing/serverless";
-import { type PriceList, type Proposal, ProposalSchema, type Readings } from "../types";
-import { AT, GB, history, MB, readingsOf } from "./__fixtures__/rule-readings";
+import type { PriceList, Proposal } from "../types";
 import {
-  containerAt,
+  AT,
+  container,
   digitaloceanTable,
+  GB,
   hetznerTable,
+  history,
+  ids,
+  MB,
   onThisComputer,
+  reading,
+  readingsOf,
   server,
-  serverReading,
+  texts,
+  validated,
   withDataServer,
   withServerType,
   withWorker,
-} from "./__fixtures__/sizing";
+} from "./__fixtures__/rule-readings";
 import { sizeRules } from "./size";
 
 /** The deployed example: Hetzner cx23 (2 vCPU, 4 GB, 40 GB) in nbg1, backups on, Postgres `db`. */
 const plan = testPlan({ deployed: true });
 
-/** The size proposals, each checked against the schema `--json` and MCP use. */
-function sized(readings: Readings): Proposal[] {
-  const proposals = sizeRules(readings);
-  for (const proposal of proposals) expect(ProposalSchema.parse(proposal)).toEqual(proposal);
-  return proposals;
-}
+const sized = validated(sizeRules);
 
 /** The size proposals of the app's server with `past` and `now`, at Hetzner's static prices. */
 async function sizeApp(
   past: Parameters<typeof history>[0] | undefined,
-  now = serverReading(),
+  now = reading(),
   appPlan: DeployPlan = plan,
 ): Promise<Proposal[]> {
   const prices = [await hetznerTable()];
@@ -40,9 +42,6 @@ async function sizeApp(
 }
 
 const byId = (proposals: Proposal[], id: string) => proposals.find((p) => p.id === id);
-const ids = (proposals: Proposal[]) => proposals.map((p) => p.id);
-const texts = (proposal: Proposal | undefined) =>
-  (proposal?.reasons ?? []).map((r) => `${r.text} [${r.figure ?? ""}]`).join("\n");
 
 describe("sizeRules: a container at its limit", () => {
   it("raises a container's limit by 1.5, rounded up to 64 MB, when the server has room", async () => {
@@ -84,7 +83,7 @@ describe("sizeRules: a container at its limit", () => {
   it("counts an OOM kill whatever the maximum, and rounds 1.5 times the limit up to 64 MB", async () => {
     const proposals = await sizeApp(
       { containers: [{ service: "jobs", memoryMax: 100 * MB, limit: 300 * MB, oomKills: 3 }] },
-      serverReading(),
+      reading(),
       withWorker(plan, "jobs", 300),
     );
     const [limit] = proposals;
@@ -145,7 +144,7 @@ describe("sizeRules: a container at its limit", () => {
           memoryP95: 0.79,
           containers: [{ service: "jobs", memoryMax: 256 * MB, limit: 256 * MB }],
         },
-        serverReading(),
+        reading(),
         withWorker(plan, "jobs", 256, count),
       );
     // 128 MB more for one copy fits; 256 MB for two doesn't.
@@ -162,7 +161,7 @@ describe("sizeRules: a container at its limit", () => {
           { service: "jobs", memoryMax: 512 * MB, limit: 512 * MB },
         ],
       },
-      serverReading(),
+      reading(),
       withWorker(plan, "jobs", 512),
     );
     expect(ids(proposals)).toEqual(["size.app.app-limit", "size.app.larger"]);
@@ -173,9 +172,14 @@ describe("sizeRules: a container at its limit", () => {
     const twoServers = withDataServer(plan);
     const prices = [await hetznerTable()];
     const data = server(
-      serverReading({ containers: [containerAt("db", 500, 512), containerAt("alloy", 250, 256)] }),
+      reading({
+        containers: [
+          container("db", { usedMb: 500, limitMb: 512 }),
+          container("alloy", { usedMb: 250, limitMb: 256 }),
+        ],
+      }),
     );
-    const app = server(serverReading({ containers: [containerAt("cron", 500, 512)] }));
+    const app = server(reading({ containers: [container("cron", { usedMb: 500, limitMb: 512 })] }));
     const proposals = sized(readingsOf(twoServers, { servers: { app, data }, prices }));
     expect(proposals).toEqual([
       expect.objectContaining({
@@ -197,7 +201,12 @@ describe("sizeRules: a container at its limit", () => {
   it("reads one reading without history, and says so", async () => {
     const proposals = await sizeApp(
       undefined,
-      serverReading({ containers: [containerAt("app", 400, 512), containerAt("db", 500, 512)] }),
+      reading({
+        containers: [
+          container("app", { usedMb: 400, limitMb: 512 }),
+          container("db", { usedMb: 500, limitMb: 512 }),
+        ],
+      }),
     );
     expect(ids(proposals)).toEqual(["size.app.db-limit"]);
     expect(proposals[0]?.reasons[0]).toEqual({
@@ -224,11 +233,14 @@ describe("sizeRules: a larger server", () => {
       apply: { kind: "plan", change: { kind: "server-type", server: "app", serverType: "cx33" } },
     });
     expect(larger?.price?.asOf).toBe(STATIC_PRICES_AS_OF);
-    expect(larger?.reasons[0]).toEqual({
-      text: "Memory in use at the 95th percentile is above 85% of the server; on cx33 it would be 45%",
-      figure: "90% of 4 GB",
-      basis: { kind: "history", days: 14 },
-    });
+    expect(larger?.reasons.slice(0, 2)).toEqual([
+      {
+        text: "Memory in use at the 95th percentile is above 85% of the server",
+        figure: "90% of 4 GB",
+        basis: { kind: "history", days: 14 },
+      },
+      { text: "On cx33 it would be 45%", basis: { kind: "plan" } },
+    ]);
     const why = texts(larger);
     expect(why).toContain("offline one to three minutes");
     expect(why).toContain("addresses stay the same");
@@ -248,16 +260,18 @@ describe("sizeRules: a larger server", () => {
   it("puts a filling disk into the larger type when there is one", async () => {
     const cpx22 = withServerType(plan, "cpx22");
     // Memory alone takes cx33, whose 80 GB disk is no larger than cpx22's; cx43 holds both.
-    const [memory] = await sizeApp({ memoryP95: 0.9 }, serverReading(), cpx22);
+    const [memory] = await sizeApp({ memoryP95: 0.9 }, reading(), cpx22);
     expect(memory?.apply).toMatchObject({ change: { serverType: "cx33" } });
-    const proposals = await sizeApp({ memoryP95: 0.9, diskFullInDays: 5 }, serverReading(), cpx22);
+    const proposals = await sizeApp({ memoryP95: 0.9, diskFullInDays: 5 }, reading(), cpx22);
     expect(ids(proposals)).toEqual(["size.app.larger"]);
     expect(proposals[0]).toMatchObject({
       urgency: "now",
       apply: { change: { serverType: "cx43" } },
     });
     const why = texts(proposals[0]);
-    expect(why).toContain("Server app's disk is full in 5 days at the pace of the last 7 days.");
+    expect(why).toContain(
+      "Server app's disk is filling at the pace of the last 7 days [full in 5 days]",
+    );
     expect(why).toContain("docker image prune");
   });
 
@@ -267,34 +281,34 @@ describe("sizeRules: a larger server", () => {
     expect(larger).toMatchObject({ id: "size.app.larger", urgency: "soon" });
     expect(larger?.apply).toMatchObject({ change: { serverType: "cx33" } });
     expect(larger?.reasons[0]).toEqual({
-      text: "The 15-minute load was above the server's 2 CPUs for 25% of the time",
+      text: "The 15-minute load was above the server's 2 CPUs",
       figure: "25% of the time",
       basis: { kind: "history", days: 14 },
     });
   });
 
   it("grows on one reading, each reason saying it rests on one", async () => {
-    const memory = await sizeApp(undefined, serverReading({ memory: [3401, 4000] }));
+    const memory = await sizeApp(undefined, reading({ memory: [3401, 4000] }));
     expect(ids(memory)).toEqual(["size.app.larger"]);
-    expect(memory[0]?.reasons[0]).toMatchObject({
-      text: "Memory in use is above 85% of the server; on cx33 it would be 43%",
-      basis: { kind: "one-reading", at: AT },
-    });
-    expect(await sizeApp(undefined, serverReading({ memory: [3400, 4000] }))).toEqual([]);
+    expect(memory[0]?.reasons.slice(0, 2)).toMatchObject([
+      { text: "Memory in use is above 85% of the server", basis: { kind: "one-reading", at: AT } },
+      { text: "On cx33 it would be 43%", basis: { kind: "plan" } },
+    ]);
+    expect(await sizeApp(undefined, reading({ memory: [3400, 4000] }))).toEqual([]);
 
-    const load = await sizeApp(undefined, serverReading({ load15: 2.5 }));
+    const load = await sizeApp(undefined, reading({ load15: 2.5 }));
     expect(load[0]).toMatchObject({ apply: { change: { serverType: "cx33" } } });
     expect(load[0]?.reasons[0]).toEqual({
       text: "The 15-minute load is above the server's 2 CPUs",
       figure: "2.50",
       basis: { kind: "one-reading", at: AT },
     });
-    expect(await sizeApp(undefined, serverReading({ load15: 2 }))).toEqual([]);
+    expect(await sizeApp(undefined, reading({ load15: 2 }))).toEqual([]);
   });
 
   it("prices from live catalogues as live, without a date", async () => {
     const prices = [await hetznerTable("nbg1", "live")];
-    const app = server(serverReading(), history({ memoryP95: 0.9 }));
+    const app = server(reading(), history({ memoryP95: 0.9 }));
     const [larger] = sized(readingsOf(plan, { servers: { app }, prices }));
     expect(larger?.price).toEqual({ before: 7.09, after: 10.69, currency: "EUR", source: "live" });
   });
@@ -302,7 +316,7 @@ describe("sizeRules: a larger server", () => {
   it("says how long a DigitalOcean resize keeps the app offline", async () => {
     const droplet = testPlan({ deployed: true, provider: "digitalocean" });
     const prices = [await digitaloceanTable()];
-    const app = server(serverReading({ cpus: 1 }), history({ memoryP95: 0.9 }));
+    const app = server(reading({ cpus: 1 }), history({ memoryP95: 0.9 }));
     const [larger] = sized(readingsOf(droplet, { servers: { app }, prices }));
     expect(larger).toMatchObject({
       title: "Move server app to s-2vcpu-4gb (2 vCPU, 4 GB memory, 80 GB disk)",
@@ -337,7 +351,7 @@ describe("sizeRules: a smaller server", () => {
     },
   };
   const big = withServerType(plan, "big");
-  const shrink = (past?: Parameters<typeof history>[0], now = serverReading({ cpus: 8 })) =>
+  const shrink = (past?: Parameters<typeof history>[0], now = reading({ cpus: 8 })) =>
     sized(
       readingsOf(big, {
         servers: { app: server(now, past === undefined ? undefined : history(past)) },
@@ -364,16 +378,13 @@ describe("sizeRules: a smaller server", () => {
       }),
     ]);
     const why = texts(proposals[0]);
-    expect(why).toContain(
-      "CPU in use at the 95th percentile; on mid it would be 40% [20% of 8 vCPU]",
-    );
-    expect(why).toContain(
-      "Memory in use at the 95th percentile; on mid it would be 50% [25% of 16 GB]",
-    );
+    expect(why).toContain("The CPUs were in use at the 95th percentile [20% of 8 vCPU]");
+    expect(why).toContain("The memory was in use at the 95th percentile [25% of 16 GB]");
+    expect(why).toContain("On mid the CPUs would be 40% in use and the memory 50% []");
     expect(why).toContain("The disk stays 160 GB");
     // Even when a type two steps down would hold it too.
     expect(shrink({ cpuP95: 0.1, memoryP95: 0.1 })[0]).toMatchObject({ id: "size.app.smaller" });
-    expect(texts(shrink({ cpuP95: 0.1, memoryP95: 0.1 })[0])).toContain("on mid");
+    expect(texts(shrink({ cpuP95: 0.1, memoryP95: 0.1 })[0])).toContain("On mid");
   });
 
   it("keeps a type that holds the plan's memory limits, as design sizes the app's server", () => {
@@ -382,7 +393,7 @@ describe("sizeRules: a smaller server", () => {
       sized(
         readingsOf(
           { ...big, app: { ...big.app, memoryMb } },
-          { servers: { app: server(serverReading({ cpus: 8 }), quiet) }, prices: [line] },
+          { servers: { app: server(reading({ cpus: 8 }), quiet) }, prices: [line] },
         ),
       );
     // The web process and Postgres (512 MB), Caddy's 128 MB and the system's 384 MB: 8192 MB is
@@ -396,7 +407,7 @@ describe("sizeRules: a smaller server", () => {
     const withDb = (memoryMb: number) => {
       const two = withDataServer(plan, "big");
       const services = two.services.map((s) => (s.name === "db" ? { ...s, memoryMb } : s));
-      const data = server(serverReading({ cpus: 8 }), quiet);
+      const data = server(reading({ cpus: 8 }), quiet);
       return sized(readingsOf({ ...two, services }, { servers: { data }, prices: [line] }));
     };
     // Postgres and the system's 384 MB: 8192 MB is exactly mid's memory.
@@ -407,7 +418,7 @@ describe("sizeRules: a smaller server", () => {
   it("says it is sized on the figures rather than the interview's users band", () => {
     const readings = readingsOf(big, {
       servers: {
-        app: server(serverReading({ cpus: 8 }), history({ cpuP95: 0.1, memoryP95: 0.1 })),
+        app: server(reading({ cpus: 8 }), history({ cpuP95: 0.1, memoryP95: 0.1 })),
       },
       prices: [line],
       requirements: makeRequirements({ expectedMonthlyUsers: "1k-10k" }),
@@ -419,7 +430,7 @@ describe("sizeRules: a smaller server", () => {
   });
 
   it("never shrinks a server on one reading", () => {
-    const quiet = serverReading({ cpus: 8, load15: 0.01, memory: [100, 16000], disk: [5, 160] });
+    const quiet = reading({ cpus: 8, load15: 0.01, memory: [100, 16000], disk: [5, 160] });
     expect(shrink(undefined, quiet)).toEqual([]);
   });
 
@@ -438,9 +449,7 @@ describe("sizeRules: a smaller server", () => {
 
   it("never proposes a smaller disk: at Hetzner a smaller type has one", async () => {
     const quiet = { cpuP95: 0.01, memoryP95: 0.05 };
-    expect(await sizeApp(quiet, serverReading({ cpus: 4 }), withServerType(plan, "cx33"))).toEqual(
-      [],
-    );
+    expect(await sizeApp(quiet, reading({ cpus: 4 }), withServerType(plan, "cx33"))).toEqual([]);
   });
 
   it("doesn't shrink a server with a container at its limit or a filling disk", () => {
@@ -466,7 +475,7 @@ describe("sizeRules: a smaller server", () => {
     ]);
     expect(cpus[0]?.price).toBeUndefined();
     const why = texts(cpus[0]);
-    expect(why).toContain("The 15-minute load was above the server's 8 CPUs for 30% of the time");
+    expect(why).toContain("The 15-minute load was above the server's 8 CPUs [30% of the time]");
     expect(why).toContain("No larger type in Hetzner Cloud's price list for nbg1 holds it");
     // Short of both: one proposal naming both.
     expect(shrink({ memoryP95: 0.9, loadOverCpus: 0.3 })).toEqual([
@@ -496,11 +505,7 @@ describe("sizeRules: a smaller server", () => {
     expect(why).toContain("The system stopped the web process for lack of memory");
     expect(why).toContain("No larger type in Hetzner Cloud's price list for nbg1 holds it");
     // A type the price list doesn't have: the same, from the reading's memory.
-    const [unlisted] = await sizeApp(
-      { memoryP95: 0.9 },
-      serverReading(),
-      withServerType(plan, "cx22"),
-    );
+    const [unlisted] = await sizeApp({ memoryP95: 0.9 }, reading(), withServerType(plan, "cx22"));
     expect(unlisted).toMatchObject({
       id: "size.app.larger",
       title: "Give server app at least 5 GB of memory",
@@ -520,8 +525,8 @@ describe("sizeRules: the disk", () => {
       apply: { kind: "plan", change: { kind: "server-type", server: "app", serverType: "cx33" } },
     });
     expect(disk?.reasons[0]).toEqual({
-      text: "Server app's disk is full in 16 days at the pace of the last 7 days.",
-      figure: "16 days",
+      text: "Server app's disk is filling at the pace of the last 7 days",
+      figure: "full in 16 days",
       basis: { kind: "history", days: 14 },
     });
     expect(texts(disk)).toContain("docker image prune");
@@ -537,19 +542,19 @@ describe("sizeRules: the disk", () => {
   });
 
   it("flags a disk at diskHigh on one reading", async () => {
-    const [full] = await sizeApp(undefined, serverReading({ disk: [34, 40] }));
+    const [full] = await sizeApp(undefined, reading({ disk: [34, 40] }));
     expect(full).toMatchObject({ id: "size.app.disk", urgency: "soon" });
     expect(full?.reasons[0]).toEqual({
-      text: "Server app's disk is 85% full.",
-      figure: "85%",
+      text: "Server app's disk is nearly full",
+      figure: "85% in use",
       basis: { kind: "one-reading", at: AT },
     });
-    expect(await sizeApp(undefined, serverReading({ disk: [33.9, 40] }))).toEqual([]);
+    expect(await sizeApp(undefined, reading({ disk: [33.9, 40] }))).toEqual([]);
   });
 
   it("picks a disk that brings the use under diskHigh", async () => {
     // 70 GB in use needs more than cx33's 80 GB: cx43's 160 GB.
-    const [disk] = await sizeApp(undefined, serverReading({ disk: [70, 80], cpus: 4 }), {
+    const [disk] = await sizeApp(undefined, reading({ disk: [70, 80], cpus: 4 }), {
       ...withServerType(plan, "cx33"),
     });
     expect(disk?.apply).toMatchObject({ change: { serverType: "cx43" } });
@@ -560,10 +565,10 @@ describe("sizeRules: targets", () => {
   it("reports a server the user owns short of memory, with what would fit, and no price", () => {
     const own = ownPlan({ deployed: true });
     const app = server(
-      serverReading({
+      reading({
         memory: [3700, 4000],
         disk: [36, 40],
-        containers: [containerAt("app", 300, 512)],
+        containers: [container("app", { usedMb: 300, limitMb: 512 })],
       }),
     );
     const proposals = sized(readingsOf(own, { servers: { app }, flags: " --env staging" }));
@@ -594,7 +599,7 @@ describe("sizeRules: targets", () => {
 
   it("raises a container's limit on a server the user owns, which is no resize", () => {
     const own = ownPlan({ deployed: true });
-    const app = server(serverReading({ containers: [containerAt("app", 500, 512)] }));
+    const app = server(reading({ containers: [container("app", { usedMb: 500, limitMb: 512 })] }));
     expect(ids(sized(readingsOf(own, { servers: { app } })))).toEqual(["size.app.app-limit"]);
   });
 
@@ -602,7 +607,7 @@ describe("sizeRules: targets", () => {
     const app = server({
       takenAt: AT,
       server: { cpus: 4, memory: { totalBytes: 8 * 1024 ** 3 } },
-      containers: [containerAt("app", 500, 512)],
+      containers: [container("app", { usedMb: 500, limitMb: 512 })],
       unavailable: [],
       flags: [],
     });
@@ -616,20 +621,20 @@ describe("sizeRules: targets", () => {
 
   it("on this computer, raises a limit only; short of memory there or in a Portainer, says what would fit", () => {
     const local = onThisComputer(testPlan({ deployed: true }));
-    const reading = (memory: { usedBytes?: number; totalBytes: number }, mb?: number) =>
+    const figures = (memory: { usedBytes?: number; totalBytes: number }, mb?: number) =>
       server({
         takenAt: AT,
         server: { cpus: 4, memory },
-        containers: mb === undefined ? [] : [containerAt("app", mb, 512)],
+        containers: mb === undefined ? [] : [container("app", { usedMb: mb, limitMb: 512 })],
         unavailable: [],
         flags: [],
       });
-    const limited = reading({ totalBytes: 8 * GB }, 500);
+    const limited = figures({ totalBytes: 8 * GB }, 500);
     expect(ids(sized(readingsOf(local, { servers: { app: limited } })))).toEqual([
       "size.app.app-limit",
     ]);
     // Where the memory in use is readable: 7.5 of 8 GB needs 9 GB to stay under 85%.
-    const short = reading({ usedBytes: 7.5 * GB, totalBytes: 8 * GB });
+    const short = figures({ usedBytes: 7.5 * GB, totalBytes: 8 * GB });
     const cases = [
       [local, "Give Docker on this computer at least 9 GB of memory"],
       [portainerPlan(), "Give the host your Portainer runs on at least 9 GB of memory"],

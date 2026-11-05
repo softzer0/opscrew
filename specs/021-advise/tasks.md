@@ -206,6 +206,32 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
 
 - [ ] T2111 The live runs (lead): T2110's pass, then `docs/e2e-coverage.md` updated per run. Findings become tasks.
 - [ ] T2112 The simplify pass (lead): reviewers by area over the whole feature's diff; real findings become tasks.
+
+  The findings, by files (behaviour unchanged unless said):
+
+- [ ] T2115 [P] The advise core, simpler
+  - Owns: `packages/agents/src/advise/{types,run,apply,readings,history,render,index}.ts` and their tests, `advise/__fixtures__/**`, `monitoring/status.ts`, `provision/disk-guard.ts`, `secure/{servers,run}.ts`, `packages/agents/src/testing/**`, `packages/cli/src/commands/advise.ts` (+ test), `packages/mcp-server/src/tools/advise.ts` (+ test)
+  - Accept: each category and urgency list written once (`URGENCIES`, `CATEGORIES` in types.ts; the types from the zod schemas); `targetOf`/`memoryLimitOf` shared by run and apply; the stubs' root exports and their test gone (the agents root exports what the CLI and MCP use); one Prometheus fake and one scenario helper in `__fixtures__`; `lastFigures` from status.ts reused by history; history's result built once; one `hostChecksFor` in secure used by secure and readings; `readAdvice`'s reads in one `Promise.all`; `AdviceReport.suggestMonitoring` set by runAdvise, so the CLI and MCP don't compute it and don't parse their own report again; the CLI and MCP tests share agents' figures fake (`@opscrew/agents/testing`); the small items of the review.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`
+  - Effort: high
+
+- [x] T2116 [P] The rules, simpler, and one way to write a reason
+  - Owns: `packages/agents/src/advise/rules/**` (+ tests, fixtures), the reason line of `advise/render.ts`
+  - Accept: reliability and components use shared.ts's servers and prices (`cloudServers`, `isPriced`, `serverCost`, `priceChange`, `priceSource`); a reason's text states the claim and its `figure` holds the number once (the renderer adds it), so render.ts's substring check goes; `serverRules` split into the limit and larger parts; one server list (`planTargets`); `historyBasis`/`readingBasis`/`PLAN` shared; one fixture builder per thing; the small items of the review.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T2117 [P] Connectors, templates, the live harness and the skill
+  - Owns: `packages/connectors/cloudflare/src/**`, `packages/connectors/github/src/github.ts`, `packages/iac-templates/src/infra/servers.ts` (+ test), `packages/cli/test/live/**`, `plugin/skills/opscrew-troubleshoot/**`
+  - Accept: `verifyToken`'s failing answers carry no `status`/`expiresOn` (advise lists such a token as not read) and `CloudflareTokenCheck` leaves the index unless imported; `serverTfvars` uses `serverVariableNames`; one exported Hetzner listing by the app's labels in the live harness, used by its three callers; the advise pass uses `ENVIRONMENT_E2E_VARIABLES` and searches its audit lines for addresses; the skill's trigger said once, and the resize warning taken from the proposal.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare --filter=@opscrew/connector-github --filter=@opscrew/iac-templates --filter=opscrew && node plugin/validate.mjs`
+  - Effort: medium
+
+- [ ] T2118 [P] The guide: `opscrew retarget`'s page, advise in the plugin page and the README, advise's page tighter
+  - Owns: `docs/guide/retarget.md` (new), `docs/guide/index.md`, the `opscrew retarget` mentions in `docs/guide/*.md`, `docs/guide/advise.md`, `docs/guide/claude-code-plugin.md`, `README.md`
+  - Accept: a retarget page from 005's spec and today's command (moving to another provider, the maintenance window, `--finish`, `--abort`, what can't move); every guide mention of `opscrew retarget` linked to it; `opscrew_advise` and advice in claude-code-plugin.md; one README bullet; advise.md says each thing once (applying separate, never smaller under 7 days, the closing line, own server/Portainer/this computer), "Changing a server's type" for the one-way and smaller-disk notes, and no "or has expired".
+  - Verify: `pnpm lint`
+  - Effort: medium
 - [ ] T2113 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync (0.2.2: nothing to redo).
 
 ## Dependencies

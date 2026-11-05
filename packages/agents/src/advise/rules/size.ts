@@ -17,7 +17,6 @@ import { onAppServer } from "../../design/placement";
 import { cheapestServerOffer, extraServerNeed } from "../../design/servers";
 import { providerProfile } from "../../providers";
 import { appMemoryMb, memoryHeadroom, monitoringLimits } from "../../shared/memory";
-import type { ResourceReading } from "../../status";
 import {
   type Basis,
   type PlanChange,
@@ -32,12 +31,15 @@ import {
   type CloudServer,
   cloudServers,
   diskFilling,
+  historyBasis,
   isPriced,
   otherTypes,
   PLAN,
   type PricedServer,
   percent,
   percentAbove,
+  planTargets,
+  readingBasis,
   sizeOf,
   typeChange,
 } from "./shared";
@@ -54,14 +56,6 @@ function gbText(gb: number): string {
 /** `512 MB`. */
 function mbText(mb: number): string {
   return `${Math.round(mb)} MB`;
-}
-
-function historyBasis(past: ServerHistory): Basis {
-  return { kind: "history", days: past.days };
-}
-
-function readingBasis(now: ResourceReading): Basis {
-  return { kind: "one-reading", at: now.takenAt };
 }
 
 /** A share (0–1) of the server, and what it rests on. */
@@ -94,7 +88,7 @@ function loadAbove(
     if (share < THRESHOLDS.loadHighShare) return undefined;
     return {
       reason: {
-        text: `The 15-minute load was above the server's ${plural(cpus, "CPU")} for ${percent(share)} of the time`,
+        text: `The 15-minute load was above the server's ${plural(cpus, "CPU")}`,
         figure: `${percent(share)} of the time`,
         basis: historyBasis(history),
       },
@@ -230,39 +224,52 @@ function limitProposal(server: string, limit: AtLimit, room: Reason): Proposal {
   };
 }
 
-/** The memory in use above `memoryHigh`, and what it would be on `offer`. */
-function memoryReason(memory: Share, totalGb: number, offer?: ComputeOffer): Reason {
+/** The memory in use above `memoryHigh` of the server's `totalGb`. */
+function memoryReason(memory: Share, totalGb: number): Reason {
   const what =
     memory.basis.kind === "history" ? "Memory in use at the 95th percentile" : "Memory in use";
-  const after =
-    offer === undefined
-      ? ""
-      : `; on ${offer.id} it would be ${percent((memory.share * totalGb) / offer.memoryGb)}`;
   return {
-    text: `${what} is above ${percent(THRESHOLDS.memoryHigh)} of the server${after}`,
+    text: `${what} is above ${percent(THRESHOLDS.memoryHigh)} of the server`,
     figure: `${percentAbove(memory.share)} of ${gbText(totalGb)}`,
     basis: memory.basis,
   };
 }
 
-/** The kind of server a reading is of: one OpsCrew created, the user's own, a Portainer, this computer. */
-type Host = "cloud" | "own" | "portainer" | "localhost";
+/** What `memory`'s share of `totalGb` would be on `offer`. */
+function memoryOnReason(memory: Share, totalGb: number, offer: ComputeOffer): Reason {
+  const share = (memory.share * totalGb) / offer.memoryGb;
+  return { text: `On ${offer.id} it would be ${percent(share)}`, basis: PLAN };
+}
+
+/** What the size rules know of one server they read. */
+interface SizedServer {
+  /** The plan's name: `app` or an extra server. */
+  name: string;
+  /** Its target's provider: a cloud one, `own`, `portainer` or `localhost`. */
+  provider: string;
+  figures: ServerReadings;
+  /** The server OpsCrew created, when it is one. */
+  cloud: CloudServer | undefined;
+  /** {@link cloud} when the prices list its type. */
+  priced: PricedServer | undefined;
+  memory: Share | undefined;
+  /** Its memory: its type's, else the reading's. */
+  totalGb: number | undefined;
+}
 
 /**
- * Why OpsCrew doesn't resize a server of `host` that needs `need` (`at least 5 GB of memory and 3
- * CPUs`), and what the user does instead (US3-3, the edge case "The user's own server"): a server
- * OpsCrew created whose type is the largest, or not in the price list, gets `opscrew design`; the
- * others, a step by hand.
+ * Why OpsCrew doesn't resize `server` that needs `need` (`at least 5 GB of memory and 3 CPUs`),
+ * and what the user does instead (US3-3, the edge case "The user's own server"): a server OpsCrew
+ * created whose type is the largest, or not in the price list, gets `opscrew design`; the others,
+ * a step by hand.
  */
 function noLargerType(
-  host: Host,
-  name: string,
-  cloud: CloudServer | undefined,
+  { name, provider, cloud }: SizedServer,
   need: string,
   flags: string,
 ): { reason: Reason; apply: Proposal["apply"] } {
   const design = `opscrew design${flags}`;
-  if (host === "cloud" && cloud !== undefined) {
+  if (cloud !== undefined) {
     const { displayName } = providerProfile(cloud.provider);
     return {
       reason: {
@@ -273,12 +280,12 @@ function noLargerType(
     };
   }
   const [reason, text] =
-    host === "own"
+    provider === "own"
       ? [
           `OpsCrew can't resize a server you own: give it ${need}, then run \`${design}\` again so the plan knows`,
           `Give server ${name} ${need}, then run \`${design}\``,
         ]
-      : host === "portainer"
+      : provider === "portainer"
         ? [
             `OpsCrew doesn't change the host your Portainer runs on: give it ${need} there`,
             `Give the host your Portainer runs on ${need}`,
@@ -290,38 +297,36 @@ function noLargerType(
   return { reason: { text: reason, basis: PLAN }, apply: { kind: "manual", text } };
 }
 
-/**
- * The size proposals of one server: a higher limit for each container at its limit while the
- * server has room for it (the first ones first), else a larger server that holds them; a larger
- * server for memory or load, holding a filling disk too; the disk alone; and only when none of
- * these, a smaller server. A server short of memory always gets a proposal: without a larger type
- * to move to, what would fit.
- */
-function serverRules(
-  readings: Readings,
-  name: string,
-  figures: ServerReadings,
-  host: Host,
-  cloud: CloudServer | undefined,
-): Proposal[] {
-  const { plan, flags } = readings;
-  const priced = cloud !== undefined && isPriced(cloud) ? cloud : undefined;
-  const current = priced?.prices.offer;
-  const memory = memoryInUse(figures);
-  const totalBytes = figures.now.server?.memory.totalBytes;
-  const totalGb = current?.memoryGb ?? (totalBytes === undefined ? undefined : totalBytes / GIB);
-  const usedGb = memory === undefined || totalGb === undefined ? undefined : memory.share * totalGb;
+/** {@link limitRules}'s outcome. */
+interface Limits {
+  /** A higher limit for each container the server has room for. */
+  proposals: Proposal[];
+  /** Why the others need a larger server. */
+  roomless: Reason[];
+  /** The memory in use with the raises that fit, in GB. */
+  withRaisesGb: number;
+  /** The raises that don't fit, in GB. */
+  roomlessGb: number;
+}
 
-  const proposals: Proposal[] = [];
-  const roomless: Reason[] = [];
-  // The memory in use with the raises that fit, and the raises that don't.
-  let withRaisesGb = usedGb ?? 0;
-  let roomlessGb = 0;
+/**
+ * A higher limit for each container of `server` at its limit while the server has room for it,
+ * the first ones first; the others' reasons and raises, for a larger server. Where the memory in
+ * use can't be read (a Portainer, this computer), every raise, asking the user to check the room.
+ */
+function limitRules(plan: DeployPlan, server: SizedServer): Limits {
+  const { name, figures, memory, totalGb } = server;
+  const limits: Limits = {
+    proposals: [],
+    roomless: [],
+    withRaisesGb: memory === undefined || totalGb === undefined ? 0 : memory.share * totalGb,
+    roomlessGb: 0,
+  };
   for (const planned of plannedContainers(plan, name)) {
     const limit = atLimit(planned, figures);
     if (limit === undefined) continue;
     if (memory === undefined || totalGb === undefined) {
-      proposals.push(
+      limits.proposals.push(
         limitProposal(name, limit, {
           text: `OpsCrew can't read the memory in use on this host: check it has ${mbText(limit.raiseGb * 1024)} to spare for the higher limit`,
           basis: PLAN,
@@ -329,10 +334,10 @@ function serverRules(
       );
       continue;
     }
-    const after = (withRaisesGb + limit.raiseGb) / totalGb;
+    const after = (limits.withRaisesGb + limit.raiseGb) / totalGb;
     if (after <= THRESHOLDS.memoryHigh) {
-      withRaisesGb += limit.raiseGb;
-      proposals.push(
+      limits.withRaisesGb += limit.raiseGb;
+      limits.proposals.push(
         limitProposal(name, limit, {
           text: `The server has room for the higher limit: its memory in use plus the raise stays at or under ${percent(THRESHOLDS.memoryHigh)}`,
           figure: `${percent(after)} of ${gbText(totalGb)}`,
@@ -340,23 +345,35 @@ function serverRules(
         }),
       );
     } else {
-      roomlessGb += limit.raiseGb;
-      roomless.push(...limit.reasons, {
+      limits.roomlessGb += limit.raiseGb;
+      limits.roomless.push(...limit.reasons, {
         text: `The server has no room to raise the limit of ${limit.words} to ${limit.memoryMb} MB: its memory in use plus the raise would pass ${percent(THRESHOLDS.memoryHigh)}`,
         figure: `${percentAbove(after)} of ${gbText(totalGb)}`,
         basis: memory.basis,
       });
     }
   }
+  return limits;
+}
 
+/**
+ * A larger server for memory (in use above `memoryHigh`, or the raises it has no room for) or
+ * load, holding a filling disk too; without a larger type to move to, what would fit, unpriced.
+ */
+function largerRule(
+  flags: string,
+  server: SizedServer,
+  { roomless, withRaisesGb, roomlessGb }: Limits,
+  filling: ReturnType<typeof diskFilling>,
+): Proposal | undefined {
+  const { name, figures, memory, totalGb, cloud, priced } = server;
+  const current = priced?.prices.offer;
   const short = memory !== undefined && memory.share > THRESHOLDS.memoryHigh ? memory : undefined;
   const memoryNeed = short !== undefined || roomless.length > 0;
   const needGb = withRaisesGb + roomlessGb;
-  const filling = diskFilling(name, figures);
   const id = `size.${name}.larger`;
   const cpus = figures.now.server?.cpus ?? current?.vcpus;
   const load = cpus === undefined ? undefined : loadAbove(figures, cpus);
-  let larger: Proposal | undefined;
   if (priced !== undefined && current !== undefined && (memoryNeed || load !== undefined)) {
     // A filling disk grows with the type: the larger type holds what the disk needs too.
     const offer = cheapestServerOffer(
@@ -371,50 +388,64 @@ function serverRules(
     );
     if (offer !== undefined) {
       const reasons = [
-        ...(short === undefined ? [] : [memoryReason(short, current.memoryGb, offer)]),
+        ...(short === undefined
+          ? []
+          : [
+              memoryReason(short, current.memoryGb),
+              memoryOnReason(short, current.memoryGb, offer),
+            ]),
         ...(load === undefined ? [] : [load.reason]),
         ...roomless,
         ...(filling === undefined ? [] : diskReasons(filling.reasons)),
       ];
       const urgency = roomless.length > 0 || filling?.urgency === "now" ? "now" : "soon";
-      larger = typeChange(priced, offer, { id, category: "size", urgency, reasons });
+      return typeChange(priced, offer, { id, category: "size", urgency, reasons });
     }
   }
   const memoryGb =
     memoryNeed && totalGb !== undefined ? Math.ceil(needGb / THRESHOLDS.memoryHigh) : undefined;
-  if (larger === undefined && (memoryGb !== undefined || load !== undefined)) {
-    // No larger type to move to: what would fit, without a price.
-    const need = `at least ${[
-      ...(memoryGb === undefined ? [] : [`${memoryGb} GB of memory`]),
-      ...(load === undefined ? [] : [plural(load.vcpus, "CPU")]),
-    ].join(" and ")}`;
-    const cpusOnly =
-      load !== undefined && memoryGb === undefined
-        ? `Server ${name} needs more ${cloud === undefined ? `than its ${plural(load.cpus, "CPU")}` : `CPUs than its ${cloud.serverType} has`}`
-        : undefined;
-    const why = noLargerType(host, name, cloud, need, flags);
-    larger = {
-      id,
-      category: "size",
-      urgency: roomless.length > 0 ? "now" : "soon",
-      server: name,
-      title: cpusOnly ?? `Give server ${name} ${need}`,
-      reasons: [
-        ...(short === undefined || totalGb === undefined ? [] : [memoryReason(short, totalGb)]),
-        ...(load === undefined ? [] : [load.reason]),
-        ...roomless,
-        why.reason,
-      ],
-      apply: why.apply,
-    };
-  }
-  if (larger !== undefined) proposals.push(larger);
+  if (memoryGb === undefined && load === undefined) return undefined;
+  // No larger type to move to: what would fit, without a price.
+  const need = `at least ${[
+    ...(memoryGb === undefined ? [] : [`${memoryGb} GB of memory`]),
+    ...(load === undefined ? [] : [plural(load.vcpus, "CPU")]),
+  ].join(" and ")}`;
+  const cpusOnly =
+    load !== undefined && memoryGb === undefined
+      ? `Server ${name} needs more ${cloud === undefined ? `than its ${plural(load.cpus, "CPU")}` : `CPUs than its ${cloud.serverType} has`}`
+      : undefined;
+  const why = noLargerType(server, need, flags);
+  return {
+    id,
+    category: "size",
+    urgency: roomless.length > 0 ? "now" : "soon",
+    server: name,
+    title: cpusOnly ?? `Give server ${name} ${need}`,
+    reasons: [
+      ...(short === undefined || totalGb === undefined ? [] : [memoryReason(short, totalGb)]),
+      ...(load === undefined ? [] : [load.reason]),
+      ...roomless,
+      why.reason,
+    ],
+    apply: why.apply,
+  };
+}
 
-  const resized = larger?.apply.kind === "plan";
-  if (filling !== undefined && !resized) proposals.push(diskRule(name, figures, filling, priced));
-  // Never smaller while growing, even when no larger type is offered.
-  const growing = memoryNeed || load !== undefined;
-  if (!growing && proposals.length === 0 && priced !== undefined && figures.history !== undefined) {
+/**
+ * The size proposals of one server: {@link limitRules}, {@link largerRule}, the disk when no larger
+ * type is proposed, and only when none of these, a smaller server (so never while it grows: a
+ * priced server short of memory or CPUs always gets a larger proposal).
+ */
+function serverRules(readings: Readings, server: SizedServer): Proposal[] {
+  const { name, figures, priced } = server;
+  const limits = limitRules(readings.plan, server);
+  const filling = diskFilling(name, figures);
+  const larger = largerRule(readings.flags, server, limits, filling);
+  const proposals = [...limits.proposals, ...(larger === undefined ? [] : [larger])];
+  if (filling !== undefined && larger?.apply.kind !== "plan") {
+    proposals.push(diskRule(name, figures, filling, priced));
+  }
+  if (proposals.length === 0 && priced !== undefined && figures.history !== undefined) {
     const smaller = smallerRule(readings, priced, figures.history);
     if (smaller !== undefined) proposals.push(smaller);
   }
@@ -541,14 +572,18 @@ function smallerRule(
     urgency: "when-convenient",
     reasons: [
       {
-        text: `CPU in use at the 95th percentile; on ${next.id} it would be ${percent(cpuOn(next))}`,
+        text: "The CPUs were in use at the 95th percentile",
         figure: `${percent(cpuP95)} of ${current.vcpus} vCPU`,
         basis,
       },
       {
-        text: `Memory in use at the 95th percentile; on ${next.id} it would be ${percent(memoryOn(next))}`,
+        text: "The memory was in use at the 95th percentile",
         figure: `${percent(memoryP95)} of ${current.memoryGb} GB`,
         basis,
+      },
+      {
+        text: `On ${next.id} the CPUs would be ${percent(cpuOn(next))} in use and the memory ${percent(memoryOn(next))}`,
+        basis: PLAN,
       },
       {
         text: `OpsCrew proposes a smaller type only when both stay at or under ${percent(usable)} of it over at least ${plural(THRESHOLDS.minHistoryDaysToShrink, "day")}, and it still holds the containers' memory limits`,
@@ -568,22 +603,29 @@ function smallerRule(
 
 /**
  * The size proposals (US3, US4, FR-2106): per server read, a container at its limit, a larger or
- * smaller server, the disk. On the user's own server, no resize or price (what would fit, and
- * cleaning up the disk); in a Portainer or on this computer, only containers' limits; none for
- * Cloudflare's hosting or GitHub Pages.
+ * smaller server, the disk. On the user's own server, in a Portainer or on this computer, no
+ * resize or price: containers' limits, what a server short of memory or CPUs needs, and cleaning
+ * up a full disk by hand. None for Cloudflare's hosting or GitHub Pages.
  */
 export function sizeRules(readings: Readings): Proposal[] {
   const { plan } = readings;
   if (isServerlessProvider(plan.target.provider)) return [];
   const cloud = new Map(cloudServers(readings).map((s) => [s.name, s]));
-  const hostOf = (provider: string): Host =>
-    provider === "own" || provider === "portainer" || provider === "localhost" ? provider : "cloud";
-  const hosts = new Map([
-    [APP_SERVER, hostOf(plan.target.provider)],
-    ...(plan.servers ?? []).map(({ name, target }) => [name, hostOf(target.provider)] as const),
-  ]);
-  return Object.entries(readings.servers).flatMap(([name, figures]) => {
-    const host = hosts.get(name);
-    return host === undefined ? [] : serverRules(readings, name, figures, host, cloud.get(name));
+  return planTargets(plan).flatMap(({ name, target }) => {
+    const figures = readings.servers[name];
+    if (figures === undefined) return [];
+    const server = cloud.get(name);
+    const priced = server !== undefined && isPriced(server) ? server : undefined;
+    const totalBytes = figures.now.server?.memory.totalBytes;
+    return serverRules(readings, {
+      name,
+      provider: target.provider,
+      figures,
+      cloud: server,
+      priced,
+      memory: memoryInUse(figures),
+      totalGb:
+        priced?.prices.offer.memoryGb ?? (totalBytes === undefined ? undefined : totalBytes / GIB),
+    });
   });
 }

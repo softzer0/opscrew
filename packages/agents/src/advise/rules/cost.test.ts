@@ -5,17 +5,21 @@ import { describe, expect, it } from "vitest";
 import { EXCHANGE_RATE_NOTE } from "../../design/cost";
 import { makeRequirements, offer, ownPlan, portainerPlan, testPlan } from "../../testing";
 import { sitePlan } from "../../testing/serverless";
-import { type PriceList, type Proposal, ProposalSchema, type Readings } from "../types";
-import { history, readingsOf } from "./__fixtures__/rule-readings";
+import type { PriceList, Proposal } from "../types";
 import {
   digitaloceanTable,
   hetznerTable,
+  history,
+  ids,
   onThisComputer,
+  reading,
+  readingsOf,
   server,
-  serverReading,
+  texts,
+  validated,
   withDataServer,
   withServerType,
-} from "./__fixtures__/sizing";
+} from "./__fixtures__/rule-readings";
 import { costRules } from "./cost";
 import { sizeRules } from "./size";
 
@@ -24,12 +28,7 @@ const plan = testPlan({ deployed: true });
 /** The same app on a cpx22: 2 vCPU, 4 GB and 80 GB like a cx33's disk, for more than a cx33. */
 const cpx22 = withServerType(plan, "cpx22");
 
-/** The cost proposals, each checked against the schema `--json` and MCP use. */
-function costed(readings: Readings): Proposal[] {
-  const proposals = costRules(readings);
-  for (const proposal of proposals) expect(ProposalSchema.parse(proposal)).toEqual(proposal);
-  return proposals;
-}
+const costed = validated(costRules);
 
 /** The cost proposals of `appPlan`'s quiet server with `budget`, at Hetzner's prices in nbg1. */
 async function costApp(
@@ -39,7 +38,7 @@ async function costApp(
 ): Promise<Proposal[]> {
   return costed(
     readingsOf(appPlan, {
-      servers: { app: server(serverReading()) },
+      servers: { app: server(reading()) },
       prices: prices ?? [await hetznerTable()],
       ...(budget === undefined
         ? {}
@@ -47,10 +46,6 @@ async function costApp(
     }),
   );
 }
-
-const ids = (proposals: Proposal[]) => proposals.map((p) => p.id);
-const texts = (proposal: Proposal | undefined) =>
-  (proposal?.reasons ?? []).map((r) => `${r.text} [${r.figure ?? ""}]`).join("\n");
 
 describe("costRules: a cheaper type", () => {
   it("proposes the cheapest type with at least the same CPUs, memory and disk where it runs", async () => {
@@ -74,9 +69,7 @@ describe("costRules: a cheaper type", () => {
       }),
     ]);
     const why = texts(proposals[0]);
-    expect(why).toContain(
-      "cx33 has at least the CPUs, memory and disk of cpx22, for less [cx33 (4 vCPU, 8 GB memory, 80 GB disk) against cpx22 (2 vCPU, 4 GB memory, 80 GB disk)]",
-    );
+    expect(why).toContain("cx33 has at least the CPUs, memory and disk of cpx22, for less []");
     expect(why).toContain("The disk stays 80 GB");
     expect(why).toContain("offline one to three minutes");
   });
@@ -109,7 +102,7 @@ describe("costRules: a cheaper type", () => {
   it("leaves a server the size rules move to another type to them", async () => {
     const prices = [await hetznerTable()];
     const readings = readingsOf(cpx22, {
-      servers: { app: server(serverReading(), history({ memoryP95: 0.9 })) },
+      servers: { app: server(reading(), history({ memoryP95: 0.9 })) },
       prices,
     });
     // The larger type is cx33 too, and costs less than the cpx22.
@@ -125,7 +118,7 @@ describe("costRules: a cheaper type", () => {
   it("prices an extra server at its own location", async () => {
     const twoServers = withDataServer(plan, "cpx22");
     const prices = [await hetznerTable()];
-    const servers = { app: server(serverReading()), data: server(serverReading()) };
+    const servers = { app: server(reading()), data: server(reading()) };
     expect(ids(costed(readingsOf(twoServers, { servers: servers, prices })))).toEqual([
       "cost.data.cheaper-type",
     ]);
@@ -148,7 +141,7 @@ describe("costRules: the other provider", () => {
 
   it("names `opscrew retarget` when the same server costs less at the other provider", async () => {
     const readings = readingsOf(droplet, {
-      servers: { app: server(serverReading({ cpus: 1 })) },
+      servers: { app: server(reading({ cpus: 1 })) },
       prices: await prices(),
       requirements: eu,
     });
@@ -174,13 +167,13 @@ describe("costRules: the other provider", () => {
     const why = texts(proposals[0]);
     expect(why).toContain("$15.60");
     expect(why).toContain("€10.69");
-    expect(why).toContain(EXCHANGE_RATE_NOTE);
+    expect(why).toContain(`${EXCHANGE_RATE_NOTE.slice(0, -1)} []`);
     expect(why).toContain("maintenance window");
   });
 
   it("proposes no move when the other provider costs more", async () => {
     const readings = readingsOf(plan, {
-      servers: { app: server(serverReading()) },
+      servers: { app: server(reading()) },
       prices: await prices(),
       requirements: makeRequirements(),
     });
@@ -189,13 +182,13 @@ describe("costRules: the other provider", () => {
 
   it("proposes no move for an app on several servers, or without a region", async () => {
     const several = readingsOf(withDataServer(droplet), {
-      servers: { app: server(serverReading({ cpus: 1 })) },
+      servers: { app: server(reading({ cpus: 1 })) },
       prices: await prices(),
       requirements: eu,
     });
     expect(ids(costed(several))).not.toContain("cost.app.other-provider");
     const noRegion = readingsOf(droplet, {
-      servers: { app: server(serverReading({ cpus: 1 })) },
+      servers: { app: server(reading({ cpus: 1 })) },
       prices: await prices(),
     });
     expect(costed(noRegion)).toEqual([]);
@@ -205,7 +198,7 @@ describe("costRules: the other provider", () => {
     const flags = " --app shop --env staging";
     const moving = costed(
       readingsOf(droplet, {
-        servers: { app: server(serverReading({ cpus: 1 })) },
+        servers: { app: server(reading({ cpus: 1 })) },
         prices: await prices(),
         requirements: eu,
         flags,
@@ -220,7 +213,7 @@ describe("costRules: the other provider", () => {
     const hetzner = await hetznerTable();
     const budget = (appPlan: DeployPlan, amount: number) =>
       readingsOf(appPlan, {
-        servers: { app: server(serverReading()) },
+        servers: { app: server(reading()) },
         prices: [hetzner],
         requirements: makeRequirements({ budgetMonthly: { amount, currency: "EUR" } }),
         flags,
@@ -258,7 +251,7 @@ describe("costRules: the budget", () => {
     });
     expect(budget?.server).toBeUndefined();
     const why = texts(budget);
-    expect(why).toContain("[€23.89 against €15.00]");
+    expect(why).toContain("[€23.89 against €15.00 a month]");
     expect(why).toContain("cost.app.cheaper-type (saves €13.20)");
   });
 
@@ -287,19 +280,19 @@ describe("costRules: the budget", () => {
       id: "cost.env.budget",
       price: { before: 26.28, after: 11.76, currency: "USD" },
     });
-    expect(texts(budget)).toContain(EXCHANGE_RATE_NOTE);
+    expect(texts(budget)).toContain(`${EXCHANGE_RATE_NOTE.slice(0, -1)} []`);
   });
 
   it("adds up every server OpsCrew created", async () => {
     const twoServers = withDataServer(plan);
     const readings = readingsOf(twoServers, {
-      servers: { app: server(serverReading()), data: server(serverReading()) },
+      servers: { app: server(reading()), data: server(reading()) },
       prices: [await hetznerTable()],
       requirements: makeRequirements({ budgetMonthly: { amount: 10, currency: "EUR" } }),
     });
     const [budget] = costed(readings);
     expect(budget).toMatchObject({ id: "cost.env.budget" });
-    expect(texts(budget)).toContain("[€14.18 against €10.00]");
+    expect(texts(budget)).toContain("[€14.18 against €10.00 a month]");
   });
 });
 
@@ -316,7 +309,7 @@ describe("costRules: targets", () => {
     ];
     for (const target of targets) {
       const readings = readingsOf(target, {
-        servers: { app: server(serverReading()) },
+        servers: { app: server(reading()) },
         prices,
         requirements: tight,
       });
