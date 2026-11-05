@@ -162,7 +162,8 @@ seed's rows, a second preview's database is separate, and prod's database is nev
 3. **Given** the seed fails, **Then** the preview still starts, and the comment says the seed failed
    and how to see its log.
 4. **Then** the app's own values come from the recipe (`.env.preview`); services that live elsewhere
-   (a bucket, a hosted database) are whatever `.env.preview` names.
+   (a bucket, a hosted database) are whatever `.env.preview` names: a preview environment plans no
+   bucket of its own.
 
 ---
 
@@ -283,9 +284,12 @@ them. The MCP server offers `opscrew_preview_list`, read-only.
   recipe.
 - **FR-2209**: The pull request's job MUST get only the restricted key, the address and the host
   key (in the GitHub environment of the preview environment); the unrestricted key stays local.
-  Provision MUST refuse while another environment's deploy secrets are repository secrets in a
-  repository where GitHub enforces branch rules on environments; where it enforces none, the plan
-  MUST say that any workflow can read every secret of the repository.
+  Provision MUST refuse while any environment of any app in the repository has its deploy secrets
+  where a pull request can read them (repository secrets, or a GitHub environment without its branch
+  rule) in a repository where GitHub enforces branch rules on environments; once a repository has
+  previews, every app's environments, prod-only ones included, place their deploy secrets in
+  branch-limited GitHub environments. Where GitHub enforces none, the plan MUST say that any
+  workflow can read every secret of the repository.
 - **FR-2210**: The constitution's principle I MUST gain the standing approval (ADR 0026, version
   1.7.0): bounds named in an approved plan, enforced on the target, each action under it recorded,
   reaching no other environment's servers or data, nor its secrets where the code host can keep

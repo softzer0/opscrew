@@ -266,11 +266,13 @@ and its committed recipe too. Detection writes the seed command into the facts, 
 ### 7. Provisioning previews (T2209)
 
 `opscrew provision --env <preview>`:
-1. **The secrets check first:** another environment of the app whose deploy secrets are repository
-   secrets, in a repository where GitHub enforces branch rules on environments (the probe of 015),
-   is refused before any change: "a pull request could read <env>'s deploy key; run `opscrew
-   provision --env <env>` first, which moves its secrets into a GitHub environment only its branch
-   can use". Where GitHub enforces none (Free, private), the host plan's text says that any
+1. **The secrets check first:** any environment of any app in the repository whose deploy secrets
+   a pull request could read (repository secrets, or a GitHub environment without its branch rule),
+   in a repository where GitHub enforces branch rules on environments (the probe of 015), is
+   refused before any change (once a repository has previews, every app's environments, prod-only
+   ones included, place their secrets in branch-limited GitHub environments): "a pull request
+   could read <env>'s deploy key; run `opscrew provision [--app <key>] --env <env>` first, which
+   moves its secrets into a GitHub environment only its branch can use". Where GitHub enforces none (Free, private), the host plan's text says that any
    workflow, a pull request's included, can read every secret of the repository.
 2. The IaC plan (server, firewall, wildcard), `iac-apply` by hash.
 3. The server's own host plans as for any environment, then the previews host plan
