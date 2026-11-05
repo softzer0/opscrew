@@ -365,11 +365,11 @@ describe("opscrew dns in a preview environment", () => {
     await expect(runDns(deps, { domain: "preview.example.com" })).rejects.toMatchObject({
       code: "INVALID_INPUT",
       message:
-        "The preview environment is a preview environment, which has no hostname of its own: its previews are at pr-<number>.shop.example.com, under the wildcard record `opscrew provision --env preview` manages. Nothing was changed.",
-      hint: "To give the previews another base, set environment.previews.domain in opscrew/environments/preview/plan.yaml, then run `opscrew provision --env preview`.",
+        "The preview environment is a preview environment, which has no hostname of its own: its previews are at pr-<number>-<random>.example.net, under the proxied wildcard record `opscrew provision --env preview` manages. Nothing was changed.",
+      hint: "To move the previews to another domain of their own, a Cloudflare zone used only for previews, set environment.previews.domain and dns.zone to it in opscrew/environments/preview/plan.yaml, then run `opscrew provision --env preview`.",
     });
     expect(await readFile(deps.paths.files.plan, "utf8")).toBe(before);
-    expect(plan.environment?.previews?.domain).toBe("shop.example.com");
+    expect(plan.environment?.previews?.domain).toBe("example.net");
     expect((deps.approvalHandler as ScriptedApprovalHandler).requests).toEqual([]);
   });
 });

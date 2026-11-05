@@ -1,7 +1,8 @@
 /**
  * `opscrew verify --env <preview>` (FR-2221, plan.md 8.): a preview environment has no hostname
  * of its own, so verify checks its server (it answers and lists its previews through the preview
- * command) and each running preview's address (its certificate and its health endpoint). It
+ * command) and each running preview's address as the server lists it (`pr-<n>-<random>.<zone>`:
+ * the certificate Cloudflare's proxy serves there, and its health endpoint). It
  * writes no runbook and records nothing in plan.yaml: previews come and go with pull requests.
  */
 import type { CheckResult } from "@opscrew/contracts";
@@ -28,19 +29,20 @@ async function previewChecks(p: Preview, ctx: VerifyCheckContext): Promise<Check
       ? { remediation: `${read}, and its pull request's preview job in GitHub Actions.` }
       : {}),
   });
-  if (p.state === "failed") {
+  const { address } = p;
+  if (p.state === "failed" || address === undefined) {
+    const why =
+      p.state === "failed"
+        ? `pr-${p.number}'s last deploy failed, so it is not served.`
+        : `pr-${p.number} has no address on the preview server, so it is not served.`;
     return [
-      checkResult(
-        "preview-state",
-        `pr-${p.number} runs`,
-        "medium",
-        "warn",
-        `pr-${p.number}'s last deploy failed, so ${p.address} is not served.`,
-        { remediation: logs, target: p.address },
-      ),
+      checkResult("preview-state", `pr-${p.number} runs`, "medium", "warn", why, {
+        remediation: logs,
+        ...(address === undefined ? {} : { target: address }),
+      }),
     ];
   }
-  const host = new URL(p.address).hostname;
+  const host = new URL(address).hostname;
   return [
     ...(p.state === "seed-failed"
       ? [
@@ -50,12 +52,12 @@ async function previewChecks(p: Preview, ctx: VerifyCheckContext): Promise<Check
             "low",
             "warn",
             `pr-${p.number} runs, but its seed command failed, so its databases may be empty.`,
-            { remediation: logs, target: p.address },
+            { remediation: logs, target: address },
           ),
         ]
       : []),
     ofPreview(await checkTls(host, ctx)),
-    ofPreview(await checkHealth(p.address, ctx)),
+    ofPreview(await checkHealth(address, ctx)),
   ];
 }
 
@@ -80,7 +82,7 @@ function serverCheck(list: PreviewList | undefined, error: unknown): CheckResult
 
 /**
  * Verifies a preview environment (see the module's comment), marks `verify`, and returns its
- * checks; `url` is the previews' address pattern. Read-only.
+ * checks; `url` is the previews' address pattern, `https://pr-<number>-<random>.<zone>`. Read-only.
  */
 export async function verifyPreviews(
   deps: PhaseDeps,
@@ -126,5 +128,5 @@ export async function verifyPreviews(
     );
   }
   await deps.state.markPhase("verify", passed ? "ok" : "failed", summary);
-  return { checks: shown, passed, url: `https://pr-<number>.${domain}`, plan };
+  return { checks: shown, passed, url: `https://pr-<number>-<random>.${domain}`, plan };
 }

@@ -39,6 +39,7 @@ import {
   ownCloudflare,
   ownPlan,
   ownRunner,
+  PREVIEW_ZONE,
   PUBLIC_CHANGES,
   previewTestPlan,
   projectRunner,
@@ -54,9 +55,11 @@ import {
 } from "../testing";
 import { pagesTestPlan } from "../testing/pages";
 import { sitePlan } from "../testing/serverless";
+import { readOriginTlsValues } from "./origin-tls";
 import { previewDeploymentFiles } from "./render";
 import { runProvision } from "./run";
 import { placeDeploySecrets } from "./secrets";
+import { readCloudflareRecord } from "./shared-cloudflare";
 import type { ProvisionServices } from "./types";
 
 const HCLOUD = fakeSecret("hcloud-token");
@@ -64,7 +67,8 @@ const HCLOUD = fakeSecret("hcloud-token");
 const PROD_STRIPE = fakeSecret("stripe-live-key", "prod");
 /** The previews' test key, from `.env.preview`. */
 const PREVIEW_STRIPE = fakeSecret("stripe-live-key", "preview");
-const BASE = "shop.example.com";
+/** The preview zone, a Cloudflare zone of its own. */
+const BASE = PREVIEW_ZONE;
 const PREVIEW_WORKFLOW = ".github/workflows/opscrew-preview.yml";
 const RECIPE = "opscrew/environments/preview/previews";
 const STANDING =
@@ -82,8 +86,8 @@ function previewOf(prod: DeployPlan, cap = 3): DeployPlan {
       previews: { cap, lifetimeDays: 7, domain: BASE, seed: "npm run seed" },
     },
     infra: { ...prod.infra, dir: "opscrew/infra/preview" },
-    dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
-    security: { ...prod.security, httpAllowedFrom: "any" },
+    dns: { provider: "cloudflare", zone: BASE, proxied: true, www: false },
+    security: { ...prod.security, httpAllowedFrom: "cloudflare" },
     supplyChain: { ...prod.supplyChain, sign: false },
     cicd: {
       ...prod.cicd,
@@ -131,6 +135,7 @@ class PreviewServer {
             app: plan.app,
             files: Object.fromEntries(files),
             values: true,
+            tls: true,
             cron: [`${minute} * * * * /srv/apps/${plan.app}/bin/opscrew-preview gc`],
             numbers: [],
           },
@@ -166,6 +171,8 @@ async function appWithPreviews() {
   await writeFile(join(root, "production.env"), `STRIPE_SECRET_KEY=${PROD_STRIPE}\n`);
   const github = new FakeGitHub();
   const server = new PreviewServer();
+  // One Cloudflare account for every run: its zone keeps the origin certificates it issued.
+  const zone = new FakeZone();
   const env = {
     ...process.env,
     OPSCREW_HOME: join(root, ".home-opscrew"),
@@ -187,7 +194,7 @@ async function appWithPreviews() {
     tcpConnect: async () => true,
     remote: readyRemote,
     sleep: async () => undefined,
-    sharedCloudflare: fakeSharedCloudflare(new FakeZone()),
+    sharedCloudflare: fakeSharedCloudflare(zone),
     cloudflare: fakeCloudflare(),
     serverHost: server,
   });
@@ -205,7 +212,7 @@ async function appWithPreviews() {
   const previewPlan = environmentPaths(prodDeps.paths, "preview").files.plan;
   await writeArtifact("plan", previewPlan, previewOf(prod));
   await writeFile(join(root, ".env.preview"), `STRIPE_SECRET_KEY=${PREVIEW_STRIPE}\n`);
-  return { ...project, prod, prodDeps, deps, services, github, server, merge, previewPlan };
+  return { ...project, prod, prodDeps, deps, services, github, server, zone, merge, previewPlan };
 }
 
 const requestsOf = (deps: TestPhaseDeps) =>
@@ -304,6 +311,7 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
     const result = await runProvision(preview, { services: app.services() });
     expect(requestsOf(preview).map((r) => r.kind)).toEqual([
       "github-settings",
+      "cloudflare-apply",
       "repo-write",
       "iac-apply",
       "host-apply",
@@ -311,6 +319,28 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
       "git-push",
       "pull-request",
     ]);
+
+    // The Cloudflare plan: the previews' Origin CA certificate for the zone and its wildcard, no
+    // client certificate, and OpsCrew's rules over every name in the preview zone.
+    const cloudflarePlan = requestsOf(preview).find((r) => r.kind === "cloudflare-apply");
+    const cloudflareText = cloudflarePlan?.details ?? "";
+    expect(cloudflareText).toContain(
+      `Create a Cloudflare origin certificate for *.${BASE}, ${BASE} (15 years)`,
+    );
+    expect(cloudflareText).not.toContain("client certificate");
+    expect((await readCloudflareRecord(preview.paths))?.hostnames).toMatchObject({
+      "opscrew-block-probes": [`*.${BASE}`, BASE],
+      "opscrew-strict-tls": [`*.${BASE}`, BASE],
+    });
+    expect(app.zone.originCertificates.map((c) => c.hostnames)).toEqual([[`*.${BASE}`, BASE]]);
+    expect(app.zone.clientCertificates).toEqual([]);
+    const tls = await readOriginTlsValues(preview);
+    expect(tls.ORIGIN_TLS_CERT).toBe(app.zone.originCertificates[0]?.certificate);
+    expect(tls.ORIGIN_PULL_KEY).toBeUndefined();
+    const originKey = tls.ORIGIN_TLS_KEY as string;
+    // A line of the key that only this key has (the first holds every P-256 key's prefix).
+    const originKeyLine = originKey.split(/\r?\n/)[2] as string;
+    expect(originKey).toContain("BEGIN PRIVATE KEY");
 
     // The previews host plan: the standing approval with every bound and the values' names,
     // approved by its hash with allowDestroy and the typed <app>-<env>.
@@ -321,7 +351,7 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
     for (const line of [
       STANDING,
       "  At most 3 previews at once; a preview with no push for 7 days is removed.",
-      `  Addresses: pr-<number>.${BASE}, DNS only, each with its own certificate and marked noindex.`,
+      `  Addresses: pr-<number>-<random>.${BASE}, a random part nobody can guess, behind Cloudflare's proxy with the previews' Cloudflare Origin CA certificate, and marked noindex; the server's web ports accept only Cloudflare.`,
       "  Image: only ghcr.io/acme/shop, pinned by digest.",
       "  Seed: `npm run seed`, once for each new preview (tried again at its next update until it succeeds).",
       "  Preview values from .env.preview (names only): STRIPE_SECRET_KEY.",
@@ -335,13 +365,17 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
     expect(details).not.toContain(NO_BRANCH_RULES);
     expect(result).toMatchObject({ applied: true, previewsApplied: true });
 
-    // The server got the recipe, the preview key and the values, the values only at apply.
+    // The server got the recipe, the preview key, the values and the certificate with its key,
+    // the values and the certificate only at apply.
     expect(server.applies).toHaveLength(1);
     const [installed] = server.applies;
+    const previewTls = { certificate: tls.ORIGIN_TLS_CERT, key: originKey };
     expect(installed?.options.secrets).toEqual({
       previewValues: `STRIPE_SECRET_KEY=${PREVIEW_STRIPE}\n`,
+      previewTls,
     });
     expect(JSON.stringify(installed?.plan)).not.toContain(PREVIEW_STRIPE);
+    expect(JSON.stringify(installed?.plan)).not.toContain(originKeyLine);
     const keyPub = (await readFile(preview.paths.files.previewKeyPub, "utf8")).trim();
     expect(installed?.plan.steps[0]?.params.publicKey).toBe(
       keyPub.split(" ").slice(0, 2).join(" "),
@@ -409,7 +443,12 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
       ...github.secrets.values(),
       ...[...github.environments.values()].flatMap((secrets) => [...secrets.values()]),
     ];
-    for (const value of stored) expect(value).not.toContain(keyMaterial(deployKey));
+    for (const value of stored) {
+      expect(value).not.toContain(keyMaterial(deployKey));
+      // Nothing of the previews' certificate goes to GitHub.
+      expect(value).not.toContain(originKeyLine);
+      expect(value).not.toContain(previewTls.certificate);
+    }
     expect(requestsOf(preview).find((r) => r.kind === "github-secrets")?.details).toContain(
       "The SSH key is the preview key, which can run only the preview command on the preview server; the environment's deploy key stays on this computer.",
     );
@@ -420,7 +459,7 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
     expect(body).toContain(`\`${RECIPE}/\``);
     expect(github.dispatches).toEqual([]);
     expect(preview.reporter.text()).toContain(
-      `Once https://github.com/acme/shop/pull/7 is merged, each pull request from a branch of this repository that changes the app gets its own preview at pr-<number>.${BASE}`,
+      `Once https://github.com/acme/shop/pull/7 is merged, each pull request from a branch of this repository that changes the app gets its own preview at pr-<number>-<random>.${BASE}, an address nobody can guess`,
     );
 
     // Prod's plan, state, workflow and secrets are as they were.
@@ -439,18 +478,26 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
       JSON.stringify(requestsOf(preview)),
       ...Object.values(await filesUnder(preview.paths.files.plansDir)),
     ].join("\n");
-    for (const secret of [PREVIEW_STRIPE, PROD_STRIPE, keyMaterial(previewKey)]) {
+    for (const secret of [PREVIEW_STRIPE, PROD_STRIPE, keyMaterial(previewKey), originKeyLine]) {
       expect(shown).not.toContain(secret);
+    }
+    // Nor anything of the certificate in the repository: no file of the pull request holds it.
+    const changed = await app.git(root, "diff", "--name-only", "main", "HEAD");
+    for (const path of changed.split("\n").filter((line) => line !== "")) {
+      const text = await readFile(join(root, path), "utf8");
+      expect(text).not.toContain(originKeyLine);
+      expect(text).not.toContain(previewTls.certificate);
     }
     await app.merge();
 
-    // Again with nothing changed: no infrastructure apply and no host change.
+    // Again with nothing changed: no Cloudflare or infrastructure apply and no host change.
     const again = await app.deps("preview");
     const unchanged = new FakeEngine({ changes: [] });
     const second = await runProvision(again, { services: app.services(unchanged) });
     expect(unchanged.calls).not.toContain("apply");
     expect(server.applies).toHaveLength(1);
     expect(hostRequest(again)).toBeUndefined();
+    expect(requestsOf(again).map((r) => r.kind)).not.toContain("cloudflare-apply");
     expect(second).toMatchObject({ previewsApplied: false });
     expect(again.reporter.text()).toContain(
       "The previews' recipe on the preview server is as approved; nothing on it changes.",
@@ -469,8 +516,28 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
     expect(server.applies).toHaveLength(2);
     expect(server.applies.at(-1)?.options.secrets).toEqual({
       previewValues: `STRIPE_SECRET_KEY=${rotated}\n`,
+      previewTls,
     });
     expect(server.applies.at(-1)?.plan.steps[0]?.params.rewrite).toBe(true);
+    await app.merge();
+
+    // So is a renewed certificate: Cloudflare no longer lists the old one, so the Cloudflare plan
+    // makes a new one, which the host plan installs.
+    const [old] = app.zone.originCertificates;
+    if (old !== undefined) old.revoked_at = "2026-11-05T12:00:00Z";
+    const renewal = await app.deps("preview");
+    await runProvision(renewal, { services: app.services(new FakeEngine({ changes: [] })) });
+    expect(requestsOf(renewal).map((r) => r.kind)).toContain("cloudflare-apply");
+    const renewed = await readOriginTlsValues(renewal);
+    expect(renewed.ORIGIN_TLS_CERT).toBe(app.zone.originCertificates[1]?.certificate);
+    expect(server.applies).toHaveLength(3);
+    expect(server.applies.at(-1)?.options.secrets).toEqual({
+      previewValues: `STRIPE_SECRET_KEY=${rotated}\n`,
+      previewTls: { certificate: renewed.ORIGIN_TLS_CERT, key: renewed.ORIGIN_TLS_KEY },
+    });
+    expect(server.applies.at(-1)?.plan.steps[0]?.params.rewrite).toBe(true);
+    // No deploy: the host plan brought the certificate.
+    expect(github.dispatches).toEqual([]);
     await app.merge();
 
     // So is a changed recipe: a lower cap.
@@ -478,8 +545,26 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
     const recipeChange = await app.deps("preview");
     await runProvision(recipeChange, { services: app.services(new FakeEngine({ changes: [] })) });
     expect(hostRequest(recipeChange)?.details).toContain("  At most 2 previews at once;");
-    expect(server.applies).toHaveLength(3);
+    expect(server.applies).toHaveLength(4);
     expect(await readFile(join(root, RECIPE, "settings.env"), "utf8")).toContain("CAP=2\n");
+  });
+
+  it("refuses before any change when the Cloudflare token may not make the previews' certificate", async () => {
+    const app = await appWithPreviews();
+    await runProvision(await app.deps(), { services: app.services() });
+    await app.merge();
+    app.zone.denied.add("ssl");
+    const preview = await app.deps("preview");
+    const engine = new FakeEngine();
+    await expect(runProvision(preview, { services: app.services(engine) })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: `The Cloudflare token lacks Zone → SSL and Certificates → Edit for ${BASE} (HTTP 403), and the preview server serves every preview with a Cloudflare Origin CA certificate for *.${BASE} that the token makes. Nothing was changed.`,
+      hint: `Edit the token at https://dash.cloudflare.com/profile/api-tokens and give it Zone → SSL and Certificates → Edit for ${BASE}, then run \`opscrew provision --env preview\` again.`,
+    });
+    expect(requestsOf(preview).map((r) => r.kind)).not.toContain("cloudflare-apply");
+    expect(engine.calls).not.toContain("apply");
+    expect(app.server.applies).toEqual([]);
+    expect(app.github.environments.has("preview")).toBe(false);
   });
 
   it("writes the workflow and the recipe in a plan-only run, asking GitHub and the server nothing", async () => {
@@ -591,8 +676,9 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
         environment: {
           ...docsPreview.environment,
           secrets: "environment",
-          previews: { ...docsPreview.environment?.previews, domain: "docs.example.com" },
+          previews: { ...docsPreview.environment?.previews, domain: "example.org" },
         },
+        dns: { ...docsPreview.dns, zone: "example.org" },
       }),
     );
     github.environments.set("docs-preview", new Map([["OPSCREW_PREVIEW_HOST", "x"]]));

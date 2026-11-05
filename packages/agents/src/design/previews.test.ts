@@ -21,6 +21,7 @@ import {
   makeRequirements,
   nextPostgresFacts,
   offer,
+  PREVIEW_ZONE,
   TOKEN,
   testPlan,
 } from "../testing";
@@ -35,7 +36,7 @@ import {
 import { runDesign } from "./run";
 import { type Sizing, sizeFor } from "./sizing";
 
-const PREVIEWS = { cap: 3, lifetimeDays: 7, domain: "shop.example.com", seed: null };
+const PREVIEWS = { cap: 3, lifetimeDays: 7, domain: PREVIEW_ZONE, seed: null };
 
 /** A preview environment's plan as plan.yaml holds it, with `extra` over it. */
 function previewPlanFile(extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -49,8 +50,8 @@ function previewPlanFile(extra: Record<string, unknown> = {}): Record<string, un
       runner: "github",
       previews: PREVIEWS,
     },
-    dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
-    security: { ...plan.security, httpAllowedFrom: "any" },
+    dns: { provider: "cloudflare", zone: PREVIEW_ZONE, proxied: true, www: false },
+    security: { ...plan.security, httpAllowedFrom: "cloudflare" },
     ...extra,
   };
 }
@@ -220,7 +221,7 @@ describe("previewPlan's object storage", () => {
 });
 
 describe("designing a preview environment of an app with a bucket", () => {
-  /** Cloudflare's API with the zone example.com (id z1) and no DNS record. */
+  /** Cloudflare's API with the preview zone (id z1) and no DNS record. */
   const fetch: FetchLike = async (input) => {
     const url = new URL(String(input));
     const ok = (result: unknown) =>
@@ -228,9 +229,9 @@ describe("designing a preview environment of an app with a bucket", () => {
         headers: { "content-type": "application/json" },
       });
     if (url.pathname.endsWith("/zones")) {
-      const found = url.searchParams.get("name") === "example.com";
+      const found = url.searchParams.get("name") === PREVIEW_ZONE;
       return ok(
-        found ? [{ id: "z1", name: "example.com", status: "active", name_servers: [] }] : [],
+        found ? [{ id: "z1", name: PREVIEW_ZONE, status: "active", name_servers: [] }] : [],
       );
     }
     if (url.pathname.endsWith("/zones/z1/dns_records")) return ok([]);
@@ -281,7 +282,7 @@ describe("designing a preview environment of an app with a bucket", () => {
     });
     const { design } = await addEnvironment(preview, {
       previews: true,
-      answers: {},
+      answers: { domain: PREVIEW_ZONE },
       design: { catalog: euCatalog() },
     });
     expect(design.plan.storage?.objectStorage).toBeUndefined();

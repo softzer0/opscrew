@@ -116,6 +116,7 @@ function previewServerFacts(projectId: string): HostFacts {
       app,
       files: { "bin/opscrew-preview": "c".repeat(64) },
       values: true,
+      tls: true,
       cron: ["17 * * * * /srv/apps/shop-preview/bin/opscrew-preview gc"],
       numbers: [42],
     },

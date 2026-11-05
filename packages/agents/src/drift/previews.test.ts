@@ -23,6 +23,7 @@ function serverFacts(files: Record<string, string>, more: Partial<HostFacts> = {
         app: "shop-preview",
         files: Object.fromEntries(Object.entries(files).map(([p, text]) => [p, sha256Hex(text)])),
         values: true,
+        tls: true,
         cron: ["17 * * * * /srv/apps/shop-preview/bin/opscrew-preview gc"],
         numbers: [42],
       },

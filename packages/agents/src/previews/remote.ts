@@ -71,11 +71,6 @@ export function previewNumber(text: string): number {
   );
 }
 
-/** The address of preview `n`: `https://pr-<n>.<base>`. */
-export function previewAddress(previews: Previews, n: number): string {
-  return `https://pr-${n}.${previews.domain}`;
-}
-
 /**
  * The deploy user's shell on the preview server, with the environment's deploy key.
  * @throws OpsCrewError `PHASE_PRECONDITION` when this computer has no address or deploy key.

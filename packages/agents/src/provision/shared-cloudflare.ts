@@ -115,7 +115,17 @@ export async function writeCloudflareRecord(
 }
 
 /**
- * What this plan needs from the shared resources in the zone `zone`: the app's hostnames in the
+ * The names a preview environment serves behind Cloudflare's proxy, sorted: its zone's wildcard
+ * and the zone itself (`previews.domain`, research R6); none for another environment.
+ */
+export function previewZoneNames(plan: DeployPlan): string[] {
+  const zone = plan.environment?.previews?.domain;
+  return zone === undefined ? [] : [`*.${zone}`, zone];
+}
+
+/**
+ * What this plan needs from the shared resources in the zone `zone`: the app's hostnames (a
+ * preview environment's {@link previewZoneNames}) in the
  * probe block wherever OpsCrew blocks probes (`security.wafCustomRules`, not on the user's
  * Portainer unless it serves the app through its tunnel) and in the strict-TLS rule wherever the
  * origin has its own certificate (not through a tunnel, not on the user's Portainer); the Zero
@@ -126,7 +136,14 @@ export async function writeCloudflareRecord(
 export function sharedDesired(plan: DeployPlan, zone: string): SharedDesired {
   if (plan.target.provider === "cloudflare-workers") return siteRulesDesired(plan);
   const domain = plan.dns.domain;
-  const hosts = domain === undefined ? [] : plan.dns.www ? [domain, `www.${domain}`] : [domain];
+  const hosts =
+    plan.environment?.previews !== undefined
+      ? previewZoneNames(plan)
+      : domain === undefined
+        ? []
+        : plan.dns.www
+          ? [domain, `www.${domain}`]
+          : [domain];
   const portainer = portainerCloudflare(plan);
   const block = plan.security.wafCustomRules && (portainer === undefined || portainer.appTunnel);
   const tls = !tunnelMode(plan) && portainer === undefined;

@@ -6,6 +6,7 @@ import { updateServerAddresses } from "../../shared";
 import {
   createProject,
   createTestPhaseDeps,
+  PREVIEW_ZONE,
   previewTestPlan,
   ScriptedApprovalHandler,
   SERVER_IPV4,
@@ -17,13 +18,17 @@ import {
 export const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 export const DIGEST = `sha256:${"ab".repeat(32)}`;
 
+/** The hosts of previews 42 and 7 in the preview zone, as the server lists them. */
+export const HOST_42 = `pr-42-a1b2c3d4e5.${PREVIEW_ZONE}`;
+export const HOST_7 = `pr-7-f6g7h8i9j0.${PREVIEW_ZONE}`;
+
 /**
  * The preview command's `list` answer: previews 42 (running, created 2026-10-10, updated
- * 2026-10-11) and 7 (failed, 2026-10-10), cap 3.
+ * 2026-10-11) and 7 (failed, 2026-10-10), cap 3, each with its address.
  */
 export const LIST_OUTPUT = [
-  `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST}`,
-  `7 failed ${COMMIT} 1791590400 1791590400 ${DIGEST}`,
+  `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST} ${HOST_42}`,
+  `7 failed ${COMMIT} 1791590400 1791590400 ${DIGEST} ${HOST_7}`,
   "opscrew-preview: listed 2/3",
 ].join("\n");
 

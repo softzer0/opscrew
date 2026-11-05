@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fakeShell, LIST_OUTPUT, previewProject } from "../previews/__fixtures__/plan";
+import { fakeShell, HOST_42, LIST_OUTPUT, previewProject } from "../previews/__fixtures__/plan";
 import { figuresOutput, SERVER_IPV4 } from "../testing";
 import { componentStatusReport } from "./run";
 
@@ -20,7 +20,7 @@ describe("status --env <preview>", () => {
     expect(text).toContain("Resources (read now):");
     expect(text).toMatch(/ {2}Server: load .* on 2 CPUs; memory/);
     expect(text).toContain("Previews: 2 of at most 3.");
-    expect(text).toContain("  pr-42: https://pr-42.shop.example.com, running");
+    expect(text).toContain(`  pr-42: https://${HOST_42}, running`);
     // Only the figures and the list: no component, health or deploy read.
     expect(shell.commands).toHaveLength(2);
     expect(text).not.toMatch(/web process|health|Warning|High/i);

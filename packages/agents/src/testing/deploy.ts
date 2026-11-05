@@ -783,8 +783,9 @@ export function opscrewRecord(
 }
 
 /**
- * The zone `example.com` (id {@link FAKE_ZONE_ID}, in the account {@link FAKE_ACCOUNT_ID}) as the
- * Cloudflare checks see it; OpsCrew's shared rules are in {@link fakeSharedCloudflare}'s zone.
+ * The zone `example.com`, or the preview zone `example.net` for a name in it (id
+ * {@link FAKE_ZONE_ID}, in the account {@link FAKE_ACCOUNT_ID}) as the Cloudflare checks see it;
+ * OpsCrew's shared rules are in {@link fakeSharedCloudflare}'s zone.
  */
 export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudflareApi {
   const state = { records: [...(options.records ?? [])] };
@@ -793,12 +794,15 @@ export function fakeCloudflare(options: FakeCloudflareOptions = {}): FakeCloudfl
     state,
     listed,
     verifyToken: async () => ({ ok: true, message: "The Cloudflare token is active." }),
-    findZone: async () =>
+    findZone: async (domain) =>
       options.zone === false
         ? undefined
         : {
             id: FAKE_ZONE_ID,
-            name: "example.com",
+            name:
+              domain === "example.net" || domain.endsWith(".example.net")
+                ? "example.net"
+                : "example.com",
             status: "active",
             nameServers: [],
             accountId: FAKE_ACCOUNT_ID,

@@ -46,7 +46,15 @@ import {
 } from "./index";
 
 const DOMAIN = "shop.example.com";
+/** staging's suggested hostname with {@link counting}'s draws: 10 characters below the zone. */
+const HIDDEN = "staging-abcdefghij.example.com";
 const IPV4 = "203.0.113.10";
+
+/** Injected randomness that draws 0, 1, 2, … (each below `max`). */
+function counting(): (max: number) => number {
+  let next = 0;
+  return (max) => next++ % max;
+}
 const HOST_KEY = `SHA256:${"A".repeat(43)}`;
 const SERVER: OwnServerFacts = {
   arch: "amd64",
@@ -110,6 +118,7 @@ describe("addEnvironment", () => {
     const result = await addEnvironment(staging, {
       answers: { provider: "hetzner" },
       design: { catalog: euCatalog() },
+      randomInt: counting(),
     });
     const { plan } = result.design;
     expect(plan.environment).toEqual({
@@ -120,23 +129,23 @@ describe("addEnvironment", () => {
     expect(plan.app.name).toBe(`${prodPlan.app.name}-staging`);
     expect(plan.infra.dir).toBe("opscrew/infra/staging");
     expect(plan.cicd.workflowPath).toBe(".github/workflows/opscrew-deploy-staging.yml");
-    // staging.shop.example.com would be too deep for Cloudflare's free certificate.
-    expect(plan.dns).toMatchObject({ provider: "cloudflare", domain: "staging-shop.example.com" });
+    // Behind Cloudflare's proxy: a random name one level below the zone, in no public certificate.
+    expect(plan.dns).toMatchObject({ provider: "cloudflare", domain: HIDDEN, proxied: true });
     expect(sharedPartsDiffer(prodPlan, plan)).toEqual([]);
     expect(plan.target).toMatchObject({ provider: "hetzner", mode: "vps-compose" });
     expect(await readArtifact("plan", staging.paths.files.plan)).toEqual(plan);
 
     // Its own answers are only those that differ from prod's.
     const own = await readFile(staging.paths.files.requirements, "utf8");
-    expect(own).toContain("domain: staging-shop.example.com");
+    expect(own).toContain(`domain: ${HIDDEN}`);
     expect(own).not.toMatch(/budgetMonthly|provider|uptime/);
-    expect(result.requirements).toMatchObject({
-      domain: "staging-shop.example.com",
-      region: "eu-central",
-    });
+    expect(result.requirements).toMatchObject({ domain: HIDDEN, region: "eu-central" });
 
     // The monthly cost is shown, and what comes next.
     const said = staging.reporter.text();
+    expect(said).toContain(
+      `The staging environment's hostname is ${HIDDEN}. A random name, which nobody finds without the link: behind Cloudflare's proxy it stays out of public certificates once its Cloudflare origin certificate is in place.`,
+    );
     expect(said).toMatch(/Wrote opscrew\/environments\/staging\/plan\.yaml: .*€\d+\.\d\d\/month/);
     expect(said).toContain("Next: run `opscrew provision --env staging`.");
     expect(result.design.chosen.cost.monthly.amount).toBeGreaterThan(0);
@@ -172,12 +181,28 @@ describe("addEnvironment", () => {
     ]);
   });
 
+  it("suggests the plain name, said to be listed, where the user's own proxy serves the app", async () => {
+    const { prod } = await prodApp();
+    const base = await readArtifact("requirements", prod.paths.files.requirements);
+    const facts = nextPostgresFacts({ name: "shop" });
+    // A Portainer whose own proxy serves the app gets public certificates, even with the DNS
+    // record behind Cloudflare's proxy.
+    const plan = portainerPlan({ web: { mode: "proxy", port: 8080 } });
+    const prodPlan = { ...plan, dns: { ...plan.dns, proxied: true } };
+    const context = { prodPlan, base, environments: ["prod"], randomInt: counting() };
+    const domain = environmentQuestions("staging", context, facts).find((q) => q.id === "domain");
+    expect(domain?.default).toBe("staging-shop.example.com");
+    expect(domain?.help).toContain(
+      "It gets a certificate of its own, and public certificate logs list every such name, so anyone can find it.",
+    );
+  });
+
   it("asks only the environment's own questions, with their defaults", async () => {
     const { prod } = await prodApp();
     const prodPlan = await readArtifact("plan", prod.paths.files.plan);
     const base = await readArtifact("requirements", prod.paths.files.requirements);
     const facts = nextPostgresFacts({ name: "shop" });
-    const context = { prodPlan, base, environments: ["prod"] };
+    const context = { prodPlan, base, environments: ["prod"], randomInt: counting() };
     const questions = environmentQuestions("staging", context, facts);
     expect(questions.map((q) => q.id)).toEqual([
       "provider",
@@ -196,10 +221,22 @@ describe("addEnvironment", () => {
       provider: "hetzner",
       region: "eu-central",
       expectedMonthlyUsers: "<1k",
-      domain: "staging-shop.example.com",
+      domain: HIDDEN,
       from: "main",
       runner: "github",
     });
+    expect(questions.find((q) => q.id === "domain")?.help).toContain(
+      "A random name, which nobody finds without the link",
+    );
+    // Node's randomness by default: 10 of [a-z0-9] each time.
+    const drawn = environmentQuestions(
+      "staging",
+      { prodPlan, base, environments: ["prod"] },
+      facts,
+    );
+    expect(drawn.find((q) => q.id === "domain")?.default).toMatch(
+      /^staging-[a-z0-9]{10}\.example\.com$/,
+    );
     expect(questions[0]?.options?.map((o) => o.value)).toContain("localhost");
     expect(questions[4]?.options?.map((o) => o.value)).toEqual(["main", "prod"]);
     // dev runs on this computer by default.
@@ -260,7 +297,11 @@ describe("addEnvironment", () => {
     const { plan } = result.design;
     expect(plan.target).toEqual(prodPlan.target);
     expect(plan.app.name).toBe(`${prodPlan.app.name}-staging`);
+    // DNS only, the name gets a certificate of its own: the plain one, said to be listed.
     expect(plan.dns).toMatchObject({ domain: "staging-shop.example.com", proxied: false });
+    expect(staging.reporter.text()).toContain(
+      "The staging environment's hostname is staging-shop.example.com. It gets a certificate of its own, and public certificate logs list every such name, so anyone can find it.",
+    );
     expect(sharedPartsDiffer(prodPlan, plan)).toEqual([]);
     expect(await readFile(prod.paths.files.plan, "utf8")).toBe(prodBytes);
   });
@@ -385,7 +426,11 @@ describe("addEnvironment", () => {
 
   it("refuses prod's design when its domain becomes one staging uses", async () => {
     const { prod, staging } = await prodApp();
-    await addEnvironment(staging, { design: { catalog: euCatalog() } });
+    // A hostname given wins over the suggested one.
+    await addEnvironment(staging, {
+      answers: { domain: "staging-shop.example.com" },
+      design: { catalog: euCatalog() },
+    });
     const before = await readFile(prod.paths.files.plan, "utf8");
     const answers = await readArtifact("requirements", prod.paths.files.requirements);
     await writeArtifact("requirements", prod.paths.files.requirements, {

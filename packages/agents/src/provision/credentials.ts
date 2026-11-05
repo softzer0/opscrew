@@ -295,8 +295,8 @@ async function zoneAccount(
  * (in `proxy` and `caddy` mode the user's own record there is expected), the webhook's hostname
  * (`portainer-<app>.<zone>`) in redeploy mode `cloudflare`.
  *
- * A preview environment (`environment.previews`, a zone and no domain) checks its wildcard
- * `*.<previews.domain>` in the zone that holds the previews' base.
+ * A preview environment (`environment.previews`, its zone and no domain) checks its wildcard
+ * `*.<zone>` in its preview zone.
  */
 export async function setupCloudflare(
   deps: PhaseDeps,
@@ -376,7 +376,7 @@ export async function setupCloudflare(
           ].join("\n"),
         ),
         {
-          hint: `Delete these records in the Cloudflare dashboard (DNS → Records) if they belong to a host you no longer use, or ${previews !== undefined ? "give the previews another base (environment.previews.domain in the environment's plan.yaml)" : "pick another hostname with `opscrew dns --domain <hostname>`"}, then run OpsCrew again.`,
+          hint: `Delete these records in the Cloudflare dashboard (DNS → Records) if they belong to a host you no longer use, or ${previews !== undefined ? "use a preview domain used for nothing else (environment.previews.domain and dns.zone in the environment's plan.yaml)" : "pick another hostname with `opscrew dns --domain <hostname>`"}, then run OpsCrew again.`,
         },
       );
     }

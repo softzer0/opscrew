@@ -3,7 +3,7 @@
  * from the preview command's `list` (contracts/opscrew-preview.md), each line checked with zod.
  */
 import type { RemoteExec } from "@opscrew/contracts";
-import { plural } from "@opscrew/core";
+import { escapeRegExp, plural } from "@opscrew/core";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -11,7 +11,6 @@ import {
   PREVIEW_NUMBER,
   type PreviewServices,
   PreviewStateSchema,
-  previewAddress,
   previewCommandFailed,
   previewServerTarget,
   previewShell,
@@ -34,8 +33,8 @@ export interface Preview {
   updatedAt?: string;
   /** Its image's digest (`sha256:…`). */
   digest?: string;
-  /** `https://pr-<n>.<base>`. */
-  address: string;
+  /** `https://pr-<n>-<random>.<zone>`, as the server keeps it; absent while it has none. */
+  address?: string;
 }
 
 /** What `list` read: each preview, how many run and how many may. */
@@ -54,15 +53,26 @@ const Seconds = z
   .regex(/^\d{1,12}$/)
   .transform((text) => new Date(Number(text) * 1000).toISOString());
 
-/** `<n> <state> <commit> <created> <updated> <digest>`. */
-const ListLineSchema = z.tuple([
-  z.string().regex(PREVIEW_NUMBER).transform(Number),
-  PreviewStateSchema,
-  orDash(z.string().regex(/^[0-9a-f]{40}$/)),
-  orDash(Seconds),
-  orDash(Seconds),
-  orDash(z.string().regex(/^sha256:[0-9a-f]{64}$/)),
-]);
+/**
+ * `<n> <state> <commit> <created> <updated> <digest> <address>`, the address a name of the
+ * previews' zone `zone` (`pr-<n>-<random>.<zone>`, the number checked against the line's).
+ */
+function listLineSchema(zone: string) {
+  const host = new RegExp(`^pr-([1-9][0-9]{0,5})-[a-z0-9]{10}\\.${escapeRegExp(zone)}$`);
+  return z
+    .tuple([
+      z.string().regex(PREVIEW_NUMBER).transform(Number),
+      PreviewStateSchema,
+      orDash(z.string().regex(/^[0-9a-f]{40}$/)),
+      orDash(Seconds),
+      orDash(Seconds),
+      orDash(z.string().regex(/^sha256:[0-9a-f]{64}$/)),
+      orDash(z.string().regex(host)),
+    ])
+    .refine(
+      ([n, , , , , , address]) => address === undefined || host.exec(address)?.[1] === `${n}`,
+    );
+}
 
 /** `list`'s last line's detail: `<count>/<cap>`. */
 const CountSchema = z
@@ -97,11 +107,12 @@ export async function listPreviews(
     throw await previewCommandFailed(deps, answer, "list the previews");
   }
   const found: Preview[] = [];
+  const lineSchema = listLineSchema(previews.domain);
   for (const line of answer.lines) {
-    const parsed = ListLineSchema.safeParse(line.trim().split(" "));
+    const parsed = lineSchema.safeParse(line.trim().split(" "));
     if (!parsed.success)
       throw await previewCommandFailed(deps, answer, "read the list of previews");
-    const [number, state, commit, createdAt, updatedAt, digest] = parsed.data;
+    const [number, state, commit, createdAt, updatedAt, digest, host] = parsed.data;
     found.push({
       number,
       state,
@@ -109,7 +120,7 @@ export async function listPreviews(
       ...(createdAt === undefined ? {} : { createdAt }),
       ...(updatedAt === undefined ? {} : { updatedAt }),
       ...(digest === undefined ? {} : { digest }),
-      address: previewAddress(previews, number),
+      ...(host === undefined ? {} : { address: `https://${host}` }),
     });
   }
   const [listed, cap] = count.data;
@@ -145,7 +156,7 @@ export function previewListLines(list: PreviewList, now: Date): string[] {
     `Previews: ${list.count} of at most ${list.cap}.`,
     ...list.previews.map((p) =>
       [
-        `  pr-${p.number}: ${p.address}`,
+        `  pr-${p.number}: ${p.address ?? "no address yet"}`,
         STATE_WORDS[p.state],
         ...(p.commit === undefined ? [] : [`commit ${p.commit.slice(0, 7)}`]),
         ...(p.createdAt === undefined ? [] : [`created ${age(p.createdAt, now)} ago`]),

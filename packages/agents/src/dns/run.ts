@@ -35,9 +35,9 @@ export async function runDns(deps: PhaseDeps, options: DnsOptions = {}): Promise
     const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
     throw new OpsCrewError(
       "INVALID_INPUT",
-      `The ${deps.paths.environment} environment is a preview environment, which has no hostname of its own: its previews are at pr-<number>.${previews.domain}, under the wildcard record \`opscrew provision${flags}\` manages. Nothing was changed.`,
+      `The ${deps.paths.environment} environment is a preview environment, which has no hostname of its own: its previews are at pr-<number>-<random>.${previews.domain}, under the proxied wildcard record \`opscrew provision${flags}\` manages. Nothing was changed.`,
       {
-        hint: `To give the previews another base, set environment.previews.domain in ${toPosixRelative(deps.paths.root, deps.paths.files.plan)}, then run \`opscrew provision${flags}\`.`,
+        hint: `To move the previews to another domain of their own, a Cloudflare zone used only for previews, set environment.previews.domain and dns.zone to it in ${toPosixRelative(deps.paths.root, deps.paths.files.plan)}, then run \`opscrew provision${flags}\`.`,
       },
     );
   }

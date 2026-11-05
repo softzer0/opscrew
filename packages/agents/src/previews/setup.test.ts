@@ -1,16 +1,18 @@
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   type ApplyOptions,
   type HostFacts,
   type HostPlan,
   hostPlanHash,
 } from "@opscrew/connector-ssh-host";
+import { generateP256 } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { renderPreviewRecipe } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import type { NetworkServer } from "../provision/network";
+import { generatedValuesFile } from "../shared/app-secrets";
 import { freshFacts, type ScriptedApprovalHandler, type TestPhaseDeps } from "../testing";
 import { previewProject } from "./__fixtures__/plan";
 import { ensurePreviewKey } from "./keys";
@@ -35,6 +37,20 @@ function serverWith(facts: HostFacts) {
     alone: true,
   };
   return { server, applies };
+}
+
+/** A certificate as Cloudflare's Origin CA issues one (PEM; not a real certificate). */
+const CERTIFICATE = "-----BEGIN CERTIFICATE-----\nMIIBorigin\n-----END CERTIFICATE-----\n";
+
+/** The previews' certificate and its key kept with the generated values, as provision keeps them. */
+async function keepCertificate(deps: TestPhaseDeps): Promise<string> {
+  const key = generateP256().privateKey;
+  await mkdir(dirname(generatedValuesFile(deps)), { recursive: true });
+  await writeFile(
+    generatedValuesFile(deps),
+    JSON.stringify({ originTls: { ORIGIN_TLS_KEY: key, ORIGIN_TLS_CERT: CERTIFICATE } }),
+  );
+  return key;
 }
 
 /** The previews host plan of `plan` on `facts`, with `.env.preview` holding the test key. */
@@ -90,6 +106,7 @@ describe("previewEnvironment", () => {
 describe("applyPreviewsHostPlan", () => {
   it("installs the recipe as root on the user's own server, cron first, approved with the typed name", async () => {
     const { deps, plan, root } = await previewProject({ own: true });
+    const key = await keepCertificate(deps);
     const { outcome, applies } = await installOn(deps, plan, root, freshFacts());
     expect(outcome.applied).toBe(true);
     const [step] = applies[0]?.plan.steps ?? [];
@@ -103,8 +120,26 @@ describe("applyPreviewsHostPlan", () => {
     });
     expect(request?.details).toContain("Host plan for your server");
     expect(request?.details).toContain("Preview values from .env.preview (names only): none.");
-    // An app without values of its own still gets values.env, which each preview's start needs.
-    expect(applies[0]?.options.secrets).toEqual({ previewValues: "" });
+    // An app without values of its own still gets values.env, which each preview's start needs;
+    // the certificate and its key go at apply only, never in the plan or its text.
+    expect(applies[0]?.options.secrets).toEqual({
+      previewValues: "",
+      previewTls: { certificate: CERTIFICATE, key },
+    });
+    const keyLine = key.split(/\r?\n/)[2] as string;
+    expect(JSON.stringify(applies[0]?.plan)).not.toContain(keyLine);
+    expect(request?.details).not.toContain(keyLine);
+    expect(deps.redactor.redact(`key ${key}`)).not.toContain(keyLine);
+  });
+
+  it("installs nothing when this computer holds no key for the previews' certificate", async () => {
+    const { deps, plan, root } = await previewProject({ own: true });
+    await expect(installOn(deps, plan, root, freshFacts())).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining(
+        "This computer holds no key for the previews' Cloudflare Origin CA certificate",
+      ),
+    });
   });
 });
 

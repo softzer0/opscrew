@@ -32,6 +32,7 @@ import type { DeployPlan, Previews } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import type { NetworkServer } from "../provision/network";
+import { previewTlsOf, readOriginTlsValues } from "../provision/origin-tls";
 import { serviceEnvFiles } from "../provision/secrets";
 import { assembleAppEnv, dotenvLine } from "../shared/app-env";
 import { readValidJson } from "../shared/files";
@@ -210,7 +211,7 @@ function bounds(
   const names = input.env.valueNames;
   return [
     `  At most ${plural(previews.cap, "preview")} at once; a preview with no push for ${plural(previews.lifetimeDays, "day")} is removed.`,
-    `  Addresses: pr-<number>.${previews.domain}, DNS only, each with its own certificate and marked noindex.`,
+    `  Addresses: pr-<number>-<random>.${previews.domain}, a random part nobody can guess, behind Cloudflare's proxy with the previews' Cloudflare Origin CA certificate, and marked noindex; the server's web ports accept only Cloudflare.`,
     `  Image: only ${input.imageName}, pinned by digest.`,
     `  Each preview runs ${listText(limits)} (their memory limits), on its own network with its own volumes; its passwords and keys are made on the server for it and never leave it.`,
     typeof previews.seed === "string"
@@ -224,12 +225,13 @@ function bounds(
 /**
  * The previews host plan (`planAddon("previews")`, plan.md "7." step 3): the rendered recipe, the
  * preview key's restricted line and the hourly cleanup on the preview server, and `values.env`
- * from the preview values, supplied only at apply. Its approval states the standing approval with
- * every bound and the values' names (and, where GitHub enforces no branch rules, that any
- * workflow can read every secret of the repository), and needs `allowDestroy` with `<app>-<env>`
- * typed. A changed recipe is a change the server's facts show; changed values are one when their
- * digest differs from the one this computer kept after the last apply (`secretsChanged`), which is
- * written once the plan is applied.
+ * from the preview values and the previews' Origin CA certificate with its key (the origin TLS
+ * values this run's Cloudflare plan made or kept, `previewTls`), supplied only at apply. Its
+ * approval states the standing approval with every bound and the values' names (and, where GitHub
+ * enforces no branch rules, that any workflow can read every secret of the repository), and needs
+ * `allowDestroy` with `<app>-<env>` typed. A changed recipe is a change the server's facts show;
+ * changed values or a new certificate are one when their digest differs from the one this computer
+ * kept after the last apply (`secretsChanged`), which is written once the plan is applied.
  */
 export async function applyPreviewsHostPlan(
   deps: PhaseDeps,
@@ -242,7 +244,9 @@ export async function applyPreviewsHostPlan(
   const files = Object.fromEntries(
     input.recipe.map((file) => [file.path.slice(dir.length + 1), file.content]),
   );
-  const digest = sha256Hex(input.env.values);
+  // The certificate the Cloudflare plan of this run made or kept; a renewed one is a change too.
+  const tls = await readOriginTlsValues(deps);
+  const digest = sha256Hex(`${input.env.values}${tls.ORIGIN_TLS_CERT ?? ""}`);
   const kept = await readValidJson(valuesDigestFile(deps), ValuesDigestSchema);
   const own = plan.target.provider === "own";
   const hostPlan = planAddon("previews", {
@@ -277,7 +281,10 @@ export async function applyPreviewsHostPlan(
             `GitHub enforces no branch rules on the environments of ${repository} (GitHub Free has none in private repositories), so any workflow, a pull request's included, can read every secret of the repository.`,
           ]),
     ],
-    secrets: async () => ({ previewValues: input.env.values }),
+    secrets: async () => ({
+      previewValues: input.env.values,
+      previewTls: previewTlsOf(tls, input.command),
+    }),
     applying: `Installing the previews' recipe on ${words}`,
   });
   if (outcome.applied) {

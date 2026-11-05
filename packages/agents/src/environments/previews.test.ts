@@ -13,12 +13,14 @@ import {
 import { describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { runDesign } from "../design/run";
+import { readOwnServer } from "../shared";
 import { appMemoryMb, SYSTEM_RESERVE_MB } from "../shared/memory";
 import {
   createTestPhaseDeps,
   euCatalog,
   makeRequirements,
   nextPostgresFacts,
+  PREVIEW_ZONE,
   type TestPhaseDeps,
   TOKEN,
 } from "../testing";
@@ -29,10 +31,16 @@ const DOMAIN = "shop.example.com";
 const ZONE = "example.com";
 const API = "https://api.cloudflare.com/client/v4";
 const SEED = "npx prisma db seed";
+/** The preview domain the tests answer: a zone of its own. */
+const PREVIEWS = { domain: PREVIEW_ZONE };
 
-/** A fake Cloudflare API: the zone `ZONE` (id z1), its records at any name `records`. */
+/**
+ * A fake Cloudflare API: the app's zone `ZONE` (id z1) and the preview zone (id z2), which holds
+ * `records`.
+ */
 function cloudflare(records: { type: string; name: string; content: string }[] = []) {
   const asked: string[] = [];
+  const zones: Record<string, string> = { [ZONE]: "z1", [PREVIEW_ZONE]: "z2" };
   const fetch: FetchLike = async (input) => {
     const url = new URL(String(input));
     const path = url.pathname.replace(new URL(API).pathname, "");
@@ -42,12 +50,11 @@ function cloudflare(records: { type: string; name: string; content: string }[] =
         headers: { "content-type": "application/json" },
       });
     if (path === "/zones") {
-      const name = url.searchParams.get("name");
-      return ok(
-        name === ZONE ? [{ id: "z1", name: ZONE, status: "active", name_servers: [] }] : [],
-      );
+      const name = url.searchParams.get("name") ?? "";
+      const id = zones[name];
+      return ok(id === undefined ? [] : [{ id, name, status: "active", name_servers: [] }]);
     }
-    if (path === "/zones/z1/dns_records") {
+    if (path === "/zones/z2/dns_records") {
       return ok(records.map((record, i) => ({ id: `r${i}`, ttl: 1, ...record })));
     }
     throw new Error(`unrouted ${path}`);
@@ -126,7 +133,7 @@ describe("addEnvironment with previews", () => {
 
     const result = await addEnvironment(preview, {
       previews: true,
-      answers: {},
+      answers: PREVIEWS,
       design: { catalog: euCatalog() },
     });
     const { plan } = result.design;
@@ -134,11 +141,16 @@ describe("addEnvironment with previews", () => {
       name: "preview",
       deploySource: { from: "main" },
       runner: "github",
-      previews: { cap: 3, lifetimeDays: 7, domain: DOMAIN, seed: null },
+      previews: { cap: 3, lifetimeDays: 7, domain: PREVIEW_ZONE, seed: null },
     });
-    // The zone, no hostname of its own, DNS only, open to everyone.
-    expect(plan.dns).toEqual({ provider: "cloudflare", zone: ZONE, proxied: false, www: false });
-    expect(plan.security.httpAllowedFrom).toBe("any");
+    // The preview zone, no hostname of its own, behind the proxy, open to Cloudflare only.
+    expect(plan.dns).toEqual({
+      provider: "cloudflare",
+      zone: PREVIEW_ZONE,
+      proxied: true,
+      www: false,
+    });
+    expect(plan.security.httpAllowedFrom).toBe("cloudflare");
     expect(plan.supplyChain.sign).toBe(false);
     expect(plan.cicd.deployTags.enabled).toBe(false);
     expect(plan.observability?.check?.enabled).toBe(false);
@@ -156,14 +168,15 @@ describe("addEnvironment with previews", () => {
       expectedMonthlyUsers: "<1k",
     });
     expect(await readArtifact("plan", preview.paths.files.plan)).toEqual(plan);
-    // The wildcard's name was checked in the zone.
-    expect(asked).toContain(
-      `/zones/z1/dns_records?page=1&per_page=100&name=${encodeURIComponent(`*.${DOMAIN}`)}`,
-    );
+    // The preview zone's records were read, and nothing of the app's zone.
+    expect(asked).toContain("/zones/z2/dns_records?page=1&per_page=100");
+    expect(asked.filter((path) => path.startsWith("/zones/z1"))).toEqual([]);
 
     const said = preview.reporter.text();
     expect(said).toMatch(/Wrote opscrew\/environments\/preview\/plan\.yaml: .*€\d+\.\d\d\/month/);
-    expect(said).toContain(`Previews: up to 3 previews at once at pr-<number>.${DOMAIN}`);
+    expect(said).toContain(
+      `Previews: up to 3 previews at once at pr-<number>-<random>.${PREVIEW_ZONE}, behind Cloudflare's proxy`,
+    );
     expect(said).toContain("OpsCrew found no seed command");
     expect(said).toContain("There is no .env.preview yet");
     expect(said).toContain("Prod's .env never goes to previews");
@@ -181,24 +194,28 @@ describe("addEnvironment with previews", () => {
       previews: true,
       ask: async (asked) => {
         questions = asked;
-        return { cap: "2", lifetime: "3" };
+        return { cap: "2", lifetime: "3", ...PREVIEWS };
       },
       design: { catalog: euCatalog() },
     });
+    // The preview domain has no default: the app's own is not one previews can use.
     expect(questions.map((q) => [q.id, q.default])).toEqual([
       ["provider", "hetzner"],
       ["region", "eu-central"],
       ["cap", "3"],
-      ["domain", DOMAIN],
+      ["domain", undefined],
       ["seed", SEED],
       ["lifetime", "7"],
     ]);
+    expect(questions.find((q) => q.id === "domain")?.help).toContain(
+      "`opscrew domain buy <name>` buys one",
+    );
     expect(questions[0]?.options?.map((o) => o.value)).toEqual(["hetzner", "digitalocean", "own"]);
     const plan = await readArtifact("plan", preview.paths.files.plan);
     expect(plan.environment?.previews).toEqual({
       cap: 2,
       lifetimeDays: 3,
-      domain: DOMAIN,
+      domain: PREVIEW_ZONE,
       seed: SEED,
     });
     expect(preview.reporter.text()).toContain(
@@ -210,13 +227,13 @@ describe("addEnvironment with previews", () => {
     const one = await prodApp();
     const small = await addEnvironment(one.preview, {
       previews: true,
-      answers: { cap: "1" },
+      answers: { cap: "1", ...PREVIEWS },
       design: { catalog: euCatalog() },
     });
     const ten = await prodApp();
     const big = await addEnvironment(ten.preview, {
       previews: true,
-      answers: { cap: "10" },
+      answers: { cap: "10", ...PREVIEWS },
       design: { catalog: euCatalog() },
     });
     expect(big.design.chosen.target.memoryGb).toBeGreaterThan(small.design.chosen.target.memoryGb);
@@ -226,7 +243,7 @@ describe("addEnvironment with previews", () => {
     const sized = await prodApp();
     const result = await addEnvironment(sized.preview, {
       previews: true,
-      answers: { size: "cx43" },
+      answers: { size: "cx43", ...PREVIEWS },
       design: { catalog: euCatalog() },
     });
     expect(result.design.options.map((o) => o.target.serverType)).toEqual(["cx43"]);
@@ -244,42 +261,36 @@ describe("addEnvironment with previews", () => {
     });
     const result = await addEnvironment(preview, {
       previews: true,
-      answers: { cap: "8" },
+      answers: { cap: "8", ...PREVIEWS },
       design: { catalog: euCatalog() },
     });
     expect(result.design.warnings.join("\n")).toMatch(/None of the options fits your budget/);
   });
 
-  it("takes --seed, --no-seed and another base name; says so on the zone's apex", async () => {
+  it("takes --seed and --no-seed", async () => {
     const seeded = await prodApp({
       facts: nextPostgresFacts({ name: "shop", build: { seedCommand: SEED } }),
     });
     const none = await addEnvironment(seeded.preview, {
       previews: true,
-      answers: { seed: false },
+      answers: { seed: false, ...PREVIEWS },
       design: { catalog: euCatalog() },
     });
     expect(none.design.plan.environment?.previews?.seed).toBeNull();
     expect(seeded.preview.reporter.text()).toContain("with no seed command");
 
-    const apex = await prodApp({
+    const other = await prodApp({
       facts: nextPostgresFacts({
         name: "shop",
         build: { seedNote: "OpsCrew found no seed command: Drizzle has none of its own." },
       }),
     });
-    const result = await addEnvironment(apex.preview, {
+    const result = await addEnvironment(other.preview, {
       previews: true,
-      answers: { seed: "npm run db:fill", domain: ZONE },
+      answers: { seed: "npm run db:fill", ...PREVIEWS },
       design: { catalog: euCatalog() },
     });
-    expect(result.design.plan.environment?.previews).toMatchObject({
-      domain: ZONE,
-      seed: "npm run db:fill",
-    });
-    expect(apex.preview.reporter.text()).toContain(
-      `The previews' name ${ZONE} is your zone's apex, so the wildcard record *.${ZONE} sends every name`,
-    );
+    expect(result.design.plan.environment?.previews).toMatchObject({ seed: "npm run db:fill" });
   });
 
   it("says the values come from .env.<name> when it is there", async () => {
@@ -287,7 +298,7 @@ describe("addEnvironment with previews", () => {
     await writeFile(join(preview.paths.root, ".env.preview"), "STRIPE_KEY=\n");
     await addEnvironment(preview, {
       previews: true,
-      answers: {},
+      answers: PREVIEWS,
       design: { catalog: euCatalog() },
     });
     expect(preview.reporter.text()).toContain(
@@ -331,26 +342,83 @@ describe("addEnvironment with previews", () => {
     expect(await nothingWritten(preview)).toBe(true);
   });
 
-  it("refuses a name in no Cloudflare zone, and a record already at the wildcard", async () => {
-    const outside = await prodApp();
-    const error = await failure(
-      addEnvironment(outside.preview, {
-        previews: true,
-        answers: { domain: "previews.example.org" },
-      }),
-    );
-    expect(error.message).toContain(
-      "no Cloudflare zone your token sees holds previews.example.org",
-    );
-    expect(await nothingWritten(outside.preview)).toBe(true);
+  it.each([
+    [
+      "no domain",
+      {},
+      "INVALID_INPUT",
+      "Previews need a domain of their own on Cloudflare, where each preview gets an address nobody can guess (pr-<number>-<random>.<domain>), and none was given.",
+    ],
+    [
+      "the app's own zone",
+      { domain: ZONE },
+      "INVALID_INPUT",
+      `${ZONE} is in your app's own domain ${ZONE}, and previews need a domain of their own`,
+    ],
+    [
+      "a name in the app's zone",
+      { domain: `previews.${ZONE}` },
+      "INVALID_INPUT",
+      `previews.${ZONE} is in your app's own domain ${ZONE}`,
+    ],
+    [
+      "a name no zone of the token's is",
+      { domain: "example.org" },
+      "PHASE_PRECONDITION",
+      "Previews need a domain of their own on Cloudflare, and no Cloudflare zone your token sees is example.org.",
+    ],
+    [
+      "a name inside another zone",
+      { domain: `previews.${PREVIEW_ZONE}` },
+      "PHASE_PRECONDITION",
+      `previews.${PREVIEW_ZONE} is a name inside your Cloudflare zone ${PREVIEW_ZONE}, and previews need a zone of their own`,
+    ],
+  ])(
+    "refuses %s before any change, naming `opscrew domain buy`",
+    async (_case, answers, code, said) => {
+      const { preview } = await prodApp();
+      const error = await failure(addEnvironment(preview, { previews: true, answers }));
+      expect(error.code).toBe(code);
+      expect(error.message).toContain(said);
+      expect(error.message).toMatch(/Nothing was changed\.$/);
+      expect(error.hint).toContain("`opscrew domain buy <name>`");
+      expect(await nothingWritten(preview)).toBe(true);
+    },
+  );
 
+  it("refuses a preview zone with A, AAAA or CNAME records, naming them without their content", async () => {
     const taken = await prodApp({
-      records: [{ type: "A", name: `*.${DOMAIN}`, content: "203.0.113.20" }],
+      records: [
+        { type: "A", name: `www.${PREVIEW_ZONE}`, content: "203.0.113.20" },
+        { type: "CNAME", name: `*.${PREVIEW_ZONE}`, content: "other.example.com" },
+        { type: "TXT", name: PREVIEW_ZONE, content: "v=spf1 -all" },
+      ],
     });
-    const wildcard = await failure(addEnvironment(taken.preview, { previews: true, answers: {} }));
-    expect(wildcard.message).toContain(`already has a record at *.${DOMAIN} (A)`);
-    expect(wildcard.message).not.toContain("203.0.113.20");
+    const error = await failure(
+      addEnvironment(taken.preview, { previews: true, answers: PREVIEWS }),
+    );
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain(
+      `Your Cloudflare zone ${PREVIEW_ZONE} already has www.${PREVIEW_ZONE} (A) and *.${PREVIEW_ZONE} (CNAME), and previews need a zone used for nothing else`,
+    );
+    expect(error.message).not.toContain("203.0.113.20");
+    expect(error.message).not.toContain("other.example.com");
+    expect(error.hint).toContain("`opscrew domain buy <name>`");
     expect(await nothingWritten(taken.preview)).toBe(true);
+
+    // Other records (mail, verification) stay the zone's own business.
+    const mail = await prodApp({
+      records: [
+        { type: "TXT", name: PREVIEW_ZONE, content: "v=spf1 -all" },
+        { type: "MX", name: PREVIEW_ZONE, content: "mail.example.com" },
+      ],
+    });
+    const result = await addEnvironment(mail.preview, {
+      previews: true,
+      answers: PREVIEWS,
+      design: { catalog: euCatalog() },
+    });
+    expect(result.design.plan.dns.zone).toBe(PREVIEW_ZONE);
   });
 
   it("refuses without a Cloudflare token", async () => {
@@ -360,7 +428,7 @@ describe("addEnvironment with previews", () => {
       env: prod.env,
       environment: "preview",
     });
-    const error = await failure(addEnvironment(preview, { previews: true, answers: {} }));
+    const error = await failure(addEnvironment(preview, { previews: true, answers: PREVIEWS }));
     expect(error.code).toBe("CREDENTIALS_MISSING");
     expect(await nothingWritten(preview)).toBe(true);
   });
@@ -369,7 +437,7 @@ describe("addEnvironment with previews", () => {
     const { prod, preview } = await prodApp();
     await addEnvironment(preview, {
       previews: true,
-      answers: {},
+      answers: PREVIEWS,
       design: { catalog: euCatalog() },
     });
     const second = await createTestPhaseDeps({
@@ -401,7 +469,12 @@ describe("addEnvironment with previews", () => {
   });
 
   it("refuses --size on a server of the user's, and one the internet cannot reach", async () => {
-    const own = { provider: "own", "server.host": "198.51.100.7", "server.user": "root" };
+    const own = {
+      provider: "own",
+      "server.host": "198.51.100.7",
+      "server.user": "root",
+      ...PREVIEWS,
+    };
     const sized = await prodApp();
     const size = await failure(
       addEnvironment(sized.preview, { previews: true, answers: { ...own, size: "cx33" } }),
@@ -428,7 +501,12 @@ describe("addEnvironment with previews", () => {
       diskFreeGb: 120,
       os: "Ubuntu 24.04",
     };
-    const answers = { provider: "own", "server.host": "198.51.100.7", "server.user": "root" };
+    const answers = {
+      provider: "own",
+      "server.host": "198.51.100.7",
+      "server.user": "root",
+      ...PREVIEWS,
+    };
     const busy = await prodApp();
     const error = await failure(
       addEnvironment(busy.preview, {
@@ -457,10 +535,12 @@ describe("addEnvironment with previews", () => {
     expect(await readFile(free.preview.paths.files.plan, "utf8")).not.toContain("198.51.100.7");
     expect(result.design.plan.dns).toEqual({
       provider: "cloudflare",
-      zone: ZONE,
-      proxied: false,
+      zone: PREVIEW_ZONE,
+      proxied: true,
       www: false,
     });
+    // Served behind Cloudflare's proxy with OpsCrew's web filter.
+    expect((await readOwnServer(free.preview.paths))?.serve).toBe("proxy");
 
     const small = await prodApp();
     const full = await failure(
@@ -480,7 +560,7 @@ describe("design of a preview environment", () => {
     const { preview } = await prodApp();
     await addEnvironment(preview, {
       previews: true,
-      answers: {},
+      answers: PREVIEWS,
       design: { catalog: euCatalog() },
     });
     const file = preview.paths.files.plan;
@@ -497,7 +577,7 @@ describe("design of a preview environment", () => {
     expect(plan.environment?.previews).toEqual({
       cap: 2,
       lifetimeDays: 3,
-      domain: DOMAIN,
+      domain: PREVIEW_ZONE,
       seed: null,
     });
     expect(plan.app.memoryMb).toBe(384);
@@ -510,9 +590,14 @@ describe("design of a preview environment", () => {
     expect(lines).toContain(
       "The scheduled check is off: it watches a deployed app, and previews come and go.",
     );
-    expect(plan.dns).toEqual({ provider: "cloudflare", zone: ZONE, proxied: false, www: false });
+    expect(plan.dns).toEqual({
+      provider: "cloudflare",
+      zone: PREVIEW_ZONE,
+      proxied: true,
+      www: false,
+    });
     expect(lines).toContain(
-      `Previews: up to 2 previews at once at pr-<number>.${DOMAIN}, each removed after 3 days without a push, with no seed command.`,
+      `Previews: up to 2 previews at once at pr-<number>-<random>.${PREVIEW_ZONE}, behind Cloudflare's proxy, each removed after 3 days without a push, with no seed command.`,
     );
   });
 });
@@ -522,7 +607,7 @@ describe("removeEnvironment of a preview environment", () => {
     const { prod, preview } = await prodApp();
     await addEnvironment(preview, {
       previews: true,
-      answers: {},
+      answers: PREVIEWS,
       design: { catalog: euCatalog() },
     });
     const root = preview.paths.root;

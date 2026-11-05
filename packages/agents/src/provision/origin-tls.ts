@@ -7,7 +7,12 @@
  * through the shared Cloudflare plan; the server gets the files with the deploy.
  */
 import { posix } from "node:path";
-import type { SharedDesired, SharedPlan, SharedRecord } from "@opscrew/connector-cloudflare";
+import {
+  CLOUDFLARE_TOKEN_PAGE,
+  type SharedDesired,
+  type SharedPlan,
+  type SharedRecord,
+} from "@opscrew/connector-cloudflare";
 import { type PortainerFacts, valueFingerprint } from "@opscrew/connector-portainer";
 import type { Clock, PhaseName, RemoteExec } from "@opscrew/contracts";
 import {
@@ -47,11 +52,18 @@ import {
 import { generatedValuesFile } from "../shared/app-secrets";
 import { readOwnServerRecord } from "../shared/own-server";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
-import { readCloudflareRecord, type SharedCloudflareInput } from "./shared-cloudflare";
+import {
+  previewZoneNames,
+  readCloudflareRecord,
+  type SharedCloudflareInput,
+} from "./shared-cloudflare";
 import type { ProvisionServices } from "./types";
 
 /** The client certificate's lifetime: 15 years, as the origin certificate's (research R3). */
 const CLIENT_CERTIFICATE_DAYS = 5475;
+
+/** The token permission Origin CA certificates need, named as in the token builder. */
+const SSL_PERMISSION = "Zone → SSL and Certificates → Edit";
 
 /** The origin TLS values in `generated_values.json` (key `originTls`); never logged or committed. */
 const OriginTlsValuesSchema = z.strictObject({
@@ -178,6 +190,9 @@ export interface OriginTlsStep {
  * kept at once; a fresh key and certificate request go with every plan (the planner creates a
  * certificate only when its rule wants one), except that a request a plan already created is kept
  * while the hostnames are the same. `undefined` when the app has no origin TLS and wants none.
+ * A preview environment's origin certificate covers its zone's names ({@link previewZoneNames},
+ * research R6), with no client certificate: the preview server installs it with the previews'
+ * host plan.
  */
 export async function planOriginTls(
   deps: Pick<PhaseDeps, "paths" | "redactor" | "clock">,
@@ -188,7 +203,8 @@ export async function planOriginTls(
   },
 ): Promise<OriginTlsStep | undefined> {
   const { plan, record, served } = input;
-  const wanted = originTlsHostnames(plan);
+  const previews = plan.environment?.previews !== undefined;
+  const wanted = previews ? previewZoneNames(plan) : originTlsHostnames(plan);
   const client = record?.tls?.client;
   const sites = siteHosts(plan);
   // A hostname the app no longer serves at all goes at once: the planner turns it off once the
@@ -207,20 +223,22 @@ export async function planOriginTls(
   let keys: OriginTlsStep["keys"];
   let request: CertificateRequest | undefined;
   if (proxied.length > 0) {
-    let clientKey = values.ORIGIN_PULL_KEY;
-    let clientCertificate = values.ORIGIN_PULL_CERT;
-    if (clientKey === undefined || clientCertificate === undefined) {
-      clientKey = newKey(deps);
-      clientCertificate = selfSignedClientCertificate({
-        key: clientKey,
-        commonName: `opscrew-${plan.app.name}`,
-        days: CLIENT_CERTIFICATE_DAYS,
-        now: deps.clock.now(),
-      });
-      values = { ...values, ORIGIN_PULL_KEY: clientKey, ORIGIN_PULL_CERT: clientCertificate };
-      await writeOriginTlsValues(deps, values);
+    if (!previews) {
+      let clientKey = values.ORIGIN_PULL_KEY;
+      let clientCertificate = values.ORIGIN_PULL_CERT;
+      if (clientKey === undefined || clientCertificate === undefined) {
+        clientKey = newKey(deps);
+        clientCertificate = selfSignedClientCertificate({
+          key: clientKey,
+          commonName: `opscrew-${plan.app.name}`,
+          days: CLIENT_CERTIFICATE_DAYS,
+          now: deps.clock.now(),
+        });
+        values = { ...values, ORIGIN_PULL_KEY: clientKey, ORIGIN_PULL_CERT: clientCertificate };
+        await writeOriginTlsValues(deps, values);
+      }
+      keys = { clientCertificate, clientKey };
     }
-    keys = { clientCertificate, clientKey };
     const kept = values.ORIGIN_TLS_REQUEST;
     if (kept !== undefined && sameList(kept.hostnames, proxied)) {
       request = kept;
@@ -233,11 +251,9 @@ export async function planOriginTls(
     desired: {
       proxied,
       ...(served !== undefined ? { served } : {}),
-      ...(request !== undefined && keys !== undefined
-        ? {
-            origin: { csr: request.csr },
-            client: { sha256: fingerprintSha256(keys.clientCertificate) },
-          }
+      ...(request !== undefined ? { origin: { csr: request.csr } } : {}),
+      ...(keys !== undefined
+        ? { client: { sha256: fingerprintSha256(keys.clientCertificate) } }
         : {}),
     },
     ...(keys !== undefined ? { keys } : {}),
@@ -246,6 +262,47 @@ export async function planOriginTls(
     holdsProxy: plan.target.provider !== "portainer" && !plan.dns.proxied && leaving.length > 0,
     values,
   };
+}
+
+/**
+ * Stops a preview environment's provision before any change when its Cloudflare plan leaves out
+ * the previews' Origin CA certificate because the token may not make one (`tls.gap`): the preview
+ * server serves every preview with it.
+ */
+export function requirePreviewCertificate(
+  plan: DeployPlan,
+  shared: Pick<SharedPlan, "record"> | undefined,
+  command: string,
+): void {
+  if (shared?.record.tls?.gap !== "permission") return;
+  const zone = plan.environment?.previews?.domain;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The Cloudflare token lacks ${SSL_PERMISSION} for ${zone} (HTTP 403), and the preview server serves every preview with a Cloudflare Origin CA certificate for *.${zone} that the token makes. Nothing was changed.`,
+    {
+      hint: `Edit the token at ${CLOUDFLARE_TOKEN_PAGE} and give it ${SSL_PERMISSION} for ${zone}, then run \`${command}\` again.`,
+    },
+  );
+}
+
+/**
+ * The previews' Origin CA certificate and its key from the origin TLS values, for the previews
+ * host plan's apply (`previewTls`).
+ * @throws OpsCrewError `PHASE_PRECONDITION` when this computer does not hold them.
+ */
+export function previewTlsOf(
+  values: OriginTlsValues,
+  command: string,
+): { certificate: string; key: string } {
+  const { ORIGIN_TLS_CERT: certificate, ORIGIN_TLS_KEY: key } = values;
+  if (certificate !== undefined && key !== undefined) return { certificate, key };
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "This computer holds no key for the previews' Cloudflare Origin CA certificate, which the preview server serves every preview with, so the previews' recipe was not installed.",
+    {
+      hint: `Run \`${command}\` on the computer that set the previews up, or revoke the previews' origin certificate in Cloudflare (SSL/TLS → Origin Server) and run \`${command}\` again, which makes a new one.`,
+    },
+  );
 }
 
 /**

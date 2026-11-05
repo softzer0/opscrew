@@ -111,6 +111,7 @@ import {
   readEdgeOver,
   readServerEdge,
   renewsOriginCertificate,
+  requirePreviewCertificate,
   tlsWarnings,
 } from "./origin-tls";
 import {
@@ -542,11 +543,10 @@ async function provisionFlow(
   );
   // What the server runs now (read-only, over SSH as deploy): its proxy, and the app's origin
   // certificate and client-certificate requirement, which the origin TLS clean-up waits for. A
-  // preview environment serves no hostname behind Cloudflare's proxy, so it has no origin TLS and
-  // no part in OpsCrew's shared rules in the zone.
+  // preview environment's origin certificate covers its zone's names, with no client certificate.
   const served = await readServerEdge(deps, beforeApply(plan), services);
   const tls =
-    cloudflare === undefined || previews
+    cloudflare === undefined
       ? undefined
       : await planOriginTls(deps, {
           plan,
@@ -565,27 +565,32 @@ async function provisionFlow(
   if (tls?.holdsProxy) plan = { ...plan, dns: { ...plan.dns, proxied: true } };
   // OpsCrew's shared Cloudflare change (also the removal of this app's hostnames from a zone it
   // no longer uses), with the app's origin TLS and the zone's minimum TLS, planned read-only now
-  // (it stops on its findings) and applied before the infrastructure plan.
-  const shared = previews
-    ? undefined
-    : await planSharedCloudflare(deps, {
-        services,
-        plan,
-        cloudflare,
-        command,
-        tls: { ...(tls !== undefined ? { tls: tls.desired } : {}), minTls: true },
-        ...(tls !== undefined
-          ? {
-              notes: originTlsNotes(tls, {
-                workflow: posix.basename(plan.cicd.workflowPath),
-                branch: workflowBranch(plan, github.defaultBranch),
-              }),
-            }
-          : {}),
-      });
+  // (it stops on its findings) and applied before the infrastructure plan. A preview
+  // environment's renewed certificate needs no deploy: its host plan below installs it.
+  const shared = await planSharedCloudflare(deps, {
+    services,
+    plan,
+    cloudflare,
+    command,
+    tls: { ...(tls !== undefined ? { tls: tls.desired } : {}), minTls: true },
+    ...(tls !== undefined
+      ? {
+          notes: originTlsNotes(
+            tls,
+            previews
+              ? undefined
+              : {
+                  workflow: posix.basename(plan.cicd.workflowPath),
+                  branch: workflowBranch(plan, github.defaultBranch),
+                },
+          ),
+        }
+      : {}),
+  });
   if (tls !== undefined && shared?.main !== undefined) {
     await keepCertificateRequest(deps, tls, shared.main.plan);
   }
+  if (previews) requirePreviewCertificate(plan, shared?.main?.plan, again);
   // A server OpsCrew creates holds only this app, so a proxy switch there is planned and said.
   const edgeNotes: string[] = [];
   const switchNote = ownServer ? undefined : edgeSwitch(plan, served, []);

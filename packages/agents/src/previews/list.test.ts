@@ -1,7 +1,15 @@
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { SERVER_IPV4, testPlan } from "../testing";
-import { COMMIT, DIGEST, fakeShell, LIST_OUTPUT, previewProject } from "./__fixtures__/plan";
+import {
+  COMMIT,
+  DIGEST,
+  fakeShell,
+  HOST_7,
+  HOST_42,
+  LIST_OUTPUT,
+  previewProject,
+} from "./__fixtures__/plan";
 import { listPreviews, previewListLines } from "./list";
 
 describe("listPreviews", () => {
@@ -22,7 +30,7 @@ describe("listPreviews", () => {
           updatedAt: "2026-10-11T00:00:00.000Z",
 
           digest: DIGEST,
-          address: "https://pr-42.shop.example.com",
+          address: `https://${HOST_42}`,
         },
         expect.objectContaining({ number: 7, state: "failed" }),
       ],
@@ -37,8 +45,8 @@ describe("listPreviews", () => {
     );
     expect(previewListLines(list, deps.clock.now())).toEqual([
       "Previews: 2 of at most 3.",
-      "  pr-42: https://pr-42.shop.example.com, running, commit 0123456, created 36 hours ago, updated 12 hours ago",
-      "  pr-7: https://pr-7.shop.example.com, failed, commit 0123456, created 36 hours ago, updated 36 hours ago",
+      `  pr-42: https://${HOST_42}, running, commit 0123456, created 36 hours ago, updated 12 hours ago`,
+      `  pr-7: https://${HOST_7}, failed, commit 0123456, created 36 hours ago, updated 36 hours ago`,
     ]);
     // The server's address stays out of what is said and audited.
     const said = [
@@ -60,23 +68,33 @@ describe("listPreviews", () => {
     const { deps, plan } = await previewProject();
     const shell = fakeShell(() => ({
       exitCode: 0,
-      stdout: "9 failed - - - -\nopscrew-preview: listed 1/3\n",
+      stdout: "9 failed - - - - -\nopscrew-preview: listed 1/3\n",
     }));
     const list = await listPreviews(deps, plan, { services: { remote: shell.remote } });
-    expect(list.previews).toEqual([
-      { number: 9, state: "failed", address: "https://pr-9.shop.example.com" },
-    ]);
+    expect(list.previews).toEqual([{ number: 9, state: "failed" }]);
     expect(previewListLines(list, deps.clock.now())).toEqual([
       "Previews: 1 of at most 3.",
-      "  pr-9: https://pr-9.shop.example.com, failed",
+      "  pr-9: no address yet, failed",
     ]);
   });
 
-  it("refuses a line outside the contract instead of guessing", async () => {
+  it.each([
+    ["a time that is not one", `42 running ${COMMIT} soon 1791676800 ${DIGEST} ${HOST_42}`],
+    ["no address field", `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST}`],
+    ["another preview's address", `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST} ${HOST_7}`],
+    [
+      "an address outside the preview zone",
+      `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST} pr-42-a1b2c3d4e5.example.com`,
+    ],
+    [
+      "an address without its random part",
+      `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST} pr-42.example.net`,
+    ],
+  ])("refuses a line outside the contract instead of guessing: %s", async (_case, line) => {
     const { deps, plan } = await previewProject();
     const shell = fakeShell(() => ({
       exitCode: 0,
-      stdout: `42 running ${COMMIT} soon 1791676800 ${DIGEST}\nopscrew-preview: listed 1/3\n`,
+      stdout: `${line}\nopscrew-preview: listed 1/3\n`,
     }));
     await expect(
       listPreviews(deps, plan, { services: { remote: shell.remote } }),

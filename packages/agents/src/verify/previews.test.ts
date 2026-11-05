@@ -1,15 +1,23 @@
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { fakeShell, LIST_OUTPUT, previewProject } from "../previews/__fixtures__/plan";
+import {
+  COMMIT,
+  DIGEST,
+  fakeShell,
+  HOST_42,
+  LIST_OUTPUT,
+  previewProject,
+} from "../previews/__fixtures__/plan";
+import { PREVIEW_ZONE } from "../testing";
 import type { TlsConnect } from "./net";
 import { runVerify } from "./run";
 
-/** A certificate for `host` from Let's Encrypt, valid for two more months. */
-const tlsConnect: TlsConnect = async (host) => ({
-  subjectAltNames: [host],
+/** Cloudflare's edge certificate for the preview zone, valid for two more months. */
+const tlsConnect: TlsConnect = async () => ({
+  subjectAltNames: [PREVIEW_ZONE, `*.${PREVIEW_ZONE}`],
   validFrom: "2026-10-01T00:00:00.000Z",
   validTo: "2026-12-30T00:00:00.000Z",
-  issuer: "Let's Encrypt",
+  issuer: "Google Trust Services",
 });
 
 describe("verify --env <preview>", () => {
@@ -35,10 +43,10 @@ describe("verify --env <preview>", () => {
     });
 
     expect(shell.commands).toEqual(["/srv/apps/shop-preview/bin/opscrew-preview list"]);
-    expect(asked).toEqual(["https://pr-42.shop.example.com/api/health"]);
+    expect(asked).toEqual([`https://${HOST_42}/api/health`]);
     expect(result.checks.map((c) => `${c.status} ${c.title}`)).toEqual([
       "pass The preview server answers and lists its previews",
-      "pass pr-42: HTTPS certificate for pr-42.shop.example.com is valid",
+      `pass pr-42: HTTPS certificate for ${HOST_42} is valid`,
       "pass pr-42: Health endpoint answers 200",
       "warn pr-7 runs",
     ]);
@@ -61,5 +69,33 @@ describe("verify --env <preview>", () => {
         message: expect.stringContaining("did not answer over SSH"),
       }),
     ]);
+  });
+
+  it("warns about a running preview the server lists without an address, and asks it nothing", async () => {
+    const { deps } = await previewProject();
+    const stdout = `42 running ${COMMIT} 1791590400 1791676800 ${DIGEST} -\nopscrew-preview: listed 1/3\n`;
+    const shell = fakeShell(() => ({ exitCode: 0, stdout }));
+    const asked: string[] = [];
+    const result = await runVerify(deps, {
+      remote: shell.remote,
+      tlsConnect: async () => {
+        throw new Error("no TLS check expected");
+      },
+      fetch: async (input) => {
+        asked.push(String(input));
+        return new Response("ok", { status: 200 });
+      },
+    });
+    expect(asked).toEqual([]);
+    expect(result.checks.map((c) => `${c.status} ${c.title}`)).toEqual([
+      "pass The preview server answers and lists its previews",
+      "warn pr-42 runs",
+    ]);
+    expect(result.checks[1]).toMatchObject({
+      message: "pr-42 has no address on the preview server, so it is not served.",
+      remediation: expect.stringContaining("opscrew preview logs 42 --env preview"),
+    });
+    expect(result.checks[1]?.target).toBeUndefined();
+    expect(result.passed).toBe(true);
   });
 });

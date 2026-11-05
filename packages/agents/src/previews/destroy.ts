@@ -10,7 +10,6 @@ import { commandFlags } from "../environments/choice";
 import { refusalReason } from "../shared";
 import {
   type PreviewServices,
-  previewAddress,
   previewCommandFailed,
   previewNumber,
   previewServerTarget,
@@ -33,7 +32,7 @@ export async function destroyPreview(
   number: string,
   options: { services?: PreviewServices } = {},
 ): Promise<void> {
-  const previews = requirePreviews(plan, deps.paths.environment, "opscrew preview destroy");
+  requirePreviews(plan, deps.paths.environment, "opscrew preview destroy");
   const n = previewNumber(number);
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const remote = await previewShell(deps, plan, options.services);
@@ -41,7 +40,7 @@ export async function destroyPreview(
     kind: "remote-exec",
     title: `Remove preview pr-${n} of ${plan.app.name} with its data`,
     details: [
-      `Preview pr-${n} (${previewAddress(previews, n)}) is removed as if its pull request closed: its containers, its databases and files, its site and its route. This cannot be undone.`,
+      `Preview pr-${n} is removed as if its pull request closed: its containers, its databases and files, its site and its route. This cannot be undone.`,
       "A new push to the pull request creates it again, empty (seeded when the recipe has a seed).",
       "On the preview server, as deploy:",
       `  ${previewCommand(plan.app.name)} down ${n}`,

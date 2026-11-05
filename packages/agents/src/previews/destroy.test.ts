@@ -13,7 +13,7 @@ describe("destroyPreview", () => {
       kind: "remote-exec",
       allowDestroy: true,
       confirmPhrase: "pr-42",
-      details: expect.stringContaining("https://pr-42.shop.example.com"),
+      details: expect.stringContaining("Preview pr-42 is removed as if its pull request closed"),
     });
     expect(deps.audit.entries).toContainEqual(
       expect.objectContaining({

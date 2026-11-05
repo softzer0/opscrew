@@ -17,7 +17,7 @@ const MAX_PREVIEW_CAP = 20;
 
 /** What design is told about a new preview environment (`opscrew env add --previews`). */
 export interface PreviewDesignInput {
-  /** The Cloudflare zone the wildcard record `*.<previews.domain>` goes in, found by `env add`. */
+  /** The preview zone (`previews.domain`), checked by `env add`: the wildcard record `*.<zone>` goes in it. */
   zone: string;
   /** The server type the user chose (`--size`): the cap is what its memory holds. */
   serverType?: string;
@@ -141,11 +141,11 @@ export function previewStorageLine(designed: DeployPlan, name: string): string |
 }
 
 /**
- * The plan of a preview environment, from the one design made for it: a DNS-only Cloudflare zone
- * without a hostname of its own (its base is `previews.domain`, data-model.md), open to everyone
- * on ports 80 and 443, no signing and no deploy tags, no bucket at a provider (its storage
- * variables come from the values file, {@link previewStorageLine}), and the detected seed command
- * when its `previews` set none (`null` when detection found none).
+ * The plan of a preview environment, from the one design made for it: the preview zone, a
+ * Cloudflare zone of its own (`previews.domain`, data-model.md), without a hostname of its own,
+ * behind Cloudflare's proxy and open to Cloudflare only, no signing and no deploy tags, no bucket
+ * at a provider (its storage variables come from the values file, {@link previewStorageLine}), and
+ * the detected seed command when its `previews` set none (`null` when detection found none).
  */
 export function previewPlan(plan: DeployPlan, zone: string, facts: ProjectFacts): DeployPlan {
   const { environment } = plan;
@@ -158,10 +158,11 @@ export function previewPlan(plan: DeployPlan, zone: string, facts: ProjectFacts)
     ...(environment === undefined || previews === undefined
       ? {}
       : { environment: { ...environment, previews: { ...previews, seed } } }),
-    // Each preview's site is a Caddy site that gets its own certificate.
+    // Each preview's site is a Caddy site serving the previews' Origin CA certificate.
     ...("edge" in plan.target ? { target: { ...plan.target, edge: "caddy" as const } } : {}),
-    dns: { provider: "cloudflare", zone, proxied: false, www: false },
-    security: { ...plan.security, httpAllowedFrom: "any" },
+    // Behind the proxy a preview's name is in no public certificate (research R6).
+    dns: { provider: "cloudflare", zone, proxied: true, www: false },
+    security: { ...plan.security, httpAllowedFrom: "cloudflare" },
     supplyChain: { ...plan.supplyChain, sign: false },
     cicd: { ...plan.cicd, deployTags: { enabled: false, release: false } },
   };
@@ -201,5 +202,5 @@ export function previewsLine(previews: Previews): string {
     previews.seed === null || previews.seed === undefined
       ? "with no seed command"
       : `seeded once with \`${previews.seed}\``;
-  return `Previews: up to ${plural(previews.cap, "preview")} at once at pr-<number>.${previews.domain}, each removed after ${plural(previews.lifetimeDays, "day")} without a push, ${seed}.`;
+  return `Previews: up to ${plural(previews.cap, "preview")} at once at pr-<number>-<random>.${previews.domain}, behind Cloudflare's proxy, each removed after ${plural(previews.lifetimeDays, "day")} without a push, ${seed}.`;
 }

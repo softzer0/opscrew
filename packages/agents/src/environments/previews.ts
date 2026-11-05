@@ -11,6 +11,7 @@ import {
 import {
   type DeployPlan,
   isServerlessTarget,
+  likelyCloudflareZone,
   PREVIEW_APP_NAME_MAX,
   PreviewsSchema,
   type ProjectFacts,
@@ -44,6 +45,12 @@ import { writeEnvironmentRequirements } from "./requirements";
 /** Where previews run: a server OpsCrew creates, or one the user has (FR-2201). */
 const PREVIEW_TARGETS: ReadonlySet<string> = new Set(["hetzner", "digitalocean", "own"]);
 
+/** The command that buys a domain, which the preview domain's refusals name. */
+const BUY = "`opscrew domain buy <name>`";
+
+/** The record types that would serve a site in the preview zone besides the previews. */
+const WEB_RECORDS: ReadonlySet<string> = new Set(["A", "AAAA", "CNAME"]);
+
 /** The flag of each previews setting, in refusals. */
 const FLAGS: Record<string, string> = {
   cap: "--cap",
@@ -53,10 +60,10 @@ const FLAGS: Record<string, string> = {
 };
 
 /**
- * The questions of `opscrew env add <name> --previews` (spec.md US1): where the previews run (a
- * new server on prod's provider by default, or a server the user has), the region, how many run at
- * once (3), the base of their addresses (prod's hostname), the seed command (the detected one) and
- * how long an idle preview lives (7 days).
+ * The questions of `opscrew env add <name> --previews` (spec.md US1, US8): where the previews run
+ * (a new server on prod's provider by default, or a server the user has), the region, how many run
+ * at once (3), the preview domain (a Cloudflare zone of its own, no default), the seed command (the
+ * detected one) and how long an idle preview lives (7 days).
  */
 export function previewQuestions(
   name: string,
@@ -66,7 +73,6 @@ export function previewQuestions(
   const interview = buildQuestions(facts, context.base);
   const asked = (id: QuestionId) => interview.find((q) => q.id === id) as Question;
   const provider = asked("provider");
-  const domain = context.prodPlan.dns.domain;
   const { seedCommand, seedNote } = facts.build;
   return [
     {
@@ -88,10 +94,9 @@ export function previewQuestions(
     },
     {
       id: "domain",
-      prompt: "Under which name should previews get their addresses (pr-<number>.<name>)?",
-      help: "A name in a Cloudflare zone of yours: OpsCrew creates the wildcard record *.<name> there, DNS only.",
+      prompt: "Which domain should previews use? A domain of their own, on Cloudflare.",
+      help: `Each preview gets an address nobody can guess, pr-<number>-<random>.<domain>, behind Cloudflare's proxy. Use a domain used only for previews, not your app's: a second domain costs about $10 a year, and ${BUY} buys one.`,
       kind: "text",
-      ...(domain === undefined ? {} : { default: domain }),
       required: true,
     },
     {
@@ -151,36 +156,56 @@ function seedOf(answers: InterviewAnswers): string | null {
 }
 
 /**
- * The Cloudflare zone that holds `base`, once the wildcard record `*.<base>` is known to be free
- * (FR-2202); says so when `base` is the zone's apex, where the wildcard catches every name without
- * a record of its own.
- * @throws OpsCrewError `CREDENTIALS_MISSING` without a Cloudflare token, `PHASE_PRECONDITION` when
- * no zone holds `base` or a record is already at `*.<base>`.
+ * The preview domain `domain` once it is a Cloudflare zone of its own (FR-2202, research R6): not
+ * the app's own zone (prod's `dns.zone`, else the likely zone of prod's domain), a zone itself and
+ * not a name inside one, and without A, AAAA or CNAME records, which would serve something else
+ * beside the proxied wildcard `*.<zone>`. The refusals name `opscrew domain buy` for a domain of
+ * its own. Records are named by name and type only, never their content.
+ * @throws OpsCrewError `INVALID_INPUT` for the app's own zone, `CREDENTIALS_MISSING` without a
+ * Cloudflare token, `PHASE_PRECONDITION` for a domain that is no zone of the token's or a zone
+ * with such records.
  */
-async function previewZone(deps: PhaseDeps, base: string, command: string): Promise<string> {
+async function previewZone(
+  deps: PhaseDeps,
+  domain: string,
+  prodPlan: DeployPlan,
+  command: string,
+): Promise<string> {
+  const again = `then run \`${command}\` again`;
+  const { dns } = prodPlan;
+  const appZone =
+    dns.zone ?? (dns.domain === undefined ? undefined : likelyCloudflareZone(dns.domain));
+  if (appZone !== undefined && (domain === appZone || domain.endsWith(`.${appZone}`))) {
+    throw refuse(
+      "INVALID_INPUT",
+      `${domain} is in your app's own domain ${appZone}, and previews need a domain of their own: behind its proxy Cloudflare would name the app's domain on every preview, and a preview's records would sit beside the app's.`,
+      `Give a domain used only for previews with --domain (${BUY} buys one), ${again}.`,
+    );
+  }
   const connector = cloudflareConnector(deps);
   const client = connector.client;
   if (client === undefined) throw missing("Cloudflare", connector.credentials);
-  const zone = await client.findZone(base);
+  const zone = await client.findZone(domain);
   if (zone === undefined) {
     throw refuse(
       "PHASE_PRECONDITION",
-      `Previews get their addresses (pr-<number>.${base}) from a wildcard record OpsCrew creates in your Cloudflare zone, and no Cloudflare zone your token sees holds ${base}.`,
-      `Move the domain's DNS to Cloudflare (\`opscrew domain connect\`), or give a name in a Cloudflare zone of yours with --domain, then run \`${command}\` again.`,
+      `Previews need a domain of their own on Cloudflare, and no Cloudflare zone your token sees is ${domain}.`,
+      `Add ${domain} to your Cloudflare account, or buy a domain for previews with ${BUY}, ${again}.`,
     );
   }
-  const wildcard = `*.${base}`;
-  const taken = await client.listDnsRecords(zone.id, { name: wildcard });
-  if (taken.length > 0) {
+  if (zone.name !== domain) {
     throw refuse(
       "PHASE_PRECONDITION",
-      `Your Cloudflare zone ${zone.name} already has a record at ${wildcard} (${listText([...new Set(taken.map((r) => r.type))])}), the name OpsCrew would give the previews.`,
-      `Give the previews another name with --domain (for example previews.${base}), or delete that record in Cloudflare if nothing uses it, then run \`${command}\` again.`,
+      `${domain} is a name inside your Cloudflare zone ${zone.name}, and previews need a zone of their own, used for nothing else.`,
+      `Give a domain used only for previews with --domain (${BUY} buys one), ${again}.`,
     );
   }
-  if (base === zone.name) {
-    deps.reporter.info(
-      `The previews' name ${base} is your zone's apex, so the wildcard record ${wildcard} sends every name in the zone without a record of its own to the preview server, which answers none of them. To keep the rest of the zone apart, give the previews a name below it with --domain (for example previews.${base}).`,
+  const web = (await client.listDnsRecords(zone.id)).filter((r) => WEB_RECORDS.has(r.type));
+  if (web.length > 0) {
+    throw refuse(
+      "PHASE_PRECONDITION",
+      `Your Cloudflare zone ${zone.name} already has ${listText(web.map((r) => `${r.name} (${r.type})`))}, and previews need a zone used for nothing else: the proxied wildcard *.${zone.name} and the previews' certificate cover every name in it.`,
+      `Give a domain used only for previews with --domain (${BUY} buys one), or delete those records in Cloudflare if nothing uses them, ${again}.`,
     );
   }
   return zone.name;
@@ -190,8 +215,9 @@ async function previewZone(deps: PhaseDeps, base: string, command: string): Prom
  * `opscrew env add <name> --previews` (FR-2201, spec.md US1): asks only what previews need
  * ({@link previewQuestions}, defaults filling what `answers` leaves out), refuses before any change
  * what previews cannot have (FR-2202: a site, Portainer, this computer, a runner or build other
- * than GitHub's, a second preview environment, a base name in no Cloudflare zone or with a record
- * at `*.<base>` already, a server of the user's that is not public or runs an app), writes the
+ * than GitHub's, a second preview environment, no preview domain or one that is not a Cloudflare
+ * zone of its own ({@link previewZone}), a server of the user's that is not public or runs an
+ * app), records a server of the user's as served behind Cloudflare's proxy, writes the
  * environment's own answers (`dataCriticality: none`, `uptime: best-effort`, the fewest users),
  * says where the previews' values and seed come from, and designs it (`runDesign`, which shows its
  * monthly cost against the budget). A server the user owns is recorded and inspected first, as
@@ -272,8 +298,8 @@ export async function addPreviewEnvironment(
   if (domain === undefined) {
     throw refuse(
       "INVALID_INPUT",
-      "Previews get their addresses (pr-<number>.<name>) under a name in a Cloudflare zone of yours, and prod has no hostname to take it from.",
-      `Give the name with --domain, then run \`${command}\` again.`,
+      "Previews need a domain of their own on Cloudflare, where each preview gets an address nobody can guess (pr-<number>-<random>.<domain>), and none was given.",
+      `Give it with --domain (${BUY} buys one), then run \`${command}\` again.`,
     );
   }
   const parsed = PreviewsSchema.safeParse({
@@ -293,7 +319,7 @@ export async function addPreviewEnvironment(
     );
   }
   const previews = parsed.data;
-  const zone = await previewZone(deps, previews.domain, command);
+  const zone = await previewZone(deps, previews.domain, prodPlan, command);
   const requirements = answersToRequirements(
     { ...rest, expectedMonthlyUsers: "<1k", uptime: "best-effort", dataCriticality: "none" },
     { now: deps.clock.now(), facts, previous: base },
@@ -302,18 +328,22 @@ export async function addPreviewEnvironment(
   let inspected: OwnServerDesignInput | undefined;
   await ensureStateDir(paths);
   if (requirements.provider === "own") {
-    // Served directly with DNS only: GitHub's machines and Let's Encrypt reach it.
-    const ownContext = { cloudflareDomain: false };
+    // Served directly behind Cloudflare's proxy with OpsCrew's web filter; GitHub's machines
+    // reach it over SSH.
+    const ownContext = { cloudflareDomain: true };
     let follow = server;
     if (!hasFollowUps(follow) && options.askServer !== undefined) {
       const asked = buildServerQuestions(ownContext).filter((q) => q.id !== "server.serve");
       follow = splitFollowUps(await options.askServer(asked), "server", SERVER_FIELDS);
     }
-    const own = answersToOwnServer(follow, ownContext);
+    const own = answersToOwnServer(
+      { ...follow, values: { ...follow.values, serve: "proxy" } },
+      ownContext,
+    );
     if (!own.reachable) {
       throw refuse(
         "INVALID_INPUT",
-        "Previews need a server the internet reaches: GitHub's machines connect to it over SSH, and Let's Encrypt reaches it for each preview's certificate.",
+        "Previews need a server the internet reaches: GitHub's machines connect to it over SSH, and Cloudflare's proxy sends visitors to it.",
         `Use a server with a public address, or a new one (--target hetzner or digitalocean), then run \`${command}\` again.`,
       );
     }

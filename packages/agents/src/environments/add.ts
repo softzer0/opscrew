@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import {
   ensureStateDir,
   errorMessage,
@@ -5,6 +6,7 @@ import {
   type ProjectPaths,
   toPosixRelative,
 } from "@opscrew/core";
+import { tunnelMode } from "@opscrew/iac-templates";
 import {
   cloudflareEdgeCoverage,
   type DeployPlan,
@@ -43,6 +45,7 @@ import {
 } from "../interview/portainer";
 import { buildQuestions, type InterviewAnswers } from "../interview/questions";
 import { portainerAnswers } from "../interview/run";
+import { originTlsHostnames } from "../provision/origin-tls";
 import type { OwnServerServices } from "../provision/types";
 import { listRunnerHosts } from "../runners/machine";
 import { gitClient, readOwnServer, readPortainerConnection, serverlessName } from "../shared";
@@ -115,12 +118,17 @@ export interface AddEnvironmentOptions {
   /**
    * A preview environment (`--previews`, one per app): its answers are then `provider` (Hetzner,
    * DigitalOcean or `own`), `region`, `cap` (3 by default) or `size` (a server type, whose memory
-   * gives the cap; it wins over `cap`), `domain` (the base of `pr-<number>.<domain>`, prod's
-   * hostname by default), `seed` (a command, `none` or `false` for none; the detected one by
-   * default), `lifetime` (days, 7 by default) and a server's `server.*` follow-ups. See
-   * `addPreviewEnvironment`.
+   * gives the cap; it wins over `cap`), `domain` (the preview domain, a Cloudflare zone of its
+   * own: previews are `pr-<number>-<random>.<domain>`; no default), `seed` (a command, `none` or
+   * `false` for none; the detected one by default), `lifetime` (days, 7 by default) and a server's
+   * `server.*` follow-ups. See `addPreviewEnvironment`.
    */
   previews?: boolean;
+  /**
+   * Draws a whole number below `max` for the random part of the suggested hostname (default:
+   * node's `crypto.randomInt`).
+   */
+  randomInt?: (max: number) => number;
 }
 
 /** What {@link addEnvironment} wrote: the environment's requirements, and its design. */
@@ -130,13 +138,57 @@ export interface AddEnvironmentResult {
   design: DesignResult;
 }
 
+/** The characters of a suggested hostname's random part. */
+const RANDOM_CHARACTERS = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+/** How many random characters a suggested hostname has (research R6). */
+const RANDOM_LENGTH = 10;
+
 /**
- * The default hostname of the environment `name`: `<name>.<domain>`, or, where Cloudflare's free
+ * True when a new environment's name stays unlisted: the app runs on a server behind a Cloudflare
+ * Tunnel, or behind Cloudflare's proxy with a Cloudflare origin certificate
+ * (`originTlsHostnames`), so Cloudflare serves a name one level below the zone with its own
+ * certificate. A site's custom domain, or the user's own proxy in a Portainer, gets a public
+ * certificate of its own.
+ */
+function hidesNames(prodPlan: DeployPlan): boolean {
+  return (
+    !isServerlessTarget(prodPlan.target) &&
+    (tunnelMode(prodPlan) || originTlsHostnames(prodPlan).length > 0)
+  );
+}
+
+/**
+ * What the suggested hostname means for who can find it: a random name nobody finds without the
+ * link ({@link hidesNames}), or a name public certificate logs list.
+ */
+function hostnameNote(prodPlan: DeployPlan): string {
+  return hidesNames(prodPlan)
+    ? "A random name, which nobody finds without the link: behind Cloudflare's proxy it stays out of public certificates once its Cloudflare origin certificate is in place."
+    : "It gets a certificate of its own, and public certificate logs list every such name, so anyone can find it.";
+}
+
+/**
+ * The default hostname of the environment `name`: where the app's names stay unlisted
+ * ({@link hidesNames}), `<name>-<random>.<zone>` with {@link RANDOM_LENGTH} characters of
+ * `[a-z0-9]` drawn with `randomInt`; otherwise `<name>.<domain>`, or, where Cloudflare's free
  * certificate would not cover that name, the one-level name it suggests (`staging-shop.example.com`).
  */
-function defaultHostname(name: string, base: Requirements): string | undefined {
+function defaultHostname(
+  name: string,
+  base: Requirements,
+  prodPlan: DeployPlan,
+  random: (max: number) => number,
+): string | undefined {
   const { domain } = base;
   if (domain === undefined) return undefined;
+  if (hidesNames(prodPlan)) {
+    let part = "";
+    for (let i = 0; i < RANDOM_LENGTH; i++) {
+      part += RANDOM_CHARACTERS[random(RANDOM_CHARACTERS.length)];
+    }
+    return `${name}-${part}.${prodPlan.dns.zone ?? likelyCloudflareZone(domain)}`;
+  }
   const hostname = `${name}.${domain}`;
   if (base.dnsProvider !== "cloudflare") return hostname;
   return cloudflareEdgeCoverage(hostname, likelyCloudflareZone(domain))?.suggestion ?? hostname;
@@ -145,7 +197,8 @@ function defaultHostname(name: string, base: Requirements): string | undefined {
 /**
  * The questions of `opscrew env add <name>`: only the environment's own. Its target (prod's by
  * default, this computer for `dev`), the region for a cloud server, its size (the expected users,
- * the fewest by default), its hostname (`<name>.<domain>`), how it gets new versions (from main by
+ * the fewest by default), its hostname (`defaultHostname`, drawn with `randomInt`, by default
+ * node's), how it gets new versions (from main by
  * default, or promoted from an existing environment) and where its deploy job runs (GitHub's
  * machines by default), with the project's `runnerHosts` (its runner machines' names) a runner
  * machine too and the question which one, and where its image is built. A setup chosen first
@@ -160,6 +213,7 @@ export function environmentQuestions(
     runnerHosts?: readonly string[];
     from?: string;
     branch?: string;
+    randomInt?: (max: number) => number;
   },
   facts: ProjectFacts,
 ): EnvironmentQuestion[] {
@@ -168,7 +222,7 @@ export function environmentQuestions(
   const interview = buildQuestions(facts, base);
   const asked = (id: QuestionId) => interview.find((q) => q.id === id) as Question;
   const provider = asked("provider");
-  const hostname = defaultHostname(name, base);
+  const hostname = defaultHostname(name, base, prodPlan, context.randomInt ?? randomInt);
   return [
     {
       // The interview's targets, this computer among them.
@@ -193,7 +247,7 @@ export function environmentQuestions(
       ...asked("domain"),
       id: "domain",
       prompt: `Which hostname should the ${name} environment use?`,
-      help: "Its own: no other environment may use it. Not used on this computer, which has its own .localhost address.",
+      help: `Its own: no other environment may use it. Not used on this computer, which has its own .localhost address.${hostname === undefined ? "" : ` ${hostnameNote(prodPlan)}`}`,
       ...(hostname === undefined ? {} : { default: hostname }),
     },
     {
@@ -555,11 +609,29 @@ export async function addEnvironment(
       : {};
   const questions = environmentQuestions(
     name,
-    { prodPlan, base, environments, runnerHosts, ...chosen },
+    {
+      prodPlan,
+      base,
+      environments,
+      runnerHosts,
+      ...chosen,
+      ...(options.randomInt !== undefined ? { randomInt: options.randomInt } : {}),
+    },
     facts,
   );
   const given = options.answers ?? (ask === undefined ? {} : await ask(questions));
   const answers = answersWithDefaults(questions, given);
+  // A hostname given (`--hostname`, or the user's answer) wins; the suggested one is said.
+  const suggested = questions.find((q) => q.id === "domain")?.default;
+  if (
+    text(given, "domain") === undefined &&
+    typeof suggested === "string" &&
+    text(answers, "provider") !== "localhost"
+  ) {
+    deps.reporter.info(
+      `The ${name} environment's hostname is ${suggested}. ${hostnameNote(prodPlan)}`,
+    );
+  }
 
   let server = splitFollowUps(answers, "server", SERVER_FIELDS);
   const portainerSplit = splitFollowUps(server.rest, "portainer", PORTAINER_FIELDS);
