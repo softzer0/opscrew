@@ -5,10 +5,9 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–021. [021 advise](021-advise/) was built on 2026-11-04 and 2026-11-05 and passed its live
-pass on the final code; its release waits for the founder. [020 self-hosted
-monitoring](020-self-hosted-monitoring/) was released as 0.2.1 on 2026-11-04. Next: 022 preview
-environments, which waits for the founder's go-ahead.
+Done: 000–021. [021 advise](021-advise/) was built on 2026-11-04 and 2026-11-05, passed its live
+pass on the final code, and was released as 0.2.2 on 2026-11-05. Next: 022 preview environments,
+which waits for the founder's go-ahead.
 
 ## 019 Rollback
 

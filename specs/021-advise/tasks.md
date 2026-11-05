@@ -232,7 +232,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Accept: a retarget page from 005's spec and today's command (moving to another provider, the maintenance window, `--finish`, `--abort`, what can't move); every guide mention of `opscrew retarget` linked to it; `opscrew_advise` and advice in claude-code-plugin.md; one README bullet; advise.md says each thing once (applying separate, never smaller under 7 days, the closing line, own server/Portainer/this computer), "Changing a server's type" for the one-way and smaller-disk notes, and no "or has expired".
   - Verify: `pnpm lint`
   - Effort: medium
-- [ ] T2113 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync (0.2.2: nothing to redo).
+- [x] T2113 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync (0.2.2: nothing to redo).
 
 ## Dependencies
 
