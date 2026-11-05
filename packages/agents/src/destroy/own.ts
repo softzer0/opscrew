@@ -9,6 +9,7 @@ import {
   hostPlanHash,
   otherActiveApps,
   PORTAINER_PROJECT,
+  planAddon,
   planTeardown,
   planUndo,
   readableRecords,
@@ -441,7 +442,9 @@ function remainingOnOwnServer(input: {
  * plan deletes the tunnel, both are approved first, then the teardown is applied, then OpsCrew
  * waits until Cloudflare reports no active connections for the tunnel (it refuses to delete one
  * that has them) and only then applies the Cloudflare plan → the deploy secrets
- * (tunnel ones included) and OpsCrew's local record of the deployment. With `undoHost`, the undo
+ * (tunnel ones included) and OpsCrew's local record of the deployment. A preview environment's
+ * previews, recipe, preview key and cleanup go first, with `planAddon("previews", { disable })`
+ * (`host-apply`, `allowDestroy` + typed app name), listed in the same confirmation. With `undoHost`, the undo
  * host plan follows as a separate `host-apply` approval; it also runs alone after an earlier
  * destroy. A refusal or failure leaves everything after it untouched; running it again continues.
  */
@@ -600,6 +603,21 @@ export async function destroyOwnServer(
   }
   noteKept(teardown);
   const hostSteps = (teardown?.steps ?? []).filter((step) => step.state === "change");
+  // A preview environment: its previews with their data, the recipe, the preview key and the
+  // cleanup go first, in a destroying host plan of their own (planned now, from the facts).
+  const previews =
+    removeApp && plan.environment?.previews !== undefined
+      ? planAddon("previews", {
+          app: name,
+          runAs: "root",
+          facts,
+          ...(github.owner !== undefined && github.repo !== undefined
+            ? { repository: `${github.owner}/${github.repo}` }
+            : {}),
+          disable: {},
+        })
+      : undefined;
+  const previewSteps = (previews?.steps ?? []).filter((step) => step.state === "change");
   // The teardown deletes the app's data (with `deleteData`) in its step that removes the app.
   const deletesData =
     deleteData &&
@@ -621,7 +639,7 @@ export async function destroyOwnServer(
   const cloudflarePlan = removalDetails(shared);
   let bucket: BucketDeletion | undefined;
   if (removeApp) {
-    const removed = hostSteps.map((step) => step.title);
+    const removed = [...previewSteps, ...hostSteps].map((step) => step.title);
     deps.reporter.info(teardownSummary({ resources, removed, words }));
     if (cloudflarePlan !== undefined) deps.reporter.info(cloudflarePlan);
     if (dataWarning !== undefined) deps.reporter.warn(dataWarning);
@@ -706,12 +724,28 @@ export async function destroyOwnServer(
   let removal: CloudflareRemoval | undefined;
   const hostPlans: { teardown?: string; undo?: string } = {};
   let teardownApproval: ApprovalRecord | undefined;
+  let previewsApproval: ApprovalRecord | undefined;
   let protectionApproval: ApprovalRecord | undefined;
   let extraApprovals: ApprovalRecord[] = [];
   /** The servers whose delete protection this run lifted, said in every stop before they go. */
   let lifted: string[] = [];
   let snapshotIds: Record<string, string | undefined> = {};
   try {
+    if (previews !== undefined && previewSteps.length > 0) {
+      const result = await applyHostPlanApproved(deps, host, previews, {
+        deployPlan: plan,
+        name,
+        command,
+        title: `Remove the previews of ${name} from your server with their data`,
+        intro: [
+          `This removes every preview of ${name} with its data, then the previews' recipe and values, the preview key and the hourly cleanup; the app's removal follows.`,
+          SERVER_STAYS,
+        ],
+        refused: `The removal of the previews of ${name} was not approved, so nothing on your server was changed.`,
+      });
+      previewsApproval = result.approval;
+      deps.reporter.success(`Removed the previews of ${name} from your server.`);
+    }
     // The extra servers' snapshots (their own records), before anything is deleted.
     if (iac !== undefined && snapshots.length > 0) {
       snapshotIds = await snapshotServers(iac, snapshots, {
@@ -828,6 +862,7 @@ export async function destroyOwnServer(
       bucketDeleted?.approval,
       protectionApproval,
       removal?.approval,
+      previewsApproval,
       teardownApproval,
       ...extraApprovals,
       sharedApproval,

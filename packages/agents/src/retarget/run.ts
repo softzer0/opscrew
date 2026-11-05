@@ -105,6 +105,16 @@ export async function runRetarget(
   options: RetargetOptions = {},
 ): Promise<RetargetResult> {
   const plan = await readArtifact("plan", deps.paths.files.plan);
+  const name = deps.paths.environment;
+  if (plan.environment?.previews !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${name} is a preview environment: its previews come and go with pull requests, so OpsCrew does not move it to another provider. Nothing was changed.`,
+      {
+        hint: `To run the previews elsewhere, remove the environment (\`opscrew destroy --env ${name}\`, then \`opscrew env remove ${name}\`) and add it again with \`opscrew env add ${name} --previews --target <provider>\`.`,
+      },
+    );
+  }
   return runPhase(deps, "retarget", async () => {
     const session =
       plan.retarget === undefined

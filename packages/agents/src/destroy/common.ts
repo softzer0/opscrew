@@ -773,13 +773,20 @@ export function deploySecretsLeft(
 
 /**
  * 9. "What remains": the app's container images in GitHub's container registry, a further app's
- * package `<repo>/<key>` (`ghcrImageFor`).
+ * package `<repo>/<key>` (`ghcrImageFor`). A preview environment's are its previews' (`pr-*`),
+ * which every deploy workflow's image cleanup deletes once they are 31 days old.
  */
-export function containerImagesLeft(github: GitHubTarget, plan: Pick<DeployPlan, "app">): string {
+export function containerImagesLeft(
+  github: GitHubTarget,
+  plan: Pick<DeployPlan, "app" | "environment">,
+): string {
   const image = ghcrImageFor(
     github.owner && github.repo ? `${github.owner}/${github.repo}` : "<owner>/<repo>",
     plan.app.key,
   );
+  if (plan.environment?.previews !== undefined) {
+    return `The images of the previews that were still running (${image}:pr-*): the deploy workflows' image cleanup deletes them within 31 days.`;
+  }
   return `The app's container images in GitHub's container registry (${image}). Delete them in the package settings on GitHub if you no longer need them.`;
 }
 

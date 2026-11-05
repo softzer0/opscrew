@@ -72,6 +72,7 @@ import {
   renderPortainerRunbook,
   withoutRoute,
 } from "./portainer";
+import { verifyPreviews } from "./previews";
 import { verifySite } from "./serverless";
 import { serverChecks } from "./servers";
 
@@ -123,8 +124,8 @@ export interface VerifyResult {
   passed: boolean;
   /** The site address that was checked. */
   url: string;
-  /** Repo-relative path of the runbook that was written. */
-  runbookPath: string;
+  /** Repo-relative path of the runbook that was written; none for a preview environment. */
+  runbookPath?: string;
   /** The plan after verification (with `deployment.url`/`firstDeployAt` when passed). */
   plan: DeployPlan;
 }
@@ -139,7 +140,8 @@ export interface VerifyResult {
  * `deployment.url`, and with extra servers where each service runs (`deployment.placement`, when
  * none is recorded and no move is under way) in `opscrew/plan.yaml`, which stays as it is when
  * none changes. Marks `verify`. A site on Cloudflare's hosting or GitHub Pages is checked by
- * `verifySite`, which changes nothing and writes only its runbook.
+ * `verifySite`, which changes nothing and writes only its runbook. A preview environment is checked
+ * by `verifyPreviews`, which writes nothing.
  */
 export async function runVerify(
   deps: PhaseDeps,
@@ -159,6 +161,9 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   // ` --env <name>` for the commands verify names; `--env prod` beside other environments.
   const flag = await commandFlags(paths.root, paths.environment, paths.app);
   const serverless = isServerlessProvider(plan.target.provider);
+  if (plan.environment?.previews !== undefined) {
+    return verifyPreviews(deps, plan, { ...options, flag });
+  }
   if (!ownProxy && options.url !== undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",

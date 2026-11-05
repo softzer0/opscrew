@@ -64,6 +64,7 @@ import {
   PORTAINER_SECURE_NOTES,
   portainerSecurityChecks,
 } from "./portainer";
+import { previewServiceChecks } from "./previews";
 import { probeExpectedPorts, probeOwnServerPorts } from "./probes";
 import {
   renderSecurityReport,
@@ -223,10 +224,18 @@ async function checkServer(
     );
     // With the app's services' checks: no published port, their login set (FR-1328), Valkey's
     // password (FR-1450).
-    hostChecks = await runHostChecks(remote, [
-      ...hostChecksFor(plan, APP_SERVER, own?.hardening),
-      ...(await siteTlsChecks(deps, plan, remote)),
-    ]);
+    const previews =
+      plan.environment?.previews === undefined
+        ? undefined
+        : await previewServiceChecks(deps, plan, remote);
+    hostChecks = [
+      ...(await runHostChecks(remote, [
+        ...hostChecksFor(plan, APP_SERVER, own?.hardening),
+        ...(previews?.checks ?? []),
+        ...(await siteTlsChecks(deps, plan, remote)),
+      ])),
+      ...(previews?.unread ?? []),
+    ];
   }
   reporter.step(
     own === undefined
@@ -364,7 +373,14 @@ async function deepChecks(
 
   const hostnames = verifyHosts(plan);
   let testssl: DeepToolResult;
-  if (hostnames.length === 0) {
+  if (plan.environment?.previews !== undefined) {
+    testssl = skippedTool(
+      "testssl",
+      DEEP_PINS,
+      "A preview environment has no hostname of its own: its previews come and go with pull requests.",
+      "Nothing to do: `opscrew verify` checks each running preview's certificate.",
+    );
+  } else if (hostnames.length === 0) {
     testssl = skippedTool(
       "testssl",
       DEEP_PINS,

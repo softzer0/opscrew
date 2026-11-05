@@ -18,6 +18,7 @@ export * from "./logs";
 export * from "./monitoring";
 export * from "./network";
 export * from "./portainer";
+export * from "./previews";
 export * from "./promote";
 export * from "./providers";
 export * from "./provision";

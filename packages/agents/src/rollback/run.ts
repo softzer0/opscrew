@@ -49,6 +49,15 @@ export async function rollbackRun(deps: PhaseDeps, options: RollbackOptions): Pr
   const environment = deps.paths.environment;
   const flags = `${await appFlag(deps.paths.root, deps.paths.app)} --env ${environment}`;
   const command = `opscrew rollback${flags}`;
+  if (plan.environment?.previews !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${environment} is a preview environment: each preview runs its pull request's latest push, so there is no version to roll back to. ${NOTHING_CHANGED}`,
+      {
+        hint: `To run an earlier version in a preview, revert the change in its pull request and push; \`opscrew preview destroy <number>${flags}\` removes a preview.`,
+      },
+    );
+  }
   if (options.allowOldSecrets !== undefined && plan.target.provider !== "cloudflare-workers") {
     throw new OpsCrewError(
       "INVALID_INPUT",

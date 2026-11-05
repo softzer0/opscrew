@@ -35,7 +35,8 @@ import { serverServiceChecks, servicePorts } from "./services";
 
 /**
  * `secure`'s host checks on server `server` of `plan`: the hardening checks (on a server the user
- * owns, with what its last setup accepts, `hardening`), then those of the services it runs.
+ * owns, with what its last setup accepts, `hardening`), then those of the services it runs; on a
+ * preview server those are checked per preview instead (`previewServiceChecks`).
  */
 export function hostChecksFor(
   plan: DeployPlan,
@@ -44,7 +45,7 @@ export function hostChecksFor(
 ): HostCheck[] {
   return [
     ...(hardening === undefined ? HOST_CHECKS : ownServerHostChecks(hardening)),
-    ...serverServiceChecks(plan, server),
+    ...(plan.environment?.previews === undefined ? serverServiceChecks(plan, server) : []),
   ];
 }
 

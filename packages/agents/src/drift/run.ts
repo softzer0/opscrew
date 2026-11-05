@@ -30,6 +30,7 @@ import {
 } from "./infra";
 import { monitoringDrift } from "./monitoring";
 import { portainerDrift } from "./portainer";
+import { previewRecipeDrift } from "./previews";
 import { namedDifferences, type ServersDriftOptions, serversDrift } from "./servers";
 import { siteDrift } from "./site";
 import type { DriftOptions, DriftReport } from "./types";
@@ -68,6 +69,9 @@ const NO_CLOUD_RESOURCES_NOTE =
  *
  * On Cloudflare's hosting and GitHub Pages it compares the site with its plan and its IaC state
  * (`report.site`, see `siteDrift`).
+ *
+ * In a preview environment it also compares the recipe on the preview server with the committed
+ * one (`previewRecipeDrift`).
  */
 export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Promise<DriftReport> {
   const services = options.services ?? {};
@@ -195,6 +199,11 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   const monitoring = await monitoringDrift(deps, plan, notes, { services, inspect });
   if (monitoring.length > 0) {
     host = { ...host, differences: [...(host?.differences ?? []), ...monitoring] };
+  }
+  // 5d. A preview environment (feature 022): the recipe on its server against the committed one.
+  if (plan.environment?.previews !== undefined) {
+    const recipe = await previewRecipeDrift(deps, plan, notes, { services, inspect });
+    host = { ...host, differences: [...(host?.differences ?? []), ...recipe] };
   }
 
   return finishDriftReport(deps, plan, {

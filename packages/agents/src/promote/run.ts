@@ -263,6 +263,15 @@ export async function promote(deps: PhaseDeps, options: PromoteOptions): Promise
     app: deps.paths.app,
   });
   const plan = await readArtifact("plan", targetPaths.files.plan);
+  if (plan.environment?.previews !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${target} is a preview environment: each pull request deploys its own preview there, so nothing is promoted to it. ${NOTHING_CHANGED}`,
+      {
+        hint: "Push to a pull request to update its preview; `opscrew preview list` shows them.",
+      },
+    );
+  }
   if (
     options.allowOldSecrets !== undefined &&
     (options.version === undefined || plan.target.provider !== "cloudflare-workers")

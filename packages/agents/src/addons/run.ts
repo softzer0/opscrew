@@ -832,6 +832,15 @@ export async function addonEnable(
 ): Promise<AddonResult> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const command = `opscrew addon enable ${kind}${flag}`;
+  if (plan.environment?.previews !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${deps.paths.environment} is a preview environment: add-ons watch servers that run an app for good, and previews come and go with pull requests. Nothing was changed.`,
+      {
+        hint: `Turn the add-on on for another environment, for example \`opscrew addon enable ${kind}\` for prod.`,
+      },
+    );
+  }
   if (kind === "monitoring") {
     const { on, newServer, metricsDays, logsDays, services } = options;
     const change = await monitoringEnable(deps, plan, {

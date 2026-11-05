@@ -11,6 +11,7 @@ import { commandFlags } from "../environments/choice";
 import { localComponentStatus } from "../localhost/status";
 import type { MonitoringReading } from "../monitoring/status";
 import type { NetworkLink, ReadNetworkServices } from "../network";
+import { listPreviews, previewListLines } from "../previews/list";
 import type { PromoteGitHubApi } from "../promote/types";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import type { ProvisionServices } from "../provision/types";
@@ -238,13 +239,15 @@ function readingLines(
  * `verify` did (`deployStateReport`, FR-1913), then the scheduled check's state and open alerts when the plan
  * has it on (FR-1708). A site on Cloudflare's hosting
  * or GitHub Pages has no components: its running version, custom domains or Pages site instead
- * (`siteStatusReport`), and the figures it cannot give.
+ * (`siteStatusReport`), and the figures it cannot give. A preview environment shows its server's
+ * figures and its previews instead (`previewStatusReport`).
  */
 export async function componentStatusReport(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions & { check?: () => Promise<void> } = {},
 ): Promise<ComponentStatusReport> {
+  if (plan.environment?.previews !== undefined) return previewStatusReport(deps, plan, options);
   let report: Omit<ComponentStatusReport, "check" | "deploys">;
   let versions: Pick<DeployState, "running" | "previous"> = {};
   let deploys: Awaited<ReturnType<typeof deployStateReport>> = { lines: [] };
@@ -298,6 +301,51 @@ export async function componentStatusReport(
     ...(deploys.deploys !== undefined ? { deploys: { ...versions, ...deploys.deploys } } : {}),
     ...(state.check !== undefined ? { check: state.check } : {}),
   };
+}
+
+/**
+ * What `status` shows of a preview environment (spec.md US6), read-only: the preview server's
+ * figures and its previews, each with its address and state. A preview environment has no app of
+ * its own, so there is no component list, health check, deploy state or scheduled check. A part
+ * that cannot be read says why in its place.
+ */
+async function previewStatusReport(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: ComponentStatusOptions & { check?: () => Promise<void> },
+): Promise<ComponentStatusReport> {
+  if (!hasDeployment(plan)) {
+    const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+    return {
+      lines: [`The preview server is not set up yet: \`opscrew provision${flag}\` sets it up.`],
+    };
+  }
+  const { check, ...read } = options;
+  const note = (what: string, error: unknown) => {
+    if (!isUserFacingError(error)) throw error;
+    return [deps.redactor.redact(`OpsCrew could not read ${what}. ${errorText(error)}`)];
+  };
+  let resources: ResourceReading | undefined;
+  let figures: string[];
+  try {
+    await check?.();
+    resources = await readResources(deps, plan, read);
+    figures = readingLines(deps, plan, resources);
+  } catch (error) {
+    return { lines: note("the preview server", error) };
+  }
+  let previews: string[];
+  try {
+    const list = await listPreviews(deps, plan, {
+      ...(read.services?.remote !== undefined
+        ? { services: { remote: read.services.remote } }
+        : {}),
+    });
+    previews = previewListLines(list, deps.clock.now()).map((line) => deps.redactor.redact(line));
+  } catch (error) {
+    previews = note("the previews", error);
+  }
+  return { lines: joinBlocks(figures, previews), resources };
 }
 
 /** {@link componentStatusReport} without the runner and the check. */
