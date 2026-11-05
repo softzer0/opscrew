@@ -17,6 +17,7 @@ import * as localhost from "./localhost";
 import * as logs from "./logs";
 import * as mcp from "./mcp";
 import * as portainer from "./portainer";
+import * as preview from "./preview";
 import * as promote from "./promote";
 import * as provision from "./provision";
 import * as retarget from "./retarget";
@@ -60,6 +61,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   status,
   advise,
   logs,
+  preview,
   localhost,
   runner,
   secrets,

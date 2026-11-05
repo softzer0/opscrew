@@ -14,6 +14,7 @@ import { registerInterviewTools } from "./tools/interview";
 import { registerLogsTool } from "./tools/logs";
 import { registerPlacementTool } from "./tools/placement";
 import { registerPortainerTools } from "./tools/portainer";
+import { registerPreviewTools } from "./tools/previews";
 import { registerRunnerHostTools } from "./tools/runners";
 import { registerScanTool } from "./tools/scan";
 import { registerSecretsTools } from "./tools/secrets";
@@ -58,6 +59,7 @@ export function createOpscrewMcpServer(deps: OpscrewMcpDeps): McpServer {
   registerStatusTool(server, resolved);
   registerAdviseTool(server, resolved);
   registerLogsTool(server, resolved);
+  registerPreviewTools(server, resolved);
   registerDeployTools(server, resolved);
   registerDriftTool(server, resolved);
   registerInitCheckTool(server, resolved);

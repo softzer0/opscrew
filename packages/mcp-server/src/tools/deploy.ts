@@ -1118,8 +1118,8 @@ export function registerDeployTools(
             ? `${checked} is live and healthy (${summary}).`
             : `Verification of ${checked} found problems (${summary}). Fix them and call opscrew_verify again.`,
           ...checkLines(checks),
-          "",
-          `Runbook: ${result.runbookPath}`,
+          // A preview environment has no runbook.
+          ...(result.runbookPath === undefined ? [] : ["", `Runbook: ${result.runbookPath}`]),
         ].join("\n");
         return {
           text,

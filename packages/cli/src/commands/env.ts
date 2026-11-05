@@ -8,7 +8,7 @@ import {
   removeEnvironment,
   setEnvironment,
 } from "@opscrew/agents";
-import { OpsCrewError } from "@opscrew/core";
+import { listText, OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, DeployProviderSchema } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
 import type { CliContext } from "../context";
@@ -39,11 +39,61 @@ interface AddFlags extends RunnerFlags {
   branch?: string;
   option?: string;
   hostKey?: string;
+  /** `--previews`, with `--cap`, `--size`, `--lifetime`, `--domain` and `--seed` or `--no-seed`. */
+  previews?: boolean;
+  cap?: string;
+  size?: string;
+  lifetime?: string;
+  domain?: string;
+  seed?: string | false;
+}
+
+/** The flags that go only with `--previews`, by their key in {@link AddFlags}. */
+const PREVIEW_FLAGS = ["cap", "size", "lifetime", "domain", "seed"] as const;
+
+/**
+ * Refuses, before anything is asked, flags that don't go together: a previews flag without
+ * `--previews`; with it, `--cap` and `--size` together (the server type's memory gives the cap)
+ * and a runner or build other than GitHub's (a pull request's code runs in the job).
+ */
+function checkPreviewFlags(flags: AddFlags, command: string): void {
+  const given = PREVIEW_FLAGS.filter((key) => flags[key] !== undefined).map((key) =>
+    flags[key] === false ? "--no-seed" : `--${key}`,
+  );
+  if (flags.previews !== true) {
+    if (given.length === 0) return;
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${listText(given)} ${given.length === 1 ? "goes" : "go"} only with --previews. Nothing was changed.`,
+      { hint: `To set up previews of pull requests, run \`${command} --previews\`.` },
+    );
+  }
+  if (flags.cap !== undefined && flags.size !== undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "--cap and --size don't go together: the server type's memory gives how many previews run at once. Nothing was changed.",
+      { hint: `Give one of them, for example \`${command} --previews --cap 3\`.` },
+    );
+  }
+  for (const flag of ["runner", "build"] as const) {
+    const value = flags[flag];
+    if (value === undefined || value === "github") continue;
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `Previews are built and deployed on GitHub's machines only, never on a runner of yours: a pull request's code runs in the job, so --${flag} ${value} is not available with --previews. Nothing was changed.`,
+      { hint: `Leave --${flag} out, then run \`${command} --previews\` again.` },
+    );
+  }
 }
 
 /** The answers the flags of `env add` give up front, by question id. */
 function flagAnswers(flags: AddFlags): InterviewAnswers {
   return {
+    ...(flags.cap === undefined ? {} : { cap: flags.cap.trim() }),
+    ...(flags.size === undefined ? {} : { size: flags.size.trim() }),
+    ...(flags.lifetime === undefined ? {} : { lifetime: flags.lifetime.trim() }),
+    ...(flags.domain === undefined ? {} : { domain: flags.domain.trim() }),
+    ...(flags.seed === undefined ? {} : { seed: flags.seed === false ? false : flags.seed.trim() }),
     ...(flags.target === undefined ? {} : { provider: flags.target }),
     ...(flags.from === undefined ? {} : { from: flags.from.trim() }),
     ...(flags.branch === undefined ? {} : { branch: flags.branch.trim() }),
@@ -73,21 +123,34 @@ function ownServerOptions(
  * `opscrew env add <name>`: the environment's own questions (in a terminal, those its flags do not
  * answer, and the setup of FR-1537 unless `--from` or `--branch` decide it; in a script, the
  * flags and the defaults), its requirements, and its design with the monthly cost
- * (contracts/environments.md "Commands").
+ * (contracts/environments.md "Commands"). With `--previews`, a preview environment (`preview` by
+ * default) and only the questions previews need (spec.md US1).
  */
-async function add(ctx: CliContext, name: string, flags: AddFlags): Promise<void> {
+async function add(ctx: CliContext, named: string | undefined, flags: AddFlags): Promise<void> {
+  const appFlag = flags.app === undefined ? "" : ` --app ${flags.app.trim()}`;
+  checkPreviewFlags(flags, `opscrew env add ${named ?? "preview"}${appFlag}`);
+  const previews = flags.previews === true;
+  if (named === undefined && !previews) {
+    throw new OpsCrewError("INVALID_INPUT", "Name the environment to add.", {
+      hint: `For example \`opscrew env add staging${appFlag}\`, or \`opscrew env add preview${appFlag} --previews\` for previews of pull requests.`,
+    });
+  }
+  const name = named ?? "preview";
   const app = await resolveCliApp(ctx, flags.app, "env add");
   const deps = createPhaseDeps(ctx, { ai: false, app, environment: name });
   const given = flagAnswers(flags);
   const answered = new Set([
     ...Object.keys(given),
     ...("from" in given || "branch" in given ? ["setup"] : []),
+    // The server type's memory gives the cap.
+    ...("size" in given ? ["cap"] : []),
   ]);
   const prompts = promptsOf(ctx);
   const ask = (questions: Parameters<typeof askQuestions>[0]) =>
     askQuestions(questions, { prompts });
   const optionId = flags.option?.trim() || undefined;
   await addEnvironment(deps, {
+    ...(previews ? { previews: true } : {}),
     ...(ctx.isInteractive
       ? {
           ask: async (questions) => ({
@@ -244,9 +307,12 @@ export function register(program: Command, ctx: CliContext): void {
   const adding = env
     .command("add")
     .description(
-      "Add an environment: ask its own questions (where it runs, its size, hostname, how it gets new versions, where its deploy job runs and its image is built), design it and show its monthly cost",
+      "Add an environment: ask its own questions (where it runs, its size, hostname, how it gets new versions, where its deploy job runs and its image is built), design it and show its monthly cost; with --previews, previews of pull requests",
     )
-    .argument("<name>", "The environment's name, for example staging or dev")
+    .argument(
+      "[name]",
+      "The environment's name, for example staging or dev (with --previews: preview by default)",
+    )
     .addOption(
       new Option(
         "--target <provider>",
@@ -266,7 +332,29 @@ export function register(program: Command, ctx: CliContext): void {
       "--option <id>",
       "Choose this design option without asking (ids are listed by the command)",
     )
-    .action((name: string, flags: AddFlags) => add(ctx, name, flags));
+    .option(
+      "--previews",
+      "A preview environment: one preview of the app per pull request, built and deployed by GitHub Actions on a server of its own (--target hetzner, digitalocean or own; default prod's provider)",
+    )
+    .option("--cap <n>", "With --previews: how many previews run at once, 1 to 20 (default 3)")
+    .option(
+      "--size <type>",
+      "With --previews: the new server's type instead of --cap; its memory gives how many previews run at once",
+    )
+    .option(
+      "--lifetime <days>",
+      "With --previews: after how many days without a push a preview is removed, 1 to 30 (default 7)",
+    )
+    .option(
+      "--domain <name>",
+      "With --previews: the name previews get their addresses under (pr-<number>.<name>), in a Cloudflare zone of yours (default: prod's hostname)",
+    )
+    .option(
+      "--seed <command>",
+      "With --previews: the command that fills a new preview's database once (default: the one OpsCrew found)",
+    )
+    .option("--no-seed", "With --previews: no seed command; previews start with empty databases")
+    .action((name: string | undefined, flags: AddFlags) => add(ctx, name, flags));
   const setting = env
     .command("set")
     .description(

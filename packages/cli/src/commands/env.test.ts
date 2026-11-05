@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { makeRequirements, nextPostgresFacts, testPlan } from "@opscrew/agents/testing";
-import type { CommandRunner } from "@opscrew/contracts";
+import { makeRequirements, nextPostgresFacts, TOKEN, testPlan } from "@opscrew/agents/testing";
+import type { CommandRunner, FetchLike } from "@opscrew/contracts";
 import { exists } from "@opscrew/core";
-import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
+import { type Requirements, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { inEnvironment, planFile, withEnvironments } from "../ui/__fixtures__/environments";
 import {
@@ -220,8 +220,8 @@ describe("opscrew env remove", () => {
 });
 
 describe("opscrew env add", () => {
-  /** A designed prod app: its facts, its answers and its plan. */
-  async function prodApp(): Promise<TempProject> {
+  /** A designed prod app: its facts, its answers (`requirements`) and its plan. */
+  async function prodApp(requirements: Requirements = makeRequirements()): Promise<TempProject> {
     const created = await tempProject();
     await writeArtifact("architecture", path.join(created.root, "opscrew", "architecture.json"), {
       schemaVersion: 1,
@@ -235,7 +235,7 @@ describe("opscrew env add", () => {
     await writeArtifact(
       "requirements",
       path.join(created.root, "opscrew", "requirements.yaml"),
-      makeRequirements(),
+      requirements,
     );
     const ctx = projectContext(created);
     expect(await run(ctx, "design"), ctx.errors).toBe(0);
@@ -334,5 +334,113 @@ describe("opscrew env add", () => {
     expect(await run(ctx, "env", "add", "staging", "--branch", "staging")).not.toBe(0);
     expect(ctx.errors).toContain("The repository on GitHub has no branch staging");
     expect(await exists(planFile(project.root, "staging"))).toBe(false);
+  });
+
+  describe("--previews", () => {
+    const API = "https://api.cloudflare.com/client/v4";
+
+    /** Cloudflare's API with the zone example.com and no record at the wildcard's name. */
+    const cloudflare: FetchLike = async (input) => {
+      const url = new URL(String(input));
+      const ok = (result: unknown) =>
+        new Response(JSON.stringify({ success: true, errors: [], messages: [], result }), {
+          headers: { "content-type": "application/json" },
+        });
+      if (url.href.startsWith(`${API}/zones?`)) {
+        const found = url.searchParams.get("name") === "example.com";
+        return ok(
+          found ? [{ id: "z1", name: "example.com", status: "active", name_servers: [] }] : [],
+        );
+      }
+      if (url.href.startsWith(`${API}/zones/z1/dns_records`)) return ok([]);
+      return new Response("unavailable in tests", { status: 503 });
+    };
+
+    /** prod on shop.example.com in Cloudflare, and a context with a Cloudflare token. */
+    async function previewsApp(options: { interactive?: boolean; prompts?: UiPrompts } = {}) {
+      project = await prodApp(
+        makeRequirements({ domain: "shop.example.com", dnsProvider: "cloudflare" }),
+      );
+      project.env.CLOUDFLARE_API_TOKEN = TOKEN;
+      return projectContext(project, {
+        interactive: options.interactive ?? false,
+        services: {
+          fetch: cloudflare,
+          ...(options.prompts === undefined ? {} : { prompts: options.prompts }),
+        },
+      });
+    }
+
+    it("in a script, designs the preview environment from its flags, named preview by default", async () => {
+      const ctx = await previewsApp();
+      const args = ["--previews", "--cap", "2", "--lifetime", "5", "--seed", "npm run db:seed"];
+      expect(await run(ctx, "env", "add", ...args), ctx.errors).toBe(0);
+      const plan = await readArtifact("plan", planFile(ctx.cwd, "preview"));
+      expect(plan.environment?.previews).toEqual({
+        cap: 2,
+        lifetimeDays: 5,
+        domain: "shop.example.com",
+        seed: "npm run db:seed",
+      });
+      expect(ctx.output).toContain("opscrew provision --env preview");
+      expect(ctx.output + ctx.errors).not.toContain(TOKEN);
+    });
+
+    it("takes --domain, --no-seed and --size, whose memory gives the cap", async () => {
+      const ctx = await previewsApp();
+      const args = ["--previews", "--domain", "previews.example.com", "--no-seed"];
+      expect(await run(ctx, "env", "add", "review", ...args, "--size", "cx43"), ctx.errors).toBe(0);
+      const plan = await readArtifact("plan", planFile(ctx.cwd, "review"));
+      expect(plan.environment?.previews).toMatchObject({
+        domain: "previews.example.com",
+        seed: null,
+      });
+      expect(plan.target).toMatchObject({ serverType: "cx43" });
+    });
+
+    it("refuses flags that don't go together before anything is written", async () => {
+      const ctx = await previewsApp();
+      const refusals: [string[], string][] = [
+        [["--previews", "--cap", "2", "--size", "cx33"], "--cap and --size don't go together"],
+        [["--previews", "--runner", "server"], "--runner server is not available with --previews"],
+        [["--previews", "--build", "runner"], "--build runner is not available with --previews"],
+        [["staging", "--cap", "2", "--no-seed"], "--cap and --no-seed go only with --previews"],
+        [[], "Name the environment to add."],
+      ];
+      for (const [args, message] of refusals) {
+        const before = ctx.errors.length;
+        expect(await run(ctx, "env", "add", ...args), args.join(" ")).toBe(2);
+        expect(ctx.errors.slice(before)).toContain(message);
+      }
+      expect(await exists(planFile(ctx.cwd, "preview"))).toBe(false);
+      expect(await exists(planFile(ctx.cwd, "staging"))).toBe(false);
+    });
+
+    it("in a terminal, asks only what previews need and its flags leave open", async () => {
+      const prompts = new DefaultPrompts();
+      const ctx = await previewsApp({ interactive: true, prompts });
+      const args = ["env", "add", "--previews", "--size", "cx43", "--no-seed"];
+      expect(await run(ctx, ...args), ctx.errors).toBe(0);
+      const asked = prompts.messages.join("\n");
+      expect(asked).toContain("Where should the preview environment's previews run?");
+      expect(asked).toContain("Under which name should previews get their addresses");
+      expect(asked).not.toContain("How many previews may run at once?");
+      expect(asked).not.toContain("fill a new preview's database");
+      expect(asked).not.toContain("get new versions");
+    });
+
+    it("in a terminal, refuses a runner or build of yours before asking anything", async () => {
+      for (const flags of [
+        ["--runner", "server"],
+        ["--build", "runner"],
+      ]) {
+        const prompts = new DefaultPrompts();
+        const ctx = await previewsApp({ interactive: true, prompts });
+        expect(await run(ctx, "env", "add", "--previews", ...flags), flags.join(" ")).toBe(2);
+        expect(ctx.errors).toContain(`${flags.join(" ")} is not available with --previews`);
+        expect(prompts.messages).toEqual([]);
+        await project?.cleanup();
+      }
+    });
   });
 });

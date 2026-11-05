@@ -362,6 +362,31 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   and in the terminal commands you pass on add `--env <name>`, for example
   `npx opscrew provision --env staging`. Removing one stays in the terminal:
   `npx opscrew destroy --env <name>`, then `opscrew_env_remove`.
+- **Previews of pull requests.** Suggest them when a team reviews pull requests and the app runs
+  on a server with its domain on Cloudflare: each pull request from a branch of the repository
+  gets its own copy of the app at `https://pr-<number>.<hostname>`, built and deployed by GitHub
+  Actions on a small server of its own, and removed with its data when the pull request closes.
+  Setup is in the user's terminal: `npx opscrew env add preview --previews` (optional `--cap <n>`
+  or `--size <type>`, `--lifetime <days>`, `--domain <name>`, `--seed <command>` or `--no-seed`,
+  `--target own` for a server they have with nothing else on it) designs it and shows its monthly
+  cost; then `npx opscrew provision --env preview`, where the user approves the plans by their
+  hashes and types `<app>-preview`: a standing approval for GitHub Actions to create, update and
+  delete previews within the recipe's bounds without asking again. The deploy-setup pull request
+  adds the preview workflow. The app's values for previews come from `.env.preview`: test keys
+  only, since anyone who can push a branch can read them. `opscrew_preview_list` with
+  `environment` lists the previews (read-only); their logs are `npx opscrew preview logs <n>`,
+  removing one is `npx opscrew preview destroy <n>` (the user types `pr-<n>`), and removing them
+  all with their server is `npx opscrew destroy --env preview`. The pull request's comment says:
+  the preview runs at its address with its commit; it runs but its seed failed (its data may be
+  missing; the next push tries again); it failed at a step (a preview that ran before keeps its
+  earlier version; the logs say why); the cap is reached (close or merge another pull request
+  with one, or wait until one is idle for its lifetime; nothing running was stopped); the server
+  refused a request outside the recipe, was busy, could not be reached, or the preview did not
+  answer within 3 minutes (its first certificate can take longer); the image did not build; or
+  the preview was removed. Previews never run for forks or Dependabot, have no login in front
+  of them (their addresses are public), and are not for sites without a server, a Portainer or
+  this computer; each runs its own empty databases (seeded when there is a seed), never prod's
+  data.
 - **Promotion.** An environment promoted from another (for example prod from staging) gets no
   build of its own: `opscrew_promote` with `to` deploys exactly the image its source runs. To roll
   it back, the user runs `npx opscrew rollback --env <name>` in their terminal (see "Rolling back"

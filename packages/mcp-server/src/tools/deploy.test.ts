@@ -586,6 +586,7 @@ describe.skipIf(!findExecutable("git"))(
       expect(data.checks.length).toBeGreaterThan(0);
       expect(data.summary).toMatch(/\d+ passed, \d+ failed/);
       expect(data.runbookPath).toBe("opscrew/RUNBOOK.md");
+      expect(textOf(result)).toContain("Runbook: opscrew/RUNBOOK.md");
       expect(data.checks.some((c: { id: string; status: string }) => c.status === "pass")).toBe(
         true,
       );

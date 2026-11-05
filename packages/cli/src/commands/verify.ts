@@ -55,10 +55,16 @@ export function register(program: Command, ctx: CliContext): void {
         return;
       }
       const portainer = provider === "portainer";
+      const runbook = result.runbookPath;
       printNextSteps(ctx, [
-        portainer
-          ? `read ${result.runbookPath}: it explains deploys, rollbacks, logs, backups and secret rotation in your Portainer.`
-          : `read ${result.runbookPath}: it explains deploys, rollbacks, logs, SSH access, backups and secret rotation.`,
+        // A preview environment has no runbook.
+        ...(runbook === undefined
+          ? []
+          : [
+              portainer
+                ? `read ${runbook}: it explains deploys, rollbacks, logs, backups and secret rotation in your Portainer.`
+                : `read ${runbook}: it explains deploys, rollbacks, logs, SSH access, backups and secret rotation.`,
+            ]),
         portainer
           ? `run \`opscrew secure${flag}\` to check the app's stack in your Portainer and write ${report}.`
           : secureServerStep(flag, report),
