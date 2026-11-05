@@ -1,4 +1,3 @@
-import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { detectProjectDetails } from "./index";
 import { makeTree, removeTree } from "./test-helpers";
@@ -180,8 +179,16 @@ describe("detectSeed", () => {
   });
 
   it("an app in a folder gets cd <dir> && …, like its release command", async () => {
-    const fixture = fileURLToPath(new URL("./seed/__fixtures__/rails-in-folder/", import.meta.url));
-    const detection = await detectProjectDetails(fixture, { appDir: "apps/shop" });
+    const detection = await detectionOf(
+      {
+        "apps/shop/Gemfile": 'source "https://rubygems.org"\ngem "rails", "~> 8.0.2"\ngem "pg"\n',
+        "apps/shop/config/application.rb":
+          "module Shop\n  class Application < Rails::Application\n  end\nend\n",
+        "apps/shop/bin/rails": "#!/usr/bin/env ruby\n",
+        "apps/shop/db/seeds.rb": 'Product.create!(name: "Mug")\n',
+      },
+      "apps/shop",
+    );
     expect(detection.facts.build.seedCommand).toBe("cd apps/shop && bin/rails db:seed");
   });
 });

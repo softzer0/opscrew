@@ -7,7 +7,7 @@ import { dirnameRel, joinRel } from "./paths";
 import { cleanPath, ReleaseContext } from "./release/context";
 
 /** What {@link detectSeed} found: a command, or a note saying why there is none. */
-export interface SeedDetection {
+interface SeedDetection {
   /** The seed command, run from the repository root like the release command. */
   command?: string;
   /** Why no seed command was found, in plain English that says what to do next. */
@@ -15,7 +15,7 @@ export interface SeedDetection {
 }
 
 /** What {@link detectSeed} looks at. */
-export interface SeedInputs {
+interface SeedInputs {
   /** Repo-relative directory of the app (`.` for the root). */
   appDir: string;
   /** Repo-relative files of the repository that detection may look at. */
@@ -25,7 +25,7 @@ export interface SeedInputs {
   /** Frameworks detected for the app. */
   frameworks: ReadonlySet<string>;
   /** Reads a repo-relative file of `files`; none when absent. */
-  read?: ReadText;
+  read: ReadText;
   /** `<pm> run <script>` for the app in repository-root form (Node.js apps). */
   runScript?: (script: string) => string;
 }
@@ -91,15 +91,7 @@ async function knex(ctx: ReleaseContext): Promise<string | undefined> {
 /** Sequelize: `npx sequelize-cli db:seed:all` with seeders in `seeders-path` or `seeders/`. */
 async function sequelize(ctx: ReleaseContext): Promise<string | undefined> {
   if (!ctx.npm("sequelize-cli")) return undefined;
-  const args = /["']seeders-path["']\s*:\s*path\.(?:resolve|join)\(([^)]*)\)/.exec(
-    (await ctx.read(".sequelizerc")) ?? "",
-  )?.[1];
-  const configured = args
-    ?.split(",")
-    .map((arg) => /^\s*["'`]([^"'`]+)["'`]\s*$/.exec(arg)?.[1])
-    .filter((part): part is string => part !== undefined)
-    .join("/");
-  const folder = configured ? cleanPath(configured) : "seeders";
+  const folder = (await ctx.sequelizercPath("seeders-path")) ?? "seeders";
   return folderHas(ctx, folder, SCRIPT_FILE)
     ? ctx.at(".", "npx sequelize-cli db:seed:all")
     : undefined;
@@ -122,13 +114,7 @@ function adonis(ctx: ReleaseContext): string | undefined {
  * named) and Drizzle (no seed command of its own) get a note instead of a command.
  */
 export async function detectSeed(inputs: SeedInputs): Promise<SeedDetection> {
-  const ctx = new ReleaseContext(
-    inputs.appDir,
-    inputs.files,
-    inputs.unit,
-    inputs.read ?? (async () => undefined),
-    undefined,
-  );
+  const ctx = new ReleaseContext(inputs.appDir, inputs.files, inputs.unit, inputs.read, undefined);
   if (inputs.runScript) {
     const script = SEED_SCRIPTS.find((name) => (ctx.scripts[name] ?? "").trim() !== "");
     if (script) return { command: inputs.runScript(script) };

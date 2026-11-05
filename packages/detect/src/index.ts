@@ -28,7 +28,6 @@ export {
   SKIPPED_DIRECTORIES,
 } from "./files";
 export { type GitRemote, parseGitRemote, readGitInfo } from "./git";
-export { detectSeed, type SeedDetection, type SeedInputs } from "./seed";
 export {
   type CloudflareAdapter,
   type CloudflareFramework,

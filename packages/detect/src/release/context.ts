@@ -143,6 +143,18 @@ export class ReleaseContext {
     return this.readRepo(joinRel(this.appDir, path));
   }
 
+  /** A folder path set in `.sequelizerc` (`path.resolve(...)` or `path.join(...)`), cleaned. */
+  async sequelizercPath(key: "migrations-path" | "seeders-path"): Promise<string | undefined> {
+    const pattern = new RegExp(`["']${key}["']\\s*:\\s*path\\.(?:resolve|join)\\(([^)]*)\\)`);
+    const args = pattern.exec((await this.read(".sequelizerc")) ?? "")?.[1];
+    const configured = args
+      ?.split(",")
+      .map((arg) => /^\s*["'`]([^"'`]+)["'`]\s*$/.exec(arg)?.[1])
+      .filter((part): part is string => part !== undefined)
+      .join("/");
+    return configured ? cleanPath(configured) : undefined;
+  }
+
   /** Reads up to `limit` app-relative files and returns the first whose text matches. */
   async firstMatching(
     files: readonly string[],

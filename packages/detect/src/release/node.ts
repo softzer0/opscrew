@@ -329,18 +329,10 @@ async function knex(ctx: ReleaseContext): Promise<ReleaseDetection | undefined> 
 
 /** True when the app has sequelize-cli style migrations (`<14 digits>-name.js`). */
 async function hasSequelizeMigrations(ctx: ReleaseContext): Promise<boolean> {
-  const rc = await ctx.read(".sequelizerc");
-  const args = /["']migrations-path["']\s*:\s*path\.(?:resolve|join)\(([^)]*)\)/.exec(
-    rc ?? "",
-  )?.[1];
-  const configured = args
-    ?.split(",")
-    .map((arg) => /^\s*["'`]([^"'`]+)["'`]\s*$/.exec(arg)?.[1])
-    .filter((part): part is string => part !== undefined)
-    .join("/");
+  const configured = await ctx.sequelizercPath("migrations-path");
   const migration = /^\d{14}-[\w.-]+\.[cm]?js$/;
   return configured
-    ? folderHas(ctx, cleanPath(configured), migration)
+    ? folderHas(ctx, configured, migration)
     : ctx.rel.some(
         (file) => /(?:^|\/)migrations$/.test(dirnameRel(file)) && migration.test(basenameRel(file)),
       );

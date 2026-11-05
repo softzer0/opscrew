@@ -156,7 +156,7 @@ its state:
 | State | What it means |
 |---|---|
 | Runs | the preview is up at its address, on that commit |
-| Runs, but the seed failed | the preview is up, but its data may be missing; the next push tries the seed again |
+| Runs, but the seed failed | the preview is up, but its data may be missing (see [Data and seeds](#data-and-seeds)) |
 | The cap is reached | the server already runs as many previews as its cap; nothing running was stopped (see [The cap and cleanup](#the-cap-and-cleanup)) |
 | Failed at a step | pulling the image, the release command, starting the app, its health check, or routing the address; a preview that ran before keeps its earlier version, a new one isn't served |
 | The image did not build | the comment links the workflow run that says why |
@@ -205,7 +205,9 @@ its preview was removed gets a new one, empty and seeded again.
 ### The preview values: test keys only
 
 Your app's own values for previews (API keys, mail settings, and the like) come from `.env.preview`,
-which `opscrew provision --env preview` reads. Prod's `.env` never goes to previews.
+which `opscrew provision --env preview` reads. Prod's `.env` never goes to previews. Git must ignore
+`.env.preview`: add `.env.*` to your `.gitignore` (with `!.env.example` if you commit an example
+file). Provision stops before reading the file when git would commit it.
 
 **Put test keys only in `.env.preview`.** Anyone who can push a branch to the repository can run
 their code on the preview server, and so read these values. Use a payment provider's test mode, a
@@ -249,8 +251,10 @@ server. `promote`, `rollback` and `retarget` don't apply to previews and say so.
 
 ## Changing the recipe
 
-To change the cap, the size, the lifetime or the seed, design the environment again, then provision
-it:
+Designing the environment again keeps its previews' settings, so change them in its plan first.
+Edit `environment.previews` in `opscrew/environments/preview/plan.yaml`: `cap`, `lifetimeDays`,
+`domain` or `seed` (`null` for none). Then design the environment again, which sizes a new server
+for the cap (or checks that it fits on a server you already have), and provision it:
 
 ```bash
 npx opscrew design --env preview
@@ -283,14 +287,10 @@ recipe.
 
 ## What previews don't do
 
-- **Pull requests from forks** get no preview.
-- **No login in front:** previews are public to anyone with the address.
 - **Not for sites** on [Cloudflare's hosting](cloudflare-hosting.md) or
   [GitHub Pages](github-pages.md), and not on [a Portainer](portainer-target.md) or
   [this computer](localhost.md): previews need a server of their own.
-- **No copies of prod's data**, or of any other environment's.
 - **Not several apps wired to each other:** in a repository with [several apps](several-apps.md),
   each app has its own preview environment and server, and a pull request touching two apps gets
   two separate previews.
-- **Not one server shared by several apps' previews.**
 - **No monitoring or alerts** for previews.

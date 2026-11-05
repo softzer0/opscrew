@@ -1,1 +1,0 @@
-Product.create!(name: "Mug")
