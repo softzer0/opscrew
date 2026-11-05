@@ -315,21 +315,77 @@ describe("environment.previews", () => {
     expect(www.message).toContain("set dns.www to false");
   });
 
-  it("refuses a base other than the zone itself, inside it or not", async () => {
-    for (const domain of [
-      "pr.example-previews.com",
-      "app.example.org",
-      "notexample-previews.com",
-    ]) {
+  it("allows a base below the zone, and refuses one outside it, naming both", async () => {
+    for (const domain of ["pr.example-previews.com", "a.b.example-previews.com"]) {
+      const plan = await previewPlan((p) => {
+        p.environment.previews.domain = domain;
+      });
+      expect(DeployPlanSchema.parse(plan).environment?.previews?.domain).toBe(domain);
+    }
+    for (const domain of ["app.example.org", "notexample-previews.com"]) {
       const issue = await refused((p) => {
         p.environment.previews.domain = domain;
       });
       expect(issue).toEqual({
         path: "environment.previews.domain",
         message:
-          "must be the zone itself (example-previews.com): previews get a Cloudflare zone of their own, used for nothing else; set environment.previews.domain to example-previews.com, or dns.zone to your preview zone",
+          "must be the zone (example-previews.com) or a name below it, such as previews.example-previews.com: the wildcard record goes in that Cloudflare zone; set environment.previews.domain to one of them, or dns.zone to the zone it is in",
       });
     }
+  });
+
+  it("allows previews on another environment's server you own, never prod's", async () => {
+    const plan = DeployPlanSchema.parse(
+      await previewPlan((p) => {
+        p.target = { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" };
+        p.environment.previews.server = { environment: "dev" };
+      }),
+    );
+    expect(plan.environment?.previews?.server).toEqual({ environment: "dev" });
+    expect(parseArtifact("plan", serializeArtifact("plan", plan), "plan.yaml")).toEqual(plan);
+    const prod = PreviewsSchema.safeParse({
+      domain: "example.com",
+      server: { environment: "prod" },
+    });
+    expect(prod.error?.issues.map((i) => ({ path: i.path.join("."), message: i.message }))).toEqual(
+      [
+        {
+          path: "server.environment",
+          message:
+            "must not be \"prod\": previews never run on prod's server, as anyone who can push a branch would run code beside prod's data; name another environment, such as dev",
+        },
+      ],
+    );
+    for (const server of [{ environment: "Dev" }, { environment: "dev", extra: true }, {}]) {
+      expect(PreviewsSchema.safeParse({ domain: "example.com", server }).success).toBe(false);
+    }
+  });
+
+  it("refuses another environment's server unless the target is a server you own, public", async () => {
+    const message =
+      'must be "own" with environment.previews.server: previews run on the app server of dev and OpsCrew creates no server for them; set target.provider to "own" with access "public", or remove environment.previews.server to give previews a server of their own';
+    const cloud = await refused((p) => {
+      p.environment.previews.server = { environment: "dev" };
+    });
+    expect(cloud).toEqual({ path: "target.provider", message });
+    const portainer = await refused((p) => {
+      p.environment.previews.server = { environment: "dev" };
+      p.target = {
+        provider: "portainer",
+        mode: "portainer-stack",
+        environmentId: 3,
+        arch: "amd64",
+        redeploy: "updater",
+        web: { mode: "proxy", port: 8080 },
+      };
+    });
+    expect(portainer).toEqual({ path: "target.provider", message });
+    const tunnel = await refused((p) => {
+      p.environment.previews.server = { environment: "dev" };
+      p.target = { provider: "own", mode: "vps-compose", arch: "amd64", access: "tunnel" };
+    });
+    expect(tunnel.path).toBe("target.access");
+    expect(tunnel.message).toContain('must be "public" with previews');
   });
 
   it("refuses an app name longer than 31 characters", async () => {

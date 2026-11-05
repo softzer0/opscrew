@@ -372,8 +372,8 @@ function boundedInt(min: number, max: number, message: string) {
 
 /**
  * `plan.environment.previews`: a preview environment, which runs one app per pull request,
- * `<app.name>-pr-<number>` at `pr-<number>-<random>.<domain>`, on its own server (ADR 0026). Absent for every
- * other environment.
+ * `<app.name>-pr-<number>` at `pr-<number>-<random>.<domain>`, on its own server or, opted into,
+ * another environment's (ADR 0026). Absent for every other environment.
  */
 export const PreviewsSchema = z.strictObject({
   /** How many previews run at once. */
@@ -388,8 +388,23 @@ export const PreviewsSchema = z.strictObject({
     30,
     "must be a whole number of days from 1 to 30: a preview not updated this long is removed",
   ).default(7),
-  /** The preview zone, a Cloudflare zone of its own: previews are `pr-<number>-<random>.<domain>`. */
+  /**
+   * Where previews are `pr-<number>-<random>.<domain>`: `dns.zone` itself (a Cloudflare zone of
+   * their own) or, opted into, a name below it.
+   */
   domain: FqdnSchema,
+  /**
+   * Opted into: previews run on the app server of this other environment (never prod's) instead of
+   * a server of their own.
+   */
+  server: z
+    .strictObject({
+      environment: EnvironmentNameSchema.refine((name) => name !== "prod", {
+        message:
+          "must not be \"prod\": previews never run on prod's server, as anyone who can push a branch would run code beside prod's data; name another environment, such as dev",
+      }),
+    })
+    .optional(),
   /**
    * The command that seeds a new preview's database once, or `null` for none. Absent until design
    * sets the detected one.
@@ -1329,7 +1344,12 @@ function checkPreviews(
     );
   }
   const { provider } = plan.target;
-  if (!onOneServer(provider)) {
+  if (previews.server !== undefined && provider !== "own") {
+    issue(
+      ["target", "provider"],
+      `must be "own" with environment.previews.server: previews run on the app server of ${previews.server.environment} and OpsCrew creates no server for them; set target.provider to "own" with access "public", or remove environment.previews.server to give previews a server of their own`,
+    );
+  } else if (!onOneServer(provider)) {
     issue(
       ["target", "provider"],
       `can be "hetzner", "digitalocean" or "own" with previews: previews run on a server OpsCrew deploys to over SSH, which a ${provider} target is not; choose a cloud server or a server you own for the preview environment`,
@@ -1395,9 +1415,9 @@ function checkPreviews(
 }
 
 /**
- * A preview environment's DNS: a Cloudflare zone of its own (`previews.domain` is `dns.zone`) behind
+ * A preview environment's DNS: a Cloudflare zone (`previews.domain` is `dns.zone` or below it) behind
  * the proxy, open to Cloudflare only, without a domain or `www.` alias; its one record is the
- * proxied wildcard `*.<zone>`.
+ * proxied wildcard `*.<domain>`.
  */
 function checkPreviewDns(
   previews: Previews,
@@ -1417,10 +1437,10 @@ function checkPreviewDns(
       ["dns", "zone"],
       `is required with previews: the Cloudflare zone the wildcard record *.${previews.domain} goes in; set dns.zone to it`,
     );
-  } else if (previews.domain !== dns.zone) {
+  } else if (previews.domain !== dns.zone && !previews.domain.endsWith(`.${dns.zone}`)) {
     issue(
       ["environment", "previews", "domain"],
-      `must be the zone itself (${dns.zone}): previews get a Cloudflare zone of their own, used for nothing else; set environment.previews.domain to ${dns.zone}, or dns.zone to your preview zone`,
+      `must be the zone (${dns.zone}) or a name below it, such as previews.${dns.zone}: the wildcard record goes in that Cloudflare zone; set environment.previews.domain to one of them, or dns.zone to the zone it is in`,
     );
   }
   if (dns.domain !== undefined) {

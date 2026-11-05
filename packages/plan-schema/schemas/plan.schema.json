@@ -105,6 +105,17 @@
               "type": "string",
               "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
             },
+            "server": {
+              "type": "object",
+              "properties": {
+                "environment": {
+                  "type": "string",
+                  "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
+                }
+              },
+              "required": ["environment"],
+              "additionalProperties": false
+            },
             "seed": {
               "anyOf": [
                 {
