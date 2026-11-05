@@ -381,6 +381,20 @@ export function longestInterruption(
  * the request is in the Cloudflare plan); plus the Portainer stack variable built from them
  * (base64 of the origin certificate, its key and `pull.pem`) when they are all there.
  */
+/**
+ * The lines of the PEM private key `pem` that hold private bytes: each base64 line of 16
+ * characters or more that none of `publics` (certificates and requests, armor and line breaks
+ * left out) contains.
+ */
+export function privateLines(pem: string, publics: readonly string[]): string[] {
+  const flat = publics.map((text) => text.replace(/-----[^-]+-----|\s/g, ""));
+  return pem
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 16 && !line.startsWith("-----"))
+    .filter((line) => !flat.some((text) => text.includes(line)));
+}
+
 export function generatedSecrets(json: unknown): string[] {
   if (json === null || typeof json !== "object" || Array.isArray(json)) return jsonStrings(json);
   // Monitoring keeps its owner (plan path, server, interface) beside its two passwords: only
@@ -391,9 +405,15 @@ export function generatedSecrets(json: unknown): string[] {
   const tls = (originTls ?? {}) as Record<string, unknown>;
   const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : undefined);
   const request = (tls.ORIGIN_TLS_REQUEST ?? {}) as Record<string, unknown>;
-  const keys = [tls.ORIGIN_TLS_KEY, tls.ORIGIN_PULL_KEY, request.key]
+  // A PKCS#8 key also carries its public key, which its certificate or request holds too (pull.pem
+  // is committed): only the key's lines that hold private bytes are secret.
+  const publics = [tls.ORIGIN_TLS_CERT, tls.ORIGIN_PULL_CERT, request.csr]
     .map(text)
     .filter((value): value is string => value !== undefined);
+  const keys = [tls.ORIGIN_TLS_KEY, tls.ORIGIN_PULL_KEY, request.key]
+    .map(text)
+    .filter((value): value is string => value !== undefined)
+    .flatMap((pem) => privateLines(pem, publics));
   const [cert, key, pull] = [tls.ORIGIN_TLS_CERT, tls.ORIGIN_TLS_KEY, tls.ORIGIN_PULL_CERT].map(
     text,
   );

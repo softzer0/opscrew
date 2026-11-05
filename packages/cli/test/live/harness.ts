@@ -232,9 +232,9 @@ export async function readGeneratedEntries(
   return generatedSecrets(json).map((value) => [pathOfString(json, value) ?? "?", value]);
 }
 
-/** The dotted path of the first string equal to `value` in `json`. */
+/** The dotted path of the first string in `json` that holds `value` (a key's line, say). */
 function pathOfString(json: unknown, value: string, at = ""): string | undefined {
-  if (json === value) return at;
+  if (typeof json === "string" && json.includes(value)) return at;
   if (json === null || typeof json !== "object") return undefined;
   for (const [key, child] of Object.entries(json)) {
     const found = pathOfString(child, value, at === "" ? key : `${at}.${key}`);

@@ -17,6 +17,7 @@ import {
   longestInterruption,
   minTlsDecision,
   otherRecordChanges,
+  privateLines,
   tlsLeft,
   tlsLeftText,
   type ZoneRecord,
@@ -406,9 +407,27 @@ describe("the secret parts of the generated values", () => {
     const bundle = Buffer.from(
       `${originTls.ORIGIN_TLS_CERT}${key}${originTls.ORIGIN_PULL_CERT}`,
     ).toString("base64");
-    expect(secrets).toEqual([values.POSTGRES_PASSWORD, key, pullKey, requestKey, bundle]);
+    const lines = (pem: string) => pem.split("\n").filter((line) => !line.startsWith("-----"));
+    expect(secrets).toEqual([
+      values.POSTGRES_PASSWORD,
+      ...lines(key),
+      ...lines(pullKey),
+      ...lines(requestKey),
+      bundle,
+    ]);
     expect(generatedSecrets({ A: fakeSecret("generic-password", "a") })).toHaveLength(1);
     expect(generatedSecrets(["not an object value"])).toEqual(["not an object value"]);
+  });
+
+  it("leaves out a key's lines its certificate also holds (a PKCS#8 key carries its public key)", () => {
+    const key = fakeSecret("private-key-pem", "pull");
+    const [, first, second, ...rest] = key.split("\n");
+    // The certificate's base64 holds the key's second line, across one of its own line breaks.
+    const cert = `-----BEGIN CERTIFICATE-----\nAAAA${second?.slice(0, 30)}\n${second?.slice(30)}BBBB\n-----END CERTIFICATE-----\n`;
+    const kept = privateLines(key, [cert]);
+    expect(kept).toContain(first);
+    expect(kept).not.toContain(second);
+    expect(kept).toHaveLength(rest.length);
   });
 
   it("keeps monitoring's two passwords, not its owner's plan, server and interface", () => {
