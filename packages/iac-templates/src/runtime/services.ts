@@ -132,6 +132,8 @@ export interface CaddySite {
    * visitor's address (Caddy's `{client_ip}`, from `CF-Connecting-IP`) as `X-Forwarded-For`.
    */
   realIp?: boolean | undefined;
+  /** A preview's site: every response also carries `X-Robots-Tag: noindex`. */
+  noindex?: boolean | undefined;
 }
 
 /**
@@ -332,6 +334,7 @@ function siteBlock(site: CaddySite, hosts: readonly string[], first: readonly st
     "\theader {",
     ...(hsts ? [`\t\tStrict-Transport-Security "${HSTS}"`] : []),
     ...BASELINE_HEADERS.map(([name, value]) => `\t\t${name} "${value}"`),
+    ...(site.noindex ? ['\t\tX-Robots-Tag "noindex"'] : []),
     "\t\t-Server",
     "\t}",
   ];

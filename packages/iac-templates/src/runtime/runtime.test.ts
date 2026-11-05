@@ -142,9 +142,41 @@ describe("renderCompose", () => {
     expect(file.content).toContain("app.releaseCommand");
     expect(file.content).toMatchSnapshot();
   });
+
+  it("runs a preview's seed command as a one-off service like the release command's, never started by up", () => {
+    const p = plan({ redis: true, release: "npm run migrate" });
+    const seed = "npm run seed -- --name $USER";
+    const file = renderCompose(p, { seed });
+    const doc = parse(file.content);
+    expect(Object.keys(doc.services)).toEqual(["app", "release", "seed", "db", "cache"]);
+    const { release } = doc.services;
+    // The release service's image, env files, environment, user, volumes, limits and network.
+    expect(doc.services.seed).toEqual({
+      ...release,
+      profiles: ["seed"],
+      command: ["sh", "-c", "npm run seed -- --name $$USER"],
+    });
+    expect(file.content).toContain("environment.previews.seed");
+    // Without the option the file is the same as before, byte for byte.
+    const without = renderCompose(p).content;
+    expect(without).not.toContain("seed");
+    expect(
+      file.content.replace(/\n# `seed` runs .*/, "").replace(/\n {2}seed:\n(?: {4}.*\n)+/, "\n"),
+    ).toBe(without);
+  });
 });
 
 describe("renderCaddyfile (the app's site on the shared edge)", () => {
+  it("adds X-Robots-Tag noindex to every response with noindex (a preview's site)", () => {
+    const p = plan({ domain: "pr-42.example.com" });
+    const plain = renderCaddyfile(p, ctx).content;
+    const content = renderCaddyfile(p, { ...ctx, noindex: true }).content;
+    expect(plain).not.toContain("X-Robots-Tag");
+    // In the site's headers and in those of the responses Caddy writes itself.
+    expect(content.split('X-Robots-Tag "noindex"').length - 1).toBe(2);
+    expect(content.replaceAll(/\t+X-Robots-Tag "noindex"\n/g, "")).toBe(plain);
+  });
+
   it("serves the domain with HSTS and the ACME email, and redirects www to it", () => {
     const file = renderCaddyfile(plan({ domain: "example.com", www: true }), ctx);
     expect(file.path).toBe("opscrew/runtime/edge/sites/shop.caddy");

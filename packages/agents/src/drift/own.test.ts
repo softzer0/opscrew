@@ -695,11 +695,7 @@ describe.skipIf(!findExecutable("git"))("runDrift on a server the user owns", ()
         opscrewVersion: "0.0.0",
         ...siteContext({ originTls: { hostnames: ["shop.example.com"] } }, undefined),
       };
-      const [site] = renderEdgeSite(plan, {
-        ...ctx,
-        github: { owner: "", repo: "" },
-        deploySshPublicKey: "",
-      });
+      const [site] = renderEdgeSite(plan, ctx);
       expect(site?.path).toBe("opscrew/runtime/edge/sites/shop.conf");
       expect(site?.content).toContain("ssl_verify_client on;");
       expect(expectedRuntimeFiles(plan, ctx).rendered.site).toBe(sum(site?.content ?? ""));

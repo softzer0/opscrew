@@ -1,0 +1,234 @@
+import { OpsCrewError } from "@opscrew/core";
+import type { DeployPlan } from "@opscrew/plan-schema";
+import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
+import {
+  BASE,
+  directPreview,
+  envFor,
+  IMAGE_NAME,
+  type PreviewPlanOptions,
+  previewPlan,
+  REPOSITORY,
+} from "./__fixtures__/plans";
+import {
+  PREVIEW_SECRET_FORMATS,
+  type PreviewEnvTemplates,
+  type PreviewSecretFormat,
+  previewRecipeDir,
+  previewSecret,
+  previewTemplatePlan,
+  renderPreviewRecipe,
+} from "./index";
+import { previewScript } from "./script";
+
+const DIR = "opscrew/environments/preview/previews";
+
+/** The recipe of `plan` with the fixtures' env templates (or `env`), by path under its folder. */
+function recipe(plan: DeployPlan, env?: PreviewEnvTemplates): Record<string, string> {
+  const files = renderPreviewRecipe(plan, {
+    repository: REPOSITORY,
+    imageName: IMAGE_NAME,
+    env: env ?? envFor(previewTemplatePlan(plan)),
+  });
+  return Object.fromEntries(files.map((file) => [file.path.slice(DIR.length + 1), file.content]));
+}
+
+/** A fixed value per generated name, in its format, as the server would make it. */
+function fixed(name: string, format: PreviewSecretFormat): string {
+  const hex = (bytes: number) => Buffer.alloc(bytes, name.length).toString("hex");
+  switch (format) {
+    case "hex32":
+      return hex(32);
+    case "hex64":
+      return hex(64);
+    case "b64k32":
+      return `base64:${Buffer.alloc(32, name.length).toString("base64")}`;
+    case "gk":
+      return `GK${hex(12)}`;
+  }
+}
+
+/** `template/` filled in as the server does: `@N@` with `n`, each placeholder with {@link fixed}. */
+function filled(files: Record<string, string>, n: number): Record<string, string> {
+  const fill = (text: string) =>
+    text
+      .replaceAll("@N@", String(n))
+      .replaceAll(/@SECRET:([A-Za-z][A-Za-z0-9_-]*):([a-z0-9]+)@/g, (_, name, format) =>
+        fixed(name, format),
+      );
+  return Object.fromEntries(
+    Object.entries(files)
+      .filter(([path]) => path.startsWith("template/"))
+      .map(([path, content]) => [fill(path.slice("template/".length)), fill(content)]),
+  );
+}
+
+describe("renderPreviewRecipe", () => {
+  it("writes the settings, the template of a preview's folder and the command, in the environment's previews folder", () => {
+    const plan = previewPlan();
+    const files = renderPreviewRecipe(plan, {
+      repository: REPOSITORY,
+      imageName: IMAGE_NAME,
+      env: envFor(previewTemplatePlan(plan)),
+    });
+    expect(previewRecipeDir(plan)).toBe(DIR);
+    expect(files.map((file) => file.path.slice(DIR.length + 1))).toEqual([
+      "settings.env",
+      "template/compose.yaml",
+      "template/crontab",
+      "template/edge/compose.yaml",
+      "template/edge/sites/shop-preview-pr-@N@.caddy",
+      "template/start.sh",
+      "template/rollback.sh",
+      "template/env/app.env",
+      "template/env/db.env",
+      "bin/opscrew-preview",
+    ]);
+    expect(files.every((file) => file.kind === "runtime")).toBe(true);
+    expect(files.filter((file) => file.mode !== undefined)).toEqual([
+      expect.objectContaining({ path: `${DIR}/bin/opscrew-preview`, mode: 0o755 }),
+    ]);
+    expect(files.at(-1)?.content).toBe(previewScript());
+  });
+
+  it("holds every bound in settings.env, each value checked before it is written", () => {
+    const settings = recipe(previewPlan({ cap: 5, lifetimeDays: 2 }))["settings.env"];
+    expect(settings).toBe(
+      [
+        "# The bounds of the previews of example-org/example-app's pull requests, from opscrew/environments/preview/plan.yaml:",
+        "# opscrew-preview reads them. `opscrew provision` rewrites this file; a change is a new approval.",
+        "APP=shop-preview",
+        "CAP=5",
+        "LIFETIME_DAYS=2",
+        "IMAGE_NAME=ghcr.io/example-org/example-app",
+        `BASE=${BASE}`,
+        "SEED=1",
+        "",
+      ].join("\n"),
+    );
+    // The script reads each of them.
+    for (const name of ["APP", "CAP", "LIFETIME_DAYS", "IMAGE_NAME", "BASE", "SEED"]) {
+      expect(previewScript()).toMatch(new RegExp(`\\$\\(?\\(?${name}\\b`));
+    }
+    const plan = previewPlan();
+    const env = envFor(previewTemplatePlan(plan));
+    for (const imageName of [
+      "ghcr.io/example-org/Example-App",
+      "ghcr.io/example-org",
+      "docker.io/example-org/example-app",
+      "ghcr.io/example-org/example-app\nSEED=1",
+      "ghcr.io/example-org/example-app:latest",
+    ]) {
+      expect(() => renderPreviewRecipe(plan, { repository: REPOSITORY, imageName, env })).toThrow(
+        OpsCrewError,
+      );
+    }
+    for (const repository of ["example-org", "example-org/example-app\n# x", "a/b/c"]) {
+      expect(() => renderPreviewRecipe(plan, { repository, imageName: IMAGE_NAME, env })).toThrow(
+        OpsCrewError,
+      );
+    }
+  });
+
+  it("has no seed service and SEED=0 without a seed command (none, or none set yet)", () => {
+    for (const plan of [previewPlan({ seed: null }), withoutSeed(previewPlan())]) {
+      const files = recipe(plan);
+      expect(files["settings.env"]).toContain("\nSEED=0\n");
+      expect(Object.keys(parse(files["template/compose.yaml"] ?? "").services)).not.toContain(
+        "seed",
+      );
+    }
+    const services = parse(recipe(previewPlan())["template/compose.yaml"] ?? "").services;
+    expect(services.seed.command).toEqual(["sh", "-c", "npm run seed"]);
+    expect(services.seed.profiles).toEqual(["seed"]);
+  });
+
+  it("puts @N@ where the preview's number goes, and the token nowhere", () => {
+    const plan = previewPlan();
+    const template = previewTemplatePlan(plan);
+    expect(template.app.name).toBe("shop-preview-pr-xnumbx");
+    expect(template.dns.domain).toBe(`pr-xnumbx.${BASE}`);
+    expect(template.environment?.previews).toBeUndefined();
+    // Its app name is as long as the longest preview's: <31>-pr-<6 digits>.
+    expect(
+      previewTemplatePlan(previewPlan({ name: `${"a".repeat(23)}-preview` })).app.name,
+    ).toHaveLength(41);
+    const files = recipe(plan);
+    expect(JSON.stringify(files)).not.toMatch(/xnumbx/i);
+    expect(files["template/compose.yaml"]).toContain("name: shop-preview-pr-@N@\n");
+    expect(files["template/compose.yaml"]).toContain("- /srv/data/shop-preview-pr-@N@/db:");
+    expect(files["template/edge/sites/shop-preview-pr-@N@.caddy"]).toContain(
+      `\npr-@N@.${BASE} {\n`,
+    );
+    expect(files["template/start.sh"]).toContain(`--host pr-@N@.${BASE} `);
+    expect(files["template/env/app.env"]).toContain(`APP_URL=https://pr-@N@.${BASE}\n`);
+  });
+
+  it("serves each preview with X-Robots-Tag noindex", () => {
+    const site = recipe(previewPlan())["template/edge/sites/shop-preview-pr-@N@.caddy"];
+    expect(site?.match(/X-Robots-Tag "noindex"/g)).toHaveLength(2);
+  });
+
+  describe("filled with a number and values, is what OpsCrew renders for <app>-pr-<number>", () => {
+    const plans: [string, PreviewPlanOptions][] = [
+      ["Postgres, a worker, cron, a release command and a seed", {}],
+      [
+        "a name of 31 characters, Postgres and Valkey, no seed",
+        { name: `${"b".repeat(23)}-preview`, redis: true, seed: null },
+      ],
+      [
+        "no service, worker, release command or seed",
+        { postgres: false, processes: false, release: null, seed: null },
+      ],
+    ];
+    it.each(plans)("%s", (_, options) => {
+      const plan = previewPlan(options);
+      const files = recipe(plan);
+      for (const n of [42, 999999]) {
+        expect(filled(files, n)).toEqual(directPreview(plan, n, fixed));
+      }
+    });
+  });
+
+  it("uses every placeholder format, and placeholders only for generated values", () => {
+    const app = recipe(previewPlan())["template/env/app.env"] ?? "";
+    for (const format of PREVIEW_SECRET_FORMATS) expect(app).toContain(`:${format}@`);
+    expect(previewSecret("db-password", "hex32")).toBe("@SECRET:db-password:hex32@");
+    for (const name of ["", "1st", "a b", "a@b", "a:b", "x".repeat(65)]) {
+      expect(() => previewSecret(name, "hex32")).toThrow(OpsCrewError);
+    }
+  });
+
+  it("refuses env templates the server can't fill", () => {
+    const plan = previewPlan({ redis: true });
+    const env = envFor(previewTemplatePlan(plan));
+    const bad: PreviewEnvTemplates[] = [
+      { ...env, app: `${env.app}TOKEN=@SECRET:token:hex16@\n` },
+      { ...env, app: `${env.app}TOKEN=@SECRET:token\n` },
+      { ...env, app: `${env.app}AGAIN=@SECRET:db-password:hex64@\n` },
+      {
+        ...env,
+        app: `${env.app}NAME=shop-preview-pr-xnumbx_db\n`.replace("pr-xnumbx", "PR_XNUMBX"),
+      },
+    ];
+    for (const templates of bad) {
+      expect(() => recipe(plan, templates)).toThrow(OpsCrewError);
+    }
+  });
+
+  it("refuses a plan without previews", () => {
+    const plan = previewPlan();
+    const { previews: _, ...environment } = plan.environment ?? { name: "x" };
+    expect(() => recipe({ ...plan, environment } as DeployPlan)).toThrow(OpsCrewError);
+    expect(() => previewTemplatePlan({ ...plan, environment } as DeployPlan)).toThrow(OpsCrewError);
+  });
+});
+
+/** `plan` before design set a seed command: `environment.previews` without `seed`. */
+function withoutSeed(plan: DeployPlan): DeployPlan {
+  const environment = plan.environment;
+  if (environment?.previews === undefined) throw new Error("not previews");
+  const { seed: _, ...previews } = environment.previews;
+  return { ...plan, environment: { ...environment, previews } };
+}

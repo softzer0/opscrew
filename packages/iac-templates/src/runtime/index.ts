@@ -83,7 +83,15 @@ export interface RuntimeContext extends RenderContext {
    * addresses do not apply.
    */
   localhost?: LocalhostSite | undefined;
+  /** A preview's site (Caddy): every response carries `X-Robots-Tag: noindex`. */
+  noindex?: boolean | undefined;
 }
+
+/** What the app's site files read from the {@link RuntimeContext}. */
+export type SiteContext = Pick<
+  RuntimeContext,
+  "acmeEmail" | "originTls" | "additions" | "localhost" | "cloudflareRanges" | "noindex"
+>;
 
 /** A Portainer target's stack holds both files: reaching these renderers with one is a bug. */
 function notForPortainer(): OpsCrewError {
@@ -116,10 +124,12 @@ export function siteHosts(plan: DeployPlan): string[] {
  * does not have them (`pull_policy: missing`): an image built here is never pulled, since no
  * registry has it, and the image GitHub Actions built is pulled by its digest the first time.
  * Throws for a Portainer target, whose stack `renderPortainerStack` renders.
+ * With `o.seed` (a preview's seed command) a `seed` service like `release` runs it, also only
+ * through `docker compose run seed`.
  * @throws OpsCrewError `INVALID_INPUT` for a service OpsCrew cannot run as planned, or a SQLite
  * folder in an image whose app folder OpsCrew does not know.
  */
-export function renderCompose(plan: DeployPlan): RenderedFile {
+export function renderCompose(plan: DeployPlan, o: { seed?: string } = {}): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();
   if (isServerlessTarget(plan.target)) throw notOnServer(plan.target.provider, "Compose file");
   const local = plan.target.provider === "localhost";
@@ -130,6 +140,11 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
       ? "# The local deploy copies it to the app's folder on this computer."
       : `# The deploy workflow copies it to ${appDir(plan)} on the server.`,
     ...(plan.app.releaseCommand === undefined ? [] : [releaseNote(plan)]),
+    ...(o.seed === undefined
+      ? []
+      : [
+          `# \`seed\` runs environment.previews.seed from ${planFilePath(plan)} once, after a preview's first start.`,
+        ]),
   ].join("\n");
   const image = "${APP_IMAGE:?APP_IMAGE is not set; deploy with the OpsCrew workflow}";
   const healthcheck = appHealthcheck(plan);
@@ -154,21 +169,21 @@ export function renderCompose(plan: DeployPlan): RenderedFile {
     ...(Object.keys(backing.dependsOn).length > 0 ? { depends_on: backing.dependsOn } : {}),
   };
   const services: Record<string, unknown> = { app };
+  // A one-off container of the app's image, environment and network running `command`; only
+  // `docker compose run <name>` starts it (the deploy runs `release` before the app is replaced).
+  const oneOff = (name: string, command: string) => ({
+    image,
+    ...pull,
+    profiles: [name],
+    ...environment(),
+    ...appVolumes(plan),
+    command: ["sh", "-c", composeLiteral(command)],
+    ...memoryLimit(plan.app.memoryMb),
+    ...hardened({ noCapabilities: true, internal: true }),
+  });
   const release = plan.app.releaseCommand;
-  if (release !== undefined) {
-    // A one-off container of the app's image, environment and network; only
-    // `docker compose run release` starts it (the deploy does, before the app is replaced).
-    services.release = {
-      image,
-      ...pull,
-      profiles: ["release"],
-      ...environment(),
-      ...appVolumes(plan),
-      command: ["sh", "-c", composeLiteral(release)],
-      ...memoryLimit(plan.app.memoryMb),
-      ...hardened({ noCapabilities: true, internal: true }),
-    };
-  }
+  if (release !== undefined) services.release = oneOff("release", release);
+  if (o.seed !== undefined) services.seed = oneOff("seed", o.seed);
   Object.assign(
     services,
     renderProcesses(plan, {
@@ -283,7 +298,7 @@ function redirectedHosts(plan: DeployPlan): string[] {
  * `ctx.cloudflareRanges` when Cloudflare's proxy serves the app's hostnames and reaches the server
  * directly (not through a tunnel): the ranges whose `CF-Connecting-IP` the app's site trusts.
  */
-function realIpRanges(plan: DeployPlan, ctx: RuntimeContext): readonly string[] | undefined {
+function realIpRanges(plan: DeployPlan, ctx: SiteContext): readonly string[] | undefined {
   const ranges = ctx.cloudflareRanges;
   if (!plan.dns.proxied || tunnelMode(plan) || ranges === undefined) return undefined;
   return ranges.length > 0 ? ranges : undefined;
@@ -301,7 +316,7 @@ function realIpRanges(plan: DeployPlan, ctx: RuntimeContext): readonly string[] 
  * `ctx.localhost`'s hostname with the leaf certificate of OpsCrew's local CA, without ACME, origin
  * TLS or Cloudflare. Throws for a Portainer target, whose stack holds Caddy's configuration inline.
  */
-export function renderCaddyfile(plan: DeployPlan, ctx: RuntimeContext): RenderedFile {
+export function renderCaddyfile(plan: DeployPlan, ctx: SiteContext): RenderedFile {
   if (plan.target.provider === "portainer") throw notForPortainer();
   const app = plan.app.name;
   const additions = ctx.additions
@@ -328,6 +343,7 @@ export function renderCaddyfile(plan: DeployPlan, ctx: RuntimeContext): Rendered
           additions,
           realIp: realIpRanges(plan, ctx) !== undefined,
           redirects: redirectedHosts(plan),
+          noindex: ctx.noindex,
         };
   const lines = [
     `# Generated by OpsCrew from ${planFilePath(plan)}; \`opscrew provision\` regenerates it.`,
@@ -348,7 +364,7 @@ export function renderCaddyfile(plan: DeployPlan, ctx: RuntimeContext): Rendered
  * the origin certificate, served directly (not behind a tunnel). Empty for Caddy, which gets its
  * own, and on this computer, where they come from OpsCrew's local CA.
  */
-export function certbotHosts(plan: DeployPlan, ctx: RuntimeContext): string[] {
+export function certbotHosts(plan: DeployPlan, ctx: SiteContext): string[] {
   if (edgeProxy(plan) !== "nginx" || tunnelMode(plan) || plan.target.provider === "localhost") {
     return [];
   }
@@ -359,7 +375,7 @@ export function certbotHosts(plan: DeployPlan, ctx: RuntimeContext): string[] {
  * The site file of the app on the nginx edge, `before` its first certbot certificate or not; on
  * this computer `ctx.localhost`'s hostname with the leaf certificate of OpsCrew's local CA.
  */
-function nginxSiteFile(plan: DeployPlan, ctx: RuntimeContext, before: boolean): RenderedFile {
+function nginxSiteFile(plan: DeployPlan, ctx: SiteContext, before: boolean): RenderedFile {
   const app = plan.app.name;
   const additions = ctx.additions
     ? { file: nginxAdditionsFile(app), source: additionsPath(plan, "nginx") }
@@ -406,7 +422,7 @@ function nginxSiteFile(plan: DeployPlan, ctx: RuntimeContext, before: boolean): 
  * such hostnames, `sites/<app>.http.conf`, the site the deploy serves until certbot has the
  * first certificate. Throws for a Portainer target.
  */
-export function renderEdgeSite(plan: DeployPlan, ctx: RuntimeContext): RenderedFile[] {
+export function renderEdgeSite(plan: DeployPlan, ctx: SiteContext): RenderedFile[] {
   if (edgeProxy(plan) === "caddy") return [renderCaddyfile(plan, ctx)];
   return [
     nginxSiteFile(plan, ctx, false),

@@ -75,12 +75,8 @@ describe("originTlsHostnames", () => {
 describe("requiringHostnames: the hostnames a site requires the client certificate for", () => {
   const plan = testPlan({ domain: "example.com", www: true });
   const site = (p: DeployPlan, hostnames: string[] | undefined) =>
-    renderEdgeSite(p, {
-      opscrewVersion: "0.0.0-test",
-      github: { owner: "acme", repo: "shop" },
-      deploySshPublicKey: "",
-      ...(hostnames !== undefined ? { originTls: { hostnames } } : {}),
-    })[0]?.content ?? "";
+    renderEdgeSite(p, hostnames !== undefined ? { originTls: { hostnames } } : {})[0]?.content ??
+    "";
 
   it.each(["caddy", "nginx"] as const)("reads %s's rendered site", (edge) => {
     const p = withEdge(plan, edge);
