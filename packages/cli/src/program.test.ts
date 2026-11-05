@@ -55,6 +55,7 @@ describe("opscrew program", () => {
       "destroy",
       "mcp",
       "status",
+      "advise",
       "logs",
       "localhost",
       "runner",
@@ -62,7 +63,7 @@ describe("opscrew program", () => {
     ]) {
       expect(ctx.output).toMatch(new RegExp(`^\\s+${name}\\b`, "m"));
     }
-    expect(ALL_COMMANDS).toHaveLength(27);
+    expect(ALL_COMMANDS).toHaveLength(28);
   });
 
   it("exits 2 for an unknown command", async () => {

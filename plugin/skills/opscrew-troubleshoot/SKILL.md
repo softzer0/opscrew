@@ -1,6 +1,6 @@
 ---
 name: opscrew-troubleshoot
-description: Find out why an app OpsCrew deployed is failing, slow or using too much, from its status, resource figures, alerts and logs, all read-only with secrets masked, and when a recent release is the cause, how to roll it back in the terminal; with self-hosted monitoring on, how to open its Grafana dashboards and what each shows. Use when the user asks "why is my app failing?", "why is it down?", "it's slow", "how much memory (or CPU, or disk) does it use?", "undo the last release", "roll back", "how do I see the logs (or figures) of last week?", "open Grafana", "is monitoring working?", or about an OpsCrew alert issue.
+description: Find out why an app OpsCrew deployed is failing, slow or using too much, from its status, resource figures, alerts and logs, all read-only with secrets masked, and when a recent release is the cause, how to roll it back in the terminal; with self-hosted monitoring on, how to open its Grafana dashboards and what each shows; and what to change (a larger or smaller server, backups, security updates, tokens about to expire), each proposal with its figures and price. Use when the user asks "why is my app failing?", "why is it down?", "it's slow", "how much memory (or CPU, or disk) does it use?", "undo the last release", "roll back", "how do I see the logs (or figures) of last week?", "open Grafana", "is monitoring working?", "is it the right size?", "can it cost less?", "what should I change?", or about an OpsCrew alert issue.
 ---
 
 # Troubleshooting with OpsCrew
@@ -51,6 +51,30 @@ Cloudflare. Secrets in log lines arrive masked; never try to recover them.
    - **It started with the latest release:** see "A release that deploys fine but is wrong" below.
 4. If the server does not answer, say so and suggest `npx opscrew verify` in a terminal; it checks
    the app from the outside.
+5. When status shows memory high or near a limit, a filling disk, or load above the CPUs, call
+   `opscrew_advise` for what to change: see "What to change: advise" below.
+
+## What to change: advise
+
+Call `opscrew_advise` (read only, with `app` and `environment` when the repository has several)
+when the user asks "is it the right size?", "why is it slow?", "can it cost less?" or "what should
+I change?", and after `opscrew_status` shows high memory, a container at its memory limit or a
+filling disk. It reads the servers' figures, the plan, the interview's budget, the providers'
+prices, Dependabot and the tokens' expiry, and lists proposals, the most urgent first (now, soon,
+when convenient). Each has an id, its reasons with their figures (over 14 days with self-hosted
+monitoring, else one reading), its monthly price before and after, and how to apply it.
+
+- Explain each proposal with its figures and its price; for a larger server, say the app is
+  offline one to three minutes and that the move is one way (the disk grows and can't shrink).
+- **Applying stays in the terminal.** For a proposal whose apply is `Apply: opscrew advise --apply
+  <id>`, the user runs `npx opscrew advise --apply <id>` (with the `--app`/`--env` it shows): it
+  changes only `opscrew/plan.yaml`, then `npx opscrew provision` shows the change and applies it
+  once they approve its hash. For the others, pass on the command it names, or what to do by hand.
+- Without history it never proposes a smaller server; its last line says that
+  `npx opscrew addon enable monitoring` gives two weeks of figures so it can. Offer that when the
+  user wants to know whether the server could be cheaper.
+- What it couldn't read is listed with why (a missing token, a server out of reach): say so rather
+  than guessing.
 
 ## A release that deploys fine but is wrong
 

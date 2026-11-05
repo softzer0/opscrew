@@ -170,7 +170,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
 
 ## Phase 4: Wave 3 (parallel)
 
-- [ ] T2108 [P] [US1] [US2] [US9] The CLI command, the MCP tool and the plugin's skill
+- [x] T2108 [P] [US1] [US2] [US9] The CLI command, the MCP tool and the plugin's skill
   - Owns: `packages/cli/src/commands/advise.ts` (+ test) and its line in `commands/index.ts`, `packages/mcp-server/src/tools/advise.ts` (+ test) and its line in `server.ts`, `plugin/skills/opscrew-troubleshoot/**`
   - Reads: plan.md "6."; contracts/advise.md "CLI and MCP"
   - Depends: T2107

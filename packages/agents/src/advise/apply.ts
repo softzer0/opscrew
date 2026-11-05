@@ -3,13 +3,14 @@
  * the plan holds becomes that one field of the plan, which `opscrew provision` then applies after
  * its hash is approved; the others give their command or what to do by hand. Nothing else changes.
  */
-import { formatMoney, OpsCrewError } from "@opscrew/core";
+import { OpsCrewError } from "@opscrew/core";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { planFile } from "../runners";
 import { writePlanIfChanged } from "../shared";
+import { priceWords } from "./render";
 import { adviseWithFlags, type RunAdviseOptions } from "./run";
-import type { PlanChange, Proposal, ProposalPrice } from "./types";
+import type { PlanChange, Proposal } from "./types";
 
 /**
  * What applying a proposal did: the plan written, with its summary; or the command that applies
@@ -120,16 +121,6 @@ function withChange(
   }
 }
 
-/** `€9.69`, and where the price comes from. */
-function priceText(price: ProposalPrice): string {
-  const money = (amount: number) => formatMoney({ amount, currency: price.currency });
-  const source =
-    price.source === "live"
-      ? "live prices"
-      : `static prices${price.asOf === undefined ? "" : ` dated ${price.asOf.slice(0, 10)}`}`;
-  return `from ${money(price.before)} to ${money(price.after)} a month (${source})`;
-}
-
 /**
  * Applies the proposal `id` on a fresh reading (`runAdvise`): a plan proposal writes only its
  * field of the plan (through the plan's writer, as `opscrew addon enable` does) and returns the new
@@ -168,7 +159,7 @@ export async function applyProposal(
     `Changed ${planFile(plan)}: ${changed.field} from ${changed.before} to ${changed.after}.`,
     proposal.price === undefined
       ? "The monthly price doesn't change."
-      : `${whose} monthly price goes ${priceText(proposal.price)}.`,
+      : `${whose} monthly price: ${priceWords(proposal.price)}.`,
     `Run \`opscrew provision${flags}\`: it shows the change and applies it once you approve its hash.`,
   ].join("\n");
   return { plan: changed.plan, summary };

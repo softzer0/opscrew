@@ -1,5 +1,6 @@
 export * from "./apply";
 export * from "./history";
+export { renderAdviceReport, renderAppliedProposal } from "./render";
 export * from "./rules/components";
 export * from "./rules/cost";
 export * from "./rules/reliability";

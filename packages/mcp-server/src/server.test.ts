@@ -154,6 +154,7 @@ describe("createOpscrewMcpServer", () => {
       "`npx opscrew domain buy <domain> [--registrar <id>]`",
       "scripts need --confirm and --max-price",
       "`npx opscrew domain connect <domain>`",
+      "applying an advise proposal, `npx opscrew advise --apply <id>`",
       "`npx opscrew destroy`",
       "`--delete-data` and the app's name typed by the user",
       "`--undo-host`",
@@ -163,7 +164,7 @@ describe("createOpscrewMcpServer", () => {
       expect(instructions, rule).toContain(rule);
     }
     // What each tool does is in its description, the details of the flow in the skill.
-    expect(instructions.length).toBeLessThan(2_500);
+    expect(instructions.length).toBeLessThan(2_600);
   });
 
   it("lists the seven planning tools with descriptions, schemas and annotations", async () => {

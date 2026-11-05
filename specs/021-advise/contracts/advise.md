@@ -70,3 +70,4 @@ verifyToken(): Promise<CloudflareTokenCheck>;   // the existing CredentialCheck 
 
 - `opscrew advise [--apply <id>] [--json] [--app <name>] [--env <name>]`
 - MCP `opscrew_advise` (`projectDir`, `app`, `env`), read only.
+- Both print `renderAdviceReport(report, flags, { suggestMonitoring })` and `renderAppliedProposal(applied)` from agents' `advise/render.ts`; the closing monitoring line only for Hetzner and DigitalOcean servers without monitoring.

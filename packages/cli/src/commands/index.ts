@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import type { CliContext } from "../context";
 import * as adapt from "./adapt";
 import * as addon from "./addon";
+import * as advise from "./advise";
 import * as analyze from "./analyze";
 import * as app from "./app";
 import * as design from "./design";
@@ -57,6 +58,7 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   retarget,
   destroy,
   status,
+  advise,
   logs,
   localhost,
   runner,

@@ -103,7 +103,7 @@ describe("applyProposal: a plan proposal", () => {
     expect(applied.plan).toEqual(expected);
     await expectPlanOnDisk(s.deps, expected);
     expect(applied.summary).toMatch(
-      /^Changed opscrew\/plan\.yaml: target\.serverType from cx23 to cx33\.\nServer app's monthly price goes from €\d+\.\d\d to €\d+\.\d\d a month \(static prices dated \d{4}-\d{2}-\d{2}\)\.\nRun `opscrew provision`: it shows the change and applies it once you approve its hash\.$/,
+      /^Changed opscrew\/plan\.yaml: target\.serverType from cx23 to cx33\.\nServer app's monthly price: €\d+\.\d\d → €\d+\.\d\d a month \(static prices dated \d{4}-\d{2}-\d{2}\)\.\nRun `opscrew provision`: it shows the change and applies it once you approve its hash\.$/,
     );
   });
 
@@ -132,7 +132,7 @@ describe("applyProposal: a plan proposal", () => {
       target: { ...s.plan.target, backups: true },
     } as DeployPlan);
     expect(applied.summary).toContain("target.backups from off to on.");
-    expect(applied.summary).toMatch(/Server app's monthly price goes from €/);
+    expect(applied.summary).toMatch(/Server app's monthly price: €/);
   });
 
   it("turns the scheduled check on", async () => {
@@ -227,7 +227,7 @@ describe("applyProposal: an extra server", () => {
     expect(applied.summary).toContain(
       "Changed opscrew/plan.yaml: servers[].target.backups of server data from off to on.",
     );
-    expect(applied.summary).toMatch(/Server data's monthly price goes from €/);
+    expect(applied.summary).toMatch(/Server data's monthly price: €/);
   });
 
   it("raises the memory limit of a service on server data only", async () => {
