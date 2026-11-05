@@ -32,7 +32,8 @@ repository's settings, replacing a token).
 
 `AdviceReport`: `proposals` (ordered), `basis` per server (`history` with its days, or
 `one-reading`), `checked` (what was read), `notRead` (what couldn't be, with why: no permission, a
-server unreachable, prices static).
+server unreachable, prices static), `suggestMonitoring` (the closing line: Hetzner and DigitalOcean
+servers without monitoring).
 
 Reasons: the `text` states the claim without a final full stop; the `figure` holds the measured or
 priced number once, or is absent; the report prints `text (figure, basis)`.

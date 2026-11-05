@@ -22,6 +22,7 @@ import {
   type ServerAddress,
   type SshLogin,
 } from "./server-record";
+import { targetOf } from "./servers";
 import { keysFor, knownHostsName, writeKnownHost } from "./wait";
 
 /**
@@ -431,13 +432,11 @@ export async function appServerShell(
   options: { remote?: (host: string) => RemoteExec; keepAliveSeconds?: number } = {},
   server: string = APP_SERVER,
 ): Promise<RemoteExec> {
-  const target =
-    server === APP_SERVER ? plan.target : plan.servers?.find((s) => s.name === server)?.target;
   return remoteAt(
     deps,
     plan,
     server,
-    { ...login, own: target?.provider === "own" },
+    { ...login, own: targetOf(plan, server)?.provider === "own" },
     ({ host, port }) =>
       options.remote?.(host) ??
       new SshRemoteExec({

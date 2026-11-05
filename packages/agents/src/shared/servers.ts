@@ -3,10 +3,24 @@
  * login's shell on one of them.
  */
 import type { RemoteExec } from "@opscrew/contracts";
-import { APP_SERVER, type CloudProvider, type DeployPlan } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type CloudProvider,
+  type DeployPlan,
+  type DeployTarget,
+  type ExtraServer,
+} from "@opscrew/plan-schema";
 import type { ProvisionServices } from "../provision/types";
 import type { EngineDeps } from "./engine";
 import { type ServerLogin, serverLogin, serverRemote } from "./server-address";
+
+/** The target of `plan`'s server `server` (`app` or an extra server); `undefined` for none. */
+export function targetOf(
+  plan: Pick<DeployPlan, "target" | "servers">,
+  server: string,
+): DeployTarget | ExtraServer["target"] | undefined {
+  return server === APP_SERVER ? plan.target : plan.servers?.find((s) => s.name === server)?.target;
+}
 
 /** The extra servers' names, in plan order; none for an app on one server. */
 export function extraServers(plan: Pick<DeployPlan, "servers">): string[] {

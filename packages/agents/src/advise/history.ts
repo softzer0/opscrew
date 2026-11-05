@@ -10,6 +10,7 @@ import {
   answer,
   envLabel,
   FIGURES_QUERY,
+  lastFigures,
   type MonitoringStatusServices,
   marker,
   monitoringStack,
@@ -133,7 +134,6 @@ function answerSchema<T extends z.ZodRawShape>(labels: T) {
     }),
   });
 }
-const FiguresAnswerSchema = answerSchema({ app: z.string(), env: z.string(), server: z.string() });
 const ServerAnswerSchema = answerSchema({ server: z.string() });
 const ContainerAnswerSchema = answerSchema({ server: z.string(), service: z.string() });
 
@@ -158,7 +158,7 @@ const failed = (words: string) => `${words}: Prometheus did not answer the query
  * absent and listed in `notRead`, and a server without figures has `days` 0. A server whose
  * figures stopped (none in the last 5 minutes) is listed too, without its limits and disk trend.
  * @throws OpsCrewError `PHASE_PRECONDITION` when the server's login is not on this computer,
- * `COMMAND_FAILED` when the stack's server could not be reached.
+ * `COMMAND_FAILED` when the stack's server could not be reached (advise says it in its own words).
  */
 export async function readHistory(
   deps: PhaseDeps,
@@ -178,10 +178,7 @@ export async function readHistory(
   if (result.exitCode !== 0) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      `OpsCrew could not read the figures of the monitoring stack on server ${stack.server} over SSH (exit code ${result.exitCode}).`,
-      {
-        hint: `Check that server ${stack.server} is on and that this computer reaches it over SSH, then try again.`,
-      },
+      `The monitoring stack on server ${stack.server} did not answer (exit code ${result.exitCode}).`,
     );
   }
   await deps.audit.append({
@@ -192,34 +189,28 @@ export async function readHistory(
     decision: "allow",
   });
   const read = sections(result.stdout);
-  const servers = appServers(plan);
   const histories = new Map<string, ServerHistory>(
-    servers.map((server) => [server, { days: 0, containers: [] }]),
+    appServers(plan).map((server) => [server, { days: 0, containers: [], notRead: [] }]),
   );
-  const notRead = new Map<string, string[]>(servers.map((server) => [server, []]));
   const everyServer = (text: string) => {
-    for (const list of notRead.values()) list.push(text);
+    for (const history of histories.values()) history.notRead?.push(text);
   };
 
-  const newest = samples(read.figures, FiguresAnswerSchema);
+  // A server whose figures stopped: its limits and disk trend, read at this instant, are stale.
+  const newest = lastFigures(read.figures);
   const stopped = new Set<string>();
   if (newest === undefined) everyServer(failed("whether its figures still arrive"));
   else {
     const now = deps.clock.now().getTime();
-    for (const server of servers) {
-      const at = newest.find(
-        (s) =>
-          s.labels.app === labels.app && s.labels.env === labels.env && s.labels.server === server,
-      )?.value;
-      if (at !== undefined && now - at * 1000 <= SILENT_AFTER_MS) continue;
+    for (const [server, history] of histories) {
+      const at = newest({ ...labels, server });
+      if (at !== undefined && now - at <= SILENT_AFTER_MS) continue;
       stopped.add(server);
-      notRead
-        .get(server)
-        ?.push(
-          at === undefined
-            ? "its figures: none arrived in the last 5 minutes"
-            : `its figures stopped at ${new Date(at * 1000).toISOString()}`,
-        );
+      history.notRead?.push(
+        at === undefined
+          ? "its figures: none arrived in the last 5 minutes"
+          : `its figures stopped at ${new Date(at).toISOString()}`,
+      );
     }
   }
 
@@ -227,6 +218,7 @@ export async function readHistory(
     const answered = samples(read[q.section], ServerAnswerSchema);
     if (answered === undefined) everyServer(failed(q.words));
     for (const { labels: series, value } of answered ?? []) {
+      if (name === "diskFullInDays" && stopped.has(series.server)) continue;
       const history = histories.get(series.server);
       if (history !== undefined) history[name] = value;
     }
@@ -242,27 +234,14 @@ export async function readHistory(
         container = { service: series.service };
         history.containers.push(container);
       }
+      if (name === "limit" && stopped.has(series.server)) continue;
       // `increase` extrapolates to the window's edges: a count of kills is whole.
       container[name] = name === "oomKills" ? Math.round(value) : value;
     }
   }
 
-  return Object.fromEntries(
-    servers.map((server) => {
-      const { diskFullInDays, containers, ...history } = histories.get(server) as ServerHistory;
-      const fresh = !stopped.has(server);
-      const missing = notRead.get(server) as string[];
-      return [
-        server,
-        {
-          ...history,
-          ...(fresh && diskFullInDays !== undefined ? { diskFullInDays } : {}),
-          containers: containers.map(({ limit, ...c }) =>
-            fresh && limit !== undefined ? { ...c, limit } : c,
-          ),
-          ...(missing.length > 0 ? { notRead: missing } : {}),
-        },
-      ];
-    }),
-  );
+  for (const history of histories.values()) {
+    if (history.notRead?.length === 0) delete history.notRead;
+  }
+  return Object.fromEntries(histories);
 }

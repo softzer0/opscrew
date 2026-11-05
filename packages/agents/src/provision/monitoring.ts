@@ -61,7 +61,7 @@ import {
   serverWords,
 } from "../shared";
 import { generatedValuesFile } from "../shared/app-secrets";
-import { appServers, extraCloudServers } from "../shared/servers";
+import { appServers, extraCloudServers, targetOf } from "../shared/servers";
 import { applyNetworkPlans, type NetworkServer } from "./network";
 import {
   keepMonitoringValues,
@@ -249,9 +249,7 @@ async function serversKnown(deps: PhaseDeps, plan: DeployPlan): Promise<boolean>
 
 /** True when the server `name` of `plan` is the user's own. */
 function isOwn(plan: DeployPlan, name: string): boolean {
-  const target =
-    name === APP_SERVER ? plan.target : plan.servers?.find((s) => s.name === name)?.target;
-  return target?.provider === "own";
+  return targetOf(plan, name)?.provider === "own";
 }
 
 /**

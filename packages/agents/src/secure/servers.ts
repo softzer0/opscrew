@@ -12,6 +12,7 @@ import { IMAGES, publishedOnNetwork } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, networkInterface } from "@opscrew/plan-schema";
 import {
   HOST_CHECKS,
+  type HostCheck,
   type OwnServerHardening,
   ownServerHostChecks,
   probePorts,
@@ -31,6 +32,21 @@ import { serviceWords } from "../status/network";
 import { readPublishedPorts, serverShell } from "../status/servers";
 import { ownServerHardening } from "./own";
 import { serverServiceChecks, servicePorts } from "./services";
+
+/**
+ * `secure`'s host checks on server `server` of `plan`: the hardening checks (on a server the user
+ * owns, with what its last setup accepts, `hardening`), then those of the services it runs.
+ */
+export function hostChecksFor(
+  plan: DeployPlan,
+  server: string,
+  hardening: OwnServerHardening | undefined,
+): HostCheck[] {
+  return [
+    ...(hardening === undefined ? HOST_CHECKS : ownServerHostChecks(hardening)),
+    ...serverServiceChecks(plan, server),
+  ];
+}
 
 /**
  * Reads the rules of the network's filter (`OPSCREW-<if>`) on a server as root the way
@@ -102,11 +118,7 @@ export async function extraServerChecks(
       if (options.hostChecks) {
         const shell = await serverShell(deps, plan, server, options);
         deps.reporter.step(`Checking server ${server}'s hardening over SSH`);
-        const checks = hardening !== undefined ? ownServerHostChecks(hardening) : HOST_CHECKS;
-        const results = await runHostChecks(shell.docker, [
-          ...checks,
-          ...serverServiceChecks(plan, server),
-        ]);
+        const results = await runHostChecks(shell.docker, hostChecksFor(plan, server, hardening));
         hostChecks.push(...results.map((check) => onExtraServer(check, server)));
       }
     } catch (error) {

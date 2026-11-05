@@ -8,69 +8,25 @@ import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResourceReading } from "../status";
 
-/** What a proposal is about. */
-export type ProposalCategory =
-  | "size"
-  | "cost"
-  | "reliability"
-  | "upkeep"
-  | "security"
-  | "components"
-  | "moving";
+/**
+ * The urgencies, most urgent first. `now`: about to break; `soon`: security findings, a filling
+ * disk, over budget; the rest later.
+ */
+export const URGENCIES = ["now", "soon", "when-convenient"] as const;
 
-/** `now`: about to break; `soon`: security findings, a filling disk, over budget; the rest later. */
-export type Urgency = "now" | "soon" | "when-convenient";
-
-/** Where a reason's figure comes from. */
-export type Basis =
-  | { kind: "history"; days: number }
-  | { kind: "one-reading"; at: string }
-  | { kind: "plan" }
-  | { kind: "account" };
-
-/** One sentence of why, with its figure. */
-export interface Reason {
-  text: string;
-  figure?: string;
-  basis: Basis;
-}
-
-/** The monthly net price before and after the proposal. */
-export interface ProposalPrice {
-  before: number;
-  after: number;
-  currency: "EUR" | "USD";
-  source: "live" | "static";
-  asOf?: string;
-}
-
-/** A plan edit `opscrew advise --apply` can make. */
-export type PlanChange =
-  | { kind: "server-type"; server: string; serverType: string }
-  | {
-      kind: "memory-limit";
-      container: { kind: "web" } | { kind: "worker" | "service"; name: string };
-      memoryMb: number;
-    }
-  | { kind: "backups"; server: string; enabled: true }
-  | { kind: "check"; enabled: true };
-
-/** One proposal; its `id` (`<category>.<server or "env">.<what>`) is stable across runs. */
-export interface Proposal {
-  id: string;
-  category: ProposalCategory;
-  urgency: Urgency;
-  /** The plan's name of the server it concerns (`app` or an extra server). */
-  server?: string;
-  title: string;
-  reasons: Reason[];
-  price?: ProposalPrice;
-  /** A plan edit, a command to run, or, with nothing to type, what to do by hand. */
-  apply:
-    | { kind: "plan"; change: PlanChange }
-    | { kind: "command"; command: string }
-    | { kind: "manual"; text: string };
-}
+/**
+ * What a proposal is about, in the order proposals of one urgency are listed: a move in progress
+ * first, then a server's size, security, upkeep, savings, and the rest (US1-3).
+ */
+export const CATEGORIES = [
+  "moving",
+  "size",
+  "security",
+  "upkeep",
+  "cost",
+  "reliability",
+  "components",
+] as const;
 
 const BasisSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("history"), days: z.number().nonnegative() }),
@@ -78,6 +34,20 @@ const BasisSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("plan") }),
   z.object({ kind: z.literal("account") }),
 ]);
+
+const ReasonSchema = z.object({
+  text: z.string().min(1),
+  figure: z.string().min(1).optional(),
+  basis: BasisSchema,
+});
+
+const PriceSchema = z.object({
+  before: z.number().nonnegative(),
+  after: z.number().nonnegative(),
+  currency: z.enum(["EUR", "USD"]),
+  source: z.enum(["live", "static"]),
+  asOf: z.string().min(1).optional(),
+});
 
 const PlanChangeSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -98,36 +68,38 @@ const PlanChangeSchema = z.discriminatedUnion("kind", [
 ]);
 
 /** A proposal as `--json` and the MCP tool give it. */
-export const ProposalSchema: z.ZodType<Proposal> = z.object({
+export const ProposalSchema = z.object({
+  /** `<category>.<server or "env">.<what>`, stable across runs. */
   id: z.string().min(1),
-  category: z.enum(["size", "cost", "reliability", "upkeep", "security", "components", "moving"]),
-  urgency: z.enum(["now", "soon", "when-convenient"]),
+  category: z.enum(CATEGORIES),
+  urgency: z.enum(URGENCIES),
+  /** The plan's name of the server it concerns (`app` or an extra server). */
   server: z.string().min(1).optional(),
   title: z.string().min(1),
-  reasons: z
-    .array(
-      z.object({
-        text: z.string().min(1),
-        figure: z.string().min(1).optional(),
-        basis: BasisSchema,
-      }),
-    )
-    .min(1),
-  price: z
-    .object({
-      before: z.number().nonnegative(),
-      after: z.number().nonnegative(),
-      currency: z.enum(["EUR", "USD"]),
-      source: z.enum(["live", "static"]),
-      asOf: z.string().min(1).optional(),
-    })
-    .optional(),
+  reasons: z.array(ReasonSchema).min(1),
+  price: PriceSchema.optional(),
+  /** A plan edit, a command to run, or, with nothing to type, what to do by hand. */
   apply: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("plan"), change: PlanChangeSchema }),
     z.object({ kind: z.literal("command"), command: z.string().min(1) }),
     z.object({ kind: z.literal("manual"), text: z.string().min(1) }),
   ]),
 });
+
+/** What a proposal is about. */
+export type ProposalCategory = (typeof CATEGORIES)[number];
+/** How soon a proposal matters. */
+export type Urgency = (typeof URGENCIES)[number];
+/** Where a reason's figure comes from. */
+export type Basis = z.infer<typeof BasisSchema>;
+/** One sentence of why, with its figure. */
+export type Reason = z.infer<typeof ReasonSchema>;
+/** The monthly net price before and after the proposal. */
+export type ProposalPrice = z.infer<typeof PriceSchema>;
+/** A plan edit `opscrew advise --apply` can make. */
+export type PlanChange = z.infer<typeof PlanChangeSchema>;
+/** One proposal. */
+export type Proposal = z.infer<typeof ProposalSchema>;
 
 /** The rules' thresholds (data-model.md "The thresholds"; the guide states them). */
 export const THRESHOLDS = Object.freeze({
@@ -229,7 +201,7 @@ export interface Readings {
   notRead: string[];
   /**
    * What every `opscrew` command a proposal names adds: ` --app …`/` --env …` from commandFlags,
-   * empty for the default; T2107 fills it.
+   * empty for the default.
    */
   flags: string;
 }
@@ -244,4 +216,9 @@ export interface AdviceReport {
   checked: string[];
   /** What couldn't be read, each with why. */
   notRead: string[];
+  /**
+   * Monitoring is off and the app's server is one OpsCrew created (Hetzner or DigitalOcean): its
+   * 14 days of figures would let advise also propose a smaller server.
+   */
+  suggestMonitoring: boolean;
 }

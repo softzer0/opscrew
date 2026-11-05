@@ -1,10 +1,4 @@
 export * from "./apply";
-export * from "./history";
 export { renderAdviceReport, renderAppliedProposal } from "./render";
-export * from "./rules/components";
-export * from "./rules/cost";
-export * from "./rules/reliability";
-export * from "./rules/size";
-export * from "./rules/upkeep";
 export { type RunAdviseOptions, runAdvise } from "./run";
 export * from "./types";

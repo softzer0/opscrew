@@ -17,6 +17,7 @@ import { recordOwnServer, recordPortainerConnection } from "../shared";
 import { serverFiguresCommand } from "../status/resources";
 import {
   fakeCertificate,
+  figuresOutput,
   makeRequirements,
   movingPlan,
   OWN_IPV4,
@@ -33,13 +34,15 @@ import {
   FakeAdviseGitHub,
   type FakeHost,
   fakeServers,
-  figuresOutput,
   IPS,
   inEnvironment,
   NOW,
   type ProjectInit,
   project,
   recordedHistory,
+  type Scenario,
+  type ScenarioInit,
+  scenario,
   tree,
 } from "./__fixtures__/environment";
 import { type RunAdviseOptions, runAdvise } from "./run";
@@ -85,39 +88,14 @@ const SHORT: FakeHost = {
   checks: { "reboot-required": "yes", "security-updates": "3" },
 };
 
-interface Scenario {
-  deps: TestPhaseDeps;
-  plan: DeployPlan;
-  options: RunAdviseOptions;
-  servers: ReturnType<typeof fakeServers>;
-  github: FakeAdviseGitHub;
-}
-
-/** {@link onePlan}'s project, its server as `host`, and GitHub with `ALERTS`, `PULL` and the token. */
-async function oneServer(
-  o: {
-    host?: FakeHost;
-    init?: Partial<ProjectInit>;
-    github?: FakeAdviseGitHub | null;
-    cloudflare?: RunAdviseOptions["cloudflare"];
-  } = {},
-): Promise<Scenario> {
-  const plan = o.init?.plan ?? onePlan();
-  const deps = await project({
-    plan,
-    addresses: { app: IPS.app },
-    requirements: REQUIREMENTS,
-    ...o.init,
+/** {@link onePlan}'s project, its server `SHORT`, and GitHub with `ALERTS`, `PULL` and the token. */
+function oneServer(o: Partial<ScenarioInit> = {}): Promise<Scenario> {
+  return scenario({
+    plan: onePlan(),
+    host: SHORT,
+    github: new FakeAdviseGitHub({ alerts: ALERTS, pulls: [PULL], expiry: inDays(5) }),
+    ...o,
   });
-  const servers = fakeServers({ [IPS.app]: o.host ?? SHORT });
-  const github =
-    o.github ?? new FakeAdviseGitHub({ alerts: ALERTS, pulls: [PULL], expiry: inDays(5) });
-  const options: RunAdviseOptions = {
-    services: { remote: servers.remote },
-    github: o.github === null ? null : github,
-    cloudflare: o.cloudflare ?? null,
-  };
-  return { deps, plan, options, servers, github };
 }
 
 /** Each proposal is one `--json` and the MCP tool can give. */
@@ -139,7 +117,7 @@ function expectNoLeak(deps: TestPhaseDeps, secrets: string[], ...more: unknown[]
 describe("runAdvise: refusing", () => {
   it("refuses an environment that isn't provisioned, before reading anything", async () => {
     const plan = testPlan();
-    const s = await oneServer({ init: { plan } });
+    const s = await oneServer({ plan });
     const error = await runAdvise(s.deps, plan, s.options).then(
       () => undefined,
       (e: unknown) => e,
@@ -153,7 +131,7 @@ describe("runAdvise: refusing", () => {
       "Run `opscrew provision` first, then `opscrew advise` again.",
     );
     expect(s.servers.commands).toEqual([]);
-    expect(s.github.calls).toEqual([]);
+    expect(s.github?.calls).toEqual([]);
     expect(s.deps.audit.entries).toEqual([]);
   });
 });
@@ -181,6 +159,8 @@ describe("runAdvise: one server", () => {
       ]),
     });
     expect(report.basis).toEqual({ app: { kind: "one-reading", at: NOW.toISOString() } });
+    // Monitoring off on a server OpsCrew created: its history would let advise propose smaller.
+    expect(report.suggestMonitoring).toBe(true);
     expect(report.checked).toEqual([
       "the plan",
       "the interview's answers",
@@ -202,7 +182,7 @@ describe("runAdvise: one server", () => {
         /^live prices: HCLOUD_TOKEN is not set, so prices come from Hetzner's published price list dated \d{4}-\d{2}-\d{2}/,
       ),
     ]);
-    expect(s.github.calls).toEqual([
+    expect(s.github?.calls).toEqual([
       "dependabotAlerts example/example-app",
       "dependabotPulls example/example-app",
       "tokenExpiry",
@@ -214,7 +194,7 @@ describe("runAdvise: one server", () => {
     const plan = DeployPlanSchema.parse({ ...base, observability: { check: { enabled: true } } });
     const issues = [3, 2, 1].map((day) => ({ number: day, createdAt: inDays(-day) }));
     const github = new FakeAdviseGitHub({ issues });
-    const s = await oneServer({ init: { plan }, github });
+    const s = await oneServer({ plan, github });
     const report = await runAdvise(s.deps, plan, s.options);
     expect(github.calls).toContain(`issuesSince example/example-app opscrew-check ${inDays(-14)}`);
     expect(report.checked).toContain("the scheduled check's issues of the last 14 days");
@@ -244,7 +224,7 @@ describe("runAdvise: one server", () => {
       observability: { check: { enabled: true } },
     });
     const s = await oneServer({
-      init: { plan },
+      plan,
       host: { figures: figuresOutput("shop") },
       github: new FakeAdviseGitHub(),
     });
@@ -255,7 +235,7 @@ describe("runAdvise: one server", () => {
 
   it("gives a site on Cloudflare's hosting only the upkeep proposals, and reads no server", async () => {
     const plan = deployed(sitePlan());
-    const s = await oneServer({ init: { plan } });
+    const s = await oneServer({ plan });
     const report = valid(await runAdvise(s.deps, plan, s.options));
     expect(ids(report)).toEqual(["upkeep.env.github-token", "security.env.dependabot-alerts"]);
     expect(report.basis).toEqual({});
@@ -306,6 +286,8 @@ describe("runAdvise: several servers, history", () => {
       app: { kind: "history", days: 14 },
       data: { kind: "history", days: 5 },
     });
+    // Monitoring is on: nothing to suggest.
+    expect(report.suggestMonitoring).toBe(false);
     expect(byId(report, "size.app.larger")?.reasons).toContainEqual(
       expect.objectContaining({ basis: { kind: "history", days: 14 } }),
     );
@@ -573,6 +555,8 @@ describe("runAdvise: changes nothing", () => {
     expect(tried).toBeGreaterThan(0);
     expect(report.notRead).toContainEqual(expect.stringMatching(/^server app's figures: /));
     expect(report.notRead.join("\n")).toMatch(/secure's host check/);
+    // A server the user owns can't be resized: no monitoring to suggest.
+    expect(report.suggestMonitoring).toBe(false);
     expectNoLeak(deps, [OWN_IPV4], report);
   });
 
@@ -670,7 +654,8 @@ describe("runAdvise: environments and apps", () => {
   it("names a further app in every command", async () => {
     const plan = deployed({ ...onePlan(), app: { ...onePlan().app, key: "docs", name: "docs" } });
     const s = await oneServer({
-      init: { plan, app: "docs" },
+      plan,
+      init: { app: "docs" },
       host: {
         ...SHORT,
         figures: figuresOutput("docs", { memory: 0.92 }),
@@ -688,7 +673,7 @@ describe("runAdvise: environments and apps", () => {
 describe("runAdvise: a move in progress", () => {
   it("reports a move to another provider and proposes nothing that changes the plan", async () => {
     const plan = movingPlan();
-    const s = await oneServer({ init: { plan } });
+    const s = await oneServer({ plan });
     const report = valid(await runAdvise(s.deps, plan, s.options));
     expect(report.proposals[0]).toEqual({
       id: "moving.env.retarget",
@@ -697,11 +682,11 @@ describe("runAdvise: a move in progress", () => {
       title: "Finish the move in progress before other changes",
       reasons: [
         {
-          text: "A move to DigitalOcean is in progress. Run `opscrew retarget` to continue it, `opscrew retarget --finish` after the switch, or `opscrew retarget --abort` before it.",
+          text: "A move to DigitalOcean is in progress; run `opscrew retarget` to continue it, `opscrew retarget --finish` after the switch, or `opscrew retarget --abort` before it",
           basis: { kind: "plan" },
         },
         {
-          text: "Until it finishes, advise proposes nothing that changes the servers or the plan.",
+          text: "Until it finishes, advise proposes nothing that changes the servers or the plan",
           basis: { kind: "plan" },
         },
       ],
@@ -739,10 +724,10 @@ describe("runAdvise: a move in progress", () => {
       id: "moving.env.retarget",
       reasons: [
         {
-          text: "A move to DigitalOcean is being aborted. Run `opscrew retarget --env staging --abort` to finish the abort; it continues where it stopped and puts the app back on the previous server.",
+          text: "A move to DigitalOcean is being aborted; run `opscrew retarget --env staging --abort` to finish the abort, which continues where it stopped and puts the app back on the previous server",
         },
         {
-          text: "Until it finishes, advise proposes nothing that changes the servers or the plan.",
+          text: "Until it finishes, advise proposes nothing that changes the servers or the plan",
         },
       ],
       apply: { kind: "command", command: "opscrew retarget --env staging --abort" },
@@ -757,7 +742,7 @@ describe("runAdvise: a move in progress", () => {
         move: { service: "db", from: "app", to: "data", step: "started", copy: "dump" },
       }),
     );
-    const s = await oneServer({ init: { plan, addresses: { app: IPS.app } } });
+    const s = await oneServer({ plan, init: { addresses: { app: IPS.app } } });
     const report = valid(await runAdvise(s.deps, plan, s.options));
     expect(report.proposals[0]).toMatchObject({
       id: "moving.env.move",
@@ -765,7 +750,7 @@ describe("runAdvise: a move in progress", () => {
       apply: { kind: "command", command: "opscrew provision" },
     });
     expect(report.proposals[0]?.reasons[0]?.text).toBe(
-      "db is moving from the app's server to server data; `opscrew provision` continues the move.",
+      "db is moving from the app's server to server data; `opscrew provision` continues the move",
     );
     expect(report.proposals.some((p: Proposal) => p.apply.kind === "plan")).toBe(false);
   });
@@ -780,7 +765,8 @@ describe("runAdvise: a proposal the plan already holds", () => {
     });
     // provision last rendered the cx23.
     const s = await oneServer({
-      init: { plan, tfvars: { location: "nbg1", server_type: "cx23", backups: false } },
+      plan,
+      init: { tfvars: { location: "nbg1", server_type: "cx23", backups: false } },
     });
     const report = valid(await runAdvise(s.deps, plan, s.options));
     const larger = byId(report, "size.app.larger");
@@ -790,7 +776,7 @@ describe("runAdvise: a proposal the plan already holds", () => {
       apply: { kind: "command", command: "opscrew provision" },
     });
     expect(larger?.reasons.at(-1)?.text).toBe(
-      "The plan already holds this change; `opscrew provision` shows it and applies it once you approve its hash.",
+      "The plan already holds this change; `opscrew provision` shows the change and applies it once you approve its hash",
     );
   });
 
@@ -798,7 +784,7 @@ describe("runAdvise: a proposal the plan already holds", () => {
     const base = onePlan();
     const plan = deployed({ ...base, app: { ...base.app, memoryMb: 768 } });
     const s = await oneServer({
-      init: { plan },
+      plan,
       host: {
         figures: figuresOutput("shop", {
           containers: [{ service: "app", usedMb: 500, limitMb: 512 }],

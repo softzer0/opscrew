@@ -1,17 +1,22 @@
 /** Advise's 14 days from the self-hosted stack (US3, US4), on Prometheus answers as recorded. */
-import { readFile } from "node:fs/promises";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { monitoredPlan, networked, senderPlan, splitPlan } from "../network/__fixtures__/plans";
 import type { NetworkHostFacts } from "../network/allocate";
 import { updateServerAddresses } from "../shared/server-record";
 import { createTestPhaseDeps, type TestPhaseDeps } from "../testing";
+import { deployed as applied, NOW, recordedHistory as recorded } from "./__fixtures__/environment";
+import {
+  type Answer,
+  type Figure,
+  prometheusOutput,
+  settledQueries,
+} from "./__fixtures__/prometheus";
 import { readHistory } from "./history";
 import type { ServerHistory } from "./types";
 
-const NOW = new Date("2026-11-04T12:00:00.000Z");
 /** Public addresses: none may appear in any output. */
 const IPS = {
   app: "203.0.113.10",
@@ -23,52 +28,6 @@ const IPS = {
 const SHARED_FACTS: Record<string, NetworkHostFacts> = {
   monitoring: { udpPortsInUse: [51820], wireguardInterfaces: ["wg-opscrew0"] },
 };
-const PROMETHEUS = "docker exec opscrew-monitoring-prometheus-1 wget -q -O - ";
-
-type Figure =
-  | "figures"
-  | "days"
-  | "cpuP95"
-  | "memoryP95"
-  | "loadOverCpus"
-  | "diskFullInDays"
-  | "containerP95"
-  | "containerMax"
-  | "containerLimit"
-  | "restarts"
-  | "oomKills";
-
-/** The queries of research R5 (S2), as written, for one app and environment; then status's. */
-function settledQueries(app: string, env: string): Record<Figure, string> {
-  const SEL = `app="${app}",env="${env}"`;
-  const BY = "app, env, server";
-  return {
-    // Each server's newest figures, as `opscrew status` asks: every app's.
-    figures: "max by (app, env, server) (timestamp(node_load1))",
-    days: `max by (${BY}) ((time() - min_over_time(timestamp(node_memory_MemTotal_bytes{${SEL}})[14d:1h])) / 86400)`,
-    cpuP95: `quantile_over_time(0.95, (1 - avg by (${BY}) (rate(node_cpu_seconds_total{${SEL},mode="idle"}[5m])))[14d:5m])`,
-    memoryP95: `quantile_over_time(0.95, (1 - max by (${BY}) (node_memory_MemAvailable_bytes{${SEL}}) / max by (${BY}) (node_memory_MemTotal_bytes{${SEL}}))[14d:5m])`,
-    loadOverCpus: `avg_over_time((max by (${BY}) (node_load15{${SEL}}) > bool on (${BY}) count by (${BY}) (node_cpu_seconds_total{${SEL},mode="idle"}))[14d:5m])`,
-    diskFullInDays: `max by (${BY}) (node_filesystem_avail_bytes{${SEL},mountpoint="/"}) / max by (${BY}) (-deriv(node_filesystem_avail_bytes{${SEL},mountpoint="/"}[7d]) > 0) / 86400`,
-    containerP95: `quantile_over_time(0.95, (max by (${BY}, service) (container_memory_working_set_bytes{${SEL}}))[14d:5m])`,
-    containerMax: `max by (${BY}, service) (max_over_time(container_memory_working_set_bytes{${SEL}}[14d]))`,
-    containerLimit: `max by (${BY}, service) (container_spec_memory_limit_bytes{${SEL}} > 0)`,
-    restarts: `sum by (${BY}, service) (changes(container_start_time_seconds{${SEL}}[14d]))`,
-    oomKills: `sum by (${BY}, service) (increase(container_oom_events_total{${SEL}}[14d]))`,
-  };
-}
-
-interface Answer {
-  status: string;
-  data: { resultType: string; result: { metric: Record<string, string>; value: unknown[] }[] };
-}
-
-/** Prometheus's answers recorded for the spike's figures (`shop`, prod: app, data, monitoring). */
-async function recorded(): Promise<Record<Figure, Answer>> {
-  return JSON.parse(
-    await readFile(new URL("./__fixtures__/prometheus-history.json", import.meta.url), "utf8"),
-  );
-}
 
 /** `answer` without the series of `server`, as Prometheus answers once its figures stopped. */
 function without(answer: Answer, server: string): Answer {
@@ -79,9 +38,8 @@ function without(answer: Answer, server: string): Answer {
 }
 
 /**
- * The stack's server as a shell: runs the command's `echo`s, `true` and Prometheus's `wget`s,
- * answering each settled query of `app`/`env` with its answer (raw text as is; none: wget failed).
- * Any other command part fails the test. Every other host is out of reach.
+ * The stack's server as a shell, answering each settled query of `app`/`env` with its answer in
+ * `answers` (`prometheusOutput`). Every other host is out of reach.
  */
 function fakeStack(
   stackHost: string,
@@ -89,39 +47,6 @@ function fakeStack(
   answers: Partial<Record<Figure, Answer | string>>,
 ) {
   const commands: { host: string; command: string; timeoutMs?: number }[] = [];
-  const byQuery = new Map(
-    Object.entries(settledQueries(labels.app, labels.env)).map(([figure, q]) => [q, figure]),
-  );
-  const shell = (command: string): string =>
-    command
-      .split("; ")
-      .map((part) => {
-        if (part === "echo") return "\n";
-        if (part === "true") return "";
-        const echo = /^echo '([^']*)'$/.exec(part);
-        if (echo !== null) return `${echo[1]}\n`;
-        const url = new RegExp(
-          `^${PROMETHEUS}'http://127\\.0\\.0\\.1:9090/api/v1/query\\?query=([^']*)'$`,
-        ).exec(part);
-        if (url === null) throw new Error(`unexpected command part: ${part}`);
-        const figure = byQuery.get(decodeURIComponent(url[1] as string)) as Figure | undefined;
-        if (figure === undefined) throw new Error(`not a settled query: ${url[1]}`);
-        const answer = answers[figure];
-        if (answer === undefined) return "";
-        if (typeof answer === "string") return answer;
-        return JSON.stringify({
-          ...answer,
-          data: {
-            ...answer.data,
-            result: answer.data.result.map((s) =>
-              s.metric.app === "shop" && s.metric.env === "prod"
-                ? { ...s, metric: { ...s.metric, ...labels } }
-                : s,
-            ),
-          },
-        });
-      })
-      .join("");
   const remote = (host: string): RemoteExec => ({
     host,
     async run(command, options): Promise<CommandResult> {
@@ -130,7 +55,9 @@ function fakeStack(
         command,
         ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
       });
-      if (host === stackHost) return { exitCode: 0, stdout: shell(command), stderr: "" };
+      if (host === stackHost) {
+        return { exitCode: 0, stdout: prometheusOutput(command, answers, labels), stderr: "" };
+      }
       return { exitCode: 255, stdout: "", stderr: "ssh: connect to host: Connection timed out" };
     },
   });
@@ -142,15 +69,7 @@ function deployed(
   plan: Omit<DeployPlan, "network">,
   facts: Record<string, NetworkHostFacts> = {},
 ): DeployPlan {
-  const allocated = networked(plan, facts).plan;
-  return DeployPlanSchema.parse({
-    ...allocated,
-    deployment: {
-      ...allocated.deployment,
-      lastApplyAt: "2026-10-20T09:00:00.000Z",
-      firstDeployAt: "2026-10-20T09:30:00.000Z",
-    },
-  });
+  return applied(networked(plan, facts).plan);
 }
 
 /** Prod owning its monitoring server, and staging sending to it, in one repository. */

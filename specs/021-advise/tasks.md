@@ -209,7 +209,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
 
   The findings, by files (behaviour unchanged unless said):
 
-- [ ] T2115 [P] The advise core, simpler
+- [x] T2115 [P] The advise core, simpler
   - Owns: `packages/agents/src/advise/{types,run,apply,readings,history,render,index}.ts` and their tests, `advise/__fixtures__/**`, `monitoring/status.ts`, `provision/disk-guard.ts`, `secure/{servers,run}.ts`, `packages/agents/src/testing/**`, `packages/cli/src/commands/advise.ts` (+ test), `packages/mcp-server/src/tools/advise.ts` (+ test)
   - Accept: each category and urgency list written once (`URGENCIES`, `CATEGORIES` in types.ts; the types from the zod schemas); `targetOf`/`memoryLimitOf` shared by run and apply; the stubs' root exports and their test gone (the agents root exports what the CLI and MCP use); one Prometheus fake and one scenario helper in `__fixtures__`; `lastFigures` from status.ts reused by history; history's result built once; one `hostChecksFor` in secure used by secure and readings; `readAdvice`'s reads in one `Promise.all`; `AdviceReport.suggestMonitoring` set by runAdvise, so the CLI and MCP don't compute it and don't parse their own report again; the CLI and MCP tests share agents' figures fake (`@opscrew/agents/testing`); the small items of the review.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew --filter=@opscrew/mcp-server`

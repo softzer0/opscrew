@@ -8,9 +8,6 @@ import type { AdviceReport, Proposal } from "./types";
 
 const AT = "2026-11-04T12:00:00.000Z";
 
-/** Monitoring off on a server OpsCrew created: the closing line may apply. */
-const SUGGEST = { suggestMonitoring: true };
-
 const LARGER: Proposal = {
   id: "size.app.larger",
   category: "size",
@@ -61,19 +58,21 @@ const MONITORING: Proposal = {
   apply: { kind: "command", command: "opscrew addon enable monitoring --env staging" },
 };
 
+/** A report; monitoring off on a server OpsCrew created, so the closing line may apply. */
 function report(over: Partial<AdviceReport> = {}): AdviceReport {
   return {
     proposals: [REBOOT, LARGER, MONITORING],
     basis: { app: { kind: "history", days: 14 } },
     checked: ["the plan", "server app's figures"],
     notRead: [],
+    suggestMonitoring: true,
     ...over,
   };
 }
 
 describe("renderAdviceReport", () => {
   it("groups the proposals by urgency, each with its reasons, price and how to apply it", () => {
-    const text = renderAdviceReport(report(), " --env staging", SUGGEST);
+    const text = renderAdviceReport(report(), " --env staging");
     expect(text).toBe(
       [
         "Advise's proposals, the most urgent first:",
@@ -109,7 +108,6 @@ describe("renderAdviceReport", () => {
         notRead: ["Dependabot alerts: no GitHub token is available"],
       }),
       "",
-      SUGGEST,
     );
     expect(text).not.toContain("Now:");
     expect(text).not.toContain("When convenient:");
@@ -118,7 +116,7 @@ describe("renderAdviceReport", () => {
   });
 
   it("with no proposals, says so and what it checked", () => {
-    const text = renderAdviceReport(report({ proposals: [] }), "", SUGGEST);
+    const text = renderAdviceReport(report({ proposals: [] }), "");
     expect(text).toBe(
       [
         "Nothing to change: advise found nothing to propose.",
@@ -130,22 +128,23 @@ describe("renderAdviceReport", () => {
 
   it("with monitoring off and one reading, closes with the line on monitoring's figures", () => {
     const basis = { app: { kind: "one-reading", at: AT } } as const;
-    const text = renderAdviceReport(report({ proposals: [], basis }), " --app api", SUGGEST);
+    const text = renderAdviceReport(report({ proposals: [], basis }), " --app api");
     expect(text.split("\n").at(-1)).toBe(
       "These figures are one reading. `opscrew addon enable monitoring --app api` gives two weeks of figures, so advise can also propose smaller servers.",
     );
     // With history, or without servers, no such line.
-    expect(renderAdviceReport(report(), "", SUGGEST)).not.toContain("one reading.");
-    expect(renderAdviceReport(report({ basis: {} }), "", SUGGEST)).not.toContain("one reading.");
+    expect(renderAdviceReport(report(), "")).not.toContain("one reading.");
+    expect(renderAdviceReport(report({ basis: {} }), "")).not.toContain("one reading.");
   });
 
   it("has no closing line on the user's own server, nor with monitoring on and one reading", () => {
-    // The callers pass suggestMonitoring false for both: an own server can't be resized, and
+    // runAdvise sets suggestMonitoring false for both: an own server can't be resized, and
     // monitoring that is on (its history unread) needs no enabling.
     const basis = { app: { kind: "one-reading", at: AT } } as const;
-    const text = renderAdviceReport(report({ proposals: [LARGER], basis }), "", {
-      suggestMonitoring: false,
-    });
+    const text = renderAdviceReport(
+      report({ proposals: [LARGER], basis, suggestMonitoring: false }),
+      "",
+    );
     expect(text).not.toContain("addon enable monitoring");
     expect(text.split("\n").at(-1)).toBe("Checked: the plan and server app's figures.");
   });
@@ -166,7 +165,7 @@ describe("renderAdviceReport", () => {
         },
       ],
     };
-    const text = renderAdviceReport(report({ proposals: [token] }), "", SUGGEST);
+    const text = renderAdviceReport(report({ proposals: [token] }), "");
     expect(text).toContain("    - The GitHub token expires on 2026-11-07 (in 3 days)\n");
     expect(text).toContain("    - The disk is filling (full in 20 days, over 14 days)\n");
   });

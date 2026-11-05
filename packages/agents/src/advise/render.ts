@@ -4,7 +4,15 @@
  */
 import { formatMoney, listText, plural } from "@opscrew/core";
 import type { AppliedProposal } from "./apply";
-import type { AdviceReport, Basis, Proposal, ProposalPrice, Reason, Urgency } from "./types";
+import {
+  type AdviceReport,
+  type Basis,
+  type Proposal,
+  type ProposalPrice,
+  type Reason,
+  URGENCIES,
+  type Urgency,
+} from "./types";
 
 const HEADINGS: Record<Urgency, string> = {
   now: "Now:",
@@ -56,17 +64,12 @@ function proposalLines(proposal: Proposal, flags: string): string[] {
 /**
  * `report` in words: its proposals grouped by urgency (now, soon, when convenient), each with its
  * title and id, its reasons with their figures and basis, its monthly price before and after and
- * how to apply it; then what was checked and what couldn't be read; with `suggestMonitoring`
- * (monitoring off on a server OpsCrew created) and a server read once, a closing line on the two
- * weeks of figures monitoring gives. `flags` are the commands' ` --app …`/` --env …` (empty for
- * the default).
+ * how to apply it; then what was checked and what couldn't be read; with the report's
+ * `suggestMonitoring` and a server read once, a closing line on the two weeks of figures monitoring
+ * gives. `flags` are the commands' ` --app …`/` --env …` (empty for the default).
  */
-export function renderAdviceReport(
-  report: AdviceReport,
-  flags: string,
-  options: { suggestMonitoring: boolean },
-): string {
-  const groups = (["now", "soon", "when-convenient"] as const).flatMap((urgency) => {
+export function renderAdviceReport(report: AdviceReport, flags: string): string {
+  const groups = URGENCIES.flatMap((urgency) => {
     const proposals = report.proposals.filter((p) => p.urgency === urgency);
     if (proposals.length === 0) return [];
     return [
@@ -76,7 +79,7 @@ export function renderAdviceReport(
     ];
   });
   const closing =
-    options.suggestMonitoring && Object.values(report.basis).some((b) => b.kind === "one-reading");
+    report.suggestMonitoring && Object.values(report.basis).some((b) => b.kind === "one-reading");
   return [
     report.proposals.length === 0
       ? "Nothing to change: advise found nothing to propose."

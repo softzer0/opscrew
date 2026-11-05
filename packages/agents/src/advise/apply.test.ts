@@ -7,18 +7,19 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema, readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { networked, splitPlan } from "../network/__fixtures__/plans";
-import { makeRequirements, type TestPhaseDeps, testPlan } from "../testing";
+import { figuresOutput, makeRequirements, type TestPhaseDeps, testPlan } from "../testing";
 import {
   deployed,
   FakeAdviseGitHub,
   type FakeHost,
   fakeServers,
-  figuresOutput,
   IPS,
   inEnvironment,
   NOW,
-  type ProjectInit,
   project,
+  type Scenario,
+  type ScenarioInit,
+  scenario,
   tree,
 } from "./__fixtures__/environment";
 import { type AppliedProposal, applyProposal } from "./apply";
@@ -59,28 +60,14 @@ const ROOMY: FakeHost = {
   }),
 };
 
-interface Setup {
-  deps: TestPhaseDeps;
-  plan: DeployPlan;
-  options: RunAdviseOptions;
-  servers: ReturnType<typeof fakeServers>;
-}
-
-async function setup(o: { host?: FakeHost; init?: Partial<ProjectInit> } = {}): Promise<Setup> {
-  const plan = o.init?.plan ?? basePlan();
-  const deps = await project({
-    plan,
-    addresses: { app: IPS.app },
-    requirements: makeRequirements({ dataCriticality: "important" }),
-    ...o.init,
-  });
-  const servers = fakeServers({ [IPS.app]: o.host ?? SHORT });
-  const options: RunAdviseOptions = {
-    services: { remote: servers.remote },
+/** {@link basePlan}'s project, its server `SHORT`, and Dependabot off. */
+function setup(o: Partial<ScenarioInit> = {}): Promise<Scenario> {
+  return scenario({
+    plan: basePlan(),
+    host: SHORT,
     github: new FakeAdviseGitHub({ alerts: { state: "off" } }),
-    cloudflare: null,
-  };
-  return { deps, plan, options, servers };
+    ...o,
+  });
 }
 
 /** `apply`'s written plan and summary; fails the test for a command or a manual step. */
@@ -179,7 +166,7 @@ describe("applyProposal: an extra server", () => {
    * Postgres (`db`, 512 MB) on server `data` without backups, the app's server with them; both
    * reachable, `data` as `dataHost`.
    */
-  async function split(dataHost: FakeHost): Promise<Setup> {
+  async function split(dataHost: FakeHost): Promise<Scenario> {
     const base = networked(splitPlan()).plan;
     const plan = deployed({
       ...base,
@@ -198,12 +185,13 @@ describe("applyProposal: an extra server", () => {
       [IPS.app]: { figures: figuresOutput("shop") },
       [IPS.data]: dataHost,
     });
+    const github = new FakeAdviseGitHub({ alerts: { state: "off" } });
     const options: RunAdviseOptions = {
       services: { remote: servers.remote },
-      github: new FakeAdviseGitHub({ alerts: { state: "off" } }),
+      github,
       cloudflare: null,
     };
-    return { deps, plan, options, servers };
+    return { deps, plan, options, servers, github };
   }
 
   const quiet: FakeHost = {
@@ -250,7 +238,7 @@ describe("applyProposal: an extra server", () => {
 describe("applyProposal: other proposals", () => {
   it("returns a command proposal's command and changes nothing", async () => {
     const s = await setup({
-      init: { plan: deployed({ ...basePlan(), app: { ...basePlan().app, memoryMb: 512 } }) },
+      plan: deployed({ ...basePlan(), app: { ...basePlan().app, memoryMb: 512 } }),
       host: { ...SHORT, checks: { "unattended-upgrades": "disabled" } },
     });
     const before = await tree(s.deps.paths.root);
@@ -276,7 +264,8 @@ describe("applyProposal: other proposals", () => {
       target: { ...base.target, serverType: "cx33" },
     } as DeployPlan);
     const s = await setup({
-      init: { plan, tfvars: { location: "nbg1", server_type: "cx23", backups: false } },
+      plan,
+      init: { tfvars: { location: "nbg1", server_type: "cx23", backups: false } },
     });
     expect(await applyProposal(s.deps, plan, "size.app.larger", s.options)).toEqual({
       command: "opscrew provision",
@@ -286,7 +275,7 @@ describe("applyProposal: other proposals", () => {
 
 describe("applyProposal: refusals", () => {
   /** The refusal of `applyProposal`, with the plan file untouched. */
-  async function refused(s: Setup, id: string): Promise<OpsCrewError> {
+  async function refused(s: Scenario, id: string): Promise<OpsCrewError> {
     const before = await tree(s.deps.paths.root);
     const error = await applyProposal(s.deps, s.plan, id, s.options).then(
       () => undefined,
@@ -326,14 +315,14 @@ describe("applyProposal: refusals", () => {
         startedAt: "2026-11-01T09:00:00.000Z",
       },
     });
-    const s = await setup({ init: { plan } });
+    const s = await setup({ plan });
     const error = await refused(s, "size.app.larger");
     expect(error.message).toContain("The current ones are moving.env.retarget");
   });
 
   it("refuses an environment that isn't provisioned", async () => {
     const plan = testPlan();
-    const s = await setup({ init: { plan } });
+    const s = await setup({ plan });
     const error = await refused(s, "size.app.larger");
     expect(error.code).toBe("PHASE_PRECONDITION");
     expect(error.message).toContain("Nothing was changed.");

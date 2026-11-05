@@ -22,13 +22,11 @@ import {
   type DeepToolResult,
   defaultTcpConnect,
   evaluatePlanPolicies,
-  HOST_CHECKS,
   type HostCheck,
   type LocalDocker,
   localDocker,
   localDockerProblem,
   originHostChecks,
-  ownServerHostChecks,
   probePorts,
   probeSshPasswordAuth,
   runHostChecks,
@@ -77,11 +75,12 @@ import {
 } from "./report";
 import {
   extraServerChecks,
+  hostChecksFor,
   type NetworkFilterReader,
   networkListing,
   privateAddressChecks,
 } from "./servers";
-import { serverServiceChecks, servicePorts } from "./services";
+import { servicePorts } from "./services";
 import { behindCloudflare, settingsChecks } from "./settings";
 import { siteProbesSkipped, siteSecureNotes, siteSecurityChecks } from "./site";
 
@@ -214,22 +213,18 @@ async function checkServer(
       : undefined);
   let hostChecks: CheckResult[] = [];
   let skipped: string | undefined;
-  // The app's services: no published port, their login set (FR-1328), Valkey's password (FR-1450).
-  const services = serverServiceChecks(plan);
   if (remote === undefined) {
     skipped = `the deploy key is not on this machine (it is created by \`opscrew provision\`). Run the checks from the machine that ${own !== undefined ? "prepared your server" : "provisioned the server"}.`;
-  } else if (own !== undefined) {
-    reporter.step("Checking your server's hardening over SSH");
-    hostChecks = await runHostChecks(remote, [
-      ...ownServerHostChecks(own.hardening),
-      ...services,
-      ...(await siteTlsChecks(deps, plan, remote)),
-    ]);
   } else {
-    reporter.step(`Checking the server's hardening over SSH (${host})`);
+    reporter.step(
+      own !== undefined
+        ? "Checking your server's hardening over SSH"
+        : `Checking the server's hardening over SSH (${host})`,
+    );
+    // With the app's services' checks: no published port, their login set (FR-1328), Valkey's
+    // password (FR-1450).
     hostChecks = await runHostChecks(remote, [
-      ...HOST_CHECKS,
-      ...services,
+      ...hostChecksFor(plan, APP_SERVER, own?.hardening),
       ...(await siteTlsChecks(deps, plan, remote)),
     ]);
   }

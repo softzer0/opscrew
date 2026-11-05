@@ -1,12 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  ProposalSchema,
-  type RunAdviseOptions,
-  renderAdviceReport,
-  runAdvise,
-} from "@opscrew/agents";
-import { monitoringOf, readArtifact } from "@opscrew/plan-schema";
-import { z } from "zod";
+import { type RunAdviseOptions, renderAdviceReport, runAdvise } from "@opscrew/agents";
+import { readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
 import { appInput, environmentInput, projectDirInput, runTool, toolEnvironment } from "./shared";
 
@@ -37,15 +31,7 @@ export function registerAdviseTool(
         const phase = await call.phaseDeps({ app: appKey, environment: name });
         const plan = await readArtifact("plan", phase.paths.files.plan);
         const report = await runAdvise(phase, plan, options);
-        // Monitoring's history would let advise propose a smaller server OpsCrew created.
-        const { provider } = plan.target;
-        const suggestMonitoring =
-          monitoringOf(plan) === undefined &&
-          (provider === "hetzner" || provider === "digitalocean");
-        return {
-          text: renderAdviceReport(report, flag, { suggestMonitoring }),
-          data: { ...report, proposals: z.array(ProposalSchema).parse(report.proposals) },
-        };
+        return { text: renderAdviceReport(report, flag), data: { ...report } };
       }),
   );
 }

@@ -1,17 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  applyProposal,
-  componentRules,
-  costRules,
-  type Proposal,
-  ProposalSchema,
-  readHistory,
-  reliabilityRules,
-  runAdvise,
-  sizeRules,
-  THRESHOLDS,
-  upkeepRules,
-} from "../index";
+import { type Proposal, ProposalSchema, THRESHOLDS } from "../index";
 
 const AT = "2026-11-05T10:00:00.000Z";
 
@@ -235,19 +223,5 @@ describe("THRESHOLDS", () => {
       databaseShare: 0.5,
     });
     expect(Object.isFrozen(THRESHOLDS)).toBe(true);
-  });
-});
-
-describe("the stubs", () => {
-  it("are exported from the agents root for the waves to fill", () => {
-    const stubs = [
-      readHistory,
-      sizeRules,
-      costRules,
-      reliabilityRules,
-      upkeepRules,
-      componentRules,
-    ];
-    for (const stub of [...stubs, runAdvise, applyProposal]) expect(stub).toBeTypeOf("function");
   });
 });

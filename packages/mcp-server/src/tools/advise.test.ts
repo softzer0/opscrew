@@ -11,13 +11,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { ProposalSchema, type RunAdviseOptions, recordServerAddress } from "@opscrew/agents";
 import {
+  figuresOutput,
+  figuresRemote,
   forbiddenFetch,
   makeRequirements,
   ScriptedRunner,
   SERVER_IPV4,
   testPlan,
 } from "@opscrew/agents/testing";
-import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
@@ -26,36 +27,11 @@ import { resolveMcpDeps } from "../deps";
 import { registerAdviseTool } from "./advise";
 
 const GITHUB_TOKEN = fakeSecret("github-token", "advise");
-const MB = 1024 ** 2;
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   while (cleanups.length > 0) await cleanups.pop()?.();
 });
-
-/** The figures command's answer: 92% of 4 GB in use, the web process well under its limit. */
-const FIGURES = [
-  "==opscrew-figures:cpus",
-  "2",
-  "==opscrew-figures:load",
-  "0.30 0.30 0.30 1/123 4567",
-  "==opscrew-figures:memory",
-  "               total        used        free      shared  buff/cache   available",
-  "Mem:      4294967296  3951369912   1000     1000  1000  343597384",
-  "==opscrew-figures:disk",
-  "Filesystem        1-blocks        Used   Available Capacity Mounted on",
-  "/dev/sda1      42949672960 12884901888  30064771072      30% /",
-  "==opscrew-figures:stats",
-  JSON.stringify({ Name: "shop-app-1", CPUPerc: "1.50%", MemUsage: "120MiB / 512MiB" }),
-  "==opscrew-figures:inspect",
-  JSON.stringify({
-    name: "/shop-app-1",
-    restarts: 0,
-    startedAt: "2026-10-11T08:00:00Z",
-    memoryLimit: 512 * MB,
-  }),
-  "",
-].join("\n");
 
 /**
  * The tool on a deployed Hetzner cx23 without backups (important data in the interview): its
@@ -81,19 +57,9 @@ async function connect() {
   await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
   await mkdir(path.dirname(paths.files.deployKey), { recursive: true });
   await writeFile(paths.files.deployKey, "placeholder for the deploy key file\n");
-  const remote = (host: string): RemoteExec => ({
-    host,
-    run: async (command) =>
-      command.includes("==opscrew-figures:")
-        ? { exitCode: 0, stdout: FIGURES, stderr: "" }
-        : {
-            exitCode: 255,
-            stdout: "",
-            stderr: `ssh: connect to host ${host} port 22: Connection timed out`,
-          },
-  });
   const options: RunAdviseOptions = {
-    services: { remote },
+    // 92% of 4 GB in use, the web process well under its limit.
+    services: { remote: figuresRemote(figuresOutput("shop", { memory: 0.92 })) },
     github: {
       dependabotAlerts: async () => ({ state: "on", alerts: [] }),
       dependabotPulls: async () => [],

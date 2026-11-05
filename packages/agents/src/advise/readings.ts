@@ -16,16 +16,15 @@ import {
   isServerlessProvider,
   type Requirements,
 } from "@opscrew/plan-schema";
-import { couldNotRun, HOST_CHECKS, ownServerHostChecks, runHostChecks } from "@opscrew/secops";
+import { couldNotRun, runHostChecks } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { extraCatalogs } from "../design/run";
-import { commandFlags } from "../environments/choice";
 import { readEnvironmentRequirements } from "../environments/requirements";
 import { providerProfile } from "../providers";
 import { renderedServers } from "../provision/disk-guard";
 import type { ProvisionServices } from "../provision/types";
 import { ownServerHardening } from "../secure/own";
-import { serverServiceChecks } from "../secure/services";
+import { hostChecksFor } from "../secure/servers";
 import {
   gitClient,
   githubClientFromToken,
@@ -131,12 +130,14 @@ async function hostChecks(
   services: ReadingsOptions["services"],
 ): Promise<CheckResult[]> {
   const { login, docker } = await serverShell(deps, plan, name, services);
-  const setup = login.own
-    ? await (name === APP_SERVER ? lastHostSetup(deps, plan) : lastServerSetup(deps, name))
+  const hardening = login.own
+    ? ownServerHardening(
+        await (name === APP_SERVER ? lastHostSetup(deps, plan) : lastServerSetup(deps, name)),
+        login,
+      )
     : undefined;
-  const checks = login.own ? ownServerHostChecks(ownServerHardening(setup, login)) : HOST_CHECKS;
   deps.reporter.step(`Running secure's host checks on server ${name} (read-only)`);
-  const results = await runHostChecks(docker, [...checks, ...serverServiceChecks(plan, name)]);
+  const results = await runHostChecks(docker, hostChecksFor(plan, name, hardening));
   await deps.audit.append({
     kind: "remote-exec",
     actor: "opscrew",
@@ -285,7 +286,7 @@ async function priceLists(
 
 /** What GitHub tells advise: Dependabot, the token's expiry, the check's issues. */
 type GitHubReadings = Pick<Readings, "check"> &
-  Pick<Readings["upkeep"], "dependabot" | "pulls"> & { expiresAt?: string };
+  Pick<Readings["upkeep"], "dependabot" | "pulls" | "tokens">;
 
 /**
  * Dependabot's alerts and pull requests, the GitHub token's expiry and, with the scheduled check
@@ -309,6 +310,7 @@ async function readGitHub(
   if (api === null || api === undefined) {
     return {
       pulls: [],
+      tokens: [],
       checked: [],
       notRead: [
         `${what}: no GitHub token is available (set GITHUB_TOKEN or run \`gh auth login\`)`,
@@ -316,7 +318,9 @@ async function readGitHub(
     };
   }
   const where = await attempt(deps, what, () => githubCoordinates(gitClient(deps)));
-  if (where.value === undefined) return { pulls: [], checked: [], notRead: where.notRead };
+  if (where.value === undefined) {
+    return { pulls: [], tokens: [], checked: [], notRead: where.notRead };
+  }
   const { owner, repo } = where.value;
   deps.reporter.step("Reading Dependabot's alerts and pull requests at GitHub (read-only)");
   const [alerts, pulls, expiry, issues] = await Promise.all([
@@ -343,7 +347,7 @@ async function readGitHub(
   return {
     ...(alerts.value === undefined ? {} : { dependabot: alerts.value }),
     pulls: pulls.value ?? [],
-    ...(expiry.value === undefined ? {} : { expiresAt: expiry.value }),
+    tokens: expiry.value === undefined ? [] : [{ service: "github", expiresAt: expiry.value }],
     ...(issues?.value === undefined ? {} : { check: issues.value }),
     checked: sources.flatMap((s) => s.checked),
     notRead: sources.flatMap((s) => s.notRead),
@@ -357,23 +361,30 @@ async function readGitHub(
 async function readCloudflare(
   deps: PhaseDeps,
   cloudflare: ReadingsOptions["cloudflare"],
-): Promise<Lines & { expiresAt?: string }> {
+): Promise<Lines & Pick<Readings["upkeep"], "tokens">> {
   const client = cloudflare === undefined ? cloudflareConnector(deps).client : cloudflare;
-  if (client === null || client === undefined) return { checked: [], notRead: [] };
+  if (client === null || client === undefined) return { tokens: [], checked: [], notRead: [] };
   const what = "the Cloudflare token's expiry";
-  const read = await attempt(deps, what, () => client.verifyToken());
-  const check = read.value;
-  if (check === undefined) return read;
-  if (!check.ok)
-    return { checked: [], notRead: [`${what}: ${deps.redactor.redact(check.message)}`] };
-  if (check.expiresOn !== undefined) return { ...read, expiresAt: check.expiresOn };
+  const { value: check, checked, notRead } = await attempt(deps, what, () => client.verifyToken());
+  if (check === undefined) return { tokens: [], checked, notRead };
+  if (!check.ok) {
+    return {
+      tokens: [],
+      checked: [],
+      notRead: [`${what}: ${deps.redactor.redact(check.message)}`],
+    };
+  }
+  if (check.expiresOn !== undefined) {
+    return { tokens: [{ service: "cloudflare", expiresAt: check.expiresOn }], checked, notRead };
+  }
   if (check.identity === "account API token") {
     return {
+      tokens: [],
       checked: [],
       notRead: [`${what}: Cloudflare gives none for an account-owned token`],
     };
   }
-  return read;
+  return { tokens: [], checked, notRead };
 }
 
 /**
@@ -409,43 +420,31 @@ async function readServerHistory(
  * plan (each server OpsCrew created as provision last rendered it), the interview's answers, the
  * providers' prices, Dependabot's alerts and pull requests, the GitHub and Cloudflare tokens' expiry
  * and the scheduled check's issues; with what was read (`checked`). Every remote command is fixed
- * and read-only, audited by its reader as `remote-exec`.
+ * and read-only, audited by its reader as `remote-exec`. `flags` are the environment's ` --app …`/
+ * ` --env …` for the commands it names.
  */
 export async function readAdvice(
   deps: PhaseDeps,
   plan: DeployPlan,
+  flags: string,
   options: ReadingsOptions = {},
 ): Promise<{ readings: Readings; checked: string[] }> {
   const at = deps.clock.now();
   const since = new Date(at.getTime() - THRESHOLDS.historyDays * DAY_MS).toISOString();
-  const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const { services } = options;
   const names = isServerlessProvider(plan.target.provider) ? [] : appServers(plan);
-  const requirementsRead = attempt(deps, "the interview's answers", () =>
-    readEnvironmentRequirements(deps.paths),
-  );
-  const deployedRead = asDeployed(deps, plan);
-  const [requirements, deployedPlan, prices, servers, history, github, cloudflare] =
-    await Promise.all([
-      requirementsRead,
-      deployedRead,
-      Promise.all([deployedRead, requirementsRead]).then(([view, answers]) =>
-        priceLists(deps, view, answers.value),
-      ),
-      Promise.all(names.map((name) => readServer(deps, plan, name, services, flags))),
-      readServerHistory(deps, plan, services, flags),
-      readGitHub(deps, plan, options.github, since),
-      readCloudflare(deps, options.cloudflare),
-    ]);
+  const [requirements, deployedPlan] = await Promise.all([
+    attempt(deps, "the interview's answers", () => readEnvironmentRequirements(deps.paths)),
+    asDeployed(deps, plan),
+  ]);
+  const [prices, servers, history, github, cloudflare] = await Promise.all([
+    priceLists(deps, deployedPlan, requirements.value),
+    Promise.all(names.map((name) => readServer(deps, plan, name, services, flags))),
+    readServerHistory(deps, plan, services, flags),
+    readGitHub(deps, plan, options.github, since),
+    readCloudflare(deps, options.cloudflare),
+  ]);
   const read: Lines[] = [requirements, ...servers, history, prices, github, cloudflare];
-  const tokens = [
-    ...(github.expiresAt === undefined
-      ? []
-      : [{ service: "github" as const, expiresAt: github.expiresAt }]),
-    ...(cloudflare.expiresAt === undefined
-      ? []
-      : [{ service: "cloudflare" as const, expiresAt: cloudflare.expiresAt }]),
-  ];
   const readings: Readings = {
     at: at.toISOString(),
     servers: Object.fromEntries(
@@ -463,7 +462,7 @@ export async function readAdvice(
     upkeep: {
       ...(github.dependabot === undefined ? {} : { dependabot: github.dependabot }),
       pulls: github.pulls,
-      tokens,
+      tokens: [...github.tokens, ...cloudflare.tokens],
       hostChecks: Object.fromEntries(
         names.flatMap((name, i) => {
           const checks = servers[i]?.checks;

@@ -7,8 +7,14 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ProposalSchema, recordServerAddress } from "@opscrew/agents";
-import { makeRequirements, ScriptedRunner, SERVER_IPV4, testPlan } from "@opscrew/agents/testing";
-import type { RemoteExec } from "@opscrew/contracts";
+import {
+  figuresOutput,
+  figuresRemote,
+  makeRequirements,
+  ScriptedRunner,
+  SERVER_IPV4,
+  testPlan,
+} from "@opscrew/agents/testing";
 import { resolveProjectPaths } from "@opscrew/core";
 import { fakeFetch, fakeSecret } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -20,7 +26,6 @@ import { createTestContext } from "../test-context";
 
 const argv = (...args: string[]) => ["node", "opscrew", ...args];
 const GITHUB_TOKEN = fakeSecret("github-token", "advise");
-const MB = 1024 ** 2;
 
 let dir: string;
 beforeEach(async () => {
@@ -29,30 +34,6 @@ beforeEach(async () => {
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
-
-/** The figures command's answer: 92% of 4 GB in use, the web process well under its limit. */
-const FIGURES = [
-  "==opscrew-figures:cpus",
-  "2",
-  "==opscrew-figures:load",
-  "0.30 0.30 0.30 1/123 4567",
-  "==opscrew-figures:memory",
-  "               total        used        free      shared  buff/cache   available",
-  "Mem:      4294967296  3951369912   1000     1000  1000  343597384",
-  "==opscrew-figures:disk",
-  "Filesystem        1-blocks        Used   Available Capacity Mounted on",
-  "/dev/sda1      42949672960 12884901888  30064771072      30% /",
-  "==opscrew-figures:stats",
-  JSON.stringify({ Name: "shop-app-1", CPUPerc: "1.50%", MemUsage: "120MiB / 512MiB" }),
-  "==opscrew-figures:inspect",
-  JSON.stringify({
-    name: "/shop-app-1",
-    restarts: 0,
-    startedAt: "2026-10-11T08:00:00Z",
-    memoryLimit: 512 * MB,
-  }),
-  "",
-].join("\n");
 
 /**
  * A deployed Hetzner cx23 without backups, important data in the interview; its server answers
@@ -80,17 +61,8 @@ async function deployedProject(plan?: DeployPlan) {
   await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
   await mkdir(path.dirname(paths.files.deployKey), { recursive: true });
   await writeFile(paths.files.deployKey, "placeholder for the deploy key file\n");
-  const remote = (host: string): RemoteExec => ({
-    host,
-    run: async (command) =>
-      command.includes("==opscrew-figures:")
-        ? { exitCode: 0, stdout: FIGURES, stderr: "" }
-        : {
-            exitCode: 255,
-            stdout: "",
-            stderr: `ssh: connect to host ${host} port 22: Connection timed out`,
-          },
-  });
+  // 92% of 4 GB in use, the web process well under its limit.
+  const remote = figuresRemote(figuresOutput("shop", { memory: 0.92 }));
   // GitHub: no alert, the token expires in 3 days, and the pull requests fail with an answer that
   // quotes the token (it reaches the output only through the error's message, redacted).
   const github = fakeFetch(
@@ -170,12 +142,14 @@ describe("opscrew advise", () => {
       basis: Record<string, unknown>;
       checked: string[];
       notRead: string[];
+      suggestMonitoring: boolean;
     };
     expect(report.proposals.length).toBeGreaterThan(0);
     for (const proposal of report.proposals)
       expect(ProposalSchema.parse(proposal)).toEqual(proposal);
     expect(report.basis).toEqual({ app: { kind: "one-reading", at: "2026-10-11T12:00:00.000Z" } });
     expect(report.checked).toContain("the plan");
+    expect(report.suggestMonitoring).toBe(true);
     expectNoLeak(ctx.output + ctx.errors);
   });
 

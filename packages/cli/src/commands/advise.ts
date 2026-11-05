@@ -1,15 +1,13 @@
 import {
   applyProposal,
-  ProposalSchema,
   type RunAdviseOptions,
   renderAdviceReport,
   renderAppliedProposal,
   runAdvise,
 } from "@opscrew/agents";
 import { OpsCrewError } from "@opscrew/core";
-import { monitoringOf, readArtifact } from "@opscrew/plan-schema";
+import { readArtifact } from "@opscrew/plan-schema";
 import type { Command } from "commander";
-import { z } from "zod";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { quietReporter } from "../reporter";
@@ -72,15 +70,6 @@ export function register(program: Command, ctx: CliContext): void {
       return;
     }
     const report = await runAdvise(deps, plan, options);
-    if (json) {
-      const checked = { ...report, proposals: z.array(ProposalSchema).parse(report.proposals) };
-      ctx.stdout(`${JSON.stringify(checked, null, 2)}\n`);
-      return;
-    }
-    // Monitoring's history would let advise propose a smaller server OpsCrew created.
-    const { provider } = plan.target;
-    const suggestMonitoring =
-      monitoringOf(plan) === undefined && (provider === "hetzner" || provider === "digitalocean");
-    ctx.stdout(`${renderAdviceReport(report, flag, { suggestMonitoring })}\n`);
+    ctx.stdout(`${json ? JSON.stringify(report, null, 2) : renderAdviceReport(report, flag)}\n`);
   });
 }

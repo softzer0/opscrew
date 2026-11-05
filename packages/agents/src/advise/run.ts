@@ -3,11 +3,12 @@
  * rules and lists their proposals, the most urgent first. It changes nothing.
  */
 import { OpsCrewError } from "@opscrew/core";
-import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, monitoringOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { moveInProgress } from "../provision/guard";
 import { hasDeployment, serverWords } from "../shared";
+import { targetOf } from "../shared/servers";
 import { type ReadingsOptions, readAdvice } from "./readings";
 import { componentRules } from "./rules/components";
 import { costRules } from "./rules/cost";
@@ -15,49 +16,40 @@ import { reliabilityRules } from "./rules/reliability";
 import { PLAN } from "./rules/shared";
 import { sizeRules } from "./rules/size";
 import { upkeepRules } from "./rules/upkeep";
-import type {
-  AdviceReport,
-  Basis,
-  PlanChange,
-  Proposal,
-  ProposalCategory,
-  Readings,
-  Urgency,
+import {
+  type AdviceReport,
+  type Basis,
+  CATEGORIES,
+  type PlanChange,
+  type Proposal,
+  type ProposalCategory,
+  type Readings,
+  URGENCIES,
 } from "./types";
 
-/** What `runAdvise` reads through besides `deps`: the servers', GitHub's and Cloudflare's fakes in tests. */
-export type RunAdviseOptions = ReadingsOptions;
+export type { ReadingsOptions as RunAdviseOptions };
 
 const RULES = [sizeRules, costRules, reliabilityRules, upkeepRules, componentRules];
-
-/** The urgencies, most urgent first. */
-const URGENCIES: readonly Urgency[] = ["now", "soon", "when-convenient"];
-
-/**
- * Within an urgency: a move in progress first, then a server's size, security, upkeep, savings,
- * and the rest (US1-3).
- */
-const CATEGORIES: readonly ProposalCategory[] = [
-  "moving",
-  "size",
-  "security",
-  "upkeep",
-  "cost",
-  "reliability",
-  "components",
-];
 
 /** The proposals that change the servers: none while a move is in progress. */
 const SERVER_CATEGORIES: ReadonlySet<ProposalCategory> = new Set(["size", "cost", "components"]);
 
+/** What `opscrew provision` does with a plan change, after its command (no full stop). */
+export const PROVISION_APPLIES = "shows the change and applies it once you approve its hash";
+
+/** The memory limit in MB `plan` gives `container`; `undefined` without one. */
+export function memoryLimitOf(
+  plan: DeployPlan,
+  container: Extract<PlanChange, { kind: "memory-limit" }>["container"],
+): number | undefined {
+  if (container.kind === "web") return plan.app.memoryMb;
+  const planned = container.kind === "worker" ? plan.processes.workers : plan.services;
+  return planned.find((c) => c.name === container.name)?.memoryMb;
+}
+
 /** True when `plan` already holds `change` (a memory limit at least as high). */
 function planHolds(plan: DeployPlan, change: PlanChange): boolean {
-  const target =
-    "server" in change
-      ? change.server === APP_SERVER
-        ? plan.target
-        : plan.servers?.find((s) => s.name === change.server)?.target
-      : undefined;
+  const target = "server" in change ? targetOf(plan, change.server) : undefined;
   switch (change.kind) {
     case "server-type":
       return (
@@ -68,13 +60,7 @@ function planHolds(plan: DeployPlan, change: PlanChange): boolean {
     case "check":
       return plan.observability?.check?.enabled === true;
     case "memory-limit": {
-      const { container } = change;
-      const limit =
-        container.kind === "web"
-          ? plan.app.memoryMb
-          : container.kind === "worker"
-            ? plan.processes.workers.find((w) => w.name === container.name)?.memoryMb
-            : plan.services.find((s) => s.name === container.name)?.memoryMb;
+      const limit = memoryLimitOf(plan, change.container);
       return limit !== undefined && limit >= change.memoryMb;
     }
   }
@@ -89,7 +75,7 @@ function alreadyInPlan(proposal: Proposal, flags: string): Proposal {
     reasons: [
       ...proposal.reasons,
       {
-        text: `The plan already holds this change; \`${provision}\` shows it and applies it once you approve its hash.`,
+        text: `The plan already holds this change; \`${provision}\` ${PROVISION_APPLIES}`,
         basis: PLAN,
       },
     ],
@@ -98,7 +84,7 @@ function alreadyInPlan(proposal: Proposal, flags: string): Proposal {
 }
 
 const UNTIL_FINISHED =
-  "Until it finishes, advise proposes nothing that changes the servers or the plan.";
+  "Until it finishes, advise proposes nothing that changes the servers or the plan";
 
 /**
  * The move in progress, when there is one: to another provider (`moveInProgress`'s words, then
@@ -116,13 +102,13 @@ function moveProposal(plan: DeployPlan, flags: string): Proposal | undefined {
     const command = `opscrew retarget${flags}`;
     const aborting = plan.retarget?.abort !== undefined;
     const next = aborting
-      ? `Run \`${command} --abort\` to finish the abort; it continues where it stopped and puts the app back on the previous server.`
-      : `Run \`${command}\` to continue it, \`${command} --finish\` after the switch, or \`${command} --abort\` before it.`;
+      ? `run \`${command} --abort\` to finish the abort, which continues where it stopped and puts the app back on the previous server`
+      : `run \`${command}\` to continue it, \`${command} --finish\` after the switch, or \`${command} --abort\` before it`;
     return {
       ...fields,
       id: "moving.env.retarget",
       reasons: [
-        { text: `${retarget.message} ${next}`, basis: PLAN },
+        { text: `${retarget.message.replace(/\.$/, "")}; ${next}`, basis: PLAN },
         { text: UNTIL_FINISHED, basis: PLAN },
       ],
       apply: { kind: "command", command: aborting ? `${command} --abort` : command },
@@ -136,7 +122,7 @@ function moveProposal(plan: DeployPlan, flags: string): Proposal | undefined {
     id: "moving.env.move",
     reasons: [
       {
-        text: `${move.service} is moving from ${serverWords(move.from)} to ${serverWords(move.to)}; \`${provision}\` continues the move.`,
+        text: `${move.service} is moving from ${serverWords(move.from)} to ${serverWords(move.to)}; \`${provision}\` continues the move`,
         basis: PLAN,
       },
       { text: UNTIL_FINISHED, basis: PLAN },
@@ -176,30 +162,29 @@ function ordered(proposals: Proposal[]): Proposal[] {
 export async function runAdvise(
   deps: PhaseDeps,
   plan: DeployPlan,
-  options: RunAdviseOptions = {},
+  options: ReadingsOptions = {},
 ): Promise<AdviceReport> {
   return (await adviseWithFlags(deps, plan, options)).report;
 }
 
 /**
- * Internal, for `applyProposal`: {@link runAdvise}'s report with the `--app`/`--env` flags the
- * readings found, so the flags are read once.
+ * Internal, for `applyProposal`: {@link runAdvise}'s report with the environment's `--app`/`--env`
+ * flags, so they are read once.
  */
 export async function adviseWithFlags(
   deps: PhaseDeps,
   plan: DeployPlan,
-  options: RunAdviseOptions,
+  options: ReadingsOptions,
 ): Promise<{ report: AdviceReport; flags: string }> {
+  const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   if (!hasDeployment(plan)) {
-    const flags = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `The ${deps.paths.environment} environment is not provisioned, so advise has nothing to read. Nothing was changed.`,
       { hint: `Run \`opscrew provision${flags}\` first, then \`opscrew advise${flags}\` again.` },
     );
   }
-  const { readings, checked } = await readAdvice(deps, plan, options);
-  const { flags } = readings;
+  const { readings, checked } = await readAdvice(deps, plan, flags, options);
   const proposals = RULES.flatMap((rule) => rule(readings)).map((proposal) =>
     proposal.apply.kind === "plan" && planHolds(plan, proposal.apply.change)
       ? alreadyInPlan(proposal, flags)
@@ -213,12 +198,15 @@ export async function adviseWithFlags(
           move,
           ...proposals.filter((p) => p.apply.kind !== "plan" && !SERVER_CATEGORIES.has(p.category)),
         ];
+  const { provider } = plan.target;
   return {
     report: {
       proposals: ordered(kept),
       basis: basisOf(readings),
       checked,
       notRead: readings.notRead,
+      suggestMonitoring:
+        monitoringOf(plan) === undefined && (provider === "hetzner" || provider === "digitalocean"),
     },
     flags,
   };

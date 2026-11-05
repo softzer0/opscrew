@@ -15,7 +15,7 @@ import { planFile } from "../runners";
 import { committedTfvars } from "./render";
 
 /** What {@link requireNoSmallerDisk} needs. */
-export interface DiskGuardInput {
+interface DiskGuardInput {
   root: string;
   plan: DeployPlan;
   /** The provider's catalogue, live or static (design's `resolveCatalog`), for `location`. */

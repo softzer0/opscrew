@@ -23,7 +23,8 @@ export interface Proposal {
   title: string; reasons: Reason[]; price?: ProposalPrice;
   apply: { kind: "plan"; change: PlanChange } | { kind: "command"; command: string } | { kind: "manual"; text: string };
 }
-export const ProposalSchema: z.ZodType<Proposal>;           // for the CLI's --json and MCP
+export const URGENCIES, CATEGORIES;                         // each list once; the types come from the schemas (z.infer)
+export const ProposalSchema;                                // the tests check every proposal against it
 export const THRESHOLDS: Readonly<{ ... }>;                  // data-model.md
 export interface ServerHistory {                             // T2104 fills
   days: number; cpuP95?: number; memoryP95?: number; loadOverCpus?: number; diskFullInDays?: number;
@@ -31,7 +32,7 @@ export interface ServerHistory {                             // T2104 fills
   containers: { service: string; memoryP95?: number; memoryMax?: number; limit?: number; restarts?: number; oomKills?: number }[];
 }
 export interface Readings { at: string; flags: string; ... } // `at`: when read (deps.clock, ISO); `flags`: commandFlags; per server now/history, plan, requirements, prices, upkeep, check, notRead
-export interface AdviceReport { proposals: Proposal[]; basis: Record<string, Basis>; checked: string[]; notRead: string[] }
+export interface AdviceReport { proposals: Proposal[]; basis: Record<string, Basis>; checked: string[]; notRead: string[]; suggestMonitoring: boolean }
 ```
 
 ```ts
@@ -70,4 +71,4 @@ verifyToken(): Promise<CloudflareTokenCheck>;   // the existing CredentialCheck 
 
 - `opscrew advise [--apply <id>] [--json] [--app <name>] [--env <name>]`
 - MCP `opscrew_advise` (`projectDir`, `app`, `env`), read only.
-- Both print `renderAdviceReport(report, flags, { suggestMonitoring })` and `renderAppliedProposal(applied)` from agents' `advise/render.ts`; the closing monitoring line only for Hetzner and DigitalOcean servers without monitoring.
+- Both print `renderAdviceReport(report, flags)` and `renderAppliedProposal(applied)` from agents' `advise/render.ts`; the closing monitoring line when `report.suggestMonitoring` (Hetzner and DigitalOcean servers without monitoring, on one reading).

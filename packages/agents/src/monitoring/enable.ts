@@ -50,7 +50,7 @@ import {
 } from "../shared/memory";
 import { writePlanIfChanged } from "../shared/plan-file";
 import { hasDeployment, serverWords } from "../shared/server-address";
-import { appServers } from "../shared/servers";
+import { appServers, targetOf } from "../shared/servers";
 import { networkServer, type VpnServices } from "../vpn/servers";
 import {
   estimateDisk,
@@ -149,14 +149,8 @@ type Where = MonitoringSettings["where"];
 type CloudTarget = Extract<DeployTarget | ExtraServer["target"], { serverType: string }>;
 
 /** True for a server OpsCrew creates (it has a type at a provider). */
-function isCloud(target: DeployTarget | ExtraServer["target"]): target is CloudTarget {
-  return target.provider === "hetzner" || target.provider === "digitalocean";
-}
-
-/** The target of `plan`'s server `name`. */
-function targetOf(plan: DeployPlan, name: string): DeployTarget | ExtraServer["target"] {
-  if (name === APP_SERVER) return plan.target;
-  return ((plan.servers ?? []).find((server) => server.name === name) as ExtraServer).target;
+function isCloud(target: DeployTarget | ExtraServer["target"] | undefined): target is CloudTarget {
+  return target?.provider === "hetzner" || target?.provider === "digitalocean";
 }
 
 /** One of the plan's servers as the checks see it: its memory and price. */
@@ -174,7 +168,7 @@ interface Room {
 /** The memory and price of the server `name` with `target` (facts for one the user owns). */
 async function roomOf(
   name: string,
-  target: DeployTarget | ExtraServer["target"],
+  target: DeployTarget | ExtraServer["target"] | undefined,
   facts: HostFacts | undefined,
   catalogFor: NonNullable<MonitoringServices["catalogFor"]>,
 ): Promise<Room> {

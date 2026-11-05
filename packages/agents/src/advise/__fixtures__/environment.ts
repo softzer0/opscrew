@@ -20,8 +20,16 @@ import {
 } from "@opscrew/plan-schema";
 import { HOST_CHECKS } from "@opscrew/secops";
 import { updateServerAddresses } from "../../shared/server-record";
-import { createTestPhaseDeps, ScriptedRunner, type TestPhaseDeps } from "../../testing";
-import type { AdviseGitHub } from "../readings";
+import {
+  createTestPhaseDeps,
+  makeRequirements,
+  ScriptedRunner,
+  type TestPhaseDeps,
+} from "../../testing";
+import type { AdviseGitHub, ReadingsOptions } from "../readings";
+import { type Answer, type Figure, prometheusOutput } from "./prometheus";
+
+export { recordedHistory } from "./prometheus";
 
 /** When advise reads (the recorded Prometheus answers are of this moment). */
 export const NOW = new Date("2026-11-04T12:00:00.000Z");
@@ -37,67 +45,6 @@ export const IPS = {
 /** The repository's GitHub remote. */
 export const REMOTE = "https://github.com/example/example-app.git";
 
-const MB = 1024 ** 2;
-const GB = 1024 ** 3;
-
-/** A container as the figures command reads it: its memory now, its limit, its restarts. */
-export interface FakeContainer {
-  service: string;
-  usedMb: number;
-  limitMb?: number;
-  restarts?: number;
-}
-
-/** A server's figures: memory and disk in use as shares, CPUs, the 15-minute load. */
-export interface FakeFigures {
-  memory?: number;
-  totalGb?: number;
-  disk?: number;
-  diskGb?: number;
-  cpus?: number;
-  load15?: number;
-  containers?: FakeContainer[];
-}
-
-/** The output of the fixed figures command (`serverFiguresCommand`) for the Compose project `app`. */
-export function figuresOutput(app: string, f: FakeFigures = {}): string {
-  const total = Math.round((f.totalGb ?? 4) * GB);
-  const available = Math.round(total * (1 - (f.memory ?? 0.4)));
-  const disk = Math.round((f.diskGb ?? 40) * GB);
-  const used = Math.round(disk * (f.disk ?? 0.3));
-  const containers = f.containers ?? [{ service: "app", usedMb: 120, limitMb: 512 }];
-  return [
-    "==opscrew-figures:cpus",
-    String(f.cpus ?? 2),
-    "==opscrew-figures:load",
-    `0.30 0.30 ${(f.load15 ?? 0.3).toFixed(2)} 1/123 4567`,
-    "==opscrew-figures:memory",
-    "               total        used        free      shared  buff/cache   available",
-    `Mem:      ${total}  ${total - available}   1000     1000  1000  ${available}`,
-    "==opscrew-figures:disk",
-    "Filesystem        1-blocks        Used   Available Capacity Mounted on",
-    `/dev/sda1      ${disk} ${used}  ${disk - used}      30% /`,
-    "==opscrew-figures:stats",
-    ...containers.map((c) =>
-      JSON.stringify({
-        Name: `${app}-${c.service}-1`,
-        CPUPerc: "1.50%",
-        MemUsage: `${c.usedMb}MiB / ${c.limitMb ?? 4096}MiB`,
-      }),
-    ),
-    "==opscrew-figures:inspect",
-    ...containers.map((c) =>
-      JSON.stringify({
-        name: `/${app}-${c.service}-1`,
-        restarts: c.restarts ?? 0,
-        startedAt: "2026-11-03T08:00:00Z",
-        memoryLimit: c.limitMb === undefined ? 0 : c.limitMb * MB,
-      }),
-    ),
-    "",
-  ].join("\n");
-}
-
 /** `secure`'s host checks answered as on a healthy server, by check id. */
 const HEALTHY: Record<string, string> = {
   "setup-finished": "yes",
@@ -112,56 +59,14 @@ const HEALTHY: Record<string, string> = {
   "security-updates": "0",
 };
 
-/** The section of each recorded Prometheus answer (`readHistory`'s markers). */
-const SECTIONS: Record<string, string> = {
-  figures: "figures",
-  days: "days",
-  cpu: "cpuP95",
-  memory: "memoryP95",
-  load: "loadOverCpus",
-  disk: "diskFullInDays",
-  containermemory: "containerP95",
-  containerpeak: "containerMax",
-  containerlimit: "containerLimit",
-  restarts: "restarts",
-  oomkills: "oomKills",
-};
-
-/** Prometheus's answers recorded for the spike's figures (`shop`, prod: app, data, monitoring). */
-export async function recordedHistory(): Promise<Record<string, unknown>> {
-  return JSON.parse(
-    await readFile(new URL("./prometheus-history.json", import.meta.url), "utf8"),
-  ) as Record<string, unknown>;
-}
-
 /** One server as a shell. */
 export interface FakeHost {
   /** The figures command's output; absent: ssh can't reach the server for it (exit code 255). */
   figures?: string;
   /** Host checks answered otherwise (by id); an `Error` is thrown by the shell. */
   checks?: Record<string, string | Error>;
-  /** The monitoring stack's recorded answers, when the stack runs here. */
-  prometheus?: Record<string, unknown>;
-}
-
-/** The monitoring command's output: each marker, then the recorded answer of its section. */
-function prometheusOutput(command: string, answers: Record<string, unknown>): string {
-  let section = "";
-  return command
-    .split("; ")
-    .map((part) => {
-      const marker = /^echo '==opscrew-monitoring:([a-z]+)'$/.exec(part);
-      if (marker !== null) {
-        section = marker[1] as string;
-        return `==opscrew-monitoring:${section}\n`;
-      }
-      if (part.startsWith("docker exec opscrew-monitoring-prometheus-1 wget")) {
-        const answer = answers[SECTIONS[section] ?? ""];
-        return answer === undefined ? "" : JSON.stringify(answer);
-      }
-      return part === "echo" ? "\n" : "";
-    })
-    .join("");
+  /** The monitoring stack's recorded answers (`shop`, prod), when the stack runs here. */
+  prometheus?: Partial<Record<Figure, Answer | string>>;
 }
 
 /**
@@ -310,6 +215,49 @@ export async function project(init: ProjectInit): Promise<TestPhaseDeps> {
     await writeFile(file, `${JSON.stringify(init.tfvars, null, 2)}\n`);
   }
   return deps;
+}
+
+/** What {@link scenario} sets up. */
+export interface ScenarioInit {
+  plan: DeployPlan;
+  /** The app's server, at `IPS.app`. */
+  host: FakeHost;
+  /** GitHub's reads; `null`: no token (default: no alert, no pull request, no expiry). */
+  github?: FakeAdviseGitHub | null;
+  /** The Cloudflare token's check (default: none set). */
+  cloudflare?: ReadingsOptions["cloudflare"];
+  /** The rest of the project (default: the app's server's address and the interview's answers). */
+  init?: Partial<Omit<ProjectInit, "plan">>;
+}
+
+/** A scenario: the project, its plan, advise's options, the servers' shells and GitHub. */
+export interface Scenario {
+  deps: TestPhaseDeps;
+  plan: DeployPlan;
+  options: ReadingsOptions;
+  servers: ReturnType<typeof fakeServers>;
+  github: FakeAdviseGitHub | null;
+}
+
+/**
+ * `plan`'s project on disk, its app's server as `host`, the interview answered (important data),
+ * with GitHub and Cloudflare as `o` says.
+ */
+export async function scenario(o: ScenarioInit): Promise<Scenario> {
+  const deps = await project({
+    plan: o.plan,
+    addresses: { app: IPS.app },
+    requirements: makeRequirements({ dataCriticality: "important" }),
+    ...o.init,
+  });
+  const servers = fakeServers({ [IPS.app]: o.host });
+  const github = o.github === undefined ? new FakeAdviseGitHub() : o.github;
+  const options: ReadingsOptions = {
+    services: { remote: servers.remote },
+    github,
+    cloudflare: o.cloudflare ?? null,
+  };
+  return { deps, plan: o.plan, options, servers, github };
 }
 
 /** Every file under `root` with its content, to show that nothing was written. */

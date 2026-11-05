@@ -8,8 +8,9 @@ import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { planFile } from "../runners";
 import { writePlanIfChanged } from "../shared";
+import { targetOf } from "../shared/servers";
 import { priceWords } from "./render";
-import { adviseWithFlags, type RunAdviseOptions } from "./run";
+import { adviseWithFlags, memoryLimitOf, PROVISION_APPLIES, type RunAdviseOptions } from "./run";
 import type { PlanChange, Proposal } from "./types";
 
 /**
@@ -53,8 +54,7 @@ function withChange(
   switch (change.kind) {
     case "server-type": {
       const { server, serverType } = change;
-      const target =
-        server === APP_SERVER ? plan.target : plan.servers?.find((s) => s.name === server)?.target;
+      const target = targetOf(plan, server);
       return {
         plan: onServer(plan, server, { serverType }),
         field: field("target.serverType", "servers[].target.serverType", server),
@@ -85,12 +85,12 @@ function withChange(
     case "memory-limit": {
       const { container, memoryMb } = change;
       const mb = (value: number | undefined) => `${value ?? "no"} MB`;
+      const words = { before: mb(memoryLimitOf(plan, container)), after: mb(memoryMb) };
       if (container.kind === "web") {
         return {
           plan: { ...plan, app: { ...plan.app, memoryMb } },
           field: "app.memoryMb",
-          before: mb(plan.app.memoryMb),
-          after: mb(memoryMb),
+          ...words,
         };
       }
       if (container.kind === "worker") {
@@ -104,8 +104,7 @@ function withChange(
             },
           },
           field: `processes.workers[].memoryMb of worker ${container.name}`,
-          before: mb(workers.find((w) => w.name === container.name)?.memoryMb),
-          after: mb(memoryMb),
+          ...words,
         };
       }
       return {
@@ -114,8 +113,7 @@ function withChange(
           services: plan.services.map((s) => (s.name === container.name ? { ...s, memoryMb } : s)),
         },
         field: `services[].memoryMb of ${container.name}`,
-        before: mb(plan.services.find((s) => s.name === container.name)?.memoryMb),
-        after: mb(memoryMb),
+        ...words,
       };
     }
   }
@@ -160,7 +158,7 @@ export async function applyProposal(
     proposal.price === undefined
       ? "The monthly price doesn't change."
       : `${whose} monthly price: ${priceWords(proposal.price)}.`,
-    `Run \`opscrew provision${flags}\`: it shows the change and applies it once you approve its hash.`,
+    `Run \`opscrew provision${flags}\`: it ${PROVISION_APPLIES}.`,
   ].join("\n");
   return { plan: changed.plan, summary };
 }

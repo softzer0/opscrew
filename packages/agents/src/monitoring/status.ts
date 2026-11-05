@@ -242,8 +242,24 @@ export function answer<T>(lines: string[] | undefined, schema: z.ZodType<T>): T 
   }
 }
 
-const key = (labels: { app: string; env: string; server: string }) =>
-  `${labels.app}\u0000${labels.env}\u0000${labels.server}`;
+type ServerLabels = z.infer<typeof LabelsSchema>;
+
+const key = (labels: ServerLabels) => `${labels.app}\u0000${labels.env}\u0000${labels.server}`;
+
+/**
+ * From the stack's answer to {@link FIGURES_QUERY} (its section's `lines`), when a server's newest
+ * figures arrived (ms since the epoch), by its labels; `undefined` when the stack did not answer.
+ */
+export function lastFigures(
+  lines: string[] | undefined,
+): ((labels: ServerLabels) => number | undefined) | undefined {
+  const figures = answer(lines, FiguresAnswerSchema);
+  if (figures === undefined) return undefined;
+  const at = new Map(
+    figures.data.result.map((item) => [key(item.metric), Number(item.value[1]) * 1000]),
+  );
+  return (labels) => at.get(key(labels));
+}
 
 /** The two volumes' sizes from `du -sk`'s lines; `undefined` unless both are there. */
 function parseDisk(lines: string[] | undefined): MonitoringReading["disk"] | undefined {
@@ -299,12 +315,9 @@ export async function monitoringStatus(
     decision: "allow",
   });
   const read = sections(result.stdout);
-  const figures = answer(read.figures, FiguresAnswerSchema);
+  const figures = lastFigures(read.figures);
   const logs = answer(read.logs, LogsAnswerSchema);
   const disk = parseDisk(read.disk);
-  const lastFigures = new Map(
-    (figures?.data.result ?? []).map((item) => [key(item.metric), Number(item.value[1]) * 1000]),
-  );
   const lastLog = new Map(
     (logs?.data.result ?? []).flatMap((item) => {
       const times = item.values.filter(([, count]) => Number(count) > 0).map(([at]) => at * 1000);
@@ -313,7 +326,7 @@ export async function monitoringStatus(
   );
   const now = deps.clock.now().getTime();
   const servers = (await monitoredServers(deps, stack.plan)).map((labels) => {
-    const figured = lastFigures.get(key(labels));
+    const figured = figures?.(labels);
     const logged = lastLog.get(key(labels));
     return {
       ...labels,
