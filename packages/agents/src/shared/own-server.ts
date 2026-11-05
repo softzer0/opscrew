@@ -18,7 +18,10 @@ import { SshRemoteExec } from "./remote";
 import { ownServerReach, type SshReach, TUNNEL_DOWN_HINT } from "./server-address";
 import {
   type OwnServerConnection,
+  oldConnectionNotRecorded,
+  readOldOwnServer,
   readOwnServer,
+  recordOldOwnServer,
   recordOwnServer,
   type ServerAddress,
   type SshLogin,
@@ -51,6 +54,12 @@ export interface ConnectOwnServerOptions {
    * for `~/` key paths (default: `HOME`, `USERPROFILE`, then the OS's); fakes in tests.
    */
   services?: Pick<OwnServerServices, "remote" | "homeDir"> | undefined;
+  /**
+   * The recorded login to connect with: `own` (default), the deployment's server; or, during a
+   * move away from a server the user owns, `fromOwn`, the old side's (`retarget.fromOwn`). A host
+   * key this connection pins is recorded with the same login.
+   */
+  login?: "own" | "fromOwn";
 }
 
 /** A connection to the user's own server whose host key is confirmed and pinned. */
@@ -88,14 +97,16 @@ export const OWN_SERVER_DAMAGED_HINT =
   "Fix the JSON in .opscrew/server.json and run the command again. Keep the file: it holds how OpsCrew reaches your server and the host key you confirmed. If you cannot fix it, run `opscrew interview` again: it keeps the damaged file as .opscrew/server.json.damaged and records your server's login again, and OpsCrew asks you to confirm the server's host key at the next connection.";
 
 /**
- * {@link readOwnServer} for a project on the user's own server: a damaged `.opscrew/server.json`
- * stops with `ARTIFACT_INVALID` and {@link OWN_SERVER_DAMAGED_HINT}.
+ * {@link readOwnServer} for a project on the user's own server (with `login` `fromOwn`, the old
+ * side's login of a move): a damaged `.opscrew/server.json` stops with `ARTIFACT_INVALID` and
+ * {@link OWN_SERVER_DAMAGED_HINT}.
  */
 export async function readOwnServerRecord(
   paths: Pick<OwnServerDeps["paths"], "stateDir">,
+  login: NonNullable<ConnectOwnServerOptions["login"]> = "own",
 ): Promise<OwnServerConnection | undefined> {
   try {
-    return await readOwnServer(paths);
+    return await (login === "own" ? readOwnServer(paths) : readOldOwnServer(paths));
   } catch (error) {
     if (error instanceof OpsCrewError && error.code === "ARTIFACT_INVALID") {
       throw new OpsCrewError("ARTIFACT_INVALID", error.message, {
@@ -219,26 +230,44 @@ function describeKey(key: ScannedHostKey): string {
  * Connects to the server the user owns with the login recorded by the interview
  * (`.opscrew/server.json` → `own`: address, SSH port, user, key file or SSH agent; never a
  * password) and makes sure it is the right server (FR-903), through {@link connectPinnedLogin}:
- * the confirmed key is pinned in the project's known_hosts and in `own.hostKey`.
+ * the confirmed key is pinned in the project's known_hosts and in `own.hostKey`. With `login`
+ * `fromOwn` it connects with the old side's login of a move instead, and pins its key there.
  */
 export async function connectOwnServer(
   deps: OwnServerDeps,
   options: ConnectOwnServerOptions = {},
 ): Promise<OwnServerSession> {
-  const connection = await readOwnServerRecord(deps.paths);
-  if (connection === undefined) throw ownServerNotSetUp();
-  const reach = await ownServerReach(deps, APP_SERVER, connection);
+  const old = options.login === "fromOwn";
+  const connection = await requireOwnServerRecord(deps.paths, options.login);
+  // A move keeps public SSH open on both sides, and the plan's network describes the new one.
+  const reach = old ? undefined : await ownServerReach(deps, APP_SERVER, connection);
   return connectPinnedLogin(
     deps,
     {
       connection,
       knownHostsFile: deps.paths.files.knownHosts,
-      pin: (hostKey) => recordOwnServer(deps.paths, { ...connection, hostKey }),
+      pin: (hostKey) =>
+        old
+          ? recordOldOwnServer(deps.paths, { ...connection, hostKey })
+          : recordOwnServer(deps.paths, { ...connection, hostKey }),
       words: OWN_SERVER_WORDS,
       ...(reach !== undefined ? { reach } : {}),
     },
     options,
   );
+}
+
+/**
+ * {@link readOwnServerRecord}, stopping in plain words when this computer has no such login:
+ * {@link ownServerNotSetUp}, or for a move's old side that its login is not here.
+ */
+export async function requireOwnServerRecord(
+  paths: Pick<OwnServerDeps["paths"], "stateDir">,
+  login: NonNullable<ConnectOwnServerOptions["login"]> = "own",
+): Promise<OwnServerConnection> {
+  const connection = await readOwnServerRecord(paths, login);
+  if (connection !== undefined) return connection;
+  throw login === "own" ? ownServerNotSetUp() : oldConnectionNotRecorded("own");
 }
 
 /** A machine of the user's that OpsCrew logs in to with their own SSH key ({@link connectPinnedLogin}). */
@@ -483,12 +512,12 @@ export async function connectExtraServer(
 }
 
 /**
- * "Connecting to your server": {@link connectOwnServer} (the pinned host key, the login checked),
- * then {@link inspectOwnHost}.
+ * "Connecting to your server": {@link connectOwnServer} (the pinned host key, the login checked;
+ * with `login` `fromOwn`, a move's old side), then {@link inspectOwnHost}.
  */
 export async function connectAndInspectOwnServer(
   deps: OwnServerDeps & Pick<PhaseDeps, "audit">,
-  options: Pick<ConnectOwnServerOptions, "hostKey"> & {
+  options: Pick<ConnectOwnServerOptions, "hostKey" | "login"> & {
     services?: Pick<OwnServerServices, "remote" | "homeDir" | "host"> | undefined;
     phase?: PhaseName;
     detail?: string;

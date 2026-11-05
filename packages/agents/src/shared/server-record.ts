@@ -8,7 +8,12 @@ import {
   stripBom,
   writeFileAtomic,
 } from "@opscrew/core";
-import { DeviceNameSchema, PortainerWebSchema, ServerNameSchema } from "@opscrew/plan-schema";
+import {
+  type DeployTarget,
+  DeviceNameSchema,
+  PortainerWebSchema,
+  ServerNameSchema,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 
 /** A server's public addresses. */
@@ -252,9 +257,20 @@ const ServerAddressesSchema = z.strictObject({
   schemaVersion: z.literal(1),
   /** The server that receives the app's traffic (the one `plan.deployment` describes). */
   deployment: AddressSchema.optional(),
-  /** During `opscrew retarget`: the server being replaced and the new one, once created. */
+  /**
+   * During `opscrew retarget`: the addresses of the side being replaced and of the new one (once
+   * created), and the old side's connection while the usual slot (`own`, `portainer`) holds the
+   * new side's.
+   */
   retarget: z
-    .strictObject({ from: AddressSchema.optional(), next: AddressSchema.optional() })
+    .strictObject({
+      from: AddressSchema.optional(),
+      next: AddressSchema.optional(),
+      /** The old side's login when it is a server the user owns (its `own`, set aside). */
+      fromOwn: OwnServerSchema.optional(),
+      /** The old side's connection when it is the user's Portainer (its `portainer`, set aside). */
+      fromPortainer: PortainerConnectionSchema.optional(),
+    })
     .optional(),
   /** A server the user owns (`target.provider: own`): how OpsCrew connects to it. */
   own: OwnServerSchema.optional(),
@@ -427,4 +443,108 @@ export async function recordPortainerConnection(
   await updateServerAddresses(paths, ({ portainer: _old, ...rest }) =>
     portainer === undefined ? rest : { ...rest, portainer },
   );
+}
+
+/**
+ * At the start of a move away from a server the user owns or from their Portainer (`from`, the old
+ * target's provider): its connection moves from `own` or `portainer` to `retarget.fromOwn` or
+ * `retarget.fromPortainer`, so that the usual slot can take the new side's and the helpers that
+ * read it reach the new side. Once set aside it stays: calling it again changes nothing. A cloud
+ * server has nothing to set aside. Stops with {@link oldConnectionNotRecorded}, changing nothing,
+ * when this computer has the old side's connection in neither place.
+ */
+export async function setAsideOldConnection(
+  paths: ProjectPaths,
+  from: DeployTarget["provider"],
+): Promise<void> {
+  if (from !== "own" && from !== "portainer") return;
+  await updateServerAddresses(paths, (current) => {
+    const { own, portainer, ...rest } = current;
+    const move = current.retarget ?? {};
+    if (from === "own") {
+      if (move.fromOwn !== undefined) return current;
+      if (own === undefined) throw oldConnectionNotRecorded("own");
+      return { ...rest, ...(portainer ? { portainer } : {}), retarget: { ...move, fromOwn: own } };
+    }
+    if (move.fromPortainer !== undefined) return current;
+    if (portainer === undefined) throw oldConnectionNotRecorded("portainer");
+    return { ...rest, ...(own ? { own } : {}), retarget: { ...move, fromPortainer: portainer } };
+  });
+}
+
+/**
+ * The stop when the connection of a move's old side (a server the user owns, or their Portainer)
+ * is not in `.opscrew/server.json` on this computer.
+ */
+export function oldConnectionNotRecorded(kind: "own" | "portainer"): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    kind === "own"
+      ? "OpsCrew does not know how to reach the server your app is moving from on this computer: its login is not in .opscrew/server.json. Nothing was changed."
+      : "OpsCrew does not know how to reach the Portainer your app is moving from on this computer: its address and the stacks OpsCrew created there are not in .opscrew/server.json. Nothing was changed.",
+    {
+      hint: "Run the command on the computer that provisioned the app or started the move, or copy its .opscrew/server.json here, then try again.",
+    },
+  );
+}
+
+/**
+ * On `--abort`: the old side's connection set aside at the start goes back to its usual slot, and
+ * the new side's (when `sides.to` is a server the user owns or their Portainer) is forgotten in its
+ * place. Calling it again changes nothing.
+ */
+export async function restoreOldConnection(
+  paths: ProjectPaths,
+  sides: { from: DeployTarget["provider"]; to: DeployTarget["provider"] },
+): Promise<void> {
+  await updateServerAddresses(paths, ({ own, portainer, retarget, ...rest }) => {
+    const { fromOwn, fromPortainer, ...move } = retarget ?? {};
+    /** The slot of `kind` after the abort: the old side's, else empty in place of the new side's. */
+    const slot = <T>(kind: "own" | "portainer", current: T | undefined, setAside: T | undefined) =>
+      sides.from === kind ? (setAside ?? current) : sides.to === kind ? undefined : current;
+    const restoredOwn = slot("own", own, fromOwn);
+    const restoredPortainer = slot("portainer", portainer, fromPortainer);
+    return {
+      ...rest,
+      ...(restoredOwn !== undefined ? { own: restoredOwn } : {}),
+      ...(restoredPortainer !== undefined ? { portainer: restoredPortainer } : {}),
+      ...(retarget !== undefined ? { retarget: move } : {}),
+    };
+  });
+}
+
+/**
+ * Records the address of a move's side (`from`, the side being left, or `next`, the new one) and
+ * keeps the rest of the move's record, such as the old side's set-aside connection.
+ */
+export async function recordMoveAddress(
+  paths: ProjectPaths,
+  which: "from" | "next",
+  address: ServerAddress,
+): Promise<void> {
+  await updateServerAddresses(paths, (current) => ({
+    ...current,
+    retarget: { ...current.retarget, [which]: address },
+  }));
+}
+
+/**
+ * The old side's login during a move away from a server the user owns (`retarget.fromOwn`);
+ * `undefined` when none is set aside. A damaged file stops with `ARTIFACT_INVALID`.
+ */
+export async function readOldOwnServer(
+  paths: Pick<ProjectPaths, "stateDir">,
+): Promise<OwnServerConnection | undefined> {
+  return (await readServerAddresses(paths)).retarget?.fromOwn;
+}
+
+/** Records the old side's login during a move (`retarget.fromOwn`), such as its pinned host key. */
+export async function recordOldOwnServer(
+  paths: ProjectPaths,
+  own: OwnServerConnectionInput,
+): Promise<void> {
+  await updateServerAddresses(paths, (current) => ({
+    ...current,
+    retarget: { ...current.retarget, fromOwn: own },
+  }));
 }

@@ -29,6 +29,7 @@ import {
   withOtherApp,
 } from "../testing";
 import {
+  connectAndInspectOwnServer,
   connectOwnServer,
   inspectOwnServer,
   OWN_SERVER_DAMAGED_HINT,
@@ -40,9 +41,11 @@ import { inspectOwnServerForDesign } from "./own-server-design";
 import { sshArgs } from "./remote";
 import {
   type OwnServerConnectionInput,
+  readOldOwnServer,
   readOwnServer,
   recordOwnServer,
   serverAddressesFile,
+  setAsideOldConnection,
 } from "./server-record";
 import { hostKeyFingerprint, knownHostsName, scanHostKeys, writeKnownHost } from "./wait";
 
@@ -386,6 +389,62 @@ describe("connectOwnServer", () => {
       `[${address}]:2222 ssh-ed25519 ${ED25519}`,
     );
     expect((await readOwnServer(deps.paths))?.host).toBe(OWN_IPV4);
+  });
+});
+
+describe("connectOwnServer with a move's old login", () => {
+  /** A move from the server at OWN_IPV4 to the one at LAN_IPV4, both the user's own. */
+  async function moving(o: ConnectSetup = {}) {
+    const s = await connectSetup({
+      own: { host: OWN_IPV4, port: 22, user: "root", agent: true, reachable: true },
+      ...o,
+    });
+    await setAsideOldConnection(s.deps.paths, "own");
+    await recordOwnServer(s.deps.paths, {
+      host: LAN_IPV4,
+      port: 2222,
+      user: "admin",
+      agent: true,
+      reachable: true,
+    });
+    return s;
+  }
+
+  it("connects with the old side's login and pins its key there, not in `own`", async () => {
+    const { deps, runner } = await moving();
+    const session = await connectOwnServer(deps, {
+      login: "fromOwn",
+      hostKey: ED25519_FINGERPRINT,
+    });
+    expect(session.connection).toMatchObject({ host: OWN_IPV4, port: 22, user: "root" });
+    expect((await readOldOwnServer(deps.paths))?.hostKey).toBe(ED25519_FINGERPRINT);
+    expect((await readOwnServer(deps.paths))?.hostKey).toBeUndefined();
+    expect(runner.calls.find((c) => c.command === "ssh")?.args).toContain(`root@${OWN_IPV4}`);
+  });
+
+  it("inspects the old side through connectAndInspectOwnServer", async () => {
+    const { deps } = await moving();
+    const host = new FakeHostServer(freshFacts());
+    const { session, facts } = await connectAndInspectOwnServer(deps, {
+      login: "fromOwn",
+      hostKey: ED25519_FINGERPRINT,
+      services: { host },
+      phase: "retarget",
+    });
+    expect(session.connection.host).toBe(OWN_IPV4);
+    expect(facts.arch).toBe("amd64");
+    expect(host.inspections).toBe(1);
+    expect(JSON.stringify(deps.audit.entries)).not.toContain(OWN_IPV4);
+  });
+
+  it("says where the old login is kept when this computer lacks it", async () => {
+    const { deps } = await connectSetup();
+    const error = (await connectOwnServer(deps, { login: "fromOwn" }).catch(
+      (e: unknown) => e,
+    )) as OpsCrewError;
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("Nothing was changed.");
+    expect(error.hint).toContain(".opscrew/server.json");
   });
 });
 
