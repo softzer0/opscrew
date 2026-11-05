@@ -167,14 +167,38 @@ describe("renderCompose", () => {
 });
 
 describe("renderCaddyfile (the app's site on the shared edge)", () => {
-  it("adds X-Robots-Tag noindex to every response with noindex (a preview's site)", () => {
-    const p = plan({ domain: "pr-42.example.com" });
+  it("serves a preview's site with its environment's Origin CA certificate and X-Robots-Tag noindex", () => {
+    const p = plan({ domain: "pr-42-a1b2c3d4e5.example.net" });
     const plain = renderCaddyfile(p, ctx).content;
-    const content = renderCaddyfile(p, { ...ctx, noindex: true }).content;
+    const content = renderCaddyfile(p, { ...ctx, preview: { app: "shop-preview" } }).content;
     expect(plain).not.toContain("X-Robots-Tag");
     // In the site's headers and in those of the responses Caddy writes itself.
     expect(content.split('X-Robots-Tag "noindex"').length - 1).toBe(2);
-    expect(content.replaceAll(/\t+X-Robots-Tag "noindex"\n/g, "")).toBe(plain);
+    // The certificate the previews host plan installs, no ACME and no client certificate; plain
+    // HTTP from Cloudflare is redirected.
+    expect(content).toContain(
+      "\npr-42-a1b2c3d4e5.example.net {\n\ttls /etc/caddy/tls/shop-preview/origin.pem /etc/caddy/tls/shop-preview/origin.key\n",
+    );
+    expect(content).toContain(
+      "\nhttp://pr-42-a1b2c3d4e5.example.net {\n\tredir https://{host}{uri} 308\n}\n",
+    );
+    expect(content).not.toContain("ops@example.com");
+    expect(content).not.toContain("client_auth");
+    // As the same site with the app's own origin certificate, but for these.
+    const origin = renderCaddyfile(p, {
+      ...ctx,
+      originTls: { hostnames: ["pr-42-a1b2c3d4e5.example.net"] },
+    }).content;
+    expect(
+      content
+        .replaceAll(/\t+X-Robots-Tag "noindex"\n/g, "")
+        .replaceAll("/tls/shop-preview/", "/tls/shop/"),
+    ).toBe(
+      origin.replace(
+        / \{\n\t\tclient_auth \{\n\t\t\tmode require_and_verify\n\t\t\ttrust_pool file \S+\n\t\t\}\n\t\}\n/,
+        "\n",
+      ),
+    );
   });
 
   it("serves the domain with HSTS and the ACME email, and redirects www to it", () => {

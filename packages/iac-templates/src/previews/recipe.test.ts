@@ -49,11 +49,15 @@ function fixed(name: string, format: PreviewSecretFormat): string {
   }
 }
 
-/** `template/` filled in as the server does: `@N@` with `n`, each placeholder with {@link fixed}. */
-function filled(files: Record<string, string>, n: number): Record<string, string> {
+/**
+ * `template/` filled in as the server does: `@N@` with `n`, `@R@` with `random`, each placeholder
+ * with {@link fixed}.
+ */
+function filled(files: Record<string, string>, n: number, random: string): Record<string, string> {
   const fill = (text: string) =>
     text
       .replaceAll("@N@", String(n))
+      .replaceAll("@R@", random)
       .replaceAll(/@SECRET:([A-Za-z][A-Za-z0-9_-]*):([a-z0-9]+)@/g, (_, name, format) =>
         fixed(name, format),
       );
@@ -144,30 +148,43 @@ describe("renderPreviewRecipe", () => {
     expect(services.seed.profiles).toEqual(["seed"]);
   });
 
-  it("puts @N@ where the preview's number goes, and the token nowhere", () => {
+  it("puts @N@ where the preview's number goes, @R@ where its random part goes, and the tokens nowhere", () => {
     const plan = previewPlan();
     const template = previewTemplatePlan(plan);
     expect(template.app.name).toBe("shop-preview-pr-xnumbx");
-    expect(template.dns.domain).toBe(`pr-xnumbx.${BASE}`);
+    // As long as the longest address: pr-<6 digits>-<10 random characters>.<base>.
+    expect(template.dns.domain).toBe(`pr-xnumbx-xrandpartx.${BASE}`);
     expect(template.environment?.previews).toBeUndefined();
     // Its app name is as long as the longest preview's: <31>-pr-<6 digits>.
     expect(
       previewTemplatePlan(previewPlan({ name: `${"a".repeat(23)}-preview` })).app.name,
     ).toHaveLength(41);
     const files = recipe(plan);
-    expect(JSON.stringify(files)).not.toMatch(/xnumbx/i);
+    expect(JSON.stringify(files)).not.toMatch(/xnumbx|xrandpartx/i);
     expect(files["template/compose.yaml"]).toContain("name: shop-preview-pr-@N@\n");
     expect(files["template/compose.yaml"]).toContain("- /srv/data/shop-preview-pr-@N@/db:");
     expect(files["template/edge/sites/shop-preview-pr-@N@.caddy"]).toContain(
-      `\npr-@N@.${BASE} {\n`,
+      `\npr-@N@-@R@.${BASE} {\n`,
     );
-    expect(files["template/start.sh"]).toContain(`--host pr-@N@.${BASE} `);
-    expect(files["template/env/app.env"]).toContain(`APP_URL=https://pr-@N@.${BASE}\n`);
+    expect(files["template/start.sh"]).toContain(`--host pr-@N@-@R@.${BASE} `);
+    expect(files["template/env/app.env"]).toContain(`APP_URL=https://pr-@N@-@R@.${BASE}\n`);
+    // @R@ only in the address.
+    for (const [path, content] of Object.entries(files)) {
+      if (!path.startsWith("template/")) continue;
+      expect(content.split("@R@").length, path).toBe(content.split(`pr-@N@-@R@.${BASE}`).length);
+    }
   });
 
-  it("serves each preview with X-Robots-Tag noindex", () => {
-    const site = recipe(previewPlan())["template/edge/sites/shop-preview-pr-@N@.caddy"];
-    expect(site?.match(/X-Robots-Tag "noindex"/g)).toHaveLength(2);
+  it("serves each preview with the Origin CA certificate the previews host plan installs, and X-Robots-Tag noindex", () => {
+    const site = recipe(previewPlan())["template/edge/sites/shop-preview-pr-@N@.caddy"] ?? "";
+    expect(site.match(/X-Robots-Tag "noindex"/g)).toHaveLength(2);
+    // /srv/edge/tls/shop-preview on the server, no ACME (none of its certificates is public)
+    // and no client certificate.
+    expect(site).toContain(
+      `\npr-@N@-@R@.${BASE} {\n\ttls /etc/caddy/tls/shop-preview/origin.pem /etc/caddy/tls/shop-preview/origin.key\n`,
+    );
+    expect(site.match(/\ttls /g)).toHaveLength(1);
+    expect(site).not.toContain("client_auth");
   });
 
   describe("filled with a number and values, is what OpsCrew renders for <app>-pr-<number>", () => {
@@ -185,8 +202,11 @@ describe("renderPreviewRecipe", () => {
     it.each(plans)("%s", (_, options) => {
       const plan = previewPlan(options);
       const files = recipe(plan);
-      for (const n of [42, 999999]) {
-        expect(filled(files, n)).toEqual(directPreview(plan, n, fixed));
+      for (const [n, random] of [
+        [42, "a1b2c3d4e5"],
+        [999999, "zzzzzzzzzz"],
+      ] as const) {
+        expect(filled(files, n, random)).toEqual(directPreview(plan, n, random, fixed));
       }
     });
   });
@@ -211,6 +231,8 @@ describe("renderPreviewRecipe", () => {
         ...env,
         app: `${env.app}NAME=shop-preview-pr-xnumbx_db\n`.replace("pr-xnumbx", "PR_XNUMBX"),
       },
+      { ...env, app: `${env.app}HOST=pr-xnumbx-XRANDPARTX.${BASE}\n` },
+      { ...env, app: `${env.app}CODE=xrandpartx\n` },
     ];
     for (const templates of bad) {
       expect(() => recipe(plan, templates)).toThrow(OpsCrewError);

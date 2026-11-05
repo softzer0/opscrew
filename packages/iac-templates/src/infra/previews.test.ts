@@ -17,7 +17,7 @@ function dnsBlock(main: string): string {
 
 describe("the preview environment's root", () => {
   for (const provider of ["hetzner", "digitalocean", "own"] as const) {
-    it(`points the previews' wildcard at the ${provider} server, DNS only, without www. or CAA`, () => {
+    it(`points the previews' wildcard at the ${provider} server through Cloudflare's proxy, without www. or CAA`, () => {
       const files = renderInfra(previewPlan({ provider }), context());
       const main = file(files, "main.tf");
       const [ipv4, ipv6] =
@@ -33,14 +33,17 @@ describe("the preview environment's root", () => {
           '  domain      = "*.${var.preview_domain}"',
           `  ipv4        = ${ipv4}`,
           `  ipv6        = ${ipv6}`,
-          ...(provider === "own" ? ["  ipv6_record = var.server_ipv6 != null"] : []),
-          "  proxied     = false",
+          // Behind OpsCrew's web filter an own server's site is on IPv4 only, as a proxied app's.
+          ...(provider === "own" ? ["  ipv6_record = false"] : []),
+          "  proxied     = true",
           "  www         = false",
           "  caa_issuers = []",
           "}",
         ].join("\n"),
       );
-      expect(main).toContain("# The previews' wildcard record, DNS only");
+      expect(main).toContain(
+        "# The previews' wildcard record, through Cloudflare's proxy: each preview is\n# pr-<number>-<random>.<base>, a name in no public certificate.\n",
+      );
       expect(main).toContain('provider "cloudflare" {}');
       if (provider !== "own") expect(main).toContain('module "server" {');
       expect(file(files, "versions.tf")).toContain('source  = "cloudflare/cloudflare"');
@@ -49,6 +52,18 @@ describe("the preview environment's root", () => {
       );
     });
   }
+
+  it("opens the server's web ports to Cloudflare only, as a proxied app's root does", () => {
+    const ranges = ["173.245.48.0/20", "2400:cb00::/32"];
+    for (const provider of ["hetzner", "digitalocean"] as const) {
+      const files = renderInfra(
+        previewPlan({ provider }),
+        testContext({ cloudflare: testCloudflare(), cloudflareRanges: ranges }),
+      );
+      expect(JSON.parse(file(files, "terraform.tfvars.json")).http_allowed_cidrs).toEqual(ranges);
+      expect(file(files, "main.tf")).toContain("http_allowed_cidrs = var.http_allowed_cidrs");
+    }
+  });
 
   it("declares the base name and the zone, never the app's own records' variables", () => {
     const files = renderInfra(previewPlan(), context());
@@ -61,7 +76,7 @@ describe("the preview environment's root", () => {
     const tfvars = JSON.parse(file(files, "terraform.tfvars.json"));
     expect(tfvars).toMatchObject({
       app_name: "shop-preview",
-      preview_domain: "shop.example.com",
+      preview_domain: "example.net",
       cloudflare_zone_id: testCloudflare().zoneId,
     });
     for (const name of ["domain", "proxied", "www", "caa_issuers"]) {

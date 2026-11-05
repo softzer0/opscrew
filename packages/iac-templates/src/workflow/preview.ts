@@ -63,19 +63,25 @@ function quoted(text: string): string {
 }
 
 /**
+ * A bash line that sets `name` to the regular expression of `prefix` then this pull request's
+ * preview address, `pr-<n>-<10 of [a-z0-9]>.<zone>`, to the end.
+ */
+function addressRegex(name: string, prefix: string, previews: Previews): string {
+  const zone = previews.domain.replaceAll(".", "\\.");
+  return `${name}='^${prefix}pr-'"$NUMBER"'-[a-z0-9]{10}\\.${zone}$'`;
+}
+
+/**
  * Reads the server's answer (`$out`, `$code`) as contracts/opscrew-preview.md gives it: only the
  * last line, `opscrew-preview: <state> <detail>`, with its exit code and a detail of that state's
  * form, sets `state` and `detail`: for `up` one of `running`, `seed-failed` (this preview's
- * address), `refused`, `cap`, `failed` and `busy`; for `down` `removed` (this preview's number),
- * `refused` and `busy`. SSH's own failure (255) is `unreachable`, anything else `error`. Nothing
- * else the server printed is used or shown.
+ * address, `pr-<n>-<random>.<zone>`), `refused`, `cap`, `failed` and `busy`; for `down` `removed`
+ * (this preview's number), `refused` and `busy`. SSH's own failure (255) is `unreachable`,
+ * anything else `error`. Nothing else the server printed is used or shown.
  */
 function readAnswer(previews: Previews, request: "up" | "down"): string[] {
   const refused = "2 refused (request|number|image|commit|token|command)|6 busy [0-9]{1,6}";
-  const exact =
-    request === "up"
-      ? '"$answer" == "0 running $site" || "$answer" == "5 seed-failed $site"'
-      : '"$answer" == "0 removed $NUMBER"';
+  const exact = request === "up" ? '"$answer" =~ $site' : '"$answer" == "0 removed $NUMBER"';
   return [
     "state=error",
     "detail=",
@@ -87,7 +93,9 @@ function readAnswer(previews: Previews, request: "up" | "down"): string[] {
     "  state=unreachable",
     "elif [[ \"$last\" == 'opscrew-preview: '* ]]; then",
     '  answer="$code ${last#opscrew-preview: }"',
-    ...(request === "up" ? [`  site="pr-$NUMBER.${previews.domain}"`] : []),
+    ...(request === "up"
+      ? [`  ${addressRegex("site", "(0 running|5 seed-failed) ", previews)}`]
+      : []),
     `  if [[ ${exact} || "$answer" =~ $known ]]; then`,
     '    answer="${answer#* }"',
     '    state="${answer%% *}"',
@@ -103,7 +111,7 @@ const WRITE_ANSWER = [
   'echo "The preview server answered: $state $detail"',
 ];
 
-/** How long the deploy waits for the preview's address to answer: its first certificate. */
+/** How long the deploy waits for the preview's address to answer through Cloudflare. */
 const HEALTH_SECONDS = 180;
 
 /**
@@ -111,9 +119,9 @@ const HEALTH_SECONDS = 180;
  * server, which pulls the image with it): in the preview environment's GitHub environment (when its
  * secrets live in one) with the preview's address as its `url`, it sends `up <n> <digest> <head
  * commit>` through the preview key with the token on stdin, reads the answer
- * ({@link readAnswer}), then checks the preview's health path from outside for up to 3 minutes.
- * Its outputs `state` and `detail` are the answer's (or `unanswered` when the address never
- * answered); it fails unless the preview runs.
+ * ({@link readAnswer}), whose detail is the preview's address, then checks the preview's health
+ * path there from outside for up to 3 minutes. Its outputs `state` and `detail` are the answer's
+ * (or `unanswered` with the address when it never answered); it fails unless the preview runs.
  */
 function deployJob(plan: DeployPlan, previews: Previews, ctx: RenderContext): string[] {
   const environment = githubEnvironment(plan);
@@ -122,10 +130,11 @@ function deployJob(plan: DeployPlan, previews: Previews, ctx: RenderContext): st
     name: "Start or update the preview",
     needs: "build",
     if: `\${{ ${READY} }}`,
-    // The preview's address, which GitHub shows as the pull request's "View deployment".
+    // The preview's address from the server's answer, which GitHub shows as the pull request's
+    // "View deployment".
     ...(environment === undefined
       ? {}
-      : { environment: { name: environment, url: `https://pr-${NUMBER}.${previews.domain}` } }),
+      : { environment: { name: environment, url: "${{ steps.up.outputs.url }}" } }),
     permissions: ["contents: read", "packages: read"],
     outputs: ["state: ${{ steps.up.outputs.state }}", "detail: ${{ steps.up.outputs.detail }}"],
     steps: [
@@ -137,7 +146,7 @@ function deployJob(plan: DeployPlan, previews: Previews, ctx: RenderContext): st
       "    IMAGE: ${{ needs.build.outputs.image }}",
       `    NUMBER: ${NUMBER}`,
       `    COMMIT: ${HEAD_COMMIT}`,
-      `    URL: https://pr-${NUMBER}.${previews.domain}${healthPath(plan)}`,
+      `    HEALTH_PATH: ${healthPath(plan)}`,
       "    REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
       ...run([
         "set -uo pipefail",
@@ -149,17 +158,19 @@ function deployJob(plan: DeployPlan, previews: Previews, ctx: RenderContext): st
         `out="$(printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "up $NUMBER $IMAGE $COMMIT")" || code=$?`,
         "unset REGISTRY_TOKEN",
         ...readAnswer(previews, "up"),
+        "url=",
         'if [[ "$state" == running || "$state" == seed-failed ]]; then',
+        '  url="https://$detail"',
         `  deadline=$((SECONDS + ${HEALTH_SECONDS}))`,
-        '  until curl -fsS --max-time 10 -o /dev/null "$URL"; do',
+        '  until curl -fsS --max-time 10 -o /dev/null "$url$HEALTH_PATH"; do',
         "    if (( SECONDS >= deadline )); then",
         "      state=unanswered",
-        "      detail=",
         "      break",
         "    fi",
         "    sleep 6",
         "  done",
         "fi",
+        'echo "url=$url" >> "$GITHUB_OUTPUT"',
         ...WRITE_ANSWER,
       ]),
       "- name: Stop unless the preview runs",
@@ -178,8 +189,10 @@ function deployJob(plan: DeployPlan, previews: Previews, ctx: RenderContext): st
  * The script that writes the pull request's comment, found by its marker
  * (`<!-- opscrew-preview:<app> -->`) among the job token's own comments and edited in place, or
  * with `create` created when there is none. Its text is chosen by `$STATE` only, from this fixed
- * table; `$DETAIL` picks a fixed phrase, and only a cap's `<count>/<cap>` is written as it is,
- * after its check. Anything unknown gets the table's last text. Never a log line or a value.
+ * table; `$DETAIL` picks a fixed phrase, and only a cap's `<count>/<cap>` and the preview's
+ * address are written as they are, after their checks (a running preview without its address
+ * gets the table's last text). Anything unknown gets the table's last text. Never a log line or a
+ * value.
  */
 function commentScript(plan: DeployPlan, previews: Previews, create: boolean): string[] {
   const marker = `<!-- opscrew-preview:${plan.app.name} -->`;
@@ -189,10 +202,16 @@ function commentScript(plan: DeployPlan, previews: Previews, create: boolean): s
   const text = (line: string) => `    text=${quoted(line)} ;;`;
   return [
     "set -euo pipefail",
-    `site="https://pr-$NUMBER.${previews.domain}"`,
+    addressRegex("address", "", previews),
+    'site=""',
+    'if [[ "$DETAIL" =~ $address ]]; then site="https://$DETAIL"; fi',
+    'state="$STATE"',
+    'if [[ -z "$site" && ( "$state" == running || "$state" == seed-failed || "$state" == unanswered ) ]]; then',
+    "  state=unknown",
+    "fi",
     'commit="${COMMIT:0:12}"',
     '[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || commit=unknown',
-    'case "$STATE" in',
+    'case "$state" in',
     "  running)",
     text("The preview of this pull request runs at $site (commit `$commit`)."),
     "  seed-failed)",
@@ -238,7 +257,7 @@ function commentScript(plan: DeployPlan, previews: Previews, create: boolean): s
     ),
     "  unanswered)",
     text(
-      `The preview started but did not answer at $site within 3 minutes; its first certificate can take longer. Re-run this workflow, or see ${logs}.`,
+      `The preview started but did not answer at $site within 3 minutes. Re-run this workflow, or see ${logs}.`,
     ),
     "  build-failed)",
     text("No preview: the image did not build. The workflow run says why: $RUN_URL"),
@@ -445,9 +464,10 @@ export function renderPreviewWorkflow(plan: DeployPlan, ctx: RenderContext): Ren
   const lines = [
     `# Generated by OpsCrew from ${planFilePath(plan)}; \`${provisionCommand(plan)}\` regenerates it.`,
     "# Builds each pull request from a branch of this repository on GitHub's machines and asks the",
-    `# preview server to start, update or remove its preview at pr-<number>.${previews.domain}. The server`,
-    "# holds the recipe you approved and refuses anything outside it; the key this workflow has can do",
-    "# nothing else there. Secrets are set by `opscrew provision`; their values never appear here.",
+    `# preview server to start, update or remove its preview at pr-<number>-<random>.${previews.domain}, a`,
+    "# name the server draws. The server holds the recipe you approved and refuses anything outside it;",
+    "# the key this workflow has can do nothing else there. Secrets are set by `opscrew provision`;",
+    "# their values never appear here.",
     `name: OpsCrew preview${key === undefined ? "" : ` ${key}`}`,
     "",
     "on:",

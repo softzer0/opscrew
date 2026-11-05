@@ -39,16 +39,18 @@ const START_FAILURES = {
  * refuses any other request before it reads or writes anything:
  * - `up <n> <IMAGE_NAME>@sha256:<digest> <commit>`, the registry token on stdin: creates preview
  *   `<n>` (the app `<APP>-pr-<n>`, the cap checked under the recipe's lock) or updates it under
- *   its own lock: fills `template/` into `/srv/apps/<APP>-pr-<n>/` (`@N@`, and each
- *   `@SECRET:<name>:<format>@` from the preview's `secrets.env`, generated the first time a name
- *   appears), logs in to the registry in the preview's `.docker` (removed when `up` ends), pulls,
- *   runs `start.sh` (on a failed update `rollback.sh` puts the previous image back; on a failed
- *   creation nothing stays routed), then the seed while `.seeded` is absent;
- * - `down <n>`: `.preview` and `.seeded`, the route, the site, the containers, networks and
- *   volumes, the data, then the folder, in an order a later `down` repeats, stopping at a step
- *   that fails;
- * - `list`: `<n> <state> <commit> <created> <updated> <digest>` per preview (`-` for what a preview
- *   half made or half removed lacks);
+ *   its own lock: fills `template/` into `/srv/apps/<APP>-pr-<n>/` (`@N@`, `@R@` the address's
+ *   random part, 10 of `[a-z0-9]` drawn from `/dev/urandom` when the preview has none yet and
+ *   kept in its `.preview`, and each `@SECRET:<name>:<format>@` from the preview's `secrets.env`,
+ *   generated the first time a name appears), logs in to the registry in the preview's `.docker`
+ *   (removed when `up` ends), pulls, runs `start.sh` (on a failed update `rollback.sh` puts the
+ *   previous image back; on a failed creation nothing stays routed), then the seed while
+ *   `.seeded` is absent; `running` and `seed-failed` say the address, `pr-<n>-<random>.<BASE>`;
+ * - `down <n>`: `.preview` (with the random part) and `.seeded`, the route, the site, the
+ *   containers, networks and volumes, the data, then the folder, in an order a later `down`
+ *   repeats, stopping at a step that fails;
+ * - `list`: `<n> <state> <commit> <created> <updated> <digest> <address>` per preview (`-` for
+ *   what a preview half made or half removed lacks);
  * - `gc` (cron): `down` for each preview not updated for `LIFETIME_DAYS` days, logged as `gc`; it
  *   prints nothing unless a removal fails, which prints its line on stderr and exits non-zero;
  * - `logs <n>`: the last 200 lines of each of the preview's containers, then `listed <n>`
@@ -95,6 +97,7 @@ finished=""
 step=start
 docker_config=""
 n=""
+random=""
 
 # One line in previews.log: the time, the command and number, the caller and the state.
 record() {
@@ -173,7 +176,6 @@ fi
 
 NAME="$APP-pr-$n"
 P="$APPS_DIR/$NAME"
-HOST="pr-$n.$BASE"
 
 edge() {
   docker compose -p ${EDGE_PROJECT} -f "$EDGE_DIR/compose.yaml" "$@" < /dev/null
@@ -193,10 +195,28 @@ field() {
   echo "\${value:-$3}"
 }
 
-# The preview's state and this up's commit and digest, with its creation and update times.
+# The preview's state and this up's commit and digest, with its creation and update times and
+# its address's random part.
 write_preview() {
-  printf 'state=%s\\ncommit=%s\\ndigest=%s\\ncreated=%s\\nupdated=%s\\n' "$1" "$commit" "$digest" "$created" "$(date +%s)" > "$P/.preview.new"
+  printf 'state=%s\\ncommit=%s\\ndigest=%s\\ncreated=%s\\nupdated=%s\\nrandom=%s\\n' "$1" "$commit" "$digest" "$created" "$(date +%s)" "$random" > "$P/.preview.new"
   mv -f "$P/.preview.new" "$P/.preview"
+}
+
+# An address's random part: 10 of a-z 0-9.
+random_ok() {
+  case "$1" in *[!a-z0-9]*) return 1 ;; esac
+  [ "\${#1}" -eq 10 ]
+}
+
+# A new random part from /dev/urandom: tr keeps only the bytes a-z 0-9, so each of the 36 is as
+# likely as any other.
+draw_random() {
+  value=""
+  while [ "\${#value}" -lt 10 ]; do
+    value="$value$(head -c 64 /dev/urandom | tr -dc 'a-z0-9')"
+  done
+  rest="\${value#??????????}"
+  echo "\${value%"$rest"}"
 }
 
 # True when the preview in folder $1 was not updated for LIFETIME_DAYS days: its .preview, else
@@ -251,15 +271,16 @@ generate() {
   esac
 }
 
-# template/ filled into the preview's folder: @N@ is its number, each @SECRET:<name>:<format>@
-# the value secrets.env keeps for the name, made the first time the name appears. The app's env
-# file is values.env, then the filled env/app.env; the services' env files are owner-only too.
+# template/ filled into the preview's folder: @N@ is its number, @R@ its address's random part,
+# each @SECRET:<name>:<format>@ the value secrets.env keeps for the name, made the first time the
+# name appears. The app's env file is values.env, then the filled env/app.env; the services' env
+# files are owner-only too.
 fill() {
   script="$P/.fill.sed"
   (
     umask 077
     touch "$P/secrets.env"
-    printf 's|@N@|%s|g\\n' "$n" > "$script"
+    printf 's|@N@|%s|g\\ns|@R@|%s|g\\n' "$n" "$random" > "$script"
     for placeholder in $(grep -rhoE '${PREVIEW_SECRET_PLACEHOLDER}' "$RECIPE/template" | sort -u); do
       rest="\${placeholder#@SECRET:}"
       name="\${rest%%:*}"
@@ -317,6 +338,10 @@ up_preview() {
   log_as=up
   enter
   created="$(field "$P" created "$(date +%s)")"
+  # The address's random part: drawn when the preview has none (a new one), then kept.
+  random="$(field "$P" random "")"
+  if ! random_ok "$random"; then random="$(draw_random)"; fi
+  HOST="pr-$n-$random.$BASE"
   # The steps' output can quote data (the seed's): owner-only, as the release command's log.
   (umask 077 && : > "$P/up.log")
   fill
@@ -399,7 +424,10 @@ list_previews() {
   count=0
   for k in $(numbers); do
     p="$APPS_DIR/$APP-pr-$k"
-    echo "$k $(field "$p" state failed) $(field "$p" commit -) $(field "$p" created -) $(field "$p" updated -) $(field "$p" digest -)"
+    address=-
+    random="$(field "$p" random "")"
+    if random_ok "$random"; then address="pr-$k-$random.$BASE"; fi
+    echo "$k $(field "$p" state failed) $(field "$p" commit -) $(field "$p" created -) $(field "$p" updated -) $(field "$p" digest -) $address"
     count=$((count + 1))
   done
   finish listed "$count/$CAP" 0

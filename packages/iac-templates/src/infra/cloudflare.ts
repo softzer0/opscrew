@@ -52,7 +52,7 @@ export function zoneVariables(use: ZoneUse): VariableSpec[] {
     specs.push({
       name: "preview_domain",
       type: "string",
-      description: "Base name of the previews: each one is pr-<number>.<base>.",
+      description: "The previews' own zone: each one is pr-<number>-<random>.<zone>.",
     });
   } else if (use !== "zone") {
     specs.push({ name: "domain", type: "string", description: "Hostname of the app." });
@@ -111,8 +111,9 @@ function caaIssuers(plan: DeployPlan): string[] {
 
 /**
  * `module "dns"` pointing the records of `use` at `ipv4` and `ipv6` (HCL expressions): the app's
- * domain with its proxy, `www.` and CAA settings, or a preview environment's wildcard `*.<base>`,
- * DNS only, without `www.` or CAA (the preview server's Caddy gets each preview's certificate).
+ * domain with its proxy, `www.` and CAA settings, or a preview environment's wildcard `*.<base>`
+ * through Cloudflare's proxy, without `www.` or CAA (the preview server serves Cloudflare's Origin
+ * CA certificate for `*.<base>`).
  */
 export function dnsModule(
   use: "records" | "previews",
@@ -123,7 +124,10 @@ export function dnsModule(
   const previews = use === "previews";
   return moduleBlock({
     comment: previews
-      ? ["# The previews' wildcard record, DNS only: each preview is pr-<number>.<base>."]
+      ? [
+          "# The previews' wildcard record, through Cloudflare's proxy: each preview is",
+          "# pr-<number>-<random>.<base>, a name in no public certificate.",
+        ]
       : [],
     name: "dns",
     source: "cloudflare-dns",
@@ -133,7 +137,7 @@ export function dnsModule(
       ["ipv4", ipv4],
       ["ipv6", ipv6],
       ...(ipv6Record === undefined ? [] : [["ipv6_record", ipv6Record] as const]),
-      ["proxied", previews ? "false" : "var.proxied"],
+      ["proxied", previews ? "true" : "var.proxied"],
       ["www", previews ? "false" : "var.www"],
       ["caa_issuers", previews ? "[]" : "var.caa_issuers"],
     ],

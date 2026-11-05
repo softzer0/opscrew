@@ -31,6 +31,16 @@ const NUMBER_TOKEN = "xnumbx";
 /** Where the server puts the preview's number in a recipe file: `@N@`. */
 const NUMBER = "@N@";
 
+/**
+ * The word in the place of a preview's random part while the recipe is rendered: 10 lower-case
+ * letters, as long as the random part. The recipe turns `pr-<number token>-<token>` into
+ * `pr-@N@-@R@`.
+ */
+const RANDOM_TOKEN = "xrandpartx";
+
+/** Where the server puts the preview's random part in a recipe file: `@R@`. */
+const RANDOM = "@R@";
+
 /** Every `@SECRET:<name>:<format>@` placeholder in a text. */
 const SECRET_PLACEHOLDERS = new RegExp(PREVIEW_SECRET_PLACEHOLDER, "g");
 
@@ -82,11 +92,11 @@ function previewEnvironment(plan: DeployPlan) {
 
 /**
  * The plan every preview's files come from: the preview environment's `plan` as the app
- * `<app>-pr-<token>` at `pr-<token>.<previews.domain>`, without `environment.previews`, where the
- * token is a fixed word the recipe turns into the preview's number. Provision builds the
- * {@link PreviewEnvTemplates} from it. Not parsed again: plan-schema wants a named environment's
- * app name to end with `-<env>`, which a preview's doesn't, and the two fields it changes stay
- * valid (the app name is at most 31 characters).
+ * `<app>-pr-<token>` at `pr-<token>-<random token>.<previews.domain>`, without
+ * `environment.previews`, where the tokens are fixed words the recipe turns into the preview's
+ * number and random part. Provision builds the {@link PreviewEnvTemplates} from it. Not parsed
+ * again: plan-schema wants a named environment's app name to end with `-<env>`, which a preview's
+ * doesn't, and the two fields it changes stay valid (the app name is at most 31 characters).
  * @throws OpsCrewError for a plan without `environment.previews`.
  */
 export function previewTemplatePlan(plan: DeployPlan): DeployPlan {
@@ -95,7 +105,7 @@ export function previewTemplatePlan(plan: DeployPlan): DeployPlan {
     ...plan,
     environment,
     app: { ...plan.app, name: `${plan.app.name}-pr-${NUMBER_TOKEN}` },
-    dns: { ...plan.dns, domain: `pr-${NUMBER_TOKEN}.${previews.domain}` },
+    dns: { ...plan.dns, domain: `pr-${NUMBER_TOKEN}-${RANDOM_TOKEN}.${previews.domain}` },
   };
 }
 
@@ -140,12 +150,18 @@ function checkEnv(env: PreviewEnvTemplates): void {
   }
 }
 
-/** `text` with the number's token as `@N@`; throws when the token is left in another form. */
+/**
+ * `text` with the address's tokens as `@N@` and `@R@` and the number's elsewhere as `@N@`; throws
+ * when a token is left in another form.
+ */
 function withNumber(file: string, text: string): string {
-  const filled = text.replaceAll(`pr-${NUMBER_TOKEN}`, `pr-${NUMBER}`);
-  if (filled.toLowerCase().includes(NUMBER_TOKEN)) {
+  const filled = text
+    .replaceAll(`pr-${NUMBER_TOKEN}-${RANDOM_TOKEN}.`, `pr-${NUMBER}-${RANDOM}.`)
+    .replaceAll(`pr-${NUMBER_TOKEN}`, `pr-${NUMBER}`);
+  const lower = filled.toLowerCase();
+  if (lower.includes(NUMBER_TOKEN) || lower.includes(RANDOM_TOKEN)) {
     throw wrongTarget(
-      `The preview recipe's ${file} holds the preview's number in a form the server can't fill.`,
+      `The preview recipe's ${file} holds the preview's number or address in a form the server can't fill.`,
     );
   }
   return filled;
@@ -196,11 +212,13 @@ function settingsFile(plan: DeployPlan, previews: Previews, o: PreviewRecipeOpti
  * - `template/`: what a preview's folder gets, rendered from {@link previewTemplatePlan}: every
  *   file a deploy uploads to an app's folder (the Compose file, with the `seed` service when the
  *   plan has a seed command, the services' files, the crontab, the edge's Compose file and the
- *   site, which sends `X-Robots-Tag: noindex`), `start.sh` and `rollback.sh` (the deploy's start
- *   and rollback scripts) and `env/app.env` and `env/<service>.env` from `o.env`, with `@N@` in the
- *   number's place;
+ *   site, served with the Origin CA certificate in `/srv/edge/tls/<app>/` and sending
+ *   `X-Robots-Tag: noindex`), `start.sh` and `rollback.sh` (the deploy's start and rollback
+ *   scripts) and `env/app.env` and `env/<service>.env` from `o.env`, with `@N@` in the number's
+ *   place and the address `pr-@N@-@R@.<base>`, `@R@` the preview's random part;
  * - `bin/opscrew-preview` (0755), the command that enforces it.
- * Filled with a number and values, `template/` is what OpsCrew renders for `<app>-pr-<number>`.
+ * Filled with a number, a random part and values, `template/` is what OpsCrew renders for
+ * `<app>-pr-<number>` at `pr-<number>-<random>.<base>`.
  * @throws OpsCrewError for a plan without previews,
  * an image name or repository that isn't one, or an env template with a placeholder the server can't fill.
  */
@@ -214,7 +232,7 @@ export function renderPreviewRecipe(plan: DeployPlan, o: PreviewRecipeOptions): 
   const rendered = [
     renderCompose(template, seed),
     ...renderRuntimeFiles(template),
-    ...renderEdgeSite(template, { noindex: true }),
+    ...renderEdgeSite(template, { preview: { app: plan.app.name } }),
   ].map((file) => ({ path: file.path.slice(runtime.length + 1), content: file.content }));
   const script = (lines: readonly string[]) => `${lines.join("\n")}\n`;
   const files = [

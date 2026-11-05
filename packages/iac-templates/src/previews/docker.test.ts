@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { generateP256, selfSignedClientCertificate } from "@opscrew/core";
 import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { IMAGES } from "../pins";
@@ -8,8 +9,9 @@ import { commit, PreviewServer, shWorks } from "./__fixtures__/server";
 
 /*
  * opscrew-preview on a real Docker: up, an update, list and down of a preview whose app is the
- * pinned unprivileged nginx image (it answers on port 8080), with the real shared edge (Caddy and
- * kamal-proxy, published on loopback ports here), and nothing of the preview left afterwards. Only
+ * pinned unprivileged nginx image (it answers on port 8080), with the real shared edge (Caddy, with
+ * a self-signed certificate in place of the Origin CA one, and kamal-proxy, published on loopback
+ * ports here), and nothing of the preview left afterwards. Only
  * the registry login is faked (the image is public) and flock is a shim (Git for Windows has none).
  * Runs only with OPSCREW_DOCKER_TESTS=1, and never beside an OpsCrew edge this Docker already runs.
  */
@@ -74,7 +76,7 @@ describe.skipIf(reason !== undefined)(
         { real: true },
       );
       edge = ["compose", "-p", "opscrew-edge", "-f", `${s.work}/srv/edge/compose.yaml`];
-      pulled = [IMAGES.nginx.ref, IMAGES.caddy.ref, IMAGES.kamalProxy.ref].filter(
+      pulled = [IMAGES.nginx.ref, IMAGES.caddy.ref, IMAGES.kamalProxy.ref, IMAGES.curl.ref].filter(
         (ref) => docker("image", "inspect", ref).status !== 0,
       );
       // The preview's image is nginx; the edge publishes on loopback ports only.
@@ -85,6 +87,11 @@ describe.skipIf(reason !== undefined)(
           `IMAGE_NAME=${APP_IMAGE}`,
         ),
       );
+      // A self-signed certificate in place of the Origin CA one the previews host plan installs.
+      const key = generateP256().privateKey;
+      const tls = `${s.work}/srv/edge/tls/${s.app}`;
+      s.write(`${tls}/origin.pem`, selfSignedClientCertificate({ key, commonName: BASE, days: 1 }));
+      s.write(`${tls}/origin.key`, key, 0o600);
       const compose = s.read(`${s.recipe}/template/edge/compose.yaml`) ?? "";
       const loopback = compose.replace(
         /- 80:80\n(\s+)- 443:443\n\s+- 443:443\/udp\n/,
@@ -101,11 +108,13 @@ describe.skipIf(reason !== undefined)(
       s.remove();
     }, 300_000);
 
+    /** The preview's address, from the random part its `.preview` keeps. */
+    const address = () => `pr-1-${s.previewFields(1).random}.${BASE}`;
     /** What the edge's kamal-proxy serves for the preview's hostname, through the edge's network. */
     const served = () =>
       docker(
         ...edge,
-        ...["exec", "-T", "caddy", "wget", "-qO-", "--header", `Host: pr-1.${BASE}`],
+        ...["exec", "-T", "caddy", "wget", "-qO-", "--header", `Host: ${address()}`],
         "http://kamal-proxy/",
       ).out;
     /** The ids of the preview's containers, networks or volumes. */
@@ -121,12 +130,24 @@ describe.skipIf(reason !== undefined)(
         stdin: "test-token",
         env: ENV,
       });
+      expect(s.previewFields(1).random).toMatch(/^[a-z0-9]{10}$/);
+      const first = address();
       expect(up, s.read(`${s.preview(1)}/up.log`)).toMatchObject({
         status: 0,
-        stdout: `opscrew-preview: running pr-1.${BASE}\n`,
+        stdout: `opscrew-preview: running ${first}\n`,
       });
       expect(served()).toContain("Welcome to nginx");
-      expect(s.read(`${s.work}/srv/edge/sites/${NAME}.caddy`)).toContain('X-Robots-Tag "noindex"');
+      // Caddy took the site with the certificate: it serves it for the address.
+      const site = s.read(`${s.work}/srv/edge/sites/${NAME}.caddy`) ?? "";
+      expect(site).toContain('X-Robots-Tag "noindex"');
+      expect(site).toContain(`\n${first} {\n\ttls /etc/caddy/tls/shop-preview/origin.pem`);
+      const caddy = docker(...edge, "ps", "-q", "caddy").out;
+      expect(
+        docker(
+          ...["run", "--rm", "--network", `container:${caddy}`, IMAGES.curl.ref],
+          ...["-sSk", "--resolve", `${first}:443:127.0.0.1`, `https://${first}/`],
+        ).out,
+      ).toContain("Welcome to nginx");
       expect(s.read(`${s.preview(1)}/.seeded`)).toBe("");
       expect(s.read(`${s.preview(1)}/up.log`)).toContain("seeded");
 
@@ -135,15 +156,18 @@ describe.skipIf(reason !== undefined)(
         stdin: "test-token",
         env: ENV,
       });
+      // At the same address.
       expect(update, s.read(`${s.preview(1)}/up.log`)).toMatchObject({
         status: 0,
-        stdout: `opscrew-preview: running pr-1.${BASE}\n`,
+        stdout: `opscrew-preview: running ${first}\n`,
       });
       expect(served()).toContain("Welcome to nginx");
       expect(left("container").split("\n")).toHaveLength(1);
 
       expect(s.run({ key: "list", env: ENV }).stdout).toMatch(
-        new RegExp(`^1 running ${commit("2")} \\d+ \\d+ ${DIGEST}\nopscrew-preview: listed 1/3\n$`),
+        new RegExp(
+          `^1 running ${commit("2")} \\d+ \\d+ ${DIGEST} ${first.replaceAll(".", "\\.")}\nopscrew-preview: listed 1/3\n$`,
+        ),
       );
 
       expect(s.run({ key: "down 1", env: ENV })).toMatchObject({

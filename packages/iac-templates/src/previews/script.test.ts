@@ -23,7 +23,12 @@ const FULL = previewPlan();
 /** Only the app, its release command and a seed: fewer containers to start. */
 const LEAN = previewPlan({ postgres: false, processes: false });
 
-const HOST = (n: number) => `pr-${n}.${BASE}`;
+/** Preview `n`'s address on `s`, from the random part its `.preview` keeps. */
+const HOST = (s: PreviewServer, n: number) => `pr-${n}-${s.previewFields(n).random}.${BASE}`;
+/** The random part {@link existing} gives preview `n`. */
+const RANDOM = (n: number) => `r${String(n).padStart(9, "0")}`;
+/** An address's random part. */
+const RANDOM_PART = /^[a-z0-9]{10}$/;
 const DAY = 86_400;
 const NOW = () => Math.floor(Date.now() / 1000);
 const POSIX = process.platform !== "win32";
@@ -50,15 +55,23 @@ function only(result: RunResult, line: string, status: number): void {
 
 /**
  * Preview `n` as an earlier up left it, without running one: its folder with `.preview` (unless
- * `preview` is false), its app container, network and volume, its route and site, and its data.
+ * `preview` is false) and its random part (`random`, default {@link RANDOM}), its app container,
+ * network and volume, its route and site, and its data.
  */
 function existing(
   s: PreviewServer,
   n: number,
-  o: { state?: string; updated?: number; created?: number; preview?: boolean } = {},
+  o: {
+    state?: string;
+    updated?: number;
+    created?: number;
+    preview?: boolean;
+    random?: string;
+  } = {},
 ): void {
   const name = `${s.app}-pr-${n}`;
   const dir = s.preview(n);
+  const host = `pr-${n}-${o.random ?? RANDOM(n)}.${BASE}`;
   s.write(`${dir}/compose.yaml`, `name: ${name}\n`);
   if (o.preview !== false) {
     s.write(
@@ -69,6 +82,7 @@ function existing(
         `digest=sha256:${String(n % 10).repeat(64)}`,
         `created=${o.created ?? NOW() - DAY}`,
         `updated=${o.updated ?? NOW() - 60}`,
+        `random=${o.random ?? RANDOM(n)}`,
         "",
       ].join("\n"),
     );
@@ -76,9 +90,9 @@ function existing(
   s.write(`${dir}/.lock`, "");
   s.write(`${dir}/.seeded`, "");
   s.write(`${dir}/secrets.env`, "db-password=00\n", 0o600);
-  s.write(`${s.work}/srv/edge/sites/${name}.caddy`, `pr-${n}.${BASE} {\n}\n`);
+  s.write(`${s.work}/srv/edge/sites/${name}.caddy`, `${host} {\n}\n`);
   s.write(`${s.work}/srv/edge/compose.yaml`, "name: opscrew-edge\n");
-  s.write(`${s.work}/state/routes/${name}`, `${name}-app-${n}:3000 ${HOST(n)}\n`);
+  s.write(`${s.work}/state/routes/${name}`, `${name}-app-${n}:3000 ${host}\n`);
   s.write(`${s.work}/srv/data/${name}/db/PG_VERSION`, "17\n");
   const state = (file: string, line: string) =>
     s.write(`${s.work}/state/${file}`, `${s.state(file)}${line}\n`);
@@ -138,10 +152,13 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
     it("through the preview key creates the preview from the recipe and prints only where it runs", () => {
       const s = server(FULL);
       const result = s.up(42);
-      only(result, `running ${HOST(42)}`, 0);
+      const random = s.previewFields(42).random ?? "";
+      expect(random).toMatch(RANDOM_PART);
+      only(result, `running pr-42-${random}.${BASE}`, 0);
 
-      // Its folder is the template filled in: what OpsCrew renders for shop-preview-pr-42 with the
-      // values generated for it, the app's env file after the user's preview values.
+      // Its folder is the template filled in: what OpsCrew renders for shop-preview-pr-42 at its
+      // address with the values generated for it, the app's env file after the user's preview
+      // values.
       const secrets = Object.fromEntries(
         (s.read(`${s.preview(42)}/secrets.env`) ?? "")
           .split("\n")
@@ -158,7 +175,7 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
       expect(secrets.SECRET_KEY_BASE).toMatch(/^[0-9a-f]{128}$/);
       expect(secrets.APP_KEY).toMatch(/^base64:[A-Za-z0-9+/]{43}=$/);
       expect(secrets["garage-key-id"]).toMatch(/^GK[0-9a-f]{24}$/);
-      const direct = directPreview(FULL, 42, (name) => secrets[name] ?? "");
+      const direct = directPreview(FULL, 42, random, (name) => secrets[name] ?? "");
       for (const [path, content] of Object.entries(direct)) {
         if (path === "env/app.env") {
           const values = Object.entries(VALUES).map(([name, value]) => `${name}=${value}`);
@@ -175,11 +192,14 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
 
       // Routed at its address, its site on the edge, seeded once, recorded.
       expect(s.state("routes/shop-preview-pr-42")).toMatch(
-        new RegExp(`^shop-preview-pr-42-app-\\d+:3000 ${HOST(42).replaceAll(".", "\\.")}\n$`),
+        new RegExp(`^shop-preview-pr-42-app-\\d+:3000 ${HOST(s, 42).replaceAll(".", "\\.")}\n$`),
       );
-      expect(s.read(`${s.work}/srv/edge/sites/shop-preview-pr-42.caddy`)).toBe(
-        direct["edge/sites/shop-preview-pr-42.caddy"],
+      const site = s.read(`${s.work}/srv/edge/sites/shop-preview-pr-42.caddy`);
+      expect(site).toBe(direct["edge/sites/shop-preview-pr-42.caddy"]);
+      expect(site).toContain(
+        `\n${HOST(s, 42)} {\n\ttls /etc/caddy/tls/shop-preview/origin.pem /etc/caddy/tls/shop-preview/origin.key\n`,
       );
+      expect(s.read(`${s.preview(42)}/app.env`)).toContain(`\nAPP_URL=https://${HOST(s, 42)}\n`);
       expect(s.read(`${s.preview(42)}/.seeded`)).toBe("");
       const fields = s.previewFields(42);
       expect(fields).toEqual({
@@ -188,6 +208,7 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
         digest: `sha256:${"a".repeat(64)}`,
         created: expect.stringMatching(/^\d{10}$/),
         updated: expect.stringMatching(/^\d{10}$/),
+        random,
       });
       expect(Number(fields.updated) - Number(fields.created)).toBeLessThan(600);
       expect(s.log()).toEqual([expect.stringMatching(logLine("up", 42, "key", "running"))]);
@@ -214,7 +235,8 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
     it("updates a preview: the template filled again, generated values kept, new names generated", () => {
       const s = server();
       const first = s.up(42);
-      only(first, `running ${HOST(42)}`, 0);
+      const address = HOST(s, 42);
+      only(first, `running ${address}`, 0);
       const secrets = s.read(`${s.preview(42)}/secrets.env`) ?? "";
       const created = s.previewFields(42).created;
       // A recipe changed since: another file content and a new generated value.
@@ -232,7 +254,9 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
       );
 
       const second = s.up(42, { image: image("b"), commit: commit("2") });
-      only(second, `running ${HOST(42)}`, 0);
+      // At the address it was made with.
+      only(second, `running ${address}`, 0);
+      expect(s.state("routes/shop-preview-pr-42")).toContain(` ${address}\n`);
       expect(s.read(`${s.preview(42)}/compose.yaml`)).toMatch(/# changed for 42\n$/);
       const now = s.read(`${s.preview(42)}/secrets.env`) ?? "";
       expect(now.startsWith(secrets)).toBe(true);
@@ -263,7 +287,8 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
     it("runs the seed until it succeeds: a failed seed says seed-failed and the preview runs", () => {
       const s = server();
       const failed = s.up(42, { env: { SEED_FAIL: "1" } });
-      only(failed, `seed-failed ${HOST(42)}`, 5);
+      expect(s.previewFields(42).random).toMatch(RANDOM_PART);
+      only(failed, `seed-failed ${HOST(s, 42)}`, 5);
       expect(s.read(`${s.preview(42)}/.seeded`)).toBeUndefined();
       expect(s.state("routes/shop-preview-pr-42")).not.toBe("");
       expect(s.previewFields(42).state).toBe("seed-failed");
@@ -271,13 +296,43 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
         "seed failed: relation users does not exist",
       );
 
-      only(s.up(42), `running ${HOST(42)}`, 0);
+      only(s.up(42), `running ${HOST(s, 42)}`, 0);
       expect(s.read(`${s.preview(42)}/.seeded`)).toBe("");
       expect(s.state("docker.log").match(/docker ran seed/g)).toHaveLength(2);
       expect(s.log()).toEqual([
         expect.stringMatching(logLine("up", 42, "key", "seed-failed")),
         expect.stringMatching(logLine("up", 42, "key", "running")),
       ]);
+    });
+
+    it("gives each preview an address of its own, kept by its updates and forgotten by down", () => {
+      const s = server(
+        previewPlan({ postgres: false, processes: false, release: null, seed: null, cap: 5 }),
+      );
+      only(s.up(42), `running ${HOST(s, 42)}`, 0);
+      only(s.up(43), `running ${HOST(s, 43)}`, 0);
+      const [a, b] = [s.previewFields(42).random, s.previewFields(43).random];
+      expect(a).toMatch(RANDOM_PART);
+      expect(b).toMatch(RANDOM_PART);
+      expect(a).not.toBe(b);
+      expect(s.state("routes/shop-preview-pr-43")).toContain(` pr-43-${b}.${BASE}\n`);
+
+      // An update keeps the random part its .preview holds; one that is not of the form is
+      // drawn again.
+      existing(s, 7);
+      only(s.up(7), `running pr-7-${RANDOM(7)}.${BASE}`, 0);
+      expect(s.read(`${s.work}/srv/edge/sites/shop-preview-pr-7.caddy`)).toContain(
+        `\npr-7-${RANDOM(7)}.${BASE} {\n`,
+      );
+      existing(s, 8, { random: "r00000008;" });
+      only(s.up(8), `running ${HOST(s, 8)}`, 0);
+      expect(s.previewFields(8).random).toMatch(RANDOM_PART);
+
+      // A preview made again after down gets a new one.
+      only(s.run({ key: "down 42" }), "removed 42", 0);
+      only(s.up(42), `running ${HOST(s, 42)}`, 0);
+      expect(s.previewFields(42).random).toMatch(RANDOM_PART);
+      expect(s.previewFields(42).random).not.toBe(a);
     });
 
     it.each([
@@ -289,7 +344,7 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
       "keeps the previous image when an update fails its health check (%s)",
       (strategy, outcome) => {
         const s = server(previewPlan({ postgres: false, processes: false, strategy }));
-        only(s.up(42), `running ${HOST(42)}`, 0);
+        only(s.up(42), `running ${HOST(s, 42)}`, 0);
         const failed = s.up(42, {
           image: image("b"),
           commit: commit("2"),
@@ -456,19 +511,22 @@ describe.skipIf(!shWorks())("opscrew-preview (sh)", { timeout: 120_000 }, () => 
 
   describe("list", () => {
     it("prints one line per preview, smallest number first, then the count, and changes nothing", () => {
-      const s = server(previewPlan({ postgres: false, processes: false, cap: 5 }));
+      const s = server(previewPlan({ postgres: false, processes: false, cap: 6 }));
       existing(s, 10, { state: "seed-failed", created: 1_700_000_000, updated: 1_700_000_500 });
       existing(s, 2, { created: 1_700_000_100, updated: 1_700_000_200 });
       existing(s, 5, { preview: false });
+      // A random part that is not of the form is no address.
+      existing(s, 6, { created: 1_700_000_300, updated: 1_700_000_400, random: "R000000006" });
       // Not a preview of this recipe.
       s.write(`${s.work}/srv/apps/${s.app}-pr-07/x`, "");
       s.write(`${s.work}/srv/apps/${s.app}-pr-x/x`, "");
       const before = s.tree();
       const expected = [
-        `2 running ${commit("2")} 1700000100 1700000200 sha256:${"2".repeat(64)}`,
-        "5 failed - - - -",
-        `10 seed-failed ${commit("0")} 1700000000 1700000500 sha256:${"0".repeat(64)}`,
-        "opscrew-preview: listed 3/5",
+        `2 running ${commit("2")} 1700000100 1700000200 sha256:${"2".repeat(64)} pr-2-${RANDOM(2)}.${BASE}`,
+        "5 failed - - - - -",
+        `6 running ${commit("6")} 1700000300 1700000400 sha256:${"6".repeat(64)} -`,
+        `10 seed-failed ${commit("0")} 1700000000 1700000500 sha256:${"0".repeat(64)} pr-10-${RANDOM(10)}.${BASE}`,
+        "opscrew-preview: listed 4/6",
         "",
       ].join("\n");
       for (const result of [s.run({ key: "list" }), s.run({ args: ["list"] })]) {

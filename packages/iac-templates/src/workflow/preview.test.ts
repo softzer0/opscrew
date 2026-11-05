@@ -138,9 +138,10 @@ describe("renderPreviewWorkflow", () => {
   });
 
   it("deploys in the preview's GitHub environment with its address; removes without a deployment", () => {
+    // The address the server answered, from the step's output.
     expect(flow.jobs.deploy?.environment).toEqual({
       name: "preview",
-      url: "https://pr-${{ github.event.pull_request.number }}.shop.example.com",
+      url: "${{ steps.up.outputs.url }}",
     });
     expect(flow.jobs.remove?.environment).toEqual({ name: "preview", deployment: false });
     const inactive = step(flow.jobs.remove, "Mark the pull request's deployments inactive");
@@ -196,7 +197,7 @@ describe("renderPreviewWorkflow", () => {
       HOST: "${{ secrets.OPSCREW_PREVIEW_HOST }}",
       NUMBER: "${{ github.event.pull_request.number }}",
       COMMIT: "${{ github.event.pull_request.head.sha }}",
-      URL: "https://pr-${{ github.event.pull_request.number }}.shop.example.com/api/health",
+      HEALTH_PATH: "/api/health",
     });
     const ssh = step(flow.jobs.deploy, "Configure SSH with the pinned host key");
     expect(ssh.env).toEqual({
@@ -284,10 +285,13 @@ describe("the deploy job's answer from the preview server", { timeout: 30_000 },
   const token = fakeSecret("github-token");
   const image = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
   const commit = "b".repeat(40);
-  /** ssh prints FAKE_OUT and exits FAKE_CODE; curl answers FAKE_CURL; sleep only moves the clock. */
+  /**
+   * ssh prints FAKE_OUT and exits FAKE_CODE; curl records its last argument and answers FAKE_CURL;
+   * sleep only moves the clock.
+   */
   const fakes = [
     'ssh() { cat > "$FAKE/stdin"; printf \'%s\\n\' "$@" > "$FAKE/args"; printf \'%s\' "$FAKE_OUT"; return "$FAKE_CODE"; }',
-    'curl() { return "${FAKE_CURL:-0}"; }',
+    'curl() { printf \'%s\\n\' "${@: -1}" >> "$FAKE/calls"; return "${FAKE_CURL:-0}"; }',
     "sleep() { SECONDS=$((SECONDS + $1)); }",
   ].join("\n");
   const env = (out: string, code: number, extra: Record<string, string> = {}) => ({
@@ -295,7 +299,7 @@ describe("the deploy job's answer from the preview server", { timeout: 30_000 },
     IMAGE: image,
     NUMBER: "42",
     COMMIT: commit,
-    URL: "https://pr-42.shop.example.com/api/health",
+    HEALTH_PATH: "/api/health",
     REGISTRY_TOKEN: token,
     FAKE_OUT: out,
     FAKE_CODE: String(code),
@@ -303,10 +307,12 @@ describe("the deploy job's answer from the preview server", { timeout: 30_000 },
   });
   const answer = async (out: string, code: number, extra: Record<string, string> = {}) =>
     (await bash(fakes, up, env(out, code, extra))).outputs;
+  /** Preview 42's address as the server draws it. */
+  const ADDRESS = "pr-42-a1b2c3d4e5.example.net";
 
   const rows: [string, number, string][] = [
-    ["running", 0, "pr-42.shop.example.com"],
-    ["seed-failed", 5, "pr-42.shop.example.com"],
+    ["running", 0, ADDRESS],
+    ["seed-failed", 5, ADDRESS],
     ...["request", "number", "image", "commit", "token", "command"].map(
       (detail): [string, number, string] => ["refused", 2, detail],
     ),
@@ -320,41 +326,62 @@ describe("the deploy job's answer from the preview server", { timeout: 30_000 },
   ];
   it.each(rows)("reads %s (exit %i, %s) from the last line", async (state, code, detail) => {
     const out = `opscrew-preview: pulling\nsomething else\nopscrew-preview: ${state} ${detail}`;
-    expect(await answer(out, code)).toEqual({ state, detail });
+    const url = state === "running" || state === "seed-failed" ? `https://${detail}` : "";
+    expect(await answer(out, code)).toEqual({ state, detail, url });
   });
 
   it.each([
-    ["a state with another exit code", "opscrew-preview: running pr-42.shop.example.com", 4],
-    ["another preview's address", "opscrew-preview: running pr-43.shop.example.com", 0],
+    ["a state with another exit code", `opscrew-preview: running ${ADDRESS}`, 4],
+    ["another preview's address", "opscrew-preview: running pr-43-a1b2c3d4e5.example.net", 0],
+    ["an address without its random part", "opscrew-preview: running pr-42.example.net", 0],
+    ["a random part too short", "opscrew-preview: running pr-42-a1b2c3d4e.example.net", 0],
+    ["a random part too long", "opscrew-preview: running pr-42-a1b2c3d4e5f.example.net", 0],
+    ["a random part in capitals", "opscrew-preview: running pr-42-A1B2C3D4E5.example.net", 0],
+    ["another zone", `opscrew-preview: running ${ADDRESS}.evil.example.com`, 0],
+    ["another zone's name", "opscrew-preview: running pr-42-a1b2c3d4e5.examplexnet", 0],
+    ["a name before the address", `opscrew-preview: running x.${ADDRESS}`, 0],
+    ["a seed-failed with a number", "opscrew-preview: seed-failed 42", 5],
     ["a detail outside the contract", "opscrew-preview: failed disk", 4],
     ["a cap that is no count", "opscrew-preview: cap 3/3;id", 3],
-    ["text after the answer", "opscrew-preview: running pr-42.shop.example.com\nhello", 0],
+    ["text after the answer", `opscrew-preview: running ${ADDRESS}\nhello`, 0],
     ["a state the contract lacks", "opscrew-preview: exploded 1", 7],
     ["no answer", "", 1],
     ["removed in reply to up", "opscrew-preview: removed 42", 0],
   ])("takes %s as an error", async (_, out, code) => {
-    expect(await answer(out, code)).toEqual({ state: "error", detail: "" });
+    const run = await bash(fakes, up, env(out, code));
+    expect(run.outputs).toEqual({ state: "error", detail: "", url: "" });
+    // Nothing is checked at an address the answer did not give.
+    expect(run.calls).toBe("");
   });
 
   it("takes SSH's own failure as unreachable", async () => {
-    expect(await answer("", 255)).toEqual({ state: "unreachable", detail: "" });
+    expect(await answer("", 255)).toEqual({ state: "unreachable", detail: "", url: "" });
+  });
+
+  it("checks the health path at the address the server answered", async () => {
+    const run = await bash(fakes, up, env(`opscrew-preview: running ${ADDRESS}`, 0));
+    expect(run.calls).toBe(`https://${ADDRESS}/api/health\n`);
+    expect(run.outputs).toEqual({ state: "running", detail: ADDRESS, url: `https://${ADDRESS}` });
   });
 
   it("sends the token on stdin only, and shows none of the server's lines", async () => {
-    const out =
-      "opscrew-preview: step said something private\nopscrew-preview: running pr-42.shop.example.com";
+    const out = `opscrew-preview: step said something private\nopscrew-preview: running ${ADDRESS}`;
     const run = await bash(fakes, up, env(out, 0));
     expect(run.stdin).toBe(`${token}\n`);
     expect(run.args).toContain(`up 42 ${image} ${commit}`);
     expect(run.args).not.toContain(token);
     expect(run.stdout + run.stderr).not.toContain(token);
     expect(run.stdout + run.stderr).not.toContain("private");
-    expect(run.stdout).toContain("The preview server answered: running pr-42.shop.example.com");
+    expect(run.stdout).toContain(`The preview server answered: running ${ADDRESS}`);
   });
 
-  it("is unanswered when the address does not answer within 3 minutes", async () => {
-    const out = "opscrew-preview: running pr-42.shop.example.com";
-    expect(await answer(out, 0, { FAKE_CURL: "7" })).toEqual({ state: "unanswered", detail: "" });
+  it("is unanswered, with the address, when the address does not answer within 3 minutes", async () => {
+    const out = `opscrew-preview: running ${ADDRESS}`;
+    expect(await answer(out, 0, { FAKE_CURL: "7" })).toEqual({
+      state: "unanswered",
+      detail: ADDRESS,
+      url: `https://${ADDRESS}`,
+    });
   });
 
   it("refuses an image that is not a GHCR digest before calling the server", async () => {
@@ -415,9 +442,11 @@ describe("the preview's comment", { timeout: 30_000 }, () => {
     return { call, body };
   }
 
+  const address = "pr-42-a1b2c3d4e5.example.net";
+
   it.each([
-    ["running", "", "runs at https://pr-42.shop.example.com (commit `cccccccccccc`)."],
-    ["seed-failed", "", "its seed command failed"],
+    ["running", address, `runs at https://${address} (commit \`cccccccccccc\`).`],
+    ["seed-failed", address, `runs at https://${address} (commit \`cccccccccccc\`), but its seed`],
     ["refused", "image", "refused the request (the image is not the app's own image"],
     ["refused", "token", "(the registry token was missing or too long)"],
     ["refused", "command", "(the preview key may only start, update, remove and list previews)"],
@@ -430,7 +459,7 @@ describe("the preview's comment", { timeout: 30_000 }, () => {
     ["failed", "edge", "failed at routing the address to the app"],
     ["busy", "600", "busy with another request for more than 10 minutes"],
     ["unreachable", "", "could not reach the preview server over SSH"],
-    ["unanswered", "", "did not answer at https://pr-42.shop.example.com within 3 minutes"],
+    ["unanswered", address, `did not answer at https://${address} within 3 minutes.`],
     [
       "build-failed",
       "",
@@ -454,6 +483,10 @@ describe("the preview's comment", { timeout: 30_000 }, () => {
   it.each([
     ["an unknown state", "hacked", "x"],
     ["a cap that is no count", "cap", "3/3`rm`"],
+    ["a running preview without its address", "running", "none"],
+    ["a running preview at another address", "running", "pr-43-a1b2c3d4e5.example.net"],
+    ["a seed-failed preview at no address", "seed-failed", "pr-42-a1b2c3d4e5.example.net`rm`"],
+    ["an unanswered preview at another zone", "unanswered", "pr-42-a1b2c3d4e5.example.com"],
   ])("gives the generic text for %s, never its words", async (_, state, detail) => {
     const { body } = await comment(state, detail);
     expect(body).toContain("the preview server gave an answer it does not know");
@@ -464,7 +497,7 @@ describe("the preview's comment", { timeout: 30_000 }, () => {
   it("writes no detail but a cap's count, and no commit that is not one", async () => {
     expect((await comment("failed", "disk")).body).toContain("failed at one of its steps");
     expect((await comment("failed", "disk")).body).not.toContain("disk");
-    const odd = await comment("running", "", { commit: "$(id)" });
+    const odd = await comment("running", address, { commit: "$(id)" });
     expect(odd.body).toContain("(commit `unknown`)");
   });
 

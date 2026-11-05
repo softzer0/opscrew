@@ -388,9 +388,9 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  * domain verification record is in a root of its own ({@link renderPagesVerification}).
  *
  * A preview environment's root (`environment.previews`: a zone, no domain) gets its server as
- * usual and, in place of the app's records, `module "dns"` with the previews' wildcard
- * `*.${var.preview_domain}`, DNS only, without `www.` or CAA; its `url` output is the server's
- * address.
+ * usual, its web ports open to Cloudflare only, and, in place of the app's records, `module "dns"`
+ * with the previews' wildcard `*.${var.preview_domain}` through Cloudflare's proxy, without `www.`
+ * or CAA; its `url` output is the server's address.
  */
 export function renderInfra(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
   const portainer = ctx.layout === undefined && plan.target.provider === "portainer";

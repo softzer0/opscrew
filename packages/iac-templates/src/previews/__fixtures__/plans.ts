@@ -7,8 +7,8 @@ import { NIGHTLY } from "../../workflow/__fixtures__/plans";
 import { rollbackCommands, switchCommands } from "../../workflow/switch";
 import { type PreviewEnvTemplates, type PreviewSecretFormat, previewSecret } from "../index";
 
-/** The preview environment's base name: previews are `pr-<n>.shop.example.com`. */
-export const BASE = "shop.example.com";
+/** The previews' own Cloudflare zone: previews are `pr-<n>-<random>.example.net`. */
+export const BASE = "example.net";
 
 /** The image the tests' previews run. */
 export const IMAGE_NAME = "ghcr.io/example-org/example-app";
@@ -45,7 +45,8 @@ export interface PreviewPlanOptions {
 /**
  * A preview environment's plan, as design writes it (ADR 0026): the environment `preview` of
  * `shop` on Hetzner, with Postgres, a worker, a cron job, a release command and a seed, previews at
- * `pr-<n>.shop.example.com` in the zone example.com, DNS only, with no domain of its own.
+ * `pr-<n>-<random>.example.net` in that zone of their own, behind Cloudflare's proxy and open to
+ * Cloudflare only, with no domain of its own.
  */
 export function previewPlan(o: PreviewPlanOptions = {}): DeployPlan {
   const base = testPlan({ provider: o.provider ?? "hetzner", postgres: o.postgres ?? true });
@@ -79,11 +80,11 @@ export function previewPlan(o: PreviewPlanOptions = {}): DeployPlan {
         seed: o.seed === undefined ? "npm run seed" : o.seed,
       },
     },
-    dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
+    dns: { provider: "cloudflare", zone: BASE, proxied: true, www: false },
     // The environment's own folder and workflow file (infraDirFor, workflowPathFor).
     infra: {},
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
-    security: { ...base.security, httpAllowedFrom: "any" },
+    security: { ...base.security, httpAllowedFrom: "cloudflare" },
   });
 }
 
@@ -119,12 +120,13 @@ export function envFor(
 
 /**
  * The files OpsCrew renders directly for preview `n` of the preview environment's `plan` (the app
- * `<app>-pr-<n>` at `pr-<n>.<base>`), by their path in the preview's folder, with the env templates
- * of {@link envFor} and `secret`'s values: what the recipe's template must fill into.
+ * `<app>-pr-<n>` at `pr-<n>-<random>.<base>`), by their path in the preview's folder, with the env
+ * templates of {@link envFor} and `secret`'s values: what the recipe's template must fill into.
  */
 export function directPreview(
   plan: DeployPlan,
   n: number,
+  random: string,
   secret: (name: string, format: PreviewSecretFormat) => string,
 ): Record<string, string> {
   const previews = plan.environment?.previews;
@@ -134,14 +136,14 @@ export function directPreview(
     ...plan,
     environment,
     app: { ...plan.app, name: `${plan.app.name}-pr-${n}` },
-    dns: { ...plan.dns, domain: `pr-${n}.${previews.domain}` },
+    dns: { ...plan.dns, domain: `pr-${n}-${random}.${previews.domain}` },
   };
   const runtime = runtimeDir(own);
   const files: Record<string, string> = {};
   for (const file of [
     renderCompose(own, typeof previews.seed === "string" ? { seed: previews.seed } : {}),
     ...renderRuntimeFiles(own),
-    ...renderEdgeSite(own, { noindex: true }),
+    ...renderEdgeSite(own, { preview: { app: plan.app.name } }),
   ]) {
     files[file.path.slice(runtime.length + 1)] = file.content;
   }

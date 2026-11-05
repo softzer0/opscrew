@@ -107,9 +107,10 @@ export interface CaddySite {
   /**
    * `direct` mode only: the `hostnames` among `hosts` served with the app's Cloudflare origin
    * certificate from `dir` ({@link originTlsDir}), which accept only TLS connections that present
-   * the client certificate Cloudflare sends for the app.
+   * the client certificate Cloudflare sends for the app; with `clientAuth: false` (a preview's
+   * site, whose server's web ports accept only Cloudflare) without that requirement.
    */
-  origin?: { hostnames: readonly string[]; dir: string } | undefined;
+  origin?: { hostnames: readonly string[]; dir: string; clientAuth?: false } | undefined;
   /**
    * `direct` mode on this computer (the localhost target): every hostname is served with the leaf
    * certificate of OpsCrew's local CA from `dir` ({@link originTlsDir}), so Caddy obtains none,
@@ -167,10 +168,11 @@ export function splitByOrigin(
 
 /**
  * The `tls` directive for the hostnames with the origin certificate: Caddy serves the certificate
- * from `dir` (so it obtains none for them) and refuses a client without the app's client
- * certificate.
+ * from `dir` (so it obtains none for them) and, unless `clientAuth` is false, refuses a client
+ * without the app's client certificate.
  */
-function originTlsLines(dir: string): string[] {
+function originTlsLines({ dir, clientAuth }: NonNullable<CaddySite["origin"]>): string[] {
+  if (clientAuth === false) return [`\ttls ${dir}/origin.pem ${dir}/origin.key`];
   return [
     `\ttls ${dir}/origin.pem ${dir}/origin.key {`,
     "\t\tclient_auth {",
@@ -293,7 +295,7 @@ function siteBlocks(site: CaddySite, tls: readonly string[]): string[] {
   return [
     // Cloudflare forwards a visitor's plain HTTP to port 80, where the catch-all would abort it.
     ...httpsRedirect(hosts.origin),
-    ...blocks(hosts.origin, originTlsLines(origin.dir)),
+    ...blocks(hosts.origin, originTlsLines(origin)),
     ...(hosts.others.length === 0 ? [] : blocks(hosts.others, tls)),
   ];
 }
