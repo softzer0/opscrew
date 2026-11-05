@@ -114,7 +114,7 @@ retention above all).
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T2204 [US2] [US3] [US4] [US5] The recipe and `opscrew-preview`, in `packages/iac-templates/`
+- [x] T2204 [US2] [US3] [US4] [US5] The recipe and `opscrew-preview`, in `packages/iac-templates/`
   - Owns: `packages/iac-templates/src/previews/**`, `packages/iac-templates/src/runtime/**`
     (+ tests), its export lines in `packages/iac-templates/src/index.ts`
   - Reads: plan.md "3."; contracts/opscrew-preview.md; data-model.md "On the preview server";
@@ -144,7 +144,7 @@ retention above all).
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: xhigh
 
-- [ ] T2205 [US2] [US3] [US5] The preview workflow, the builds and the wildcard, in `packages/iac-templates/`
+- [x] T2205 [US2] [US3] [US5] The preview workflow, the builds and the wildcard, in `packages/iac-templates/`
   - Owns: `packages/iac-templates/src/workflow/preview*.ts`, `workflow/build.ts`,
     `workflow/retention.ts` (+ tests), the preview root in `packages/iac-templates/src/infra/**`
     (+ tests), its export lines in `packages/iac-templates/src/index.ts`
@@ -175,7 +175,7 @@ retention above all).
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T2208 [US1] [US4] Designing previews, in `packages/agents/` (environments, design, analyze)
+- [x] T2208 [US1] [US4] Designing previews, in `packages/agents/` (environments, design, analyze)
   - Owns: `packages/agents/src/environments/**`, `packages/agents/src/design/**`,
     `packages/agents/src/analyze/**` (+ tests)
   - Reads: plan.md "6."; spec.md US1; data-model.md; `environments/add.ts`, `environments/remove.ts`,
@@ -239,7 +239,7 @@ retention above all).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2210 [US5] [US6] Preview commands, destroy and refusals, in `packages/agents/`
+- [x] T2210 [US5] [US6] Preview commands, destroy and refusals, in `packages/agents/`
   - Owns: `packages/agents/src/previews/{list,logs,destroy,remote}.ts` (+ tests),
     `packages/agents/src/{destroy,promote,rollback,retarget,addons,move,status,verify,drift,secure,advise}/**`
     (+ tests), its export lines in `packages/agents/src/previews/index.ts` and `src/index.ts`
@@ -275,6 +275,8 @@ retention above all).
     - `opscrew preview list|logs <n>|destroy <n> [--confirm pr-<n>]`, with `--env` and `--app` as
       every command, `--json` for `list`.
     - MCP `opscrew_preview_list` (read-only, `readOnlyHint`), with `environment` and `app`.
+    - `verify` for a preview environment has no runbook (`VerifyResult.runbookPath` absent): the
+      CLI's "read <runbook>" next step and the MCP deploy tool's runbook line are left out.
     - The deploy skill gains a previews section (when to suggest them, the comment's states, what
       previews don't do); `node plugin/validate.mjs` passes.
     - No secret in output or MCP answers (leak test).

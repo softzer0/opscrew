@@ -43,6 +43,10 @@ script's own lines; the last line is always `opscrew-preview: <state> <detail>`:
 | 5 | `seed-failed` | `pr-<n>.<base>` | the preview runs but its seed command failed; the next `up` tries the seed again |
 | 6 | `busy` | `<seconds>` | a lock was held longer than 600 seconds |
 
+Two requests differ: `gc`, which only cron runs, prints nothing when it succeeds (each removal goes
+to `previews.log`) and its `failed` line to stderr when a removal fails, leaving that preview's
+folder for the next run; `logs` ends `listed <n>`, or `removed <n>` when there is no such preview.
+
 `list` prints, before its last line, one line per preview:
 `<n> <state> <commit> <created> <updated> <digest>` where `state` is `running`, `seed-failed` or
 `failed`, times are seconds since 1970 and `digest` is the image's `sha256:` value.

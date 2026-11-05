@@ -192,7 +192,7 @@ is removed by the server's timer and the comment says so on the next run.
 ### User Story 6 - From the user's computer (Priority: P2)
 
 The user sees and manages previews without SSH: `opscrew preview list` (each preview: pull request,
-address, commit, age, memory), `opscrew preview logs <n>`, `opscrew preview destroy <n>`. Changing
+address, commit, age, state), `opscrew preview logs <n>`, `opscrew preview destroy <n>`. Changing
 the recipe (cap, size, seed, values) is `opscrew design --env preview` then `opscrew provision
 --env preview`, approved by hash. `opscrew destroy --env preview` removes the server, the wildcard
 record and every preview, with the typed confirmation.
