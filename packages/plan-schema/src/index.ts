@@ -14,6 +14,7 @@ export {
   appsOf,
   environmentsOf,
   otherAppDirs,
+  previewEnvironmentOf,
   type RepositoryApp,
   resolveEnvironmentPaths,
 } from "./environments";

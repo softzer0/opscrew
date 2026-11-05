@@ -21,6 +21,7 @@ export {
 } from "./choice";
 export { type EnvironmentSummary, environmentDeployed, listEnvironments } from "./list";
 export { environmentPaths } from "./paths";
+export { previewRunnerRefusal } from "./previews";
 export { removeEnvironment } from "./remove";
 export { readEnvironmentRequirements } from "./requirements";
 export {

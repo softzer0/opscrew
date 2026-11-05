@@ -67,7 +67,7 @@ describe("a preview environment's plan.yaml", () => {
     expect(DeployPlanSchema.safeParse(previewPlanFile()).success).toBe(true);
   });
 
-  it("is read with its servers and add-ons apart, and design leaves them out with a line each", async () => {
+  it("is read with its servers and add-ons apart", async () => {
     const plan = testPlan();
     const file = await planFile(
       previewPlanFile({
@@ -80,13 +80,6 @@ describe("a preview environment's plan.yaml", () => {
     expect(read?.whole).toBeUndefined();
     expect(read?.plan.observability?.check?.enabled).toBe(false);
     expect(read?.edits).toMatchObject({ placed: { db: "data" }, addonsOff: ["check"] });
-
-    const collapsed = previewEdits(read?.edits ?? { servers: [], placed: {} });
-    expect(collapsed.edits).toEqual({ servers: [], placed: {} });
-    expect(collapsed.lines).toEqual([
-      "Server data is left out: every preview runs on the preview environment's one server, so db runs there too.",
-      "The scheduled check is off: it watches a deployed app, and previews come and go.",
-    ]);
   });
 
   it("of another environment is read with its add-ons as they are", async () => {
@@ -164,10 +157,9 @@ describe("previewCapacity", () => {
 describe("previewEdits", () => {
   it("turns the self-hosted monitoring off with a line", () => {
     const monitoring = { enabled: true } as unknown as MonitoringSettings;
-    expect(previewEdits({ servers: [], placed: {}, monitoring })).toEqual({
-      edits: { servers: [], placed: {} },
-      lines: ["The self-hosted monitoring is off: it watches prod's servers, not previews."],
-    });
+    expect(previewEdits({ servers: [], placed: {}, monitoring })).toEqual([
+      "The self-hosted monitoring is off: it watches prod's servers, not previews.",
+    ]);
   });
 });
 

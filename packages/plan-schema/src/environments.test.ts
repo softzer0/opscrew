@@ -3,12 +3,14 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { resolveProjectPaths } from "@opscrew/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { previewPlanOf } from "./__fixtures__/preview-plan";
 import {
   appsOf,
   type DeployPlan,
   environmentsOf,
   otherAppDirs,
   parseArtifact,
+  previewEnvironmentOf,
   resolveEnvironmentPaths,
   writeArtifact,
 } from "./index";
@@ -190,11 +192,13 @@ describe("environmentsOf", () => {
     expect((error as Error).message).not.toContain("alpha");
   });
 
-  it("lists a preview environment like any other", async () => {
+  it("lists a preview environment like any other, and names it apart", async () => {
     await addEnvironment("prod");
-    await addPreviewEnvironment("preview");
     await addEnvironment("staging", "prod");
+    expect(await previewEnvironmentOf(root)).toBeUndefined();
+    await addPreviewEnvironment("preview");
     expect(await environmentsOf(root)).toEqual(["prod", "preview", "staging"]);
+    expect(await previewEnvironmentOf(root)).toBe("preview");
   });
 
   it("refuses an environment promoted from a preview environment", async () => {
@@ -224,20 +228,8 @@ describe("environmentsOf", () => {
 
 /** Writes a preview environment's plan (data-model.md) in its own folder. */
 async function addPreviewEnvironment(name: string): Promise<void> {
-  const { deployment: _deployment, ...plan } = prodPlan;
-  const preview: DeployPlan = {
-    ...plan,
-    app: { ...prodPlan.app, name: `${prodPlan.app.name}-${name}` },
-    environment: {
-      name,
-      deploySource: { from: "main" },
-      runner: "github",
-      previews: { cap: 3, lifetimeDays: 7, domain: "app.example.com" },
-    },
-    dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
-    deployment: {},
-  };
-  await writeArtifact("plan", resolveProjectPaths(root, { environment: name }).files.plan, preview);
+  const file = resolveProjectPaths(root, { environment: name }).files.plan;
+  await writeArtifact("plan", file, previewPlanOf(prodPlan, name));
 }
 
 describe("appsOf", () => {

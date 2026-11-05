@@ -4,9 +4,9 @@
  * as `deploy` with the environment's deploy key and the pinned host key, the request as its
  * arguments. Its last line, `opscrew-preview: <state> <detail>`, is checked with zod.
  */
+import { previewCommand } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { appDir } from "@opscrew/iac-templates";
 import type { DeployPlan, Previews } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
@@ -43,7 +43,7 @@ export interface PreviewReply {
 }
 
 /** A pull request number the command accepts (`^[1-9][0-9]{0,5}$`). */
-const NUMBER = /^[1-9][0-9]{0,5}$/;
+export const PREVIEW_NUMBER = /^[1-9][0-9]{0,5}$/;
 
 /** The previews of `plan`'s environment, or a refusal when it is no preview environment. */
 export function requirePreviews(plan: DeployPlan, environment: string, command: string): Previews {
@@ -63,7 +63,7 @@ export function requirePreviews(plan: DeployPlan, environment: string, command: 
  * @throws OpsCrewError `INVALID_INPUT` for anything else.
  */
 export function previewNumber(text: string): number {
-  if (NUMBER.test(text)) return Number(text);
+  if (PREVIEW_NUMBER.test(text)) return Number(text);
   throw new OpsCrewError(
     "INVALID_INPUT",
     `"${text}" is not a pull request number. Nothing was changed.`,
@@ -87,12 +87,11 @@ export async function previewShell(
 ): Promise<RemoteExec> {
   const remote = await deployShell(deps, plan, services);
   if (remote !== undefined) return remote;
-  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     "OpsCrew has no SSH login to the preview server on this computer (its address or the environment's deploy key is missing), so it could not reach the previews.",
     {
-      hint: `Run the command on the computer that ran \`opscrew provision${flag}\`, or run that command here first.`,
+      hint: `Run the command on the computer that ran \`opscrew provision${await flagOf(deps)}\`, or run that command here first.`,
     },
   );
 }
@@ -110,15 +109,14 @@ export async function runPreviewCommand(
   request: string,
   timeoutMs: number,
 ): Promise<PreviewReply> {
-  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-  const result = await remote.run(`${appDir(plan)}/bin/opscrew-preview ${request}`, {
+  const result = await remote.run(`${previewCommand(plan.app.name)} ${request}`, {
     timeoutMs,
   });
   if (result.exitCode === 255 || result.timedOut === true) {
     throw new OpsCrewError(
       "COMMAND_FAILED",
       "The preview server did not answer over SSH, so OpsCrew could not reach the previews.",
-      { hint: `Check that it is on, then run \`opscrew status${flag}\`.` },
+      { hint: `Check that it is on, then run \`opscrew status${await flagOf(deps)}\`.` },
     );
   }
   const lines = result.stdout.split(/\r?\n/).filter((line) => line.trim() !== "");
@@ -128,7 +126,7 @@ export async function runPreviewCommand(
     throw new OpsCrewError(
       "COMMAND_FAILED",
       `The preview command on the server did not answer as OpsCrew expects (exit code ${result.exitCode}), so the previews' recipe there is missing or not the one OpsCrew installs.`,
-      { hint: `Run \`opscrew provision${flag}\`: it installs the recipe again.` },
+      { hint: `Run \`opscrew provision${await flagOf(deps)}\`: it installs the recipe again.` },
     );
   }
   return { exitCode: result.exitCode, lines: lines.slice(0, -1), reply: reply.data };
@@ -143,7 +141,6 @@ export async function previewCommandFailed(
   answer: PreviewReply,
   what: string,
 ): Promise<OpsCrewError> {
-  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
   const { reply, exitCode } = answer;
   if (reply.state === "busy") {
     return new OpsCrewError(
@@ -156,9 +153,14 @@ export async function previewCommandFailed(
     "COMMAND_FAILED",
     `OpsCrew could not ${what}: the preview command answered "${reply.state} ${reply.detail}" (exit code ${exitCode}).`,
     {
-      hint: `Run \`opscrew provision${flag}\` to install the previews' recipe again, then try again.`,
+      hint: `Run \`opscrew provision${await flagOf(deps)}\` to install the previews' recipe again, then try again.`,
     },
   );
+}
+
+/** The flags of the environment `deps.paths` belong to, for the commands an error names. */
+function flagOf(deps: PhaseDeps): Promise<string> {
+  return commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
 }
 
 /** The audit entry's target of the preview server: never its address. */

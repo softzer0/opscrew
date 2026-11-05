@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
+import { previewPlanOf } from "./__fixtures__/preview-plan";
 import {
-  type DeployPlan,
   DeployPlanSchema,
   PreviewsSchema,
   ProjectFactsSchema,
@@ -15,26 +15,9 @@ const fixture = (name: string) => readFile(new URL(name, FIXTURES), "utf8");
 // biome-ignore lint/suspicious/noExplicitAny: a test plan is edited as loose JSON before parsing.
 type Loose = Record<string, any>;
 
-async function prodPlan(): Promise<DeployPlan> {
-  return parseArtifact("plan", await fixture("plan.yaml"), "fixture");
-}
-
-/** A valid preview environment's plan, as data-model.md shows it, with `changes` applied. */
+/** {@link previewPlanOf} the fixture's prod plan, with `changes` applied. */
 async function previewPlan(changes: (plan: Loose) => void = () => {}) {
-  const prod = await prodPlan();
-  const { deployment: _deployment, ...plan } = prod;
-  const value: Loose = {
-    ...plan,
-    app: { ...prod.app, name: "acme-web-preview" },
-    environment: {
-      name: "preview",
-      deploySource: { from: "main" },
-      runner: "github",
-      previews: { domain: "app.example.com" },
-    },
-    dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
-    security: { ...prod.security, httpAllowedFrom: "any" },
-  };
+  const value: Loose = previewPlanOf(parseArtifact("plan", await fixture("plan.yaml"), "fixture"));
   changes(value);
   return value;
 }

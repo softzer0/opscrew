@@ -8,6 +8,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import {
+  PREVIEW_NUMBER,
   type PreviewServices,
   PreviewStateSchema,
   previewAddress,
@@ -55,10 +56,7 @@ const Seconds = z
 
 /** `<n> <state> <commit> <created> <updated> <digest>`. */
 const ListLineSchema = z.tuple([
-  z
-    .string()
-    .regex(/^[1-9][0-9]{0,5}$/)
-    .transform(Number),
+  z.string().regex(PREVIEW_NUMBER).transform(Number),
   PreviewStateSchema,
   orDash(z.string().regex(/^[0-9a-f]{40}$/)),
   orDash(Seconds),

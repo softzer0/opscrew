@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { previewTestPlan } from "../previews/__fixtures__/plan";
-import { figuresOutput } from "../testing";
+import { figuresOutput, previewTestPlan } from "../testing";
 import { scenario } from "./__fixtures__/environment";
 import { runAdvise } from "./run";
 

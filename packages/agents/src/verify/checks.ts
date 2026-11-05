@@ -5,6 +5,7 @@ import { normalizeHostName, upperFirst } from "@opscrew/core";
 import { runtimeDir, tunnelMode } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { CERTIFICATE_WARN_DAYS, daysLeft, type TcpConnect } from "@opscrew/secops";
+import type { PhaseDeps } from "../context";
 import { type ProviderProfile, planProvider, providerProfile } from "../providers";
 import { namedEnvironmentFlag } from "../runners/words";
 import {
@@ -25,6 +26,24 @@ import {
   type TlsCertificateInfo,
   type TlsConnect,
 } from "./net";
+
+/**
+ * Says each of `checks` on a line of its own (`<title>: <message>`, through `say`): a pass as a
+ * success, a failure as an error, a warning as one, a skipped check as information.
+ */
+export function reportChecks(
+  reporter: PhaseDeps["reporter"],
+  checks: readonly CheckResult[],
+  say: (text: string) => string = (text) => text,
+): void {
+  for (const check of checks) {
+    const line = say(`${check.title}: ${check.message}`);
+    if (check.status === "pass") reporter.success(line);
+    else if (check.status === "fail") reporter.error(line);
+    else if (check.status === "warn") reporter.warn(line);
+    else reporter.info(line);
+  }
+}
 
 /** Cloudflare edge ranges (CIDRs) used to confirm proxied DNS records. */
 export interface CloudflareRanges {

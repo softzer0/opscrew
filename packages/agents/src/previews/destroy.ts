@@ -2,8 +2,8 @@
  * `opscrew preview destroy <n>` (FR-2219, spec.md US6): removes one preview as if its pull
  * request closed, through the preview command's `down <n>`, after the typed `pr-<n>`.
  */
+import { previewCommand } from "@opscrew/connector-ssh-host";
 import { OpsCrewError } from "@opscrew/core";
-import { appDir } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
@@ -44,7 +44,7 @@ export async function destroyPreview(
       `Preview pr-${n} (${previewAddress(previews, n)}) is removed as if its pull request closed: its containers, its databases and files, its site and its route. This cannot be undone.`,
       "A new push to the pull request creates it again, empty (seeded when the recipe has a seed).",
       "On the preview server, as deploy:",
-      `  ${appDir(plan)}/bin/opscrew-preview down ${n}`,
+      `  ${previewCommand(plan.app.name)} down ${n}`,
     ].join("\n"),
     allowDestroy: true,
     confirmPhrase: `pr-${n}`,

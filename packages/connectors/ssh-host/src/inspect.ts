@@ -25,6 +25,7 @@ import {
   PREVIEW_COMMAND_FILE,
   PREVIEW_KEY_LINE_RE,
   READY_FLAG,
+  RECIPE_LEFT_OUT_FIND,
   RECORD_PATH,
   RUNNERS_DIR,
   RUNTIME_FILE_NAMES,
@@ -368,7 +369,7 @@ if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
     app_name "$app" || continue
     if [ -L "$d" ] || [ -L "$d/bin" ] || [ -L "$d/${PREVIEW_COMMAND_FILE}" ] || [ ! -f "$d/${PREVIEW_COMMAND_FILE}" ]; then continue; fi
     echo "recipe $app"
-    (cd "$d" && find . -type f ! -name '.*' ! -path ./values.env ! -path ./previews.log) | while IFS= read -r f; do
+    (cd "$d" && find . -type f ! -name '.*' ${RECIPE_LEFT_OUT_FIND}) | while IFS= read -r f; do
       echo "file $app \${f#./} $(sha256sum "$d/\${f#./}" | cut -d ' ' -f 1)"
     done
     if [ -f "$d/values.env" ] && [ ! -L "$d/values.env" ]; then echo "values $app"; fi

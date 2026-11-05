@@ -376,10 +376,7 @@ export async function setupCloudflare(
           ].join("\n"),
         ),
         {
-          hint:
-            previews !== undefined
-              ? "Delete these records in the Cloudflare dashboard (DNS → Records) if they belong to a host you no longer use, or give the previews another base (environment.previews.domain in the environment's plan.yaml), then run OpsCrew again."
-              : "Delete these records in the Cloudflare dashboard (DNS → Records) if they belong to a host you no longer use, or pick another hostname with `opscrew dns --domain <hostname>`, then run OpsCrew again.",
+          hint: `Delete these records in the Cloudflare dashboard (DNS → Records) if they belong to a host you no longer use, or ${previews !== undefined ? "give the previews another base (environment.previews.domain in the environment's plan.yaml)" : "pick another hostname with `opscrew dns --domain <hostname>`"}, then run OpsCrew again.`,
         },
       );
     }

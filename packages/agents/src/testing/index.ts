@@ -16,6 +16,7 @@ export * from "./move";
 export * from "./network";
 export * from "./own";
 export * from "./portainer";
+export * from "./previews";
 export * from "./registrars";
 export * from "./runner-github";
 export * from "./runner-machine";

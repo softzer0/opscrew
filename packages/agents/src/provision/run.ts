@@ -44,6 +44,7 @@ import {
   applyPreviewsHostPlan,
   previewDeploySecrets,
   previewEnvironment,
+  requireIgnoredValues,
   requirePreviewValues,
   requireServerForPreviews,
 } from "../previews/setup";
@@ -460,13 +461,14 @@ async function provisionFlow(
   // An extra own server is taken off only while public SSH reaches it.
   await requirePublicSshForRemoval(deps, plan, command);
   // A preview environment (ADR 0026): its env templates, and its own values from `.env.<env>`,
-  // which must hold every value the app needs, before any change.
+  // which git must ignore and which must hold every value the app needs, before any change.
   const previews = plan.environment?.previews !== undefined;
-  const previewEnv = previews ? await previewEnvironment(deps, plan) : undefined;
   /** The command again for this environment, as the preview steps name it. */
   const again = previews
     ? `${command}${await commandFlags(root, deps.paths.environment, deps.paths.app)}`
     : command;
+  if (previews) await requireIgnoredValues(deps, again);
+  const previewEnv = previews ? await previewEnvironment(deps, plan) : undefined;
   if (previewEnv !== undefined) requirePreviewValues(deps, previewEnv, again);
   const profile = providerProfile(planProvider(plan));
   // The providers of the extra servers OpsCrew creates, besides the app server's.

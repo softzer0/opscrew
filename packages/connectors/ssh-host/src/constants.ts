@@ -283,16 +283,26 @@ export function checkKeyLine(publicKey: string, repository: string): string {
 /** ERE for a check key line in OpsCrew's form, of any repository: the deploy-key step keeps it. */
 export const CHECK_KEY_LINE_RE = `^restrict,command="${CHECK_KEY_COMMAND}" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
 
-/**
- * A preview environment's command (feature 022), in its recipe folder `/srv/apps/<app>`: the
- * preview key's forced command, and what the deploy user's cron runs for idle previews.
- */
-export function previewCommand(app: string): string {
-  return `${appDirs(app).app}/bin/opscrew-preview`;
-}
-
 /** The recipe file that is the preview command, the only one written runnable (0755). */
 export const PREVIEW_COMMAND_FILE = "bin/opscrew-preview";
+
+/**
+ * A preview environment's command (feature 022), `/srv/apps/<app>/bin/opscrew-preview` in its
+ * recipe folder: the preview key's forced command, and what the deploy user's cron runs for idle
+ * previews.
+ */
+export function previewCommand(app: string): string {
+  return `${appDirs(app).app}/${PREVIEW_COMMAND_FILE}`;
+}
+
+/**
+ * The files of a recipe's folder that a recipe leaves out: the preview values and the preview
+ * command's log. No recipe file takes their names, and inspection never reads them.
+ */
+export const RECIPE_LEFT_OUT: readonly string[] = ["values.env", "previews.log"];
+
+/** `find`'s tests that skip {@link RECIPE_LEFT_OUT} in a recipe's folder (`find .` from it). */
+export const RECIPE_LEFT_OUT_FIND = RECIPE_LEFT_OUT.map((name) => `! -path ./${name}`).join(" ");
 
 /**
  * The comment that marks a preview environment's key in the deploy user's authorized_keys,
@@ -315,7 +325,7 @@ export function previewKeyLine(publicKey: string, repository: string, app: strin
 }
 
 /** ERE for a preview key line in OpsCrew's form, of any app: the deploy-key step keeps it. */
-export const PREVIEW_KEY_LINE_RE = `^restrict,command="${APPS_DIR}/[a-z0-9][a-z0-9-]*/bin/opscrew-preview" [^ ]+ [^ ]+ ${PREVIEW_KEY_COMMENT}[^ ]+$`;
+export const PREVIEW_KEY_LINE_RE = `^restrict,command="${APPS_DIR}/[a-z0-9][a-z0-9-]*/${PREVIEW_COMMAND_FILE}" [^ ]+ [^ ]+ ${PREVIEW_KEY_COMMENT}[^ ]+$`;
 
 /**
  * The deploy user's cron line that removes a preview environment's idle previews, hourly at a

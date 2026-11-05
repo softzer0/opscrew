@@ -12,30 +12,22 @@ import type { PhaseDeps } from "../context";
 import { listPreviews, type Preview, type PreviewList } from "../previews/list";
 import { requirePreviews } from "../previews/remote";
 import { checkResult, summarizeChecks } from "../shared";
-import { checkHealth, checkTls, type VerifyCheckContext } from "./checks";
+import { checkHealth, checkTls, reportChecks, type VerifyCheckContext } from "./checks";
 import { defaultDnsResolver, defaultTlsConnect } from "./net";
 import type { RunVerifyOptions, VerifyResult } from "./run";
 
-/** `check` of preview `p`: its title names it, and a failure says to read its lines. */
-function ofPreview(check: CheckResult, p: Preview, flag: string): CheckResult {
-  return {
+/** The checks of one preview: its state, then (when it runs) its certificate and health. */
+async function previewChecks(p: Preview, ctx: VerifyCheckContext): Promise<CheckResult[]> {
+  const read = `Read its lines with \`opscrew preview logs ${p.number}${ctx.flag ?? ""}\``;
+  const logs = `${read}; a new push to its pull request tries again.`;
+  /** `check` of the preview: its title names it, and a failure says to read its lines. */
+  const ofPreview = (check: CheckResult): CheckResult => ({
     ...check,
     title: `pr-${p.number}: ${check.title}`,
     ...(check.status === "fail"
-      ? {
-          remediation: `Read its lines with \`opscrew preview logs ${p.number}${flag}\`, and its pull request's preview job in GitHub Actions.`,
-        }
+      ? { remediation: `${read}, and its pull request's preview job in GitHub Actions.` }
       : {}),
-  };
-}
-
-/** The checks of one preview: its state, then (when it runs) its certificate and health. */
-async function previewChecks(
-  p: Preview,
-  ctx: VerifyCheckContext,
-  flag: string,
-): Promise<CheckResult[]> {
-  const logs = `Read its lines with \`opscrew preview logs ${p.number}${flag}\`; a new push to its pull request tries again.`;
+  });
   if (p.state === "failed") {
     return [
       checkResult(
@@ -62,8 +54,8 @@ async function previewChecks(
           ),
         ]
       : []),
-    ofPreview(await checkTls(host, ctx), p, flag),
-    ofPreview(await checkHealth(p.address, ctx), p, flag),
+    ofPreview(await checkTls(host, ctx)),
+    ofPreview(await checkHealth(p.address, ctx)),
   ];
 }
 
@@ -119,17 +111,12 @@ export async function verifyPreviews(
     flag: options.flag,
   };
   const checks = [serverCheck(list, failure)];
-  for (const p of list?.previews ?? []) checks.push(...(await previewChecks(p, ctx, options.flag)));
+  for (const p of list?.previews ?? []) checks.push(...(await previewChecks(p, ctx)));
   const shown = checks.map((check) => ({
     ...check,
     message: deps.redactor.redact(check.message),
   }));
-  for (const check of shown) {
-    const line = `${check.title}: ${check.message}`;
-    if (check.status === "pass") reporter.success(line);
-    else if (check.status === "fail") reporter.error(line);
-    else reporter.warn(line);
-  }
+  reportChecks(reporter, shown);
   const passed = shown.every((check) => check.status !== "fail");
   const summary = summarizeChecks(shown);
   if (passed) reporter.success(`The preview server and its previews are healthy (${summary}).`);

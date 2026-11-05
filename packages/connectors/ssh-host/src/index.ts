@@ -50,6 +50,7 @@ export {
   MIN_DOCKER_MAJOR,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
+  previewCommand,
   previewKeyLine,
   RUNNERS_DIR,
   type RuntimeFileName,

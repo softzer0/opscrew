@@ -25,6 +25,7 @@ import {
   errorText,
   MIN_CERT_DAYS,
   rangeList,
+  reportChecks,
   SECURITY_HEADERS,
   verifyHosts,
 } from "./checks";
@@ -519,13 +520,7 @@ export async function verifySite(
   }
 
   const checks = checked.map((check) => editCheckText(check, (t) => deps.redactor.redact(t)));
-  for (const check of checks) {
-    const line = `${check.title}: ${check.message}`;
-    if (check.status === "pass") reporter.success(line);
-    else if (check.status === "fail") reporter.error(line);
-    else if (check.status === "warn") reporter.warn(line);
-    else reporter.info(line);
-  }
+  reportChecks(reporter, checks);
   const passed = checks.every((check) => check.status !== "fail");
   const summary = summarizeChecks(checks);
 

@@ -52,6 +52,7 @@ import {
 import {
   type CloudflareRanges,
   type DeployRunInfo,
+  reportChecks,
   runVerifyChecks,
   siteUrl,
   UNKNOWN_ADDRESS_REMEDIATION,
@@ -324,13 +325,7 @@ async function verify(deps: PhaseDeps, options: RunVerifyOptions): Promise<Verif
   const checks = checked.map((check) =>
     editCheckText(check, (text) => deps.redactor.redact(withoutRoute(text, route))),
   );
-  for (const check of checks) {
-    const line = say(`${check.title}: ${check.message}`);
-    if (check.status === "pass") reporter.success(line);
-    else if (check.status === "fail") reporter.error(line);
-    else if (check.status === "warn") reporter.warn(line);
-    else reporter.info(line);
-  }
+  reportChecks(reporter, checks, say);
   const passed = checks.every((check) => check.status !== "fail");
 
   let current = plan;

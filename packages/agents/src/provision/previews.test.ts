@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
@@ -22,7 +22,6 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments";
-import { previewTestPlan } from "../previews/__fixtures__/plan";
 import { recordOwnServer } from "../shared";
 import {
   createProject,
@@ -41,6 +40,7 @@ import {
   ownPlan,
   ownRunner,
   PUBLIC_CHANGES,
+  previewTestPlan,
   projectRunner,
   publicOutputs,
   readyRemote,
@@ -144,9 +144,19 @@ class PreviewServer {
   };
 }
 
+/** `.env.*` in the project's `.gitignore`, committed: previews refuse a values file git keeps. */
+async function ignoreValueFiles(
+  root: string,
+  git: (cwd: string, ...args: string[]) => Promise<string>,
+): Promise<void> {
+  await appendFile(join(root, ".gitignore"), ".env.*\n");
+  await git(root, "commit", "-q", "-m", "Ignore the environments' values", "--", ".gitignore");
+}
+
 /**
  * An app provisioned in prod (its pull request merged), with the preview environment's plan and
- * `.env.preview` beside it; one GitHub fake and one preview server for every run.
+ * `.env.preview` beside it, which git ignores; one GitHub fake and one preview server for every
+ * run.
  */
 async function appWithPreviews() {
   const prod = testPlan({ postgres: true });
@@ -191,6 +201,7 @@ async function appWithPreviews() {
   const prodDeps = await deps();
   await runProvision(prodDeps, { services: services() });
   await merge();
+  await ignoreValueFiles(root, git);
   const previewPlan = environmentPaths(prodDeps.paths, "preview").files.plan;
   await writeArtifact("plan", previewPlan, previewOf(prod));
   await writeFile(join(root, ".env.preview"), `STRIPE_SECRET_KEY=${PREVIEW_STRIPE}\n`);
@@ -236,6 +247,26 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
     expect(app.server.applies).toEqual([]);
     expect(existsSync(join(app.root, PREVIEW_WORKFLOW))).toBe(false);
     expect(existsSync(join(app.root, RECIPE))).toBe(false);
+  });
+
+  it("refuses, before reading it, a .env.preview git doesn't ignore", async () => {
+    const app = await appWithPreviews();
+    await writeFile(join(app.root, ".gitignore"), ".opscrew/\n.env\n");
+    await app.git(app.root, "commit", "-q", "-m", "Keep .env.*", "--", ".gitignore");
+    // Read, it would be refused for the value it lacks.
+    await writeFile(join(app.root, ".env.preview"), `UNUSED=${PREVIEW_STRIPE}\n`);
+    const preview = await app.deps("preview");
+    const error = await runProvision(preview, { services: app.services() }).catch(
+      (caught: unknown) => caught,
+    );
+    expect(error).toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        ".env.preview holds the previews' values, and git doesn't ignore it, so a commit could take them. Nothing was changed.",
+      hint: "Add .env.* to .gitignore (if .env.preview is committed already, also run `git rm --cached .env.preview`), then run `opscrew provision --env preview` again.",
+    });
+    expect(requestsOf(preview)).toEqual([]);
+    expect(preview.reporter.text()).not.toContain(PREVIEW_STRIPE);
   });
 
   it("refuses before any change while .env.preview lacks a value the app needs", async () => {
@@ -575,6 +606,7 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
 
   it("refuses the user's own server when it holds another app, before anything is applied", async () => {
     const project = await createProject(ownPlan());
+    await ignoreValueFiles(project.root, project.git);
     const env: Record<string, string | undefined> = {
       ...process.env,
       OPSCREW_HOME: join(project.root, ".home-opscrew"),

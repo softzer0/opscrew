@@ -194,10 +194,9 @@ async function ownServerSshPorts(
  * (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server) and, with origin TLS on a
  * server, `pull.pem`, the client certificate (`values`) the site trusts.
  *
- * A preview environment (ADR 0026) has no app of its own and no deploy workflow: its root (the
- * server and the wildcard record), the preview workflow and the recipe (`renderPreviewRecipe`)
- * with its env templates `previews`, without values.
- * @throws OpsCrewError `INTERNAL` for a preview environment without `previews`.
+ * A preview environment (ADR 0026), rendered with its env templates `previews` (without values),
+ * has no app of its own and no deploy workflow: its root (the server and the wildcard record), the
+ * preview workflow and the recipe (`renderPreviewRecipe`).
  */
 export function deploymentFiles(
   plan: DeployPlan,
@@ -205,14 +204,7 @@ export function deploymentFiles(
   values: OriginTlsValues = {},
   previews?: PreviewEnvTemplates,
 ): RenderedFile[] {
-  if (plan.environment?.previews !== undefined) {
-    if (previews === undefined) {
-      throw new OpsCrewError(
-        "INTERNAL",
-        "OpsCrew rendered a preview environment without its env templates.",
-        { hint: "This is a bug in OpsCrew; please report it." },
-      );
-    }
+  if (previews !== undefined) {
     const repository = `${ctx.github.owner}/${ctx.github.repo}`;
     return [
       ...renderInfra(plan, ctx),

@@ -62,6 +62,8 @@ export interface DesignedComponents {
   lines: string[];
   /** What the user must act on, such as a worker without a command. */
   warnings: string[];
+  /** The line among `lines` about the planned bucket, which a preview environment replaces. */
+  bucketLine?: string;
 }
 
 /** The web process's memory limit unless the plan sets another. */
@@ -1110,12 +1112,13 @@ export function designComponents(input: {
 
   lines.push(...componentLines(components, facts));
   lines.push(...externalLines(facts, externalServices, settingProblem));
+  const bucketLine =
+    facts.objectStorage === undefined ? undefined : storageText(components, storage.offers);
   if (facts.objectStorage !== undefined) {
-    const text = storageText(components, storage.offers);
     const { client } = facts.objectStorage;
     if (storage.line !== undefined) lines.push(storage.line);
     if (storage.warning !== undefined) warnings.push(storage.warning);
-    if (text !== undefined) lines.push(text);
+    if (bucketLine !== undefined) lines.push(bucketLine);
     else if (requirements.keepExternalServices.s3 !== false) {
       lines.push(
         `The app keeps its files where it stores them now (S3 through ${client}), so OpsCrew plans no bucket. To let OpsCrew create one, answer keepExternalServices.s3: false in \`opscrew interview\`, which lists the options and their prices.`,
@@ -1130,7 +1133,7 @@ export function designComponents(input: {
     lines.push(`Kept your changes in opscrew/plan.yaml: ${listText(notes.kept)}.`);
   }
   lines.push(...notes.changed);
-  return { components, lines, warnings };
+  return { components, lines, warnings, ...(bucketLine === undefined ? {} : { bucketLine }) };
 }
 
 /** The components, one plain sentence each, with each licence that is not permissive (FR-1327). */

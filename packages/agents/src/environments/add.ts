@@ -272,6 +272,19 @@ export function environmentQuestions(
   ];
 }
 
+/** `given` over the defaults of `questions`: each default fills what `given` leaves out. */
+export function answersWithDefaults(
+  questions: readonly EnvironmentQuestion[],
+  given: InterviewAnswers,
+): InterviewAnswers {
+  return {
+    ...Object.fromEntries(
+      questions.flatMap((q) => (q.default === undefined ? [] : [[q.id, q.default]])),
+    ),
+    ...given,
+  };
+}
+
 /** The answer `id` as trimmed text, `undefined` when not text. */
 function text(answers: InterviewAnswers, id: string): string | undefined {
   const value = answers[id];
@@ -546,12 +559,7 @@ export async function addEnvironment(
     facts,
   );
   const given = options.answers ?? (ask === undefined ? {} : await ask(questions));
-  const answers: InterviewAnswers = {
-    ...Object.fromEntries(
-      questions.flatMap((q) => (q.default === undefined ? [] : [[q.id, q.default]])),
-    ),
-    ...given,
-  };
+  const answers = answersWithDefaults(questions, given);
 
   let server = splitFollowUps(answers, "server", SERVER_FIELDS);
   const portainerSplit = splitFollowUps(server.rest, "portainer", PORTAINER_FIELDS);

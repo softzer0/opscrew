@@ -17,7 +17,7 @@ import {
   type DeployPlan,
   environmentsOf,
   type ProjectFacts,
-  readArtifact,
+  previewEnvironmentOf,
   readOptionalArtifact,
 } from "@opscrew/plan-schema";
 import { parse } from "yaml";
@@ -81,13 +81,8 @@ async function javaBuildOf(
  * all but a preview environment, which has no runtime folder (its previews' files are its recipe).
  */
 async function watchedEnvironments(root: string, key: string | undefined): Promise<string[]> {
-  const repository = resolveProjectPaths(root, { env: {} });
-  const names: string[] = [];
-  for (const name of await environmentsOf(root, key)) {
-    const plan = await readArtifact("plan", appPaths(repository, key, name).files.plan);
-    if (plan.environment?.previews === undefined) names.push(name);
-  }
-  return names;
+  const preview = await previewEnvironmentOf(root, key);
+  return (await environmentsOf(root, key)).filter((name) => name !== preview);
 }
 
 /**

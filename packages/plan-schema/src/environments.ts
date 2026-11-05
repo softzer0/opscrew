@@ -121,6 +121,27 @@ async function furtherApps(root: string): Promise<{ key: string; record: AppReco
  * promoted in a cycle.
  */
 export async function environmentsOf(root: string, app?: string): Promise<string[]> {
+  return (await readEnvironments(root, app)).names;
+}
+
+/**
+ * The preview environment of the repository's first app, or of the further app `app`: the one
+ * whose plan has `environment.previews` (an app has at most one), as {@link environmentsOf} reads
+ * and checks the plans; `undefined` when the app has none.
+ * @throws as {@link environmentsOf}.
+ */
+export async function previewEnvironmentOf(
+  root: string,
+  app?: string,
+): Promise<string | undefined> {
+  return (await readEnvironments(root, app)).preview;
+}
+
+/** {@link environmentsOf}'s names, in order, and the preview environment's name among them. */
+async function readEnvironments(
+  root: string,
+  app: string | undefined,
+): Promise<{ names: string[]; preview: string | undefined }> {
   if (app !== undefined) await requireApp(root, app);
   const paths = resolveProjectPaths(root, app === undefined ? {} : { app });
   const folder = app === undefined ? "opscrew" : `opscrew/apps/${app}`;
@@ -198,7 +219,7 @@ export async function environmentsOf(root: string, app?: string): Promise<string
       { hint: `Remove one with \`opscrew env remove <name>${appFlag} --confirm <name>\`.` },
     );
   }
-  return inSourceOrder(sources);
+  return { names: inSourceOrder(sources), preview: previews[0] };
 }
 
 /**

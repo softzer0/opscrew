@@ -10,7 +10,7 @@ import {
   SYSTEM_RESERVE_MB,
 } from "../shared/memory";
 import type { PlacementEdits, PreviewAddon } from "./placement-edits";
-import type { Sizing } from "./sizing";
+import { type Sizing, usableOffer } from "./sizing";
 
 /** The most previews a preview server runs at once (`environment.previews.cap`'s bound). */
 const MAX_PREVIEW_CAP = 20;
@@ -68,9 +68,7 @@ export async function previewCapacity(
     .flat()
     .filter(
       (o) =>
-        o.architecture === "x86" &&
-        o.available &&
-        !o.deprecated &&
+        usableOffer(o) &&
         o.cpuType === "shared" &&
         o.vcpus >= sizing.vcpus &&
         o.diskGb >= sizing.diskGb &&
@@ -177,10 +175,11 @@ const ADDON_OFF: Record<PreviewAddon, string> = {
 };
 
 /**
- * A preview environment's placement: every preview runs on its one server, so the extra servers
- * plan.yaml names are left out, with the self-hosted monitoring and the add-ons, a line each.
+ * What a preview environment leaves out of the placement `edits` plan.yaml holds, a line each:
+ * every preview runs on its one server, so its extra servers, the self-hosted monitoring and the
+ * add-ons go (design places nothing).
  */
-export function previewEdits(edits: PlacementEdits): { edits: PlacementEdits; lines: string[] } {
+export function previewEdits(edits: PlacementEdits): string[] {
   const lines = edits.servers.map((server) => {
     const services = Object.keys(edits.placed).filter((name) => edits.placed[name] === server.name);
     const there =
@@ -193,7 +192,7 @@ export function previewEdits(edits: PlacementEdits): { edits: PlacementEdits; li
     lines.push("The self-hosted monitoring is off: it watches prod's servers, not previews.");
   }
   for (const addon of edits.addonsOff ?? []) lines.push(ADDON_OFF[addon]);
-  return { edits: { servers: [], placed: {} }, lines };
+  return lines;
 }
 
 /** What the previews are, in a line: the cap, their addresses, their lifetime and their seed. */

@@ -6,10 +6,10 @@
  * hourly cleanup. Read-only.
  */
 import { readdir, readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
-import { inspectHost } from "@opscrew/connector-ssh-host";
-import { errorText, isUserFacingError, listText, sha256Hex } from "@opscrew/core";
-import { appDir, IMAGES } from "@opscrew/iac-templates";
+import { join } from "node:path";
+import { inspectHost, previewCommand } from "@opscrew/connector-ssh-host";
+import { errorText, isUserFacingError, listText, sha256Hex, toPosixRelative } from "@opscrew/core";
+import { appDir, IMAGES, previewRecipeDir } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
@@ -33,7 +33,7 @@ async function committedRecipe(dir: string): Promise<Record<string, string> | un
     const path = join(entry.parentPath, entry.name);
     // A Windows checkout's CRLF line ends are the same text.
     const text = (await readFile(path, "utf8")).replaceAll("\r\n", "\n");
-    files[relative(dir, path).replaceAll("\\", "/")] = sha256Hex(text);
+    files[toPosixRelative(dir, path)] = sha256Hex(text);
   }
   return files;
 }
@@ -49,11 +49,11 @@ export async function previewRecipeDrift(
   options: ServersDriftOptions = {},
 ): Promise<HostDifference[]> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-  const folder = join(deps.paths.artefactsDir, "previews");
-  const committed = await committedRecipe(folder);
+  const folder = previewRecipeDir(plan);
+  const committed = await committedRecipe(join(deps.paths.root, folder));
   if (committed === undefined) {
     notes.push(
-      `The previews' recipe is not in the repository yet (${relative(deps.paths.root, folder).replaceAll("\\", "/")}/), so the one on the preview server was not compared; \`opscrew provision${flag}\` renders it.`,
+      `The previews' recipe is not in the repository yet (${folder}/), so the one on the preview server was not compared; \`opscrew provision${flag}\` renders it.`,
     );
     return [];
   }
@@ -103,7 +103,7 @@ export async function previewRecipeDrift(
   if (recipe.cron.length === 0) {
     out.push(differ("The hourly cleanup of idle previews is not in the deploy user's crontab."));
   }
-  const command = `command="${appDir(plan)}/bin/opscrew-preview"`;
+  const command = `command="${previewCommand(app)}"`;
   if (!(facts.deployUser?.previewKeys ?? []).some((line) => line.includes(command))) {
     out.push(
       differ(

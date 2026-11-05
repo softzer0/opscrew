@@ -1,7 +1,13 @@
 import { createHash, generateKeyPairSync, randomBytes, randomInt } from "node:crypto";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
-import { OpsCrewError, type ProjectPaths, type Redactor, readTextIfExists } from "@opscrew/core";
+import {
+  OpsCrewError,
+  type ProjectPaths,
+  type Redactor,
+  readTextIfExists,
+  writeFileAtomic,
+} from "@opscrew/core";
 import type { PhaseDeps } from "../context";
 
 export interface Ed25519KeyPair {
@@ -74,17 +80,49 @@ export function generateEd25519KeyPair(
   };
 }
 
-async function writePrivate(file: string, content: string): Promise<void> {
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  await writeFile(file, content, { mode: 0o600 });
-  await chmod(file, 0o600).catch(() => undefined);
+/** An Ed25519 key pair OpsCrew keeps on this computer. */
+export interface KeyPair {
+  /** `-----BEGIN OPENSSH PRIVATE KEY-----` …, with its final newline. */
+  privateKeyOpenSsh: string;
+  /** `ssh-ed25519 AAAA… <comment>`. */
+  publicKeyOpenSsh: string;
+  /** True when this run made it. */
+  created: boolean;
 }
 
-export interface DeployKey {
-  privateKeyOpenSsh: string;
-  publicKeyOpenSsh: string;
+/**
+ * The Ed25519 key pair in `files.private` and `files.public`, made once with `comment` (the
+ * private half 0600, in a folder only the user can open) and reused; its private half is
+ * registered with the redactor as `label`.
+ */
+export async function ensureKeyPair(
+  files: { private: string; public: string },
+  comment: string,
+  redactor: Pick<Redactor, "addLiteral">,
+  label: string,
+): Promise<KeyPair> {
+  const privateKeyOpenSsh = await readTextIfExists(files.private);
+  const publicKeyOpenSsh = await readTextIfExists(files.public);
+  let key: KeyPair;
+  if (privateKeyOpenSsh && publicKeyOpenSsh) {
+    key = { privateKeyOpenSsh, publicKeyOpenSsh: publicKeyOpenSsh.trim(), created: false };
+  } else {
+    const pair = generateEd25519KeyPair(comment);
+    await mkdir(dirname(files.private), { recursive: true, mode: 0o700 });
+    await writeFileAtomic(files.private, pair.privateKeyOpenSsh, { mode: 0o600 });
+    await writeFileAtomic(files.public, `${pair.publicKeyOpenSsh}\n`, { mode: 0o644 });
+    key = {
+      privateKeyOpenSsh: pair.privateKeyOpenSsh,
+      publicKeyOpenSsh: pair.publicKeyOpenSsh,
+      created: true,
+    };
+  }
+  redactor.addLiteral(key.privateKeyOpenSsh, label);
+  return key;
+}
+
+export interface DeployKey extends KeyPair {
   privateKeyFile: string;
-  created: boolean;
 }
 
 /**
@@ -95,29 +133,11 @@ export async function ensureDeployKey(
   paths: ProjectPaths,
   redactor: Pick<Redactor, "addLiteral">,
 ): Promise<DeployKey> {
-  const existingPrivate = await readTextIfExists(paths.files.deployKey);
-  const existingPublic = await readTextIfExists(paths.files.deployKeyPub);
-  let key: DeployKey;
-  if (existingPrivate && existingPublic) {
-    key = {
-      privateKeyOpenSsh: existingPrivate,
-      publicKeyOpenSsh: existingPublic.trim(),
-      privateKeyFile: paths.files.deployKey,
-      created: false,
-    };
-  } else {
-    const pair = generateEd25519KeyPair(`opscrew-deploy@${paths.projectId}`);
-    await writePrivate(paths.files.deployKey, pair.privateKeyOpenSsh);
-    await writeFile(paths.files.deployKeyPub, `${pair.publicKeyOpenSsh}\n`, { mode: 0o644 });
-    key = {
-      privateKeyOpenSsh: pair.privateKeyOpenSsh,
-      publicKeyOpenSsh: pair.publicKeyOpenSsh,
-      privateKeyFile: paths.files.deployKey,
-      created: true,
-    };
-  }
-  redactor.addLiteral(key.privateKeyOpenSsh, "deploy-key");
-  return key;
+  const { deployKey, deployKeyPub } = paths.files;
+  const files = { private: deployKey, public: deployKeyPub };
+  const comment = `opscrew-deploy@${paths.projectId}`;
+  const key = await ensureKeyPair(files, comment, redactor, "deploy-key");
+  return { ...key, privateKeyFile: deployKey };
 }
 
 /** How to bring the deploy key to this computer; `then` ends it (`then try again.`). */

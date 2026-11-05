@@ -53,6 +53,8 @@ import {
   previewKeyComment,
   previewKeyLine,
   READY_FLAG,
+  RECIPE_LEFT_OUT,
+  RECIPE_LEFT_OUT_FIND,
   RECORD_PATH,
   RUNNERS_DIR,
   runnerDir,
@@ -2577,7 +2579,6 @@ read_others() {
 function checkKeyScripts(step: HostStep): StepScripts {
   const remove = step.params.remove === true;
   const p = params(step, z.object({ runAs: RunAsSchema, repository: RepositoryNameSchema }));
-  const helpers = KEY_HELPERS;
   const shared = {
     USER_NAME: "deploy",
     KEY_RE: commentRe(checkKeyComment(p.repository)),
@@ -2587,7 +2588,7 @@ function checkKeyScripts(step: HostStep): StepScripts {
     return scripts({
       name: "check-key.remove",
       params: shared,
-      helpers,
+      helpers: KEY_HELPERS,
       verify: `  k=$(keys_file)
   [ ! -f "$k" ] || ! grep -qE "$KEY_RE" "$k"`,
       apply: `k=$(keys_file)
@@ -2606,7 +2607,7 @@ fi`,
   return scripts({
     name: "check-key",
     params: { ...shared, LINE: checkKeyLine(publicKey, p.repository) },
-    helpers,
+    helpers: KEY_HELPERS,
     verify: `  k=$(keys_file)
   [ -f "$k" ] && [ ! -L "$k" ] || return 1
   [ "$(grep -cE "$KEY_RE" "$k")" = 1 ] || return 1
@@ -3215,7 +3216,7 @@ ${ADDON_PARENTS_CLEANUP}`,
 const RECIPE_FILE_RULES: FileRules = {
   name: RecipePathSchema,
   text: textUpTo(MAX_RECIPE_FILE_BYTES),
-  reserved: new Set(["values.env", "previews.log"]),
+  reserved: new Set(RECIPE_LEFT_OUT),
   required: PREVIEW_COMMAND_FILE,
 };
 
@@ -3246,7 +3247,7 @@ sums_ok() {
 # Files in the recipe's folder that the plan does not name: the values, the command's log and its
 # dot-files (its lock) aside.
 stale_files() {
-  (cd "$DIR" && find . -type f ! -name '.*' ! -path ./values.env ! -path ./previews.log) | while IFS= read -r f; do
+  (cd "$DIR" && find . -type f ! -name '.*' ${RECIPE_LEFT_OUT_FIND}) | while IFS= read -r f; do
     f=\${f#./}
     case " $PATHS " in *" $f "*) ;; *) printf '%s\\n' "$f" ;; esac
   done
@@ -3347,9 +3348,7 @@ rm -rf "$DIR"`,
     step,
     z.object({
       publicKey: BareKeySchema,
-      valueNames: words(EnvNameSchema).refine((names) => new Set(names).size === names.length, {
-        message: "must name each value once",
-      }),
+      valueNames: words(EnvNameSchema),
       ...RewriteParams.shape,
     }),
   );

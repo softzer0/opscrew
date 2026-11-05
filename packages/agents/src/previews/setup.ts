@@ -4,9 +4,15 @@
  * standing approval GitHub Actions acts under; and the secrets the preview workflow reads.
  */
 import { join } from "node:path";
-import { type HostFacts, planAddon, readableRecords } from "@opscrew/connector-ssh-host";
+import {
+  type HostFacts,
+  planAddon,
+  previewCommand,
+  readableRecords,
+} from "@opscrew/connector-ssh-host";
 import type { PhaseName } from "@opscrew/contracts";
 import {
+  exists,
   listText,
   OpsCrewError,
   plural,
@@ -31,7 +37,7 @@ import { assembleAppEnv, dotenvLine } from "../shared/app-env";
 import { readValidJson } from "../shared/files";
 import { approveAndApplyHostPlan, type HostPlanOutcome } from "../shared/host-plan";
 import { appMemoryLimits } from "../shared/memory";
-import type { PreviewKey } from "./keys";
+import type { KeyPair } from "../shared/ssh-keys";
 
 /** A preview environment's env templates and its own values, as provision reads them. */
 export interface PreviewEnvironment {
@@ -52,6 +58,32 @@ export interface PreviewEnvironment {
 /** The file a preview environment's own values come from: `.env.<env>`, never prod's `.env`. */
 function valuesFile(deps: Pick<PhaseDeps, "paths">): string {
   return `.env.${deps.paths.environment}`;
+}
+
+/**
+ * Stops (`INVALID_INPUT`, before any change and before it is read) when `.env.<env>` is there
+ * and git doesn't ignore it (`git check-ignore`): a commit could take the previews' values.
+ */
+export async function requireIgnoredValues(
+  deps: Pick<PhaseDeps, "paths" | "runner" | "env">,
+  command: string,
+): Promise<void> {
+  const { root } = deps.paths;
+  const file = valuesFile(deps);
+  if (!(await exists(join(root, file)))) return;
+  // As the git client runs git: never a prompt, never a lock in the user's way.
+  const ignored = await deps.runner.run("git", ["-C", root, "check-ignore", "-q", "--", file], {
+    env: { ...deps.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
+    timeoutMs: 120_000,
+  });
+  if (ignored.exitCode === 0) return;
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `${file} holds the previews' values, and git doesn't ignore it, so a commit could take them. Nothing was changed.`,
+    {
+      hint: `Add .env.* to .gitignore (if ${file} is committed already, also run \`git rm --cached ${file}\`), then run \`${command}\` again.`,
+    },
+  );
 }
 
 /**
@@ -147,7 +179,7 @@ export interface PreviewsHostInput {
   /** The rendered recipe (`renderPreviewRecipe`), as the deploy-setup pull request commits it. */
   recipe: readonly RenderedFile[];
   env: PreviewEnvironment;
-  key: PreviewKey;
+  key: KeyPair;
   /** `<owner>/<repo>`. */
   repository: string;
   /** The image previews may run, `ghcr.io/<owner>/<repo>[/<app key>]`. */
@@ -236,7 +268,7 @@ export async function applyPreviewsHostPlan(
     allowDestroy: true,
     intro: [
       "The standing approval: GitHub Actions will create, update and delete previews of same-repository pull requests within these bounds without asking again; each preview's data is deleted when it ends.",
-      `Its bounds, which ${appDir(plan)}/bin/opscrew-preview enforces on the server whatever a pull request's workflow asks:`,
+      `Its bounds, which ${previewCommand(plan.app.name)} enforces on the server whatever a pull request's workflow asks:`,
       ...bounds(plan, previews, input, valuesFile(deps)),
       `Only runs of pull requests from branches of ${repository} get the preview key: forks' and Dependabot's runs get no secrets. Changing a bound or a value is a new plan to approve.`,
       ...(input.branchRules === true
@@ -264,7 +296,7 @@ export async function applyPreviewsHostPlan(
 export function previewDeploySecrets(input: {
   host: string;
   knownHosts: string;
-  key: PreviewKey;
+  key: KeyPair;
   env: Pick<PreviewEnvironment, "build">;
 }): Record<string, string> {
   return {

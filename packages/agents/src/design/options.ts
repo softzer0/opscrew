@@ -29,7 +29,14 @@ import {
 } from "./cost";
 import { previewMemoryText } from "./previews";
 import { keptTypeText, type ServerSize } from "./server-changes";
-import { containersText, previewSizing, regionLocations, type Sizing, sizeFor } from "./sizing";
+import {
+  containersText,
+  previewSizing,
+  regionLocations,
+  type Sizing,
+  sizeFor,
+  usableOffer,
+} from "./sizing";
 import { type DesignWording, designWording } from "./wording";
 
 export interface BuildDesignOptionsInput {
@@ -119,13 +126,7 @@ export async function buildDesignOptionSet(
 
   const offers = (await Promise.all(locations.map((location) => catalog.listOffers(location))))
     .flat()
-    .filter(
-      (offer) =>
-        offer.architecture === "x86" &&
-        !offer.deprecated &&
-        offer.available &&
-        locations.includes(offer.location),
-    );
+    .filter((offer) => usableOffer(offer) && locations.includes(offer.location));
   // One offer per server type: the first location (in region order) where it is available, the
   // deployed server's first, since another location replaces the server with its data.
   const { deployed } = input;

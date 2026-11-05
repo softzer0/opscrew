@@ -11,20 +11,10 @@ import { renderPreviewRecipe } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import type { NetworkServer } from "../provision/network";
-import {
-  freshFacts,
-  type ScriptedApprovalHandler,
-  type TestPhaseDeps,
-  withOtherApp,
-} from "../testing";
+import { freshFacts, type ScriptedApprovalHandler, type TestPhaseDeps } from "../testing";
 import { previewProject } from "./__fixtures__/plan";
 import { ensurePreviewKey } from "./keys";
-import {
-  applyPreviewsHostPlan,
-  previewDeploySecrets,
-  previewEnvironment,
-  requirePreviewValues,
-} from "./setup";
+import { applyPreviewsHostPlan, previewDeploySecrets, previewEnvironment } from "./setup";
 
 const STRIPE = fakeSecret("stripe-live-key", "preview");
 
@@ -95,20 +85,6 @@ describe("previewEnvironment", () => {
     }
     expect(deps.redactor.redact(`key ${STRIPE}`)).not.toContain(STRIPE);
   });
-
-  it("stops before any change without a value the app needs, naming the file", async () => {
-    const { deps, plan } = await previewProject();
-    const env = await previewEnvironment(deps, plan);
-    expect(env.missing).toEqual(["STRIPE_SECRET_KEY"]);
-    expect(() => requirePreviewValues(deps, env, "opscrew provision --env preview")).toThrow(
-      expect.objectContaining({
-        code: "INVALID_INPUT",
-        message:
-          ".env.preview has no value for STRIPE_SECRET_KEY, which the app needs, so previews could not start. Nothing was changed.",
-        hint: "Put test values for it in .env.preview (anyone who can push a branch can read them), then run `opscrew provision --env preview` again.",
-      }),
-    );
-  });
 });
 
 describe("applyPreviewsHostPlan", () => {
@@ -129,15 +105,6 @@ describe("applyPreviewsHostPlan", () => {
     expect(request?.details).toContain("Preview values from .env.preview (names only): none.");
     // An app without values of its own still gets values.env, which each preview's start needs.
     expect(applies[0]?.options.secrets).toEqual({ previewValues: "" });
-  });
-
-  it("refuses a server that holds another app before anything is asked or changed", async () => {
-    const { deps, plan, root } = await previewProject({ own: true });
-    await expect(installOn(deps, plan, root, withOtherApp())).rejects.toMatchObject({
-      code: "PHASE_PRECONDITION",
-      message: expect.stringContaining('This server also holds "blog"'),
-    });
-    expect((deps.approvalHandler as ScriptedApprovalHandler).requests).toEqual([]);
   });
 });
 

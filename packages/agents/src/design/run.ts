@@ -100,6 +100,7 @@ import {
 } from "./code-changes";
 import {
   type Components,
+  type DesignedComponents,
   designComponents,
   memoryText,
   routeJobsOffText,
@@ -322,15 +323,14 @@ export interface DesignPreview {
   components: Components;
   /** One plain sentence per component, licence, storage choice and kept edit. */
   lines: string[];
+  /** The line among `lines` about the planned bucket, which a preview environment replaces. */
+  bucketLine?: string;
 }
 
 interface DesignInputs {
   facts: ProjectFacts;
   requirements: Requirements;
 }
-
-/** How the components' line about a planned bucket starts (`designComponents`' storage text). */
-const BUCKET_LINE = "Object storage for the app's files, in the private bucket ";
 
 /** Collects warnings: redacted, sent to the reporter and kept for the result. */
 function warner(deps: PhaseDeps, warnings: string[]): (text: string) => void {
@@ -455,10 +455,7 @@ function appWarnings(
 }
 
 /** What runs next to the app, from the facts, the interview and the previous plan's edits. */
-interface Designed {
-  components: Components;
-  lines: string[];
-}
+type Designed = Omit<DesignedComponents, "warnings">;
 
 /**
  * The single option on the user's own server: no price, warnings when the server is smaller than
@@ -575,8 +572,9 @@ async function componentsFor(
   const designed = designComponents({ facts, requirements, previous, vcpus });
   const sqlite = designed.components.storage?.sqlite;
   if (sqlite !== undefined) await checkSqliteFolder(deps.paths.root, facts, sqlite.dir);
-  for (const warning of designed.warnings) warn(warning);
-  return { components: designed.components, lines: designed.lines };
+  const { warnings, ...rest } = designed;
+  for (const warning of warnings) warn(warning);
+  return rest;
 }
 
 /**
@@ -907,9 +905,10 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   if (previews !== undefined && zone === undefined) {
     throw new Error("A preview environment's design needs its Cloudflare zone.");
   }
-  const collapsed =
+  const leftOut =
     previews === undefined || read === undefined ? undefined : previewEdits(read.edits);
-  const edits: PlacementEdits = collapsed?.edits ?? read?.edits ?? { servers: [], placed: {} };
+  const edits: PlacementEdits =
+    previews === undefined && read !== undefined ? read.edits : { servers: [], placed: {} };
   requirePlacementTarget(edits, inputs.requirements);
   if (previous !== undefined) {
     requireSameProvider(
@@ -1134,7 +1133,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   // What the previews are, and what a preview environment left out of plan.yaml.
   const previewLines = [
     ...(planPreviews === undefined ? [] : [previewsLine(planPreviews)]),
-    ...(collapsed?.lines ?? []),
+    ...(leftOut ?? []),
   ].map(say);
   for (const line of previewLines) reporter.info(line);
   if (previous) {
@@ -1220,7 +1219,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
           ...preview.lines.filter(
             (line) =>
               !off.some((name) => line.startsWith(`Cron job ${name} (`)) &&
-              !(bucketLine !== undefined && line.startsWith(BUCKET_LINE)),
+              !(bucketLine !== undefined && line === preview.bucketLine),
           ),
           ...(bucketLine !== undefined ? [bucketLine] : []),
           ...(off.length > 0 ? [routeJobsOffText(off, plan)] : []),

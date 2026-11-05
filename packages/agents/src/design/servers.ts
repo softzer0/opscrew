@@ -22,7 +22,7 @@ import {
 } from "./cost";
 import type { EditedServer } from "./placement-edits";
 import { keptTypeText, type ServerSize } from "./server-changes";
-import { regionLocations } from "./sizing";
+import { regionLocations, usableOffer } from "./sizing";
 import { designWording } from "./wording";
 
 /** An extra server's target as the user wrote it, for a server OpsCrew creates. */
@@ -100,9 +100,7 @@ export function cheapestServerOffer(
     .filter(
       (offer) =>
         offer.location === location &&
-        offer.architecture === "x86" &&
-        !offer.deprecated &&
-        offer.available &&
+        usableOffer(offer) &&
         offer.memoryGb * 1024 >= need.memoryMb &&
         offer.vcpus >= need.vcpus &&
         offer.diskGb >= minDiskGb,

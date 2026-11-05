@@ -3,12 +3,9 @@ import { cloudflareConnector } from "@opscrew/connector-cloudflare";
 import {
   ensureStateDir,
   exists,
-  isRecord,
   listText,
   normalizeHostName,
   OpsCrewError,
-  readTextIfExists,
-  stripBom,
   toPosixRelative,
 } from "@opscrew/core";
 import {
@@ -17,11 +14,11 @@ import {
   PREVIEW_APP_NAME_MAX,
   PreviewsSchema,
   type ProjectFacts,
+  previewEnvironmentOf,
   type Question,
   type QuestionId,
   type Requirements,
 } from "@opscrew/plan-schema";
-import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
 import { type OwnServerDesignInput, runDesign } from "../design/run";
 import { answersToRequirements } from "../interview/answers";
@@ -35,13 +32,13 @@ import {
 import { buildQuestions, type InterviewAnswers } from "../interview/questions";
 import { missing } from "../provision/credentials";
 import { inspectOwnServerForDesign } from "../shared/own-server-design";
-import type {
-  AddContext,
-  AddEnvironmentOptions,
-  AddEnvironmentResult,
-  EnvironmentQuestion,
+import {
+  type AddContext,
+  type AddEnvironmentOptions,
+  type AddEnvironmentResult,
+  answersWithDefaults,
+  type EnvironmentQuestion,
 } from "./add";
-import { environmentPaths } from "./paths";
 import { writeEnvironmentRequirements } from "./requirements";
 
 /** Where previews run: a server OpsCrew creates, or one the user has (FR-2201). */
@@ -117,6 +114,14 @@ export function previewQuestions(
       required: true,
     },
   ];
+}
+
+/**
+ * Why `--runner` or `--build` (`flag`) `value` is refused with `--previews`, without the ending
+ * every refusal has: previews run on GitHub's machines only.
+ */
+export function previewRunnerRefusal(flag: "runner" | "build", value: string): string {
+  return `Previews are built and deployed on GitHub's machines only, never on a runner of yours: a pull request's code runs in the job, so --${flag} ${value} is not available with --previews.`;
 }
 
 /** A refusal before any change, ending as every one does. */
@@ -198,7 +203,7 @@ export async function addPreviewEnvironment(
   options: AddEnvironmentOptions,
 ): Promise<AddEnvironmentResult> {
   const { paths, reporter } = deps;
-  const { name, environments, app, prodPlan, base, facts } = context;
+  const { name, app, prodPlan, base, facts } = context;
   const command = `opscrew env add ${name}${app} --previews`;
   if (isServerlessTarget(prodPlan.target)) {
     throw refuse(
@@ -207,13 +212,8 @@ export async function addPreviewEnvironment(
       "Check a site's changes in their pull request before you merge them, or move the app to a server with `opscrew interview` and `opscrew design` first.",
     );
   }
-  // Only each plan's `environment.previews` is read, as `environmentsOf` does.
-  for (const other of environments) {
-    const text = await readTextIfExists(environmentPaths(paths, other).files.plan);
-    const plan: unknown = text === undefined ? undefined : parse(stripBom(text));
-    if (!isRecord(plan) || !isRecord(plan.environment) || plan.environment.previews === undefined) {
-      continue;
-    }
+  const other = await previewEnvironmentOf(paths.root, paths.app);
+  if (other !== undefined) {
     throw refuse(
       "PHASE_PRECONDITION",
       `The app already has a preview environment, ${other}, and an app has one.`,
@@ -231,18 +231,13 @@ export async function addPreviewEnvironment(
   const questions = previewQuestions(name, { prodPlan, base }, facts);
   const ask = options.answers === undefined ? options.ask : undefined;
   const given = options.answers ?? (ask === undefined ? {} : await ask(questions));
-  const answers: InterviewAnswers = {
-    ...Object.fromEntries(
-      questions.flatMap((q) => (q.default === undefined ? [] : [[q.id, q.default]])),
-    ),
-    ...given,
-  };
+  const answers = answersWithDefaults(questions, given);
   for (const field of ["runner", "build"] as const) {
     const value = textOf(answers, field);
     if (value === undefined || value === "github") continue;
     throw refuse(
       "INVALID_INPUT",
-      `Previews are built and deployed on GitHub's machines only, never on a runner of yours: a pull request's code runs in the job, so --${field} ${value} is not available with --previews.`,
+      previewRunnerRefusal(field, value),
       `Leave --${field} out, then run \`${command}\` again.`,
     );
   }

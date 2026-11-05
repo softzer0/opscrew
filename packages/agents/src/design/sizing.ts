@@ -1,4 +1,4 @@
-import type { VpsProviderId } from "@opscrew/contracts";
+import type { ComputeOffer, VpsProviderId } from "@opscrew/contracts";
 import { listText, plural } from "@opscrew/core";
 import {
   CONNECTOR_MEMORY_MB,
@@ -20,6 +20,11 @@ import { serviceOf } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { appMemoryMb, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { type Components, designComponents } from "./components";
+
+/** A server type design can choose: x86, available and not deprecated. */
+export function usableOffer(offer: ComputeOffer): boolean {
+  return offer.architecture === "x86" && offer.available && !offer.deprecated;
+}
 
 /**
  * A provider's locations for a region, in order of preference (Hetzner by default); none for a
