@@ -46,17 +46,14 @@ and a quiet one look very different, so it is careful with them:
   since waiting costs more than checking.
 - Each figure says what it rests on: 14 days (or as many as there are), or one reading.
 
-A report on one reading ends with a line suggesting `opscrew addon enable monitoring`, shown for
-servers OpsCrew created on Hetzner Cloud or DigitalOcean without monitoring. For history, turn on
-self-hosted monitoring:
+For servers OpsCrew created on Hetzner Cloud or DigitalOcean without monitoring, a report on one
+reading ends with a line suggesting self-hosted monitoring, whose history advise uses from the
+first day:
 
 ```bash
 npx opscrew addon enable monitoring
 npx opscrew provision
 ```
-
-Advise uses the history from the first day; it needs 7 days of it before it proposes anything
-smaller.
 
 ## What it proposes
 
@@ -74,9 +71,9 @@ stays the same from one run to the next.
 | **The disk** | The disk is 85% full or more, or at the pace of the last 7 days it is full within 30 days. A type with a larger disk that brings it under 85%, or, when there is none or the server is your own, freeing space with `docker image prune` |
 
 When a server needs both more memory or CPUs and a larger disk, one type covers both. On a server
-OpsCrew can't resize (the largest type at its location, [a server you own](own-server.md),
-[a Portainer](portainer-target.md) or [your computer](localhost.md)), a server short of memory or
-CPUs still gets a proposal: what it needs, without a price, and what to do yourself.
+OpsCrew can't resize (the largest type at its location, or one it
+[doesn't change the hardware of](#what-it-doesnt-do)), a server short of memory or CPUs still gets
+a proposal: what it needs, without a price, and what to do yourself.
 
 ### Cost
 
@@ -84,7 +81,7 @@ CPUs still gets a proposal: what it needs, without a price, and what to do yours
 |---|---|
 | **Over budget** | The servers OpsCrew created cost more a month than the budget you gave in the interview. It names the other proposals that each bring them under it, or suggests `opscrew design` when none does |
 | **A cheaper type** | Where the server runs, a type with at least its CPUs, memory and disk costs less |
-| **Another provider** | The same server costs less at the other provider (Hetzner Cloud or DigitalOcean) in your region. It names `opscrew retarget`, which moves an app on one server with a short maintenance window |
+| **Another provider** | The same server costs less at the other provider (Hetzner Cloud or DigitalOcean) in your region. It names [`opscrew retarget`](retarget.md), which moves an app on one server with a short maintenance window |
 
 Prices are monthly, before VAT, with the server's IPv4 address and backups when they are on.
 
@@ -106,7 +103,7 @@ Prices are monthly, before VAT, with the server's IPv4 address and backups when 
 | **A reboot** | A server installed security updates that need a reboot |
 | **Security updates** | Security updates are waiting on a server |
 | **Failing host checks** | One of `secure`'s host checks fails on a server, most severe first |
-| **A token expiring** | Your GitHub or Cloudflare token expires within 30 days, or has expired: make a new one with the same permissions |
+| **A token expiring** | Your GitHub or Cloudflare token expires within 30 days: make a new one with the same permissions |
 
 ### Components
 
@@ -126,9 +123,9 @@ Prices are monthly, before VAT, with the server's IPv4 address and backups when 
 Within an urgency, the size of a server comes first, then security, upkeep, cost, reliability and
 components.
 
-While a move to another provider (`opscrew retarget`) or a move between the app's servers is in
-progress, advise lists it first, with how to finish it, and proposes nothing that changes the
-servers or the plan until it is done.
+While a move to another provider ([`opscrew retarget`](retarget.md)) or a move between the app's
+servers is in progress, advise lists it first, with how to finish it, and proposes nothing that
+changes the servers or the plan until it is done.
 
 ## Applying a proposal
 
@@ -144,13 +141,13 @@ have changed) and lists the current ones. Then:
   one field of `opscrew/plan.yaml`, and only that, and prints the change and the new monthly price.
   Nothing else changes yet. `npx opscrew provision` then shows the change and applies it once you
   approve its hash, as for every change.
-- **Anything else:** it prints the command to run (such as `opscrew retarget` or `opscrew secure`),
-  or what to do yourself (such as turning Dependabot alerts on).
+- **Anything else:** it prints the command to run (such as [`opscrew retarget`](retarget.md) or
+  `opscrew secure`), or what to do yourself (such as turning Dependabot alerts on).
 
 A proposal already written to the plan but not provisioned yet says so, and names
 `opscrew provision`.
 
-### A larger server is one way
+### Changing a server's type
 
 - **The app is offline while the server changes type:** one to three minutes at Hetzner, while it
   restarts on its new type; at DigitalOcean about a minute per GB of disk in use, often less. Its
@@ -188,16 +185,15 @@ Advise uses the tokens you already gave OpsCrew, and only reads with them:
 
 The [OpsCrew plugin](claude-code-plugin.md) gives Claude the same proposals through a read-only tool
 when you ask "is it the right size?", "why is it slow?" or "can it cost less?". Applying stays in
-your terminal: `npx opscrew advise --apply <id>`, then `npx opscrew provision`.
+your terminal (see [Applying a proposal](#applying-a-proposal)).
 
 ## What it doesn't do
 
 - **Use a model:** every proposal comes from fixed rules and the thresholds on this page.
-- **Apply anything by itself,** or on a schedule: you run `--apply`, and `provision` asks for your
-  approval.
 - **Read history from [Grafana Cloud](grafana-cloud.md) or [Beszel](beszel.md):** only from
   [self-hosted monitoring](monitoring.md). With those, advise works on one reading.
 - **Grow a disk with a block volume:** a larger disk comes with a larger type.
-- **Resize or price a server you own, a Portainer or your computer:** OpsCrew doesn't change their
-  hardware. On [Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md),
-  with no server, it gives only the upkeep and security proposals.
+- **Resize or price [a server you own](own-server.md), [a Portainer](portainer-target.md) or
+  [your computer](localhost.md):** OpsCrew doesn't change their hardware. On
+  [Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md), with no server, it gives only
+  the upkeep and security proposals.

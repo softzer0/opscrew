@@ -254,8 +254,8 @@ environment) where it was first turned on is refused, naming them: turn monitori
 Turning it off in one of those other environments, or destroying it, removes its agents and takes the
 monitoring server off its network.
 
-`npx opscrew retarget` refuses an environment with monitoring on: turn monitoring off and run
-`provision` first.
+[`npx opscrew retarget`](retarget.md) refuses an environment with monitoring on: turn monitoring off
+and run `provision` first.
 
 ## The licences
 

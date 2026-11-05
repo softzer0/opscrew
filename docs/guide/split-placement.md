@@ -132,7 +132,8 @@ Which services can move with their data:
   placed on any server.
 
 One service moves at a time. Moving the whole app to another provider is
-`npx opscrew retarget`, which an app with extra servers can't use yet: it refuses before any change.
+[`npx opscrew retarget`](retarget.md), which an app with extra servers can't use yet: it refuses
+before any change.
 
 ## Kafka, Redpanda and OpenSearch
 

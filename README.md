@@ -78,9 +78,10 @@ In Claude Code, the OpsCrew plugin runs the same steps from the chat, and every 
 ## After the first deploy
 
 - `npx opscrew logs` shows the app's log lines (`--follow` for new ones), and `npx opscrew status` what runs with its CPU, memory and disk. See [Your app's logs and resource figures](docs/guide/logs-and-status.md).
+- `npx opscrew advise` says whether the app's servers are the right size, what could cost less and what needs attention soon, and how to apply each change. See [Advice on size, cost and upkeep](docs/guide/advise.md).
 - A deploy or a provision failed? See [When a deploy fails, and how to recover](docs/guide/when-a-deploy-fails.md): what your visitors get, what OpsCrew already put back and what to do next.
 - `npx opscrew destroy` deletes the deployment's infrastructure. It asks you to type the server name first and can take a snapshot.
-- `npx opscrew retarget --to <provider>` moves a live app to another cloud provider with its data (not yet to or from your own server or a Portainer). It builds the new server next to the old one, copies the database in a short maintenance window and switches DNS. The old server is deleted only when you run `opscrew retarget --finish`.
+- `npx opscrew retarget --to <provider>` moves a live app to another cloud provider with its data (not yet to or from your own server or a Portainer). It builds the new server next to the old one, copies the database in a short maintenance window and switches DNS. The old server is deleted only when you run `opscrew retarget --finish`. See [Moving your app to another cloud provider](docs/guide/retarget.md).
 - No domain yet? `npx opscrew domain buy <domain>` buys one at cost after you confirm the price, through Cloudflare, Porkbun, Namecheap or GoDaddy. Already own one? `npx opscrew domain connect <domain>` moves its DNS to Cloudflare. See [Buying or connecting a domain](docs/guide/domains.md).
 - Several apps under one domain? See [Your domain on Cloudflare, and several apps in one zone](docs/guide/cloudflare.md).
 - Every guide page is listed in [the guide's index](docs/guide/index.md).

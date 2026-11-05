@@ -43,8 +43,9 @@ Windows reserves for devices (`con`, `nul`, `com1` and the like).
 ## Choosing the app
 
 Every command that acts on an app takes `--app <key>`: `analyze`, `interview`, `design`, `adapt`,
-`env`, `provision`, `promote`, `dns`, `secure`, `verify`, `drift`, `status`, `secrets`, `retarget`,
-`runner start` and `destroy`. `--app .` names the first app, which has no key.
+`env`, `provision`, `promote`, `dns`, `secure`, `verify`, `drift`, `status`, `secrets`,
+[`retarget`](retarget.md), `runner start` and `destroy`. `--app .` names the first app, which has no
+key.
 
 - With one app, `--app` may be left out.
 - With several, a command without `--app` asks which one in a terminal. In a script it stops and

@@ -76,8 +76,8 @@ starting with `storage-`, names with `service` as one of their hyphen-separated 
 ## Working with several environments
 
 Every command that acts on a deployment takes `--env <name>`: `provision`, `destroy`, `drift`,
-`status`, `verify`, `secure`, `retarget`, `secrets` and `promote`. In Claude Code, the matching
-OpsCrew tools take an `environment` input. In a repository with
+`status`, `verify`, `secure`, [`retarget`](retarget.md), `secrets` and `promote`. In Claude Code,
+the matching OpsCrew tools take an `environment` input. In a repository with
 [several apps](several-apps.md), each app has its own environments, and `--app <key>` says whose.
 
 - With one environment, `--env` may be left out.

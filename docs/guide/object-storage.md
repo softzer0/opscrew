@@ -180,6 +180,6 @@ old key in the provider's console.
 `npx opscrew destroy` keeps the bucket and its files, which the provider bills until the bucket is
 deleted. To delete it too, add `--delete-data` (and type the app's name). An R2 bucket must be
 empty first: Cloudflare refuses to delete a bucket that holds files, and OpsCrew never deletes your
-files itself. Moving the app to another provider with `npx opscrew retarget` leaves a provider's
-bucket where it is. Garage keeps the files on the server, and a move does not copy them yet, so
-`npx opscrew retarget` stops before any change for an app that uses Garage.
+files itself. Moving the app to another provider with [`npx opscrew retarget`](retarget.md) leaves
+a provider's bucket where it is. Garage keeps the files on the server, and a move does not copy
+them yet, so `npx opscrew retarget` stops before any change for an app that uses Garage.

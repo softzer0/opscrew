@@ -55,8 +55,8 @@ script writes only the folder copy (when you set a folder) and says how to commi
 ## Keeping it current
 
 Whenever one of these files changes, the next pull request from `npx opscrew provision` (or from
-`npx opscrew retarget --finish`) carries the updated copy. When you set a folder, OpsCrew writes the
-folder copy at once.
+[`npx opscrew retarget --finish`](retarget.md#finishing-the-move)) carries the updated copy. When
+you set a folder, OpsCrew writes the folder copy at once.
 
 ```bash
 npx opscrew secrets status          # last update, how many keys open it, whether it is behind

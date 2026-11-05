@@ -52,7 +52,7 @@ Set them before you start Claude Code. Tool results never contain a token or a s
 | `/opscrew:opscrew-deploy` | The whole flow: scan, analyze, interview, design, prepare the code, provision and verify |
 | `/opscrew:opscrew-scan` | The free security scan, with guided fixes |
 | `/opscrew:opscrew-adapt` | Prepares the app's code for its deployment |
-| `/opscrew:opscrew-troubleshoot` | Finds out why the app is failing or slow, and what it uses: its status, figures, alerts and logs, read-only |
+| `/opscrew:opscrew-troubleshoot` | Finds out why the app is failing or slow, and what it uses: its status, figures, alerts and logs, and [advice](advise.md) on what to change, read-only |
 
 Claude also uses them on its own when you ask things like "deploy my app", "is my app secure?" or
 "why is my app failing?".
@@ -64,6 +64,9 @@ Every target works from the chat: a cloud server, [a server you already have](ow
 
 - **`opscrew_status`** includes the [resource figures and the scheduled check's state and open
   alerts](logs-and-status.md).
+- **`opscrew_advise`** gives [advise's proposals](advise.md) on size, cost and upkeep, read-only.
+  Applying one stays in your terminal: `npx opscrew advise --apply <id>`, then
+  `npx opscrew provision`.
 - **`opscrew_logs`** reads the app's latest lines, read-only and masked: at most 500 lines and
   64 KiB, and it never follows. For more, or `--follow`, run `npx opscrew logs` in your terminal.
 - **`opscrew_addon_status`, `opscrew_addon_enable` and `opscrew_addon_disable`** show, turn on and
