@@ -2152,6 +2152,88 @@ Not measured yet: about 2 hours, with up to three of the smallest servers for th
 the monitoring server and staging's; well under €1 in all), and five or six deploy runs with a
 build (about 20 to 30 Actions minutes in a private repository).
 
+## Advise
+
+`packages/cli/test/live/advise.test.ts`, with `OPSCREW_E2E_ADVISE=1`, runs feature 021's
+`opscrew advise` on `examples/nextjs-postgres` (always this example: its Postgres holds the data
+the interview marks important, so `OPSCREW_E2E_APP` is ignored). The app runs at Hetzner behind
+Cloudflare, in the throwaway repository `OPSCREW_E2E_GITHUB_REPO`, on Hetzner's smallest type,
+`cx23`, which a move up resizes in place (specs/021-advise/research.md R5, S1). Advise reads the
+server as `status` does, one reading: the pass doesn't turn monitoring on, so no proposal rests on
+two weeks of figures.
+
+The steps:
+
+1. **The app:** the example goes to `main`, then prod's design (as for
+   [environments](#environments-and-promotion), whose interview answers say the data is
+   important). Then, as a user edits `opscrew/plan.yaml`, `target.serverType: cx23` and
+   `target.backups: false`; the run stops first when Hetzner's live list doesn't offer `cx23` in
+   the designed location (set `OPSCREW_E2E_REGION` to another region). `adapt`, `provision` until
+   done, the first deploy, and the page `/` answering with the database's time. Hetzner must
+   report the server as `cx23` without backups.
+2. **Short of memory:** over SSH, as `deploy`, a ballast container of the pinned Node.js image
+   (`IMAGES.nodeAlpine`), labelled `opscrew-e2e=advise-ballast` and with no restart policy,
+   allocates and touches the memory that brings the server to about 92% in use, sized from its
+   `/proc/meminfo` (about 2.9 GB on a `cx23`). Within 3 minutes more than 88% must be in use, with
+   the ballast still running.
+3. **The proposals** (SC-2101, SC-2104): `advise --json` is timed; over 60 seconds is a finding
+   that fails the run at the end. Its report must match `ProposalSchema` and list
+   `reliability.app.backups`, `size.app.larger` and `security.env.dependabot-off`, with server
+   `app`'s figures from one reading. The larger proposal must move the server, in the plan, to a
+   type with more memory and at least the same disk. Each price of the backups and the type
+   proposals must be the one Hetzner's live price list gives, read through OpsCrew's Hetzner
+   connector with the run's token: the type, its IPv4 address and, with backups, Hetzner's backup
+   percentage, to the cent, in the list's currency, marked live. The GitHub token's expiry is read
+   through OpsCrew's GitHub connector: `upkeep.env.github-token` must be listed exactly when the
+   token expires within 30 days. Each `notRead` line is a finding, except DigitalOcean's prices
+   (the run gives OpsCrew no DigitalOcean token) and the expiry an account-owned Cloudflare token
+   doesn't give. Then `advise`, held to the same 60 seconds, must show each proposal as `[<id>]`
+   under its own urgency's heading (`Now:`, `Soon:`, `When convenient:`): the nearest heading
+   before it.
+4. **Nothing changed** (SC-2101): `opscrew/plan.yaml`, the repository's commit and `git status`,
+   and the server's type and backups at Hetzner must be as before step 3. The audit entries the
+   two advise runs added must all be reads: `remote-exec` or `provider-call` entries whose action
+   ends "(read-only)".
+5. **Applied** (SC-2102): `advise --apply reliability.app.backups` must show `target.backups from
+   off to on`, the monthly price and `opscrew provision`, and change only that field of the plan
+   (and the plan's `updatedAt`); `advise --apply size.app.larger` the same for
+   `target.serverType`, from `cx23` to the type of step 3. Hetzner's server must still be `cx23` without backups. Then `provision` until done, each
+   plan approved by its hash, and its pull request deployed if it opened one. The time and the
+   longest stretch the page `/` didn't answer with the database's time are logged. The app must
+   answer again, Hetzner must report the new type with backups on, and no ballast container may
+   run (it had no restart policy, and the resize restarted the server).
+6. **Again** (SC-2102): neither `advise --json` nor `advise` may list `reliability.app.backups` or
+   `size.app.larger`.
+7. **Destroy:** `destroy --confirm <app> --no-snapshot`; nothing of the app may be left at Hetzner
+   (by its labels) or in Cloudflare.
+8. **Nothing leaked** (SC-2105), as for environments; besides, no advise output (its JSON
+   included) may hold the server's public addresses, and the audit entries of the advise runs may
+   hold neither an address nor a secret.
+
+**Cleanup.** The cleanup is the one for environments: `opscrew destroy` if needed, then always
+Hetzner's API by the app's labels, which deletes the server (its backups and the ballast go with
+it), its firewall and SSH key, GitHub's environments and deploy secrets, and Cloudflare.
+
+**If a run was interrupted**, delete by hand what the environments test lists.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_ADVISE` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for environments. Without any of them the test is skipped with a message naming it. The GitHub token also needs "Dependabot alerts: Read", and the repository must keep Dependabot alerts off (GitHub's default for a private repository), so advise proposes turning them on. |
+| `OPSCREW_E2E_REGION`, `OPSCREW_E2E_APP_ENV` | Optional, as above. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_ADVISE=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com \
+  npx vitest run test/live/advise.test.ts
+```
+
+Not measured yet: about 45 minutes, with one `cx23`, then one `cx33` with backups, for that time
+(a few cents), and one or two deploy runs with a build (about 5 to 10 Actions minutes in a private
+repository).
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still

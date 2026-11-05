@@ -193,7 +193,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
   - Verify: `pnpm lint`
   - Effort: medium
 
-- [ ] T2110 [P] The live tests (gated on `OPSCREW_E2E_ADVISE=1` and the Hetzner token), in `packages/cli/test/live/advise.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
+- [x] T2110 [P] The live tests (gated on `OPSCREW_E2E_ADVISE=1` and the Hetzner token), in `packages/cli/test/live/advise.test.ts` (+ support), `docs/e2e.md`, `docs/e2e-coverage.md`
   - Owns: those paths
   - Reads: plan.md "7."; spec SC-2101–SC-2105; the live harness and 018's or 020's pass for style
   - Depends: T2108

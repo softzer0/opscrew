@@ -59,6 +59,7 @@ of the pass passed; otherwise the status says how many of its steps did.
 | Split placement with the second server at DigitalOcean (the same pass) | + `OPSCREW_E2E_DIGITALOCEAN_TOKEN` | **Not run yet** | — | A DigitalOcean API token |
 | Rollback on Hetzner (`rollback.test.ts`, feature 019): `opscrew rollback` in a script shows the rollback and changes nothing, then `--approve <hash>` under load with no build and no release command, timed from the approval (SC-1901); `status` paused; a push while paused skipped with the `paused` job's notice, `--resume --deploy` (SC-1902); `--list` and a refused `--to` (SC-1903); a version that never answers and `logs --failed` (SC-1904); destroy and the leak search (SC-1905) ([its steps](e2e.md#rollback)) | `OPSCREW_E2E_ROLLBACK=1`, a Cloudflare domain, + `OPSCREW_E2E_GHCR_READ_TOKEN` | **Passed** (9 steps; run 3, on the final code) | 2026-11-01 | — |
 | Self-hosted monitoring on Hetzner (`monitoring.test.ts`, feature 020), 10 steps: 1. the example with Postgres deployed; 2. `addon enable monitoring` writing the plan only, then `provision` creating the monitoring server, the network, the stack and Alloy; 3. every server's figures and logs in `addon status` within 2 minutes (SC-2001); 4. from the internet, only SSH and WireGuard's UDP port on the monitoring server, `verify` and `secure` (SC-2002); 5. a device reaching Grafana and not the push paths, the app's server reaching the push paths and not the queries or Grafana (SC-2002), and through Grafana's API from the device every dashboard panel with data after HTTP traffic and one 502 (SC-2003) and no app secret in Loki's stored lines (SC-2004); 6. staging sending to the same server, no new server, its data under its own environment (US5); 7. prod's turn-off refused while staging sends, staging destroyed and the monitoring server off its network; 8. `addon disable monitoring` and `provision`: Alloy gone, the monitoring server deleted after its typed name (SC-2007); 9. destroy leaving nothing; 10. the leak search (SC-2008) ([its steps](e2e.md#self-hosted-monitoring)) | `OPSCREW_E2E_MONITORING=1`, a Cloudflare domain, Docker here | **Passed** (10 of 10 steps, run 5 on the final code) | 2026-11-04 | — |
+| Advise on Hetzner (`advise.test.ts`, feature 021), 8 steps: 1. the example with Postgres deployed on `cx23`, backups off, the data important; 2. a ballast container holding the server above 85% memory on one reading; 3. `advise --json` within 60 seconds (SC-2101) listing the backups, larger server and Dependabot proposals (the GitHub token's when it expires within 30 days), each price Hetzner's live one (SC-2104), and the text grouped by urgency; 4. nothing changed: the plan, the repository, the server, only reads in the audit log; 5. `advise --apply` writing only the two plan fields, then `provision` resizing the server and turning backups on (SC-2102); 6. `advise` listing neither (SC-2102); 7. destroy leaving nothing; 8. the leak search (SC-2105) ([its steps](e2e.md#advise)) | `OPSCREW_E2E_ADVISE=1`, a Cloudflare domain | **Not run yet** | — | A live run (T2111) |
 
 Run in development, not tracked by date:
 
@@ -236,6 +237,23 @@ Cloudflare's hosting and GitHub Pages. These have unit tests only:
   `promote` refusing while it is paused.
 - **A run held for a reviewer:** a rollback run that waits in GitHub for a required reviewer,
   recorded by the next `opscrew rollback` once it finished, or its pause put back when it failed.
+
+### Advise (feature 021)
+
+The live pass reads one server at Hetzner once, without monitoring. These have unit tests only:
+
+- **The 14 days of figures:** the rules that need history (a smaller server after 7 days, the
+  load over time, a filling disk's pace, restart loops, OOM kills, a container at its limit) run on
+  fakes; the history queries ran once on a real stack in the spike (specs/021-advise/research.md
+  R5, S2).
+- **The cost rule:** a cheaper type and the other provider's price, on catalogue fakes (a cheaper
+  type with the same disk is rare at Hetzner, R5, S1).
+- **DigitalOcean:** a Droplet's resize, and its prices in a proposal.
+- **Dependabot's alerts:** the test repositories keep them off, so a list of real alerts runs on
+  fixtures from GitHub's documented answer.
+- **The other targets:** your own server, an existing Portainer, Cloudflare's hosting and GitHub
+  Pages.
+- **The MCP tool** `opscrew_advise`, and `--apply` of a memory limit or the scheduled check.
 
 ## Confirmed live behaviour
 
