@@ -68,6 +68,8 @@ describe("resolveProjectPaths", () => {
       checkKey: path.join(p.projectHomeDir, "check_key"),
       beszelSecrets: path.join(p.projectHomeDir, "beszel_secrets.json"),
       grafanaCloudToken: path.join(p.projectHomeDir, "grafana_cloud_token"),
+      previewKey: path.join(p.projectHomeDir, "preview_key"),
+      previewKeyPub: path.join(p.projectHomeDir, "preview_key.pub"),
       shared: {
         architecture: path.join(root, "opscrew", "architecture.json"),
         architectureMd: path.join(root, "opscrew", "ARCHITECTURE.md"),
@@ -165,6 +167,8 @@ describe("resolveProjectPaths", () => {
       checkKey: path.join(home, "check_key"),
       beszelSecrets: path.join(home, "beszel_secrets.json"),
       grafanaCloudToken: path.join(home, "grafana_cloud_token"),
+      previewKey: path.join(home, "preview_key"),
+      previewKeyPub: path.join(home, "preview_key.pub"),
       shared: prod.files.shared,
     });
   });
@@ -344,6 +348,8 @@ describe("resolveProjectPaths for the apps of a repository", () => {
         checkKey: "home/.opscrew/projects/<id>/check_key",
         beszelSecrets: "home/.opscrew/projects/<id>/beszel_secrets.json",
         grafanaCloudToken: "home/.opscrew/projects/<id>/grafana_cloud_token",
+        previewKey: "home/.opscrew/projects/<id>/preview_key",
+        previewKeyPub: "home/.opscrew/projects/<id>/preview_key.pub",
         shared: {
           architecture: "app/opscrew/architecture.json",
           architectureMd: "app/opscrew/ARCHITECTURE.md",
@@ -392,6 +398,8 @@ describe("resolveProjectPaths for the apps of a repository", () => {
         checkKey: "home/.opscrew/projects/<id>/environments/staging/check_key",
         beszelSecrets: "home/.opscrew/projects/<id>/environments/staging/beszel_secrets.json",
         grafanaCloudToken: "home/.opscrew/projects/<id>/environments/staging/grafana_cloud_token",
+        previewKey: "home/.opscrew/projects/<id>/environments/staging/preview_key",
+        previewKeyPub: "home/.opscrew/projects/<id>/environments/staging/preview_key.pub",
         shared: {
           architecture: "app/opscrew/architecture.json",
           architectureMd: "app/opscrew/ARCHITECTURE.md",
@@ -439,6 +447,8 @@ describe("resolveProjectPaths for the apps of a repository", () => {
         checkKey: "home/.opscrew/projects/<id>/apps/docs/check_key",
         beszelSecrets: "home/.opscrew/projects/<id>/apps/docs/beszel_secrets.json",
         grafanaCloudToken: "home/.opscrew/projects/<id>/apps/docs/grafana_cloud_token",
+        previewKey: "home/.opscrew/projects/<id>/apps/docs/preview_key",
+        previewKeyPub: "home/.opscrew/projects/<id>/apps/docs/preview_key.pub",
         shared: {
           architecture: "app/opscrew/apps/docs/architecture.json",
           architectureMd: "app/opscrew/apps/docs/ARCHITECTURE.md",
@@ -489,6 +499,8 @@ describe("resolveProjectPaths for the apps of a repository", () => {
         checkKey: `${home}/check_key`,
         beszelSecrets: `${home}/beszel_secrets.json`,
         grafanaCloudToken: `${home}/grafana_cloud_token`,
+        previewKey: `${home}/preview_key`,
+        previewKeyPub: `${home}/preview_key.pub`,
         shared: {
           architecture: "app/opscrew/apps/docs/architecture.json",
           architectureMd: "app/opscrew/apps/docs/ARCHITECTURE.md",

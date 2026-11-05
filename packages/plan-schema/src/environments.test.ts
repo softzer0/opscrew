@@ -189,7 +189,56 @@ describe("environmentsOf", () => {
     });
     expect((error as Error).message).not.toContain("alpha");
   });
+
+  it("lists a preview environment like any other", async () => {
+    await addEnvironment("prod");
+    await addPreviewEnvironment("preview");
+    await addEnvironment("staging", "prod");
+    expect(await environmentsOf(root)).toEqual(["prod", "preview", "staging"]);
+  });
+
+  it("refuses an environment promoted from a preview environment", async () => {
+    await addEnvironment("prod");
+    await addPreviewEnvironment("preview");
+    await addEnvironment("staging", "preview");
+    await expect(environmentsOf(root)).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        'The environment "staging" is promoted from "preview", a preview environment: previews run pull requests\' code, which never goes on to another environment.',
+      hint: 'Promote "staging" from another environment, or deploy it from main (environment.deploySource.from: main).',
+    });
+  });
+
+  it("refuses a second preview environment, naming both", async () => {
+    await addEnvironment("prod");
+    await addPreviewEnvironment("preview");
+    await addPreviewEnvironment("review");
+    await expect(environmentsOf(root)).rejects.toMatchObject({
+      code: "INVALID_INPUT",
+      message:
+        'The app has more than one preview environment ("preview", "review"): an app has at most one.',
+      hint: "Remove one with `opscrew env remove <name> --confirm <name>`.",
+    });
+  });
 });
+
+/** Writes a preview environment's plan (data-model.md) in its own folder. */
+async function addPreviewEnvironment(name: string): Promise<void> {
+  const { deployment: _deployment, ...plan } = prodPlan;
+  const preview: DeployPlan = {
+    ...plan,
+    app: { ...prodPlan.app, name: `${prodPlan.app.name}-${name}` },
+    environment: {
+      name,
+      deploySource: { from: "main" },
+      runner: "github",
+      previews: { cap: 3, lifetimeDays: 7, domain: "app.example.com" },
+    },
+    dns: { provider: "cloudflare", zone: "example.com", proxied: false, www: false },
+    deployment: {},
+  };
+  await writeArtifact("plan", resolveProjectPaths(root, { environment: name }).files.plan, preview);
+}
 
 describe("appsOf", () => {
   it("lists the first app at the root before it is set up, and at the analysed folder", async () => {

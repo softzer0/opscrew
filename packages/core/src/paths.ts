@@ -37,6 +37,12 @@ export interface ProjectFiles {
   beszelSecrets: string;
   /** The Grafana Cloud access token (`grafana_cloud_token`), private. */
   grafanaCloudToken: string;
+  /**
+   * A preview environment's preview key (`preview_key`): an SSH key servers let run only
+   * `opscrew-preview`, whose private half goes to GitHub. The deploy key stays on this computer.
+   */
+  previewKey: string;
+  previewKeyPub: string;
   /** The files every environment of the app shares, at the app's prod paths. */
   shared: SharedProjectFiles;
 }
@@ -233,6 +239,8 @@ export function resolveProjectPaths(
       checkKey: path.join(projectHomeDir, "check_key"),
       beszelSecrets: path.join(projectHomeDir, "beszel_secrets.json"),
       grafanaCloudToken: path.join(projectHomeDir, "grafana_cloud_token"),
+      previewKey: path.join(projectHomeDir, "preview_key"),
+      previewKeyPub: path.join(projectHomeDir, "preview_key.pub"),
       shared,
     },
   };

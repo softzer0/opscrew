@@ -117,7 +117,8 @@ async function furtherApps(root: string): Promise<{ key: string; record: AppReco
  * not its folder's, or a plan whose `app.key` is not its app's.
  * @throws OpsCrewError `INVALID_INPUT` for an app the repository does not have (listing its apps),
  * a folder that is not an environment's name, an environment promoted from one that does not
- * exist, or environments promoted in a cycle.
+ * exist or from a preview environment, more than one preview environment, or environments
+ * promoted in a cycle.
  */
 export async function environmentsOf(root: string, app?: string): Promise<string[]> {
   if (app !== undefined) await requireApp(root, app);
@@ -125,6 +126,7 @@ export async function environmentsOf(root: string, app?: string): Promise<string
   const folder = app === undefined ? "opscrew" : `opscrew/apps/${app}`;
   const appFlag = app === undefined ? "" : ` --app ${app}`;
   const sources = new Map<string, string | undefined>();
+  const previews: string[] = [];
   const prod = await readArtifactFields("plan", paths.files.plan, PlanPlaceSchema);
   if (prod?.environment?.name !== undefined) {
     throw new ArtifactError({
@@ -165,6 +167,7 @@ export async function environmentsOf(root: string, app?: string): Promise<string
     }
     checkKey(plan, file, app);
     sources.set(name, sourceOf(plan.environment.deploySource));
+    if (plan.environment.previews !== undefined) previews.push(name);
   }
 
   for (const [name, source] of sources) {
@@ -177,6 +180,23 @@ export async function environmentsOf(root: string, app?: string): Promise<string
         },
       );
     }
+    if (source !== undefined && previews.includes(source)) {
+      throw new OpsCrewError(
+        "INVALID_INPUT",
+        `The environment "${name}" is promoted from "${source}", a preview environment: previews run pull requests' code, which never goes on to another environment.`,
+        {
+          hint: `Promote "${name}" from another environment, or deploy it from main (environment.deploySource.from: main).`,
+        },
+      );
+    }
+  }
+  if (previews.length > 1) {
+    const names = previews.map((name) => `"${name}"`).join(", ");
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `The app has more than one preview environment (${names}): an app has at most one.`,
+      { hint: `Remove one with \`opscrew env remove <name>${appFlag} --confirm <name>\`.` },
+    );
   }
   return inSourceOrder(sources);
 }

@@ -169,6 +169,16 @@ export const ProjectFactsSchema = z.strictObject({
         atStartup: z.boolean(),
       })
       .optional(),
+    /**
+     * Command that seeds the database of a new preview once, run from the repository root like
+     * `releaseCommand`. Absent when the app has none.
+     */
+    seedCommand: CommandLineSchema.optional(),
+    /**
+     * Detection's note on seeding, in plain English that says what to do next: why there is no
+     * seed command (Django, Drizzle: set one yourself).
+     */
+    seedNote: z.string().min(1).optional(),
     outputDir: z.string().min(1).optional(),
     /**
      * The working directory of the last stage of the app's own Dockerfile (its last `WORKDIR`,

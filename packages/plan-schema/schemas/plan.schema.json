@@ -85,6 +85,40 @@
         "secrets": {
           "type": "string",
           "enum": ["environment", "prefixed"]
+        },
+        "previews": {
+          "type": "object",
+          "properties": {
+            "cap": {
+              "default": 3,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            },
+            "lifetimeDays": {
+              "default": 7,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 30
+            },
+            "domain": {
+              "type": "string",
+              "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$"
+            },
+            "seed": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["domain"],
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

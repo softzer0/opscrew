@@ -365,6 +365,39 @@ export const RUNNER_HOST_NAME_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 export const RUNNER_HOST_NAME_MESSAGE =
   "must be 1-32 lower-case letters, digits or hyphens and start with a letter: the name of a runner machine of the project, never its address";
 
+/** A whole number from `min` to `max`, refused with `message` (naming what the number is for). */
+function boundedInt(min: number, max: number, message: string) {
+  return z.int({ error: message }).min(min, { error: message }).max(max, { error: message });
+}
+
+/**
+ * `plan.environment.previews`: a preview environment, which runs one app per pull request,
+ * `<app.name>-pr-<number>` at `pr-<number>.<domain>`, on its own server (ADR 0026). Absent for every
+ * other environment.
+ */
+export const PreviewsSchema = z.strictObject({
+  /** How many previews run at once. */
+  cap: boundedInt(
+    1,
+    20,
+    "must be a whole number from 1 to 20: how many previews run at once",
+  ).default(3),
+  /** A preview not updated this many days is removed. */
+  lifetimeDays: boundedInt(
+    1,
+    30,
+    "must be a whole number of days from 1 to 30: a preview not updated this long is removed",
+  ).default(7),
+  /** The base name: previews are `pr-<number>.<domain>`. Design sets the app's prod hostname. */
+  domain: FqdnSchema,
+  /**
+   * The command that seeds a new preview's database once, or `null` for none. Absent until design
+   * sets the detected one.
+   */
+  seed: CommandLineSchema.nullable().optional(),
+});
+export type Previews = z.output<typeof PreviewsSchema>;
+
 /**
  * `plan.environment`: which of the app's environments this plan deploys, and how. Absent, or
  * without a `name`, the plan is the app's `prod` environment (`opscrew/plan.yaml`); every other
@@ -412,6 +445,8 @@ export const EnvironmentSchema = z.strictObject({
    * GitHub plan supports: a GitHub environment of this name, or repository secrets prefixed with it.
    */
   secrets: z.enum(["environment", "prefixed"]).optional(),
+  /** Set for a preview environment only: its previews' bounds, base name and seed. */
+  previews: PreviewsSchema.optional(),
 });
 
 /**
@@ -1257,6 +1292,150 @@ function checkRunnerBuild(
   }
 }
 
+/** The longest app name of a preview environment: `<app.name>-pr-999999` fits in 41 characters. */
+const PREVIEW_APP_NAME_MAX = 31;
+
+/**
+ * The rules of a preview environment (`environment.previews`, ADR 0026): a named environment
+ * following main on a server OpsCrew deploys to over SSH, built and deployed from GitHub's
+ * machines; one server, nothing else on it (no add-ons, check, monitoring, signing or deploy
+ * tags); a DNS-only Cloudflare zone holding the wildcard record, with no hostname of its own; and
+ * an app name short enough for each preview's.
+ */
+function checkPreviews(
+  environment: NonNullable<DeployPlanFields["environment"]>,
+  previews: Previews,
+  plan: DeployPlanFields,
+  ctx: z.RefinementCtx,
+): void {
+  const issue = (path: (string | number)[], message: string) =>
+    ctx.addIssue({ code: "custom", path, message });
+  if (environment.name === undefined) {
+    issue(
+      ["environment", "previews"],
+      "is only for a named environment: prod's plan can't hold previews; add a preview environment with opscrew env add preview --previews",
+    );
+  }
+  if (plan.target.provider === "own" && plan.target.access === "tunnel") {
+    issue(
+      ["target", "access"],
+      `must be "public" with previews: previews need a server with a public address, as GitHub's runners connect to it over SSH and Let's Encrypt reaches it for each preview's certificate; set target.access to "public" for a server the internet reaches, or choose a cloud server`,
+    );
+  }
+  const { provider } = plan.target;
+  if (!onOneServer(provider)) {
+    issue(
+      ["target", "provider"],
+      `can be "hetzner", "digitalocean" or "own" with previews: previews run on a server OpsCrew deploys to over SSH, which a ${provider} target is not; choose a cloud server or a server you own for the preview environment`,
+    );
+  }
+  if (environment.runner !== "github") {
+    issue(
+      ["environment", "runner"],
+      'must be "github" with previews: each pull request is built and deployed from GitHub\'s machines; set environment.runner to "github"',
+    );
+  }
+  if (environment.build !== undefined && environment.build !== "github") {
+    issue(
+      ["environment", "build"],
+      "must be \"github\" or absent with previews: pull requests' code is built only on GitHub's machines, never on a machine of yours; remove environment.build",
+    );
+  }
+  if (environment.deploySource.from !== "main") {
+    issue(
+      ["environment", "deploySource", "from"],
+      'must be "main" with previews: a preview environment deploys pull requests, never an image promoted from another environment; set environment.deploySource.from to "main"',
+    );
+  }
+  if ((plan.servers ?? []).length > 0) {
+    issue(
+      ["servers"],
+      "must be absent with previews: every preview runs on the preview environment's one server; remove servers, and every services[].server with them",
+    );
+  }
+  const observability = plan.observability;
+  const off = [
+    ["beszel", "Beszel runs on prod's servers, not on previews"],
+    ["grafanaCloud", "Grafana Cloud watches prod's servers, not previews"],
+    ["monitoring", "monitoring watches prod's servers, not previews"],
+    ["check", "the scheduled check watches a deployed app, and previews come and go"],
+  ] as const;
+  for (const [field, why] of off) {
+    if (observability?.[field]?.enabled !== true) continue;
+    issue(
+      ["observability", field, "enabled"],
+      `must be false with previews: ${why}; set observability.${field}.enabled to false`,
+    );
+  }
+  if (plan.supplyChain.sign) {
+    issue(
+      ["supplyChain", "sign"],
+      "must be false with previews: pull requests' images are short-lived and never signed; set supplyChain.sign to false",
+    );
+  }
+  if (plan.cicd.deployTags.enabled) {
+    issue(
+      ["cicd", "deployTags", "enabled"],
+      "must be false with previews: a preview is no deploy of main to tag; set cicd.deployTags.enabled to false",
+    );
+  }
+  checkPreviewDns(previews, plan, issue);
+  if (plan.app.name.length > PREVIEW_APP_NAME_MAX) {
+    issue(
+      ["app", "name"],
+      `must be at most ${PREVIEW_APP_NAME_MAX} characters with previews: each preview's app is named <app.name>-pr-<number>, which must fit in 41; shorten the app's or the environment's name`,
+    );
+  }
+}
+
+/**
+ * A preview environment's DNS: a DNS-only Cloudflare zone, without a domain or `www.` alias, that
+ * holds the base name (`previews.domain`) and so the wildcard record `*.<base>`.
+ */
+function checkPreviewDns(
+  previews: Previews,
+  plan: DeployPlanFields,
+  issue: (path: (string | number)[], message: string) => void,
+): void {
+  const { dns } = plan;
+  if (dns.provider !== "cloudflare") {
+    issue(
+      ["dns", "provider"],
+      `must be "cloudflare" with previews: OpsCrew creates the wildcard record *.${previews.domain} in your Cloudflare zone; move your domain's DNS to Cloudflare (opscrew domain connect), then set dns.provider to "cloudflare" with dns.zone`,
+    );
+    return;
+  }
+  if (dns.zone === undefined) {
+    issue(
+      ["dns", "zone"],
+      `is required with previews: the Cloudflare zone the wildcard record *.${previews.domain} goes in; set dns.zone to it`,
+    );
+  } else if (previews.domain !== dns.zone && !previews.domain.endsWith(`.${dns.zone}`)) {
+    issue(
+      ["environment", "previews", "domain"],
+      `must be ${dns.zone} or a name inside it: the wildcard record *.${previews.domain} goes in your Cloudflare zone ${dns.zone}; use a name ending in .${dns.zone}`,
+    );
+  }
+  if (dns.domain !== undefined) {
+    issue(
+      ["dns", "domain"],
+      `must be absent with previews: a preview environment serves no hostname of its own, only pr-<number>.${previews.domain}; remove dns.domain`,
+    );
+  }
+  if (dns.proxied) {
+    issue(
+      ["dns", "proxied"],
+      "must be false with previews: the wildcard record is DNS only, and the preview server gets each preview's certificate itself; set dns.proxied to false",
+    );
+  }
+  if (dns.www) {
+    issue(
+      ["dns", "www"],
+      "must be false with previews: previews have no www. alias; set dns.www to false",
+    );
+  }
+}
+
 /** True when `host` (a URL's hostname) is an IPv4 or bracketed IPv6 address, not a name. */
 function isIpHost(host: string): boolean {
   return (
@@ -1477,7 +1656,10 @@ const DeployPlanFieldsSchema = z.strictObject({
     .prefault({}),
   dns: z.strictObject({
     provider: z.enum(["cloudflare", "none"]),
-    /** Required when `provider` is `cloudflare`. */
+    /**
+     * Required when `provider` is `cloudflare`, except in a preview environment's plan, which has
+     * none (its base is `environment.previews.domain`).
+     */
     domain: FqdnSchema.optional(),
     /** Registrable zone, for example `example.com`. */
     zone: FqdnSchema.optional(),
@@ -1600,7 +1782,12 @@ const DeployPlanFieldsSchema = z.strictObject({
 type DeployPlanFields = z.output<typeof DeployPlanFieldsSchema>;
 
 const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) => {
-  if (plan.dns.provider === "cloudflare" && plan.dns.domain === undefined) {
+  const { environment } = plan;
+  if (
+    plan.dns.provider === "cloudflare" &&
+    plan.dns.domain === undefined &&
+    environment?.previews === undefined
+  ) {
     ctx.addIssue({
       code: "custom",
       path: ["dns", "domain"],
@@ -1610,6 +1797,8 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   if (
     plan.target.provider === "own" &&
     plan.target.access === "tunnel" &&
+    // A preview environment has its own refusal, as it has no domain.
+    environment?.previews === undefined &&
     // The zone is learned from Cloudflare at provision, before rendering (the renderer requires it).
     (plan.dns.provider !== "cloudflare" || plan.dns.domain === undefined)
   ) {
@@ -1646,7 +1835,10 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   if (plan.target.provider === "portainer") checkPortainerTarget(plan.target, plan, ctx);
   if (plan.target.provider === "localhost") checkLocalhostTarget(plan, ctx);
   if (isServerlessTarget(plan.target)) checkServerlessTarget(plan.target, plan, ctx);
-  if (plan.environment !== undefined) checkEnvironment(plan.environment, plan, ctx);
+  if (environment !== undefined) checkEnvironment(environment, plan, ctx);
+  if (environment?.previews !== undefined) {
+    checkPreviews(environment, environment.previews, plan, ctx);
+  }
   checkSubdomains(plan, ctx);
   checkObservability(plan, ctx);
   checkCloudflareEdgeNames(plan, ctx);
