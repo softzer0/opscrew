@@ -151,7 +151,7 @@ plus `docs/adr/0025-advise.md`, and features 000–020 (017's `status`, 020's st
 
 ## Phase 3: Wave 2
 
-- [ ] T2107 [US1] [US2] [US4] Gathering, ordering and applying, in `packages/agents/src/advise/{readings,run,apply}.ts`
+- [x] T2107 [US1] [US2] [US4] Gathering, ordering and applying, in `packages/agents/src/advise/{readings,run,apply}.ts`
   - Owns: `packages/agents/src/advise/{readings,run,apply}.ts` (+ tests)
   - Reads: plan.md "5."; spec US1, US2, US4 and the edge cases; `status/resources.ts`, `secure/` host checks, `design/run.ts` catalogues, the plan writer `addons/run.ts` uses
   - Depends: T2103, T2104, T2105, T2106

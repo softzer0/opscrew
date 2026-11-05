@@ -5,5 +5,5 @@ export * from "./rules/cost";
 export * from "./rules/reliability";
 export * from "./rules/size";
 export * from "./rules/upkeep";
-export * from "./run";
+export { type RunAdviseOptions, runAdvise } from "./run";
 export * from "./types";

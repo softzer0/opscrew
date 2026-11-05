@@ -8,6 +8,7 @@ import {
   deployedExtraServers,
   extraServerChanges,
   type ServerChange,
+  type ServerSize,
 } from "../design/server-changes";
 import { providerProfile } from "../providers";
 import { planFile } from "../runners";
@@ -31,34 +32,53 @@ interface Resize {
 }
 
 /**
- * The deployed servers (the app's and the extra ones) the plan resizes. The app's deployed server
- * is as provision last rendered it: its location and type in the committed
- * `terraform.tfvars.json` stand in for the plan before the edit.
+ * The servers OpsCrew created for `plan`'s app (the app's, by `app`, and the extra ones) as
+ * provision last rendered them: each one's location and type in the committed
+ * `terraform.tfvars.json`. A server the file doesn't hold is absent; the extra servers only once
+ * the plan was applied or planned.
  */
-async function resizes(root: string, plan: DeployPlan): Promise<Resize[]> {
-  const found: Resize[] = [];
-  const { target } = plan;
-  if (target.provider === "hetzner" || target.provider === "digitalocean") {
-    const tfvars = await committedTfvars(root, plan);
-    const names = appServerVariables();
-    const location = tfvars?.[names.location];
-    const serverType = tfvars?.[names.serverType];
-    if (typeof location === "string" && typeof serverType === "string") {
-      const last = { ...plan, target: { ...target, location, serverType } };
-      const app = appServerChange(last, plan);
-      if (app?.kind === "resize") {
-        found.push({ name: APP_SERVER, provider: target.provider, change: app });
-      }
-    }
-  }
+export async function renderedServers(
+  root: string,
+  plan: DeployPlan,
+): Promise<Map<string, ServerSize>> {
   const servers = plan.servers ?? [];
-  const current = await deployedExtraServers(
+  const rendered = await deployedExtraServers(
     root,
     plan,
     plan,
     servers.map((s) => s.name),
   );
-  const changes = extraServerChanges(current, servers);
+  const { provider } = plan.target;
+  if (provider === "hetzner" || provider === "digitalocean") {
+    const tfvars = await committedTfvars(root, plan);
+    const names = appServerVariables();
+    const location = tfvars?.[names.location];
+    const serverType = tfvars?.[names.serverType];
+    if (typeof location === "string" && typeof serverType === "string") {
+      rendered.set(APP_SERVER, { location, serverType });
+    }
+  }
+  return rendered;
+}
+
+/**
+ * The deployed servers (the app's and the extra ones) the plan resizes. Each deployed server is as
+ * provision last rendered it ({@link renderedServers}), which stands in for the plan before the
+ * edit.
+ */
+async function resizes(root: string, plan: DeployPlan): Promise<Resize[]> {
+  const found: Resize[] = [];
+  const rendered = await renderedServers(root, plan);
+  const { target } = plan;
+  const last = rendered.get(APP_SERVER);
+  if (last !== undefined && (target.provider === "hetzner" || target.provider === "digitalocean")) {
+    const app = appServerChange({ ...plan, target: { ...target, ...last } }, plan);
+    if (app?.kind === "resize") {
+      found.push({ name: APP_SERVER, provider: target.provider, change: app });
+    }
+  }
+  const servers = plan.servers ?? [];
+  const changes = extraServerChanges(rendered, servers);
   for (const { name, target } of servers) {
     const change = changes.get(name);
     // Only cloud servers have changes; the check narrows the provider's type.

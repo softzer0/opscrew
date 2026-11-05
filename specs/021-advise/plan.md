@@ -160,13 +160,17 @@ Each rule is `(readings) => Proposal[]`, pure, tested on fixtures at the thresho
 
 - `runAdvise(deps, plan, options)`: refuses an environment that isn't deployed; reads everything of
   plan.md "Summary" (each source optional: what couldn't be read is listed, never fatal), runs the
-  rules, orders by urgency then category, and returns `AdviceReport` (`proposals`, `checked`,
-  `basis`: `history` with days or `one-reading`, `notRead`).
+  rules, orders by urgency then category (moving, size, security, upkeep, cost, reliability,
+  components), and returns `AdviceReport` (`proposals`, `checked`, `basis`: `history` with days or
+  `one-reading`, `notRead`). The rules size and price the servers as provision last rendered them
+  (`renderedServers`, shared with the disk guard), so a plan edit not provisioned yet shows as
+  "already in the plan, not provisioned yet" with `opscrew provision`. A move in progress is the
+  first proposal (`moving`), and nothing that changes the plan is proposed beside it.
 - `applyProposal(deps, plan, id)`: reads again, finds the proposal by id (refusing an unknown or no
   longer valid one, naming the current ids), and for a plan proposal writes the plan through its
   writer (the server's `serverType`, a container's `memoryMb`, the server's `backups`,
-  `observability.check.enabled`); prints the new
-  monthly price and "run `opscrew provision`". A command proposal prints its command.
+  `observability.check.enabled`); prints the new monthly price and "run `opscrew provision`". A
+  command proposal prints its command, a manual one its text.
 - The audit log holds only reads (and the plan write with `--apply`).
 
 ### 5b. Provision refuses a smaller disk (T2114)

@@ -41,8 +41,9 @@ readHistory(deps, plan, services?): Promise<Record<string, ServerHistory> | unde
 sizeRules(readings): Proposal[]; costRules(readings): Proposal[];
 reliabilityRules(readings): Proposal[]; upkeepRules(readings): Proposal[]; componentRules(readings): Proposal[];
 // T2107
-runAdvise(deps, plan, options?): Promise<AdviceReport>;
-applyProposal(deps, plan, id): Promise<{ plan: DeployPlan; summary: string } | { command: string }>;
+runAdvise(deps, plan, options?): Promise<AdviceReport>;          // options: services, github, cloudflare seams (RunAdviseOptions)
+applyProposal(deps, plan, id, options?): Promise<AppliedProposal>;
+type AppliedProposal = { plan: DeployPlan; summary: string } | { command: string } | { manual: string };
 ```
 
 ## connectors (T2103)
