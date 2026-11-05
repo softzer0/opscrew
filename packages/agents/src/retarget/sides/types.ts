@@ -12,17 +12,27 @@ import type { RetargetResult } from "../types";
 export type MoveSideKind = "cloud" | "own" | "portainer";
 
 /**
- * One named volume on a side. Volumes are paired across the sides by `owner` and `key`, never by
- * Docker's name, which differs between Compose projects.
+ * Where a side keeps one mount's data: a named Docker volume (Portainer, SQLite, a few catalog
+ * kinds), or a folder on the server bound into the service (`/srv/data/<app>/<service>` on a server
+ * OpsCrew deploys to over SSH). The carrier mounts either.
+ */
+export type SideSource = { kind: "volume"; name: string } | { kind: "bind"; path: string };
+
+/**
+ * One mount of the app's data on a side. Mounts are paired across the sides by `owner` and `key`,
+ * never by a volume's name or a folder's path, which differ between sides.
  */
 export interface SideVolume {
-  /** The service whose volume it is; `app` for the app's own, `monitoring` for its stack's. */
+  /** The service whose data it is; `app` for the app's own, `monitoring` for its stack's. */
   owner: string;
-  /** Compose's volume key (the `com.docker.compose.volume` label): the same on both sides. */
+  /**
+   * The path the service mounts it at inside its container (`/var/lib/postgresql/data`): the
+   * catalog renders the same on every side, whether the source is a volume or a folder.
+   */
   key: string;
-  /** Docker's name of the volume on this side. */
-  name: string;
-  /** Its size in bytes (`system/df`), for the summary's minutes. */
+  /** Where the data is on this side. */
+  source: SideSource;
+  /** Its size in bytes (`system/df` for a volume, the carrier's `du` for a folder). */
   bytes: number;
 }
 
@@ -76,7 +86,7 @@ export interface MoveSide {
   startEdge(session: MoveSession): Promise<void>;
   /** Whether the app answers its health route on this side. */
   healthy(session: MoveSession): Promise<boolean>;
-  /** The app's named volumes on this side: its services', its own and its monitoring stack's. */
+  /** The app's data mounts on this side: its services', its own and its monitoring stack's. */
   volumes(session: MoveSession): Promise<SideVolume[]>;
   /**
    * `--finish` (the old side) and `--abort` (the new side): removes what the move made or left
