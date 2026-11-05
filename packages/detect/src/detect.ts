@@ -64,6 +64,7 @@ import { detectRelease } from "./release";
 import { byDepth, inFolder } from "./release/context";
 import { runtimeEvidence } from "./runtime-evidence";
 import { declaredRuntimeVersions, firstLine } from "./runtime-versions";
+import { detectSeed } from "./seed";
 import {
   addComposeRedisEngines,
   addDependencyServices,
@@ -759,6 +760,9 @@ export async function detectProjectDetails(
     }
     if (start) build.startCommand = start;
     const pm = jsPm;
+    const runScript = pm
+      ? (script: string) => (member ? jsRun(pm, script, member) : cdPrefix(jsRun(pm, script)))
+      : undefined;
     const release = await detectRelease({
       appDir,
       files: scopedFiles,
@@ -769,15 +773,20 @@ export async function detectProjectDetails(
       frameworks: appFrameworkNames,
       ecosystem,
       read,
-      ...(pm
-        ? {
-            runScript: (script: string) =>
-              member ? jsRun(pm, script, member) : cdPrefix(jsRun(pm, script)),
-          }
-        : {}),
+      ...(runScript ? { runScript } : {}),
     });
     if (release.command) build.releaseCommand = release.command;
     if (release.note) build.releaseNote = release.note;
+    const seed = await detectSeed({
+      appDir,
+      files: scopedFiles,
+      unit: primary?.unit,
+      frameworks: appFrameworkNames,
+      read,
+      ...(runScript ? { runScript } : {}),
+    });
+    if (seed.command) build.seedCommand = seed.command;
+    if (seed.note) build.seedNote = seed.note;
   } else {
     const output = await staticOutputDir(primary, read, filesIn);
     if (output) build.outputDir = joinRel(appDir, output);
