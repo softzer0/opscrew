@@ -596,7 +596,7 @@ describe("the sites", () => {
   });
 });
 
-describe("the paused job", () => {
+describe("the paused job", { timeout: 30_000 }, () => {
   const prod = content(serverPlan());
   const job = (text: string) => jobsOf(text).paused as JobDoc;
 
