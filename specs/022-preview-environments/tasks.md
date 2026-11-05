@@ -407,4 +407,25 @@ script's contract or what is redacted; snapshots may change only where a test fi
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server`
   - Effort: medium
 
+### Found in the live runs (T2214)
+
+- [x] T2221 A GitHub environment without any rule gets OpsCrew's branch rule (found live, run 6)
+  - Owns: `packages/agents/src/provision/secrets.ts` (+ its tests), `docs/guide/environments.md`, `docs/guide/previews.md`
+  - Why: prod's deploy job names `production`, so GitHub creates that environment itself on the first
+    deploy. Provision then finds an environment it didn't create and leaves its rules alone, so prod
+    never gets its branch rule, and the previews' secrets check refuses for good (its hint, provision
+    prod again, can't help).
+  - Accept:
+    - `setEnvironmentRules` also sets the branch rule (after the same `github-settings` approval)
+      on a GitHub environment OpsCrew didn't create when it has no rule at all (every branch may
+      deploy, no required reviewer, no wait timer): there is nothing of the user's to change. An
+      environment with any rule of the user's stays as it is, as today. Such an environment is not
+      recorded as created (destroy doesn't delete it).
+    - The secrets check's hint for an environment without a branch rule stays accurate: provisioning
+      it again now adds the rule, unless it has rules of the user's, then it says to set the branch
+      rule in the repository's environment settings.
+    - environments.md and previews.md say it in one sentence each; tests for both cases.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: medium
+
 - [ ] T2216 Release (lead): `docs/releasing.md`.
