@@ -234,3 +234,17 @@ Elasticsearch 9.5, Meilisearch 1.55, Typesense 30.2, ClickHouse 26.3, Neo4j 2026
     root-equivalent anyway. OpsCrew already treats the Portainer token as one.
 - **Not checked:** Edge Agent environments, and containers that a stack created (the spike made
   its own). The live pass covers stacks; Edge stays refused for the window until checked.
+
+### S2 again, through OpsCrew's connector (T2304, 2026-11-05, Portainer CE 2.45.2, the pinned image)
+
+- **1 GiB through the proxy:** a chunked `PUT` took 72 s (about 15 MB/s), and a `GET` 35 s (about
+  30 MB/s). The window's estimate uses the slower figure for Portainer.
+- **A standard user's token:** with the environment granted (`UserAccessPolicies`), it creates
+  volumes and containers, moves 1 GiB both ways, deploys a stack, and stops and starts that stack's
+  container. On a Compose container the administrator made, its stop gets HTTP 403. So a move works
+  with the token of the user whose token deployed the app's stacks (OpsCrew's own), or with an
+  administrator's.
+- **Status codes:** volume create answers 200 through Portainer, where Docker answers 201, so
+  callers accept any 2xx. Portainer's own 401 and 403 pass through unchanged.
+- **Setup:** a fresh Portainer 2.45.2 needs the `X-Setup-Token` from its log for the admin's
+  first login.
