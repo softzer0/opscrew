@@ -370,3 +370,69 @@ No new dependency.
   zone, otherwise says the name would be public and suggests the plain one.
 - **Surfaces (T2226):** the CLI's flags and prompts, the guide's previews page (addresses), the
   environments page (hidden addresses), the skill, and the live pass on a preview zone.
+
+## 12. Two opt-ins (US9, US10, research R7; added 2026-11-05 after 0.2.3)
+
+No new dependency. Constitution 1.8.0 changes principle I's standing-approval bullet. The rest
+of the Constitution Check above stands. The default stays a server and a domain of their own.
+
+**A. On another environment's server (`previews.server.environment`).**
+- **Plan (T2229):** `previews.server: { environment: <name> }`, which needs `target.provider: own`.
+  OpsCrew neither creates nor deletes that server; `arch` and `edge` are the host's, and `access`
+  is `public`. The server's address and logins are never copied into the preview environment's
+  state: every reader takes them from the host environment.
+- **The root:** unchanged. An own target's root is DNS only, and its wildcard points at
+  `server_ipv4` and `server_ipv6`, which the CLI supplies as `TF_VAR_*`, never in tfvars. On a shared
+  server provision supplies the host's addresses: the `server_ipv4` and `server_ipv6` outputs of
+  its root on a server OpsCrew created, or its `.opscrew` `server.json` on the user's own.
+- **Agents (T2232):**
+  - **One helper** resolves the host's paths, plan and logins for every reach of the preview
+    server: the host plan, preview commands, `verify`, `drift`, `status`, the GitHub secrets
+    `HOST` and `KNOWN_HOSTS`. It uses the deploy login as `runAs: "login"` on a server OpsCrew
+    created, and the recorded admin login as root on the user's own.
+  - **`env add`** offers each eligible, provisioned environment and checks the R7.3 refusals.
+    Inspection's apps must be the host environment's only.
+  - **Design** fits the cap into the memory the host's server has left, prices no server, and makes
+    the host environment's sizing and `advise` count the previews.
+  - **Provision** skips the server, its base and the edge switch, and the approval names the host
+    and repeats the warning.
+  - **Refusals:** `destroy` and `retarget` of the host environment, and a proxy switch on its
+    server. `destroy --env preview` removes the previews, the recipe and the wildcard, and never
+    the server.
+  - **Assumptions to check:** "a server OpsCrew creates holds only this app" (the edge switch,
+    clean-up steps, disk and container checks in `verify`, `secure` and `status`) must hold or
+    refuse on a host server with previews.
+
+**B. Under the app's zone (`previews.domain` below `dns.zone`).**
+- **Plan (T2229):** `previews.domain` equals `dns.zone` (a zone of its own) or is a name below it
+  (the app's zone). The second is what makes the root hold an advanced pack. There is no new field.
+- **Cloudflare (T2230):** read-only connector calls, each checked with zod: the pack quota
+  (`advanced.allocated`, `used`), Total TLS (`enabled`), and the zone's packs (id, type, hosts,
+  status).
+- **The root (T2231):** below the zone, a `cloudflare_certificate_pack` named `previews`, with
+  `type = "advanced"`, `hosts = [<zone>, "*.<domain>"]`, `certificate_authority = "lets_encrypt"`,
+  `validation_method = "txt"`, `validity_days = 90` and `lifecycle { create_before_destroy =
+  true }`. Its id is an output.
+- **Agents (T2233):**
+  - **`env add`:** a domain below the app's zone asks for the confirmation (`--app-zone` in a
+    script) and refuses before any change, with the dashboard steps for each:
+    - without ACM;
+    - with Total TLS on;
+    - with records at or below the domain;
+    - with a domain that is an app or environment hostname, or a parent of one.
+  - **Provision:** the same checks before the plan. After apply, it polls the pack (read-only)
+    until `active`, for up to 10 minutes; otherwise it says previews answer once Cloudflare issues
+    it, and that `verify` shows it.
+  - **The Origin CA names and the rules:** they already follow `previews.domain` (`*.<domain>` and
+    `<domain>`, `ends_with(http.host, ".<domain>")`); they sit in the app's zone beside the app's
+    own rules through the shared plan.
+  - **`verify` and `drift`:** the pack active and Total TLS off.
+  - **`destroy`:** says that ACM stays on.
+- **Surfaces (T2234):**
+  - **CLI:** the `--share-server <env>` and `--app-zone` flags, with their prompts.
+  - **The guide:** the previews page gets a "Fewer servers or one domain" section (both opt-ins,
+    their risks, the refusals, ACM, cookies, how to undo each), and the environments page links to
+    it.
+  - **The skill.**
+  - **The live pass:** `OPSCREW_E2E_PREVIEWS_SHARED=1` runs previews on a dev environment's
+    Hetzner server, and B's refusal on a zone without ACM.

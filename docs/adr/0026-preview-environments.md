@@ -73,3 +73,22 @@ workflow would be no bound at all.
 - **Previews beside prod on its server:** a pull request's code would run next to prod's data.
 - **Workers preview URLs for sites:** they run with prod's bindings and secrets, and need an
   account-wide token in the job.
+
+## Amendments
+
+- **2026-11-05, hidden addresses (022 research R6).** D6 changed: the one wildcard, `*.<zone>`,
+  is proxied, on a Cloudflare zone used only for previews, and the preview server holds one
+  Cloudflare Origin CA certificate for it. Each preview is `pr-<n>-<random>.<zone>`, so no public
+  certificate names a preview, the server's address stays hidden, and its web ports accept only
+  Cloudflare. Let's Encrypt's weekly limit no longer applies.
+- **2026-11-05, two opt-ins (022 research R7, constitution 1.8.0).** Both were asked for by the
+  founder.
+  - **D4 gains an opt-in.** The user may run previews on another environment's app server, one
+    environment named in the plan (`previews.server`), never prod's or any server prod runs on.
+    They opt in after a warning that anyone who can push a branch then runs code beside that
+    environment's data and secrets, and the recipe's approval repeats it.
+  - **D6 gains an opt-in.** The preview domain may be a name below the app's own zone. A
+    Cloudflare advanced certificate pack for `*.<domain>` (Advanced Certificate Manager, a paid
+    add-on) then keeps previews' names out of public certificates, provided Total TLS is off. The
+    domain's cookies are shared with previews, and the user is told so.
+  - Without either opt-in, nothing changes: previews get a server and a zone of their own.

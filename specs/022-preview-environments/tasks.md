@@ -5,7 +5,7 @@ description: "Tasks for 022-preview-environments"
 # Tasks: Preview environments per pull request
 
 **Input**: `specs/022-preview-environments/`:
-- spec.md, plan.md, research.md (R1–R5), data-model.md;
+- spec.md, plan.md, research.md (R1–R7), data-model.md;
 - contracts/opscrew-preview.md;
 
 plus `docs/adr/0026-preview-environments.md`, constitution 1.7.0, and features 000–021 (015's
@@ -515,3 +515,147 @@ Added by the founder on 2026-11-05: previews on a domain of their own behind Clo
   - Effort: medium
 
 - [x] T2216 Release (lead): `docs/releasing.md`.
+
+### Two opt-ins (US9, US10, research R7, plan.md "12.")
+
+The founder added both on 2026-11-05, after 0.2.3: previews may run on another environment's
+server (never prod's), and under the app's own zone with Cloudflare's Advanced Certificate Manager.
+They aren't released on their own; they ship with 023. Waves: T2229 and T2230, then T2231 and T2232,
+then T2233, then T2234.
+
+- [x] T2228 Spec, plan, research R7, data model, ADR 0026 (D4, D6), constitution 1.8.0 (lead).
+
+- [ ] T2229 [P] [US9] [US10] The opt-ins in the schema, in `packages/plan-schema/`
+  - Owns: `packages/plan-schema/src/**` (+ tests, regenerated schemas)
+  - Accept:
+    - `previews.server?: { environment }` (strict, an environment name, never `prod`), which needs
+      `target.provider: own` with `access: public`, each with a plain message.
+    - `previews.domain` equal to `dns.zone` or a name below it (the refinement's message names both).
+    - Plans without these parse as before.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema`
+  - Effort: medium
+
+- [ ] T2230 [P] [US10] Certificate packs and Total TLS, read-only, in `packages/connectors/cloudflare/`
+  - Owns: `packages/connectors/cloudflare/src/**` (+ tests)
+  - Accept: three read-only client calls, each checked with zod, each with a plain error that
+    names the token permission (Zone → SSL and Certificates → Read) when Cloudflare refuses:
+    - `certificatePackQuota(zoneId)`: `{ allocated, used }` from `GET
+      /zones/{id}/ssl/certificate_packs/quota`; with no `advanced` in the answer, both are 0.
+    - `totalTls(zoneId)`: `{ enabled }` from `GET /zones/{id}/acm/total_tls`.
+    - `listCertificatePacks(zoneId)`: `[{ id, type, hosts, status }]` from `GET
+      /zones/{id}/ssl/certificate_packs?status=all`, paged as the client pages.
+    - Fake-fetch tests, with no token in any error.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare`
+  - Effort: medium
+
+- [ ] T2231 [US10] The advanced certificate pack in the preview root, in `packages/iac-templates/`
+  - Owns: `packages/iac-templates/src/**` (+ tests, snapshots, fixtures)
+  - Depends: T2229
+  - Accept:
+    - With `previews.domain` below `dns.zone`, the preview root has
+      `cloudflare_certificate_pack.previews` (data-model.md: the zone and `*.<domain>`, Let's
+      Encrypt, `txt`, 90 days, `create_before_destroy`) and an output
+      `previews_certificate_pack_id`. With the domain equal to the zone, nothing changes
+      (snapshots).
+    - A preview plan with `previews.server` renders as an own target's root does (DNS only, the
+      wildcard to `server_ipv4`/`server_ipv6`), shown by a test.
+    - Whatever matches a preview's address escapes the domain's dots, for a domain several labels
+      deep.
+    - `tofu validate` passes on the new root (the existing harness).
+  - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
+  - Effort: medium
+
+- [ ] T2232 [US9] Previews on another environment's server, in `packages/agents/`
+  - Owns: `packages/agents/src/**` (+ tests)
+  - Depends: T2229
+  - Reads: research R7.3 (1), plan.md "12." A
+  - Accept:
+    - **One helper** resolves the host environment's paths, plan and logins. Everything that
+      reaches the preview server uses it:
+      - the previews host plan: on a server OpsCrew created, the deploy login (`runAs: "login"`);
+        on the user's own, the recorded admin login as root;
+      - `preview list`, `logs` and `destroy`;
+      - `verify`, `drift` and `status`;
+      - the GitHub secrets `HOST` and `KNOWN_HOSTS`;
+      - the TF_VAR addresses of the preview root, from the host's root outputs or its
+        `server.json`.
+
+      Nothing of the host's address or logins is copied into the preview environment's state.
+    - **`env add --previews`:**
+      - `--share-server <env>` is the scripted opt-in. Interactively, "Where should previews run?"
+        lists each eligible, provisioned environment's server, followed by a confirmation that
+        defaults to no.
+      - The warning (research R7.3 (1)) is printed both ways.
+      - Refused before any change, each in plain words: prod, or a server prod runs on; a server
+        with apps besides that environment's (from inspection); no public SSH or a tunnel; an edge
+        other than Caddy; a preview environment, Portainer, localhost or a site as the host; a host
+        not provisioned; a cap that doesn't fit the memory left after the host's needs (it says
+        the cap that fits).
+      - The plan written is T2229's (`target: own`, `previews.server`).
+    - **Design:** no server price. The host environment's design and `advise` count the previews'
+      memory (`cap` × a preview's limits) while a preview environment names it.
+    - **Provision:** no server, base or edge switch. The approval names the host environment and
+      repeats the warning.
+    - **Refusals on the host environment:** `destroy`, `retarget`, and a proxy switch on its server,
+      while previews run there. Each refusal names `opscrew destroy --env <preview>`.
+      `destroy --env <preview>` removes the previews, the recipe and the wildcard, never the
+      server.
+    - **"Holds only this app" assumptions** (the edge switch, clean-up steps, container and disk
+      checks in `verify`, `secure` and `status`) are checked with a host server carrying previews:
+      each either holds or refuses plainly. Findings go in the report.
+    - **Tests:** fakes for both hosts (a server OpsCrew created, and the user's own), and a leak
+      test for addresses and keys.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: xhigh
+
+- [ ] T2233 [US10] Previews under the app's zone, in `packages/agents/`
+  - Owns: `packages/agents/src/**` (+ tests)
+  - Depends: T2230, T2231, T2232
+  - Reads: research R7.1 and R7.3 (2), plan.md "12." B
+  - Accept:
+    - **`env add --previews --domain <name below the app's zone>`:**
+      - `--app-zone` is the scripted opt-in. Interactively, a confirmation that defaults to no and
+        first says what it costs (ACM, a paid add-on, with no price named) and what it shares
+        (cookies set for the whole domain reach previews, where a pull request's code can read
+        them, and previews can set such cookies).
+      - Refused before any change, with the dashboard steps: no ACM (`allocated` 0); Total TLS on;
+        records at or below the domain; a domain that is an app or environment hostname, or a
+        parent of one.
+      - Without the opt-in, today's refusal stands, and it names `--app-zone`.
+    - **Provision:**
+      - The same checks before any plan.
+      - After apply, it polls the pack (read-only, injected clock) until `active`, for up to 10
+        minutes; otherwise it says previews answer once Cloudflare issues it, and `verify` shows
+        when.
+      - The Origin CA certificate and the shared rules use `*.<domain>` and `<domain>`, beside the
+        app's own in the app's zone; the app's own rules and certificate are unchanged (test).
+    - **`verify` and `drift`:** the pack active and Total TLS off, each a check with a plain fix.
+    - **`destroy --env <preview>`:** says that ACM stays on until the user turns it off in the
+      dashboard.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T2234 [US9] [US10] The CLI, the guide, the skill and the live pass for the opt-ins
+  - Owns: `packages/cli/src/**`, `packages/cli/test/live/**` (+ tests), `plugin/skills/opscrew-deploy/**`,
+    `docs/guide/previews.md`, `docs/guide/environments.md`, `docs/e2e.md`
+  - Depends: T2232, T2233
+  - Accept:
+    - **The CLI:** `env add --previews` gains `--share-server <env>` and `--app-zone`, with their
+      help and prompts.
+    - **The guide:** previews.md gets a "Fewer servers or one domain" section: both opt-ins, what
+      each risks (the warning's words), the refusals, ACM and Total TLS, the cookie caveat, and how
+      to undo each. environments.md links to it.
+    - **The skill** says the same.
+    - **The live pass:**
+      - `OPSCREW_E2E_PREVIEWS_SHARED=1` provisions a dev environment on Hetzner and previews on its
+        server: a pull request's preview answers; dev keeps answering; `destroy --env dev` is
+        refused while previews run; `destroy --env preview` leaves dev's server and dev working;
+        then dev is destroyed.
+      - B's refusal runs on the preview zone, which has no ACM.
+      - docs/e2e.md says how to run both.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew && node plugin/validate.mjs && pnpm lint`
+  - Effort: high
+
+- [ ] T2235 Live runs (lead): T2234's pass on the final code, recorded in `docs/e2e-coverage.md`.
+
+- [ ] T2236 Simplify (lead): a review of the opt-ins' diff for reuse and simplicity.

@@ -253,6 +253,62 @@ proxied app suggests `staging-<random>.<zone>`.
    replace; where the name would get its own public certificate, it says so and suggests the plain
    name.
 
+### User Story 9 - Previews on dev's or staging's server, by choice (Priority: P2)
+
+Added by the founder after 0.2.3 (research R7): a user who already pays for a dev or staging
+server can run previews on it instead of a server of their own, after OpsCrew tells them plainly
+what that risks.
+
+**Why this priority**: one server fewer for small teams whose test environments hold only test
+data.
+
+**Independent Test**: on a provisioned dev environment, `env add preview --previews --share-server
+dev`: OpsCrew warns, asks, and designs previews with no server of their own. A pull request's
+preview runs on dev's server beside dev, which keeps working. `destroy --env preview` leaves dev
+and its server as they were.
+
+**Acceptance Scenarios**:
+
+1. **Given** `env add preview --previews`, **Then** "Where should previews run?" also offers each
+   provisioned environment's server (never prod's), and choosing one shows the warning and asks
+   for a confirmation that defaults to no. In a script, `--share-server <env>` is the opt-in and
+   prints the warning.
+2. **Given** a server prod runs on, one with apps other than that environment's, one without
+   public SSH, one whose edge isn't Caddy, or a cap that doesn't fit, **Then** OpsCrew refuses
+   before any change and says why.
+3. **When** the user provisions previews, **Then** no server is created. The wildcard points at
+   the environment's server; the recipe is installed there through that environment's login; and
+   the approval names the environment and repeats the warning.
+4. **Given** previews on dev's server, **Then** `destroy --env dev`, `retarget --env dev` and a
+   switch of dev's proxy refuse until the previews are removed. `destroy --env preview` removes
+   the previews, the recipe and the wildcard, and never the server.
+
+### User Story 10 - Previews under the app's own domain, by choice (Priority: P3)
+
+Added by the founder after 0.2.3 (research R7): previews at `pr-<n>-<random>.previews.example.com`
+instead of on a second domain, for a user who pays for Cloudflare's Advanced Certificate Manager.
+
+**Why this priority**: one domain to manage, at the price of ACM and of sharing the domain's
+cookies.
+
+**Independent Test**: on a zone with ACM and Total TLS off, `env add preview --previews --domain
+previews.example.com --app-zone`: provision makes a wildcard record and an advanced certificate pack
+for `*.previews.example.com`, and Certificate Transparency logs name no preview. On a zone
+without ACM, OpsCrew refuses and says how to turn it on.
+
+**Acceptance Scenarios**:
+
+1. **Given** a preview domain below the app's zone, **Then** OpsCrew explains what it costs (ACM)
+   and shares (cookies set for the whole domain), and asks for a confirmation that defaults to no.
+   In a script, `--app-zone` is the opt-in.
+2. **Given** a zone without ACM, with Total TLS on, or with records at or below the domain,
+   **Then** OpsCrew refuses before any change, with the dashboard steps.
+3. **When** the user provisions previews, **Then** the approved plan holds the proxied wildcard and
+   an advanced certificate pack for the zone and `*.<domain>`. Provision waits for the pack to be
+   active, and `verify` and `drift` check it and Total TLS.
+4. **When** the preview environment is destroyed, **Then** the pack and the wildcard go, and
+   OpsCrew says ACM stays on until the user turns it off.
+
 ### Edge Cases
 
 - **No preview domain yet:** setup refuses and points to `opscrew domain buy` (or adding a domain
@@ -377,6 +433,32 @@ proxied app suggests `staging-<random>.<zone>`.
 - **FR-2227**: The guide MUST say what hidden addresses protect against and what they don't (a
   shared link, a public repository's comments).
 
+**Opt-ins (US9, US10, research R7)**
+- **FR-2228**: A preview environment MAY run on another environment's app server
+  (`previews.server.environment`) only when the user opts in for that environment after the
+  warning. Never prod's, or any server prod runs on. The server must run no app except that
+  environment's, take public SSH, and use the Caddy edge; that environment must be provisioned;
+  and the cap must fit the memory left after that environment's needs. Each refusal comes before
+  any change.
+- **FR-2229**: On another environment's server, provision MUST create no server. It MUST point the
+  wildcard at that server's public addresses and install the recipe through that environment's
+  login, with the approval naming the environment and repeating the warning. Preview commands,
+  `verify`, `drift` and `status` MUST reach the server the same way.
+- **FR-2230**: While previews run on an environment's server, `destroy` and `retarget` of that
+  environment, and a switch of its proxy, MUST refuse. Its design and `advise` MUST count the
+  previews' memory. `destroy` of the preview environment MUST NOT touch the server beyond the
+  recipe and the previews.
+- **FR-2231**: The preview domain MAY be a name below the app's Cloudflare zone only when the user
+  opts in after being told about ACM and cookies, and only with ACM on, Total TLS off and no record
+  at or below the domain. The domain must also be neither a hostname of the app or an environment
+  nor a parent of one.
+- **FR-2232**: Below the app's zone, the preview root MUST hold an advanced certificate pack for
+  the zone and `*.<domain>` (Let's Encrypt, TXT validation, 90 days, the new pack before the old),
+  approved with the rest. Provision MUST wait up to 10 minutes for the pack to be active.
+  `verify` and `drift` MUST check the pack and Total TLS.
+- **FR-2233**: The guide MUST cover both opt-ins: what each risks, the warning, the refusals, ACM
+  and the cookie caveat, and how to undo each.
+
 ### Key Entities
 
 - **Preview environment:** an environment with `previews` set; one per app.
@@ -407,7 +489,9 @@ The lead's defaults, for the founder to change:
   for previews.
 - **No password in front of an environment** in this feature (roadmap, later); previews send
   `noindex`.
-- **One preview server per app.**
+- **One preview server per app,** of its own unless the user chooses another environment's (US9).
+- **A domain of their own,** unless the user chooses a name below the app's zone and pays for ACM
+  (US10).
 
 ## Out of scope
 
@@ -417,3 +501,5 @@ The lead's defaults, for the founder to change:
 - Previews of several apps wired to each other.
 - Copies of prod's data, or of any other environment's.
 - Several apps' previews sharing one server.
+- Previews on prod's server, ever.
+- Turning Advanced Certificate Manager on or off (a purchase the user makes in the dashboard).

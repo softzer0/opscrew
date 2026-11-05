@@ -373,3 +373,110 @@ Lead decisions (superseding R3.6 for previews):
    (DNS only, or a name two levels deep), `env add` says it would be visible and suggests the plain
    name. Prod is unchanged.
 4. **No password** in this feature (roadmap, later).
+
+## R7. Two opt-ins (founder, 2026-11-05, after 0.2.3)
+
+After reading the previews page, the founder asked whether previews could sit where dev or
+staging already run, and under the app's own domain. Both are now opt-ins, built as a follow-up
+to 022 and released together with 023. A domain and a server of their own stay the default,
+because only that setup keeps previews fully apart.
+
+### R7.1 Outside facts (Cloudflare, official docs, 2026-11-05)
+
+- **Advanced Certificate Manager (ACM)** is a paid add-on for each zone, bought in the dashboard.
+  The docs give no price, and no documented API turns it on
+  (developers.cloudflare.com/ssl/edge-certificates/advanced-certificate-manager/). A pack is DV only
+  and holds up to 50 hosts. A wildcard in a pack covers one level, and the docs' example pairs
+  `*.example.com` with `*.staging.example.com`.
+- **Ordering a pack:** `POST /zones/{zone_id}/ssl/certificate_packs/order` with `type: advanced`,
+  `hosts` (1 to 50, which MUST include the zone apex), `certificate_authority` (`google`,
+  `lets_encrypt` or `ssl_com`), `validation_method` (`txt`, `http` or `email`) and
+  `validity_days` (14, 30, 90 or 365). The token needs Zone → SSL and Certificates → Edit, which
+  OpsCrew's token already has for origin protection. Packs list with
+  `GET .../ssl/certificate_packs?status=all` and are deleted with `DELETE .../certificate_packs/{id}`.
+  The docs state no issuance time; the statuses include `pending_validation`,
+  `pending_issuance` and `active`.
+- **Quota:** `GET /zones/{zone_id}/ssl/certificate_packs/quota` returns `advanced: { allocated,
+  used }` (Read is enough). The docs don't say that `allocated: 0` means no ACM, but it is the only
+  read-only sign. Checked live on 2026-11-05 on a Free zone without ACM: `allocated: 0, used: 0`;
+  Total TLS answered `{ enabled: false }`; the pack list paged with `result_info`, and showed the
+  Universal SSL packs (`universal`, `active` and `backup_issued`).
+- **Terraform / OpenTofu** (`cloudflare_certificate_pack`, provider v5; OpsCrew pins `~> 5.27`):
+  `zone_id`, `type = "advanced"`, `certificate_authority`, `validation_method`, `validity_days` and
+  `hosts`. A pack can't be updated in place, so any change makes a new one; to avoid a gap, the new
+  pack is created before the old one is removed. The docs say nothing about waiting for issuance.
+- **Total TLS** issues a certificate for each proxied hostname that Universal SSL doesn't cover.
+  It needs ACM. A certificate for an exact name beats a wildcard
+  (developers.cloudflare.com/ssl/reference/certificate-and-hostname-priority/), and every public
+  certificate is published in Certificate Transparency logs. So with Total TLS on, a preview name
+  could get its own published certificate. The docs don't say whether this happens for names a
+  wildcard record serves.
+- **Certificate Transparency** publishes the names a certificate holds. A pack for
+  `*.previews.example.com` publishes only the wildcard and the apex, never a preview's name.
+
+### R7.2 What OpsCrew has to build on
+
+- Several apps on one server are 013's (R2.3): the shared edge, one Compose project and folder per
+  app, `otherActiveApps` in the ssh-host connector. The previews' host plan already runs as the
+  deploy login on a server OpsCrew created (`runAs: "login"`) and as root on the user's own server.
+- The previews' Origin CA names and the rules' wildcard condition already come from
+  `previews.domain` (`previewZoneNames`, `hostCondition`), so a domain below a zone mostly needs
+  the checks to allow it.
+- An own target's root has DNS only; a preview root on another environment's server needs the same
+  shape, with the addresses of that environment's server.
+
+### R7.3 Lead decisions
+
+1. **On another environment's server (opt-in A).** `opscrew env add preview --previews
+   --share-server <env>`, or a choice in "Where should previews run?", followed by a confirmation
+   that defaults to no. The warning, shown at `env add` and again in the host plan's approval, says
+   that anyone who can push a branch then runs code on `<env>`'s server, beside its data and
+   secrets: if that code escaped its container, it could reach them. So use it only when `<env>`
+   holds test data and test keys.
+   - **What it shares:** previews run on `<env>`'s app server as extra apps, as on their own
+     server. The preview environment has no server of its own. Its root holds only the proxied
+     wildcard (to that server's public addresses, read at provision), plus the pack below when
+     there is one. Every SSH connection goes the way `<env>`'s own does: its deploy login and pinned
+     host key, and its recorded admin login on a server of the user's.
+   - **Refused** (each with a plain reason):
+     - prod, or any server prod runs on;
+     - a server that runs apps other than `<env>`'s;
+     - a server that takes no public SSH (closed public SSH, a tunnel), because GitHub's machines
+       reach previews over SSH;
+     - a server whose edge isn't Caddy;
+     - a preview environment, Portainer, this computer, or a site;
+     - `<env>` not yet provisioned;
+     - a cap that doesn't fit the memory the server has left after `<env>`'s own needs.
+   - **Cost:** no server of its own, so none in the budget. `<env>`'s design and `advise` count the
+     previews' memory in its server's needs.
+   - **The host environment:** `destroy --env <env>` and `retarget --env <env>` refuse while
+     previews run on its server, and so does a switch of its server's proxy. `destroy --env
+     preview` removes the previews, the recipe and the wildcard, and never the server.
+   - **Constitution I** forbids a standing approval from reaching another environment's servers.
+     It becomes an opt-in the user makes for one named environment, never prod's, after being told
+     what the approval can then reach (1.8.0, ADR 0026 D4).
+2. **Under the app's own domain (opt-in B).** The preview domain may be a name below the app's
+   Cloudflare zone, for example `previews.example.com`, so that previews are
+   `pr-<n>-<random>.previews.example.com`. To stay hidden behind the proxy, such names need an
+   advanced certificate pack for `*.previews.example.com`.
+   - **Opt-in:** interactively, a confirmation that defaults to no; in a script, `--app-zone` with
+     `--domain`.
+   - **Checks, before any change:**
+     - ACM is on (`advanced.allocated` > 0);
+     - Total TLS is off (a per-name certificate would publish each preview's name);
+     - no record sits at the domain or below it;
+     - the domain is no hostname of the app or an environment, nor a parent of one.
+
+     A failed check is refused, with the dashboard steps.
+   - **The pack:** made in the preview root by `cloudflare_certificate_pack`, approved by hash with
+     the rest: `hosts = [<zone>, "*.<domain>"]`, Let's Encrypt, `txt` validation, 90 days, created
+     before an old one is removed. Provision waits up to 10 minutes for it to become active, and
+     says so when it isn't yet. `verify` and `drift` check the pack and Total TLS.
+   - **Cookies:** the confirmation and the guide say that a cookie the app sets for the whole
+     domain (`Domain=example.com`) reaches previews, where a pull request's code can read it, and
+     that previews can set such cookies too.
+   - **Destroy** removes the pack. ACM itself stays on, and the user turns it off in the dashboard.
+   - **Price:** ACM's price is shown in Cloudflare's dashboard. OpsCrew names no figure and adds
+     none to the budget, because the user turns ACM on there before OpsCrew uses it.
+3. **Live:** A runs on a dev environment on Hetzner. B needs ACM on a zone, a monthly cost the
+   founder decides on. Until then, B's live check is the refusal on a zone without ACM.

@@ -92,3 +92,39 @@ IPv4 (and IPv6 when the server has one), DNS only, no CAA.
   certificate for `*.<zone>` and `<zone>`; each preview's `.preview` keeps its random part.
 - A preview's address: `pr-<n>-<random>.<zone>`, `<random>` 10 of `[a-z0-9]`.
 - Another environment's suggested hostname: `<env>-<random>.<zone>` (10 random characters).
+
+## Opt-ins (US9, US10)
+
+A preview plan on another environment's server (A):
+
+```yaml
+target: { provider: own, mode: vps-compose, arch: amd64, access: public, edge: caddy }
+environment:
+  name: preview
+  previews:
+    server: { environment: dev }   # dev's app server; never prod's
+```
+
+- The preview root is an own target's, and holds no server: `TF_VAR_server_ipv4` and
+  `TF_VAR_server_ipv6` are the host server's public addresses, which provision reads from the host
+  environment.
+- On the host server, the recipe sits in `/srv/apps/<app>-preview/` and each preview is
+  `<app>-preview-pr-<n>`, as on a server of their own, beside `<app>-dev`.
+
+A preview plan under the app's zone (B): `dns.zone: example.com`, `previews.domain:
+previews.example.com`. The root gains:
+
+```hcl
+resource "cloudflare_certificate_pack" "previews" {
+  zone_id               = var.zone_id
+  type                  = "advanced"
+  hosts                 = ["example.com", "*.previews.example.com"]
+  certificate_authority = "lets_encrypt"
+  validation_method     = "txt"
+  validity_days         = 90
+  lifecycle { create_before_destroy = true }
+}
+```
+
+Its address is `pr-<n>-<random>.previews.example.com`. The Origin CA certificate covers
+`*.previews.example.com` and `previews.example.com`.

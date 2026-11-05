@@ -7,8 +7,9 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 
 Done: 000–022. [022 preview environments](022-preview-environments/) was built on 2026-11-05,
 with addresses nobody can guess on a domain of their own (the founder's change that day), and
-passed its live pass on the final code. Next: 023 retarget anywhere, which waits for the founder's
-go-ahead.
+passed its live pass on the final code. Being built now: 022's two opt-ins (research R7: previews on
+another environment's server, and under the app's own zone with Advanced Certificate Manager). Then
+023 retarget anywhere (the founder's go-ahead, 2026-11-05). Both ship in one release once 023 is done.
 
 ## 019 Rollback
 
@@ -137,7 +138,9 @@ Done (2026-11-05): [research](022-preview-environments/research.md),
 [spec](022-preview-environments/spec.md), [plan](022-preview-environments/plan.md),
 [tasks](022-preview-environments/tasks.md), ADR 0026, constitution 1.7.0 (the standing approval), and
 the guide page `docs/guide/previews.md`. Previews live on a Cloudflare zone of their own at
-`pr-<n>-<random>.<zone>` (research R6). The sketch below is the roadmap's, kept as the founder's
+`pr-<n>-<random>.<zone>` (research R6). Two opt-ins follow it (founder, 2026-11-05, research R7,
+constitution 1.8.0): another environment's server (never prod's), and a name below the app's own
+zone with Advanced Certificate Manager. The sketch below is the roadmap's, kept as the founder's
 input.
 
 Founder agreed, 2026-10-23. A short-lived environment per pull request: created when it opens,
