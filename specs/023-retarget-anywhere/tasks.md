@@ -1,0 +1,260 @@
+---
+description: "Tasks for 023-retarget-anywhere"
+---
+
+# Tasks: Retarget anywhere
+
+**Input:** `specs/023-retarget-anywhere/`: spec.md, plan.md and research.md (R1 to R5). Also
+today's retarget (`packages/agents/src/retarget/`), move (`packages/agents/src/move/`), and
+features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split placement).
+
+**Numbering**: T2301–T2399.
+
+**Format**: `- [ ] T#### [P] [USn] description` + `Owns / Reads / Depends / Accept / Verify / Effort`.
+
+**Rules for every task:**
+- **Approvals:**
+  - Every change goes through its approval: IaC plans and host plans by hash, stacks by hash, the
+    window's commands as one `remote-exec` approval.
+  - Deletions need the typed name.
+  - The user's own server, Portainer and its environment are never deleted or reset.
+- **Leaks:** no token, key, password, server address or bucket key in output, plans, logs, audit
+  entries, snapshots or MCP answers. Every agents task's tests include a leak check.
+- **Fixtures** never contain secret-shaped literals: use `fakeSecret()`, or `{{FAKE:…}}` with
+  `materializeFixture()`.
+- **No network in unit tests:** use fakes for the providers, servers, Portainer, Docker, GitHub and
+  Cloudflare.
+- **Refusals** come before any change, in plain words, ending "Nothing was changed." with what to do
+  next. User-facing text never names a feature number.
+- **Scope:** build only what Accept asks. Report anything else as a finding.
+- **Writing files:** long files with the Write or Edit tool, not shell heredocs.
+- **Examples:** neutral only, `example.com`, `example-app`, `203.0.113.0/24`.
+
+## Phase 1: Foundation
+
+- [ ] T2301 The lead's groundwork:
+  - ADR 0027: sides, the archive API, and the carrier and rclone images;
+  - the contracts: `StreamRunner.open(cmd, args)` returning `{ stream: Duplex; exit }`,
+    `DockerTransport.request({ method, path, headers, body?: Readable })` returning
+    `{ status, headers, body }`, and `PhaseDeps.streams`;
+  - the package scaffold `packages/connectors/docker` and the lockfile;
+  - `packages/agents/src/retarget/sides/types.ts`;
+  - the `busybox` and `rclone` digests in `packages/iac-templates/src/pins.ts`.
+
+## Phase 2: Wave 1 (parallel)
+
+- [ ] T2302 [P] The move's schema, in `packages/plan-schema/`
+  - Owns: `packages/plan-schema/src/**` (+ tests, regenerated schemas)
+  - Depends: T2301
+  - Accept:
+    - `RetargetSchema.from.target` accepts any server target (cloud, own or Portainer) and the
+      site targets.
+    - New fields:
+      - `from.objectStorage?`, the bucket being left: its presence means the bucket moves, and
+        `plan.storage.objectStorage` is the new one;
+      - `from.member?`, the old app server's network member;
+      - `retarget.empty`, the services started empty (`app` for the app's own volumes; default
+        `[]`);
+      - Portainer `web` `caddy` gains `records?: boolean`.
+    - The schema's refusals of moves to or from own servers and Portainer go. This computer and
+      previews stay refused.
+    - Existing fixtures, and cloud-to-cloud moves, parse as before.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema`
+  - Effort: high
+
+- [ ] T2303 [P] The Docker connector and the stream runner, in `packages/connectors/docker/` and `packages/core/`
+  - Owns: `packages/connectors/docker/src/**`, `packages/core/src/process*.ts` (+ tests)
+  - Depends: T2301
+  - Accept:
+    - A typed subset of the Docker API through an injected `DockerTransport`:
+      - containers: list by labels, create, start, stop, wait, logs, remove;
+      - archive `GET` and `PUT`, streamed;
+      - volumes: list, create, remove;
+      - `system/df` and image pull.
+    - The carrier operations (`readVolume`, `writeVolume`, `volumeDigest`) as plan.md
+      describes.
+    - `dialStdioTransport(open)` over `ssh … docker system dial-stdio`.
+    - `StreamRunner` in core.
+    - Errors in plain words, with no secret (a leak test).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-docker --filter=@opscrew/core`
+  - Effort: xhigh
+
+- [ ] T2304 [P] [US2] Streaming through Portainer, in `packages/connectors/portainer/`
+  - Owns: `packages/connectors/portainer/src/**` (+ tests)
+  - Depends: T2301
+  - Accept:
+    - `pinnedStream`: chunked uploads and downloads, with the pinned certificate, `X-API-Key` and
+      no fixed timeout.
+    - `dockerProxyTransport(environmentId)`, satisfying `DockerTransport`.
+    - `environmentKind`, to refuse Edge Agent environments.
+    - A gated test against a local Portainer of the pinned image (`IMAGES.portainer`,
+      `OPSCREW_DOCKER_TESTS=1`): a chunked `PUT` of
+      1 GiB, and stopping and starting a stack's container with a standard user's token. If that
+      needs an admin token, say so in the report.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-portainer`
+  - Effort: high
+
+- [ ] T2305 [P] Layouts, records and the bucket root, in `packages/iac-templates/`
+  - Owns: `packages/iac-templates/src/infra/**` (+ snapshots, fixtures)
+  - Depends: T2302
+  - Accept:
+    - `moveLayout` for every pair of cloud, own and Portainer (Caddy with `records`).
+    - The adopting `import` blocks for a Portainer side's records.
+    - The Portainer root's `module.dns` with `records`.
+    - The storage root with `bucket_previous` (`prevent_destroy`, a second provider alias).
+    - Both engines `validate`, and the cloud-to-cloud snapshots are unchanged.
+  - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
+  - Effort: xhigh
+
+## Phase 3: Wave 2 (parallel)
+
+- [ ] T2306 [P] [US3] Every catalog kind's copy, on Docker (spike S1 as a test)
+  - Owns: `packages/agents/src/retarget/catalog-copy.docker.test.ts`, `packages/iac-templates/src/catalog/**`, `packages/iac-templates/src/runtime/components.ts`
+  - Depends: T2303
+  - Accept:
+    - For every catalog kind and an app's SQLite volume, with the pinned images:
+      1. seed data, users and passwords;
+      2. stop the service;
+      3. copy its stopped volumes with the connector into a second Compose project that has been
+         created but not started;
+      4. start that project;
+      5. read the same data with the same logins; the digests match.
+    - Each fix the test needs goes into the catalog (a stop grace period, a fixed hostname, Kafka's
+      `meta.properties`).
+    - `OPSCREW_DOCKER_CROSS_ARCH=1` adds the other architecture through `--platform`.
+    - The report lists any kind that fails and why.
+  - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter @opscrew/agents exec vitest run src/retarget/catalog-copy.docker.test.ts`
+  - Effort: high
+
+- [ ] T2307 [P] [US1] The SSH sides: cloud and own
+  - Owns: `packages/agents/src/retarget/sides/{ssh,cloud,own}*.ts`, `packages/agents/src/shared/{server-record,own-server}*.ts`
+  - Depends: T2302, T2303
+  - Accept:
+    - `MoveSide` over `server-ops` and dial-stdio.
+    - own `prepare` and `remove` as plan.md "1." describes, never the server itself.
+    - The connections moved into `server.json`'s `retarget` slots and back.
+    - Tests with fakes only, and a leak test.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: xhigh
+
+- [ ] T2308 [P] [US2] The Portainer side, and Postgres in one-off containers
+  - Owns: `packages/agents/src/retarget/sides/{portainer,postgres}*.ts`, `packages/agents/src/provision/{portainer-flow,stack-plan}.ts` (+ tests)
+  - Depends: T2302, T2303, T2304
+  - Accept:
+    - `preparePortainerStacks` extracted, with provision's tests unchanged.
+    - Edge Agent refused.
+    - Postgres dump and restore for every side (`sides/postgres.ts`, over any `SideDocker`): one-off
+      postgres containers on the service's network, the dump in a move volume that copies like any
+      other, the password only in a `.pgpass` written through the archive API, and
+      `pg_restore --list` plus a SHA-256 on both ends.
+    - `remove`: the stacks and volumes, never the environment.
+    - A leak test.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: xhigh
+
+## Phase 4: Wave 3 (parallel)
+
+- [ ] T2309 [US1] [US2] [US3] Start, steps, window and switch
+  - Owns: `packages/agents/src/retarget/{start,steps,window,switch,run,session,servers,layouts,types,texts,plans}.ts` (+ tests)
+  - Depends: T2305, T2306, T2307, T2308
+  - Accept:
+    - The steps (plan.md "2."), and the window (plan.md "3."), with `--empty` and the summary's
+      sizes and minutes.
+    - A rollback empties the new volumes, and the old side serves again (SC-2302).
+    - The workflow pull request stop.
+    - Every refusal of plan.md "4." and the spec's edge cases, before any change.
+    - The DNS switch for every pair.
+    - A leak test.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: xhigh
+
+- [ ] T2310 [US1] [US2] Finish and abort, by side
+  - Owns: `packages/agents/src/retarget/{finish,abort,removal}.ts` (+ tests)
+  - Depends: T2307, T2308
+  - Accept:
+    - The old side at `--finish`, each after the typed name:
+      - cloud, as today;
+      - own, by a teardown host plan;
+      - Portainer, by a stack teardown.
+    - `--abort` removes the new side the same way.
+    - SC-2304: never a server of the user's, Portainer or its environment.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
+## Phase 5: Wave 4 (parallel)
+
+- [ ] T2311 [US4] Buckets
+  - Owns: `packages/agents/src/retarget/bucket*.ts`, `packages/agents/src/provision/storage.ts`, `packages/agents/src/destroy/storage.ts`, and the bucket call sites in `retarget/{start,steps,window,finish,abort}.ts` (+ tests)
+  - Depends: T2309, T2310
+  - Accept:
+    - plan.md "5.".
+    - FR-2312: the keys only on standard input, never in a plan, log or audit entry.
+    - Two typed names at `--finish`: the app's and the bucket's.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T2312 [US5] Sites between site hosts
+  - Owns: `packages/agents/src/retarget/site*.ts`, the dispatch in `retarget/run.ts`, `packages/agents/src/serverless/**` (+ tests)
+  - Depends: T2309
+  - Accept:
+    - plan.md "6.": Workers to Pages and back, with fakes.
+    - A site to a server, or a server to a site, refused plainly.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: xhigh
+
+## Phase 6: Wave 5 (parallel)
+
+- [ ] T2313 [US6] Several servers and monitoring
+  - Owns: `packages/agents/src/network/**`, `packages/agents/src/retarget/network*.ts`, and the network call sites in `retarget/{start,steps,finish,abort}.ts` (+ tests)
+  - Depends: T2311
+  - Accept:
+    - plan.md "7.". The old member leaves only at `--finish`.
+    - Monitoring on the app server copied, and on its own server kept.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T2314 The CLI, MCP, status and the e2e
+  - Owns: `packages/cli/src/commands/retarget*.ts`, `packages/cli/test/e2e/retarget.test.ts`, `packages/mcp-server/src/**`, `packages/agents/src/status/**`, `plugin/skills/**`
+  - Depends: T2311, T2312
+  - Accept:
+    - `--to own|portainer|<site host>`, `--answers`, `--empty` (repeatable), `--keep-bucket`, and
+      `--confirm` for both names.
+    - `opscrew_status` shows the step for every target.
+    - The e2e with fakes covers each pair.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs`
+  - Effort: high
+
+- [ ] T2315 The guide
+  - Owns: `docs/guide/retarget.md`, and links in `docs/guide/{own-server,portainer-target,object-storage,split-placement}.md`
+  - Depends: T2309, T2314
+  - Accept:
+    - Every target, the data (copy or empty, and what empty loses), the window's length, buckets
+      and egress, sites, and several servers.
+    - "To keep a service": place it on an extra server first.
+    - The shorter "can't move yet" list.
+  - Verify: `pnpm lint`
+  - Effort: medium
+
+## Phase 7: Live
+
+- [ ] T2316 [US1] [US2] [US3] [US4] The live pass, in `packages/cli/test/live/`
+  - Owns: `packages/cli/test/live/retarget-anywhere*.ts`, `docs/e2e.md`
+  - Depends: T2314
+  - Accept, gated on `OPSCREW_E2E_RETARGET_ANYWHERE=1`:
+    - An example app with Postgres, MySQL, Valkey holding jobs and a SQLite file moves from
+      Hetzner, to a throwaway server provisioned as the user's own, to DigitalOcean. Every row, job
+      and file is there afterwards.
+    - A Hetzner bucket moves.
+    - A Portainer leg: to it and back.
+    - A forced copy failure leaves the old app serving.
+    - A leak search.
+    - Cleanup always runs.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew`
+  - Effort: high
+
+- [ ] T2317 Live runs (lead): T2316's pass on the final code, recorded in `docs/e2e-coverage.md`.
+
+## Phase 8: Finish
+
+- [ ] T2318 Simplify (lead): a review of the feature's diff for reuse and simplicity.
+- [ ] T2319 Release (lead): `docs/releasing.md`, with 022's opt-ins in the same release.

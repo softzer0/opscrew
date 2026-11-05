@@ -120,8 +120,8 @@ uses the new bucket; `--finish` deletes the old bucket after its typed name.
 
 ### User Story 5 - Sites move too (Priority: P2)
 
-A site moves between Cloudflare's hosting and GitHub Pages, or between a site host and a server,
-where design offers the new target for the app.
+A site moves between Cloudflare's hosting and GitHub Pages, where design offers the new host for
+the app. Between a site and a server, the app's whole design changes, so that stays out (later).
 
 **Why this priority**: the same promise of leaving, for apps without a server.
 
@@ -133,8 +133,9 @@ provisioned and checked, DNS switches, and `--finish` removes the Pages site.
 1. **When** the user retargets a site, **Then** OpsCrew offers only the targets design offers the
    app, provisions the new one with its approvals, checks it, and switches DNS. There is no window,
    since a site has no data.
-2. **When** an app with a server moves to a site host, **Then** OpsCrew refuses it unless design
-   offers that host for the app (no services, no server process), and says why.
+2. **When** a site would move to a server, or an app with a server to a site host, **Then**
+   OpsCrew refuses it plainly and says how: `destroy`, then `interview`, `design` and
+   `provision`.
 
 ### User Story 6 - Apps on several servers, and with monitoring (Priority: P3)
 
@@ -165,6 +166,10 @@ The new app server joins the private network, Postgres stays where it is, and th
 - A host environment of previews (022 US9) moves only after its previews are removed.
 - An interrupted window recovers on the next run, as today.
 - Public SSH closed on an SSH side: refused before any change, as today.
+- A Cloudflare Tunnel on either side (an own server reached through one, Portainer's tunnel
+  modes), and Portainer behind the user's own proxy with Cloudflare DNS: refused for now. Switching
+  between a tunnel and address records needs two changes with an outage between them.
+- Two different Portainer instances: refused (one Portainer token).
 
 ## Requirements *(mandatory)*
 
@@ -179,8 +184,9 @@ The new app server joins the private network, Postgres stays where it is, and th
 - **FR-2303**: A new Portainer MUST get its stacks through stack plans approved by hash. An old
   Portainer MUST keep everything but the app's stacks and volumes at `--finish`. Edge Agent
   environments are refused.
-- **FR-2304**: Sites MUST move between Cloudflare's hosting, GitHub Pages and servers, wherever
-  design offers the new target for the app, without a window.
+- **FR-2304**: Sites MUST move between Cloudflare's hosting and GitHub Pages, wherever design
+  offers the new host for the app, without a window. A move between a site and a server is
+  refused plainly.
 - **FR-2305**: This computer and preview environments MUST be refused plainly. So MUST a
   previews' host environment while previews run on it.
 
@@ -244,5 +250,7 @@ The new app server joins the private network, Postgres stays where it is, and th
 - Moves within one cloud provider: another location, or another size (advise).
 - This computer as either side.
 - Edge Agent Portainer environments (until checked).
+- A site to a server, or a server to a site.
+- A Cloudflare Tunnel on either side.
 - Keeping a component on the old server as a special mode. Place it on an extra server first.
 - AWS (024), which joins as another target.

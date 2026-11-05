@@ -158,6 +158,11 @@ AWS, so both support previews from the start. More relevant to teams than to sol
 
 ## 023 Retarget anywhere
 
+In progress (2026-11-05): [research](023-retarget-anywhere/research.md),
+[spec](023-retarget-anywhere/spec.md), [plan](023-retarget-anywhere/plan.md),
+[tasks](023-retarget-anywhere/tasks.md). The sketch below is the roadmap's, kept as the founder's
+input.
+
 `opscrew retarget` from any target to any target: cloud ↔ own server ↔ Portainer (and AWS once it
 exists), with all the app's data. Founder agreed, 2026-10-20 ("moving from every to every provider
 no matter which should be supported"). Today's move is generic over cloud providers but refuses
@@ -286,6 +291,10 @@ never runs, they stay "not tested live" on the coverage page.
 
 ## Later, not yet placed
 
+- **Moves between a site and a server, and moves through a Cloudflare Tunnel** (lead, 2026-11-05,
+  from 023's plan): `retarget` moves between any two server targets and between site hosts. A site
+  becoming a server app (or back) changes its whole design. A tunnel on either side needs two DNS
+  changes with an outage between them. Both stay refused with the steps to do them by hand.
 - **A password in front of an environment** (founder, 2026-11-05, from 022): HTTP basic
   authentication in the Caddy site (a bcrypt hash made on the user's computer; the health route
   left open), opt-in per environment, because a login can break what calls the app (webhooks,

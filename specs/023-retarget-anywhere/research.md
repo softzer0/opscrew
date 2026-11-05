@@ -130,10 +130,10 @@ Elasticsearch 9.5, Meilisearch 1.55, Typesense 30.2, ClickHouse 26.3, Neo4j 2026
    4. the window;
    5. switch;
    6. `--finish` or `--abort`.
-2. **Sites move too:** between Cloudflare's hosting and GitHub Pages, and between a site host and a
-   server, wherever design offers the new target for the app. A site has no data, so there is no
-   window: provision the new one, check it, switch DNS. At `--finish` the old Worker or Pages site
-   goes.
+2. **Sites move too:** between Cloudflare's hosting and GitHub Pages, wherever design offers the
+   new host for the app. A site has no data, so there is no window: provision the new one, check
+   it, switch DNS. At `--finish` the old Worker or Pages site goes. Between a site and a server the
+   app's whole design changes, so that stays out (later; plan review, 2026-11-05).
 3. **This computer stays out.** It runs a copy for trying changes, not a deployment to move:
    `env remove`, then `env add`.
 4. **One way to copy a service's data: its stopped volumes, through Docker's archive API.**
@@ -145,8 +145,11 @@ Elasticsearch 9.5, Meilisearch 1.55, Typesense 30.2, ClickHouse 26.3, Neo4j 2026
         is created but not started, with a SHA-256 checked on both ends.
      3. Then the services start, then the app.
    - The plan pins the image versions, so both sides run the same ones.
-   - The same calls work over SSH and through Portainer's Docker proxy, so the copy has one shape
-     everywhere. It streams through this computer, as the dump does, and is never stored there.
+   - The same calls work over SSH (`docker system dial-stdio`) and through Portainer's Docker
+     proxy, so the copy has one shape everywhere. It streams through this computer, as the dump
+     does, and is never stored there.
+   - A pinned `busybox` carrier container empties and hashes a volume, since a service's image
+     may lack the tools (plan review).
    - Rejected: a dump tool for each kind. That would be 17 tools, each with its own handling of
      users and consistency (R1.1).
 5. **A choice for each service: copy (the default) or start empty.** `--empty <service>` in a
