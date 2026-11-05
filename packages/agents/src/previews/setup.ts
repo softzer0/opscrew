@@ -27,18 +27,32 @@ import {
   previewRecipeDir,
   previewTemplatePlan,
   type RenderedFile,
+  webOnlyFromCloudflare,
 } from "@opscrew/iac-templates";
-import type { DeployPlan, Previews } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, type Previews, readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
+import { environmentPaths } from "../environments/paths";
 import type { NetworkServer } from "../provision/network";
 import { previewTlsOf, readOriginTlsValues } from "../provision/origin-tls";
 import { serviceEnvFiles } from "../provision/secrets";
+import { serverForNetwork } from "../provision/servers";
+import type { ProvisionPhase } from "../provision/steps";
+import type { ProvisionServices } from "../provision/types";
 import { assembleAppEnv, dotenvLine } from "../shared/app-env";
 import { readValidJson } from "../shared/files";
 import { approveAndApplyHostPlan, type HostPlanOutcome } from "../shared/host-plan";
 import { appMemoryLimits } from "../shared/memory";
+import type { ServerAddress } from "../shared/server-record";
 import type { KeyPair } from "../shared/ssh-keys";
+import {
+  type PreviewServer,
+  previewServerAddress,
+  requireHostApps,
+  shareableHost,
+  sharedServerReach,
+  sharedServerWarning,
+} from "./host";
 
 /** A preview environment's env templates and its own values, as provision reads them. */
 export interface PreviewEnvironment {
@@ -165,6 +179,75 @@ export function requireServerForPreviews(facts: HostFacts, app: string, command:
   );
 }
 
+/** Another environment's server as provision reaches it ({@link prepareSharedServer}). */
+export interface SharedServerRun {
+  server: PreviewServer;
+  /** Inspected now, through the host's login. */
+  network: NetworkServer;
+  /** What GitHub's machines reach it with (`sharedServerReach`). */
+  reach: { host: string; knownHosts: string; sshPort: number };
+  /** Its public address, the preview root's `TF_VAR_server_ipv4`/`_ipv6`. */
+  address: ServerAddress;
+  /** What the previews host plan says of it (`PreviewsHostInput.shared`). */
+  shared: NonNullable<PreviewsHostInput["shared"]>;
+}
+
+/**
+ * The server of another environment the preview environment `plan` runs on (FR-2228, FR-2229), as
+ * provision reaches it before any change: its plan checked again (`shareableHost`), inspected
+ * read-only through the host's login (its admin login on the user's own server, its deploy login
+ * on one OpsCrew created, as `serverForNetwork` reaches another environment's monitoring server),
+ * refused when it runs apps besides the host's (`requireHostApps`), with its reach for GitHub's
+ * machines and its public address. Nothing of it is recorded in the preview environment's state.
+ */
+export async function prepareSharedServer(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: { services: ProvisionServices; phase: ProvisionPhase; again: string },
+): Promise<SharedServerRun> {
+  const host = plan.environment?.previews?.server?.environment as string;
+  const server = await shareableHost(deps, host, {
+    preview: deps.paths.environment,
+    again: input.again,
+  });
+  const network = await serverForNetwork(
+    server.deps,
+    {
+      plan: server.plan,
+      services: input.services,
+      phase: input.phase,
+      ownRun: undefined,
+      extraOwn: [],
+    },
+    APP_SERVER,
+  );
+  const prod = await readArtifact("plan", environmentPaths(deps.paths, "prod").files.plan);
+  requireHostApps(
+    readableRecords(network.facts.apps)
+      .filter((record) => record.state === "active")
+      .map((record) => record.app),
+    {
+      host,
+      hostApp: server.plan.app.name,
+      previewApp: plan.app.name,
+      prodApp: prod.app.name,
+      again: input.again,
+    },
+  );
+  return {
+    server,
+    network,
+    reach: await sharedServerReach(server),
+    address: await previewServerAddress(server),
+    shared: {
+      environment: host,
+      app: server.plan.app.name,
+      own: server.plan.target.provider === "own",
+      cloudflareOnly: webOnlyFromCloudflare(server.plan),
+    },
+  };
+}
+
 /** The SHA-256 of the preview values this computer last installed on the preview server. */
 const ValuesDigestSchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/) });
 
@@ -191,6 +274,13 @@ export interface PreviewsHostInput {
   readable: readonly string[];
   command: string;
   phase: PhaseName;
+  /**
+   * Another environment's server the previews share (`previews.server`, spec.md US9): its name, its
+   * app (which the plan lets stay beside the previews), whether it is the user's own (its recorded
+   * admin login, as root) rather than one OpsCrew created (its deploy login), and whether its web
+   * ports accept only Cloudflare (its plan's `security.httpAllowedFrom`).
+   */
+  shared?: { environment: string; app: string; own: boolean; cloudflareOnly: boolean };
 }
 
 /**
@@ -209,9 +299,14 @@ function bounds(
   );
   const limits = appMemoryLimits(plan).map((limit) => `${limit.name} ${limit.memoryMb} MB`);
   const names = input.env.valueNames;
+  const { shared } = input;
+  const ports =
+    shared === undefined || shared.cloudflareOnly
+      ? "the server's web ports accept only Cloudflare"
+      : `the server's web ports are open to everyone, as ${shared.environment}'s plan sets them`;
   return [
     `  At most ${plural(previews.cap, "preview")} at once; a preview with no push for ${plural(previews.lifetimeDays, "day")} is removed.`,
-    `  Addresses: pr-<number>-<random>.${previews.domain}, a random part nobody can guess, behind Cloudflare's proxy with the previews' Cloudflare Origin CA certificate, and marked noindex; the server's web ports accept only Cloudflare.`,
+    `  Addresses: pr-<number>-<random>.${previews.domain}, a random part nobody can guess, behind Cloudflare's proxy with the previews' Cloudflare Origin CA certificate, and marked noindex; ${ports}.`,
     `  Image: only ${input.imageName}, pinned by digest.`,
     `  Each preview runs ${listText(limits)} (their memory limits), on its own network with its own volumes; its passwords and keys are made on the server for it and never leave it.`,
     typeof previews.seed === "string"
@@ -248,7 +343,9 @@ export async function applyPreviewsHostPlan(
   const tls = await readOriginTlsValues(deps);
   const digest = sha256Hex(`${input.env.values}${tls.ORIGIN_TLS_CERT ?? ""}`);
   const kept = await readValidJson(valuesDigestFile(deps), ValuesDigestSchema);
-  const own = plan.target.provider === "own";
+  const { shared } = input;
+  // The host's login on a shared server: as root on the user's own, as deploy on one OpsCrew made.
+  const own = shared?.own ?? plan.target.provider === "own";
   const hostPlan = planAddon("previews", {
     app: plan.app.name,
     runAs: own ? "root" : "login",
@@ -256,8 +353,14 @@ export async function applyPreviewsHostPlan(
     repository,
     enable: { files, publicKey: input.key.publicKeyOpenSsh, valueNames: input.env.valueNames },
     secretsChanged: kept?.sha256 !== digest,
+    ...(shared === undefined ? {} : { shares: shared.app }),
   });
-  const words = own ? "your server" : "the preview server";
+  const words =
+    shared !== undefined
+      ? `${shared.environment}'s server`
+      : own
+        ? "your server"
+        : "the preview server";
   const outcome = await approveAndApplyHostPlan(deps, {
     plan: hostPlan,
     remote: server.remote,
@@ -271,6 +374,8 @@ export async function applyPreviewsHostPlan(
     phase: input.phase,
     allowDestroy: true,
     intro: [
+      // The approval repeats the warning the user opted in after (FR-2229).
+      ...(shared === undefined ? [] : [sharedServerWarning(shared.environment)]),
       "The standing approval: GitHub Actions will create, update and delete previews of same-repository pull requests within these bounds without asking again; each preview's data is deleted when it ends.",
       `Its bounds, which ${previewCommand(plan.app.name)} enforces on the server whatever a pull request's workflow asks:`,
       ...bounds(plan, previews, input, valuesFile(deps)),

@@ -1,15 +1,23 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ApprovalRequest, RemoteExec } from "@opscrew/contracts";
+import type { ProjectPaths } from "@opscrew/core";
 import { type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
-import { updateServerAddresses } from "../../shared";
+import { environmentPaths } from "../../environments/paths";
+import { knownHostsName, recordOwnServer, updateServerAddresses } from "../../shared";
 import {
   createProject,
   createTestPhaseDeps,
+  HOST_ADMIN,
+  HOST_ENV,
+  HOST_IPV4,
+  HOST_KEY,
+  hostTestPlan,
   PREVIEW_ZONE,
   previewTestPlan,
   ScriptedApprovalHandler,
   SERVER_IPV4,
+  sharedPreviewTestPlan,
   type TestPhaseDeps,
   testPlan,
 } from "../../testing";
@@ -79,4 +87,56 @@ export async function previewProject(
   // Only its presence matters: the fake shell never reads it.
   await writeFile(deps.paths.files.deployKey, "placeholder\n");
   return { deps, plan, root: project.root };
+}
+
+/** The SSH port of the user's own server's login in {@link sharedPreviewProject} (`own`). */
+export const HOST_SSH_PORT = 2222;
+
+/**
+ * A project (git, prod's plan) with `dev` provisioned on a server OpsCrew created, or the user's
+ * own (`own`, its admin login on {@link HOST_SSH_PORT}), with dev's address, deploy key and
+ * pinned host key on this computer (and the login on the user's own); and the preview
+ * environment's plan on dev's server, with deps for it. Nothing of dev's server is in the preview
+ * environment's own state.
+ */
+export async function sharedPreviewProject(
+  options: {
+    own?: boolean;
+    answer?: boolean[] | ((request: ApprovalRequest) => boolean);
+    env?: Record<string, string | undefined>;
+  } = {},
+): Promise<{ deps: TestPhaseDeps; plan: DeployPlan; host: ProjectPaths; root: string }> {
+  const own = options.own === true;
+  const plan = sharedPreviewTestPlan();
+  const project = await createProject(testPlan({ deployed: true }));
+  const deps = await createTestPhaseDeps({
+    root: project.root,
+    environment: "preview",
+    env: { OPSCREW_HOME: join(project.root, ".home-opscrew"), ...options.env },
+    ...(options.answer !== undefined
+      ? { approvalHandler: new ScriptedApprovalHandler(options.answer) }
+      : {}),
+  });
+  const host = environmentPaths(deps.paths, HOST_ENV);
+  await writeArtifact("plan", host.files.plan, hostTestPlan({ own }));
+  await writeArtifact("plan", deps.paths.files.plan, plan);
+  await updateServerAddresses(host, (current) => ({
+    ...current,
+    deployment: { ipv4: HOST_IPV4 },
+  }));
+  const port = own ? HOST_SSH_PORT : 22;
+  if (own) {
+    await recordOwnServer(host, {
+      host: HOST_IPV4,
+      port,
+      user: HOST_ADMIN,
+      agent: true,
+      reachable: true,
+    });
+  }
+  await mkdir(dirname(host.files.deployKey), { recursive: true });
+  // Only its presence matters: the fake shells never read it.
+  await writeFile(host.files.deployKey, "placeholder\n");
+  await writeFile(host.files.knownHosts, `${knownHostsName(HOST_IPV4, port)} ${HOST_KEY}\n`);
+  return { deps, plan, host, root: project.root };
 }

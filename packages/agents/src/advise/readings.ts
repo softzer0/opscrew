@@ -20,6 +20,7 @@ import { couldNotRun, runHostChecks } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { extraCatalogs } from "../design/run";
 import { readEnvironmentRequirements } from "../environments/requirements";
+import { sharedPreviewsLimit } from "../previews/host";
 import { providerProfile } from "../providers";
 import { renderedServers } from "../provision/disk-guard";
 import type { ProvisionServices } from "../provision/types";
@@ -433,9 +434,10 @@ export async function readAdvice(
   const since = new Date(at.getTime() - THRESHOLDS.historyDays * DAY_MS).toISOString();
   const { services } = options;
   const names = isServerlessProvider(plan.target.provider) ? [] : appServers(plan);
-  const [requirements, deployedPlan] = await Promise.all([
+  const [requirements, deployedPlan, sharedPreviews] = await Promise.all([
     attempt(deps, "the interview's answers", () => readEnvironmentRequirements(deps.paths)),
     asDeployed(deps, plan),
+    sharedPreviewsLimit(deps.paths),
   ]);
   const [prices, servers, history, github, cloudflare] = await Promise.all([
     priceLists(deps, deployedPlan, requirements.value),
@@ -457,6 +459,7 @@ export async function readAdvice(
       }),
     ),
     plan: deployedPlan,
+    ...(sharedPreviews === undefined ? {} : { sharedPreviewsMb: sharedPreviews.memoryMb }),
     ...(requirements.value === undefined ? {} : { requirements: requirements.value }),
     prices: prices.lists,
     upkeep: {

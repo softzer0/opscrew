@@ -11,6 +11,7 @@ import {
 } from "@opscrew/plan-schema";
 import { appFlag } from "../apps/choice";
 import type { PhaseDeps } from "../context";
+import { requireNoSharedPreviews } from "../previews/host";
 import { resolveEnvironment } from "./choice";
 import { environmentDeployed } from "./list";
 import { environmentPaths } from "./paths";
@@ -24,8 +25,8 @@ import { environmentPaths } from "./paths";
  * environment: a folder the plan was pointed to by hand stays. Returns what was removed
  * (repository paths relative to the root).
  * @throws OpsCrewError `INVALID_INPUT` for prod or an unknown environment, and
- * `PHASE_PRECONDITION` (nothing removed) while it is deployed or another environment is promoted
- * from it.
+ * `PHASE_PRECONDITION` (nothing removed) while it is deployed, another environment is promoted
+ * from it, or a preview environment names its server.
  */
 export async function removeEnvironment(
   deps: Pick<PhaseDeps, "paths" | "reporter" | "redactor">,
@@ -41,6 +42,13 @@ export async function removeEnvironment(
     );
   }
   await resolveEnvironment(paths.root, name, { app: paths.app });
+  // Not while a preview environment names its server, even one not provisioned yet.
+  await requireNoSharedPreviews(
+    paths,
+    `removing ${name}`,
+    `opscrew env remove ${name}${app}`,
+    true,
+  );
   const plan = await readArtifact("plan", paths.files.plan);
   if (await environmentDeployed(paths, plan)) {
     throw new OpsCrewError(

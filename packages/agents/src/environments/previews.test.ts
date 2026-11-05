@@ -1,10 +1,12 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { HostFactsSchema } from "@opscrew/connector-ssh-host";
 import type { FetchLike } from "@opscrew/contracts";
 import { exists, OpsCrewError } from "@opscrew/core";
 import { edgeMemoryMb } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
+  DeployPlanSchema,
   type ProjectFacts,
   type Requirements,
   readArtifact,
@@ -13,19 +15,25 @@ import {
 import { describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { runDesign } from "../design/run";
-import { readOwnServer } from "../shared";
+import { sharedServerWarning } from "../previews/host";
+import { readOwnServer, readServerAddresses, updateServerAddresses } from "../shared";
 import { appMemoryMb, SYSTEM_RESERVE_MB } from "../shared/memory";
 import {
   createTestPhaseDeps,
   euCatalog,
+  freshFacts,
+  HOST_IPV4,
+  hostTestPlan,
   makeRequirements,
   nextPostgresFacts,
   PREVIEW_ZONE,
+  sharedPreviewTestPlan,
   type TestPhaseDeps,
   TOKEN,
 } from "../testing";
 import { sitePlan } from "../testing/serverless";
 import { addEnvironment, type EnvironmentQuestion, removeEnvironment } from "./index";
+import { environmentPaths } from "./paths";
 
 const DOMAIN = "shop.example.com";
 const ZONE = "example.com";
@@ -626,5 +634,298 @@ describe("removeEnvironment of a preview environment", () => {
     // Prod's workflow and plan stay.
     expect(await exists(join(root, ".github/workflows/opscrew-deploy.yml"))).toBe(true);
     expect(await exists(prod.paths.files.plan)).toBe(true);
+  });
+});
+
+describe("addEnvironment with previews on another environment's server (US9)", () => {
+  /** dev's server: 8 GB, as inspection reads it. */
+  const SERVER = {
+    arch: "amd64" as const,
+    vcpus: 4,
+    memoryGb: 8,
+    diskFreeGb: 120,
+    os: "Ubuntu 24.04",
+  };
+  /** What dev's own containers take on it. */
+  const DEV = { name: "shop-dev", memoryMb: 1536, tunnel: false };
+  const WARNING = sharedServerWarning("dev");
+
+  /** prodApp with dev provisioned (`hostTestPlan`, or `plan`). */
+  async function withDev(plan: DeployPlan = hostTestPlan()) {
+    const app = await prodApp();
+    const dev = environmentPaths(app.prod.paths, "dev");
+    await writeArtifact("plan", dev.files.plan, plan);
+    return { ...app, dev };
+  }
+
+  it("--share-server dev: warns, designs previews on dev's server with no price, and records nothing of it", async () => {
+    const { preview } = await withDev();
+    const result = await addEnvironment(preview, {
+      previews: true,
+      shareServer: "dev",
+      answers: PREVIEWS,
+      design: { ownServer: { facts: SERVER, apps: [DEV] } },
+    });
+    const { plan } = result.design;
+    expect(plan.target).toMatchObject({ provider: "own", access: "public", edge: "caddy" });
+    expect(plan.environment?.previews).toEqual({
+      cap: 3,
+      lifetimeDays: 7,
+      domain: PREVIEW_ZONE,
+      server: { environment: "dev" },
+      seed: null,
+    });
+    expect(await readArtifact("plan", preview.paths.files.plan)).toEqual(plan);
+    expect(result.requirements.provider).toBe("own");
+    // No server price: the server is dev's, whose own containers it holds too.
+    const { chosen } = result.design;
+    expect(chosen.cost.monthly.amount).toBe(0);
+    expect(chosen.title).toBe("dev's server");
+    expect(chosen.summary).toMatch(/^dev's server \(4 vCPU, 8 GB memory/);
+    expect(chosen.summary).toContain("; dev's own containers 1536 MB;");
+    // dev is behind Cloudflare's proxy, open to Cloudflare only.
+    expect(chosen.summary).toContain(
+      "The previews are served behind Cloudflare's proxy, and dev's server lets only Cloudflare's addresses reach ports 80 and 443.",
+    );
+    expect(chosen.summary).toContain("The server is dev's: it is priced and backed up with dev.");
+    expect(chosen.summary).not.toContain("you already pay for this server");
+    expect(chosen.summary).not.toContain("backups are your responsibility");
+    expect(preview.reporter.text()).not.toContain("backups are your responsibility");
+    expect(preview.reporter.text()).toContain(WARNING);
+    // Nothing of dev's server or login in the preview environment's state.
+    expect(await readOwnServer(preview.paths)).toBeUndefined();
+    expect(await readServerAddresses(preview.paths)).not.toHaveProperty("deployment");
+  });
+
+  it("offers each provisioned environment's server, and confirms after the warning, no by default", async () => {
+    const { preview } = await withDev();
+    const asked: EnvironmentQuestion[][] = [];
+    const ask = (share: boolean) => async (questions: EnvironmentQuestion[]) => {
+      asked.push(questions);
+      return questions[0]?.id === "share" ? { share } : { ...PREVIEWS, provider: "share:dev" };
+    };
+    const error = await failure(
+      addEnvironment(preview, {
+        previews: true,
+        ask: ask(false),
+        design: { ownServer: { facts: SERVER, apps: [DEV] } },
+      }),
+    );
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toBe(
+      "The previews were not set up on dev's server. Nothing was changed.",
+    );
+    expect(await nothingWritten(preview)).toBe(true);
+    const [where, confirm] = asked;
+    expect(where?.[0]?.options?.map((o) => o.value)).toEqual([
+      "hetzner",
+      "digitalocean",
+      "own",
+      "share:dev",
+    ]);
+    expect(where?.[0]?.options?.at(-1)?.label).toBe("On the dev environment's server");
+    expect(confirm).toEqual([
+      expect.objectContaining({ id: "share", kind: "confirm", default: false, help: WARNING }),
+    ]);
+    expect(preview.reporter.text()).toContain(WARNING);
+
+    const yes = await withDev();
+    const result = await addEnvironment(yes.preview, {
+      previews: true,
+      ask: ask(true),
+      design: { ownServer: { facts: SERVER, apps: [DEV] } },
+    });
+    expect(result.design.plan.environment?.previews?.server).toEqual({ environment: "dev" });
+  });
+
+  it("asks no question of where previews run with --share-server in a terminal", async () => {
+    const { preview } = await withDev();
+    const asked: EnvironmentQuestion[][] = [];
+    const result = await addEnvironment(preview, {
+      previews: true,
+      shareServer: "dev",
+      ask: async (questions) => {
+        asked.push(questions);
+        return PREVIEWS;
+      },
+      design: { ownServer: { facts: SERVER, apps: [DEV] } },
+    });
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.map((q) => q.id)).not.toContain("provider");
+    expect(result.design.plan.environment?.previews?.server).toEqual({ environment: "dev" });
+  });
+
+  it("refuses a cap that doesn't fit what dev's server has left, saying the cap that fits", async () => {
+    const { preview } = await withDev();
+    const error = await failure(
+      addEnvironment(preview, {
+        previews: true,
+        shareServer: "dev",
+        answers: { ...PREVIEWS, cap: "20" },
+        design: { ownServer: { facts: { ...SERVER, memoryGb: 4 }, apps: [DEV] } },
+      }),
+    );
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("dev's server has 4096 MB of memory.");
+    expect(error.message).toContain("1536 MB for dev's own containers");
+    expect(error.message).toMatch(/do not fit: at most \d+ previews? fits?\./);
+    expect(error.hint).toMatch(/^Lower the cap to \d+ /);
+  });
+
+  it.each([
+    ["prod", "prod", {}, "Previews never run on prod's server"],
+    ["the preview environment itself", "preview", {}, "preview is the preview environment itself"],
+    [
+      "--target beside it",
+      "dev",
+      { provider: "hetzner" },
+      "--share-server runs previews on dev's server, and --target names a server of their own.",
+    ],
+    [
+      "--size beside it",
+      "dev",
+      { size: "cx33" },
+      "--size picks a new server's type, and dev's server has its own size.",
+    ],
+  ])("refuses %s before any change", async (_case, shareServer, answers, said) => {
+    const { preview } = await withDev();
+    const error = await failure(
+      addEnvironment(preview, {
+        previews: true,
+        shareServer,
+        answers: { ...PREVIEWS, ...answers },
+        design: { ownServer: { facts: SERVER, apps: [DEV] } },
+      }),
+    );
+    expect(error.message).toContain(said);
+    expect(error.message).toMatch(/Nothing was changed\.$/);
+    expect(await nothingWritten(preview)).toBe(true);
+  });
+
+  it.each([
+    ["dev not provisioned", hostTestPlan({ deployed: false }), [DEV], "dev is not provisioned yet"],
+    [
+      "an edge other than Caddy",
+      DeployPlanSchema.parse({
+        ...hostTestPlan(),
+        target: { ...hostTestPlan().target, edge: "nginx" },
+      }),
+      [DEV],
+      "dev's server runs nginx as its proxy",
+    ],
+    [
+      "a server prod runs on",
+      hostTestPlan(),
+      [DEV, { ...DEV, name: "shop" }],
+      "prod runs on dev's server too",
+    ],
+    [
+      "a server with another app",
+      hostTestPlan(),
+      [DEV, { ...DEV, name: "blog" }],
+      'dev\'s server also runs "blog"',
+    ],
+  ])("refuses %s before any change", async (_case, plan, apps, said) => {
+    const { preview } = await withDev(plan);
+    const error = await failure(
+      addEnvironment(preview, {
+        previews: true,
+        shareServer: "dev",
+        answers: PREVIEWS,
+        design: { ownServer: { facts: SERVER, apps } },
+      }),
+    );
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain(said);
+    expect(error.hint).toContain("opscrew env add preview --previews");
+    expect(await nothingWritten(preview)).toBe(true);
+  });
+
+  it("dev's design counts the previews' memory while the preview environment names it", async () => {
+    const { prod, preview } = await prodApp();
+    const dev = await createTestPhaseDeps({
+      root: prod.paths.root,
+      env: preview.env,
+      fetch: preview.fetch,
+      environment: "dev",
+    });
+    await addEnvironment(dev, {
+      answers: { provider: "hetzner", from: "main", runner: "github" },
+      design: { catalog: euCatalog() },
+    });
+    const alone = await runDesign(dev, { catalog: euCatalog() });
+    expect(alone.chosen.summary).not.toContain("the previews of preview");
+
+    const plan = sharedPreviewTestPlan();
+    await writeArtifact("plan", preview.paths.files.plan, plan);
+    const previewsMb = 3 * appMemoryMb(plan);
+    const shared = await runDesign(dev, { catalog: euCatalog() });
+    expect(shared.chosen.summary).toContain(`the previews of preview ${previewsMb} MB`);
+    const need = appMemoryMb(shared.plan) + previewsMb + edgeMemoryMb("caddy") + SYSTEM_RESERVE_MB;
+    expect(shared.chosen.target.memoryGb * 1024).toBeGreaterThanOrEqual(need);
+  });
+
+  it("refuses dev's own server when it no longer holds dev and the previews", async () => {
+    const { prod, preview } = await prodApp();
+    const dev = await createTestPhaseDeps({
+      root: prod.paths.root,
+      env: preview.env,
+      fetch: preview.fetch,
+      environment: "dev",
+    });
+    const small = { ...SERVER, memoryGb: 2 };
+    await addEnvironment(dev, {
+      answers: {
+        provider: "own",
+        from: "main",
+        runner: "github",
+        "server.host": "198.51.100.7",
+        "server.user": "root",
+      },
+      design: { ownServer: { facts: small, apps: [] } },
+    });
+    await writeArtifact("plan", preview.paths.files.plan, sharedPreviewTestPlan());
+    const error = await failure(runDesign(dev, { ownServer: { facts: small, apps: [] } }));
+    expect(error.message).toContain("the previews of preview");
+  });
+
+  it("reads the size of dev's server through dev's deploy login, counting dev's own needs", async () => {
+    const { preview, dev } = await withDev();
+    await updateServerAddresses(dev, (current) => ({
+      ...current,
+      deployment: { ipv4: HOST_IPV4 },
+    }));
+    await mkdir(dirname(dev.files.deployKey), { recursive: true });
+    await writeFile(dev.files.deployKey, "placeholder\n");
+    const inspected: string[] = [];
+    const facts = HostFactsSchema.parse({
+      ...freshFacts({ user: "deploy" }),
+      memoryBytes: 8 * 1024 ** 3,
+    });
+    const result = await addEnvironment(preview, {
+      previews: true,
+      shareServer: "dev",
+      answers: PREVIEWS,
+      ownServer: {
+        services: {
+          host: {
+            inspect: async (remote) => {
+              inspected.push(remote.host);
+              return facts;
+            },
+            apply: async () => {
+              throw new Error("env add applies nothing");
+            },
+          },
+        },
+      },
+    });
+    expect(inspected).toEqual([HOST_IPV4]);
+    expect(result.design.plan.environment?.previews?.server).toEqual({ environment: "dev" });
+    expect(preview.reporter.text()).toContain(
+      "Connecting to dev's server to read its size (read-only)",
+    );
+    expect(preview.reporter.text()).not.toContain(HOST_IPV4);
+    expect(await readFile(preview.paths.files.plan, "utf8")).not.toContain(HOST_IPV4);
   });
 });

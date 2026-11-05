@@ -27,7 +27,7 @@ import {
   ServiceKindSchema,
 } from "@opscrew/plan-schema";
 import { localhostHostSettingProblem } from "../localhost/preflight";
-import { appMemoryLimits, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { appMemoryLimits, type MemoryLimit, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { backgroundJobLibraries } from "./background-jobs";
 import { convertMoney } from "./cost";
 import {
@@ -1258,8 +1258,9 @@ export function appNameFor(facts: ProjectFacts): string {
  * The containers' memory on a server of `serverMb`, next to the edge's `edgeMb`, each with its
  * share of the server's monthly price when there is one (SC-1308): `Memory limits: the app 512 MB
  * (€1.37/month), mysql 512 MB (€1.37/month); OpsCrew's edge and the system 512 MB; 1.0 GB of 2 GB
- * free.` A plan's enabled add-ons (Beszel, Grafana Alloy) count as containers too. With `server`,
- * the line names the server (`Memory limits on server app: …`).
+ * free.` A plan's enabled add-ons (Beszel, Grafana Alloy) count as containers too, and so do
+ * `others` (the previews another environment runs there). With `server`, the line names the server
+ * (`Memory limits on server app: …`).
  */
 export function memoryText(
   components: Pick<Components, "app" | "processes" | "services"> &
@@ -1268,9 +1269,10 @@ export function memoryText(
   edgeMb: number,
   monthly?: Money,
   server?: string,
+  others: readonly MemoryLimit[] = [],
 ): string {
   const shared = { label: "OpsCrew's edge and the system", mb: edgeMb + SYSTEM_RESERVE_MB };
-  return limitsText(appMemoryLimits(components), shared, serverMb, monthly, server);
+  return limitsText([...appMemoryLimits(components), ...others], shared, serverMb, monthly, server);
 }
 
 /**

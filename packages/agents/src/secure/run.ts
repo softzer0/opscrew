@@ -7,7 +7,14 @@ import type {
   Scanner,
   ScanReport,
 } from "@opscrew/contracts";
-import { exists, plural, replaceNames, toPosixRelative, writeFileAtomic } from "@opscrew/core";
+import {
+  exists,
+  OpsCrewError,
+  plural,
+  replaceNames,
+  toPosixRelative,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { IMAGES, TOOLS } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
@@ -38,6 +45,7 @@ import {
   type TcpConnect,
 } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
 import { LOCAL_PROBES_SKIPPED, LOCAL_SECURE_NOTES, localSecurityChecks } from "../localhost/secure";
 import type { LocalhostServices } from "../localhost/services";
 import { planProvider, providerProfile } from "../providers";
@@ -427,6 +435,17 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   const { paths, reporter } = deps;
   const say = (text: string) => deps.redactor.redact(text);
   const plan = await readArtifact("plan", paths.files.plan);
+  // Previews on another environment's server: that server's checks are its environment's.
+  const sharedHost = plan.environment?.previews?.server?.environment;
+  if (sharedHost !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The previews of ${paths.environment} run on ${sharedHost}'s server, whose hardening \`opscrew secure\` checks for ${sharedHost}. Nothing was changed.`,
+      {
+        hint: `Run \`opscrew secure${await commandFlags(paths.root, sharedHost, paths.app)}\`; \`opscrew verify${await commandFlags(paths.root, paths.environment, paths.app)}\` checks the previews themselves.`,
+      },
+    );
+  }
   // A server the user owns is reached by its recorded login instead (see `ownSecureTarget`); the
   // user's Portainer through its API (see `portainerSecurityChecks`), never its host; this
   // computer through its Docker (see `localSecurityChecks`); a site with no server over HTTPS

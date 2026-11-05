@@ -20,6 +20,7 @@ import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { cloudflareWorkerAccount } from "../logs/cloudflare";
+import { previewServer } from "../previews/host";
 import { providerProfile } from "../providers";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import { portainerClientFor } from "../shared";
@@ -319,15 +320,20 @@ export async function appServerCommand(
   return { remote, command };
 }
 
-/** The figures of the app's server, OpsCrew's or the user's own, with one fixed command. */
+/**
+ * The figures of the app's server, OpsCrew's or the user's own, with one fixed command; a preview
+ * environment on another environment's server reads that server through that environment's login
+ * (`previewServer`), its own previews' containers only.
+ */
 async function serverFigures(
   deps: PhaseDeps,
   plan: DeployPlan,
   options: ComponentStatusOptions,
 ): Promise<Figures> {
+  const server = await previewServer(deps, plan);
   const { remote, command } = await appServerCommand(
-    deps,
-    plan,
+    server.deps,
+    server.plan,
     options,
     serverFiguresCommand(plan.app.name),
     "the server's figures",

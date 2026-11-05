@@ -12,7 +12,7 @@ import {
   serviceOf,
 } from "@opscrew/plan-schema";
 import { type Components, memoryText } from "./components";
-import { previewMemoryText } from "./previews";
+import { type PreviewHost, previewMemoryText } from "./previews";
 import {
   containersText,
   OWN_SERVER_MEMORY_TOLERANCE,
@@ -126,6 +126,8 @@ export interface OwnServerOptionInput {
   edge?: EdgeProxy;
   /** A preview server's cap: its memory line counts that many previews. */
   previewCap?: number;
+  /** A preview server that is another environment's (`previews.server`): that environment. */
+  previewHost?: PreviewHost;
 }
 
 export interface OwnServerDesign {
@@ -219,21 +221,33 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
     warnings.push(`${message} ${hint}`);
   }
 
+  const host = input.previewHost;
+  /** On another environment's server, what is said instead of the own server's price and backups. */
+  const hostLine =
+    host === undefined
+      ? undefined
+      : `The server is ${host.environment}'s: it is priced and backed up with ${host.environment}.`;
   const cost = noServerCost(
-    "Your own server (you already pay for it)",
+    host === undefined
+      ? "Your own server (you already pay for it)"
+      : `${host.environment}'s server (priced with ${host.environment})`,
     requirements.budgetMonthly.currency,
     server.asOf,
   );
 
   const os = server.description === undefined ? "" : `, ${server.description}`;
   const served =
-    access === "tunnel"
-      ? " The app is served through a Cloudflare Tunnel, so no ports are opened on the server."
-      : serving === "proxy"
-        ? " The app is served directly behind Cloudflare's proxy; a filter in Docker lets only Cloudflare's addresses reach ports 80 and 443."
-        : "";
+    host !== undefined
+      ? host.cloudflareOnly
+        ? ` The previews are served behind Cloudflare's proxy, and ${host.environment}'s server lets only Cloudflare's addresses reach ports 80 and 443.`
+        : ` The previews are served behind Cloudflare's proxy, and ${host.environment}'s server lets everyone reach ports 80 and 443, as ${host.environment}'s plan sets it.`
+      : access === "tunnel"
+        ? " The app is served through a Cloudflare Tunnel, so no ports are opened on the server."
+        : serving === "proxy"
+          ? " The app is served directly behind Cloudflare's proxy; a filter in Docker lets only Cloudflare's addresses reach ports 80 and 443."
+          : "";
   const summary = [
-    `Your own server (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${containers} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.${served}`,
+    `${host === undefined ? "Your own server" : `${host.environment}'s server`} (${server.vcpus} vCPU, ${gb(server.memoryGb)} GB memory, ${gb(server.diskGb)} GB free disk, ${arch}${os}) running ${containers} with Docker Compose behind ${EDGE_PROXIES[sizing.edge].label}.${served}`,
     input.previewCap === undefined
       ? memoryText(sizing.components, server.memoryGb * 1024, sizing.edgeMb)
       : previewMemoryText(
@@ -241,9 +255,9 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
           input.previewCap,
           server.memoryGb * 1024,
           sizing.edgeMb,
+          input.previewHost,
         ),
-    OWN_SERVER_PRICE_NOTE,
-    OWN_SERVER_BACKUPS_NOTE,
+    ...(hostLine === undefined ? [OWN_SERVER_PRICE_NOTE, OWN_SERVER_BACKUPS_NOTE] : [hostLine]),
   ].join(" ");
 
   const tradeoffs = [...warnings];
@@ -251,7 +265,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
     tradeoffs.push(
       "OpsCrew serves the app through a Cloudflare Tunnel on your Cloudflare domain: no inbound ports are opened, and deploys from GitHub go through the tunnel too.",
     );
-  } else if (serving === "proxy") {
+  } else if (host === undefined && serving === "proxy") {
     tradeoffs.push(
       "Ports 80 and 443 stay open, but OpsCrew's filter in Docker's DOCKER-USER chain lets only Cloudflare's addresses through (no Cloudflare Zero Trust needed). It fails closed: if the filter cannot be installed, Docker does not start and the site is down until it is fixed. A Cloudflare Tunnel opens no port at all.",
     );
@@ -269,11 +283,11 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
       "Postgres runs in a container on the same server; back up its data yourself, because OpsCrew cannot turn on backups on your own server.",
     );
   }
-  tradeoffs.push(OWN_SERVER_BACKUPS_NOTE);
+  tradeoffs.push(hostLine ?? OWN_SERVER_BACKUPS_NOTE);
 
   const option = DesignOptionSchema.parse({
     id: OWN_SERVER_OPTION_ID,
-    title: "Your server",
+    title: host === undefined ? "Your server" : `${host.environment}'s server`,
     summary,
     target: {
       provider: "own",

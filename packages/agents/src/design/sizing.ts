@@ -18,7 +18,7 @@ import type {
 } from "@opscrew/plan-schema";
 import { serviceOf } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
-import { appMemoryMb, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { appMemoryMb, type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { type Components, designComponents } from "./components";
 
 /** A server type design can choose: x86, available and not deprecated. */
@@ -58,6 +58,8 @@ export interface Sizing {
   externalServices: ServiceKind[];
   /** A preview server's: how many previews it holds at once, each with `components`' limits. */
   previewCap?: number;
+  /** The previews another environment runs on this server (spec.md US9), counted in `limitsMb`. */
+  sharedPreviews?: MemoryLimit;
 }
 
 /**
@@ -72,6 +74,20 @@ export function previewSizing(sizing: Sizing, cap: number): Sizing {
     // Never below one preview's floor (`sizeFor`: the services' smallest servers among it).
     memoryGb: Math.max(sizing.memoryGb, (limitsMb + sizing.edgeMb + SYSTEM_RESERVE_MB) / 1024),
     previewCap: cap,
+  };
+}
+
+/**
+ * A server's sizing ({@link sizeFor}'s) with the previews another environment runs on it too
+ * (`previews`, spec.md US9): their memory limits beside the app's.
+ */
+export function withSharedPreviews(sizing: Sizing, previews: MemoryLimit): Sizing {
+  const limitsMb = sizing.limitsMb + previews.memoryMb;
+  return {
+    ...sizing,
+    limitsMb,
+    memoryGb: Math.max(sizing.memoryGb, (limitsMb + sizing.edgeMb + SYSTEM_RESERVE_MB) / 1024),
+    sharedPreviews: previews,
   };
 }
 

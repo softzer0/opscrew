@@ -10,7 +10,13 @@ import {
   toPosixRelative,
 } from "@opscrew/core";
 import { detectProjectDetails, detectSite, normalizeAppDir } from "@opscrew/detect";
-import { type EdgeProxy, edgeMemoryMb, edgeProxy, serviceSpec } from "@opscrew/iac-templates";
+import {
+  type EdgeProxy,
+  edgeMemoryMb,
+  edgeProxy,
+  serviceSpec,
+  webOnlyFromCloudflare,
+} from "@opscrew/iac-templates";
 import {
   type CloudDeployTarget,
   type CloudProvider,
@@ -65,6 +71,7 @@ import {
 import { githubRegistry, type LocalRegistry } from "../localhost/image";
 import type { LocalhostServices } from "../localhost/services";
 import type { NetworkHostFacts } from "../network";
+import { sharedPreviewsLimit } from "../previews/host";
 import {
   type OwnServerFacts,
   planProvider,
@@ -79,6 +86,7 @@ import {
   designOptionLine,
   hasDeployment,
   hasState,
+  type MemoryLimit,
   memoryHeadroom,
   readOwnServer,
   readPortainerConnection,
@@ -136,6 +144,7 @@ import {
 } from "./portainer";
 import {
   type PreviewDesignInput,
+  type PreviewHost,
   previewCapacity,
   previewEdits,
   previewMemoryText,
@@ -471,7 +480,7 @@ async function priceOwnServer(
   designed: Designed,
   onApp: Components,
   edge: EdgeProxy,
-  previewCap: number | undefined,
+  previews: PlanBasis["previews"],
 ): Promise<DesignPreview> {
   const say = (text: string) => deps.redactor.redact(text);
   const warn = warner(deps, warnings);
@@ -485,14 +494,19 @@ async function priceOwnServer(
     serving,
     components: onApp,
     edge,
-    ...(previewCap === undefined ? {} : { previewCap }),
+    ...(previews === undefined ? {} : { previewCap: previews.cap }),
+    ...(previews?.host === undefined ? {} : { previewHost: previews.host }),
   });
   for (const warning of own.warnings) warn(warning);
   const { option } = own;
-  deps.reporter.info(
-    say(`${option.title} (${option.id}): ${lowerFirst(OWN_SERVER_PRICE_NOTE)} — recommended`),
-  );
-  deps.reporter.info(OWN_SERVER_BACKUPS_NOTE);
+  const host = previews?.host?.environment;
+  // Another environment's server is priced and backed up with that environment.
+  const priced =
+    host === undefined
+      ? OWN_SERVER_PRICE_NOTE
+      : `The server is ${host}'s: it is priced and backed up with ${host}.`;
+  deps.reporter.info(say(`${option.title} (${option.id}): ${lowerFirst(priced)} — recommended`));
+  if (host === undefined) deps.reporter.info(OWN_SERVER_BACKUPS_NOTE);
   appWarnings(facts, designed.components, warn);
   return {
     options: [option],
@@ -603,7 +617,14 @@ interface PlanBasis {
    * A preview environment's cap, or the server type chosen for it (`opscrew env add --size`),
    * whose memory gives the cap: the server is sized for that many previews.
    */
-  previews?: { cap: number; serverType?: string | undefined };
+  previews?: {
+    cap: number;
+    serverType?: string | undefined;
+    /** On another environment's server: that environment, its own needs and its web filter. */
+    host?: PreviewHost;
+  };
+  /** The previews another environment runs on this one's server: it is sized for them too. */
+  sharedPreviews?: MemoryLimit;
 }
 
 /** A preview, with the catalogue a server OpsCrew creates was priced from. */
@@ -779,7 +800,7 @@ async function priceOptions(
       designed,
       components,
       edge,
-      basis.previews?.cap,
+      basis.previews,
     );
   }
   const provider = requestedProvider(requirements);
@@ -824,6 +845,7 @@ async function priceOptions(
       deployed,
       ...(monitoring === undefined ? {} : { monitoring }),
       ...(sized === undefined ? {} : { previewCap: sized.cap }),
+      ...(basis.sharedPreviews === undefined ? {} : { sharedPreviews: basis.sharedPreviews }),
     });
     return { options, cap: sized?.cap };
   };
@@ -937,9 +959,25 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     ownServer = { ...ownServer, access, serving };
   }
 
+  // On another environment's server, what that environment's own containers take there
+  // (`sharedServerDesign`); the previews another environment runs on this environment's server
+  // (FR-2230), counted beside it.
+  const hostEnv = previews?.server?.environment;
+  const previewHost: PreviewHost | undefined =
+    hostEnv === undefined
+      ? undefined
+      : {
+          environment: hostEnv,
+          memoryMb: (ownServer?.apps ?? []).reduce((sum, app) => sum + app.memoryMb, 0),
+          cloudflareOnly: webOnlyFromCloudflare(
+            await readArtifact("plan", environmentPaths(paths, hostEnv).files.plan),
+          ),
+        };
+  const sharedPreviews = previews === undefined ? await sharedPreviewsLimit(paths) : undefined;
   const preview = await priceOptions(deps, inputs, options.catalog, warnings, ownServer, {
     previous,
     shared: basis?.plan,
+    ...(sharedPreviews === undefined ? {} : { sharedPreviews }),
     localhost: {
       services: options.localhost,
       environment:
@@ -949,7 +987,13 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
     ...(edits.monitoring === undefined ? {} : { monitoring: edits.monitoring }),
     ...(previews === undefined
       ? {}
-      : { previews: { cap: previews.cap, serverType: options.preview?.serverType } }),
+      : {
+          previews: {
+            cap: previews.cap,
+            serverType: options.preview?.serverType,
+            ...(previewHost === undefined ? {} : { host: previewHost }),
+          },
+        }),
   });
   const { facts, requirements, priceSource, components } = preview;
   // A new preview environment on a chosen server type takes the cap that type holds.
@@ -1107,18 +1151,24 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const cap = planPreviews?.cap;
   const onAppMb = appMemoryMb(onApp) * (cap ?? 1);
   if (chosen.target.provider === "own" && cap !== undefined) {
+    // On another environment's server, after that environment's own needs (`sharedServerDesign`).
     requirePreviewsFit(
       chosen.target.memoryGb * 1024,
       cap,
       appMemoryMb(onApp),
       edgeMemoryMb(edgeProxy(plan)),
+      previewHost,
     );
   } else if (chosen.target.provider === "own") {
-    // On the user's own server, its memory must hold this app next to the other OpsCrew apps.
+    // On the user's own server, its memory must hold this app next to the other OpsCrew apps,
+    // and the previews another environment runs there.
     const memory = ownServerMemory(
       chosen.target.memoryGb * 1024,
       appMemoryMb(onApp),
-      (ownServer?.apps ?? []).filter((app) => app.name !== plan.app.name),
+      [
+        ...(ownServer?.apps ?? []).filter((app) => app.name !== plan.app.name),
+        ...(sharedPreviews === undefined ? [] : [{ ...sharedPreviews, tunnel: false }]),
+      ],
       edgeMemoryMb(edgeProxy(plan)),
     );
     if (memory?.refused !== undefined) {
@@ -1228,8 +1278,15 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       ? []
       : [
           cap === undefined
-            ? memoryText(plan, serverMb, edgeMb, ownsServer ? undefined : chosen.cost.monthly)
-            : previewMemoryText(plan, cap, serverMb, edgeMb),
+            ? memoryText(
+                plan,
+                serverMb,
+                edgeMb,
+                ownsServer ? undefined : chosen.cost.monthly,
+                undefined,
+                sharedPreviews === undefined ? [] : [sharedPreviews],
+              )
+            : previewMemoryText(plan, cap, serverMb, edgeMb, previewHost),
         ]),
   ].map(say);
   for (const line of componentLines) reporter.info(line);
@@ -1237,7 +1294,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
   const placementLines = placement.lines.map(say);
   for (const line of placementLines) reporter.info(line);
   for (const warning of placement.warnings) warn(warning);
-  const headroom = memoryHeadroom(serverMb, onAppMb, edgeMb);
+  const headroom = memoryHeadroom(serverMb, onAppMb + (sharedPreviews?.memoryMb ?? 0), edgeMb);
   if (!ownsServer && serverless === undefined && headroom.low) {
     warn(lowHeadroomText(chosen.target.serverType, headroom.free));
   }

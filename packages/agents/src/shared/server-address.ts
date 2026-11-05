@@ -90,13 +90,16 @@ export function hasDeployment(plan: Pick<DeployPlan, "deployment">): boolean {
  * OpenTofu/Terraform outputs (`server_ipv4`, `server_ipv6`), which are then recorded in the local
  * state. `undefined` when the server's address is not known here. Every command that needs an
  * address reads it here (an extra server's: the local state's `servers`); it is never read from
- * or written to `opscrew/plan.yaml`.
+ * or written to `opscrew/plan.yaml`. A preview environment on another environment's server
+ * (`previews.server`) has no server of its own: `undefined`, and its root's outputs (that server's
+ * address) are never recorded in its state; `previewServerAddress` reads the host's.
  */
 export async function serverAddress(
   deps: EngineDeps,
   plan: DeployPlan,
   options: OutputsOptions = {},
 ): Promise<ServerAddress | undefined> {
+  if (plan.environment?.previews?.server !== undefined) return undefined;
   const local = (await readServerAddresses(deps.paths)).deployment;
   if (local !== undefined) return local;
   if (!hasDeployment(plan)) return undefined;

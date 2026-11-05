@@ -13,6 +13,7 @@ import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import type { ProvisionServices } from "../provision/types";
 import { deployShell } from "../status/certificates";
+import { previewServer } from "./host";
 
 /** The fakes `opscrew preview …` takes in tests: the deploy user's shell. */
 export type PreviewServices = Pick<ProvisionServices, "remote">;
@@ -72,7 +73,9 @@ export function previewNumber(text: string): number {
 }
 
 /**
- * The deploy user's shell on the preview server, with the environment's deploy key.
+ * The deploy user's shell on the preview server, with the environment's deploy key; on another
+ * environment's server, with that environment's address, deploy key and pinned host key
+ * (`previewServer`).
  * @throws OpsCrewError `PHASE_PRECONDITION` when this computer has no address or deploy key.
  */
 export async function previewShell(
@@ -80,7 +83,8 @@ export async function previewShell(
   plan: DeployPlan,
   services: PreviewServices = {},
 ): Promise<RemoteExec> {
-  const remote = await deployShell(deps, plan, services);
+  const server = await previewServer(deps, plan);
+  const remote = await deployShell(server.deps, server.plan, services);
   if (remote !== undefined) return remote;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
@@ -160,5 +164,7 @@ function flagOf(deps: PhaseDeps): Promise<string> {
 
 /** The audit entry's target of the preview server: never its address. */
 export function previewServerTarget(plan: DeployPlan): string {
+  const host = plan.environment?.previews?.server?.environment;
+  if (host !== undefined) return `${host}'s server`;
   return plan.target.provider === "own" ? "own server" : "server";
 }

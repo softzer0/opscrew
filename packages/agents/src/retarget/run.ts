@@ -1,6 +1,8 @@
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
+import { requireNoSharedPreviews } from "../previews/host";
 import { providerProfile } from "../providers";
 import { runPhase } from "../shared/phase-status";
 import { moveProvider } from "../shared/vps-target";
@@ -115,6 +117,12 @@ export async function runRetarget(
       },
     );
   }
+  // Not while another environment's previews run on this one's server (FR-2230).
+  await requireNoSharedPreviews(
+    deps.paths,
+    `moving ${name} to another provider`,
+    `opscrew retarget${await commandFlags(deps.paths.root, name, deps.paths.app)}`,
+  );
   return runPhase(deps, "retarget", async () => {
     const session =
       plan.retarget === undefined

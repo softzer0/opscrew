@@ -36,3 +36,44 @@ export function previewTestPlan(options: { own?: boolean } = {}): DeployPlan {
     },
   });
 }
+
+/** The environment whose server previews share in the tests (spec.md US9). */
+export const HOST_ENV = "dev";
+
+/** The admin login of `dev`'s server when it is the user's own, in the tests: never shown. */
+export const HOST_ADMIN = "dev-admin-7f3";
+
+/** The address of `dev`'s server in the tests: a documentation address (RFC 5737), public. */
+export const HOST_IPV4 = "198.51.100.40";
+
+/**
+ * `dev`'s plan (`shop-dev`), provisioned unless `deployed` is false: on a server OpsCrew created
+ * at Hetzner, or the user's own (`own`), behind Cloudflare's proxy on `dev.shop.example.com`, with
+ * the Caddy edge.
+ */
+export function hostTestPlan(options: { own?: boolean; deployed?: boolean } = {}): DeployPlan {
+  const deployed = options.deployed ?? true;
+  const base =
+    options.own === true
+      ? ownPlan({ deployed, domain: "dev.shop.example.com" })
+      : testPlan({ deployed, domain: "dev.shop.example.com" });
+  return DeployPlanSchema.parse({
+    ...base,
+    app: { ...base.app, name: `shop-${HOST_ENV}` },
+    environment: { name: HOST_ENV, deploySource: { from: "main" }, runner: "github" },
+    infra: { ...base.infra, dir: `opscrew/infra/${HOST_ENV}` },
+    cicd: { ...base.cicd, workflowPath: `.github/workflows/opscrew-deploy-${HOST_ENV}.yml` },
+  });
+}
+
+/** {@link previewTestPlan} on `dev`'s server: an own target with `previews.server`. */
+export function sharedPreviewTestPlan(): DeployPlan {
+  const plan = previewTestPlan({ own: true });
+  return DeployPlanSchema.parse({
+    ...plan,
+    environment: {
+      ...plan.environment,
+      previews: { ...plan.environment?.previews, server: { environment: HOST_ENV } },
+    },
+  });
+}

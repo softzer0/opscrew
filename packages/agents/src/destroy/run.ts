@@ -5,6 +5,7 @@ import { cloudTarget, runnerLabel } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { destroyLocalhost } from "../localhost/destroy";
+import { requireNoSharedPreviews } from "../previews/host";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider, providerBucket } from "../provision";
 import {
@@ -66,6 +67,7 @@ import {
 import { leaveSharedMonitoring, requireNoMonitoringSenders } from "./monitoring";
 import { destroyOwnServer } from "./own";
 import { destroyPortainer } from "./portainer";
+import { destroySharedPreviews } from "./previews";
 import { destroyCloudflareWorkers, destroyGithubPages } from "./serverless";
 import {
   confirmExtraServers,
@@ -501,6 +503,13 @@ export async function runDestroy(
   if (plan.retarget !== undefined) throw moveInProgress(plan);
   // Nor while other environments send to this one's monitoring server.
   await requireNoMonitoringSenders(deps, plan);
+  // Nor while another environment's previews run on this one's server (FR-2230).
+  const here = `opscrew destroy${(await planWhere(deps.paths.root, plan)).flag}`;
+  await requireNoSharedPreviews(deps.paths, `destroying ${deps.paths.environment}`, here);
+  // Previews on another environment's server: they go, and that server stays.
+  if (plan.environment?.previews?.server !== undefined) {
+    return destroySharedPreviews(deps, plan, options);
+  }
   if (plan.target.provider === "localhost") return destroyLocalhost(deps, plan, options);
   if (plan.target.provider === "cloudflare-workers") {
     return destroyCloudflareWorkers(deps, plan, options);

@@ -402,6 +402,22 @@ describe("sizeRules: a smaller server", () => {
     expect(withApp(7169)).toEqual([]);
   });
 
+  it("counts the previews another environment runs on the app's server (US9)", () => {
+    const quiet = history({ cpuP95: 0.1, memoryP95: 0.1 });
+    const withPreviews = (sharedPreviewsMb: number) =>
+      sized({
+        ...readingsOf(
+          { ...big, app: { ...big.app, memoryMb: 4096 } },
+          { servers: { app: server(reading({ cpus: 8 }), quiet) }, prices: [line] },
+        ),
+        sharedPreviewsMb,
+      });
+    // The app and Postgres (4608 MB), Caddy's and the system's 512 MB: 3072 MB of previews fill
+    // mid's 8192 MB; 1 MB more doesn't fit.
+    expect(ids(withPreviews(3072))).toEqual(["size.app.smaller"]);
+    expect(withPreviews(3073)).toEqual([]);
+  });
+
   it("keeps a type that holds an extra server's services, as design sizes it", () => {
     const quiet = history({ cpuP95: 0.1, memoryP95: 0.1 });
     const withDb = (memoryMb: number) => {

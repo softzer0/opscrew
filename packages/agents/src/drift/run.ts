@@ -9,7 +9,9 @@ import {
   readArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
 import { localDrift } from "../localhost/drift";
+import { previewServer, previewServerAddress } from "../previews/host";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider } from "../provision/credentials";
 import { requireNoMoveInProgress } from "../provision/guard";
@@ -77,6 +79,9 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   const services = options.services ?? {};
   const plan = await readArtifact("plan", deps.paths.files.plan);
   const ownServer = plan.target.provider === "own";
+  // Previews on another environment's server (spec.md US9): only their root and their recipe are
+  // theirs; the server and its setup are that environment's (`opscrew drift --env <it>`).
+  const sharedHost = plan.environment?.previews?.server?.environment;
 
   // 1. Preconditions: no move in progress, a deployment and its state (no network yet)
   requireNoMoveInProgress(plan);
@@ -99,11 +104,13 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   const provider = planProvider(plan);
   const cloud = providerProfile(provider).displayName;
   deps.reporter.step(
-    ownServer
-      ? `Checking the login to your server${usesCloudflare ? " and your Cloudflare access" : ""}`
-      : `Checking your ${cloud}${usesCloudflare ? " and Cloudflare" : ""} access`,
+    sharedHost !== undefined
+      ? "Checking your Cloudflare access"
+      : ownServer
+        ? `Checking the login to your server${usesCloudflare ? " and your Cloudflare access" : ""}`
+        : `Checking your ${cloud}${usesCloudflare ? " and Cloudflare" : ""} access`,
   );
-  await checkProvider(deps, provider, services);
+  if (sharedHost === undefined) await checkProvider(deps, provider, services);
   const cloudflareRules = await cloudflareRulesDrift(deps, services);
   deps.reporter.step("Comparing the generated files with what OpsCrew renders from the plan");
   const preview = await previewDeploymentFiles(deps, {
@@ -133,7 +140,17 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
         ? {
             // The server's address reaches the engine only as TF_VAR_* (FR-902), as in provision.
             prepare: async (readOutputs) => {
-              await ownEngineEnv(deps, { target: ownTarget(plan) }, env, readOutputs);
+              // On another environment's server, that environment's address (`previewServer`).
+              const address =
+                sharedHost === undefined
+                  ? undefined
+                  : await previewServerAddress(await previewServer(deps, plan));
+              await ownEngineEnv(
+                deps,
+                { target: ownTarget(plan), ...(address === undefined ? {} : { address }) },
+                env,
+                readOutputs,
+              );
             },
           }
         : {}),
@@ -163,7 +180,12 @@ export async function runDrift(deps: PhaseDeps, options: DriftOptions = {}): Pro
   // a server OpsCrew created: the app's components, once it was deployed, and the server's runner
   // (read-only, as deploy).
   let host: HostDrift | undefined;
-  if (ownServer) {
+  if (sharedHost !== undefined) {
+    const flags = await commandFlags(deps.paths.root, sharedHost, deps.paths.app);
+    notes.push(
+      `The previews run on ${sharedHost}'s server: \`opscrew drift${flags}\` checks that server and its setup.`,
+    );
+  } else if (ownServer) {
     host = await ownHostDrift(deps, plan, {
       ...(services.own !== undefined ? { own: services.own } : {}),
       ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),

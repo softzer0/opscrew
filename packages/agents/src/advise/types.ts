@@ -183,6 +183,11 @@ export interface Readings {
   /** Per server, by the plan's name (`app` or an extra server). */
   servers: Record<string, ServerReadings>;
   plan: DeployPlan;
+  /**
+   * The memory limits of the previews another environment runs on this environment's server
+   * (spec.md US9), in MB: the app's server holds them too.
+   */
+  sharedPreviewsMb?: number;
   requirements?: Requirements;
   prices: PriceList[];
   upkeep: {

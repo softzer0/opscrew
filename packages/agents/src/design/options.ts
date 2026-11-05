@@ -18,7 +18,7 @@ import {
   serviceOf,
 } from "@opscrew/plan-schema";
 import { requestedProvider, requestedRegion } from "../providers";
-import { memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
+import { type MemoryLimit, memoryHeadroom, SYSTEM_RESERVE_MB } from "../shared/memory";
 import { type Components, memoryText } from "./components";
 import {
   convertMoney,
@@ -36,6 +36,7 @@ import {
   type Sizing,
   sizeFor,
   usableOffer,
+  withSharedPreviews,
 } from "./sizing";
 import { type DesignWording, designWording } from "./wording";
 
@@ -55,6 +56,8 @@ export interface BuildDesignOptionsInput {
   monitoring?: MonitoringSettings;
   /** A preview server's cap: it is sized for this many previews at once (`previewSizing`). */
   previewCap?: number;
+  /** The previews another environment runs on this server: sized for too (`withSharedPreviews`). */
+  sharedPreviews?: MemoryLimit;
 }
 
 /** Option tiers, in display order. */
@@ -120,7 +123,12 @@ export async function buildDesignOptionSet(
   const region = requestedRegion(requirements);
   if (region === undefined) throw new Error(`${provider} requirements need a region.`);
   const app = sizeFor(facts, requirements, input.components, input.edge, input.monitoring);
-  const sizing = input.previewCap === undefined ? app : previewSizing(app, input.previewCap);
+  const sizing =
+    input.previewCap !== undefined
+      ? previewSizing(app, input.previewCap)
+      : input.sharedPreviews !== undefined
+        ? withSharedPreviews(app, input.sharedPreviews)
+        : app;
   const locations = regionLocations(region, provider);
   const backups = requirements.dataCriticality !== "none";
 
@@ -353,6 +361,8 @@ function toOption(
           serverMb,
           sizing.edgeMb,
           cost.monthly,
+          undefined,
+          sizing.sharedPreviews === undefined ? [] : [sizing.sharedPreviews],
         )
       : previewMemoryText(sizing.components, sizing.previewCap, serverMb, sizing.edgeMb),
   ].join(" ");

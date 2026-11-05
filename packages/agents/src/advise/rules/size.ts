@@ -511,14 +511,19 @@ function diskRule(
 
 /**
  * True when `offer` holds the containers the plan puts on server `name` as design sizes them: on
- * the app's server their memory limits next to the edge and the system's reserve, on an extra
- * server its services and add-ons (`extraServerNeed`). So the next `opscrew design` doesn't grow
- * a smaller server straight back.
+ * the app's server their memory limits (and the previews another environment runs there,
+ * `sharedPreviewsMb`) next to the edge and the system's reserve, on an extra server its services
+ * and add-ons (`extraServerNeed`). So the next `opscrew design` doesn't grow a smaller server
+ * straight back.
  */
-function holdsContainers(plan: DeployPlan, name: string, offer: ComputeOffer): boolean {
+function holdsContainers(
+  { plan, sharedPreviewsMb = 0 }: Pick<Readings, "plan" | "sharedPreviewsMb">,
+  name: string,
+  offer: ComputeOffer,
+): boolean {
   const serverMb = offer.memoryGb * 1024;
   if (name === APP_SERVER) {
-    const limitsMb = appMemoryMb(onAppServer(plan));
+    const limitsMb = appMemoryMb(onAppServer(plan)) + sharedPreviewsMb;
     return memoryHeadroom(serverMb, limitsMb, edgeMemoryMb(edgeProxy(plan))).fits;
   }
   const need = extraServerNeed(servicesOn(plan, name), monitoringLimits(plan, name));
@@ -555,7 +560,7 @@ function smallerRule(
         (o.vcpus < current.vcpus || o.memoryGb < current.memoryGb) &&
         cpuOn(o) <= usable &&
         memoryOn(o) <= usable &&
-        holdsContainers(readings.plan, priced.name, o),
+        holdsContainers(readings, priced.name, o),
     )
     .sort(
       (a, b) =>

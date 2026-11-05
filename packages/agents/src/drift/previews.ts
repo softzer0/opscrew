@@ -3,7 +3,8 @@
  * (its server and wildcard record) and its generated files, the recipe on the preview server is
  * compared with the one provision rendered and committed (`opscrew/environments/<env>/previews/`,
  * the same files without the values): its files, its values file, the preview key and the
- * hourly cleanup. Read-only.
+ * hourly cleanup. Read-only. On another environment's server it reads the recipe through that
+ * environment's login.
  */
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import { appDir, IMAGES, previewRecipeDir } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
+import { previewServer } from "../previews/host";
 import { serverShell } from "../status/servers";
 import { AREA_TITLES, type HostDifference } from "./host";
 import type { ServersDriftOptions } from "./servers";
@@ -59,7 +61,9 @@ export async function previewRecipeDrift(
   }
   let facts: Awaited<ReturnType<typeof inspectHost>>;
   try {
-    const shell = await serverShell(deps, plan, APP_SERVER, options.services ?? {});
+    // On another environment's server, through that environment's login (`previewServer`).
+    const server = await previewServer(deps, plan);
+    const shell = await serverShell(server.deps, server.plan, APP_SERVER, options.services ?? {});
     deps.reporter.step("Comparing the previews' recipe on the server with the repository's");
     facts = await (options.inspect ?? inspectHost)(
       shell.remote,

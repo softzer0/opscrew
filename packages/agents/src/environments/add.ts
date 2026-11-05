@@ -77,7 +77,8 @@ export type EnvironmentQuestionId =
   | "build"
   | "cap"
   | "seed"
-  | "lifetime";
+  | "lifetime"
+  | "share";
 
 /** One question of `opscrew env add` (same shape as a `Question`). */
 export interface EnvironmentQuestion extends Omit<Question, "id"> {
@@ -124,6 +125,12 @@ export interface AddEnvironmentOptions {
    * `server.*` follow-ups. See `addPreviewEnvironment`.
    */
   previews?: boolean;
+  /**
+   * With `previews`, `--share-server <env>`: the previews run on that environment's server instead
+   * of one of their own (spec.md US9), the scripted opt-in; the warning is printed. Interactively,
+   * "Where should previews run?" offers each eligible environment's server, with a confirmation.
+   */
+  shareServer?: string;
   /**
    * Draws a whole number below `max` for the random part of the suggested hostname (default:
    * node's `crypto.randomInt`).

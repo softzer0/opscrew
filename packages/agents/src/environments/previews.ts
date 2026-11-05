@@ -31,8 +31,14 @@ import {
   SERVER_FIELDS,
 } from "../interview/own-server";
 import { buildQuestions, type InterviewAnswers } from "../interview/questions";
+import {
+  requireHostApps,
+  shareableHost,
+  shareableHosts,
+  sharedServerWarning,
+} from "../previews/host";
 import { missing } from "../provision/credentials";
-import { inspectOwnServerForDesign } from "../shared/own-server-design";
+import { inspectOwnServerForDesign, sharedServerDesign } from "../shared/own-server-design";
 import {
   type AddContext,
   type AddEnvironmentOptions,
@@ -59,28 +65,40 @@ const FLAGS: Record<string, string> = {
   seed: "--seed",
 };
 
+/** The prefix of the answer that picks another environment's server (`share:dev`). */
+const SHARE = "share:";
+
 /**
- * The questions of `opscrew env add <name> --previews` (spec.md US1, US8): where the previews run
- * (a new server on prod's provider by default, or a server the user has), the region, how many run
- * at once (3), the preview domain (a Cloudflare zone of its own, no default), the seed command (the
- * detected one) and how long an idle preview lives (7 days).
+ * The questions of `opscrew env add <name> --previews` (spec.md US1, US8, US9): where the previews
+ * run (a new server on prod's provider by default, a server the user has, or the server of one of
+ * `hosts`, environments whose server previews may share), the region, how many run at once (3),
+ * the preview domain (a Cloudflare zone of its own, no default), the seed command (the detected
+ * one) and how long an idle preview lives (7 days).
  */
 export function previewQuestions(
   name: string,
-  context: { prodPlan: DeployPlan; base: Requirements },
+  context: { prodPlan: DeployPlan; base: Requirements; hosts?: readonly string[] },
   facts: ProjectFacts,
 ): EnvironmentQuestion[] {
   const interview = buildQuestions(facts, context.base);
   const asked = (id: QuestionId) => interview.find((q) => q.id === id) as Question;
   const provider = asked("provider");
   const { seedCommand, seedNote } = facts.build;
+  const hosts = context.hosts ?? [];
   return [
     {
       ...provider,
       id: "provider",
       prompt: `Where should the ${name} environment's previews run?`,
-      help: "On a small server of their own: a new one, or a server you already have with a public address and nothing else on it.",
-      options: (provider.options ?? []).filter((option) => PREVIEW_TARGETS.has(option.value)),
+      help: `On a small server of their own: a new one, or a server you already have with a public address and nothing else on it.${hosts.length > 0 ? " Or on another environment's server, beside it, after a warning." : ""}`,
+      options: [
+        ...(provider.options ?? []).filter((option) => PREVIEW_TARGETS.has(option.value)),
+        ...hosts.map((host) => ({
+          value: `${SHARE}${host}`,
+          label: `On the ${host} environment's server`,
+          hint: "beside it, only when it holds test data and test keys",
+        })),
+      ],
       default: context.prodPlan.target.provider === "digitalocean" ? "digitalocean" : "hetzner",
     },
     { ...asked("region"), id: "region" },
@@ -119,6 +137,18 @@ export function previewQuestions(
       required: true,
     },
   ];
+}
+
+/** The confirmation of previews on `host`'s server, which defaults to no. */
+function shareQuestion(host: string, warning: string): EnvironmentQuestion {
+  return {
+    id: "share",
+    prompt: `Run the previews on ${host}'s server?`,
+    help: warning,
+    kind: "confirm",
+    default: false,
+    required: true,
+  };
 }
 
 /**
@@ -222,6 +252,13 @@ async function previewZone(
  * says where the previews' values and seed come from, and designs it (`runDesign`, which shows its
  * monthly cost against the budget). A server the user owns is recorded and inspected first, as
  * `opscrew design` inspects it, since only its inspection shows the apps on it.
+ *
+ * Previews on another environment's server (FR-2228, `shareServer` or picked in the question):
+ * refused before any change for prod or a server prod runs on, a host whose plan allows none
+ * (`shareableHost`), a server with apps besides the host's (`requireHostApps`, from its
+ * inspection) and, in design, a cap that doesn't fit what the host leaves; the warning is printed,
+ * picked interactively a confirmation that defaults to no follows, and the plan is an own target's
+ * with `previews.server`, with nothing of the host's address or logins recorded here.
  */
 export async function addPreviewEnvironment(
   deps: PhaseDeps,
@@ -254,8 +291,16 @@ export async function addPreviewEnvironment(
       `Choose a shorter environment name, for example preview, then run \`opscrew env add <name>${app} --previews\` again.`,
     );
   }
-  const questions = previewQuestions(name, { prodPlan, base }, facts);
   const ask = options.answers === undefined ? options.ask : undefined;
+  // Interactively, the servers of the app's other environments that previews may share.
+  const hosts =
+    ask === undefined || options.shareServer !== undefined
+      ? []
+      : await shareableHosts(paths, context.environments);
+  // With --share-server, where previews run is answered: no question takes it for --target.
+  const questions = previewQuestions(name, { prodPlan, base, hosts }, facts).filter(
+    (question) => options.shareServer === undefined || question.id !== "provider",
+  );
   const given = options.answers ?? (ask === undefined ? {} : await ask(questions));
   const answers = answersWithDefaults(questions, given);
   for (const field of ["runner", "build"] as const) {
@@ -278,7 +323,18 @@ export async function addPreviewEnvironment(
     build: _build,
     ...rest
   } = server.rest;
-  const target = textOf(rest, "provider")?.toLowerCase();
+  // Another environment's server: `--share-server <env>`, or picked in the question.
+  const picked = textOf(rest, "provider");
+  const chosenHost = picked?.startsWith(SHARE) ? picked.slice(SHARE.length) : undefined;
+  if (options.shareServer !== undefined && textOf(given, "provider") !== undefined) {
+    throw refuse(
+      "INVALID_INPUT",
+      `--share-server runs previews on ${options.shareServer}'s server, and --target names a server of their own.`,
+      `Give one of them, then run \`${command}\` again.`,
+    );
+  }
+  const host = options.shareServer?.trim() ?? chosenHost;
+  const target = host === undefined ? picked?.toLowerCase() : "own";
   if (target === undefined || !PREVIEW_TARGETS.has(target)) {
     throw refuse(
       "INVALID_INPUT",
@@ -286,11 +342,16 @@ export async function addPreviewEnvironment(
       `Run \`${command}\` with --target hetzner, digitalocean or own.`,
     );
   }
+  // The server previews share, once its plan allows it (FR-2228).
+  const shared =
+    host === undefined
+      ? undefined
+      : await shareableHost(deps, host, { preview: name, again: command });
   const size = textOf(answers, "size");
   if (size !== undefined && target === "own") {
     throw refuse(
       "INVALID_INPUT",
-      "--size picks a new server's type, and your own server has its own size.",
+      `--size picks a new server's type, and ${host === undefined ? "your own server" : `${host}'s server`} has its own size.`,
       `Give --cap instead (how many previews run at once), then run \`${command}\` again.`,
     );
   }
@@ -307,6 +368,7 @@ export async function addPreviewEnvironment(
     cap: size === undefined ? numberOf(answers, "cap") : 3,
     lifetimeDays: numberOf(answers, "lifetime"),
     domain: normalizeHostName(domain),
+    ...(host === undefined ? {} : { server: { environment: host } }),
     seed: seedOf(answers),
   });
   if (!parsed.success) {
@@ -321,13 +383,56 @@ export async function addPreviewEnvironment(
   const previews = parsed.data;
   const zone = await previewZone(deps, previews.domain, prodPlan, command);
   const requirements = answersToRequirements(
-    { ...rest, expectedMonthlyUsers: "<1k", uptime: "best-effort", dataCriticality: "none" },
+    {
+      ...rest,
+      provider: target,
+      expectedMonthlyUsers: "<1k",
+      uptime: "best-effort",
+      dataCriticality: "none",
+    },
     { now: deps.clock.now(), facts, previous: base },
   );
 
   let inspected: OwnServerDesignInput | undefined;
+  if (shared !== undefined) {
+    // The opt-in (FR-2228): the warning both ways; picked interactively, a confirmation too.
+    const warning = sharedServerWarning(shared.host as string);
+    reporter.warn(warning);
+    if (chosenHost !== undefined && ask !== undefined) {
+      const confirmed = await ask([shareQuestion(shared.host as string, warning)]);
+      if (confirmed.share !== true) {
+        throw new OpsCrewError(
+          "APPROVAL_REFUSED",
+          `The previews were not set up on ${shared.host}'s server. Nothing was changed.`,
+          {
+            hint: `Run \`${command}\` again and choose a server of the previews' own, or confirm.`,
+          },
+        );
+      }
+    }
+    // Inspected now, before anything is written; nothing of its login is copied here.
+    inspected =
+      options.design?.ownServer ??
+      (await sharedServerDesign(shared, {
+        ...(options.ownServer?.hostKey !== undefined ? { hostKey: options.ownServer.hostKey } : {}),
+        ...(options.ownServer?.services !== undefined
+          ? { services: options.ownServer.services }
+          : {}),
+      }));
+    requireHostApps(
+      (inspected.apps ?? []).map((app) => app.name),
+      {
+        host: shared.host as string,
+        hostApp: shared.plan.app.name,
+        previewApp: appName,
+        prodApp: prodPlan.app.name,
+        again: command,
+      },
+    );
+    inspected = { ...inspected, access: "public", serving: "proxy" };
+  }
   await ensureStateDir(paths);
-  if (requirements.provider === "own") {
+  if (shared === undefined && requirements.provider === "own") {
     // Served directly behind Cloudflare's proxy with OpsCrew's web filter; GitHub's machines
     // reach it over SSH.
     const ownContext = { cloudflareDomain: true };

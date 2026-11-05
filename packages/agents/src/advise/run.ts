@@ -184,6 +184,18 @@ export async function adviseWithFlags(
       { hint: `Run \`opscrew provision${flags}\` first, then \`opscrew advise${flags}\` again.` },
     );
   }
+  // Previews on another environment's server: that environment's advice reads the server, the
+  // previews' memory counted (FR-2230).
+  const host = plan.environment?.previews?.server?.environment;
+  if (host !== undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The previews of ${deps.paths.environment} run on ${host}'s server, and ${host}'s advice reads that server, counting the previews' memory. Nothing was changed.`,
+      {
+        hint: `Run \`opscrew advise${await commandFlags(deps.paths.root, host, deps.paths.app)}\`.`,
+      },
+    );
+  }
   const { readings, checked } = await readAdvice(deps, plan, flags, options);
   const proposals = RULES.flatMap((rule) => rule(readings)).map((proposal) =>
     proposal.apply.kind === "plan" && planHolds(plan, proposal.apply.change)

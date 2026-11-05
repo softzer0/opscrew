@@ -30,6 +30,7 @@ import type { PhaseDeps } from "../context";
 import { builderBranch } from "../environments/branches";
 import { readEnvironmentRequirements } from "../environments/requirements";
 import { previewLocalStack } from "../localhost/stack";
+import { previewServer } from "../previews/host";
 import { previewEnvironment } from "../previews/setup";
 import {
   diffRenderedFiles,
@@ -46,7 +47,13 @@ import {
 } from "../shared";
 import { readOwnServerRecord } from "../shared/own-server";
 import { type CloudflareSetup, setupCloudflare } from "./credentials";
-import { type OriginTlsValues, originTlsFor, pullPemFile, readOriginTlsValues } from "./origin-tls";
+import {
+  deployLogin,
+  type OriginTlsValues,
+  originTlsFor,
+  pullPemFile,
+  readOriginTlsValues,
+} from "./origin-tls";
 import { readCloudflareRecord } from "./shared-cloudflare";
 import type { ProvisionServices } from "./types";
 
@@ -285,10 +292,16 @@ export function ownRenderFromTfvars(values: Record<string, unknown> | undefined)
  * `terraform.tfvars.json` ({@link ownRenderFromTfvars}) and, on a server the user owns, the SSH
  * port provision used. In public mode that is the recorded login port (`.opscrew/server.json`,
  * which differs from sshd's when a router forwards it); the committed `ssh_port` (written only in
- * tunnel mode) stands in when no login is recorded on this computer.
+ * tunnel mode) stands in when no login is recorded on this computer. Previews on another
+ * environment's server connect on that environment's deploy login port, as provision renders it.
  */
 async function previewRender(deps: PhaseDeps, plan: DeployPlan): Promise<OwnRenderInput> {
   const committed = ownRenderFromTfvars(await committedTfvars(deps.paths.root, plan));
+  if (plan.environment?.previews?.server !== undefined) {
+    const server = await previewServer(deps, plan);
+    const login = await deployLogin(server.deps, server.plan);
+    return login === undefined ? committed : { ...committed, sshPort: login.port };
+  }
   if (plan.target.provider !== "own" || tunnelMode(plan)) return committed;
   const login = await readOwnServerRecord(deps.paths).catch(() => undefined);
   return login?.port !== undefined ? { ...committed, sshPort: login.port } : committed;

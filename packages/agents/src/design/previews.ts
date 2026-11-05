@@ -26,19 +26,34 @@ export interface PreviewDesignInput {
 const gb = (mb: number) => `${(mb / 1024).toFixed(1)} GB`;
 
 /**
+ * Another environment's server a preview environment runs on (`previews.server`, spec.md US9):
+ * its name, what its own containers take there (their memory limits), and whether its web ports
+ * accept only Cloudflare (its plan's `webOnlyFromCloudflare`).
+ */
+export interface PreviewHost {
+  environment: string;
+  memoryMb: number;
+  cloudflareOnly: boolean;
+}
+
+/**
  * The memory line of a preview server: the cap, each preview's memory limits (the app and its
- * services, as the runtime renders them), the edge's and the system's share and what stays free.
+ * services, as the runtime renders them), on another environment's server what that environment
+ * takes (`host`), the edge's and the system's share and what stays free.
  */
 export function previewMemoryText(
   components: AppMemoryInput,
   cap: number,
   serverMb: number,
   edgeMb: number,
+  host?: Pick<PreviewHost, "environment" | "memoryMb">,
 ): string {
   const limits = appMemoryLimits(components);
   const each = limits.reduce((sum, limit) => sum + limit.memoryMb, 0);
-  const free = Math.max(0, serverMb - cap * each - edgeMb - SYSTEM_RESERVE_MB);
-  return `Memory limits: up to ${plural(cap, "preview")} at once, each ${each} MB (${limits.map((l) => `${l.name} ${l.memoryMb} MB`).join(", ")}); OpsCrew's edge and the system ${edgeMb + SYSTEM_RESERVE_MB} MB; ${gb(free)} of ${gb(serverMb)} free.`;
+  const hostMb = host?.memoryMb ?? 0;
+  const free = Math.max(0, serverMb - cap * each - hostMb - edgeMb - SYSTEM_RESERVE_MB);
+  const beside = host === undefined ? "" : `; ${host.environment}'s own containers ${hostMb} MB`;
+  return `Memory limits: up to ${plural(cap, "preview")} at once, each ${each} MB (${limits.map((l) => `${l.name} ${l.memoryMb} MB`).join(", ")})${beside}; OpsCrew's edge and the system ${edgeMb + SYSTEM_RESERVE_MB} MB; ${gb(free)} of ${gb(serverMb)} free.`;
 }
 
 /** How many previews of `eachMb` a server of `serverMb` holds next to the edge and the system. */
@@ -95,20 +110,29 @@ export async function previewCapacity(
 
 /**
  * Refuses (`PHASE_PRECONDITION`) a server the user owns whose memory, after the system's and the
- * edge's share, does not hold `cap` previews of `eachMb`.
+ * edge's share, does not hold `cap` previews of `eachMb`; on another environment's server
+ * (`host`, spec.md US9), after that environment's own needs too. It says the cap that fits.
  */
 export function requirePreviewsFit(
   serverMb: number,
   cap: number,
   eachMb: number,
   edgeMb: number,
+  host?: Pick<PreviewHost, "environment" | "memoryMb">,
 ): void {
-  if (memoryHeadroom(serverMb, cap * eachMb, edgeMb).fits) return;
+  const hostMb = host?.memoryMb ?? 0;
+  if (memoryHeadroom(serverMb, cap * eachMb + hostMb, edgeMb).fits) return;
+  const fits = Math.max(0, Math.floor((serverMb - SYSTEM_RESERVE_MB - edgeMb - hostMb) / eachMb));
+  const server = host === undefined ? "Your server" : `${host.environment}'s server`;
+  const after =
+    host === undefined
+      ? `${SYSTEM_RESERVE_MB} MB for the system and ${edgeMb} MB for OpsCrew's edge`
+      : `${SYSTEM_RESERVE_MB} MB for the system, ${edgeMb} MB for OpsCrew's edge and ${hostMb} MB for ${host.environment}'s own containers (their memory limits)`;
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
-    `Your server has ${Math.round(serverMb)} MB of memory. After ${SYSTEM_RESERVE_MB} MB for the system and ${edgeMb} MB for OpsCrew's edge, ${plural(cap, "preview")} of ${eachMb} MB each (the app and its services' memory limits) do not fit. Nothing was written.`,
+    `${server} has ${Math.round(serverMb)} MB of memory. After ${after}, ${plural(cap, "preview")} of ${eachMb} MB each (the app and its services' memory limits) do not fit${fits > 0 ? `: at most ${plural(fits, "preview")} ${fits === 1 ? "fits" : "fit"}` : ""}. Nothing was written.`,
     {
-      hint: "Lower the cap (environment.previews.cap in the environment's plan.yaml, or --cap with `opscrew env add`), lower the memory limits there, or add memory to the server; then design the environment again.",
+      hint: `Lower the cap${fits > 0 ? ` to ${fits}` : ""} (environment.previews.cap in the environment's plan.yaml, or --cap with \`opscrew env add\`), lower the memory limits there, or add memory to the server; then design the environment again.`,
     },
   );
 }

@@ -39,9 +39,12 @@ import { localPlanFile } from "../localhost/plan";
 import { provisionLocalhost } from "../localhost/provision";
 import { finishMove, recordSwitchedMove, runMove } from "../move";
 import { cloudConnectorRemoval } from "../portainer/run";
+import { requireNoForeignPreviews, requireNoSharedPreviews } from "../previews/host";
 import { ensurePreviewKey } from "../previews/keys";
+import { previewShell } from "../previews/remote";
 import {
   applyPreviewsHostPlan,
+  prepareSharedServer,
   previewDeploySecrets,
   previewEnvironment,
   requireIgnoredValues,
@@ -123,6 +126,7 @@ import {
   ownConnectorFirst,
   ownDeployTarget,
   ownEngineEnv,
+  ownTarget,
   portainerWaitsForNetwork,
   prepareExtraOwnServer,
   prepareOwnServer,
@@ -435,6 +439,16 @@ async function provisionFlow(
   requireCheckSettingsPlace(deps.paths, plan);
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
+  // A server another environment's previews are set up on keeps public SSH, which GitHub's
+  // machines reach them over: no switch to a Cloudflare Tunnel meanwhile (FR-2228).
+  if (plan.target.provider === "own" && plan.target.access === "tunnel") {
+    await requireNoSharedPreviews(
+      deps.paths,
+      `serving ${deps.paths.environment}'s server through a Cloudflare Tunnel`,
+      `${command}${await commandFlags(root, deps.paths.environment, deps.paths.app)}`,
+      true,
+    );
+  }
 
   // 1–2. Preconditions and credentials. A promoted environment's plan must have its source's
   // build, components and port (FR-1539), and every environment serves hostnames of its own; a
@@ -471,16 +485,21 @@ async function provisionFlow(
   if (previews) await requireIgnoredValues(deps, again);
   const previewEnv = previews ? await previewEnvironment(deps, plan) : undefined;
   if (previewEnv !== undefined) requirePreviewValues(deps, previewEnv, again);
+  // Previews on another environment's server (spec.md US9): no server, base or edge switch of
+  // their own; that server is reached through its environment's login (`prepareSharedServer`).
+  const sharedHost = plan.environment?.previews?.server?.environment;
   const profile = providerProfile(planProvider(plan));
   // The providers of the extra servers OpsCrew creates, besides the app server's.
   const extraProviders = extraCloudProviders(plan, profile.id);
   const others = extraProviders.map((provider) => `${providerProfile(provider).displayName}, `);
   deps.reporter.step(
-    ownServer
-      ? `Checking the login to your server, ${others.join("")}Cloudflare and GitHub access`
-      : `Checking your ${profile.displayName}, ${others.join("")}Cloudflare and GitHub access`,
+    sharedHost !== undefined
+      ? `Checking the login to ${sharedHost}'s server, Cloudflare and GitHub access`
+      : ownServer
+        ? `Checking the login to your server, ${others.join("")}Cloudflare and GitHub access`
+        : `Checking your ${profile.displayName}, ${others.join("")}Cloudflare and GitHub access`,
   );
-  await checkProvider(deps, profile.id, services);
+  if (sharedHost === undefined) await checkProvider(deps, profile.id, services);
   for (const provider of extraProviders) {
     const check = services.providers?.[provider];
     await checkProvider(deps, provider, check !== undefined ? { provider: check } : {});
@@ -544,7 +563,11 @@ async function provisionFlow(
   // What the server runs now (read-only, over SSH as deploy): its proxy, and the app's origin
   // certificate and client-certificate requirement, which the origin TLS clean-up waits for. A
   // preview environment's origin certificate covers its zone's names, with no client certificate.
-  const served = await readServerEdge(deps, beforeApply(plan), services);
+  // On another environment's server it is read through that environment's login (`previewShell`).
+  const served =
+    sharedHost === undefined
+      ? await readServerEdge(deps, beforeApply(plan), services)
+      : await readEdgeOver(deps, await previewShell(deps, plan, services), plan.app.name);
   const tls =
     cloudflare === undefined
       ? undefined
@@ -594,7 +617,11 @@ async function provisionFlow(
   // A server OpsCrew creates holds only this app, so a proxy switch there is planned and said.
   const edgeNotes: string[] = [];
   const switchNote = ownServer ? undefined : edgeSwitch(plan, served, []);
-  if (switchNote !== undefined) edgeNotes.push(switchNote);
+  // Except while another environment's previews run there too (FR-2230).
+  if (switchNote !== undefined) {
+    await requireNoProxySwitch(deps, command);
+    edgeNotes.push(switchNote);
+  }
   // The saved infrastructure plans the `--approve` hashes name (applied instead of planning again).
   const saved = await savedInfrastructureHashes(deps, options, plan, cloudflarePlanHashes(shared));
   const approveHash = saved.apply;
@@ -603,7 +630,7 @@ async function provisionFlow(
   // A preview environment on the user's own server: inspected now, before any change at GitHub,
   // and refused when the server holds another app; its preparation below goes on from this.
   const inspected =
-    previews && ownServer
+    previews && ownServer && sharedHost === undefined
       ? await connectAndInspectOwnServer(deps, {
           hostKey: options.hostKey,
           services: { ...services.own, host: boundHostAdapter(services.own?.host) },
@@ -611,6 +638,11 @@ async function provisionFlow(
         })
       : undefined;
   if (inspected !== undefined) requireServerForPreviews(inspected.facts, plan.app.name, again);
+  // On another environment's server: that server, checked and inspected the same way.
+  const sharedRun =
+    sharedHost === undefined
+      ? undefined
+      : await prepareSharedServer(deps, plan, { services, phase, again });
   // Where the deploy secrets live, before anything is rendered (a plan-only run asks GitHub
   // nothing); a preview environment is refused here while a pull request could read another
   // environment's deploy secrets.
@@ -684,7 +716,12 @@ async function provisionFlow(
       }),
     );
   }
-  if (ownServer) {
+  if (sharedRun !== undefined) {
+    // Its address reaches the engine only as TF_VAR_*, read from the host environment; the
+    // preview workflow connects on the host's login port.
+    await ownEngineEnv(deps, { target: ownTarget(plan), address: sharedRun.address }, engineEnv);
+    ownRender = { sshPort: sharedRun.reach.sshPort };
+  } else if (ownServer) {
     ownRun = await prepareOwnServer(deps, {
       plan,
       options,
@@ -695,12 +732,22 @@ async function provisionFlow(
       command,
       ...(inspected !== undefined ? { inspected } : {}),
     });
+    // Never beside previews it doesn't host by its own choice: pull requests' code runs there.
+    await requireNoForeignPreviews(
+      deps.paths,
+      plan,
+      ownRun.facts,
+      `${command}${await commandFlags(root, deps.paths.environment, deps.paths.app)}`,
+    );
     // The server's proxy, which every OpsCrew app on it shares: another one is refused while other
     // apps are there, and planned with its interruption while this app is alone (FR-1440, FR-1444).
     const running = await readEdgeOver(deps, ownRun.session.remote, plan.app.name);
     const others = otherActiveApps(ownRun.facts.apps, plan.app.name).map((r) => r.app);
     const ownSwitch = edgeSwitch(plan, running, others);
-    if (ownSwitch !== undefined) edgeNotes.push(ownSwitch);
+    if (ownSwitch !== undefined) {
+      await requireNoProxySwitch(deps, command);
+      edgeNotes.push(ownSwitch);
+    }
     await ownEngineEnv(deps, ownRun, engineEnv, () =>
       infrastructureOutputs(deps, plan, { engine: async () => engine, engineEnv }),
     );
@@ -1027,7 +1074,7 @@ async function provisionFlow(
           "The host plan for your server follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's id. Applying it shows the host plan and asks for its approval separately (in scripts: run with `--approve` and this hash, then again with `--approve` and the host plan's hash).",
         );
       }
-    } else {
+    } else if (sharedRun === undefined) {
       // The server's runner on a server OpsCrew created: its own host plan, shown and saved.
       hostPlanHash ??= (
         await applyCloudRunner(deps, {
@@ -1103,7 +1150,10 @@ async function provisionFlow(
   // 6. Record the deployment: the server's address in the local state (never in the repository),
   // the apply and the domain URL in the plan.
   let address: ServerAddress | undefined;
-  if (ownRun) {
+  if (sharedRun !== undefined) {
+    // Another environment's server: its address stays that environment's, never recorded here.
+    address = sharedRun.address;
+  } else if (ownRun) {
     // Right after the infrastructure apply, as for cloud servers: the DNS records now point at this
     // address (none in tunnel mode), and a later switch's removal plan needs it.
     address = ownRun.address;
@@ -1150,7 +1200,10 @@ async function provisionFlow(
     tunnel?: { serviceTokenId: string; serviceTokenSecret: string };
   };
   let host: HostPlanOutcome | undefined;
-  if (ownRun) {
+  if (sharedRun !== undefined) {
+    // 7 (another environment's server): GitHub's machines reach it as that environment's do.
+    secretsTarget = { host: sharedRun.reach.host, knownHosts: sharedRun.reach.knownHosts };
+  } else if (ownRun) {
     // 7 (own server). Host plan → policy → host-apply approval by its hash → apply.
     const outputs = await currentOutputs(applied, engine, dir, engineEnv);
     host = await applyOwnHostPlan(deps, ownRun, {
@@ -1257,7 +1310,10 @@ async function provisionFlow(
   let previewsHost: HostPlanOutcome | undefined;
   if (previewEnv !== undefined && previewKey !== undefined) {
     previewsHost = await applyPreviewsHostPlan(deps, plan, {
-      server: await serverForNetwork(deps, { ...serverPlansInput, plan }, APP_SERVER),
+      server:
+        sharedRun?.network ??
+        (await serverForNetwork(deps, { ...serverPlansInput, plan }, APP_SERVER)),
+      ...(sharedRun !== undefined ? { shared: sharedRun.shared } : {}),
       recipe: files.filter((file) => file.path.startsWith(`${previewRecipeDir(plan)}/`)),
       env: previewEnv,
       key: previewKey,
@@ -1444,6 +1500,19 @@ async function provisionFlow(
     published: published.published.published,
     pushed: published.published.pushed,
   };
+}
+
+/**
+ * Refuses a switch of the server's proxy while another environment's previews run on the server
+ * of the environment `deps.paths` belong to (FR-2230): they need Caddy.
+ */
+async function requireNoProxySwitch(deps: PhaseDeps, command: string): Promise<void> {
+  const { root, environment, app } = deps.paths;
+  await requireNoSharedPreviews(
+    deps.paths,
+    `switching ${environment}'s server to another proxy`,
+    `${command}${await commandFlags(root, environment, app)}`,
+  );
 }
 
 /** Runs the shared flow and records the phase outcome (`ok`, or `failed` with the reason). */

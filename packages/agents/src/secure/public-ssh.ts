@@ -12,6 +12,7 @@ import { APP_SERVER, type DeployPlan, readArtifact } from "@opscrew/plan-schema"
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { publicSshHostPlan, readNetwork } from "../network";
+import { requireNoSharedPreviews } from "../previews/host";
 import { runProvision } from "../provision/run";
 import type { ProvisionOptions, ProvisionResult } from "../provision/types";
 import {
@@ -336,6 +337,14 @@ export async function closePublicSsh(
   const plan = await readArtifact("plan", deps.paths.files.plan);
   requireServers(plan);
   const command = await commandOf(deps, "--close-public-ssh");
+  // Not while a preview environment names this server: GitHub's machines reach previews over
+  // public SSH (FR-2228).
+  await requireNoSharedPreviews(
+    deps.paths,
+    `closing public SSH on ${deps.paths.environment}'s server`,
+    command,
+    true,
+  );
   const missing = await missingConditions(deps, plan, services);
   if (missing.length > 0) {
     throw new OpsCrewError(
