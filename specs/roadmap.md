@@ -132,8 +132,10 @@ folder with one file per app, written by that app's own repository) is in
 
 ## 022 Preview environments per pull request
 
-Started 2026-11-05: [research](022-preview-environments/research.md). The sketch below is the
-roadmap's, kept as the founder's input.
+Started 2026-11-05: [research](022-preview-environments/research.md),
+[spec](022-preview-environments/spec.md), [plan](022-preview-environments/plan.md),
+[tasks](022-preview-environments/tasks.md), ADR 0026 and constitution 1.7.0 (the standing approval).
+The sketch below is the roadmap's, kept as the founder's input.
 
 Founder agreed, 2026-10-23. A short-lived environment per pull request: created when it opens,
 updated on each push, destroyed on close or merge, at `pr-<n>.<domain>`.

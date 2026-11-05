@@ -280,6 +280,20 @@ https://docs.djangoproject.com/en/stable/howto/initial-data/, https://orm.drizzl
 12. **Not here:** previews for forks; protecting previews with a login; previews for Cloudflare's
     hosting, GitHub Pages, Portainer and this computer; several apps' previews wired to each other;
     copies of prod's data.
+13. **Added after the cross-artefact review (2026-11-05):**
+    - A pull request can read repository secrets (R1.1), and a prod-only app keeps its deploy key
+      there (R2.1). So provision refuses previews while another environment's secrets are
+      repository secrets where GitHub can keep them in a branch-limited environment, and says so
+      plainly where it can't (Free, private).
+    - The preview environment's plan has no hostname of its own (`dns.domain` absent); its base
+      lives in `previews.domain`, so nothing aims at prod's name.
+    - The recipe lives in the environment's own app folder, `/srv/apps/<app>/` (the deploy user
+      can't create folders directly under `/srv` on a server OpsCrew creates), and its rendered
+      files, without values, are committed in the repository.
+    - Each `up` applies the current recipe; generated values are made in the format each needs
+      (Laravel's key is base64), kept per preview; the seed runs until it has succeeded once.
+    - Every request is logged on the server; the token sent there comes from a job that may only
+      read packages.
 
 ## R4. Spike questions (T2201, before the code depends on them)
 
@@ -287,7 +301,38 @@ https://docs.djangoproject.com/en/stable/howto/initial-data/, https://orm.drizzl
   first's "View deployment", and does `environment: { name, deployment: false }` exist?
 - S2: a same-repository pull request's job pushing to GHCR with `packages: write`, and deleting its
   own versions with `GITHUB_TOKEN`.
-- S3: the restricted key under OpsCrew's sshd settings: `restrict,command=` with
-  `SSH_ORIGINAL_COMMAND` and stdin passing a token, from a GitHub-hosted runner.
-- S4: Caddy on a server behind a DNS-only wildcard while the parent name is proxied: a Let's Encrypt
-  certificate for `pr-<n>.<name>` on the first request after its site file appears.
+- Not in the spike: the restricted key from a GitHub-hosted runner is already proven by the
+  check's key (R2.2), and the script's side is covered by Docker tests; a certificate under a
+  DNS-only wildcard is plain DNS, shown by the live pass.
+
+## R5. The spike (T2201, 2026-11-05)
+
+On the private throwaway repository, two pull requests (#668, #669) from branches of the repository,
+each with a workflow whose job used one GitHub environment `spike-preview` with
+`url: https://pr-<n>.example.com`, and a second job with `deployment: false`.
+
+- **S1, one environment for every pull request:** each pull request got its own deployment (GitHub
+  keys them by the head branch). After #669 deployed, #668's deployment stayed `success` with its own
+  URL, never marked `inactive`: GitHub only marks older deployments of the same branch inactive. So
+  every pull request keeps its own "View deployment" with one shared environment.
+  `environment: { name, deployment: false }` is valid: that job ran with the environment and created
+  no deployment.
+- **S2, GHCR from a pull request's job:** with `permissions: packages: write`, `GITHUB_TOKEN` logged
+  in, pushed `ghcr.io/<owner>/<repo>:pr-<n>-spike` into the repository's existing package, listed
+  the package's versions (`GET /users/<owner>/packages/container/<repo>/versions`, 200) and deleted
+  the version with that tag (`DELETE …/versions/<id>`, 204). Nothing else was touched.
+- **A fine-grained personal token can't use the packages API:** the e2e token got 403 "Resource not
+  accessible by personal access token" on the same list call. So OpsCrew can't delete a preview's
+  images with the user's token (OpsCrew asks for fine-grained tokens); only a workflow's
+  `GITHUB_TOKEN` can.
+- **Cleanup:** both pull requests closed unmerged, both branches and the environment deleted, the two
+  pushed versions deleted; the two deployment records stay as the deleted environment's history.
+
+**What changes in the design:**
+- The deploy job uses the preview environment with its `url`; the `remove` job uses it with
+  `deployment: false` and marks the pull request's deployments `inactive`, so its "View
+  deployment" goes when the preview goes.
+- No connector calls for package versions (T2207 dropped). Images left when no preview workflow runs
+  again (pull requests still open when the user destroys previews) are deleted by every deploy
+  workflow's image cleanup, which deletes `pr-*` versions older than 31 days: no preview lives
+  longer than 30 days without an update, so none of them is still in use.

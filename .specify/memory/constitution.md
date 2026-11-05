@@ -26,6 +26,13 @@ governs every specification, plan, task and line of code in this repository.
 - Every provider mutation and approval decision is appended to an audit log.
 - Approvals in non-interactive mode MUST name the plan hash explicitly (`--approve <hash>`);
   a blanket `--yes` for applies is forbidden.
+- A standing approval MAY let CI repeat one bounded kind of change without asking again (ADR 0026:
+  preview environments per pull request). The plan that installs it MUST name every bound and is
+  approved by hash like any plan, with `allowDestroy` and the typed confirmation when the repeated
+  change deletes data. The bounds MUST be enforced on the target itself, so that a changed workflow
+  can't exceed them; each action taken under it MUST be recorded; and it MUST reach no other
+  environment's servers or data, nor its secrets where the code host can keep them apart. Changing
+  a bound is a new plan and a new approval.
 - Purchases (for example registering a domain) cost money and cannot be undone: they need an
   approval of their own kind with the price shown and a typed confirmation of the item, are never
   granted by a blanket flag, and in non-interactive mode need the exact item and a price bound.
@@ -175,4 +182,4 @@ human sees and approves every change.
 - Every plan includes a Constitution Check; violations are either fixed or justified in the plan's
   Complexity Tracking table. Every reviewer pass checks constitution compliance.
 
-**Version**: 1.6.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-10-23
+**Version**: 1.7.0 | **Ratified**: 2026-10-11 | **Last Amended**: 2026-11-05

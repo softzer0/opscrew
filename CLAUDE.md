@@ -78,6 +78,8 @@ engine tests, never at a folder inside a Git checkout.
 
 - No code path applies infrastructure changes without a plan, policy checks and an approval bound
   to the plan's SHA-256 hash. Destroys need `allowDestroy` + typed resource-name confirmation.
+  The one standing approval (ADR 0026) lets CI create and remove previews only within a recipe
+  approved that way and enforced on the preview server.
 - Secrets never go into prompts, logs, audit entries, reports, generated files or fixtures.
 - Mutations go through typed adapters or the IaC engine, never ad-hoc shell commands.
 
