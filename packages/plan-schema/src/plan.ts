@@ -1645,14 +1645,14 @@ export function snapshotDatabases(plan: {
 
 /**
  * True when each release snapshots the databases on the app's server: on a cloud server, the
- * user's own server or this computer, outside a preview environment, with PostgreSQL, MySQL,
+ * user's own server, this computer or the user's Portainer, outside a preview environment, with PostgreSQL, MySQL,
  * MariaDB or MongoDB on the app's server, and `deploy.snapshots` true, or absent outside prod.
  */
 export function snapshotsOn(
   plan: Pick<DeployPlan, "target" | "environment" | "services" | "deploy">,
 ): boolean {
   const { provider } = plan.target;
-  if (!onOneServer(provider) && provider !== "localhost") return false;
+  if (!onOneServer(provider) && provider !== "localhost" && provider !== "portainer") return false;
   if (plan.environment?.previews !== undefined) return false;
   if (snapshotDatabases(plan).length === 0) return false;
   return plan.deploy.snapshots ?? plan.environment?.name !== undefined;
@@ -2014,18 +2014,16 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
 
 /**
  * Snapshots only where a release can take them (a cloud server, the user's own server, this
- * computer, outside a preview environment), and down migrations only beside a release command.
+ * computer, the user's Portainer, outside a preview environment), and down migrations only beside a release command.
  */
 function checkDatabaseRollback(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   if (plan.deploy.snapshots === true) {
     const where =
       plan.environment?.previews !== undefined
         ? "a preview environment"
-        : plan.target.provider === "portainer"
-          ? "a Portainer target"
-          : isServerlessTarget(plan.target)
-            ? "a site target"
-            : undefined;
+        : isServerlessTarget(plan.target)
+          ? "a site target"
+          : undefined;
     if (where !== undefined) {
       ctx.addIssue({
         code: "custom",

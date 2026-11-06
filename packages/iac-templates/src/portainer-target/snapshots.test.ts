@@ -271,6 +271,7 @@ describe("the snapshot before each release in a stack", () => {
   it("is off in prod unless asked, with deploy.snapshots false, and without a database", () => {
     const has = (plan: DeployPlan) => "snapshot" in render(plan).stack.services;
     expect(has(snapshotPlan())).toBe(false);
+    expect(has(snapshotPlan({ deploy: { ...snapshotPlan().deploy, snapshots: true } }))).toBe(true);
     expect(
       has(staging(snapshotPlan(), { deploy: { ...snapshotPlan().deploy, snapshots: false } })),
     ).toBe(false);

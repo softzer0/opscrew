@@ -100,15 +100,30 @@ describe("snapshotsOn", () => {
     expect(snapshotsOn(parse({ ...plan, deploy: { snapshots: false } }))).toBe(false);
   });
 
-  it("is on for a cloud server, the user's own server and this computer", async () => {
-    for (const kind of ["hetzner", "digitalocean", "own", "localhost"]) {
+  it("is on for a cloud server, the user's own server, this computer and Portainer", async () => {
+    for (const kind of ["hetzner", "digitalocean", "own", "localhost", "portainer"]) {
       const plan = await targetPlan(kind);
       expect(snapshotsOn(parse({ ...plan, deploy: { snapshots: true } })), kind).toBe(true);
     }
   });
 
-  it("is off on Portainer and site targets", async () => {
-    for (const kind of ["portainer", "cloudflare-workers", "github-pages"]) {
+  it("is on Portainer as on servers: off on prod unless asked, on in another environment", async () => {
+    const plan = await targetPlan("portainer");
+    expect(snapshotsOn(plan)).toBe(false);
+    const named: Loose = {
+      ...plan,
+      app: { ...plan.app, name: `${plan.app.name}-dev` },
+      environment: { name: "dev", deploySource: { from: "main" }, runner: "github" },
+    };
+    expect(snapshotsOn(parse(named))).toBe(true);
+    expect(snapshotsOn(parse({ ...named, deploy: { ...named.deploy, snapshots: false } }))).toBe(
+      false,
+    );
+    expect(snapshotsOn(parse({ ...named, services: [] }))).toBe(false);
+  });
+
+  it("is off on site targets", async () => {
+    for (const kind of ["cloudflare-workers", "github-pages"]) {
       const plan = await targetPlan(kind);
       expect(snapshotsOn(plan), kind).toBe(false);
       const named: Loose = {
@@ -156,8 +171,15 @@ describe("deploy.snapshots: true where snapshots aren't offered", () => {
     );
   });
 
-  it("is refused on Portainer and site targets", async () => {
-    for (const kind of ["portainer", "cloudflare-workers", "github-pages"]) {
+  it("is accepted on Portainer", async () => {
+    const plan: Loose = await targetPlan("portainer");
+    expect(
+      DeployPlanSchema.safeParse({ ...plan, deploy: { snapshots: true } }).error,
+    ).toBeUndefined();
+  });
+
+  it("is refused on site targets", async () => {
+    for (const kind of ["cloudflare-workers", "github-pages"]) {
       const plan: Loose = await targetPlan(kind);
       const found = issues(DeployPlanSchema.safeParse({ ...plan, deploy: { snapshots: true } }));
       expect(found, kind).toHaveLength(1);

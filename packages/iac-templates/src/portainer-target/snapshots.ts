@@ -6,9 +6,9 @@ import {
   keepSnapshotsOf,
   ONLINE_SNAPSHOT_KINDS,
   type PlanService,
-  snapshotDatabases,
   snapshotOffsiteOf,
   snapshotScheduleOf,
+  snapshotsOn,
 } from "@opscrew/plan-schema";
 import { enabledServices, serviceSpec } from "../catalog";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
@@ -222,13 +222,6 @@ function finalizerFunctions(all: Part[]): string[] {
     `  done | sort -r | sed "1,$2d" | while read -r _ d; do rm -rf "$d"; done`,
     "}",
   ];
-}
-
-/** True when each release snapshots the stack's databases, as on a server (`snapshotsOn`). */
-function releaseSnapshotsOn(plan: DeployPlan): boolean {
-  if (plan.environment?.previews !== undefined) return false;
-  if (snapshotDatabases(plan).length === 0) return false;
-  return plan.deploy.snapshots ?? plan.environment?.name !== undefined;
 }
 
 /**
@@ -524,7 +517,7 @@ export function stackSnapshots(
   deploy: DeployFilled,
 ): StackSnapshots {
   const all = parts(plan);
-  const release = releaseSnapshotsOn(plan);
+  const release = snapshotsOn(plan);
   const services = {
     ...(all.length > 0 ? scheduled(plan, all, backing) : {}),
     ...(release ? beforeRelease(plan, all, backing, deploy) : {}),
