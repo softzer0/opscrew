@@ -547,7 +547,8 @@ describe.skipIf(!findExecutable("git"))("provisioning previews (ADR 0026)", () =
     expect(hostRequest(recipeChange)?.details).toContain("  At most 2 previews at once;");
     expect(server.applies).toHaveLength(4);
     expect(await readFile(join(root, RECIPE, "settings.env"), "utf8")).toContain("CAP=2\n");
-  });
+    // It runs the whole flow five times: about 50 s alone, past 90 s under the repository's load.
+  }, 240_000);
 
   it("refuses before any change when the Cloudflare token may not make the previews' certificate", async () => {
     const app = await appWithPreviews();
