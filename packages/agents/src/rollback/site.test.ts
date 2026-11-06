@@ -274,6 +274,24 @@ describe("opscrew rollback on Cloudflare's hosting", () => {
     expect(world.zone.writes()).toEqual([]);
   });
 
+  it("refuses a database choice that changes data on a site, and takes keep (FR-1930)", async () => {
+    for (const pages of [false, true]) {
+      const world = await siteWorld({ pages });
+      for (const database of ["snapshot", "migrations"] as const) {
+        const error = await failure(world.run({ database }));
+        expect(error.code).toBe("INVALID_INPUT");
+        expect(error.message).toBe(
+          `prod is a site on ${pages ? "GitHub Pages" : "Cloudflare's hosting"}: it has no database OpsCrew snapshots or migrates, so its rollback changes only the site's version. Nothing was changed.`,
+        );
+        expect(error.hint).toBe(`Leave --database out, then run \`${COMMAND}\` again.`);
+      }
+      expect(world.handler.requests).toEqual([]);
+      expect(world.events).toEqual([]);
+    }
+    const world = await siteWorld();
+    expect(await world.run({ database: "keep" })).toMatchObject({ kind: "rolled-back" });
+  });
+
   it("refuses when the Worker has no version older than the one running, with nothing changed", async () => {
     const world = await siteWorld();
     const worker = world.zone.workers.get("example-app");

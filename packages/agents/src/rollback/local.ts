@@ -34,6 +34,7 @@ import { NOTHING_CHANGED, requireWorkflowApplied } from "../promote/shared";
 import { approve } from "../promote/site";
 import { deployPauseOf } from "../shared/deploy-pause";
 import { pushesDeploy } from "../status/deploys";
+import { databaseStep } from "./database";
 import type { RollbackResult } from "./index";
 import { imageRollbackHash, readRollback, writeRollback } from "./record";
 import { type RollbackRepository, type RollbackRun, rollbackRepository } from "./run";
@@ -138,16 +139,19 @@ async function pinnedImage(
  *    branch is the one the plan generates, which pauses (`requireWorkflowApplied`; drift is not
  *    asked: it counts a broken app's stopped containers as pending), and no run of it is queued or
  *    in progress (FR-1907);
- * 3. the `promote` approval, bound to {@link imageRollbackHash} of the environment, both image
- *    references and the plan's hash; never granted by `--yes`.
+ * 3. how to treat the database (`databaseStep`), then the `promote` approval, bound to
+ *    {@link imageRollbackHash} of the environment, both image references, the plan's hash and the
+ *    database step; never granted by `--yes`. A database choice that changes data is approved like
+ *    a destroy, with the app's name typed.
  *
  * Then, when the local runner deploys the environment from its branch, its deploys are paused and
  * the deploys created just before are waited for. Only then is this computer's deploy lock taken,
  * so neither the approval nor the wait holds it. Under the lock the images are read again, and a
- * rollback whose hash is no longer the approved one stops; otherwise `switchTo` switches the app to
- * the image in the start script's `rollback` mode, checks it, and puts the image it ran back when
- * that fails. Any error after the pause puts the pause back as it was. Recorded in
- * `rollback.json`, and audited by the hash.
+ * rollback whose hash is no longer the approved one stops; otherwise the database step's one-time
+ * approval is left in the app's folder, and `switchTo` switches the app to the image in the start
+ * script's `rollback` mode, checks it, and puts the image it ran back when that fails; whatever
+ * happened, an unused one-time approval goes. Any error after the pause puts the pause back as it
+ * was. Recorded in `rollback.json`, and audited by the hash.
  */
 export async function rollbackLocal(run: RollbackRun): Promise<RollbackResult> {
   const { deps, options, plan, environment, command, services } = run;
@@ -211,6 +215,11 @@ export async function rollbackLocal(run: RollbackRun): Promise<RollbackResult> {
     await requireNoDeployRunning(run, github);
   }
   const pinned = github === undefined ? undefined : await pinnedImage(run, github, previous);
+  const database = await databaseStep(run, {
+    current: running,
+    target: previous,
+    words: shortImage(previous),
+  });
 
   // 3. The approval, bound to the rollback's hash.
   const targetPlanHash = sha256Hex(canonicalJson(plan));
@@ -220,6 +229,7 @@ export async function rollbackLocal(run: RollbackRun): Promise<RollbackResult> {
       current: now ?? "",
       target: before ?? "",
       targetPlanHash,
+      ...(database.binding !== undefined ? { database: database.binding } : {}),
     });
   const hash = hashOf(running, previous);
   const site = await servedSite(deps.paths, plan);
@@ -231,13 +241,14 @@ export async function rollbackLocal(run: RollbackRun): Promise<RollbackResult> {
       details: [
         `Now: ${running}`,
         `Back to: ${previous}, the version before, which Docker on this computer still has`,
-        "The data, the database schema and the app's settings and secrets stay as they are now: the earlier version must work with them. The release command does not run.",
+        ...database.lines,
         `Target: ${environment} on this computer (${address}), ${toPosixRelative(deps.paths.root, deps.paths.files.plan)} with plan hash ${targetPlanHash}`,
         `Deploy: the start script switches the app to that image; nothing is rebuilt.${pauses ? ` Afterwards ${environment}'s deploys pause until \`${command} --resume\`.` : ""}`,
         `Rollback hash: ${hash}`,
       ].join("\n"),
       hash,
-      later: `${command} --approve ${hash}`,
+      later: `${command}${database.flags} --approve ${hash}`,
+      ...(database.confirmPhrase !== undefined ? { confirmPhrase: database.confirmPhrase } : {}),
     },
   );
 
@@ -262,16 +273,23 @@ export async function rollbackLocal(run: RollbackRun): Promise<RollbackResult> {
     }
     await audit("local rollback started", "approved", `${plan.app.name} on this computer`);
     deps.reporter.step(`Switching ${plan.app.name} back to ${shortImage(previous)}`);
-    const switched = await switchTo(deps, {
-      exec,
-      local,
-      plan,
-      site,
-      image: previous,
-      rollback: true,
-      registry,
-      additions: await exists(join(folder, `additions.${edgeProxy(plan)}`)),
-    });
+    // The start script uses the one-time approval once; what it left unused goes afterwards.
+    await database.leave();
+    let switched: Awaited<ReturnType<typeof switchTo>>;
+    try {
+      switched = await switchTo(deps, {
+        exec,
+        local,
+        plan,
+        site,
+        image: previous,
+        rollback: true,
+        registry,
+        additions: await exists(join(folder, `additions.${edgeProxy(plan)}`)),
+      });
+    } finally {
+      await database.clear();
+    }
     if (switched.healthy) return;
     const after =
       switched.back === "restored"
@@ -308,10 +326,11 @@ export async function rollbackLocal(run: RollbackRun): Promise<RollbackResult> {
     from: { digest: running },
     at: deps.clock.now().toISOString(),
     hash,
+    database: database.record,
   });
   await audit("local rollback finished", "approved", previous);
   deps.reporter.success(
-    `${environment} runs ${shortImage(previous)} again on this computer (${address}): no build, and no release command ran.`,
+    `${environment} runs ${shortImage(previous)} again on this computer (${address}): no build, and no release command ran. ${database.outcome}`,
   );
   if (pauses) deps.reporter.info(pausedText(run));
   return {
@@ -321,5 +340,6 @@ export async function rollbackLocal(run: RollbackRun): Promise<RollbackResult> {
     from: { ...imageView(running), marks: ["running"] },
     paused: pauses,
     how: "local",
+    database: database.record,
   };
 }

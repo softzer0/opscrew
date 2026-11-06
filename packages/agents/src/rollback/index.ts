@@ -8,8 +8,11 @@ import { isServerlessProvider } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { LocalhostServices } from "../localhost/services";
 import type { PromoteServices } from "../promote/types";
+import type { ProvisionServices } from "../provision/types";
 import type { DeployPause } from "../shared/deploy-pause";
+import type { DatabaseQuestion } from "./database";
 import { rollbackLocal } from "./local";
+import type { DatabaseChoice, DatabaseRecord } from "./record";
 import { resumeDeploys } from "./resume";
 import { requireRollbackable, rollbackRun } from "./run";
 import { rollbackServer } from "./server";
@@ -17,7 +20,16 @@ import { rollbackSite } from "./site";
 import type { LeftOutVersion, VersionsGitHubApi, VersionView } from "./types";
 
 export { pinnedText } from "../shared/deploy-pause";
-export type { DeployPause, LeftOutVersion, VersionView };
+export type { DatabaseOffer } from "./database";
+export { DATABASE_CHOICES } from "./record";
+export type {
+  DatabaseChoice,
+  DatabaseQuestion,
+  DatabaseRecord,
+  DeployPause,
+  LeftOutVersion,
+  VersionView,
+};
 
 /**
  * `opscrew rollback` on the environment `deps` belong to (FR-1901–FR-1909): with `resume`, ends
@@ -57,6 +69,8 @@ export interface RollbackServices extends Omit<PromoteServices, "github"> {
   now?: () => number;
   /** This computer (`target.provider: localhost`). */
   localhost?: LocalhostServices;
+  /** The app's server's shell, given its address (default: ssh with the login `logs` uses). */
+  remote?: ProvisionServices["remote"];
 }
 
 export interface RollbackOptions {
@@ -78,6 +92,14 @@ export interface RollbackOptions {
   approveHash?: string;
   /** `--allow-old-secrets <names>`, on Cloudflare's hosting only, as `promote --version`. */
   allowOldSecrets?: string[];
+  /**
+   * `--database <choice>`: how a server's or this computer's rollback treats the database (plan.md
+   * 12.5). Without it, `chooseDatabase` asks, or the default applies: the snapshot outside prod
+   * when there is one, keep otherwise. A site refuses `snapshot` and `migrations`.
+   */
+  database?: DatabaseChoice;
+  /** A terminal's question, asked when more than keep is offered and `database` is not given. */
+  chooseDatabase?: (question: DatabaseQuestion) => Promise<DatabaseChoice>;
   services?: RollbackServices;
 }
 
@@ -110,6 +132,8 @@ export type RollbackResult =
        * this computer's earlier image.
        */
       how: "image" | "worker" | "pages" | "local";
+      /** What it did with the database (a server's or this computer's rollback). */
+      database?: DatabaseRecord;
     }
   | {
       kind: "resumed";

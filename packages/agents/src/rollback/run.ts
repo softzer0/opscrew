@@ -4,7 +4,7 @@
  * the checks of its plan that need no network.
  */
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessProvider, readArtifact } from "@opscrew/plan-schema";
 import { appFlag } from "../apps/choice";
 import type { PhaseDeps } from "../context";
 import { FINISH_COMMAND, MOVE_COMMAND } from "../move/window";
@@ -42,7 +42,9 @@ export function rollbackRepository(
 /**
  * The run of `options` on the environment `deps` belong to: its plan, and the command the hints
  * name.
- * @throws OpsCrewError `INVALID_INPUT` for `allowOldSecrets` anywhere but Cloudflare's hosting.
+ * @throws OpsCrewError `PHASE_PRECONDITION` for a preview environment, `INVALID_INPUT` for
+ * `allowOldSecrets` anywhere but Cloudflare's hosting and for a site's `--database snapshot` or
+ * `migrations`.
  */
 export async function rollbackRun(deps: PhaseDeps, options: RollbackOptions): Promise<RollbackRun> {
   const plan = await readArtifact("plan", deps.paths.files.plan);
@@ -56,6 +58,17 @@ export async function rollbackRun(deps: PhaseDeps, options: RollbackOptions): Pr
       {
         hint: `To run an earlier version in a preview, revert the change in its pull request and push; \`opscrew preview destroy <number>${flags}\` removes a preview.`,
       },
+    );
+  }
+  if (
+    options.database !== undefined &&
+    options.database !== "keep" &&
+    isServerlessProvider(plan.target.provider)
+  ) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${environment} is a site on ${plan.target.provider === "github-pages" ? "GitHub Pages" : "Cloudflare's hosting"}: it has no database OpsCrew snapshots or migrates, so its rollback changes only the site's version. ${NOTHING_CHANGED}`,
+      { hint: `Leave --database out, then run \`${command}\` again.` },
     );
   }
   if (options.allowOldSecrets !== undefined && plan.target.provider !== "cloudflare-workers") {

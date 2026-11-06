@@ -7,11 +7,18 @@ import type {
   VersionView,
 } from "@opscrew/agents";
 import { testPlan } from "@opscrew/agents/testing";
+import type { ApprovalRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inEnvironment, withEnvironments } from "../ui/__fixtures__/environments";
-import { projectContext, run, type TempProject } from "../ui/__fixtures__/harness";
+import {
+  CANCEL,
+  projectContext,
+  run,
+  ScriptedPrompts,
+  type TempProject,
+} from "../ui/__fixtures__/harness";
 
 /** Each call of `rollback`, and the answer a test gives instead of the real agent's. */
 const fake = vi.hoisted(() => ({
@@ -78,8 +85,13 @@ describe("opscrew rollback: the flags, checked before any work", () => {
     [["--list", "--to", "1a2b3c4"], "--list stands alone"],
     [["--list", "--resume"], "--list stands alone"],
     [["--list", "--approve", HASH], "--list stands alone"],
-    [["--resume", "--to", "1a2b3c4"], "--resume takes no --to, --approve or --allow-old-secrets"],
-    [["--resume", "--approve", HASH], "--resume takes no --to, --approve or --allow-old-secrets"],
+    [["--resume", "--to", "1a2b3c4"], "--resume takes no --to, --approve, --allow-old-secrets"],
+    [["--resume", "--approve", HASH], "--resume takes no --to, --approve, --allow-old-secrets"],
+    [["--resume", "--database", "keep"], "--database or --confirm: it ends the pause"],
+    [["--resume", "--confirm", "shop"], "--database or --confirm: it ends the pause"],
+    [["--list", "--database", "keep"], "--list stands alone"],
+    [["--list", "--confirm", "shop"], "--list stands alone"],
+    [["--database", "later"], "--database takes snapshot, migrations or keep, not later."],
   ])("refuses %j with exit code 2", async (flags, message) => {
     const ctx = await setup();
     expect(await run(ctx, "rollback", ...flags)).toBe(2);
@@ -104,18 +116,20 @@ describe("opscrew rollback: the flags, checked before any work", () => {
       "--yes",
       "--approve <hash>",
       "--allow-old-secrets <names>",
+      "--database <snapshot|migrations|keep>",
+      "--confirm <name>",
       "--app <key>",
       "--env <name>",
     ]) {
       expect(ctx.output).toContain(flag);
     }
-    const caveat = ctx.output.indexOf("The database stays as it is");
+    const caveat = ctx.output.indexOf("it asks how to treat the database");
     expect(caveat).toBeGreaterThan(ctx.output.indexOf("Usage:"));
     expect(caveat).toBeLessThan(ctx.output.indexOf("Options:"));
     const top = await setup();
     expect(await run(top, "--help")).toBe(0);
     expect(top.output).toMatch(/rollback \[options\]\s+Put an environment back/);
-    expect(top.output).not.toContain("The database stays as it is");
+    expect(top.output).not.toContain("it asks how to treat the database");
   });
 });
 
@@ -332,6 +346,114 @@ describe("opscrew rollback", () => {
     expect(await run(ctx, "rollback")).toBe(1);
     expect(ctx.output).not.toContain(token);
     expect(ctx.errors).not.toContain(token);
+  });
+});
+
+describe("opscrew rollback and the database", () => {
+  /** A rollback that restores a snapshot asks this: a destroy-kind `promote` approval. */
+  const restore = (planHash = HASH): ApprovalRequest => ({
+    kind: "promote",
+    title: "Roll prod back",
+    details: "Database: Restore the snapshot. Everything written since is lost.",
+    planHash,
+    allowDestroy: true,
+    confirmPhrase: "shop",
+  });
+  const rolledBack = (): RollbackResult => ({
+    kind: "rolled-back",
+    status: "deployed",
+    target: version("2", 20),
+    paused: true,
+    how: "image",
+  });
+
+  it("passes --database and asks nothing", async () => {
+    const ctx = await setup();
+    fake.answer = async () => rolledBack();
+    expect(await run(ctx, "rollback", "--database", " snapshot "), ctx.errors).toBe(0);
+    expect(fake.calls[0]?.options).toEqual({ database: "snapshot" });
+  });
+
+  it("asks a terminal how to treat the database, starting on the default", async () => {
+    const prompts = new ScriptedPrompts(["snapshot"]);
+    project = await withEnvironments({});
+    const ctx = projectContext(project, { interactive: true, services: { prompts } });
+    const offers = [
+      { choice: "snapshot", text: "Restore the snapshot taken 2026-10-11 11:30 UTC." },
+      { choice: "keep", text: "Keep it as it is." },
+    ] as const;
+    let chosen: string | undefined;
+    fake.answer = async (options) => {
+      chosen = await options.chooseDatabase?.({ offers: [...offers], default: "keep" });
+      return rolledBack();
+    };
+    expect(await run(ctx, "rollback"), ctx.errors).toBe(0);
+    expect(chosen).toBe("snapshot");
+    expect(prompts.calls).toEqual([
+      {
+        kind: "select",
+        message: "How should the rollback treat the database?",
+        options: offers.map((offer) => ({ value: offer.choice, label: offer.text })),
+        initial: "keep",
+      },
+    ]);
+  });
+
+  it("says nothing was changed when the question is cancelled", async () => {
+    const prompts = new ScriptedPrompts([CANCEL]);
+    project = await withEnvironments({});
+    const ctx = projectContext(project, { interactive: true, services: { prompts } });
+    fake.answer = async (options) => {
+      await options.chooseDatabase?.({
+        offers: [{ choice: "keep", text: "Keep it as it is." }],
+        default: "keep",
+      });
+      return rolledBack();
+    };
+    expect(await run(ctx, "rollback")).toBe(1);
+    expect(ctx.errors).toContain(
+      "You cancelled the choice of how to treat the database. Nothing was changed.",
+    );
+  });
+
+  it("gives a script no question: the agent's default applies", async () => {
+    const ctx = await setup();
+    fake.answer = async () => rolledBack();
+    expect(await run(ctx, "rollback"), ctx.errors).toBe(0);
+    expect(fake.calls[0]?.options.chooseDatabase).toBeUndefined();
+  });
+
+  it("approves a choice that changes data in a script only with --confirm <name> and --approve <hash>", async () => {
+    const ctx = await setup();
+    const decisions: (string | undefined)[] = [];
+    fake.answer = async () => {
+      const [call] = fake.calls.slice(-1);
+      const decision = await call?.deps.approvals.request(restore());
+      decisions.push(decision?.approved === true ? "approved" : decision?.reason);
+      return rolledBack();
+    };
+    expect(await run(ctx, "rollback", "--confirm", "shop", "--approve", HASH), ctx.errors).toBe(0);
+    expect(await run(ctx, "rollback", "--approve", HASH)).toBe(0);
+    expect(await run(ctx, "rollback", "--confirm", "shop")).toBe(0);
+    expect(await run(ctx, "rollback", "--confirm", "other", "--approve", HASH)).toBe(0);
+    expect(decisions).toEqual([
+      "approved",
+      "a rollback that changes the database needs shop typed to confirm: add --confirm shop (with --approve and the plan's hash), or run the command in a terminal",
+      `--confirm shop approves a rollback that changes the database only together with --approve and that plan's hash ${HASH}`,
+      "a rollback that changes the database needs shop typed to confirm: add --confirm shop",
+    ]);
+    expect(ctx.output).toContain("✓ Roll prod back (confirmed with --confirm shop)");
+  });
+
+  it("never lets --yes grant a choice that changes data", async () => {
+    const ctx = await setup();
+    let decision: { approved: boolean } | undefined;
+    fake.answer = async () => {
+      decision = await fake.calls[0]?.deps.approvals.request(restore());
+      return { kind: "resumed", wasPaused: true };
+    };
+    expect(await run(ctx, "rollback", "--resume", "--yes"), ctx.errors).toBe(0);
+    expect(decision?.approved).toBe(false);
   });
 });
 

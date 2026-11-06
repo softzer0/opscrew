@@ -152,11 +152,13 @@ export function guardText(reviewed: string | undefined): string {
 /**
  * Shows `details`, refuses an `--approve` hash that is not `hash`, asks the `promote` approval
  * bound to `hash` and checks it; `later` is the command that applies it without prompts. The
- * refusals name `run.what`, a promotion or a rollback, of `run.target`.
+ * refusals name `run.what`, a promotion or a rollback, of `run.target`. With `confirmPhrase`, the
+ * change deletes data: the approval is asked like a destroy's (`allowDestroy`, the phrase typed),
+ * and one recorded without `allowDestroy` stops with `DESTROY_NOT_APPROVED`.
  */
 export async function approve(
   run: Pick<SiteRun, "deps" | "approveHash" | "target" | "what">,
-  input: { title: string; details: string; hash: string; later: string },
+  input: { title: string; details: string; hash: string; later: string; confirmPhrase?: string },
 ): Promise<void> {
   const { deps, what } = run;
   const nothing = nothingChanged(what);
@@ -172,11 +174,13 @@ export async function approve(
       },
     );
   }
+  const destroys = input.confirmPhrase !== undefined;
   const approval = await deps.approvals.request({
     kind: "promote",
     title: input.title,
     details: input.details,
     planHash: input.hash,
+    ...(destroys ? { allowDestroy: true, confirmPhrase: input.confirmPhrase } : {}),
   });
   if (!approval.approved) {
     throw new PlanRefusedError({
@@ -186,7 +190,14 @@ export async function approve(
       hint: `To ${what === "rollback" ? "roll back" : "deploy it"} later without prompts, run: ${input.later}`,
     });
   }
-  await deps.approvals.assertApprovedPromotion(input.hash);
+  const record = await deps.approvals.assertApprovedPromotion(input.hash);
+  if (destroys && record.allowDestroy !== true) {
+    throw new OpsCrewError(
+      "DESTROY_NOT_APPROVED",
+      `The ${what} deletes data, but its approval (${input.hash}) did not allow deleting it. ${nothing}`,
+      { hint: `Type ${input.confirmPhrase} when asked; in a script, run: ${input.later}` },
+    );
+  }
 }
 
 /**

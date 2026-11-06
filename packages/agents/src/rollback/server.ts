@@ -12,6 +12,7 @@ import {
   toPosixRelative,
 } from "@opscrew/core";
 import { checkEnvironmentKey, ROLLBACK_INPUTS } from "@opscrew/iac-templates";
+import { formatUtc } from "@opscrew/secops";
 import { workflowBranch } from "../environments/branches";
 import { appImageOf } from "../promote/image";
 import { clearPendingPromotion, readPromotion, writePromotion } from "../promote/record";
@@ -28,6 +29,7 @@ import {
 } from "../shared/deploy-pause";
 import { auditFinishedRun, deployRunFailure, dispatchAndFollow } from "../shared/deploy-run";
 import { codeOf } from "../shared/errors";
+import { type DatabaseStep, databaseStep } from "./database";
 import type { RollbackResult } from "./index";
 import {
   imageRollbackHash,
@@ -242,6 +244,7 @@ async function checkPending(
     runUrl: last.htmlUrl,
     at: deps.clock.now().toISOString(),
     hash: pending.hash,
+    ...(pending.database !== undefined ? { database: pending.database } : {}),
   });
   await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
   deps.reporter.success(`${environment} runs ${shortText(target)} again (${last.htmlUrl}).`);
@@ -285,10 +288,26 @@ async function servicesLines(
 }
 
 /**
- * After the pause is set: waits for the deploys created just before it, then starts the workflow
+ * Removes the one-time approval of `database` once no run can use it: the dispatch was refused, or
+ * the run ended. A removal that fails is said, since the approval stays until it expires.
+ */
+async function clearApproval(run: RollbackRun, database: DatabaseStep): Promise<void> {
+  try {
+    await database.clear();
+  } catch (error) {
+    run.deps.reporter.warn(
+      `${errorMessage(error)} The one-time approval of the database step stays on the server until it expires, 30 minutes after OpsCrew left it.`,
+    );
+  }
+}
+
+/**
+ * After the pause is set: waits for the deploys created just before it, leaves the database
+ * step's one-time approval on the server (or removes an earlier one), then starts the workflow
  * with the target's digest and commit tag and `rollback`, and follows its run. A failed or
  * cancelled run, a dispatch GitHub definitely refused, or a wait that never ended puts back the
- * pause entry `pauseBefore`; a run that may have started keeps the pause, and says so.
+ * pause entry `pauseBefore`, and the first two remove the one-time approval; a run that may have
+ * started keeps both, and says so.
  * @throws OpsCrewError `COMMAND_FAILED` naming the run when it did not succeed, and
  * `dispatchAndFollow`'s errors otherwise.
  */
@@ -302,16 +321,29 @@ async function dispatchRollback(
     from: string;
     hash: string;
     pauseBefore: DeployPause | undefined;
+    database: DatabaseStep;
   },
-): Promise<{ status: "deployed" | "waiting"; runId: number; runUrl: string }> {
+): Promise<{ status: "deployed" | "waiting"; runId: number; runUrl: string; expires?: string }> {
   const { deps, plan, environment, command, flags } = run;
-  const { workflowFile, branch, target } = input;
+  const { workflowFile, branch, target, database } = input;
   await waitAfterPause(run, github, input.pauseBefore);
+  let expires: string | undefined;
+  try {
+    expires = await database.leave();
+  } catch (error) {
+    await restoreDeployPause(deps, github, plan, input.pauseBefore);
+    const hint = error instanceof OpsCrewError ? error.hint : undefined;
+    throw new OpsCrewError(
+      codeOf(error),
+      `${errorMessage(error)} The rollback did not start, and OpsCrew put ${environment}'s deploy pause back as it was. ${NOTHING_CHANGED}`,
+      hint !== undefined ? { hint } : {},
+    );
+  }
   deps.reporter.step(
     `Starting ${workflowFile} on ${branch} with the digest of ${shortText(target)}: no build, and no release command`,
   );
   try {
-    return await dispatchAndFollow(deps, github, {
+    const done = await dispatchAndFollow(deps, github, {
       workflowFile,
       ref: branch,
       inputs: {
@@ -323,13 +355,20 @@ async function dispatchRollback(
       command,
       detail: `${workflowFile} on ${branch} with ${target.digest}, a rollback (hash ${input.hash})`,
     });
+    return { ...done, ...(expires !== undefined ? { expires } : {}) };
   } catch (error) {
     const failure = deployRunFailure(error);
     if (failure.kind === "failed") {
+      // The start step used the one-time approval, or never ran: it is of no use now.
+      await clearApproval(run, database);
       await restoreDeployPause(deps, github, plan, input.pauseBefore);
+      const data =
+        database.confirmPhrase === undefined
+          ? ""
+          : " When its database step failed, the start step put the database back as it was just before, and the run's log names the step's own log.";
       throw new OpsCrewError(
         "COMMAND_FAILED",
-        `The rollback of ${environment} did not succeed (${failure.conclusion ?? "no result"}): ${failure.runUrl}. When the earlier version fails its checks, the automatic switch back returns ${environment} to the version it ran, ${input.from}. OpsCrew put ${environment}'s deploy pause back as it was.`,
+        `The rollback of ${environment} did not succeed (${failure.conclusion ?? "no result"}): ${failure.runUrl}. When the earlier version fails its checks, the automatic switch back returns ${environment} to the version it ran, ${input.from}.${data} OpsCrew put ${environment}'s deploy pause back as it was.`,
         {
           hint: `Open the run to see which job failed; \`opscrew logs --failed${flags}\` shows the earlier version's last lines when it failed its health check. Then roll back to another version (\`${command} --list\`), or deploy a fix forward.`,
         },
@@ -337,6 +376,7 @@ async function dispatchRollback(
     }
     // A definite refusal started nothing.
     if (failure.kind === "refused") {
+      await clearApproval(run, database);
       await restoreDeployPause(deps, github, plan, input.pauseBefore);
       throw error;
     }
@@ -359,11 +399,15 @@ async function dispatchRollback(
  *    the one its plan generates (`requireApplied`), which a workflow from before 019 is not;
  * 4. no run of its deploy workflow is queued or in progress (ADR 0023 D6);
  * 5. the version: the one before the running one, or `--to`'s, among its versions
- *    (`listVersions`, `chooseVersion`), with the services it ran with still in the plan;
+ *    (`listVersions`, `chooseVersion`), with the services it ran with still in the plan, and how
+ *    to treat the database ({@link databaseStep});
  * 6. the `promote` approval, bound to {@link imageRollbackHash} of the environment, the current
- *    digest, the target digest and the plan's hash; never granted by `--yes`;
- * 7. the pause set, the deploys created just before it waited for, the workflow dispatched with
- *    the digest, the commit tag and `rollback`, and its run followed;
+ *    digest, the target digest, the plan's hash and the database step; never granted by `--yes`.
+ *    A database choice that changes data is approved like a destroy: the environment's app name
+ *    typed (`--confirm` in a script);
+ * 7. the pause set, the deploys created just before it waited for, the database step's one-time
+ *    approval left on the server, the workflow dispatched with the digest, the commit tag and
+ *    `rollback`, and its run followed;
  * 8. recorded once the run succeeded (`rollback.json`, and `promotion.json` when promoted), or as
  *    pending while it waits for a reviewer; the pause is put back when it failed.
  */
@@ -414,6 +458,11 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     command,
   });
   const added = await servicesLines(run, ctx, target);
+  const database = await databaseStep(run, {
+    current: runningDigest,
+    target: target.digest,
+    words: shortText(target),
+  });
 
   // 6. The approval, bound to the rollback's hash. It says whether GitHub also asks a reviewer.
   const targetPlanHash = sha256Hex(canonicalJson(plan));
@@ -422,6 +471,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     current: runningDigest,
     target: target.digest,
     targetPlanHash,
+    ...(database.binding !== undefined ? { database: database.binding } : {}),
   });
   const nowText = current !== undefined ? versionText(current) : shortDigest(runningDigest);
   const url = plan.deployment.url;
@@ -433,7 +483,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
         `Now: ${nowText}`,
         `Back to: ${versionText(target)}`,
         `Image: ${target.image}, built by ${target.runUrl}`,
-        "The data, the database schema and the app's settings and secrets stay as they are now: the earlier version must work with them. The release command does not run.",
+        ...database.lines,
         ...added,
         `Target: ${environment}${url !== undefined ? ` (${url})` : ""}, ${toPosixRelative(deps.paths.root, deps.paths.files.plan)} with plan hash ${targetPlanHash}; nothing is waiting for \`opscrew provision\``,
         `Deploy: ${workflowFile} on ${branch}, given the digest; nothing is rebuilt. Afterwards ${environment}'s deploys pause until \`${command} --resume\`.`,
@@ -447,7 +497,8 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
         guardText(await reviewedEnvironment(plan, github)),
       ].join("\n"),
       hash,
-      later: `${command} --to ${target.digest} --approve ${hash}`,
+      later: `${command} --to ${target.digest}${database.flags} --approve ${hash}`,
+      ...(database.confirmPhrase !== undefined ? { confirmPhrase: database.confirmPhrase } : {}),
     },
   );
 
@@ -472,6 +523,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     from: nowText,
     hash,
     pauseBefore,
+    database,
   });
 
   // 8. The record.
@@ -497,8 +549,13 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
       at,
       hash,
       pauseBefore: pauseBefore ?? null,
+      database: database.record,
     });
-    deps.reporter.warn(stillWaiting(run, outcome.runUrl, shortText(target)));
+    const expiry =
+      outcome.expires === undefined
+        ? ""
+        : ` The database step's one-time approval on the server expires at ${formatUtc(outcome.expires)}: if the run starts later, the database stays as it is.`;
+    deps.reporter.warn(`${stillWaiting(run, outcome.runUrl, shortText(target))}${expiry}`);
     return { ...result, status: "waiting" };
   }
   await recordRollback(run, {
@@ -508,10 +565,11 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     runUrl: outcome.runUrl,
     at,
     hash,
+    database: database.record,
   });
   deps.reporter.success(
-    `${environment} runs ${shortText(target)} again (${shortDigest(target.digest)}, ${outcome.runUrl}): no build, and no release command ran.`,
+    `${environment} runs ${shortText(target)} again (${shortDigest(target.digest)}, ${outcome.runUrl}): no build, and no release command ran. ${database.outcome}`,
   );
   deps.reporter.info(pausedText(run));
-  return { ...result, status: "deployed" };
+  return { ...result, status: "deployed", database: database.record };
 }

@@ -29,7 +29,7 @@ import {
 } from "./__fixtures__/world";
 import { promote } from "./index";
 import { buildPromotionHash, rollbackHash } from "./record";
-import { rollBackPages, rollBackWorker, type SiteRun } from "./site";
+import { approve, rollBackPages, rollBackWorker, type SiteRun } from "./site";
 import type { PromoteServices } from "./types";
 
 /** The build staging runs: run 501's, with this SHA-256 (a hash, not a secret). */
@@ -703,5 +703,77 @@ describe("a site's paused deploys and the rollbacks `opscrew rollback` reuses", 
     expect(result).toMatchObject({ status: "deployed", version: "800" });
     expect(seen).toEqual([{ approvals: 1, reruns: [] }]);
     expect(world.github.reruns).toEqual([800]);
+  });
+});
+
+describe("approve", () => {
+  const HASH = sha256Hex("a rollback that restores the database");
+  const input = {
+    title: "Roll staging back",
+    details: "What is lost.",
+    hash: HASH,
+    later: `opscrew rollback --env staging --approve ${HASH}`,
+  };
+
+  it("asks a promote approval bound to the hash, deleting nothing without a phrase", async () => {
+    const handler = new ScriptedApprovalHandler();
+    const deps = await createTestPhaseDeps({ approvalHandler: handler });
+    await approve({ deps, approveHash: undefined, target: "staging", what: "rollback" }, input);
+    expect(handler.requests).toEqual([
+      { kind: "promote", title: input.title, details: input.details, planHash: HASH },
+    ]);
+  });
+
+  it("with a phrase, asks it like a destroy: allowDestroy, and the phrase typed", async () => {
+    const handler = new ScriptedApprovalHandler();
+    const deps = await createTestPhaseDeps({ approvalHandler: handler });
+    const run = { deps, approveHash: undefined, target: "staging", what: "rollback" } as const;
+    await approve(run, { ...input, confirmPhrase: "shop-staging" });
+    expect(handler.requests[0]).toMatchObject({
+      kind: "promote",
+      planHash: HASH,
+      allowDestroy: true,
+      confirmPhrase: "shop-staging",
+    });
+
+    const typo = new ScriptedApprovalHandler(() => ({ approved: true, confirmation: "shop" }));
+    const other = await createTestPhaseDeps({ approvalHandler: typo });
+    const error = await failure(
+      approve({ ...run, deps: other }, { ...input, confirmPhrase: "shop-staging" }),
+    );
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toBe(
+      "The rollback was not approved (confirmation phrase did not match). Nothing was changed.",
+    );
+  });
+
+  it("stops with DESTROY_NOT_APPROVED when the recorded approval does not allow deleting", async () => {
+    const deps = await createTestPhaseDeps();
+    const record = {
+      id: "1",
+      kind: "promote" as const,
+      title: input.title,
+      planHash: HASH,
+      approved: true,
+      approver: "test-user",
+      decidedAt: "2026-10-11T12:00:00.000Z",
+    };
+    const approvals = {
+      request: async () => record,
+      assertApprovedPromotion: async () => record,
+    } as unknown as typeof deps.approvals;
+    const error = await failure(
+      approve(
+        {
+          deps: { ...deps, approvals },
+          approveHash: undefined,
+          target: "staging",
+          what: "rollback",
+        },
+        { ...input, confirmPhrase: "shop-staging" },
+      ),
+    );
+    expect(error.code).toBe("DESTROY_NOT_APPROVED");
+    expect(error.message).toMatch(/did not allow deleting it\. Nothing was changed\.$/);
   });
 });

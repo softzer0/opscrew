@@ -1,9 +1,18 @@
-import { type DeployPause, pinnedText, type RollbackResult, rollback } from "@opscrew/agents";
+import {
+  DATABASE_CHOICES,
+  type DatabaseChoice,
+  type DatabaseQuestion,
+  type DeployPause,
+  pinnedText,
+  type RollbackResult,
+  rollback,
+} from "@opscrew/agents";
 import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import { formatUtc } from "@opscrew/secops";
 import type { Command } from "commander";
+import { FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
-import { createPhaseDeps, servicesOf } from "../deps";
+import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printNextSteps, textTable } from "../ui/output";
 
@@ -19,6 +28,20 @@ interface RollbackFlags extends AppEnvFlags {
   approve?: string;
   /** `--allow-old-secrets <names>`: on Cloudflare's hosting, comma-separated. */
   allowOldSecrets?: string;
+  /** `--database snapshot|migrations|keep`: how the rollback treats the database. */
+  database?: string;
+  /** `--confirm <name>`: in a script, the name typed to approve a choice that changes data. */
+  confirm?: string;
+}
+
+/** The checked flags of one run. */
+interface CheckedFlags {
+  approve?: string;
+  database?: DatabaseChoice;
+}
+
+function isDatabaseChoice(value: string): value is DatabaseChoice {
+  return (DATABASE_CHOICES as readonly string[]).includes(value);
 }
 
 /** `sha256:` and the digest's first 12 digits. */
@@ -28,9 +51,10 @@ function shortDigest(digest: string): string {
 
 /**
  * Refuses flags that don't go together, before any work (exit code 2), and returns the trimmed
- * `--approve` hash. `given` holds the `--app`/`--env` flags the user gave, for the hints.
+ * `--approve` hash and the `--database` choice. `given` holds the `--app`/`--env` flags the user
+ * gave, for the hints.
  */
-function checkFlags(flags: RollbackFlags, given: string): string | undefined {
+function checkFlags(flags: RollbackFlags, given: string): CheckedFlags {
   const command = `opscrew rollback${given}`;
   const approve = flags.approve?.trim();
   if (approve !== undefined && !isPlanHash(approve)) {
@@ -40,13 +64,25 @@ function checkFlags(flags: RollbackFlags, given: string): string | undefined {
       { hint: `Run \`${command}\` to see the rollback and its hash.` },
     );
   }
+  const database = flags.database?.trim();
+  if (database !== undefined && !isDatabaseChoice(database)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `--database takes snapshot, migrations or keep, not ${database}.`,
+      {
+        hint: `Run \`${command}\` without it to see what OpsCrew offers, then give one of them.`,
+      },
+    );
+  }
   const others =
     flags.to !== undefined ||
     flags.resume === true ||
     flags.deploy === true ||
     flags.yes === true ||
     approve !== undefined ||
-    flags.allowOldSecrets !== undefined;
+    flags.allowOldSecrets !== undefined ||
+    database !== undefined ||
+    flags.confirm !== undefined;
   if (flags.list === true && others) {
     throw new OpsCrewError(
       "INVALID_INPUT",
@@ -72,17 +108,49 @@ function checkFlags(flags: RollbackFlags, given: string): string | undefined {
   }
   if (
     flags.resume === true &&
-    (flags.to !== undefined || approve !== undefined || flags.allowOldSecrets !== undefined)
+    (flags.to !== undefined ||
+      approve !== undefined ||
+      flags.allowOldSecrets !== undefined ||
+      database !== undefined ||
+      flags.confirm !== undefined)
   ) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      "--resume takes no --to, --approve or --allow-old-secrets: it ends the pause a rollback set, and a script gives --yes.",
+      "--resume takes no --to, --approve, --allow-old-secrets, --database or --confirm: it ends the pause a rollback set, and a script gives --yes.",
       {
         hint: `Run \`${command} --resume\` (add --deploy to deploy the branch's latest commit now).`,
       },
     );
   }
-  return approve;
+  return {
+    ...(approve !== undefined ? { approve } : {}),
+    ...(database !== undefined ? { database } : {}),
+  };
+}
+
+/**
+ * The terminal's question of how the rollback treats the database, starting on its default.
+ * @throws OpsCrewError `APPROVAL_REFUSED` when the user cancels it, before any change.
+ */
+async function askDatabase(
+  ctx: CliContext,
+  question: DatabaseQuestion,
+  command: string,
+): Promise<DatabaseChoice> {
+  const prompts = promptsOf(ctx);
+  const answer = await prompts.select({
+    message: "How should the rollback treat the database?",
+    options: question.offers.map((offer) => ({ value: offer.choice, label: offer.text })),
+    initialValue: question.default,
+  });
+  if (prompts.isCancel(answer) || !isDatabaseChoice(answer)) {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      "You cancelled the choice of how to treat the database. Nothing was changed.",
+      { hint: `Run \`${command}\` again, or give --database with one of the choices.` },
+    );
+  }
+  return answer;
 }
 
 /** The pause in one line, with what ends it. */
@@ -141,14 +209,16 @@ const SUMMARY =
   "Put an environment back on its previous deployment, or an earlier version, with no build; its automatic deploys then pause until --resume";
 
 /**
- * `opscrew rollback` (feature 019, ADR 0023): puts an environment back on an earlier version of
- * its own, with no build and no release command, through the agents' `rollback`. Without `--to`
- * it goes back to the deployment before the running one. A rollback is a `promote` approval bound
- * to its hash: a terminal asks, a script gives `--approve <hash>`, and `--yes` never grants it.
- * Afterwards the environment's automatic deploys pause until `--resume` (whose GitHub settings
- * change `--yes` grants; `--deploy` also deploys the branch's latest commit). `--list` shows the
- * versions, read-only. Exit codes: 0 rolled back, listed, resumed or waiting for a reviewer;
- * 1 refused or not approved; 2 error.
+ * `opscrew rollback` (feature 019, ADR 0023, ADR 0028): puts an environment back on an earlier
+ * version of its own, with no build and no release command, through the agents' `rollback`.
+ * Without `--to` it goes back to the deployment before the running one. On a server or this
+ * computer it asks how to treat the database (a terminal's question, or `--database`). A rollback
+ * is a `promote` approval bound to its hash: a terminal asks, a script gives `--approve <hash>`,
+ * and `--yes` never grants it; a database choice that changes data also needs the name `destroy
+ * --env` asks for, typed or given as `--confirm <name>`. Afterwards the environment's automatic
+ * deploys pause until `--resume` (whose GitHub settings change `--yes` grants; `--deploy` also
+ * deploys the branch's latest commit). `--list` shows the versions, read-only. Exit codes: 0
+ * rolled back, listed, resumed or waiting for a reviewer; 1 refused or not approved; 2 error.
  */
 export function register(program: Command, ctx: CliContext): void {
   const command = program
@@ -158,8 +228,10 @@ export function register(program: Command, ctx: CliContext): void {
       [
         SUMMARY,
         "",
-        "The database stays as it is: the earlier version runs with today's data, schema, settings",
-        "and secrets, and the release command does not run. Restoring a backup is a separate step.",
+        "On a server or this computer it asks how to treat the database: restore the snapshot taken",
+        "when that version stopped running (the default outside prod, when there is one), migrate it",
+        "down, or keep it as it is (the default on prod). Restoring or migrating down needs the",
+        "app's name typed, as destroy does. Settings and secrets stay; the release command never runs.",
       ].join("\n"),
     )
     .option(
@@ -180,6 +252,14 @@ export function register(program: Command, ctx: CliContext): void {
     .option(
       "--allow-old-secrets <names>",
       "Cloudflare's hosting: activate that Worker version even though these secrets (comma-separated, as OpsCrew's refusal names them) changed since; it runs with their old values",
+    )
+    .option(
+      "--database <snapshot|migrations|keep>",
+      "How to treat the database, without the question: restore that version's snapshot, migrate it down, or keep it as it is",
+    )
+    .option(
+      "--confirm <name>",
+      "In a script, with --approve: the app's name, as destroy asks for it, to restore a snapshot or migrate down",
     );
   addEnvOption(command)
     .addHelpText(
@@ -189,19 +269,33 @@ export function register(program: Command, ctx: CliContext): void {
         "  opscrew rollback --list          the versions, newest first",
         "  opscrew rollback                  back to the previous deployment",
         "  opscrew rollback --to <commit>    back to an earlier version",
+        "  opscrew rollback --database keep  back, keeping the database as it is",
         "  opscrew rollback --resume         deploys on again, once the fix is pushed",
       ].join("\n"),
     )
     .action(async (flags: RollbackFlags) => {
       const given = `${flags.app === undefined ? "" : ` --app ${flags.app.trim()}`}${flags.env === undefined ? "" : ` --env ${flags.env.trim()}`}`;
-      const approve = checkFlags(flags, given);
+      const { approve, database } = checkFlags(flags, given);
       const { app, name, flag } = await chooseEnvironment(ctx, flags, "rollback");
+      const confirm = flags.confirm?.trim();
+      const hashes = approve === undefined ? [] : [approve];
       const deps = createPhaseDeps(ctx, {
         ai: false,
         app,
         environment: name,
-        approveHashes: approve === undefined ? [] : [approve],
+        approveHashes: hashes,
         ...(flags.yes === true ? { assumeYes: true } : {}),
+        // A database choice that changes data: the name typed, or `--confirm` with `--approve`.
+        wrapApprovals: (base, clock) =>
+          new FlagConfirmation(base, {
+            kinds: ["promote"],
+            what: "a rollback that changes the database",
+            names: confirm === undefined ? [] : [confirm],
+            hashes,
+            interactive: ctx.isInteractive,
+            print: ctx.stdout,
+            clock,
+          }),
       });
       const services = servicesOf(ctx).rollback;
       // rollback checks the names.
@@ -213,6 +307,14 @@ export function register(program: Command, ctx: CliContext): void {
         ...(flags.deploy === true ? { deploy: true } : {}),
         ...(approve === undefined ? {} : { approveHash: approve }),
         ...(oldSecrets === undefined ? {} : { allowOldSecrets: oldSecrets }),
+        ...(database !== undefined
+          ? { database }
+          : ctx.isInteractive
+            ? {
+                chooseDatabase: (question: DatabaseQuestion) =>
+                  askDatabase(ctx, question, `opscrew rollback${flag}`),
+              }
+            : {}),
         ...(services === undefined ? {} : { services }),
       });
       if (result.kind === "list") {

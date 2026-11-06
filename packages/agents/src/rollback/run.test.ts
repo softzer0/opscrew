@@ -19,13 +19,16 @@ import {
   WORKFLOWS,
 } from "../promote/__fixtures__/world";
 import { promotionFile, readPromotion, writePromotion } from "../promote/record";
+import { recordServerAddress } from "../shared";
 import {
   createTestPhaseDeps,
   movingPlan,
   portainerPlan,
   ScriptedApprovalHandler,
+  SERVER_IPV4,
   testPlan,
 } from "../testing";
+import { FakeAppFolder, SH_AVAILABLE } from "./__fixtures__/folder";
 import {
   at,
   type Built,
@@ -35,8 +38,10 @@ import {
   versionsWorld,
   YES_KINDS,
 } from "./__fixtures__/versions";
+import { APPROVAL_FILE } from "./database";
 import { type RollbackOptions, type RollbackServices, rollback } from "./index";
 import {
+  type DatabaseBinding,
   imageRollbackHash,
   PENDING_ROLLBACK_FILE,
   readPendingRollback,
@@ -106,9 +111,14 @@ async function rollbackWorld(o: WorldOptions = {}) {
   await writeRepoFile(PROD_WORKFLOW, WORKFLOWS[PROD_WORKFLOW] as string);
   const plan = o.plan ?? prodPlan();
   await base.writePlan(o.environment ?? "prod", plan);
+  // The app's folder on its server, which a rollback reads when the plan has snapshots or down
+  // migrations.
+  const folder = await FakeAppFolder.create(`/srv/apps/${plan.app.name}`);
+  await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
   const drift = { report: cleanDrift() };
   const services: RollbackServices = {
     github,
+    remote: (host) => folder.remote(host),
     drift: async () => drift.report,
     sleep: async () => {
       events.push("sleep");
@@ -130,6 +140,7 @@ async function rollbackWorld(o: WorldOptions = {}) {
     events,
     hooks,
     plan,
+    folder,
     run,
     writeRepoFile,
   };
@@ -148,14 +159,35 @@ async function prodWorld(o: WorldOptions = {}) {
   return { world, a, b, c };
 }
 
-/** The rollback's hash of `environment` (default prod) from `current` to `target`, with its plan. */
-const hashOf = (world: World, current: Built, target: Built, environment = "shop/prod") =>
+/**
+ * The rollback's hash of `environment` (default prod) from `current` to `target`, with its plan,
+ * and the database step's binding when the plan has snapshots or down migrations.
+ */
+const hashOf = (
+  world: World,
+  current: Built,
+  target: Built,
+  environment = "shop/prod",
+  database?: DatabaseBinding,
+) =>
   imageRollbackHash({
     environment,
     current: current.digest,
     target: target.digest,
     targetPlanHash: planHash(world.plan),
+    ...(database !== undefined ? { database } : {}),
   });
+
+/** The binding of `choice` when the server holds nothing but `taken`. */
+const bound = (
+  choice: DatabaseBinding["choice"],
+  taken: string | null = null,
+): DatabaseBinding => ({
+  choice,
+  taken,
+  currentRecord: null,
+  targetRecord: null,
+});
 
 /** The pause variable as JSON, `undefined` when GitHub has none. */
 function paused(world: World): Record<string, unknown> | undefined {
@@ -269,6 +301,7 @@ describe("opscrew rollback on a server", () => {
       runUrl: DEPLOY_RUN_URL,
       at: NOW,
       hash,
+      database: { choice: "keep" },
     });
     expect(await readPromotion(world.deps.paths)).toBeUndefined();
     // The output says the deploys are paused, and how to resume them.
@@ -668,6 +701,7 @@ describe("opscrew rollback on a server", () => {
         at: NOW,
         hash: hashOf(world, c, b),
         pauseBefore: null,
+        database: { choice: "keep" },
       });
       expect(paused(world)).toMatchObject({ "shop/prod": { image: b.digest } });
       expect(await readRollback(world.deps.paths)).toBeUndefined();
@@ -774,42 +808,49 @@ describe("opscrew rollback on a server", () => {
     });
   });
 
-  it("rolls back an environment that follows another branch, on that branch", async () => {
-    const staging = inEnvironment(prodPlan(), "staging");
-    const plan = DeployPlanSchema.parse({
-      ...staging,
-      cicd: { ...staging.cicd, branch: "develop" },
-    });
-    const world = await rollbackWorld({ environment: "staging", plan });
-    const workflow = "name: OpsCrew deploy (staging)\n";
-    const path = ".github/workflows/opscrew-deploy-staging.yml";
-    await world.writeRepoFile(path, workflow);
-    world.github.fileSha = async (_owner, _repo, file, ref) =>
-      file === path && ref === "develop" ? blobOf(workflow) : undefined;
-    const develop = { environment: "staging", run: { headBranch: "develop" } };
-    world.deploy("a", 1, develop);
-    const b = world.deploy("b", 2, develop);
-    const c = world.deploy("c", 3, develop);
-    world.label("staging", c);
-    world.label("staging", b, true);
+  // Staging's rollback reads its app folder's snapshots, through `sh` in the fake server.
+  it.skipIf(!SH_AVAILABLE)(
+    "rolls back an environment that follows another branch, on that branch",
+    async () => {
+      const staging = inEnvironment(prodPlan(), "staging");
+      const plan = DeployPlanSchema.parse({
+        ...staging,
+        cicd: { ...staging.cicd, branch: "develop" },
+      });
+      const world = await rollbackWorld({ environment: "staging", plan });
+      const workflow = "name: OpsCrew deploy (staging)\n";
+      const path = ".github/workflows/opscrew-deploy-staging.yml";
+      await world.writeRepoFile(path, workflow);
+      world.github.fileSha = async (_owner, _repo, file, ref) =>
+        file === path && ref === "develop" ? blobOf(workflow) : undefined;
+      const develop = { environment: "staging", run: { headBranch: "develop" } };
+      world.deploy("a", 1, develop);
+      const b = world.deploy("b", 2, develop);
+      const c = world.deploy("c", 3, develop);
+      world.label("staging", c);
+      world.label("staging", b, true);
 
-    await world.run();
+      await world.run();
 
-    expect(world.github.dispatches).toEqual([
-      {
-        workflowFile: "opscrew-deploy-staging.yml",
-        ref: "develop",
-        inputs: { digest: b.digest, tag: `${b.commit}-staging`, rollback: "true" },
-      },
-    ]);
-    expect(world.handler.requests[0]?.planHash).toBe(hashOf(world, c, b, "shop/staging"));
-    expect(paused(world)).toEqual({
-      "shop/staging": expect.objectContaining({ reason: "rollback", image: b.digest }),
-    });
-    expect(world.deps.reporter.text()).toContain(
-      "staging's deploys are paused: a push to develop builds but doesn't deploy.",
-    );
-  });
+      expect(world.github.dispatches).toEqual([
+        {
+          workflowFile: "opscrew-deploy-staging.yml",
+          ref: "develop",
+          inputs: { digest: b.digest, tag: `${b.commit}-staging`, rollback: "true" },
+        },
+      ]);
+      // Staging takes snapshots: with none of b on the server, the rollback keeps the data.
+      expect(world.handler.requests[0]?.planHash).toBe(
+        hashOf(world, c, b, "shop/staging", bound("keep")),
+      );
+      expect(paused(world)).toEqual({
+        "shop/staging": expect.objectContaining({ reason: "rollback", image: b.digest }),
+      });
+      expect(world.deps.reporter.text()).toContain(
+        "staging's deploys are paused: a push to develop builds but doesn't deploy.",
+      );
+    },
+  );
 
   it("rolls back on the user's Portainer through the same dispatch", async () => {
     const plan = portainerPlan({ deployed: true });
@@ -1128,5 +1169,210 @@ describe("opscrew rollback --resume", () => {
     expect(error.hint).toContain("opscrew promote --to prod");
     expect(world.handler.requests).toEqual([]);
     expect(world.events).toEqual([]);
+  });
+});
+
+describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => {
+  const STAGING = "opscrew rollback --env staging";
+  const STAGING_WORKFLOW = ".github/workflows/opscrew-deploy-staging.yml";
+  /** When b's snapshot was taken, and when an approval left at the test clock expires. */
+  const TAKEN = "2026-10-11T11:30:00Z";
+  const EXPIRY = Date.parse(NOW) / 1000 + 30 * 60;
+  const KEEP_LINE =
+    "The data, the database schema and the app's settings and secrets stay as they are now: the earlier version must work with them. The release command does not run.";
+
+  /**
+   * Staging (snapshots on by default), deployed from main three times with c running, its app
+   * folder on a fake server holding b's snapshot unless `snapshot` is false. `atDispatch` holds
+   * the one-time approval as each dispatch found it.
+   */
+  async function stagingWorld(o: Omit<WorldOptions, "environment"> & { snapshot?: boolean } = {}) {
+    const world = await rollbackWorld({
+      ...o,
+      environment: "staging",
+      plan: o.plan ?? inEnvironment(prodPlan(), "staging"),
+    });
+    const workflow = "name: OpsCrew deploy (staging)\n";
+    await world.writeRepoFile(STAGING_WORKFLOW, workflow);
+    world.github.onMain.set(STAGING_WORKFLOW, blobOf(workflow));
+    const on = { environment: "staging" };
+    world.deploy("a", 1, on);
+    const b = world.deploy("b", 2, on);
+    const c = world.deploy("c", 3, on);
+    world.label("staging", c);
+    world.label("staging", b, true);
+    const hexB = b.digest.slice("sha256:".length);
+    if (o.snapshot !== false) await world.folder.write(`.snapshots/${hexB}/taken`, TAKEN);
+    const atDispatch: (string | undefined)[] = [];
+    const dispatch = world.github.dispatchWorkflow.bind(world.github);
+    world.github.dispatchWorkflow = async (...args: Parameters<typeof dispatch>) => {
+      atDispatch.push(await world.folder.read(APPROVAL_FILE));
+      return dispatch(...args);
+    };
+    return { world, b, c, hexB, atDispatch };
+  }
+
+  it("restores staging's snapshot by default, approved like a destroy, with the one-time approval left before the dispatch", async () => {
+    const { world, b, c, hexB, atDispatch } = await stagingWorld();
+
+    const result = await world.run();
+
+    expect(result).toMatchObject({
+      kind: "rolled-back",
+      status: "deployed",
+      database: { choice: "snapshot", taken: TAKEN },
+    });
+    const request = world.handler.requests[0] as ApprovalRequest;
+    const hash = hashOf(world, c, b, "shop/staging", bound("snapshot", TAKEN));
+    expect(request).toMatchObject({
+      kind: "promote",
+      planHash: hash,
+      allowDestroy: true,
+      confirmPhrase: "shop-staging",
+    });
+    expect(request.details).toContain(
+      `Database: Restore the snapshot taken 2026-10-11 11:30 UTC, when ${short(b)} "b" stopped running. Everything written since is lost.`,
+    );
+    expect(request.details).toContain("Typing shop-staging approves it.");
+    expect(request.details).not.toContain(KEEP_LINE);
+    expect(atDispatch).toEqual([`${hexB} snapshot ${EXPIRY}\n`]);
+    expect(world.events).toEqual(["pause", "sleep", "dispatch"]);
+    expect((await readRollback(world.deps.paths))?.database).toEqual({
+      choice: "snapshot",
+      taken: TAKEN,
+    });
+    expect(world.deps.reporter.text()).toContain(
+      "no build, and no release command ran. The database was restored from the snapshot taken 2026-10-11 11:30 UTC.",
+    );
+    // The server's address shows nowhere.
+    expect(await everythingShown(world)).not.toContain(SERVER_IPV4);
+  });
+
+  it("binds the choice to the hash, and an --approve of another choice stops before asking", async () => {
+    const { world, b, c } = await stagingWorld();
+    const snapshot = hashOf(world, c, b, "shop/staging", bound("snapshot", TAKEN));
+    const keep = hashOf(world, c, b, "shop/staging", bound("keep", TAKEN));
+    expect(keep).not.toBe(snapshot);
+    // Another snapshot taken: another hash.
+    expect(hashOf(world, c, b, "shop/staging", bound("snapshot", "2026-10-11T11:31:00Z"))).not.toBe(
+      snapshot,
+    );
+
+    const error = await failure(world.run({ database: "keep", approveHash: snapshot }));
+    expect(error.code).toBe("PLAN_NOT_APPROVED");
+    expect(error.hint).toBe(
+      `Review the rollback above; to apply it, run: ${STAGING} --to ${b.digest} --database keep --approve ${keep}`,
+    );
+    expect(world.handler.requests).toEqual([]);
+    expect(world.github.dispatches).toEqual([]);
+
+    await world.run({ database: "keep", approveHash: keep });
+    expect(world.handler.requests[0]?.planHash).toBe(keep);
+  });
+
+  it("stops without the typed name: no one-time approval, no pause, no dispatch", async () => {
+    const { world, b } = await stagingWorld({
+      approve: () => ({ approved: true, confirmation: "shop" }),
+    });
+    const error = await failure(world.run());
+    expect(error.code).toBe("APPROVAL_REFUSED");
+    expect(error.message).toBe(
+      "The rollback was not approved (confirmation phrase did not match). Nothing was changed.",
+    );
+    expect(error.hint).toContain(`--to ${b.digest} --database snapshot --confirm shop-staging`);
+    expect(world.events).toEqual([]);
+    expect(await world.folder.read(APPROVAL_FILE)).toBeUndefined();
+  });
+
+  it("keeps the data with --database keep, removing a one-time approval an earlier run left", async () => {
+    const { world, hexB, atDispatch } = await stagingWorld();
+    await world.folder.write(APPROVAL_FILE, `${hexB} snapshot ${EXPIRY}\n`);
+    const result = await world.run({ database: "keep" });
+    expect(result).toMatchObject({ database: { choice: "keep" } });
+    expect(world.handler.requests[0]?.allowDestroy).toBeUndefined();
+    expect(world.handler.requests[0]?.details).toContain(KEEP_LINE);
+    expect(atDispatch).toEqual([undefined]);
+    expect(world.deps.reporter.text()).toContain("The database stayed as it was.");
+  });
+
+  it("refuses a choice not offered, with its reason, before any change", async () => {
+    const { world } = await stagingWorld({ snapshot: false });
+    const snapshot = await failure(world.run({ database: "snapshot" }));
+    expect(snapshot.message).toContain("The server keeps no complete snapshot of");
+    expect(snapshot.hint).toBe(`Run \`${STAGING}\` with --database keep.`);
+    await nothingChanged(world, snapshot);
+    const migrations = await failure(world.run({ database: "migrations" }));
+    expect(migrations.message).toMatch(
+      /^staging's plan has no app\.migrations.*Nothing was changed\.$/,
+    );
+    await nothingChanged(world, migrations);
+  });
+
+  it.each([
+    ["GitHub refuses the dispatch", "refused"],
+    ["the run fails", "failed"],
+  ] as const)("removes the one-time approval when %s", async (_what, how) => {
+    const { world, hexB, atDispatch } = await stagingWorld();
+    if (how === "refused") {
+      world.github.dispatchError = new OpsCrewError(
+        "PHASE_PRECONDITION",
+        "GitHub cannot start the workflow opscrew-deploy-staging.yml on main: Not Found.",
+      );
+    } else {
+      world.github.conclusion = "failure";
+    }
+    const error = await failure(world.run());
+    expect(atDispatch).toEqual([`${hexB} snapshot ${EXPIRY}\n`]);
+    expect(await world.folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(paused(world)).toBeUndefined();
+    if (how === "failed") {
+      expect(error.message).toContain(
+        "When its database step failed, the start step put the database back as it was just before",
+      );
+    }
+    expect(await readRollback(world.deps.paths)).toBeUndefined();
+  });
+
+  it("keeps the one-time approval while the run waits for a reviewer, saying when it expires, and records the choice once it ran", async () => {
+    const { world, hexB } = await stagingWorld();
+    world.github.reviewer = "pending";
+    await world.run();
+    expect(await world.folder.read(APPROVAL_FILE)).toBe(`${hexB} snapshot ${EXPIRY}\n`);
+    expect(world.deps.reporter.text()).toContain(
+      "The database step's one-time approval on the server expires at 2026-10-11 12:30 UTC: if the run starts later, the database stays as it is.",
+    );
+    expect((await readPendingRollback(world.deps.paths))?.database).toEqual({
+      choice: "snapshot",
+      taken: TAKEN,
+    });
+    world.github.reviewer = "none";
+    await world.run();
+    expect((await readRollback(world.deps.paths))?.database).toEqual({
+      choice: "snapshot",
+      taken: TAKEN,
+    });
+  });
+
+  it("keeps prod's database by default, even with snapshots on and one taken", async () => {
+    const plan = DeployPlanSchema.parse({ ...prodPlan(), deploy: { snapshots: true } });
+    const { world, b } = await prodWorld({ plan });
+    await world.folder.write(`.snapshots/${b.digest.slice("sha256:".length)}/taken`, TAKEN);
+    const result = await world.run();
+    expect(result).toMatchObject({ database: { choice: "keep" } });
+    expect(world.handler.requests[0]?.allowDestroy).toBeUndefined();
+  });
+
+  it("offers only keep in the user's Portainer, saying snapshots there come later", async () => {
+    const { world } = await prodWorld({ plan: portainerPlan({ deployed: true }) });
+    const error = await failure(world.run({ database: "snapshot" }));
+    expect(error.message).toBe(
+      "In your Portainer, a rollback keeps the database as it is: snapshots and down migrations there come in a later release. Nothing was changed.",
+    );
+    await nothingChanged(world, error);
+    await world.run();
+    expect(world.handler.requests[0]?.details).toContain(
+      "Kept as they are in your Portainer: db. Snapshots there come in a later release.",
+    );
+    expect(world.folder.commands).toEqual([]);
   });
 });
