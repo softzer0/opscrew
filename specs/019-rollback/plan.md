@@ -760,10 +760,19 @@ database as it was when that version stopped running.
     The workflow's rollback step then finds `.env` unchanged and says so.
   - **When the earlier version then fails** (its health check, a worker, or the check from outside,
     so the switch back to the running version runs): the start script leaves a marker that this
-    run changed the database (`.database.changed`, removed at the start of every run). Every such
-    failure ends in the workflow's rollback script (`rollbackCommands`), which checks the marker
-    before its early exits: it holds requests, stops the earlier version, restores step 3's dump,
-    removes the marker, and starts the version that served before the run. Without a
+    run changed the database (`.database.changed`, removed at the start of every run and when a
+    deploy saves `.env.previous`). The marker is written before the pause, names the run's target
+    and the version that served, and says whether step 4 began. Every such failure, a cancelled run
+    included (the workflow's rollback step also runs on a cancel), ends in the workflow's rollback
+    script (`rollbackCommands`). It checks the marker before its early exits, and only a marker of
+    this run counts:
+    - when step 4 began, it holds requests, stops the earlier version, restores step 3's dump,
+      removes the marker, and starts the version that served before the run;
+    - otherwise it only starts that version again.
+
+    A failed put-back leaves the app stopped with a clear message, never a version on the wrong
+    data. Too little disk for step 3's dump refuses the rollback before any change (T1933's
+    review). Without a
     step 3 dump (a database the step can't dump, such as SQLite or one on another server, after
     down migrations), the message says the database stays as the step left it, and that the next
     deploy's release command migrates it up again.
