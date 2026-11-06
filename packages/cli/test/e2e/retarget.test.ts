@@ -440,7 +440,7 @@ describe.skipIf(GIT === undefined)("opscrew retarget between every kind of side"
         ...continueFlags(to),
       ]);
       expect(moved.last.code, moved.text).toBe(0);
-      expect(moved.text).toContain("db's data at /var/lib/postgresql/data:");
+      expect(moved.text).toContain("Db's data at /var/lib/postgresql/data:");
       const plan = await readPlan(m);
       expect(plan.target.provider).toBe(to);
       expect(plan.retarget?.step).toBe("switched");

@@ -1,17 +1,29 @@
-import type { ApprovalRequest, VpsProviderId } from "@opscrew/contracts";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import type { ApprovalRequest, Currency, VpsProviderId } from "@opscrew/contracts";
+import { OpsCrewError } from "@opscrew/core";
+import type { CostEstimate, DeployPlan } from "@opscrew/plan-schema";
+import { noServerCost } from "../design/own";
 import { providerProfile } from "../providers";
 import { HUNDRED_MB } from "./server-ops";
 
 /** Continues a move. */
 export const RUN_COMMAND = "opscrew retarget";
-/** Deletes the old server after the switch. */
+/** Ends a move after the switch: deletes a cloud old server, or removes the app from the old side. */
 export const FINISH_COMMAND = "opscrew retarget --finish";
 /** Undoes a move before the switch. */
 export const ABORT_COMMAND = "opscrew retarget --abort";
 
 /** The next step when no move is in progress. */
-export const START_MOVE_HINT = `Start one with \`${RUN_COMMAND} --to <provider>\`.`;
+export const START_MOVE_HINT = `Start one with \`${RUN_COMMAND} --to <target>\`.`;
+
+/** The stop of `--finish` or `--abort` (`verb`) when no move is in progress. */
+export function noMove(verb: "finish" | "abort"): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `No move is in progress, so there is nothing to ${verb}.`,
+    { hint: START_MOVE_HINT },
+  );
+}
+
 /** The next step while a move is being aborted. */
 export const FINISH_ABORT_HINT = `Run \`${ABORT_COMMAND}\` to complete the abort.`;
 
@@ -64,22 +76,40 @@ export function untilSwitched(plan: Pick<DeployPlan, "dns">): string {
 /**
  * What the downtime means without OpsCrew-managed DNS and with a database to copy: it lasts for
  * the copy plus the user's DNS change, so lower the TTL first, and in scripts pass
- * `--allow-downtime --dns-switched` together only when the records are ready. Empty otherwise.
+ * `--allow-downtime --dns-switched` together only when the records are ready. `sides` are the old
+ * and the new side in words. Empty otherwise.
  */
-export function manualSwitchDowntime(plan: Pick<DeployPlan, "dns">, copies: boolean): string[] {
+export function manualSwitchDowntime(
+  plan: Pick<DeployPlan, "dns">,
+  sides: { old: string; fresh: string },
+  copies: boolean,
+): string[] {
   if (!downtimeUntilDnsChange(plan, copies)) return [];
   const domain = plan.dns.domain;
   if (domain === undefined) {
     return [
-      "Without a domain, the downtime lasts for the copy plus the time your users need to switch to the new address: the app on the old server stays stopped from the copy on.",
+      `Without a domain, the downtime lasts for the copy plus the time your users need to switch to the new address: the app on ${sides.old} stays stopped from the copy on.`,
       `In scripts, pass \`--allow-downtime --dns-switched\` together only when your users can switch right after the copy; with \`--allow-downtime\` alone the run stops after the copy, with the app offline, until you run \`${RUN_COMMAND} --dns-switched\`.`,
     ];
   }
   return [
-    `Without OpsCrew-managed DNS, the downtime lasts for the copy plus your DNS change: the app on the old server stays stopped until the DNS records of ${domain} point to the new server and the change has reached your users.`,
+    `Without OpsCrew-managed DNS, the downtime lasts for the copy plus your DNS change: the app on ${sides.old} stays stopped until the DNS records of ${domain} point to ${sides.fresh} and the change has reached your users.`,
     "Lower the TTL of those records beforehand (for example to 60 seconds), so the change reaches your users quickly.",
     `In scripts, pass \`--allow-downtime --dns-switched\` together only when the records are ready to change right after the copy; with \`--allow-downtime\` alone the run stops after the copy, with the app offline, until you change them and run \`${RUN_COMMAND} --dns-switched\`.`,
   ];
+}
+
+/** The cost of a side that costs a move nothing more: the user's own server, or their Portainer. */
+export function noSideCost(
+  provider: "own" | "portainer",
+  currency: Currency,
+  asOf: string,
+): CostEstimate {
+  const item =
+    provider === "own"
+      ? "Your own server (you already pay for it)"
+      : "Your Portainer (you already run it)";
+  return noServerCost(item, currency, asOf);
 }
 
 /** Rough maintenance window: two minutes plus one per started 100 MB copied through this computer. */

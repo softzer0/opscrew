@@ -189,7 +189,7 @@ describe.skipIf(!findExecutable("git"))("dev while previews run on its server", 
     ],
     [
       "retarget",
-      "moving dev to another provider",
+      "moving dev away from Hetzner Cloud",
       (dev: TestPhaseDeps) => runRetarget(dev, {}),
       expect.stringContaining("`opscrew destroy --env preview`"),
     ],

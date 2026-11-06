@@ -13,7 +13,6 @@ import {
 import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { costFor } from "../design";
-import { noServerCost } from "../design/own";
 import { forgetHostKeys } from "../destroy/deletion";
 import type { DestroyPreview } from "../destroy/types";
 import { providerProfile, vpsConnector } from "../providers";
@@ -47,7 +46,14 @@ import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
 import { abortSiteMove } from "./site-end";
 import { pendingStop, proposeWorkflow, storeDeploySecrets, workflowChanged } from "./steps";
 import { dnsOnlyLead, dnsUpdate } from "./switch";
-import { ABORT_COMMAND, FINISH_COMMAND, managedDns, RUN_COMMAND, START_MOVE_HINT } from "./texts";
+import {
+  ABORT_COMMAND,
+  FINISH_COMMAND,
+  managedDns,
+  noMove,
+  noSideCost,
+  RUN_COMMAND,
+} from "./texts";
 import type { AbortRetargetOptions, RetargetResult } from "./types";
 import { recoverInterruptedWindow, restartOldApp, stepBefore } from "./window";
 
@@ -226,10 +232,8 @@ async function oldCost(session: MoveSession): Promise<CostEstimate | undefined> 
     }
     return cost;
   }
-  return noServerCost(
-    target.provider === "own"
-      ? "Your own server (you already pay for it)"
-      : "Your Portainer (you already run it)",
+  return noSideCost(
+    target.provider === "own" ? "own" : "portainer",
     plan.cost.monthly.currency,
     deps.clock.now().toISOString(),
   );
@@ -435,13 +439,7 @@ export async function abortRetarget(
 ): Promise<RetargetResult> {
   let plan = await readArtifact("plan", deps.paths.files.plan);
   const move = plan.retarget;
-  if (move === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "No move to another provider is in progress, so there is nothing to abort.",
-      { hint: START_MOVE_HINT },
-    );
-  }
+  if (move === undefined) throw noMove("abort");
   // A site's move between site hosts is undone in steps of its own (plan.md "6.").
   if (isServerlessTarget(plan.target)) return abortSiteMove(deps, plan, options);
   if (move.step === "switched") {

@@ -138,7 +138,7 @@ export async function runRetarget(
   if (plan.environment?.previews !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${name} is a preview environment: its previews come and go with pull requests, so OpsCrew does not move it to another provider. Nothing was changed.`,
+      `${name} is a preview environment: its previews come and go with pull requests, so OpsCrew does not move it away from ${placeWords(plan.target)}. Nothing was changed.`,
       {
         hint: `To run the previews elsewhere, remove the environment (\`opscrew destroy --env ${name}\`, then \`opscrew env remove ${name}\`) and add it again with \`opscrew env add ${name} --previews --target <provider>\`.`,
       },
@@ -147,7 +147,7 @@ export async function runRetarget(
   // Not while another environment's previews run on this one's server (FR-2230).
   await requireNoSharedPreviews(
     deps.paths,
-    `moving ${name} to another provider`,
+    `moving ${name} away from ${placeWords(plan.target)}`,
     `opscrew retarget${await commandFlags(deps.paths.root, name, deps.paths.app)}`,
   );
   return runPhase(deps, "retarget", async () => {

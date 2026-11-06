@@ -246,7 +246,9 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     await expect(run(h)).rejects.toThrow("interrupted");
     const early = await caught(finish(h));
     expect(early.code).toBe("PHASE_PRECONDITION");
-    expect(early.message).toContain("Traffic does not go to the new server yet");
+    expect(early.message).toContain(
+      "Traffic does not go to the new Droplet on DigitalOcean yet, so the move cannot be finished.",
+    );
     expect(early.hint).toContain("opscrew retarget --abort");
 
     await run(h);

@@ -480,7 +480,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
       ),
       "Start the move to your own server? It adds no monthly cost, with no maintenance window.",
     ]);
-    expect(ctx.output).toContain("db's data at /var/lib/postgresql/data: 50.0 MB, starts empty");
+    expect(ctx.output).toContain("Db's data at /var/lib/postgresql/data: 50.0 MB, starts empty");
     expect(ctx.errors).toContain("The move was not started. Nothing was changed.");
     expect(approvals.requests).toEqual([]);
     expect((await readArtifact("plan", move.paths.files.plan)).retarget).toBeUndefined();
@@ -505,7 +505,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     );
     // The summary lists each data mount with its size, and the window's minutes.
     expect(ctx.output).toContain("Extra cost while both run");
-    expect(ctx.output).toContain("db's data at /var/lib/postgresql/data: 50.0 MB, copied");
+    expect(ctx.output).toContain("Db's data at /var/lib/postgresql/data: 50.0 MB, copied");
     expect(ctx.output).toContain("Expected maintenance window: about 3 minutes.");
     expect(ctx.errors).toContain("The move was not started. Nothing was changed.");
     expect(move.engine.applied).toEqual([]);

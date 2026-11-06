@@ -1,5 +1,12 @@
 import { join } from "node:path";
-import { exists, formatMoney, listText, normalizeHostName, OpsCrewError } from "@opscrew/core";
+import {
+  exists,
+  formatMoney,
+  listText,
+  normalizeHostName,
+  OpsCrewError,
+  upperFirst,
+} from "@opscrew/core";
 import { edgeProxy, usesTunnel } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
@@ -21,7 +28,7 @@ import {
 import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
 import { chooseBuilder } from "../design/builder";
-import { buildOwnServerOption, noServerCost } from "../design/own";
+import { buildOwnServerOption } from "../design/own";
 import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
 import { recordOwnServerAnswers } from "../interview/own-server";
 import { recordPortainerAnswers } from "../interview/portainer";
@@ -62,12 +69,14 @@ import {
   FINISH_COMMAND,
   managedDns,
   manualSwitchDowntime,
+  noSideCost,
   RUN_COMMAND,
   sizeText,
   untilSwitched,
   windowMinutes,
 } from "./texts";
 import type { MoveData, MoveTargetId, RetargetOptions, RetargetSummary } from "./types";
+import { mountWords } from "./window";
 
 export function nothingLive(plan: DeployPlan): OpsCrewError {
   return new OpsCrewError(
@@ -425,7 +434,7 @@ async function ownServerSide(
       access: "public",
       edge: edgeProxy(plan),
     },
-    cost: noServerCost("Your own server (you already pay for it)", plan.cost.monthly.currency, now),
+    cost: noSideCost("own", plan.cost.monthly.currency, now),
     build: await builderFor(deps, facts, plan, host.arch),
     deploy: plan.deploy,
     network: host,
@@ -496,11 +505,7 @@ async function portainerSide(
       redeploy: answers.redeploy,
       web,
     },
-    cost: noServerCost(
-      "Your Portainer (you already run it)",
-      plan.cost.monthly.currency,
-      deps.clock.now().toISOString(),
-    ),
+    cost: noSideCost("portainer", plan.cost.monthly.currency, deps.clock.now().toISOString()),
     build: await builderFor(deps, facts, plan, answers.arch),
     deploy: plan.deploy,
     address,
@@ -577,19 +582,24 @@ export function moveSummary(
 
 /** A data mount in words, for the summary. */
 function dataLine(plan: DeployPlan, mount: MoveData): string {
-  const what = `${mount.owner === "app" ? "The app's" : `${mount.owner}'s`} data at ${mount.key}: ${sizeText(mount.bytes)}`;
+  const what = `${upperFirst(mountWords(mount))}: ${sizeText(mount.bytes)}`;
   return mount.copy ? `${what}, copied` : `${what}, starts empty. ${emptyLoses(plan, mount.owner)}`;
 }
 
 function summaryText(summary: RetargetSummary, plan: DeployPlan, bucketLines: string[]): string {
   const old = sideWords(summary.from, "old");
+  const fresh = sideWords(summary.to, "new");
   const free = summary.extraMonthly.amount === 0;
+  // A cloud old server is billed until the move is finished; the user's own server or Portainer is theirs.
+  const billed = isCloudProvider(summary.from.provider)
+    ? `; ${old} is billed until the move is finished`
+    : "";
   return [
     `Moving ${plan.app.name} from ${targetLine(summary.from, "old")} to ${targetLine(summary.to, "new")}:`,
     ...summary.steps.map((step, i) => `  ${i + 1}. ${step}`),
     free
-      ? `Extra cost: none for ${sideWords(summary.to, "new")}${isCloudProvider(summary.from.provider) ? `; ${old} is billed until the move is finished` : ""}.`
-      : `Extra cost while both run: ${formatMoney(summary.extraMonthly)} per month for ${sideWords(summary.to, "new")}${isCloudProvider(summary.from.provider) ? `; ${old} is billed until the move is finished` : ""}.`,
+      ? `Extra cost: none for ${fresh}${billed}.`
+      : `Extra cost while both run: ${formatMoney(summary.extraMonthly)} per month for ${fresh}${billed}.`,
     ...(summary.data.length === 0
       ? summary.expectedDowntimeMinutes === undefined
         ? [`Data: none on ${old}, so the app stays online until the switch.`]
@@ -603,7 +613,7 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan, bucketLines: st
             ? downtimeUntilDnsChange(plan, true)
               ? [
                   `Expected downtime: about ${summary.expectedDowntimeMinutes} minutes for the copy, plus the time ${plan.dns.domain !== undefined ? "your DNS change takes to reach your users" : "your users take to switch to the new address"}.`,
-                  ...manualSwitchDowntime(plan, true),
+                  ...manualSwitchDowntime(plan, { old, fresh }, true),
                 ]
               : [`Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes.`]
             : []),

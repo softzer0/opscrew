@@ -122,7 +122,7 @@ interface WindowPlan {
 }
 
 /** A mount in words: `db's data at /var/lib/postgresql/data`, `the app's files at /data`. */
-function mountWords(mount: Pick<MountCopy, "owner" | "key">): string {
+export function mountWords(mount: Pick<MountCopy, "owner" | "key">): string {
   return `${mount.owner === "app" ? "the app's" : `${mount.owner}'s`} data at ${mount.key}`;
 }
 
@@ -334,7 +334,7 @@ export async function maintenanceWindow(
   const downtime = `about ${minutes} minutes`;
   // Without managed DNS the old app stays stopped after the copy until the user's switch is live.
   const byHand = downtimeUntilDnsChange(plan, true);
-  const warning = manualSwitchDowntime(plan, true);
+  const warning = manualSwitchDowntime(plan, { old: oldWords, fresh: freshWords }, true);
   deps.reporter.info(
     byHand
       ? `The app's data is ${sizeText(window.bytes)}. Copying it takes ${downtime}; the app is offline from then ${untilSwitched(plan)}.`

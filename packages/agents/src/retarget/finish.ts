@@ -40,13 +40,7 @@ import {
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
 import { finishSiteMove } from "./site-end";
 import { requireSwitchSettled } from "./switch";
-import {
-  ABORT_COMMAND,
-  FINISH_ABORT_HINT,
-  FINISH_COMMAND,
-  RUN_COMMAND,
-  START_MOVE_HINT,
-} from "./texts";
+import { ABORT_COMMAND, FINISH_ABORT_HINT, FINISH_COMMAND, noMove, RUN_COMMAND } from "./texts";
 import type { FinishRetargetOptions, RetargetResult } from "./types";
 
 /** Paths among `paths` that git tracks (a deleted tracked file is staged with `git add`). */
@@ -147,7 +141,7 @@ async function finish(
   if (move.from.member !== undefined && devices.length > 0) {
     const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
     remaining.push(
-      `The WireGuard configurations of your devices (${listText(devices)}) name the old app server, which is gone: get each device a new one with \`opscrew vpn add <device> --again${flag}\` and import it in its WireGuard app.`,
+      `The WireGuard configurations of your devices (${listText(devices)}) still name ${old} as the app's server: get each device a new one with \`opscrew vpn add <device> --again${flag}\` and import it in its WireGuard app.`,
     );
   }
   if (from.provider === "portainer") {
@@ -263,13 +257,7 @@ export async function finishRetarget(
 ): Promise<RetargetResult> {
   const plan = await readArtifact("plan", deps.paths.files.plan);
   const move = plan.retarget;
-  if (move === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "No move to another provider is in progress, so there is nothing to finish.",
-      { hint: START_MOVE_HINT },
-    );
-  }
+  if (move === undefined) throw noMove("finish");
   // A site's move between site hosts finishes in steps of its own (plan.md "6.").
   if (isServerlessTarget(plan.target)) return finishSiteMove(deps, plan, options);
   if (move.abort !== undefined) {
@@ -282,7 +270,7 @@ export async function finishRetarget(
   if (move.step !== "switched") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "Traffic does not go to the new server yet, so the old server cannot be deleted. Nothing was changed.",
+      `Traffic does not go to ${sideWords(plan.target, "new")} yet, so the move cannot be finished. Nothing was changed.`,
       { hint: `Run \`${RUN_COMMAND}\` to continue the move, or \`${ABORT_COMMAND}\` to undo it.` },
     );
   }
