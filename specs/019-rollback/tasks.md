@@ -690,7 +690,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1933 [US8] The snapshot before each release and the rollback's database step, in `packages/iac-templates/src/workflow/{switch,snapshots}.ts` (+ tests)
+- [x] T1933 [US8] The snapshot before each release and the rollback's database step, in `packages/iac-templates/src/workflow/{switch,snapshots}.ts` (+ tests)
   - Owns: `packages/iac-templates/src/workflow/switch.ts`, `packages/iac-templates/src/workflow/snapshots.ts`, `packages/iac-templates/src/workflow/migrations.ts` (only the stub below), their tests and fixtures, the workflow snapshot fixtures that change
   - Reads: plan.md 12.3–12.4 and D10–D12, research R9's dump and restore table, `switch.ts`'s `switchApp`, `recreate` path and `keepFailed`, `agents/src/retarget/sides/postgres.ts` (the commands to reuse in shell form)
   - Depends: T1930
