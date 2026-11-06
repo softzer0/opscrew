@@ -148,11 +148,14 @@ async function rollBackSwitch(session: MoveSession, cause: unknown): Promise<Ops
     !refused && managedDns(plan)
       ? ` Some DNS records of ${dnsHosts(plan).join(" and ")} may already point at ${sideWords(plan.target, "new")}, where the web server is stopped, so some visitors may get errors until you continue or abort: \`${RUN_COMMAND}\` completes the switch, \`${ABORT_COMMAND}\` points them back first.`
       : "";
+  // The cause's hint (the command that approves the switch) ends as a sentence of its own.
+  const earlier = hintOf(cause).trim();
+  const before = earlier === "" || /[.!?]$/.test(earlier) ? earlier : `${earlier}.`;
   return new OpsCrewError(
     codeOf(cause),
     `${what}. The app on ${sideWords(moveOf(session).from.target, "old")} runs again, and the move went back to the step before the maintenance window.${partly}`,
     {
-      hint: `${hintOf(cause)}When you are ready, ${again}, or \`${ABORT_COMMAND}\` to undo the move.`,
+      hint: `${before === "" ? "" : `${before} `}When you are ready, ${again}, or \`${ABORT_COMMAND}\` to undo the move.`,
     },
   );
 }

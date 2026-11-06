@@ -637,6 +637,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const error = await caught(run(h));
     expect(error.code).toBe("APPROVAL_REFUSED");
     expect(error.message).toContain("The switch was not approved");
+    // Any hint before "When you are ready" (the command that approves it) ends as a sentence.
+    expect(error.hint ?? "").toMatch(/(^|[.!?] )When you are ready/);
     expect((await move(h))?.step).toBe("deployed");
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
   });
