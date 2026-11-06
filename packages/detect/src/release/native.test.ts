@@ -7,12 +7,13 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(removeTree));
 });
 
-/** The release command and note detection gives the app in `files`. */
+/** The release command, note and down migrations detection gives the app in `files`. */
 async function releaseOf(files: Record<string, string>) {
   const root = await makeTree(files, "release-native");
   roots.push(root);
   const detection = await detectProjectDetails(root);
-  return { command: detection.facts.build.releaseCommand, note: detection.facts.build.releaseNote };
+  const { build } = detection.facts;
+  return { command: build.releaseCommand, note: build.releaseNote, migrations: build.migrations };
 }
 
 /** Expects a note about migrations the app runs when it starts, containing `text`. */
@@ -24,7 +25,7 @@ async function expectStartup(files: Record<string, string>, text: string) {
   expect(found.note?.text).toContain("app.releaseCommand");
 }
 
-const NONE = { command: undefined, note: undefined };
+const NONE = { command: undefined, note: undefined, migrations: undefined };
 
 describe("Ruby release commands", () => {
   const rails = {
@@ -39,7 +40,15 @@ describe("Ruby release commands", () => {
         ...rails,
         "db/migrate/20240101000000_create_users.rb": "class CreateUsers; end\n",
       }),
-    ).toEqual({ command: "bin/rails db:migrate", note: undefined });
+    ).toEqual({
+      command: "bin/rails db:migrate",
+      note: undefined,
+      migrations: {
+        tool: "rails",
+        status: "bin/rails db:version",
+        down: "bin/rails db:migrate VERSION={version}",
+      },
+    });
     expect(await releaseOf(rails)).toEqual(NONE);
   });
 
@@ -53,7 +62,7 @@ describe("Ruby release commands", () => {
         ...hanami,
         "config/db/migrate/20240101000000_create_books.rb": "ROM::SQL.migration do\nend\n",
       }),
-    ).toMatchObject({ command: "bundle exec hanami db migrate" });
+    ).toMatchObject({ command: "bundle exec hanami db migrate", migrations: undefined });
     expect(await releaseOf(hanami)).toEqual(NONE);
   });
 
@@ -64,7 +73,10 @@ describe("Ruby release commands", () => {
         ...sinatra,
         "db/migrations/001_create_users.rb": "Sequel.migration do\nend\n",
       }),
-    ).toMatchObject({ command: 'bundle exec sequel -m db/migrations "$DATABASE_URL"' });
+    ).toMatchObject({
+      command: 'bundle exec sequel -m db/migrations "$DATABASE_URL"',
+      migrations: undefined,
+    });
     expect(await releaseOf(sinatra)).toEqual(NONE);
   });
 });
@@ -96,7 +108,10 @@ describe("PHP release commands", () => {
     };
     expect(
       await releaseOf({ ...symfony, "migrations/Version20240101000000.php": "<?php\n" }),
-    ).toMatchObject({ command: "php bin/console doctrine:migrations:migrate --no-interaction" });
+    ).toMatchObject({
+      command: "php bin/console doctrine:migrations:migrate --no-interaction",
+      migrations: undefined,
+    });
     expect(await releaseOf(symfony)).toEqual(NONE);
   });
 });
@@ -114,7 +129,10 @@ describe("Go release commands", () => {
         "db/migrations/20240101000000_init.sql":
           "-- +goose Up\nCREATE TABLE a();\n-- +goose Down\nDROP TABLE a;\n",
       }),
-    ).toMatchObject({ command: 'goose -dir db/migrations postgres "$DATABASE_URL" up' });
+    ).toMatchObject({
+      command: 'goose -dir db/migrations postgres "$DATABASE_URL" up',
+      migrations: undefined,
+    });
     expect(await releaseOf(app)).toEqual(NONE);
   });
 
@@ -126,7 +144,10 @@ describe("Go release commands", () => {
         "migrations/000001_init.up.sql": "CREATE TABLE a();",
         "migrations/000001_init.down.sql": "DROP TABLE a;",
       }),
-    ).toMatchObject({ command: 'migrate -path migrations -database "$DATABASE_URL" up' });
+    ).toMatchObject({
+      command: 'migrate -path migrations -database "$DATABASE_URL" up',
+      migrations: undefined,
+    });
     expect(await releaseOf(app)).toEqual(NONE);
   });
 
@@ -164,7 +185,10 @@ describe("Go release commands", () => {
         "migrations/20240101000000.sql": "CREATE TABLE a();",
         "migrations/atlas.sum": "h1:x\n",
       }),
-    ).toMatchObject({ command: 'atlas migrate apply --url "$DATABASE_URL"' });
+    ).toMatchObject({
+      command: 'atlas migrate apply --url "$DATABASE_URL"',
+      migrations: undefined,
+    });
     expect(
       await releaseOf({
         ...app,
@@ -173,6 +197,7 @@ describe("Go release commands", () => {
       }),
     ).toMatchObject({
       command: 'atlas migrate apply --url "$DATABASE_URL" --dir file://db/migrations',
+      migrations: undefined,
     });
     expect(await releaseOf(app)).toEqual(NONE);
   });
@@ -195,7 +220,7 @@ describe("Rust release commands", () => {
         "migrations/2024-01-01-000000_create_posts/up.sql": "CREATE TABLE posts();",
         "migrations/2024-01-01-000000_create_posts/down.sql": "DROP TABLE posts;",
       }),
-    ).toMatchObject({ command: "diesel migration run" });
+    ).toMatchObject({ command: "diesel migration run", migrations: undefined });
     expect(await releaseOf(app)).toEqual(NONE);
   });
 
@@ -207,6 +232,7 @@ describe("Rust release commands", () => {
     const migration = { "migrations/20240101000000_init.sql": "CREATE TABLE a();" };
     expect(await releaseOf({ ...app, ...migration })).toMatchObject({
       command: "sqlx migrate run",
+      migrations: undefined,
     });
     await expectStartup(
       {
@@ -228,6 +254,7 @@ describe("Rust release commands", () => {
     };
     expect(await releaseOf({ ...app, ...crate })).toMatchObject({
       command: "sea-orm-cli migrate up",
+      migrations: undefined,
     });
     await expectStartup(
       { ...app, ...crate, "src/main.rs": "async fn main() { Migrator::up(&db, None).await; }\n" },
@@ -246,9 +273,10 @@ describe("Elixir, .NET and Java release commands", () => {
     const release = "defmodule MyApp.Release do\n  def migrate do\n    load_app()\n  end\nend\n";
     expect(
       await releaseOf({ "mix.exs": mix, ...migration, "lib/my_app/release.ex": release }),
-    ).toMatchObject({ command: 'bin/my_app eval "MyApp.Release.migrate"' });
+    ).toMatchObject({ command: 'bin/my_app eval "MyApp.Release.migrate"', migrations: undefined });
     expect(await releaseOf({ "mix.exs": mix, ...migration })).toMatchObject({
       command: "mix ecto.migrate",
+      migrations: undefined,
     });
     await expectStartup(
       {
@@ -272,6 +300,7 @@ describe("Elixir, .NET and Java release commands", () => {
     };
     expect(await releaseOf({ ...api, ...snapshot })).toMatchObject({
       command: "cd Api && dotnet ef database update",
+      migrations: undefined,
     });
     await expectStartup(
       { ...api, ...snapshot, "Api/Program.cs": "db.Database.Migrate();\napp.Run();\n" },

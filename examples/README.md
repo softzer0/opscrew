@@ -35,6 +35,7 @@ They are not part of the pnpm workspace.
 | `facts.frameworkNames` | names that must all appear in `ProjectFacts.frameworks[].name` |
 | `facts.services` | service kinds that must all appear in `ProjectFacts.services[].kind` (`[]` = none detected) |
 | `facts.clientExposedEnv` / `facts.secretEnv` | env var names that must be client-exposed / secret-likely |
+| `facts.migrations` | detection's down-migration tool and commands (`ProjectFacts.build.migrations`), exactly; absent means none |
 | `scan.mustInclude` | rule ids that `opscrew scan` must report |
 | `scan.clean` | `true` → no high or critical findings |
 | `codeChanges` | code-change kinds `opscrew design` must derive |

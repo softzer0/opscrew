@@ -89,6 +89,47 @@ describe("down migrations in the plan", () => {
     });
   });
 
+  it("keeps the release command's FLASK_APP when the folder is dropped", async () => {
+    const facts = makeFacts({
+      name: "api",
+      languages: ["python"],
+      packageManager: "pip",
+      frameworks: [{ name: "flask", path: "api" }],
+      appKind: "api",
+      port: 8000,
+      build: {
+        releaseCommand: "cd api && FLASK_APP=run:app flask db upgrade",
+        migrations: {
+          tool: "flask-migrate",
+          status: "cd api && FLASK_APP=run:app flask db current",
+          down: "cd api && FLASK_APP=run:app flask db downgrade {version}",
+        },
+      },
+      services: [{ kind: "postgres", evidence: ["dependency:psycopg"] }],
+      appDir: "api",
+    });
+    const plan = await planFor(facts);
+    expect(plan.app.releaseCommand).toBe("FLASK_APP=run:app flask db upgrade");
+    expect(plan.app.migrations).toEqual({
+      tool: "flask-migrate",
+      status: "FLASK_APP=run:app flask db current",
+      down: "FLASK_APP=run:app flask db downgrade {version}",
+    });
+  });
+
+  it("leaves them out when the image could not run them", async () => {
+    // A hand-edited architecture.json: down migrations of a tool the Python image lacks.
+    const facts = withMigrations("cd backend && ", "backend");
+    facts.build.migrations = {
+      tool: "rails",
+      status: "cd backend && bin/rails db:version",
+      down: "cd backend && bin/rails db:migrate VERSION={version}",
+    };
+    const plan = await planFor(facts);
+    expect(plan.app.releaseCommand).toBe("python manage.py migrate --noinput");
+    expect(plan.app.migrations).toBeUndefined();
+  });
+
   it("leaves them out when the release command is left out of the plan", async () => {
     // The Python image OpsCrew builds cannot run a Rails command.
     const facts = djangoFacts("bin/rails db:migrate");

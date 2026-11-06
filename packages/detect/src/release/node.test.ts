@@ -7,12 +7,13 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(removeTree));
 });
 
-/** The release command and note detection gives the app in `files`. */
+/** The release command, note and down migrations detection gives the app in `files`. */
 async function releaseOf(files: Record<string, string>, appDir?: string) {
   const root = await makeTree(files, "release-node");
   roots.push(root);
   const detection = await detectProjectDetails(root, appDir === undefined ? {} : { appDir });
-  return { command: detection.facts.build.releaseCommand, note: detection.facts.build.releaseNote };
+  const { build } = detection.facts;
+  return { command: build.releaseCommand, note: build.releaseNote, migrations: build.migrations };
 }
 
 interface Manifest {
@@ -58,7 +59,7 @@ describe("package.json migrate scripts", () => {
         }),
         ...drizzle,
       }),
-    ).toMatchObject({ command: "npm run migrate" });
+    ).toMatchObject({ command: "npm run migrate", migrations: undefined });
     expect(
       await releaseOf({
         ...server({
@@ -67,7 +68,7 @@ describe("package.json migrate scripts", () => {
         }),
         ...drizzle,
       }),
-    ).toMatchObject({ command: "npm run migrate:deploy" });
+    ).toMatchObject({ command: "npm run migrate:deploy", migrations: undefined });
   });
 
   it("skips scripts that generate, reset or push a schema", async () => {
@@ -79,7 +80,7 @@ describe("package.json migrate scripts", () => {
         }),
         ...drizzle,
       }),
-    ).toMatchObject({ command: "npx drizzle-kit migrate" });
+    ).toMatchObject({ command: "npx drizzle-kit migrate", migrations: undefined });
   });
 
   it("runs the script with the app's package manager and keeps the Procfile first", async () => {
@@ -87,9 +88,13 @@ describe("package.json migrate scripts", () => {
       ...server({ scripts: { "db:migrate": "node scripts/migrate.js" } }),
       "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
     };
-    expect(await releaseOf(files)).toMatchObject({ command: "pnpm run db:migrate" });
+    expect(await releaseOf(files)).toMatchObject({
+      command: "pnpm run db:migrate",
+      migrations: undefined,
+    });
     expect(await releaseOf({ ...files, Procfile: "release: node seed.js\n" })).toMatchObject({
       command: "node seed.js",
+      migrations: undefined,
     });
   });
 
@@ -174,7 +179,7 @@ describe("package.json migrate scripts", () => {
     // A delegated script that only applies migrations is fine.
     expect(
       await withScripts({ migrate: "yarn run apply", apply: "knex migrate:latest" }),
-    ).toMatchObject({ command: "npm run migrate" });
+    ).toMatchObject({ command: "npm run migrate", migrations: undefined });
   });
 
   it("skips a script that only starts a migration CLI and uses the tool's own command", async () => {
@@ -204,7 +209,7 @@ describe("Node.js migration tools", () => {
         "drizzle/0000_init.sql": "CREATE TABLE a();",
         "drizzle/meta/_journal.json": "{}",
       }),
-    ).toMatchObject({ command: "npx drizzle-kit migrate" });
+    ).toMatchObject({ command: "npx drizzle-kit migrate", migrations: undefined });
     expect(
       await releaseOf({
         ...app,
@@ -212,7 +217,7 @@ describe("Node.js migration tools", () => {
           'module.exports = { out: "./src/db/migrations", dialect: "postgresql" };',
         "src/db/migrations/0000_init.sql": "CREATE TABLE a();",
       }),
-    ).toMatchObject({ command: "npx drizzle-kit migrate" });
+    ).toMatchObject({ command: "npx drizzle-kit migrate", migrations: undefined });
     // `drizzle-kit push` apps have a config but no migrations.
     expect(
       (await releaseOf({ ...app, "drizzle.config.ts": DRIZZLE_CONFIG })).command,
@@ -415,7 +420,7 @@ describe("Node.js migration tools", () => {
         ...server({ dependencies: deps, devDependencies: { "@mikro-orm/cli": "^6" } }),
         ...migration,
       }),
-    ).toMatchObject({ command: "npx mikro-orm migration:up" });
+    ).toMatchObject({ command: "npx mikro-orm migration:up", migrations: undefined });
     expect(
       (await releaseOf({ ...server({ dependencies: deps }), ...migration })).note?.text,
     ).toContain("@mikro-orm/cli");
@@ -443,9 +448,10 @@ describe("Node.js migration tools", () => {
           "export default { migrations: { path: './dist/migrations', pathTs: './src/migrations' } };",
         ),
       ),
-    ).toMatchObject({ command: "npx mikro-orm migration:up" });
+    ).toMatchObject({ command: "npx mikro-orm migration:up", migrations: undefined });
     expect(await releaseOf(app({ tsx: "^4" }, pathTsOnly))).toMatchObject({
       command: "npx mikro-orm migration:up",
+      migrations: undefined,
     });
   });
 
@@ -460,7 +466,7 @@ describe("Node.js migration tools", () => {
         ...app,
         "migrations/1700000000000_init.ts": "export async function up() {}",
       }),
-    ).toMatchObject({ command: "npx kysely migrate:latest" });
+    ).toMatchObject({ command: "npx kysely migrate:latest", migrations: undefined });
     expect((await releaseOf(app)).command).toBeUndefined();
   });
 
@@ -472,9 +478,11 @@ describe("Node.js migration tools", () => {
     });
     expect(await releaseOf(files({ "ts-node": "^10" }))).toMatchObject({
       command: "npx node-pg-migrate up --tsconfig tsconfig.json",
+      migrations: undefined,
     });
     expect(await releaseOf(files({ tsx: "^4" }))).toMatchObject({
       command: 'NODE_OPTIONS="--import tsx" npx node-pg-migrate up',
+      migrations: undefined,
     });
     const leftOut = await releaseOf(files({}));
     expect(leftOut.command).toBeUndefined();
@@ -485,7 +493,7 @@ describe("Node.js migration tools", () => {
     const app = server({ dependencies: { "node-pg-migrate": "^8", pg: "^8" } });
     expect(
       await releaseOf({ ...app, "migrations/1700000000000_init.js": "exports.up = () => {};" }),
-    ).toMatchObject({ command: "npx node-pg-migrate up" });
+    ).toMatchObject({ command: "npx node-pg-migrate up", migrations: undefined });
     expect((await releaseOf(app)).command).toBeUndefined();
   });
 
@@ -494,6 +502,7 @@ describe("Node.js migration tools", () => {
     const migration = { "migrations/20240101000000-init.js": "exports.up = () => {};" };
     expect(await releaseOf({ ...app, ...migration })).toMatchObject({
       command: "npx db-migrate up",
+      migrations: undefined,
     });
     expect(
       await releaseOf({
@@ -501,7 +510,7 @@ describe("Node.js migration tools", () => {
         ...migration,
         "database.json": '{ "dev": { "driver": "pg" }, "prod": { "driver": "pg" } }',
       }),
-    ).toMatchObject({ command: "npx db-migrate up -e prod" });
+    ).toMatchObject({ command: "npx db-migrate up -e prod", migrations: undefined });
     expect((await releaseOf(app)).command).toBeUndefined();
   });
 
@@ -521,10 +530,12 @@ describe("Node.js migration tools", () => {
     expect(await releaseOf({ ...adonis({ build: "node ace build" }), ...migration })).toMatchObject(
       {
         command: "cd build && node ace migration:run --force",
+        migrations: undefined,
       },
     );
     expect(await releaseOf({ ...adonis({}), ...migration })).toMatchObject({
       command: "node ace migration:run --force",
+      migrations: undefined,
     });
     expect((await releaseOf(adonis({ build: "node ace build" }))).command).toBeUndefined();
   });
@@ -544,6 +555,7 @@ describe("Node.js migration tools", () => {
     };
     expect(await releaseOf({ ...payload, ...migrations })).toMatchObject({
       command: "npx payload migrate",
+      migrations: undefined,
     });
     const startup = await releaseOf({
       ...payload,
@@ -569,7 +581,10 @@ describe("Node.js migration tools", () => {
         ...medusa("2.8.0"),
         "medusa-config.ts": "module.exports = defineConfig({});",
       }),
-    ).toMatchObject({ command: "npx medusa db:migrate --execute-safe-links" });
+    ).toMatchObject({
+      command: "npx medusa db:migrate --execute-safe-links",
+      migrations: undefined,
+    });
     const v1 = await releaseOf({
       ...medusa("^1.20.0"),
       "medusa-config.js": "module.exports = {};",
@@ -642,7 +657,7 @@ describe("Node.js migration tools", () => {
         ...redwood,
         "api/db/migrations/20240101000000_init/migration.sql": "CREATE TABLE a();",
       }),
-    ).toMatchObject({ command: "yarn rw prisma migrate deploy" });
+    ).toMatchObject({ command: "yarn rw prisma migrate deploy", migrations: undefined });
     expect((await releaseOf(redwood)).command).toBeUndefined();
   });
 

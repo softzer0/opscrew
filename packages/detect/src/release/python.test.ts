@@ -7,12 +7,13 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(removeTree));
 });
 
-/** The release command and note detection gives the app in `files`. */
+/** The release command, note and down migrations detection gives the app in `files`. */
 async function releaseOf(files: Record<string, string>) {
   const root = await makeTree(files, "release-py");
   roots.push(root);
   const detection = await detectProjectDetails(root);
-  return { command: detection.facts.build.releaseCommand, note: detection.facts.build.releaseNote };
+  const { build } = detection.facts;
+  return { command: build.releaseCommand, note: build.releaseNote, migrations: build.migrations };
 }
 
 const FASTAPI = "from fastapi import FastAPI\napp = FastAPI()\n";
@@ -30,7 +31,15 @@ describe("Python release commands", () => {
         "migrations/env.py": "from sqlmodel import SQLModel\n",
         "migrations/versions/0001_init.py": "revision = '0001'\n",
       }),
-    ).toEqual({ command: "alembic upgrade head", note: undefined });
+    ).toEqual({
+      command: "alembic upgrade head",
+      note: undefined,
+      migrations: {
+        tool: "alembic",
+        status: "alembic current",
+        down: "alembic downgrade {version}",
+      },
+    });
     expect(await releaseOf(app)).toEqual({ command: undefined, note: undefined });
   });
 
@@ -58,7 +67,7 @@ describe("Python release commands", () => {
         ...app,
         "databases/migrations/2024_01_01_000000_create_users_table.py": "class X: pass\n",
       }),
-    ).toMatchObject({ command: "python craft migrate --force" });
+    ).toMatchObject({ command: "python craft migrate --force", migrations: undefined });
     expect((await releaseOf(app)).command).toBeUndefined();
   });
 
@@ -80,7 +89,7 @@ describe("Python release commands", () => {
         ...app,
         "migrations/models/0_20240101000000_init.py": "async def upgrade(db): ...\n",
       }),
-    ).toMatchObject({ command: "aerich upgrade" });
+    ).toMatchObject({ command: "aerich upgrade", migrations: undefined });
     expect((await releaseOf(app)).command).toBeUndefined();
   });
 
@@ -96,7 +105,7 @@ describe("Python release commands", () => {
         "app/main.py": FASTAPI,
         ...migration,
       }),
-    ).toMatchObject({ command: "tortoise migrate" });
+    ).toMatchObject({ command: "tortoise migrate", migrations: undefined });
     expect(
       (await releaseOf({ "pyproject.toml": pyproject(""), "app/main.py": FASTAPI, ...migration }))
         .command,
@@ -114,7 +123,7 @@ describe("Python release commands", () => {
         ...app,
         "home/piccolo_migrations/home_2024_01_01t00_00_00_000000.py": "ID = '1'\n",
       }),
-    ).toMatchObject({ command: "piccolo migrations forwards all" });
+    ).toMatchObject({ command: "piccolo migrations forwards all", migrations: undefined });
     expect((await releaseOf(app)).command).toBeUndefined();
   });
 
@@ -124,21 +133,30 @@ describe("Python release commands", () => {
     const database = `"$(printf %s "$DATABASE_URL" | sed 's#^postgres://#postgresql://#')"`;
     expect(
       await releaseOf({ ...app, ...migration, "yoyo.ini": "[DEFAULT]\nsources = migrations\n" }),
-    ).toMatchObject({ command: `yoyo apply --batch --database ${database} migrations` });
+    ).toMatchObject({
+      command: `yoyo apply --batch --database ${database} migrations`,
+      migrations: undefined,
+    });
     expect(
       await releaseOf({
         ...app,
         "db/yoyo.ini": "[DEFAULT]\nsources = %(here)s/steps\ndatabase = postgresql:///app\n",
         "db/steps/0001.create-users.sql": "CREATE TABLE users (id int);\n",
       }),
-    ).toMatchObject({ command: `cd db && yoyo apply --batch --database ${database} steps` });
+    ).toMatchObject({
+      command: `cd db && yoyo apply --batch --database ${database} steps`,
+      migrations: undefined,
+    });
     // Without yoyo.ini: a migrations folder of Python steps that import yoyo.
     expect(
       await releaseOf({
         ...app,
         "migrations/0001_users.py": "from yoyo import step\nsteps = [step('CREATE TABLE a()')]\n",
       }),
-    ).toMatchObject({ command: `yoyo apply --batch --database ${database} migrations` });
+    ).toMatchObject({
+      command: `yoyo apply --batch --database ${database} migrations`,
+      migrations: undefined,
+    });
     expect((await releaseOf({ ...app, ...migration })).command).toBeUndefined();
   });
 
@@ -166,6 +184,7 @@ describe("Python release commands", () => {
       }),
     ).toMatchObject({
       command: 'pw_migrate migrate --database "$DATABASE_URL" --directory migrations',
+      migrations: undefined,
     });
     expect((await releaseOf(app)).command).toBeUndefined();
   });

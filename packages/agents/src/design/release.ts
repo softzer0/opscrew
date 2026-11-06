@@ -53,31 +53,21 @@ export function releaseCommandNote(
 
 /**
  * `app.migrations` for the plan: detection's down-migration commands (`facts.build.migrations`)
- * as the image runs them, beside `releaseCommand`, the detected release command as the image runs
- * it (`releaseCommandInImage`). The folder prefix detection gave all three is changed the same way
- * the release command's was. Absent without a release command in the plan.
+ * as the image runs them, each changed as the release command is (`imageReleaseCommand`: a Python
+ * image drops the folder prefix). Absent without a release command in the plan, or when the image
+ * could not run either command.
  */
 export function migrationsInImage(
   facts: ProjectFacts,
   releaseCommand: string | undefined,
 ): Migrations | undefined {
   const detected = facts.build.migrations;
-  const found = facts.build.releaseCommand;
-  if (releaseCommand === undefined || detected === undefined || found === undefined) {
-    return undefined;
-  }
-  // The text both commands end with; what precedes it is the prefix the image changed.
-  let same = 0;
-  while (
-    same < Math.min(found.length, releaseCommand.length) &&
-    found[found.length - 1 - same] === releaseCommand[releaseCommand.length - 1 - same]
-  ) {
-    same++;
-  }
-  const from = found.slice(0, found.length - same);
-  const to = releaseCommand.slice(0, releaseCommand.length - same);
-  const inImage = (line: string) => `${to}${line.slice(from.length)}`;
-  return { ...detected, status: inImage(detected.status), down: inImage(detected.down) };
+  if (releaseCommand === undefined || detected === undefined) return undefined;
+  const inImage = (line: string) =>
+    imageReleaseCommand({ ...facts, build: { ...facts.build, releaseCommand: line } }).command;
+  const status = inImage(detected.status);
+  const down = inImage(detected.down);
+  return status === undefined || down === undefined ? undefined : { ...detected, status, down };
 }
 
 /** The services whose tables an app migrates. */

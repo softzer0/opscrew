@@ -275,6 +275,14 @@ describe("tools without down migrations in a rollback", () => {
       },
     ],
     [
+      "Flask-DB",
+      {
+        "requirements.txt": "Flask\nFlask-DB\n",
+        "app.py": FLASK_APP,
+        "db/env.py": "",
+      },
+    ],
+    [
       "node-pg-migrate",
       {
         ...server({ "node-pg-migrate": "^7", pg: "^8" }),
