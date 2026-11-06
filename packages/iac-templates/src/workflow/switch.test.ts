@@ -281,7 +281,8 @@ describe.skipIf(!shWorks())(
       expect(read(`${edgeDir()}/tls/shop/local.key`)).toBe("key for shop.localhost\n");
       expect(existsSync(`${edgeDir()}/tls/shop/local.pem.new`)).toBe(false);
       expect(existsSync(`${edgeDir()}/tls/shop/local.key.previous`)).toBe(false);
-      expect(read(`${work}/flock.log`)).toBe("flock 9\n");
+      // The start script's lock in the app's folder, then the edge's.
+      expect(read(`${work}/flock.log`)).toBe("flock 7\nflock 9\n");
       expect(existsSync(`${edgeDir()}/.lock`)).toBe(true);
       const docker = read(`${work}/docker.log`) ?? "";
       expect(docker).toContain(

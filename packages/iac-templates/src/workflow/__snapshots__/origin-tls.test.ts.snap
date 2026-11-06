@@ -21,6 +21,8 @@ set -eu
 export DOCKER_CONFIG="$APPS_DIR"/shop/.docker
 trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
 cd "$APPS_DIR"/shop
+exec 7> .start.lock
+flock 7
 echo started > .start.outcome
 export APP_IMAGE="$1"
 RUN_IMAGE="$1"

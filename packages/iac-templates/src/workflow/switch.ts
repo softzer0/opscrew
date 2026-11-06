@@ -370,6 +370,35 @@ function kamalProxy(words: string): string {
   return `edge exec -T kamal-proxy kamal-proxy ${words} < /dev/null`;
 }
 
+/**
+ * The lock in the app's folder (fd 7) that the start script holds for its whole run and the
+ * rollback script takes before it reads anything: a cancelled run's start script can go on on
+ * the server after the workflow moved on to its rollback step. Neither the edge's lock nor this
+ * computer's deploy lock (`OPSCREW_LOCAL_LOCK`, outside the app's folder) is this file.
+ */
+const START_LOCK = ".start.lock";
+
+/** How long the rollback script waits for the start script's lock. */
+const START_LOCK_WAIT_SECONDS = 900;
+
+/**
+ * Takes {@link START_LOCK}: the start script waits as long as it takes; the rollback script, with
+ * `timedOut` (its message), waits {@link START_LOCK_WAIT_SECONDS} and then stops, changing
+ * nothing. On this computer only where `flock` exists, as the edge's lock.
+ */
+function startLock(plan: DeployPlan, timedOut?: string): string[] {
+  const take =
+    timedOut === undefined
+      ? "flock 7"
+      : `flock -w ${START_LOCK_WAIT_SECONDS} 7 || { echo ${shellQuote(timedOut)} >&2; exit 1; }`;
+  return [
+    `exec 7> ${START_LOCK}`,
+    plan.target.provider === "localhost"
+      ? `if command -v flock > /dev/null 2>&1; then ${take}; fi`
+      : take,
+  ];
+}
+
 /** What the start script's EXIT trap runs: the registry logout of the app's own Docker settings. */
 const LOGOUT = "docker logout ghcr.io > /dev/null 2>&1";
 
@@ -978,7 +1007,8 @@ function databaseStep(plan: DeployPlan): string[] {
  * named after the setup, and no Compose command names another app's folder or project. The script
  * reaches `sh` on its stdin, so the commands that read stdin (`docker compose exec` and `run`) get
  * `/dev/null`; otherwise they would swallow the rest of the script. It starts with
- * {@link SCRIPT_ROOTS}, so the local executor runs it on this computer under its own folders.
+ * {@link SCRIPT_ROOTS}, so the local executor runs it on this computer under its own folders, and
+ * holds {@link START_LOCK} from its first lines in the app's folder to its end.
  */
 export function switchCommands(
   plan: DeployPlan,
@@ -1032,6 +1062,7 @@ export function switchCommands(
     `export DOCKER_CONFIG=${appFolder(plan)}/.docker`,
     `trap '${LOGOUT}' EXIT`,
     `cd ${appFolder(plan)}`,
+    ...startLock(plan),
     `echo started > ${START_OUTCOME}`,
     'export APP_IMAGE="$1"',
     'RUN_IMAGE="$1"',
@@ -1091,8 +1122,9 @@ export function serverCommands(
  * finished and the check from outside failed, `failed=start` when it stopped after the switch.
  * Before all of that, when this run's database step changed the database ({@link
  * DATABASE_CHANGED}), it puts the database back and starts the version that ran before
- * ({@link databaseBack}). On this computer `localhost` is the app's hostname there, as the start
- * script had it.
+ * ({@link databaseBack}). First of all it takes {@link START_LOCK}, waiting for a start script
+ * that still runs for up to 15 minutes, after which it stops with nothing changed. On this
+ * computer `localhost` is the app's hostname there, as the start script had it.
  */
 export function rollbackCommands(
   plan: DeployPlan,
@@ -1118,6 +1150,10 @@ export function rollbackCommands(
     ...SCRIPT_ROOTS,
     "set -eu",
     `cd ${appFolder(plan)}`,
+    ...startLock(
+      plan,
+      `::error::The start script of this run is still running on the server after ${START_LOCK_WAIT_SECONDS / 60} minutes, so the rollback step changed nothing. Check the app on the server (${runbookFilePath(plan)} has the SSH command), then run the deploy or opscrew rollback again.`,
+    ),
     'RUN_IMAGE="$1"',
     ...keepFailed(plan),
     EDGE_FUNCTION,

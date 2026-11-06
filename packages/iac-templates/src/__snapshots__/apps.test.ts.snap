@@ -309,6 +309,8 @@ jobs:
           export DOCKER_CONFIG="$APPS_DIR"/docs/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/docs
+          exec 7> .start.lock
+          flock 7
           echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
@@ -548,6 +550,8 @@ jobs:
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
           cd "$APPS_DIR"/docs
+          exec 7> .start.lock
+          flock -w 900 7 || { echo '::error::The start script of this run is still running on the server after 15 minutes, so the rollback step changed nothing. Check the app on the server (opscrew/apps/docs/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.' >&2; exit 1; }
           RUN_IMAGE="$1"
           keep_failed() {
             (

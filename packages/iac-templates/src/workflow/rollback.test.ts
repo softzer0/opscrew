@@ -1405,8 +1405,9 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       expect(existsSync(join(work, "network-opscrew-edge"))).toBe(true);
       const calls = dockerCalls().split("\n");
       const at = (text: string) => calls.findIndex((line) => line.includes(text));
-      // Under the lock, the network comes before the edge, the edge before the app's switch.
-      expect(file("flock.log")).toBe("flock 9");
+      // Under the lock, the network comes before the edge, the edge before the app's switch; the
+      // start script holds its own lock in the app's folder throughout.
+      expect(file("flock.log")).toBe("flock 7\nflock 9");
       expect(at("docker network create opscrew-edge")).toBeGreaterThan(at("docker compose pull"));
       expect(at("docker network create opscrew-edge")).toBeLessThan(at(" up -d --wait"));
       expect(at(" up -d --wait")).toBeLessThan(at("caddy reload"));

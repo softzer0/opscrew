@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { serviceSpec } from "../catalog";
 import { withServices } from "../catalog/__fixtures__/plans";
+import { localhostPlan } from "../edge/__fixtures__/localhost";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import { inEnvironment, NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
@@ -144,6 +145,16 @@ const FAKE_DOCKER = [
   '  "logs --timestamps") echo "copy-line of $last" ;;',
   '  "rm "*) for f in "$WORK"/containers-*; do grep -v "^$last " "$f" > "$f.tmp" || true; mv "$f.tmp" "$f"; done ;;',
   "esac",
+].join("\n");
+
+/**
+ * The fake `flock`: logs its call among docker's ($WORK/docker.log); with FLOCK_BUSY, a bounded
+ * wait (`-w`) runs out, as when another script holds the lock all that time.
+ */
+const FAKE_FLOCK = [
+  "#!/bin/sh",
+  'echo "flock $*" >> "$WORK/docker.log"',
+  'if [ "$1" = -w ] && [ -n "${FLOCK_BUSY:-}" ]; then exit 1; fi',
 ].join("\n");
 
 /**
@@ -294,7 +305,7 @@ describe.skipIf(!shWorks())(
       work = mkdtempSync(join(tmpdir(), "opscrew-snapshots-")).replaceAll("\\", "/");
       write(`${work}/bin/docker`, `${FAKE_DOCKER}\n`);
       write(`${work}/bin/df`, `${FAKE_DF}\n`);
-      write(`${work}/bin/flock`, "#!/bin/sh\n");
+      write(`${work}/bin/flock`, `${FAKE_FLOCK}\n`);
       write(`${work}/bin/sleep`, "#!/bin/sh\n");
       for (const fake of ["docker", "df", "flock", "sleep"]) {
         spawnSync("chmod", ["755", `${work}/bin/${fake}`]);
@@ -918,6 +929,39 @@ describe.skipIf(!shWorks())(
         back();
         expect(oneOffs()).toEqual([]);
       });
+
+      it("serialises the two scripts: the start script holds the app's lock from its first lines, the rollback script takes it before reading anything", () => {
+        const start = switchCommands(staging, []);
+        const cd = start.indexOf('cd "$APPS_DIR"/shop-staging');
+        expect(start.slice(cd + 1, cd + 3)).toEqual(["exec 7> .start.lock", "flock 7"]);
+        const script = rollbackCommands(staging);
+        const lock = script.indexOf("exec 7> .start.lock");
+        expect(script[lock - 1]).toBe('cd "$APPS_DIR"/shop-staging');
+        expect(script[lock + 1]).toMatch(/^flock -w 900 7 \|\| \{ echo '::error::/);
+        const reads = script.findIndex((line) => /\.database\.changed|\.env\b/.test(line));
+        expect(reads).toBeGreaterThan(lock + 1);
+
+        approved();
+        expect(rollback().status).toBe(0);
+        expect(calls()[0]).toBe("flock 7");
+        rmSync(`${work}/docker.log`);
+        back();
+        expect(calls()[0]).toBe("flock -w 900 7");
+      });
+
+      it("changes nothing when the start script still holds the lock after 15 minutes", () => {
+        approved();
+        write(at(".database.changed"), MARKER);
+        const result = run(rollbackCommands(staging), A, undefined, { FLOCK_BUSY: "1" });
+        expect(result.status).toBe(1);
+        expect(result.stdout).toBe("");
+        expect(result.output).toContain(
+          "::error::The start script of this run is still running on the server after 15 minutes, so the rollback step changed nothing. Check the app on the server (opscrew/environments/staging/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.",
+        );
+        expect(calls()).toEqual(["flock -w 900 7", ""]);
+        expect(read(".database.changed")).toBe(MARKER);
+        expect(db()).toBe("rows of B\n");
+      });
     });
 
     describe("with snapshots off and no approval", () => {
@@ -1019,6 +1063,17 @@ describe("the start script's database lines", () => {
         expect(text).not.toMatch(/snapshot|rollback-database|database\.changed|database=/);
       }
     }
+  });
+
+  it("take the app's lock on this computer only where flock exists", () => {
+    const site = { hostname: "shop.localhost" };
+    const local = localhostPlan();
+    expect(
+      switchCommands(local, [], { originTls: false, additions: false, localhost: site }),
+    ).toContain("if command -v flock > /dev/null 2>&1; then flock 7; fi");
+    expect(rollbackCommands(local, site).join("\n")).toContain(
+      "if command -v flock > /dev/null 2>&1; then flock -w 900 7 || { echo '::error::",
+    );
   });
 
   it("switch once in a recreate app's database step, and twice otherwise", () => {

@@ -307,6 +307,8 @@ jobs:
           export DOCKER_CONFIG="$APPS_DIR"/shop-staging/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop-staging
+          exec 7> .start.lock
+          flock 7
           echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
@@ -558,6 +560,8 @@ jobs:
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
           cd "$APPS_DIR"/shop-staging
+          exec 7> .start.lock
+          flock -w 900 7 || { echo '::error::The start script of this run is still running on the server after 15 minutes, so the rollback step changed nothing. Check the app on the server (opscrew/environments/staging/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.' >&2; exit 1; }
           RUN_IMAGE="$1"
           keep_failed() {
             (
@@ -1203,6 +1207,8 @@ jobs:
           export DOCKER_CONFIG="$APPS_DIR"/shop/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop
+          exec 7> .start.lock
+          flock 7
           echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
@@ -1442,6 +1448,8 @@ jobs:
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
           cd "$APPS_DIR"/shop
+          exec 7> .start.lock
+          flock -w 900 7 || { echo '::error::The start script of this run is still running on the server after 15 minutes, so the rollback step changed nothing. Check the app on the server (opscrew/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.' >&2; exit 1; }
           RUN_IMAGE="$1"
           keep_failed() {
             (
@@ -1698,6 +1706,8 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           export DOCKER_CONFIG="$APPS_DIR"/shop-eu-staging/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop-eu-staging
+          exec 7> .start.lock
+          flock 7
           echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
@@ -1949,6 +1959,8 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
           cd "$APPS_DIR"/shop-eu-staging
+          exec 7> .start.lock
+          flock -w 900 7 || { echo '::error::The start script of this run is still running on the server after 15 minutes, so the rollback step changed nothing. Check the app on the server (opscrew/environments/eu-staging/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.' >&2; exit 1; }
           RUN_IMAGE="$1"
           keep_failed() {
             (
@@ -2165,6 +2177,8 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           export DOCKER_CONFIG="$APPS_DIR"/shop-staging/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop-staging
+          exec 7> .start.lock
+          flock 7
           echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
@@ -2415,6 +2429,8 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
           cd "$APPS_DIR"/shop-staging
+          exec 7> .start.lock
+          flock -w 900 7 || { echo '::error::The start script of this run is still running on the server after 15 minutes, so the rollback step changed nothing. Check the app on the server (opscrew/environments/staging/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.' >&2; exit 1; }
           RUN_IMAGE="$1"
           keep_failed() {
             (
@@ -2666,6 +2682,8 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           export DOCKER_CONFIG="$APPS_DIR"/shop-dev/.docker
           trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
           cd "$APPS_DIR"/shop-dev
+          exec 7> .start.lock
+          if command -v flock > /dev/null 2>&1; then flock 7; fi
           echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
@@ -2929,6 +2947,8 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
           set -eu
           cd "$APPS_DIR"/shop-dev
+          exec 7> .start.lock
+          if command -v flock > /dev/null 2>&1; then flock -w 900 7 || { echo '::error::The start script of this run is still running on the server after 15 minutes, so the rollback step changed nothing. Check the app on the server (opscrew/environments/dev/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.' >&2; exit 1; }; fi
           RUN_IMAGE="$1"
           keep_failed() {
             (
