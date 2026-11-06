@@ -263,8 +263,8 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Owns: `packages/cli/src/commands/retarget*.ts`, `packages/cli/test/e2e/retarget.test.ts`, `packages/mcp-server/src/**`, `packages/agents/src/status/**`, `plugin/skills/**`
   - Depends: T2311, T2312
   - Accept:
-    - `--to own|portainer|<site host>`, `--answers`, `--empty` (repeatable), `--keep-bucket`, and
-      `--confirm` for both names.
+    - `--to own|portainer|<site host>`, `--answers`, `--empty` (repeatable), `--keep-bucket`,
+      `--pages-verification` (found in T2312), and `--confirm` for both names.
     - Found in T2308: `RetargetApprovalHandler` handles a `stack-apply` teardown with `--approve` and
       `--confirm`, as it handles `iac-apply` deletions.
     - `opscrew_status` shows the step for every target.
@@ -307,6 +307,9 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
       and file is there afterwards.
     - A Hetzner bucket moves.
     - A Portainer leg: to it and back.
+    - A site leg (found in T2312): GitHub Pages to Cloudflare's hosting and back on the e2e domain.
+      It checks that the Pages to Workers switch, whose record deletes and creates run in parallel,
+      finishes (in one run or two).
     - A forced copy failure leaves the old app serving.
     - A leak search.
     - Cleanup always runs.
@@ -318,4 +321,5 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 ## Phase 8: Finish
 
 - [ ] T2318 Simplify (lead): a review of the feature's diff for reuse and simplicity. Known so far: provision/portainer-flow.ts sets the Portainer records' TF_VARs inline, beside T2320's `setPortainerRecordsAddress` (move it to shared/ and use it in all three); postgres.ts's one-file tar writer; the shared output filter (S4 from T2308's review).
-- [ ] T2319 Release (lead): `docs/releasing.md`, with 022's opt-ins in the same release.
+- [ ] T2319 Release (lead): `docs/releasing.md`, with 022's opt-ins in the same release. (T2312's review: the Worker's custom domain moves to its new address in the infrastructure
+  code by itself, a moves-only plan, so no changelog warning is needed.)
