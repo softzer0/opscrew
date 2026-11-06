@@ -617,3 +617,23 @@ Not offered in this release:
 - **Not verified against a real container yet:** goose, golang-migrate, Doctrine, Sequel, Ecto,
   MikroORM, Kysely, node-pg-migrate, db-migrate, Hanami, Masonite, Aerich, Tortoise, Piccolo,
   Yoyo, Flask-DB. Each can join later as one row of the table.
+- **Several databases or heads** (T1935's review): a Rails app with several databases prints one
+  `Current version:` per database, and `db:migrate VERSION=` doesn't target one of them; Alembic
+  with several heads prints several revisions. The deploy records nothing for such a version, with
+  a warning that says why, so its rollback doesn't offer down migrations.
+
+### The real outputs (T1935's Docker test, 2026-11-06)
+
+Seen through `docker compose run -T` (no terminal). Every tool matched the table above; none needed
+a parsing change.
+
+| Tool | Status output |
+|---|---|
+| Rails 8.1.0 | `database: <name>`, then `Current version: <v>` (`0` before any migration), one pair per database; needs `SECRET_KEY_BASE` in production |
+| Django 6.1.2 | `[X]  <app>.<name>` applied, `[ ]  <app>.<name>` pending, in plan order |
+| Alembic 1.20.0 | `<rev> (head)`, nothing before any migration; its logs on stderr |
+| Flask-Migrate 4.1.0 | as Alembic; Flask's ".env files" tip on stderr |
+| Knex 3.3.0 | `Found N Completed Migration file/files.` and the names, or `No Completed Migration files Found.`; pending files after |
+| sequelize-cli 6.6.3 | a `Sequelize CLI [...]` header, config and environment lines, then `up <file>` / `down <file>` |
+| TypeORM 1.1.2 | `[X] <id> <name>` applied, `[ ] <name>` pending; exits 0 with pending migrations |
+| Laravel 13 (PHP 8.5) | a `Migration name … Batch / Status` heading, then `… [<batch>] Ran` or `… Pending` rows; before any migration `ERROR  Migration table not found.` and exit 1 |

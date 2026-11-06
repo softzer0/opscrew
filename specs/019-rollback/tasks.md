@@ -749,7 +749,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
   - Effort: xhigh
 
-- [ ] T1935 [US8] Down migrations for the eight tools: the record at deploy and the down step, in `packages/iac-templates/src/workflow/migrations.ts` (+ tests, Docker tests)
+- [x] T1935 [US8] Down migrations for the eight tools: the record at deploy and the down step, in `packages/iac-templates/src/workflow/migrations.ts` (+ tests, Docker tests)
   - Owns: `packages/iac-templates/src/workflow/migrations.ts` and its tests, Docker test files and fixtures for it (under `packages/iac-templates/src/workflow/__fixtures__/migrations/` or `packages/cli/test/e2e/migrations*.ts`)
   - Reads: plan.md 12.3–12.4, research R9's table, T1933's `switch.ts` and `snapshots.ts`
   - Depends: T1933, T1932
