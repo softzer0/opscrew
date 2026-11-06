@@ -81,7 +81,7 @@ description: "Tasks for 024-snapshots-and-restores"
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T2406 [US6] The encrypted copy off the server: the bucket in the storage root and the upload, in `packages/iac-templates/src/{storage,workflow/snapshot-script.ts}` and `packages/agents/src/provision/{storage,portainer-flow}.ts` (+ tests)
+- [ ] T2406 [US6] The encrypted copy off the server: the bucket in its own `backups` root (D9) and the upload, in `packages/iac-templates/src/{storage,workflow/snapshot-script.ts}` and `packages/agents/src/provision/{storage,portainer-flow,run,secrets,publish,steps,types}.ts`, `packages/agents/src/{secrets/copy,shared/apply-command}.ts`, the backups hash in `packages/cli/src/commands/provision.ts` and `packages/mcp-server/src/tools/deploy.ts` and the root's rendering (+ tests); the deploy's `offsite.env` (`workflow/{index,shared}.ts`) after T2417
   - Owns: those paths (`portainer-flow.ts` only to fill the Portainer stack's `OPSCREW_OFFSITE_*` variables, which T2405's `offsite` service reads)
   - Reads: plan.md 7., research R3 and R7 (S3)
   - Depends: T2404
@@ -136,19 +136,19 @@ description: "Tasks for 024-snapshots-and-restores"
 - [ ] T2418 [US1] [US7] Portainer's SQLite as `sqlite.tar` (plan.md D6), in `packages/iac-templates/src/portainer-target/**` (+ tests, Docker test)
   - Owns: `packages/iac-templates/src/portainer-target/**`
   - Depends: T2404
-  - Accept: the scheduled and pre-release SQLite parts use the Python program from `workflow/snapshots.ts`; a volume with several databases and other files gives one `sqlite.tar`; an empty volume is `skipped`. The Docker test covers both.
+  - Accept: the scheduled and pre-release SQLite parts use the Python program from `workflow/snapshots.ts`; a volume with several databases and other files gives one `sqlite.tar`; an empty volume is `skipped`. The Docker test covers both. The snapshots volume is the stack's `snapshots` (`opscrew-<app>_snapshots`), recorded with `snapshot_tools` among the stack's volumes (D12). `portainerSnapshotParts(plan)` and `portainerServiceEnvironment(plan, service)` are exported for T2407.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, the Docker test with `OPSCREW_DOCKER_TESTS=1`
   - Effort: high
 
-- [ ] T2419 [US5] Destroy and retarget leave no snapshot schedule behind, in `packages/agents/src/destroy/{own,portainer}.ts` and `packages/agents/src/retarget/removal.ts` (+ tests)
-  - Owns: those files and their tests
-  - Reads: plan.md 1., 3.–4.; `packages/iac-templates/src/workflow/snapshots.ts` (the crontab tag)
-  - Depends: T2404
+- [ ] T2419 [US5] Destroy and moves leave no snapshot schedule behind (plan.md D12), in `packages/connectors/ssh-host/src/**`, `packages/agents/src/testing/own.ts` and `packages/agents/src/destroy/portainer.ts` (+ tests)
+  - Owns: those paths and their tests
+  - Reads: plan.md 1., 3.–4., D12; `packages/iac-templates/src/workflow/snapshots.ts` (the crontab tag)
+  - Depends: T2404; the Portainer part after T2418
   - Accept:
-    - **Own servers:** destroy and a move off a server remove the app's crontab line (the end-anchored tag ` # opscrew-snapshots <app>`) on the app's and extra servers. Other apps' lines stay.
-    - **Portainer:** destroy removes the `opscrew-snapshots-<app>` volume and the stack's `snapshot_tools` volume, and its summary names them.
-    - **Tests:** with the existing fakes; a second app's line survives.
-  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+    - **Own servers:** `planTeardown` removes the deploy user's line ending in ` # opscrew-snapshots <app>` (end-anchored) in a host-plan step, as the connector removes cron lines today. That covers destroy, extra servers and moves off an own server. Other apps' lines stay; a missing crontab or line is fine. `FakeHostServer` keeps a crontab in its facts.
+    - **Portainer:** destroy's data warning and its "kept" text name the `snapshots` and `snapshot_tools` volumes as holding the app's snapshots (T2418 records them among the stack's volumes).
+    - **Tests:** a second app's line survives; the Portainer texts name the volumes.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
 
 ## Phase 4: Wave 3 (parallel)

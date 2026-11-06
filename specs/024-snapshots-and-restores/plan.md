@@ -37,7 +37,7 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 
 - **A snapshot is a folder named by its UTC time** (`20261106T190000Z`), the id. It lives:
   - on a server and this computer, in `<app folder>/.snapshots/` beside 019's pre-release ones;
-  - on Portainer, in a named volume `opscrew-snapshots-<app>`;
+  - on Portainer, in the stack's `snapshots` volume, `opscrew-<app>_snapshots` (D12);
   - for a database on another server (018), on that server, with the snapshot's `about.json`
     naming each part's place.
 - **`about.json`, written last:** id, kind (`manual`, `release`, `scheduled`), the version that ran
@@ -147,19 +147,23 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 
 ### 7. The off-server copy
 
-- **The bucket:** a second bucket in 013's `storage` root (`<app>-<env>-backups`), planned and
+- **The bucket:** `<app>-<env>-backups`, in a `backups` root with its own state (D9), planned and
   approved by hash.
   - Its key is the user's, as 013's are: OpsCrew never creates storage keys, and R2's is scoped
     to the bucket.
   - Versioning is on where the provider offers it.
-  - A lifecycle rule expires copies after `snapshots.offsite.days` (90 by default), through the
-    S3 API. If Hetzner rejects it (spike S3), the script deletes copies older than the retention
-    after each upload.
+  - A lifecycle rule expires copies after `snapshots.offsite.days` (90 by default): Hetzner
+    through the S3 API, with versioning and expiry of old versions; R2 through Cloudflare's
+    lifecycle, with no versioning offered.
+  - DigitalOcean Spaces, untested live, gets neither. There the script deletes copies older than
+    the retention after each upload.
 - **The upload:** `snapshot.sh offsite <id>` streams each file through `age -r <recipient>` (the
   recovery copy's recipient from `opscrew/.sops.yaml`) into `rclone rcat` (the pinned image, the
   key in a mode-600 env file the deploy uploads, as `.env` is).
-  - The age binary is a new tool pin (`TOOLS.age`, linux amd64 and arm64 with SHA-256), uploaded
-    beside the script and checked against its hash before each use.
+  - The age binary is a new tool pin (`TOOLS.age`, linux amd64 and arm64 with SHA-256). The
+    script fetches the pinned archive through the pinned rclone image, as Portainer's service
+    does, checks the archive's and the binary's hashes, and the binary's again before each use
+    (D10).
   - Every snapshot taken while the copy is on is uploaded right after it.
 - **Portainer:** an `offsite` service in the stack does the same with the snapshots volume
   (spike S2).
@@ -176,7 +180,8 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 
 - `deploy.snapshotStop: string[]`: stop-only services the pre-release snapshot includes.
 - `snapshots.schedule?: { every: "daily" | "weekly" | <n>h, keep: 1–30, stop: string[] }`.
-- `snapshots.offsite?: { provider, bucket, days }`.
+- `snapshots.offsite?: { provider, bucket, region, days }`: `region` is required for Hetzner and
+  DigitalOcean, and is `auto` for R2.
 - Defaults: weekly, keep 4, 90 days.
 
 ### 10. Tests
@@ -233,6 +238,21 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
   servers. A restore on an extra server doesn't hold or stop the app. The CLI runs the app
   server's `snapshot.sh hold` first and `snapshot.sh resume` after (019's code; no approval file,
   since they lose no data) (T2408).
+- **D9 (T2406's report):** the backups bucket has a `backups` root with its own state, not a
+  second bucket in 013's `storage` root.
+  - Moves, `destroy --delete-data` and drift never handle its key.
+  - The copies outlive a destroyed server, which is their purpose.
+  - Deleting the bucket is the user's, and the guide says how.
+- **D10:** the script fetches `age` itself (7.), so the deploy uploads nothing new.
+- **D11:** with the off-server copy on, provision makes the recovery copy's age key before it
+  sets the deploy secrets. So the first provision already has the recipient. The first recipient
+  in `opscrew/.sops.yaml` is used.
+- **D12 (T2419's report):**
+  - **Own servers:** the app's crontab line is removed by the ssh-host connector's teardown
+    (`planTeardown`, approved by hash). Destroy, extra servers and moves all go through it.
+  - **Portainer:** the snapshots volume is the stack's own `snapshots` volume
+    (`opscrew-<app>_snapshots`, not `opscrew-snapshots-<app>`), recorded with `snapshot_tools`
+    among the stack's volumes. So destroy deletes both only with `--delete-data`, as all data.
 
 ## Order
 

@@ -1603,8 +1603,18 @@ export const SnapshotsSchema = z.strictObject({
     .strictObject({
       provider: z.enum(["r2", "hetzner", "digitalocean"]),
       bucket: StorageSchema.shape.objectStorage.unwrap().shape.bucket,
+      /**
+       * The bucket's region or location, for example `fsn1` (Hetzner) or `fra1` (DigitalOcean).
+       * Absent for R2, whose region is `auto`.
+       */
+      region: StorageSchema.shape.objectStorage.unwrap().shape.region.optional(),
       /** Days a copy is kept. Absent: 90. */
       days: z.int().min(1).max(3650).optional(),
+    })
+    .refine((offsite) => offsite.provider === "r2" || offsite.region !== undefined, {
+      message:
+        "needs the bucket's region for Hetzner and DigitalOcean, for example fsn1 or fra1; run `opscrew snapshot offsite on --to <provider> --region <region>` again",
+      path: ["region"],
     })
     .optional(),
 });
@@ -1623,13 +1633,18 @@ export function snapshotScheduleOf(plan: {
   };
 }
 
-/** `snapshots.offsite` with its default (90 days), or undefined when off. */
-export function snapshotOffsiteOf(plan: {
-  snapshots?: Snapshots | undefined;
-}): { provider: "r2" | "hetzner" | "digitalocean"; bucket: string; days: number } | undefined {
+/** `snapshots.offsite` with its defaults (90 days, R2's region `auto`), or undefined when off. */
+export function snapshotOffsiteOf(plan: { snapshots?: Snapshots | undefined }):
+  | {
+      provider: "r2" | "hetzner" | "digitalocean";
+      bucket: string;
+      region: string;
+      days: number;
+    }
+  | undefined {
   const offsite = plan.snapshots?.offsite;
   if (offsite === undefined) return undefined;
-  return { ...offsite, days: offsite.days ?? 90 };
+  return { ...offsite, region: offsite.region ?? "auto", days: offsite.days ?? 90 };
 }
 
 type DatabaseService = PlanService & { kind: (typeof DATABASE_KINDS)[number] };

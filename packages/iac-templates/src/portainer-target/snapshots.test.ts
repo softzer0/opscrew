@@ -302,7 +302,7 @@ describe("the snapshot before each release in a stack", () => {
 
 describe("the off-server copy in a stack", () => {
   const plan = snapshotPlan({
-    snapshots: { offsite: { provider: "hetzner", bucket: "shop-prod-backups" } },
+    snapshots: { offsite: { provider: "hetzner", bucket: "shop-prod-backups", region: "fsn1" } },
   });
   const { stack, content } = render(plan);
   const offsite = stack.services.offsite;
@@ -365,7 +365,9 @@ describe("the off-server copy in a stack", () => {
 
   it("names the region only for Hetzner, and DigitalOcean as rclone's provider", () => {
     const spaces = snapshotPlan({
-      snapshots: { offsite: { provider: "digitalocean", bucket: "shop-prod-backups" } },
+      snapshots: {
+        offsite: { provider: "digitalocean", bucket: "shop-prod-backups", region: "fra1" },
+      },
     });
     const environment = render(spaces).stack.services.offsite?.environment;
     expect(environment?.RCLONE_CONFIG_OFFSITE_PROVIDER).toBe("DigitalOcean");

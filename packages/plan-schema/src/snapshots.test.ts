@@ -208,15 +208,17 @@ describe("snapshots.offsite", () => {
   it("keeps copies 90 days by default, without writing it", async () => {
     const parsed = parse({ ...(await prodPlan()), snapshots: { offsite } });
     expect(parsed.snapshots).toEqual({ offsite });
-    expect(snapshotOffsiteOf(parsed)).toEqual({ ...offsite, days: 90 });
+    expect(snapshotOffsiteOf(parsed)).toEqual({ ...offsite, region: "auto", days: 90 });
   });
 
   it("takes R2, Hetzner and DigitalOcean, 1 to 3650 days and 013's bucket names", async () => {
     const plan = await prodPlan();
     for (const provider of ["r2", "hetzner", "digitalocean"]) {
       for (const days of [1, 3650]) {
-        const parsed = parse({ ...plan, snapshots: { offsite: { ...offsite, provider, days } } });
-        expect(snapshotOffsiteOf(parsed)).toEqual({ ...offsite, provider, days });
+        const region = provider === "r2" ? undefined : "fsn1";
+        const value = { ...offsite, provider, days, ...(region === undefined ? {} : { region }) };
+        const parsed = parse({ ...plan, snapshots: { offsite: value } });
+        expect(snapshotOffsiteOf(parsed)).toEqual({ ...value, region: region ?? "auto" });
       }
     }
     const refused: [Loose, string][] = [
@@ -227,6 +229,9 @@ describe("snapshots.offsite", () => {
       [{ ...offsite, days: 0 }, "snapshots.offsite.days"],
       [{ ...offsite, days: 3651 }, "snapshots.offsite.days"],
       [{ provider: "r2" }, "snapshots.offsite.bucket"],
+      [{ ...offsite, provider: "hetzner" }, "snapshots.offsite.region"],
+      [{ ...offsite, provider: "digitalocean" }, "snapshots.offsite.region"],
+      [{ ...offsite, region: "" }, "snapshots.offsite.region"],
     ];
     for (const [value, path] of refused) {
       const found = issues({ ...plan, snapshots: { offsite: value } });
