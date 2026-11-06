@@ -296,7 +296,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 7: Live
 
-- [ ] T2316 [US1] [US2] [US3] [US4] [US5] The live pass, in `packages/cli/test/live/`
+- [x] T2316 [US1] [US2] [US3] [US4] [US5] The live pass, in `packages/cli/test/live/`
   - Owns: `packages/cli/test/live/retarget-anywhere*.ts`, `docs/e2e.md`
   - Depends: T2314
   - Accept, gated on `OPSCREW_E2E_RETARGET_ANYWHERE=1`, in legs that each clean up after themselves:
