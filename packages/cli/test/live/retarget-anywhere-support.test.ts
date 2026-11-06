@@ -94,6 +94,15 @@ describe("the printed command", () => {
     expect(confirmNames(args)).toEqual(["shop", "opscrew-e2e-x"]);
   });
 
+  it("reads the plain hint a refused switch prints, after the commands before it", () => {
+    const output = [
+      `Review the plan above, then run \`opscrew retarget --approve ${OTHER}\` to apply it.`,
+      "✗ The switch was not approved. The app on the old server runs again.",
+      `  To apply it later without prompts, run: opscrew retarget --approve ${HASH} --confirm shop. When you are ready, run \`opscrew retarget\` again (it repeats the maintenance window), or \`opscrew retarget --abort\` to undo the move.`,
+    ].join("\n");
+    expect(printedApproval(output)).toEqual(["--approve", HASH, "--confirm", "shop"]);
+  });
+
   it("is none without a plan hash", () => {
     expect(printedApproval("Then run `opscrew retarget` again.")).toBeUndefined();
     expect(printedApproval("run `opscrew retarget --approve <hash>`")).toBeUndefined();

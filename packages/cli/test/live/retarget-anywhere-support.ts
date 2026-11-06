@@ -83,7 +83,12 @@ const PLAN_HASH = /^[0-9a-f]{64}$/;
  */
 export function printedApproval(output: string): string[] | undefined {
   let found: string[] | undefined;
-  for (const [, command = ""] of output.matchAll(/`(opscrew retarget(?: [^`]*)?)`/g)) {
+  const commands = [
+    ...output.matchAll(/`(opscrew retarget(?: [^`]*)?)`/g),
+    // The plain hint: "…without prompts, run: opscrew retarget --approve <hash> --confirm <app>."
+    ...output.matchAll(/without prompts, run: (opscrew retarget[^\n]*?)(?=\.(?:\s|$)|\n|$)/g),
+  ].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+  for (const [, command = ""] of commands) {
     const args = splitCommand(command).slice(2);
     if (PLAN_HASH.test(flagValue(args, "--approve") ?? "")) found = args;
   }
