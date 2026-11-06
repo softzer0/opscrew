@@ -1195,6 +1195,42 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect((await readArtifact("plan", s.deps.paths.files.plan)).retarget?.step).toBe("deployed");
   });
 
+  it.each([
+    [
+      { provider: "own", mode: "vps-compose", arch: "amd64", access: "public", edge: "caddy" },
+      "your own server",
+    ],
+    [
+      {
+        provider: "portainer",
+        mode: "portainer-stack",
+        environmentId: 3,
+        arch: "amd64",
+        redeploy: "updater",
+        web: { mode: "proxy", port: 8080 },
+      },
+      "your Portainer",
+    ],
+  ] as const)("names a move to %j in words", async (target, words) => {
+    const from = deployedPlan();
+    const s = await setup();
+    await writeArtifact("plan", s.deps.paths.files.plan, {
+      ...from,
+      target: target as DeployPlan["target"],
+      retarget: {
+        from: { target: cloudTarget(from.target), deploy: from.deploy },
+        step: "deployed",
+        empty: [],
+        startedAt: NOW,
+      },
+    });
+    await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: `A move to ${words} is in progress, so OpsCrew will not delete this deployment.`,
+    });
+    expect(s.engine.calls).toEqual([]);
+  });
+
   it("stops before any credential check without local state or with old infrastructure code", async () => {
     const elsewhere = await setup({ state: false });
     await expect(

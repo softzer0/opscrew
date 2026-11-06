@@ -10,12 +10,18 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { MaintenanceWindowApproval, NonInteractiveApprovalHandler } from "../approval";
 import { CANCEL, GIT, run, ScriptedPrompts } from "../ui/__fixtures__/harness";
-import { type MoveProject, moveProject } from "../ui/__fixtures__/retarget";
+import {
+  HOST_KEY_FINGERPRINT,
+  type MoveProject,
+  moveProject,
+  OWN_NEW_IPV4,
+} from "../ui/__fixtures__/retarget";
 import { retargetStatusLine } from "../ui/retarget";
 import { flagProblems, RetargetApprovalHandler } from "./retarget";
 
 const HASH = "a".repeat(64);
 const OTHER = "b".repeat(64);
+const KEY = `SHA256:${"A".repeat(43)}`;
 
 /** Answers yes to whatever reaches it and records the requests. */
 class RecordingApprovals implements ApprovalHandler {
@@ -125,6 +131,25 @@ describe("RetargetApprovalHandler in a non-interactive run", () => {
     expect((await run.handler.request(deletion(HASH))).approved).toBe(false);
   });
 
+  it.each(["stack-apply", "host-apply"] as const)(
+    "approves a %s teardown only with its hash and --confirm <app name>",
+    async (kind) => {
+      const teardown: ApprovalRequest = { ...deletion(HASH), kind, title: "Remove shop" };
+      const ok = scripted({ approve: HASH, confirm: APP, appName: APP });
+      expect(await ok.handler.request(teardown)).toMatchObject({
+        approved: true,
+        confirmation: APP,
+      });
+      const noConfirm = scripted({ approve: HASH, appName: APP });
+      expect(await noConfirm.handler.request(teardown)).toMatchObject({
+        approved: false,
+        reason: "deleting needs --confirm shop",
+      });
+      const otherHash = scripted({ approve: OTHER, confirm: APP, appName: APP });
+      expect((await otherHash.handler.request(teardown)).approved).toBe(false);
+    },
+  );
+
   it("leaves the GitHub steps to --yes", async () => {
     const { handler } = scripted();
     const secrets = await handler.request({ kind: "github-secrets", title: "Store", details: "" });
@@ -185,6 +210,22 @@ describe("flagProblems", () => {
     );
     expect(flagProblems({ approve: "abc" })[0]).toContain("64-character");
   });
+
+  it("refuses the own server's and Portainer's flags for a move elsewhere", () => {
+    expect(
+      flagProblems({ to: "digitalocean", answers: "a.yaml", publicImage: true, hostKey: KEY }),
+    ).toEqual(["--answers, --host-key, --public-image do not apply to a move to digitalocean."]);
+    expect(flagProblems({ to: "own", portainerAddress: "203.0.113.5" })).toEqual([
+      "--portainer-address does not apply to a move to own.",
+    ]);
+    expect(flagProblems({ to: "portainer", passwordLogins: "off" })).toEqual([
+      "--password-logins does not apply to a move to portainer.",
+    ]);
+    expect(flagProblems({ to: "own", answers: "a.yaml", hostKey: KEY })).toEqual([]);
+    expect(
+      flagProblems({ to: "portainer", answers: "a.yaml", portainerCert: "x", publicImage: true }),
+    ).toEqual([]);
+  });
 });
 
 describe("retargetStatusLine", () => {
@@ -212,10 +253,10 @@ describe("retargetStatusLine", () => {
 
   it("names the providers, the last step and the next command", () => {
     expect(retargetStatusLine(moving({ step: "created" }))).toBe(
-      "  retarget  moving from Hetzner Cloud to DigitalOcean; last completed step: created (new server created); next: run `opscrew retarget` to continue, or `opscrew retarget --abort` to undo the move.",
+      "  retarget  moving from Hetzner Cloud to DigitalOcean; last completed step: created (the new Droplet on DigitalOcean created); next: run `opscrew retarget` to continue, or `opscrew retarget --abort` to undo the move.",
     );
     expect(retargetStatusLine(moving({ step: "switched" }))).toContain(
-      "next: run `opscrew retarget --finish`",
+      "next: run `opscrew retarget --finish` to delete the old server on Hetzner Cloud once the app works on the new Droplet on DigitalOcean.",
     );
     expect(
       retargetStatusLine(moving({ step: "deployed", abort: { step: "new-removed" } })),
@@ -224,7 +265,55 @@ describe("retargetStatusLine", () => {
     );
     expect(
       retargetStatusLine(moving({ step: "deployed", oldAppStoppedAt: "2026-10-13T12:05:00.000Z" })),
-    ).toContain("the app on the old server is stopped");
+    ).toContain("the app on the old server on Hetzner Cloud is stopped");
+  });
+
+  it("shows the step for a move to or from the user's own server and Portainer", () => {
+    const own = {
+      provider: "own",
+      mode: "vps-compose",
+      arch: "amd64",
+      access: "public",
+      edge: "caddy",
+    } as const;
+    const portainer = {
+      provider: "portainer",
+      mode: "portainer-stack",
+      environmentId: 3,
+      arch: "amd64",
+      redeploy: "updater",
+      web: { mode: "caddy" },
+    } as const;
+    const plan = testPlan({ deployed: true, userSecret: false, domain: "shop.example.com" });
+    const between = (
+      from: DeployPlan["target"],
+      to: DeployPlan["target"],
+      retarget: Record<string, unknown>,
+    ) =>
+      DeployPlanSchema.parse({
+        ...plan,
+        target: to,
+        retarget: { from: { target: from }, startedAt: "2026-10-13T12:00:00.000Z", ...retarget },
+      });
+    expect(retargetStatusLine(between(plan.target, own, { step: "created" }))).toContain(
+      "moving from Hetzner Cloud to your own server; last completed step: created (your new server prepared)",
+    );
+    expect(retargetStatusLine(between(plan.target, portainer, { step: "deployed" }))).toContain(
+      "moving from Hetzner Cloud to your Portainer; last completed step: deployed (app deployed in your Portainer)",
+    );
+    expect(retargetStatusLine(between(own, plan.target, { step: "switched" }))).toContain(
+      "next: run `opscrew retarget --finish` to remove the app from your old server once the app works on the new server on Hetzner Cloud.",
+    );
+    expect(
+      retargetStatusLine(
+        between(portainer, plan.target, {
+          step: "migrated",
+          oldAppStoppedAt: "2026-10-13T12:05:00.000Z",
+        }),
+      ),
+    ).toContain(
+      "last completed step: migrated (data copied to the new server on Hetzner Cloud); the app in your Portainer is stopped",
+    );
   });
 });
 
@@ -271,7 +360,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     expect(move.events).toEqual([]);
   });
 
-  it("refuses a Portainer target plainly: it never moves", async () => {
+  it("refuses a Portainer behind the user's own proxy with Cloudflare DNS before any change", async () => {
     move = await moveProject();
     const current = await readArtifact("plan", move.paths.files.plan);
     const portainer = DeployPlanSchema.parse({
@@ -289,27 +378,96 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     const ctx = move.context();
     expect(await run(ctx, "retarget", "--to", "digitalocean")).toBe(1);
     expect(ctx.errors).toContain(
-      "Moving an app to or from a Portainer target is not supported; destroy it and provision again.",
+      "Your app on your Portainer is served behind your own proxy with its DNS on Cloudflare",
     );
+    expect(ctx.errors).toContain("Nothing was changed.");
     expect(move.events).toEqual([]);
     expect((await readArtifact("plan", move.paths.files.plan)).target).toEqual(portainer.target);
   });
 
+  it.each([
+    [["--to", "own", "--host-key", "SHA256:short"], "--host-key expects"],
+    [["--to", "portainer", "--portainer-address", "not-an-ip"], "--portainer-address expects"],
+    [["--to", "portainer", "--portainer-cert", "nope"], "--portainer-cert expects"],
+    [["--finish", "--empty", "db", "--answers", "a.yaml"], "--answers, --empty only apply"],
+  ])("refuses %j before anything happens", async (args, message) => {
+    move = await moveProject();
+    const ctx = move.context();
+    expect(await run(ctx, "retarget", ...args)).toBe(2);
+    expect(ctx.errors).toContain(message);
+    expect(move.events).toEqual([]);
+  });
+
+  it("stops in a script without the own server's answers, naming --answers", async () => {
+    move = await moveProject();
+    const ctx = move.context();
+    expect(await run(ctx, "retarget", "--to", "own")).toBe(1);
+    expect(ctx.errors).toContain("OpsCrew needs the answers about your new server");
+    expect(ctx.errors).toContain("--answers");
+    expect(move.events).toEqual([]);
+    expect((await readArtifact("plan", move.paths.files.plan)).retarget).toBeUndefined();
+  });
+
+  it("asks a terminal the own server's questions as the interview does, and what starts empty", async () => {
+    move = await moveProject();
+    const prompts = new ScriptedPrompts([
+      OWN_NEW_IPV4,
+      "22",
+      "root",
+      "agent",
+      true,
+      "dns-only",
+      false, // db starts empty
+      false, // the summary is declined
+    ]);
+    const approvals = new RecordingApprovals();
+    const ctx = move.context({
+      interactive: true,
+      services: { prompts, approvalHandler: approvals },
+    });
+    expect(
+      await run(ctx, "retarget", "--to", "own", "--host-key", HOST_KEY_FINGERPRINT),
+      ctx.errors,
+    ).toBe(1);
+    expect(prompts.calls.map((call) => call.message.split("\n")[0])).toEqual([
+      "What is your server's address?",
+      "Which port do you connect to for SSH?",
+      "Which user should OpsCrew log in as?",
+      "Which SSH key should OpsCrew use?",
+      "Can the internet reach this server directly?",
+      "If the internet can reach your server, how should it serve the site?",
+      expect.stringMatching(
+        /^Copy db's data \(50\.0 MB\) to your own server\? Starting it empty loses/,
+      ),
+      "Start the move to your own server? It adds no monthly cost, with no maintenance window.",
+    ]);
+    expect(ctx.output).toContain("db's data at /var/lib/postgresql/data: 50.0 MB, starts empty");
+    expect(ctx.errors).toContain("The move was not started. Nothing was changed.");
+    expect(approvals.requests).toEqual([]);
+    expect((await readArtifact("plan", move.paths.files.plan)).retarget).toBeUndefined();
+  });
+
   it("changes nothing when the summary is declined in a terminal", async () => {
     move = await moveProject();
-    const prompts = new ScriptedPrompts(["digitalocean-single-s-2vcpu-4gb-fra1", false]);
+    const prompts = new ScriptedPrompts(["digitalocean-single-s-2vcpu-4gb-fra1", true, false]);
     const approvals = new RecordingApprovals();
     const ctx = move.context({
       interactive: true,
       services: { prompts, approvalHandler: approvals },
     });
     expect(await run(ctx, "retarget", "--to", "digitalocean")).toBe(1);
-    expect(prompts.calls.map((call) => call.kind)).toEqual(["select", "confirm"]);
+    expect(prompts.calls.map((call) => call.kind)).toEqual(["select", "confirm", "confirm"]);
     expect(prompts.calls[0]?.initial).toBe("digitalocean-single-s-1vcpu-2gb-fra1");
-    expect(prompts.calls[1]?.message).toBe(
-      "Start the move to DigitalOcean? It costs $31.20 per month extra while both servers run, with about 3 minutes of downtime during the database copy.",
+    // Each owner of data: copy it (the default) or start it empty, with its size.
+    expect(prompts.calls[1]?.message).toMatch(/^Copy db's data \(50\.0 MB\) to DigitalOcean\? /);
+    expect(prompts.calls[1]?.initial).toBe(true);
+    expect(prompts.calls[2]?.message).toBe(
+      "Start the move to DigitalOcean? It costs $31.20 per month extra while both run, with about 3 minutes of downtime while the data is copied.",
     );
-    expect(ctx.output).toContain("Extra cost while both servers run");
+    // The summary lists each data mount with its size, and the window's minutes.
+    expect(ctx.output).toContain("Extra cost while both run");
+    expect(ctx.output).toContain("db's data at /var/lib/postgresql/data: 50.0 MB, copied");
+    expect(ctx.output).toContain("Expected maintenance window: about 3 minutes.");
     expect(ctx.errors).toContain("The move was not started. Nothing was changed.");
     expect(move.engine.applied).toEqual([]);
     expect(approvals.requests).toEqual([]);
@@ -319,7 +477,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
   it("moves in one terminal run after the choice and the summary, then finishes after the typed name", async () => {
     move = await moveProject();
     const m = move;
-    const prompts = new ScriptedPrompts(["digitalocean-single-s-2vcpu-4gb-fra1", true]);
+    const prompts = new ScriptedPrompts(["digitalocean-single-s-2vcpu-4gb-fra1", true, true]);
     const approvals = new RecordingApprovals();
     const ctx = m.context({ interactive: true, services: { prompts, approvalHandler: approvals } });
     expect(await run(ctx, "retarget"), ctx.errors).toBe(0);

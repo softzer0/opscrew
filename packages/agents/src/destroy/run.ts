@@ -9,6 +9,7 @@ import { acmStaysOn, appZoneDomain } from "../previews/app-zone";
 import { requireNoSharedPreviews } from "../previews/host";
 import { planProvider, providerProfile } from "../providers";
 import { checkProvider, providerBucket } from "../provision";
+import { placeWords } from "../retarget/sides";
 import {
   deleteRegistrations,
   planWhere,
@@ -129,7 +130,7 @@ interface DestroyContext {
  * state is transitional, so destroy refuses before any check or change.
  */
 function moveInProgress(plan: DeployPlan): OpsCrewError {
-  const to = providerProfile(planProvider(plan)).displayName;
+  const to = placeWords(plan.target);
   return new OpsCrewError(
     "PHASE_PRECONDITION",
     `A move to ${to} is in progress, so OpsCrew will not delete this deployment.`,

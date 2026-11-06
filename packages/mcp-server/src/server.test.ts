@@ -149,7 +149,7 @@ describe("createOpscrewMcpServer", () => {
       '"your Portainer"',
       "never write the address into a file",
       "Never run tofu, terraform, hcloud, doctl, ssh or curl against Portainer yourself",
-      "`npx opscrew retarget --to <provider>`",
+      "`npx opscrew retarget --to <hetzner|digitalocean|own|portainer>`",
       "continue, finish or abort",
       "`npx opscrew domain buy <domain> [--registrar <id>]`",
       "scripts need --confirm and --max-price",

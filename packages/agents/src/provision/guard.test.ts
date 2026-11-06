@@ -53,3 +53,31 @@ describe("moveInProgress", () => {
     },
   );
 });
+
+describe("moveInProgress for a move to the user's own server or Portainer", () => {
+  const to = (target: DeployPlan["target"]): DeployPlan => ({ ...moving(), target });
+  const own = to({
+    provider: "own",
+    mode: "vps-compose",
+    arch: "amd64",
+    access: "public",
+    edge: "caddy",
+  });
+  const portainer = to({
+    provider: "portainer",
+    mode: "portainer-stack",
+    environmentId: 3,
+    arch: "amd64",
+    redeploy: "updater",
+    web: { mode: "caddy" },
+  });
+
+  it.each([
+    [own, "A move to your own server is in progress."],
+    [portainer, "A move to your Portainer is in progress."],
+  ])("names the target in words and refuses with that notice (%#)", (plan, message) => {
+    expect(moveInProgress(plan)?.message).toBe(message);
+    expect(() => requireNoMoveInProgress(plan)).toThrow(message);
+    expect(JSON.stringify(moveInProgress(plan))).not.toContain("Your own server");
+  });
+});

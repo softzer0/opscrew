@@ -29,6 +29,7 @@ import type {
   CommandRunner,
   FetchLike,
   Reporter,
+  StreamRunner,
 } from "@opscrew/contracts";
 import {
   DefaultToolPolicy,
@@ -52,6 +53,8 @@ export interface CliServices {
   runtime?: AgentRuntime;
   fetch?: FetchLike;
   runner?: CommandRunner;
+  /** Byte pipes to servers (`ssh … docker system dial-stdio`); default core's `NodeStreamRunner`. */
+  streams?: StreamRunner;
   clock?: Clock;
   /** Approval handler used instead of the interactive / `--approve <hash>` handler. */
   approvalHandler?: ApprovalHandler;
@@ -193,7 +196,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
       },
       clock,
     );
-  const deps = buildPhaseDeps({
+  const built = buildPhaseDeps({
     root: ctx.cwd,
     env: ctx.env,
     ...(extra.homedir === undefined ? {} : { homedir: extra.homedir }),
@@ -208,6 +211,7 @@ export function createPhaseDeps(ctx: CliContext, options: PhaseDepsOptions = {})
     interactive: ctx.isInteractive,
     version: ctx.version,
   });
+  const deps = extra.streams === undefined ? built : { ...built, streams: extra.streams };
   if (options.ai === false) return deps;
   if (extra.runtime !== undefined) return { ...deps, runtime: extra.runtime };
   if (!claudeConfigured(ctx.env)) return deps;

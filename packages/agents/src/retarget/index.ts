@@ -2,11 +2,12 @@
 export { abortRetarget } from "./abort";
 export { finishRetarget } from "./finish";
 export { runRetarget } from "./run";
-export { placeWords } from "./sides";
+export { placeWords, sideWords } from "./sides";
 export {
   ABORT_COMMAND,
   FINISH_COMMAND,
   isMaintenanceWindowRequest,
   RUN_COMMAND,
+  sizeText,
 } from "./texts";
 export type * from "./types";

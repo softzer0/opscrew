@@ -566,18 +566,24 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   runner and this computer is a device, SSH answers only on the private network;
   `--open-public-ssh` opens it again). `opscrew_status` lists the devices by name and address with
   their last handshake, and the grants; never ask for or read a device's configuration file.
-- **Moving to another provider.** Moving a live app to another cloud provider is terminal-only
-  on purpose; there is no tool for it, and you must not try to perform its steps yourself. Tell
-  the user to run `npx opscrew retarget --to <provider>` (`npx opscrew retarget --help` lists the
-  providers) in their own terminal. Moving to or from a server they own, or a Portainer, is not
-  supported yet. It creates the new server next to the old one and
-  deploys the app there, then copies the database in a short maintenance window (it shows the
-  expected downtime first) and switches DNS to the new server. After checking the app, the user
-  runs `npx opscrew retarget --finish` to delete the old server (it offers a snapshot and asks
-  them to type the app name). `npx opscrew retarget --abort` restores the old deployment, but only
-  before the DNS switch. Both servers are billed until the move is finished. `opscrew_status` (or
-  `npx opscrew status`) shows where a move stands; while it is in progress, design, provision and
-  drift stop with the commands to continue, finish or abort it, so pass those on to the user.
+- **Moving the app somewhere else.** Moving a live app to another cloud provider, to a server
+  the user owns or into their Portainer (and from any of these to another) is terminal-only on
+  purpose; there is no tool for it, and you must not try to perform its steps yourself. Tell the
+  user to run `npx opscrew retarget --to <hetzner|digitalocean|own|portainer>` in their own
+  terminal (`npx opscrew retarget --help` explains the flags). For their own server or Portainer
+  it asks the same questions as the interview (how to reach the server; Portainer's address,
+  certificate and environment, and its host's public address). It prepares the new side next to
+  the old one and deploys the app there, then copies the app's data in a maintenance window: it
+  shows each data mount's size and the expected minutes first, and asks for each service whether
+  to copy its data or start it empty (`--empty <service>` in scripts). Then it switches DNS.
+  After checking the app, the user runs `npx opscrew retarget --finish` to remove the old side
+  (it asks them to type the app name): an old server OpsCrew created is deleted, and from their
+  own server or Portainer only the app and its data are removed, never the server or Portainer
+  itself. `npx opscrew retarget --abort` restores the old deployment, but only before the DNS
+  switch. A server at a cloud provider is billed until the move is finished. `opscrew_status`
+  (or `npx opscrew status`) shows where a move stands; while it is in progress, design,
+  provision and drift stop with the commands to continue, finish or abort it, so pass those on to
+  the user.
 
 If a tool returns an error, read its message and hint to the user and suggest the next step; do not
 work around OpsCrew's checks.

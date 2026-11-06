@@ -1,18 +1,15 @@
 import {
   abortRetarget,
   finishRetarget,
+  HOST_KEY_FINGERPRINT,
+  type MoveTargetId,
+  placeWords,
   type RetargetResult,
   type RetargetServices,
   readEnvironmentRequirements,
   runRetarget,
 } from "@opscrew/agents";
-import type {
-  ApprovalDecision,
-  ApprovalHandler,
-  ApprovalRequest,
-  Clock,
-  VpsProviderId,
-} from "@opscrew/contracts";
+import type { ApprovalDecision, ApprovalHandler, ApprovalRequest, Clock } from "@opscrew/contracts";
 import {
   approvalDecision,
   isPlanHash,
@@ -20,7 +17,7 @@ import {
   OpsCrewError,
   systemClock,
 } from "@opscrew/core";
-import { CloudProviderSchema, type Money, readArtifact } from "@opscrew/plan-schema";
+import { CloudProviderSchema, readArtifact } from "@opscrew/plan-schema";
 import { type Command, Option } from "commander";
 import {
   askTypedName,
@@ -32,18 +29,34 @@ import {
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
-import { runPhaseCommand } from "../ui/deploy";
+import { collect, runPhaseCommand } from "../ui/deploy";
 import { addEnvOption, type ChosenEnvironment, chooseEnvironment } from "../ui/environment";
 import { chooseOption } from "../ui/options";
 import { printNextSteps } from "../ui/output";
+import { checkPortainerCert, PORTAINER_CERT_DESCRIPTION } from "../ui/portainer";
 import { startQuestion } from "../ui/retarget";
 import { createStorageKeyPrompt } from "../ui/storage-key-prompt";
-import { engineOption, YES_DESCRIPTION } from "./provision";
+import { addHostKeyOption, engineOption, YES_DESCRIPTION } from "./provision";
+import { chooseEmptyInTerminal, newSideAnswers, parsePortainerAddress } from "./retarget-answers";
 
-/** Flags of `opscrew retarget` (FR-501). */
+/** Flags of `opscrew retarget` (FR-501, FR-2315). */
 export interface RetargetFlags {
-  to?: VpsProviderId;
+  to?: MoveTargetId;
   option?: string;
+  /** `--answers <file>`: the own server's (`server.*`) or Portainer's (`portainer.*`) answers. */
+  answers?: string;
+  /** `--host-key SHA256:…`: the new own server's host key, trusted without a prompt. */
+  hostKey?: string;
+  /** `--password-logins off|keep`: the choice a new own server with password users needs. */
+  passwordLogins?: "off" | "keep";
+  /** `--portainer-address <ipv4[,ipv6]>`: the Portainer host's public address. */
+  portainerAddress?: string;
+  /** `--portainer-cert SHA256:…`: Portainer's certificate fingerprint, trusted without a prompt. */
+  portainerCert?: string;
+  /** `--empty <service>` (repeatable): what starts empty on the new side instead of being copied. */
+  empty?: string[];
+  /** `--public-image`: the app's image is public, so Portainer pulls it without a registry entry. */
+  publicImage?: boolean;
   approve?: string;
   allowDowntime?: boolean;
   dnsSwitched?: boolean;
@@ -76,12 +89,23 @@ export interface RetargetApprovalOptions {
 }
 
 /**
+ * The plans a move's `--finish` or `--abort` deletes with: a server's infrastructure plan, the
+ * teardown host plan of the user's own server, the stack teardown in the user's Portainer.
+ */
+const DELETION_KINDS: readonly ApprovalRequest["kind"][] = [
+  "iac-apply",
+  "host-apply",
+  "stack-apply",
+];
+
+/**
  * The approvals of `opscrew retarget` on top of the normal handler (`base`); the maintenance
  * window's `--allow-downtime` is `MaintenanceWindowApproval`'s, around this handler:
- * - a deletion plan (`allowDestroy` with the app name as `confirmPhrase`) is approved in a script
+ * - a deletion plan (`iac-apply`, `host-apply` or `stack-apply` with `allowDestroy` and the app
+ *   name as `confirmPhrase`) is approved in a script
  *   only when `--approve` names its hash and `--confirm` is the app name, and in a terminal once
  *   the app name was typed at the confirmation prompt;
- * - everything else goes to `base`: `iac-apply` by `--approve <hash>`, `--yes` for the GitHub
+ * - everything else goes to `base`: plans by `--approve <hash>`, `--yes` for the GitHub
  *   secrets, the push and the pull request, or the interactive prompt.
  */
 export class RetargetApprovalHandler implements ApprovalHandler {
@@ -94,7 +118,7 @@ export class RetargetApprovalHandler implements ApprovalHandler {
     const { interactive, appName, approve, typed, print } = this.options;
     const clock = this.options.clock ?? systemClock;
     const deletion =
-      request.kind === "iac-apply" &&
+      DELETION_KINDS.includes(request.kind) &&
       request.allowDestroy === true &&
       appName !== undefined &&
       request.confirmPhrase === appName;
@@ -130,6 +154,13 @@ export function flagProblems(flags: RetargetFlags): string[] {
     const runOnly = [
       ...(flags.to !== undefined ? ["--to"] : []),
       ...(flags.option !== undefined ? ["--option"] : []),
+      ...(flags.answers !== undefined ? ["--answers"] : []),
+      ...(flags.hostKey !== undefined ? ["--host-key"] : []),
+      ...(flags.passwordLogins !== undefined ? ["--password-logins"] : []),
+      ...(flags.portainerAddress !== undefined ? ["--portainer-address"] : []),
+      ...(flags.portainerCert !== undefined ? ["--portainer-cert"] : []),
+      ...(flags.empty !== undefined ? ["--empty"] : []),
+      ...(flags.publicImage ? ["--public-image"] : []),
       ...(flags.allowDowntime ? ["--allow-downtime"] : []),
       ...(flags.dnsSwitched ? ["--dns-switched"] : []),
     ];
@@ -152,7 +183,47 @@ export function flagProblems(flags: RetargetFlags): string[] {
       "--approve expects the 64-character SHA-256 plan hash that an earlier `opscrew retarget` run printed.",
     );
   }
+  const hostKey = flags.hostKey?.trim();
+  if (hostKey !== undefined && !HOST_KEY_FINGERPRINT.test(hostKey)) {
+    problems.push(
+      "--host-key expects the new server's SHA-256 host key fingerprint: SHA256: followed by 43 letters, digits, + or /.",
+    );
+  }
+  const to = flags.to;
+  if (to !== undefined) {
+    const wrong = sideFlags(flags)
+      .filter((flag) => !flag.targets.includes(to))
+      .map((flag) => flag.name);
+    if (wrong.length > 0) {
+      problems.push(
+        `${wrong.join(", ")} ${wrong.length === 1 ? "does" : "do"} not apply to a move to ${to}.`,
+      );
+    }
+  }
   return problems;
+}
+
+/** The given flags about the new side that only a move to the user's own server or Portainer uses. */
+function sideFlags(flags: RetargetFlags): { name: string; targets: MoveTargetId[] }[] {
+  const all: [given: boolean, name: string, targets: MoveTargetId[]][] = [
+    [flags.answers !== undefined, "--answers", ["own", "portainer"]],
+    [flags.hostKey !== undefined, "--host-key", ["own"]],
+    [flags.passwordLogins !== undefined, "--password-logins", ["own"]],
+    [flags.portainerAddress !== undefined, "--portainer-address", ["portainer"]],
+    [flags.portainerCert !== undefined, "--portainer-cert", ["portainer"]],
+    [flags.publicImage === true, "--public-image", ["portainer"]],
+  ];
+  return all.filter(([given]) => given).map(([, name, targets]) => ({ name, targets }));
+}
+
+/**
+ * The flags only a move's start uses (the new side's answers and its host key), given while a move
+ * is recorded. `--password-logins` and `--public-image` are left out: later steps use them too.
+ */
+function startOnlyFlags(flags: RetargetFlags): string[] {
+  return sideFlags(flags)
+    .map((flag) => flag.name)
+    .filter((name) => name !== "--password-logins" && name !== "--public-image");
 }
 
 /** Flags a scripted run repeats with every command it is told to run next. */
@@ -160,6 +231,9 @@ function repeatedFlags(flags: RetargetFlags, environment: ChosenEnvironment): st
   return [
     ...(environment.flag !== "" ? [environment.flag.trim()] : []),
     ...(flags.engine !== undefined ? [`--engine ${flags.engine}`] : []),
+    // The new side's choices that later steps use (the stacks, the host plan).
+    ...(flags.publicImage === true ? ["--public-image"] : []),
+    ...(flags.passwordLogins !== undefined ? [`--password-logins ${flags.passwordLogins}`] : []),
     ...(flags.yes === true ? ["--yes"] : []),
   ];
 }
@@ -190,6 +264,11 @@ async function runCommand(
       hint: "Run `opscrew retarget --help` to see how the flags fit together.",
     });
   }
+  const certFingerprint = checkPortainerCert(flags.portainerCert);
+  const portainerAddress =
+    flags.portainerAddress === undefined
+      ? undefined
+      : parsePortainerAddress(flags.portainerAddress);
   const approve = flags.approve?.trim() || undefined;
   const mode = flags.finish ? "finish" : flags.abort ? "abort" : "run";
   const deps0 = createPhaseDeps(ctx, {
@@ -230,20 +309,49 @@ async function runCommand(
       },
     });
     const option = flags.option?.trim() || undefined;
-    let budget: Money | undefined;
-    if (ctx.isInteractive && option === undefined) {
-      budget = await readEnvironmentRequirements(deps0.paths)
-        .then((requirements) => requirements.budgetMonthly)
-        .catch(() => undefined);
+    const plan = await readArtifact("plan", deps0.paths.files.plan);
+    // The new side's answers and the data's questions only when a move starts.
+    const starting = plan.retarget === undefined;
+    const requirements = starting
+      ? await readEnvironmentRequirements(deps0.paths).catch(() => undefined)
+      : undefined;
+    const budget =
+      ctx.isInteractive && option === undefined ? requirements?.budgetMonthly : undefined;
+    const to = flags.to ?? requirements?.provider;
+    const ignored = starting ? [] : startOnlyFlags(flags);
+    if (ignored.length > 0) {
+      ctx.reporter.warn(
+        `${ignored.join(", ")} only ${ignored.length === 1 ? "applies" : "apply"} when a move starts; the move to ${placeWords(plan.target)} uses what it recorded.`,
+      );
     }
+    const side = starting
+      ? await newSideAnswers(ctx, deps0, {
+          to,
+          plan,
+          flags: {
+            ...(flags.answers !== undefined ? { answers: flags.answers } : {}),
+            ...(portainerAddress !== undefined ? { portainerAddress } : {}),
+            ...(certFingerprint !== undefined ? { portainerCert: certFingerprint } : {}),
+          },
+        })
+      : {};
+    const hostKey = flags.hostKey?.trim();
     return runRetarget(deps, {
       ...common,
+      ...side,
       ...(flags.to !== undefined ? { to: flags.to } : {}),
       ...(option !== undefined ? { option } : {}),
+      ...(hostKey !== undefined ? { hostKey } : {}),
+      ...(flags.passwordLogins !== undefined ? { passwordLogins: flags.passwordLogins } : {}),
+      ...(flags.publicImage === true ? { publicImage: true } : {}),
+      ...(flags.empty !== undefined ? { empty: flags.empty } : {}),
       ...(flags.allowDowntime === true ? { allowDowntime: true } : {}),
       ...(flags.dnsSwitched === true ? { dnsSwitched: true } : {}),
       ...(ctx.isInteractive
         ? {
+            ...(to !== undefined
+              ? { chooseEmpty: chooseEmptyInTerminal(ctx, { provider: to }) }
+              : {}),
             ...(option === undefined
               ? {
                   choose: (options) =>
@@ -266,7 +374,7 @@ async function runCommand(
     });
   }
 
-  // --finish and --abort delete a server: the app name, typed or given with --confirm.
+  // --finish and --abort delete a side: the app name, typed or given with --confirm.
   const name = (await readArtifact("plan", deps0.paths.files.plan)).app.name;
   const command = `opscrew retarget${environment.flag} --${mode}`;
   const scripted = flags.confirm !== undefined;
@@ -279,7 +387,7 @@ async function runCommand(
   if (!scripted && !ctx.isInteractive) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
-      `${mode === "finish" ? "Finishing" : "Aborting"} the move deletes a server, which needs the app name typed by a person, and this run is not interactive. Nothing was changed.`,
+      `${mode === "finish" ? "Finishing the move deletes the old side" : "Aborting the move deletes the new side"} (a server OpsCrew created, or the app and its data on your own server or in your Portainer), which needs the app name typed by a person, and this run is not interactive. Nothing was changed.`,
       {
         hint: `Run \`${command}\` in a terminal, or \`${command} --confirm ${name}\` in a script.`,
       },
@@ -322,9 +430,12 @@ async function runCommand(
 }
 
 /**
- * `opscrew retarget`: moves a live deployment to the other VPS provider (FR-501): the new server
- * next to the old one, the app deployed there, the database copied in a maintenance window, DNS
- * switched; `--finish` deletes the old server, `--abort` (before the switch) the new one. Every
+ * `opscrew retarget`: moves a live deployment between any two server targets (FR-501, ADR 0027):
+ * a cloud provider, the user's own server (`--to own`, its answers from `--answers` or asked) or
+ * Portainer (`--to portainer`, likewise, plus its host's public address); the new side next to the
+ * old one, the app deployed there, its data copied in a maintenance window (`--empty` or a question
+ * per service starts it empty), DNS switched; `--finish` removes the old side, `--abort` (before
+ * the switch) the new one, never the user's server or Portainer itself. Every
  * infrastructure plan is approved by its hash; scripts stop at each plan with the hash and the
  * command to continue. Exit codes: 0 done (switched, finished or aborted), 1 stopped on purpose (a
  * plan to approve, a flag to pass, a refusal), 2 error.
@@ -332,33 +443,65 @@ async function runCommand(
 export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("retarget")
-    .description("Move the live deployment to another cloud provider, step by step")
+    .description(
+      "Move the live deployment to another cloud provider, your own server or your Portainer, with its data, step by step",
+    )
     .addOption(
-      new Option("--to <provider>", "Provider to move to (default: the one in your answers)")
-        .choices(CloudProviderSchema.options)
+      new Option(
+        "--to <target>",
+        "Where to move to: a cloud provider, your own server (own) or your existing Portainer (default: the one in your answers)",
+      )
+        .choices([...CloudProviderSchema.options, "own", "portainer"])
         .conflicts(["finish", "abort"]),
     )
     .option("--option <id>", "Server option to move to without asking (ids are listed by the run)")
+    .option(
+      "--answers <file>",
+      "Your own server's (server.*) or your Portainer's (portainer.*) answers from a YAML or JSON file, as `opscrew interview --answers` takes them, instead of asking",
+    )
+    .option("--portainer-cert <fingerprint>", PORTAINER_CERT_DESCRIPTION)
+    .option(
+      "--portainer-address <ipv4[,ipv6]>",
+      "Your existing Portainer: the public address of its host, where its Caddy serves the app and the app's DNS records point (a terminal asks)",
+    )
+    .addOption(
+      new Option(
+        "--password-logins <choice>",
+        "Your own server, when other users log in with a password and no SSH key: turn password logins off anyway, or keep them",
+      ).choices(["off", "keep"]),
+    )
+    .option(
+      "--public-image",
+      "Your existing Portainer: the app's image on GitHub Container Registry is public, so Portainer pulls it without a registry entry (give it again on each run of the move)",
+    )
+    .option(
+      "--empty <service>",
+      "Start this service's data empty on the new side instead of copying it (app for the app's own files); repeat for each (a terminal asks)",
+      collect,
+    )
     .option(
       "--approve <hash>",
       "Apply exactly the saved plan with this hash (printed by the previous run) and continue",
     )
     .option(
       "--allow-downtime",
-      "In a non-interactive run, allow the maintenance window that copies the database",
+      "In a non-interactive run, allow the maintenance window that copies the app's data",
     )
     .option(
       "--dns-switched",
-      "You changed the DNS records (or the address) to the new server yourself",
+      "You changed the DNS records (or the address) to the new side yourself",
     )
     .addOption(engineOption())
     .addOption(
       new Option(
         "--finish",
-        "After the switch, delete the old server (asks for the app name)",
+        "After the switch, delete the old server, or remove the app from your own server or Portainer (asks for the app name)",
       ).conflicts("abort"),
     )
-    .option("--abort", "Before the switch, delete the new server and go back to the old one")
+    .option(
+      "--abort",
+      "Before the switch, delete the new server (or remove the app from your own server or Portainer) and go back",
+    )
     .option("--snapshot", "With --finish, take a snapshot of the old server first")
     .option("--no-snapshot", "With --finish, do not take a snapshot of the old server first")
     .option(
@@ -366,24 +509,32 @@ export function register(program: Command, ctx: CliContext): void {
       "The app name, to run --finish or --abort without prompts (for scripts and CI)",
     )
     .option("--yes", YES_DESCRIPTION);
-  addEnvOption(command)
+  addHostKeyOption(addEnvOption(command))
     .addHelpText(
       "after",
       [
         "",
         "How a move works:",
-        "  OpsCrew creates the new server next to the old one, deploys the app there with your",
-        "  deploy workflow, copies the database in a short maintenance window, switches DNS and",
-        "  keeps the old server (with its app stopped) until you finish the move. Both providers'",
-        "  API tokens (HCLOUD_TOKEN and DIGITALOCEAN_TOKEN) and your GitHub access are needed.",
+        "  OpsCrew prepares the new side next to the old one (a new server on a cloud provider, the",
+        "  app set up on your own server, or its stacks in your Portainer), deploys the app there",
+        "  with your deploy workflow, copies the app's data in a maintenance window (each data",
+        "  mount, unless you start it empty), switches DNS and keeps the old side (with its app",
+        "  stopped) until you finish the move. Your own server and your Portainer are never",
+        "  deleted: finishing removes only the app from them. The cloud providers' API tokens",
+        "  (HCLOUD_TOKEN, DIGITALOCEAN_TOKEN), PORTAINER_API_KEY for Portainer and your GitHub",
+        "  access are needed for the sides involved.",
         "",
         "  opscrew retarget --to digitalocean   start the move, or continue it after a stop",
-        "  opscrew retarget --finish            after the switch, delete the old server",
+        "  opscrew retarget --to own            move to your own server (asks how to reach it)",
+        "  opscrew retarget --to portainer      move into your Portainer (asks for it)",
+        "  opscrew retarget --finish            after the switch, remove the old side",
         "  opscrew retarget --abort             before the switch, undo the move",
         "",
         "In scripts each infrastructure plan stops with its hash: run the printed command with",
         "--approve <hash> to apply it. The maintenance window needs --allow-downtime, the GitHub",
-        "steps --yes, and --finish or --abort need --confirm <app name>.",
+        "steps --yes, and --finish or --abort need --confirm <app name>. A move to your own server",
+        "or Portainer takes their answers with --answers <file> (and --host-key, --portainer-cert",
+        "and --portainer-address); --empty <service> starts that service's data empty.",
         "`opscrew status` shows where a move stands.",
       ].join("\n"),
     )

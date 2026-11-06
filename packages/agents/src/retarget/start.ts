@@ -468,7 +468,7 @@ async function portainerSide(
       "PHASE_PRECONDITION",
       "OpsCrew needs the public address of your Portainer host, where its Caddy serves the app and the app's DNS records point. Nothing was changed.",
       {
-        hint: `Run \`${RUN_COMMAND} --to portainer\` in a terminal to give it, or with --answers.`,
+        hint: `Run \`${RUN_COMMAND} --to portainer\` in a terminal to give it, or with --portainer-address <ipv4[,ipv6]>.`,
       },
     );
   }

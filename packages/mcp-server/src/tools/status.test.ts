@@ -38,20 +38,50 @@ afterEach(async () => {
 
 type AbortStep = NonNullable<Retarget["abort"]>["step"];
 
-/** A DigitalOcean plan in the middle of a move from Hetzner Cloud, at `step`. */
-function movingPlan(step: Retarget["step"], abort?: AbortStep) {
+const HETZNER = {
+  provider: "hetzner",
+  mode: "vps-compose",
+  location: "nbg1",
+  serverType: "cpx22",
+  backups: false,
+};
+const DIGITALOCEAN = {
+  provider: "digitalocean",
+  mode: "vps-compose",
+  location: "fra1",
+  serverType: "s-1vcpu-2gb",
+  backups: false,
+};
+const OWN = {
+  provider: "own",
+  mode: "vps-compose",
+  arch: "amd64",
+  access: "public",
+  edge: "caddy",
+};
+const PORTAINER = {
+  provider: "portainer",
+  mode: "portainer-stack",
+  environmentId: 3,
+  arch: "amd64",
+  redeploy: "updater",
+  web: { mode: "proxy", port: 8080 },
+};
+
+/** The sides of a move: by default from Hetzner Cloud to DigitalOcean. */
+interface MoveSides {
+  from?: object;
+  to?: object;
+}
+
+/** A plan in the middle of a move (default from Hetzner Cloud to DigitalOcean), at `step`. */
+function movingPlan(step: Retarget["step"], abort?: AbortStep, sides: MoveSides = {}) {
   return DeployPlanSchema.parse({
     schemaVersion: 1,
     createdAt: "2026-10-11T10:00:00.000Z",
     updatedAt: "2026-10-11T10:00:00.000Z",
     app: { name: "shop", port: 3000, healthPath: "/api/health", env: [] },
-    target: {
-      provider: "digitalocean",
-      mode: "vps-compose",
-      location: "fra1",
-      serverType: "s-1vcpu-2gb",
-      backups: false,
-    },
+    target: sides.to ?? DIGITALOCEAN,
     services: [
       {
         name: "db",
@@ -78,15 +108,7 @@ function movingPlan(step: Retarget["step"], abort?: AbortStep) {
     cicd: { provider: "github-actions", registry: "ghcr", branch: "main" },
     security: {},
     retarget: {
-      from: {
-        target: {
-          provider: "hetzner",
-          mode: "vps-compose",
-          location: "nbg1",
-          serverType: "cpx22",
-          backups: false,
-        },
-      },
+      from: { target: sides.from ?? HETZNER },
       step,
       ...(abort !== undefined ? { abort: { step: abort } } : {}),
       startedAt: "2026-10-12T09:00:00.000Z",
@@ -94,11 +116,15 @@ function movingPlan(step: Retarget["step"], abort?: AbortStep) {
   });
 }
 
-async function status(step: Retarget["step"], abort?: AbortStep) {
+async function status(step: Retarget["step"], abort?: AbortStep, sides: MoveSides = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-status-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
   await mkdir(path.join(dir, "opscrew"), { recursive: true });
-  await writeArtifact("plan", path.join(dir, "opscrew", "plan.yaml"), movingPlan(step, abort));
+  await writeArtifact(
+    "plan",
+    path.join(dir, "opscrew", "plan.yaml"),
+    movingPlan(step, abort, sides),
+  );
   const server = createOpscrewMcpServer({
     version: "0.0.0-test",
     env: { OPSCREW_HOME: path.join(dir, "home") },
@@ -521,6 +547,55 @@ describe("opscrew_status during a move", () => {
       expect(text).toContain("`opscrew retarget --abort` to finish the abort");
     },
   );
+
+  it.each([
+    {
+      sides: { to: OWN },
+      move: "Move: from Hetzner Cloud to your own server, last completed step: deployed.",
+      bill: "The move adds no server cost: only the old server on Hetzner Cloud is billed, as before.",
+      next: "Next: A move to your own server is in progress.",
+      data: { from: "hetzner", to: "own" },
+    },
+    {
+      sides: { to: PORTAINER },
+      move: "Move: from Hetzner Cloud to your Portainer, last completed step: deployed.",
+      bill: "The move adds no server cost: only the old server on Hetzner Cloud is billed, as before.",
+      next: "Next: A move to your Portainer is in progress.",
+      data: { from: "hetzner", to: "portainer" },
+    },
+    {
+      sides: { from: PORTAINER },
+      move: "Move: from your Portainer to DigitalOcean, last completed step: deployed.",
+      bill: "The new Droplet on DigitalOcean is billed from now on; your Portainer costs nothing extra.",
+      next: "Next: A move to DigitalOcean is in progress.",
+      data: { from: "portainer", to: "digitalocean" },
+    },
+    {
+      sides: { from: OWN, to: PORTAINER },
+      move: "Move: from your own server to your Portainer, last completed step: deployed.",
+      bill: "The move adds no server cost.",
+      next: "Next: A move to your Portainer is in progress.",
+      data: { from: "own", to: "portainer" },
+    },
+  ])(
+    "shows the step of a move $data.from → $data.to",
+    async ({ sides, move, bill, next, data }) => {
+      const { text, data: structured } = await status("deployed", undefined, sides);
+      expect(text).toContain(move);
+      expect(text).toContain(bill);
+      expect(text).toContain(next);
+      expect(structured).toMatchObject({ move: { ...data, step: "deployed" } });
+    },
+  );
+
+  it("bills the new cloud server only once it exists, for a move from the user's own server", async () => {
+    expect((await status("renamed", undefined, { from: OWN })).text).toContain(
+      "The new server is not created yet; the move costs nothing yet.",
+    );
+    expect((await status("deployed", "new-removed", { from: OWN })).text).toContain(
+      "The new server was deleted by the abort; the move costs nothing any more.",
+    );
+  });
 });
 
 describe("opscrew_status: the proxy, the certificates and the recovery copy (FR-1462)", () => {

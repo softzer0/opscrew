@@ -6,7 +6,14 @@ export {
   componentAnswerLines,
   hostedAdditions,
 } from "./components";
-export { buildServerQuestions, recordOwnServerAnswers, SERVER_FIELDS } from "./own-server";
+export { splitFollowUps } from "./follow-ups";
+export {
+  answersToOwnServer,
+  buildServerQuestions,
+  type OwnServerAnswers,
+  recordOwnServerAnswers,
+  SERVER_FIELDS,
+} from "./own-server";
 export {
   buildPortainerQuestions,
   CHECK_PORTAINER_CERTIFICATE,
@@ -14,6 +21,7 @@ export {
   NEW_CERTIFICATE_WARNING,
   PORTAINER_FIELDS,
   type PortainerAccess,
+  type PortainerAnswers,
   PortainerCertificateError,
   type PortainerEnvironment,
   type PortainerInterviewOptions,
@@ -23,6 +31,7 @@ export { buildQuestions, type InterviewAnswers, inferredAnswers } from "./questi
 export {
   type InterviewOptions,
   type InterviewResult,
+  portainerAnswers,
   runInterview,
   withPlanSettings,
 } from "./run";

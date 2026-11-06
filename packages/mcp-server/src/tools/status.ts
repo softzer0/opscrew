@@ -8,13 +8,15 @@ import {
   phaseStatusLines,
   placeWords,
   readOwnServer,
+  sideWords,
   supplyChainLines,
   type TlsStatusOptions,
   tlsStatusReport,
 } from "@opscrew/agents";
-import { exists, toPosixRelative } from "@opscrew/core";
+import { exists, toPosixRelative, upperFirst } from "@opscrew/core";
 import {
   type DeployPlan,
+  type DeployTarget,
   isServerlessProvider,
   type Retarget,
   readArtifact,
@@ -49,15 +51,31 @@ function nextStep(
   return `Apply the pending code changes from ${input.planFile} (opscrew-adapt skill), then provision with \`npx opscrew provision${input.flag}\` in a terminal.`;
 }
 
+const isCloud = (target: Pick<DeployTarget, "provider">) =>
+  target.provider === "hetzner" || target.provider === "digitalocean";
+
 /**
- * Which servers a move keeps billed: only the current one before the new one is created
- * (`started`, `renamed`) and once an abort deleted it (`new-removed` and later); both otherwise.
+ * Which servers a move keeps billed. Only servers OpsCrew created at a cloud provider are: never
+ * the user's own server or Portainer. A new cloud server is billed once it exists (from `created`)
+ * until an abort deleted it (`new-removed` and later); an old one until `--finish` deletes it.
  */
-function billing(move: Retarget): string {
-  if (move.abort !== undefined && move.abort.step !== "started") {
+function billing(move: Retarget, to: DeployTarget): string {
+  const removed = move.abort !== undefined && move.abort.step !== "started";
+  const notYet = move.step === "started" || move.step === "renamed";
+  if (!isCloud(to)) {
+    return isCloud(move.from.target)
+      ? `The move adds no server cost: only ${sideWords(move.from.target, "old")} is billed, as before.`
+      : "The move adds no server cost.";
+  }
+  if (!isCloud(move.from.target)) {
+    if (removed) return "The new server was deleted by the abort; the move costs nothing any more.";
+    if (notYet) return "The new server is not created yet; the move costs nothing yet.";
+    return `${upperFirst(sideWords(to, "new"))} is billed from now on; ${sideWords(move.from.target, "old")} costs nothing extra.`;
+  }
+  if (removed) {
     return "The new server was deleted by the abort; only the previous server is billed.";
   }
-  if (move.step === "started" || move.step === "renamed") {
+  if (notYet) {
     return "The new server is not created yet; only the current server is billed.";
   }
   if (move.abort !== undefined) {
@@ -128,7 +146,7 @@ export function registerStatusTool(
     {
       title: "OpsCrew status",
       description:
-        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) or, for a site on Cloudflare's hosting or GitHub Pages, the version running, the one before with the rollback command (`npx opscrew rollback --to <id>`) and its custom domains or certificate, and, once the app was deployed, whether each component runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer) and the resource figures read now (the server's load, memory and disk; each container's CPU, memory against its limit, restarts and uptime; on Cloudflare's hosting the last day's requests, errors and CPU time), each flag past a threshold with what it means and what to do, and the figures the target cannot give, once the app was deployed the version running (commit, message, short digest and since when) and the one before it, and whether its deploys are paused, by a rollback (since when, the pinned version and the resume command `npx opscrew rollback --resume`) or a move (`deploys` in the data, with `running`, `previous` and `paused`; a rollback itself stays in the user's terminal, `npx opscrew rollback`, because it asks for approval), the scheduled check's state (on, or turned off by GitHub with how to turn it on again) and its open alerts, the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), for an app with a private network each server's components and figures, each link between the servers (up or down, its last handshake and measured round trip), the user's devices (names and addresses, never a key) with their last handshake, each device's database access and whether public SSH is open (`servers`, `links`, `devices` and `grants` in the data; adding a device or access stays in the user's terminal, `npx opscrew vpn add <name>` and `npx opscrew vpn grant <device> <service>`, because it makes a private key or a password that must not pass through the chat), where a move to another provider stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
+        "Show which OpsCrew phases have run in this project (with result, time and summary), which OpsCrew files exist (security scan report, architecture, requirements, plan), the planned image builder and deploy strategy with their reasons, the image signing, deploy tag and image retention settings, the app's components (web process, workers, cron jobs, services) or, for a site on Cloudflare's hosting or GitHub Pages, the version running, the one before with the rollback command (`npx opscrew rollback --to <id>`) and its custom domains or certificate, and, once the app was deployed, whether each component runs (read over SSH on a server, on the user's own server only after its SSH host key was confirmed; through Portainer's API with PORTAINER_API_KEY in the user's Portainer) and the resource figures read now (the server's load, memory and disk; each container's CPU, memory against its limit, restarts and uptime; on Cloudflare's hosting the last day's requests, errors and CPU time), each flag past a threshold with what it means and what to do, and the figures the target cannot give, once the app was deployed the version running (commit, message, short digest and since when) and the one before it, and whether its deploys are paused, by a rollback (since when, the pinned version and the resume command `npx opscrew rollback --resume`) or a move (`deploys` in the data, with `running`, `previous` and `paused`; a rollback itself stays in the user's terminal, `npx opscrew rollback`, because it asks for approval), the scheduled check's state (on, or turned off by GitHub with how to turn it on again) and its open alerts, the server's reverse proxy (Caddy or nginx), each certificate OpsCrew manages with its expiry and a warning when fewer than 30 days remain, the encrypted recovery copy of the app's secrets (last update, how many keys open it, whether it is behind), for an app with a private network each server's components and figures, each link between the servers (up or down, its last handshake and measured round trip), the user's devices (names and addresses, never a key) with their last handshake, each device's database access and whether public SSH is open (`servers`, `links`, `devices` and `grants` in the data; adding a device or access stays in the user's terminal, `npx opscrew vpn add <name>` and `npx opscrew vpn grant <device> <service>`, because it makes a private key or a password that must not pass through the chat), where a move to another provider, the user's own server or their Portainer stands (moves run only in the user's terminal with `npx opscrew retarget`) and the next step. Writes nothing.",
       inputSchema: { ...projectDirInput, ...appInput, ...environmentInput },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -160,7 +178,7 @@ export function registerStatusTool(
         }
         const phases = current.phases;
         const lines = phaseStatusLines(phases);
-        // A move to another provider in progress (`opscrew retarget`): where it stands and the
+        // A move in progress (`opscrew retarget`, between any two server targets): where it stands and the
         // terminal command to continue it. An unreadable plan is not this tool's concern.
         const plan = have.plan
           ? await readArtifact("plan", paths.files.plan).catch(() => undefined)
@@ -182,7 +200,7 @@ export function registerStatusTool(
             : [
                 "",
                 `Move: from ${placeWords(plan.retarget.from.target)} to ${placeWords(plan.target)}, last completed step: ${moveData.step}${plan.retarget.abort === undefined ? "" : ` (being aborted, last abort step: ${plan.retarget.abort.step})`}.`,
-                billing(plan.retarget),
+                billing(plan.retarget, plan.target),
               ];
         const step =
           move === undefined
