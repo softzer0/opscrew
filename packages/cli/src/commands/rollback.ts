@@ -34,12 +34,6 @@ interface RollbackFlags extends AppEnvFlags {
   confirm?: string;
 }
 
-/** The checked flags of one run. */
-interface CheckedFlags {
-  approve?: string;
-  database?: DatabaseChoice;
-}
-
 function isDatabaseChoice(value: string): value is DatabaseChoice {
   return (DATABASE_CHOICES as readonly string[]).includes(value);
 }
@@ -54,7 +48,10 @@ function shortDigest(digest: string): string {
  * `--approve` hash and the `--database` choice. `given` holds the `--app`/`--env` flags the user
  * gave, for the hints.
  */
-function checkFlags(flags: RollbackFlags, given: string): CheckedFlags {
+function checkFlags(
+  flags: RollbackFlags,
+  given: string,
+): { approve?: string; database?: DatabaseChoice } {
   const command = `opscrew rollback${given}`;
   const approve = flags.approve?.trim();
   if (approve !== undefined && !isPlanHash(approve)) {

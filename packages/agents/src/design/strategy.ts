@@ -71,11 +71,10 @@ export function snapshotSettings(
 
 /**
  * The new plan's deploy settings on a later design: the previous drain time and snapshot settings,
- * and the previous
- * strategy when the user changed it, that is when it differs from the fresh one on the same server
- * (the user's own server counts as the same one whatever its memory). A recreate with the reason
- * design wrote is design's own and gives way to the fresh strategy. A Portainer and an app on
- * SQLite always recreate.
+ * and the previous strategy when the user changed it, that is when it differs from the fresh one
+ * on the same server (the user's own server counts as the same one whatever its memory). A
+ * recreate with the reason design wrote is design's own and gives way to the fresh strategy. A
+ * Portainer and an app on SQLite always recreate.
  */
 export function keptDeploy(fresh: PlanDeploy, previous: PlanDeploy): DeployPlan["deploy"] {
   const before = previous.deploy;

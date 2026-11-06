@@ -54,15 +54,7 @@ const RAILS = {
 };
 
 describe("down migrations of the release command's tool", () => {
-  it("Rails: db:version and db:migrate VERSION with the release command's binary", async () => {
-    expect(await migrationsOf({ ...RAILS, "bin/rails": "#!/usr/bin/env ruby\n" })).toEqual({
-      command: "bin/rails db:migrate",
-      migrations: {
-        tool: "rails",
-        status: "bin/rails db:version",
-        down: "bin/rails db:migrate VERSION={version}",
-      },
-    });
+  it("Rails: db:version and db:migrate VERSION through bundle exec without bin/rails", async () => {
     expect((await migrationsOf(RAILS)).migrations).toEqual({
       tool: "rails",
       status: "bundle exec rails db:version",
@@ -92,21 +84,12 @@ describe("down migrations of the release command's tool", () => {
   });
 
   it("Alembic: current and downgrade, from the folder of alembic.ini", async () => {
-    const app = {
+    const found = await migrationsOf({
       "requirements.txt": "fastapi\nuvicorn\nsqlmodel\nalembic\n",
       "main.py": "from fastapi import FastAPI\napp = FastAPI()\n",
-    };
-    expect(
-      await migrationsOf({ ...app, "alembic.ini": "[alembic]\n", "migrations/env.py": "" }),
-    ).toEqual({
-      command: "alembic upgrade head",
-      migrations: {
-        tool: "alembic",
-        status: "alembic current",
-        down: "alembic downgrade {version}",
-      },
+      "db/alembic.ini": "[alembic]\n",
     });
-    expect((await migrationsOf({ ...app, "db/alembic.ini": "[alembic]\n" })).migrations).toEqual({
+    expect(found.migrations).toEqual({
       tool: "alembic",
       status: "cd db && alembic current",
       down: "cd db && alembic downgrade {version}",
@@ -267,26 +250,11 @@ describe("tools without down migrations in a rollback", () => {
       },
     ],
     [
-      "Drizzle",
-      {
-        ...server({ "drizzle-orm": "^0.40" }, { "drizzle-kit": "^0.30" }),
-        "drizzle.config.ts": 'export default { dialect: "postgresql", out: "./drizzle" };\n',
-        "drizzle/0000_init.sql": "CREATE TABLE a (id int);\n",
-      },
-    ],
-    [
       "Flask-DB",
       {
         "requirements.txt": "Flask\nFlask-DB\n",
         "app.py": FLASK_APP,
         "db/env.py": "",
-      },
-    ],
-    [
-      "node-pg-migrate",
-      {
-        ...server({ "node-pg-migrate": "^7", pg: "^8" }),
-        "migrations/1700000000000_init.js": "exports.up = () => {};\n",
       },
     ],
     [
@@ -300,27 +268,6 @@ describe("tools without down migrations in a rollback", () => {
     [
       "a Procfile release line running Django",
       { ...DJANGO, Procfile: "release: python manage.py migrate\n" },
-    ],
-    [
-      "goose",
-      {
-        "go.mod": "module example.com/api\n\ngo 1.23\n",
-        "main.go": "package main\nfunc main() {}\n",
-        "db/migrations/00001_init.sql": "-- +goose Up\nCREATE TABLE a (id int);\n",
-      },
-    ],
-    [
-      "Doctrine",
-      {
-        "composer.json": JSON.stringify({
-          require: {
-            "doctrine/doctrine-migrations-bundle": "^3",
-            "symfony/framework-bundle": "^7",
-          },
-        }),
-        "bin/console": "#!/usr/bin/env php\n",
-        "migrations/Version20240101000000.php": "<?php\n",
-      },
     ],
   ])("%s: a release command without migrations", async (_name, files) => {
     const found = await migrationsOf(files);

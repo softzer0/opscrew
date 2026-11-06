@@ -8,17 +8,18 @@ import { planFile } from "../runners/words";
 
 /**
  * `fresh` with the values the user set where design sets them from what analyze detects. The
- * parts environments share (`app.port`, `app.healthPath`, `app.releaseCommand`, `app.migrations`) come from
- * `shared`, the plan that holds them: prod's for another environment built from the same branch
- * (its own copy then follows prod's, said when it differed), else the environment's own; only
- * between plans with a server (a release command left out for a site without one is said). The
- * site's own settings come from the environment's `previous` plan: `target.notFound`
- * (Cloudflare, while the site renders the same way), `target.site.command` and `outputDir` (while
- * it is the same kind of site: tool, package manager, server rendering and folder). `lines` say
- * each value kept, with what analyze found and the file to change, and each one taken from
- * analysis instead because the kept one no longer applies. A release command and down migrations
- * analyze finds are set when the plan had none, and said so; a site without a server has neither. The Node.js version follows the runtime rules instead
- * (`resolveRuntime`), which keep the recorded one or say why not.
+ * parts environments share (`app.port`, `app.healthPath`, `app.releaseCommand`,
+ * `app.migrations`) come from `shared`, the plan that holds them: prod's for another environment
+ * built from the same branch (its own copy then follows prod's, said when it differed), else the
+ * environment's own; only between plans with a server (a release command left out for a site
+ * without one is said). The site's own settings come from the environment's `previous` plan:
+ * `target.notFound` (Cloudflare, while the site renders the same way), `target.site.command` and
+ * `outputDir` (while it is the same kind of site: tool, package manager, server rendering and
+ * folder). `lines` say each value kept, with what analyze found and the file to change, and each
+ * one taken from analysis instead because the kept one no longer applies. A release command and
+ * down migrations analyze finds are set when the plan had none, and said so; a site without a
+ * server has neither. The Node.js version follows the runtime rules instead (`resolveRuntime`),
+ * which keep the recorded one or say why not.
  */
 export function keptEdits(
   fresh: DeployPlan,
