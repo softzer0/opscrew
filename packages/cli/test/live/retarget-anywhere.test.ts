@@ -231,7 +231,8 @@ describe.skipIf(OWN.skip)(OWN.title, () => {
         label: "the move to your own server",
         start: window,
         always: MOVE_FLAGS,
-        names: [],
+        // The switch deletes the AAAA record (the own server has no IPv6): it asks for the name.
+        names: [app()],
       });
       await expectSwitched(run, "own");
       const own = execOn(run.shell());
