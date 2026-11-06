@@ -668,4 +668,4 @@ then T2233, then T2234.
 
 - [x] T2235 Live runs (lead): T2234's pass on the final code, recorded in `docs/e2e-coverage.md`.
 
-- [ ] T2236 Simplify (lead): a review of the opt-ins' diff for reuse and simplicity.
+- [x] T2236 Simplify (lead): a review of the opt-ins' diff for reuse and simplicity.
