@@ -47,6 +47,19 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
   API); `<service>.rdb` (Valkey, Redis, Dragonfly); `<service>.tar` (a stopped volume, through a
   busybox one-off on servers and 023's carrier on Portainer).
 - **Modes:** files 600, folders 700, owned by the deploy user.
+- **The contract** (T2405, 2026-11-06), the same on servers and Portainer:
+  - `about.json` is one line:
+    `{"id","kind","taken","version":"sha256:<hex>","services":[…]}`;
+  - each service entry is `{"name","kind","file","size"}`, or
+    `{"name","kind","failed":true}`, or `{"name","kind","skipped":true}` for a stop-only
+    service left out;
+  - `kind` is `manual`, `release` or `scheduled`;
+  - pre-release folders are named by the 64-hex digest, the others by `YYYYMMDDTHHMMSSZ`;
+  - a scheduled snapshot is written in `<id>.partial`, a manual one in `<id>.taking`, each
+    renamed when complete;
+  - SQLite's file is `sqlite.db`;
+  - on Portainer, `/snapshots/.running` names the running image, written by the stamp after a
+    new version starts.
 
 ### 2. Per kind (R2)
 
