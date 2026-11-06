@@ -108,7 +108,7 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (025), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (026), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
 
@@ -128,7 +128,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (023), or to AWS (025) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (026) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -235,7 +235,38 @@ New beside the rollback's snapshots:
     providers' backups today.
   - This supersedes the founder's 2026-10-13 decision that provider backups are enough.
 
-## 025 AWS
+## 025 Contabo, opening with the provider plugin system
+
+The founder placed Contabo before AWS and the other hyperscalers on 2026-11-06. It is a cheap
+VPS provider, so it joins as another server target like Hetzner and DigitalOcean: its connector,
+profile, prices and IaC module, through `vpsConnector` and `providerProfile`.
+
+**Research first:** Contabo's API and its official CLI `cntb`
+(https://github.com/contabo/cntb, founder, 2026-11-06). The CLI's source shows the API's calls,
+login and quirks. OpsCrew calls the API through its own typed connector and the IaC engine,
+never through `cntb` (constitution IV).
+
+**It opens with the provider plugin system** (founder, 2026-10-16; moved here from AWS on
+2026-11-06, built before the Contabo part):
+- Each provider becomes its own package (`@opscrew/provider-aws`: connector, profile, interview,
+  design options, IaC modules, templates and its own Claude Code skills), loaded through a
+  versioned contract and installed when first needed (`opscrew plugin add aws`, or offered by the
+  interview), so the core CLI stays small.
+- The safety gate stays in core: plugins only produce plans; hash-bound approval, policy, apply
+  through the IaC engine and redaction are core's (constitution I and IV).
+- Only official `@opscrew/*` packages at first, pinned and checked with npm provenance;
+  third-party plugins later, behind an explicit opt-in.
+- Hetzner, DigitalOcean, own server and Portainer move behind the same contract but stay built in,
+  in the `opscrew` npm package and the `opscrew@opscrew` Claude Code plugin; one can move out
+  later if it grows.
+- Contabo is built in, like Hetzner and DigitalOcean, as an everyday VPS provider. AWS (026)
+  ships as the first separately installed plugin, then Azure and Google Cloud.
+- The Claude Code side follows the same split: one provider = one npm package plus one Claude
+  Code plugin `opscrew-<provider>@opscrew`, released together; the core plugin keeps only the
+  provider-neutral flow skills; one MCP server serves the tools of whichever provider packages are
+  installed. One ADR covers both.
+
+## 026 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps
@@ -308,24 +339,8 @@ services, each one explained, priced at design and changeable:
 - Azure and Google Cloud follow the same pattern with Azure Monitor and Google Cloud Monitoring
   and Logging.
 
-**Starts with a provider plugin system (founder, 2026-10-16),** possibly a feature of its own
-right before AWS if it proves bigger:
-- Each provider becomes its own package (`@opscrew/provider-aws`: connector, profile, interview,
-  design options, IaC modules, templates and its own Claude Code skills), loaded through a
-  versioned contract and installed when first needed (`opscrew plugin add aws`, or offered by the
-  interview), so the core CLI stays small.
-- The safety gate stays in core: plugins only produce plans; hash-bound approval, policy, apply
-  through the IaC engine and redaction are core's (constitution I and IV).
-- Only official `@opscrew/*` packages at first, pinned and checked with npm provenance;
-  third-party plugins later, behind an explicit opt-in.
-- Hetzner, DigitalOcean, own server and Portainer move behind the same contract but stay built in,
-  in the `opscrew` npm package and the `opscrew@opscrew` Claude Code plugin; one can move out
-  later if it grows.
-- AWS ships as the first separately installed plugin, then Azure, Google Cloud, Contabo.
-- The Claude Code side follows the same split: one provider = one npm package plus one Claude
-  Code plugin `opscrew-<provider>@opscrew`, released together; the core plugin keeps only the
-  provider-neutral flow skills; one MCP server serves the tools of whichever provider packages are
-  installed. One ADR covers both.
+**Builds on 025's provider plugin system:** AWS ships as the first separately installed plugin
+(`@opscrew/provider-aws`, `opscrew plugin add aws`), then Azure and Google Cloud.
 
 **Testing (founder, 2026-10-18):** the **floci** AWS emulator (https://github.com/floci-io/floci;
 MIT; one Docker image, `floci/floci`, on port 4566; Terraform and OpenTofu through the standard
@@ -354,7 +369,7 @@ never runs, they stay "not tested live" on the coverage page.
   A tunnel on either side needs two DNS changes with an outage between them. Two Portainer
   environments would share one deploy branch and webhook. All three stay refused with the steps to
   do them by hand.
-- **Azure, Google Cloud and Contabo** after AWS, as provider plugins, reusing Azure Verified
+- **Azure and Google Cloud** after AWS, as provider plugins, reusing Azure Verified
   Modules, terraform-google-modules and Infracost.
 - **Tailscale or Headscale as the private network** (lead proposal, 2026-10-18; the founder is
   interested in Headscale), next to 018's plain WireGuard:
