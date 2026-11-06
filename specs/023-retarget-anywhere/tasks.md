@@ -108,7 +108,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T2306 [P] [US3] Every catalog kind's copy, on Docker (spike S1 as a test)
+- [x] T2306 [P] [US3] Every catalog kind's copy, on Docker (spike S1 as a test)
   - Owns: `packages/agents/src/retarget/catalog-copy.docker.test.ts`, `packages/iac-templates/src/catalog/**`, `packages/iac-templates/src/runtime/components.ts`
   - Depends: T2303
   - Accept:
@@ -186,6 +186,10 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
       layout), `requireSwitchSettled`, `storeDeploySecrets` and `restartOldApp` work for any old side
       through `moveSide`, not `previousCloud`; then end-to-end `--finish` and `--abort` tests for an
       own and a Portainer old side.
+    - From T2306: the window stops each stateful service with a long timeout (120 s, `docker
+      compose stop -t 120` on SSH sides, the stop call's `t` on Portainer), then checks it exited
+      cleanly. A service that was killed (exit 137) or ran out of memory fails the window and rolls
+      it back, so a killed database's files are never copied.
     - Also from T2310: `deletionStep`'s unused `beforeApply` goes (plans.ts); `forgetHostKeys` for an
       own old side forgets the admin login's host too, not only the move's addresses.
     - Found in T2308:
@@ -286,7 +290,9 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Depends: T2314
   - Accept, gated on `OPSCREW_E2E_RETARGET_ANYWHERE=1`:
     - An example app with Postgres, MySQL, Valkey holding jobs and a SQLite file moves from
-      Hetzner, to a throwaway server provisioned as the user's own, to DigitalOcean. Every row, job
+      Hetzner, to a throwaway server provisioned as the user's own, to DigitalOcean. The own server
+      is arm64 (a Hetzner CAX type), so the copy crosses architectures for real (T2306: QEMU can't run
+      most kinds). Every row, job
       and file is there afterwards.
     - A Hetzner bucket moves.
     - A Portainer leg: to it and back.

@@ -248,3 +248,17 @@ Elasticsearch 9.5, Meilisearch 1.55, Typesense 30.2, ClickHouse 26.3, Neo4j 2026
   callers accept any 2xx. Portainer's own 401 and 403 pass through unchanged.
 - **Setup:** a fresh Portainer 2.45.2 needs the `X-Setup-Token` from its log for the admin's
   first login.
+
+### S1: every catalog kind's stopped-volume copy (T2306, 2026-11-06, local Docker, amd64)
+
+- **Native architecture:** every stateful kind (Postgres, Valkey, Redis, Dragonfly, MySQL, MariaDB,
+  MongoDB, RabbitMQ, NATS, Kafka, Redpanda, Garage, OpenSearch, Elasticsearch, Meilisearch,
+  Typesense, ClickHouse, Neo4j) and an app's SQLite file (WAL) start on a copy of their stopped
+  volumes with the same data and logins, and the digests match. Volumes were up to about 0.5 GB.
+- **Neo4j:** its clean stop took 10.5 s on an empty database, so Compose's default 10 s killed it.
+  The catalog gives it a 60 s stop grace period. The window stops every stateful service with a
+  long timeout and fails if one was killed.
+- **amd64 to arm64 under QEMU:** 7 of 18 passed (Postgres, Dragonfly, MySQL, MariaDB, NATS, Neo4j,
+  SQLite). The other 11 failed inside the emulator: Valkey's and Redis's ARM64 copy-on-write
+  kernel check, async I/O, memory, and missing system calls. None failed on the copied data. A
+  real arm64 server in the live pass checks the crossing.
