@@ -370,7 +370,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck --filter=opscrew`
   - Effort: high
 
-- [ ] T2317 Live runs (lead): T2316's pass on the final code, recorded in `docs/e2e-coverage.md`.
+- [x] T2317 Live runs (lead): T2316's pass on the final code, recorded in `docs/e2e-coverage.md`.
 
 ## Phase 8: Finish
 
