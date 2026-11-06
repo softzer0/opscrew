@@ -884,4 +884,4 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect`
   - Effort: medium
 
-- [ ] T1938 The live runs and the simplify pass (lead): T1937's pass until it passes, `docs/e2e-coverage.md` per run, then `/simplify` over the follow-up's diff. It ships in 023's release (T2319).
+- [x] T1938 The live runs and the simplify pass (lead): T1937's pass until it passes, `docs/e2e-coverage.md` per run, then `/simplify` over the follow-up's diff. It ships in 023's release (T2319).
