@@ -4,7 +4,7 @@ import { makeTree, removeTree } from "../test-helpers";
 
 /** Rails' status: each database.yml entry and its version, read by `rails runner`. */
 const RAILS_VERSIONS =
-  "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }";
+  "ActiveRecord::Base.configurations.configs_for(env_name: Rails.env).each { |c| ActiveRecord::Base.establish_connection(c); puts 'database: ' + c.name, 'Current version: ' + ActiveRecord::Base.connection_pool.with_connection { |x| x.schema_version }.to_s }";
 
 const roots: string[] = [];
 afterEach(async () => {

@@ -2,6 +2,9 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+/** Rails' migration status as detection writes it: each database.yml entry and its version. */
+export const RAILS_STATUS = `bin/rails runner "ActiveRecord::Base.configurations.configs_for(env_name: Rails.env).each { |c| ActiveRecord::Base.establish_connection(c); puts 'database: ' + c.name, 'Current version: ' + ActiveRecord::Base.connection_pool.with_connection { |x| x.schema_version }.to_s }"`;
+
 /** Whether `sh` runs here (Git Bash on Windows); the shell tests skip without it. */
 export function shWorks(): boolean {
   try {

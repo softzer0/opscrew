@@ -19,7 +19,7 @@ import {
 } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testPlan } from "../__fixtures__/plans";
-import { fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
+import { fakeBin, RAILS_STATUS, runSh, shWorks, write } from "./__fixtures__/sh";
 import { migrationDown, migrationRecord, schemaRecordPath } from "./migrations";
 import { switchCommands } from "./switch";
 
@@ -33,9 +33,6 @@ function withMigrations(releaseCommand: string, migrations: Migrations): DeployP
   const plan = testPlan();
   return DeployPlanSchema.parse({ ...plan, app: { ...plan.app, releaseCommand, migrations } });
 }
-
-/** Rails' status as detection writes it: each database.yml entry and its version. */
-const RAILS_STATUS = `bin/rails runner "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }"`;
 
 /** Each tool's plan; Django and Knex run from a folder, Flask-Migrate with a quoted `FLASK_APP`. */
 const PLANS: Record<MigrationTool, DeployPlan> = {
@@ -658,24 +655,30 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
       expect(existsSync(`${work}/container/pwned`)).toBe(false);
     });
 
-    it("changes nothing for several Rails databases when down has no db:migrate to point at each", () => {
-      recorded(
-        "database=primary 20261101000000\ndatabase=queue 0\n",
-        "database=primary 20261106000000\ndatabase=queue 20261102000000\n",
-      );
-      const plan = withMigrations("bin/rails db:migrate", {
-        tool: "rails",
-        status: RAILS_STATUS,
-        down: "bin/rails db:migrate:primary VERSION={version}",
-      });
-      const result = rollback(plan);
-      expect(result.status).toBe(1);
-      expect(result.output).toBe(
-        "::error::The app has several databases, and app.migrations.down in opscrew/plan.yaml has no `db:migrate ` for OpsCrew to turn into each database's `db:migrate:<name>`, so nothing was migrated down.\nthe step failed\n",
-      );
-      expect(lines("docker.log")).toEqual([]);
-      expect(lines("tools.log")).toEqual([]);
-    });
+    it.each([
+      "bin/rails db:migrate:primary VERSION={version}",
+      "bin/rails shop_db:migrate VERSION={version}",
+    ])(
+      "changes nothing for several Rails databases when down is %s, with no db:migrate word to point at each",
+      (down) => {
+        recorded(
+          "database=primary 20261101000000\ndatabase=queue 0\n",
+          "database=primary 20261106000000\ndatabase=queue 20261102000000\n",
+        );
+        const plan = withMigrations("bin/rails db:migrate", {
+          tool: "rails",
+          status: RAILS_STATUS,
+          down,
+        });
+        const result = rollback(plan);
+        expect(result.status).toBe(1);
+        expect(result.output).toBe(
+          "::error::The app has several databases, and app.migrations.down in opscrew/plan.yaml has no `db:migrate ` for OpsCrew to turn into each database's `db:migrate:<name>`, so nothing was migrated down.\nthe step failed\n",
+        );
+        expect(lines("docker.log")).toEqual([]);
+        expect(lines("tools.log")).toEqual([]);
+      },
+    );
 
     it("fails when the down migrations fail, naming their log and printing none of it", () => {
       recorded("count=1\n", "count=2\n");

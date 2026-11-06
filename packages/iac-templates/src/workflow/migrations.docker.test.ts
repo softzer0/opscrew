@@ -3,8 +3,8 @@
  * 12.7). For each tool, an app with two migrations: the example where one exists (`koa-knex`,
  * `django-postgres`, `fastapi-sqlmodel`, `nestjs-typeorm`, `laravel-app`), a small fixture for
  * Rails, Sequelize and Flask-Migrate, and a second migration in `__fixtures__/migrations/<tool>-v2`
- * (Django's also installs the sessions app, which the first version lacks). Rails also runs with
- * two PostgreSQL databases (`rails-databases`), each with its own migrations, going down per
+ * (Django's also installs the sessions app, which the first version lacks). Rails runs on 8.1 and
+ * on 7.1 (`rails71`), and with two PostgreSQL databases (`rails-databases`), each with its own migrations, going down per
  * database with `db:migrate:<name>`. Version 1's image is a small one built for the test, version
  * 2's adds the second migration. As OpsCrew's Compose project renders them (PostgreSQL `db`, or
  * SQLite in a volume for Laravel, as its example has it; the one-off `release`), with the start
@@ -47,7 +47,7 @@ import { serviceSpec } from "../catalog";
 import { onThisComputer } from "../edge/__fixtures__/localhost";
 import { IMAGES } from "../pins";
 import { renderCompose } from "../runtime";
-import { skipReason } from "./__fixtures__/sh";
+import { RAILS_STATUS, skipReason } from "./__fixtures__/sh";
 import { migrationDown, migrationRecord, schemaRecordPath } from "./migrations";
 
 const reason = skipReason();
@@ -82,17 +82,22 @@ const PYTHON_IMAGE = [
   "COPY . .",
 ];
 
-const RAILS_IMAGE = [
+/** A Rails app's image with Rails `version`'s railties and Active Record. */
+const railsImage = (version: string) => [
   `FROM ${RUBY}`,
-  "RUN gem install --no-document --minimal-deps railties:8.1.0 activerecord:8.1.0 pg:1.6.2",
+  `RUN gem install --no-document --minimal-deps railties:${version} activerecord:${version} pg:1.6.2`,
   "WORKDIR /app",
   "COPY . .",
   "RUN chmod 755 bin/rails",
   "ENV RAILS_ENV=production",
 ];
 
-/** Rails' status as detection writes it: each database.yml entry and its version. */
-const RAILS_STATUS = `bin/rails runner "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }"`;
+/** Rails' `migrations`, as detection writes them for `bin/rails`. */
+const RAILS_MIGRATIONS: Migrations = {
+  tool: "rails",
+  status: RAILS_STATUS,
+  down: "bin/rails db:migrate VERSION={version}",
+};
 
 const TSC = "RUN npx tsc -p tsconfig.build.json";
 
@@ -228,13 +233,21 @@ const CASES: Case[] = [
   {
     tool: "rails",
     app: join(FIXTURES, "rails"),
-    image: RAILS_IMAGE,
+    image: railsImage("8.1.0"),
     releaseCommand: "bin/rails db:migrate",
-    migrations: {
-      tool: "rails",
-      status: RAILS_STATUS,
-      down: "bin/rails db:migrate VERSION={version}",
-    },
+    migrations: RAILS_MIGRATIONS,
+    database: "postgres",
+    env: { SECRET_KEY_BASE: secret() },
+    records: ["version=20261101000000\n", "version=20261106000000\n"],
+    added: ["visits.note"],
+  },
+  {
+    tool: "rails",
+    name: "rails71",
+    app: join(FIXTURES, "rails71"),
+    image: railsImage("7.1.6"),
+    releaseCommand: "bin/rails db:migrate",
+    migrations: RAILS_MIGRATIONS,
     database: "postgres",
     env: { SECRET_KEY_BASE: secret() },
     records: ["version=20261101000000\n", "version=20261106000000\n"],
@@ -244,13 +257,9 @@ const CASES: Case[] = [
     tool: "rails",
     name: "rails-databases",
     app: join(FIXTURES, "rails-databases"),
-    image: RAILS_IMAGE,
+    image: railsImage("8.1.0"),
     releaseCommand: "bin/rails db:migrate",
-    migrations: {
-      tool: "rails",
-      status: RAILS_STATUS,
-      down: "bin/rails db:migrate VERSION={version}",
-    },
+    migrations: RAILS_MIGRATIONS,
     database: "postgres",
     databases: ["app_queue"],
     env: { SECRET_KEY_BASE: secret() },

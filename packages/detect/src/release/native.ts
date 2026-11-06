@@ -34,9 +34,11 @@ function folderOf(files: readonly string[]): string | undefined {
  * environment, `database: <its database.yml entry>` and `Current version: <v>`, as `db:version`
  * prints them but with the entry's name, which `db:migrate:<name>` takes (`db:version` prints the
  * database's own name). Single-quoted Ruby strings only, so it stays one word in double quotes.
+ * Only API that Rails 6.1 to 8.1 all have (`with_temporary_pool_for_each` and a pool's
+ * `migration_context` came in 7.2); checked on Rails 7.1 and 8.1.
  */
 const RAILS_VERSIONS =
-  "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }";
+  "ActiveRecord::Base.configurations.configs_for(env_name: Rails.env).each { |c| ActiveRecord::Base.establish_connection(c); puts 'database: ' + c.name, 'Current version: ' + ActiveRecord::Base.connection_pool.with_connection { |x| x.schema_version }.to_s }";
 
 /** Rails, Hanami and Sequel (Gemfile). */
 function ruby(ctx: ReleaseContext): ReleaseDetection | undefined {

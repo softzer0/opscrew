@@ -176,25 +176,7 @@ function downScript(
       return tool === "rails" ? railsDown(plan, down, one, fail) : one;
     }
     case "apps":
-      // Each app of the running record, newest first, goes back to its migration in the earlier
-      // record, or to `zero` when that has none; an app already there is left alone.
-      return [
-        `pairs="$(awk ${shellQuote(
-          [
-            "!/^app=[A-Za-z0-9_.:-]+ [A-Za-z0-9_.:-]+$/ { bad = 1; next }",
-            "{ app = substr($1, 5) }",
-            "FILENAME == ARGV[1] { was[app] = $2; next }",
-            '{ to = (app in was) ? was[app] : "zero"; if (to != $2) pair[++n] = app " " to }',
-            "END { if (bad) exit 1; for (i = n; i > 0; i--) print pair[i] }",
-          ].join(" "),
-        )} "$was_record" "$now_record")" || invalid`,
-        'script=""',
-        "set -- $pairs",
-        'while [ "$#" -ge 2 ]; do',
-        '  app="$1"; name="$2"; shift 2',
-        `  script="\${script:+$script && }("${filled(down)}")"`,
-        "done",
-      ];
+      return perItem("app", "name", "zero", down);
     case "count":
     case "each":
       return [
@@ -216,12 +198,40 @@ function downScript(
 }
 
 /**
+ * The lines that set `$script` to `command` once per `<item>=<key> <value>` line of the running
+ * record, newest first, with the shell variables `$<item>` the key and `$<value>` the earlier
+ * record's value for it, or `none` when that has none. A key already there, or only in the earlier
+ * record, is left alone. A line that isn't `<item>=<key> <value>`, each a value, calls `invalid`.
+ */
+function perItem(item: string, value: string, none: string, command: string): string[] {
+  return [
+    `pairs="$(awk ${shellQuote(
+      [
+        `!/^${item}=[A-Za-z0-9_.:-]+ [A-Za-z0-9_.:-]+$/ { bad = 1; next }`,
+        `{ key = substr($1, ${item.length + 2}) }`,
+        "FILENAME == ARGV[1] { was[key] = $2; next }",
+        `{ to = (key in was) ? was[key] : "${none}"; if (to != $2) pair[++n] = key " " to }`,
+        "END { if (bad) exit 1; for (i = n; i > 0; i--) print pair[i] }",
+      ].join(" "),
+    )} "$was_record" "$now_record")" || invalid`,
+    'script=""',
+    "set -- $pairs",
+    'while [ "$#" -ge 2 ]; do',
+    `  ${item}="$1"; ${value}="$2"; shift 2`,
+    `  script="\${script:+$script && }("${filled(command)}")"`,
+    "done",
+  ];
+}
+
+/** `db:migrate` as a word of its own, followed by a space: what Rails' `down` points at a database. */
+const DB_MIGRATE = /(?<=^|\s)db:migrate(?= )/;
+
+/**
  * Rails' down lines: `one` when the running record has one database (`version=`); with several
  * (`database=<name> <v>` lines), `down` with its `db:migrate` turned into `db:migrate:<name>` for
- * each database of the running record, newest first, with `{version}` the earlier record's for that
- * database, or `0` when it has none. A database already there, or only in the earlier record, is
- * left alone. Records of different shapes, or several databases and a `down` without `db:migrate `,
- * exit 1 before any change.
+ * each database of the running record, newest first ({@link perItem}), with `{version}` the
+ * earlier record's for that database, or `0` when it has none. Records of different shapes, or
+ * several databases and a `down` without `db:migrate `, exit 1 before any change.
  */
 function railsDown(
   plan: DeployPlan,
@@ -230,33 +240,21 @@ function railsDown(
   fail: (text: string) => string,
 ): string[] {
   const shapes = `{ ${fail(`The version rolled back to and the version running now record a different number of databases (their records in ${SCHEMA_DIR} on the server), so OpsCrew can't tell which to undo and nothing was migrated down.`)} }`;
-  const each = down.includes("db:migrate ")
-    ? down.replace("db:migrate ", "db:migrate:{database} ")
-    : undefined;
   return [
     "several() { grep -q '^database=' \"$1\"; }",
     'if several "$now_record"; then',
-    ...(each === undefined
+    ...(DB_MIGRATE.test(down)
       ? [
-          `  ${fail(`The app has several databases, and app.migrations.down in ${planFilePath(plan)} has no \`db:migrate \` for OpsCrew to turn into each database's \`db:migrate:<name>\`, so nothing was migrated down.`)}`,
+          `  several "$was_record" || ${shapes}`,
+          ...perItem(
+            "database",
+            "version",
+            "0",
+            down.replace(DB_MIGRATE, "db:migrate:{database}"),
+          ).map((line) => `  ${line}`),
         ]
       : [
-          `  several "$was_record" || ${shapes}`,
-          `  pairs="$(awk ${shellQuote(
-            [
-              "!/^database=[A-Za-z0-9_.:-]+ [A-Za-z0-9_.:-]+$/ { bad = 1; next }",
-              "{ db = substr($1, 10) }",
-              "FILENAME == ARGV[1] { was[db] = $2; next }",
-              '{ to = (db in was) ? was[db] : "0"; if (to != $2) pair[++n] = db " " to }',
-              "END { if (bad) exit 1; for (i = n; i > 0; i--) print pair[i] }",
-            ].join(" "),
-          )} "$was_record" "$now_record")" || invalid`,
-          '  script=""',
-          "  set -- $pairs",
-          '  while [ "$#" -ge 2 ]; do',
-          '    database="$1"; version="$2"; shift 2',
-          `    script="\${script:+$script && }("${filled(each)}")"`,
-          "  done",
+          `  ${fail(`The app has several databases, and app.migrations.down in ${planFilePath(plan)} has no \`db:migrate \` for OpsCrew to turn into each database's \`db:migrate:<name>\`, so nothing was migrated down.`)}`,
         ]),
     "else",
     `  several "$was_record" && ${shapes}`,
