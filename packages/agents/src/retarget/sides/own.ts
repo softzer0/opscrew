@@ -16,7 +16,7 @@ import type { DestroyPreview } from "../../destroy/types";
 import { requireNoForeignPreviews } from "../../previews/host";
 import { edgeSwitch, readEdgeOver } from "../../provision/origin-tls";
 import { applyOwnHostPlan, prepareOwnServer } from "../../provision/own";
-import type { ProvisionServices } from "../../provision/types";
+import type { ProvisionOptions, ProvisionServices } from "../../provision/types";
 import { lazyRepository } from "../../runners";
 import {
   adapterBlocked,
@@ -39,6 +39,9 @@ import type { MoveSide, SideStop } from "./types";
 /** What an own side reaches the server with: the host adapter and logins (fakes in tests). */
 export type OwnSideServices = Pick<ProvisionServices, "own" | "runnerGitHub">;
 
+/** A new own side's choices from the command line (a script's `--host-key`, `--password-logins`). */
+export type OwnSideOptions = Pick<ProvisionOptions, "hostKey" | "passwordLogins">;
+
 /** Said wherever the app comes off a server the user owns. */
 const SERVER_STAYS =
   "Your server itself stays: OpsCrew never deletes, rebuilds or reinstalls it, and leaves its own host settings (Docker, the deploy user, SSH and the firewall) as they are.";
@@ -54,7 +57,11 @@ const SERVER_STAYS =
  * - `remove` takes only the app off the server with a teardown host plan that deletes its data,
  *   after the typed app name, approved with `allowDestroy`. Never the undo host plan.
  */
-export function ownSide(which: MoveServer, services: OwnSideServices = {}): MoveSide {
+export function ownSide(
+  which: MoveServer,
+  services: OwnSideServices = {},
+  options: OwnSideOptions = {},
+): MoveSide {
   const login = which === "new" ? "own" : "fromOwn";
   const own = services.own ?? {};
   const ssh = sshSide({
@@ -79,7 +86,7 @@ export function ownSide(which: MoveServer, services: OwnSideServices = {}): Move
   return {
     kind: "own",
     ...ssh,
-    prepare: (session) => prepare(session, services),
+    prepare: (session) => prepare(session, services, options),
     remove: (session, confirm) => remove(session, which, services, confirm),
   };
 }
@@ -119,13 +126,20 @@ function waitsForApproval(session: MoveSession, plan: HostPlan): boolean {
  * (`host-apply`). A script stops with the hash. The server's public address becomes the move's new
  * address.
  */
-async function prepare(session: MoveSession, services: OwnSideServices): Promise<SideStop> {
+async function prepare(
+  session: MoveSession,
+  services: OwnSideServices,
+  options: OwnSideOptions,
+): Promise<SideStop> {
   const { deps, plan, command } = session;
   if (usesTunnel(plan)) throw tunnelRefused(plan);
   const deployPublicKey = session.deployKey.publicKeyOpenSsh;
   const run = await prepareOwnServer(deps, {
     plan,
-    options: {},
+    options: {
+      ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
+      ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
+    },
     services: {
       ...services,
       ...(session.services.cloudflare !== undefined
@@ -134,7 +148,7 @@ async function prepare(session: MoveSession, services: OwnSideServices): Promise
     },
     deployPublicKey,
     deployKeyFile: session.deployKey.privateKeyFile,
-    phase: "provision",
+    phase: "retarget",
     command,
   });
   await requireNoForeignPreviews(deps.paths, plan, run.facts, command);
@@ -153,7 +167,8 @@ async function prepare(session: MoveSession, services: OwnSideServices): Promise
     plan,
     outputs: {},
     deployPublicKey,
-    phase: "provision",
+    ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
+    phase: "retarget",
     command,
     planOnly,
     shown: (hash) => {

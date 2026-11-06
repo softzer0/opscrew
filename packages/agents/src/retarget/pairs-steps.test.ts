@@ -1,0 +1,191 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { findExecutable } from "@opscrew/core";
+import { readArtifact } from "@opscrew/plan-schema";
+import { describe, expect, it } from "vitest";
+import { readServerAddresses } from "../shared";
+import { DOMAIN, ED25519, OLD_IPV4 } from "../testing";
+import { NEW_IPV4, PORTAINER, pairHarness } from "./__fixtures__/pairs";
+import { abortRetarget } from "./abort";
+import { finishRetarget } from "./finish";
+import { moveOf, useLayout } from "./session";
+import { deployStep, prepareStep, storeDeploySecrets } from "./steps";
+
+const MAIN_TF = "opscrew/infra/prod/main.tf";
+
+describe.skipIf(!findExecutable("git"))(
+  "step deployed, for the user's own server and Portainer",
+  () => {
+    it("a workflow that differs for the new side waits for its pull request, then deploys once it is merged", async () => {
+      const h = await pairHarness("hetzner", "own", { step: "created", ownPort: 2222 });
+      const stop = await deployStep(h.session, {});
+      expect(stop).toMatchObject({ step: "created", done: false });
+      expect(stop?.next.join(" ")).toContain("The deploy workflow for your new server differs");
+      expect(stop?.next.join(" ")).toContain("opscrew retarget");
+      expect(h.github.runs).toEqual([]);
+      expect(h.handler.requests.some((r) => r.kind === "pull-request")).toBe(true);
+      // The secrets point to the new side already: once merged, every push deploys there.
+      expect(h.github.secrets.get("OPSCREW_HOST")).toBe(NEW_IPV4);
+      expect(h.github.secrets.get("OPSCREW_SSH_KNOWN_HOSTS")).toBe(
+        `[${NEW_IPV4}]:2222 ssh-ed25519 ${ED25519}\n`,
+      );
+
+      // Not merged yet: it stops again, opening nothing new.
+      expect(await deployStep(h.session, {})).toMatchObject({ done: false });
+
+      // Merged on GitHub: the deploy runs, the app answers there, and its edge stops.
+      await h.git(h.root, "push", h.bare, "HEAD:refs/heads/main");
+      expect(await deployStep(h.session, {})).toBeUndefined();
+      expect(moveOf(h.session).step).toBe("deployed");
+      expect(h.github.runs).toHaveLength(1);
+      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: true, caddy: false });
+    });
+
+    it("a workflow that stays the same deploys at once", async () => {
+      const h = await pairHarness("hetzner", "own", { step: "created" });
+      expect(await deployStep(h.session, {})).toBeUndefined();
+      expect(moveOf(h.session).step).toBe("deployed");
+      expect(h.handler.requests.some((r) => r.kind === "pull-request")).toBe(false);
+    });
+
+    it("stores Portainer's deploy secrets for a Portainer side: the build's values, never a server's", async () => {
+      const h = await pairHarness("own", "portainer", { step: "created" });
+      await storeDeploySecrets(h.session, "new");
+      expect(h.github.secrets.has("OPSCREW_BUILD_ENV")).toBe(true);
+      expect(h.github.secrets.has("OPSCREW_HOST")).toBe(false);
+      expect(h.github.secrets.has("OPSCREW_SSH_KEY")).toBe(false);
+      const record = JSON.parse(await readFile(h.paths.files.deploySecrets, "utf8"));
+      expect(record).toMatchObject({ host: "portainer" });
+      // Back to the user's own old server on abort: its public address, its login's host key.
+      await storeDeploySecrets(h.session, "old");
+      expect(h.github.secrets.get("OPSCREW_HOST")).toBe(OLD_IPV4);
+      expect(h.github.secrets.get("OPSCREW_SSH_KNOWN_HOSTS")).toBe(
+        `${OLD_IPV4} ssh-ed25519 ${ED25519}\n`,
+      );
+      expect(h.reporter.text()).not.toContain(OLD_IPV4);
+    });
+  },
+);
+
+describe.skipIf(!findExecutable("git"))("the DNS switch's layouts, for every pair", () => {
+  it.each([
+    ["own", "hetzner", { previous: OLD_IPV4 }],
+    ["hetzner", "own", { server: NEW_IPV4 }],
+    ["own", "own", { server: NEW_IPV4, previous: OLD_IPV4 }],
+    ["hetzner", "portainer", { server: NEW_IPV4 }],
+    ["portainer", "own", { server: NEW_IPV4, previous: OLD_IPV4 }],
+  ] as const)(
+    "%s to %s: an address side's records point at it through TF_VAR, never a file",
+    async (from, to, vars) => {
+      const h = await pairHarness(from, to, { step: "migrated" });
+      const files = await useLayout(h.session, "switched");
+      expect(h.session.env.TF_VAR_server_ipv4).toBe("server" in vars ? vars.server : undefined);
+      expect(h.session.env.TF_VAR_previous_server_ipv4).toBe(
+        "previous" in vars ? vars.previous : undefined,
+      );
+      const written = files.map((file) => file.content).join("\n");
+      for (const ip of [OLD_IPV4, NEW_IPV4]) expect(written).not.toContain(ip);
+      const main = await readFile(join(h.root, MAIN_TF), "utf8");
+      expect(main).toContain('module "dns"');
+      expect(main).not.toContain("import {");
+    },
+  );
+
+  it("adopts a Portainer old side's records, still the user's, with import blocks", async () => {
+    const h = await pairHarness("portainer", "own", { step: "migrated", userRecords: true });
+    expect(h.session.adoptRecords).toEqual({ a: expect.any(String), aaaa: expect.any(String) });
+    await useLayout(h.session, "switched");
+    const main = await readFile(join(h.root, MAIN_TF), "utf8");
+    expect(main).toContain("to = module.dns.cloudflare_dns_record.a");
+    expect(main).toContain(`id = "`);
+    // The old side's address is where the user's record points.
+    expect(h.session.env.TF_VAR_previous_server_ipv4).toBe(OLD_IPV4);
+    expect(DOMAIN).toBeTruthy();
+  });
+
+  it("once a plan adopted them, the Portainer old side's records are OpsCrew's, so an abort keeps them", async () => {
+    const h = await pairHarness("portainer", "hetzner", { step: "renamed", userRecords: true });
+    // No server of the move is in the state yet: the create step's plan makes the new one.
+    h.engine.state.servers = {};
+    expect(await prepareStep(h.session, {})).toBeUndefined();
+    expect(moveOf(h.session).step).toBe("created");
+    const main = await readFile(join(h.root, MAIN_TF), "utf8");
+    expect(main).toContain("to = module.dns.cloudflare_dns_record.a");
+    const from = moveOf(h.session).from.target;
+    expect(from).toMatchObject({ provider: "portainer", web: { mode: "caddy", records: true } });
+    expect(h.session.adoptRecords).toBeUndefined();
+    const onDisk = (await readArtifact("plan", h.paths.files.plan)).retarget?.from.target;
+    expect(onDisk).toMatchObject({ web: { records: true } });
+  });
+});
+
+describe.skipIf(!findExecutable("git"))(
+  "--finish and --abort, end to end, for an own and a Portainer old side",
+  () => {
+    it("--finish from the user's own server takes only the app off it, then publishes the final files", async () => {
+      const h = await pairHarness("own", "hetzner", { step: "switched", dns: "none" });
+      h.hosts.host(NEW_IPV4).caddy = true;
+      const result = await finishRetarget(h.deps, {
+        services: h.services,
+        confirm: async () => true,
+      });
+      expect(result).toMatchObject({ step: "finished", done: true });
+      // Only the app's teardown host plan: the server itself stays.
+      expect(h.services.own.host.applies.map((a) => a.plan.purpose)).toEqual(["teardown"]);
+      expect(h.events.filter((e) => e.type === "apply")).toEqual([]);
+      const plan = await readArtifact("plan", h.paths.files.plan);
+      expect(plan.retarget).toBeUndefined();
+      expect(plan.target).toMatchObject({ provider: "hetzner" });
+      // The old server's host keys are forgotten, its admin login's too.
+      expect(await readFile(h.paths.files.knownHosts, "utf8")).not.toContain(OLD_IPV4);
+      expect((await readServerAddresses(h.paths)).retarget).toBeUndefined();
+      expect(h.reporter.text()).toContain("the app is removed from your old server");
+    });
+
+    it("--abort back to the user's own server removes the new cloud server and points the secrets back", async () => {
+      const h = await pairHarness("own", "hetzner", { step: "deployed", dns: "none" });
+      const result = await abortRetarget(h.deps, {
+        services: h.services,
+        confirm: async () => true,
+      });
+      expect(result).toMatchObject({ step: "aborted", done: true });
+      expect(h.events.filter((e) => e.type === "apply").map((e) => e.type)).toContain("apply");
+      expect(h.github.secrets.get("OPSCREW_HOST")).toBe(OLD_IPV4);
+      const plan = await readArtifact("plan", h.paths.files.plan);
+      expect(plan.retarget).toBeUndefined();
+      expect(plan.target).toMatchObject({ provider: "own" });
+      // The old side's login is back in its slot.
+      expect((await readServerAddresses(h.paths)).own).toMatchObject({ host: OLD_IPV4 });
+    });
+
+    it("--finish from Portainer stops its app, removes what is left of it, and finishes", async () => {
+      const h = await pairHarness("portainer", "hetzner", { step: "switched", dns: "none" });
+      h.hosts.host(NEW_IPV4).caddy = true;
+      const result = await finishRetarget(h.deps, {
+        services: h.services,
+        confirm: async () => true,
+      });
+      expect(result).toMatchObject({ step: "finished", done: true });
+      const app = [...h.hosts.docker(PORTAINER).containers.values()].find(
+        (c) => c.labels["com.docker.compose.service"] === "app",
+      );
+      expect(app?.state).toBe("exited");
+      expect((await readArtifact("plan", h.paths.files.plan)).retarget).toBeUndefined();
+      expect(h.events.filter((e) => e.type === "apply")).toEqual([]);
+    });
+
+    it("--abort back to Portainer removes the new cloud server and stores Portainer's deploy secrets again", async () => {
+      // Caddy in the app's stack serves a domain: OpsCrew manages its records there.
+      const h = await pairHarness("portainer", "hetzner", { step: "deployed" });
+      const result = await abortRetarget(h.deps, {
+        services: h.services,
+        confirm: async () => true,
+      });
+      expect(result).toMatchObject({ step: "aborted", done: true });
+      const plan = await readArtifact("plan", h.paths.files.plan);
+      expect(plan.target).toMatchObject({ provider: "portainer" });
+      expect(h.github.secrets.has("OPSCREW_BUILD_ENV")).toBe(true);
+      expect((await readServerAddresses(h.paths)).portainer).toMatchObject({ environmentId: 3 });
+    });
+  },
+);

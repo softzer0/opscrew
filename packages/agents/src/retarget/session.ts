@@ -1,5 +1,6 @@
 import { access, rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { cloudflareConnector } from "@opscrew/connector-cloudflare";
 import type { GitClient } from "@opscrew/connector-github";
 import type {
   ApprovalRecord,
@@ -19,6 +20,7 @@ import {
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
+  type DeployTarget,
   type Requirements,
   type Retarget,
   writeArtifact,
@@ -55,6 +57,7 @@ import {
   pinHostKey,
   providerConsole,
   readOutputsAfterInit,
+  readServerAddresses,
   requireGitRepo,
   type ServerAddress,
   SshRemoteExec,
@@ -62,8 +65,9 @@ import {
   stateNotHere,
   writeRenderedFiles,
 } from "../shared";
-import { previousTarget } from "./layouts";
+import { oldSideTarget } from "./layouts";
 import { loadMoveServers, type MoveServers, recordMoveServers, unknownNewServer } from "./servers";
+import { managedDns, RUN_COMMAND } from "./texts";
 import type { RetargetGitHubApi, RetargetServices } from "./types";
 
 /** Everything the steps of one run share: credentials checked, engine ready, files rendered. */
@@ -101,6 +105,67 @@ export interface MoveSession {
    * values: the new server gets the same certificates, with the same deploy secret.
    */
   site: Awaited<ReturnType<typeof recordedEdge>>;
+  /**
+   * A Portainer old side whose DNS records on Cloudflare are still the user's: their ids, which
+   * the move's layouts adopt into `module "dns"` with `import` blocks.
+   */
+  adoptRecords?: UserRecords["ids"];
+}
+
+/** The app's DNS records on Cloudflare that are the user's, not OpsCrew's (a Portainer side). */
+export interface UserRecords {
+  /** Their Cloudflare ids: the domain's A record, its AAAA record and the `www.` CNAME. */
+  ids: { a: string; aaaa?: string; www?: string };
+  /** Where they point: the Portainer host's public address. */
+  address: ServerAddress;
+}
+
+/**
+ * The app's DNS records that are still the user's when the move's old side is a Portainer whose
+ * web mode `caddy` has no `records` yet and OpsCrew manages the app's DNS on Cloudflare: read
+ * through the Cloudflare connector (the domain's A and AAAA records, and `www.` when the plan
+ * serves it). `undefined` for every other move. Stops before any change when the domain has no A
+ * record (a CNAME to a dynamic-DNS name): the switch updates address records only.
+ */
+export async function userRecords(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: Pick<RetargetServices, "cloudflare">,
+): Promise<UserRecords | undefined> {
+  const from = plan.retarget?.from.target;
+  const domain = plan.dns.domain;
+  if (from?.provider !== "portainer" || !managedDns(plan) || domain === undefined) return undefined;
+  if (from.web.mode === "caddy" && from.web.records === true) return undefined;
+  const api =
+    services.cloudflare === undefined
+      ? (cloudflareConnector(deps).client ?? null)
+      : services.cloudflare;
+  // Without a token the session stops when it checks Cloudflare.
+  if (api === null) return undefined;
+  const zone = await api.findZone(domain);
+  if (!zone) return undefined;
+  const first = async (name: string, type: string) =>
+    (await api.listDnsRecords(zone.id, { name, type }))[0];
+  const a = await first(domain, "A");
+  if (a === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${domain} has no A record on Cloudflare pointing at your Portainer host, and a move switches the app's address records in place, so OpsCrew did not start it. Nothing was changed.`,
+      {
+        hint: `Point ${domain} at your Portainer host's public address with an A record (and AAAA for IPv6) instead of a CNAME, then run \`${RUN_COMMAND}\` again.`,
+      },
+    );
+  }
+  const aaaa = await first(domain, "AAAA");
+  const www = plan.dns.www ? await first(`www.${domain}`, "CNAME") : undefined;
+  return {
+    ids: {
+      a: a.id,
+      ...(aaaa !== undefined ? { aaaa: aaaa.id } : {}),
+      ...(www !== undefined ? { www: www.id } : {}),
+    },
+    address: { ipv4: a.content, ...(aaaa !== undefined ? { ipv6: aaaa.content } : {}) },
+  };
 }
 
 /**
@@ -164,17 +229,22 @@ async function readDeployKey(deps: PhaseDeps, command: string): Promise<DeployKe
   return ensureDeployKey(deps.paths, deps.redactor);
 }
 
-/** The remote shell for `host`: the injected one, else SSH with the deploy key and pinned keys. */
+/**
+ * The deploy user's shell on `host`:`port`: the injected one, else SSH with the deploy key and
+ * the pinned host keys.
+ */
 export function remoteFor(
-  deps: PhaseDeps,
+  deps: Pick<PhaseDeps, "paths" | "runner">,
   services: RetargetServices,
   keyFile: string,
   host: string,
+  port = 22,
 ): RemoteExec {
   return (
     services.remote?.(host) ??
     new SshRemoteExec({
       host,
+      port,
       keyFile,
       knownHostsFile: deps.paths.files.knownHosts,
       runner: deps.runner,
@@ -219,8 +289,36 @@ export interface OpenSessionInput {
 }
 
 /**
- * Checks everything a move needs before any change (state, both providers' tokens, Cloudflare
- * when the plan uses it, GitHub, deploy key, state passphrase) and prepares the engine.
+ * True when the move's root module holds resources in the infrastructure state already: a cloud
+ * side, or the app's DNS records OpsCrew manages for an old side that is the user's own server
+ * or Portainer. A move between the user's own server and Portainer without them starts a state.
+ */
+function needsState(plan: DeployPlan): boolean {
+  const from = moveOf({ plan }).from.target;
+  const cloud = (target: Pick<DeployTarget, "provider">) =>
+    target.provider === "hetzner" || target.provider === "digitalocean";
+  if (cloud(from) || cloud(plan.target)) return true;
+  if (!managedDns(plan)) return false;
+  return (
+    from.provider === "own" ||
+    (from.provider === "portainer" && from.web.mode === "caddy" && from.web.records === true)
+  );
+}
+
+/**
+ * The plan Cloudflare is checked for: the move's plan, with a Portainer side's target replaced by
+ * the other side's (a server's), since a stack's plan reads Cloudflare only for a tunnel while the
+ * move manages the app's records there.
+ */
+function cloudflarePlan(plan: DeployPlan): DeployPlan {
+  if (plan.target.provider !== "portainer") return plan;
+  return { ...plan, target: oldSideTarget(moveOf({ plan })) };
+}
+
+/**
+ * Checks everything a move needs before any change (state where the move's root holds resources,
+ * the cloud providers' tokens, Cloudflare when the plan uses it, GitHub, deploy key, state
+ * passphrase) and prepares the engine. `plan` is the move's (`plan.retarget` set).
  */
 export async function openSession(
   deps: PhaseDeps,
@@ -228,7 +326,7 @@ export async function openSession(
   input: OpenSessionInput,
 ): Promise<MoveSession> {
   const { services, command } = input;
-  await requireState(deps, plan);
+  if (needsState(plan)) await requireState(deps, plan);
   const git = await requireGitRepo(deps);
   const providers = [...new Set(input.providers)];
   const names = providers.map((id) => providerProfile(id).displayName);
@@ -240,7 +338,8 @@ export async function openSession(
     const check = services.providers?.[id];
     await checkProvider(deps, id, check ? { provider: check } : {});
   }
-  const cloudflare = await setupCloudflare(deps, plan, services);
+  const cloudflare = await setupCloudflare(deps, cloudflarePlan(plan), services);
+  const adopted = await userRecords(deps, plan, services);
   const githubApi = await githubApiOf(deps, services);
   // Stops with CREDENTIALS_MISSING when there is no token, so the API exists after it.
   const github = await setupGitHub(deps, git, { github: githubApi });
@@ -286,6 +385,7 @@ export async function openSession(
     committedRender: ownRenderFromTfvars(await committedTfvars(deps.paths.root, plan)),
     builderBranch: await builderBranch(deps.paths, plan),
     site: await recordedEdge(deps, withCloudflareZone(plan, cloudflare)),
+    ...(adopted !== undefined ? { adoptRecords: adopted.ids } : {}),
   };
 }
 
@@ -313,8 +413,17 @@ export async function renderFiles(
   session: MoveSession,
   layout?: InfraLayout,
   movePlan: DeployPlan = session.plan,
+  /** For a plan on the user's own server: the login whose SSH port the deploy uses. */
+  login: "own" | "fromOwn" = "own",
 ): Promise<RenderedFile[]> {
   const plan = withCloudflareZone(movePlan, session.cloudflare);
+  // On the user's own server in public mode the deploy connects to its login's port.
+  const recorded = await readServerAddresses(session.deps.paths);
+  const ownLogin = login === "own" ? recorded.own : recorded.retarget?.fromOwn;
+  const own =
+    plan.target.provider === "own" && plan.target.access === "public" && ownLogin !== undefined
+      ? { ...session.committedRender, sshPort: ownLogin.port }
+      : session.committedRender;
   // The new server gets the scheduled check's key at its first boot, as from provision.
   const checkKeyLine = await renderedCheckKeyLine(
     session.deps,
@@ -328,31 +437,77 @@ export async function renderFiles(
     github: { owner: session.github.owner, repo: session.github.repo },
     deployPublicKey: session.deployKey.publicKeyOpenSsh,
     cloudflare: session.cloudflare,
-    own: session.committedRender,
+    own,
     edge: session.site.edge,
     builderBranch: session.builderBranch,
   });
-  return renderDeployment(plan, layout ? { ...ctx, layout } : ctx);
-}
-
-/** The move's layout `name`, from the old server (`plan.retarget.from`) to the new one (`plan.target`). */
-export function layoutOf(session: Pick<MoveSession, "plan">, name: MoveLayoutName): InfraLayout {
-  return moveLayout(name, previousTarget(moveOf(session)), session.plan.target);
+  return renderDeployment(plan, {
+    ...ctx,
+    ...(layout !== undefined ? { layout } : {}),
+    // A Portainer old side's records, adopted into the move's root while it renders a layout.
+    ...(layout !== undefined && session.adoptRecords !== undefined
+      ? { adoptRecords: session.adoptRecords }
+      : {}),
+  });
 }
 
 /**
- * Writes the infrastructure files of the move's layout `name` into the working tree and
- * initialises the engine again (a new module call or provider needs `init` before any plan or
- * output).
+ * After an applied plan that adopted a Portainer old side's records (`adoptRecords`): they are in
+ * OpsCrew's state now, so the old target says so (`web.records: true`) and an abort restores it
+ * that way; later layouts need no `import` blocks for them.
+ */
+export async function recordAdopted(session: MoveSession): Promise<void> {
+  if (session.adoptRecords === undefined) return;
+  const move = moveOf(session);
+  const from = move.from.target;
+  if (from.provider !== "portainer" || from.web.mode !== "caddy") return;
+  await saveMove(session, {
+    ...move,
+    from: { ...move.from, target: { ...from, web: { ...from.web, records: true } } },
+  });
+  delete session.adoptRecords;
+}
+
+/** The move's layout `name`, from the old side (`plan.retarget.from`) to the new one (`plan.target`). */
+export function layoutOf(session: Pick<MoveSession, "plan">, name: MoveLayoutName): InfraLayout {
+  return moveLayout(name, oldSideTarget(moveOf(session)), session.plan.target);
+}
+
+/**
+ * The address variables of the layout's sides that are the user's own server or Portainer (never
+ * written to a file): `TF_VAR_server_ipv4`/`_ipv6` for the new side in the `server` slot and
+ * `TF_VAR_previous_server_ipv4`/`_ipv6` for the old one, from OpsCrew's local state.
+ */
+function addressVariables(session: MoveSession, layout: InfraLayout): void {
+  const slots = [
+    { side: layout.server, prefix: "", address: session.servers.next },
+    { side: layout.previous, prefix: "previous_", address: session.servers.from },
+  ];
+  for (const { side, prefix, address } of slots) {
+    delete session.env[`TF_VAR_${prefix}server_ipv4`];
+    delete session.env[`TF_VAR_${prefix}server_ipv6`];
+    if (side === undefined || side.provider === "hetzner" || side.provider === "digitalocean") {
+      continue;
+    }
+    if (address === undefined) continue;
+    session.env[`TF_VAR_${prefix}server_ipv4`] = address.ipv4;
+    if (address.ipv6 !== undefined) session.env[`TF_VAR_${prefix}server_ipv6`] = address.ipv6;
+  }
+}
+
+/**
+ * Writes the infrastructure files of the move's layout `name` into the working tree, sets the
+ * address variables of its sides that are the user's own server or Portainer, and initialises the
+ * engine again (a new module call or provider needs `init` before any plan or output).
  */
 export async function useLayout(
   session: MoveSession,
   name: MoveLayoutName,
 ): Promise<RenderedFile[]> {
   const { deps } = session;
-  const files = (await renderFiles(session, layoutOf(session, name))).filter(
-    (file) => file.kind === "infra",
-  );
+  const layout = layoutOf(session, name);
+  addressVariables(session, layout);
+  const files = (await renderFiles(session, layout)).filter((file) => file.kind === "infra");
   const diff = await diffRenderedFiles(deps.paths.root, files);
   const toWrite = [...diff.created, ...diff.changed];
   if (toWrite.length > 0) {

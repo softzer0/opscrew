@@ -254,8 +254,6 @@ export interface DeletionStepInput {
   what: string;
   /** Hint after a failed apply. */
   hint: string;
-  /** Runs after the approval, right before the apply (the step's first change). */
-  beforeApply?: () => Promise<void>;
 }
 
 /**
@@ -302,7 +300,6 @@ export async function deletionStep(
     await deps.approvals.assertApprovedPlan(summary.planHash, {
       allowDestroy: input.allowDestroy,
     });
-    await input.beforeApply?.();
     deps.reporter.step(upperFirst(input.what));
     await applyApprovedPlan(del, summary, {
       allowDestroy: input.allowDestroy,

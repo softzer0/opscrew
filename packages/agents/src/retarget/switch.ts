@@ -1,8 +1,8 @@
 import { lookup } from "node:dns/promises";
 import type { ApprovalRecord, FetchLike } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
-import { EDGE_DIR, EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
-import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
+import { OpsCrewError, upperFirst } from "@opscrew/core";
+import { EDGE_PROXIES, edgeProxy, portainerStackName } from "@opscrew/iac-templates";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { SavedPlan } from "../provision";
 import {
@@ -14,38 +14,29 @@ import {
   sameIp,
 } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
-import { moveProvider } from "../shared/vps-target";
-import { previousCloud } from "./layouts";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
-import { serverOps, startService, stopService } from "./server-ops";
-import { oldServer } from "./servers";
 import {
   auditMove,
   auditStep,
   type MoveSession,
   moveOf,
   newServer,
+  recordAdopted,
   saveMove,
   useLayout,
   waitsOf,
   withApply,
 } from "./session";
+import { moveSide, placeWords, sideWords } from "./sides";
 import { pendingStop } from "./steps";
-import {
-  ABORT_COMMAND,
-  FINISH_COMMAND,
-  managedDns,
-  providerWords,
-  RUN_COMMAND,
-  untilSwitched,
-} from "./texts";
+import { ABORT_COMMAND, FINISH_COMMAND, managedDns, RUN_COMMAND, untilSwitched } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
-import { asOpsCrewError, maintenanceWindow, newRemote, oldRemote, restartOldApp } from "./window";
+import { asOpsCrewError, copiesData, maintenanceWindow, restartOldApp } from "./window";
 
 const URL_WAIT_MS = 5 * 60_000;
 const URL_INTERVAL_MS = 10_000;
 
-/** Where the app answers after the switch: its domain, else the new server's address. */
+/** Where the app answers after the switch: its domain, else the new side's address. */
 function publicUrl(plan: DeployPlan, ipv4: string): string {
   return plan.dns.domain !== undefined ? `https://${plan.dns.domain}` : `http://${ipv4}`;
 }
@@ -60,7 +51,8 @@ function assertDnsOnly(saved: Pick<SavedPlan, "changes" | "moves">): void {
 
 /**
  * Stops unless every change of a plan is an in-place `update` of a record under `module.dns.`
- * (no creates, deletes or replacements, nothing outside DNS, no moves).
+ * (no creates, deletes or replacements, nothing outside DNS, no moves). A record the plan adopts
+ * with an `import` block (a Portainer old side's, still the user's) is updated in place too.
  */
 export function assertDnsUpdatesOnly(
   saved: Pick<SavedPlan, "changes" | "moves">,
@@ -81,14 +73,15 @@ export function assertDnsUpdatesOnly(
 }
 
 /**
- * A failed (or refused) switch: the app on the old server runs again (when OpsCrew stopped it)
- * and the move goes back to `deployed`, so users are served while the cause is fixed. Returns the
+ * A failed (or refused) switch: the app on the old side runs again (when OpsCrew stopped it) and
+ * the move goes back to `deployed`, so users are served while the cause is fixed. Returns the
  * error to throw.
  */
 async function rollBackSwitch(session: MoveSession, cause: unknown): Promise<OpsCrewError> {
   const { plan } = session;
   const refused = cause instanceof OpsCrewError && cause.code === "APPROVAL_REFUSED";
   const what = refused ? "The switch was not approved" : `The switch failed: ${reasonOf(cause)}`;
+  const copied = moveOf(session).step === "migrated";
   await auditMove(session, {
     kind: "phase",
     action: "retarget switch",
@@ -96,7 +89,7 @@ async function rollBackSwitch(session: MoveSession, cause: unknown): Promise<Ops
     detail: refused ? "switch not approved" : `switch failed: ${reasonOf(cause)}`,
   });
   // Back before the window first: even if the old app cannot be started now, the next run starts
-  // it (an open window before `migrated`) and copies the database again before switching.
+  // it (an open window before `migrated`) and copies the data again before switching.
   await saveMove(session, { ...moveOf(session), step: "deployed" });
   await auditStep(session, "deployed", "back to the step before the maintenance window");
   try {
@@ -104,19 +97,18 @@ async function rollBackSwitch(session: MoveSession, cause: unknown): Promise<Ops
   } catch (error) {
     return asOpsCrewError(error);
   }
-  const again = serviceOf(plan, "postgres")
+  const again = copied
     ? `run \`${RUN_COMMAND}\` again (it repeats the maintenance window)`
     : `run \`${RUN_COMMAND}\` again`;
-  // A failed apply may have updated some records before it stopped; they point at the new server,
+  // A failed apply may have updated some records before it stopped; they point at the new side,
   // whose web server is stopped. Continuing completes the switch; aborting points them back first.
-  const next = session.servers.next;
   const partly =
-    !refused && managedDns(plan) && next !== undefined
-      ? ` Some DNS records of ${dnsHosts(plan).join(" and ")} may already point at the new server (${[next.ipv4, next.ipv6].filter(Boolean).join(", ")}), where the web server is stopped, so some visitors may get errors until you continue or abort: \`${RUN_COMMAND}\` completes the switch, \`${ABORT_COMMAND}\` points them back to the old server first.`
+    !refused && managedDns(plan)
+      ? ` Some DNS records of ${dnsHosts(plan).join(" and ")} may already point at ${sideWords(plan.target, "new")}, where the web server is stopped, so some visitors may get errors until you continue or abort: \`${RUN_COMMAND}\` completes the switch, \`${ABORT_COMMAND}\` points them back first.`
       : "";
   return new OpsCrewError(
     codeOf(cause),
-    `${what}. The app on the old server runs again, and the move went back to the step before the maintenance window.${partly}`,
+    `${what}. The app on ${sideWords(moveOf(session).from.target, "old")} runs again, and the move went back to the step before the maintenance window.${partly}`,
     {
       hint: `${hintOf(cause)}When you are ready, ${again}, or \`${ABORT_COMMAND}\` to undo the move.`,
     },
@@ -131,7 +123,7 @@ function dnsHosts(plan: DeployPlan): string[] {
 }
 
 /**
- * Records the switch: the new server receives the traffic (its address in OpsCrew's local state
+ * Records the switch: the new side receives the traffic (its address in OpsCrew's local state
  * first, then the domain URL in `deployment`) and the step is `switched` (abort is over).
  */
 async function recordSwitched(
@@ -140,14 +132,13 @@ async function recordSwitched(
 ): Promise<void> {
   const { deps } = session;
   const move = moveOf(session);
-  const next = newServer(session);
-  await recordServerAddress(deps.paths, next);
+  await recordServerAddress(deps.paths, newServer(session));
   const at = deps.clock.now().toISOString();
   const recorded = input.applied
     ? withApply(session.plan, input.applied, at)
     : { approvals: session.plan.approvals, deployment: session.plan.deployment };
   const { url: _previous, ...deployment } = recorded.deployment;
-  // Without a domain the URL is the new server's IP address, which is never committed.
+  // Without a domain the URL is the new side's IP address, which is never committed.
   const url = committableUrl(input.url);
   await saveMove(
     session,
@@ -157,12 +148,12 @@ async function recordSwitched(
       deployment: { ...deployment, ...(url !== undefined ? { url } : {}) },
     },
   );
-  await auditStep(session, "switched", `traffic goes to the new server ${next.ipv4}`);
+  await auditStep(session, "switched", `traffic goes to ${sideWords(session.plan.target, "new")}`);
 }
 
 const UrlSchema = z.url({ protocol: /^https?$/ });
 
-/** The DNS change to make by hand, line by line. */
+/** The DNS change to make by hand, line by line: the user points the records at the new side. */
 function manualRecords(plan: DeployPlan, next: ServerAddress) {
   const domain = plan.dns.domain;
   if (domain === undefined) {
@@ -180,10 +171,19 @@ function manualRecords(plan: DeployPlan, next: ServerAddress) {
   ];
 }
 
+/** The web server the new side starts at the switch, in words. */
+function edgeWords(plan: DeployPlan): string {
+  return plan.target.provider === "portainer"
+    ? "the stack's Caddy"
+    : EDGE_PROXIES[edgeProxy(plan)].label;
+}
+
 /**
- * Step 6 with Cloudflare: the switch plan is made (and, in scripts, approved by hash) before the
- * maintenance window, so no plan or prompt fails while the app is offline; then the window (with a
- * self-hosted database), then the apply. A failed or refused apply rolls back to `deployed`.
+ * Step 6 with Cloudflare: the switch plan (an update-only DNS plan over the move's layout; a
+ * Portainer old side's records, still the user's, adopted into it with `import` blocks) is made
+ * (and, in scripts, approved by hash) before the maintenance window, so no plan or prompt fails
+ * while the app is offline; then the window, then the apply. A failed or refused apply rolls back
+ * to `deployed`.
  */
 async function switchManagedDns(
   session: MoveSession,
@@ -193,19 +193,26 @@ async function switchManagedDns(
 ): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  const fresh = providerWords(moveProvider(plan.target));
-  const old = providerWords(previousCloud(move).provider);
-  deps.reporter.step(`Planning the switch of ${plan.dns.domain} to the new ${fresh.noun}`);
+  const fresh = sideWords(plan.target, "new");
+  const old = sideWords(move.from.target, "old");
+  deps.reporter.step(`Planning the switch of ${plan.dns.domain} to ${fresh}`);
   const files = await useLayout(session, "switched");
+  const adopted =
+    session.adoptRecords !== undefined
+      ? [
+          `The records of ${plan.dns.domain} were yours: OpsCrew adopts them (an import changes nothing in Cloudflare) and manages them from now on.`,
+        ]
+      : [];
   const input: InfraPlanInput = {
     action: "switch",
     files,
     check: assertDnsOnly,
-    // DNS records are not billed: the new server's price was shown with the plan that created it.
+    // DNS records are not billed: the new side's price was shown with the plan that created it.
     costDelta: null,
     notes: [
-      `This points ${plan.dns.domain} at the new ${fresh.noun}; the records are updated in place.`,
-      `Then OpsCrew starts ${EDGE_PROXIES[edgeProxy(plan)].label} on the new ${fresh.noun}, checks the app through its domain and keeps the app on the old ${old.noun} stopped. After this the move can no longer be aborted.`,
+      `This points ${plan.dns.domain} at ${fresh}; the records are updated in place.`,
+      ...adopted,
+      `Then OpsCrew starts ${edgeWords(plan)} on ${fresh}, checks the app through its domain and keeps the app on ${old} stopped. After this the move can no longer be aborted.`,
     ],
   };
   const prepared = await prepareInfraPlan(session, input);
@@ -214,7 +221,7 @@ async function switchManagedDns(
     const offline =
       !windowAhead && moveOf(session).oldAppStoppedAt !== undefined
         ? [
-            `The app on the old ${old.noun} is stopped (its database was copied to the new ${fresh.noun}), so your users are offline until this switch is applied. Apply it soon, or run \`${ABORT_COMMAND}\` to start the old app again and undo the move.`,
+            `The app on ${old} is stopped (its data was copied to ${fresh}), so your users are offline until this switch is applied. Apply it soon, or run \`${ABORT_COMMAND}\` to start the old app again and undo the move.`,
           ]
         : [];
     return pendingStop(
@@ -227,7 +234,7 @@ async function switchManagedDns(
   if (windowAhead) {
     if (prepared.kind === "ready" && deps.interactive) {
       deps.reporter.info(
-        `The DNS switch is planned (hash ${prepared.planHash}) and checked; OpsCrew shows it for your approval right after the database copy.`,
+        `The DNS switch is planned (hash ${prepared.planHash}) and checked; OpsCrew shows it for your approval right after the copy.`,
       );
     }
     const window = await maintenanceWindow(
@@ -238,7 +245,7 @@ async function switchManagedDns(
     if (window !== "done") return window;
   }
   if (prepared.kind === "unchanged") {
-    deps.reporter.info(`The DNS records of ${plan.dns.domain} already point to the new server.`);
+    deps.reporter.info(`The DNS records of ${plan.dns.domain} already point to ${fresh}.`);
     const url = UrlSchema.safeParse(prepared.outputs.url);
     await recordSwitched(session, { url: url.success ? url.data : publicUrl(plan, next.ipv4) });
     return undefined;
@@ -249,6 +256,7 @@ async function switchManagedDns(
   } catch (error) {
     throw await rollBackSwitch(session, error);
   }
+  await recordAdopted(session);
   const url = UrlSchema.safeParse(applied.outputs.url);
   await recordSwitched(session, {
     url: url.success ? url.data : publicUrl(plan, next.ipv4),
@@ -277,8 +285,8 @@ async function switchByHand(
     const window = await maintenanceWindow(session, options);
     if (window !== "done") return window;
   }
-  const fresh = providerWords(moveProvider(plan.target));
-  const old = providerWords(previousCloud(move).provider);
+  const fresh = sideWords(plan.target, "new");
+  const old = sideWords(move.from.target, "old");
   const records = manualRecords(plan, next);
   const url = publicUrl(plan, next.ipv4);
   if (options.dnsSwitched === true) {
@@ -286,23 +294,23 @@ async function switchByHand(
       kind: "approval",
       actor: "user",
       action: "dns-switched",
-      target: next.ipv4,
+      target: fresh,
       decision: "approved",
-      detail: "the user confirmed the switch to the new server with --dns-switched",
+      detail: `the user confirmed the switch to ${fresh} with --dns-switched`,
     });
   } else if (deps.interactive) {
     const approval = await deps.approvals.request({
       kind: "remote-exec",
-      title: `Switch ${plan.app.name} to the new ${fresh.noun} (${next.ipv4})`,
+      title: `Switch ${plan.app.name} to ${fresh}`,
       details: [
         ...records,
         "",
         ...(moveOf(session).oldAppStoppedAt !== undefined
           ? [
-              `The app on the old ${old.noun} is stopped (its database was copied), so your users are offline ${untilSwitched(plan)}.`,
+              `The app on ${old} is stopped (its data was copied), so your users are offline ${untilSwitched(plan)}.`,
             ]
           : []),
-        `Confirm once you made this change. OpsCrew then starts ${EDGE_PROXIES[edgeProxy(plan)].label} on the new ${fresh.noun}, checks the app at ${url} and keeps the app on the old ${old.noun} stopped. After this the move can no longer be aborted.`,
+        `Confirm once you made this change. OpsCrew then starts ${edgeWords(plan)} on ${fresh}, checks the app at ${url} and keeps the app on ${old} stopped. After this the move can no longer be aborted.`,
       ].join("\n"),
     });
     if (!approval.approved) {
@@ -316,7 +324,7 @@ async function switchByHand(
     const stoppedNote =
       moveOf(session).oldAppStoppedAt !== undefined
         ? [
-            `The app on the old ${old.noun} is stopped (its database was copied), so users see an error until the new ${fresh.noun} takes over.`,
+            `The app on ${old} is stopped (its data was copied), so users see an error until ${fresh} takes over.`,
           ]
         : [];
     return {
@@ -330,7 +338,7 @@ async function switchByHand(
 }
 
 /**
- * Step 6: the switch from `deployed` (maintenance window first, with a self-hosted database) or
+ * Step 6: the switch from `deployed` (the maintenance window first, when the move copies data) or
  * from `migrated` (the window is done). Returns a stop, or `undefined` once the step is
  * `switched`.
  */
@@ -338,10 +346,9 @@ export async function switchStep(
   session: MoveSession,
   options: Pick<RetargetOptions, "allowDowntime" | "dnsSwitched">,
 ): Promise<RetargetResult | undefined> {
-  // Stops before the window and the switch when the new server's address is unknown here.
+  // Stops before the window and the switch when the new side's address is unknown here.
   const next = newServer(session);
-  const windowAhead =
-    serviceOf(session.plan, "postgres") !== undefined && moveOf(session).step === "deployed";
+  const windowAhead = moveOf(session).step === "deployed" && copiesData(session.plan);
   return managedDns(session.plan)
     ? switchManagedDns(session, options, windowAhead, next)
     : switchByHand(session, options, windowAhead, next);
@@ -380,7 +387,8 @@ async function systemResolve(hostname: string): Promise<string[]> {
 
 /**
  * Without managed DNS the user changed the records: polls (5 minutes) until `hostname` resolves to
- * the new server and no longer to the old one. Returns `undefined` when it does, else the problem.
+ * the new side and no longer to the old one (when its address is known). Returns `undefined` when
+ * it does, else the problem.
  */
 async function waitForDns(
   session: MoveSession,
@@ -400,7 +408,7 @@ async function waitForDns(
       try {
         const seen = await resolve(hostname);
         if (seen.some((a) => among(fresh, a)) && !seen.some((a) => among(old, a))) return true;
-        problem = `${hostname} resolves to ${seen.length > 0 ? seen.join(", ") : "no address"} from this computer, not only to the new server (${fresh.join(", ")})`;
+        problem = `${hostname} does not resolve only to ${sideWords(session.plan.target, "new")} from this computer yet`;
       } catch (error) {
         problem = `${hostname} could not be resolved from this computer (${reasonOf(error)})`;
       }
@@ -411,20 +419,31 @@ async function waitForDns(
   return settled ? undefined : problem;
 }
 
-/** Why the new server is not settled yet, and what to do about it. */
+/** Why the new side is not settled yet, and what to do about it. */
 interface Unsettled {
   problem: string;
   hint: string;
 }
 
+/** Where to look when the new side does not serve the app yet, without its address. */
+function logsHint(session: MoveSession): string {
+  const { plan } = session;
+  const where = sideWords(plan.target, "new");
+  if (plan.target.provider === "portainer") {
+    return `See what happens in your Portainer (the stack ${portainerStackName(plan)}: its caddy and app containers' logs), then run \`${RUN_COMMAND}\` to check again.`;
+  }
+  const edge = edgeProxy(plan);
+  return `See what happens as deploy on ${where}: \`cd /srv/edge && docker compose logs --tail 100 ${edge}\` and \`docker compose logs --tail 100 app\` in the app's folder, then run \`${RUN_COMMAND}\` to check again.`;
+}
+
 /**
- * The end of a switch, done again on every later run (and before `--finish`): the edge's proxy starts on the
- * new server; without managed DNS the app's domain must resolve to the new server (and no longer
- * to the old one), so the check below reaches the new server and not the old app; the app must
- * answer through its URL within 5 minutes; then the app on the old server is stopped when it still
- * runs (no self-hosted database). With Cloudflare the applied DNS plan is the proof (a proxied
- * domain resolves to Cloudflare's edge). Returns the site, or stops with `refuse(…)`: the old
- * server is kept.
+ * The end of a switch, done again on every later run (and before `--finish`): the new side's edge
+ * starts (`startEdge`; a shared edge reloads); without managed DNS the app's domain must resolve
+ * to the new side (and no longer to the old one), so the check below reaches the new side and
+ * not the old app; the app must answer through its URL within 5 minutes; then the old side's app
+ * stops (`stopApp`) when it still runs. With Cloudflare the applied DNS plan is the proof (a
+ * proxied domain resolves to Cloudflare's edge). Returns the site, or stops with `refuse(…)`: the
+ * old side is kept.
  */
 async function settleSwitch(
   session: MoveSession,
@@ -433,40 +452,36 @@ async function settleSwitch(
   const { deps, plan } = session;
   const move = moveOf(session);
   const next = newServer(session);
-  const fresh = providerWords(moveProvider(plan.target));
-  const old = providerWords(previousCloud(move).provider);
-  const ops = serverOps(plan, deps.redactor);
-  const edge = edgeProxy(plan);
-  const { label } = EDGE_PROXIES[edge];
-  const remote = newRemote(session);
+  const fresh = sideWords(plan.target, "new");
+  const old = sideWords(move.from.target, "old");
+  const label = edgeWords(plan);
   const site = publicUrl(plan, next.ipv4);
   const check = `${site}${plan.app.healthPath}`;
-  const logs = `See what happens with \`ssh deploy@${next.ipv4}\`, \`cd ${EDGE_DIR} && docker compose logs --tail 100 ${edge}\` and \`cd ${ops.folder} && docker compose logs --tail 100 app\`, then run \`${RUN_COMMAND}\` to check again.`;
-  deps.reporter.step(`Starting ${label} on the new ${fresh.noun}`);
+  const logs = logsHint(session);
+  deps.reporter.step(`Starting ${label} on ${fresh}`);
   try {
-    await startService(remote, edge, ops);
+    await moveSide(session, "new").startEdge(session);
   } catch (error) {
     throw refuse({ problem: `starting ${label} there failed (${reasonOf(error)})`, hint: logs });
   }
   await auditMove(session, {
     kind: "remote-exec",
-    action: `start ${edge}`,
-    target: remote.host,
+    action: "start edge",
+    target: fresh,
     decision: "approved",
   });
   const domain = plan.dns.domain;
   if (domain !== undefined && !managedDns(plan)) {
-    deps.reporter.step(
-      `Checking that ${domain} resolves to the new ${fresh.noun} (up to 5 minutes)`,
-    );
+    deps.reporter.step(`Checking that ${domain} resolves to ${fresh} (up to 5 minutes)`);
+    const from = session.servers.from;
     const problem = await waitForDns(session, domain, {
       fresh: [next.ipv4, next.ipv6],
-      old: [oldServer(session).ipv4, oldServer(session).ipv6],
+      old: [from?.ipv4, from?.ipv6],
     });
     if (problem !== undefined) {
       throw refuse({
         problem,
-        hint: `Change the DNS records of ${dnsHosts(plan).join(" and ")} to ${[next.ipv4, next.ipv6].filter(Boolean).join(" and ")} at your DNS provider (and remove the old addresses), wait until the change reaches this computer, then run \`${RUN_COMMAND}\` to check again.`,
+        hint: `Change the DNS records of ${dnsHosts(plan).join(" and ")} to ${fresh}'s address at your DNS provider (and remove the old addresses), wait until the change reaches this computer, then run \`${RUN_COMMAND}\` to check again.`,
       });
     }
   }
@@ -477,7 +492,7 @@ async function settleSwitch(
       answer.last !== undefined ? ` (last answer: ${deps.redactor.redact(answer.last)})` : "";
     const tls =
       domain !== undefined
-        ? `${label} on the new ${fresh.noun} may still be getting its TLS certificate${managedDns(plan) ? ", or the DNS change has not reached this computer yet" : ""}. `
+        ? `${label} on ${fresh} may still be getting its TLS certificate${managedDns(plan) ? ", or the DNS change has not reached this computer yet" : ""}. `
         : "";
     throw refuse({
       problem: `the app did not answer at ${check} within 5 minutes${why}`,
@@ -485,9 +500,9 @@ async function settleSwitch(
     });
   }
   if (move.oldAppStoppedAt === undefined) {
-    deps.reporter.step(`Stopping the app on the old ${old.noun} (traffic goes to the new one)`);
+    deps.reporter.step(`Stopping the app on ${old} (traffic goes to the new side)`);
     try {
-      await stopService(oldRemote(session), "app", ops);
+      await moveSide(session, "old").stopApp(session);
       await saveMove(session, {
         ...moveOf(session),
         oldAppStoppedAt: deps.clock.now().toISOString(),
@@ -495,12 +510,12 @@ async function settleSwitch(
       await auditMove(session, {
         kind: "remote-exec",
         action: "stop app",
-        target: oldServer(session).ipv4,
+        target: old,
         decision: "approved",
       });
     } catch (error) {
       deps.reporter.warn(
-        `OpsCrew could not stop the app on the old ${old.noun}: ${reasonOf(error)}. It keeps running until \`${FINISH_COMMAND}\` deletes the ${old.noun}.`,
+        `OpsCrew could not stop the app on ${old}: ${reasonOf(error)}. It keeps running until \`${FINISH_COMMAND}\` removes it.`,
       );
     }
   }
@@ -513,43 +528,47 @@ async function settleSwitch(
  */
 export async function completeSwitch(session: MoveSession): Promise<RetargetResult> {
   const { deps, plan } = session;
-  const fresh = providerWords(moveProvider(plan.target));
-  const old = providerWords(previousCloud(moveOf(session)).provider);
+  const fresh = sideWords(plan.target, "new");
+  const from = moveOf(session).from.target;
+  const old = sideWords(from, "old");
   const site = await settleSwitch(
     session,
     ({ problem, hint }) =>
       new OpsCrewError(
         "COMMAND_FAILED",
-        `The switch to the new ${fresh.noun} is recorded, but it does not serve the app yet: ${problem}. The old ${old.noun} is kept.`,
+        `The switch to ${fresh} is recorded, but it does not serve the app yet: ${problem}. ${upperFirst(old)} is kept.`,
         { hint: `${hint} The move can no longer be aborted.` },
       ),
   );
-  // The new server receives the traffic (again in the local state if that record was lost).
+  // The new side receives the traffic (again in the local state if that record was lost).
   await recordServerAddress(deps.paths, newServer(session));
-  deps.reporter.success(`${plan.app.name} now runs on ${fresh.name} at ${site}.`);
+  deps.reporter.success(`${plan.app.name} now runs on ${placeWords(plan.target)} at ${site}.`);
+  const cloud = from.provider === "hetzner" || from.provider === "digitalocean";
   return {
     step: "switched",
     done: true,
     next: [
       `Check your app at ${site}.`,
-      `When you are happy with it, run \`${FINISH_COMMAND}\` to delete the old ${old.noun} on ${old.name} (it is billed until then).`,
+      cloud
+        ? `When you are happy with it, run \`${FINISH_COMMAND}\` to delete ${old} (it is billed until then).`
+        : `When you are happy with it, run \`${FINISH_COMMAND}\` to remove the app from ${old}.`,
     ],
   };
 }
 
 /**
- * Before `--finish` deletes anything: {@link settleSwitch} must succeed, so the old server is never
- * deleted while the new one does not serve the app (or DNS still leads to the old one).
+ * Before `--finish` removes anything: {@link settleSwitch} must succeed, so the old side is never
+ * removed while the new one does not serve the app (or DNS still leads to the old one).
  */
 export async function requireSwitchSettled(session: MoveSession): Promise<void> {
-  const fresh = providerWords(moveProvider(session.plan.target));
-  const old = providerWords(previousCloud(moveOf(session)).provider);
+  const fresh = sideWords(session.plan.target, "new");
+  const old = sideWords(moveOf(session).from.target, "old");
   await settleSwitch(
     session,
     ({ problem, hint }) =>
       new OpsCrewError(
         "PHASE_PRECONDITION",
-        `The new ${fresh.noun} does not serve the app yet: ${problem}. OpsCrew keeps the old ${old.noun}; nothing was deleted.`,
+        `${upperFirst(fresh)} does not serve the app yet: ${problem}. OpsCrew keeps ${old}; nothing was removed.`,
         { hint: `${hint} It tells you when the move can be finished.` },
       ),
   );

@@ -54,10 +54,17 @@ import {
   pollUntil,
   portainerClientFor,
 } from "../../shared";
-import { auditMove, type MoveSession, moveOf, renderFiles, waitsOf } from "../session";
+import {
+  auditMove,
+  type MoveBase,
+  type MoveSession,
+  moveOf,
+  renderFiles,
+  waitsOf,
+} from "../session";
 import { pendingStop } from "../steps";
 import { runOneOff } from "./postgres";
-import type { MoveSide, SideDocker, SideVolume } from "./types";
+import { type MoveSide, type SideDocker, type SideVolume, STOP_SECONDS } from "./types";
 
 /** The Compose label that names a container's service. */
 const SERVICE_LABEL = "com.docker.compose.service";
@@ -175,18 +182,18 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
   const services = input.services ?? {};
 
   /** The plan as this side runs the app: the new target, or the one being left. */
-  function sidePlan(session: MoveSession): DeployPlan {
+  function sidePlan(session: MoveBase): DeployPlan {
     return input.which === "new"
       ? session.plan
       : { ...session.plan, target: oldTarget(moveOf(session).from.target) };
   }
 
   /** The client of each session's Portainer, made and checked once. */
-  const clients = new WeakMap<MoveSession, Promise<Pick<Connected, "client" | "valueKey">>>();
+  const clients = new WeakMap<MoveBase, Promise<Pick<Connected, "client" | "valueKey">>>();
 
   /** A client for the recorded Portainer, with the token; stops on an Edge Agent environment. */
   async function openClient(
-    session: MoveSession,
+    session: MoveBase,
     connection: PortainerConnection,
     target: PortainerDeployTarget,
   ): Promise<Pick<Connected, "client" | "valueKey">> {
@@ -211,7 +218,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
    * session's client; stops on a move between two Portainer environments and on an Edge Agent
    * environment.
    */
-  async function connect(session: MoveSession): Promise<Connected> {
+  async function connect(session: MoveBase): Promise<Connected> {
     const from = session.plan.retarget?.from.target;
     if (session.plan.target.provider === "portainer" && from?.provider === "portainer") {
       throw betweenPortainers();
@@ -241,7 +248,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
     return { plan, target, connection, ...(await opened) };
   }
 
-  async function sideDocker(session: MoveSession): Promise<SideDocker> {
+  async function sideDocker(session: MoveBase): Promise<SideDocker> {
     const { client, target } = await connect(session);
     const docker = dockerClient(
       withAccessWords(client.dockerProxyTransport(target.environmentId), session.command),
@@ -255,7 +262,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
 
   /** The app stack's containers, by the Compose services they run. */
   async function containers(
-    session: MoveSession,
+    session: MoveBase,
     docker: DockerClient,
     names: readonly string[],
   ): Promise<DockerContainer[]> {
@@ -264,14 +271,19 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
     return all.filter((container) => names.includes(container.labels[SERVICE_LABEL] ?? ""));
   }
 
-  async function stop(session: MoveSession, names: readonly string[]): Promise<void> {
+  /** Stops the stack's containers of `names`, each with `seconds` to stop cleanly (Docker's default without). */
+  async function stop(
+    session: MoveBase,
+    names: readonly string[],
+    seconds?: number,
+  ): Promise<void> {
     const { client } = await sideDocker(session);
     for (const container of await containers(session, client, names)) {
-      await client.stopContainer(container.id);
+      await client.stopContainer(container.id, seconds);
     }
   }
 
-  async function start(session: MoveSession, names: readonly string[]): Promise<void> {
+  async function start(session: MoveBase, names: readonly string[]): Promise<void> {
     const { client } = await sideDocker(session);
     for (const container of await containers(session, client, names)) {
       await client.startContainer(container.id);
@@ -279,9 +291,9 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
   }
 
   /** The app, its workers and its cron, which use its data. */
-  const appServices = (session: MoveSession) => ["app", ...processServices(sidePlan(session))];
+  const appServices = (session: MoveBase) => ["app", ...processServices(sidePlan(session))];
 
-  async function healthy(session: MoveSession): Promise<boolean> {
+  async function healthy(session: MoveBase): Promise<boolean> {
     const plan = sidePlan(session);
     const { client } = await sideDocker(session);
     // A one-off busybox on the stack's network, as the carrier runs: it works whether the stack's
@@ -477,11 +489,33 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
 
     stopApp: (session) => stop(session, appServices(session)),
     startApp: (session) => start(session, appServices(session)),
-    stopServices: (session, names) => stop(session, names),
+    // A stateful service gets 120 s to stop cleanly (T2306), so its files are whole.
+    stopServices: (session, names) => stop(session, names, STOP_SECONDS),
     startServices: (session, names) => start(session, names),
     stopEdge: (session) => stop(session, [EDGE]),
     startEdge: (session) => start(session, [EDGE]),
     healthy,
+
+    async release(session) {
+      const plan = sidePlan(session);
+      if (plan.app.releaseCommand === undefined) return;
+      const { client } = await sideDocker(session);
+      // The stack's one-off `release` container, which ran before the app's first start: it runs
+      // the release command again, now on the copied data. Its output is never read.
+      for (const container of await containers(session, client, ["release"])) {
+        await client.startContainer(container.id);
+        const exitCode = await client.waitContainer(container.id);
+        if (exitCode !== 0) {
+          throw new OpsCrewError(
+            "COMMAND_FAILED",
+            `Could not run the release command (app.releaseCommand in opscrew/plan.yaml) in your Portainer: it exited with code ${exitCode} (it ran only on the copy of the data there; your users' data on the old side is untouched).`,
+            {
+              hint: `See its output in Portainer (the stack ${portainerStackName(plan)}, the release container's logs). Fix the release command or the app's migrations so they run on the old side's data, push the fix, then run \`${session.command}\` again.`,
+            },
+          );
+        }
+      }
+    },
 
     async volumes(session) {
       const plan = sidePlan(session);

@@ -5,8 +5,14 @@
  */
 import type { DockerClient, VolumeCarrier } from "@opscrew/connector-docker";
 import type { DestroyPreview } from "../../destroy/types";
-import type { MoveSession } from "../session";
+import type { MoveBase, MoveSession } from "../session";
 import type { RetargetResult } from "../types";
+
+/**
+ * How long a stateful service gets to stop cleanly before Docker kills it (T2306): long enough for
+ * a database to flush, so its files are whole when they are copied.
+ */
+export const STOP_SECONDS = 120;
 
 /** The kinds of side: a server OpsCrew created, the user's own server, the user's Portainer. */
 export type MoveSideKind = "cloud" | "own" | "portainer";
@@ -61,7 +67,7 @@ export type SideStop = RetargetResult | undefined;
 export interface MoveSide {
   readonly kind: MoveSideKind;
   /** Opens the Docker API on this side's server. The caller closes it. */
-  docker(session: MoveSession): Promise<SideDocker>;
+  docker(session: MoveBase): Promise<SideDocker>;
   /**
    * Step `created` (the new side): the server or environment made ready for the app, through its
    * approval: a cloud server's IaC plan, the own server's host plan, Portainer's stacks' setup.
@@ -73,21 +79,28 @@ export interface MoveSide {
    */
   deploy(session: MoveSession): Promise<SideStop>;
   /** Stops the app, its workers and its cron (not its stateful services, not the edge). */
-  stopApp(session: MoveSession): Promise<void>;
+  stopApp(session: MoveBase): Promise<void>;
   /** Starts what {@link stopApp} stopped. */
-  startApp(session: MoveSession): Promise<void>;
+  startApp(session: MoveBase): Promise<void>;
   /** Stops the named stateful services cleanly (Compose service names). */
-  stopServices(session: MoveSession, names: readonly string[]): Promise<void>;
+  stopServices(session: MoveBase, names: readonly string[]): Promise<void>;
   /** Starts the named stateful services. */
-  startServices(session: MoveSession, names: readonly string[]): Promise<void>;
+  startServices(session: MoveBase, names: readonly string[]): Promise<void>;
   /** Stops the edge (Caddy or nginx and kamal-proxy, or the stack's Caddy on Portainer). */
-  stopEdge(session: MoveSession): Promise<void>;
+  stopEdge(session: MoveBase): Promise<void>;
   /** Starts the edge. */
-  startEdge(session: MoveSession): Promise<void>;
+  startEdge(session: MoveBase): Promise<void>;
   /** Whether the app answers its health route on this side. */
-  healthy(session: MoveSession): Promise<boolean>;
+  healthy(session: MoveBase): Promise<boolean>;
   /** The app's data mounts on this side: its services', its own and its monitoring stack's. */
-  volumes(session: MoveSession): Promise<SideVolume[]>;
+  volumes(session: MoveBase): Promise<SideVolume[]>;
+  /**
+   * The window on the new side, once the data is there and before the app starts: runs the
+   * release command of the version deployed there (`app.releaseCommand`, which migrates the
+   * copied data forward) when it has one, with a timeout that grows with the `bytes` copied. Its
+   * output never shows: it may quote rows.
+   */
+  release(session: MoveBase, bytes: number): Promise<void>;
   /**
    * `--finish` (the old side) and `--abort` (the new side): removes what the move made or left
    * there after `confirm` (the typed name): a cloud server through its IaC plan; on the user's

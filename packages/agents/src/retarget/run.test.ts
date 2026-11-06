@@ -75,7 +75,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(summary).toMatchObject({
       from: { provider: "hetzner" },
       to: { provider: "digitalocean", location: "fra1" },
-      databaseBytes: 52_428_800,
+      data: [{ owner: "db", key: "/var/lib/postgresql/data", bytes: 52_428_800, copy: true }],
       expectedDowntimeMinutes: 3,
     });
     expect(summary?.extraMonthly.currency).toBe("USD");
@@ -83,7 +83,6 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
 
     const n = h.newServer.ipv4;
     expect(trail(h.events)).toEqual([
-      `${OLD_IPV4} db size`,
       "approve iac-apply",
       "apply moves=3",
       "approve iac-apply",
@@ -91,21 +90,24 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       "approve github-secrets",
       "dispatch main",
       `${n} stop caddy`,
-      `${OLD_IPV4} db size`,
       "approve remote-exec",
       `${OLD_IPV4} stop app`,
       `${OLD_IPV4} dump`,
-      `scp ${OLD_IPV4} -> ${n}`,
+      `${OLD_IPV4} stop db`,
       `${n} stop app`,
+      `${n} stop db`,
+      `${n} start db`,
       `${n} empty db`,
       `${n} restore`,
-      `${OLD_IPV4} rm dump`,
-      `${n} rm dump`,
       `${n} start app`,
       "approve iac-apply",
       "apply updates=2",
       `${n} start caddy`,
     ]);
+    // The dump volume is gone from both servers.
+    for (const ip of [OLD_IPV4, n]) {
+      expect(h.hosts.docker(ip).volumes.has("opscrew-move-dump-shop")).toBe(false);
+    }
     // Without a release service in the new server's compose file, no release runs in the window.
     expect(ops(h, n, "release")).toBe(0);
     const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
@@ -242,7 +244,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     },
   );
 
-  it("an interrupted maintenance window starts the old app first and repeats the copy", async () => {
+  it("an interrupted maintenance window starts the old side first and repeats the copy", async () => {
     const h = await moveHarness();
     const n = h.newServer.ipv4;
     // Killed once the window began (oldAppStoppedAt recorded); it had stopped the app and dumped.
@@ -251,61 +253,93 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const interrupted = await move(h);
     expect(interrupted).toMatchObject({ step: "deployed" });
     expect(interrupted?.oldAppStoppedAt).toBeDefined();
-    Object.assign(h.hosts.host(OLD_IPV4), { app: false, dump: "orders before the move" });
+    Object.assign(h.hosts.host(OLD_IPV4), { app: false });
+    h.hosts.docker(OLD_IPV4).addVolume("opscrew-move-dump-shop");
+    h.hosts.docker(n).addVolume("opscrew-move-dump-shop");
     h.events.length = 0;
 
     const result = await run(h);
     expect(result).toMatchObject({ step: "switched", done: true });
     const lines = trail(h.events);
-    expect(lines.slice(0, 3)).toEqual([
-      `${OLD_IPV4} start app`,
-      `${OLD_IPV4} rm dump`,
-      `${n} rm dump`,
-    ]);
+    // The old side's services and app start first; the leftover dump volumes go.
+    expect(lines.slice(0, 2)).toEqual([`${OLD_IPV4} start db`, `${OLD_IPV4} start app`]);
     expect(lines).toContain("approve remote-exec");
     expect(ops(h, OLD_IPV4, "dump")).toBe(1);
     expect(h.reporter.text()).toContain("stopped during the maintenance window");
     expect(h.hosts.host(n).db).toBe("orders before the move");
+    for (const ip of [OLD_IPV4, n]) {
+      expect(h.hosts.docker(ip).volumes.has("opscrew-move-dump-shop")).toBe(false);
+    }
   });
 
+  /** A failure of the window at a server operation (`op` on the old or new side), or in Docker. */
   const WINDOW_FAILURES = [
     { what: "stopping the old app", on: "old", op: "stop app" },
     { what: "the dump", on: "old", op: "dump" },
-    { what: "the copy", on: "old", op: "scp" },
+    { what: "stopping the old services", on: "old", op: "stop db" },
     { what: "stopping the new app", on: "new", op: "stop app" },
+    { what: "the copy of the dump", on: "new", op: "PUT archive" },
+    { what: "starting the new services", on: "new", op: "start db" },
     { what: "emptying the new database", on: "new", op: "empty db" },
     { what: "the restore", on: "new", op: "restore" },
-    { what: "deleting the old dump", on: "old", op: "rm dump" },
+    { what: "deleting the old dump volume", on: "old", op: "DELETE volume" },
     { what: "starting the new app", on: "new", op: "start app" },
     { what: "the health check", on: "new", op: "health" },
   ] as const;
 
   it.each(WINDOW_FAILURES)(
-    "FR-506: a failure of $what rolls back to the old app; a re-run repeats the window",
+    "FR-506 and SC-2302: a failure of $what rolls back to the old side, its data unchanged; a re-run repeats the window",
     async ({ on, op }) => {
       const h = await moveHarness();
       const n = h.newServer.ipv4;
       const host = on === "old" ? OLD_IPV4 : n;
       let failed = false;
-      h.hosts.fail = (ip, o) => {
-        if (ip !== host || o !== op || !windowStarted(h)) return undefined;
-        if (failed && op !== "health") return undefined;
-        failed = true;
-        return fail(`${op} failed`);
-      };
+      if (op === "PUT archive" || op === "DELETE volume") {
+        // Docker refuses once the window began: a full disk, a lost connection.
+        h.hosts.fail = (ip, o) => {
+          if (!failed && ip === host && o === "stop app" && windowStarted(h)) {
+            failed = true;
+            const [method, path] =
+              op === "PUT archive" ? ["PUT", /\/archive/] : ["DELETE", /^\/volumes\//];
+            h.hosts.docker(host).fail(method, path, 500, `${op} failed`);
+          }
+          return undefined;
+        };
+      } else {
+        h.hosts.fail = (ip, o) => {
+          if (ip !== host || o !== op || !windowStarted(h)) return undefined;
+          if (failed && op !== "health") return undefined;
+          failed = true;
+          return fail(`${op} failed`);
+        };
+      }
+      const oldFiles = [
+        ...(h.hosts.docker(OLD_IPV4).folders.get("/srv/data/shop/db")?.files ?? []),
+      ];
       const error = await caught(run(h));
       expect(error.message).toContain("The maintenance window failed");
-      expect(error.message).toContain("The app on the old server runs again");
+      expect(error.message).toContain("The app on the old server on Hetzner Cloud runs again");
       expect(error.hint).toContain("opscrew retarget");
       const state = await move(h);
       expect(state?.step).toBe("deployed");
       expect(state?.oldAppStoppedAt).toBeUndefined();
+      // SC-2302: the old side serves again, with its data as it was.
       expect(h.hosts.host(OLD_IPV4).app).toBe(true);
-      expect(h.hosts.host(OLD_IPV4).dump).toBeUndefined();
-      expect(h.hosts.host(n).dump).toBeUndefined();
+      expect(h.hosts.host(OLD_IPV4).db).toBe("orders before the move");
+      expect([...(h.hosts.docker(OLD_IPV4).folders.get("/srv/data/shop/db")?.files ?? [])]).toEqual(
+        oldFiles,
+      );
+      const running = (ip: string) =>
+        [...h.hosts.docker(ip).containers.values()]
+          .filter((c) => c.labels["com.docker.compose.service"] === "db")
+          .map((c) => c.state);
+      expect(running(OLD_IPV4)).toEqual(["running"]);
       expect(h.hosts.host(n).app).toBe(true);
       expect(applies(h)).toHaveLength(2);
       expect(h.engine.dnsServer()?.ipv4).toBe(OLD_IPV4);
+      expect(h.audit.entries).toContainEqual(
+        expect.objectContaining({ action: "maintenance window", decision: "refused" }),
+      );
 
       h.hosts.fail = undefined;
       const result = await run(h);
@@ -314,6 +348,24 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       expectGated(h.events);
     },
   );
+
+  it("T2306: a service Docker killed when it stopped fails the window before its files are copied", async () => {
+    const h = await moveHarness();
+    const n = h.newServer.ipv4;
+    h.hosts.killed.add(`${OLD_IPV4} db`);
+    const error = await caught(run(h));
+    expect(error.message).toContain("db did not stop cleanly on the old server on Hetzner Cloud");
+    expect(error.message).toContain("The app on the old server on Hetzner Cloud runs again");
+    // Stopped with 120 seconds to stop cleanly; nothing reached the new side.
+    expect(ops(h, OLD_IPV4, "stop db")).toBe(1);
+    expect(ops(h, n, "stop app")).toBe(0);
+    expect(ops(h, n, "restore")).toBe(0);
+    expect((await move(h))?.step).toBe("deployed");
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+
+    h.hosts.killed.clear();
+    expect(await run(h)).toMatchObject({ step: "switched", done: true });
+  });
 
   it("T831: with a release command the copy goes onto an empty database and is migrated before the app starts", async () => {
     const h = await moveHarness({ release: true });
@@ -325,33 +377,23 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(lines.slice(from, lines.indexOf(`${n} start app`) + 1)).toEqual([
       `${OLD_IPV4} stop app`,
       `${OLD_IPV4} dump`,
-      `scp ${OLD_IPV4} -> ${n}`,
+      `${OLD_IPV4} stop db`,
       `${n} stop app`,
+      `${n} stop db`,
+      `${n} start db`,
       `${n} empty db`,
       `${n} restore`,
       `${n} release`,
-      `${OLD_IPV4} rm dump`,
-      `${n} rm dump`,
       `${n} start app`,
     ]);
-    // The new server's compose file is read before the window is approved.
-    const probe = h.events.findIndex((e) => e.type === "remote" && e.op === "services?");
-    const approval = h.events.findIndex(
-      (e) => e.type === "approval" && e.title.startsWith("Maintenance"),
-    );
-    expect(probe).toBeGreaterThanOrEqual(0);
-    expect(probe).toBeLessThan(approval);
-    expect(h.events[probe]).toMatchObject({ host: n });
     // The old data, migrated forward to the version deployed on the new server.
     expect(h.hosts.host(n).db).toBe("orders before the move (migrated)");
     const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
-    expect(window?.details).toContain(
-      "docker compose exec -T db psql -U app -d postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE IF EXISTS app WITH (FORCE)' -c 'CREATE DATABASE app OWNER app'",
-    );
-    expect(window?.details).toContain("docker compose run --rm --no-deps -T release");
+    expect(window?.details).toContain("recreate the database empty and restore the dump");
+    expect(window?.details).toContain("run the release command (app.releaseCommand)");
     expect(window?.details).not.toContain("--clean");
     const actions = h.audit.entries.map((e) => e.action);
-    expect(actions).toContain("empty database");
+    expect(actions).toContain("restore database");
     expect(actions).toContain("run release command");
     expect(h.reporter.text()).toContain("release command");
     expectGated(h.events);
@@ -375,13 +417,10 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       expect(error.code).toBe("COMMAND_FAILED");
       expect(error.message).toContain("The maintenance window failed");
       expect(error.message).toContain(
-        `Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on ${n}: it exited with code 1`,
+        "Could not run the release command (app.releaseCommand in opscrew/plan.yaml) on the new Droplet: it exited with code 1",
       );
-      expect(error.message).toContain("it ran only on the copy of the database on the new server");
-      expect(error.message).toContain("The app on the old server runs again");
-      expect(error.hint).toContain("The old server keeps serving your users.");
-      expect(error.hint).toContain("app.releaseCommand");
-      expect(error.hint).toContain("docker compose run --rm --no-deps -T release");
+      expect(error.message).toContain("The app on the old server on Hetzner Cloud runs again");
+      expect(error.message).not.toContain(n);
       expect(error.hint).toContain("opscrew retarget");
       // Migration output quotes rows and SQL parameters: none of it is shown or audited.
       const printed = `${everythingPrinted(h)}\n${error.message}\n${error.hint}`;
@@ -389,21 +428,19 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       const lines = trail(h.events);
       expect(lines.slice(lines.indexOf(`${n} release`))).toEqual([
         `${n} release`,
-        `${OLD_IPV4} rm dump`,
-        `${n} rm dump`,
+        `${n} start db`,
         `${n} start app`,
+        `${OLD_IPV4} start db`,
         `${OLD_IPV4} start app`,
       ]);
       const state = await move(h);
       expect(state?.step).toBe("deployed");
       expect(state?.oldAppStoppedAt).toBeUndefined();
       expect(h.hosts.host(OLD_IPV4).app).toBe(true);
-      expect(h.hosts.host(OLD_IPV4).dump).toBeUndefined();
-      expect(h.hosts.host(n).dump).toBeUndefined();
+      for (const ip of [OLD_IPV4, n]) {
+        expect(h.hosts.docker(ip).volumes.has("opscrew-move-dump-shop")).toBe(false);
+      }
       expect(h.engine.dnsServer()?.ipv4).toBe(OLD_IPV4);
-      expect(h.audit.entries).toContainEqual(
-        expect.objectContaining({ action: "maintenance window", decision: "refused" }),
-      );
 
       // A re-run repeats the window from a fresh, empty database.
       const result = await run(h);
@@ -413,54 +450,32 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     },
   );
 
-  it("T831: stops before the window, with nothing changed, when the new server's services cannot be read", async () => {
-    const h = await moveHarness({ release: true });
-    h.hosts.fail = (ip, op) =>
-      ip === h.newServer.ipv4 && op === "services?"
-        ? fail("no configuration file provided")
-        : undefined;
-    const error = await caught(run(h));
-    expect(error.message).toContain("read the Compose services");
-    expect(windowStarted(h)).toBe(false);
-    expect(ops(h, OLD_IPV4, "stop app")).toBe(0);
-    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
-    expect((await move(h))?.oldAppStoppedAt).toBeUndefined();
-  });
-
   it.each([
     { what: "unreadable", result: fail("pg_restore: error: input file is too short") },
     {
-      what: "different from the old server's dump",
-      result: {
-        exitCode: 0,
-        stdout: `${"0".repeat(64)}  /srv/apps/shop/opscrew-move.dump\n`,
-        stderr: "",
-      },
+      what: "different from the old side's dump",
+      result: { exitCode: 0, stdout: `${"0".repeat(64)}  /dump/app.dump\n`, stderr: "" },
     },
   ])("T831: a copied dump that is $what drops nothing and rolls back", async ({ result }) => {
     const h = await moveHarness({ release: true });
     const n = h.newServer.ipv4;
-    let failed = false;
+    let checks = 0;
     h.hosts.fail = (ip, op) => {
-      if (ip !== n || op !== "verify dump" || failed) return undefined;
-      failed = true;
+      // The old side's own check passes; the new side's check of the copy fails, once.
+      if (ip !== n || op !== "verify dump" || checks++ > 0) return undefined;
       return result;
     };
     const error = await caught(run(h));
     expect(error.message).toContain("The maintenance window failed");
-    expect(error.message).toContain(n);
-    expect(error.message).toContain("The app on the old server runs again");
+    expect(error.message).toContain("The app on the old server on Hetzner Cloud runs again");
     expect(ops(h, n, "empty db")).toBe(0);
     expect(ops(h, n, "restore")).toBe(0);
     expect(ops(h, n, "release")).toBe(0);
-    expect(ops(h, n, "stop app")).toBe(0);
     expect(h.hosts.host(n).db).toBe("schema of HEAD");
     const state = await move(h);
     expect(state?.step).toBe("deployed");
     expect(state?.oldAppStoppedAt).toBeUndefined();
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
-    expect(h.hosts.host(OLD_IPV4).dump).toBeUndefined();
-    expect(h.hosts.host(n).dump).toBeUndefined();
   });
 
   it("FR-810: stops before any server command when the recorded servers share an address", async () => {
@@ -517,13 +532,14 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const error = await caught(run(h));
     expect(error.message).toContain("could not start the app on the old server");
     expect(error.message).toContain("Your app is offline");
-    expect(error.hint).toContain("docker compose up -d app");
+    expect(error.hint).toContain("docker compose up -d");
+    expect(`${error.message} ${error.hint}`).not.toContain(OLD_IPV4);
     expect((await move(h))?.oldAppStoppedAt).toBeDefined();
 
     h.hosts.fail = undefined;
     h.events.length = 0;
     await run(h);
-    expect(trail(h.events)[0]).toBe(`${OLD_IPV4} start app`);
+    expect(trail(h.events).slice(0, 2)).toEqual([`${OLD_IPV4} start db`, `${OLD_IPV4} start app`]);
   });
 
   it("stops before the window when the DNS switch plan would create a record", async () => {
@@ -558,7 +574,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       return "Error: Cloudflare API timeout";
     };
     const error = await caught(run(h));
-    expect(error.message).toContain(`may already point at the new server (${n}`);
+    expect(error.message).toContain("may already point at the new Droplet on DigitalOcean");
+    expect(error.message).not.toContain(n);
     h.engine.failApply = undefined;
     expect(await run(h)).toMatchObject({ step: "switched", done: true });
     expect(ops(h, OLD_IPV4, "dump")).toBe(2);
@@ -572,7 +589,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       effect.dnsTo !== undefined ? "Error: Cloudflare API returned 500" : undefined;
     const error = await caught(run(h));
     expect(error.message).toContain("The switch failed");
-    expect(error.message).toContain("The app on the old server runs again");
+    expect(error.message).toContain("The app on the old server on Hetzner Cloud runs again");
     expect(error.hint).toContain("repeats the maintenance window");
     const state = await move(h);
     expect(state?.step).toBe("deployed");
@@ -603,7 +620,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     h.events.length = 0;
     expect(await run(h)).toMatchObject({ step: "switched", done: true });
     const lines = trail(h.events);
-    expect(lines[0]).toBe(`${OLD_IPV4} start app`);
+    expect(lines.slice(0, 2)).toEqual([`${OLD_IPV4} start db`, `${OLD_IPV4} start app`]);
     expect(lines).toContain(`${OLD_IPV4} dump`);
   });
 
@@ -664,7 +681,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const error = await caught(run(h));
     expect(error.code).toBe("PHASE_PRECONDITION");
     expect(error.message).toBe(
-      "The new server's builder needs a Dockerfile this repository lacks: run `opscrew design` and `opscrew adapt` first. Nothing was changed.",
+      "The new side's builder needs a Dockerfile this repository lacks: run `opscrew design` and `opscrew adapt` first. Nothing was changed.",
     );
     expect(applies(h)).toHaveLength(0);
     expect((await readArtifact("plan", h.paths.files.plan)).retarget).toBeUndefined();
@@ -697,7 +714,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect((await readArtifact("plan", h.paths.files.plan)).retarget).toBeUndefined();
   });
 
-  it("without a self-hosted database there is no maintenance window", async () => {
+  it("without data to copy there is no maintenance window", async () => {
     const h = await moveHarness({ postgres: false });
     let summary: RetargetSummary | undefined;
     const result = await run(h, {
@@ -707,7 +724,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       },
     });
     expect(result).toMatchObject({ step: "switched", done: true });
-    expect(summary?.databaseBytes).toBeUndefined();
+    expect(summary?.data).toEqual([]);
+    expect(summary?.expectedDowntimeMinutes).toBeUndefined();
     expect(summary?.steps.join(" ")).toContain("No maintenance window");
     const lines = trail(h.events);
     expect(lines).not.toContain("approve remote-exec");
@@ -829,7 +847,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const hash = stop.pendingPlanHash as string;
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
     const text = stop.next.join("\n");
-    expect(text).toContain("The app on the old server is stopped");
+    expect(text).toContain("The app on the old server on Hetzner Cloud is stopped");
     expect(text).toContain("your users are offline until this switch is applied");
     expect(text).toContain(`opscrew retarget --approve ${hash}`);
     expect(h.hosts.host(OLD_IPV4).app).toBe(false);
@@ -1027,7 +1045,9 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     const error = await caught(run(h));
     expect(error.message).toContain("The deploy workflow did not succeed (failure)");
     expect(error.message).toContain("https://github.com/acme/shop/actions/runs/99");
-    expect(error.message).toContain("The old server still serves your users");
+    expect(error.message).toContain(
+      "The app on the old server on Hetzner Cloud still serves your users",
+    );
     expect(error.hint).toContain("opscrew retarget --abort");
     expect((await move(h))?.step).toBe("created");
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
@@ -1117,9 +1137,11 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       const error = await caught(run(h));
       expect(error).toMatchObject({
         code: "PHASE_PRECONDITION",
-        message: `Moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere.`,
-        hint: "Run `opscrew destroy`, then `opscrew interview`, `opscrew design` and `opscrew provision` for the new target.",
+        message:
+          "opscrew/requirements.yaml asks for a site host, and an app with a server does not move to one. Nothing was changed.",
+        hint: expect.stringContaining("`opscrew destroy`"),
       });
+      expect(name).toBeTruthy();
       expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
       expect(await move(h)).toBeUndefined();
     },
@@ -1140,16 +1162,19 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       const error = await caught(run(h, { to: "digitalocean" }));
       expect(error).toMatchObject({
         code: "PHASE_PRECONDITION",
-        message: `Moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere.`,
+        message:
+          "Moving shop between a site host and a server changes the app's whole design, so OpsCrew does not do it as a move. Nothing was changed.",
         hint: expect.stringContaining("Run `opscrew destroy`"),
       });
+      expect(name).toBeTruthy();
       expect(h.events.filter((e) => e.type === "plan")).toEqual([]);
       expect(await move(h)).toBeUndefined();
     },
   );
 
-  it("refuses before any change when the app keeps data a move cannot copy yet (FR-1332)", async () => {
+  it("US3: copies every service's data in the window, each checked by its digest on both sides", async () => {
     const h = await moveHarness();
+    const n = h.newServer.ipv4;
     const plan = await readArtifact("plan", h.paths.files.plan);
     await writeArtifact(
       "plan",
@@ -1167,89 +1192,43 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
             licence: "MPL-2.0",
           },
         ],
-        storage: { sqlite: { dir: "storage" } },
-        deploy: { ...plan.deploy, strategy: "recreate" },
       }),
     );
-    const before = h.events.length;
-    const error = await caught(run(h));
-    expect(error.code).toBe("PHASE_PRECONDITION");
-    expect(error.message).toBe(
-      "A move copies the PostgreSQL database to the new server, but not yet the data of mysql (MySQL), rabbitmq (RabbitMQ) and the SQLite database, so OpsCrew did not start it. Nothing was changed.",
+    const file = (text: string) => ({
+      type: "file" as const,
+      mode: 0o600,
+      uid: 999,
+      gid: 999,
+      data: Buffer.from(text),
+    });
+    h.hosts.services = ["db", "mysql", "rabbitmq"];
+    h.hosts.seed(OLD_IPV4, { ibdata1: file("orders table"), "queue.idx": file("jobs") });
+    const result = await run(h);
+    expect(result).toMatchObject({ step: "switched", done: true });
+    for (const service of ["mysql", "rabbitmq"]) {
+      const folder = `/srv/data/shop/${service}`;
+      const old = [...(h.hosts.docker(OLD_IPV4).folders.get(folder)?.files ?? [])];
+      const copied = [...(h.hosts.docker(n).folders.get(folder)?.files ?? [])];
+      expect(copied).toEqual(old);
+      expect(copied.length).toBeGreaterThan(1);
+    }
+    expect(trail(h.events)).toEqual(
+      expect.arrayContaining([
+        `${OLD_IPV4} stop db mysql rabbitmq`,
+        `${n} stop db mysql rabbitmq`,
+        `${n} start db mysql rabbitmq`,
+      ]),
     );
-    expect(error.hint).toContain("comes in a later version of OpsCrew");
-    expect(h.events.slice(before)).toEqual([]);
-    expect(await move(h)).toBeUndefined();
+    const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));
+    expect(window?.details).toContain("mysql's data at /var/lib/postgresql/data");
+    expect(window?.details).toContain("rabbitmq's data at /var/lib/postgresql/data");
+    expect(window?.details).not.toContain(OLD_IPV4);
+    expect(window?.details).not.toContain(n);
   });
 
-  it("refuses before any change when the app keeps its files in Garage on the server", async () => {
+  it("US3: --empty starts a service empty, and the summary says what that loses", async () => {
     const h = await moveHarness();
-    const plan = await readArtifact("plan", h.paths.files.plan);
-    await writeArtifact(
-      "plan",
-      h.paths.files.plan,
-      DeployPlanSchema.parse({
-        ...plan,
-        services: [
-          ...plan.services,
-          { kind: "garage", version: "2.4", memoryMb: 64, reason: "uploads", licence: "AGPL-3.0" },
-        ],
-        storage: {
-          objectStorage: {
-            provider: "garage",
-            bucket: "shop-uploads",
-            region: "garage",
-            expected: { storageGb: 10, egressGbPerMonth: 50 },
-            price: { monthly: 0, currency: "USD", source: "test", checkedOn: "2026-10-19" },
-          },
-        },
-      }),
-    );
-    const before = h.events.length;
-    const error = await caught(run(h));
-    expect(error.code).toBe("PHASE_PRECONDITION");
-    expect(error.message).toBe(
-      "A move copies the PostgreSQL database to the new server, but not yet the data of garage (Garage), so OpsCrew did not start it. Nothing was changed.",
-    );
-    expect(h.events.slice(before)).toEqual([]);
-    expect(await move(h)).toBeUndefined();
-  });
-
-  it("refuses before any change when the app runs Redis 8 or Dragonfly (FR-1321a)", async () => {
-    const h = await moveHarness();
-    const plan = await readArtifact("plan", h.paths.files.plan);
-    const redis = { version: "8", memoryMb: 128, reason: "redis-om", licence: "RSALv2" };
-    await writeArtifact(
-      "plan",
-      h.paths.files.plan,
-      DeployPlanSchema.parse({
-        ...plan,
-        services: [
-          ...plan.services,
-          { ...redis, kind: "redis", options: { mode: "cache" } },
-          {
-            kind: "dragonfly",
-            version: "2",
-            memoryMb: 512,
-            options: { mode: "queue" },
-            reason: "BullMQ",
-            licence: "BSL-1.1",
-          },
-        ],
-      }),
-    );
-    const before = h.events.length;
-    const error = await caught(run(h));
-    expect(error.code).toBe("PHASE_PRECONDITION");
-    expect(error.message).toBe(
-      "A move copies the PostgreSQL database to the new server, but not yet the data of cache (Redis) and queue (Dragonfly), so OpsCrew did not start it. Nothing was changed.",
-    );
-    expect(h.events.slice(before)).toEqual([]);
-    expect(await move(h)).toBeUndefined();
-  });
-
-  it("says in its summary that jobs waiting in a Valkey queue are not moved", async () => {
-    const h = await moveHarness();
+    const n = h.newServer.ipv4;
     const plan = await readArtifact("plan", h.paths.files.plan);
     await writeArtifact(
       "plan",
@@ -1269,10 +1248,44 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
         ],
       }),
     );
-    await caught(run(h, { confirmStart: async () => false }));
+    h.hosts.services = ["db", "queue"];
+    h.hosts.seed(OLD_IPV4, {
+      "dump.rdb": { type: "file", mode: 0o600, uid: 999, gid: 999, data: Buffer.from("jobs") },
+    });
+    let summary: RetargetSummary | undefined;
+    const result = await run(h, {
+      empty: ["queue"],
+      confirmStart: async (s) => {
+        summary = s;
+        return true;
+      },
+    });
+    expect(result).toMatchObject({ step: "switched", done: true });
+    expect(summary?.data).toContainEqual(expect.objectContaining({ owner: "queue", copy: false }));
     expect(h.reporter.text()).toContain(
-      "Jobs waiting in the Valkey queue (queue) are not moved: let the queue drain before the move, or those jobs are lost.",
+      "starts empty. Starting it empty loses the jobs waiting in its queue",
     );
+    expect((await move(h))?.empty).toEqual(["queue"]);
+    // The queue's folder on the new server stays as its deploy made it.
+    expect([
+      ...(h.hosts.docker(n).folders.get("/srv/data/shop/queue")?.files.keys() ?? []),
+    ]).toEqual([""]);
+
+    const asked: string[] = [];
+    const g = await moveHarness();
+    await caught(
+      run(g, {
+        chooseEmpty: async (question) => {
+          asked.push(`${question.owner}: ${question.loses}`);
+          return true;
+        },
+        confirmStart: async () => false,
+      }),
+    );
+    expect(asked).toEqual(["db: Starting it empty loses every table and row in it."]);
+    const refused = await caught(run(await moveHarness(), { empty: ["nothing"] }));
+    expect(refused.code).toBe("INVALID_INPUT");
+    expect(refused.message).toContain("--empty nothing");
   });
 
   it("stops before any change when the key of the app's bucket is not known here", async () => {
@@ -1352,7 +1365,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(error.code).toBe("ENGINE_FAILED");
     expect(error.hint).toMatch(/^DigitalOcean cannot create a \S+ Droplet in \S+ right now /);
     expect(error.hint).toContain(
-      "Run `opscrew retarget --abort` (your app keeps running on the old server), then start the move again and pick another option: `opscrew retarget --to digitalocean --option <id>`. Nothing that was already created is removed until you abort.",
+      "Run `opscrew retarget --abort` (your app keeps running on the old server on Hetzner Cloud), then start the move again and pick another option: `opscrew retarget --to digitalocean --option <id>`. Nothing that was already created is removed until you abort.",
     );
     expect(error.hint).not.toContain("opscrew design");
     expect((await move(h))?.step).toBe("renamed");

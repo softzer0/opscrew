@@ -1,48 +1,61 @@
 import { join } from "node:path";
-import { exists, formatMoney, listText, OpsCrewError } from "@opscrew/core";
-import { cloudTarget, serviceSpec } from "@opscrew/iac-templates";
+import { exists, formatMoney, listText, normalizeHostName, OpsCrewError } from "@opscrew/core";
+import { usesTunnel } from "@opscrew/iac-templates";
 import {
+  APP_SERVER,
   type AppBuild,
   type CloudDeployTarget,
   type DeployPlan,
+  type DeployTarget,
   type DesignOption,
   isServerlessProvider,
   monitoringOf,
+  monitoringServerName,
   type ProjectFacts,
   type Retarget,
   readArtifact,
-  serviceOf,
+  servicesOn,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
 import { chooseBuilder } from "../design/builder";
+import { noServerCost } from "../design/own";
 import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
 import { commandFlags } from "../environments/choice";
-import { providerProfile, requestedProvider, vpsConnector } from "../providers";
+import { recordOwnServerAnswers } from "../interview/own-server";
+import { recordPortainerAnswers } from "../interview/portainer";
+import { providerProfile, vpsConnector } from "../providers";
 import { providerBucket, readRequirements, requireStorageKey } from "../provision";
-import { designOptionLine, hasState, serverAddress } from "../shared";
-import { extraServers, hasExtraServers } from "../shared/servers";
 import {
-  localhostTargetNoMove,
-  ownServerNoMove,
-  portainerTargetNoMove,
-  serverlessTargetNoMove,
-} from "../shared/vps-target";
-import { databaseSize, serverOps } from "./server-ops";
-import { recordMoveServers } from "./servers";
-import { auditStep, type MoveSession, openSession, pinHost, remoteFor, saveMove } from "./session";
+  boundHostAdapter,
+  designOptionLine,
+  hasState,
+  readPortainerConnection,
+  readServerAddresses,
+  restoreOldConnection,
+  type ServerAddress,
+  serverAddress,
+  setAsideOldConnection,
+} from "../shared";
+import { connectAndInspectOwnServer } from "../shared/own-server";
+import { extraServers, hasExtraServers } from "../shared/servers";
+import { endMoveServers, startMoveServers } from "./servers";
+import { auditStep, type MoveSession, openSession, saveMove, userRecords } from "./session";
+import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
+import type { SideVolume } from "./sides/types";
 import {
   ABORT_COMMAND,
-  downtimeMinutes,
   downtimeUntilDnsChange,
+  emptyLoses,
   FINISH_COMMAND,
+  managedDns,
   manualSwitchDowntime,
-  providerWords,
   RUN_COMMAND,
   sizeText,
   untilSwitched,
+  windowMinutes,
 } from "./texts";
-import type { RetargetOptions, RetargetSummary } from "./types";
+import type { MoveData, MoveTargetId, RetargetOptions, RetargetSummary } from "./types";
 
 function nothingLive(plan: DeployPlan): OpsCrewError {
   return new OpsCrewError(
@@ -50,15 +63,15 @@ function nothingLive(plan: DeployPlan): OpsCrewError {
     `${plan.app.name} has no live deployment on this computer, so there is nothing to move. Nothing was changed.`,
     {
       hint: plan.deployment.destroyedAt
-        ? "The deployment was torn down. Run `opscrew design` for the provider you want, then `opscrew provision`."
+        ? "The deployment was torn down. Run `opscrew design` for the target you want, then `opscrew provision`."
         : "Run `opscrew provision` to deploy the app first (or run OpsCrew on the computer that provisioned it).",
     },
   );
 }
 
 /**
- * An app with services on other servers (`plan.servers`) is not moved: moving several servers to
- * another provider comes with retarget anywhere. Said before any check or change.
+ * An app with services on other servers (`plan.servers`) is not moved yet: moving its app server
+ * beside them comes in a later step of this feature. Said before any check or change.
  */
 function splitAppNoMove(plan: DeployPlan): OpsCrewError {
   return new OpsCrewError(
@@ -71,9 +84,9 @@ function splitAppNoMove(plan: DeployPlan): OpsCrewError {
 }
 
 /**
- * An app with self-hosted monitoring on is not moved (FR-2026): its agents, its stack and the
- * monitoring server's network move with retarget anywhere. Said before any check or change, with
- * the commands that turn it off.
+ * An app with self-hosted monitoring on is not moved yet (FR-2026): its agents, its stack and the
+ * monitoring server's network move later. Said before any check or change, with the commands that
+ * turn it off.
  */
 async function monitoringNoMove(deps: PhaseDeps, plan: DeployPlan): Promise<OpsCrewError> {
   const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
@@ -86,29 +99,76 @@ async function monitoringNoMove(deps: PhaseDeps, plan: DeployPlan): Promise<OpsC
   );
 }
 
-/**
- * Stops before any change when the app keeps data a move cannot copy yet (FR-1332): a running
- * service other than PostgreSQL and Valkey (MySQL, MongoDB, a broker, Garage, an engine), or a
- * SQLite database. Workers and cron move with the app, and a bucket at a provider stays where it
- * is, so neither stops a move.
- */
-function requireMovableData(plan: DeployPlan): void {
-  const stuck = plan.services
-    .filter((service) => service.enabled && !MOVABLE_KINDS.has(service.kind))
-    .map((service) => `${service.name} (${serviceSpec(service.kind).title})`);
-  if (plan.storage?.sqlite !== undefined) stuck.push("the SQLite database");
-  if (stuck.length === 0) return;
-  throw new OpsCrewError(
+/** This computer is no side of a move (spec: `env remove`, then `env add`). */
+function thisComputerNoMove(): OpsCrewError {
+  return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `A move copies the PostgreSQL database to the new server, but not yet the data of ${listText(stuck)}, so OpsCrew did not start it. Nothing was changed.`,
+    "This computer runs a copy of the app for trying changes, not a deployment to move, so OpsCrew does not move an app to or from it. Nothing was changed.",
     {
-      hint: "Copying the data of these services to a new server comes in a later version of OpsCrew. Until then, the app stays on its server.",
+      hint: "Remove that environment with `opscrew env remove <name>` and add one for the target you want with `opscrew env add <name>`.",
     },
   );
 }
 
-/** The services a move handles (feature 005): PostgreSQL is copied, Valkey starts afresh. */
-const MOVABLE_KINDS: ReadonlySet<string> = new Set(["postgres", "valkey"]);
+/** A site and a server are different designs: no move between them. */
+function siteServerNoMove(plan: DeployPlan): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `Moving ${plan.app.name} between a site host and a server changes the app's whole design, so OpsCrew does not do it as a move. Nothing was changed.`,
+    {
+      hint: "Run `opscrew destroy`, then `opscrew interview`, `opscrew design` and `opscrew provision` for the new target.",
+    },
+  );
+}
+
+/**
+ * The plain stop for a side that would need a Cloudflare Tunnel, or Portainer behind the user's
+ * own proxy with Cloudflare DNS: a move switches between address records only (FR-2301, plan.md
+ * "4.").
+ */
+function addressOnly(side: string, why: string, hint: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${side} ${why}, and a move switches the app's DNS between address records only: switching to or from that needs two changes with an outage between them, which OpsCrew does not do yet. Nothing was changed.`,
+    { hint },
+  );
+}
+
+/** Stops before any change when the old side serves the app other than at a public address. */
+function requireAddressedOldSide(plan: DeployPlan): void {
+  const from = plan.target;
+  const words = `Your app on ${placeWords(from)}`;
+  if (from.provider === "own" && from.access === "tunnel") {
+    throw addressOnly(
+      words,
+      "is served through a Cloudflare Tunnel",
+      "To move it now, serve it on the server's public address first (answer that the internet reaches your server in `opscrew interview`, then run `opscrew design` and `opscrew provision`), then run `opscrew retarget` again.",
+    );
+  }
+  if (from.provider === "portainer") {
+    if (from.web.mode === "tunnel" || from.redeploy === "cloudflare") {
+      throw addressOnly(
+        words,
+        "is reached through a Cloudflare Tunnel",
+        "To move it now, serve it with the stack's Caddy and the updater first (`opscrew interview`, `opscrew design` and `opscrew provision`), then run `opscrew retarget` again.",
+      );
+    }
+    if (from.web.mode === "proxy" && managedDns(plan)) {
+      throw addressOnly(
+        words,
+        "is served behind your own proxy with its DNS on Cloudflare",
+        "To move it now, serve it with the stack's Caddy first (`opscrew interview`, `opscrew design` and `opscrew provision`), then run `opscrew retarget` again.",
+      );
+    }
+  }
+  if (usesTunnel(plan)) {
+    throw addressOnly(
+      words,
+      "has Portainer or Beszel's hub on a subdomain, through a Cloudflare Tunnel",
+      "Turn them off first (`opscrew portainer disable`, `opscrew addon disable beszel`) or reach them over the private network, move the app, then turn them on again.",
+    );
+  }
+}
 
 /** The option the user chose: `--option`, the picker, else the recommended one. */
 async function pickOption(
@@ -135,16 +195,14 @@ async function pickOption(
   return chosen;
 }
 
-/**
- * The new target from the chosen option, with the provider's default image and the old proxy;
- * throws the plain refusal for an option of a target that does not move.
- */
+/** The new cloud target from the chosen option, with the provider's default image and the old proxy. */
 export function targetOf(option: DesignOption, edge: CloudDeployTarget["edge"]): CloudDeployTarget {
   const { provider } = option.target;
-  if (provider === "own") throw ownServerNoMove();
-  if (provider === "portainer") throw portainerTargetNoMove();
-  if (provider === "localhost") throw localhostTargetNoMove();
-  if (isServerlessProvider(provider)) throw serverlessTargetNoMove(provider);
+  if (provider !== "hetzner" && provider !== "digitalocean") {
+    throw new OpsCrewError("INTERNAL", `A cloud provider's options include ${provider}.`, {
+      hint: "This is a bug in OpsCrew; please report it.",
+    });
+  }
   return {
     provider,
     mode: "vps-compose",
@@ -156,42 +214,40 @@ export function targetOf(option: DesignOption, edge: CloudDeployTarget["edge"]):
   };
 }
 
-/** How the traffic reaches the new server at the switch, in one sentence. */
-function switchSentence(plan: DeployPlan, noun: string): string {
+/** How the traffic reaches the new side at the switch, in one sentence. */
+function switchSentence(plan: DeployPlan, fresh: string): string {
   const domain = plan.dns.domain;
-  if (plan.dns.provider === "cloudflare" && domain !== undefined) {
-    return `Switch the Cloudflare DNS records of ${domain} to the new ${noun} and check the app through its domain.`;
+  if (managedDns(plan) && domain !== undefined) {
+    return `Switch the Cloudflare DNS records of ${domain} to ${fresh} and check the app through its domain.`;
   }
   if (domain !== undefined) {
-    return `You change the DNS records of ${domain} to the new ${noun} (OpsCrew shows them), then OpsCrew checks the app through its domain.`;
+    return `You change the DNS records of ${domain} to ${fresh} (OpsCrew shows them), then OpsCrew checks the app through its domain.`;
   }
-  return `Your app moves to the new ${noun}'s address (OpsCrew shows it), then OpsCrew checks it there.`;
+  return `Your app moves to ${fresh}'s address (OpsCrew shows it), then OpsCrew checks it there.`;
 }
 
-/** What a move to `option` sets: the builder and the deploy strategy design picks for it. */
-interface NewServerBuild {
+/** What a move sets on the new side: its target and cost, the builder and deploy strategy. */
+interface NewSide {
+  target: DeployTarget;
+  cost: DeployPlan["cost"];
   build: AppBuild;
   deploy: DeployPlan["deploy"];
+  /** The new side's address when the move knows it from the start (a Portainer host's). */
+  address?: ServerAddress;
 }
 
 /**
- * The image builder (`chooseBuilder` for the new server's architecture) and the deploy strategy
- * (`deployStrategyFor` its memory) of a move to `option`, as design picks them, keeping the
- * plan's drain time. Stops with `INVALID_INPUT` when the plan's builder cannot build there, and
- * with `PHASE_PRECONDITION` when the builder needs a Dockerfile (`app.dockerfile`) the repository
- * lacks.
+ * The image builder for the new side's architecture (`chooseBuilder`), as design picks it. Stops
+ * with `INVALID_INPUT` when the plan's builder cannot build there, and with `PHASE_PRECONDITION`
+ * when the builder needs a Dockerfile (`app.dockerfile`) the repository lacks.
  */
-async function newServerBuild(
+async function builderFor(
   deps: PhaseDeps,
   facts: ProjectFacts,
   plan: DeployPlan,
-  option: DesignOption,
-): Promise<NewServerBuild> {
-  const choice = chooseBuilder(
-    facts,
-    plan,
-    option.target.architecture === "arm" ? "arm64" : "amd64",
-  );
+  arch: "amd64" | "arm64",
+): Promise<AppBuild> {
+  const choice = chooseBuilder(facts, plan, arch);
   if ("refused" in choice) {
     throw new OpsCrewError("INVALID_INPUT", `${choice.refused} Nothing was changed.`, {
       hint: `Change app.build.builder in opscrew/plan.yaml, then run \`${RUN_COMMAND}\` again.`,
@@ -202,19 +258,16 @@ async function newServerBuild(
   if (dockerfileBuild && !(await exists(join(deps.paths.root, plan.app.dockerfile)))) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      "The new server's builder needs a Dockerfile this repository lacks: run `opscrew design` and `opscrew adapt` first. Nothing was changed.",
+      "The new side's builder needs a Dockerfile this repository lacks: run `opscrew design` and `opscrew adapt` first. Nothing was changed.",
     );
   }
   for (const warning of choice.warnings) deps.reporter.warn(deps.redactor.redact(warning));
   const { builder, chosen, reason, runtime, probe, automatic } = choice;
-  return {
-    build: { builder, chosen, reason, runtime, probe, automatic },
-    deploy: { ...deployStrategyFor(option), drainSeconds: plan.deploy.drainSeconds },
-  };
+  return { builder, chosen, reason, runtime, probe, automatic };
 }
 
 /** The builder and strategy lines of the summary that differ from the plan's, with reasons. */
-function buildChanges(plan: DeployPlan, next: NewServerBuild): string[] {
+function buildChanges(plan: DeployPlan, next: NewSide): string[] {
   const changes: string[] = [];
   const before = plan.app.build?.builder;
   if (before !== next.build.builder) {
@@ -230,118 +283,53 @@ function buildChanges(plan: DeployPlan, next: NewServerBuild): string[] {
   return changes;
 }
 
-/** The summary shown before the first change. */
-export function moveSummary(
-  plan: DeployPlan,
-  to: CloudDeployTarget,
-  option: DesignOption,
-  databaseBytes: number | undefined,
-  changes: string[],
-): RetargetSummary {
-  const from = cloudTarget(plan.target);
-  const old = providerWords(from.provider);
-  const fresh = providerWords(to.provider);
-  const minutes = databaseBytes === undefined ? undefined : downtimeMinutes(databaseBytes);
-  // Without managed DNS the old app stays stopped until the user's own switch has taken effect.
-  const offline = downtimeUntilDnsChange(plan)
-    ? `; the app stays offline from then ${untilSwitched(plan)}`
-    : "";
-  return {
-    from,
-    to,
-    steps: [
-      `Rename the current ${old.noun} in OpsCrew's infrastructure state (nothing changes in your cloud).`,
-      `Create the new ${fresh.noun} on ${fresh.name} (${to.serverType} in ${to.location}) next to the current one.`,
-      `Point the GitHub deploy secrets at the new ${fresh.noun}, run the deploy workflow on ${plan.cicd.branch} and check the app there; its web server stays stopped until the switch.`,
-      databaseBytes !== undefined
-        ? `Maintenance window (about ${minutes} minutes for the copy): stop the app on the old ${old.noun}, copy the database (${sizeText(databaseBytes)}) to the new ${fresh.noun} and start the app there${offline}.`
-        : "No maintenance window: there is no self-hosted database to copy.",
-      switchSentence(plan, fresh.noun),
-      `Keep the old ${old.noun} (with its app stopped) until you run \`${FINISH_COMMAND}\`; until the switch, \`${ABORT_COMMAND}\` undoes the move.`,
-    ],
-    extraMonthly: option.cost.monthly,
-    ...(databaseBytes !== undefined ? { databaseBytes } : {}),
-    ...(minutes !== undefined ? { expectedDowntimeMinutes: minutes } : {}),
-    changes,
-  };
-}
-
-function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
-  const old = providerWords(summary.from.provider);
-  const fresh = providerWords(summary.to.provider);
-  // Valkey starts afresh on the new server.
-  const queue = plan.services.find(
-    (service) => service.enabled && service.kind === "valkey" && service.options.mode === "queue",
-  );
-  return [
-    `Moving ${plan.app.name} from ${old.name} (${summary.from.serverType} in ${summary.from.location}) to ${fresh.name} (${summary.to.serverType} in ${summary.to.location}):`,
-    ...summary.steps.map((step, i) => `  ${i + 1}. ${step}`),
-    `Extra cost while both servers run: ${formatMoney(summary.extraMonthly)} per month for the new ${fresh.noun}; the old ${old.noun} is billed until the move is finished.`,
-    ...(summary.databaseBytes === undefined
-      ? ["Database: none on the server, so the app stays online until the switch."]
-      : downtimeUntilDnsChange(plan)
-        ? [
-            `Database: ${sizeText(summary.databaseBytes)}; expected downtime: about ${summary.expectedDowntimeMinutes} minutes for the copy, plus the time ${plan.dns.domain !== undefined ? "your DNS change takes to reach your users" : "your users take to switch to the new address"}.`,
-            ...manualSwitchDowntime(plan),
-          ]
-        : [
-            `Database: ${sizeText(summary.databaseBytes)}; expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes.`,
-          ]),
-    ...(queue === undefined
-      ? []
-      : [
-          `Jobs waiting in the Valkey queue (${queue.name}) are not moved: let the queue drain before the move, or those jobs are lost.`,
-        ]),
-    ...(summary.changes.length === 0
-      ? []
-      : [
-          `On the new ${fresh.noun} (opscrew/plan.yaml records it, and the final files use it):`,
-          ...summary.changes.map((change) => `  - ${change}`),
-        ]),
-    `While the move runs, ${plan.infra.dir} holds a transitional version of the infrastructure files; \`${FINISH_COMMAND}\` publishes the final ones in a pull request.`,
-  ].join("\n");
+/** The old side's proxy, which a new server runs too. */
+function oldEdge(plan: DeployPlan): CloudDeployTarget["edge"] {
+  const from = plan.target;
+  return "edge" in from ? from.edge : "caddy";
 }
 
 /**
- * Step 1 of a move: preconditions (live deployment, another provider, credentials, keys), the
- * new provider's options in the plan's region and budget (as `opscrew design` prices them, without
- * its provider-switch guard), the choice, the summary and `confirmStart`; then records the move
- * (`plan.target` and `cost` are the new server's, `retarget.step` is `started`).
+ * A cloud provider's options in the plan's region and budget, priced as `opscrew design` prices
+ * them (without its provider-switch guard), and the choice.
  */
-export async function startMove(
+async function cloudSide(
   deps: PhaseDeps,
-  plan: DeployPlan,
+  input: { plan: DeployPlan; facts: ProjectFacts; to: CloudDeployTarget["provider"] },
   options: RetargetOptions,
-): Promise<MoveSession> {
-  // A Portainer target never moves (feature 010): it is destroyed and provisioned again instead.
-  if (plan.target.provider === "portainer") throw portainerTargetNoMove();
-  // Nor does an app on this computer (feature 015), or a server-less one (feature 016).
-  if (plan.target.provider === "localhost") throw localhostTargetNoMove();
-  if (isServerlessProvider(plan.target.provider))
-    throw serverlessTargetNoMove(plan.target.provider);
-  // Nor, until retarget anywhere, an app with self-hosted monitoring on (FR-2026), said before
-  // the extra servers (its monitoring server may be one), nor one with services on other servers
-  // (FR-1820).
-  if (monitoringOf(plan) !== undefined) throw await monitoringNoMove(deps, plan);
-  if (hasExtraServers(plan)) throw splitAppNoMove(plan);
-  // Nor while public SSH is closed: the new server is reached at its public address.
-  if (plan.network?.publicSsh === false) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      "Public SSH is closed, and a move reaches the new server over public SSH before it joins the app's private network. Nothing was changed.",
-      {
-        hint: "Open public SSH first (`opscrew secure --open-public-ssh`), move the app, then close it again with `opscrew secure --close-public-ssh`.",
-      },
-    );
-  }
-  const address =
-    plan.deployment.destroyedAt === undefined && (await hasState(deps.paths))
-      ? await serverAddress(deps, plan, {
-          engine: options.services?.engine,
-          ...(options.engine !== undefined ? { preference: options.engine } : {}),
-        })
-      : undefined;
-  if (address === undefined) throw nothingLive(plan);
+): Promise<NewSide> {
+  const { plan, facts, to } = input;
+  const requirements = await requireRequirements(deps);
+  const services = options.services ?? {};
+  deps.reporter.step(`Pricing ${providerProfile(to).displayName} options for ${plan.app.name}`);
+  const catalog =
+    services.catalogs?.[to] ?? vpsConnector(to, deps, { now: () => deps.clock.now() }).catalog();
+  const edge = oldEdge(plan);
+  const designOptions = await buildDesignOptions({
+    facts,
+    requirements: { ...requirements, provider: to },
+    catalog,
+    now: deps.clock.now(),
+    // The new server runs the same proxy, whose memory the sizing counts.
+    edge,
+  });
+  for (const option of designOptions) deps.reporter.info(designOptionLine(option));
+  const chosen = await pickOption(designOptions, options);
+  return {
+    target: targetOf(chosen, edge),
+    cost: chosen.cost,
+    build: await builderFor(
+      deps,
+      facts,
+      plan,
+      chosen.target.architecture === "arm" ? "arm64" : "amd64",
+    ),
+    deploy: { ...deployStrategyFor(chosen), drainSeconds: plan.deploy.drainSeconds },
+  };
+}
+
+/** `opscrew/requirements.yaml`, which a cloud provider's options are priced for. */
+async function requireRequirements(deps: PhaseDeps) {
   const requirements = await readRequirements(deps);
   if (requirements === undefined) {
     throw new OpsCrewError(
@@ -352,107 +340,506 @@ export async function startMove(
       },
     );
   }
-  // A server the user owns never moves (spec 009): said before the cloud-only steps.
-  if (plan.target.provider === "own") throw ownServerNoMove();
-  requireMovableData(plan);
-  // The bucket stays where it is: the app on the new server needs its key, known before any change.
-  if (providerBucket(plan) !== undefined) {
-    await requireStorageKey(deps, plan, options.services ?? {}, { command: RUN_COMMAND });
+  return requirements;
+}
+
+/** The stop when the new side's answers are missing. */
+function answersMissing(what: string, questions: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `OpsCrew needs the answers about ${what} to move the app there. Nothing was changed.`,
+    {
+      hint: `Run \`${RUN_COMMAND} --to ${questions}\` in a terminal to answer them, or give them with --answers.`,
+    },
+  );
+}
+
+/**
+ * The user's own server as the new side: its answers (public, served directly), recorded in the
+ * usual slot, then connected (its host key confirmed, or `--host-key`) and inspected read-only for
+ * its architecture. Stops before any change on a tunnel and on the same server as the old side.
+ */
+async function ownServerSide(
+  deps: PhaseDeps,
+  input: { plan: DeployPlan; facts: ProjectFacts; fromOwn?: { host: string; port: number } },
+  options: RetargetOptions,
+): Promise<NewSide> {
+  const { plan, facts, fromOwn } = input;
+  const answers = options.ownServer;
+  if (answers === undefined) throw answersMissing("your new server", "own");
+  if (!answers.reachable || answers.serve === "tunnel") {
+    throw addressOnly(
+      "Your new server",
+      "would serve the app through a Cloudflare Tunnel",
+      "Answer that the internet reaches the server, and serve the app directly (server.serve dns-only or proxy), then run the move again.",
+    );
   }
-  const from = cloudTarget(plan.target);
-  if (options.to === undefined && requirements.provider === "portainer") {
-    throw portainerTargetNoMove();
-  }
-  if (options.to === undefined && requirements.provider === "localhost") {
-    throw localhostTargetNoMove();
-  }
-  if (options.to === undefined && isServerlessProvider(requirements.provider)) {
-    throw serverlessTargetNoMove(requirements.provider);
-  }
-  const to = options.to ?? requestedProvider(requirements);
-  if (to === "own") throw ownServerNoMove();
-  if (to === from.provider) {
-    const name = providerProfile(to).displayName;
+  if (
+    fromOwn !== undefined &&
+    normalizeHostName(fromOwn.host) === normalizeHostName(answers.host) &&
+    fromOwn.port === answers.port
+  ) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `${plan.app.name} already runs on ${name}, so there is nothing to move. Moves within one provider (another location or size) are not supported yet. Nothing was changed.`,
+      `${plan.app.name} already runs on that server, so there is nothing to move. Nothing was changed.`,
+      { hint: `Run \`${RUN_COMMAND} --to own\` with another server's answers.` },
+    );
+  }
+  await recordOwnServerAnswers(deps.paths, answers);
+  const own = options.services?.own ?? {};
+  const { facts: host } = await connectAndInspectOwnServer(deps, {
+    hostKey: options.hostKey,
+    services: { ...own, host: boundHostAdapter(own.host) },
+    phase: "retarget",
+    detail: "the new side of a move",
+  });
+  if (host.arch !== "amd64" && host.arch !== "arm64") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `Your new server's processor (${host.arch}) is not one OpsCrew builds images for (amd64 or arm64). Nothing was changed.`,
+      { hint: `Choose another server, then run \`${RUN_COMMAND} --to own\` again.` },
+    );
+  }
+  const now = deps.clock.now().toISOString();
+  return {
+    target: {
+      provider: "own",
+      mode: "vps-compose",
+      arch: host.arch,
+      access: "public",
+      edge: oldEdge(plan),
+    },
+    cost: noServerCost("Your own server (you already pay for it)", plan.cost.monthly.currency, now),
+    build: await builderFor(deps, facts, plan, host.arch),
+    deploy: plan.deploy,
+  };
+}
+
+/**
+ * The user's Portainer as the new side: its answers (web mode `caddy` with the updater; with the
+ * app's DNS on Cloudflare OpsCrew manages its records there, `records: true`) recorded in the
+ * usual slot, and the public address its Caddy serves the app on. Stops before any change on a
+ * tunnel or the user's own proxy with Cloudflare DNS.
+ */
+async function portainerSide(
+  deps: PhaseDeps,
+  input: { plan: DeployPlan; facts: ProjectFacts },
+  options: RetargetOptions,
+): Promise<NewSide> {
+  const { plan, facts } = input;
+  const answers = options.portainer;
+  if (answers === undefined) throw answersMissing("your Portainer", "portainer");
+  const words = "Your Portainer";
+  if (answers.web.mode === "tunnel" || answers.redeploy === "cloudflare") {
+    throw addressOnly(
+      words,
+      "would reach the app through a Cloudflare Tunnel",
+      "Answer web mode caddy and the updater for Portainer (portainer.web caddy, portainer.redeploy updater), then run the move again.",
+    );
+  }
+  if (answers.web.mode === "proxy" && managedDns(plan)) {
+    throw addressOnly(
+      words,
+      "would serve the app behind your own proxy with its DNS on Cloudflare",
+      "Answer web mode caddy for Portainer (portainer.web caddy), then run the move again.",
+    );
+  }
+  const address = options.portainerAddress;
+  if (address === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "OpsCrew needs the public address of your Portainer host, where its Caddy serves the app and the app's DNS records point. Nothing was changed.",
       {
-        hint: `Run \`${RUN_COMMAND} --to <provider>\` with the other provider, or change the provider with \`opscrew interview\` first.`,
+        hint: `Run \`${RUN_COMMAND} --to portainer\` in a terminal to give it, or with --answers.`,
       },
     );
   }
-  const services = options.services ?? {};
-  const session = await openSession(deps, plan, {
-    command: RUN_COMMAND,
-    providers: [from.provider, to],
-    services,
-    servers: { from: address },
-    ...(options.engine !== undefined ? { engine: options.engine } : {}),
-    ...(options.approvePlanHash !== undefined ? { approvePlanHash: options.approvePlanHash } : {}),
-  });
-
-  // The new provider's options in the plan's region and budget.
-  const fresh = providerWords(to);
-  deps.reporter.step(`Pricing ${fresh.name} options for ${plan.app.name}`);
-  const facts = (await readArtifact("architecture", deps.paths.files.architecture)).facts;
-  const catalog =
-    services.catalogs?.[to] ?? vpsConnector(to, deps, { now: () => deps.clock.now() }).catalog();
-  const designOptions = await buildDesignOptions({
-    facts,
-    requirements: { ...requirements, provider: to },
-    catalog,
-    now: deps.clock.now(),
-    // The new server runs the same proxy, whose memory the sizing counts.
-    edge: from.edge,
-  });
-  for (const option of designOptions) deps.reporter.info(designOptionLine(option));
-  const chosen = await pickOption(designOptions, options);
-  const target = targetOf(chosen, from.edge);
-  // The builder and the deploy strategy for the new server, before anything is created.
-  const next = await newServerBuild(deps, facts, plan, chosen);
-
-  // What it means: database size (over SSH to the old server) and the summary.
-  const oldHost = address.ipv4;
-  let databaseBytes: number | undefined;
-  if (serviceOf(plan, "postgres")) {
-    await pinHost(session, oldHost, from.provider);
-    deps.reporter.step("Measuring the database on the old server");
-    const old = remoteFor(deps, services, session.deployKey.privateKeyFile, oldHost);
-    databaseBytes = await databaseSize(old, serverOps(plan, deps.redactor));
-  }
-  const summary = moveSummary(plan, target, chosen, databaseBytes, buildChanges(plan, next));
-  deps.reporter.info(summaryText(summary, plan));
-  if (options.confirmStart !== undefined && !(await options.confirmStart(summary))) {
-    throw new OpsCrewError("APPROVAL_REFUSED", "The move was not started. Nothing was changed.", {
-      hint: `Run \`${RUN_COMMAND}\` again when you are ready.`,
-    });
-  }
-
-  const retarget: Retarget = {
-    from: {
-      target: from,
-      deploy: plan.deploy,
-      ...(plan.app.build === undefined ? {} : { build: plan.app.build }),
+  await recordPortainerAnswers(deps.paths, answers);
+  const web =
+    answers.web.mode === "caddy" && managedDns(plan)
+      ? { ...answers.web, records: true }
+      : answers.web;
+  return {
+    target: {
+      provider: "portainer",
+      mode: "portainer-stack",
+      environmentId: answers.environmentId,
+      arch: answers.arch,
+      redeploy: answers.redeploy,
+      web,
     },
-    step: "started",
-    empty: [],
-    startedAt: deps.clock.now().toISOString(),
+    cost: noServerCost(
+      "Your Portainer (you already run it)",
+      plan.cost.monthly.currency,
+      deps.clock.now().toISOString(),
+    ),
+    build: await builderFor(deps, facts, plan, answers.arch),
+    deploy: plan.deploy,
+    address,
   };
-  // The old server's address goes to the local state, never into opscrew/plan.yaml.
-  await recordMoveServers(deps, session.servers);
-  await saveMove(session, retarget, {
-    target,
-    cost: chosen.cost,
-    app: { ...plan.app, build: next.build },
-    deploy: next.deploy,
-  });
-  deps.reporter.success(
-    `Started the move of ${plan.app.name} to ${fresh.name} (${chosen.id}); opscrew/plan.yaml records each step.`,
+}
+
+/** The new side's target in words with its details, for the summary's first line. */
+function targetLine(target: DeployTarget, which: "old" | "new"): string {
+  if (target.provider === "hetzner" || target.provider === "digitalocean") {
+    return `${providerProfile(target.provider).displayName} (${target.serverType} in ${target.location})`;
+  }
+  return sideWords(target, which);
+}
+
+/** The summary shown before the first change. */
+export function moveSummary(
+  plan: DeployPlan,
+  next: Pick<NewSide, "target" | "cost">,
+  data: MoveData[],
+  changes: string[],
+  portainer: boolean,
+): RetargetSummary {
+  const from = plan.target;
+  const to = next.target;
+  const old = sideWords(from, "old");
+  const fresh = sideWords(to, "new");
+  const copies = data.some((mount) => mount.copy);
+  const bytes = data.filter((mount) => mount.copy).reduce((sum, mount) => sum + mount.bytes, 0);
+  const minutes = copies ? windowMinutes(bytes, portainer) : undefined;
+  // Without managed DNS the old app stays stopped until the user's own switch has taken effect.
+  const offline = downtimeUntilDnsChange(plan, copies)
+    ? `; the app stays offline from then ${untilSwitched(plan)}`
+    : "";
+  const cloudOld = from.provider === "hetzner" || from.provider === "digitalocean";
+  const prepare =
+    to.provider === "hetzner" || to.provider === "digitalocean"
+      ? `Create ${fresh} (${to.serverType} in ${to.location}) next to ${old}.`
+      : to.provider === "own"
+        ? `Set up ${fresh} for the app with a host plan you approve by its hash, beside any other apps there.`
+        : "Check your Portainer environment for the app's stacks.";
+  const deploy =
+    to.provider === "portainer"
+      ? `Point the GitHub deploy secrets at ${fresh}, set up the app's stacks there with the version ${old} runs (a stack plan you approve by its hash) and check the app; the stack's Caddy stays stopped until the switch.`
+      : `Point the GitHub deploy secrets at ${fresh}, run the deploy workflow on ${plan.cicd.branch} and check the app there; its web server stays stopped until the switch.`;
+  return {
+    from,
+    to,
+    steps: [
+      cloudOld
+        ? `Rename ${old} in OpsCrew's infrastructure state (nothing changes in your cloud).`
+        : `Keep ${old} as it is: nothing in OpsCrew's infrastructure state is renamed.`,
+      prepare,
+      deploy,
+      copies
+        ? `Maintenance window (about ${minutes} minutes for ${sizeText(bytes)}): stop the app on ${old}, copy its data to ${fresh} and start the app there${offline}.`
+        : "No maintenance window: there is no data to copy.",
+      switchSentence(plan, fresh),
+      `Keep ${old} (with its app stopped) until you run \`${FINISH_COMMAND}\`; until the switch, \`${ABORT_COMMAND}\` undoes the move.`,
+    ],
+    extraMonthly: next.cost.monthly,
+    data,
+    ...(minutes !== undefined ? { expectedDowntimeMinutes: minutes } : {}),
+    changes,
+  };
+}
+
+/** A data mount in words, for the summary. */
+function dataLine(plan: DeployPlan, mount: MoveData): string {
+  const what = `${mount.owner === "app" ? "The app's" : `${mount.owner}'s`} data at ${mount.key}: ${sizeText(mount.bytes)}`;
+  return mount.copy ? `${what}, copied` : `${what}, starts empty. ${emptyLoses(plan, mount.owner)}`;
+}
+
+function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
+  const old = sideWords(summary.from, "old");
+  const copies = summary.data.some((mount) => mount.copy);
+  const free = summary.extraMonthly.amount === 0;
+  return [
+    `Moving ${plan.app.name} from ${targetLine(summary.from, "old")} to ${targetLine(summary.to, "new")}:`,
+    ...summary.steps.map((step, i) => `  ${i + 1}. ${step}`),
+    free
+      ? `Extra cost: none for ${sideWords(summary.to, "new")}${summary.from.provider === "hetzner" || summary.from.provider === "digitalocean" ? `; ${old} is billed until the move is finished` : ""}.`
+      : `Extra cost while both run: ${formatMoney(summary.extraMonthly)} per month for ${sideWords(summary.to, "new")}${summary.from.provider === "hetzner" || summary.from.provider === "digitalocean" ? `; ${old} is billed until the move is finished` : ""}.`,
+    ...(summary.data.length === 0
+      ? [`Data: none on ${old}, so the app stays online until the switch.`]
+      : [
+          `Data on ${old}:`,
+          ...summary.data.map((mount) => `  - ${dataLine(plan, mount)}`),
+          ...(copies
+            ? downtimeUntilDnsChange(plan, true)
+              ? [
+                  `Expected downtime: about ${summary.expectedDowntimeMinutes} minutes for the copy, plus the time ${plan.dns.domain !== undefined ? "your DNS change takes to reach your users" : "your users take to switch to the new address"}.`,
+                  ...manualSwitchDowntime(plan, true),
+                ]
+              : [`Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes.`]
+            : []),
+        ]),
+    ...bucketLines(plan),
+    ...(summary.changes.length === 0
+      ? []
+      : [
+          `On ${sideWords(summary.to, "new")} (opscrew/plan.yaml records it, and the final files use it):`,
+          ...summary.changes.map((change) => `  - ${change}`),
+        ]),
+    `While the move runs, ${plan.infra.dir} holds a transitional version of the infrastructure files; \`${FINISH_COMMAND}\` publishes the final ones in a pull request.`,
+  ].join("\n");
+}
+
+/** What happens to the app's bucket at a provider, for the summary (it stays where it is). */
+function bucketLines(plan: DeployPlan): string[] {
+  const bucket = providerBucket(plan);
+  if (bucket === undefined) return [];
+  return [
+    `Bucket: ${bucket.bucket} stays where it is; the app on the new side keeps using it with the same key.`,
+  ];
+}
+
+/**
+ * The owners of data that start empty: `--empty`, each checked, and for each other owner of data
+ * the answer to `chooseEmpty` in a terminal (copy is the default). Stops before any change on a
+ * name that is no service of the app's server, `app` or `monitoring` there.
+ */
+async function emptyChoices(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  volumes: readonly SideVolume[],
+  options: Pick<RetargetOptions, "empty" | "chooseEmpty">,
+): Promise<string[]> {
+  const names = servicesOn(plan, APP_SERVER).map((service) => service.name);
+  const allowed = new Set([
+    ...names,
+    "app",
+    ...(monitoringServerName(plan) === APP_SERVER ? ["monitoring"] : []),
+  ]);
+  const given = [...new Set(options.empty ?? [])];
+  const unknown = given.filter((name) => !allowed.has(name));
+  if (unknown.length > 0) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `--empty ${listText(unknown)}: no service of the app's server is named so. Nothing was changed.`,
+      {
+        hint: `Name a service on the app's server${names.length > 0 ? ` (${listText(names)})` : ""}, or app for the app's own files.`,
+      },
+    );
+  }
+  const empty = new Set(given);
+  if (deps.interactive && options.chooseEmpty !== undefined) {
+    const owners = [...new Set(volumes.map((volume) => volume.owner))].filter(
+      (owner) => !empty.has(owner),
+    );
+    for (const owner of owners) {
+      const bytes = volumes
+        .filter((volume) => volume.owner === owner)
+        .reduce((sum, volume) => sum + volume.bytes, 0);
+      const copy = await options.chooseEmpty({ owner, bytes, loses: emptyLoses(plan, owner) });
+      if (!copy) empty.add(owner);
+    }
+  }
+  return [...empty];
+}
+
+/**
+ * The old side's address and whether it runs the app: a server's from OpsCrew's local state (else
+ * the infrastructure state's outputs), the user's Portainer's stacks from its record. Stops with
+ * {@link nothingLive}.
+ */
+async function liveOldSide(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: RetargetOptions,
+): Promise<ServerAddress | undefined> {
+  if (plan.deployment.destroyedAt !== undefined) throw nothingLive(plan);
+  if (plan.target.provider === "portainer") {
+    const connection = await readPortainerConnection(deps.paths);
+    if (connection === undefined || connection.created.stacks.length === 0) throw nothingLive(plan);
+    return (await readServerAddresses(deps.paths)).deployment;
+  }
+  // A server OpsCrew created lives in the infrastructure state; the user's own server is live
+  // where OpsCrew recorded its address.
+  const cloud = plan.target.provider !== "own";
+  if (cloud && !(await hasState(deps.paths))) throw nothingLive(plan);
+  const address = cloud
+    ? await serverAddress(deps, plan, {
+        engine: options.services?.engine,
+        ...(options.engine !== undefined ? { preference: options.engine } : {}),
+      })
+    : (await readServerAddresses(deps.paths)).deployment;
+  if (address === undefined) throw nothingLive(plan);
+  return address;
+}
+
+/** The new target the move goes to: `--to`, else the requirements' provider. */
+async function newTargetId(deps: PhaseDeps, options: RetargetOptions): Promise<MoveTargetId> {
+  if (options.to !== undefined) return options.to;
+  const { provider } = await requireRequirements(deps);
+  if (provider === "localhost") throw thisComputerNoMove();
+  if (isServerlessProvider(provider)) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "opscrew/requirements.yaml asks for a site host, and an app with a server does not move to one. Nothing was changed.",
+      {
+        hint: `Run \`${RUN_COMMAND} --to <hetzner|digitalocean|own|portainer>\`, or \`opscrew destroy\`, then \`opscrew interview\`, \`opscrew design\` and \`opscrew provision\` for the site host.`,
+      },
+    );
+  }
+  return provider;
+}
+
+/**
+ * Step 1 of a move (plan.md "2." started): every refusal of plan.md "4." and the spec's edge cases
+ * before any change (this computer, a site and a server, previews, a tunnel or Portainer behind the
+ * user's own proxy with Cloudflare DNS on either side, two Portainers, the same place, public SSH
+ * closed, Edge Agent environments, an app that cannot be built for the new side); the new side
+ * (a cloud provider's options and the choice, the user's own server inspected, or the user's
+ * Portainer reached); the old side's data mounts and their sizes, copied or started empty
+ * (`--empty`, or a question for each); the summary and `confirmStart`; then the move is recorded
+ * (`plan.target` and `cost` are the new side's, `retarget.step` is `started`, `retarget.empty`
+ * what starts empty). The old side's connection is set aside at the start (`retarget.fromOwn` or
+ * `fromPortainer`) so the new side's takes its slot; any stop before the record puts it back.
+ */
+export async function startMove(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: RetargetOptions,
+): Promise<MoveSession> {
+  const from = plan.target;
+  if (from.provider === "localhost") throw thisComputerNoMove();
+  if (isServerlessProvider(from.provider)) throw siteServerNoMove(plan);
+  // Not yet: an app with self-hosted monitoring on (FR-2026), said before the extra servers (its
+  // monitoring server may be one), nor one with services on other servers (FR-1820).
+  if (monitoringOf(plan) !== undefined) throw await monitoringNoMove(deps, plan);
+  if (hasExtraServers(plan)) throw splitAppNoMove(plan);
+  // A side over SSH is reached at its public address before it joins the app's private network.
+  if (plan.network?.publicSsh === false) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "Public SSH is closed, and a move reaches the servers over public SSH before they join the app's private network. Nothing was changed.",
+      {
+        hint: "Open public SSH first (`opscrew secure --open-public-ssh`), move the app, then close it again with `opscrew secure --close-public-ssh`.",
+      },
+    );
+  }
+  requireAddressedOldSide(plan);
+  const oldAddress = await liveOldSide(deps, plan, options);
+  // The bucket stays where it is: the app on the new side needs its key, known before any change.
+  if (providerBucket(plan) !== undefined) {
+    await requireStorageKey(deps, plan, options.services ?? {}, { command: RUN_COMMAND });
+  }
+  const to = await newTargetId(deps, options);
+  if (to === from.provider) {
+    if (to === "portainer") throw betweenPortainers();
+    if (to !== "own") {
+      const name = providerProfile(to).displayName;
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `${plan.app.name} already runs on ${name}, so there is nothing to move. Moves within one provider (another location or size) are not supported yet. Nothing was changed.`,
+        {
+          hint: `Run \`${RUN_COMMAND} --to <target>\` with another target, or change the provider with \`opscrew interview\` first.`,
+        },
+      );
+    }
+  }
+  const facts = (await readArtifact("architecture", deps.paths.files.architecture)).facts;
+  const services = options.services ?? {};
+  const fromOwn = from.provider === "own" ? (await readServerAddresses(deps.paths)).own : undefined;
+
+  // From here the old side's connection is set aside, and the new side's takes its slot: a stop
+  // before the move is recorded puts it back, so nothing is changed.
+  await setAsideOldConnection(deps.paths, from.provider);
+  try {
+    const next =
+      to === "own"
+        ? await ownServerSide(
+            deps,
+            { plan, facts, ...(fromOwn !== undefined ? { fromOwn } : {}) },
+            options,
+          )
+        : to === "portainer"
+          ? await portainerSide(deps, { plan, facts }, options)
+          : await cloudSide(deps, { plan, facts, to }, options);
+    const retarget: Retarget = {
+      from: {
+        target: plan.target,
+        deploy: plan.deploy,
+        ...(plan.app.build === undefined ? {} : { build: plan.app.build }),
+      },
+      step: "started",
+      empty: [],
+      startedAt: deps.clock.now().toISOString(),
+    };
+    // The move's plan, recorded only once the summary is confirmed.
+    const moving: DeployPlan = {
+      ...plan,
+      target: next.target,
+      cost: next.cost,
+      app: { ...plan.app, build: next.build },
+      deploy: next.deploy,
+      retarget,
+    };
+    // A Portainer old side's address is where the user's records on Cloudflare point.
+    const fromAddress = oldAddress ?? (await userRecords(deps, moving, services))?.address;
+    const session = await openSession(deps, moving, {
+      command: RUN_COMMAND,
+      providers: cloudProviders({ plan: moving }),
+      services,
+      servers: {
+        ...(fromAddress !== undefined ? { from: fromAddress } : {}),
+        ...(next.address !== undefined ? { next: next.address } : {}),
+      },
+      ...(options.engine !== undefined ? { engine: options.engine } : {}),
+      ...(options.approvePlanHash !== undefined
+        ? { approvePlanHash: options.approvePlanHash }
+        : {}),
+    });
+    const old = moveSide(session, "old");
+    const fresh = moveSide(session, "new");
+    // An Edge Agent environment is refused when Portainer is reached (either side), before any
+    // change.
+    if (fresh.kind === "portainer") await (await fresh.docker(session)).close();
+    deps.reporter.step(`Measuring the app's data on ${sideWords(plan.target, "old")}`);
+    const volumes = await old.volumes(session);
+    const empty = await emptyChoices(deps, plan, volumes, options);
+    const data: MoveData[] = volumes.map((volume) => ({
+      owner: volume.owner,
+      key: volume.key,
+      bytes: volume.bytes,
+      copy: !empty.includes(volume.owner),
+    }));
+    const summary = moveSummary(
+      plan,
+      next,
+      data,
+      buildChanges(plan, next),
+      old.kind === "portainer" || fresh.kind === "portainer",
+    );
+    deps.reporter.info(summaryText(summary, plan));
+    if (options.confirmStart !== undefined && !(await options.confirmStart(summary))) {
+      throw new OpsCrewError("APPROVAL_REFUSED", "The move was not started. Nothing was changed.", {
+        hint: `Run \`${RUN_COMMAND}\` again when you are ready.`,
+      });
+    }
+    // The sides' addresses go to the local state, never into opscrew/plan.yaml.
+    await startMoveServers(deps, session.servers);
+    await saveMove(session, { ...retarget, empty });
+    deps.reporter.success(
+      `Started the move of ${plan.app.name} to ${placeWords(next.target)}; opscrew/plan.yaml records each step.`,
+    );
+    await auditStep(
+      session,
+      "started",
+      `move from ${from.provider} to ${next.target.provider}${empty.length > 0 ? `, starting empty: ${empty.join(", ")}` : ""}`,
+    );
+    return session;
+  } catch (error) {
+    // Nothing of the move stays: the old side's connection back in its slot, no move record.
+    await restoreOldConnection(deps.paths, { from: from.provider, to });
+    await endMoveServers(deps, undefined);
+    throw error;
+  }
+}
+
+/** The plain stop for a move from one Portainer environment to another, before any change. */
+function betweenPortainers(): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    "Moving an app between two Portainer environments isn't possible yet: the app has one deploy branch and one Portainer token. Nothing was changed.",
+    {
+      hint: "Move the app to a server first, then into the other environment; or remove it with `opscrew destroy` and set it up there with `opscrew provision`.",
+    },
   );
-  await auditStep(
-    session,
-    "started",
-    `move from ${from.provider} (${from.serverType} in ${from.location}) to ${to} (${target.serverType} in ${target.location}), option ${chosen.id}`,
-  );
-  return session;
 }

@@ -1,6 +1,5 @@
 import type { GitHubClient } from "@opscrew/connector-github";
 import type {
-  CommandRunner,
   ComputeCatalog,
   CredentialCheck,
   Money,
@@ -8,9 +7,12 @@ import type {
   VpsProviderId,
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
-import type { CloudDeployTarget, DesignOption, Retarget } from "@opscrew/plan-schema";
+import type { CloudProvider, DeployTarget, DesignOption, Retarget } from "@opscrew/plan-schema";
 import type { DestroyPreview } from "../destroy";
+import type { OwnServerAnswers } from "../interview/own-server";
+import type { PortainerAnswers } from "../interview/portainer";
 import type { GitHubApi, ProvisionServices } from "../provision";
+import type { ServerAddress } from "../shared";
 
 /** The GitHub calls a move needs: the deploy secrets plus running the deploy workflow. */
 export interface RetargetGitHubApi extends GitHubApi, Pick<GitHubClient, "deleteBranch"> {
@@ -52,8 +54,6 @@ export interface RetargetServices
   >;
   /** GitHub REST API (default: client from `resolveGitHubToken`); `null` means no token. */
   github?: RetargetGitHubApi | null;
-  /** Runs `scp -3` between the servers (default: `deps.runner`). */
-  runner?: CommandRunner;
   /** Server lookup and snapshots per provider (default: `vpsConnector(id).servers`). */
   servers?: Partial<Record<VpsProviderId, ServerSnapshotApi>>;
   /**
@@ -71,30 +71,92 @@ export interface RetargetServices
   now?: () => number;
 }
 
+/** The targets a move goes to: a cloud provider, the user's own server, the user's Portainer. */
+export type MoveTargetId = CloudProvider | "own" | "portainer";
+
+/** One of the app's data mounts on the old side, as the summary lists it. */
+export interface MoveData {
+  /** The service whose data it is; `app` for the app's own files, `monitoring` for its stack's. */
+  owner: string;
+  /** Where the service mounts it in its container (`/var/lib/postgresql/data`). */
+  key: string;
+  /** Its size on the old side, in bytes. */
+  bytes: number;
+  /** Copied in the maintenance window (true), or the new side starts with it empty (false). */
+  copy: boolean;
+}
+
 /** What the move will do, shown before anything changes. */
 export interface RetargetSummary {
-  from: CloudDeployTarget;
-  to: CloudDeployTarget;
+  /** The side being left (`plan.retarget.from.target`). */
+  from: DeployTarget;
+  /** The new side (`plan.target`). */
+  to: DeployTarget;
   /** Plain-English steps in order. */
   steps: string[];
-  /** Monthly price of the new server, paid on top while both servers run. */
+  /** Monthly price of the new side, paid on top while both run (nothing on the user's own). */
   extraMonthly: Money;
-  /** Size of the self-hosted database; undefined without one (no maintenance window). */
-  databaseBytes?: number;
-  /** Rough length of the maintenance window. */
+  /** Each data mount on the old side, its size and whether it is copied or starts empty. */
+  data: MoveData[];
+  /** Rough length of the maintenance window; undefined when nothing is copied (no window). */
   expectedDowntimeMinutes?: number;
   /**
-   * What changes with the new server, each with its reason: the image builder and the deploy
+   * What changes with the new side, each with its reason: the image builder and the deploy
    * strategy design picks for it (empty when they stay). They go into opscrew/plan.yaml.
    */
   changes: string[];
 }
 
+/**
+ * The question for one owner of data on the old side when it is not named with `--empty`: copy
+ * its data (the default) or start it empty on the new side.
+ */
+export interface EmptyQuestion {
+  /** A service's name, `app` (the app's own files) or `monitoring`. */
+  owner: string;
+  /** Its size on the old side, in bytes. */
+  bytes: number;
+  /** What starting empty loses, in one sentence. */
+  loses: string;
+}
+
 export interface RetargetOptions {
-  /** Provider to move to (default: `requirements.provider`). Must differ from the plan's. */
-  to?: VpsProviderId;
-  /** Design option id to use instead of asking. */
+  /** Where to move to (default: `requirements.provider`). Must be another place than the plan's. */
+  to?: MoveTargetId;
+  /** Design option id to use instead of asking (a move to a cloud provider). */
   option?: string;
+  /**
+   * `--to own`: how OpsCrew reaches the new server (the interview's server questions, or the
+   * answers file's `server.*`). It must be reachable from the internet and serve the app
+   * directly: a Cloudflare Tunnel is refused.
+   */
+  ownServer?: OwnServerAnswers;
+  /** `--host-key SHA256:…`: the new own server's host key, needed when nobody can confirm it. */
+  hostKey?: string;
+  /** `--password-logins off|keep`: the choice about other users' password logins there. */
+  passwordLogins?: "off" | "keep";
+  /**
+   * `--to portainer`: the Portainer answers, Portainer reached and its certificate confirmed as
+   * the interview does (`portainer.*`). Web mode `caddy` with the default updater only.
+   */
+  portainer?: PortainerAnswers;
+  /**
+   * `--to portainer`: the public address of the environment's host, where its Caddy serves the
+   * app: the app's DNS records point there. Kept in OpsCrew's local state only.
+   */
+  portainerAddress?: ServerAddress;
+  /** `--public-image`: the app's image is public on GitHub Container Registry (Portainer). */
+  publicImage?: boolean;
+  /**
+   * `--empty <service>`: what starts empty on the new side instead of being copied: a service on
+   * the app's server, `app` for the app's own files, `monitoring` for its stack's.
+   */
+  empty?: readonly string[];
+  /**
+   * Asks for each owner of data not named in `empty` whether to copy it (true, the default) or
+   * start it empty; without it everything else is copied.
+   */
+  chooseEmpty?: (question: EmptyQuestion) => Promise<boolean>;
   /** Apply the saved plan with this hash (from an earlier non-interactive run) and continue. */
   approvePlanHash?: string;
   /** Allow the maintenance window without a prompt (non-interactive runs). */

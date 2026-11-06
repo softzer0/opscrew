@@ -10,7 +10,7 @@ import {
 } from "../destroy/deletion";
 import { deleteDeployBranch } from "../destroy/portainer";
 import { publishDeploySetup } from "../provision";
-import { deployBranchOf, trackedFiles } from "../shared";
+import { deployBranchOf, readOldOwnServer, trackedFiles } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { previousCloud, previousTarget } from "./layouts";
@@ -130,7 +130,12 @@ async function finish(
       `OpsCrew no longer knows the address of ${old} on this computer, so its SSH host key stays in OpsCrew's known_hosts (${deps.paths.files.knownHosts}). It is harmless; you can delete its lines there.`,
     );
   } else if (
-    (await forgetHostKeys(deps, [session.servers.from.ipv4, session.servers.from.ipv6])) > 0
+    (await forgetHostKeys(deps, [
+      session.servers.from.ipv4,
+      session.servers.from.ipv6,
+      // The user's own old server: its admin login's host too, where OpsCrew pinned its key.
+      ...(from.provider === "own" ? [(await readOldOwnServer(deps.paths))?.host] : []),
+    ])) > 0
   ) {
     deps.reporter.info(`Removed the SSH host key of ${old} from OpsCrew's known_hosts.`);
   }

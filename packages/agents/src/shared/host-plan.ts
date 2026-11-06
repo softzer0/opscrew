@@ -138,11 +138,14 @@ const PASSWORD_CHOICE = new Set(["password-users-without-keys", "directory-login
  * Stops (`PHASE_PRECONDITION`, nothing changed) when the host plan has blocking findings or
  * blocked steps: each named with what was found and what to do (the host plan's policy check).
  * `server` names the server (`your server`, `the server`) and `command` what to run again; the
- * choice about password logins is only offered by `opscrew provision`.
+ * choice about password logins is offered by `where.passwordLogins` (default `opscrew provision`).
  */
 export function requireNoBlockers(
   plan: HostPlan,
-  where: Pick<HostPlanStep, "server" | "command">,
+  where: Pick<HostPlanStep, "server" | "command"> & {
+    /** The command that takes `--password-logins` (a move: `opscrew retarget`). */
+    passwordLogins?: string;
+  },
 ): void {
   const blocked = plan.steps.filter((step) => step.state === "blocked");
   if (plan.findings.length === 0 && blocked.length === 0) return;
@@ -152,8 +155,7 @@ export function requireNoBlockers(
     blocked,
     ...(plan.findings.some((finding) => PASSWORD_CHOICE.has(finding.code))
       ? {
-          extraHint:
-            "To decide, run `opscrew provision --password-logins off` (turn password logins off anyway) or `opscrew provision --password-logins keep` (leave them as they are).",
+          extraHint: `To decide, run \`${where.passwordLogins ?? "opscrew provision"} --password-logins off\` (turn password logins off anyway) or \`${where.passwordLogins ?? "opscrew provision"} --password-logins keep\` (leave them as they are).`,
         }
       : {}),
     fallbackHint: `Fix what blocks these steps on the server, then run \`${where.command}\` again.`,

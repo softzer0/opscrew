@@ -18,18 +18,27 @@ import {
   MONITORING_PROJECT,
 } from "@opscrew/iac-templates";
 import { APP_SERVER, monitoringServerName, servicesOn } from "@opscrew/plan-schema";
-import { SshRemoteExec, sshArgs } from "../../shared";
+import { sshArgs } from "../../shared";
 import type { MoveServer } from "../removal";
 import {
+  hasReleaseService,
   isAppHealthy,
+  reloadEdge,
+  runRelease,
   type ServerOpOptions,
   serverOps,
   startService,
   stopService,
   waitAppHealthy,
 } from "../server-ops";
-import { auditMove, type MoveSession, moveOf, waitsOf } from "../session";
-import type { MoveSide, SideDocker, SideSource, SideVolume } from "./types";
+import { auditMove, type MoveBase, moveOf, remoteFor, waitsOf } from "../session";
+import {
+  type MoveSide,
+  type SideDocker,
+  type SideSource,
+  type SideVolume,
+  STOP_SECONDS,
+} from "./types";
 
 /** The Compose labels a side reads on containers. */
 const PROJECT_LABEL = "com.docker.compose.project";
@@ -49,9 +58,9 @@ export interface SshSideInput {
   /** The side being left, or the new one. */
   which: MoveServer;
   /** The side's server in words (`the new server`), for messages and audit: never its address. */
-  words(session: MoveSession): string;
+  words(session: MoveBase): string;
   /** Where `deploy` logs in to the side's server. */
-  login(session: MoveSession): Promise<DeployLogin>;
+  login(session: MoveBase): Promise<DeployLogin>;
   /**
    * Other apps may share the server's edge (a server the user owns): while they are there, the
    * edge stays running, so they keep serving.
@@ -61,14 +70,14 @@ export interface SshSideInput {
    * Whether the monitoring stack on the side's server is the app's: on a server the user owns it
    * may be another app's. Absent, it is (a server OpsCrew created for the app).
    */
-  ownsMonitoring?(session: MoveSession): Promise<boolean>;
+  ownsMonitoring?(session: MoveBase): Promise<boolean>;
 }
 
 /** What every side over SSH shares: everything but preparing and removing it. */
 export type SshSideParts = Omit<MoveSide, "kind" | "prepare" | "remove">;
 
 /** The edge's proxy on the side: the plan's for the new side, the move's `from` for the old one. */
-function sideEdge(session: MoveSession, which: MoveServer): EdgeProxy {
+function sideEdge(session: MoveBase, which: MoveServer): EdgeProxy {
   if (which === "new") return edgeProxy(session.plan);
   const from = moveOf(session).from.target;
   // As `edgeProxy` says: a server's own choice, else (Portainer) the stack's Caddy.
@@ -76,7 +85,7 @@ function sideEdge(session: MoveSession, which: MoveServer): EdgeProxy {
 }
 
 /** The typed server operations' options for the session's app. */
-function opsOf(session: MoveSession): ServerOpOptions {
+function opsOf(session: MoveBase): ServerOpOptions {
   return { ...serverOps(session.plan, session.deps.redactor), command: session.command };
 }
 
@@ -89,22 +98,13 @@ function opsOf(session: MoveSession): ServerOpOptions {
  */
 export function sshSide(input: SshSideInput): SshSideParts {
   /** The deploy user's shell on the side's server: the injected one, else SSH. */
-  async function remoteOf(session: MoveSession): Promise<RemoteExec> {
+  async function remoteOf(session: MoveBase): Promise<RemoteExec> {
     const { host, port } = await input.login(session);
-    return (
-      session.services.remote?.(host) ??
-      new SshRemoteExec({
-        host,
-        port,
-        keyFile: session.deployKey.privateKeyFile,
-        knownHostsFile: session.deps.paths.files.knownHosts,
-        runner: session.deps.runner,
-      })
-    );
+    return remoteFor(session.deps, session.services, session.deployKey.privateKeyFile, host, port);
   }
 
   /** What to do after a failed command on the server, in words. */
-  function serverHint(session: MoveSession): string {
+  function serverHint(session: MoveBase): string {
     const { folder } = opsOf(session);
     return `As deploy on ${input.words(session)}, \`docker compose ps\` in ${folder} shows what runs and \`docker compose logs --tail 200\` why; then run \`${session.command}\` again.`;
   }
@@ -115,7 +115,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
    * names none, stays.
    */
   async function inWords<T>(
-    session: MoveSession,
+    session: MoveBase,
     act: () => Promise<T>,
     keepHint = false,
   ): Promise<T> {
@@ -135,7 +135,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
 
   /** `docker compose stop` or `up -d` of the app's stateful services `names`. */
   async function compose(
-    session: MoveSession,
+    session: MoveBase,
     verb: "stop" | "up -d",
     names: readonly string[],
   ): Promise<void> {
@@ -161,7 +161,9 @@ export function sshSide(input: SshSideInput): SshSideParts {
       };
       let result: CommandResult;
       try {
-        result = await remote.run(`cd ${folder} && docker compose ${verb} ${names.join(" ")}`, {
+        // A stateful service gets 120 s to stop cleanly (T2306), so its files are whole.
+        const args = verb === "stop" ? `stop -t ${STOP_SECONDS}` : verb;
+        result = await remote.run(`cd ${folder} && docker compose ${args} ${names.join(" ")}`, {
           timeoutMs,
         });
       } catch (error) {
@@ -172,7 +174,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
     });
   }
 
-  async function docker(session: MoveSession): Promise<SideDocker> {
+  async function docker(session: MoveBase): Promise<SideDocker> {
     const { host, port } = await input.login(session);
     const streams = session.deps.streams ?? new NodeStreamRunner();
     const args = [
@@ -201,7 +203,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
 
   /** Runs `use` with the side's Docker API, closed afterwards. */
   async function withDocker<T>(
-    session: MoveSession,
+    session: MoveBase,
     use: (side: SideDocker) => Promise<T>,
   ): Promise<T> {
     const side = await docker(session);
@@ -216,7 +218,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
    * True when the edge must stay as it is: other apps' Compose projects (`/srv/apps/<other>`) are
    * on a server whose edge they share.
    */
-  async function edgeShared(session: MoveSession): Promise<boolean> {
+  async function edgeShared(session: MoveBase): Promise<boolean> {
     if (input.sharedEdge !== true) return false;
     const app = session.plan.app.name;
     const containers = await withDocker(session, (side) =>
@@ -230,23 +232,30 @@ export function sshSide(input: SshSideInput): SshSideParts {
   }
 
   /** Says that the shared edge stays running for the other apps on the side's server. */
-  function edgeStays(session: MoveSession, edge: EdgeProxy): void {
+  function edgeStays(session: MoveBase, edge: EdgeProxy): void {
     session.deps.reporter.info(
       `${EDGE_PROXIES[edge].label} on ${input.words(session)} keeps running: other apps there use it too.`,
     );
   }
 
-  async function stopEdge(session: MoveSession): Promise<void> {
+  async function stopEdge(session: MoveBase): Promise<void> {
     const edge = sideEdge(session, input.which);
     if (await edgeShared(session)) return edgeStays(session, edge);
     const remote = await remoteOf(session);
     await inWords(session, () => stopService(remote, edge, opsOf(session)));
   }
 
-  async function startEdge(session: MoveSession): Promise<void> {
+  /**
+   * Starts the edge; one other apps share kept running, so it is reloaded instead: the app's
+   * hostnames get their certificates right after DNS switched to this server.
+   */
+  async function startEdge(session: MoveBase): Promise<void> {
     const edge = sideEdge(session, input.which);
-    if (await edgeShared(session)) return edgeStays(session, edge);
     const remote = await remoteOf(session);
+    if (await edgeShared(session)) {
+      await inWords(session, () => reloadEdge(remote, edge, opsOf(session)));
+      return;
+    }
     await inWords(session, () => startService(remote, edge, opsOf(session)));
   }
 
@@ -306,7 +315,17 @@ export function sshSide(input: SshSideInput): SshSideParts {
         plan.app.port,
         plan.app.healthPath,
         sideEdge(session, input.which),
+        plan.app.name,
       );
+    },
+
+    async release(session, bytes) {
+      const remote = await remoteOf(session);
+      const ops = opsOf(session);
+      await inWords(session, async () => {
+        // The version deployed there decides: its compose file has a `release` service or not.
+        if (await hasReleaseService(remote, ops)) await runRelease(remote, bytes, ops);
+      });
     },
 
     async volumes(session) {
@@ -327,7 +346,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
  * `app`. Each mount is listed once, with its size.
  */
 async function dataMounts(
-  session: MoveSession,
+  session: MoveBase,
   side: SideDocker,
   monitoring: boolean,
 ): Promise<SideVolume[]> {
@@ -363,6 +382,6 @@ async function dataMounts(
 }
 
 /** The app's data folder on a server (`/srv/data/<app>/`): the only folders a side copies. */
-function dataRoot(session: MoveSession): string {
+function dataRoot(session: MoveBase): string {
   return `${appDirs(session.plan.app.name).data}/`;
 }

@@ -1,19 +1,34 @@
 import { cloudTarget, type InfraLayout, type ServerModule } from "@opscrew/iac-templates";
-import type { CloudDeployTarget, Retarget } from "@opscrew/plan-schema";
+import type { CloudDeployTarget, DeployTarget, Retarget } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 
 /**
- * The old server's cloud target (`plan.retarget.from.target`). Until the move's sides cover the
- * user's own server and Portainer, every move starts from a server OpsCrew created.
+ * The old side's cloud target (`plan.retarget.from.target`), for what only a server OpsCrew
+ * created has (its module, its rename, its snapshot); throws for another side.
  */
 export function previousCloud(move: Pick<Retarget, "from">): CloudDeployTarget {
   return cloudTarget(move.from.target) as CloudDeployTarget;
 }
 
-/** The old server's target (`plan.retarget.from.target`) with its image filled in. */
+/** The old cloud server's target (`plan.retarget.from.target`) with its image filled in. */
 export function previousTarget(move: Pick<Retarget, "from">): CloudDeployTarget {
   const target = previousCloud(move);
   return { ...target, image: target.image ?? providerProfile(target.provider).defaultImage };
+}
+
+/**
+ * The old side's target for any side (`plan.retarget.from.target`): a cloud server's with its
+ * image filled in, the user's own server or Portainer as recorded.
+ */
+export function oldSideTarget(move: Pick<Retarget, "from">): DeployTarget {
+  const { target } = move.from;
+  switch (target.provider) {
+    case "hetzner":
+    case "digitalocean":
+      return previousTarget(move);
+    default:
+      return target;
+  }
 }
 
 /**

@@ -303,12 +303,14 @@ describe.skipIf(!findExecutable("git"))("a side on a server the user owns", () =
       "Caddy on your new server keeps running: other apps there use it too.",
     );
     await side.stopEdge(s.session);
+    // Started again after the switch, the shared edge reloads, so the app's hostnames get their
+    // certificates at once; it never stops.
     await side.startEdge(s.session);
-    expect(ops(s.events, OWN_IPV4)).toEqual(["health"]);
+    expect(ops(s.events, OWN_IPV4)).toEqual(["health", "reload edge"]);
 
     s.docker.containers.clear();
     await side.deploy(s.session);
-    expect(ops(s.events, OWN_IPV4)).toEqual(["health", "health", "stop caddy"]);
+    expect(ops(s.events, OWN_IPV4)).toEqual(["health", "reload edge", "health", "stop caddy"]);
   });
 
   it("remove takes only the app off the new server with its data at --abort, never undoing the host", async () => {

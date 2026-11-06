@@ -20,7 +20,7 @@ import { previousTarget } from "./layouts";
 import { clearPending } from "./pending";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { isAppHealthy } from "./server-ops";
-import { endMoveServers, oldServer } from "./servers";
+import { endMoveServers } from "./servers";
 import {
   auditStep,
   layoutOf,
@@ -296,7 +296,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   if (abortProgress(session) < ABORT_PROGRESS["secrets-restored"]) {
     if (!stepBefore(move.step, "created")) {
       await recordAbort(session);
-      await storeDeploySecrets(session, oldServer(session).ipv4, "old");
+      await storeDeploySecrets(session, "old");
     }
     await recordAbortStep(session, "secrets-restored", "the deploy secrets point to the old side");
   }

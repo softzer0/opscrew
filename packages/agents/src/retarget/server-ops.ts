@@ -46,6 +46,11 @@ export interface ServerOpOptions {
   database?: string;
   /** The command the hints say to run again after a fix (default `opscrew retarget`). */
   command?: string;
+  /**
+   * The app's name, which names its web container (`<app>-app-1`): the health check reaches it
+   * by that name, since the `app` alias is ambiguous on an edge network several apps share.
+   */
+  app?: string;
 }
 
 /** {@link ServerOpOptions.database} with its default. */
@@ -60,7 +65,12 @@ function commandOf(options: Pick<ServerOpOptions, "command">): string {
 
 /** {@link ServerOpOptions} for `plan`'s app, its text redacted by `redactor`. */
 export function serverOps(plan: DeployPlan, redactor: Pick<Redactor, "redact">): ServerOpOptions {
-  return { redact: redactor.redact, folder: appDir(plan), processes: processServices(plan) };
+  return {
+    redact: redactor.redact,
+    folder: appDir(plan),
+    processes: processServices(plan),
+    app: plan.app.name,
+  };
 }
 
 /** Where a service's Compose project is: the app's folder, or the edge's for its proxy. */
@@ -98,10 +108,12 @@ function excerpt(text: string, redact: RedactText): string {
 
 /**
  * Keeps only Postgres tool and shell messages from dump/restore stderr. Lines that can quote row
- * data or SQL (`DETAIL:`, `CONTEXT:`, `Command was:`, indented continuations, ...) are dropped.
+ * data or SQL (`DETAIL:`, `CONTEXT:`, `Command was:`, a tool's `pg_dump: detail:` and `hint:`
+ * lines, indented continuations, ...) are dropped.
  */
 function withoutData(stderr: string): string {
-  const dataLine = /^(DETAIL|CONTEXT|HINT|QUERY|STATEMENT|LINE \d+|Command was):/;
+  const dataLine =
+    /^(DETAIL|CONTEXT|HINT|QUERY|STATEMENT|LINE \d+|Command was):|^[\w.-]+: (detail|hint):/i;
   return stderr
     .split(/\r?\n/)
     .filter((line) => line.trim().length > 0 && !/^\s/.test(line) && !dataLine.test(line))
@@ -227,11 +239,38 @@ export async function startService(
   );
 }
 
+/** How the edge's running proxy reloads its configuration; each keeps it on an error. */
+const RELOAD: Record<EdgeProxy, string> = {
+  // `--force` provisions the sites again even when the configuration is the same, so Caddy tries
+  // the certificates of hostnames whose DNS just switched to this server right away.
+  caddy: "caddy reload --force --config /etc/caddy/Caddyfile --adapter caddyfile",
+  nginx: "sh -c 'nginx -t -q && nginx -s reload'",
+};
+
+/** Reloads the running proxy of the edge (`/srv/edge`), which other apps on the server share. */
+export async function reloadEdge(
+  remote: RemoteExec,
+  edge: EdgeProxy,
+  options: ServerOpOptions,
+): Promise<void> {
+  await runStep(
+    remote,
+    `cd ${EDGE_DIR} && docker compose exec -T ${edge} ${RELOAD[edge]} < /dev/null`,
+    MINUTE,
+    {
+      what: `reload ${EDGE_PROXIES[edge].label}`,
+      hint: composePsHint(remote.host, { ...options, folder: EDGE_DIR }),
+    },
+    options.redact,
+  );
+}
+
 /**
  * The health check; `port` is the plan's (`app.port`, a validated TCP port), `edge` the server's
- * proxy, whose image (Caddy's, or nginx's on Alpine) has busybox `wget`.
+ * proxy, whose image (Caddy's, or nginx's on Alpine) has busybox `wget`. With `app` (the plan's
+ * validated app name) it reaches the app's web container by name, else by the `app` alias.
  */
-function healthCommand(port: number, healthPath: string, edge: EdgeProxy): string {
+function healthCommand(port: number, healthPath: string, edge: EdgeProxy, app?: string): string {
   // Single-quoted in the remote shell; quotes, whitespace, `$`, backticks and backslashes refused.
   if (!/^\/[^\s'"`$\\]*$/.test(healthPath)) {
     throw new OpsCrewError(
@@ -243,9 +282,14 @@ function healthCommand(port: number, healthPath: string, edge: EdgeProxy): strin
     );
   }
   // A one-off container of the edge's proxy (busybox wget) on the edge's network, which the app's
-  // web service joins as `app` (a server OpsCrew creates runs one app): works whether or not the
-  // proxy is running (it is stopped on the new server until DNS points at it).
-  return `cd ${EDGE_DIR} && docker compose run --rm --no-deps -T --entrypoint wget ${edge} -q -O /dev/null -T 5 'http://app:${port}${healthPath}'`;
+  // web container joins: works whether or not the proxy is running (it is stopped on the new
+  // server until DNS points at it).
+  return `cd ${EDGE_DIR} && docker compose run --rm --no-deps -T --entrypoint wget ${edge} -q -O /dev/null -T 5 'http://${appHost(app)}:${port}${healthPath}'`;
+}
+
+/** Where the health check reaches the app: its web container (`<app>-app-1`), else the alias. */
+function appHost(app: string | undefined): string {
+  return app === undefined ? "app" : `${app}-app-1`;
 }
 
 async function probe(
@@ -270,8 +314,9 @@ export async function isAppHealthy(
   port: number,
   healthPath: string,
   edge: EdgeProxy,
+  app?: string,
 ): Promise<boolean> {
-  return (await probe(remote, healthCommand(port, healthPath, edge))).healthy;
+  return (await probe(remote, healthCommand(port, healthPath, edge, app))).healthy;
 }
 
 export interface WaitAppHealthyOptions extends ServerOpOptions {
@@ -293,7 +338,7 @@ export async function waitAppHealthy(
   healthPath: string,
   options: WaitAppHealthyOptions,
 ): Promise<void> {
-  const command = healthCommand(port, healthPath, options.edge);
+  const command = healthCommand(port, healthPath, options.edge, options.app);
   const timeoutMs = options.timeoutMs ?? 5 * MINUTE;
   let detail = "";
   const healthy = await pollUntil(
@@ -313,7 +358,7 @@ export async function waitAppHealthy(
   const last = excerpt(detail, options.redact);
   throw new OpsCrewError(
     "COMMAND_FAILED",
-    `The app on ${remote.host} did not answer on http://app:${port}${healthPath} within ${durationText(timeoutMs)}${last ? ` (last check: ${last})` : ""}.`,
+    `The app on ${remote.host} did not answer on http://${appHost(options.app)}:${port}${healthPath} within ${durationText(timeoutMs)}${last ? ` (last check: ${last})` : ""}.`,
     {
       hint: `See why on the server: \`ssh deploy@${remote.host}\`, then \`cd ${options.folder} && docker compose logs --tail 200 app\`.`,
     },

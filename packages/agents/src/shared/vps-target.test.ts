@@ -88,10 +88,13 @@ describe("a Portainer target in steps that only know single servers", () => {
     expect(moveProvider(testPlan().target)).toBe("hetzner");
   });
 
-  it("never moves: opscrew retarget refuses a Portainer target before anything else", async () => {
+  it("moves once it runs: opscrew retarget refuses a Portainer target with nothing deployed", async () => {
     const deps = await createTestPhaseDeps();
     await writeArtifact("plan", deps.paths.files.plan, portainerPlan());
-    await expect(runRetarget(deps, { to: "hetzner" })).rejects.toMatchObject(NO_MOVE);
+    await expect(runRetarget(deps, { to: "hetzner" })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("has no live deployment on this computer"),
+    });
   });
 
   it("says plainly that a server the user owns never moves", () => {
@@ -151,7 +154,10 @@ describe("the localhost target in steps that do not support it yet", () => {
   it("never moves: opscrew retarget refuses it before anything else", async () => {
     expect(refusal(() => moveProvider(localhostPlan().target))).toMatchObject(NO_LOCAL_MOVE);
     const deps = await localhostProject();
-    await expect(runRetarget(deps, { to: "hetzner" })).rejects.toMatchObject(NO_LOCAL_MOVE);
+    await expect(runRetarget(deps, { to: "hetzner" })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("This computer runs a copy of the app for trying changes"),
+    });
   });
 
   it("is refused plainly by the commands it has no use for, or that do not support it yet", async () => {
@@ -260,7 +266,10 @@ describe.each([
   it("never moves: opscrew retarget refuses it before anything else", async () => {
     expect(refusal(() => moveProvider(serverlessPlan().target))).toMatchObject(NO_MOVE);
     const deps = await serverlessProject();
-    await expect(runRetarget(deps, { to: "hetzner" })).rejects.toMatchObject(NO_MOVE);
+    await expect(runRetarget(deps, { to: "hetzner" })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("between a site host and a server"),
+    });
   });
 
   it("is refused plainly by every command that does not support it yet", async () => {

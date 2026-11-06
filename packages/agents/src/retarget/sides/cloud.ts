@@ -31,7 +31,7 @@ export interface CloudSideOptions {
 }
 
 /** The provider of the side's server: the plan's for the new side, the move's `from` for the old. */
-function providerOf(session: MoveSession, which: MoveServer) {
+function providerOf(session: Pick<MoveSession, "plan">, which: MoveServer) {
   return which === "new"
     ? moveProvider(session.plan.target)
     : previousCloud(moveOf(session)).provider;

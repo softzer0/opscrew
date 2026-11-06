@@ -432,8 +432,8 @@ function requireMongoAvx(
   );
 }
 
-/** The phases that change a server the user owns through its host plan. */
-type OwnHostPhase = Extract<PhaseName, "provision" | "dns" | "portainer">;
+/** The phases that change a server the user owns through its host plan (a move's new side too). */
+type OwnHostPhase = Extract<PhaseName, "provision" | "dns" | "portainer" | "retarget">;
 
 /**
  * Connects to the user's own server (host key confirmed or `--host-key`, pinned), inspects it
@@ -529,7 +529,12 @@ export async function prepareOwnServer(
       }),
       input.command,
     ),
-    { server: "your server", command: input.command },
+    {
+      server: "your server",
+      command: input.command,
+      // A move offers the choice about password logins itself.
+      ...(input.phase === "retarget" ? { passwordLogins: input.command } : {}),
+    },
   );
   if (target.access === "public") {
     const address = ownServerPublicAddress(session.connection, facts);

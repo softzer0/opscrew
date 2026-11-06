@@ -357,7 +357,9 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     const error = await caught(finish(h));
     expect(error.code).toBe("PHASE_PRECONDITION");
     expect(error.message).toContain("does not serve the app yet: starting Caddy there failed");
-    expect(error.message).toContain("OpsCrew keeps the old server; nothing was deleted.");
+    expect(error.message).toContain(
+      "OpsCrew keeps the old server on Hetzner Cloud; nothing was removed.",
+    );
     expect(error.hint).toContain("run `opscrew retarget` to check again");
     expect(error.hint).not.toContain("--finish");
     expect(trail(since(h, mark)).filter((line) => !line.endsWith("start caddy"))).toEqual([]);
@@ -384,8 +386,13 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     h.hosts.host(OLD_IPV4).app = true;
     const early = await caught(run(h, { dnsSwitched: true }));
     expect(early.message).toContain("does not serve the app yet");
-    expect(early.message).toContain(`${DOMAIN} resolves to ${OLD_IPV4} from this computer`);
-    expect(early.hint).toContain(`Change the DNS records of ${DOMAIN} to ${n}`);
+    expect(early.message).toContain(
+      `${DOMAIN} does not resolve only to the new Droplet on DigitalOcean from this computer yet`,
+    );
+    expect(early.message).not.toContain(OLD_IPV4);
+    expect(early.hint).toContain(
+      `Change the DNS records of ${DOMAIN} to the new Droplet on DigitalOcean's address`,
+    );
     expect(early.hint).not.toContain("--finish");
     expect(h.events.some((e) => e.type === "fetch" && e.url.includes(DOMAIN))).toBe(false);
     expect((await moveOnDisk(h))?.step).toBe("switched");
@@ -393,8 +400,10 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     scripted(h);
     const refused = await caught(finish(h, { confirm: async () => true }));
     expect(refused.code).toBe("PHASE_PRECONDITION");
-    expect(refused.message).toContain(`${DOMAIN} resolves to ${OLD_IPV4}`);
-    expect(refused.message).toContain("OpsCrew keeps the old server; nothing was deleted.");
+    expect(refused.message).toContain(`${DOMAIN} does not resolve only to the new Droplet`);
+    expect(refused.message).toContain(
+      "OpsCrew keeps the old server on Hetzner Cloud; nothing was removed.",
+    );
     expect(h.engine.state.servers.server_previous).toBeDefined();
     expect(h.events.some((e) => e.type === "snapshot" || e.type === "confirm")).toBe(false);
 
@@ -473,7 +482,9 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
       const result = await abort(h);
       expect(result).toMatchObject({ step: "aborted", done: true });
       const lines = trail(since(h, mark));
-      if (step === "migrated") expect(lines[0]).toBe(`${OLD_IPV4} start app`);
+      if (step === "migrated") {
+        expect(lines.slice(0, 2)).toEqual([`${OLD_IPV4} start db`, `${OLD_IPV4} start app`]);
+      }
       const created = !["started", "renamed"].includes(step);
       expect(lines.filter((line) => line.startsWith("apply"))).toEqual(
         step === "started"
@@ -766,13 +777,13 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     const stopAt = window.indexOf(`${OLD_IPV4} stop app`);
     expect(window[stopAt + 1]).toBe(`${OLD_IPV4} ${processes} stop worker cron`);
     expect(window.indexOf(`${OLD_IPV4} dump`)).toBeGreaterThan(stopAt + 1);
-    expect(window).toContain(`${h.newServer.ipv4} ${processes} up -d worker cron`);
+    expect(window).toContain(`${h.newServer.ipv4} start worker cron`);
 
     const mark = h.events.length;
     await abort(h);
     const back = trail(since(h, mark));
     const startAt = back.indexOf(`${OLD_IPV4} start app`);
-    expect(back[startAt + 1]).toBe(`${OLD_IPV4} ${processes} up -d worker cron`);
+    expect(back[startAt + 1]).toBe(`${OLD_IPV4} start worker cron`);
   });
 
   it("with the local record gone too, starts the app on the old server (from the state)", async () => {
@@ -789,7 +800,7 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     const mark = h.events.length;
     const error = await caught(abort(h));
     expect(error.code).toBe("CREDENTIALS_INVALID");
-    expect(trail(since(h, mark))).toEqual([`${OLD_IPV4} start app`]);
+    expect(trail(since(h, mark))).toEqual([`${OLD_IPV4} start db`, `${OLD_IPV4} start app`]);
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
     expect(h.hosts.host(h.newServer.ipv4).db).toBe("orders before the move");
     expect((await readServerAddresses(h.paths)).retarget).toEqual({
@@ -865,7 +876,7 @@ describe.skipIf(!findExecutable("git"))("abortRetarget", () => {
     };
     const failed = await caught(run(h));
     expect(failed.message).toContain("The switch failed");
-    expect(failed.message).toContain(`may already point at the new server (${n}`);
+    expect(failed.message).toContain("may already point at the new Droplet on DigitalOcean");
     expect(failed.message).toContain("opscrew retarget --abort` points them back");
     expect(h.engine.dnsServer()?.ipv4).toBe(n);
     expect((await moveOnDisk(h))?.step).toBe("deployed");

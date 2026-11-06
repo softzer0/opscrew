@@ -128,10 +128,11 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
     await side.stopServices(session, []);
     expect(ops(h, OLD_IPV4)).toEqual([
       "stop app",
-      "cd /srv/apps/shop && docker compose stop db",
+      // A stateful service gets 120 seconds to stop cleanly.
+      "stop db",
       "stop caddy",
       "start caddy",
-      "cd /srv/apps/shop && docker compose up -d db",
+      "start db",
       "start app",
     ]);
   });
@@ -255,7 +256,7 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
     const h = await moveHarness();
     const { session } = await moving(h);
     h.hosts.fail = (_ip, op) =>
-      op.endsWith("docker compose stop db")
+      op === "stop db"
         ? { exitCode: 255, stdout: "", stderr: `ssh: connect to host ${OLD_IPV4} port 22: refused` }
         : undefined;
     const error = (await cloudSide("old")

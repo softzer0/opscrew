@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  type FakeContainer,
+  FakeDocker,
+  type FakeFile,
+  type FakeRun,
+} from "@opscrew/connector-docker/testing";
 import type {
   ApprovalDecision,
   ApprovalHandler,
@@ -19,6 +25,7 @@ import type {
   ResourceChange,
   ResourceMove,
   ServerSnapshotApi,
+  StreamRunner,
 } from "@opscrew/contracts";
 import {
   ApprovalGate,
@@ -30,6 +37,7 @@ import {
   resolveProjectPaths,
 } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { IMAGES } from "@opscrew/iac-templates";
 import {
   type CloudProvider,
   type DeployPlan,
@@ -37,6 +45,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { fakeDialStdio } from "../retarget/sides/ssh.fakes";
 import { isMaintenanceWindowRequest } from "../retarget/texts";
 import type { RetargetGitHubApi, RetargetServices } from "../retarget/types";
 import { ensureDeployKey, ensureStatePassphrase } from "../shared";
@@ -537,6 +546,10 @@ function opOf(command: string): string {
   // The edge's proxy: Caddy, or nginx on the nginx edge.
   const edge = /docker compose (stop|up -d) (caddy|nginx)$/.exec(command);
   if (edge) return `${edge[1] === "stop" ? "stop" : "start"} ${edge[2]}`;
+  if (/docker compose exec -T (caddy|nginx) /.test(command)) return "reload edge";
+  // The app's stateful services, which a move's window stops (with time to stop cleanly) and starts.
+  const services = /docker compose (stop -t \d+|up -d) ([a-z0-9 -]+)$/.exec(command);
+  if (services) return `${services[1] === "up -d" ? "start" : "stop"} ${services[2]}`;
   if (/--entrypoint wget (caddy|nginx) /.test(command)) return "health";
   if (command.includes("pg_database_size")) return "db size";
   if (command.includes("pg_dump")) return "dump";
@@ -549,12 +562,188 @@ function opOf(command: string): string {
   return command;
 }
 
-/** The two servers' shells: Compose services, the database marker and the dump file. */
+/** The Compose label of a container's project, and of its service. */
+const PROJECT_LABEL = "com.docker.compose.project";
+const SERVICE_LABEL = "com.docker.compose.service";
+/** Where the app's services keep their data on a server OpsCrew deploys to over SSH. */
+const DATA_ROOT = `/srv/data/${APP}`;
+
+/**
+ * The two servers' shells (Compose services, the database marker) and their Docker APIs, which a
+ * move reaches over `ssh … docker system dial-stdio` ({@link FakeHosts.streams}): the app's
+ * containers, its services' data folders, the carrier and the one-off postgres containers that
+ * dump the database into the move's dump volume and restore it.
+ */
 export class FakeHosts {
   readonly hosts = new Map<string, FakeHost>();
+  /** Each server's Docker, by address. */
+  readonly dockers = new Map<string, FakeDocker>();
   /** Makes an operation fail (a result) or the connection break (an error). */
   fail: ((host: string, op: string) => CommandResult | Error | undefined) | undefined;
+  /** The stateful services on the app's server, each with a data folder (`db`: Postgres). */
+  services: string[] = ["db"];
+  /** Services Docker kills when they are stopped (exit 137), by `<host> <service>`. */
+  readonly killed = new Set<string>();
   dbSize = 52_428_800;
+  readonly #dialers = new Map<string, ReturnType<typeof fakeDialStdio>>();
+
+  /** `ssh … deploy@<host> … docker system dial-stdio`: a byte pipe to that server's Docker. */
+  readonly streams: StreamRunner = {
+    open: (command, args, options) => {
+      const login = args.find((arg) => arg.startsWith("deploy@")) ?? "";
+      const host = login.slice("deploy@".length);
+      let dialer = this.#dialers.get(host);
+      if (dialer === undefined) {
+        dialer = fakeDialStdio(this.docker(host));
+        this.#dialers.set(host, dialer);
+      }
+      return dialer.open(command, args, options);
+    },
+  };
+
+  /** The Docker API of the server at `ip`, with the carrier's and postgres's images. */
+  docker(ip: string): FakeDocker {
+    let docker = this.dockers.get(ip);
+    if (docker === undefined) {
+      docker = new FakeDocker();
+      docker.images.add(IMAGES.busybox.ref);
+      docker.images.add(IMAGES.postgres.ref);
+      docker.onStart = (container) => this.#oneOff(ip, container);
+      docker.addFolder("/srv/data");
+      docker.addFolder(DATA_ROOT);
+      this.dockers.set(ip, docker);
+    }
+    return docker;
+  }
+
+  /**
+   * The app's containers on `ip` as its deploy leaves them: `app`, and each stateful service with
+   * its data (`data` its files) at the same path in the container: on a server a folder bound
+   * from `/srv/data/<app>/<service>`, in the user's Portainer (`stack`) the stack's named volume
+   * `opscrew-<app>_<service>_data`.
+   */
+  seed(ip: string, data: Record<string, FakeFile> = {}, stack = false): void {
+    const docker = this.docker(ip);
+    const project = stack ? `opscrew-${APP}` : APP;
+    const container = (service: string, source?: string) => {
+      const id = `${ip}-${service}`.replace(/[^a-z0-9]/gi, "0").padEnd(64, "0");
+      if (docker.containers.has(id)) return;
+      if (source !== undefined && !stack && !docker.folders.has(source)) {
+        docker.addFolder(source, data);
+      }
+      if (source !== undefined && stack && !docker.volumes.has(source)) {
+        docker.addVolume(source, data, { [PROJECT_LABEL]: project });
+      }
+      docker.containers.set(id, {
+        id,
+        name: `${project}-${service}-1`,
+        image:
+          service === "app" ? `ghcr.io/acme/shop@sha256:${"c".repeat(64)}` : IMAGES.postgres.ref,
+        cmd: [],
+        env: [],
+        labels: { [PROJECT_LABEL]: project, [SERVICE_LABEL]: service },
+        binds: [],
+        mounts:
+          source === undefined
+            ? []
+            : [
+                {
+                  type: stack ? "volume" : "bind",
+                  source,
+                  target: "/var/lib/postgresql/data",
+                },
+              ],
+        state: "running",
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
+    };
+    container("app");
+    for (const service of this.services) {
+      container(service, stack ? `${project}_${service}_data` : `${DATA_ROOT}/${service}`);
+    }
+  }
+
+  /** Sets the state of the containers of `services` on `ip` (Compose's stop or start). */
+  #compose(ip: string, verb: "stop" | "start", services: readonly string[]): void {
+    for (const container of this.docker(ip).containers.values()) {
+      const service = container.labels[SERVICE_LABEL] ?? "";
+      if (container.labels[PROJECT_LABEL] !== APP || !services.includes(service)) continue;
+      container.state = verb === "stop" ? "exited" : "running";
+      container.exitCode = verb === "stop" && this.killed.has(`${ip} ${service}`) ? 137 : 0;
+    }
+  }
+
+  /** The dump in the dump volume a one-off container mounts at `/dump`. */
+  #dumpFile(ip: string, container: FakeContainer): FakeFile | undefined {
+    const mount = container.mounts.find((m) => m.target === "/dump");
+    return mount === undefined
+      ? undefined
+      : this.docker(ip).volumes.get(mount.source)?.files.get("app.dump");
+  }
+
+  /**
+   * A one-off postgres container's command, as `pg_dump`, `pg_restore --list`, `psql` and
+   * `pg_restore` would run it against the server's database marker; the carrier's built-ins
+   * answer every other command.
+   */
+  #oneOff(ip: string, container: FakeContainer): FakeRun | undefined {
+    const [program, ...args] = container.cmd;
+    const script = program === "sh" ? (args[1] ?? "") : "";
+    const op = script.includes("pg_dump")
+      ? "dump"
+      : script.includes("pg_restore --list")
+        ? "verify dump"
+        : program === "psql"
+          ? "empty db"
+          : program === "pg_restore"
+            ? "restore"
+            : undefined;
+    if (op === undefined) return undefined;
+    this.events.push({ type: "remote", host: ip, op });
+    const failure = this.fail?.(ip, op);
+    if (failure instanceof Error) throw failure;
+    if (failure) return failure;
+    const h = this.host(ip);
+    const file = this.#dumpFile(ip, container);
+    const failed = (stderr: string): FakeRun => ({ exitCode: 1, stderr });
+    switch (op) {
+      case "dump": {
+        const mount = container.mounts.find((m) => m.target === "/dump");
+        const volume = this.docker(ip).volumes.get(mount?.source ?? "");
+        volume?.files.set("app.dump", {
+          type: "file",
+          mode: 0o600,
+          uid: 0,
+          gid: 0,
+          data: Buffer.from(h.db),
+        });
+        return { exitCode: 0 };
+      }
+      case "verify dump":
+        if (file?.data === undefined) return failed("pg_restore: error: could not open input file");
+        return {
+          exitCode: 0,
+          stdout: `${createHash("sha256").update(file.data).digest("hex")}  /dump/app.dump\n`,
+        };
+      case "empty db":
+        h.db = "empty";
+        return { exitCode: 0 };
+      default:
+        if (h.app)
+          return failed('pg_restore: error: database "app" is being accessed by other users');
+        if (file?.data === undefined) return failed("pg_restore: error: could not open input file");
+        // Without `--clean`, a restore onto a database that holds tables fails.
+        if (h.db !== "empty") {
+          return failed(
+            'pg_restore: error: could not execute query: ERROR:  relation "orders" already exists',
+          );
+        }
+        h.db = file.data.toString("utf8");
+        return { exitCode: 0 };
+    }
+  }
   /**
    * The deployed compose file has a `release` service (the plan has `app.releaseCommand`): the
    * deploy migrates the new server's empty database to HEAD, and `release` marks the database
@@ -649,8 +838,12 @@ export class FakeHosts {
       case "rm dump":
         h.dump = undefined;
         return ok();
-      default:
+      default: {
+        const services = /^(stop|start) ([a-z0-9 -]+)$/.exec(op);
+        if (services)
+          this.#compose(ip, services[1] as "stop" | "start", services[2]?.split(" ") ?? []);
         return ok();
+      }
     }
   }
 
@@ -678,6 +871,7 @@ export class FakeHosts {
     if (this.release) h.db = "schema of HEAD";
     h.app = true;
     h.caddy = true;
+    this.seed(ip);
   }
 }
 
@@ -877,7 +1071,12 @@ export async function moveFakes(
   const events: MoveEvent[] = [];
   const hosts = new FakeHosts(events);
   hosts.release = options.release === true;
+  hosts.services = options.postgres === false ? [] : ["db"];
   Object.assign(hosts.host(SERVER_IPV4), { app: true, caddy: true, db: "orders before the move" });
+  // The database's files on the old server, as large as the database.
+  hosts.seed(SERVER_IPV4, {
+    PG_VERSION: { type: "file", mode: 0o600, uid: 999, gid: 999, data: Buffer.alloc(hosts.dbSize) },
+  });
   const engine = new FakeMoveEngine(events, { from, dns: dns === "cloudflare" });
   const github = new FakeMoveGitHub(events, hosts);
   /** Where the domain resolves when DNS is not managed (the user changes it). */
@@ -970,6 +1169,7 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
     costs: new CostLedger(paths.files.costs, clock),
     runner,
     fetch: fakes.fetch,
+    streams: hosts.streams,
     env: fakes.env,
     clock,
     redactor,

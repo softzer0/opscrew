@@ -50,19 +50,6 @@ describe("targetOf: the new target of a move", () => {
       edge: "nginx",
     });
   });
-
-  it.each([
-    ["cloudflare-workers", "Cloudflare hosting"],
-    ["github-pages", "GitHub Pages"],
-  ] as const)("refuses moving onto %s", (provider, name) => {
-    expect(() => targetOf(option(provider), "caddy")).toThrow(
-      expect.objectContaining({
-        code: "PHASE_PRECONDITION",
-        message: `Moving an app to or from ${name} is not available yet: moving to and from server-less targets comes with retarget anywhere.`,
-        hint: "Run `opscrew destroy`, then `opscrew interview`, `opscrew design` and `opscrew provision` for the new target.",
-      }),
-    );
-  });
 });
 
 describe("startMove: an app with services on other servers (FR-1820)", () => {

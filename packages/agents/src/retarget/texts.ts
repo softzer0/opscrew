@@ -1,5 +1,5 @@
 import type { ApprovalRequest, VpsProviderId } from "@opscrew/contracts";
-import { type DeployPlan, serviceOf } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 import { HUNDRED_MB } from "./server-ops";
 
@@ -46,12 +46,12 @@ export function managedDns(plan: Pick<DeployPlan, "dns">): boolean {
 }
 
 /**
- * True when the old app stays stopped beyond the maintenance window: a self-hosted database is
- * copied and OpsCrew does not manage DNS, so the app is offline until the user's own DNS change
- * (or, without a domain, the users' move to the new address) has taken effect.
+ * True when the old app stays stopped beyond the maintenance window: data is copied (`copies`)
+ * and OpsCrew does not manage DNS, so the app is offline until the user's own DNS change (or,
+ * without a domain, the users' move to the new address) has taken effect.
  */
-export function downtimeUntilDnsChange(plan: Pick<DeployPlan, "dns" | "services">): boolean {
-  return serviceOf(plan, "postgres") !== undefined && !managedDns(plan);
+export function downtimeUntilDnsChange(plan: Pick<DeployPlan, "dns">, copies: boolean): boolean {
+  return copies && !managedDns(plan);
 }
 
 /** `until your DNS change has reached your users` (or, without a domain, the new address). */
@@ -66,8 +66,8 @@ export function untilSwitched(plan: Pick<DeployPlan, "dns">): string {
  * the copy plus the user's DNS change, so lower the TTL first, and in scripts pass
  * `--allow-downtime --dns-switched` together only when the records are ready. Empty otherwise.
  */
-export function manualSwitchDowntime(plan: Pick<DeployPlan, "dns" | "services">): string[] {
-  if (!downtimeUntilDnsChange(plan)) return [];
+export function manualSwitchDowntime(plan: Pick<DeployPlan, "dns">, copies: boolean): string[] {
+  if (!downtimeUntilDnsChange(plan, copies)) return [];
   const domain = plan.dns.domain;
   if (domain === undefined) {
     return [
@@ -85,6 +85,59 @@ export function manualSwitchDowntime(plan: Pick<DeployPlan, "dns" | "services">)
 /** Rough maintenance window: two minutes plus one per started 100 MB copied through this computer. */
 export function downtimeMinutes(databaseBytes: number): number {
   return 2 + Math.ceil(Math.max(0, databaseBytes) / HUNDRED_MB);
+}
+
+/** About 15 MB/s, the slower way (the archive `PUT`) through Portainer's Docker proxy (R5). */
+const PORTAINER_BYTES_PER_MINUTE = 15 * 1024 * 1024 * 60;
+
+/**
+ * Rough length of a move's maintenance window for `bytes` of data copied through this computer:
+ * {@link downtimeMinutes} between two servers over SSH, or two minutes plus one per started 900 MB
+ * when a side is the user's Portainer (about 15 MB/s through its Docker proxy).
+ */
+export function windowMinutes(bytes: number, portainer: boolean): number {
+  if (!portainer) return downtimeMinutes(bytes);
+  return 2 + Math.ceil(Math.max(0, bytes) / PORTAINER_BYTES_PER_MINUTE);
+}
+
+/** What starting each kind of service empty loses, in a few words. */
+const LOSES: Partial<Record<string, string>> = {
+  postgres: "every table and row in it",
+  mysql: "every table and row in it",
+  mariadb: "every table and row in it",
+  mongodb: "every collection and document in it",
+  clickhouse: "every table and row in it",
+  neo4j: "every node and relationship in it",
+  rabbitmq: "the messages waiting in its queues",
+  nats: "the messages its streams keep",
+  kafka: "the messages its topics keep",
+  redpanda: "the messages its topics keep",
+  garage: "every file stored in it",
+  opensearch: "its search index, which the app must build again",
+  elasticsearch: "its search index, which the app must build again",
+  meilisearch: "its search index, which the app must build again",
+  typesense: "its search index, which the app must build again",
+};
+
+/**
+ * What starting `owner` empty on the new side loses, in one sentence: a service of the plan by
+ * its kind (a cache loses little, a queue its waiting jobs), `app` the app's own files (a SQLite
+ * database, uploads), `monitoring` the metrics and logs collected so far.
+ */
+export function emptyLoses(plan: Pick<DeployPlan, "services">, owner: string): string {
+  if (owner === "app")
+    return "Starting it empty loses the app's own files (its SQLite database, uploads).";
+  if (owner === "monitoring") {
+    return "Starting it empty loses the metrics, logs and dashboards' history collected so far.";
+  }
+  const service = plan.services.find((s) => s.name === owner);
+  const kind = service?.kind ?? "";
+  if (kind === "valkey" || kind === "redis" || kind === "dragonfly") {
+    return service !== undefined && "mode" in service.options && service.options.mode === "queue"
+      ? "Starting it empty loses the jobs waiting in its queue: let the queue drain first, or copy it."
+      : "Starting it empty loses its cached values, which is usually fine for a cache: the app fills it again.";
+  }
+  return `Starting it empty loses ${LOSES[kind] ?? "everything it stores"}.`;
 }
 
 /** `52.4 MB`, `1.2 GB`: a database size in plain words (1 MB is 1024 KB, as for the estimates). */

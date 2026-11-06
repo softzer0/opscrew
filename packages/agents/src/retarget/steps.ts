@@ -1,42 +1,62 @@
 import { posix } from "node:path";
-import { formatMoney, OpsCrewError } from "@opscrew/core";
-import { checkServerSecret, EDGE_PROXIES, edgeProxy } from "@opscrew/iac-templates";
-import { APP_SERVER } from "@opscrew/plan-schema";
+import { formatMoney, isUserFacingError, OpsCrewError, readTextIfExists } from "@opscrew/core";
+import {
+  checkServerSecret,
+  EDGE_PROXIES,
+  edgeProxy,
+  keepNewerPins,
+  portainerStackName,
+} from "@opscrew/iac-templates";
+import { APP_SERVER, type DeployPlan, type DeployTarget } from "@opscrew/plan-schema";
 import { checkReachesOverSsh } from "../check/provision";
+import { workflowBranch } from "../environments/branches";
 import { providerProfile } from "../providers";
 import {
   buildAppEnvironment,
   deploySecrets,
   deploySecretsStoredFor,
   providerBucket,
+  publishDeploySetup,
   requireStorageKey,
   type SavedPlan,
   setDeploySecrets,
   storageLogin,
 } from "../provision";
 import { originTlsSecret } from "../provision/origin-tls";
-import { continuesHint, planStop, readyNewServer, serverOfProvider } from "../shared";
+import { PORTAINER_SECRETS_RECORD, portainerDeploySecrets } from "../provision/secrets";
+import {
+  continuesHint,
+  knownHostsName,
+  planStop,
+  readServerAddresses,
+  readyNewServer,
+  serverOfProvider,
+  writeRenderedFiles,
+} from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { moveProvider } from "../shared/vps-target";
-import { previousCloud } from "./layouts";
+import { oldSideTarget, previousCloud } from "./layouts";
 import { planThenApply } from "./plans";
-import { serverOps, stopService, waitAppHealthy } from "./server-ops";
+import type { MoveServer } from "./removal";
+import { oldServer } from "./servers";
 import {
   auditMove,
   auditStep,
   type MoveSession,
   moveOf,
+  newServer,
   pinHost,
+  recordAdopted,
   recordNewServer,
+  renderFiles,
   saveMove,
   savePlan,
   useLayout,
-  waitsOf,
   withApply,
 } from "./session";
+import { type MoveSideOptions, moveSide, sideWords } from "./sides";
 import { ABORT_COMMAND, approveCommand, providerWords, RUN_COMMAND } from "./texts";
-import type { RetargetResult } from "./types";
-import { newRemote } from "./window";
+import type { RetargetOptions, RetargetResult } from "./types";
 
 const WORKFLOW_WAIT_MS = 30 * 60_000;
 
@@ -84,10 +104,24 @@ export function assertRenameOnly(
 
 const DRIFT_HINT = `The infrastructure no longer matches what OpsCrew applied. Run \`${ABORT_COMMAND}\` to undo the move, then \`opscrew drift\` to see the differences and \`opscrew provision\` to bring them back in line, and start the move again.`;
 
-/** Step 2: the moves-only plan that renames the live server to `module.server_previous`. */
+/** True for a server OpsCrew created on a cloud provider. */
+function isCloud(target: Pick<DeployTarget, "provider">): boolean {
+  return target.provider === "hetzner" || target.provider === "digitalocean";
+}
+
+/**
+ * Step 2: the moves-only plan that renames a cloud old side's server to `module.server_previous`.
+ * Any other old side is an address in the move's root, with nothing to rename: the step is
+ * recorded with no plan.
+ */
 export async function renameStep(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps } = session;
   const move = moveOf(session);
+  if (!isCloud(move.from.target)) {
+    await saveMove(session, { ...move, step: "renamed" });
+    await auditStep(session, "renamed", "nothing to rename: the old side is no server module");
+    return undefined;
+  }
   const old = providerWords(previousCloud(move).provider);
   deps.reporter.step(
     `Renaming the current ${old.noun} in the infrastructure state (nothing changes in your cloud)`,
@@ -150,15 +184,15 @@ async function waitForNewServer(session: MoveSession, host: string): Promise<voi
 }
 
 /**
- * Step 3: the plan that creates the new server as `module.server` next to the old one; its
- * addresses (the new provider's entry of the `servers` output) go to OpsCrew's local state; then
- * SSH, host key, cloud-init.
+ * Step 3 for a cloud new side (`cloudSide`'s `prepare`): the plan that creates the new server as
+ * `module.server` next to the old side; its addresses (the new provider's entry of the `servers`
+ * output) go to OpsCrew's local state; then SSH, host key, cloud-init.
  */
 export async function createStep(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps } = session;
   const move = moveOf(session);
   const fresh = providerWords(moveProvider(session.plan.target));
-  const old = providerWords(previousCloud(move).provider);
+  const old = sideWords(move.from.target, "old");
   deps.reporter.step(`Creating the new ${fresh.noun} on ${fresh.name}`);
   const files = await useLayout(session, "both");
   const outcome = await planThenApply(session, {
@@ -166,15 +200,15 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
     files,
     check: assertCreateOnly,
     notes: [
-      `This creates the new ${fresh.noun} on ${fresh.name} next to the current ${old.noun}; your app keeps running on the old one.`,
-      `Both are billed until the move is finished or aborted: about ${formatMoney(session.plan.cost.monthly)} per month extra while they run.`,
+      `This creates the new ${fresh.noun} on ${fresh.name} next to ${old}; your app keeps running there.`,
+      `The new ${fresh.noun} is billed until the move is finished or aborted: about ${formatMoney(session.plan.cost.monthly)} per month extra while both run.`,
       `Then OpsCrew deploys the app there with the deploy workflow and keeps its web server (${EDGE_PROXIES[edgeProxy(session.plan)].label}) stopped until traffic is switched to it.`,
     ],
     // `opscrew design` refuses during a move: another size means aborting and starting again.
-    redesignHint: `Run \`${ABORT_COMMAND}\` (your app keeps running on the old ${old.noun}), then start the move again and pick another option: \`${RUN_COMMAND} --to ${moveProvider(session.plan.target)} --option <id>\`. Nothing that was already created is removed until you abort.`,
+    redesignHint: `Run \`${ABORT_COMMAND}\` (your app keeps running on ${old}), then start the move again and pick another option: \`${RUN_COMMAND} --to ${moveProvider(session.plan.target)} --option <id>\`. Nothing that was already created is removed until you abort.`,
   });
   if (outcome.kind === "pending") return pendingStop(session, outcome.planHash);
-  // The new server is the one on the new provider (a move always changes the provider).
+  // The new server is the one on the new provider (a move between clouds changes the provider).
   const next = serverOfProvider(outcome.outputs, moveProvider(session.plan.target));
   if (next === undefined) {
     throw new OpsCrewError(
@@ -188,26 +222,153 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
   if (outcome.kind === "applied") {
     const at = deps.clock.now().toISOString();
     await savePlan(session, { ...session.plan, ...withApply(session.plan, outcome, at) });
+    await recordAdopted(session);
   }
   await waitForNewServer(session, next.ipv4);
   await saveMove(session, { ...moveOf(session), step: "created" });
-  await auditStep(session, "created", `new ${fresh.noun} at ${next.ipv4} is ready`);
+  await auditStep(session, "created", `the new ${fresh.noun} on ${fresh.name} is ready`);
+  return undefined;
+}
+
+/** The new side's choices from the command line that its steps use. */
+type SideChoices = Pick<RetargetOptions, "hostKey" | "passwordLogins" | "publicImage">;
+
+/** The new side with the command line's choices and the image the old side runs. */
+function newSide(session: MoveSession, options: SideChoices) {
+  const choices: MoveSideOptions = {
+    ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
+    ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
+    ...(options.publicImage !== undefined ? { publicImage: options.publicImage } : {}),
+    image: runningImage,
+  };
+  return moveSide(session, "new", choices);
+}
+
+/**
+ * Step 3: the new side made ready for the app through its approval (`prepare`): a cloud server's
+ * IaC plan, the user's own server's host plan, the Portainer environment checked for its stacks.
+ */
+export async function prepareStep(
+  session: MoveSession,
+  options: SideChoices,
+): Promise<RetargetResult | undefined> {
+  const stop = await newSide(session, options).prepare(session);
+  if (stop !== undefined) return stop;
+  if (moveOf(session).step === "created") return undefined;
+  await saveMove(session, { ...moveOf(session), step: "created" });
+  await auditStep(
+    session,
+    "created",
+    `${sideWords(session.plan.target, "new")} is ready for the app`,
+  );
   return undefined;
 }
 
 /**
- * Stores the deploy secrets for `host` (same deploy key and app environment, the host's pinned
- * key) after the `github-secrets` approval. Used for the new server and, on abort, the old one.
+ * The image the old side runs (its app container's, a `ghcr.io/…@sha256:…` reference), which a
+ * Portainer new side deploys: the same version on both sides.
  */
-export async function storeDeploySecrets(
+async function runningImage(session: MoveSession): Promise<string> {
+  const old = moveSide(session, "old");
+  const docker = await old.docker(session);
+  try {
+    const project =
+      old.kind === "portainer" ? portainerStackName(session.plan) : session.plan.app.name;
+    const [app] = await docker.client.listContainers([
+      `com.docker.compose.project=${project}`,
+      "com.docker.compose.service=app",
+    ]);
+    const image = app?.image;
+    if (image === undefined || !/^ghcr\.io\/[^@\s]+@sha256:[0-9a-f]{64}$/.test(image)) {
+      throw new OpsCrewError(
+        "PHASE_PRECONDITION",
+        `OpsCrew cannot tell which version of the app runs on ${sideWords(moveOf(session).from.target, "old")} (its app container runs no image from GitHub Container Registry by digest), so it did not deploy it in your Portainer.`,
+        {
+          hint: `Check that the app runs there, then run \`${RUN_COMMAND}\` again; \`${ABORT_COMMAND}\` undoes the move.`,
+        },
+      );
+    }
+    return image;
+  } finally {
+    await docker.close();
+  }
+}
+
+/** How the deploy workflow reaches a side over SSH: its address and its pinned host key there. */
+interface SecretsReach {
+  host: string;
+  port: number;
+  knownHosts: string;
+}
+
+/**
+ * The known_hosts lines of the user's own server, pinned under its admin login (`login`), named
+ * again for where the deploy workflow reaches it: its public address on the login's port.
+ */
+async function ownKnownHosts(
   session: MoveSession,
+  login: { host: string; port: number },
   host: string,
-  which: "new" | "old",
-): Promise<void> {
-  const { deps, plan } = session;
-  const move = moveOf(session);
-  const provider = which === "new" ? moveProvider(plan.target) : previousCloud(move).provider;
-  const pinned = await pinHost(session, host, provider);
+): Promise<string> {
+  const pinned = knownHostsName(login.host, login.port);
+  const text = (await readTextIfExists(session.deps.paths.files.knownHosts)) ?? "";
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([names]) => names?.split(",").includes(pinned))
+    .map(([, type, key]) => `${knownHostsName(host, login.port)} ${type} ${key}`);
+  if (lines.length === 0) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "OpsCrew has not pinned your server's SSH host key on this computer, so it cannot give it to GitHub Actions' deploys. Nothing was changed.",
+      { hint: `Run \`${RUN_COMMAND}\` in a terminal to confirm the key, or pass \`--host-key\`.` },
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Where the deploy workflow reaches the `which` side over SSH: a cloud server at its address with
+ * its host key pinned (or checked) now, the user's own server at its public address on its
+ * login's port, with the key confirmed at its inspection.
+ */
+async function secretsReach(session: MoveSession, which: MoveServer): Promise<SecretsReach> {
+  const target = which === "new" ? session.plan.target : moveOf(session).from.target;
+  const address = which === "new" ? newServer(session) : oldServer(session);
+  if (target.provider === "hetzner" || target.provider === "digitalocean") {
+    const pinned = await pinHost(session, address.ipv4, target.provider);
+    return { host: address.ipv4, port: 22, knownHosts: pinned.knownHostsLines };
+  }
+  const local = await readServerAddresses(session.deps.paths);
+  const login = which === "new" ? local.own : local.retarget?.fromOwn;
+  if (login === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `OpsCrew does not know how to reach ${sideWords(target, which)} on this computer: its login is not in .opscrew/server.json. Nothing was changed.`,
+      {
+        hint: "Run the command on the computer that started the move, or copy its .opscrew/server.json here, then try again.",
+      },
+    );
+  }
+  return {
+    host: address.ipv4,
+    port: login.port,
+    knownHosts: await ownKnownHosts(session, login, address.ipv4),
+  };
+}
+
+/**
+ * Stores the deploy secrets for the `which` side after the `github-secrets` approval: the new one
+ * at step `deployed`, the old one on abort. A side over SSH gets the deploy key, its address and
+ * pinned host key and the app's environment; the user's Portainer gets the build's values only
+ * (`portainerDeploySecrets`: the app's own values live in its stack's environment there).
+ */
+export async function storeDeploySecrets(session: MoveSession, which: MoveServer): Promise<void> {
+  const { deps } = session;
+  const target = which === "new" ? session.plan.target : oldSideTarget(moveOf(session));
+  // The plan as that side runs the app: its secrets are the ones its deploy workflow reads.
+  const plan: DeployPlan = { ...session.plan, target };
+  const words = sideWords(target, which);
   // The bucket stays where it is (FR-1332): the app keeps its key (`startMove` checked it is known).
   const key =
     providerBucket(plan) === undefined
@@ -216,9 +377,12 @@ export async function storeDeploySecrets(
           command: session.command,
           already:
             which === "new"
-              ? "The new server exists; set the key and run the command again to continue the move."
-              : "The old server runs again; set the key and run the command again to finish going back.",
+              ? "The new side is ready; set the key and run the command again to continue the move."
+              : "The old side runs again; set the key and run the command again to finish going back.",
         });
+  const storage = key === undefined ? {} : { storage: storageLogin(plan, key, session.cloudflare) };
+  const portainer = target.provider === "portainer";
+  const reach = portainer ? undefined : await secretsReach(session, which);
   let environment: Awaited<ReturnType<typeof buildAppEnvironment>>;
   try {
     // Without a domain, host lists (`ALLOWED_HOSTS`) name the server these secrets point to.
@@ -226,8 +390,8 @@ export async function storeDeploySecrets(
       deps,
       plan,
       session.services,
-      host,
-      key === undefined ? {} : { storage: storageLogin(plan, key, session.cloudflare) },
+      reach?.host,
+      portainer ? { portainer: true, ...storage } : storage,
     );
   } catch (error) {
     if (error instanceof OpsCrewError && error.code === "INVALID_INPUT") {
@@ -237,44 +401,56 @@ export async function storeDeploySecrets(
     }
     throw error;
   }
-  deps.reporter.step(`Pointing the GitHub deploy secrets at the ${which} server (${host})`);
+  deps.reporter.step(`Pointing the GitHub deploy secrets at ${words}`);
   try {
-    await setDeploySecrets(
-      deps,
-      session.github,
-      plan,
-      deploySecrets({
+    if (reach === undefined) {
+      await setDeploySecrets(
+        deps,
+        session.github,
         plan,
-        host,
-        privateKey: session.deployKey.privateKeyOpenSsh,
-        knownHosts: pinned.knownHostsLines,
-        environment,
-        ...(session.site.edge.originTls !== undefined
-          ? { originTls: originTlsSecret(session.site.values) }
-          : {}),
-      }),
-      environment.names,
-      "provision",
-      // The scheduled check reads this server's disk over SSH with its key: its reach follows.
-      plan.observability?.check?.enabled === true && checkReachesOverSsh(plan)
-        ? {
-            checkServer: checkServerSecret([
-              {
-                id: APP_SERVER,
-                host,
-                port: 22,
-                user: "deploy",
-                knownHosts: pinned.knownHostsLines,
-              },
-            ]),
-          }
-        : {},
-    );
+        portainerDeploySecrets({ environment }),
+        environment.names,
+        "retarget",
+        { record: PORTAINER_SECRETS_RECORD },
+      );
+    } else {
+      await setDeploySecrets(
+        deps,
+        session.github,
+        plan,
+        deploySecrets({
+          plan,
+          host: reach.host,
+          privateKey: session.deployKey.privateKeyOpenSsh,
+          knownHosts: reach.knownHosts,
+          environment,
+          ...(session.site.edge.originTls !== undefined
+            ? { originTls: originTlsSecret(session.site.values) }
+            : {}),
+        }),
+        environment.names,
+        "retarget",
+        // The scheduled check reads this server's disk over SSH with its key: its reach follows.
+        plan.observability?.check?.enabled === true && checkReachesOverSsh(plan)
+          ? {
+              checkServer: checkServerSecret([
+                {
+                  id: APP_SERVER,
+                  host: reach.host,
+                  port: reach.port,
+                  user: "deploy",
+                  knownHosts: reach.knownHosts,
+                },
+              ]),
+            }
+          : {},
+      );
+    }
   } catch (error) {
     if (error instanceof OpsCrewError && error.code === "APPROVAL_REFUSED") {
       throw new OpsCrewError(
         "APPROVAL_REFUSED",
-        `The deploy secrets were not changed, so they still point to the ${which === "new" ? "old" : "new"} server.`,
+        `The deploy secrets were not changed, so they still point to ${which === "new" ? "the old side" : "the new side"}.`,
         { hint: `Run \`${session.command}\` again when you are ready.` },
       );
     }
@@ -285,8 +461,103 @@ export async function storeDeploySecrets(
     action: "point deploy secrets",
     target: `${session.github.owner}/${session.github.repo}`,
     decision: "approved",
-    detail: `deploy secrets point to the ${which} server ${host}`,
+    detail: `deploy secrets point to ${words}`,
   });
+}
+
+/** Line endings and the trailing newline do not count when two workflows are compared. */
+function normalised(text: string): string {
+  return text.replace(/\r\n/g, "\n").trimEnd();
+}
+
+/**
+ * The deploy workflow at `path` on GitHub's `branch` (what a dispatched run runs), fetched from
+ * where pushes go; `undefined` when it cannot be read there.
+ */
+async function workflowOnGitHub(
+  session: MoveSession,
+  branch: string,
+  path: string,
+): Promise<string | undefined> {
+  const { deps } = session;
+  const git = (args: string[]) => deps.runner.run("git", ["-C", deps.paths.root, ...args]);
+  const url = (await git(["remote", "get-url", "--push", "origin"])).stdout.trim();
+  // A URL that looks like an option is never passed as one; the remote's name is used instead.
+  const remote = url === "" || url.startsWith("-") ? "origin" : url;
+  if ((await git(["fetch", "--quiet", remote, `refs/heads/${branch}`])).exitCode !== 0) {
+    return undefined;
+  }
+  const shown = await git(["show", `FETCH_HEAD:${path}`]);
+  return shown.exitCode === 0 ? shown.stdout : undefined;
+}
+
+/**
+ * Before the new side's first deploy: when its deploy workflow (the SSH port, the build runner's
+ * architecture, Portainer's) differs from the old side's, the workflow on GitHub must be the new
+ * one first. Until it is, the new workflow goes into a pull request and the move stops; the next
+ * run continues once it is merged. Newer action pins on GitHub (Dependabot's) are kept.
+ */
+async function workflowStop(session: MoveSession): Promise<RetargetResult | undefined> {
+  const { deps, plan } = session;
+  const path = plan.cicd.workflowPath;
+  const workflow = (files: Awaited<ReturnType<typeof renderFiles>>) =>
+    files.find((file) => file.path === path);
+  const fresh = workflow(await renderFiles(session));
+  if (fresh === undefined) return undefined;
+  const move = moveOf(session);
+  const oldPlan: DeployPlan = {
+    ...plan,
+    target: oldSideTarget(move),
+    deploy: move.from.deploy,
+    app: { ...plan.app, ...(move.from.build !== undefined ? { build: move.from.build } : {}) },
+  };
+  const old = workflow(await renderFiles(session, undefined, oldPlan, "fromOwn"));
+  if (old !== undefined && normalised(old.content) === normalised(fresh.content)) return undefined;
+  const branch = workflowBranch(plan, session.github.defaultBranch);
+  const committed = await workflowOnGitHub(session, branch, path);
+  if (
+    committed !== undefined &&
+    normalised(keepNewerPins(committed, fresh.content)) === normalised(committed)
+  ) {
+    return undefined;
+  }
+  const words = sideWords(plan.target, "new");
+  deps.reporter.step(`Proposing the deploy workflow for ${words}`);
+  await writeRenderedFiles(deps.paths.root, [fresh]);
+  let published: Awaited<ReturnType<typeof publishDeploySetup>>;
+  try {
+    published = await publishDeploySetup(deps, {
+      git: session.git,
+      github: session.github,
+      plan,
+      paths: [path],
+      push: true,
+      phase: "retarget",
+    });
+  } catch (error) {
+    // An earlier run's pull request is in the way (this clone is on its branch): it waits.
+    if (!(isUserFacingError(error) && error.code === "PHASE_PRECONDITION")) throw error;
+    return {
+      step: move.step,
+      done: false,
+      next: [
+        `The deploy workflow for ${words} differs from the one on ${branch}, and it is not merged yet: ${deps.redactor.redact(error.message)}`,
+        ...(error.hint !== undefined ? [deps.redactor.redact(error.hint)] : []),
+        `Once it is merged, run \`${RUN_COMMAND}\` again to deploy the app there and continue the move.`,
+      ],
+    };
+  }
+  const merge = published.prUrl
+    ? `Merge ${published.prUrl}`
+    : `Push the branch ${published.branch} and merge it into ${branch}`;
+  return {
+    step: move.step,
+    done: false,
+    next: [
+      `The deploy workflow for ${words} differs from the one on ${branch}. ${merge}: once it is merged, every push deploys to ${words}, where the deploy secrets point now.`,
+      `Then run \`${RUN_COMMAND}\` again to deploy the app there and continue the move (\`${ABORT_COMMAND}\` undoes it).`,
+    ],
+  };
 }
 
 /** Dispatches the deploy workflow on the plan's branch and waits for it to succeed. */
@@ -295,11 +566,9 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
   const { owner, repo } = session.github;
   const workflowFile = posix.basename(plan.cicd.workflowPath);
   const branch = plan.cicd.branch;
-  const fresh = providerWords(moveProvider(plan.target));
-  const oldStill = "The old server still serves your users.";
-  deps.reporter.step(
-    `Running the deploy workflow (${workflowFile} on ${branch}) for the new ${fresh.noun}`,
-  );
+  const words = sideWords(plan.target, "new");
+  const oldStill = `The app on ${sideWords(moveOf(session).from.target, "old")} still serves your users.`;
+  deps.reporter.step(`Running the deploy workflow (${workflowFile} on ${branch}) for ${words}`);
   let run: Awaited<ReturnType<typeof githubApi.waitForWorkflowRun>>;
   try {
     // Recorded as soon as GitHub accepts the dispatch, before any wait for its run.
@@ -339,7 +608,7 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
       "COMMAND_FAILED",
       `The deploy workflow did not succeed (${run.conclusion ?? "no result"}): ${run.htmlUrl}. ${oldStill} Nothing else changed.`,
       {
-        hint: `Open the run to see what failed and push a fix (deploys now go to the new ${fresh.noun}), then run \`${RUN_COMMAND}\` again. To go back instead, run \`${ABORT_COMMAND}\`.`,
+        hint: `Open the run to see what failed and push a fix (deploys now go to ${words}), then run \`${RUN_COMMAND}\` again. To go back instead, run \`${ABORT_COMMAND}\`.`,
       },
     );
   }
@@ -347,49 +616,42 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
 }
 
 /**
- * Step 4: the deploy secrets point to the new server, the deploy workflow puts the app there, the
- * app answers over SSH, and the edge's proxy on the new server is stopped until the switch.
+ * Step 4: the deploy secrets point to the new side (a server's over SSH, or the build values for
+ * the user's Portainer); a deploy workflow that differs for the new side waits for its pull
+ * request first; then the new side's deploy: on a server the deploy workflow puts the app there,
+ * and the side checks it and stops its edge until the switch; in Portainer its stacks are applied
+ * with the version the old side runs.
  */
-export async function deployStep(session: MoveSession): Promise<RetargetResult | undefined> {
+export async function deployStep(
+  session: MoveSession,
+  options: SideChoices,
+): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
-  const move = moveOf(session);
-  const next = session.servers.next;
-  if (next === undefined) {
+  const side = newSide(session, options);
+  const portainer = side.kind === "portainer";
+  if (!portainer && session.servers.next === undefined) {
     // A step `created` always has the address; the create step reads it from the state again.
-    await saveMove(session, { ...move, step: "renamed" });
+    await saveMove(session, { ...moveOf(session), step: "renamed" });
     return { step: "renamed", done: false, next: [`Run \`${RUN_COMMAND}\` again.`] };
   }
-  const fresh = providerWords(moveProvider(plan.target));
-  const where = { host: next.ipv4, owner: session.github.owner, repo: session.github.repo };
+  const words = sideWords(plan.target, "new");
+  const where = {
+    host: portainer ? PORTAINER_SECRETS_RECORD : newServer(session).ipv4,
+    owner: session.github.owner,
+    repo: session.github.repo,
+  };
   if (await deploySecretsStoredFor(deps, plan, where)) {
-    deps.reporter.info("The GitHub deploy secrets already point to the new server.");
+    deps.reporter.info(`The GitHub deploy secrets already point to ${words}.`);
   } else {
-    await storeDeploySecrets(session, next.ipv4, "new");
+    await storeDeploySecrets(session, "new");
   }
-  await runDeployWorkflow(session);
-  const remote = newRemote(session);
-  deps.reporter.step(`Checking the app on the new ${fresh.noun} over SSH`);
-  const ops = serverOps(plan, deps.redactor);
-  const edge = edgeProxy(plan);
-  await waitAppHealthy(remote, plan.app.port, plan.app.healthPath, {
-    ...ops,
-    edge,
-    ...waitsOf(session.services),
-  });
-  deps.reporter.step(
-    `Stopping ${EDGE_PROXIES[edge].label} on the new ${fresh.noun} until traffic is switched to it`,
-  );
-  await stopService(remote, edge, ops);
-  await auditMove(session, {
-    kind: "remote-exec",
-    action: `stop ${edge}`,
-    target: remote.host,
-    decision: "approved",
-  });
+  const pending = await workflowStop(session);
+  if (pending !== undefined) return pending;
+  if (!portainer) await runDeployWorkflow(session);
+  const stop = await side.deploy(session);
+  if (stop !== undefined) return stop;
   await saveMove(session, { ...moveOf(session), step: "deployed" });
-  deps.reporter.success(
-    `The app runs on the new ${fresh.noun}; the old server still serves users.`,
-  );
-  await auditStep(session, "deployed", `app deployed and healthy on ${next.ipv4}`);
+  deps.reporter.success(`The app runs on ${words}; the old side still serves users.`);
+  await auditStep(session, "deployed", `app deployed and healthy on ${words}`);
   return undefined;
 }

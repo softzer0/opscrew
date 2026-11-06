@@ -21,6 +21,12 @@ async function portainerSession(committed: Record<string, unknown> | undefined) 
       hostname: "portainer.example.com",
       allowedEmails: ["owner@example.com"],
     },
+    // A session is a move's.
+    retarget: {
+      from: { target: h.plan.target },
+      step: "started",
+      startedAt: "2026-11-06T12:00:00.000Z",
+    },
   });
   await writeArtifact("plan", h.paths.files.plan, plan);
   if (committed !== undefined) {

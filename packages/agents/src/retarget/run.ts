@@ -3,13 +3,11 @@ import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { requireNoSharedPreviews } from "../previews/host";
-import { providerProfile } from "../providers";
 import { runPhase } from "../shared/phase-status";
-import { moveProvider } from "../shared/vps-target";
-import { previousCloud } from "./layouts";
 import { type MoveSession, moveBase, moveOf, openSession, warnUnusedApproval } from "./session";
+import { cloudProviders, placeWords } from "./sides";
 import { startMove } from "./start";
-import { createStep, deployStep, renameStep } from "./steps";
+import { deployStep, prepareStep, renameStep } from "./steps";
 import { completeSwitch, switchStep } from "./switch";
 import { ABORT_COMMAND, FINISH_ABORT_HINT, RUN_COMMAND } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
@@ -22,7 +20,7 @@ async function continueMove(
   options: RetargetOptions,
 ): Promise<MoveSession> {
   const move = moveOf({ plan });
-  const to = providerProfile(moveProvider(plan.target)).displayName;
+  const to = placeWords(plan.target);
   if (move.abort !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
@@ -30,7 +28,7 @@ async function continueMove(
       { hint: FINISH_ABORT_HINT },
     );
   }
-  if (options.to !== undefined && options.to !== moveProvider(plan.target)) {
+  if (options.to !== undefined && options.to !== plan.target.provider) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `A move to ${to} is already in progress, so OpsCrew will not start another one.`,
@@ -44,10 +42,19 @@ async function continueMove(
       `--option only applies when a move starts; the move to ${to} continues with the server it chose.`,
     );
   }
+  if (
+    options.ownServer !== undefined ||
+    options.portainer !== undefined ||
+    options.empty !== undefined
+  ) {
+    deps.reporter.warn(
+      `The new side's answers and --empty only apply when a move starts; the move to ${to} continues as it started.`,
+    );
+  }
   const services = options.services ?? {};
   // Users first: an interrupted maintenance window left the old app stopped. Starting it again
-  // only needs the deploy key (and the infrastructure state when the local record is gone), so a
-  // missing token cannot keep the app offline.
+  // only needs the deploy key (and the infrastructure state when the local record is gone; the
+  // Portainer token for the user's Portainer), so a missing cloud token cannot keep it offline.
   let current = plan;
   if (move.oldAppStoppedAt !== undefined && stepBefore(move.step, "migrated")) {
     const base = await moveBase(deps, plan, {
@@ -60,7 +67,7 @@ async function continueMove(
   }
   return openSession(deps, current, {
     command: RUN_COMMAND,
-    providers: [previousCloud(move).provider, moveProvider(plan.target)],
+    providers: cloudProviders({ plan }),
     services,
     ...(options.engine !== undefined ? { engine: options.engine } : {}),
     ...(options.approvePlanHash !== undefined ? { approvePlanHash: options.approvePlanHash } : {}),
@@ -77,10 +84,10 @@ async function runSteps(session: MoveSession, options: RetargetOptions): Promise
         stop = await renameStep(session);
         break;
       case "renamed":
-        stop = await createStep(session);
+        stop = await prepareStep(session, options);
         break;
       case "created":
-        stop = await deployStep(session);
+        stop = await deployStep(session, options);
         break;
       case "deployed":
       case "migrated":
@@ -94,14 +101,17 @@ async function runSteps(session: MoveSession, options: RetargetOptions): Promise
 }
 
 /**
- * `opscrew retarget`: moves a live deployment to the other VPS provider inside the same root
- * module and state (ADR 0007), resuming from the last step recorded in `plan.retarget`:
- * start (options, summary, `confirmStart`) → rename (moves-only plan) → create (new server, SSH,
- * host key, cloud-init) → deploy (deploy secrets, deploy workflow, health over SSH, Caddy stopped)
- * → maintenance window (self-hosted Postgres only, rolled back on any failure) → switch (DNS plan,
- * or the user's confirmation without managed DNS) → Caddy, URL check, old app stopped. Every
- * infrastructure plan goes through policies and an approval bound to its hash; non-interactive
- * runs stop with the hash (`pendingPlanHash`) and continue with `approvePlanHash`.
+ * `opscrew retarget`: moves a live deployment between any two server targets (a cloud provider,
+ * the user's own server, the user's Portainer; ADR 0027) inside the same root module and state
+ * (ADR 0007), resuming from the last step recorded in `plan.retarget`: start (the new target,
+ * the refusals, the data's sizes and what starts empty, the summary, `confirmStart`) → rename (a
+ * cloud old side's moves-only plan) → create (the new side's `prepare`: a server's plan, a host
+ * plan, Portainer checked) → deploy (deploy secrets, the workflow's pull request when it differs,
+ * the new side's deploy, its edge stopped) → maintenance window (every data mount copied, Postgres
+ * dumped, rolled back on any failure) → switch (DNS plan, or the user's confirmation without
+ * managed DNS) → the new edge, URL check, old app stopped. Every plan goes through its approval
+ * bound to its hash; non-interactive runs stop with the hash (`pendingPlanHash`) and continue
+ * with `approvePlanHash`.
  */
 export async function runRetarget(
   deps: PhaseDeps,

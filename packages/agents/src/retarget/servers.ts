@@ -1,5 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import type { CloudProvider, DeployPlan, DeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   readServerAddresses,
@@ -8,8 +8,6 @@ import {
   serverOfProvider,
   updateServerAddresses,
 } from "../shared";
-import { moveProvider } from "../shared/vps-target";
-import { previousCloud } from "./layouts";
 import { moveOf } from "./session";
 
 /**
@@ -81,15 +79,25 @@ function hintFor(command: string): string {
   return `Run \`${command}\` on the computer that started the move, or copy its .opscrew/server.json (with the .opscrew/tfstate folder) here, then try again.`;
 }
 
+/** The cloud provider of a side's target, or `undefined` for the user's own server or Portainer. */
+function cloudOf(target: Pick<DeployTarget, "provider">): CloudProvider | undefined {
+  return target.provider === "hetzner" || target.provider === "digitalocean"
+    ? target.provider
+    : undefined;
+}
+
 /**
  * The servers of the move recorded in `plan.retarget`. Each address comes from the local state,
- * else from the root-module output `servers`, which lists every server by provider: the server
- * being replaced is `plan.retarget.from.target`'s provider, the new one `plan.target`'s (a move
- * always changes the provider). Neither the step nor the last applied layout is used to guess
- * which server is which. What was found is recorded again. Stops with `PHASE_PRECONDITION`, before
- * acting on any server, when the old server's address is unknown (unless `oldServerOptional`:
- * `--finish`, where that server may already be deleted) or both servers share an address
- * (FR-810); `ARTIFACT_INVALID` when the local record is damaged.
+ * else, for a cloud side, from the root-module output `servers`, which lists every server module
+ * by provider: the side being replaced is `plan.retarget.from.target`'s provider, the new one
+ * `plan.target`'s (a move between clouds always changes the provider). The user's own server and
+ * Portainer are addresses the move recorded in the local state. Neither the step nor the last
+ * applied layout is used to guess which server is which. What was found is recorded again. Stops
+ * with `PHASE_PRECONDITION`, before acting on any server, when the old side is reached over SSH
+ * and its address is unknown (unless `oldServerOptional`: `--finish`, where that server may
+ * already be deleted) or both servers share an address (FR-810); `ARTIFACT_INVALID` when the
+ * local record is damaged. A Portainer old side has an address only when the move read it from
+ * the app's records on Cloudflare.
  */
 export async function loadMoveServers(
   deps: Pick<PhaseDeps, "paths">,
@@ -102,14 +110,19 @@ export async function loadMoveServers(
   const local = (await readServerAddresses(deps.paths)).retarget;
   let from = local?.from;
   let next = local?.next;
-  if (from === undefined || next === undefined) {
+  const oldCloud = cloudOf(move.from.target);
+  const newCloud = cloudOf(plan.target);
+  if ((from === undefined && oldCloud) || (next === undefined && newCloud)) {
     const read = await outputs().catch(() => undefined);
     if (read !== undefined) {
-      from ??= serverOfProvider(read, previousCloud(move).provider);
-      next ??= serverOfProvider(read, moveProvider(plan.target));
+      if (oldCloud) from ??= serverOfProvider(read, oldCloud);
+      if (newCloud) next ??= serverOfProvider(read, newCloud);
     }
   }
-  if (from === undefined && options.oldServerOptional !== true) throw unknownOldServer(command);
+  const overSsh = move.from.target.provider !== "portainer";
+  if (from === undefined && overSsh && options.oldServerOptional !== true) {
+    throw unknownOldServer(command);
+  }
   const servers: MoveServers = {
     ...(from !== undefined ? { from } : {}),
     ...(next !== undefined ? { next } : {}),
@@ -136,12 +149,32 @@ export function unknownNewServer(command: string): OpsCrewError {
   );
 }
 
-/** Records the move's servers in the local state. */
+/**
+ * Records the move's servers in the local state, keeping the rest of the move's record (the old
+ * side's set-aside connection, `fromOwn` or `fromPortainer`).
+ */
 export async function recordMoveServers(
   deps: Pick<PhaseDeps, "paths">,
   servers: MoveServers,
 ): Promise<void> {
-  await updateServerAddresses(deps.paths, (current) => ({ ...current, retarget: servers }));
+  await updateServerAddresses(deps.paths, (current) => ({
+    ...current,
+    retarget: { ...current.retarget, ...servers },
+  }));
+}
+
+/**
+ * Records a new move's servers in the local state: its sides' addresses replace any an earlier,
+ * unfinished start left, and the old side's set-aside connection stays.
+ */
+export async function startMoveServers(
+  deps: Pick<PhaseDeps, "paths">,
+  servers: MoveServers,
+): Promise<void> {
+  await updateServerAddresses(deps.paths, (current) => {
+    const { from: _from, next: _next, ...kept } = current.retarget ?? {};
+    return { ...current, retarget: { ...kept, ...servers } };
+  });
 }
 
 /**

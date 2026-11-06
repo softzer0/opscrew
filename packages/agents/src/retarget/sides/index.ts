@@ -8,10 +8,10 @@ import {
   updateServerAddresses,
 } from "../../shared";
 import type { MoveServer } from "../removal";
-import { type MoveSession, moveOf } from "../session";
+import { type MoveBase, moveOf } from "../session";
 import { providerWords } from "../texts";
 import { type CloudSideOptions, cloudSide } from "./cloud";
-import { ownSide } from "./own";
+import { type OwnSideOptions, ownSide } from "./own";
 import { type PortainerRecord, type PortainerSideInput, portainerSide } from "./portainer";
 import type { MoveSide } from "./types";
 
@@ -19,7 +19,7 @@ import type { MoveSide } from "./types";
  * What {@link moveSide} gives the side it picks, beyond `session.services` (the own side's `own`
  * and `runnerGitHub`, the Portainer side's `portainer`). Each side uses only its own.
  */
-export interface MoveSideOptions extends CloudSideOptions {
+export interface MoveSideOptions extends CloudSideOptions, OwnSideOptions {
   /** Portainer: the image the old side runs, which the new side deploys at step `deployed`. */
   image?: PortainerSideInput["image"];
   /** Portainer: the app's image is public (`--public-image`), when the record doesn't say. */
@@ -27,7 +27,7 @@ export interface MoveSideOptions extends CloudSideOptions {
 }
 
 /** The target of a side: `plan.target` for the new one, the move's `from.target` for the old one. */
-export function sideTarget(session: Pick<MoveSession, "plan">, which: MoveServer) {
+export function sideTarget(session: Pick<MoveBase, "plan">, which: MoveServer) {
   return which === "new" ? session.plan.target : moveOf(session).from.target;
 }
 
@@ -37,7 +37,7 @@ export function sideTarget(session: Pick<MoveSession, "plan">, which: MoveServer
  * its record: `portainer` for the new side, `retarget.fromPortainer` for the old one).
  */
 export function moveSide(
-  session: MoveSession,
+  session: MoveBase,
   which: MoveServer,
   options: MoveSideOptions = {},
 ): MoveSide {
@@ -48,10 +48,19 @@ export function moveSide(
     case "digitalocean":
       return cloudSide(which, options.snapshot !== undefined ? { snapshot: options.snapshot } : {});
     case "own":
-      return ownSide(which, {
-        ...(services.own !== undefined ? { own: services.own } : {}),
-        ...(services.runnerGitHub !== undefined ? { runnerGitHub: services.runnerGitHub } : {}),
-      });
+      return ownSide(
+        which,
+        {
+          ...(services.own !== undefined ? { own: services.own } : {}),
+          ...(services.runnerGitHub !== undefined ? { runnerGitHub: services.runnerGitHub } : {}),
+        },
+        {
+          ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
+          ...(options.passwordLogins !== undefined
+            ? { passwordLogins: options.passwordLogins }
+            : {}),
+        },
+      );
     case "portainer":
       return portainerSide({
         which,
@@ -96,7 +105,7 @@ function portainerRecord(paths: ProjectPaths, which: MoveServer): PortainerRecor
 }
 
 /** The VPS providers whose tokens a move needs: those of its sides that are cloud servers. */
-export function cloudProviders(session: Pick<MoveSession, "plan">) {
+export function cloudProviders(session: Pick<MoveBase, "plan">) {
   return (["old", "new"] as const).flatMap((which) => {
     const { provider } = sideTarget(session, which);
     return provider === "hetzner" || provider === "digitalocean" ? [provider] : [];
