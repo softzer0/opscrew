@@ -294,6 +294,24 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
 
+- [ ] T2321 [US1] Found live (T2317 own run 2): the AAAA record when one side has no IPv6 address
+  - Owns: `packages/iac-templates/src/infra/{layouts,cloudflare,index,own,portainer}.ts` (+ tests), `packages/agents/src/retarget/{switch,abort,layouts}.ts` (+ tests)
+  - Depends: T2318
+  - Why: a move from Hetzner (IPv4 and IPv6) to a server of the user's recorded with IPv4 only. The `both`
+    and `switched` layouts render the AAAA record only while every address side has IPv6, so the switch
+    plan deletes it and `assertDnsUpdatesOnly` refuses; the abort's DNS restore plan deletes it too and is
+    refused as well, so the move can neither switch nor be aborted.
+  - Accept:
+    - In every layout the AAAA record follows the side DNS points at (the live side): present while that
+      side has IPv6, absent otherwise. It is never removed because the other side lacks IPv6.
+    - The switch's check allows exactly what a change of family needs: deleting the AAAA record when the
+      new side has no IPv6, creating it when the new side has IPv6 and the old didn't. The same goes for
+      the abort's restore. Anything else is still refused.
+    - Tests: cloud (IPv4 and IPv6) to own (IPv4 only), and back; the switch and the abort at each step.
+      Both engines validate.
+  - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
+  - Effort: high
+
 ## Phase 7: Live
 
 - [x] T2316 [US1] [US2] [US3] [US4] [US5] The live pass, in `packages/cli/test/live/`
