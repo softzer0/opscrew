@@ -208,6 +208,33 @@ the app's databases before each release; this feature turns that into commands t
 take a snapshot of an environment's databases or its whole server, list them, and restore one,
 each restore approved like any other change that deletes data.
 
+It reuses the database rollback's dump and exact restore, its files on the server, its disk check
+and rotation. It also covers every case the database rollback leaves out, where viable (founder,
+2026-11-06):
+- Portainer, through 023's Docker API path;
+- the app's own files (a SQLite database, uploads), with a safe copy while the app writes;
+- a database on another server (018);
+- the other services that keep data: Valkey and Redis queues, the brokers, the search and
+  analytics engines, Garage.
+
+The rollback's snapshot choice then works for them too.
+
+New beside the rollback's snapshots:
+- a restore without a rollback, checked against today's schema;
+- whole-server snapshots at Hetzner and DigitalOcean, whose restore rebuilds the server;
+- **scheduled snapshots, like backups** (founder, 2026-11-06, the lead's recommendation):
+  - a timer on the server runs the same snapshot at the interval the user picks and keeps the last
+    N; on Portainer, which has no timer, a scheduled container in the stack does;
+  - off by default, turned on per environment;
+- **an opt-in copy off the server** (founder, 2026-11-06), so that losing the server doesn't lose
+  the data: each snapshot is encrypted on the server before it leaves, then copied to object
+  storage (R2, Hetzner Object Storage or Spaces), with its own retention.
+  - **Your own server and Portainer get real backups this way.** Today they have none, and the
+    guide says backups are the user's to set up. This changes with 024.
+  - Design proposes them when the interview says the data matters, as it turns on the cloud
+    providers' backups today.
+  - This supersedes the founder's 2026-10-13 decision that provider backups are enough.
+
 ## 025 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
