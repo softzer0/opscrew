@@ -722,12 +722,19 @@ database as it was when that version stopped running.
   - a failure warns only.
 - **The rollback's database step** (`MODE` `rollback`):
   - It runs only when `.rollback-database` names `$1`'s hex and hasn't expired. The script removes
-    the file before anything else, so it is used once. An expired or other file is removed with a
-    note. With no file, the rollback keeps the data, as today.
+    the file before anything else, so it is used once.
+    - **An expired file naming `$1`'s hex fails closed** (T1934's review, 2026-11-06): it is
+      removed, an `::error::` says the one-time approval to restore or migrate the database expired
+      before the run started, that nothing was changed, and to run `opscrew rollback` again; the
+      script exits non-zero before the pause, the stop or the switch. The user approved the switch
+      and the database step under one hash, never the switch alone.
+    - A file naming another hex is removed with a note, and the rollback keeps the data.
+    - With no file, the rollback keeps the data, as today.
   - Then, in order:
     1. `kamal-proxy pause` as the `recreate` path does, with its EXIT trap;
     2. `docker compose stop` of the web, workers and cron;
-    3. when `snapshotsOn`, the current database dumped under the running version, as at a deploy;
+    3. the current database dumped under the running version, as at a deploy, for each of the four
+       databases on the app's server, whether or not `snapshotsOn` (D11);
     4. `snapshot`: each database restored, exactly (R9):
        - PostgreSQL: drop with `FORCE` and create from database `postgres`, then
          `pg_restore --no-owner --single-transaction`;
@@ -751,6 +758,15 @@ database as it was when that version stopped running.
     - the script exits non-zero with a message naming the log.
 
     The workflow's rollback step then finds `.env` unchanged and says so.
+  - **When the earlier version then fails** (its health check, a worker, or the check from outside,
+    so the switch back to the running version runs): the start script leaves a marker that this
+    run changed the database (`.database.changed`, removed at the start of every run). Every such
+    failure ends in the workflow's rollback script (`rollbackCommands`), which checks the marker
+    before its early exits: it holds requests, stops the earlier version, restores step 3's dump,
+    removes the marker, and starts the version that served before the run. Without a
+    step 3 dump (a database the step can't dump, such as SQLite or one on another server, after
+    down migrations), the message says the database stays as the step left it, and that the next
+    deploy's release command migrates it up again.
 - **Unchanged:** with snapshots off and no approval file, a deploy and a rollback run exactly as
   before. Every server workflow's text changes once; the changelog says to run `opscrew provision`.
 
