@@ -55,7 +55,7 @@ own consistency limits.
   `DockerTransport`.
 - **Two new pinned images:** `busybox` (the carrier) and `rclone`.
 - **The window's length grows with the data,** and the summary shows each volume's size and the
-  expected minutes first. Through Portainer's proxy it is about 25 MB/s (R5).
+  expected minutes first. Through Portainer's proxy an upload runs at about 15 MB/s (R5).
 - **The same image versions on both sides are required** for a volume copy. The plan pins them.
 
 ## Alternatives considered
