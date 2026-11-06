@@ -75,3 +75,25 @@
 
 - `.env` and `.env.previous` keep today's form. After a rollback, `.env.previous` names the version rolled back from.
 - **Portainer:** the deploy branch gets a commit "Roll back to <image>", whose stack has `OPSCREW_RELEASE: skip`.
+
+## The database follow-up (2026-11-06, plan.md 12.)
+
+**In the plan** (`opscrew/plan.yaml` and each environment's plan):
+
+| Field | Type | What |
+|---|---|---|
+| `deploy.snapshots` | boolean, optional | Snapshots before each release. Absent: on for every environment except prod and previews |
+| `deploy.keepSnapshots` | 1–10, default 3 | How many versions' snapshots stay on the server |
+| `app.migrations` | `{ tool, status, down }`, optional | The migration tool that can migrate down, and its commands (needs `app.releaseCommand`) |
+
+**On the servers, and on this computer** (plan.md 12.3; folders 0700, files 0600, deploy user):
+
+| Path | What |
+|---|---|
+| `<app folder>/.snapshots/<hex>/` | The database as it was when version `<hex>` stopped running: `taken` (written last) and one `<service>.dump` per database |
+| `.snapshots/<hex>.partial/` | A snapshot being written |
+| `.snapshots/snapshot.log` | The last dump's or restore's output |
+| `<app folder>/.schema/<hex>` | The migration record of version `<hex>`: `version=`, `count=`, or `app=<app> <name>` lines |
+| `<app folder>/.rollback-database` | The one-time approval: `<hex> <snapshot\|migrations> <expiry epoch>` |
+
+**`rollback.json`** gains `database`: `keep`, `snapshot` (with its `taken`) or `migrations`.

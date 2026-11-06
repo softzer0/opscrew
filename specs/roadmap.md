@@ -59,8 +59,8 @@ newer schema. Now a rollback asks how to undo the database:
 - **Down migrations, per framework, when the user picks them:** the current image migrates the
   database down to the version the earlier one ran. Offered only where the app's migration tool
   has down migrations; rows the undone migrations don't touch stay.
-- Research first: each detected migration tool's down and current-version commands, and the dump,
-  restore and hold mechanics per database and target.
+- In progress (2026-11-06): [research R9](019-rollback/research.md), [spec US8](019-rollback/spec.md),
+  [plan section 12](019-rollback/plan.md), [tasks T1930–T1938](019-rollback/tasks.md) and ADR 0028.
 
 **Also in 019: logins for Kafka, Redpanda and OpenSearch** (founder, 2026-11-01). They get a login
 of their own, generated like every other service's password. Today only the network protects

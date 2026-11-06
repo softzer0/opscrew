@@ -245,6 +245,64 @@ one with it, using the variables OpsCrew gives the app.
 
 ---
 
+### User Story 8 - A rollback undoes the database too (Priority: P1)
+
+Founder, 2026-11-06, shipped with 023. A release whose migrations changed the database is rolled
+back, and the earlier version gets the database it ran with, not only its image. Two ways:
+- **a snapshot**, the default: OpsCrew dumps the app's databases before every release;
+- **down migrations**, which the user picks: the newer version's migration tool migrates the
+  database back down.
+
+Snapshots are on by default for every environment except prod.
+
+**Why this priority**: a rollback that leaves a newer schema behind fails exactly when the release
+changed the database, which is when a rollback is needed most. Making every release add first and
+remove later works, but most apps on dev and staging don't follow that rule.
+
+**Independent Test**: on staging, deploy v1 and write rows; deploy v2, whose migration adds a
+column, and write more rows. Then:
+1. Roll back with the snapshot: v1 runs, the column is gone, and the database holds the rows of
+   the moment v2 was deployed.
+2. Deploy v2 again, roll back with down migrations: the column is gone and the rows stay.
+
+**Acceptance Scenarios**:
+
+1. **Given** an environment other than prod whose app has PostgreSQL, MySQL, MariaDB or MongoDB on
+   its server, **When** a deploy runs, **Then**:
+   - before the release command runs, OpsCrew dumps each of those databases on the server while
+     the running version keeps serving;
+   - it files the dump under the version that was running;
+   - it keeps the snapshots of the last 3 versions (`deploy.keepSnapshots`).
+2. **Given** a rollback to a version that has a snapshot, **When** the user runs
+   `opscrew rollback`, **Then**:
+   - it asks how to treat the database, the snapshot first, saying when it was taken and that
+     everything written since is lost;
+   - once approved, with the environment's name typed, requests are held while the app stops, and
+     each database is replaced by its snapshot, tables newer migrations added included;
+   - the earlier version starts, and the held requests go through.
+3. **Given** an app whose migration tool can migrate down (Rails, Django, Alembic, Flask-Migrate,
+   Knex, Sequelize, TypeORM or Laravel), **When** the user picks down migrations, **Then**:
+   - the newer version's image migrates the database down to the schema the earlier version ran
+     with;
+   - the output says what the undone migrations drop.
+
+   It is offered only when OpsCrew recorded both versions' migration state.
+4. **Given** prod, **Then** no snapshot is taken unless `deploy.snapshots` is `true` in its plan,
+   and its rollback keeps the database as it is unless the user picks otherwise.
+5. **Given** a script, **Then**:
+   - `--database snapshot|migrations|keep` makes the choice. Without it, an environment other
+     than prod restores its snapshot when there is one, and otherwise keeps the data;
+   - a choice that changes data needs `--confirm <name>`, as `destroy --env` does.
+6. **Given** a restore or down migration that fails partway, **Then**:
+   - OpsCrew puts back the snapshot it took of the current database just before;
+   - the version that ran before the rollback serves again;
+   - the output says what failed and where its log is.
+7. **Given** someone dispatches the deploy workflow's rollback by hand, without OpsCrew, **Then**
+   the server changes no data: a database step needs the one-time approval that only
+   `opscrew rollback` leaves on the server.
+
+---
+
 ### Edge Cases
 
 - **The previous image fails its checks.** The automatic switch back returns to the version that
@@ -271,6 +329,22 @@ one with it, using the variables OpsCrew gives the app.
   so, and gives the `rpk` commands to do it by hand (lead, from T1920's review).
 - **A rollback across the login change** runs the earlier image with today's settings, as with any
   setting: an earlier app version that didn't send the login can't reach Kafka or Redpanda.
+- **No snapshot for the chosen version** (taken before snapshots were on, rotated out, or skipped
+  for lack of disk space): the snapshot isn't offered. In a script, `--database snapshot` is
+  refused before any change.
+- **Too little disk space for a snapshot:** the deploy goes ahead without one, with a warning in
+  its log. A dump that fails for any other reason fails the deploy before the release command, and
+  the running version keeps serving.
+- **A rollback across several versions** restores the snapshot of the chosen version, or migrates
+  down across every migration added since.
+- **Rolling forward again after a database rollback:** the snapshot OpsCrew took just before the
+  restore is filed under the version that ran, so a later rollback to it can restore it.
+- **Not yet, with 024:** the app's own files (a SQLite database, uploads), a database on another
+  server (018) and Portainer get no snapshot. Their rollback keeps the data, and down migrations
+  work on servers wherever the release command does.
+- **A migration history that isn't a straight line** (a count tool whose earlier version has more
+  migrations applied than the newer one): down migrations aren't offered.
+- **Previews and sites** have no rollback of their data.
 
 ## Requirements *(mandatory)*
 
@@ -356,6 +430,49 @@ one with it, using the variables OpsCrew gives the app.
   - a kafkajs example;
   - that a Kafka client without the login only times out;
   - that OpsCrew generates the password once and has no command to change it.
+- **FR-1921**: On a server environment with snapshots on, every deploy that changes the image MUST
+  first dump each PostgreSQL, MySQL, MariaDB and MongoDB service on the app's server:
+  - before the release command, while the running version serves;
+  - filed under the running version's digest;
+  - keeping the last `deploy.keepSnapshots` versions (1–10, default 3).
+
+  Snapshots are on by default for every environment except prod and previews. `deploy.snapshots`
+  in the plan turns them on or off.
+- **FR-1922**: A deploy with too little free disk space for a snapshot MUST go ahead without one,
+  warning in its log. Any other failed dump MUST stop the deploy before the release command.
+- **FR-1923**: When the app's migration tool is one of the eight that can migrate down, every
+  deploy MUST record the tool's migration state after the release command, under the new
+  version's digest. A failed record only warns.
+- **FR-1924**: `opscrew rollback` MUST ask how to treat the database:
+  - restore the chosen version's snapshot (when it has one);
+  - migrate down (when both versions' states are recorded and the history is a straight line);
+  - keep it as it is.
+
+  The default is the snapshot on an environment other than prod, and keeping it otherwise.
+  `--database snapshot|migrations|keep` chooses in a script, and a choice not available is refused
+  before any change.
+- **FR-1925**: A rollback that restores or migrates down MUST be approved like a destroy: its hash
+  covers the choice and the snapshot, its text says what is lost, and the user types the
+  environment's name (`--confirm <name>`).
+- **FR-1926**: The server MUST change data on a rollback only with the one-time approval OpsCrew
+  writes there after the user's approval, naming the target digest and the choice, valid for 30
+  minutes and used once.
+- **FR-1927**: The database step MUST, in order:
+  1. hold requests;
+  2. stop the app's web, workers and cron;
+  3. dump the current database under the running version (when snapshots are on);
+  4. restore or migrate down;
+  5. start the earlier version and let the held requests through.
+
+  If step 4 fails, it MUST restore step 3's dump, start the running version again, and say what
+  failed and where the log is.
+- **FR-1928**: Restoring MUST put each database back exactly as its snapshot holds it, removing
+  the tables, collections and other objects that aren't in it.
+- **FR-1929**: Snapshots, logs and records MUST stay on the server, readable by the deploy user
+  only; no password may appear in a process's arguments, and no dumped value in any output.
+- **FR-1930**: Portainer, the app's own files and a database on another server MUST say that their
+  data is kept and that snapshots for them come later. A site or a preview MUST refuse
+  `--database snapshot|migrations`.
 
 ### Key Entities
 
@@ -365,6 +482,12 @@ one with it, using the variables OpsCrew gives the app.
   Audited, and recorded with the environment's deployment.
 - **Deploy pause:** per environment. Which version is pinned and since when. The workflow reads it
   before deploying.
+- **Snapshot:** on the server, one per version, by its digest: when it was taken, and one dump per
+  database. Never leaves the server.
+- **Migration record:** on the server, one per version: the migration tool's state after that
+  version's release command (a version, a count, or each Django app's last migration).
+- **Database approval:** on the server, one at a time: the target digest, the choice and when it
+  expires.
 
 ## Success Criteria *(mandatory)*
 
@@ -389,6 +512,15 @@ one with it, using the variables OpsCrew gives the app.
   - after the login is turned on for a service that already holds data.
 
   No password appears in any output or committed file.
+- **SC-1907**: On a staging environment in the live pass:
+  - a rollback with the snapshot gives the earlier version its database within 5 minutes of
+    approval, with the rows of the moment the newer version was deployed and none of its schema;
+  - a rollback with down migrations removes the newer schema and keeps the rows.
+- **SC-1908**: In the local Docker pass, each of the four databases comes back from its snapshot
+  with exactly the snapshot's tables (or collections) and rows. Each of the eight migration tools
+  migrates down to the recorded state.
+- **SC-1909**: A hand-made dispatch of the rollback changes no data, and no password or dumped
+  value appears in any output, log line or audit entry.
 
 ## Assumptions
 
@@ -401,7 +533,9 @@ Defaults the lead chose on 2026-10-31. The founder can change any of them.
   separate decision the user makes with the secrets commands.
 - **The release command never runs on a rollback.** An old version's migrations run against a
   newer schema could fail or do harm. The guide's rule (add in one release, remove in a later one)
-  is what keeps the earlier version working.
+  is what keeps the earlier version working when the database is kept. Since US8 (2026-11-06) a
+  rollback can also restore a snapshot or run the newer version's down migrations, never the
+  release command.
 - **How far back:** as far as the registry keeps this environment's images. Retention keeps the
   latest 10 by default; the user can change that in `opscrew/plan.yaml`.
 - **The command:** `opscrew rollback` is new. `promote --digest` and `promote --version` keep
@@ -416,6 +550,6 @@ Defaults the lead chose on 2026-10-31. The founder can change any of them.
     between servers (018).
 - **Not in scope:**
   - users per device or per app for these three services, and changing their password;
-  - rolling back the database or volumes (a backup restore is a later item on the roadmap);
+  - rolling back volumes other than the four databases' (snapshots as commands are 024);
   - rolling back infrastructure changes (`provision`) or a service's version;
   - Claude Code running the rollback itself, since it asks for approval in the terminal.

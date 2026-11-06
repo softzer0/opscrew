@@ -10,7 +10,7 @@ description: "Tasks for 019-rollback"
 
 plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
-**Numbering**: T1901–T1999.
+**Numbering**: T1901–T1999 (the database follow-up: T1930–T1938).
 
 **Format**: `- [ ] T#### [P] [USn] description` + `Owns / Reads / Depends / Accept / Verify / Effort`.
 
@@ -636,3 +636,165 @@ Each task keeps behaviour, apart from the bugs it names. Exported names used out
 
 - [x] T1916 The release (lead): `docs/releasing.md`, from the changelog to the plugin bump and the docs site sync.
   - The changelog says every deploy workflow changes. Before the first rollback, each environment needs `opscrew provision` and its merged pull request. It also says that the next provision of an app with OpenSearch turns on its login, and `OPENSEARCH_URL` changes.
+
+## Phase: The database on a rollback (US8, founder 2026-11-06; plan section 12, research R9, ADR 0028)
+
+Shipped with 023's release (T2319). The rules above hold. Additionally:
+- **No leaks:** none of these may appear in an output, log line printed by the workflow, audit
+  entry, approval text, committed file or fixture:
+  - a database password;
+  - a dumped value;
+  - a line of `snapshot.log`, `release.log` or a status command's output.
+
+  Passwords reach a dump or restore only inside its container (env or a file there), never in a
+  process's arguments.
+- **The server files** are plan.md 12.3's, exactly: names, modes, formats. They are the contract
+  between T1933, T1934 and T1935.
+- **Unchanged without the feature:** with `deploy.snapshots: false` and no `app.migrations`, a
+  deploy's and a rollback's scripts behave as before, though their text changes.
+- **Approvals:** a rollback that keeps the data stays the `promote`-kind approval of before. One
+  that restores or migrates down also needs `allowDestroy` and the typed name. No new approval
+  kind, and no change in `@opscrew/contracts`.
+
+- [ ] T1930 The plan's snapshot and migration fields in `packages/plan-schema/src/**` (+ tests, regenerated JSON schemas)
+  - Owns: `packages/plan-schema/**`
+  - Reads: plan.md 12.1, research R9 "Down migrations per tool"
+  - Accept:
+    - `deploy.snapshots` (optional boolean) and `deploy.keepSnapshots` (1–10, default 3) on `DeploySettingsSchema`.
+    - `snapshotsOn(plan)` is exported and true only when:
+      - the target is a cloud server, the user's own server or this computer;
+      - the plan isn't a preview environment;
+      - at least one PostgreSQL, MySQL, MariaDB or MongoDB service runs on the app's server;
+      - `deploy.snapshots` is `true`, or absent on an environment other than prod.
+
+      Tests cover each case.
+    - `deploy.snapshots: true` is refused on a preview environment and on Portainer and site targets. The message says snapshots there come with a later release.
+    - `app.migrations` is `{ tool, status, down }`, with `tool` from the exported `MIGRATION_TOOLS`. That table gives each of the eight tools its unit (`version`, `apps`, `count`, `each`) and `down`'s placeholders, as in plan.md 12.1. The refinement checks `down` against them, and requires `app.releaseCommand`.
+    - JSON schemas regenerated.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema`
+  - Effort: medium
+
+- [ ] T1932 [US8] Detect each down-migration tool's commands and keep them in the plan, in `packages/detect/src/release/**`, `packages/agents/src/design/{release,kept-edits}.ts` and the examples' `expected.json` (+ tests)
+  - Owns: `packages/detect/src/release/**`, `packages/detect/src/detect.ts`, `packages/agents/src/design/release.ts`, `packages/agents/src/design/kept-edits.ts`, their tests, `examples/*/expected.json`
+  - Reads: research R9's table, plan.md 12.1–12.2
+  - Depends: T1930
+  - Accept:
+    - When release detection finds Rails, Django, Alembic, Flask-Migrate, Knex, Sequelize, TypeORM or Laravel, it also returns `migrations`. Its `status` and `down` commands match R9's table, with the release command's own folder prefix and options: the same `FLASK_APP`, the TypeORM data source, the Knex folder.
+    - No other tool returns `migrations`. Prisma, Drizzle and the others of R9's "not offered" list are tested to return none.
+    - Design writes `app.migrations` as it writes `releaseCommand`:
+      - a user's own value is kept, and design names what analyze found when it differs;
+      - it is removed when the release command goes.
+
+      Tests cover all three.
+    - The examples using these tools (`django-postgres`, `fastapi-sqlmodel`, `koa-knex`, `nestjs-typeorm`, `laravel-app`, and any other) have it in `expected.json`, and the detect fixtures pass.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T1933 [US8] The snapshot before each release and the rollback's database step, in `packages/iac-templates/src/workflow/{switch,snapshots}.ts` (+ tests)
+  - Owns: `packages/iac-templates/src/workflow/switch.ts`, `packages/iac-templates/src/workflow/snapshots.ts`, `packages/iac-templates/src/workflow/migrations.ts` (only the stub below), their tests and fixtures, the workflow snapshot fixtures that change
+  - Reads: plan.md 12.3–12.4 and D10–D12, research R9's dump and restore table, `switch.ts`'s `switchApp`, `recreate` path and `keepFailed`, `agents/src/retarget/sides/postgres.ts` (the commands to reuse in shell form)
+  - Depends: T1930
+  - Accept:
+    - **The snapshot**, at deploy, in `snapshots.ts` and called from `switchCommands`:
+      - plan.md 12.4's step: the four databases, their dump commands, the files and modes of 12.3;
+      - the disk check, partials and rotation;
+      - no password in any argument;
+      - a failed dump's `::error::` (FR-1922) and the low-disk `::warning::`.
+    - **The rollback's database step** in `MODE` `rollback`:
+      - the approval file's check and its one use;
+      - the hold, the stop, and the dump of the current database;
+      - the exact restore of each database;
+      - the `recreate` switch and the resume;
+      - the failure path, which puts the current database back, starts the running version again and leaves `.env` unchanged.
+
+      No approval file, or a mismatched or expired one, means today's rollback.
+    - **The stub `migrations.ts`** exports what T1935 fills in:
+      - `migrationRecord(plan): string[]` (empty for now);
+      - `migrationDown(plan): string[]` (a script fragment that exits non-zero with "Down migrations aren't available for this app.").
+
+      `switchCommands` calls `migrationRecord` after the release command, and the database step calls `migrationDown` for `migrations`.
+    - **Tests:**
+      - The scripts run under `sh` with shims for every path: snapshot taken, skipped (first deploy, same image, low disk) and failed; restore succeeded and failed; approval file missing, mismatched, expired and used.
+      - With snapshots off, a deploy's and a rollback's behaviour is unchanged.
+      - `OPSCREW_DOCKER_TESTS=1`: for each of the four pinned images, a dump while rows are written, then an exact restore. The table or collection created after the snapshot is gone, and the rows equal the snapshot's.
+    - The leak check covers every password the scripts handle.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, and the Docker test with `OPSCREW_DOCKER_TESTS=1` (its output in the report)
+  - Effort: xhigh
+
+- [ ] T1934 [US8] The rollback's database choice, approval and one-time approval file, in `packages/agents/src/rollback/**` and `packages/cli/src/commands/rollback.ts` (+ tests)
+  - Owns: `packages/agents/src/rollback/**`, `packages/cli/src/commands/rollback.ts`, `packages/cli/src/commands/rollback.test.ts`, `packages/cli/src/ui/rollback*.ts` if it exists
+  - Reads: plan.md 12.3 and 12.5, FR-1924–FR-1926 and FR-1930, `agents/src/logs/failed.ts` (how a server's files are read, with `sudo` on own servers), `agents/src/rollback/{server,local,record,versions}.ts`, `agents/src/promote/site.ts` `approve`
+  - Depends: T1930
+  - Accept:
+    - After the version is chosen, the command reads the target's snapshot (`taken`) and both migration records with a fixed read-only script, through the access `logs --failed` uses, or locally on this computer.
+    - **The choice** offers the snapshot, down migrations and keep, by plan.md 12.5's rules, with its defaults and words. `--database snapshot|migrations|keep` chooses in a script. A choice not offered is refused with its reason, ending "Nothing was changed.".
+    - **The approval:**
+      - the hash covers the choice, the snapshot's `taken` and both records;
+      - the text says what is lost;
+      - a choice that changes data needs `allowDestroy` and the typed name `destroy --env` asks for (`--confirm <name>`);
+      - `--yes` grants neither.
+    - **The approval file:**
+      - after approval and before the dispatch, the command writes `.rollback-database` (30 minutes) through the same access;
+      - it removes the file when the dispatch or the run fails before its start step;
+      - the result says what happened to the database, and `rollback.json` records `database`.
+    - **Other targets:**
+      - Portainer offers only keep, with the "comes later" line;
+      - a site or preview refuses `--database snapshot|migrations`;
+      - a database on another server, or the app's own files, are named as kept.
+    - **Tests:**
+      - every offer and refusal, the defaults on prod and staging;
+      - the hash changing with the choice;
+      - the typed confirmation, and the file written and removed;
+      - the leak check (no address, password or record line in the output).
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=opscrew`
+  - Effort: xhigh
+
+- [ ] T1935 [US8] Down migrations for the eight tools: the record at deploy and the down step, in `packages/iac-templates/src/workflow/migrations.ts` (+ tests, Docker tests)
+  - Owns: `packages/iac-templates/src/workflow/migrations.ts` and its tests, Docker test files and fixtures for it (under `packages/iac-templates/src/workflow/__fixtures__/migrations/` or `packages/cli/test/e2e/migrations*.ts`)
+  - Reads: plan.md 12.3–12.4, research R9's table, T1933's `switch.ts` and `snapshots.ts`
+  - Depends: T1933, T1932
+  - Accept:
+    - `migrationRecord(plan)` runs `app.migrations.status` in the new image after the release command, and writes `.schema/<hex>` in 12.3's format for each tool's unit. It keeps 20 records, and a failure only warns.
+    - `migrationDown(plan)` runs the down command by unit in the running image:
+      - `{version}` from the earlier record;
+      - `n = count(current) − count(earlier)` runs, or Laravel's `--step=n`;
+      - Django per app, `zero` included, in reverse order.
+
+      Every value is checked against `^[A-Za-z0-9_.:-]+$`. A count that grew going back, or a missing record, exits non-zero before any change.
+    - **Tests:** under `sh` with shims for each unit.
+    - **Docker** (`OPSCREW_DOCKER_TESTS=1`): for each of the eight tools, a real app with two migrations:
+      - the release command, then the record from the tool's real output;
+      - the down to the first migration's state, checked in the database;
+      - the examples where one exists, and small fixtures for Rails, Sequelize and Flask-Migrate.
+
+      A tool whose real output differs from R9 is fixed here and reported.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, and the Docker tests with `OPSCREW_DOCKER_TESTS=1` (their output in the report)
+  - Effort: xhigh
+
+- [ ] T1936 [US8] The guide and the plugin's skill: `docs/guide/{rollback,when-a-deploy-fails,environments,databases}.md`, `plugin/skills/opscrew-deploy/SKILL.md`
+  - Owns: those files
+  - Reads: plan.md 12.6, spec US8, the merged T1932–T1934 for the exact words and flags
+  - Depends: T1934
+  - Accept:
+    - `rollback.md` gains "The database": the three choices, their defaults per environment, `--database` and `--confirm`, what each loses, the snapshots' disk use and `deploy.keepSnapshots`, and the eight tools. Its "The database stays as it is" becomes the keep choice.
+    - It says what isn't covered yet and comes later: Portainer, the app's own files, a database on another server.
+    - The other pages link to it. The skill says when to suggest each choice.
+    - Written for users, no task IDs.
+  - Verify: `pnpm lint`
+  - Effort: medium
+
+- [ ] T1937 [US8] The live pass's database steps, in `packages/cli/test/live/rollback.test.ts` (+ its support files)
+  - Owns: `packages/cli/test/live/rollback*.ts`, `docs/e2e.md` (its rollback section)
+  - Reads: plan.md 12.7, SC-1907 and SC-1909, the existing rollback pass
+  - Depends: T1933, T1934, T1935
+  - Accept:
+    - A staging environment with `koa-knex`. v1 is deployed and rows written. v2, whose migration adds a column, is deployed and more rows written.
+    - The snapshot rollback, timed from approval (SC-1907): the column is gone, and the rows are those of the moment v2 was deployed.
+    - `--resume --deploy` to v2, then the down-migration rollback: the column is gone and the rows stay.
+    - A hand-made dispatch with no approval file changes no data (SC-1909).
+    - The leak search covers the outputs, workflow logs and audit entries.
+    - Gated as the rollback pass is, and its steps documented in `docs/e2e.md`.
+  - Verify: `pnpm turbo run typecheck --filter=opscrew`; the live pass itself is T1938's
+  - Effort: high
+
+- [ ] T1938 The live runs and the simplify pass (lead): T1937's pass until it passes, `docs/e2e-coverage.md` per run, then `/simplify` over the follow-up's diff. It ships in 023's release (T2319).

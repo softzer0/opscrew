@@ -639,6 +639,170 @@ Device grants stay refused for these three (`vpn/grants.ts` and the plan schema)
 - **The Kafka image's start scripts are not a public interface.** Its `/etc/kafka/docker/run` and its `configure` rule on `SASL_*` names are pinned by the image digest. The Docker pass catches a change at the next pin bump.
 - **Changing Redpanda's password** needs the old one (R8). OpsCrew generates it once and has no command to change it, so this doesn't arise. The guide says it.
 
+### 12. The database on a rollback (T1930–T1938; US8, FR-1921–FR-1930, research R9)
+
+The founder's follow-up of 2026-11-06, shipped with 023. ADR 0028 records D7–D12.
+
+**12.1 The plan** (`plan-schema`, T1930):
+- **`deploy.snapshots?: boolean`.** Absent means the environment's default: on for every
+  environment except prod and a preview environment. `snapshotsOn(plan)` resolves it and is
+  exported. It is false on:
+  - Portainer and site targets;
+  - a preview environment;
+  - a plan with none of the four databases on the app's server.
+
+  `true` is refused on a preview environment and on Portainer and site targets, saying that
+  snapshots there come in a later release (024).
+- **`deploy.keepSnapshots`:** an integer from 1 to 10, default 3.
+- **`app.migrations?: { tool, status, down }`.**
+  - `tool` is one of `rails`, `django`, `alembic`, `flask-migrate`, `knex`, `sequelize`,
+    `typeorm`, `laravel`.
+  - `status` and `down` are command lines, run like the release command (same folder prefix, same
+    `FLASK_APP`, TypeORM data source).
+  - `down`'s placeholders by unit:
+    - `{version}` for `rails`, `alembic` and `flask-migrate`;
+    - `{app}` and `{name}` for `django`;
+    - `{count}` for `laravel`;
+    - none for `knex`, `sequelize` and `typeorm`, whose `down` undoes the newest migration and
+      runs once per migration.
+  - It requires `app.releaseCommand`.
+  - `MIGRATION_TOOLS` (exported) gives each tool's unit and placeholders, and the refinement
+    checks `down` against them.
+
+**12.2 Detection** (`detect` and design, T1932): the release detection that finds one of the eight
+tools also returns its `migrations` (R9's commands, with the release command's folder and
+options). Design writes `app.migrations` like `releaseCommand`:
+- it keeps the user's own;
+- it names what analyze found when it differs;
+- it removes it with the release command.
+
+The Django, Alembic, Flask-Migrate, Knex, TypeORM and Laravel examples' `expected.json` gain it.
+
+**12.3 The files on the server** (the contract between T1933, T1934 and T1935). In the app's
+folder (`appFolder(plan)`; this computer's under its local roots), every file has mode 600 and
+every folder 700:
+
+```
+.snapshots/<hex>/taken             ISO time, written last: the snapshot is complete
+.snapshots/<hex>/<service>.dump    one per database: PostgreSQL `-Fc`; MySQL, MariaDB SQL; MongoDB archive
+.snapshots/<hex>.partial/          a snapshot being written (removed by the next deploy)
+.snapshots/snapshot.log            the last dump's or restore's output (may quote data: never printed)
+.schema/<hex>                      the migration record: `version=<v>`, `count=<n>`, or `app=<app> <name>` lines
+.rollback-database                 the one-time approval: `<hex> <snapshot|migrations> <expiry epoch>`
+```
+
+`<hex>` is the image digest's 64 hex characters. A snapshot filed under a version holds the
+database as it was when that version stopped running.
+
+**12.4 The start script** (`iac-templates/src/workflow/switch.ts` and a new `snapshots.ts`, T1933;
+`migrations.ts`, T1935):
+- **The snapshot** (`MODE` `deploy`, after the services' setup, before the release command, with
+  or without a release command):
+  - It runs when `snapshotsOn(plan)` and `.env` names an image other than `$1`. The first deploy
+    has nothing to snapshot.
+  - If the app folder's filesystem has less than 1 GiB or 10% free, before or after a dump, it
+    warns (`::warning::`), removes the partial snapshot and goes on.
+  - Each database is dumped by `docker compose run --rm --no-deps -T -v <folder>:/snapshot
+    --entrypoint sh <service> -c '<dump>'`. That is the service's own pinned image and env file,
+    reaching the running service by its name, with the commands of R9:
+    - PostgreSQL: `PGPASSWORD` set inside the container from `POSTGRES_PASSWORD`;
+    - MySQL and MariaDB: root, with `MYSQL_PWD` set inside the container;
+    - MongoDB: a `--config` file written inside the container.
+
+    No password is ever in an argument.
+  - Then `taken` is written and `.partial` renamed. The newest `keepSnapshots` complete snapshots
+    stay; older ones and stale partials go.
+  - A dump that fails stops the deploy (FR-1922). Its message says that the previous version keeps
+    serving, where the log is, and `deploy.snapshots: false`.
+- **The record** (T1935; `MODE` `deploy`, after the release command succeeds, with
+  `app.migrations`):
+  - `docker compose run --rm --no-deps -T release sh -c '<status>'` runs in the new image;
+  - its output is normalized per tool into `.schema/<new hex>`;
+  - the newest 20 records stay;
+  - a failure warns only.
+- **The rollback's database step** (`MODE` `rollback`):
+  - It runs only when `.rollback-database` names `$1`'s hex and hasn't expired. The script removes
+    the file before anything else, so it is used once. An expired or other file is removed with a
+    note. With no file, the rollback keeps the data, as today.
+  - Then, in order:
+    1. `kamal-proxy pause` as the `recreate` path does, with its EXIT trap;
+    2. `docker compose stop` of the web, workers and cron;
+    3. when `snapshotsOn`, the current database dumped under the running version, as at a deploy;
+    4. `snapshot`: each database restored, exactly (R9):
+       - PostgreSQL: drop with `FORCE` and create from database `postgres`, then
+         `pg_restore --no-owner --single-transaction`;
+       - MySQL and MariaDB: drop and create, then load;
+       - MongoDB: `dropDatabase`, then `mongorestore`.
+
+       `migrations` (T1935): the down command runs in the running version's image (the `release`
+       service while `.env` still names it):
+       - `{version}` comes from the earlier version's record;
+       - count tools run `n = count(current) − count(earlier)` times, or Laravel's `--step=n`;
+       - Django runs one `migrate <app> <name>`, or `zero`, per app in the current record, in
+         reverse order.
+
+       Every value from a record is checked against `^[A-Za-z0-9_.:-]+$` before use.
+    5. the switch to `$1` by the `recreate` path, whatever `deploy.strategy` says, and the
+       resume.
+  - When step 4 fails:
+    - step 3's dump is restored, if there is one;
+    - the running version's web, workers and cron start again;
+    - requests resume;
+    - the script exits non-zero with a message naming the log.
+
+    The workflow's rollback step then finds `.env` unchanged and says so.
+- **Unchanged:** with snapshots off and no approval file, a deploy and a rollback run exactly as
+  before. Every server workflow's text changes once; the changelog says to run `opscrew provision`.
+
+**12.5 The command** (`agents/src/rollback/**` and the CLI's `rollback`, T1934):
+- **Reading the server:** after choosing the version, the command reads the snapshot list, each
+  `taken`, and the two records. It uses a fixed read-only script over the access `opscrew logs`
+  uses, or locally on this computer.
+- **The choice:** "How should the rollback treat the database?":
+  - **the snapshot**, offered when the target has one: "Restore the snapshot taken <time>, when
+    <version> stopped running. Everything written since is lost.";
+  - **down migrations**, offered when `app.migrations` is set, both records exist, and a count
+    tool's count didn't grow going back: "Migrate it down with <tool> to <version>'s migrations.
+    The tables and columns added since are dropped, with their data.";
+  - **keep**, always: "Keep it as it is: <version> runs against today's schema."
+
+  The default is the snapshot on an environment other than prod, and keep otherwise.
+  `--database <choice>` chooses in a script, with the same default. A choice not offered is
+  refused, with the reason, before any change.
+- **The approval:** the rollback's hash covers the choice, the snapshot's `taken` and both
+  records. The text says what is lost. A choice that changes data is a destroy-kind approval:
+  `allowDestroy`, and the name `destroy --env` asks for, typed or given as `--confirm <name>`.
+- **Before dispatching,** the command writes `.rollback-database` (expiry: 30 minutes) through the
+  same access. If the dispatch or the run fails before its start step, it removes the file.
+- **The result** says what happened to the database, and the rollback record keeps the choice.
+- **Portainer, sites and previews:**
+  - Portainer offers only keep, saying snapshots come with 024;
+  - sites and previews refuse a database choice;
+  - a database on another server or the app's own files are named in the "kept" line.
+
+**12.6 The guide and the plugin** (T1936):
+- `rollback.md` gains "The database": the choice, snapshots, down migrations, the defaults, the
+  disk space, what isn't covered yet. Its "The database stays as it is" section becomes the keep
+  option.
+- `when-a-deploy-fails.md`, `environments.md` (the default per environment) and `databases.md`
+  (where snapshots live, `deploy.snapshots`, `deploy.keepSnapshots`) link to it.
+- The plugin's deploy skill says when to suggest each choice.
+
+**12.7 Tests:**
+- **Unit tests:** the scripts run under `sh` with shims for each path (T1933, T1935).
+- **The local Docker pass** (`OPSCREW_DOCKER_TESTS=1`):
+  - each database's dump and exact restore, with a table and a collection that weren't in the
+    snapshot (T1933);
+  - each tool's real status output, record and down, on the examples, plus small fixtures for
+    Rails, Sequelize and Flask-Migrate (T1935).
+- **The live pass** (T1937): `rollback.test.ts` gains a staging environment with `koa-knex`, which
+  runs Knex on PostgreSQL. A v2 migration adds a column. Then:
+  - the snapshot rollback;
+  - `--resume --deploy`;
+  - the down-migration rollback;
+  - a hand-made dispatch with no approval file, which changes no data;
+  - the leak search.
+
 ## Decisions (lead, 2026-10-31: D1–D6 accepted as recommended; ADR 0023)
 
 - **D1:** provenance accepts `workflow_dispatch` builds from this repository's branch, in both checks. Recommended.
@@ -653,9 +817,28 @@ Device grants stay refused for these three (`vpn/grants.ts` and the plan schema)
 - **D5:** the hash includes the plan hash, as promote's does. Recommended.
 - **D6:** refuse, rather than wait, when a run is in progress at the start (FR-1907). Wait only for runs created in the moment before the pause.
 
+Lead decisions for the database follow-up (2026-11-06; ADR 0028). The founder chose the snapshot
+as the default, on except for prod, and down migrations as an option.
+- **D7: a logical dump per database, on the server,** filed under the outgoing version. Not a
+  provider snapshot, which would take the whole server and minutes. Not a volume copy, which needs
+  the database stopped.
+- **D8: four databases now.** The app's own files, a database on another server and Portainer get
+  snapshots in 024's commands. SQLite has no safe copy without a tool no pinned image carries.
+- **D9: eight down-migration tools now,** the ones whose state and down commands are documented
+  and checked against real containers (R9). The rest join as rows of `MIGRATION_TOOLS`.
+- **D10: the one-time approval file on the server,** not a workflow input, so a hand-made dispatch
+  can't delete data (constitution I: the bound is enforced on the target).
+- **D11: the current database is saved before any restore or down migration,** so a failure puts
+  it back, and rolling forward again can restore it.
+- **D12: a database rollback always holds requests and recreates,** since the newer version must
+  not write to a database that is being replaced. Held requests get 504 after 90 seconds, which is
+  accepted on the environments where this is on by default.
+
 ## Order
 
 T1901 → wave 1 {T1902, T1903, T1904} → wave 2 {T1905, T1906, T1907} → wave 3 {T1908, T1909} → wave 4 {T1910, T1911, T1912} → wave 5 {T1913} → fixes {T1917, T1918, T1919} → logins {T1920} → {T1921, T1922} → {T1923} → T1914 (live runs) → T1915 (simplify) → T1916 (release).
+
+The database follow-up: T1930 → {T1932, T1933, T1934} → {T1935, T1936, T1937} → T1938 (live runs and simplify, lead). It ships with 023's release (T2319).
 
 ## Complexity Tracking
 

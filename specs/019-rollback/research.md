@@ -533,3 +533,87 @@ An Opus agent ran the pinned images locally: `apache/kafka` 4.3.1, Redpanda v26.
 - Command: `bash -c`, which makes the keystore if it is missing, writes `internal_users.yml` from `hash.sh`, then runs `exec ./opensearch-docker-entrypoint.sh opensearch`.
 - The login exists before port 9200 opens.
 - The certificate and the hash stay inside the container.
+
+## R9. Rolling back the database (2026-11-06, the follow-up)
+
+The founder asked on 2026-11-06 for a rollback that undoes the database too, in the same release
+as 023. A snapshot before every release is the default, on for every environment except prod.
+Down migrations are a choice the user is offered where the app's tool has them. Three Sonnet
+agents read only official documentation (each tool's docs or repository; postgresql.org,
+dev.mysql.com, mariadb.com, mongodb.com; kamal-proxy's source) and the code. "Unverified" marks a
+fact no fetched official page stated; T1933's and T1935's Docker tests check each one against real containers.
+
+### What the code has (code map)
+
+- **Pins** (`iac-templates/src/pins.ts`): `postgres:17-alpine`, `mysql:8.4`, `mariadb:12.3`,
+  `mongo:8.0`, `basecamp/kamal-proxy:v0.10.2`.
+- **Logins** (`iac-templates/src/catalog/entries.ts`):
+  - PostgreSQL: `POSTGRES_USER=app`, database `app`; the initdb user is a superuser.
+  - MySQL and MariaDB: database and user `app`, granted `app.*` only; root has its own generated
+    password (`MYSQL_ROOT_PASSWORD`, `MARIADB_ROOT_PASSWORD`).
+  - MongoDB: root user `app` in `admin`, database `app`, standalone by default (an optional
+    one-member replica set `rs0`).
+  - Each service's env file holds its own passwords, and the services are reached by their Compose
+    service name.
+- **023's PostgreSQL copy** (`agents/src/retarget/sides/postgres.ts`):
+  - `pg_dump -Fc` of the live database;
+  - `DROP DATABASE IF EXISTS app WITH (FORCE)` and `CREATE DATABASE app OWNER app`, run from
+    database `postgres`;
+  - `pg_restore --no-owner --single-transaction`;
+  - the password only in a `.pgpass` file. It runs through the Docker API, not the start script.
+- **The start script** (`iac-templates/src/workflow/switch.ts` `switchCommands`):
+  - `MODE` is `deploy` or `rollback`;
+  - the release command runs in a one-off of the new image before the switch, skipped in
+    `rollback`;
+  - the `recreate` path holds requests with `kamal-proxy pause <app> --drain-timeout <n>s
+    --max-pause 90s` and resumes them, with an EXIT trap, since a pause survives kamal-proxy's
+    restarts. 90 s stays under Cloudflare's 100 s.
+- **Portainer** runs the release command as the stack's one-off `release` service
+  (`OPSCREW_RELEASE` `run` or `skip`). OpsCrew has no shell there, and the rollback commits the
+  earlier tree.
+
+### Dump and restore per database
+
+| Database | Dump, while the app writes | Consistent? | Exact restore |
+|---|---|---|---|
+| PostgreSQL 17 | `pg_dump -Fc` | Yes: "consistent backups even if the database is being used concurrently" | Drop with `FORCE` and create, then `pg_restore --no-owner --single-transaction`. `--clean --if-exists` drops only the objects in the dump, so tables a newer migration added would stay |
+| MySQL 8.4 | `mysqldump --single-transaction --routines --events --triggers --no-tablespaces app` (the pinned image carries `mysqldump` 8.4.13, checked 2026-11-06) | InnoDB only. Concurrent DDL can break it (unverified) | `DROP DATABASE`, `CREATE DATABASE`, load. The password via `MYSQL_PWD` or a defaults file, never the command line |
+| MariaDB 12.3 | `mariadb-dump`, with the same flags. `mysqldump` is "removed from the mariadb Docker Official Image" (the pinned image has only `mariadb-dump`, checked 2026-11-06) | InnoDB only | As MySQL, with the `mariadb` client |
+| MongoDB 8.0 | `mongodump --db=app --archive --gzip` | Standalone: "will not reflect a single moment in time"; `--oplog` needs a replica set and a whole-instance dump | Drop the database first, then `mongorestore --nsInclude='app.*'`. `--drop` keeps collections that aren't in the dump. The pinned `mongo:8.0` carries `mongodump` and `mongorestore` (checked 2026-11-06) |
+
+The app's own files (a SQLite database, uploads) have no safe copy while the app writes: the copy
+needs SQLite's backup API, and no pinned image carries the `sqlite3` tool. kamal-proxy's `pause`
+holds new requests and answers 504 once `--max-pause` runs out; `stop` answers 503 at once.
+
+### Down migrations per tool
+
+Every tool below runs inside the app's image already: OpsCrew's release command uses it. The down
+step must run in the newer image, the only one that holds the newer migrations and their down
+steps.
+
+| Tool | Records | Read with | Goes down with |
+|---|---|---|---|
+| Rails | the version | `bin/rails db:version` ("Current version: …") | `bin/rails db:migrate VERSION=<v>` (v stays applied) |
+| Django | the last applied migration of each app | `python manage.py showmigrations --plan` (`[X]` lines, in order) | `python manage.py migrate <app> <name> --noinput` for each app, `zero` for one with none |
+| Alembic | the revision | `alembic current` | `alembic downgrade <rev>` (`base` for none) |
+| Flask-Migrate | the revision | `flask db current` | `flask db downgrade <rev>` |
+| Knex | the count of applied migrations | `knex migrate:list` ("Found N Completed Migration file/files.") | `knex migrate:down`, once per migration (it undoes the newest) |
+| Sequelize | the count | `sequelize-cli db:migrate:status` (`up` lines; unverified) | `sequelize-cli db:migrate:undo`, once per migration |
+| TypeORM | the count | `typeorm migration:show -d <source>` (`[X]` lines; unverified) | `typeorm migration:revert -d <source>`, once per migration |
+| Laravel | the count | `php artisan migrate:status` (`Ran` rows) | `php artisan migrate:rollback --step=<n> --force` |
+
+Failures:
+- An irreversible migration raises when the tool reaches it: Rails `IrreversibleMigration`, a
+  Django `RunPython` without a reverse, an Alembic `downgrade()` left empty or raising. The later
+  ones are undone already by then, so the run stops partway.
+- On PostgreSQL each step runs in its own transaction. MySQL's DDL commits on its own.
+
+Not offered in this release:
+- **No down migrations:** Prisma Migrate (its documented route is a hand-made SQL file),
+  Drizzle Kit, Medusa (per module).
+- **No command that prints the current state:** Payload, AdonisJS (both batch-based).
+- **Their CLI or a second database isn't in the image:** EF Core (`dotnet ef` needs the SDK),
+  Diesel, SQLx, SeaORM (`cargo run`), Atlas (a dev database).
+- **Not verified against a real container yet:** goose, golang-migrate, Doctrine, Sequel, Ecto,
+  MikroORM, Kysely, node-pg-migrate, db-migrate, Hanami, Masonite, Aerich, Tortoise, Piccolo,
+  Yoyo, Flask-DB. Each can join later as one row of the table.
