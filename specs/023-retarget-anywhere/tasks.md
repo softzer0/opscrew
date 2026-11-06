@@ -249,7 +249,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 6: Wave 5 (parallel)
 
-- [ ] T2313 [US6] Several servers and monitoring
+- [x] T2313 [US6] Several servers and monitoring
   - Owns: `packages/agents/src/network/**`, `packages/agents/src/retarget/network*.ts`, and the network call sites in `retarget/{start,steps,finish,abort}.ts` (+ tests)
   - Depends: T2311
   - Accept:
@@ -272,7 +272,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && node plugin/validate.mjs`
   - Effort: high
 
-- [ ] T2315 The guide
+- [x] T2315 The guide
   - Owns: `docs/guide/retarget.md`, and links in `docs/guide/{own-server,portainer-target,object-storage,split-placement}.md`
   - Depends: T2309, T2314
   - Accept:
