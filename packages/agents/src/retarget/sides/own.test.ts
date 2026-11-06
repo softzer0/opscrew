@@ -38,6 +38,7 @@ import {
   withOtherApp,
 } from "../../testing";
 import type { MoveSession } from "../session";
+import { prepareStep } from "../steps";
 import { ownSide } from "./own";
 
 const closers: (() => void)[] = [];
@@ -170,7 +171,9 @@ describe.skipIf(!findExecutable("git"))("a side on a server the user owns", () =
   it("prepare sets the app up beside other apps with the own host plan, approved by its hash", async () => {
     // The other app is served with DNS only, as this one is.
     const s = await moving({ facts: withOtherApp(), proxied: false });
-    expect(await ownSide("new", s.services).prepare(s.session)).toBeUndefined();
+    // prepareStep runs the side's prepare and records the step.
+    Object.assign(s.session.services, s.services);
+    expect(await prepareStep(s.session, {})).toBeUndefined();
 
     const approvals = s.handler.requests.filter((r) => r.kind === "host-apply");
     expect(approvals).toHaveLength(1);

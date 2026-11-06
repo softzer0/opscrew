@@ -516,7 +516,7 @@ describe.skipIf(GIT === undefined)("opscrew retarget between every kind of side"
         ...continueFlags(to),
       );
       expect(again.text).toContain(
-        `only applies when a move starts; the move to ${to === "own" ? "your own server" : "your Portainer"} uses what it recorded.`,
+        `Only a move's start uses ${to === "own" ? "--host-key" : "--portainer-address"}; the move to ${to === "own" ? "your own server" : "your Portainer"} continues as it started.`,
       );
 
       const abort = ["--abort", "--confirm", APP, "--yes"];

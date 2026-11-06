@@ -1,5 +1,6 @@
 import { rm } from "node:fs/promises";
 import { join, posix } from "node:path";
+import { COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL } from "@opscrew/connector-portainer";
 import {
   formatMoney,
   isUserFacingError,
@@ -46,7 +47,6 @@ import { oldSideTarget, previousCloud } from "./layouts";
 import { joinMoveNetwork, moveMonitoring, sideServer } from "./network";
 import { type PlanSession, planBounded, planThenApply } from "./plans";
 import type { MoveServer } from "./removal";
-import { oldServer } from "./servers";
 import {
   auditMove,
   auditStep,
@@ -59,10 +59,11 @@ import {
   renderFiles,
   saveMove,
   savePlan,
+  serverOf,
   useLayout,
   withApply,
 } from "./session";
-import { composeProject, moveSide, sideWords } from "./sides";
+import { composeProject, moveSide, sideTarget, sideWords } from "./sides";
 import { ABORT_COMMAND, approveCommand, providerWords, RUN_COMMAND } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
 
@@ -215,10 +216,7 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
   await waitForNewServer(session, next.ipv4);
   // The new bucket, when the move takes the bucket along.
   const bucketStop = await createBucket(session);
-  if (bucketStop !== undefined) return bucketStop;
-  await saveMove(session, { ...moveOf(session), step: "created" });
-  await auditStep(session, "created", `the new ${fresh.noun} on ${fresh.name} is ready`);
-  return undefined;
+  return bucketStop;
 }
 
 /** The new side's choices from the command line that its steps use. */
@@ -259,8 +257,8 @@ async function runningImage(session: MoveSession): Promise<string> {
   try {
     const project = composeProject(old, session.plan);
     const [app] = await docker.client.listContainers([
-      `com.docker.compose.project=${project}`,
-      "com.docker.compose.service=app",
+      `${COMPOSE_PROJECT_LABEL}=${project}`,
+      `${COMPOSE_SERVICE_LABEL}=app`,
     ]);
     const image = app?.image;
     if (image === undefined || !/^ghcr\.io\/[^@\s]+@sha256:[0-9a-f]{64}$/.test(image)) {
@@ -318,7 +316,7 @@ async function ownKnownHosts(
  */
 async function secretsReach(session: MoveSession, which: MoveServer): Promise<SecretsReach> {
   const target = which === "new" ? session.plan.target : moveOf(session).from.target;
-  const address = which === "new" ? newServer(session) : oldServer(session);
+  const address = serverOf(session, which);
   if (isCloudProvider(target.provider)) {
     const pinned = await pinHost(session, address.ipv4, target.provider);
     return { host: address.ipv4, port: 22, knownHosts: pinned.knownHostsLines };
@@ -349,7 +347,7 @@ async function secretsReach(session: MoveSession, which: MoveServer): Promise<Se
  */
 export async function storeDeploySecrets(session: MoveSession, which: MoveServer): Promise<void> {
   const { deps } = session;
-  const target = which === "new" ? session.plan.target : oldSideTarget(moveOf(session));
+  const target = sideTarget(session, which);
   // The plan as that side runs the app: its secrets are the ones its deploy workflow reads. The
   // old side's is the bucket being left, when the move takes the bucket along.
   const leaving = which === "old" ? moveOf(session).from.objectStorage : undefined;

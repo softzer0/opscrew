@@ -5,6 +5,7 @@ import { readServerAddresses } from "../../shared";
 import { type MoveHarness, moveHarness, NEW_SERVERS, OLD_IPV4, TOKENS } from "../../testing";
 import { everythingPrinted, expectGated, run, trail } from "../__fixtures__/assert";
 import { openSession } from "../session";
+import { prepareStep } from "../steps";
 import { ABORT_COMMAND, FINISH_COMMAND, RUN_COMMAND } from "../texts";
 import { cloudSide } from "./cloud";
 
@@ -44,7 +45,8 @@ describe.skipIf(!findExecutable("git"))("a cloud side", () => {
 
     h.cli.approve = hash;
     const session = await open(h, RUN_COMMAND, hash);
-    expect(await cloudSide("new").prepare(session)).toBeUndefined();
+    // prepareStep runs the side's prepare and records the step.
+    expect(await prepareStep(session, {})).toBeUndefined();
     expect(trail(h.events.slice(mark))).toEqual(["approve iac-apply", "apply creates=4"]);
     expectGated(h.events);
     expect(session.plan.retarget?.step).toBe("created");

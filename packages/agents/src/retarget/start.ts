@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { exists, formatMoney, listText, normalizeHostName, OpsCrewError } from "@opscrew/core";
-import { usesTunnel } from "@opscrew/iac-templates";
+import { edgeProxy, usesTunnel } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type AppBuild,
@@ -288,12 +288,6 @@ function buildChanges(plan: DeployPlan, next: NewSide): string[] {
   return changes;
 }
 
-/** The old side's proxy, which a new server runs too. */
-function oldEdge(plan: DeployPlan): CloudDeployTarget["edge"] {
-  const from = plan.target;
-  return "edge" in from ? from.edge : "caddy";
-}
-
 /**
  * A cloud provider's options in the plan's region and budget, priced as `opscrew design` prices
  * them (without its provider-switch guard), and the choice.
@@ -309,7 +303,7 @@ async function cloudSide(
   deps.reporter.step(`Pricing ${providerProfile(to).displayName} options for ${plan.app.name}`);
   const catalog =
     services.catalogs?.[to] ?? vpsConnector(to, deps, { now: () => deps.clock.now() }).catalog();
-  const edge = oldEdge(plan);
+  const edge = edgeProxy(plan);
   const designOptions = await buildDesignOptions({
     facts,
     requirements: { ...requirements, provider: to },
@@ -411,7 +405,7 @@ async function ownServerSide(
     requirements: await requireRequirements(deps),
     catalog: vpsConnector("own", deps, { ownServer: ownServerFacts(host) }).catalog(),
     access: "public",
-    edge: oldEdge(plan),
+    edge: edgeProxy(plan),
   });
   if (warnings.length > 0) {
     throw new OpsCrewError(
@@ -429,7 +423,7 @@ async function ownServerSide(
       mode: "vps-compose",
       arch: host.arch,
       access: "public",
-      edge: oldEdge(plan),
+      edge: edgeProxy(plan),
     },
     cost: noServerCost("Your own server (you already pay for it)", plan.cost.monthly.currency, now),
     build: await builderFor(deps, facts, plan, host.arch),

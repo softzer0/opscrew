@@ -39,16 +39,8 @@ import {
 import { writeRenderedFiles } from "../shared";
 import { STORAGE_ENDPOINTS } from "../shared/app-env";
 import { discardSaved, planBounded, quietly } from "./plans";
-import { oldServer } from "./servers";
-import {
-  auditMove,
-  type MoveBase,
-  type MoveSession,
-  moveOf,
-  newServer,
-  remoteFor,
-} from "./session";
-import { sideWords } from "./sides";
+import { auditMove, type MoveBase, type MoveSession, remoteFor, serverOf } from "./session";
+import { sideTarget, sideWords } from "./sides";
 import { pendingStop } from "./steps";
 import { FINISH_COMMAND, sizeText } from "./texts";
 import type { MoveTargetId, RetargetResult } from "./types";
@@ -236,9 +228,8 @@ async function runRclone(
   input: { args: string; config: string[]; timeoutMs: number; what: string; hint: string },
 ): Promise<string> {
   const { deps } = session;
-  const host = (which === "old" ? oldServer(session) : newServer(session)).ipv4;
-  const target = which === "old" ? moveOf(session).from.target : session.plan.target;
-  const words = sideWords(target, which);
+  const host = serverOf(session, which).ipv4;
+  const words = sideWords(sideTarget(session, which), which);
   const remote = remoteFor(deps, session.services, session.deployKey.privateKeyFile, host);
   const result = await remote.run(rcloneCommand(input.args), {
     input: `${input.config.join("\n")}\n`,

@@ -1,18 +1,9 @@
-/**
- * `--finish` and `--abort` of a site's move (plan.md "6."): after the switch the old host's site
- * goes (the Worker with OpsCrew's rules for its hostnames, or the GitHub Pages site); before it
- * the new host's site goes and the hostnames stay where they were. Each removal after the typed
- * app name, every plan approved by its hash.
- */
-import { rm, rmdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
 import { CLOUDFLARE_TOKEN_PAGE } from "@opscrew/connector-cloudflare";
 import type { ResourceChange } from "@opscrew/contracts";
 import {
   isUserFacingError,
   lowerFirst,
   OpsCrewError,
-  tfstateFile,
   toPosixRelative,
   upperFirst,
 } from "@opscrew/core";
@@ -39,7 +30,16 @@ import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { clearPending, type MoveAction } from "./pending";
 import { applyInfraPlan, type InfraPlanInput, planBounded, prepareInfraPlan } from "./plans";
-import { auditStep, moveOf, recordApply, saveMove, savePlan, warnUnusedApproval } from "./session";
+import {
+  auditStep,
+  moveOf,
+  recordApply,
+  reinit,
+  removeStalePaths,
+  saveMove,
+  savePlan,
+  warnUnusedApproval,
+} from "./session";
 import { sitePrice } from "./site";
 import {
   afterMove,
@@ -97,19 +97,8 @@ async function writeHostFiles(
     ...(await renderSiteFiles(session, other)),
   ];
   const removed = [...new Set(before.map((file) => file.path))].filter((path) => !kept.has(path));
-  const dirs = new Set<string>();
-  for (const path of removed) {
-    await rm(join(deps.paths.root, path), { force: true });
-    dirs.add(dirname(path));
-  }
-  // Deepest first; a directory that still holds other files stays.
-  for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
-    await rmdir(join(deps.paths.root, dir)).catch(() => undefined);
-  }
-  await session.engine.init(session.dir, {
-    env: session.env,
-    backendConfig: { path: tfstateFile(deps.paths) },
-  });
+  await removeStalePaths(deps.paths.root, removed);
+  await reinit(session);
   return { files, removed };
 }
 

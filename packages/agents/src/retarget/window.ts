@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL } from "@opscrew/connector-portainer";
 import { listText, OpsCrewError, replaceNames, upperFirst } from "@opscrew/core";
 import { portainerStackName } from "@opscrew/iac-templates";
 import {
@@ -555,9 +556,9 @@ async function requireCleanStop(
   const project = composeProject(side, plan);
   const unclean: string[] = [];
   for (const container of await docker.client.listContainers([
-    `com.docker.compose.project=${project}`,
+    `${COMPOSE_PROJECT_LABEL}=${project}`,
   ])) {
-    const service = container.labels["com.docker.compose.service"] ?? "";
+    const service = container.labels[COMPOSE_SERVICE_LABEL] ?? "";
     if (!names.includes(service) || container.state === "created") continue;
     const clean =
       container.state === "exited" && (await docker.client.waitContainer(container.id)) !== KILLED;

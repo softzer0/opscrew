@@ -17,7 +17,7 @@ import {
   requireOwnServerRecord,
 } from "../../shared/own-server";
 import type { MoveServer } from "../removal";
-import { auditStep, type MoveSession, moveOf, recordNewServer, saveMove } from "../session";
+import { type MoveSession, recordNewServer } from "../session";
 import { appliesNow, pendingStop } from "../steps";
 import { sshSide } from "./ssh";
 import type { MoveSide, SideStop } from "./types";
@@ -136,8 +136,6 @@ async function prepare(
   if (run.address !== undefined) {
     await recordNewServer(session, run.address);
   }
-  await saveMove(session, { ...moveOf(session), step: "created" });
-  await auditStep(session, "created", "your new server is ready for the app");
   return undefined;
 }
 

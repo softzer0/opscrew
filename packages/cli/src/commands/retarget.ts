@@ -4,7 +4,6 @@ import {
   HOST_KEY_FINGERPRINT,
   type MoveTargetId,
   NEW_STORAGE_KEY_VARS,
-  placeWords,
   type RetargetResult,
   type RetargetServices,
   readEnvironmentRequirements,
@@ -240,20 +239,6 @@ function sideFlags(flags: RetargetFlags): { name: string; targets: RetargetTo[] 
   return all.filter(([given]) => given).map(([, name, targets]) => ({ name, targets }));
 }
 
-/** The flags only a move's start uses, given while a move is recorded (the agents warn of the rest). */
-const START_ONLY = ["--answers", "--host-key", "--portainer-address", "--portainer-cert"];
-
-/**
- * The flags only a move's start uses (the new side's answers and its host key), given while a move
- * is recorded. `--password-logins`, `--public-image` and `--pages-verification` are left out:
- * later steps use them too.
- */
-function startOnlyFlags(flags: RetargetFlags): string[] {
-  return sideFlags(flags)
-    .map((flag) => flag.name)
-    .filter((name) => START_ONLY.includes(name));
-}
-
 /** Flags a scripted run repeats with every command it is told to run next. */
 function repeatedFlags(flags: RetargetFlags, environment: ChosenEnvironment): string[] {
   return [
@@ -385,12 +370,6 @@ async function runCommand(
     const budget =
       ctx.isInteractive && option === undefined ? requirements?.budgetMonthly : undefined;
     const to = flags.to ?? requirements?.provider;
-    const ignored = starting ? [] : startOnlyFlags(flags);
-    if (ignored.length > 0) {
-      ctx.reporter.warn(
-        `${ignored.join(", ")} only ${ignored.length === 1 ? "applies" : "apply"} when a move starts; the move to ${placeWords(plan.target)} uses what it recorded.`,
-      );
-    }
     const side = starting
       ? await newSideAnswers(ctx, deps0, {
           to,
@@ -405,6 +384,8 @@ async function runCommand(
     const hostKey = flags.hostKey?.trim();
     return runRetarget(deps, {
       ...common,
+      // A recorded move warns that only its start uses the Portainer host's address.
+      ...(portainerAddress !== undefined ? { portainerAddress } : {}),
       ...side,
       ...(flags.to !== undefined ? { to: flags.to } : {}),
       ...(option !== undefined ? { option } : {}),

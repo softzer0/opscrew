@@ -68,7 +68,13 @@ import {
   writeRenderedFiles,
 } from "../shared";
 import { oldSideTarget } from "./layouts";
-import { loadMoveServers, type MoveServers, recordMoveServers, unknownNewServer } from "./servers";
+import {
+  loadMoveServers,
+  type MoveServers,
+  oldServer,
+  recordMoveServers,
+  unknownNewServer,
+} from "./servers";
 import { managedDns, RUN_COMMAND } from "./texts";
 import type { RetargetGitHubApi, RetargetServices } from "./types";
 
@@ -409,6 +415,14 @@ export function newServer(session: Pick<MoveSession, "servers" | "command">): Se
   return next;
 }
 
+/** The `which` side's address: {@link newServer} or `oldServer`. */
+export function serverOf(
+  session: Pick<MoveSession, "servers" | "command">,
+  which: "old" | "new",
+): ServerAddress {
+  return which === "new" ? newServer(session) : oldServer(session);
+}
+
 /** Every file of the deployment for `plan` (default: the session's) in `layout` (none: final). */
 export async function renderFiles(
   session: MoveSession,
@@ -491,6 +505,31 @@ function addressVariables(session: MoveSession, layout: InfraLayout): void {
 }
 
 /**
+ * Deletes `paths` (repository-relative) under `root`, then the folders they leave empty, deepest
+ * first; a folder that still holds other files stays.
+ */
+export async function removeStalePaths(root: string, paths: readonly string[]): Promise<void> {
+  const dirs = new Set<string>();
+  for (const path of paths) {
+    await rm(join(root, path), { force: true });
+    dirs.add(dirname(path));
+  }
+  for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+    await rmdir(join(root, dir)).catch(() => undefined);
+  }
+}
+
+/** Initialises the engine for the session's root again: a new module call or provider needs it. */
+export async function reinit(
+  session: Pick<MoveSession, "engine" | "dir" | "env" | "deps">,
+): Promise<void> {
+  await session.engine.init(session.dir, {
+    env: session.env,
+    backendConfig: { path: tfstateFile(session.deps.paths) },
+  });
+}
+
+/**
  * Writes the infrastructure files of the move's layout `name` into the working tree, sets the
  * address variables of its sides that are the user's own server or Portainer, and initialises the
  * engine again (a new module call or provider needs `init` before any plan or output).
@@ -511,10 +550,7 @@ export async function useLayout(
       `Updated the move's transitional infrastructure files in ${session.plan.infra.dir} (${name}); the final files are published when the move is finished.`,
     );
   }
-  await session.engine.init(session.dir, {
-    env: session.env,
-    backendConfig: { path: tfstateFile(deps.paths) },
-  });
+  await reinit(session);
   return files;
 }
 
@@ -537,15 +573,7 @@ export async function writeFinalFiles(
   const stale = (await renderFiles(session, transitional, plan))
     .filter((file) => file.kind === "infra" && !kept.has(file.path))
     .map((file) => file.path);
-  const dirs = new Set<string>();
-  for (const path of stale) {
-    await rm(join(deps.paths.root, path), { force: true });
-    dirs.add(dirname(path));
-  }
-  // Deepest first; a directory that still holds other files stays.
-  for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
-    await rmdir(join(deps.paths.root, dir)).catch(() => undefined);
-  }
+  await removeStalePaths(deps.paths.root, stale);
   return { files, removed: stale };
 }
 

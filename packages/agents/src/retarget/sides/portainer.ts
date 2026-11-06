@@ -14,6 +14,7 @@ import {
 } from "@opscrew/connector-docker";
 import {
   COMPOSE_PROJECT_LABEL,
+  COMPOSE_SERVICE_LABEL,
   DEPLOY_COMPOSE_FILE,
   PORTAINER_TOKEN_STEPS,
   type PortainerClient,
@@ -55,20 +56,13 @@ import {
   pollUntil,
   portainerClientFor,
 } from "../../shared";
-import {
-  auditMove,
-  type MoveBase,
-  type MoveSession,
-  moveOf,
-  renderFiles,
-  waitsOf,
-} from "../session";
+import { auditMove, type MoveBase, type MoveSession, renderFiles, waitsOf } from "../session";
 import { pendingStop } from "../steps";
+import { sideTarget } from ".";
 
 import { type MoveSide, type SideDocker, type SideVolume, STOP_SECONDS } from "./types";
 
 /** The Compose label that names a container's service. */
-const SERVICE_LABEL = "com.docker.compose.service";
 /** The stack's Caddy, its edge. */
 const EDGE = "caddy";
 const HEALTH_TIMEOUT_MS = 5 * 60_000;
@@ -143,7 +137,7 @@ function withAccessWords(transport: DockerTransport, command: string): DockerTra
 }
 
 /** The Portainer target the move leaves. */
-function oldTarget(target: Retarget["from"]["target"]): PortainerDeployTarget {
+function _oldTarget(target: Retarget["from"]["target"]): PortainerDeployTarget {
   if (target.provider !== "portainer") {
     throw new OpsCrewError(
       "INTERNAL",
@@ -164,7 +158,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
   function sidePlan(session: MoveBase): DeployPlan {
     return input.which === "new"
       ? session.plan
-      : { ...session.plan, target: oldTarget(moveOf(session).from.target) };
+      : { ...session.plan, target: sideTarget(session, "old") };
   }
 
   /** The client of each session's Portainer, made and checked once. */
@@ -240,7 +234,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
   ): Promise<DockerContainer[]> {
     const stack = portainerStackName(sidePlan(session));
     const all = await docker.listContainers([`${COMPOSE_PROJECT_LABEL}=${stack}`]);
-    return all.filter((container) => names.includes(container.labels[SERVICE_LABEL] ?? ""));
+    return all.filter((container) => names.includes(container.labels[COMPOSE_SERVICE_LABEL] ?? ""));
   }
 
   /** Stops the stack's containers of `names`, each with `seconds` to stop cleanly (Docker's default without). */
@@ -498,7 +492,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
       const found = new Map<string, SideVolume>();
       const stack = portainerStackName(plan);
       for (const container of await client.listContainers([`${COMPOSE_PROJECT_LABEL}=${stack}`])) {
-        const service = container.labels[SERVICE_LABEL] ?? "";
+        const service = container.labels[COMPOSE_SERVICE_LABEL] ?? "";
         // The app's data and its services'; Caddy's certificates and the version stay.
         const owner = app.has(service) ? "app" : owned.has(service) ? service : undefined;
         if (owner === undefined) continue;

@@ -14,6 +14,7 @@ import {
   serverlessName,
   updateServerAddresses,
 } from "../../shared";
+import { oldSideTarget } from "../layouts";
 import type { MoveServer } from "../removal";
 import { type MoveBase, moveOf } from "../session";
 import { providerWords } from "../texts";
@@ -33,9 +34,12 @@ export interface MoveSideOptions extends CloudSideOptions, OwnSideOptions {
   publicImage?: boolean;
 }
 
-/** The target of a side: `plan.target` for the new one, the move's `from.target` for the old one. */
-export function sideTarget(session: Pick<MoveBase, "plan">, which: MoveServer) {
-  return which === "new" ? session.plan.target : moveOf(session).from.target;
+/**
+ * The target of a side: `plan.target` for the new one, the move's `from.target` for the old one
+ * ({@link oldSideTarget}: a cloud server's with its image filled in).
+ */
+export function sideTarget(session: Pick<MoveBase, "plan">, which: MoveServer): DeployTarget {
+  return which === "new" ? session.plan.target : oldSideTarget(moveOf(session));
 }
 
 /**

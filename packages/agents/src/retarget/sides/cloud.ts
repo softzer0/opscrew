@@ -17,8 +17,8 @@ import {
   previewMoveRemoval,
   removeMoveServer,
 } from "../removal";
-import { oldServer, unknownOldServer } from "../servers";
-import { type MoveSession, moveOf, newServer, waitsOf } from "../session";
+import { unknownOldServer } from "../servers";
+import { type MoveSession, moveOf, serverOf, waitsOf } from "../session";
 import { createStep } from "../steps";
 import { providerWords } from "../texts";
 import { sshSide } from "./ssh";
@@ -52,7 +52,7 @@ export function cloudSide(which: MoveServer, options: CloudSideOptions = {}): Mo
     which,
     words: (session) => `the ${which} ${providerWords(providerOf(session, which)).noun}`,
     login: async (session) => ({
-      host: (which === "new" ? newServer(session) : oldServer(session)).ipv4,
+      host: serverOf(session, which).ipv4,
       port: 22,
     }),
   });

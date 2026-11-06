@@ -4,7 +4,7 @@
  */
 import { join } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
-import { OpsCrewError, tfstateFile } from "@opscrew/core";
+import { OpsCrewError } from "@opscrew/core";
 import type { EnginePreference } from "@opscrew/iac-engine";
 import { type RenderedFile, type RuntimeContext, renderDeployment } from "@opscrew/iac-templates";
 import type {
@@ -32,7 +32,7 @@ import {
   writeRenderedFiles,
 } from "../shared";
 import type { PlanSession } from "./plans";
-import { moveOf, requireState } from "./session";
+import { moveOf, reinit, requireState } from "./session";
 import type { RetargetGitHubApi, RetargetServices } from "./types";
 
 /** A site's target: Cloudflare's hosting or GitHub Pages. */
@@ -229,9 +229,6 @@ export async function useSiteRoot(
       `Updated the move's transitional infrastructure files in ${session.plan.infra.dir}; the final files are published when the move is finished.`,
     );
   }
-  await session.engine.init(session.dir, {
-    env: session.env,
-    backendConfig: { path: tfstateFile(deps.paths) },
-  });
+  await reinit(session);
   return files;
 }

@@ -1,4 +1,5 @@
 import { dialStdioTransport, dockerClient, volumeCarrier } from "@opscrew/connector-docker";
+import { COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL } from "@opscrew/connector-portainer";
 import { appDirs } from "@opscrew/connector-ssh-host";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import {
@@ -31,7 +32,8 @@ import {
   stopService,
   waitAppHealthy,
 } from "../server-ops";
-import { auditMove, type MoveBase, moveOf, remoteFor, waitsOf } from "../session";
+import { auditMove, type MoveBase, remoteFor, waitsOf } from "../session";
+import { sideTarget } from ".";
 import {
   type MoveSide,
   type SideDocker,
@@ -41,8 +43,6 @@ import {
 } from "./types";
 
 /** The Compose labels a side reads on containers. */
-const PROJECT_LABEL = "com.docker.compose.project";
-const SERVICE_LABEL = "com.docker.compose.service";
 const WORKING_DIR_LABEL = "com.docker.compose.project.working_dir";
 
 const MINUTE = 60_000;
@@ -75,14 +75,6 @@ export interface SshSideInput {
 
 /** What every side over SSH shares: everything but preparing and removing it. */
 export type SshSideParts = Omit<MoveSide, "kind" | "prepare" | "remove">;
-
-/** The edge's proxy on the side: the plan's for the new side, the move's `from` for the old one. */
-function sideEdge(session: MoveBase, which: MoveServer): EdgeProxy {
-  if (which === "new") return edgeProxy(session.plan);
-  const from = moveOf(session).from.target;
-  // As `edgeProxy` says: a server's own choice, else (Portainer) the stack's Caddy.
-  return "edge" in from ? from.edge : "caddy";
-}
 
 /** The typed server operations' options for the session's app. */
 function opsOf(session: MoveBase): ServerOpOptions {
@@ -259,11 +251,11 @@ export function sshSide(input: SshSideInput): SshSideParts {
     if (input.sharedEdge !== true) return false;
     const app = session.plan.app.name;
     const containers = await withDocker(session, (side) =>
-      side.client.listContainers([PROJECT_LABEL]),
+      side.client.listContainers([COMPOSE_PROJECT_LABEL]),
     );
     return containers.some(
       (container) =>
-        container.labels[PROJECT_LABEL] !== app &&
+        container.labels[COMPOSE_PROJECT_LABEL] !== app &&
         (container.labels[WORKING_DIR_LABEL] ?? "").startsWith(`${APPS_DIR}/`),
     );
   }
@@ -276,7 +268,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
   }
 
   async function stopEdge(session: MoveBase): Promise<void> {
-    const edge = sideEdge(session, input.which);
+    const edge = edgeProxy({ ...session.plan, target: sideTarget(session, input.which) });
     if (await edgeShared(session)) return edgeStays(session, edge);
     const remote = await remoteOf(session);
     await inWords(session, () => stopService(remote, edge, opsOf(session)));
@@ -287,7 +279,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
    * hostnames get their certificates right after DNS switched to this server.
    */
   async function startEdge(session: MoveBase): Promise<void> {
-    const edge = sideEdge(session, input.which);
+    const edge = edgeProxy({ ...session.plan, target: sideTarget(session, input.which) });
     const remote = await remoteOf(session);
     if (await edgeShared(session)) {
       await inWords(session, () => reloadEdge(remote, edge, opsOf(session)));
@@ -302,7 +294,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
     async deploy(session) {
       const { deps, plan } = session;
       const words = input.words(session);
-      const edge = sideEdge(session, input.which);
+      const edge = edgeProxy({ ...session.plan, target: sideTarget(session, input.which) });
       deps.reporter.step(`Checking the app on ${words} over SSH`);
       const remote = await remoteOf(session);
       await inWords(session, () =>
@@ -359,7 +351,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
         remote,
         plan.app.port,
         plan.app.healthPath,
-        sideEdge(session, input.which),
+        edgeProxy({ ...session.plan, target: sideTarget(session, input.which) }),
         plan.app.name,
       );
     },
@@ -430,8 +422,10 @@ async function dataMounts(
   const projects = [app, ...(monitoring ? [MONITORING_PROJECT] : [])];
   const found = new Map<string, Omit<SideVolume, "bytes">>();
   for (const project of projects) {
-    for (const container of await side.client.listContainers([`${PROJECT_LABEL}=${project}`])) {
-      const service = container.labels[SERVICE_LABEL] ?? "";
+    for (const container of await side.client.listContainers([
+      `${COMPOSE_PROJECT_LABEL}=${project}`,
+    ])) {
+      const service = container.labels[COMPOSE_SERVICE_LABEL] ?? "";
       const owner =
         project === MONITORING_PROJECT ? "monitoring" : services.has(service) ? service : "app";
       for (const mount of container.mounts) {

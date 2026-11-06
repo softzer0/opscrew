@@ -1,4 +1,4 @@
-import { OpsCrewError } from "@opscrew/core";
+import { listText, OpsCrewError } from "@opscrew/core";
 import {
   type DeployPlan,
   isServerlessProvider,
@@ -48,13 +48,17 @@ async function continueMove(
       `--option only applies when a move starts; the move to ${to} continues with the server it chose.`,
     );
   }
-  if (
-    options.ownServer !== undefined ||
-    options.portainer !== undefined ||
-    options.empty !== undefined
-  ) {
+  const startOnly = [
+    ...(options.ownServer !== undefined || options.portainer !== undefined
+      ? ["the new side's answers"]
+      : []),
+    ...(options.hostKey !== undefined ? ["--host-key"] : []),
+    ...(options.portainerAddress !== undefined ? ["--portainer-address"] : []),
+    ...(options.empty !== undefined ? ["--empty"] : []),
+  ];
+  if (startOnly.length > 0) {
     deps.reporter.warn(
-      `The new side's answers and --empty only apply when a move starts; the move to ${to} continues as it started.`,
+      `Only a move's start uses ${listText(startOnly)}; the move to ${to} continues as it started.`,
     );
   }
   if (options.keepBucket !== undefined) {

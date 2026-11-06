@@ -52,8 +52,7 @@ import { extraServers } from "../shared/servers";
 import { oldSideTarget } from "./layouts";
 import { quietly } from "./plans";
 import type { MoveServer } from "./removal";
-import { oldServer } from "./servers";
-import { auditMove, type MoveSession, moveOf, newServer, remoteFor } from "./session";
+import { auditMove, type MoveSession, moveOf, remoteFor, serverOf } from "./session";
 import { sideTarget, sideWords } from "./sides";
 import { pendingStop } from "./steps";
 import type { RetargetResult } from "./types";
@@ -166,7 +165,7 @@ export async function sideServer(session: MoveSession, which: MoveServer): Promi
       alone: otherActiveApps(facts.apps, plan.app.name).length === 0,
     };
   }
-  const address = which === "new" ? newServer(session) : oldServer(session);
+  const address = serverOf(session, which);
   const remote = remoteFor(deps, services, session.deployKey.privateKeyFile, address.ipv4);
   const host = services.serverHost ?? { inspect: inspectHost, apply: applyHostPlan };
   const rootImage = IMAGES.caddy.ref;

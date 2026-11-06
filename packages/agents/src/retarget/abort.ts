@@ -22,7 +22,7 @@ import { restoreOldConnection, type ServerAddress } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { movingBucketKeys, removeNewBucket, renameBucketBack, writeStorageFiles } from "./bucket";
-import { previousTarget } from "./layouts";
+import { oldSideTarget, previousTarget } from "./layouts";
 import { endMoveKey, networkBeforeMove, undoMoveNetwork } from "./network";
 import { clearPending } from "./pending";
 import { applyInfraPlan, type InfraPlanInput, planBounded, prepareInfraPlan } from "./plans";
@@ -349,7 +349,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   const restored: DeployPlan = {
     ...rest,
     app: move.from.build === undefined ? unbuilt : { ...unbuilt, build: move.from.build },
-    target: from.provider === "own" || from.provider === "portainer" ? from : previousTarget(move),
+    target: oldSideTarget(move),
     deploy: move.from.deploy,
     ...(cost !== undefined ? { cost } : {}),
     ...(move.from.objectStorage !== undefined
