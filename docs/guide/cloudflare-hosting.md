@@ -253,8 +253,9 @@ domain. To turn either on, set `target.previewUrls` or `target.workersDev` to `t
   its errors, and `npx opscrew status` its requests, errors and CPU time of the last day: see
   [logs and resource figures](logs-and-status.md#cloudflares-hosting). A static site has no request
   logs.
-- [`npx opscrew retarget`](retarget.md) does not move a site to or from a server yet: remove it with
-  `destroy` and set it up on the new target.
+- [`npx opscrew retarget --to github-pages`](retarget.md#sites) moves the site to GitHub Pages, with
+  no maintenance window. A site doesn't move to or from a server yet: remove it with `destroy` and
+  set it up on the new target.
 
 ## Removing the site
 

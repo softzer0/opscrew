@@ -131,9 +131,10 @@ Which services can move with their data:
   refused on a live app, before any change. On an app that was never deployed, every service can be
   placed on any server.
 
-One service moves at a time. Moving the whole app to another provider is
-[`npx opscrew retarget`](retarget.md), which an app with extra servers can't use yet: it refuses
-before any change.
+One service moves at a time. Moving the whole app somewhere else is
+[`npx opscrew retarget`](retarget.md): the extra servers stay, and the new app server joins the
+private network ([Apps on several servers](retarget.md#apps-on-several-servers-and-monitoring)). To
+keep a service at the old provider, place it on an extra server first, then move.
 
 ## Kafka, Redpanda and OpenSearch
 

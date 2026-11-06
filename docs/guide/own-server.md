@@ -366,4 +366,6 @@ never deletes, rebuilds or reinstalls your server.
 - In scripts: `npx opscrew destroy --confirm <app name>`; the undo plan then needs
   `--confirm <app name>` together with `--approve <its hash>`, which the run prints.
 
-Moving an app between your own server and Hetzner Cloud or DigitalOcean is not supported yet.
+To move an app to or from your server (from a cloud provider, your Portainer or another server of
+yours), use [`npx opscrew retarget`](retarget.md): at `--finish` it removes only the app from the
+old server, never the server itself ([Your own server and your Portainer](retarget.md#your-own-server-and-your-portainer)).

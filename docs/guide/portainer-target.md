@@ -330,6 +330,10 @@ deletes the volumes an earlier `destroy` kept.
 In scripts, pass the app's name: `npx opscrew destroy --confirm <app>` (with `--delete-data` to
 delete the data as well).
 
+To move the app into your Portainer or out of it, with its volumes, use
+[`npx opscrew retarget`](retarget.md): at `--finish` it removes only the app's stacks and volumes,
+never Portainer or the environment ([Your own server and your Portainer](retarget.md#your-own-server-and-your-portainer)).
+
 ## From Claude Code
 
 The [OpsCrew plugin](../../plugin/README.md) offers the same choices. Every change in Portainer is

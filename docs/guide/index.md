@@ -10,7 +10,7 @@ an app yet.
 - [Your app's production stack on your own computer](localhost.md)
 - [Host your site on Cloudflare, with no server](cloudflare-hosting.md)
 - [Publish your site on GitHub Pages](github-pages.md)
-- [Moving your app to another cloud provider](retarget.md)
+- [Moving your app somewhere else](retarget.md)
 - [dev, staging and prod: environments](environments.md)
 - [Previews: a link for every pull request](previews.md)
 - [Several apps in one repository](several-apps.md)

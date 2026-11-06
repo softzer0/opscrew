@@ -254,8 +254,10 @@ environment) where it was first turned on is refused, naming them: turn monitori
 Turning it off in one of those other environments, or destroying it, removes its agents and takes the
 monitoring server off its network.
 
-[`npx opscrew retarget`](retarget.md) refuses an environment with monitoring on: turn monitoring off
-and run `provision` first.
+Moving the app with [`npx opscrew retarget`](retarget.md) keeps monitoring: on the app server it
+moves with its data (or starts empty with `--empty monitoring`), and on a server of its own it stays
+where it is, with the new app server sending to it
+([Apps on several servers, and monitoring](retarget.md#apps-on-several-servers-and-monitoring)).
 
 ## The licences
 

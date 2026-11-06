@@ -120,7 +120,6 @@ broker is yours to choose, because its data may need a migration.
   [Search and analytics engines](search-and-analytics.md#the-kernel-setting-of-opensearch-and-elasticsearch)
   and [Deploy to a Portainer you already run](portainer-target.md)).
 
-Moving an app to another provider with [`npx opscrew retarget`](retarget.md) moves Postgres and
-Valkey with it, and the workers and cron jobs. An app with another service that keeps data (MySQL,
-MongoDB, Redis 8, Dragonfly, a broker, an engine, SQLite) cannot be moved yet: retarget says so
-before changing anything. A bucket stays where it is.
+Moving an app somewhere else with [`npx opscrew retarget`](retarget.md) moves every service's data
+with it, and the app's own files (SQLite, uploads), unless you start a service empty; the workers
+and cron jobs move too. See [The data](retarget.md#the-data) and [Buckets](retarget.md#buckets).
