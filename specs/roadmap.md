@@ -5,12 +5,10 @@ feature gets its own `specs/NNN-name/` folder when it starts, and its section he
 there. The lead keeps this file current. Research for a feature goes in that feature's
 `research.md`, never only in an agent's memory, so every session on every machine has it.
 
-Done: 000–022. [022 preview environments](022-preview-environments/) was built on 2026-11-05,
-with addresses nobody can guess on a domain of their own (the founder's change that day), and
-passed its live pass on the final code. Being built now: 022's two opt-ins (research R7: previews on
-another environment's server, and under the app's own zone with Advanced Certificate Manager). Then
-023 retarget anywhere (the founder's go-ahead, 2026-11-05), then 019's database rollback (below).
-All three ship in one release once they are done (founder, 2026-11-06).
+Done: 000–023. 022's two opt-ins (previews on another environment's server, and below the app's
+own zone), [023 retarget anywhere](023-retarget-anywhere/) and 019's database rollback (below)
+were built and passed their live passes on 2026-11-06, and shipped together as 0.2.4 that day.
+Next: 024 snapshots and restores as commands, once the founder gives the go-ahead.
 
 ## 019 Rollback
 
@@ -59,7 +57,7 @@ newer schema. Now a rollback asks how to undo the database:
 - **Down migrations, per framework, when the user picks them:** the current image migrates the
   database down to the version the earlier one ran. Offered only where the app's migration tool
   has down migrations; rows the undone migrations don't touch stay.
-- In progress (2026-11-06): [research R9](019-rollback/research.md), [spec US8](019-rollback/spec.md),
+- Done (2026-11-06, released in 0.2.4): [research R9](019-rollback/research.md), [spec US8](019-rollback/spec.md),
   [plan section 12](019-rollback/plan.md), [tasks T1930–T1938](019-rollback/tasks.md) and ADR 0028.
 
 **Also in 019: logins for Kafka, Redpanda and OpenSearch** (founder, 2026-11-01). They get a login
@@ -173,7 +171,7 @@ AWS, so both support previews from the start. More relevant to teams than to sol
 
 ## 023 Retarget anywhere
 
-In progress (2026-11-05): [research](023-retarget-anywhere/research.md),
+Done (2026-11-06, released in 0.2.4): [research](023-retarget-anywhere/research.md),
 [spec](023-retarget-anywhere/spec.md), [plan](023-retarget-anywhere/plan.md),
 [tasks](023-retarget-anywhere/tasks.md). The sketch below is the roadmap's, kept as the founder's
 input.
