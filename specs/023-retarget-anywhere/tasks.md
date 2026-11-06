@@ -324,6 +324,26 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `OPSCREW_DOCKER_TESTS=1` catalog copy test, plus agents and iac-templates
   - Effort: high
 
+- [ ] T2323 [US2] Found live (T2317 Portainer run 2): a move from Portainer back to a server deploys the Portainer template, and leaves the other side's deploy secrets
+  - Owns: `packages/agents/src/retarget/**` (+ tests)
+  - Why:
+    - **The template:** the Portainer stack template and a server's Compose file share
+      `<runtimeDir>/compose.yaml`. Moving back to Hetzner, the move proposed only the deploy
+      workflow, so the server's first deploy uploaded the template and failed on its
+      `__OPSCREW_APP_IMAGE__` placeholder. Portainer kept serving.
+    - **The secrets:** pointing the deploy secrets at one kind of side never removes the secrets
+      only the other kind uses. After the cleanup's abort back to Portainer, the repository kept
+      the server side's five.
+  - Accept:
+    - Before the new side's first deploy, every file its deploy reads from the repository that
+      differs (the workflow and the runtime files) goes into the pull request the move proposes.
+      An unchanged server-to-server move still doesn't stop.
+    - Pointing the deploy secrets at a side removes this environment's secrets only the other kind
+      of side uses, on a move, an abort and `--finish`.
+    - Fake-repository tests for both directions.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
 ## Phase 7: Live
 
 - [x] T2316 [US1] [US2] [US3] [US4] [US5] The live pass, in `packages/cli/test/live/`
