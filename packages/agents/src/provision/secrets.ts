@@ -25,6 +25,7 @@ import {
   serverDeploySecrets,
   serviceEnvSecret,
   serviceSpec,
+  siteEnvSecret,
   TUNNEL_DEPLOY_SECRETS,
 } from "@opscrew/iac-templates";
 import {
@@ -959,7 +960,9 @@ export async function readSecretsRecord(
  * repository), each where it is. `stale`: every deploy secret the record names that `names` no
  * longer holds (the env file secrets of services that no longer run, the addresses of extra
  * servers that are gone, origin TLS turned off, or the other kind of side's after a move between a
- * server and Portainer); only names OpsCrew recorded, never the scheduled check's.
+ * server and Portainer); only names OpsCrew recorded, never the scheduled check's, and never one
+ * holding an app variable of the plan (`siteEnvSecret`: a value not given this run keeps the earlier
+ * one).
  * `moved`: on a move between a GitHub environment and repository secrets (`environment` is where
  * they go now), the old copies: into a GitHub environment, the repository secrets of the same
  * names (GitHub would read them instead of a missing environment secret, also without a record of
@@ -976,8 +979,9 @@ function secretsToDelete(
     where === undefined ? { name } : { name, environment: where };
   // The build values stay repository secrets beside a GitHub environment.
   const build = BUILD_VALUES.map((name) => deploySecretName(plan, name));
+  const appValues = plan.app.env.map((v) => deploySecretName(plan, siteEnvSecret(v.name)));
   const stale = (previous?.names ?? [])
-    .filter((name) => !names.includes(name))
+    .filter((name) => !names.includes(name) && !appValues.includes(name))
     .sort()
     .map((name) => at(name, build.includes(name) ? undefined : was));
   if (environment === was) return { stale, moved: [] };

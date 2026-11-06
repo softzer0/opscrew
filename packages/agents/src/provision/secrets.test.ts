@@ -4,7 +4,12 @@ import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import { findExecutable } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DEPLOY_SECRETS, serviceEnvSecret } from "@opscrew/iac-templates";
+import {
+  CLOUDFLARE_DEPLOY_SECRETS,
+  DEPLOY_SECRETS,
+  serviceEnvSecret,
+  siteEnvSecret,
+} from "@opscrew/iac-templates";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -968,6 +973,28 @@ describe("the deploy secrets OpsCrew stored before", () => {
     );
     expect(deps.audit.entries.map((e) => e.action)).toContain(
       `delete secret ${DEPLOY_SECRETS.originTls}`,
+    );
+  });
+
+  it("keeps a site variable an earlier run stored when this run does not give it", async () => {
+    const handler = new ScriptedApprovalHandler();
+    const deps = await createTestPhaseDeps({ approvalHandler: handler });
+    const plan = sitePlan({ env: ["PUBLIC_API_URL"] });
+    const github = new FakeGitHub();
+    const setup = { api: github, owner: "acme", repo: "shop", defaultBranch: "main" };
+    const deploy = {
+      [CLOUDFLARE_DEPLOY_SECRETS.apiToken]: "token",
+      [CLOUDFLARE_DEPLOY_SECRETS.accountId]: "account",
+    };
+    const variable = siteEnvSecret("PUBLIC_API_URL");
+    await setDeploySecrets(deps, setup, plan, { ...deploy, [variable]: "https://api" }, []);
+    expect(github.secrets.get(variable)).toBe("https://api");
+
+    handler.requests.length = 0;
+    await setDeploySecrets(deps, setup, plan, deploy, []);
+    expect(github.secrets.get(variable)).toBe("https://api");
+    expect(handler.requests.find((r) => r.kind === "github-secrets")?.details).not.toContain(
+      "Deleted",
     );
   });
 });
