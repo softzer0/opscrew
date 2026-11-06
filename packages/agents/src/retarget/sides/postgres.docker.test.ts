@@ -192,7 +192,8 @@ describe.skipIf(reason !== undefined)("Postgres in a move against the local Dock
     expect(psql(newDb, "select to_regclass('stale') is null")).toBe("t");
 
     const postgresOneOffs = created.filter((spec) => spec.Image === IMAGES.postgres.ref);
-    expect(postgresOneOffs.length).toBe(5);
+    // The dump, its digest and the copy's, `pg_isready`, then psql and pg_restore.
+    expect(postgresOneOffs.length).toBe(6);
     for (const spec of created) {
       for (const password of passwords) {
         expect(JSON.stringify([spec.Env, spec.Cmd])).not.toContain(password);
