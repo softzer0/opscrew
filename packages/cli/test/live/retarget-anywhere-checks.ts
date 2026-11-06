@@ -114,7 +114,11 @@ export async function retargetUntilDone(run: LiveRun, options: MoveRuns): Promis
     }
     const printed = printedApproval(result.output);
     const hash = printed === undefined ? undefined : flagValue(printed, "--approve");
-    if (printed !== undefined && hash !== approved) {
+    // A new plan, or the same one asking for a name not typed yet (the window's run carried the
+    // switch plan's hash, and the switch then asked for `--confirm` because it deletes a record).
+    const newNames =
+      printed !== undefined && confirmNames(printed).some((name) => !confirmed.has(name));
+    if (printed !== undefined && (hash !== approved || newNames)) {
       const unexpected = confirmNames(printed).filter((name) => !names.includes(name));
       if (unexpected.length > 0) {
         throw new Error(
