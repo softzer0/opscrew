@@ -1032,7 +1032,7 @@ export function switchCommands(
           "    exit 1",
           "  fi",
           `  echo ${shellMessage(`The release command finished; its output is in ${releaseLog(plan)} on the server.`)}`,
-          ...migrationRecord(plan).map((line) => `  ${line}`),
+          ...migrationRecord(plan, o).map((line) => `  ${line}`),
           "fi",
         ];
   const hosts = proxyHosts(plan, edgeFiles.localhost);

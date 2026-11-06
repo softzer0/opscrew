@@ -2,6 +2,7 @@
 import { type DeployPlan, MIGRATION_TOOLS, type MigrationTool } from "@opscrew/plan-schema";
 import { shellQuote } from "../runtime/services";
 import { planFilePath, runbookFilePath } from "./shared";
+import type { ScriptOptions } from "./switch";
 
 /** The migration records' folder in the app's folder (plan.md 12.3). */
 export const SCHEMA_DIR = ".schema";
@@ -22,10 +23,13 @@ const RELEASE_LOG = "release.log";
 
 /**
  * The awk program that turns each tool's status output (research R9, as the tools print it without
- * a terminal) into its record, and exits non-zero when the output holds nothing it knows:
- * - Rails `db:version`: `Current version: <v>` (0 when none ran), after `database: <name>`;
- * - Alembic and Flask-Migrate `current`: `<revision> (head)`, nothing at all when none ran
- *   (`base`);
+ * a terminal) into its record. It exits 1 when the output holds nothing it knows, or a line it
+ * doesn't know where every line counts, and 2 when it shows more than one version
+ * ({@link SEVERAL}):
+ * - Rails `db:version`: `Current version: <v>` (0 when none ran), after `database: <name>`; one
+ *   pair per database;
+ * - Alembic and Flask-Migrate `current`: `<revision> (head)`, one per head, nothing at all when
+ *   none ran (`base`);
  * - Django `showmigrations --plan`: `[X]  <app>.<name>` for each applied migration, in the order
  *   they ran; the record keeps each app's last, ordered by when it ran;
  * - Knex `migrate:list`: `Found <n> Completed Migration file/files.`, or `No Completed Migration
@@ -33,10 +37,11 @@ const RELEASE_LOG = "release.log";
  * - sequelize-cli `db:migrate:status`: `up <file>` and `down <file>`;
  * - TypeORM `migration:show`: `[X] <id> <name>` and `[ ] <name>`;
  * - Laravel `migrate:status`: the `Migration name` heading, then `<name> .... [<batch>] Ran` or
- *   `Pending`.
+ *   `<name> .... Pending`.
  */
 const NORMALIZE: Record<MigrationTool, string> = {
-  rails: '/^Current version: [0-9]+$/ { print "version=" $3; found = 1 } END { exit !found }',
+  rails:
+    '/^Current version: [0-9]+$/ { print "version=" $3; n++ } END { if (n > 1) exit 2; exit !n }',
   alembic: alembicCurrent(),
   "flask-migrate": alembicCurrent(),
   django: [
@@ -50,18 +55,37 @@ const NORMALIZE: Record<MigrationTool, string> = {
   ].join(" "),
   sequelize: countOf("/^(up|down) /", "/^up /"),
   typeorm: countOf("/^\\[[X ]\\] /", "/^\\[X\\] /"),
-  laravel: countOf("/^ *Migration name /", "/\\[[0-9]+\\] Ran *$/"),
+  laravel: countOf("/ (\\[[0-9]+\\] Ran|Pending) *$/", "/\\[[0-9]+\\] Ran *$/"),
 };
 
-/** Alembic's `current`: each revision it prints, `base` when it prints none. */
+/**
+ * Alembic's `current`: the one revision it prints (letters, digits and `_.:-`), `base` when it
+ * prints none; any other line makes the output unknown.
+ */
 function alembicCurrent(): string {
-  return '/^[0-9A-Za-z_]+( \\(.*\\))?$/ { print "version=" $1; found = 1 } END { if (!found) print "version=base" }';
+  return 'NF == 0 { next } /^[A-Za-z0-9_.:-]+( \\(.*\\))?$/ { print "version=" $1; n++; next } { bad = 1 } END { if (bad) exit 1; if (n > 1) exit 2; if (n == 0) print "version=base" }';
 }
 
-/** `count=<lines matching applied>`, when any line matches `known` (the tool's own lines). */
-function countOf(known: string, applied: string): string {
-  return `${known} { found = 1 } ${applied} { n++ } END { if (found) print "count=" n + 0; exit !found }`;
+/**
+ * `count=<rows matching applied>` from the tool's list of migrations, each a `row`, applied or
+ * not; an output without a row is unknown.
+ */
+function countOf(row: string, applied: string): string {
+  return `${row} { rows++ } ${applied} { n++ } END { if (rows) print "count=" n + 0; exit !rows }`;
 }
+
+/**
+ * Why a tool's status shows more than one version: a version tool's down migrations go back to
+ * one version, so these get no record.
+ */
+const SEVERAL: Partial<Record<MigrationTool, string>> = {
+  rails:
+    "the app has several databases (bin/rails db:version shows a version for each), and OpsCrew's down migrations handle one database only for now",
+  alembic:
+    "Alembic shows several heads (branches of migrations), and OpsCrew's down migrations handle a single head only for now",
+  "flask-migrate":
+    "Alembic shows several heads (branches of migrations), and OpsCrew's down migrations handle a single head only for now",
+};
 
 /** Shown when the record fails; `%s` is the app's folder. */
 function recordFailed(plan: DeployPlan): string {
@@ -74,22 +98,37 @@ function recordFailed(plan: DeployPlan): string {
  * migrations.status` runs in a one-off of the new image (the `release` service, which `$1` names),
  * its output is turned into {@link schemaRecordPath}'s lines ({@link NORMALIZE}) and the newest
  * {@link KEEP_RECORDS} records stay. Folder 0700, files 0600. Nothing the command prints reaches
- * the log: its errors go to `release.log`. A failure only warns. None without `app.migrations`,
- * and none for an image without a digest (provision's first start on this computer).
+ * the log: its errors go to `release.log`. A failure only warns, and leaves no record: down
+ * migrations are then not offered for this version. None without `app.migrations`, in a preview's
+ * scripts (`o.preview`: no rollback changes a preview's data), and for an image without a digest
+ * (provision's first start on this computer).
  */
-export function migrationRecord(plan: DeployPlan): string[] {
+export function migrationRecord(plan: DeployPlan, o: ScriptOptions = {}): string[] {
   const migrations = plan.app.migrations;
-  if (migrations === undefined) return [];
+  if (migrations === undefined || o.preview === true) return [];
   const record = `${SCHEMA_DIR}/"$schema_hex"`;
+  const several = SEVERAL[migrations.tool];
   return [
     'case "$1" in *@sha256:*)',
     '  schema_hex="${1##*@sha256:}"',
-    `  if schema_out="$(docker compose run --rm --no-deps -T release sh -c ${shellQuote(migrations.status)} < /dev/null 2>> ${RELEASE_LOG})" && (umask 077 && mkdir -p ${SCHEMA_DIR} && printf '%s\\n' "$schema_out" | awk ${shellQuote(NORMALIZE[migrations.tool])} > ${record}); then`,
-    `    ls -t ${SCHEMA_DIR} | sed '1,${KEEP_RECORDS}d' | while read -r old; do rm -f ${SCHEMA_DIR}/"$old"; done`,
-    "  else",
-    `    rm -f ${record}`,
-    `    printf ${shellQuote(`${recordFailed(plan)}\\n`)} "$PWD"`,
-    "  fi ;;",
+    "  schema_status=1",
+    `  if schema_out="$(docker compose run --rm --no-deps -T release sh -c ${shellQuote(migrations.status)} < /dev/null 2>> ${RELEASE_LOG})"; then`,
+    `    (umask 077 && mkdir -p ${SCHEMA_DIR} && printf '%s\\n' "$schema_out" | awk ${shellQuote(NORMALIZE[migrations.tool])} > ${record}) && schema_status=0 || schema_status=$?`,
+    "  fi",
+    '  case "$schema_status" in',
+    "    0)",
+    `      ls -t ${SCHEMA_DIR} | sed '1,${KEEP_RECORDS}d' | while read -r old; do rm -f ${SCHEMA_DIR}/"$old"; done ;;`,
+    ...(several === undefined
+      ? []
+      : [
+          "    2)",
+          `      rm -f ${record}`,
+          `      echo ${shellQuote(`::warning::OpsCrew records no database migrations for this version, because ${several}, so a rollback from this version can't migrate the database down.`)} ;;`,
+        ]),
+    "    *)",
+    `      rm -f ${record}`,
+    `      printf ${shellQuote(`${recordFailed(plan)}\\n`)} "$PWD" ;;`,
+    "  esac ;;",
     "esac",
   ];
 }

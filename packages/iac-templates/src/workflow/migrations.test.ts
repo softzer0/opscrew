@@ -22,6 +22,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testPlan } from "../__fixtures__/plans";
 import { migrationDown, migrationRecord, schemaRecordPath } from "./migrations";
+import { switchCommands } from "./switch";
 
 /** The digests of the earlier and the later version. */
 const A = "a".repeat(64);
@@ -92,6 +93,12 @@ const STATUS: [string, MigrationTool, string, string][] = [
   ["Rails before any migration", "rails", "\ndatabase: app\nCurrent version: 0\n\n", "version=0\n"],
   ["Alembic", "alembic", "7c9d1e2f3a4b (head)\n", "version=7c9d1e2f3a4b\n"],
   ["Alembic before any migration", "alembic", "", "version=base\n"],
+  [
+    "Alembic with a revision of its own naming",
+    "alembic",
+    "\nshop-0002.note:v2 (head)\n\n",
+    "version=shop-0002.note:v2\n",
+  ],
   ["Flask-Migrate", "flask-migrate", "8a7b6c5d4e3f (head)\n", "version=8a7b6c5d4e3f\n"],
   [
     "Django",
@@ -153,6 +160,17 @@ const STATUS: [string, MigrationTool, string, string][] = [
       "",
     ].join("\n"),
     "count=4\n",
+  ],
+  [
+    "Laravel before any migration ran",
+    "laravel",
+    [
+      "",
+      "  Migration name .............................................. Batch / Status  ",
+      "  0001_01_01_000000_create_users_table ............................... Pending  ",
+      "",
+    ].join("\n"),
+    "count=0\n",
   ],
 ];
 
@@ -325,13 +343,31 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
       expect(read(schemaRecordPath(B))).toBe("count=2\n");
     });
 
-    it.each([
-      ["the status command fails", { TOOL_FAIL: "1" }, "Found 2 Completed Migration file/files.\n"],
-      ["its output is unknown", {}, `Error: ${SECRET_ROW}\n`],
-    ])("only warns, with no record, when %s", (_name, env, output) => {
+    it.each<[string, MigrationTool, Record<string, string>, string]>([
+      [
+        "the status command fails",
+        "knex",
+        { TOOL_FAIL: "1" },
+        "Found 2 Completed Migration file/files.\n",
+      ],
+      ["Knex's output is unknown", "knex", {}, `Error: ${SECRET_ROW}\n`],
+      ["Alembic's output is unknown", "alembic", {}, `Traceback: ${SECRET_ROW}\n`],
+      [
+        "Alembic prints an error line after its revision",
+        "alembic",
+        {},
+        `7c9d1e2f3a4b (head)\nERROR [alembic.util.messaging] ${SECRET_ROW}\n`,
+      ],
+      [
+        "Laravel shows its heading but no migration",
+        "laravel",
+        {},
+        "\n  Migration name .............................................. Batch / Status  \n\n",
+      ],
+    ])("only warns, with no record, when %s", (_name, tool, env, output) => {
       write(at(schemaRecordPath(B)), "count=1\n");
       write(`${work}/status.out`, output);
-      const result = deploy(PLANS.knex, image(B), env);
+      const result = deploy(PLANS[tool], image(B), env);
       expect(result.status, result.output).toBe(0);
       expect(result.output).toContain(
         "::warning::OpsCrew could not record which database migrations this version has (app.migrations.status in opscrew/plan.yaml failed, or printed nothing OpsCrew can read), so a rollback from this version can't migrate the database down.",
@@ -342,6 +378,44 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
       expect(result.output).toMatch(/deployed\n$/);
       expect(result.output).not.toContain(SECRET_ROW);
       expect(records()).toEqual([]);
+    });
+
+    it.each<[string, MigrationTool, string, string]>([
+      [
+        "Rails with several databases",
+        "rails",
+        "\ndatabase: app\nCurrent version: 20261106000000\n\ndatabase: app_queue\nCurrent version: 20261101000000\n\n",
+        "::warning::OpsCrew records no database migrations for this version, because the app has several databases (bin/rails db:version shows a version for each), and OpsCrew's down migrations handle one database only for now, so a rollback from this version can't migrate the database down.",
+      ],
+      [
+        "Alembic with several heads",
+        "alembic",
+        "1a2b3c4d5e6f (head)\n6f5e4d3c2b1a (head)\n",
+        "::warning::OpsCrew records no database migrations for this version, because Alembic shows several heads (branches of migrations), and OpsCrew's down migrations handle a single head only for now, so a rollback from this version can't migrate the database down.",
+      ],
+      [
+        "Flask-Migrate with several heads",
+        "flask-migrate",
+        "1a2b3c4d5e6f (head)\n6f5e4d3c2b1a (head)\n",
+        "Alembic shows several heads",
+      ],
+    ])("only warns, with no record, for %s", (_name, tool, output, warning) => {
+      write(at(schemaRecordPath(B)), "version=20261101000000\n");
+      write(`${work}/status.out`, output);
+      const result = deploy(PLANS[tool]);
+      expect(result.status, result.output).toBe(0);
+      expect(result.output).toContain(warning);
+      expect(result.output).not.toContain("could not record");
+      expect(result.output).toMatch(/deployed\n$/);
+      expect(records()).toEqual([]);
+    });
+
+    it("is not in a preview's start script, whose rollbacks never change the data", () => {
+      const script = (o?: { preview: boolean }) =>
+        switchCommands(PLANS.knex, [], undefined, o).join("\n");
+      expect(script()).toContain("schema_hex");
+      expect(script({ preview: true })).not.toContain("schema_hex");
+      expect(script({ preview: true })).not.toContain("migrate:list");
     });
 
     it("records nothing for an image built on this computer, which has no digest", () => {
