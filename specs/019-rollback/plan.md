@@ -770,6 +770,9 @@ database as it was when that version stopped running.
       removes the marker, and starts the version that served before the run;
     - otherwise it only starts that version again.
 
+    The start script holds a lock in the app folder for its whole run, and `rollbackCommands`
+    waits for it (up to 15 minutes) before it reads the marker or `.env`: a cancelled run's start
+    script can keep running on the server after GitHub stops the step (T1933's re-review).
     A failed put-back leaves the app stopped with a clear message, never a version on the wrong
     data. Too little disk for step 3's dump refuses the rollback before any change (T1933's
     review). Without a
