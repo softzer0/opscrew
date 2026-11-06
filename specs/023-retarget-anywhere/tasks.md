@@ -341,6 +341,6 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 8: Finish
 
-- [ ] T2318 Simplify (lead): a review of the feature's diff for reuse and simplicity. Known so far: provision/portainer-flow.ts sets the Portainer records' TF_VARs inline, beside T2320's `setPortainerRecordsAddress` (move it to shared/ and use it in all three); postgres.ts's one-file tar writer; the shared output filter (S4 from T2308's review); the move's texts that still say only "server" or "provider" for every side (found in T2315: texts.ts `FINISH_COMMAND` and `START_MOVE_HINT`, run.ts:137, finish.ts:265).
+- [x] T2318 Simplify (lead): a review of the feature's diff for reuse and simplicity. Known so far: provision/portainer-flow.ts sets the Portainer records' TF_VARs inline, beside T2320's `setPortainerRecordsAddress` (move it to shared/ and use it in all three); postgres.ts's one-file tar writer; the shared output filter (S4 from T2308's review); the move's texts that still say only "server" or "provider" for every side (found in T2315: texts.ts `FINISH_COMMAND` and `START_MOVE_HINT`, run.ts:137, finish.ts:265).
 - [ ] T2319 Release (lead): `docs/releasing.md`, with 022's opt-ins in the same release. (T2312's review: the Worker's custom domain moves to its new address in the infrastructure
   code by itself, a moves-only plan, so no changelog warning is needed.)
