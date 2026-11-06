@@ -200,6 +200,11 @@ Placed before AWS so AWS joins as just another target.
 
 ## 024 Snapshots and restores as commands
 
+In progress (2026-11-06): [research](024-snapshots-and-restores/research.md),
+[spec](024-snapshots-and-restores/spec.md), [plan](024-snapshots-and-restores/plan.md),
+[tasks](024-snapshots-and-restores/tasks.md). The sketch below is the roadmap's, kept as the
+founder's input.
+
 Placed before AWS by the founder on 2026-11-06. Today a snapshot is taken only by `destroy`, and
 a restore is done by hand in the provider's console or from a database dump (lead, 2026-10-31,
 from the failed-deploy guide page). 019's database rollback (in the same release as 023) dumps
