@@ -504,12 +504,17 @@ describe.skipIf(!hasBash)("deploy start and rollback scripts", { timeout: 60_000
       expect(calls.indexOf("kamal-proxy deploy")).toBeLessThan(calls.indexOf("docker stop c90"));
       expect(calls).toContain("docker rm c90");
       expect(calls).toContain("docker logout ghcr.io");
-      // No pause: the old copy serves until the new one takes traffic.
+      // No pause: the old copy serves until the new one takes traffic. Only a rollback that
+      // changes the database holds requests (snapshots.test.ts), so an app without one has no
+      // pause in its scripts at all.
       expect(file("projects.log")).not.toMatch(/kamal-proxy (pause|resume)/);
       expect(rolling.start).toContain("trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT");
-      for (const script of [rolling.start, rolling.rollback]) {
+      const plain = scripts(
+        withBuild(DeployPlanSchema.parse({ ...plan, services: [] }), "buildpacks"),
+      );
+      for (const script of [plain.start, plain.rollback]) {
         expect(script).not.toMatch(/kamal-proxy (pause|resume)/);
-        expect(script.match(/\btrap /g) ?? []).toHaveLength(script === rolling.start ? 1 : 0);
+        expect(script.match(/\btrap /g) ?? []).toHaveLength(script === plain.start ? 1 : 0);
       }
     });
 
@@ -2177,7 +2182,9 @@ describe("the deploy job per strategy", () => {
     for (const strategy of ["rolling", "recreate"] as const) {
       const job = deploy(withPlan(plan, { deploy: { strategy } }));
       const calls = job.split("\n").filter((line) => line.includes("kamal-proxy deploy"));
-      expect(calls, strategy).toHaveLength(2);
+      // An app with a database has a recreate switch for a rollback that changes it: one more in
+      // the rollback script, and one more in a rolling app's start script.
+      expect(calls, strategy).toHaveLength(strategy === "rolling" ? 4 : 3);
       // kamal-proxy reads no stdin: the server script itself arrives on it.
       for (const call of calls) expect(call).toContain(" --target-timeout 300s < /dev/null; then");
     }

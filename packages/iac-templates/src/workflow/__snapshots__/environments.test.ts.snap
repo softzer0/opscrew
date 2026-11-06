@@ -311,6 +311,29 @@ jobs:
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
+          rm -f .database.changed
+          database=keep
+          target="\${1##*@sha256:}"
+          running="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+          if [ "$MODE" = rollback ] && [ -f .rollback-database ]; then
+            approved=""; choice=""; expiry=""
+            read -r approved choice expiry < .rollback-database || true
+            rm -f .rollback-database
+            if [ "$approved" != "$target" ]; then
+              echo '::warning::The approval to change the database on a rollback (.rollback-database on the server) is for another version, so OpsCrew removed it: this rollback keeps the database as it is.'
+            else
+              case "$choice" in snapshot | migrations) ;; *)
+                echo '::error::The one-time approval to change the database on this rollback (.rollback-database on the server) names a choice this server can'\\''t carry out, so nothing was changed. Run opscrew rollback again.'
+                exit 1 ;;
+              esac
+              case "$expiry" in "" | *[!0-9]*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo '::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.'
+                exit 1
+              fi
+              database="$choice"
+            fi
+          fi
           keep_failed() {
             (
               umask 077
@@ -322,6 +345,30 @@ jobs:
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/environments/staging/plan.yaml).\\n' "$APPS_DIR"/shop-staging
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop-staging/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
           docker compose pull
           mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
@@ -370,24 +417,104 @@ jobs:
             rm -rf "$EDGE_DIR"/tls/shop-staging
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
-          old="$(docker compose ps -aq app | tr '\\n' ' ')"
-          docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
-          new=""
-          for id in $(docker compose ps -aq app); do
-            case " $old " in *" $id "*) ;; *) new="$id" ;; esac
-          done
-          name="$(docker inspect --format '{{.Name}}' "$new")"
-          if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
-            keep_failed app "$new" health
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --env staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
-            docker rm -f "$new" > /dev/null
-            exit 1
+          if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "$running" != "$target" ]; then
+            snap=0
+            snapshot_take "$running" || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::The snapshot of the databases before this release failed, so the new version was not started and the previous version keeps serving. The dump'\\''s output stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix its cause and push again, or set deploy.snapshots: false in opscrew/environments/staging/plan.yaml to deploy without snapshots.\\n' "$APPS_DIR"/shop-staging
+              exit 1
+            fi
+            if [ "$snap" -eq 0 ]; then
+              echo 'OpsCrew took a snapshot of the databases before this release: a rollback to the previous version can restore it.'
+              for f in .snapshots/*/taken; do if [ -f "$f" ]; then echo "$(cat "$f") \${f%/taken}"; fi; done | sort -r | sed '1,3d' | while read -r _ dir; do rm -rf "$dir"; done
+            fi
           fi
-          printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
-          for id in $old; do
-            docker stop "$id" > /dev/null
-            docker rm "$id" > /dev/null
-          done
+          if [ "$database" != keep ]; then
+            if [ -z "$running" ] || [ "$running" = "$target" ]; then
+              echo '::error::The server'\\''s .env names no other version by its image digest, so OpsCrew can'\\''t save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.'
+              exit 1
+            fi
+            if [ "$database" = snapshot ] && ! snapshot_complete "$target"; then
+              echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.'
+              exit 1
+            fi
+            echo 'The rollback changes the database: the app'\\''s requests wait, and the app stops until the earlier version starts.'
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            docker compose stop app
+            saved=""
+            snap=0
+            snapshot_take "$running" || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again, or keep the database as it is.\\n' "$APPS_DIR"/shop-staging
+              docker compose start app
+              exit 1
+            fi
+            if [ "$snap" -eq 0 ]; then saved="$running"; fi
+            (umask 077; printf 'APP_IMAGE=%s\\nsaved=%s\\n' "$(sed -n 's/^APP_IMAGE=//p' .env)" "$saved" > .database.changed)
+            failed=0
+            case "$database" in
+              snapshot)
+                what="Restoring the snapshot of the database"
+                if snapshot_restore "$target"; then
+                  echo "OpsCrew restored the database from the snapshot taken $(cat .snapshots/"$target"/taken)."
+                else
+                  failed=1
+                fi ;;
+              migrations)
+                what="Migrating the database down"
+                if ! (
+                  echo '::error::Down migrations aren'\\''t available for this app.'
+                  exit 1
+                ); then failed=1; fi ;;
+            esac
+            if [ "$failed" -ne 0 ]; then
+              if [ -z "$saved" ]; then
+                printf '::error::%s failed, and no copy of the database from before the rollback was saved (the disk was too full), so the database may be partly changed; the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix the cause, then run opscrew rollback again or restore a backup.\\n' "$what" "$APPS_DIR"/shop-staging
+              elif snapshot_restore "$saved"; then
+                printf '::error::%s failed, so OpsCrew put the database back as it was before the rollback, and the running version starts again: the rollback changed nothing. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again.\\n' "$what" "$APPS_DIR"/shop-staging
+              else
+                printf '::error::%s failed, and putting the database back as it was before the rollback failed too, so it may be partly changed; the running version starts again. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command).\\n' "$what" "$APPS_DIR"/shop-staging "$saved" "$APPS_DIR"/shop-staging
+              fi
+              rm -f .database.changed
+              docker compose start app
+              exit 1
+            fi
+          fi
+          if [ "$database" = keep ]; then
+            old="$(docker compose ps -aq app | tr '\\n' ' ')"
+            docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+            new=""
+            for id in $(docker compose ps -aq app); do
+              case " $old " in *" $id "*) ;; *) new="$id" ;; esac
+            done
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --env staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            for id in $old; do
+              docker stop "$id" > /dev/null
+              docker rm "$id" > /dev/null
+            done
+          else
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            docker compose up -d --no-deps --remove-orphans app
+            new="$(docker compose ps -aq app)"
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Its last lines are kept on the server: \`opscrew logs --failed --env staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null
+          fi
           echo finished > .start.outcome
           REMOTE
       - id: health
@@ -449,6 +576,72 @@ jobs:
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/environments/staging/plan.yaml).\\n' "$APPS_DIR"/shop-staging
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop-staging/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
+          if [ -f .database.changed ]; then
+            result=unchanged
+            if grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then
+              result=restored
+              outcome="$(cat .start.outcome 2> /dev/null || true)"
+              if [ "$outcome" != kept ]; then
+                why=start; if [ "$outcome" = finished ]; then why=check; fi
+                for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
+              fi
+            fi
+            saved="$(sed -n 's/^saved=//p' .database.changed)"
+            APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .database.changed)"
+            export APP_IMAGE
+            {
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              docker compose stop app
+              rm -f .database.changed
+              if [ -z "$saved" ]; then
+                echo '::warning::The earlier version failed after the rollback changed the database, and no copy of the database from before the rollback was saved, so it stays as the rollback left it while the version that ran before starts again. The next deploy'\\''s release command migrates it up again.'
+              elif snapshot_restore "$saved"; then
+                echo 'The earlier version failed after the rollback changed the database, so OpsCrew put the database back as it was before the rollback.'
+              else
+                printf '::error::The earlier version failed after the rollback changed the database, and putting the database back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command).\\n' "$APPS_DIR"/shop-staging "$saved" "$APPS_DIR"/shop-staging
+              fi
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+              docker compose up -d --no-deps --remove-orphans app
+              new="$(docker compose ps -aq app)"
+              name="$(docker inspect --format '{{.Name}}' "$new")"
+              if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+                echo '::error::The previous version did not pass its health check either.'
+                docker rm -f "$new" > /dev/null
+                exit 1
+              fi
+              edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null
+            } >&2
+            rm -f .env.previous .processes.previous
+            echo "$result"
+            exit 0
+          fi
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           outcome="$(cat .start.outcome 2> /dev/null || true)"
@@ -1010,6 +1203,29 @@ jobs:
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
+          rm -f .database.changed
+          database=keep
+          target="\${1##*@sha256:}"
+          running="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+          if [ "$MODE" = rollback ] && [ -f .rollback-database ]; then
+            approved=""; choice=""; expiry=""
+            read -r approved choice expiry < .rollback-database || true
+            rm -f .rollback-database
+            if [ "$approved" != "$target" ]; then
+              echo '::warning::The approval to change the database on a rollback (.rollback-database on the server) is for another version, so OpsCrew removed it: this rollback keeps the database as it is.'
+            else
+              case "$choice" in snapshot | migrations) ;; *)
+                echo '::error::The one-time approval to change the database on this rollback (.rollback-database on the server) names a choice this server can'\\''t carry out, so nothing was changed. Run opscrew rollback again.'
+                exit 1 ;;
+              esac
+              case "$expiry" in "" | *[!0-9]*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo '::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.'
+                exit 1
+              fi
+              database="$choice"
+            fi
+          fi
           keep_failed() {
             (
               umask 077
@@ -1021,6 +1237,30 @@ jobs:
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/plan.yaml).\\n' "$APPS_DIR"/shop
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
           docker compose pull
           mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
@@ -1069,24 +1309,92 @@ jobs:
             rm -rf "$EDGE_DIR"/tls/shop
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
-          old="$(docker compose ps -aq app | tr '\\n' ' ')"
-          docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
-          new=""
-          for id in $(docker compose ps -aq app); do
-            case " $old " in *" $id "*) ;; *) new="$id" ;; esac
-          done
-          name="$(docker inspect --format '{{.Name}}' "$new")"
-          if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
-            keep_failed app "$new" health
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed\`. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
-            docker rm -f "$new" > /dev/null
-            exit 1
+          if [ "$database" != keep ]; then
+            if [ -z "$running" ] || [ "$running" = "$target" ]; then
+              echo '::error::The server'\\''s .env names no other version by its image digest, so OpsCrew can'\\''t save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.'
+              exit 1
+            fi
+            if [ "$database" = snapshot ] && ! snapshot_complete "$target"; then
+              echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.'
+              exit 1
+            fi
+            echo 'The rollback changes the database: the app'\\''s requests wait, and the app stops until the earlier version starts.'
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            docker compose stop app
+            saved=""
+            snap=0
+            snapshot_take "$running" || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again, or keep the database as it is.\\n' "$APPS_DIR"/shop
+              docker compose start app
+              exit 1
+            fi
+            if [ "$snap" -eq 0 ]; then saved="$running"; fi
+            (umask 077; printf 'APP_IMAGE=%s\\nsaved=%s\\n' "$(sed -n 's/^APP_IMAGE=//p' .env)" "$saved" > .database.changed)
+            failed=0
+            case "$database" in
+              snapshot)
+                what="Restoring the snapshot of the database"
+                if snapshot_restore "$target"; then
+                  echo "OpsCrew restored the database from the snapshot taken $(cat .snapshots/"$target"/taken)."
+                else
+                  failed=1
+                fi ;;
+              migrations)
+                what="Migrating the database down"
+                if ! (
+                  echo '::error::Down migrations aren'\\''t available for this app.'
+                  exit 1
+                ); then failed=1; fi ;;
+            esac
+            if [ "$failed" -ne 0 ]; then
+              if [ -z "$saved" ]; then
+                printf '::error::%s failed, and no copy of the database from before the rollback was saved (the disk was too full), so the database may be partly changed; the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix the cause, then run opscrew rollback again or restore a backup.\\n' "$what" "$APPS_DIR"/shop
+              elif snapshot_restore "$saved"; then
+                printf '::error::%s failed, so OpsCrew put the database back as it was before the rollback, and the running version starts again: the rollback changed nothing. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again.\\n' "$what" "$APPS_DIR"/shop
+              else
+                printf '::error::%s failed, and putting the database back as it was before the rollback failed too, so it may be partly changed; the running version starts again. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command).\\n' "$what" "$APPS_DIR"/shop "$saved" "$APPS_DIR"/shop
+              fi
+              rm -f .database.changed
+              docker compose start app
+              exit 1
+            fi
           fi
-          printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
-          for id in $old; do
-            docker stop "$id" > /dev/null
-            docker rm "$id" > /dev/null
-          done
+          if [ "$database" = keep ]; then
+            old="$(docker compose ps -aq app | tr '\\n' ' ')"
+            docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+            new=""
+            for id in $(docker compose ps -aq app); do
+              case " $old " in *" $id "*) ;; *) new="$id" ;; esac
+            done
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed\`. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            for id in $old; do
+              docker stop "$id" > /dev/null
+              docker rm "$id" > /dev/null
+            done
+          else
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            docker compose up -d --no-deps --remove-orphans app
+            new="$(docker compose ps -aq app)"
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Its last lines are kept on the server: \`opscrew logs --failed\`. Check that the app listens on port 3000 (app.port in opscrew/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null
+          fi
           echo finished > .start.outcome
           REMOTE
       - id: health
@@ -1148,6 +1456,72 @@ jobs:
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/plan.yaml).\\n' "$APPS_DIR"/shop
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
+          if [ -f .database.changed ]; then
+            result=unchanged
+            if grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then
+              result=restored
+              outcome="$(cat .start.outcome 2> /dev/null || true)"
+              if [ "$outcome" != kept ]; then
+                why=start; if [ "$outcome" = finished ]; then why=check; fi
+                for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
+              fi
+            fi
+            saved="$(sed -n 's/^saved=//p' .database.changed)"
+            APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .database.changed)"
+            export APP_IMAGE
+            {
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              docker compose stop app
+              rm -f .database.changed
+              if [ -z "$saved" ]; then
+                echo '::warning::The earlier version failed after the rollback changed the database, and no copy of the database from before the rollback was saved, so it stays as the rollback left it while the version that ran before starts again. The next deploy'\\''s release command migrates it up again.'
+              elif snapshot_restore "$saved"; then
+                echo 'The earlier version failed after the rollback changed the database, so OpsCrew put the database back as it was before the rollback.'
+              else
+                printf '::error::The earlier version failed after the rollback changed the database, and putting the database back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command).\\n' "$APPS_DIR"/shop "$saved" "$APPS_DIR"/shop
+              fi
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+              docker compose up -d --no-deps --remove-orphans app
+              new="$(docker compose ps -aq app)"
+              name="$(docker inspect --format '{{.Name}}' "$new")"
+              if ! edge exec -T kamal-proxy kamal-proxy deploy shop --target "\${name#/}:3000" --host shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+                echo '::error::The previous version did not pass its health check either.'
+                docker rm -f "$new" > /dev/null
+                exit 1
+              fi
+              edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null
+            } >&2
+            rm -f .env.previous .processes.previous
+            echo "$result"
+            exit 0
+          fi
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           outcome="$(cat .start.outcome 2> /dev/null || true)"
@@ -1320,6 +1694,29 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
+          rm -f .database.changed
+          database=keep
+          target="\${1##*@sha256:}"
+          running="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+          if [ "$MODE" = rollback ] && [ -f .rollback-database ]; then
+            approved=""; choice=""; expiry=""
+            read -r approved choice expiry < .rollback-database || true
+            rm -f .rollback-database
+            if [ "$approved" != "$target" ]; then
+              echo '::warning::The approval to change the database on a rollback (.rollback-database on the server) is for another version, so OpsCrew removed it: this rollback keeps the database as it is.'
+            else
+              case "$choice" in snapshot | migrations) ;; *)
+                echo '::error::The one-time approval to change the database on this rollback (.rollback-database on the server) names a choice this server can'\\''t carry out, so nothing was changed. Run opscrew rollback again.'
+                exit 1 ;;
+              esac
+              case "$expiry" in "" | *[!0-9]*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo '::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.'
+                exit 1
+              fi
+              database="$choice"
+            fi
+          fi
           keep_failed() {
             (
               umask 077
@@ -1331,6 +1728,30 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/environments/eu-staging/plan.yaml).\\n' "$APPS_DIR"/shop-eu-staging
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop-eu-staging/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
           docker compose pull
           mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
@@ -1379,24 +1800,104 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
             rm -rf "$EDGE_DIR"/tls/shop-eu-staging
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
-          old="$(docker compose ps -aq app | tr '\\n' ' ')"
-          docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
-          new=""
-          for id in $(docker compose ps -aq app); do
-            case " $old " in *" $id "*) ;; *) new="$id" ;; esac
-          done
-          name="$(docker inspect --format '{{.Name}}' "$new")"
-          if ! edge exec -T kamal-proxy kamal-proxy deploy shop-eu-staging --target "\${name#/}:3000" --host eu-staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
-            keep_failed app "$new" health
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --env eu-staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/eu-staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
-            docker rm -f "$new" > /dev/null
-            exit 1
+          if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "$running" != "$target" ]; then
+            snap=0
+            snapshot_take "$running" || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::The snapshot of the databases before this release failed, so the new version was not started and the previous version keeps serving. The dump'\\''s output stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/eu-staging/RUNBOOK.md has the SSH command). Fix its cause and push again, or set deploy.snapshots: false in opscrew/environments/eu-staging/plan.yaml to deploy without snapshots.\\n' "$APPS_DIR"/shop-eu-staging
+              exit 1
+            fi
+            if [ "$snap" -eq 0 ]; then
+              echo 'OpsCrew took a snapshot of the databases before this release: a rollback to the previous version can restore it.'
+              for f in .snapshots/*/taken; do if [ -f "$f" ]; then echo "$(cat "$f") \${f%/taken}"; fi; done | sort -r | sed '1,3d' | while read -r _ dir; do rm -rf "$dir"; done
+            fi
           fi
-          printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
-          for id in $old; do
-            docker stop "$id" > /dev/null
-            docker rm "$id" > /dev/null
-          done
+          if [ "$database" != keep ]; then
+            if [ -z "$running" ] || [ "$running" = "$target" ]; then
+              echo '::error::The server'\\''s .env names no other version by its image digest, so OpsCrew can'\\''t save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.'
+              exit 1
+            fi
+            if [ "$database" = snapshot ] && ! snapshot_complete "$target"; then
+              echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.'
+              exit 1
+            fi
+            echo 'The rollback changes the database: the app'\\''s requests wait, and the app stops until the earlier version starts.'
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop-eu-staging < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop-eu-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            docker compose stop app
+            saved=""
+            snap=0
+            snapshot_take "$running" || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/eu-staging/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again, or keep the database as it is.\\n' "$APPS_DIR"/shop-eu-staging
+              docker compose start app
+              exit 1
+            fi
+            if [ "$snap" -eq 0 ]; then saved="$running"; fi
+            (umask 077; printf 'APP_IMAGE=%s\\nsaved=%s\\n' "$(sed -n 's/^APP_IMAGE=//p' .env)" "$saved" > .database.changed)
+            failed=0
+            case "$database" in
+              snapshot)
+                what="Restoring the snapshot of the database"
+                if snapshot_restore "$target"; then
+                  echo "OpsCrew restored the database from the snapshot taken $(cat .snapshots/"$target"/taken)."
+                else
+                  failed=1
+                fi ;;
+              migrations)
+                what="Migrating the database down"
+                if ! (
+                  echo '::error::Down migrations aren'\\''t available for this app.'
+                  exit 1
+                ); then failed=1; fi ;;
+            esac
+            if [ "$failed" -ne 0 ]; then
+              if [ -z "$saved" ]; then
+                printf '::error::%s failed, and no copy of the database from before the rollback was saved (the disk was too full), so the database may be partly changed; the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/eu-staging/RUNBOOK.md has the SSH command). Fix the cause, then run opscrew rollback again or restore a backup.\\n' "$what" "$APPS_DIR"/shop-eu-staging
+              elif snapshot_restore "$saved"; then
+                printf '::error::%s failed, so OpsCrew put the database back as it was before the rollback, and the running version starts again: the rollback changed nothing. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/eu-staging/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again.\\n' "$what" "$APPS_DIR"/shop-eu-staging
+              else
+                printf '::error::%s failed, and putting the database back as it was before the rollback failed too, so it may be partly changed; the running version starts again. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/eu-staging/RUNBOOK.md has the SSH command).\\n' "$what" "$APPS_DIR"/shop-eu-staging "$saved" "$APPS_DIR"/shop-eu-staging
+              fi
+              rm -f .database.changed
+              docker compose start app
+              exit 1
+            fi
+          fi
+          if [ "$database" = keep ]; then
+            old="$(docker compose ps -aq app | tr '\\n' ' ')"
+            docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+            new=""
+            for id in $(docker compose ps -aq app); do
+              case " $old " in *" $id "*) ;; *) new="$id" ;; esac
+            done
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop-eu-staging --target "\${name#/}:3000" --host eu-staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --env eu-staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/eu-staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            for id in $old; do
+              docker stop "$id" > /dev/null
+              docker rm "$id" > /dev/null
+            done
+          else
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop-eu-staging < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop-eu-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            docker compose up -d --no-deps --remove-orphans app
+            new="$(docker compose ps -aq app)"
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop-eu-staging --target "\${name#/}:3000" --host eu-staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Its last lines are kept on the server: \`opscrew logs --failed --env eu-staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/eu-staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            edge exec -T kamal-proxy kamal-proxy resume shop-eu-staging < /dev/null
+          fi
           echo finished > .start.outcome
           REMOTE
       - id: health
@@ -1458,6 +1959,72 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/environments/eu-staging/plan.yaml).\\n' "$APPS_DIR"/shop-eu-staging
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop-eu-staging/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
+          if [ -f .database.changed ]; then
+            result=unchanged
+            if grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then
+              result=restored
+              outcome="$(cat .start.outcome 2> /dev/null || true)"
+              if [ "$outcome" != kept ]; then
+                why=start; if [ "$outcome" = finished ]; then why=check; fi
+                for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
+              fi
+            fi
+            saved="$(sed -n 's/^saved=//p' .database.changed)"
+            APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .database.changed)"
+            export APP_IMAGE
+            {
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop-eu-staging < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop-eu-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              docker compose stop app
+              rm -f .database.changed
+              if [ -z "$saved" ]; then
+                echo '::warning::The earlier version failed after the rollback changed the database, and no copy of the database from before the rollback was saved, so it stays as the rollback left it while the version that ran before starts again. The next deploy'\\''s release command migrates it up again.'
+              elif snapshot_restore "$saved"; then
+                echo 'The earlier version failed after the rollback changed the database, so OpsCrew put the database back as it was before the rollback.'
+              else
+                printf '::error::The earlier version failed after the rollback changed the database, and putting the database back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/eu-staging/RUNBOOK.md has the SSH command).\\n' "$APPS_DIR"/shop-eu-staging "$saved" "$APPS_DIR"/shop-eu-staging
+              fi
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop-eu-staging < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop-eu-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+              docker compose up -d --no-deps --remove-orphans app
+              new="$(docker compose ps -aq app)"
+              name="$(docker inspect --format '{{.Name}}' "$new")"
+              if ! edge exec -T kamal-proxy kamal-proxy deploy shop-eu-staging --target "\${name#/}:3000" --host eu-staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+                echo '::error::The previous version did not pass its health check either.'
+                docker rm -f "$new" > /dev/null
+                exit 1
+              fi
+              edge exec -T kamal-proxy kamal-proxy resume shop-eu-staging < /dev/null
+            } >&2
+            rm -f .env.previous .processes.previous
+            echo "$result"
+            exit 0
+          fi
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           outcome="$(cat .start.outcome 2> /dev/null || true)"
@@ -1590,6 +2157,29 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
+          rm -f .database.changed
+          database=keep
+          target="\${1##*@sha256:}"
+          running="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+          if [ "$MODE" = rollback ] && [ -f .rollback-database ]; then
+            approved=""; choice=""; expiry=""
+            read -r approved choice expiry < .rollback-database || true
+            rm -f .rollback-database
+            if [ "$approved" != "$target" ]; then
+              echo '::warning::The approval to change the database on a rollback (.rollback-database on the server) is for another version, so OpsCrew removed it: this rollback keeps the database as it is.'
+            else
+              case "$choice" in snapshot | migrations) ;; *)
+                echo '::error::The one-time approval to change the database on this rollback (.rollback-database on the server) names a choice this server can'\\''t carry out, so nothing was changed. Run opscrew rollback again.'
+                exit 1 ;;
+              esac
+              case "$expiry" in "" | *[!0-9]*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo '::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.'
+                exit 1
+              fi
+              database="$choice"
+            fi
+          fi
           keep_failed() {
             (
               umask 077
@@ -1601,6 +2191,30 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/environments/staging/plan.yaml).\\n' "$APPS_DIR"/shop-staging
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop-staging/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
           docker compose pull
           mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
@@ -1649,24 +2263,104 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             rm -rf "$EDGE_DIR"/tls/shop-staging
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
-          old="$(docker compose ps -aq app | tr '\\n' ' ')"
-          docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
-          new=""
-          for id in $(docker compose ps -aq app); do
-            case " $old " in *" $id "*) ;; *) new="$id" ;; esac
-          done
-          name="$(docker inspect --format '{{.Name}}' "$new")"
-          if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
-            keep_failed app "$new" health
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --env staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
-            docker rm -f "$new" > /dev/null
-            exit 1
+          if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "$running" != "$target" ]; then
+            snap=0
+            snapshot_take "$running" || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::The snapshot of the databases before this release failed, so the new version was not started and the previous version keeps serving. The dump'\\''s output stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix its cause and push again, or set deploy.snapshots: false in opscrew/environments/staging/plan.yaml to deploy without snapshots.\\n' "$APPS_DIR"/shop-staging
+              exit 1
+            fi
+            if [ "$snap" -eq 0 ]; then
+              echo 'OpsCrew took a snapshot of the databases before this release: a rollback to the previous version can restore it.'
+              for f in .snapshots/*/taken; do if [ -f "$f" ]; then echo "$(cat "$f") \${f%/taken}"; fi; done | sort -r | sed '1,3d' | while read -r _ dir; do rm -rf "$dir"; done
+            fi
           fi
-          printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
-          for id in $old; do
-            docker stop "$id" > /dev/null
-            docker rm "$id" > /dev/null
-          done
+          if [ "$database" != keep ]; then
+            if [ -z "$running" ] || [ "$running" = "$target" ]; then
+              echo '::error::The server'\\''s .env names no other version by its image digest, so OpsCrew can'\\''t save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.'
+              exit 1
+            fi
+            if [ "$database" = snapshot ] && ! snapshot_complete "$target"; then
+              echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.'
+              exit 1
+            fi
+            echo 'The rollback changes the database: the app'\\''s requests wait, and the app stops until the earlier version starts.'
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            docker compose stop app
+            saved=""
+            snap=0
+            snapshot_take "$running" || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again, or keep the database as it is.\\n' "$APPS_DIR"/shop-staging
+              docker compose start app
+              exit 1
+            fi
+            if [ "$snap" -eq 0 ]; then saved="$running"; fi
+            (umask 077; printf 'APP_IMAGE=%s\\nsaved=%s\\n' "$(sed -n 's/^APP_IMAGE=//p' .env)" "$saved" > .database.changed)
+            failed=0
+            case "$database" in
+              snapshot)
+                what="Restoring the snapshot of the database"
+                if snapshot_restore "$target"; then
+                  echo "OpsCrew restored the database from the snapshot taken $(cat .snapshots/"$target"/taken)."
+                else
+                  failed=1
+                fi ;;
+              migrations)
+                what="Migrating the database down"
+                if ! (
+                  echo '::error::Down migrations aren'\\''t available for this app.'
+                  exit 1
+                ); then failed=1; fi ;;
+            esac
+            if [ "$failed" -ne 0 ]; then
+              if [ -z "$saved" ]; then
+                printf '::error::%s failed, and no copy of the database from before the rollback was saved (the disk was too full), so the database may be partly changed; the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix the cause, then run opscrew rollback again or restore a backup.\\n' "$what" "$APPS_DIR"/shop-staging
+              elif snapshot_restore "$saved"; then
+                printf '::error::%s failed, so OpsCrew put the database back as it was before the rollback, and the running version starts again: the rollback changed nothing. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again.\\n' "$what" "$APPS_DIR"/shop-staging
+              else
+                printf '::error::%s failed, and putting the database back as it was before the rollback failed too, so it may be partly changed; the running version starts again. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command).\\n' "$what" "$APPS_DIR"/shop-staging "$saved" "$APPS_DIR"/shop-staging
+              fi
+              rm -f .database.changed
+              docker compose start app
+              exit 1
+            fi
+          fi
+          if [ "$database" = keep ]; then
+            old="$(docker compose ps -aq app | tr '\\n' ' ')"
+            docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+            new=""
+            for id in $(docker compose ps -aq app); do
+              case " $old " in *" $id "*) ;; *) new="$id" ;; esac
+            done
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --env staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            for id in $old; do
+              docker stop "$id" > /dev/null
+              docker rm "$id" > /dev/null
+            done
+          else
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            docker compose up -d --no-deps --remove-orphans app
+            new="$(docker compose ps -aq app)"
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Its last lines are kept on the server: \`opscrew logs --failed --env staging\`. Check that the app listens on port 3000 (app.port in opscrew/environments/staging/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null
+          fi
           echo finished > .start.outcome
           REMOTE
       - id: health
@@ -1727,6 +2421,72 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/environments/staging/plan.yaml).\\n' "$APPS_DIR"/shop-staging
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop-staging/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
+          if [ -f .database.changed ]; then
+            result=unchanged
+            if grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then
+              result=restored
+              outcome="$(cat .start.outcome 2> /dev/null || true)"
+              if [ "$outcome" != kept ]; then
+                why=start; if [ "$outcome" = finished ]; then why=check; fi
+                for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
+              fi
+            fi
+            saved="$(sed -n 's/^saved=//p' .database.changed)"
+            APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .database.changed)"
+            export APP_IMAGE
+            {
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              docker compose stop app
+              rm -f .database.changed
+              if [ -z "$saved" ]; then
+                echo '::warning::The earlier version failed after the rollback changed the database, and no copy of the database from before the rollback was saved, so it stays as the rollback left it while the version that ran before starts again. The next deploy'\\''s release command migrates it up again.'
+              elif snapshot_restore "$saved"; then
+                echo 'The earlier version failed after the rollback changed the database, so OpsCrew put the database back as it was before the rollback.'
+              else
+                printf '::error::The earlier version failed after the rollback changed the database, and putting the database back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command).\\n' "$APPS_DIR"/shop-staging "$saved" "$APPS_DIR"/shop-staging
+              fi
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+              docker compose up -d --no-deps --remove-orphans app
+              new="$(docker compose ps -aq app)"
+              name="$(docker inspect --format '{{.Name}}' "$new")"
+              if ! edge exec -T kamal-proxy kamal-proxy deploy shop-staging --target "\${name#/}:3000" --host staging-shop.example.com --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+                echo '::error::The previous version did not pass its health check either.'
+                docker rm -f "$new" > /dev/null
+                exit 1
+              fi
+              edge exec -T kamal-proxy kamal-proxy resume shop-staging < /dev/null
+            } >&2
+            rm -f .env.previous .processes.previous
+            echo "$result"
+            exit 0
+          fi
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           outcome="$(cat .start.outcome 2> /dev/null || true)"
@@ -1894,6 +2654,29 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
           MODE="\${2:-deploy}"
+          rm -f .database.changed
+          database=keep
+          target="\${1##*@sha256:}"
+          running="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+          if [ "$MODE" = rollback ] && [ -f .rollback-database ]; then
+            approved=""; choice=""; expiry=""
+            read -r approved choice expiry < .rollback-database || true
+            rm -f .rollback-database
+            if [ "$approved" != "$target" ]; then
+              echo '::warning::The approval to change the database on a rollback (.rollback-database on the server) is for another version, so OpsCrew removed it: this rollback keeps the database as it is.'
+            else
+              case "$choice" in snapshot | migrations) ;; *)
+                echo '::error::The one-time approval to change the database on this rollback (.rollback-database on the server) names a choice this server can'\\''t carry out, so nothing was changed. Run opscrew rollback again.'
+                exit 1 ;;
+              esac
+              case "$expiry" in "" | *[!0-9]*) expiry=0 ;; esac
+              if [ "$expiry" -le "$(date +%s)" ]; then
+                echo '::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.'
+                exit 1
+              fi
+              database="$choice"
+            fi
+          fi
           keep_failed() {
             (
               umask 077
@@ -1905,6 +2688,30 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/environments/dev/plan.yaml).\\n' "$APPS_DIR"/shop-dev
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop-dev/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
           docker compose pull
           mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
@@ -1954,24 +2761,104 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             rm -f "$EDGE_DIR"/tls/shop-dev/local.pem.previous "$EDGE_DIR"/tls/shop-dev/local.key.previous
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
-          old="$(docker compose ps -aq app | tr '\\n' ' ')"
-          docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
-          new=""
-          for id in $(docker compose ps -aq app); do
-            case " $old " in *" $id "*) ;; *) new="$id" ;; esac
-          done
-          name="$(docker inspect --format '{{.Name}}' "$new")"
-          if ! edge exec -T kamal-proxy kamal-proxy deploy shop-dev --target "\${name#/}:3000" --host shop.localhost --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
-            keep_failed app "$new" health
-            echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --env dev\`. Check that the app listens on port 3000 (app.port in opscrew/environments/dev/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
-            docker rm -f "$new" > /dev/null
-            exit 1
+          if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "$running" != "$target" ]; then
+            snap=0
+            snapshot_take "$running" || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::The snapshot of the databases before this release failed, so the new version was not started and the previous version keeps serving. The dump'\\''s output stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/dev/RUNBOOK.md has the SSH command). Fix its cause and push again, or set deploy.snapshots: false in opscrew/environments/dev/plan.yaml to deploy without snapshots.\\n' "$APPS_DIR"/shop-dev
+              exit 1
+            fi
+            if [ "$snap" -eq 0 ]; then
+              echo 'OpsCrew took a snapshot of the databases before this release: a rollback to the previous version can restore it.'
+              for f in .snapshots/*/taken; do if [ -f "$f" ]; then echo "$(cat "$f") \${f%/taken}"; fi; done | sort -r | sed '1,3d' | while read -r _ dir; do rm -rf "$dir"; done
+            fi
           fi
-          printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
-          for id in $old; do
-            docker stop "$id" > /dev/null
-            docker rm "$id" > /dev/null
-          done
+          if [ "$database" != keep ]; then
+            if [ -z "$running" ] || [ "$running" = "$target" ]; then
+              echo '::error::The server'\\''s .env names no other version by its image digest, so OpsCrew can'\\''t save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.'
+              exit 1
+            fi
+            if [ "$database" = snapshot ] && ! snapshot_complete "$target"; then
+              echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.'
+              exit 1
+            fi
+            echo 'The rollback changes the database: the app'\\''s requests wait, and the app stops until the earlier version starts.'
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop-dev < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop-dev --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            docker compose stop app
+            saved=""
+            snap=0
+            snapshot_take "$running" || snap=$?
+            if [ "$snap" -eq 1 ]; then
+              printf '::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/dev/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again, or keep the database as it is.\\n' "$APPS_DIR"/shop-dev
+              docker compose start app
+              exit 1
+            fi
+            if [ "$snap" -eq 0 ]; then saved="$running"; fi
+            (umask 077; printf 'APP_IMAGE=%s\\nsaved=%s\\n' "$(sed -n 's/^APP_IMAGE=//p' .env)" "$saved" > .database.changed)
+            failed=0
+            case "$database" in
+              snapshot)
+                what="Restoring the snapshot of the database"
+                if snapshot_restore "$target"; then
+                  echo "OpsCrew restored the database from the snapshot taken $(cat .snapshots/"$target"/taken)."
+                else
+                  failed=1
+                fi ;;
+              migrations)
+                what="Migrating the database down"
+                if ! (
+                  echo '::error::Down migrations aren'\\''t available for this app.'
+                  exit 1
+                ); then failed=1; fi ;;
+            esac
+            if [ "$failed" -ne 0 ]; then
+              if [ -z "$saved" ]; then
+                printf '::error::%s failed, and no copy of the database from before the rollback was saved (the disk was too full), so the database may be partly changed; the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/dev/RUNBOOK.md has the SSH command). Fix the cause, then run opscrew rollback again or restore a backup.\\n' "$what" "$APPS_DIR"/shop-dev
+              elif snapshot_restore "$saved"; then
+                printf '::error::%s failed, so OpsCrew put the database back as it was before the rollback, and the running version starts again: the rollback changed nothing. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/dev/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again.\\n' "$what" "$APPS_DIR"/shop-dev
+              else
+                printf '::error::%s failed, and putting the database back as it was before the rollback failed too, so it may be partly changed; the running version starts again. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/dev/RUNBOOK.md has the SSH command).\\n' "$what" "$APPS_DIR"/shop-dev "$saved" "$APPS_DIR"/shop-dev
+              fi
+              rm -f .database.changed
+              docker compose start app
+              exit 1
+            fi
+          fi
+          if [ "$database" = keep ]; then
+            old="$(docker compose ps -aq app | tr '\\n' ' ')"
+            docker compose up -d --no-deps --no-recreate --remove-orphans --scale "app=$(( $(echo $old | wc -w) + 1 ))" app
+            new=""
+            for id in $(docker compose ps -aq app); do
+              case " $old " in *" $id "*) ;; *) new="$id" ;; esac
+            done
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop-dev --target "\${name#/}:3000" --host shop.localhost --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. It received no traffic: the previous version keeps serving. Its last lines are kept on the server: \`opscrew logs --failed --env dev\`. Check that the app listens on port 3000 (app.port in opscrew/environments/dev/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            for id in $old; do
+              docker stop "$id" > /dev/null
+              docker rm "$id" > /dev/null
+            done
+          else
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop-dev < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop-dev --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+            docker compose up -d --no-deps --remove-orphans app
+            new="$(docker compose ps -aq app)"
+            name="$(docker inspect --format '{{.Name}}' "$new")"
+            if ! edge exec -T kamal-proxy kamal-proxy deploy shop-dev --target "\${name#/}:3000" --host shop.localhost --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+              keep_failed app "$new" health
+              echo '::error::The new version did not pass its health check (GET /api/health on port 3000) within 60 seconds, so OpsCrew removed it. Its last lines are kept on the server: \`opscrew logs --failed --env dev\`. Check that the app listens on port 3000 (app.port in opscrew/environments/dev/plan.yaml, passed to the app as PORT) and answers /api/health. It was built from Dockerfile; to let OpsCrew choose a builder, run opscrew design, opscrew adapt and opscrew provision.'
+              docker rm -f "$new" > /dev/null
+              exit 1
+            fi
+            edge exec -T kamal-proxy kamal-proxy resume shop-dev < /dev/null
+          fi
           echo finished > .start.outcome
           REMOTE
       - id: health
@@ -2044,6 +2931,72 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/environments/dev/plan.yaml).\\n' "$APPS_DIR"/shop-dev
+            rm -rf .snapshots/*.partial
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop-dev/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_take() {
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
+            snapshot_room || return 2
+            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
+            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
+          }
+          snapshot_restore() {
+            (umask 077 && : > .snapshots/snapshot.log) || return 1
+            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
+          }
+          if [ -f .database.changed ]; then
+            result=unchanged
+            if grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then
+              result=restored
+              outcome="$(cat .start.outcome 2> /dev/null || true)"
+              if [ "$outcome" != kept ]; then
+                why=start; if [ "$outcome" = finished ]; then why=check; fi
+                for id in $(docker compose ps -aq app); do keep_failed app "$id" "$why"; done
+              fi
+            fi
+            saved="$(sed -n 's/^saved=//p' .database.changed)"
+            APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' .database.changed)"
+            export APP_IMAGE
+            {
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop-dev < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop-dev --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              docker compose stop app
+              rm -f .database.changed
+              if [ -z "$saved" ]; then
+                echo '::warning::The earlier version failed after the rollback changed the database, and no copy of the database from before the rollback was saved, so it stays as the rollback left it while the version that ran before starts again. The next deploy'\\''s release command migrates it up again.'
+              elif snapshot_restore "$saved"; then
+                echo 'The earlier version failed after the rollback changed the database, so OpsCrew put the database back as it was before the rollback.'
+              else
+                printf '::error::The earlier version failed after the rollback changed the database, and putting the database back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays in %s/.snapshots/%s: restore it before the app writes more. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/dev/RUNBOOK.md has the SSH command).\\n' "$APPS_DIR"/shop-dev "$saved" "$APPS_DIR"/shop-dev
+              fi
+              trap 'edge exec -T kamal-proxy kamal-proxy resume shop-dev < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause shop-dev --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+              printf 'APP_IMAGE=%s\\n' "$APP_IMAGE" > .env
+              docker compose up -d --no-deps --remove-orphans app
+              new="$(docker compose ps -aq app)"
+              name="$(docker inspect --format '{{.Name}}' "$new")"
+              if ! edge exec -T kamal-proxy kamal-proxy deploy shop-dev --target "\${name#/}:3000" --host shop.localhost --health-check-path '/api/health' --deploy-timeout 60s --drain-timeout 30s --target-timeout 300s < /dev/null; then
+                echo '::error::The previous version did not pass its health check either.'
+                docker rm -f "$new" > /dev/null
+                exit 1
+              fi
+              edge exec -T kamal-proxy kamal-proxy resume shop-dev < /dev/null
+            } >&2
+            rm -f .env.previous .processes.previous
+            echo "$result"
+            exit 0
+          fi
           if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi
           if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi
           outcome="$(cat .start.outcome 2> /dev/null || true)"

@@ -1,5 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, snapshotsOn } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { CF_RANGES, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
@@ -150,6 +150,15 @@ describe("renderPreviewRecipe", () => {
     const services = parse(recipe(previewPlan())["template/compose.yaml"] ?? "").services;
     expect(services.seed.command).toEqual(["sh", "-c", "npm run seed"]);
     expect(services.seed.profiles).toEqual(["seed"]);
+  });
+
+  it("takes no snapshot of a preview's databases", () => {
+    const plan = previewPlan();
+    expect(snapshotsOn(previewTemplatePlan(plan))).toBe(false);
+    const start = recipe(plan)["template/start.sh"] ?? "";
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, not a JavaScript template.
+    expect(start).toContain('MODE="${2:-deploy}"');
+    expect(start).not.toContain('if [ "$MODE" = deploy ] && [ -n "$running" ]');
   });
 
   it("puts @N@ where the preview's number goes, @R@ where its random part goes, and the tokens nowhere", () => {

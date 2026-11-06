@@ -103,9 +103,10 @@ function previewEnvironment(plan: DeployPlan) {
  * The plan every preview's files come from: the preview environment's `plan` as the app
  * `<app>-pr-<token>` at `pr-<token>-<random token>.<previews.domain>`, without
  * `environment.previews`, where the tokens are fixed words the recipe turns into the preview's
- * number and random part. Provision builds the {@link PreviewEnvTemplates} from it. Not parsed
- * again: plan-schema wants a named environment's app name to end with `-<env>`, which a preview's
- * doesn't, and the two fields it changes stay valid (the app name is at most 31 characters).
+ * number and random part, and with `deploy.snapshots` false: a preview takes no snapshots. Provision
+ * builds the {@link PreviewEnvTemplates} from it. Not parsed again: plan-schema wants a named
+ * environment's app name to end with `-<env>`, which a preview's doesn't, and the fields it changes
+ * stay valid (the app name is at most 31 characters).
  * @throws OpsCrewError for a plan without `environment.previews`.
  */
 export function previewTemplatePlan(plan: DeployPlan): DeployPlan {
@@ -115,6 +116,8 @@ export function previewTemplatePlan(plan: DeployPlan): DeployPlan {
     environment,
     app: { ...plan.app, name: `${plan.app.name}-pr-${NUMBER_TOKEN}` },
     dns: { ...plan.dns, domain: `pr-${NUMBER_TOKEN}-${RANDOM_TOKEN}.${previews.domain}` },
+    // Without `environment.previews`, the template would look like a named environment's plan.
+    deploy: { ...plan.deploy, snapshots: false },
   };
 }
 
