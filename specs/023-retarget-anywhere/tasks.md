@@ -259,7 +259,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2314 The CLI, MCP, status and the e2e
+- [x] T2314 The CLI, MCP, status and the e2e
   - Owns: `packages/cli/src/commands/retarget*.ts`, `packages/cli/test/e2e/retarget.test.ts`, `packages/mcp-server/src/**`, `packages/agents/src/status/**`, `plugin/skills/**`
   - Depends: T2311, T2312
   - Accept:
