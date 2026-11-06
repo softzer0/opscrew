@@ -783,7 +783,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm lint`
   - Effort: medium
 
-- [ ] T1937 [US8] The live pass's database steps, in `packages/cli/test/live/rollback.test.ts` (+ its support files)
+- [x] T1937 [US8] The live pass's database steps, in `packages/cli/test/live/rollback.test.ts` (+ its support files)
   - Owns: `packages/cli/test/live/rollback*.ts`, `docs/e2e.md` (its rollback section)
   - Reads: plan.md 12.7, SC-1907 and SC-1909, the existing rollback pass
   - Depends: T1933, T1934, T1935
