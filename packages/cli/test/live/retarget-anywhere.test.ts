@@ -577,7 +577,8 @@ describe.skipIf(SITE.skip)(SITE.title, () => {
         label: "the move to Cloudflare's hosting",
         start: ["--to", "cloudflare-workers"],
         always: [["--yes"]],
-        names: [],
+        // The switch deletes the old host's binding, so it asks for the app's name.
+        names: [app()],
       });
       run.log(
         `observed: the move to Cloudflare's hosting took ${moved.kind === "done" ? moved.runs : "?"} runs of opscrew retarget`,
@@ -607,7 +608,8 @@ describe.skipIf(SITE.skip)(SITE.title, () => {
         label: "the move back to GitHub Pages",
         start: ["--to", "github-pages", "--pages-verification", standIn],
         always: [["--yes"]],
-        names: [],
+        // The switch deletes the old host's binding, so it asks for the app's name.
+        names: [app()],
       });
       await expectSwitched(run, "github-pages");
       await waitFor("a record of the hostname pointing at GitHub Pages", minutes(5), async () =>
@@ -650,7 +652,29 @@ describe.skipIf(SITE.skip)(SITE.title, () => {
     { always: true },
   );
 
-  envs.registerCleanup();
+  // After the harness's cleanup: what a move off the Worker or a stopped destroy leaves (found in
+  // T2317 site run 1). GitHub's verification record goes only with --delete-verification, and the
+  // Cloudflare deploy secrets stay after a move off Cloudflare's hosting ("What remains").
+  envs.registerCleanup({
+    last: async (attempt) => {
+      await attempt("remove GitHub's verification record", async () => {
+        const repo = await repoInfo(run.github);
+        const name = verificationRecordName(repo.owner, host());
+        const zone = run.zone as CloudflareZone;
+        const left = (await run.cloudflare.zoneRecords(zone)).filter((r) => r.name === name);
+        for (const record of left) {
+          await run.cloudflare.call("DELETE", `/zones/${zone.id}/dns_records/${record.id}`);
+        }
+        return [];
+      });
+      await attempt("remove the Cloudflare deploy secrets", async () => {
+        for (const secret of ["OPSCREW_CLOUDFLARE_ACCOUNT_ID", "OPSCREW_CLOUDFLARE_API_TOKEN"]) {
+          await run.github.call("DELETE", `/repos/${run.github.name}/actions/secrets/${secret}`);
+        }
+        return [];
+      });
+    },
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
