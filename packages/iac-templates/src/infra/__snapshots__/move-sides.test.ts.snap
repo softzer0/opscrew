@@ -35,7 +35,6 @@ module "dns" {
   domain      = var.domain
   ipv4        = module.server.ipv4_address
   ipv6        = module.server.ipv6_address
-  ipv6_record = var.previous_server_ipv6 != null
   proxied     = var.proxied
   www         = var.www
   caa_issuers = var.caa_issuers
@@ -366,7 +365,7 @@ module "dns" {
   domain      = var.domain
   ipv4        = var.previous_server_ipv4
   ipv6        = var.previous_server_ipv6
-  ipv6_record = var.server_ipv6 != null && var.previous_server_ipv6 != null
+  ipv6_record = var.previous_server_ipv6 != null
   proxied     = var.proxied
   www         = var.www
   caa_issuers = var.caa_issuers

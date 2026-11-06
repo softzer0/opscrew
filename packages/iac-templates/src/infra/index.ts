@@ -2,6 +2,8 @@ import {
   APP_SERVER,
   type CloudDeployTarget,
   type DeployPlan,
+  type DeployTarget,
+  isCloudProvider,
   type OwnDeployTarget,
   type PortainerDeployTarget,
 } from "@opscrew/plan-schema";
@@ -36,7 +38,7 @@ import {
   versionsTf,
 } from "./hcl";
 import { ownRoot } from "./own";
-import { portainerRoot } from "./portainer";
+import { managesPortainerRecords, portainerRoot } from "./portainer";
 import { siteRootModule } from "./serverless";
 import {
   addressVariables,
@@ -59,7 +61,11 @@ import {
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
 
 export { MOVE_LAYOUTS, type MoveLayoutName, moveLayout } from "./layouts";
-export { PORTAINER_WEBHOOK_PATH, portainerWebhookHostname } from "./portainer";
+export {
+  managesPortainerRecords,
+  PORTAINER_WEBHOOK_PATH,
+  portainerWebhookHostname,
+} from "./portainer";
 export {
   pagesVerificationRootDir,
   renderPagesVerification,
@@ -223,18 +229,32 @@ function plainLayout(plan: DeployPlan): InfraLayout {
 }
 
 /**
- * The DNS module's `ipv6_record` while the root has an address side: the AAAA record exists only
- * while every address side has IPv6 (a server module always has), so the switch between two sides
- * only updates the records. `false` behind OpsCrew's web filter while a side is a server the user
- * owns (published on IPv4 only, as in its own root). None with server modules alone: the module's
- * default (on).
+ * True for a server the user owns behind OpsCrew's web filter: it publishes the site on IPv4 only,
+ * so its records have no AAAA record (as in its own root).
  */
-function ipv6Record(plan: DeployPlan, shape: RootShape): string | undefined {
-  if (shape.addresses.length === 0) return undefined;
-  if (webOnlyFromCloudflare(plan) && shape.addresses.some((a) => a.target.provider === "own")) {
-    return "false";
-  }
-  return shape.addresses.map((a) => `${addressesOf(a).ipv6} != null`).join(" && ");
+const ipv4Only = (plan: DeployPlan, side: Pick<DeployTarget, "provider">): boolean =>
+  side.provider === "own" && webOnlyFromCloudflare(plan);
+
+/**
+ * Whether the app's AAAA record exists while a move's DNS records point at `side` (the live side
+ * of a layout), whose address has IPv6 or not (`ipv6`): always for a server OpsCrew creates, never
+ * for a server the user owns behind OpsCrew's web filter, otherwise when the address has IPv6. The
+ * other side never matters, so a switch between sides that differ creates or deletes the record.
+ */
+export function moveAaaaRecord(plan: DeployPlan, side: DeployTarget, ipv6: boolean): boolean {
+  if (isCloudProvider(side.provider)) return true;
+  return !ipv4Only(plan, side) && ipv6;
+}
+
+/**
+ * The DNS module's `ipv6_record`, which follows the live side ({@link moveAaaaRecord}): none for a
+ * server module (the module's default, on), `false` behind the web filter of a server the user
+ * owns, else whether the address has IPv6.
+ */
+function ipv6Record(plan: DeployPlan, live: ServerCall | AddressCall): string | undefined {
+  if (live.kind === "module") return undefined;
+  if (ipv4Only(plan, live.target)) return "false";
+  return `${addressesOf(live).ipv6} != null`;
 }
 
 /**
@@ -246,9 +266,7 @@ function adoptingImports(shape: RootShape, ctx: RenderContext): string[] {
   const ids = ctx.adoptRecords;
   if (ids === undefined) {
     const users = shape.addresses.some(
-      ({ target }) =>
-        target.provider === "portainer" &&
-        !(target.web.mode === "caddy" && target.web.records === true),
+      ({ target }) => target.provider === "portainer" && !managesPortainerRecords(target),
     );
     if (users) {
       throw wrongTarget(
@@ -327,7 +345,7 @@ function mainTf(
   }
   if (zone !== undefined) {
     const { ipv4, ipv6 } = addressesOf(shape.live);
-    lines.push(...dnsModule(zone, ipv4, ipv6, ipv6Record(plan, shape)));
+    lines.push(...dnsModule(zone, ipv4, ipv6, ipv6Record(plan, shape.live)));
     lines.push(...adoptingImports(shape, ctx));
   }
   lines.push(...(previewsCertificatePack(plan)?.main ?? []));
@@ -510,10 +528,9 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  * `terraform.tfvars.json`). It renders the layout's `moved` block, every listed provider's
  * requirement, provider block and vendored module, and DNS and the `server_*` outputs from the
  * live side (no `server_id`/`server_name` for an address; `servers` lists only server modules).
- * The deploy key, SSH and web networks are declared only with a server module. With an address
- * side the DNS module's AAAA record exists only while every address has IPv6 (never behind the
- * web filter of a server the user owns), so `both` and `switched` differ only in the records'
- * addresses: the switch updates them in place. A Portainer side whose records are still the
+ * The deploy key, SSH and web networks are declared only with a server module. The DNS module's
+ * AAAA record follows the live side ({@link moveAaaaRecord}), so the switch updates the records in
+ * place, and creates or deletes the AAAA record only when the two sides differ. A Portainer side whose records are still the
  * user's needs `ctx.adoptRecords`, which adds `import` blocks adopting them into `module "dns"`.
  *
  * A Portainer subdomain adds `module "tunnel"` (`cloudflare-tunnel`) and `module "access"`

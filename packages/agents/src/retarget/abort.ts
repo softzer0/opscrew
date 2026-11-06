@@ -45,7 +45,7 @@ import {
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
 import { abortSiteMove } from "./site-end";
 import { pendingStop, proposeWorkflow, storeDeploySecrets, workflowChanged } from "./steps";
-import { dnsOnlyLead, dnsUpdate } from "./switch";
+import { dnsSwitchPlan } from "./switch";
 import {
   ABORT_COMMAND,
   FINISH_COMMAND,
@@ -154,17 +154,20 @@ async function pointDnsBack(
   const old = sideWords(move.from.target, "old");
   deps.reporter.step(`Checking that the DNS records of ${plan.dns.domain} point to ${old}`);
   const files = await useLayout(session, "both");
+  const dns = dnsSwitchPlan(
+    session,
+    "old",
+    "DNS restore",
+    `Check the records in the Cloudflare dashboard (DNS → Records), then run \`${ABORT_COMMAND}\` again.`,
+  );
   const input: InfraPlanInput = {
     action: "abort-dns",
     files,
     costDelta: null,
-    check: planBounded({
-      lead: dnsOnlyLead("DNS restore"),
-      change: dnsUpdate,
-      hint: `Check the records in the Cloudflare dashboard (DNS → Records), then run \`${ABORT_COMMAND}\` again.`,
-    }),
+    check: dns.check,
     notes: [
       `A switch that failed half-way left some DNS records of ${plan.dns.domain} pointing at the new side; this points them back to ${old}, where the app runs.`,
+      ...dns.notes,
     ],
   };
   const prepared = await prepareInfraPlan(session, input);

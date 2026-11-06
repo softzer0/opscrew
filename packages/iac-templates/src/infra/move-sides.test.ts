@@ -2,7 +2,11 @@
 // Feature 023: the move's layouts between every pair of server targets. A cloud side is a server
 // module; a server the user owns and a Portainer environment are an address the DNS records point
 // at (T2305, ADR 0027).
-import { checkDialect } from "@opscrew/iac-engine";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { NodeCommandRunner } from "@opscrew/core";
+import { checkDialect, detectEngines } from "@opscrew/iac-engine";
 import { describe, expect, it } from "vitest";
 import { testCloudflare, testContext } from "../__fixtures__/plans";
 import type { RenderContext, RenderedFile, ServerModule } from "../types";
@@ -14,7 +18,14 @@ import {
   type SideName,
   sideTarget,
 } from "./__fixtures__/sides";
-import { MOVE_LAYOUTS, type MoveLayoutName, moveLayout, renderInfra, tfvars } from "./index";
+import {
+  MOVE_LAYOUTS,
+  type MoveLayoutName,
+  moveAaaaRecord,
+  moveLayout,
+  renderInfra,
+  tfvars,
+} from "./index";
 
 const isCloud = (side: SideName) => side === "hetzner" || side === "digitalocean";
 const ZONE_ID = testCloudflare().zoneId;
@@ -262,18 +273,17 @@ describe("renderInfra with an address side", () => {
     }
   });
 
-  it("switches DNS by updating the records only: both and switched differ only in their addresses", () => {
+  it("switches DNS by updating the records only: both and switched differ only in their addresses and AAAA switch", () => {
     for (const [from, to] of ADDRESS_PAIRS) {
       for (const options of [{}, { proxied: false }] as const) {
         const label = `${from} to ${to}, ${JSON.stringify(options)}`;
         const both = render("both", from, to, options);
         const switched = render("switched", from, to, options);
-        const addressLines = /^ {2}ipv[46] += .+$/gm;
+        // The records' addresses, and the AAAA record's switch: each follows the live side.
+        const dnsLines = /^ {2}(?:ipv[46]|ipv6_record) += .+\n/gm;
         const main = (files: RenderedFile[]) => content(files, "prod/main.tf");
         expect(main(switched), label).not.toBe(main(both));
-        expect(main(switched).replace(addressLines, ""), label).toBe(
-          main(both).replace(addressLines, ""),
-        );
+        expect(main(switched).replace(dnsLines, ""), label).toBe(main(both).replace(dnsLines, ""));
         for (const file of ["variables.tf", "versions.tf", "terraform.tfvars.json"]) {
           expect(content(switched, `prod/${file}`), `${label}: ${file}`).toBe(
             content(both, `prod/${file}`),
@@ -283,31 +293,129 @@ describe("renderInfra with an address side", () => {
     }
   });
 
-  it("keeps the AAAA record only while every address side has IPv6, and never behind the web filter", () => {
-    const ipv6Record = (files: RenderedFile[]) =>
-      /^ {2}ipv6_record += (.+)$/m.exec(
-        moduleBlock(content(files, "prod/main.tf"), "dns") ?? "",
-      )?.[1];
-    const dnsOnly = { proxied: false };
-    expect(ipv6Record(render("both", "hetzner", "own", dnsOnly))).toBe("var.server_ipv6 != null");
-    expect(ipv6Record(render("both", "own", "digitalocean", dnsOnly))).toBe(
-      "var.previous_server_ipv6 != null",
-    );
-    expect(ipv6Record(render("both", "own", "portainer", dnsOnly))).toBe(
-      "var.server_ipv6 != null && var.previous_server_ipv6 != null",
-    );
-    expect(ipv6Record(render("finish", "own", "portainer", dnsOnly))).toBe(
-      "var.server_ipv6 != null",
-    );
-    expect(ipv6Record(render("finish", "own", "hetzner", dnsOnly))).toBeUndefined();
-    expect(ipv6Record(render("both", "hetzner", "digitalocean", dnsOnly))).toBeUndefined();
-    // Behind the web filter a server the user owns serves IPv4 only: no AAAA while it is a side.
-    expect(ipv6Record(render("both", "hetzner", "own"))).toBe("false");
-    expect(ipv6Record(render("abort-rename", "own", "portainer"))).toBe("false");
-    expect(ipv6Record(render("finish", "own", "portainer"))).toBe("var.server_ipv6 != null");
-    expect(ipv6Record(render("both", "portainer", "portainer"))).toBe(
-      "var.server_ipv6 != null && var.previous_server_ipv6 != null",
-    );
+  /** The DNS module's `ipv6_record` in layout `name` (undefined: the module's default, on). */
+  const ipv6Record = (name: MoveLayoutName, from: SideName, to: SideName, o: RenderOptions = {}) =>
+    /^ {2}ipv6_record += (.+)$/m.exec(
+      moduleBlock(content(render(name, from, to, o), "prod/main.tf"), "dns") ?? "",
+    )?.[1];
+  const dnsOnly = { proxied: false };
+
+  it("keeps the AAAA record with the live side, whatever the other side has", () => {
+    const server = "var.server_ipv6 != null";
+    const previous = "var.previous_server_ipv6 != null";
+    const expected: [SideName, SideName, Record<MoveLayoutName, string | undefined>][] = [
+      [
+        "hetzner",
+        "own",
+        {
+          rename: undefined,
+          both: undefined,
+          switched: server,
+          finish: server,
+          "abort-remove": undefined,
+          "abort-rename": undefined,
+        },
+      ],
+      [
+        "own",
+        "hetzner",
+        {
+          rename: previous,
+          both: previous,
+          switched: undefined,
+          finish: undefined,
+          "abort-remove": previous,
+          "abort-rename": server,
+        },
+      ],
+      [
+        "own",
+        "own",
+        {
+          rename: previous,
+          both: previous,
+          switched: server,
+          finish: server,
+          "abort-remove": previous,
+          "abort-rename": server,
+        },
+      ],
+      [
+        "digitalocean",
+        "portainer",
+        {
+          rename: undefined,
+          both: undefined,
+          switched: server,
+          finish: server,
+          "abort-remove": undefined,
+          "abort-rename": undefined,
+        },
+      ],
+      [
+        "portainer",
+        "hetzner",
+        {
+          rename: previous,
+          both: previous,
+          switched: undefined,
+          finish: undefined,
+          "abort-remove": previous,
+          "abort-rename": server,
+        },
+      ],
+    ];
+    for (const [from, to, layouts] of expected) {
+      for (const name of MOVE_LAYOUTS) {
+        expect(ipv6Record(name, from, to, dnsOnly), `${from} to ${to}, ${name}`).toBe(
+          layouts[name],
+        );
+      }
+    }
+  });
+
+  it("names only the live side's address in the AAAA switch, for every pair and layout", () => {
+    for (const [from, to] of PAIRS) {
+      for (const name of MOVE_LAYOUTS) {
+        const label = `${from} to ${to}, ${name}`;
+        const live = SLOTS[name].live;
+        const side = sideIn(name, live, from, to);
+        const record = ipv6Record(name, from, to, dnsOnly);
+        if (side === undefined || isCloud(side)) expect(record, label).toBeUndefined();
+        else
+          expect(record, label).toBe(
+            `var.${live === "server" ? "" : "previous_"}server_ipv6 != null`,
+          );
+      }
+    }
+  });
+
+  it("gives no AAAA record behind the web filter only while DNS points at a server the user owns", () => {
+    expect(ipv6Record("both", "hetzner", "own")).toBeUndefined();
+    expect(ipv6Record("switched", "hetzner", "own")).toBe("false");
+    expect(ipv6Record("finish", "hetzner", "own")).toBe("false");
+    expect(ipv6Record("rename", "own", "portainer")).toBe("false");
+    expect(ipv6Record("abort-rename", "own", "portainer")).toBe("false");
+    expect(ipv6Record("switched", "own", "portainer")).toBe("var.server_ipv6 != null");
+    expect(ipv6Record("finish", "own", "portainer")).toBe("var.server_ipv6 != null");
+    expect(ipv6Record("switched", "own", "hetzner")).toBeUndefined();
+  });
+
+  it("decides the AAAA record of a side as the layouts render it", () => {
+    const cases: [SideName, boolean, MovePlanOptions, boolean][] = [
+      ["hetzner", false, {}, true],
+      ["digitalocean", false, dnsOnly, true],
+      ["own", true, dnsOnly, true],
+      ["own", false, dnsOnly, false],
+      // Behind the web filter a server the user owns publishes the site on IPv4 only.
+      ["own", true, {}, false],
+      ["portainer", true, {}, true],
+      ["portainer", false, dnsOnly, false],
+    ];
+    for (const [side, ipv6, options, aaaa] of cases) {
+      const plan = movePlan(side, options);
+      expect(moveAaaaRecord(plan, sideTarget(side, options), ipv6), `${side}, ${ipv6}`).toBe(aaaa);
+    }
   });
 
   it("finishes with the same DNS module as the new side's own root", () => {
@@ -413,9 +521,10 @@ describe("renderInfra adopting a Portainer side's records", () => {
   it("keeps the switch an update of the records: both and switched import the same records", () => {
     const both = render("both", "portainer", "digitalocean", adopt(RECORD_IDS));
     const switched = render("switched", "portainer", "digitalocean", adopt(RECORD_IDS));
-    const addressLines = /^ {2}ipv[46] += .+$/gm;
-    expect(content(switched, "prod/main.tf").replace(addressLines, "")).toBe(
-      content(both, "prod/main.tf").replace(addressLines, ""),
+    // The records' addresses and the AAAA record's switch follow the live side.
+    const dnsLines = /^ {2}(?:ipv[46]|ipv6_record) += .+\n/gm;
+    expect(content(switched, "prod/main.tf").replace(dnsLines, "")).toBe(
+      content(both, "prod/main.tf").replace(dnsLines, ""),
     );
   });
 
@@ -454,4 +563,102 @@ describe("renderInfra adopting a Portainer side's records", () => {
     });
     expect(content(files, "prod/main.tf")).toMatchSnapshot();
   });
+});
+
+// Downloads the hcloud, digitalocean and cloudflare providers, so only with OPSCREW_IT=1.
+const runIt = process.env.OPSCREW_IT === "1";
+const detected = runIt ? await detectEngines() : [];
+// Not a credential: a placeholder of the right shape, so the provider configures without a network.
+const PLACEHOLDER_TOKEN = "0".repeat(40);
+
+describe.skipIf(!runIt)("the AAAA record of a move's layouts (integration)", () => {
+  const runner = new NodeCommandRunner();
+
+  /**
+   * Writes layout `name` of the move (DNS only) into a fresh folder and initialises it, with a
+   * local state file when `state`; returns the root module's folder.
+   */
+  async function initialised(
+    bin: string,
+    name: MoveLayoutName,
+    [from, to]: readonly [SideName, SideName],
+    state: boolean,
+  ): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "opscrew-move-aaaa-"));
+    for (const file of render(name, from, to, { proxied: false })) {
+      await mkdir(dirname(join(root, file.path)), { recursive: true });
+      await writeFile(join(root, file.path), file.content);
+    }
+    const cwd = join(root, "opscrew/infra/prod");
+    const backend = state
+      ? `-backend-config=path=${join(root, "state.tfstate")}`
+      : "-backend=false";
+    const init = await runner.run(bin, ["init", "-input=false", "-no-color", backend], { cwd });
+    expect(init.exitCode, `${from} to ${to}, ${name}: ${init.stdout}${init.stderr}`).toBe(0);
+    return cwd;
+  }
+
+  for (const engine of ["tofu", "terraform"] as const) {
+    const found = detected.find((d) => d.name === engine && d.supported);
+    const bin = found?.binary ?? engine;
+
+    it.skipIf(!found)(
+      `validates every layout between a cloud server, the user's own and Portainer (${engine})`,
+      async () => {
+        const pairs = [
+          ["hetzner", "own"],
+          ["own", "hetzner"],
+          ["own", "own"],
+          ["digitalocean", "portainer"],
+          ["portainer", "hetzner"],
+        ] as const;
+        for (const pair of pairs) {
+          for (const name of MOVE_LAYOUTS) {
+            const cwd = await initialised(bin, name, pair, false);
+            const valid = await runner.run(bin, ["validate", "-no-color"], { cwd });
+            expect(
+              valid.exitCode,
+              `${pair.join(" to ")}, ${name}: ${valid.stdout}${valid.stderr}`,
+            ).toBe(0);
+          }
+        }
+      },
+      900_000,
+    );
+
+    it.skipIf(!found)(
+      `plans the AAAA record of the live side only, between two servers of the user's (${engine})`,
+      async () => {
+        // The old server has IPv6, the new one IPv4 only.
+        const vars = {
+          previous_server_ipv4: "203.0.113.10",
+          previous_server_ipv6: "2001:db8::10",
+          server_ipv4: "198.51.100.30",
+        };
+        /** Plans layout `name` offline (a fresh local state, no refresh): what it would do. */
+        const plan = async (name: MoveLayoutName) => {
+          const cwd = await initialised(bin, name, ["own", "own"], true);
+          const env: Record<string, string | undefined> = {
+            ...process.env,
+            CLOUDFLARE_API_TOKEN: PLACEHOLDER_TOKEN,
+          };
+          for (const [key, value] of Object.entries(vars)) env[`TF_VAR_${key}`] = value;
+          const result = await runner.run(
+            bin,
+            ["plan", "-refresh=false", "-input=false", "-lock=false", "-no-color"],
+            { cwd, env },
+          );
+          expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+          return result.stdout;
+        };
+        expect(await plan("both")).toContain(
+          "module.dns.cloudflare_dns_record.aaaa[0] will be created",
+        );
+        const switched = await plan("switched");
+        expect(switched).toContain("module.dns.cloudflare_dns_record.a will be created");
+        expect(switched).not.toContain("cloudflare_dns_record.aaaa");
+      },
+      300_000,
+    );
+  }
 });

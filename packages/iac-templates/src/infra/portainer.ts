@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { usesCloudflare } from "../predicates";
 import { portainerTarget } from "../providers";
 import type { RenderContext } from "../types";
@@ -35,6 +35,14 @@ const APP_ORIGIN = '"http://caddy:80"';
 /** The only request paths the tunnel serves on Portainer's hostname (a regular expression). */
 export const PORTAINER_WEBHOOK_PATH = "^/api/stacks/webhooks/";
 
+/**
+ * True when OpsCrew manages the app's DNS records of a Portainer target: web mode `caddy` with
+ * `records` (a move adopted them). Otherwise they are the user's.
+ */
+export function managesPortainerRecords(target: PortainerDeployTarget): boolean {
+  return target.web.mode === "caddy" && target.web.records === true;
+}
+
 /** What the root module contains for the plan. */
 interface Shape {
   /** `module "tunnel"`: the app's tunnel (web mode `tunnel`). */
@@ -51,7 +59,7 @@ function shape(plan: DeployPlan): Shape {
   return {
     appTunnel: cloudflare && target.web.mode === "tunnel",
     webhook: cloudflare && target.redeploy === "cloudflare",
-    dns: cloudflare && target.web.mode === "caddy" && target.web.records === true,
+    dns: cloudflare && managesPortainerRecords(target),
   };
 }
 

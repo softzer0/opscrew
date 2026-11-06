@@ -7,6 +7,7 @@ import { type GitClient, githubConnector } from "@opscrew/connector-github";
 import type { CredentialRequirement, VpsProviderId } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import {
+  managesPortainerRecords,
   portainerHostname,
   portainerWebhookHostname,
   tunnelMode,
@@ -259,7 +260,7 @@ export function portainerCloudflare(
     webhook: cloudflare && target.redeploy === "cloudflare",
     originTls: cloudflare && target.web.mode === "caddy" && dns.proxied,
     // The app's records, which OpsCrew manages since a move adopted them.
-    records: cloudflare && target.web.mode === "caddy" && target.web.records === true,
+    records: cloudflare && managesPortainerRecords(target),
   };
 }
 

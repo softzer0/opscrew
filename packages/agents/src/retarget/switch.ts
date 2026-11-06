@@ -1,7 +1,12 @@
 import { lookup } from "node:dns/promises";
 import type { ApprovalRecord, FetchLike, ResourceChange } from "@opscrew/contracts";
 import { OpsCrewError, upperFirst } from "@opscrew/core";
-import { EDGE_PROXIES, edgeProxy, portainerStackName } from "@opscrew/iac-templates";
+import {
+  EDGE_PROXIES,
+  edgeProxy,
+  moveAaaaRecord,
+  portainerStackName,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { isCloudProvider } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -13,6 +18,7 @@ import {
   sameIp,
 } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
+import { oldSideTarget } from "./layouts";
 import { pointMonitoringAfterWindow } from "./network";
 import { applyInfraPlan, type InfraPlanInput, planBounded, prepareInfraPlan } from "./plans";
 import {
@@ -42,16 +48,71 @@ function publicUrl(plan: DeployPlan, ipv4: string): string {
 }
 
 /**
- * True for an in-place `update` of a record under `module.dns.`: all a DNS switch or restore plan
- * may do (no creates, deletes or replacements, nothing outside DNS, no moves). A record the plan
- * adopts with an `import` block (a Portainer old side's, still the user's) is updated in place too.
+ * True for an in-place `update` of a record under `module.dns.`. A record the plan adopts with an
+ * `import` block (a Portainer old side's, still the user's) is updated in place too.
  */
-export const dnsUpdate = (change: ResourceChange): boolean =>
+const dnsUpdate = (change: ResourceChange): boolean =>
   change.address.startsWith("module.dns.") && change.action === "update";
+
+/** The app's AAAA record in the DNS module. */
+const AAAA_RECORD = "module.dns.cloudflare_dns_record.aaaa[0]";
+
+/**
+ * What a DNS switch or restore plan may change when the records go from one side to the other
+ * (`from`, `to`: whether the records have the AAAA record on that side, {@link sideAaaa}): the
+ * records' in-place updates, plus what a change of address family needs, the AAAA record's delete
+ * when only `from` has it or its create when only `to` has. Nothing else: no other create, delete
+ * or replacement, nothing outside DNS, no moves.
+ */
+export function dnsSwitchChange(from: boolean, to: boolean): (change: ResourceChange) => boolean {
+  const family = from === to ? undefined : from ? "delete" : "create";
+  return (change) =>
+    dnsUpdate(change) || (change.address === AAAA_RECORD && change.action === family);
+}
+
+/**
+ * Whether the app's AAAA record exists while its DNS records point at the `which` side of the move
+ * (`moveAaaaRecord`), from the address OpsCrew recorded of that side: the layouts' address
+ * variables come from the same record.
+ */
+export function sideAaaa(
+  session: Pick<MoveSession, "plan" | "servers">,
+  which: "old" | "new",
+): boolean {
+  const side = which === "new" ? session.plan.target : oldSideTarget(moveOf(session));
+  const address = which === "new" ? session.servers.next : session.servers.from;
+  return moveAaaaRecord(session.plan, side, address?.ipv6 !== undefined);
+}
 
 /** The lead of a DNS plan's stop: the `what` plan would do more than update the records. */
 export const dnsOnlyLead = (what: string): string =>
   `The ${what} plan would do more than update the DNS records in place, so OpsCrew stopped. Nothing was changed.`;
+
+/**
+ * A DNS plan that points the records at the `to` side of the move (the switch: `new`; an abort's
+ * restore: `old`): its check, {@link dnsSwitchChange} between both sides' {@link sideAaaa}
+ * (stopping with the `what` plan's lead and `hint`), and the approval note when it creates or
+ * deletes the AAAA record.
+ */
+export function dnsSwitchPlan(
+  session: Pick<MoveSession, "plan" | "servers">,
+  to: "old" | "new",
+  what: string,
+  hint: string,
+): Pick<InfraPlanInput, "check"> & { notes: string[] } {
+  const from = sideAaaa(session, to === "new" ? "old" : "new");
+  const next = sideAaaa(session, to);
+  const target = to === "new" ? session.plan.target : moveOf(session).from.target;
+  const where = sideWords(target, to);
+  const domain = session.plan.dns.domain;
+  const note = next
+    ? `The AAAA record of ${domain} is created: ${where} is reached on IPv6 too.`
+    : `The AAAA record of ${domain} is deleted: ${where} is reached on IPv4 only.`;
+  return {
+    check: planBounded({ lead: dnsOnlyLead(what), change: dnsSwitchChange(from, next), hint }),
+    notes: from === next ? [] : [note],
+  };
+}
 
 /**
  * A failed (or refused) switch: the app on the old side runs again (when OpsCrew stopped it) and
@@ -183,6 +244,12 @@ async function switchManagedDns(
   }
   deps.reporter.step(`Planning the switch of ${plan.dns.domain} to ${fresh}`);
   const files = await useLayout(session, "switched");
+  const dns = dnsSwitchPlan(
+    session,
+    "new",
+    "DNS switch",
+    `The infrastructure no longer matches what OpsCrew applied. Run \`${ABORT_COMMAND}\` to undo the move, then \`opscrew drift\` to see the differences.`,
+  );
   const adopted =
     session.adoptRecords !== undefined
       ? [
@@ -192,15 +259,12 @@ async function switchManagedDns(
   const input: InfraPlanInput = {
     action: "switch",
     files,
-    check: planBounded({
-      lead: dnsOnlyLead("DNS switch"),
-      change: dnsUpdate,
-      hint: `The infrastructure no longer matches what OpsCrew applied. Run \`${ABORT_COMMAND}\` to undo the move, then \`opscrew drift\` to see the differences.`,
-    }),
+    check: dns.check,
     // DNS records are not billed: the new side's price was shown with the plan that created it.
     costDelta: null,
     notes: [
       `This points ${plan.dns.domain} at ${fresh}; the records are updated in place.`,
+      ...dns.notes,
       ...adopted,
       `Then OpsCrew starts ${edgeWords(plan)} on ${fresh}, checks the app through its domain and keeps the app on ${old} stopped. After this the move can no longer be aborted.`,
     ],
