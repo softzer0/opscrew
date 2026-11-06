@@ -122,7 +122,7 @@ export async function previewMoveRemoval(removal: MoveRemoval): Promise<Deletion
  */
 export async function liftMoveProtection(
   removal: MoveRemoval,
-  input: { serverInState: boolean; kept: string; beforeApply?: () => Promise<void> },
+  input: { serverInState: boolean; kept: string },
 ): Promise<{ stop: RetargetResult } | { lifted: boolean }> {
   const { session, which, words, texts, del, flags } = removal;
   const { deps } = session;
@@ -170,7 +170,6 @@ export async function liftMoveProtection(
     allowDestroy: false,
     what: `lifting delete protection on the ${which} server`,
     hint: nothingDeletedHint(command),
-    ...(input.beforeApply !== undefined ? { beforeApply: input.beforeApply } : {}),
   });
   if (lifted.kind === "pending") return { stop: pendingStop(session, lifted.planHash, flags) };
   if (lifted.kind === "applied") {
@@ -196,7 +195,6 @@ export async function removeMoveServer(
     notes: readonly string[];
     note: string;
     costDelta?: Money;
-    beforeApply?: () => Promise<void>;
   },
 ): Promise<RetargetResult | undefined> {
   const { session, which, words, del, flags } = removal;
@@ -247,7 +245,6 @@ export async function removeMoveServer(
     allowDestroy: true,
     what: `deleting the ${which} server`,
     hint: `Fix the cause shown above, then run \`${command}\` again; it continues with what is left.`,
-    ...(input.beforeApply !== undefined ? { beforeApply: input.beforeApply } : {}),
   });
   if (removed.kind === "pending") return pendingStop(session, removed.planHash, flags);
   if (removed.kind === "applied") {

@@ -1,3 +1,4 @@
+import type { GitHubClient } from "@opscrew/connector-github";
 import type {
   CommandRunner,
   ComputeCatalog,
@@ -12,7 +13,7 @@ import type { DestroyPreview } from "../destroy";
 import type { GitHubApi, ProvisionServices } from "../provision";
 
 /** The GitHub calls a move needs: the deploy secrets plus running the deploy workflow. */
-export interface RetargetGitHubApi extends GitHubApi {
+export interface RetargetGitHubApi extends GitHubApi, Pick<GitHubClient, "deleteBranch"> {
   /** Waits for the dispatched run `runId` to complete. */
   waitForWorkflowRun(
     owner: string,
@@ -34,7 +35,16 @@ export interface RetargetGitHubApi extends GitHubApi {
 export interface RetargetServices
   extends Pick<
     ProvisionServices,
-    "engine" | "cloudflare" | "tcpConnect" | "remote" | "askEnv" | "askStorageKey"
+    | "engine"
+    | "cloudflare"
+    | "tcpConnect"
+    | "remote"
+    | "askEnv"
+    | "askStorageKey"
+    // The sides on the user's own server and in their Portainer.
+    | "own"
+    | "runnerGitHub"
+    | "portainer"
   > {
   /** Credential checks per provider (default: `vpsConnector(id).verifyCredentials`). */
   providers?: Partial<

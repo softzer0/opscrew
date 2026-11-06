@@ -150,6 +150,8 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
       expect(h.github.pulls[0]?.body).not.toContain(ip);
     }
     expect(await exists(join(h.paths.stateDir, "retarget-snapshot.json"))).toBe(false);
+    // Only a move from Portainer has a deploy branch to delete.
+    expect(h.github.deletedBranches).toEqual([]);
     expect((await h.deps.state.read()).phases.retarget?.status).toBe("ok");
     expect(result.next.join(" ")).toContain("https://github.com/acme/shop/pull/7");
     expect(result.next.join(" ")).toContain("Hetzner image snap-4711");
@@ -314,7 +316,7 @@ describe.skipIf(!findExecutable("git"))("finishRetarget", () => {
     expect(result).toMatchObject({ step: "finished", done: true });
     expect(trail(since(h, mark)).filter((line) => line.startsWith("apply"))).toEqual([]);
     const text = h.reporter.text();
-    expect(text).toContain("The old server is already deleted; OpsCrew finishes the cleanup.");
+    expect(text).toContain("The old server is already deleted.");
     expect(text).toContain("its SSH host key stays in OpsCrew's known_hosts");
     expect((await readArtifact("plan", h.paths.files.plan)).retarget).toBeUndefined();
     expect(await readServerAddresses(h.paths)).toEqual({

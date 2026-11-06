@@ -31,6 +31,7 @@ import {
   processServices,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, PortainerDeployTarget, Retarget } from "@opscrew/plan-schema";
+import { confirmDeletion } from "../../destroy/deletion";
 import { applyTeardown, approveTeardown, describeTeardown } from "../../destroy/portainer";
 import type { DestroyPreview } from "../../destroy/types";
 import {
@@ -543,17 +544,24 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
         snapshot: false,
         stackChanges: work.map((change) => change.title),
       };
-      if (!(await confirm(preview))) {
-        throw new OpsCrewError(
-          "APPROVAL_REFUSED",
-          `${name} was not removed from your Portainer. Nothing was changed.`,
-          { hint: `Run \`${session.command}\` again when you are ready.` },
-        );
-      }
+      // The typed name, audited as on the other sides.
+      await confirmDeletion(
+        {
+          deps,
+          provider: "portainer",
+          app: name,
+          command: session.command,
+          what: `removal of ${name} from your Portainer`,
+          phase: "retarget",
+        },
+        preview,
+        confirm,
+      );
       const again = `Run \`${session.command}\` again when you are ready; it shows the plan again.`;
-      // A script names the teardown it applies, with the app's name.
-      if (!deps.interactive && session.approve === undefined) {
-        const hash = stackPlanHash(teardown);
+      // A script names the teardown it applies, with the app's name; any other hash (an earlier,
+      // stale one) shows the plan again.
+      const hash = stackPlanHash(teardown);
+      if (!deps.interactive && session.approve !== hash) {
         deps.reporter.info(describeTeardown(teardown, hash, connection.environmentName));
         return pendingStop(session, hash, ["--confirm", name]);
       }
@@ -565,7 +573,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
         refused: `${name} was not removed from your Portainer. Nothing was changed.`,
         hint: again,
       });
-      session.approve = undefined;
+      if (session.approve === hash) session.approve = undefined;
       await applyTeardown(deps, approved, {
         client,
         connection,

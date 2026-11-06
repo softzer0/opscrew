@@ -1,27 +1,21 @@
 import { isUserFacingError, lowerFirst, OpsCrewError, upperFirst } from "@opscrew/core";
-import { readArtifact } from "@opscrew/plan-schema";
+import { type PortainerDeployTarget, readArtifact } from "@opscrew/plan-schema";
 import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
-import { dataWarning, serverData } from "../destroy/checks";
 import {
-  confirmDeletion,
   forgetHostKeys,
+  readSnapshotRecord,
   remainingAfterDeletion,
   removeSnapshotRecord,
-  snapshotKeptNote,
-  snapshotWanted,
-  takeSnapshotBeforeDelete,
 } from "../destroy/deletion";
-import { providerProfile } from "../providers";
+import { deleteDeployBranch } from "../destroy/portainer";
 import { publishDeploySetup } from "../provision";
-import { describeChanges, trackedFiles } from "../shared";
+import { deployBranchOf, trackedFiles } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
-import { moveProvider } from "../shared/vps-target";
 import { previousCloud, previousTarget } from "./layouts";
 import { clearPending } from "./pending";
-import { liftMoveProtection, moveRemoval, previewMoveRemoval, removeMoveServer } from "./removal";
-import { endMoveServers, unknownOldServer } from "./servers";
+import { endMoveServers } from "./servers";
 import {
   auditStep,
   layoutOf,
@@ -30,29 +24,19 @@ import {
   openSession,
   planFilePath,
   savePlan,
-  waitsOf,
   warnUnusedApproval,
   writeFinalFiles,
 } from "./session";
+import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
 import { requireSwitchSettled } from "./switch";
 import {
   ABORT_COMMAND,
   FINISH_ABORT_HINT,
   FINISH_COMMAND,
-  providerWords,
   RUN_COMMAND,
   START_MOVE_HINT,
 } from "./texts";
 import type { FinishRetargetOptions, RetargetResult } from "./types";
-
-/** The flags a scripted finish repeats with each `--approve <hash>`. */
-function finishFlags(app: string, snapshot: FinishRetargetOptions["snapshot"]): string[] {
-  return [
-    "--confirm",
-    app,
-    ...(snapshot === true ? ["--snapshot"] : snapshot === false ? ["--no-snapshot"] : []),
-  ];
-}
 
 /** Paths among `paths` that git tracks (a deleted tracked file is staged with `git add`). */
 async function trackedPaths(session: MoveSession, paths: readonly string[]): Promise<string[]> {
@@ -60,108 +44,95 @@ async function trackedPaths(session: MoveSession, paths: readonly string[]): Pro
   return paths.filter((path) => tracked.has(path));
 }
 
+/** The snapshot the old cloud server's removal took (or an earlier run took), from its record. */
+async function takenSnapshot(session: MoveSession): Promise<string | undefined> {
+  const recorded = await readSnapshotRecord(session.deps, "retarget", undefined);
+  return recorded?.provider === previousCloud(moveOf(session)).provider
+    ? recorded.snapshotId
+    : undefined;
+}
+
+/**
+ * `--finish`'s removal of the old side, through the side's `remove` after the typed app name: a
+ * cloud server (a snapshot first when wanted), only the app on the user's own server (a teardown
+ * host plan), only the app's stacks and volumes in their Portainer. Never the user's server,
+ * Portainer or its environment (SC-2304). Without a `confirm` hook nothing is confirmed, so nothing
+ * is deleted. Returns a script's stop, else the snapshot a cloud side kept.
+ */
+export async function removeOldSide(
+  session: MoveSession,
+  options: Pick<FinishRetargetOptions, "snapshot" | "confirm">,
+): Promise<{ stop: RetargetResult } | { snapshotId: string | undefined }> {
+  const side = moveSide(
+    session,
+    "old",
+    options.snapshot !== undefined ? { snapshot: options.snapshot } : {},
+  );
+  const stop = await side.remove(session, options.confirm ?? (async () => false));
+  if (stop !== undefined) return { stop };
+  return { snapshotId: side.kind === "cloud" ? await takenSnapshot(session) : undefined };
+}
+
+/**
+ * After a move from Portainer: deletes the deploy branch the old side's stack was built from,
+ * behind a `git-push` approval of its own. Returns what remains when it stays: refused, or GitHub
+ * failed (a warning says so; the move is finished either way).
+ */
+export async function deleteOldDeployBranch(
+  session: MoveSession,
+  from: PortainerDeployTarget,
+): Promise<string | undefined> {
+  const { deps, github } = session;
+  const plan = { ...session.plan, target: from };
+  const deleted = await deleteDeployBranch(
+    deps,
+    { api: session.githubApi, owner: github.owner, repo: github.repo },
+    plan,
+    { phase: "retarget", ask: true },
+  );
+  if (deleted) return undefined;
+  const branch = deployBranchOf(plan);
+  return `The branch ${branch} of ${github.owner}/${github.repo}, from which your Portainer built the app's stack: delete it on GitHub (or with \`git push origin --delete ${branch}\`).`;
+}
+
 async function finish(
   session: MoveSession,
   options: FinishRetargetOptions,
 ): Promise<RetargetResult> {
-  const { deps, services } = session;
+  const { deps } = session;
   const move = moveOf(session);
   const app = session.plan.app.name;
-  const old = previousTarget(move);
+  const from = move.from.target;
   const fresh = session.plan.target;
-  const removal = moveRemoval(session, "old", old.provider, finishFlags(app, options.snapshot));
-  const { del, words, texts } = removal;
+  const old = sideWords(from, "old");
+  const cloud = from.provider === "hetzner" || from.provider === "digitalocean";
 
-  // 0. The new server must answer through the app's URL (Caddy started, URL checked); else the
-  // old server is kept. `switched` is recorded right after the DNS switch, before this check.
+  // 0. The new side must answer through the app's URL (edge started, URL checked); else the old
+  // side is kept. `switched` is recorded right after the DNS switch, before this check.
   await requireSwitchSettled(session);
 
-  // 1. Preview: only the old server's resources (the plan is discarded, never applied).
-  const preview = await previewMoveRemoval(removal);
-  const { serverInState, serverIds } = preview;
-  // Only finishing up after the old server is gone may go on without its address.
-  if (session.servers.from === undefined && preview.changes.length > 0) {
-    throw unknownOldServer(FINISH_COMMAND);
-  }
-  const warning = dataWarning(session.plan, serverInState, old);
-  const data = {
-    serverData: serverData(session.plan).length > 0,
-    backups: old.backups,
-  };
-  const snapshotFirst = serverInState && snapshotWanted(options.snapshot, data);
-  if (preview.changes.length > 0) {
-    deps.reporter.info(
-      [
-        `Finishing the move deletes these resources of the old ${words.noun} on ${words.name}:`,
-        ...describeChanges(preview.changes),
-      ].join("\n"),
-    );
-    if (warning) deps.reporter.warn(warning);
-    if (snapshotFirst) {
-      deps.reporter.info(
-        `A snapshot of the old ${words.noun} is taken first, so its data can be restored later (${texts.snapshotBilling}; \`--no-snapshot\` skips it).`,
-      );
-    }
-  } else {
-    deps.reporter.info(`The old ${words.noun} is already deleted; OpsCrew finishes the cleanup.`);
-  }
-  await confirmDeletion(
-    del,
-    {
-      name: app,
-      provider: old.provider,
-      deleteProtection: providerProfile(old.provider).deleteProtection,
-      resources: preview.changes,
-      snapshot: snapshotFirst,
-      ...(warning ? { dataWarning: warning } : {}),
-    },
-    options.confirm,
-  );
+  // 1. The old side's removal, after the typed name.
+  const removed = await removeOldSide(session, options);
+  if ("stop" in removed) return removed.stop;
+  const { snapshotId } = removed;
+  const gone = cloud
+    ? `${old} is deleted`
+    : `the app is removed from ${from.provider === "own" ? old : "your Portainer"}`;
 
-  // 2. Snapshot (after the typed name, before anything is deleted).
-  const servers = services.servers?.[old.provider];
-  const snapshotId = await takeSnapshotBeforeDelete(del, {
-    server: { inState: serverInState, ids: serverIds },
-    choice: options.snapshot ?? "auto",
-    data,
-    purpose: "retarget",
-    ...(servers ? { servers } : {}),
-    ...waitsOf(services),
-  });
-  const kept = snapshotKeptNote(texts, snapshotId);
-
-  // 3. Delete protection (Hetzner): a plan that may only turn it off, in the switched layout.
-  const lift = await liftMoveProtection(removal, { serverInState, kept });
-  if ("stop" in lift) return lift.stop;
-  /** Said with every later stop: the old server is no longer protected against deletion. */
-  const unprotected = lift.lifted
-    ? ` Delete protection on the old ${words.noun} is already off; \`${FINISH_COMMAND}\` deletes it once you confirm again.`
-    : "";
-
-  // 4. The removal: a plan of the root without the old module, bounded to the confirmed preview.
-  if (preview.changes.length > 0) {
-    const stop = await removeMoveServer(removal, {
-      preview,
-      notes: [
-        ...(warning ? [warning] : []),
-        snapshotId !== undefined
-          ? `Snapshot: ${texts.snapshotRef(snapshotId)} keeps a copy of the old ${words.noun} (${texts.snapshotBilled}; OpsCrew never deletes it).`
-          : "Snapshot: none.",
-      ],
-      note: `${unprotected}${kept}`,
-    });
-    if (stop !== undefined) return stop;
-  }
-
-  // 5. Cleanup: host keys, final files, plan, snapshot record, phase.
-  const from = session.servers.from;
-  if (from === undefined) {
+  // 2. Cleanup: host keys, the Portainer deploy branch, final files, plan, snapshot record, phase.
+  const remaining: string[] = [];
+  if (from.provider === "portainer") {
+    const branch = await deleteOldDeployBranch(session, from);
+    if (branch !== undefined) remaining.push(branch);
+  } else if (session.servers.from === undefined) {
     // Host keys are pinned by address; without it they cannot be told from the new server's.
     deps.reporter.info(
-      `OpsCrew no longer knows the old ${words.noun}'s address on this computer, so its SSH host key stays in OpsCrew's known_hosts (${deps.paths.files.knownHosts}). It is harmless; you can delete the old ${words.noun}'s lines there.`,
+      `OpsCrew no longer knows the address of ${old} on this computer, so its SSH host key stays in OpsCrew's known_hosts (${deps.paths.files.knownHosts}). It is harmless; you can delete its lines there.`,
     );
-  } else if ((await forgetHostKeys(deps, [from.ipv4, from.ipv6])) > 0) {
-    deps.reporter.info(`Removed the old ${words.noun}'s SSH host key from OpsCrew's known_hosts.`);
+  } else if (
+    (await forgetHostKeys(deps, [session.servers.from.ipv4, session.servers.from.ipv6])) > 0
+  ) {
+    deps.reporter.info(`Removed the SSH host key of ${old} from OpsCrew's known_hosts.`);
   }
   const { retarget: _finished, ...finalPlan } = session.plan;
   const written = await writeFinalFiles(session, finalPlan, layoutOf(session, "switched"), "all");
@@ -169,23 +140,25 @@ async function finish(
   await removeSnapshotRecord(deps, "retarget");
   await clearPending(deps);
   await endMoveServers(deps, session.servers.next);
-  const freshWords = providerWords(moveProvider(fresh));
-  await deps.state.markPhase("retarget", "ok", `moved to ${freshWords.name}`);
+  const place = placeWords(fresh);
+  await deps.state.markPhase("retarget", "ok", `moved to ${place}`);
+  if (cloud) {
+    const { provider, backups } = previousTarget(move);
+    remaining.unshift(...remainingAfterDeletion({ provider, app, snapshotId, backups }));
+  }
   await auditStep(
     session,
     "finished",
-    `old ${old.provider} server deleted${snapshotId !== undefined ? `, ${texts.snapshotRef(snapshotId)} kept` : ""}; the deployment runs on ${fresh.provider}`,
+    `${gone}${snapshotId !== undefined ? `, snapshot ${snapshotId} kept` : ""}; the deployment runs on ${fresh.provider}`,
   );
-  deps.reporter.success(
-    `The move of ${app} to ${freshWords.name} is finished; the old ${words.noun} is deleted.`,
-  );
+  deps.reporter.success(`The move of ${app} to ${place} is finished; ${gone}.`);
   // The scheduled check watches the app again (it was paused for the maintenance window).
   await resumeCheck(deps, session.github, finalPlan, {
     command: "opscrew provision",
     phase: "retarget",
   });
 
-  // 6. The final files in a pull request, with the recovery copy when OpsCrew's local files
+  // 3. The final files in a pull request, with the recovery copy when OpsCrew's local files
   // changed (a failure here does not undo the finished move).
   const branch = finalPlan.cicd.branch;
   const byHand = `commit the changed files under opscrew/ and open a pull request into ${branch} yourself, so the repository describes the new deployment.`;
@@ -226,12 +199,6 @@ async function finish(
           ? `${error.hint} Then ${byHand}`
           : upperFirst(byHand);
   }
-  const remaining = remainingAfterDeletion({
-    provider: old.provider,
-    app,
-    snapshotId,
-    backups: old.backups,
-  });
   if (remaining.length > 0) {
     deps.reporter.info(["What remains:", ...remaining.map((item) => `  - ${item}`)].join("\n"));
   }
@@ -244,12 +211,12 @@ async function finish(
 }
 
 /**
- * `opscrew retarget --finish` (only after the switch): previews the removal of the old server
- * (deletes only under `module.server_previous.`), asks for the typed app name, takes a snapshot
- * (by default when the database or backups lived there), lifts Hetzner delete protection with a
- * plan that may change nothing else, applies a removal plan bounded to the confirmed preview and
- * server, forgets the old host key, writes the final files and publishes them in a pull request,
- * and clears the move from `opscrew/plan.yaml`.
+ * `opscrew retarget --finish` (only after the switch): checks that the new side serves the app,
+ * removes the old side after the typed app name (a cloud server with its snapshot first when
+ * wanted; only the app on the user's own server or in their Portainer, never the server or the
+ * environment), forgets the old server's host key or deletes the old Portainer deploy branch,
+ * writes the final files and publishes them in a pull request, and clears the move from
+ * `opscrew/plan.yaml`.
  */
 export async function finishRetarget(
   deps: PhaseDeps,
@@ -281,7 +248,7 @@ export async function finishRetarget(
   return runPhase(deps, "retarget", async () => {
     const session = await openSession(deps, plan, {
       command: FINISH_COMMAND,
-      providers: [previousCloud(move).provider, moveProvider(plan.target)],
+      providers: cloudProviders({ plan }),
       services: options.services ?? {},
       oldServerOptional: true,
       ...(options.engine !== undefined ? { engine: options.engine } : {}),

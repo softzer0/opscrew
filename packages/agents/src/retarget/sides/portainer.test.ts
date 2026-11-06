@@ -466,10 +466,17 @@ describe("the Portainer side of a move", () => {
     });
 
     // The typed name refused: nothing changes.
-    await expect(h.side.remove(h.session, async () => false)).rejects.toThrow(
-      "Nothing was changed.",
-    );
+    await expect(h.side.remove(h.session, async () => false)).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+      message: expect.stringContaining("nothing was changed."),
+    });
     expect(h.portainer.stacks).toHaveLength(2);
+    // The typed name is audited, refused or confirmed, as on the other sides.
+    const typedNames = () =>
+      h.deps.audit.entries
+        .filter((entry) => entry.action === "destroy-confirm")
+        .map((entry) => entry.decision);
+    expect(typedNames()).toEqual(["refused"]);
 
     const previews: { name: string; stackChanges?: string[] }[] = [];
     expect(
@@ -479,6 +486,7 @@ describe("the Portainer side of a move", () => {
       }),
     ).toBeUndefined();
     expect(previews[0]?.name).toBe("shop");
+    expect(typedNames()).toEqual(["refused", "approved"]);
     const teardown = h.handler.requests.at(-1);
     expect(teardown).toMatchObject({
       kind: "stack-apply",
@@ -500,6 +508,21 @@ describe("the Portainer side of a move", () => {
     const stop = await h.side.remove(h.session, async () => true);
     expect(stop?.next.join(" ")).toContain(`--confirm shop --approve ${stop?.pendingPlanHash}`);
     expect(h.portainer.stacks).toHaveLength(2);
+
+    // A stale hash (an earlier plan's) shows the plan again and changes nothing.
+    h.session.approve = "f".repeat(64);
+    const again = await h.side.remove(h.session, async () => true);
+    expect(again?.pendingPlanHash).toBe(stop?.pendingPlanHash);
+    const teardowns = () =>
+      h.handler.requests.filter((r) => r.kind === "stack-apply" && r.allowDestroy === true);
+    expect(teardowns()).toEqual([]);
+    expect(h.portainer.stacks).toHaveLength(2);
+
+    h.session.approve = stop?.pendingPlanHash;
+    expect(await h.side.remove(h.session, async () => true)).toBeUndefined();
+    expect(teardowns().map((r) => r.planHash)).toEqual([stop?.pendingPlanHash]);
+    expect(h.session.approve).toBeUndefined();
+    expect(h.portainer.stacks).toEqual([]);
   });
 
   it("never shows the token, a password or Portainer's address", async () => {

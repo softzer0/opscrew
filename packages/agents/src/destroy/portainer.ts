@@ -93,7 +93,7 @@ import {
   planBucketDeletion,
 } from "./storage";
 import { destroyConfirmPrompt } from "./texts";
-import type { DestroyOptions, DestroyResult } from "./types";
+import type { DestroyGitHubApi, DestroyOptions, DestroyResult } from "./types";
 
 /** Said wherever the teardown in the user's Portainer is described (FR-1014, FR-1015). */
 const PORTAINER_STAYS = `Portainer itself, its settings and every stack, volume and registry entry OpsCrew did not create stay as they are: OpsCrew removes only what its record lists for this app. ${PORTAINER_NOTES}`;
@@ -270,28 +270,41 @@ function canDeleteBranch(github: GitHubTarget): boolean {
 
 /**
  * Once the app's stack is gone: deletes the deploy branch, which holds the stack's file, so a later
- * setup never starts from it (covered by the destroy approval; a branch already gone is fine).
- * `true` when the branch is gone afterwards. A GitHub that cannot be reached or refuses is no reason
- * to stop the teardown: the warning says how to finish (and a later `opscrew provision` replaces
+ * setup never starts from it (a branch already gone is fine). `destroy` covers it with its own
+ * approval; with `ask` (a move's `--finish`) it has a `git-push` approval of its own, and a refusal
+ * keeps it. `true` when the branch is gone afterwards. A GitHub that cannot be reached or refuses
+ * is no reason to stop: the warning says how to finish (and a later `opscrew provision` replaces
  * the branch's file before it creates the app's stack anyway).
  */
-async function deleteDeployBranch(
+export async function deleteDeployBranch(
   deps: PhaseDeps,
-  github: GitHubTarget,
+  github: Pick<GitHubTarget, "owner" | "repo"> & { api?: Pick<DestroyGitHubApi, "deleteBranch"> },
   plan: DeployPlan,
+  options: { phase: PhaseName; ask?: boolean } = { phase: "provision" },
 ): Promise<boolean> {
   const { api, owner, repo } = github;
   // Without the call (or the repository) the branch stays and is listed under what remains.
   if (api?.deleteBranch === undefined || !owner || !repo) return false;
   const where = `${owner}/${repo}`;
   const branch = deployBranchOf(plan);
+  if (options.ask === true) {
+    const approval = await deps.approvals.request({
+      kind: "git-push",
+      title: `Delete the branch ${branch} in ${where}`,
+      details: `Your Portainer built the app's stack from the ${branch} branch. The app no longer runs there, so OpsCrew deletes the branch.`,
+    });
+    if (!approval.approved) {
+      deps.reporter.info(`The branch ${branch} of ${where} stays.`);
+      return false;
+    }
+  }
   try {
     const result = await api.deleteBranch(owner, repo, branch);
     await deps.audit.append({
       kind: "git",
       actor: "opscrew",
       action: "delete branch",
-      phase: "provision",
+      phase: options.phase,
       target: `${where}:${branch}`,
       decision: "approved",
       detail: result === "deleted" ? "deleted" : "already gone",

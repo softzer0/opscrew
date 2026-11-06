@@ -712,6 +712,14 @@ export class FakeMoveGitHub extends FakeGitHub implements RetargetGitHubApi {
     return { runId: 99, url: "https://github.com/acme/shop/actions/runs/99" };
   }
 
+  /** Branches deleted with `deleteBranch`, in order. */
+  readonly deletedBranches: string[] = [];
+
+  async deleteBranch(_owner: string, _repo: string, branch: string) {
+    this.deletedBranches.push(branch);
+    return this.holds.delete(branch) ? ("deleted" as const) : ("absent" as const);
+  }
+
   async waitForWorkflowRun(_owner: string, _repo: string, options: { runId: number }) {
     const host = this.secrets.get("OPSCREW_HOST");
     if (this.conclusion === "success" && host !== undefined) this.hostsFake.deploy(host);

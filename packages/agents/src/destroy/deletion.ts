@@ -360,7 +360,7 @@ const SnapshotRecordSchema = z.looseObject({
 });
 
 /** The snapshot an earlier run recorded, or `undefined` when there is none or it is damaged. */
-function readSnapshotRecord(
+export function readSnapshotRecord(
   deps: PhaseDeps,
   purpose: SnapshotPurpose,
   server: string | undefined,

@@ -10,15 +10,15 @@ import {
 import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { costFor } from "../design";
-import { confirmDeletion, forgetHostKeys } from "../destroy/deletion";
+import { noServerCost } from "../design/own";
+import { forgetHostKeys } from "../destroy/deletion";
+import type { DestroyPreview } from "../destroy/types";
 import { providerProfile, vpsConnector } from "../providers";
-import { describeChanges } from "../shared";
+import { restoreOldConnection, type ServerAddress } from "../shared";
 import { runPhase } from "../shared/phase-status";
-import { moveProvider } from "../shared/vps-target";
-import { previousCloud, previousTarget } from "./layouts";
+import { previousTarget } from "./layouts";
 import { clearPending } from "./pending";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
-import { liftMoveProtection, moveRemoval, previewMoveRemoval, removeMoveServer } from "./removal";
 import { isAppHealthy } from "./server-ops";
 import { endMoveServers, oldServer } from "./servers";
 import {
@@ -36,16 +36,10 @@ import {
   warnUnusedApproval,
   writeFinalFiles,
 } from "./session";
+import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
 import { assertRenameOnly, pendingStop, storeDeploySecrets } from "./steps";
 import { assertDnsUpdatesOnly } from "./switch";
-import {
-  ABORT_COMMAND,
-  FINISH_COMMAND,
-  managedDns,
-  providerWords,
-  RUN_COMMAND,
-  START_MOVE_HINT,
-} from "./texts";
+import { ABORT_COMMAND, FINISH_COMMAND, managedDns, RUN_COMMAND, START_MOVE_HINT } from "./texts";
 import type { AbortRetargetOptions, RetargetResult } from "./types";
 import { recoverInterruptedWindow, restartOldApp, stepBefore } from "./window";
 
@@ -84,67 +78,26 @@ async function previousCost(
 }
 
 /**
- * Removes the new server when it exists: preview (deletes only under `module.server.`), typed app
- * name, for a new Hetzner server a protection-lifting plan first, then the removal plan bounded to
- * the confirmed preview. Returns a stop for a non-interactive run, else `undefined`.
+ * `--abort`'s removal of the new side, through the side's `remove` after the typed app name: a
+ * cloud server, only the app on the user's own server (a teardown host plan), only the app's
+ * stacks and volumes in their Portainer. Never the user's server, Portainer or its environment
+ * (SC-2304). The typed name commits to the abort, so `retarget.abort` is recorded as soon as it is
+ * confirmed, before the side changes anything; without a `confirm` hook nothing is confirmed, so
+ * nothing is deleted. Returns a script's stop.
  */
-async function removeNewServer(
+export async function removeNewSide(
   session: MoveSession,
-  options: AbortRetargetOptions,
-  flags: readonly string[],
+  options: Pick<AbortRetargetOptions, "confirm">,
 ): Promise<RetargetResult | undefined> {
-  const { deps } = session;
-  const app = session.plan.app.name;
-  const provider = moveProvider(session.plan.target);
-  const removal = moveRemoval(session, "new", provider, flags);
-  const { del, words } = removal;
-  const preview = await previewMoveRemoval(removal);
-  if (preview.changes.length === 0) {
-    deps.reporter.info(`There is no new ${words.noun} to delete.`);
-    return undefined;
-  }
-  deps.reporter.info(
-    [
-      `Aborting the move deletes these resources of the new ${words.noun} on ${words.name}:`,
-      ...describeChanges(preview.changes),
-    ].join("\n"),
-  );
-  await confirmDeletion(
-    del,
-    {
-      name: app,
-      provider,
-      deleteProtection: providerProfile(provider).deleteProtection,
-      resources: preview.changes,
-      snapshot: false,
-    },
-    options.confirm,
-  );
-  // The typed name commits to the abort; without a confirmation hook, the first apply does.
-  if (options.confirm !== undefined) await recordAbort(session);
-
-  const beforeApply = () => recordAbort(session);
-  const lift = await liftMoveProtection(removal, {
-    serverInState: preview.serverInState,
-    kept: "",
-    beforeApply,
-  });
-  if ("stop" in lift) return lift.stop;
-  return removeMoveServer(removal, {
-    preview,
-    notes: [
-      `The app keeps running on the old server; the new ${words.noun} and what it holds are deleted.`,
-    ],
-    note: "",
-    costDelta: {
-      amount: -session.plan.cost.monthly.amount,
-      currency: session.plan.cost.monthly.currency,
-    },
-    beforeApply,
-  });
+  const confirm = async (preview: DestroyPreview) => {
+    const confirmed = (await options.confirm?.(preview)) === true;
+    if (confirmed) await recordAbort(session);
+    return confirmed;
+  };
+  return moveSide(session, "new").remove(session, confirm);
 }
 
-/** Progress of an abort: nothing done (no record yet), new server removed, secrets restored. */
+/** Progress of an abort: nothing done (no record yet), new side removed, secrets restored. */
 const ABORT_PROGRESS = { started: 0, "new-removed": 1, "secrets-restored": 2 } as const;
 
 function abortProgress(session: MoveSession): number {
@@ -173,8 +126,8 @@ async function recordAbortStep(
 }
 
 /**
- * A DNS switch that failed half-way may have left records pointing at the new server: a plan in
- * the `both` layout (DNS follows the old server) points them back first, approved by its hash.
+ * A DNS switch that failed half-way may have left records pointing at the new side: a plan in
+ * the `both` layout (DNS follows the old side) points them back first, approved by its hash.
  * Returns a stop for a non-interactive run.
  */
 async function pointDnsBack(
@@ -184,8 +137,8 @@ async function pointDnsBack(
   const { deps, plan } = session;
   const move = moveOf(session);
   if (!managedDns(plan) || stepBefore(move.step, "deployed")) return undefined;
-  const old = providerWords(previousCloud(move).provider);
-  deps.reporter.step(`Checking that the DNS records of ${plan.dns.domain} point to the old server`);
+  const old = sideWords(move.from.target, "old");
+  deps.reporter.step(`Checking that the DNS records of ${plan.dns.domain} point to ${old}`);
   const files = await useLayout(session, "both");
   const input: InfraPlanInput = {
     action: "abort-dns",
@@ -197,7 +150,7 @@ async function pointDnsBack(
         hint: `Check the records in the Cloudflare dashboard (DNS → Records), then run \`${ABORT_COMMAND}\` again.`,
       }),
     notes: [
-      `A switch that failed half-way left some DNS records of ${plan.dns.domain} pointing at the new server; this points them back to the old ${old.noun}, where the app runs.`,
+      `A switch that failed half-way left some DNS records of ${plan.dns.domain} pointing at the new side; this points them back to ${old}, where the app runs.`,
     ],
   };
   const prepared = await prepareInfraPlan(session, input);
@@ -206,49 +159,24 @@ async function pointDnsBack(
   await recordAbort(session);
   const applied = await applyInfraPlan(session, input, prepared.planHash);
   await recordApply(session, { planHash: prepared.planHash, ...applied });
-  deps.reporter.success(`The DNS records of ${plan.dns.domain} point to the old server again.`);
+  deps.reporter.success(`The DNS records of ${plan.dns.domain} point to ${old} again.`);
   return undefined;
 }
 
-async function abort(session: MoveSession, options: AbortRetargetOptions): Promise<RetargetResult> {
+/**
+ * The moves-only plan that renames the old cloud server back to `module.server` (only a cloud old
+ * side has a module in the root). Returns a stop for a non-interactive run.
+ */
+async function renameBack(
+  session: MoveSession,
+  flags: readonly string[],
+): Promise<RetargetResult | undefined> {
   const { deps } = session;
-  const app = session.plan.app.name;
-  const flags = ["--confirm", app];
-  const move = moveOf(session);
-  const from = previousTarget(move);
-  const to = session.plan.target;
-  const old = providerWords(from.provider);
-
-  // 1. DNS back to the old server, then the new server (it can only exist once the rename was
-  // recorded).
-  if (abortProgress(session) < ABORT_PROGRESS["new-removed"]) {
-    const dnsStop = await pointDnsBack(session, flags);
-    if (dnsStop !== undefined) return dnsStop;
-    if (move.step !== "started") {
-      const stop = await removeNewServer(session, options, flags);
-      if (stop !== undefined) return stop;
-    }
-    await forgetHostKeys(deps, [session.servers.next?.ipv4, session.servers.next?.ipv6]);
-    await recordAbortStep(session, "new-removed", "the new server is gone");
-  }
-
-  // 2. The deploy secrets (they may point to the new server from the deploy step on).
-  if (abortProgress(session) < ABORT_PROGRESS["secrets-restored"]) {
-    if (!stepBefore(move.step, "created")) {
-      await recordAbort(session);
-      await storeDeploySecrets(session, oldServer(session).ipv4, "old");
-    }
-    await recordAbortStep(
-      session,
-      "secrets-restored",
-      "the deploy secrets point to the old server",
-    );
-  }
-
-  // 3. The moves-only plan that renames the old server back to `module.server`.
-  deps.reporter.step(`Renaming the old ${old.noun} back in the infrastructure state`);
+  const from = previousTarget(moveOf(session));
+  const old = sideWords(from, "old");
+  deps.reporter.step(`Renaming ${old} back in the infrastructure state`);
   const files = await useLayout(session, "abort-rename");
-  const renameBack: InfraPlanInput = {
+  const input: InfraPlanInput = {
     action: "abort-rename",
     files,
     deployPlan: { ...session.plan, target: from },
@@ -260,72 +188,159 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
         hint: `The infrastructure no longer matches what OpsCrew applied. Check the servers in your provider consoles (\`opscrew drift\` works again once the move is cleared), then run \`${ABORT_COMMAND}\` again.`,
       }),
     notes: [
-      `This only renames the old ${old.noun} from module.server_previous back to module.server in OpsCrew's infrastructure state. Nothing changes in your cloud.`,
+      `This only renames ${old} from module.server_previous back to module.server in OpsCrew's infrastructure state. Nothing changes in your cloud.`,
     ],
   };
-  const prepared = await prepareInfraPlan(session, renameBack);
+  const prepared = await prepareInfraPlan(session, input);
   if (prepared.kind === "pending") return pendingStop(session, prepared.planHash, flags);
   if (prepared.kind === "ready") {
     await recordAbort(session);
-    const applied = await applyInfraPlan(session, renameBack, prepared.planHash);
+    const applied = await applyInfraPlan(session, input, prepared.planHash);
     await recordApply(session, { planHash: prepared.planHash, ...applied });
   } else {
     deps.reporter.info("The infrastructure state already uses the original names.");
   }
+  return undefined;
+}
 
-  // 4. The plan as before the move, and the original files.
-  const cost = await previousCost(session, from);
-  if (cost === undefined) {
-    deps.reporter.warn(
-      `OpsCrew could not price the old ${old.noun} again (${from.serverType} is no longer listed), so opscrew/plan.yaml keeps the new server's cost. Run \`opscrew design\` to refresh it.`,
-    );
+/** The old side's monthly cost again: a cloud server's priced anew, nothing for the user's own. */
+async function oldCost(session: MoveSession): Promise<CostEstimate | undefined> {
+  const { deps, plan } = session;
+  const target = moveOf(session).from.target;
+  if (target.provider === "hetzner" || target.provider === "digitalocean") {
+    const from = previousTarget(moveOf(session));
+    const cost = await previousCost(session, from);
+    if (cost === undefined) {
+      deps.reporter.warn(
+        `OpsCrew could not price ${sideWords(from, "old")} again (${from.serverType} is no longer listed), so opscrew/plan.yaml keeps the new side's cost. Run \`opscrew design\` to refresh it.`,
+      );
+    }
+    return cost;
   }
+  return noServerCost(
+    target.provider === "own"
+      ? "Your own server (you already pay for it)"
+      : "Your Portainer (you already run it)",
+    plan.cost.monthly.currency,
+    deps.clock.now().toISOString(),
+  );
+}
+
+/**
+ * Once the plan is restored: whether the app answers on the old side, in words. The old side is
+ * the plan's target again, reached as provision reaches it: a cloud server at `oldAddress`, the
+ * user's own server or Portainer through its restored connection (so a rerun after an interrupted
+ * abort checks the same way). A check that cannot run says the same as an app that does not
+ * answer. Only a cloud server's address is said; never that of the user's own server or Portainer.
+ */
+export async function reportAborted(
+  session: MoveSession,
+  oldAddress: ServerAddress | undefined,
+): Promise<void> {
+  const { deps, plan } = session;
+  const { target } = plan;
+  const app = plan.app.name;
+  const words = sideWords(target, "old");
+  const cloud = target.provider === "hetzner" || target.provider === "digitalocean";
+  const healthy = cloud
+    ? oldAddress !== undefined &&
+      (await isAppHealthy(
+        remoteFor(deps, session.services, session.deployKey.privateKeyFile, oldAddress.ipv4),
+        plan.app.port,
+        plan.app.healthPath,
+        edgeProxy(plan),
+      ).catch(() => false))
+    : // `new` is the plan's target: with the move cleared, that is the old side.
+      await moveSide(session, "new")
+        .healthy(session)
+        .catch(() => false);
+  const address = cloud && oldAddress !== undefined ? oldAddress.ipv4 : undefined;
+  const where = address === undefined ? words : `${words} (${address})`;
+  if (healthy) {
+    deps.reporter.success(`The move is aborted; ${app} runs on ${where}.`);
+    return;
+  }
+  const look =
+    target.provider === "portainer"
+      ? "Check its containers and their logs in your Portainer."
+      : address === undefined
+        ? `Check it over your SSH login to that server with \`cd ${appDir(plan)} && docker compose ps\`.`
+        : `Check it with \`ssh deploy@${address}\` and \`cd ${appDir(plan)} && docker compose ps\`.`;
+  deps.reporter.warn(
+    `The move is aborted, but the app on ${where} does not answer its health check. ${look}`,
+  );
+}
+
+async function abort(session: MoveSession, options: AbortRetargetOptions): Promise<RetargetResult> {
+  const { deps } = session;
+  const app = session.plan.app.name;
+  const flags = ["--confirm", app];
+  const move = moveOf(session);
+  const from = move.from.target;
+  const to = session.plan.target;
+
+  // 1. DNS back to the old side, then the new side (it can only exist once the rename was
+  // recorded).
+  if (abortProgress(session) < ABORT_PROGRESS["new-removed"]) {
+    const dnsStop = await pointDnsBack(session, flags);
+    if (dnsStop !== undefined) return dnsStop;
+    if (move.step !== "started") {
+      const stop = await removeNewSide(session, options);
+      if (stop !== undefined) return stop;
+    }
+    await forgetHostKeys(deps, [session.servers.next?.ipv4, session.servers.next?.ipv6]);
+    await recordAbortStep(session, "new-removed", "the new side is removed");
+  }
+
+  // 2. The deploy secrets (they may point to the new side from the deploy step on).
+  if (abortProgress(session) < ABORT_PROGRESS["secrets-restored"]) {
+    if (!stepBefore(move.step, "created")) {
+      await recordAbort(session);
+      await storeDeploySecrets(session, oldServer(session).ipv4, "old");
+    }
+    await recordAbortStep(session, "secrets-restored", "the deploy secrets point to the old side");
+  }
+
+  // 3. A cloud old server's rename back to `module.server`.
+  if (from.provider === "hetzner" || from.provider === "digitalocean") {
+    const stop = await renameBack(session, flags);
+    if (stop !== undefined) return stop;
+  }
+
+  // 4. The old side's connection back in its usual slot, the plan as before the move, and the
+  // original files.
+  await restoreOldConnection(deps.paths, { from: from.provider, to: to.provider });
+  const cost = await oldCost(session);
   const { retarget: _aborted, ...rest } = session.plan;
-  // The old server's deploy settings and image build, as recorded when the move started.
+  // The old side's deploy settings and image build, as recorded when the move started.
   const { build: _moved, ...unbuilt } = rest.app;
   const restored: DeployPlan = {
     ...rest,
     app: move.from.build === undefined ? unbuilt : { ...unbuilt, build: move.from.build },
-    target: from,
+    target: from.provider === "own" || from.provider === "portainer" ? from : previousTarget(move),
     deploy: move.from.deploy,
     ...(cost !== undefined ? { cost } : {}),
   };
   await writeFinalFiles(session, restored, layoutOf(session, "both"), "infra");
-  const oldAddress = oldServer(session);
-  const oldHost = oldAddress.ipv4;
+  const oldAddress = session.servers.from;
   await savePlan(session, restored);
   await clearPending(deps);
   await endMoveServers(deps, oldAddress);
-  await deps.state.markPhase(
-    "retarget",
-    "skipped",
-    `move to ${providerWords(moveProvider(to)).name} aborted`,
-  );
-  await auditStep(session, "aborted", `the deployment stays on ${from.provider} at ${oldHost}`);
+  const place = placeWords(from);
+  await deps.state.markPhase("retarget", "skipped", `move to ${placeWords(to)} aborted`);
+  await auditStep(session, "aborted", `the deployment stays on ${from.provider}`);
   // The scheduled check watches the app again, when the maintenance window paused it.
   await resumeCheck(deps, session.github, restored, {
     command: "opscrew provision",
     phase: "retarget",
   });
 
-  const healthy = await isAppHealthy(
-    remoteFor(deps, session.services, session.deployKey.privateKeyFile, oldHost),
-    restored.app.port,
-    restored.app.healthPath,
-    edgeProxy(restored),
-  );
-  if (healthy) {
-    deps.reporter.success(`The move is aborted; ${app} runs on the old ${old.noun} (${oldHost}).`);
-  } else {
-    deps.reporter.warn(
-      `The move is aborted, but the app on the old ${old.noun} (${oldHost}) does not answer its health check. Check it with \`ssh deploy@${oldHost}\` and \`cd ${appDir(restored)} && docker compose ps\`.`,
-    );
-  }
+  await reportAborted(session, oldAddress);
   return {
     step: "aborted",
     done: true,
     next: [
-      `${app} stays on ${old.name}; pushes to ${restored.cicd.branch} deploy there again.`,
+      `${app} stays on ${place}; pushes to ${restored.cicd.branch} deploy there again.`,
       `To move later, run \`${RUN_COMMAND} --to ${to.provider}\` again.`,
     ],
   };
@@ -333,11 +348,12 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
 
 /**
  * `opscrew retarget --abort` (only before the switch): starts the old app again when OpsCrew
- * stopped it; removes the new server when it exists (preview under `module.server.`, typed app
- * name, protection lift for a new Hetzner server, bounded removal plan); points the deploy secrets
- * back to the old server; renames the old server back with a moves-only plan; restores the plan's
- * target and cost, the original files, and forgets the new host key. Each step is recorded in
- * `retarget.abort.step`, so an interrupted abort continues.
+ * stopped it; removes the new side when it exists, after the typed app name (a cloud server; only
+ * the app on the user's own server or in their Portainer, never the server or the environment);
+ * points the deploy secrets back to the old side; renames an old cloud server back with a
+ * moves-only plan; puts the old side's connection back; restores the plan's target and cost, the
+ * original files, and forgets the new host key. Each step is recorded in `retarget.abort.step`,
+ * so an interrupted abort continues.
  */
 export async function abortRetarget(
   deps: PhaseDeps,
@@ -353,13 +369,12 @@ export async function abortRetarget(
     );
   }
   if (move.step === "switched") {
-    const to = providerWords(moveProvider(plan.target));
-    const from = previousCloud(move).provider;
+    const from = move.from.target;
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `Traffic already goes to the new ${to.noun} on ${to.name}, so the move can no longer be aborted. Nothing was changed.`,
+      `Traffic already goes to ${sideWords(plan.target, "new")}, so the move can no longer be aborted. Nothing was changed.`,
       {
-        hint: `To go back to ${providerWords(from).name}, finish this move with \`${FINISH_COMMAND}\` and then move again with \`${RUN_COMMAND} --to ${from}\`.`,
+        hint: `To go back to ${placeWords(from)}, finish this move with \`${FINISH_COMMAND}\` and then move again with \`${RUN_COMMAND} --to ${from.provider}\`.`,
       },
     );
   }
@@ -379,7 +394,7 @@ export async function abortRetarget(
     }
     const session = await openSession(deps, plan, {
       command: ABORT_COMMAND,
-      providers: [previousCloud(move).provider, moveProvider(plan.target)],
+      providers: cloudProviders({ plan }),
       services,
       ...(options.engine !== undefined ? { engine: options.engine } : {}),
       ...(options.approvePlanHash !== undefined
