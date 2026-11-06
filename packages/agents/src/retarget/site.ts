@@ -36,7 +36,7 @@ import {
   type SiteSession,
   type SiteTarget,
 } from "./site-session";
-import { siteDeployStep, siteSwitched, siteSwitchStep } from "./site-steps";
+import { pagesClient, siteDeployStep, siteSwitched, siteSwitchStep } from "./site-steps";
 import { nothingLive, requireRequirements, siteServerNoMove } from "./start";
 import { ABORT_COMMAND, FINISH_ABORT_HINT, FINISH_COMMAND, RUN_COMMAND } from "./texts";
 import type { RetargetOptions, RetargetResult, RetargetSummary } from "./types";
@@ -147,6 +147,22 @@ async function requirePagesMove(deps: PhaseDeps, plan: DeployPlan): Promise<void
   }
 }
 
+/**
+ * Refuses a move to GitHub Pages while the repository has a GitHub Pages site already: the move
+ * turns on a site of its own, which an abort removes, so it never takes over one it did not make.
+ */
+async function requireNoPagesSite(session: SiteSession): Promise<void> {
+  const { owner, repo } = session.github;
+  if ((await (await pagesClient(session)).getPages(owner, repo)) === undefined) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `GitHub Pages is already on for ${owner}/${repo}, and a move to GitHub Pages turns on a site of its own. Nothing was changed.`,
+    {
+      hint: `Turn it off in the repository's settings (Settings → Pages) if nothing needs it, or set this app up there with \`opscrew interview\`, \`opscrew design\` and \`opscrew provision\` instead; then run \`${RUN_COMMAND} --to github-pages\` again if you still want to move.`,
+    },
+  );
+}
+
 /** The summary of a site's move, shown before anything changes. */
 function siteSummary(
   plan: DeployPlan,
@@ -239,6 +255,7 @@ async function startSiteMove(
     ...(options.engine !== undefined ? { engine: options.engine } : {}),
     ...(options.approvePlanHash !== undefined ? { approvePlanHash: options.approvePlanHash } : {}),
   });
+  if (to === "github-pages") await requireNoPagesSite(session);
   const summary = siteSummary(plan, next, session.github.owner, session.github.repo);
   deps.reporter.info(summaryText(summary, plan));
   if (options.confirmStart !== undefined && !(await options.confirmStart(summary))) {

@@ -7,6 +7,7 @@
 import { rm, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { CLOUDFLARE_TOKEN_PAGE } from "@opscrew/connector-cloudflare";
+import type { ResourceChange } from "@opscrew/contracts";
 import {
   isUserFacingError,
   lowerFirst,
@@ -20,7 +21,6 @@ import {
   deploySecretName,
   type RenderedFile,
   renderPagesVerification,
-  type SiteLayout,
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -46,21 +46,26 @@ import {
   appliesNow,
   beforeMove,
   hostWords,
-  movingWorker,
   newSite,
   oldSite,
   openSiteSession,
   renderSiteFiles,
   type SiteSession,
+  type SiteTarget,
   siteContext,
   sitePending,
 } from "./site-session";
-import { pagesClient, pagesStep, proposeSiteSetup } from "./site-steps";
+import {
+  answers,
+  customDomain,
+  onlyChanges,
+  pagesClient,
+  pagesStep,
+  proposeSiteSetup,
+  workerRules,
+} from "./site-steps";
 import { ABORT_COMMAND, FINISH_ABORT_HINT, FINISH_COMMAND, RUN_COMMAND } from "./texts";
 import type { AbortRetargetOptions, FinishRetargetOptions, RetargetResult } from "./types";
-
-/** The root of a move's both hosts, whose files the final ones replace. */
-const BOTH: SiteLayout = { worker: "shell", pages: true };
 
 /** Where a removal happens, for the typed confirmation and its audit entry. */
 function scopeOf(session: SiteSession, provider: DeletionScope["provider"]): DeletionScope {
@@ -75,9 +80,9 @@ function scopeOf(session: SiteSession, provider: DeletionScope["provider"]): Del
 }
 
 /**
- * Writes `plan`'s files (its plain root), deletes the files only the move's both-hosts root or
- * `other` (the other host's plan) had, and initialises the engine for the root again. Returns the
- * written files and the removed paths (repository-relative).
+ * Writes `plan`'s files (its plain root), deletes the files only the move's root (the Worker's
+ * shell beside GitHub Pages' records) or `other` (the other host's plan) had, and initialises the
+ * engine for the root again. Returns the written files and the removed paths (repository-relative).
  */
 async function writeHostFiles(
   session: SiteSession,
@@ -89,7 +94,7 @@ async function writeHostFiles(
   await writeRenderedFiles(deps.paths.root, files);
   const kept = new Set(files.map((file) => file.path));
   const before = [
-    ...(await renderSiteFiles(session, session.plan, BOTH)),
+    ...(await renderSiteFiles(session, session.plan, true)),
     ...(await renderSiteFiles(session, other)),
   ];
   const removed = [...new Set(before.map((file) => file.path))].filter((path) => !kept.has(path));
@@ -110,45 +115,33 @@ async function writeHostFiles(
 }
 
 /**
- * The Worker's removal from its root (`action`): `plan`'s plain root (its `files`, written) no
- * longer has it, so the plan deletes the Worker's shell and nothing else. Prepared, then confirmed
- * with the typed app name together with `rules` (OpsCrew's rules for its hostnames, removed
- * first), then each applied after its own approval; a non-interactive run stops with each hash in
- * turn.
+ * A plan of the site's root (`action`) towards `plan`'s plain root (its `files`, written), which
+ * may change only what `allowed` lets through (`what` names the plan in a refusal): the Worker's
+ * removal at `--finish`, or at `--abort` the hostnames put back on the old host (and the new Worker
+ * removed). Prepared and checked; when it deletes anything, or with `rules` (OpsCrew's rules for
+ * the Worker's hostnames, removed first), confirmed with the typed app name; then each applied
+ * after its own approval. A non-interactive run stops with each hash in turn.
  */
-async function removeWorker(
+async function rootPlan(
   session: SiteSession,
   input: {
     action: MoveAction;
     plan: DeployPlan;
     files: readonly RenderedFile[];
+    what: string;
+    allowed: (change: ResourceChange) => boolean;
     rules: boolean;
     confirm: ((preview: DestroyPreview) => Promise<boolean>) | undefined;
   },
 ): Promise<RetargetResult | undefined> {
   const { deps } = session;
   const app = session.plan.app.name;
-  const { worker } = movingWorker(session.plan);
   const plan: InfraPlanInput = {
     action: input.action,
     files: input.files.filter((file) => file.kind === "infra"),
     deployPlan: input.plan,
     costDelta: null,
-    check: (saved) => {
-      const others = saved.changes.filter(
-        (change) => change.action !== "delete" || !change.address.startsWith("module.worker."),
-      );
-      if (others.length > 0) {
-        throw new OpsCrewError(
-          "PHASE_PRECONDITION",
-          [
-            `The plan that removes the Worker ${worker} would change more than the Worker, so OpsCrew stopped. Nothing was changed.`,
-            ...describeChanges(others),
-          ].join("\n"),
-          { hint: "Run `opscrew drift` to see what changed, then run the command again." },
-        );
-      }
-    },
+    check: onlyChanges(input.what, input.allowed),
   };
   const prepared = await prepareInfraPlan(session, plan);
   const removal = input.rules
@@ -159,31 +152,30 @@ async function removeWorker(
     prepared.kind === "unchanged"
       ? undefined
       : await findSavedPlan(deps.paths.files.plansDir, prepared.planHash);
-  const resources = saved?.changes ?? [];
-  if (resources.length === 0 && rules === undefined) {
-    deps.reporter.info(`The Worker ${worker} is already deleted.`);
-    return undefined;
+  const changes = saved?.changes ?? [];
+  const deletes = changes.filter((change) => change.action === "delete");
+  if (deletes.length > 0 || rules !== undefined) {
+    deps.reporter.info(
+      [
+        `This changes the site on Cloudflare (${hostWords(input.plan.target as SiteTarget)} keeps ${input.plan.dns.domain}):`,
+        ...describeChanges(changes),
+        ...(rules === undefined ? [] : [rules]),
+      ].join("\n"),
+    );
+    await confirmDeletion(
+      scopeOf(session, "cloudflare-workers"),
+      {
+        name: app,
+        provider: "cloudflare-workers",
+        deleteProtection: false,
+        resources: deletes,
+        snapshot: false,
+        ...(rules !== undefined ? { cloudflarePlan: rules } : {}),
+      },
+      input.confirm,
+    );
   }
-  deps.reporter.info(
-    [
-      `This deletes the Worker ${worker} on Cloudflare (its secrets go with it):`,
-      ...describeChanges(resources),
-      ...(rules === undefined ? [] : [rules]),
-    ].join("\n"),
-  );
-  await confirmDeletion(
-    scopeOf(session, "cloudflare-workers"),
-    {
-      name: app,
-      provider: "cloudflare-workers",
-      deleteProtection: false,
-      resources,
-      snapshot: false,
-      ...(rules !== undefined ? { cloudflarePlan: rules } : {}),
-    },
-    input.confirm,
-  );
-  const flags = ["--confirm", app];
+  const flags = deletes.length > 0 || rules !== undefined ? ["--confirm", app] : [];
   if (removal !== undefined) {
     // Without changes in the zone only the record is written: it lists no hostnames any more.
     const hash = removal.zone.plan.hash;
@@ -200,6 +192,10 @@ async function removeWorker(
   }
   return undefined;
 }
+
+/** The changes of the site's root that touch the Worker, and those of GitHub Pages' records. */
+const ofWorker = (change: ResourceChange) => change.address.startsWith("module.worker.");
+const ofPages = (change: ResourceChange) => change.address.startsWith("module.dns.");
 
 /**
  * The GitHub Pages site's removal: its custom domain (if it has one), the site and its
@@ -329,20 +325,28 @@ async function finishSite(
   const finalPlan = afterMove(session.plan);
   const fromWorker = from.provider === "cloudflare-workers";
 
-  // 1. The final files, then the old host's site, after the typed name.
+  // 1. On the Worker, OpsCrew's rules in the zone cover its hostnames before the old site goes.
+  if (!fromWorker) {
+    const rules = await workerRules(session);
+    if (rules !== undefined) return rules;
+  }
+
+  // 2. The final files, then the old host's site, after the typed name.
   const written = await writeHostFiles(session, finalPlan, beforeMove(session.plan));
   const stop = fromWorker
-    ? await removeWorker(session, {
+    ? await rootPlan(session, {
         action: "finish-destroy",
         plan: finalPlan,
         files: written.files,
+        what: `plan that removes the Worker ${from.worker}`,
+        allowed: (change) => change.action === "delete" && ofWorker(change),
         rules: true,
         confirm: options.confirm,
       })
     : await removePages(session, options.confirm);
   if (stop !== undefined) return stop;
 
-  // 2. The plan without the move, and the final files in a pull request.
+  // 3. The plan without the move, and the final files in a pull request.
   await savePlan(session, finalPlan);
   await clearPending(deps);
   await deps.state.markPhase("retarget", "ok", `moved to ${fresh}`);
@@ -425,27 +429,47 @@ async function abortSite(
   }
   const plan = { ...beforeMove(session.plan), ...(cost !== undefined ? { cost } : {}) };
 
-  // 1. The files as before the move, then the new host's site, after the typed name; the
-  // hostnames never left the old one.
+  // 1. The files as before the move, and the old root's plan: it changes nothing unless a switch
+  // stopped part-way, and then it puts the hostnames back on the old host. To GitHub Pages, the
+  // Worker's custom domains come back and GitHub Pages' records go; to the Worker, GitHub Pages'
+  // records come back and the new Worker goes with the same plan.
   const written = await writeHostFiles(session, plan, afterMove(session.plan));
-  const stop =
-    to.provider === "cloudflare-workers"
-      ? await removeWorker(session, {
-          action: "abort-remove",
-          plan,
-          files: written.files,
-          rules: false,
-          confirm: options.confirm,
-        })
-      : await removePages(session, options.confirm);
-  if (stop !== undefined) return stop;
+  const toWorker = to.provider === "cloudflare-workers";
+  const restored = await rootPlan(session, {
+    action: toWorker ? "abort-remove" : "abort-dns",
+    plan,
+    files: written.files,
+    what: `plan that keeps ${plan.dns.domain} on ${hostWords(from)}`,
+    allowed: (change) =>
+      toWorker
+        ? (change.action === "create" && ofPages(change)) ||
+          (change.action === "delete" && ofWorker(change))
+        : (change.action === "create" && customDomain(change.address)) ||
+          (change.action === "delete" && ofPages(change)),
+    rules: false,
+    confirm: options.confirm,
+  });
+  if (restored !== undefined) return restored;
 
-  // 2. The plan as before the move, and the old host's deploy setup back on GitHub.
+  // 2. The new GitHub Pages site, after the typed name, once no record points at it.
+  if (!toWorker) {
+    const stop = await removePages(session, options.confirm);
+    if (stop !== undefined) return stop;
+  }
+
+  // 3. The plan as before the move, and the old host's deploy setup back on GitHub.
   await savePlan(session, plan);
   await clearPending(deps);
   await deps.state.markPhase("retarget", "skipped", `move to ${hostWords(to)} aborted`);
   await auditStep(session, "aborted", `the site stays on ${from.provider}`);
-  deps.reporter.success(`The move is aborted; ${app} stays on ${hostWords(from)}.`);
+  const url = `https://${plan.dns.domain}/`;
+  if (await answers(session, url)) {
+    deps.reporter.success(`The move is aborted; ${app} stays on ${hostWords(from)}.`);
+  } else {
+    deps.reporter.warn(
+      `The move is aborted and ${app} stays on ${hostWords(from)}, but the site does not answer at ${url} yet: a change of its DNS records can take a few minutes to reach this computer. \`opscrew verify\` checks it again.`,
+    );
+  }
   const proposal = await proposeSiteSetup(session, plan, written.removed).catch(
     (error: unknown) => {
       deps.reporter.warn(
@@ -474,11 +498,12 @@ async function abortSite(
 }
 
 /**
- * `opscrew retarget --abort` for a site (only before the switch): the new host's site goes after
- * the typed app name (the Worker's shell, or the GitHub Pages site), the plan and its files are as
- * before the move, and the old host's deploy setup goes back on GitHub in a pull request. The
- * hostnames never left the old host. `retarget.abort` is recorded first, so the move cannot
- * continue meanwhile.
+ * `opscrew retarget --abort` for a site (only before the switch is recorded): the old root's plan
+ * puts the hostnames back on the old host when a switch stopped part-way (else it changes
+ * nothing), the new host's site goes after the typed app name (the Worker's shell, or the GitHub
+ * Pages site), the plan and its files are as before the move, the site is checked on its domain,
+ * and the old host's deploy setup goes back on GitHub in a pull request. `retarget.abort` is
+ * recorded first, so the move cannot continue meanwhile.
  */
 export async function abortSiteMove(
   deps: PhaseDeps,

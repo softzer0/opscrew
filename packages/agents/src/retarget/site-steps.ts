@@ -78,7 +78,7 @@ import {
   type SiteSession,
   siteContext,
   sitePending,
-  useSiteLayout,
+  useSiteRoot,
 } from "./site-session";
 import { normalised, workflowOnGitHub } from "./steps";
 import { ABORT_COMMAND, FINISH_COMMAND, RUN_COMMAND } from "./texts";
@@ -143,7 +143,7 @@ export async function pagesStep(
  * Stops (`PHASE_PRECONDITION`, nothing changed) unless every change of a step's plan is one
  * `allowed` lets through: the step's own, and nothing else.
  */
-function onlyChanges(
+export function onlyChanges(
   what: string,
   allowed: (change: SavedPlan["changes"][number]) => boolean,
 ): (saved: SavedPlan) => void {
@@ -159,7 +159,7 @@ function onlyChanges(
 }
 
 /** True for a change of the Worker's custom domains. */
-const customDomain = (address: string) =>
+export const customDomain = (address: string) =>
   address.startsWith("module.worker.cloudflare_workers_custom_domain.");
 
 /**
@@ -296,7 +296,7 @@ async function prepareWorker(session: SiteSession): Promise<RetargetResult | und
     command,
   });
 
-  const files = await useSiteLayout(session, { worker: "shell", pages: true });
+  const files = await useSiteRoot(session, true);
   const step = await planThenApply(session, {
     action: "create",
     files,
@@ -472,7 +472,7 @@ async function runSiteWorkflow(session: SiteSession): Promise<number> {
 }
 
 /** Polls `url` until it answers with a success status; false when it never did in time. */
-async function answers(session: SiteSession, url: string): Promise<boolean> {
+export async function answers(session: SiteSession, url: string): Promise<boolean> {
   const answered = await pollUntil(
     async () => {
       try {
@@ -578,10 +578,8 @@ export async function siteSwitchStep(session: SiteSession): Promise<RetargetResu
     const stop = await pagesStep(session, pages, site);
     if (stop !== undefined) return stop;
   }
-  const files = await useSiteLayout(
-    session,
-    toPages ? { worker: "shell", pages: true } : { worker: "bound" },
-  );
+  // To GitHub Pages: the Worker's shell beside the records; to the Worker: its plain root.
+  const files = await useSiteRoot(session, toPages);
   const step = await planThenApply(session, {
     action: "switch",
     files,
@@ -606,7 +604,7 @@ export async function siteSwitchStep(session: SiteSession): Promise<RetargetResu
 }
 
 /** On the Worker, OpsCrew's rules in the zone for its hostnames (a Cloudflare plan). */
-async function workerRules(session: SiteSession): Promise<RetargetResult | undefined> {
+export async function workerRules(session: SiteSession): Promise<RetargetResult | undefined> {
   const { deps, plan, services, cloudflare, command } = session;
   const shared = await planSharedCloudflare(deps, {
     services: { sharedCloudflare: sharedCloudflareClient(deps, services) },

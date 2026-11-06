@@ -6,12 +6,7 @@ import { join } from "node:path";
 import type { GitClient } from "@opscrew/connector-github";
 import { OpsCrewError, tfstateFile } from "@opscrew/core";
 import type { EnginePreference } from "@opscrew/iac-engine";
-import {
-  type RenderedFile,
-  type RuntimeContext,
-  renderDeployment,
-  type SiteLayout,
-} from "@opscrew/iac-templates";
+import { type RenderedFile, type RuntimeContext, renderDeployment } from "@opscrew/iac-templates";
 import type {
   CloudflareWorkersDeployTarget,
   DeployPlan,
@@ -201,29 +196,30 @@ export async function siteContext(
   return { plan: zoned, ctx };
 }
 
-/** Every file of the site's deployment for `plan`, its root in `layout` (none: the plain one). */
+/**
+ * Every file of the site's deployment for `plan`: its plain root, or with `siteMove` the move's
+ * root (the Worker's shell beside GitHub Pages' records).
+ */
 export async function renderSiteFiles(
   session: SiteSession,
   plan: DeployPlan,
-  layout?: SiteLayout,
+  siteMove = false,
 ): Promise<RenderedFile[]> {
   const { plan: zoned, ctx } = await siteContext(session, plan);
-  return renderDeployment(zoned, {
-    ...ctx,
-    ...(layout !== undefined ? { siteLayout: layout } : {}),
-  });
+  return renderDeployment(zoned, { ...ctx, ...(siteMove ? { siteMove: true } : {}) });
 }
 
 /**
- * Writes the move root's files in `layout` into the working tree and initialises the engine
+ * Writes the root of the move's plan into the working tree (with `siteMove`, the Worker's shell
+ * beside GitHub Pages' records; else the plain root of its target) and initialises the engine
  * again (a new module call needs `init` before any plan). Returns the root's files.
  */
-export async function useSiteLayout(
+export async function useSiteRoot(
   session: SiteSession,
-  layout: SiteLayout,
+  siteMove: boolean,
 ): Promise<RenderedFile[]> {
   const { deps } = session;
-  const files = (await renderSiteFiles(session, session.plan, layout)).filter(
+  const files = (await renderSiteFiles(session, session.plan, siteMove)).filter(
     (file) => file.kind === "infra",
   );
   const diff = await diffRenderedFiles(deps.paths.root, files);

@@ -10,7 +10,7 @@ import type {
   PlanSummary,
   ResourceChange,
 } from "@opscrew/contracts";
-import { exists, findExecutable, sha256Hex, tfstateFile } from "@opscrew/core";
+import { exists, findExecutable, OpsCrewError, sha256Hex, tfstateFile } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { detectProject } from "@opscrew/detect";
 import {
@@ -150,10 +150,20 @@ class SiteEngine extends FakeEngine {
     }
     const planned = this.#plans.get(planFile);
     if (planned === undefined) throw new Error(`no plan ${planFile}`);
+    if (this.failPartway) {
+      // The deletes went through, then a create failed: the state keeps what is left.
+      this.failPartway = false;
+      const current = this.states.get(planned.state) ?? new Set<string>();
+      this.states.set(planned.state, new Set([...current].filter((a) => planned.desired.has(a))));
+      return { ok: false, outputs: {}, log: "Error: creating the hostname's record failed" };
+    }
     this.states.set(planned.state, planned.desired);
     this.appliedPlans.push(content.replace(/^site plan \d+: /, ""));
     return { ok: true, outputs: { url: `https://${DOMAIN}` }, log: "Apply complete!" };
   }
+
+  /** The next apply deletes what its plan deletes, then fails before it creates anything. */
+  failPartway = false;
 
   override async output(): Promise<Record<string, unknown>> {
     return { url: `https://${DOMAIN}` };
@@ -169,14 +179,16 @@ class SiteEngine extends FakeEngine {
  */
 class SiteGitHub extends FakeGitHub implements RetargetGitHubApi {
   deploy: (runId: number) => void = () => undefined;
+  /** How the run ends; its deploy job runs only when it succeeds. */
+  conclusion = "success";
   async deleteBranch() {
     return "absent" as const;
   }
   async waitForWorkflowRun(_owner: string, _repo: string, options: { runId: number }) {
-    this.deploy(options.runId);
+    if (this.conclusion === "success") this.deploy(options.runId);
     return {
       id: options.runId,
-      conclusion: "success",
+      conclusion: this.conclusion,
       htmlUrl: `https://github.com/${owner}/${repo}/actions/runs/${options.runId}`,
     };
   }
@@ -199,7 +211,7 @@ const SITE_FILES: Record<string, string> = {
  * A static site of `example-app` deployed on `from` (its state, its records, its GitHub Pages site
  * or Worker), analysed, with the interview's answers, in a git project whose `origin` is GitHub.
  */
-async function setup(from: ServerlessProvider) {
+async function setup(from: ServerlessProvider, o: { pagesSite?: boolean } = {}) {
   const base = sitePlan({ provider: from, env: ["API_KEY"], deployed: true });
   const plan = DeployPlanSchema.parse({
     ...base,
@@ -224,8 +236,15 @@ async function setup(from: ServerlessProvider) {
   const pages = fakeGithubPages(
     from === "github-pages"
       ? { site: { buildType: "workflow", cname: DOMAIN, httpsEnforced: true } }
-      : {},
+      : o.pagesSite === true
+        ? { site: { buildType: "legacy", httpsEnforced: false } }
+        : {},
   );
+  const engine = new SiteEngine();
+  /** Whether GitHub Pages serves the repository's site on github.io, and the domain is reachable. */
+  const up = { pages: true, domain: true };
+  /** The site root's state file, known once the first run's paths are. */
+  let stateFile = "";
   /** The site addresses checked, in order. */
   const checked: string[] = [];
   const fetch: FetchLike = async (input, init) => {
@@ -234,11 +253,20 @@ async function setup(from: ServerlessProvider) {
     if (url.hostname === "api.github.com") return pages.fetch(input, init);
     if (url.hostname === `${owner}.github.io` || url.hostname === DOMAIN) {
       checked.push(url.href);
-      return new Response("<!doctype html>", { status: 200 });
+      // The domain answers where a host holds it: the Worker's custom domain, or GitHub Pages'
+      // record while its site claims the domain.
+      const held = engine.states.get(stateFile) ?? new Set<string>();
+      const served =
+        url.hostname === DOMAIN
+          ? up.domain &&
+            (held.has(CUSTOM_DOMAIN) ||
+              (held.has(PAGES_RECORD) && pages.state.site?.cname === DOMAIN))
+          : up.pages && pages.state.site !== undefined;
+      return new Response(served ? "<!doctype html>" : "", { status: served ? 200 : 522 });
     }
     throw new Error(`no route for ${url.href}`);
   };
-  const engine = new SiteEngine();
+  let clock = 0;
   const github = new SiteGitHub();
   const cloudflare = fakeCloudflare({
     records:
@@ -261,6 +289,11 @@ async function setup(from: ServerlessProvider) {
     cloudflare,
     sharedCloudflare: fakeSharedCloudflare(zone),
     sleep: async () => undefined,
+    // A minute passes between two checks of an address, so a wait gives up quickly.
+    now: () => {
+      clock += 60_000;
+      return clock;
+    },
   };
   /** The deps of one run (each run has its own output, audit and approvals). */
   const run = async (o: { interactive?: boolean; answer?: (kind: string) => boolean } = {}) => {
@@ -286,6 +319,7 @@ async function setup(from: ServerlessProvider) {
   runs.length = 0;
   // The deployment as provision left it: its state, and the site's analysis and answers.
   const state = tfstateFile(deps.paths);
+  stateFile = state;
   await mkdir(dirname(state), { recursive: true });
   const live = from === "github-pages" ? [PAGES_RECORD] : [...SHELL, CUSTOM_DOMAIN];
   await writeFile(
@@ -367,6 +401,7 @@ async function setup(from: ServerlessProvider) {
     cloudflare,
     services,
     checked,
+    up,
     run,
     runs,
     merge,
@@ -417,6 +452,43 @@ async function move(s: Setup, options: Omit<RetargetOptions, "services"> = {}, i
   const result = await runRetarget(deps, { ...options, services: s.services });
   return { deps, handler, result };
 }
+
+/** The move to `to` started and its deploy setup merged: the next run deploys and switches. */
+async function merged(s: Setup, to: ServerlessProvider): Promise<void> {
+  await move(s, to === "github-pages" ? { to, pagesVerification: VERIFICATION } : { to });
+  await s.merge();
+  if (to === "cloudflare-workers") s.github.deploy = s.workerDeploys;
+}
+
+/** The error `work` stopped with. */
+async function failure(work: Promise<unknown>): Promise<OpsCrewError> {
+  const error = await work.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(error).toBeInstanceOf(OpsCrewError);
+  return error as OpsCrewError;
+}
+
+/** `--finish` or `--abort` in a run of its own, the app's name typed. */
+async function end(
+  s: Setup,
+  command: "finish" | "abort",
+  o: { interactive?: boolean; approvePlanHash?: string } = {},
+) {
+  const { deps, handler } = await s.run({ interactive: o.interactive ?? true });
+  const options = {
+    services: s.services,
+    confirm: async () => true,
+    ...(o.approvePlanHash !== undefined ? { approvePlanHash: o.approvePlanHash } : {}),
+  };
+  const result = await (command === "finish"
+    ? finishRetarget(deps, options)
+    : abortRetarget(deps, options));
+  return { deps, handler, result };
+}
+
+const HASH = /^[0-9a-f]{64}$/;
 
 describe.skipIf(!findExecutable("git"))("a site's move between site hosts", () => {
   it("moves from GitHub Pages to Cloudflare's hosting and back, each change approved by its hash", async () => {
@@ -657,5 +729,217 @@ describe.skipIf(!findExecutable("git"))("a site's move between site hosts", () =
     expect(s.engine.appliedPlans).toEqual([SHELL.map((a) => `create ${a}`).join(", ")]);
     expect(second.handler.requests[0]).toMatchObject({ kind: "iac-apply", planHash: hash });
     expect(second.result.pendingPlanHash).toBeUndefined();
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("a site's move when something goes wrong", () => {
+  it.each([
+    ["github-pages", "cloudflare-workers", "GitHub Pages"],
+    ["cloudflare-workers", "github-pages", "Cloudflare hosting"],
+  ] as const)(
+    "aborts after a switch that failed part-way: the hostname answers on %s again",
+    async (from, to, host) => {
+      const s = await setup(from);
+      await merged(s, to);
+      // The switch's apply deletes the old binding, then fails before it creates the new one.
+      s.engine.failPartway = true;
+      const error = await failure(move(s));
+      expect(error.code).toBe("ENGINE_FAILED");
+      expect((await s.readPlan()).retarget?.step).toBe("deployed");
+      const held = s.engine.states.get(tfstateFile(s.paths)) ?? new Set<string>();
+      expect(held.has(CUSTOM_DOMAIN) || held.has(PAGES_RECORD)).toBe(false);
+
+      const aborted = await end(s, "abort");
+      expect(aborted.result).toMatchObject({ step: "aborted", done: true });
+      expect(s.engine.states.get(tfstateFile(s.paths))).toEqual(
+        new Set(from === "github-pages" ? [PAGES_RECORD] : [...SHELL, CUSTOM_DOMAIN]),
+      );
+      expect(s.checked.at(-1)).toBe(`https://${DOMAIN}/`);
+      expect(aborted.deps.reporter.text()).toContain(
+        `The move is aborted; example-app stays on ${host}.`,
+      );
+      const plan = await s.readPlan();
+      expect(plan.retarget).toBeUndefined();
+      expect(plan.target.provider).toBe(from);
+    },
+  );
+
+  it("aborts after the Pages plan set the custom domain, removing it with the site", async () => {
+    const s = await setup("cloudflare-workers");
+    await merged(s, "github-pages");
+    const refused = await s.run({ answer: (kind) => kind !== "iac-apply" });
+    await expect(runRetarget(refused.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+    });
+    expect(s.pages.state.site).toMatchObject({ cname: DOMAIN });
+    expect((await s.readPlan()).retarget?.step).toBe("deployed");
+
+    const aborted = await end(s, "abort");
+    expect(aborted.result).toMatchObject({ step: "aborted", done: true });
+    // Nothing to put back on the Worker; the Pages plan takes the domain away with the site.
+    expect(kinds(aborted.handler)).toEqual(["pages-apply", "git-push", "pull-request"]);
+    expect(s.pages.state.site).toBeUndefined();
+    expect(s.engine.states.get(tfstateFile(s.paths))).toEqual(new Set([...SHELL, CUSTOM_DOMAIN]));
+  });
+
+  it("stops when the deploy workflow fails, while GitHub Pages keeps serving the site", async () => {
+    const s = await setup("github-pages");
+    await merged(s, "cloudflare-workers");
+    s.github.conclusion = "failure";
+    const error = await failure(move(s));
+    expect(error).toMatchObject({ code: "COMMAND_FAILED" });
+    expect(error.message).toContain("The deploy workflow did not succeed (failure)");
+    expect(error.message).toContain("GitHub Pages still serves the site.");
+    expect((await s.readPlan()).retarget?.step).toBe("started");
+  });
+
+  it("stops when the Worker does not run the build of the deploy workflow's run", async () => {
+    const s = await setup("github-pages");
+    await merged(s, "cloudflare-workers");
+    s.github.deploy = () => undefined;
+    const error = await failure(move(s));
+    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
+    expect(error.message).toContain(
+      "The Worker example-app does not run the build of the deploy workflow's run 42.",
+    );
+    expect((await s.readPlan()).retarget?.step).toBe("started");
+  });
+
+  it("stops when GitHub Pages does not answer on github.io after the deploy", async () => {
+    const s = await setup("cloudflare-workers");
+    await merged(s, "github-pages");
+    s.up.pages = false;
+    const error = await failure(move(s));
+    expect(error.message).toContain(
+      "GitHub Pages does not answer at https://example-org.github.io/example-app/ after the deploy. Cloudflare hosting still serves the site.",
+    );
+    expect((await s.readPlan()).retarget?.step).toBe("started");
+  });
+
+  it("says when the domain does not answer after the switch, and checks again on the next run", async () => {
+    const s = await setup("github-pages");
+    await merged(s, "cloudflare-workers");
+    s.up.domain = false;
+    const error = await failure(move(s));
+    expect(error.message).toContain("The site does not answer at https://docs.example.com/ yet");
+    expect((await s.readPlan()).retarget?.step).toBe("switched");
+    s.up.domain = true;
+    expect((await move(s)).result).toMatchObject({ step: "switched", done: true });
+  });
+
+  it("finishes a move to the Worker only once OpsCrew's rules cover its hostnames, each hash in turn", async () => {
+    const s = await setup("github-pages");
+    await merged(s, "cloudflare-workers");
+    const refused = await s.run({ answer: (kind) => kind !== "cloudflare-apply" });
+    await expect(runRetarget(refused.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+    });
+    expect((await s.readPlan()).retarget?.step).toBe("switched");
+
+    // A script: the zone's plan first, while the GitHub Pages site stays.
+    const rules = await end(s, "finish", { interactive: false });
+    expect(rules.result).toMatchObject({ step: "switched", done: false });
+    expect(rules.result.pendingPlanHash).toMatch(HASH);
+    expect(kinds(rules.handler)).toEqual([]);
+    expect(s.pages.state.site).toMatchObject({ cname: DOMAIN });
+
+    const site = await end(s, "finish", {
+      interactive: false,
+      approvePlanHash: rules.result.pendingPlanHash as string,
+    });
+    expect(kinds(site.handler)).toEqual(["cloudflare-apply"]);
+    expect(site.handler.requests[0]?.planHash).toBe(rules.result.pendingPlanHash);
+    expect(site.result.pendingPlanHash).toMatch(HASH);
+    expect(site.result.next[0]).toContain("--confirm example-app");
+    expect(s.pages.state.site).toMatchObject({ cname: DOMAIN });
+
+    const done = await end(s, "finish", {
+      interactive: false,
+      approvePlanHash: site.result.pendingPlanHash as string,
+    });
+    expect(done.result).toMatchObject({ step: "finished", done: true });
+    expect(kinds(done.handler)).toEqual(["pages-apply", "git-push", "pull-request"]);
+    expect(done.handler.requests[0]).toMatchObject({
+      planHash: site.result.pendingPlanHash,
+      allowDestroy: true,
+    });
+    expect(s.pages.state.site).toBeUndefined();
+  });
+
+  it("switches a script to GitHub Pages and finishes it, each Pages and infrastructure hash in turn", async () => {
+    const s = await setup("cloudflare-workers");
+    await merged(s, "github-pages");
+    const deployed = await move(s, {}, false);
+    expect(deployed.result).toMatchObject({ step: "deployed", done: false });
+    const pagesHash = deployed.result.pendingPlanHash as string;
+    expect(pagesHash).toMatch(HASH);
+    expect(s.pages.state.site?.cname).toBeUndefined();
+
+    const domain = await move(s, { approvePlanHash: pagesHash }, false);
+    expect(kinds(domain.handler)).toEqual(["pages-apply"]);
+    expect(s.pages.state.site).toMatchObject({ cname: DOMAIN });
+    expect(domain.result).toMatchObject({ step: "deployed", done: false });
+    expect(domain.result.next[0]).toContain("--confirm example-app");
+
+    const switched = await move(
+      s,
+      { approvePlanHash: domain.result.pendingPlanHash as string },
+      false,
+    );
+    expect(kinds(switched.handler)).toEqual(["iac-apply"]);
+    expect(switched.handler.requests[0]).toMatchObject({
+      planHash: domain.result.pendingPlanHash,
+      allowDestroy: true,
+      confirmPhrase: "example-app",
+    });
+    expect(switched.result).toMatchObject({ step: "switched", done: true });
+
+    const removal = await end(s, "finish", { interactive: false });
+    expect(removal.result.pendingPlanHash).toMatch(HASH);
+    expect(kinds(removal.handler)).toEqual([]);
+    const finished = await end(s, "finish", {
+      interactive: false,
+      approvePlanHash: removal.result.pendingPlanHash as string,
+    });
+    expect(finished.result).toMatchObject({ step: "finished", done: true });
+    expect(kinds(finished.handler)).toEqual(["iac-apply", "git-push", "pull-request"]);
+    expect(s.engine.states.get(tfstateFile(s.paths))).toEqual(new Set([PAGES_RECORD]));
+  });
+
+  it("aborts a script's move to the Worker by the plan's hash", async () => {
+    const s = await setup("github-pages");
+    await merged(s, "cloudflare-workers");
+    const refused = await s.run({ answer: (kind) => kind !== "iac-apply" });
+    await expect(runRetarget(refused.deps, { services: s.services })).rejects.toMatchObject({
+      code: "APPROVAL_REFUSED",
+    });
+    const pending = await end(s, "abort", { interactive: false });
+    expect(pending.result.pendingPlanHash).toMatch(HASH);
+    expect(pending.result.next[0]).toContain("--confirm example-app");
+    expect(s.engine.states.get(tfstateFile(s.paths))).toEqual(new Set([...SHELL, PAGES_RECORD]));
+
+    const aborted = await end(s, "abort", {
+      interactive: false,
+      approvePlanHash: pending.result.pendingPlanHash as string,
+    });
+    expect(aborted.result).toMatchObject({ step: "aborted", done: true });
+    expect(aborted.handler.requests[0]).toMatchObject({
+      kind: "iac-apply",
+      planHash: pending.result.pendingPlanHash,
+      allowDestroy: true,
+    });
+    expect(s.engine.states.get(tfstateFile(s.paths))).toEqual(new Set([PAGES_RECORD]));
+  });
+
+  it("refuses a move to GitHub Pages while the repository has a Pages site already", async () => {
+    const s = await setup("cloudflare-workers", { pagesSite: true });
+    const error = await failure(move(s, { to: "github-pages", pagesVerification: VERIFICATION }));
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("GitHub Pages is already on for example-org/example-app"),
+    });
+    expect(s.runs.at(-1)?.handler.requests).toEqual([]);
+    expect((await s.readPlan()).retarget).toBeUndefined();
+    expect(s.pages.state.site).toEqual({ buildType: "legacy", httpsEnforced: false });
   });
 });
