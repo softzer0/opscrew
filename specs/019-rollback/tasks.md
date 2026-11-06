@@ -656,7 +656,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   that restores or migrates down also needs `allowDestroy` and the typed name. No new approval
   kind, and no change in `@opscrew/contracts`.
 
-- [ ] T1930 The plan's snapshot and migration fields in `packages/plan-schema/src/**` (+ tests, regenerated JSON schemas)
+- [x] T1930 The plan's snapshot and migration fields in `packages/plan-schema/src/**` (+ tests, regenerated JSON schemas)
   - Owns: `packages/plan-schema/**`
   - Reads: plan.md 12.1, research R9 "Down migrations per tool"
   - Accept:
