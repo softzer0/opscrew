@@ -302,6 +302,27 @@ export async function savedHostPlanPurpose(
   return saved !== undefined && hostPlanHash(saved) === hash ? saved.purpose : undefined;
 }
 
+/**
+ * Whether the host plan saved as `.opscrew/plans/host-<hash>.json` is a preview environment's
+ * removal from a server it shares (only `previews` steps that remove them, deleting data), which
+ * `opscrew destroy` approves with the typed name as it approves the teardown. Fails closed: false
+ * for any other plan, a plan whose hash differs, or none.
+ */
+export async function isSavedPreviewsRemoval(
+  paths: Pick<PhaseDeps["paths"], "files">,
+  hash: string | undefined,
+): Promise<boolean> {
+  if (hash === undefined || !/^[0-9a-f]{64}$/.test(hash)) return false;
+  const saved = await readValidJson(hostPlanFile(paths, hash), HostPlanSchema);
+  return (
+    saved !== undefined &&
+    hostPlanHash(saved) === hash &&
+    saved.deleteData === true &&
+    saved.steps.length > 0 &&
+    saved.steps.every((step) => step.id === "previews" && step.params.remove === true)
+  );
+}
+
 /** The server's address and host names as OpsCrew knows them (kept out of errors). */
 function ownServerNames(session: Pick<OwnServerSession, "connection">): string[] {
   const { host, publicIpv4, publicIpv6 } = session.connection;

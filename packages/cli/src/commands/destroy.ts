@@ -4,6 +4,7 @@ import {
   type DestroyResult,
   destroyConfirmPrompt,
   extraCloudServers,
+  isSavedPreviewsRemoval,
   type PhaseDeps,
   providerBucket,
   runDestroy,
@@ -72,8 +73,10 @@ export interface UndoApproval {
  * it asks for the app's name as well (`allowDestroy`), but always as its own approval: the name
  * typed for the teardown never covers it. In a terminal the base handler asks for the name again;
  * in a script it is approved only with `--confirm <app>` together with `--approve <its hash>`.
- * A `host-apply` whose saved plan is not known to be the teardown (any other purpose, or the
- * lookup failed) is never covered by the typed name and goes to `base`, like everything else.
+ * A preview environment's removal from a server it shares (a saved setup plan that only removes the
+ * previews, `previews-removal`) is covered as the teardown is. A `host-apply` whose saved plan is not
+ * known to be either (any other purpose, or the lookup failed) is never covered by the typed name
+ * and goes to `base`, like everything else.
  * Exported for tests.
  */
 export class TypedConfirmationHandler implements ApprovalHandler {
@@ -97,7 +100,11 @@ export class TypedConfirmationHandler implements ApprovalHandler {
       return request.confirmPhrase === undefined || request.confirmPhrase === this.name;
     }
     if (request.kind === "host-apply") {
-      return purpose === "teardown" && request.confirmPhrase === this.name;
+      // The teardown, or a preview environment's removal from a server it shares.
+      return (
+        (purpose === "teardown" || purpose === "previews-removal") &&
+        request.confirmPhrase === this.name
+      );
     }
     if (
       request.kind === "stack-apply" ||
@@ -324,8 +331,14 @@ export async function runDestroyCommand(
     if (scripted) typed = name;
     // The typed name covers only a saved teardown plan: on this computer the local plan's, else
     // the host plan's of the user's own server.
-    const purposeOf = (hash: string | undefined) =>
-      local ? savedLocalPlanPurpose(deps0.paths, hash) : savedHostPlanPurpose(deps0.paths, hash);
+    // A preview environment's removal from a server it shares is told apart from other setup plans.
+    const purposeOf = async (hash: string | undefined) => {
+      if (local) return savedLocalPlanPurpose(deps0.paths, hash);
+      const purpose = await savedHostPlanPurpose(deps0.paths, hash);
+      return purpose === "setup" && (await isSavedPreviewsRemoval(deps0.paths, hash))
+        ? "previews-removal"
+        : purpose;
+    };
     const deps = createPhaseDeps(ctx, {
       ai: false,
       app: environment.app,

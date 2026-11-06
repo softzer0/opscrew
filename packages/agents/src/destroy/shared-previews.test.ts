@@ -31,6 +31,7 @@ import {
   publicOutputs,
   type ScriptedApprovalHandler,
 } from "../testing";
+import { isSavedPreviewsRemoval } from "./own";
 import { runDestroy } from "./run";
 import type { DestroyPreview, DestroyServices } from "./types";
 
@@ -131,6 +132,9 @@ describe.skipIf(!findExecutable("git"))("destroy --env <preview> on dev's server
         allowDestroy: true,
         confirmPhrase: "shop-preview",
       });
+      // Saved as a previews removal, which `opscrew destroy --confirm` approves as the teardown.
+      expect(await isSavedPreviewsRemoval(deps.paths, approved?.planHash)).toBe(true);
+      expect(await isSavedPreviewsRemoval(deps.paths, "0".repeat(64))).toBe(false);
       // The wildcard goes with dev's address only as TF_VAR_*.
       const destroyPlan = engine.plans.find((p) => p.destroy);
       expect(destroyPlan?.env.TF_VAR_server_ipv4).toBe(HOST_IPV4);

@@ -250,6 +250,23 @@ describe.skipIf(!GIT)("opscrew destroy on a server the user owns", () => {
     );
     expect(await teardown.request(request)).toMatchObject({ approved: true, confirmation: "shop" });
     expect(base.requests).toEqual([]);
+    // So is a preview environment's removal from a server it shares (`previews-removal`).
+    const removalBase = new BaseApprovals();
+    const removal = new TypedConfirmationHandler(
+      removalBase,
+      "shop",
+      () => "shop",
+      true,
+      () => {},
+      "the app's name",
+      { purposeOf: async () => "previews-removal", scripted: true, hashes: [] },
+    );
+    expect(await removal.request(request)).toMatchObject({ approved: true, confirmation: "shop" });
+    expect(removalBase.requests).toEqual([]);
+    // Another name than the one typed is never covered.
+    const other = { ...request, confirmPhrase: "blog" };
+    expect((await removal.request(other)).approved).toBe(false);
+    expect(removalBase.requests).toEqual([other]);
   });
 
   it("--delete-data passes the choice on, and the teardown still needs the typed name", async () => {
