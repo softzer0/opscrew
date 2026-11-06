@@ -271,20 +271,19 @@ export async function reportAborted(
       await moveSide(session, "new")
         .healthy(session)
         .catch(() => false);
-  const address = cloud && oldAddress !== undefined ? oldAddress.ipv4 : undefined;
-  const where = address === undefined ? words : `${words} (${address})`;
+  // Never the server's address (SC-2303): the user knows their server by its words.
   if (healthy) {
-    deps.reporter.success(`The move is aborted; ${app} runs on ${where}.`);
+    deps.reporter.success(`The move is aborted; ${app} runs on ${words}.`);
     return;
   }
   const look =
     target.provider === "portainer"
       ? "Check its containers and their logs in your Portainer."
-      : address === undefined
-        ? `Check it over your SSH login to that server with \`cd ${appDir(plan)} && docker compose ps\`.`
-        : `Check it with \`ssh deploy@${address}\` and \`cd ${appDir(plan)} && docker compose ps\`.`;
+      : cloud
+        ? `Check it over SSH as deploy, with the project's deploy key: \`cd ${appDir(plan)} && docker compose ps\`.`
+        : `Check it over your SSH login to that server with \`cd ${appDir(plan)} && docker compose ps\`.`;
   deps.reporter.warn(
-    `The move is aborted, but the app on ${where} does not answer its health check. ${look}`,
+    `The move is aborted, but the app on ${words} does not answer its health check. ${look}`,
   );
 }
 
