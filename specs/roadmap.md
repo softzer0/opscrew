@@ -108,7 +108,7 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (026), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (027), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
 
@@ -128,7 +128,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (023), or to AWS (026) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (027) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -235,7 +235,36 @@ New beside the rollback's snapshots:
     providers' backups today.
   - This supersedes the founder's 2026-10-13 decision that provider backups are enough.
 
-## 025 Contabo, opening with the provider plugin system
+## 025 Credential rotation
+
+The founder asked for it on 2026-11-06 and placed it after 024, as the lead suggested: security
+work that depends on no provider, with 024's snapshots in place to recover from a rotation that
+goes wrong. Today OpsCrew rotates only the recovery copy's key (`opscrew secrets rotate`); every
+other credential it generates is made once (019's guide says so for Kafka's and Redpanda's
+logins), and a few guides (Beszel, Grafana Cloud, Portainer) rotate a token by hand.
+
+What it rotates, each change a plan approved by its hash, the recovery copy updated each time, and
+no old or new value in any output or log:
+- **the services' passwords** OpsCrew generated: PostgreSQL, MySQL and MariaDB (app and root),
+  MongoDB, Valkey and Redis, RabbitMQ, Kafka and Redpanda, OpenSearch, Elasticsearch,
+  Meilisearch, Typesense, ClickHouse and Neo4j, without breaking the running app. Where a service
+  takes two passwords for a moment (MySQL's `RETAIN CURRENT PASSWORD`, Valkey's ACL users) the
+  switch is seamless; elsewhere (PostgreSQL) a short ordered swap: the database, the server's env
+  files, then a rolling redeploy;
+- **the app secrets OpsCrew generated** (`SECRET_KEY_BASE`, Laravel's `APP_KEY` and the like),
+  each with its consequence said first (every user logged out, encrypted data unreadable), or
+  refused;
+- **the deploy SSH key:** a new key on the servers, the GitHub secret updated, the old key removed;
+- **WireGuard keys** of the servers and the user's devices (018), and the GHCR pull entries on
+  Portainer;
+- **the user's own tokens** (Hetzner, Cloudflare, GitHub), which OpsCrew can't make: their age and
+  expiry checked, and when to replace them said (advise does this for the GitHub token today);
+- optionally on a schedule: advise or the scheduled check flags credentials older than a chosen
+  age.
+
+Research first: each service's way to change its password while clients are connected.
+
+## 026 Contabo, opening with the provider plugin system
 
 The founder placed Contabo before AWS and the other hyperscalers on 2026-11-06. It is a cheap
 VPS provider, so it joins as another server target like Hetzner and DigitalOcean: its connector,
@@ -259,14 +288,14 @@ never through `cntb` (constitution IV).
 - Hetzner, DigitalOcean, own server and Portainer move behind the same contract but stay built in,
   in the `opscrew` npm package and the `opscrew@opscrew` Claude Code plugin; one can move out
   later if it grows.
-- Contabo is built in, like Hetzner and DigitalOcean, as an everyday VPS provider. AWS (026)
+- Contabo is built in, like Hetzner and DigitalOcean, as an everyday VPS provider. AWS (027)
   ships as the first separately installed plugin, then Azure and Google Cloud.
 - The Claude Code side follows the same split: one provider = one npm package plus one Claude
   Code plugin `opscrew-<provider>@opscrew`, released together; the core plugin keeps only the
   provider-neutral flow skills; one MCP server serves the tools of whichever provider packages are
   installed. One ADR covers both.
 
-## 026 AWS
+## 027 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps
@@ -339,7 +368,7 @@ services, each one explained, priced at design and changeable:
 - Azure and Google Cloud follow the same pattern with Azure Monitor and Google Cloud Monitoring
   and Logging.
 
-**Builds on 025's provider plugin system:** AWS ships as the first separately installed plugin
+**Builds on 026's provider plugin system:** AWS ships as the first separately installed plugin
 (`@opscrew/provider-aws`, `opscrew plugin add aws`), then Azure and Google Cloud.
 
 **Testing (founder, 2026-10-18):** the **floci** AWS emulator (https://github.com/floci-io/floci;
