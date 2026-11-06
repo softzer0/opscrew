@@ -238,7 +238,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2312 [US5] Sites between site hosts
+- [x] T2312 [US5] Sites between site hosts
   - Owns: `packages/agents/src/retarget/site*.ts`, the dispatch in `retarget/run.ts`, `packages/agents/src/serverless/**` (+ tests)
   - Depends: T2309
   - Accept:
