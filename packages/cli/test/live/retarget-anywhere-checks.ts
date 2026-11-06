@@ -287,20 +287,24 @@ export function appArchitecture(exec: ServerExec, project: string): Promise<stri
 }
 
 /**
- * The folder on the host of the first named volume of `service` in `project` (its container
- * running or not).
+ * The folder on the host that holds `service`'s data in `project` (its container running or not):
+ * the mount at `destination` in the container, a named volume's folder or a bound folder alike.
+ * On a server OpsCrew deploys to over SSH the data is a folder bound from /srv/data/<app>/; in
+ * Portainer it is a named volume (found in T2317 own run 3).
  */
 export async function volumeFolder(
   exec: ServerExec,
   project: string,
   service: string,
+  destination = "/var/lib/mysql",
 ): Promise<string> {
-  const volumes = await exec(
-    `c=$(docker ps -aq --filter label=com.docker.compose.project=${project} --filter label=com.docker.compose.service=${service}); docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$c"`,
-  );
-  const volume = volumes.split(/\s+/).find((name) => name !== "");
-  if (volume === undefined) throw new Error(`${service} in ${project} has no named volume.`);
-  return exec(`docker volume inspect -f '{{.Mountpoint}}' ${volume}`);
+  const folder = (
+    await exec(
+      `c=$(docker ps -aq --filter label=com.docker.compose.project=${project} --filter label=com.docker.compose.service=${service}); docker inspect -f '{{range .Mounts}}{{if eq .Destination "${destination}"}}{{.Source}}{{end}}{{end}}' "$c"`,
+    )
+  ).trim();
+  if (folder === "") throw new Error(`${service} in ${project} has no mount at ${destination}.`);
+  return folder;
 }
 
 /** Nothing of `project` is left on the host: no container and no volume. */
