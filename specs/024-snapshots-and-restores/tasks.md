@@ -51,7 +51,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-hetzner --filter=@opscrew/connector-digitalocean`
   - Effort: high
 
-- [ ] T2404 [US1] [US3] [US5] [US7] The server's `snapshot.sh`, in `packages/iac-templates/src/workflow/**` (+ tests, Docker tests)
+- [x] T2404 [US1] [US3] [US5] [US7] The server's `snapshot.sh`, in `packages/iac-templates/src/workflow/**` (+ tests, Docker tests)
   - Owns: `packages/iac-templates/src/workflow/{snapshots,switch,index}.ts` and a new `snapshot-script.ts`, their tests and fixtures
   - Reads: plan.md 1.–3. and 6., research R2 and R7 (S1)
   - Depends: T2401, T2402
