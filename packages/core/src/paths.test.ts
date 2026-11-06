@@ -200,7 +200,15 @@ describe("resolveProjectPaths", () => {
     const reserved = ["con", "prn", "aux", "nul", "com0", "com9", "lpt0", "lpt9"];
     // opscrew/infra/<env> would be a storage root (opscrew/infra/storage, …/storage-<env>).
     // …or the modules every root shares (opscrew/infra/modules).
-    const storage = ["storage", "storage-x", "storage-", "modules"];
+    const storage = [
+      "storage",
+      "storage-x",
+      "storage-",
+      "backups",
+      "backups-x",
+      "backups-",
+      "modules",
+    ];
     // Prod's GitHub environment, GitHub Pages' own, and names whose OPSCREW_<ENV>_… secrets would
     // be a service's env file (OPSCREW_SERVICE_<NAME>_ENV) or a server-less site's variable
     // (OPSCREW_ENV_<NAME>).
@@ -219,7 +227,7 @@ describe("resolveProjectPaths", () => {
       expect(resolve, environment).toThrow(
         expect.objectContaining({
           code: "INVALID_INPUT",
-          message: `"${environment}" is not an environment name: it must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (production, github-pages, modules, storage, a name starting with storage-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env).`,
+          message: `"${environment}" is not an environment name: it must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (production, github-pages, modules, storage or backups, a name starting with storage- or backups-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env).`,
         }),
       );
     }
@@ -551,13 +559,22 @@ describe("resolveProjectPaths for the apps of a repository", () => {
     const refused = ["Docs", "../docs", "docs/x", "", "a-key-longer-than-16", "con", "lpt9"];
     // opscrew/infra/<key> would be the first app's prod root, the shared modules or a storage
     // root, and OPSCREW_<KEY>_… secrets a service's env file or a site variable.
-    const reserved = ["prod", "production", "github-pages", "modules", "storage", "storage-x"];
+    const reserved = [
+      "prod",
+      "production",
+      "github-pages",
+      "modules",
+      "storage",
+      "storage-x",
+      "backups",
+      "backups-x",
+    ];
     const siteVariables = ["service", "x-service", "env", "x-env", "env-x"];
     for (const app of [...refused, ...reserved, ...siteVariables]) {
       expect(() => resolve({ app }), app).toThrow(
         expect.objectContaining({
           code: "INVALID_INPUT",
-          message: `"${app}" is not an app key: it must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (prod, production, github-pages, modules, storage, a name starting with storage-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env).`,
+          message: `"${app}" is not an app key: it must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (prod, production, github-pages, modules, storage or backups, a name starting with storage- or backups-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env).`,
           hint: "Run `opscrew app list` to see the repository's apps.",
         }),
       );

@@ -118,12 +118,14 @@ const NAME_RULE =
   "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves";
 /** The names both rules reserve beyond each one's own. */
 const RESERVED_SHAPES =
-  "github-pages, modules, storage, a name starting with storage-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env";
+  "github-pages, modules, storage or backups, a name starting with storage- or backups-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env";
 
 /**
  * The rule for an environment's name; plan-schema's `EnvironmentNameSchema` checks it too. Never
  * `storage` or `storage-…`: an environment's infrastructure root `opscrew/infra/<env>` would be a
  * storage root (`opscrew/infra/storage` for prod, `opscrew/infra/storage-<env>` otherwise). Never
+ * `backups` or `backups-…` for the same reason: the off-server copy's bucket has a root of its own
+ * there (`opscrew/infra/backups`, `opscrew/infra/backups-<env>`). Never
  * `modules`: that root would be `opscrew/infra/modules/`, the modules every root shares. Never
  * `production`, prod's GitHub environment. Never `github-pages`, the GitHub environment GitHub
  * Pages publishes from, which `opscrew destroy` deletes with a Pages site (plan-schema's
@@ -134,7 +136,7 @@ const RESERVED_SHAPES =
  * outside prod `OPSCREW_<ENV>_ENV_<NAME>`).
  */
 export const ENVIRONMENT_NAME_PATTERN =
-  /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$/;
+  /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!(?:storage|backups)(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$/;
 
 /** What {@link ENVIRONMENT_NAME_PATTERN} asks for, worded to follow a name. */
 export const ENVIRONMENT_NAME_MESSAGE = `${NAME_RULE} (production, ${RESERVED_SHAPES})`;
@@ -146,7 +148,7 @@ export const ENVIRONMENT_NAME_MESSAGE = `${NAME_RULE} (production, ${RESERVED_SH
  * infrastructure root `opscrew/infra/prod` is the first app's.
  */
 export const APP_KEY_PATTERN =
-  /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|prod|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$/;
+  /^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|prod|production|github-pages|modules)$)(?!(?:storage|backups)(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$/;
 
 /** What {@link APP_KEY_PATTERN} asks for, worded to follow a key. */
 export const APP_KEY_MESSAGE = `${NAME_RULE} (prod, production, ${RESERVED_SHAPES})`;

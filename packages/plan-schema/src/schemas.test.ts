@@ -1463,7 +1463,7 @@ describe("DeployPlan environment", () => {
       expect(parsed.environment?.name, name).toBe(name);
     }
     const message =
-      "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (production, github-pages, modules, storage, a name starting with storage-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env)";
+      "must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (production, github-pages, modules, storage or backups, a name starting with storage- or backups-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env)";
     const reserved = [
       ...["con", "prn", "aux", "nul", "com0", "com9", "lpt0", "lpt9"],
       ...["production", "github-pages", "modules", "service", "db-service", "service-2"],

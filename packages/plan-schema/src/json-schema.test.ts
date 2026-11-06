@@ -93,7 +93,7 @@ describe("JSON Schema export", () => {
           properties: {
             name: {
               pattern:
-                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$",
+                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!(?:storage|backups)(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$",
             },
             deploySource: {
               oneOf: [
@@ -127,7 +127,7 @@ describe("JSON Schema export", () => {
           properties: {
             key: {
               pattern:
-                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|prod|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$",
+                "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|prod|production|github-pages|modules)$)(?!(?:storage|backups)(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$",
             },
           },
         },

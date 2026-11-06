@@ -23,7 +23,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
+          "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!(?:storage|backups)(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
         },
         "deploySource": {
           "default": {
@@ -50,7 +50,7 @@
                 },
                 "source": {
                   "type": "string",
-                  "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
+                  "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!(?:storage|backups)(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
                 }
               },
               "required": ["from", "source"],
@@ -110,7 +110,7 @@
               "properties": {
                 "environment": {
                   "type": "string",
-                  "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
+                  "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|production|github-pages|modules)$)(?!(?:storage|backups)(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
                 }
               },
               "required": ["environment"],
@@ -143,7 +143,7 @@
         },
         "key": {
           "type": "string",
-          "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|prod|production|github-pages|modules)$)(?!storage(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
+          "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9]|prod|production|github-pages|modules)$)(?!(?:storage|backups)(?:-|$))(?!(?:.*-)?(?:service|env)(?:-|$))[a-z][a-z0-9-]{0,15}$"
         },
         "port": {
           "type": "integer",

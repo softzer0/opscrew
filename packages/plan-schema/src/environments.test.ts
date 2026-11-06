@@ -144,7 +144,7 @@ describe("environmentsOf", () => {
         await mkdir(path.join(project, "opscrew", "environments", name), { recursive: true });
         await expect(environmentsOf(project), name).rejects.toMatchObject({
           code: "INVALID_INPUT",
-          message: `opscrew/environments/${name} is not an environment's folder: an environment's name must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (production, github-pages, modules, storage, a name starting with storage-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env), and never "prod".`,
+          message: `opscrew/environments/${name} is not an environment's folder: an environment's name must be 1-16 lower-case letters, digits or hyphens and start with a letter, and not a name Windows reserves (con, nul, com1…) or one OpsCrew reserves (production, github-pages, modules, storage or backups, a name starting with storage- or backups-, or a name with service or env as one of its hyphen-separated parts, such as service, db-service or env), and never "prod".`,
         });
       } finally {
         await rm(project, { recursive: true, force: true });
