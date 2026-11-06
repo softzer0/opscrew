@@ -1,0 +1,11 @@
+{
+  "name": "sequelize-migrations",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OpsCrew's down-migration test: sequelize-cli migrations on PostgreSQL.",
+  "dependencies": {
+    "pg": "8.23.1",
+    "sequelize": "6.37.7",
+    "sequelize-cli": "6.6.3"
+  }
+}
