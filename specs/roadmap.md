@@ -8,7 +8,8 @@ there. The lead keeps this file current. Research for a feature goes in that fea
 Done: 000–023. 022's two opt-ins (previews on another environment's server, and below the app's
 own zone), [023 retarget anywhere](023-retarget-anywhere/) and 019's database rollback (below)
 were built and passed their live passes on 2026-11-06, and shipped together as 0.2.4 that day.
-Next: 024 snapshots and restores as commands, once the founder gives the go-ahead.
+Being built: 024 snapshots and restores as commands (the founder's go-ahead, 2026-11-06, the
+evening 0.2.4 shipped).
 
 ## 019 Rollback
 
