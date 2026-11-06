@@ -66,7 +66,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, and the Docker tests with `OPSCREW_DOCKER_TESTS=1`
   - Effort: xhigh
 
-- [ ] T2405 [US1] [US5] [US7] Portainer's scheduled and pre-release snapshots in `packages/iac-templates/src/portainer-target/**` (+ tests, Docker test)
+- [x] T2405 [US1] [US5] [US7] Portainer's scheduled and pre-release snapshots in `packages/iac-templates/src/portainer-target/**` (+ tests, Docker test)
   - Owns: `packages/iac-templates/src/portainer-target/**` (+ tests)
   - Reads: plan.md 4. and 7., research R7 (S2)
   - Depends: T2401, T2402
