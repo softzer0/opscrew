@@ -90,6 +90,12 @@ const STATUS: [string, MigrationTool, string, string][] = [
     "version=20261106000000\n",
   ],
   ["Rails before any migration", "rails", "\ndatabase: app\nCurrent version: 0\n\n", "version=0\n"],
+  [
+    "Rails with several databases, one before any migration",
+    "rails",
+    "\ndatabase: app\nCurrent version: 20261106000000\n\ndatabase: app_queue\nCurrent version: 20261101000000\n\ndatabase: app_cache\nCurrent version: 0\n\n",
+    "database=app 20261106000000\ndatabase=app_queue 20261101000000\ndatabase=app_cache 0\n",
+  ],
   ["Alembic", "alembic", "7c9d1e2f3a4b (head)\n", "version=7c9d1e2f3a4b\n"],
   ["Alembic before any migration", "alembic", "", "version=base\n"],
   [
@@ -346,6 +352,18 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
         {},
         "\n  Migration name .............................................. Batch / Status  \n\n",
       ],
+      [
+        "Rails names a database OpsCrew won't put in a command",
+        "rails",
+        {},
+        "\ndatabase: app\nCurrent version: 20261106000000\n\ndatabase: $(touch pwned)\nCurrent version: 20261101000000\n\n",
+      ],
+      [
+        "Rails shows several versions without their databases",
+        "rails",
+        {},
+        "Current version: 20261106000000\nCurrent version: 20261101000000\n",
+      ],
     ])("only warns, with no record, when %s", (_name, tool, env, output) => {
       write(at(schemaRecordPath(B)), "count=1\n");
       write(`${work}/status.out`, output);
@@ -363,12 +381,6 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
     });
 
     it.each<[string, MigrationTool, string, string]>([
-      [
-        "Rails with several databases",
-        "rails",
-        "\ndatabase: app\nCurrent version: 20261106000000\n\ndatabase: app_queue\nCurrent version: 20261101000000\n\n",
-        "::warning::OpsCrew records no database migrations for this version, because the app has several databases (bin/rails db:version shows a version for each), and OpsCrew's down migrations handle one database only for now, so a rollback from this version can't migrate the database down.",
-      ],
       [
         "Alembic with several heads",
         "alembic",
@@ -423,6 +435,24 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
         "version=0\n",
         "version=20261106000000\n",
         ["rails db:migrate VERSION=0 in ."],
+      ],
+      [
+        "Rails per database, newest first, VERSION=0 for a database the earlier version lacks",
+        "rails",
+        "database=app 20261101000000\ndatabase=app_cache 20261102000000\n",
+        "database=app 20261106000000\ndatabase=app_cache 20261107000000\ndatabase=app_queue 20261105000000\n",
+        [
+          "rails db:migrate:app_queue VERSION=0 in .",
+          "rails db:migrate:app_cache VERSION=20261102000000 in .",
+          "rails db:migrate:app VERSION=20261101000000 in .",
+        ],
+      ],
+      [
+        "Rails per database, leaving one already there and one the running version lacks",
+        "rails",
+        "database=app 20261101000000\ndatabase=app_legacy 20261001000000\ndatabase=app_queue 20261102000000\n",
+        "database=app 20261106000000\ndatabase=app_queue 20261102000000\n",
+        ["rails db:migrate:app VERSION=20261101000000 in ."],
       ],
       [
         "Alembic to before any migration",
@@ -498,6 +528,11 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
 
     it.each<[MigrationTool, string, string]>([
       ["rails", "version=20261101000000\n", "version=20261101000000\n"],
+      [
+        "rails",
+        "database=app 20261101000000\ndatabase=app_queue 0\n",
+        "database=app 20261101000000\ndatabase=app_queue 0\n",
+      ],
       ["knex", "count=2\n", "count=2\n"],
       ["laravel", "count=3\n", "count=3\n"],
       [
@@ -580,6 +615,34 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
         "app=visits\n",
         "holds a value OpsCrew won't put in a command",
       ],
+      [
+        "a Rails database name would run a command",
+        "rails",
+        "database=app;touch$IFS-pwned 20261101000000\ndatabase=app_queue 0\n",
+        "database=app 20261106000000\ndatabase=app_queue 20261102000000\n",
+        "holds a value OpsCrew won't put in a command",
+      ],
+      [
+        "a Rails database line has no version",
+        "rails",
+        "database=app 20261101000000\ndatabase=app_queue 0\n",
+        "database=app 20261106000000\ndatabase=app_queue\n",
+        "holds a value OpsCrew won't put in a command",
+      ],
+      [
+        "Rails records one database for the earlier version and several for the running one",
+        "rails",
+        "version=20261101000000\n",
+        "database=app 20261106000000\ndatabase=app_queue 20261102000000\n",
+        "::error::The version rolled back to and the version running now record a different number of databases (their records in .schema on the server), so OpsCrew can't tell which to undo and nothing was migrated down.",
+      ],
+      [
+        "Rails records several databases for the earlier version and one for the running one",
+        "rails",
+        "database=app 20261101000000\ndatabase=app_queue 20261102000000\n",
+        "version=20261106000000\n",
+        "record a different number of databases",
+      ],
     ])("changes nothing when %s", (_name, tool, was, now, message) => {
       recorded(was, now);
       const result = rollback(PLANS[tool]);
@@ -590,6 +653,25 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
       expect(lines("tools.log")).toEqual([]);
       expect(existsSync(`${work}/app/pwned`)).toBe(false);
       expect(existsSync(`${work}/container/pwned`)).toBe(false);
+    });
+
+    it("changes nothing for several Rails databases when down has no db:migrate to point at each", () => {
+      recorded(
+        "database=app 20261101000000\ndatabase=app_queue 0\n",
+        "database=app 20261106000000\ndatabase=app_queue 20261102000000\n",
+      );
+      const plan = withMigrations("bin/rails db:migrate", {
+        tool: "rails",
+        status: "bin/rails db:version",
+        down: "bin/rails db:migrate:primary VERSION={version}",
+      });
+      const result = rollback(plan);
+      expect(result.status).toBe(1);
+      expect(result.output).toBe(
+        "::error::The app has several databases, and app.migrations.down in opscrew/plan.yaml has no `db:migrate ` for OpsCrew to turn into each database's `db:migrate:<name>`, so nothing was migrated down.\nthe step failed\n",
+      );
+      expect(lines("docker.log")).toEqual([]);
+      expect(lines("tools.log")).toEqual([]);
     });
 
     it("fails when the down migrations fail, naming their log and printing none of it", () => {

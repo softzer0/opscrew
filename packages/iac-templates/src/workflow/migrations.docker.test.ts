@@ -3,10 +3,12 @@
  * 12.7). For each tool, an app with two migrations: the example where one exists (`koa-knex`,
  * `django-postgres`, `fastapi-sqlmodel`, `nestjs-typeorm`, `laravel-app`), a small fixture for
  * Rails, Sequelize and Flask-Migrate, and a second migration in `__fixtures__/migrations/<tool>-v2`
- * (Django's also installs the sessions app, which the first version lacks). Version 1's image is
- * a small one built for the test, version 2's adds the second migration. As OpsCrew's Compose
- * project renders them (PostgreSQL `db`, or SQLite in a volume for Laravel, as its example has it;
- * the one-off `release`), with the start script's lines:
+ * (Django's also installs the sessions app, which the first version lacks). Rails also runs with
+ * two PostgreSQL databases (`rails-databases`), each with its own migrations, going down per
+ * database with `db:migrate:<name>`. Version 1's image is a small one built for the test, version
+ * 2's adds the second migration. As OpsCrew's Compose project renders them (PostgreSQL `db`, or
+ * SQLite in a volume for Laravel, as its example has it; the one-off `release`), with the start
+ * script's lines:
  * 1. each version's deploy runs its release command, then `migrationRecord`, which records the
  *    tool's real status output under the version's digest;
  * 2. `migrationDown`, as the rollback from version 2 to 1 runs it, brings the database back to
@@ -80,11 +82,25 @@ const PYTHON_IMAGE = [
   "COPY . .",
 ];
 
+const RAILS_IMAGE = [
+  `FROM ${RUBY}`,
+  "RUN gem install --no-document --minimal-deps railties:8.1.0 activerecord:8.1.0 pg:1.6.2",
+  "WORKDIR /app",
+  "COPY . .",
+  "RUN chmod 755 bin/rails",
+  "ENV RAILS_ENV=production",
+];
+
 const TSC = "RUN npx tsc -p tsconfig.build.json";
 
 /** One tool's app and what its two versions record. */
 interface Case {
   tool: MigrationTool;
+  /**
+   * The case's name in the test's, the project's and the images' names, and its v2 fixture's
+   * folder; the tool's by default.
+   */
+  name?: string;
   /** The app's folder, the context of version 1's image. */
   app: string;
   /** Version 1's Dockerfile. */
@@ -97,11 +113,16 @@ interface Case {
   migrations: Migrations;
   /** PostgreSQL `db`, or SQLite in the volume at /data. */
   database: "postgres" | "sqlite";
+  /** PostgreSQL databases besides `app`, created before the first deploy. */
+  databases?: string[];
   /** The app's variables besides `DATABASE_URL`. */
   env: Record<string, string>;
   /** Version 1's and version 2's records. */
   records: [string, string];
-  /** The `<table>.<column>` that version 2's migration adds. */
+  /**
+   * The `<table>.<column>` that version 2's migrations add (`<database>:<table>.<column>` in
+   * {@link Case.databases}).
+   */
   added: string[];
 }
 
@@ -204,14 +225,7 @@ const CASES: Case[] = [
   {
     tool: "rails",
     app: join(FIXTURES, "rails"),
-    image: [
-      `FROM ${RUBY}`,
-      "RUN gem install --no-document --minimal-deps railties:8.1.0 activerecord:8.1.0 pg:1.6.2",
-      "WORKDIR /app",
-      "COPY . .",
-      "RUN chmod 755 bin/rails",
-      "ENV RAILS_ENV=production",
-    ],
+    image: RAILS_IMAGE,
     releaseCommand: "bin/rails db:migrate",
     migrations: {
       tool: "rails",
@@ -222,6 +236,26 @@ const CASES: Case[] = [
     env: { SECRET_KEY_BASE: secret() },
     records: ["version=20261101000000\n", "version=20261106000000\n"],
     added: ["visits.note"],
+  },
+  {
+    tool: "rails",
+    name: "rails-databases",
+    app: join(FIXTURES, "rails-databases"),
+    image: RAILS_IMAGE,
+    releaseCommand: "bin/rails db:migrate",
+    migrations: {
+      tool: "rails",
+      status: "bin/rails db:version",
+      down: "bin/rails db:migrate VERSION={version}",
+    },
+    database: "postgres",
+    databases: ["app_queue"],
+    env: { SECRET_KEY_BASE: secret() },
+    records: [
+      "database=app 20261101000000\ndatabase=app_queue 20261102000000\n",
+      "database=app 20261106000000\ndatabase=app_queue 20261107000000\n",
+    ],
+    added: ["visits.note", "app_queue:jobs.attempts"],
   },
   {
     tool: "sequelize",
@@ -306,10 +340,10 @@ class Project {
   readonly password = secret();
   constructor(
     readonly dir: string,
-    tool: string,
+    id: string,
     readonly image: string,
   ) {
-    this.name = `opscrew-migrations-${RUN}-${tool}`;
+    this.name = `opscrew-migrations-${RUN}-${id}`;
   }
 
   /** The environment of every docker call and script: the project, and no path conversion. */
@@ -393,18 +427,31 @@ function writeApp(dir: string, plan: DeployPlan, c: Case, password: string): voi
   );
 }
 
-/** The database's `<table>.<column>` names, sorted. */
+/** Runs `sql` in PostgreSQL database `database` and returns what it prints. */
+function psql(project: Project, database: string, sql: string): string {
+  return project.compose([
+    "exec",
+    "-T",
+    "db",
+    "sh",
+    "-c",
+    `PGPASSWORD="$POSTGRES_PASSWORD" psql -X -q -t -A -h 127.0.0.1 -U app -d ${database} -c "${sql}"`,
+  ]);
+}
+
+/**
+ * The databases' `<table>.<column>` names (`<database>:<table>.<column>` in
+ * {@link Case.databases}), sorted.
+ */
 function columns(project: Project, c: Case): string[] {
+  const query = (prefix: string) =>
+    `SELECT '${prefix}' || table_name || '.' || column_name FROM information_schema.columns WHERE table_schema = 'public'`;
   const out =
     c.database === "postgres"
-      ? project.compose([
-          "exec",
-          "-T",
-          "db",
-          "sh",
-          "-c",
-          `PGPASSWORD="$POSTGRES_PASSWORD" psql -X -q -t -A -h 127.0.0.1 -U app -d app -c "SELECT table_name || '.' || column_name FROM information_schema.columns WHERE table_schema = 'public'"`,
-        ])
+      ? [
+          psql(project, "app", query("")),
+          ...(c.databases ?? []).map((database) => psql(project, database, query(`${database}:`))),
+        ].join("\n")
       : project.compose([
           "run",
           "--rm",
@@ -444,17 +491,18 @@ describe.skipIf(reason !== undefined)(
   { timeout: 1_800_000 },
   () => {
     for (const c of CASES) {
-      it(`${c.tool}: records the real status output and migrates down to the first migration`, () => {
+      const id = c.name ?? c.tool;
+      it(`${id}: records the real status output and migrates down to the first migration`, () => {
         const plan = casePlan(c);
         const root = mkdtempSync(join(tmpdir(), "opscrew-migrations-docker-"));
-        const v1 = `opscrew-migrations-${RUN}-${c.tool}:v1`;
-        const v2 = `opscrew-migrations-${RUN}-${c.tool}:v2`;
-        const project = new Project(join(root, "apps", plan.app.name), c.tool, v1);
+        const v1 = `opscrew-migrations-${RUN}-${id}:v1`;
+        const v2 = `opscrew-migrations-${RUN}-${id}:v2`;
+        const project = new Project(join(root, "apps", plan.app.name), id, v1);
         try {
           writeFileSync(join(root, "Dockerfile.v1"), `${c.image.join("\n")}\n`);
           docker(["build", "-q", "-t", v1, "-f", join(root, "Dockerfile.v1"), c.app]);
           const second = join(root, "v2");
-          copyFixture(join(FIXTURES, `${c.tool}-v2`), second);
+          copyFixture(join(FIXTURES, `${id}-v2`), second);
           c.patch?.(second);
           const v2File = [
             `FROM ${v1}`,
@@ -467,6 +515,9 @@ describe.skipIf(reason !== undefined)(
           writeApp(project.dir, plan, c, project.password);
           if (c.database === "postgres") {
             project.compose(["up", "-d", "--wait", "--wait-timeout", "300", "db"]);
+            for (const database of c.databases ?? []) {
+              psql(project, "app", `CREATE DATABASE ${database}`);
+            }
           } else {
             project.compose([
               "run",

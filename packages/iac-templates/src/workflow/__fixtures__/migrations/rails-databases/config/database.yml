@@ -1,0 +1,12 @@
+# Two databases on one PostgreSQL server, each with its own migrations. Rails names each database's
+# tasks (db:migrate:<name>) after its entry here, and db:version prints the database's own name, so
+# each entry is named as its database.
+production:
+  app:
+    adapter: postgresql
+    url: <%= ENV["DATABASE_URL"] %>
+    migrations_paths: db/migrate
+  app_queue:
+    adapter: postgresql
+    url: <%= ENV["DATABASE_URL"] %>_queue
+    migrations_paths: db/queue_migrate

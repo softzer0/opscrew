@@ -11,7 +11,10 @@ import { planFilePath, printfFormat, RELEASE_LOG, runbookFilePath, serverLogNote
 /** The migration records' folder in the app's folder (plan.md 12.3). */
 export const SCHEMA_DIR = ".schema";
 
-/** Version `<hex>`'s migration record: `version=<v>`, `count=<n>`, or `app=<app> <name>` lines. */
+/**
+ * Version `<hex>`'s migration record: `version=<v>`, `database=<name> <v>` lines (Rails with several
+ * databases), `count=<n>`, or `app=<app> <name>` lines.
+ */
 export function schemaRecordPath(hex: string): string {
   return `${SCHEMA_DIR}/${hex}`;
 }
@@ -25,7 +28,8 @@ const KEEP_RECORDS = 20;
  * doesn't know where every line counts, and 2 when it shows more than one version
  * ({@link SEVERAL}):
  * - Rails `db:version`: `Current version: <v>` (0 when none ran), after `database: <name>`; one
- *   pair per database;
+ *   pair per database. One database records `version=<v>`, several a `database=<name> <v>` line
+ *   each, in the order Rails prints them; a name that isn't a value makes the output unknown;
  * - Alembic and Flask-Migrate `current`: `<revision> (head)`, one per head, nothing at all when
  *   none ran (`base`);
  * - Django `showmigrations --plan`: `[X]  <app>.<name>` for each applied migration, in the order
@@ -38,8 +42,11 @@ const KEEP_RECORDS = 20;
  *   `<name> .... Pending`.
  */
 const NORMALIZE: Record<MigrationTool, string> = {
-  rails:
-    '/^Current version: [0-9]+$/ { print "version=" $3; n++ } END { if (n > 1) exit 2; exit !n }',
+  rails: [
+    "/^database: / { db = substr($0, 11) }",
+    '/^Current version: [0-9]+$/ { name[++n] = db; version[n] = $3; db = "" }',
+    'END { if (n == 1) print "version=" version[1]; else for (i = 1; i <= n; i++) { if (name[i] !~ /^[A-Za-z0-9_.:-]+$/) exit 1; print "database=" name[i] " " version[i] } exit !n }',
+  ].join(" "),
   alembic: alembicCurrent(),
   "flask-migrate": alembicCurrent(),
   django: [
@@ -77,8 +84,6 @@ function countOf(row: string, applied: string): string {
  * one version, so these get no record.
  */
 const SEVERAL: Partial<Record<MigrationTool, string>> = {
-  rails:
-    "the app has several databases (bin/rails db:version shows a version for each), and OpsCrew's down migrations handle one database only for now",
   alembic:
     "Alembic shows several heads (branches of migrations), and OpsCrew's down migrations handle a single head only for now",
   "flask-migrate":
@@ -150,18 +155,24 @@ const NOT_A_VALUE = '"" | *[!A-Za-z0-9_.:-]*';
  * (`$was_record`) and the running one's (`$now_record`), by the tool's unit; empty when there is
  * nothing to undo. Commands that run several times are `&&`-joined, each in a subshell, so a
  * `cd <folder> &&` prefix holds for each. A count that grew calls `grew`; a value that isn't one
- * calls `invalid`.
+ * calls `invalid`; `fail(text)` is the line that prints `text` as an error and exits 1.
  */
-function downScript(tool: MigrationTool, down: string): string[] {
+function downScript(
+  plan: DeployPlan,
+  { tool, down }: Migrations,
+  fail: (text: string) => string,
+): string[] {
   const unit = MIGRATION_TOOLS[tool].unit;
   switch (unit) {
-    case "version":
-      return [
+    case "version": {
+      const one = [
         'version="$(sed -n \'s/^version=//p\' "$was_record")"',
         `case "$version" in ${NOT_A_VALUE}) invalid ;; esac`,
         'script=""',
         `if [ "$version" != "$(sed -n 's/^version=//p' "$now_record")" ]; then script=${filled(down)}; fi`,
       ];
+      return tool === "rails" ? railsDown(plan, down, one, fail) : one;
+    }
     case "apps":
       // Each app of the running record, newest first, goes back to its migration in the earlier
       // record, or to `zero` when that has none; an app already there is left alone.
@@ -203,6 +214,56 @@ function downScript(tool: MigrationTool, down: string): string[] {
 }
 
 /**
+ * Rails' down lines: `one` when the running record has one database (`version=`); with several
+ * (`database=<name> <v>` lines), `down` with its `db:migrate` turned into `db:migrate:<name>` for
+ * each database of the running record, newest first, with `{version}` the earlier record's for that
+ * database, or `0` when it has none. A database already there, or only in the earlier record, is
+ * left alone. Records of different shapes, or several databases and a `down` without `db:migrate `,
+ * exit 1 before any change.
+ */
+function railsDown(
+  plan: DeployPlan,
+  down: string,
+  one: readonly string[],
+  fail: (text: string) => string,
+): string[] {
+  const shapes = `{ ${fail(`The version rolled back to and the version running now record a different number of databases (their records in ${SCHEMA_DIR} on the server), so OpsCrew can't tell which to undo and nothing was migrated down.`)} }`;
+  const each = down.includes("db:migrate ")
+    ? down.replace("db:migrate ", "db:migrate:{database} ")
+    : undefined;
+  return [
+    "several() { grep -q '^database=' \"$1\"; }",
+    'if several "$now_record"; then',
+    ...(each === undefined
+      ? [
+          `  ${fail(`The app has several databases, and app.migrations.down in ${planFilePath(plan)} has no \`db:migrate \` for OpsCrew to turn into each database's \`db:migrate:<name>\`, so nothing was migrated down.`)}`,
+        ]
+      : [
+          `  several "$was_record" || ${shapes}`,
+          `  pairs="$(awk ${shellQuote(
+            [
+              "!/^database=[A-Za-z0-9_.:-]+ [A-Za-z0-9_.:-]+$/ { bad = 1; next }",
+              "{ db = substr($1, 10) }",
+              "FILENAME == ARGV[1] { was[db] = $2; next }",
+              '{ to = (db in was) ? was[db] : "0"; if (to != $2) pair[++n] = db " " to }',
+              "END { if (bad) exit 1; for (i = n; i > 0; i--) print pair[i] }",
+            ].join(" "),
+          )} "$was_record" "$now_record")" || invalid`,
+          '  script=""',
+          "  set -- $pairs",
+          '  while [ "$#" -ge 2 ]; do',
+          '    database="$1"; version="$2"; shift 2',
+          `    script="\${script:+$script && }("${filled(each)}")"`,
+          "  done",
+        ]),
+    "else",
+    `  several "$was_record" && ${shapes}`,
+    ...one.map((line) => `  ${line}`),
+    "fi",
+  ];
+}
+
+/**
  * The rollback's down migrations (plan.md 12.4, step 4 `migrations`): a script fragment that runs
  * in a subshell of the start script's database step, inside an `if` condition, so `set -e` doesn't
  * apply there and every command that can fail exits the fragment non-zero itself. A non-zero exit
@@ -211,7 +272,8 @@ function downScript(tool: MigrationTool, down: string): string[] {
  * From the records of the version rolled back to (`$target`) and the running one (`$running`), by
  * the tool's unit ({@link MIGRATION_TOOLS}):
  * - `version`: `down` to the earlier record's `{version}` (`base` for Alembic and Flask-Migrate,
- *   `0` for Rails, when none had run);
+ *   `0` for Rails, when none had run); for Rails with several databases, `down` as
+ *   `db:migrate:<name>` per database of the running record, newest first ({@link railsDown});
  * - `count`: `down` once with `{count}`, the running count less the earlier one;
  * - `each`: `down` that many times;
  * - `apps` (Django): `down` for each app of the running record, newest first, with `{app}` and the
@@ -224,7 +286,7 @@ function downScript(tool: MigrationTool, down: string): string[] {
  * `release.log`, never printed.
  */
 export function migrationDown(plan: DeployPlan, migrations: Migrations): string[] {
-  const { tool, down } = migrations;
+  const { tool } = migrations;
   const error = (text: string) => `echo ${shellQuote(`::error::${text}`)}; exit 1;`;
   return [
     `was_record=${SCHEMA_DIR}/"$target"`,
@@ -234,7 +296,7 @@ export function migrationDown(plan: DeployPlan, migrations: Migrations): string[
     'if [ ! -f "$was_record" ] || [ ! -f "$now_record" ]; then',
     `  ${error(`The server holds no record of the migrations of the version running now or of the version rolled back to (in ${SCHEMA_DIR}), so OpsCrew can't tell which to undo and nothing was migrated down.`)}`,
     "fi",
-    ...downScript(tool, down),
+    ...downScript(plan, migrations, error),
     'if [ -z "$script" ]; then',
     `  echo ${shellQuote("The database already has the migrations of the version rolled back to: there is nothing to migrate down.")}`,
     "  exit 0",
