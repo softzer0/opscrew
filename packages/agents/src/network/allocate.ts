@@ -5,6 +5,7 @@ import {
   type DeployPlan,
   monitoringOf,
   type Network,
+  type NetworkMember,
   networkInterface,
 } from "@opscrew/plan-schema";
 import { type KeyMaker, x25519KeyPair } from "./keys";
@@ -160,6 +161,39 @@ export function allocateNetwork(
         : {}),
     },
     privateKeys,
+  };
+}
+
+/**
+ * The new `app` member of a move to another app server (feature 023): the first free server
+ * address from `.2` (the old app server keeps its own until `--finish`), listening on 51820, or on
+ * a server the user owns on the first port its `facts` show free, with a key pair from `keys`.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when every server address is taken.
+ */
+export function moveAppMember(
+  network: Pick<Network, "range" | "members">,
+  facts: NetworkHostFacts | undefined,
+  keys: KeyMaker = x25519KeyPair,
+): { member: NetworkMember; privateKey: string } {
+  const taken = new Set(network.members.map((m) => hostOf(m.address)));
+  let host = FIRST_SERVER;
+  while (taken.has(host)) host += 1;
+  if (host >= FIRST_DEVICE) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The private network ${network.range} has no free address for the new app server: servers use .2 to .99. Nothing was changed.`,
+      { hint: "Remove servers the app no longer uses from servers in the plan." },
+    );
+  }
+  const pair = keys();
+  return {
+    member: {
+      name: APP_SERVER,
+      address: hostAddress(network.range, host),
+      port: facts === undefined ? FIRST_PORT : freePort(facts),
+      publicKey: pair.publicKey,
+    },
+    privateKey: pair.privateKey,
   };
 }
 

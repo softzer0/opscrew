@@ -74,7 +74,7 @@ import { type ServerHostPlansInput, serverForNetwork } from "./servers";
 /** What {@link monitoringHostPlans} needs: the servers as provision prepared them. */
 export type MonitoringHostPlansInput = Pick<
   ServerHostPlansInput,
-  "services" | "ownRun" | "extraOwn" | "planOnly" | "command" | "phase"
+  "services" | "ownRun" | "extraOwn" | "planOnly" | "command" | "phase" | "app"
 >;
 
 /** A server the monitoring's host plans reach, inspected now. */
@@ -256,7 +256,8 @@ function isOwn(plan: DeployPlan, name: string): boolean {
  * The server `name` of `plan`, inspected now, as the network's host plans reach it
  * (`serverForNetwork`): on the user's own, with the login provision prepared for this plan's
  * (`prepared`), else its admin login; on one OpsCrew created, the deploy user's shell, root through
- * Docker in the pinned image. `deps.paths` are `plan`'s (another environment's for its monitoring
+ * Docker in the pinned image; the app's server as `input.app` says when given (a move's new app
+ * server, with `prepared`). `deps.paths` are `plan`'s (another environment's for its monitoring
  * server).
  */
 async function reachServer(
@@ -268,7 +269,11 @@ async function reachServer(
 ): Promise<Reached> {
   const { services, phase } = input;
   const runs = prepared
-    ? { ownRun: input.ownRun, extraOwn: input.extraOwn }
+    ? {
+        ownRun: input.ownRun,
+        extraOwn: input.extraOwn,
+        ...(input.app !== undefined ? { app: input.app } : {}),
+      }
     : { ownRun: undefined, extraOwn: [] };
   const server = await serverForNetwork(deps, { plan, services, phase, ...runs }, name);
   return { ...server, own: isOwn(plan, name) };

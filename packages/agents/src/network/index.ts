@@ -4,9 +4,14 @@
  * sends to another environment's monitoring server (feature 020) has that server as a member too,
  * on an interface of its own there.
  */
-export { allocateNetwork, type NetworkHostFacts, nextDeviceAddress } from "./allocate";
+export {
+  allocateNetwork,
+  moveAppMember,
+  type NetworkHostFacts,
+  nextDeviceAddress,
+} from "./allocate";
 export { deviceConfig } from "./device";
-export { hasPublicAddress, publicEndpoints } from "./endpoints";
+export { hasPublicAddress, PREVIOUS_MEMBER, publicEndpoints } from "./endpoints";
 export { networkHostPlan, publicSshHostPlan } from "./host-plans";
 export { serverNetworkInputs } from "./inputs";
 export { type KeyMaker, type WireGuardKeyPair, x25519KeyPair } from "./keys";

@@ -22,9 +22,9 @@ import { buildDesignOptions } from "../design";
 import { chooseBuilder } from "../design/builder";
 import { buildOwnServerOption, noServerCost } from "../design/own";
 import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
-import { commandFlags } from "../environments/choice";
 import { recordOwnServerAnswers } from "../interview/own-server";
 import { recordPortainerAnswers } from "../interview/portainer";
+import type { NetworkHostFacts } from "../network";
 import { providerProfile, vpsConnector } from "../providers";
 import { readRequirements, requireStorageKey } from "../provision";
 import {
@@ -49,6 +49,7 @@ import {
   measureBucket,
   syncMinutes,
 } from "./bucket";
+import { recordMoveKey, startNetwork } from "./network";
 import { endMoveServers, startMoveServers } from "./servers";
 import { auditStep, type MoveSession, openSession, saveMove, userRecords } from "./session";
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
@@ -80,31 +81,22 @@ export function nothingLive(plan: DeployPlan): OpsCrewError {
 }
 
 /**
- * An app with services on other servers (`plan.servers`) is not moved yet: moving its app server
- * beside them comes in a later step of this feature. Said before any check or change.
+ * An app on several servers, or with self-hosted monitoring, stays on servers: Portainer runs the
+ * app's stacks only (placement and monitoring need a server). Said before any change.
  */
-function splitAppNoMove(plan: DeployPlan): OpsCrewError {
+function portainerNoNetwork(plan: DeployPlan): OpsCrewError {
+  const network = hasExtraServers(plan)
+    ? `runs services on other servers (${listText(extraServers(plan))})`
+    : "has a private network for your devices";
+  const what = [
+    ...(plan.network !== undefined ? [network] : []),
+    ...(monitoringOf(plan) !== undefined ? ["has self-hosted monitoring"] : []),
+  ];
   return new OpsCrewError(
     "PHASE_PRECONDITION",
-    `${plan.app.name} runs services on other servers too (${listText(extraServers(plan))}), and moving an app with several servers to another provider comes with retarget anywhere. Nothing was changed.`,
+    `${plan.app.name} ${listText(what)}, which need a server, so it does not move to your Portainer. Nothing was changed.`,
     {
-      hint: "Until then the app stays where it is. To move it now, place its services back on the app's server first: remove `server` from those services and the servers from `servers` in opscrew/plan.yaml, run `opscrew design` and `opscrew provision`, then run `opscrew retarget`.",
-    },
-  );
-}
-
-/**
- * An app with self-hosted monitoring on is not moved yet (FR-2026): its agents, its stack and the
- * monitoring server's network move later. Said before any check or change, with the commands that
- * turn it off.
- */
-async function monitoringNoMove(deps: PhaseDeps, plan: DeployPlan): Promise<OpsCrewError> {
-  const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `Self-hosted monitoring is on for ${plan.app.name}, and moving an app with self-hosted monitoring to another provider comes with retarget anywhere. Nothing was changed.`,
-    {
-      hint: `Turn it off first: run \`opscrew addon disable monitoring${flag}\` and then \`opscrew provision${flag}\`, then run \`opscrew retarget${flag}\` again. Turn monitoring on again once the move is finished.`,
+      hint: `Move it to a server instead (\`${RUN_COMMAND} --to <hetzner|digitalocean|own>\`).`,
     },
   );
 }
@@ -244,6 +236,8 @@ interface NewSide {
   deploy: DeployPlan["deploy"];
   /** The new side's address when the move knows it from the start (a Portainer host's). */
   address?: ServerAddress;
+  /** What inspection found of the user's own new server, for its private network port. */
+  network?: NetworkHostFacts;
 }
 
 /**
@@ -439,6 +433,7 @@ async function ownServerSide(
     cost: noServerCost("Your own server (you already pay for it)", plan.cost.monthly.currency, now),
     build: await builderFor(deps, facts, plan, host.arch),
     deploy: plan.deploy,
+    network: host,
   };
 }
 
@@ -731,12 +726,15 @@ async function newTargetId(
  * Step 1 of a move (plan.md "2." started): every refusal of plan.md "4." and the spec's edge cases
  * before any change (this computer, a site and a server, previews, a tunnel or Portainer behind the
  * user's own proxy with Cloudflare DNS on either side, two Portainers, the same place, public SSH
- * closed, Edge Agent environments, an app that cannot be built for the new side); the new side
+ * closed, Edge Agent environments, an app that cannot be built for the new side, Portainer for an
+ * app with a private network or self-hosted monitoring); the new side
  * (a cloud provider's options and the choice, the user's own server inspected, or the user's
  * Portainer reached); the old side's data mounts and their sizes, copied or started empty
  * (`--empty`, or a question for each); the summary and `confirmStart`; then the move is recorded
  * (`plan.target` and `cost` are the new side's, `retarget.step` is `started`, `retarget.empty`
- * what starts empty). The old side's connection is set aside at the start (`retarget.fromOwn` or
+ * what starts empty; with a private network a new `app` member, the old one in
+ * `retarget.from.member`, and the new member's key in the generated values). The old side's
+ * connection is set aside at the start (`retarget.fromOwn` or
  * `fromPortainer`) so the new side's takes its slot; any stop before the record puts it back.
  */
 export async function startMove(
@@ -747,10 +745,6 @@ export async function startMove(
   const from = plan.target;
   if (from.provider === "localhost") throw thisComputerNoMove();
   if (isServerlessProvider(from.provider)) throw siteServerNoMove(plan);
-  // Not yet: an app with self-hosted monitoring on (FR-2026), said before the extra servers (its
-  // monitoring server may be one), nor one with services on other servers (FR-1820).
-  if (monitoringOf(plan) !== undefined) throw await monitoringNoMove(deps, plan);
-  if (hasExtraServers(plan)) throw splitAppNoMove(plan);
   // A side over SSH is reached at its public address before it joins the app's private network.
   if (plan.network?.publicSsh === false) {
     throw new OpsCrewError(
@@ -764,6 +758,9 @@ export async function startMove(
   requireAddressedOldSide(plan);
   const oldAddress = await liveOldSide(deps, plan, options);
   const to = await newTargetId(deps, plan, options);
+  if (to === "portainer" && (plan.network !== undefined || monitoringOf(plan) !== undefined)) {
+    throw portainerNoNetwork(plan);
+  }
   if (to === from.provider) {
     if (to === "portainer") throw betweenPortainers();
     if (to !== "own") {
@@ -796,7 +793,7 @@ export async function startMove(
   // From here the old side's connection is set aside, and the new side's takes its slot: a stop
   // before the move is recorded puts it back, so nothing is changed.
   await setAsideOldConnection(deps.paths, from.provider);
-  let started: { session: MoveSession; next: NewSide; empty: string[] };
+  let started: { session: MoveSession; next: NewSide; empty: string[]; key?: string };
   try {
     const next =
       to === "own"
@@ -808,12 +805,18 @@ export async function startMove(
         : to === "portainer"
           ? await portainerSide(deps, { plan, facts }, options)
           : await cloudSide(deps, { plan, facts, to }, options);
+    // Only the app server moves: it gets a new member of the private network, and the old one
+    // stays a member until `--finish`.
+    const network =
+      plan.network === undefined ? undefined : startNetwork(plan.network, next.network);
+    if (network !== undefined) deps.redactor.addLiteral(network.privateKey, "network-key");
     const retarget: Retarget = {
       from: {
         target: plan.target,
         deploy: plan.deploy,
         ...(plan.app.build === undefined ? {} : { build: plan.app.build }),
         ...(moves !== undefined ? { objectStorage: moves.old } : {}),
+        ...(network !== undefined ? { member: network.member } : {}),
       },
       step: "started",
       empty: [],
@@ -827,6 +830,7 @@ export async function startMove(
       app: { ...plan.app, build: next.build },
       deploy: next.deploy,
       ...(moves !== undefined ? { storage: { ...plan.storage, objectStorage: moves.next } } : {}),
+      ...(network !== undefined ? { network: network.network } : {}),
       retarget,
     };
     // Both buckets' keys, before any change: the new one's is asked once in a terminal.
@@ -894,14 +898,21 @@ export async function startMove(
     // The sides' addresses go to the local state, never into opscrew/plan.yaml.
     await startMoveServers(deps, session.servers);
     await saveMove(session, { ...retarget, empty });
-    started = { session, next, empty };
+    started = {
+      session,
+      next,
+      empty,
+      ...(network !== undefined ? { key: network.privateKey } : {}),
+    };
   } catch (error) {
     // Nothing of the move stays: the old side's connection back in its slot, no move record.
     await restoreOldConnection(deps.paths, { from: from.provider, to });
     await endMoveServers(deps, undefined);
     throw error;
   }
-  const { session, next, empty } = started;
+  const { session, next, empty, key } = started;
+  // The new member's key stays on this computer, with the generated values.
+  if (key !== undefined) await recordMoveKey(deps, key);
   deps.reporter.success(
     `Started the move of ${plan.app.name} to ${placeWords(next.target)}; opscrew/plan.yaml records each step.`,
   );

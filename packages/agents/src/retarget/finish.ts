@@ -17,6 +17,7 @@ import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { deleteOldBucket, movingBucketKeys, writeStorageFiles } from "./bucket";
 import { previousCloud, previousTarget } from "./layouts";
+import { endMoveKey, leaveMoveNetwork } from "./network";
 import { clearPending } from "./pending";
 import { endMoveServers } from "./servers";
 import {
@@ -117,6 +118,10 @@ async function finish(
   // Both buckets' keys when the move took the bucket along, before anything is deleted.
   const keys = await movingBucketKeys(session);
 
+  // 0b. The old app server leaves the private network of the servers that stay.
+  const left = await leaveMoveNetwork(session);
+  if (left !== undefined) return left;
+
   // 1. The old side's removal, after the typed name.
   const removed = await removeOldSide(session, options);
   if ("stop" in removed) return removed.stop;
@@ -152,6 +157,7 @@ async function finish(
   const { retarget: _finished, ...finalPlan } = session.plan;
   const written = await writeFinalFiles(session, finalPlan, layoutOf(session, "switched"), "all");
   const storage = keys === undefined ? [] : await writeStorageFiles(session, finalPlan);
+  await endMoveKey(deps, "finished");
   await savePlan(session, finalPlan);
   await removeSnapshotRecord(deps, "retarget");
   await clearPending(deps);

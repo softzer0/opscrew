@@ -22,6 +22,7 @@ import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { movingBucketKeys, removeNewBucket, renameBucketBack, writeStorageFiles } from "./bucket";
 import { previousTarget } from "./layouts";
+import { endMoveKey, networkBeforeMove, undoMoveNetwork } from "./network";
 import { clearPending } from "./pending";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import { isAppHealthy } from "./server-ops";
@@ -297,6 +298,12 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   // 1. DNS back to the old side, then the new side (it can only exist once the rename was
   // recorded).
   if (abortProgress(session) < ABORT_PROGRESS["new-removed"]) {
+    // The servers that stay link to the old app server as before, without the new one (it can
+    // only have joined from step `created` on).
+    if (!stepBefore(move.step, "created")) {
+      const networkStop = await undoMoveNetwork(session, () => recordAbort(session));
+      if (networkStop !== undefined) return networkStop;
+    }
     const dnsStop = await pointDnsBack(session, flags);
     if (dnsStop !== undefined) return dnsStop;
     if (move.step !== "started") {
@@ -352,10 +359,13 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     ...(move.from.objectStorage !== undefined
       ? { storage: { ...rest.storage, objectStorage: move.from.objectStorage } }
       : {}),
+    // The old app server's member of the private network is `app` again.
+    ...(rest.network !== undefined ? { network: networkBeforeMove(session.plan) } : {}),
   };
   await writeFinalFiles(session, restored, layoutOf(session, "both"), "infra");
   if (keys !== undefined) await writeStorageFiles(session, restored);
   const oldAddress = session.servers.from;
+  await endMoveKey(deps, "aborted");
   await savePlan(session, restored);
   await clearPending(deps);
   // A run killed while the engine ran may have left the key of the bucket being left there.

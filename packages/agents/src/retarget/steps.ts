@@ -1,7 +1,7 @@
 import { posix } from "node:path";
 import { formatMoney, isUserFacingError, OpsCrewError, readTextIfExists } from "@opscrew/core";
 import { checkServerSecret, EDGE_PROXIES, edgeProxy, keepNewerPins } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, type DeployTarget } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan, type DeployTarget, monitoringOf } from "@opscrew/plan-schema";
 import { checkReachesOverSsh } from "../check/provision";
 import { workflowBranch } from "../environments/branches";
 import { providerProfile } from "../providers";
@@ -31,6 +31,7 @@ import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { moveProvider } from "../shared/vps-target";
 import { bucketKeys, copyBucket, createBucket, movingBucket, renameBucket } from "./bucket";
 import { oldSideTarget, previousCloud } from "./layouts";
+import { joinMoveNetwork, moveMonitoring, sideServer } from "./network";
 import { planThenApply } from "./plans";
 import type { MoveServer } from "./removal";
 import { oldServer } from "./servers";
@@ -668,11 +669,13 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
 }
 
 /**
- * Step 4: the deploy secrets point to the new side (a server's over SSH, or the build values for
+ * Step 4: with a private network, the new app server joins it first (`joinMoveNetwork`); the
+ * deploy secrets point to the new side (a server's over SSH, or the build values for
  * the user's Portainer); a deploy workflow that differs for the new side waits for its pull
  * request first; then the new side's deploy: on a server the deploy workflow puts the app there,
  * and the side checks it and stops its edge until the switch; in Portainer its stacks are applied
- * with the version the old side runs.
+ * with the version the old side runs; then self-hosted monitoring's host plans for the new app
+ * server (`moveMonitoring`).
  */
 export async function deployStep(
   session: MoveSession,
@@ -686,6 +689,10 @@ export async function deployStep(
     await saveMove(session, { ...moveOf(session), step: "renamed" });
     return { step: "renamed", done: false, next: [`Run \`${RUN_COMMAND}\` again.`] };
   }
+  // The new app server joins the private network before the deploy, so the app reaches its
+  // services on the extra servers.
+  const joined = await joinMoveNetwork(session);
+  if (joined !== undefined) return joined;
   const words = sideWords(plan.target, "new");
   const where = {
     host: portainer ? PORTAINER_SECRETS_RECORD : newServer(session).ipv4,
@@ -702,6 +709,11 @@ export async function deployStep(
   if (!portainer) await runDeployWorkflow(session);
   const stop = await side.deploy(session);
   if (stop !== undefined) return stop;
+  // Self-hosted monitoring on the new app server, once the deploy made the networks Alloy joins.
+  if (monitoringOf(plan) !== undefined) {
+    const monitored = await moveMonitoring(session, plan, await sideServer(session, "new"));
+    if (monitored !== undefined) return monitored;
+  }
   // The bucket's first copy, before the maintenance window (which copies only what changed).
   const bucket = movingBucket(plan);
   if (bucket !== undefined) await copyBucket(session, "copy", await bucketKeys(session, bucket));

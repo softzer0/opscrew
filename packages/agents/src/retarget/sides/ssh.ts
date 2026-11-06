@@ -133,6 +133,14 @@ export function sshSide(input: SshSideInput): SshSideParts {
     }
   }
 
+  /** True when the side's server runs the app's own monitoring stack (`where: app`). */
+  async function hasMonitoring(session: MoveBase): Promise<boolean> {
+    return (
+      monitoringServerName(session.plan) === APP_SERVER &&
+      (input.ownsMonitoring === undefined || (await input.ownsMonitoring(session)))
+    );
+  }
+
   /** `docker compose stop` or `up -d` of the app's stateful services `names`. */
   async function compose(
     session: MoveBase,
@@ -149,10 +157,36 @@ export function sshSide(input: SshSideInput): SshSideParts {
         { hint: "This is a bug in OpsCrew; please report it." },
       );
     }
+    const { folder } = opsOf(session);
+    // A stateful service gets 120 s to stop cleanly (T2306), so its files are whole.
+    const args = verb === "stop" ? `stop -t ${STOP_SECONDS}` : verb;
+    await run(
+      session,
+      `cd ${folder} && docker compose ${args} ${names.join(" ")}`,
+      `${verb === "stop" ? "stop" : "start"} ${listText([...names])}`,
+    );
+  }
+
+  /**
+   * Stops (with time to stop cleanly) or starts the monitoring stack's project when the side's
+   * server runs the app's own (`docker compose -p`, its containers as its setup made them).
+   */
+  async function monitoringStack(session: MoveBase, verb: "stop" | "start"): Promise<void> {
+    if (!(await hasMonitoring(session))) return;
+    const args = verb === "stop" ? `stop -t ${STOP_SECONDS}` : "start";
+    await run(
+      session,
+      `docker compose -p ${MONITORING_PROJECT} ${args}`,
+      `${verb} the monitoring stack`,
+    );
+  }
+
+  /** Runs `command` as deploy on the side's server; a failure says it could not do `action`. */
+  async function run(session: MoveBase, command: string, action: string): Promise<void> {
     const remote = await remoteOf(session);
-    const { folder, redact } = opsOf(session);
+    const { redact } = opsOf(session);
     const timeoutMs = 5 * MINUTE;
-    const what = `${verb === "stop" ? "stop" : "start"} ${listText([...names])} on ${input.words(session)}`;
+    const what = `${action} on ${input.words(session)}`;
     // What ssh or Compose said may name the server's address: inWords puts the words in its place.
     await inWords(session, async () => {
       const failed = (detail: string) => {
@@ -161,11 +195,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
       };
       let result: CommandResult;
       try {
-        // A stateful service gets 120 s to stop cleanly (T2306), so its files are whole.
-        const args = verb === "stop" ? `stop -t ${STOP_SECONDS}` : verb;
-        result = await remote.run(`cd ${folder} && docker compose ${args} ${names.join(" ")}`, {
-          timeoutMs,
-        });
+        result = await remote.run(command, { timeoutMs });
       } catch (error) {
         throw failed(errorMessage(error));
       }
@@ -309,8 +339,16 @@ export function sshSide(input: SshSideInput): SshSideParts {
       await inWords(session, () => startService(remote, "app", opsOf(session)));
     },
 
-    stopServices: (session, names) => compose(session, "stop", names),
-    startServices: (session, names) => compose(session, "up -d", names),
+    // The app's own monitoring stack on the server stops and starts with its services, so its
+    // volumes are copied whole.
+    async stopServices(session, names) {
+      await compose(session, "stop", names);
+      await monitoringStack(session, "stop");
+    },
+    async startServices(session, names) {
+      await monitoringStack(session, "start");
+      await compose(session, "up -d", names);
+    },
     stopEdge,
     startEdge,
 
@@ -337,9 +375,7 @@ export function sshSide(input: SshSideInput): SshSideParts {
 
     async volumes(session) {
       // The monitoring stack's data, when it runs on the app's server and is the app's.
-      const monitoring =
-        monitoringServerName(session.plan) === APP_SERVER &&
-        (input.ownsMonitoring === undefined || (await input.ownsMonitoring(session)));
+      const monitoring = await hasMonitoring(session);
       return withDocker(session, (side) => dataMounts(session, side, monitoring));
     },
   };

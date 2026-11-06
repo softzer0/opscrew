@@ -8,7 +8,7 @@ import {
   monitoringServerName,
   networkInterface,
 } from "@opscrew/plan-schema";
-import { hasPublicAddress } from "./endpoints";
+import { hasPublicAddress, PREVIOUS_MEMBER } from "./endpoints";
 
 /** The keepalive (seconds) on every server-to-server link; never toward a device. */
 export const KEEPALIVE_SECONDS = 25;
@@ -39,14 +39,26 @@ export interface ServerNetworkFacts {
 /** OpsCrew's own interfaces: `wg-opscrew<k>`. */
 const OPSCREW_INTERFACE = /^wg-opscrew\d+$/;
 
-/** The plan's network and the server `server` on it. */
-function onNetwork(plan: Pick<DeployPlan, "network">, server: string) {
+/** What the network's steps read of a plan. */
+type NetworkPlan = Pick<DeployPlan, "network" | "target" | "observability" | "retarget">;
+
+/**
+ * The plan's network and the server `server` on it, with the servers it links to: the other
+ * members and, during a move to another app server (`retarget.from.member`), the old app server as
+ * the peer {@link PREVIOUS_MEMBER} on every server but the new app server, until `--finish`.
+ */
+function onNetwork(plan: NetworkPlan, server: string) {
   const network = plan.network;
   const self = network?.members.find((m) => m.name === server);
   if (network === undefined || self === undefined) {
     throw new Error(`Server "${server}" is not on the plan's private network.`);
   }
-  return { network, self };
+  const previous = server === APP_SERVER ? undefined : plan.retarget?.from.member;
+  const others = [
+    ...network.members.filter((m) => m.name !== server),
+    ...(previous === undefined ? [] : [{ ...previous, name: PREVIOUS_MEMBER }]),
+  ];
+  return { network, self, others, previous };
 }
 
 /**
@@ -56,15 +68,17 @@ function onNetwork(plan: Pick<DeployPlan, "network">, server: string) {
  * on (`monitoringServerName`; for a plan that sends to another environment's, its interface for
  * this network), the stack's front admits the network's other servers, which push to it, and
  * Grafana every device. Nothing else admits the monitoring server: it only receives (with the
- * stack on the app's server, the app reaches its services as it always does).
+ * stack on the app's server, the app reaches its services as it always does). During a move to
+ * another app server, the old app server is admitted wherever the app's server is, until
+ * `--finish`.
  * @throws Error when the plan has no network or the server is not on it.
  */
 export function networkFilterRules(
-  plan: Pick<DeployPlan, "network" | "target" | "observability">,
+  plan: NetworkPlan,
   server: string,
   published: ServerNetworkFacts["published"],
 ): NetworkFilterParams["rules"] {
-  const { network } = onNetwork(plan, server);
+  const { network, others, previous } = onNetwork(plan, server);
   const app = network.members.find((m) => m.name === APP_SERVER)?.address;
   // Devices peer only with servers that have a public address: no other server admits them.
   const admitted = hasPublicAddress(plan, server);
@@ -76,12 +90,14 @@ export function networkFilterRules(
     const granted = network.grants
       .filter((g) => g.service === service)
       .map((g) => deviceAddress(g.device));
-    const sources = [...new Set([app, ...granted])].filter((a): a is string => a !== undefined);
+    const sources = [...new Set([app, previous?.address, ...granted])].filter(
+      (a): a is string => a !== undefined,
+    );
     return { port, sources };
   });
   if (server !== monitoringServerName(plan)) return rules;
   // The stack's own server's Alloy pushes over a Docker network, never the private address.
-  const servers = network.members.filter((m) => m.name !== server).map((m) => m.address);
+  const servers = others.map((m) => m.address);
   return [
     ...rules,
     { port: MONITORING_PUSH_PORT, sources: servers },
@@ -102,28 +118,28 @@ function otherInterfaces(wireguardInterfaces: readonly string[], iface: string):
  * stays up even when idle, and, when this server has a public address, every device (whose own
  * configuration keeps its link up). Its filter has {@link networkFilterRules}, and is planned for
  * every server on the network, even with no rules: after the per-port rules it drops every other
- * new connection to the private address (the default deny).
+ * new connection to the private address (the default deny). During a move to another app server
+ * the old app server is a peer too ({@link PREVIOUS_MEMBER}, its endpoint by that name), except on
+ * the new app server.
  * @throws Error when the plan has no network or the server is not on it.
  */
 export function networkSteps(
-  plan: Pick<DeployPlan, "network" | "target" | "observability">,
+  plan: NetworkPlan,
   server: string,
   facts: ServerNetworkFacts,
 ): { network: Omit<NetworkStepParams, "localPorts">; filter: NetworkFilterParams } {
-  const { network, self } = onNetwork(plan, server);
+  const { network, self, others } = onNetwork(plan, server);
   const iface = networkInterface(self);
-  const servers = network.members
-    .filter((m) => m.name !== server)
-    .map((m) => {
-      const host = facts.endpoints[m.name];
-      return {
-        name: m.name,
-        publicKey: m.publicKey,
-        ...(host !== undefined ? { endpoint: wireGuardEndpoint(host, m.port) } : {}),
-        allowedIp: `${m.address}/32`,
-        keepalive: KEEPALIVE_SECONDS,
-      };
-    });
+  const servers = others.map((m) => {
+    const host = facts.endpoints[m.name];
+    return {
+      name: m.name,
+      publicKey: m.publicKey,
+      ...(host !== undefined ? { endpoint: wireGuardEndpoint(host, m.port) } : {}),
+      allowedIp: `${m.address}/32`,
+      keepalive: KEEPALIVE_SECONDS,
+    };
+  });
   const devices = hasPublicAddress(plan, server)
     ? network.devices.map((d) => ({
         name: d.name,

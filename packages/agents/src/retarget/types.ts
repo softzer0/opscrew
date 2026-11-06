@@ -56,6 +56,8 @@ export interface RetargetServices
     // A site's move: OpsCrew's rules in the zone, and the Pages verification record's value.
     | "sharedCloudflare"
     | "askPagesVerification"
+    // The private network's and the monitoring's host plans on servers OpsCrew created.
+    | "serverHost"
   > {
   /** Credential checks per provider (default: `vpsConnector(id).verifyCredentials`). */
   providers?: Partial<

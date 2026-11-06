@@ -1,4 +1,3 @@
-import { OpsCrewError } from "@opscrew/core";
 import type { DesignOption } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { allocateNetwork } from "../network";
@@ -52,29 +51,7 @@ describe("targetOf: the new target of a move", () => {
   });
 });
 
-describe("startMove: an app with services on other servers (FR-1820)", () => {
-  it("refuses before any change or connection, naming the servers and retarget anywhere", async () => {
-    const commands: string[] = [];
-    const deps = await createTestPhaseDeps({
-      runner: {
-        async run(command) {
-          commands.push(command);
-          return { exitCode: 0, stdout: "", stderr: "" };
-        },
-      },
-    });
-    const base = splitPlan();
-    const plan = withNetwork(base, allocateNetwork(base, {}, testKeyMaker()).network);
-    const error = await startMove(deps, plan, {}).catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(OpsCrewError);
-    expect(error).toMatchObject({ code: "PHASE_PRECONDITION" });
-    const message = (error as OpsCrewError).message;
-    expect(message).toContain("runs services on other servers too (data)");
-    expect(message).toContain("retarget anywhere");
-    expect(message).toContain("Nothing was changed.");
-    expect(commands).toEqual([]);
-  });
-
+describe("startMove: an app with a private network", () => {
   it("refuses while public SSH is closed, before any change or connection", async () => {
     const commands: string[] = [];
     const deps = await createTestPhaseDeps({

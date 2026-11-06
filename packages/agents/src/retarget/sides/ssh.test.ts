@@ -137,6 +137,34 @@ describe.skipIf(!findExecutable("git"))("a side over SSH", () => {
     ]);
   });
 
+  it("stops and starts the app's monitoring stack on the app's server with its services", async () => {
+    const h = await moveHarness();
+    const { session } = await moving(h);
+    const monitored = {
+      ...session,
+      plan: { ...session.plan, observability: monitoredPlan({ on: "app" }).observability },
+    } as MoveSession;
+    const side = cloudSide("old");
+    await side.stopServices(monitored, ["db"]);
+    await side.startServices(monitored, ["db"]);
+    // With no service on the app's server, the stack still stops and starts.
+    await side.stopServices(monitored, []);
+    expect(ops(h, OLD_IPV4)).toEqual([
+      "stop db",
+      "docker compose -p opscrew-monitoring stop -t 120",
+      "docker compose -p opscrew-monitoring start",
+      "start db",
+      "docker compose -p opscrew-monitoring stop -t 120",
+    ]);
+    // Monitoring on its own server stays where it is: nothing of it stops here.
+    const elsewhere = {
+      ...session,
+      plan: { ...session.plan, observability: monitoredPlan({ on: "server" }).observability },
+    } as MoveSession;
+    await cloudSide("new").stopServices(elsewhere, ["db"]);
+    expect(ops(h, NEW.ipv4)).toEqual(["stop db"]);
+  });
+
   it("refuses a service the app's server does not run, before reaching it", async () => {
     const h = await moveHarness();
     const { session } = await moving(h);

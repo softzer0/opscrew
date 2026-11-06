@@ -380,7 +380,12 @@ export interface ServerHostPlansInput {
   repository: string;
   planOnly: boolean;
   command: string;
-  phase: Extract<PhaseName, "provision" | "dns">;
+  phase: Extract<PhaseName, "provision" | "dns" | "retarget">;
+  /**
+   * How the app's server is reached when it is not the one recorded: a move's new app server
+   * (`opscrew retarget`), whose address the record gives the old one's slot until `--finish`.
+   */
+  app?: NetworkServer;
 }
 
 /**
@@ -461,13 +466,15 @@ async function serversExist(deps: PhaseDeps, plan: DeployPlan): Promise<boolean>
  * listens on there (`networkSshPort`): on the user's own (the app's or an extra one) its admin
  * login as provision prepared it, with what inspection finds there now, alone when no other
  * OpsCrew app is active there; on one OpsCrew created the deploy user's shell (`services.remote`,
- * else `serverRemote`), as `opscrew vpn` reaches it (`networkServer`).
+ * else `serverRemote`), as `opscrew vpn` reaches it (`networkServer`). The app's server is
+ * `input.app` when given (a move's new app server).
  */
 export async function serverForNetwork(
   deps: PhaseDeps,
-  input: Pick<ServerHostPlansInput, "plan" | "services" | "ownRun" | "extraOwn" | "phase">,
+  input: Pick<ServerHostPlansInput, "plan" | "services" | "ownRun" | "extraOwn" | "phase" | "app">,
   name: string,
 ): Promise<NetworkServer> {
+  if (name === APP_SERVER && input.app !== undefined) return input.app;
   const own =
     name === APP_SERVER ? input.ownRun : input.extraOwn.find((server) => server.name === name);
   if (own !== undefined) {
