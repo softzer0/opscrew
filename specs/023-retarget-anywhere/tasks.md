@@ -154,7 +154,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 4: Wave 3 (parallel)
 
-- [ ] T2309 [US1] [US2] [US3] Start, steps, window and switch
+- [x] T2309 [US1] [US2] [US3] Start, steps, window and switch
   - Owns: `packages/agents/src/retarget/{start,steps,window,switch,run,session,servers,layouts,types,texts,plans,server-ops}.ts` (+ tests), and the phase type in `packages/agents/src/provision/own.ts`
   - Depends: T2305, T2306, T2307, T2308
   - Accept:
@@ -281,6 +281,17 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
     - "To keep a service": place it on an extra server first.
     - The shorter "can't move yet" list.
   - Verify: `pnpm lint`
+  - Effort: medium
+
+- [ ] T2320 [US2] Found in T2309: a Portainer target whose records OpsCrew manages, and the paused deploys' hint
+  - Owns: `packages/agents/src/destroy/portainer*.ts`, `packages/agents/src/drift/portainer*.ts`, `packages/agents/src/move/deploys.ts` (+ tests)
+  - Depends: T2309
+  - Accept:
+    - `destroy` of a Portainer target with `web.records: true` deletes its DNS records with the rest
+      (its root holds `module.dns` now), after the typed name; `drift` compares them.
+    - `withDeploysPaused`'s hint names the command that holds the pause (`opscrew retarget` in a move,
+      `opscrew provision` otherwise), not always provision.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
 
 ## Phase 7: Live
