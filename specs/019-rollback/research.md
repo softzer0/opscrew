@@ -593,7 +593,7 @@ steps.
 
 | Tool | Records | Read with | Goes down with |
 |---|---|---|---|
-| Rails | the version | `bin/rails db:version` ("Current version: …") | `bin/rails db:migrate VERSION=<v>` (v stays applied) |
+| Rails | the version (one per database since T1942) | `bin/rails db:version` ("Current version: …"); since T1942 a `bin/rails runner` one-liner naming each database.yml entry | `bin/rails db:migrate VERSION=<v>` (v stays applied) |
 | Django | the last applied migration of each app | `python manage.py showmigrations --plan` (`[X]` lines, in order) | `python manage.py migrate <app> <name> --noinput` for each app, `zero` for one with none |
 | Alembic | the revision | `alembic current` | `alembic downgrade <rev>` (`base` for none) |
 | Flask-Migrate | the revision | `flask db current` | `flask db downgrade <rev>` |
@@ -617,10 +617,16 @@ Not offered in this release:
 - **Not verified against a real container yet:** goose, golang-migrate, Doctrine, Sequel, Ecto,
   MikroORM, Kysely, node-pg-migrate, db-migrate, Hanami, Masonite, Aerich, Tortoise, Piccolo,
   Yoyo, Flask-DB. Each can join later as one row of the table.
-- **Several databases or heads** (T1935's review): a Rails app with several databases prints one
-  `Current version:` per database, and `db:migrate VERSION=` doesn't target one of them; Alembic
-  with several heads prints several revisions. The deploy records nothing for such a version, with
-  a warning that says why, so its rollback doesn't offer down migrations.
+- **Several heads** (T1935's review, T1943): Alembic with several heads prints several revisions.
+  The deploy records nothing for such a version, with a warning that says why, so its rollback
+  doesn't offer down migrations; since T1943 such a project deploys with `alembic upgrade heads`.
+- **Several Rails databases, supported since T1942** (founder, 2026-11-06): `db:version` prints
+  each database's own name (`shop_production_queue`) while `db:migrate:<name>` takes the
+  `config/database.yml` entry's (`queue`). So the detected status is
+  `bin/rails runner "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }"`
+  (`with_temporary_pool` is private in Rails 8.1.0). Several databases record
+  `database=<entry> <v>` lines and go down with `db:migrate:<entry> VERSION=<v>`, checked on Rails
+  8.1.0 with PostgreSQL entries `primary` and `queue`.
 
 ### The real outputs (T1935's Docker test, 2026-11-06)
 

@@ -234,8 +234,9 @@ A migration your tool can't undo stops them; then OpsCrew puts the database back
 before (see [When a database step fails](#when-a-database-step-fails)).
 
 Other tools, such as Prisma and Drizzle, have no down migrations OpsCrew can run: use the snapshot.
-A Rails app with several databases, or Alembic with several heads (branches of migrations), gets
-no record either: the deploy says so, and its rollback offers the snapshot or keep.
+A Rails app with several databases (Solid Cache, Queue or Cable in their own, say) migrates each
+one down in turn. Alembic with several heads (branches of migrations) gets no record: the deploy
+says so, and its rollback offers the snapshot or keep.
 
 ### Keep it as it is
 
