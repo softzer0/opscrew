@@ -10,7 +10,7 @@ description: "Tasks for 019-rollback"
 
 plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
-**Numbering**: T1901–T1999 (the database follow-up: T1930–T1938).
+**Numbering**: T1901–T1999 (the database follow-up: T1930–T1941).
 
 **Format**: `- [ ] T#### [P] [USn] description` + `Owns / Reads / Depends / Accept / Verify / Effort`.
 
@@ -796,5 +796,62 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
     - Gated as the rollback pass is, and its steps documented in `docs/e2e.md`.
   - Verify: `pnpm turbo run typecheck --filter=opscrew`; the live pass itself is T1938's
   - Effort: high
+
+### The simplify pass's findings (T1938; two reviewers by side, 2026-11-06)
+
+- [ ] T1939 One owner of the server contract and the database kinds, and the scripts' simplifications, in `packages/plan-schema/src/**`, `packages/iac-templates/src/{index.ts,shared.ts,workflow/**,previews/**}`, `packages/agents/src/{rollback,destroy}/**` and `packages/agents/src/design/release.ts` (+ tests)
+  - Owns: those paths, except `workflow/__fixtures__/sh.ts` (T1940)
+  - Reads: the two simplify reviews' findings as listed here; plan.md 12.3–12.4
+  - Accept:
+    - **The server contract has one owner, `@opscrew/iac-templates`:**
+      - `agents/src/rollback/database.ts` imports `ROLLBACK_APPROVAL_FILE`, `snapshotTakenPath`, `schemaRecordPath` and `rollbackApprovalLine` and deletes its own copies;
+      - `rollbackApprovalLine` returns no trailing newline, and its writers add one;
+      - iac-templates' own `DatabaseChoice` goes (the choice is typed `"snapshot" | "migrations"` inline);
+      - `SNAPSHOTS_DIR`, `SNAPSHOT_LOG`, `SCHEMA_DIR` and `DatabaseChoice` leave the package root.
+    - **One list of the four database kinds:**
+      - plan-schema's `SNAPSHOT_KINDS` becomes an `as const` list named `DATABASE_KINDS`, with `snapshotDatabases(plan)` (the app server's services of those kinds) beside it;
+      - `snapshotsOn`, the rollback's `unreadReason` and iac-templates' `snapshots.ts` use them;
+      - `DATABASES` is typed by the kind, so the impossible `throw` goes;
+      - `design/release.ts` and `destroy/checks.ts` import the list instead of their own.
+    - **One preview guard:**
+      - `switchCommands` renders the snapshot step and the migration record only when the database step applies;
+      - `o.preview` is folded into `databaseRollback(plan, o)`;
+      - the dead `environment.previews` check, the template's `snapshots: false` override and `migrationRecord`'s options parameter go (and with it the type import from `switch.ts`).
+    - **Dead script parts and branches:**
+      - `rollbackCommands` renders only `snapshot_run` and `snapshot_restore`;
+      - `migrationDown(plan, migrations)` loses its branch for a plan without migrations, and that branch's test.
+    - **Shared message helpers:** `printfFormat`, the release log's name and one `serverLogNote(plan, log)` in `shared.ts`, replacing the three copies of "stays on the server in …".
+    - **Smaller:**
+      - `record.ts`'s hash without conditional spreads (`canonicalJson` drops undefined members; the hash bytes stay the same);
+      - `serverFolder`'s one-caller `run` inlined;
+      - the "30 minutes" text from `APPROVAL_SECONDS`;
+      - the tautological `MIGRATION_TOOLS` test goes;
+      - `database.test.ts`'s duplicates of `run.test.ts`'s scenarios go;
+      - `hexOf` instead of `.slice("sha256:".length)`;
+      - comments longer than their code shortened to one line pointing at plan.md 12.4.
+    - **No behaviour change:** every rendered script's behaviour and every approval hash stay the same, so the snapshot fixtures change only where text was dead or duplicated. Say which fixtures changed and why.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T1940 Shared shell-test helpers, in `packages/iac-templates/src/workflow/__fixtures__/sh.ts` and the tests that use them (+ a shared Docker skip reason)
+  - Owns: `packages/iac-templates/src/workflow/__fixtures__/sh.ts`, `packages/iac-templates/src/workflow/{snapshots,migrations,switch,rollback}.test.ts`, the iac-templates Docker tests' skip reasons
+  - Depends: T1939
+  - Accept:
+    - `shWorks`, `write`, `fakeBin(work, { name: script })`, `runSh(script, args, env)` and the fake docker's compose prologue live once in `__fixtures__/sh.ts`;
+    - the follow-up's unit tests use them;
+    - the Docker tests share one `skipReason`.
+    - No test is dropped, and none changes what it checks.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
+  - Effort: medium
+
+- [ ] T1941 The detect tests in one home, and the small leftovers, in `packages/detect/src/release/*.test.ts`, `packages/agents/src/design/{kept-edits,strategy}.ts` and `packages/cli/src/commands/rollback.ts`
+  - Owns: those files (+ their tests)
+  - Accept:
+    - **The detect tests:** the "tools without down migrations" `it.each` block and the two positive cases (Rails, Alembic) that `migrations.test.ts` repeats from the per-tool files have one home (the per-tool files keep theirs; `migrations.test.ts` keeps what only it checks).
+    - **The design files:** `kept-edits.ts`'s second migrations block joins the field loop if that stays readable, and its comments past 100 characters and `strategy.ts`'s broken doc comment are rewrapped.
+    - **The CLI:** `rollback.ts`'s one-use `CheckedFlags` is inlined.
+    - No behaviour change.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/agents --filter=opscrew`
+  - Effort: medium
 
 - [ ] T1938 The live runs and the simplify pass (lead): T1937's pass until it passes, `docs/e2e-coverage.md` per run, then `/simplify` over the follow-up's diff. It ships in 023's release (T2319).
