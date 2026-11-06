@@ -1,6 +1,6 @@
 /**
  * `@opscrew/connector-docker` (feature 023): a typed subset of the Docker Engine API over an
- * injected `DockerTransport`, the carrier operations that read, empty, write and hash a volume,
+ * injected `DockerTransport`, the carrier operations that read, empty, write and hash a volume, one-off containers,
  * and the transport over `docker system dial-stdio` (the Docker API of a server, over SSH).
  */
 
@@ -17,3 +17,5 @@ export {
   type MountSpec,
 } from "./client";
 export { dialStdioTransport } from "./dial-stdio";
+export { ContainerLeftError, type OneOffResult, runOneOff } from "./one-off";
+export { type TarEntry, tarStream } from "./tar";

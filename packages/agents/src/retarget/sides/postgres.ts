@@ -6,16 +6,18 @@
  * (`.pgpass` format) written through the archive `PUT` before it starts, never in its environment
  * or command. The flags and users are those of `server-ops.ts`.
  */
-import { Readable } from "node:stream";
 import {
-  type ContainerSpec,
-  DockerApiError,
+  ContainerLeftError,
   type DockerClient,
+  type OneOffResult,
+  runOneOff,
   sweepCarriers,
+  tarStream,
 } from "@opscrew/connector-docker";
 import { errorMessage, OpsCrewError } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
 import { pollUntil } from "../../shared";
+import { withoutData } from "../server-ops";
 import type { SideDocker } from "./types";
 
 /** The app's Postgres on one side of a move. */
@@ -46,50 +48,6 @@ export function moveDumpVolume(app: string): string {
   return `opscrew-move-dump-${app}`;
 }
 
-/** What a one-off container printed, and how it ended. */
-export interface OneOffResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-}
-
-/**
- * Runs a one-off container of `spec` to its end, pulling its image when the host lacks it, and
- * removes it afterwards (also when it fails). `before` runs once it is created and before it
- * starts, such as an archive `PUT`.
- */
-export async function runOneOff(
-  client: DockerClient,
-  spec: ContainerSpec,
-  before?: (id: string) => Promise<void>,
-): Promise<OneOffResult> {
-  let id: string;
-  try {
-    id = await client.createContainer(spec);
-  } catch (error) {
-    if (!(error instanceof DockerApiError && error.status === 404)) throw error;
-    await client.pullImage(spec.image);
-    id = await client.createContainer(spec);
-  }
-  let result: OneOffResult;
-  try {
-    await before?.(id);
-    await client.startContainer(id);
-    const exitCode = await client.waitContainer(id);
-    result = { exitCode, ...(await client.containerLogs(id)) };
-  } catch (error) {
-    // A container left behind may hold the database's password file: never silently.
-    try {
-      await client.removeContainer(id);
-    } catch {
-      throw leftBehind(error, id);
-    }
-    throw error;
-  }
-  await client.removeContainer(id);
-  return result;
-}
-
 /** `cause`, and that the one-off container `id` could not be removed after it either. */
 function leftBehind(cause: unknown, id: string): OpsCrewError {
   const short = id.slice(0, 12);
@@ -107,40 +65,12 @@ function pgpassField(value: string): string {
   return value.replace(/[\\:]/g, (char) => `\\${char}`);
 }
 
-/** A tar of one file, `name`, owned by root with mode 0600. */
-function secretFileTar(name: string, content: string): Readable {
-  const data = Buffer.from(content, "utf8");
-  const header = Buffer.alloc(512);
-  const octal = (value: number, width: number) => `${value.toString(8).padStart(width - 1, "0")}\0`;
-  header.write(name, 0, 100, "utf8");
-  header.write(octal(0o600, 8), 100);
-  header.write(octal(0, 8), 108);
-  header.write(octal(0, 8), 116);
-  header.write(octal(data.length, 12), 124);
-  header.write(octal(0, 12), 136);
-  header.write(" ".repeat(8), 148);
-  header.write("0", 156);
-  header.write("ustar\u000000", 257);
-  const sum = header.reduce((total, byte) => total + byte, 0);
-  header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148);
-  const padding = Buffer.alloc((512 - (data.length % 512)) % 512);
-  return Readable.from([Buffer.concat([header, data, padding, Buffer.alloc(1024)])], {
-    objectMode: false,
-  });
-}
-
 /**
- * Keeps only Postgres tool messages from a one-off container's output: lines that can quote row
- * data or SQL (`DETAIL:`, `CONTEXT:`, `Command was:`, a tool's `detail:` and `hint:` lines,
- * indented continuations) are dropped, and only the last line that is left is kept.
+ * The last Postgres tool message of a one-off container's output: {@link withoutData} drops the
+ * lines that can quote row data or SQL.
  */
 function lastMessage(stderr: string): string {
-  const dataLine =
-    /^(DETAIL|CONTEXT|HINT|QUERY|STATEMENT|LINE \d+|Command was):|^[\w.-]+: (detail|hint):/;
-  const lines = stderr
-    .split(/\r?\n/)
-    .filter((line) => line.trim().length > 0 && !/^\s/.test(line) && !dataLine.test(line));
-  return (lines.at(-1) ?? "").slice(0, 300);
+  return (withoutData(stderr).split("\n").at(-1) ?? "").slice(0, 300);
 }
 
 /** The plain error when a one-off container could not `what` on the side. */
@@ -170,6 +100,7 @@ function postgresOneOff(
 ): Promise<OneOffResult> {
   const volume = moveDumpVolume(db.app);
   const pgpass = `${pgpassField(db.service)}:5432:*:app:${pgpassField(db.password)}\n`;
+  const file = { name: PGPASS.slice(1), type: "file", mode: 0o600, uid: 0, gid: 0 } as const;
   return runOneOff(
     client,
     {
@@ -180,8 +111,13 @@ function postgresOneOff(
       mounts: [{ type: "volume", source: volume, target: MOUNT }],
       network: `${db.project}_internal`,
     },
-    login ? (id) => client.putArchive(id, "/", secretFileTar(PGPASS.slice(1), pgpass)) : undefined,
-  );
+    login
+      ? (id) => client.putArchive(id, "/", tarStream([{ ...file, data: Buffer.from(pgpass) }]))
+      : undefined,
+  ).catch((error: unknown) => {
+    // A container left behind may hold the database's password file: never silently.
+    throw error instanceof ContainerLeftError ? leftBehind(error.cause, error.id) : error;
+  });
 }
 
 /**
@@ -292,23 +228,6 @@ export async function emptyPostgres(docker: SideDocker, db: MovePostgres): Promi
     true,
   );
   if (recreated.exitCode !== 0) throw failed("empty the database", recreated, DATABASE_HINT);
-}
-
-/**
- * The new side, after the window copied the move volume: checks the copy (`pg_restore --list`,
- * and its SHA-256 must be `sha256`, the dump's on the old side), waits until Postgres takes
- * connections (`pg_isready`, about 2 minutes at most), then recreates the `app` database empty
- * ({@link emptyPostgres}) and restores the dump into it in one transaction (`--no-owner
- * --single-transaction`).
- */
-export async function restorePostgres(
-  docker: SideDocker,
-  db: MovePostgres,
-  sha256: string,
-  waits: Waits = {},
-): Promise<void> {
-  await checkCopiedDump(docker, db, sha256);
-  await restoreCheckedDump(docker, db, waits);
 }
 
 /**

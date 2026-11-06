@@ -13,9 +13,12 @@ export interface OpenedStream {
   args: readonly string[];
 }
 
-/** An HTTP server answering with `docker`'s API: what `docker system dial-stdio` reaches. */
-function serving(docker: DockerTransport) {
-  return (request: IncomingMessage, response: ServerResponse) => {
+/** An HTTP server's handler: what `docker system dial-stdio` reaches. */
+type DialHandler = (request: IncomingMessage, response: ServerResponse) => void;
+
+/** An HTTP server's handler answering with `docker`'s API. */
+function serving(docker: DockerTransport): DialHandler {
+  return (request, response) => {
     const method = request.method as DockerRequest["method"];
     docker
       .request({
@@ -36,17 +39,31 @@ function serving(docker: DockerTransport) {
   };
 }
 
+/** A {@link fakeDialStdio}: its starts, how many it killed, their exits, and `close`. */
+export interface FakeDialStdio extends StreamRunner {
+  readonly opened: OpenedStream[];
+  readonly killed: number;
+  readonly exits: Promise<unknown>[];
+  /** Ends the HTTP server and its connections. */
+  close(): void;
+}
+
 /**
- * A test `StreamRunner` whose every process is a byte pipe to `docker`'s API, as `ssh … docker
- * system dial-stdio` is to a server's Docker. `opened` lists each start; `close` ends the server.
+ * A test `StreamRunner` whose every process is a byte pipe to an HTTP server answering with
+ * `docker`'s API (or with `handler`), as `ssh … docker system dial-stdio` is to a server's Docker.
+ * A process exits once the server closes its connection, or it is killed.
  */
-export function fakeDialStdio(
-  docker: DockerTransport,
-): StreamRunner & { opened: OpenedStream[]; close(): void } {
-  const server: Server = createServer(serving(docker));
+export function fakeDialStdio(docker: DockerTransport | DialHandler): FakeDialStdio {
+  const server: Server = createServer(typeof docker === "function" ? docker : serving(docker));
   const opened: OpenedStream[] = [];
+  const exits: Promise<unknown>[] = [];
+  let killed = 0;
   return {
     opened,
+    exits,
+    get killed() {
+      return killed;
+    },
     open(command, args): StreamProcess {
       opened.push({ command, args });
       const [local, remote] = duplexPair();
@@ -54,10 +71,14 @@ export function fakeDialStdio(
       const exit = new Promise<{ exitCode: number; stderr: string }>((resolve) => {
         remote.on("close", () => resolve({ exitCode: 0, stderr: "" }));
       });
+      exits.push(exit);
+      let done = false;
       return {
         stream: local,
         exit,
         kill: () => {
+          if (!done) killed++;
+          done = true;
           local.destroy();
           remote.destroy();
         },

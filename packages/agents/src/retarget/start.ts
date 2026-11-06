@@ -550,10 +550,10 @@ export function moveSummary(
   const cloudOld = isCloudProvider(from.provider);
   const prepare =
     to.provider === "hetzner" || to.provider === "digitalocean"
-    ? `Create ${fresh} (${to.serverType} in ${to.location}) next to ${old}.`
-    : to.provider === "own"
-      ? `Set up ${fresh} for the app with a host plan you approve by its hash, beside any other apps there.`
-      : "Check your Portainer environment for the app's stacks.";
+      ? `Create ${fresh} (${to.serverType} in ${to.location}) next to ${old}.`
+      : to.provider === "own"
+        ? `Set up ${fresh} for the app with a host plan you approve by its hash, beside any other apps there.`
+        : "Check your Portainer environment for the app's stacks.";
   const deploy =
     to.provider === "portainer"
       ? `Point the GitHub deploy secrets at ${fresh}, set up the app's stacks there with the version ${old} runs (a stack plan you approve by its hash) and check the app; the stack's Caddy stays stopped until the switch.`

@@ -30,15 +30,12 @@ export interface ContainerMount {
 /** What {@link DockerClient.createContainer} creates. */
 export interface ContainerSpec {
   image: string;
-  name?: string;
   cmd?: readonly string[];
   env?: Record<string, string>;
   labels?: Record<string, string>;
-  /** Volume mounts, `volume:/path` or `volume:/path:ro`. */
-  binds?: readonly string[];
   /**
-   * Mounts by Docker's `Mounts` API. Unlike `binds`, Docker refuses a bound folder that doesn't
-   * exist rather than creating it (a named volume is still created).
+   * Mounts by Docker's `Mounts` API: Docker refuses a bound folder that doesn't exist rather than
+   * creating it (a named volume is still created).
    */
   mounts?: readonly MountSpec[];
   /** The network it joins (`none` for none); Docker's default bridge when omitted. */
@@ -97,7 +94,7 @@ export interface DockerClient {
   listVolumes(labels?: readonly string[]): Promise<DockerVolume[]>;
   /** True when the volume exists (Docker answers 404 when it doesn't). */
   volumeExists(name: string): Promise<boolean>;
-  createVolume(name: string, labels?: Record<string, string>): Promise<void>;
+  createVolume(name: string): Promise<void>;
   removeVolume(name: string): Promise<void>;
   /** Each volume's size in bytes, by name; a volume whose size Docker can't tell is left out. */
   volumeSizes(): Promise<Map<string, number>>;
@@ -284,7 +281,6 @@ export function dockerClient(transport: DockerTransport): DockerClient {
         Env: Object.entries(spec.env ?? {}).map(([name, value]) => `${name}=${value}`),
         Labels: spec.labels ?? {},
         HostConfig: {
-          Binds: spec.binds ?? [],
           Mounts: spec.mounts?.map((mount) => ({
             Type: mount.type,
             Source: mount.source,
@@ -294,11 +290,10 @@ export function dockerClient(transport: DockerTransport): DockerClient {
           NetworkMode: spec.network,
         },
       };
-      const query = spec.name === undefined ? "" : `?name=${encodeURIComponent(spec.name)}`;
       const created = await json(
         {
           method: "POST",
-          path: `/containers/create${query}`,
+          path: "/containers/create",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         },
@@ -396,13 +391,13 @@ export function dockerClient(transport: DockerTransport): DockerClient {
       return response.status !== 404;
     },
 
-    createVolume: (name, labels = {}) =>
+    createVolume: (name) =>
       done(
         {
           method: "POST",
           path: "/volumes/create",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ Name: name, Labels: labels }),
+          body: JSON.stringify({ Name: name }),
         },
         `create volume ${name}`,
       ),

@@ -2,45 +2,25 @@ import { once } from "node:events";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { duplexPair, Readable } from "node:stream";
-import type { DockerRequest, DockerTransport, StreamProcess } from "@opscrew/contracts";
+import type { StreamProcess } from "@opscrew/contracts";
 import { NodeStreamRunner, OpsCrewError } from "@opscrew/core";
 import { afterEach, describe, expect, it } from "vitest";
 import { volumeCarrier } from "./carrier";
 import { dockerClient } from "./client";
 import { dialStdioTransport } from "./dial-stdio";
+import { type FakeDialStdio, fakeDialStdio } from "./testing/dial-stdio";
 import { FakeDocker } from "./testing/fake-docker";
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
-/** An HTTP server for `transport`'s Docker: what `docker system dial-stdio` reaches. */
-function serving(transport: DockerTransport): Handler {
-  return (request, response) => {
-    const method = request.method as DockerRequest["method"];
-    transport
-      .request({
-        method,
-        path: request.url ?? "/",
-        ...(method === "PUT" || method === "POST" ? { body: request } : {}),
-      })
-      .then(
-        (answer) => {
-          response.writeHead(answer.status, answer.headers);
-          answer.body.pipe(response);
-        },
-        (error: unknown) => {
-          response.writeHead(500);
-          response.end(String(error));
-        },
-      );
-  };
-}
-
 const servers: Server[] = [];
+const dialers: FakeDialStdio[] = [];
 afterEach(() => {
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
     server.close();
   }
+  for (const dialer of dialers.splice(0)) dialer.close();
 });
 
 /**
@@ -69,37 +49,11 @@ async function relayed(handler: Handler) {
   return { server, open, processes };
 }
 
-/**
- * A fake `ssh … docker system dial-stdio`: each `open` is a byte pipe to `handler`'s HTTP server.
- * `opened` and `killed` count the processes.
- */
-function dialer(handler: Handler) {
-  const server = createServer(handler);
-  servers.push(server);
-  const counts = { opened: 0, killed: 0, exits: [] as Promise<unknown>[] };
-  const open = (): StreamProcess => {
-    counts.opened++;
-    const [local, remote] = duplexPair();
-    server.emit("connection", remote);
-    let settle: (value: { exitCode: number; stderr: string }) => void = () => {};
-    const exit = new Promise<{ exitCode: number; stderr: string }>((resolve) => {
-      settle = resolve;
-    });
-    counts.exits.push(exit);
-    remote.on("close", () => settle({ exitCode: 0, stderr: "" }));
-    let killed = false;
-    return {
-      stream: local,
-      exit,
-      kill: () => {
-        if (!killed) counts.killed++;
-        killed = true;
-        local.destroy();
-        remote.destroy();
-      },
-    };
-  };
-  return { open, counts };
+/** {@link fakeDialStdio} for `docker`, closed after the test; `open` starts one of its processes. */
+function dialer(docker: Parameters<typeof fakeDialStdio>[0]) {
+  const fake = fakeDialStdio(docker);
+  dialers.push(fake);
+  return { counts: fake, open: () => fake.open("ssh", ["docker", "system", "dial-stdio"]) };
 }
 
 /** A process that exits at once, as `ssh` does when it can't log in. */
@@ -126,15 +80,13 @@ async function text(body: Readable): Promise<string> {
 describe("dialStdioTransport", () => {
   it("speaks HTTP/1.1 to Docker over one process, kept for the next request", async () => {
     const fake = new FakeDocker();
-    const { open, counts } = dialer(serving(fake));
+    const { open, counts } = dialer(fake);
     const transport = dialStdioTransport(open);
     const docker = dockerClient(transport);
-    await docker.createVolume("example-app_data", { "com.docker.compose.volume": "data" });
-    expect(await docker.listVolumes()).toEqual([
-      { name: "example-app_data", labels: { "com.docker.compose.volume": "data" } },
-    ]);
+    await docker.createVolume("example-app_data");
+    expect(await docker.listVolumes()).toEqual([{ name: "example-app_data", labels: {} }]);
     expect(await docker.volumeSizes()).toEqual(new Map([["example-app_data", 0]]));
-    expect(counts.opened).toBe(1);
+    expect(counts.opened).toHaveLength(1);
     await transport.close?.();
     expect(counts.killed).toBe(1);
   });
@@ -148,7 +100,7 @@ describe("dialStdioTransport", () => {
     hosts[1]?.addVolume("example-copy");
     const data = { kind: "volume", name: "example-app_data" } as const;
     const copy = { kind: "volume", name: "example-copy" } as const;
-    const transports = hosts.map((fake) => dialStdioTransport(dialer(serving(fake)).open));
+    const transports = hosts.map((fake) => dialStdioTransport(dialer(fake).open));
     const [source, target] = transports.map((transport) =>
       volumeCarrier(dockerClient(transport), "busybox:test"),
     );
@@ -219,7 +171,7 @@ describe("dialStdioTransport", () => {
     const slow = await transport.request({ method: "GET", path: "/held" });
     const quick = await transport.request({ method: "GET", path: "/quick" });
     expect(await text(quick.body)).toBe("quick");
-    expect(counts.opened).toBe(2);
+    expect(counts.opened).toHaveLength(2);
     await transport.close?.();
     expect(counts.killed).toBe(2);
     await Promise.all(counts.exits);

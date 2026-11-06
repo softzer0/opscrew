@@ -2,6 +2,7 @@ import path from "node:path";
 import { type Readable, Transform } from "node:stream";
 import { errorMessage, OpsCrewError } from "@opscrew/core";
 import { DockerApiError, type DockerClient, type MountSpec } from "./client";
+import { ContainerLeftError, createPulled, type OneOffResult, runOneOff } from "./one-off";
 
 /** Where a carrier mounts its source; an archive holds the source's files under `data/`. */
 const MOUNT = "/data";
@@ -134,60 +135,50 @@ export function volumeCarrier(
   }
 
   /**
-   * Creates a carrier for `source` with `mounts` (Docker's `Mounts`, so a folder that isn't there
-   * is refused, never created) and `cmd`, pulling the image when the host lacks it.
+   * A carrier for `source` with `mounts` (Docker's `Mounts`, so a folder that isn't there is
+   * refused, never created) and `cmd`.
    */
+  const carrierSpec = (source: CarrierSource, mounts: MountSpec[], cmd?: string[]) => ({
+    image,
+    ...(cmd === undefined ? {} : { cmd }),
+    labels: { [CARRIER_LABEL]: located(source) },
+    mounts,
+    network: "none",
+  });
+
+  /** Docker's refusal of a missing folder (or of the parent the link check mounts) as {@link missing}. */
+  function absentAsMissing(source: CarrierSource, error: unknown): unknown {
+    const absent = /bind source path does not exist/.test(errorMessage(error));
+    return error instanceof DockerApiError && absent ? missing(source) : error;
+  }
+
+  /** Creates a carrier ({@link carrierSpec}), pulling the image when the host lacks it. */
   async function create(
     source: CarrierSource,
     mounts: MountSpec[],
     cmd?: string[],
   ): Promise<string> {
-    const spec = {
-      image,
-      ...(cmd === undefined ? {} : { cmd }),
-      labels: { [CARRIER_LABEL]: located(source) },
-      mounts,
-      network: "none",
-    };
-    const attempt = () =>
-      docker.createContainer(spec).catch((error: unknown) => {
-        // Docker's refusal of a missing folder, or of the parent the link check mounts.
-        const absent = /bind source path does not exist/.test(errorMessage(error));
-        throw error instanceof DockerApiError && absent ? missing(source) : error;
-      });
     try {
-      return await attempt();
+      return await createPulled(docker, carrierSpec(source, mounts, cmd));
     } catch (error) {
-      if (!(error instanceof DockerApiError && error.status === 404)) throw error;
-      await docker.pullImage(image);
-      return attempt();
+      throw absentAsMissing(source, error);
     }
   }
 
-  /** Runs `use` with a new carrier, then removes it; a failure of `use` wins over the removal's. */
-  async function withCarrier<T>(
+  /**
+   * Runs a carrier to its end ({@link runOneOff}) and returns its exit code and output. A failure
+   * wins over the removal's: a carrier it could not remove is left for sweepCarriers.
+   */
+  async function run(
     source: CarrierSource,
     mounts: MountSpec[],
     cmd: string[],
-    use: (id: string) => Promise<T>,
-  ): Promise<T> {
-    const id = await create(source, mounts, cmd);
-    let result: T;
+  ): Promise<OneOffResult> {
     try {
-      result = await use(id);
+      return await runOneOff(docker, carrierSpec(source, mounts, cmd));
     } catch (error) {
-      await docker.removeContainer(id).catch(() => {});
-      throw error;
+      throw absentAsMissing(source, error instanceof ContainerLeftError ? error.cause : error);
     }
-    await docker.removeContainer(id);
-    return result;
-  }
-
-  /** Starts carrier `id`, waits for it, and returns its exit code and output. */
-  async function finish(id: string) {
-    await docker.startContainer(id);
-    const exitCode = await docker.waitContainer(id);
-    return { exitCode, ...(await docker.containerLogs(id)) };
   }
 
   function failed(act: string, source: CarrierSource, exitCode: number, stderr: string) {
@@ -199,11 +190,10 @@ export function volumeCarrier(
     );
   }
 
-  /** {@link finish}, failing plainly unless the carrier exits 0; returns its stdout. */
-  async function succeed(id: string, act: string, source: CarrierSource): Promise<string> {
-    const { exitCode, stdout, stderr } = await finish(id);
-    if (exitCode !== 0) throw failed(act, source, exitCode, stderr);
-    return stdout;
+  /** A carrier's stdout, failing plainly unless it exited 0. */
+  function succeeded(result: OneOffResult, act: string, source: CarrierSource): string {
+    if (result.exitCode !== 0) throw failed(act, source, result.exitCode, result.stderr);
+    return result.stdout;
   }
 
   /** The number the carrier printed first, or a plain failure saying it printed no `what`. */
@@ -240,7 +230,7 @@ export function volumeCarrier(
       readOnly: true,
     };
     const look = ["test", "!", "-L", `${PARENT_MOUNT}/${path.posix.basename(source.path)}`];
-    const { exitCode, stderr } = await withCarrier(source, [parent], look, finish);
+    const { exitCode, stderr } = await run(source, [parent], look);
     if (exitCode === 1) {
       throw new OpsCrewError(
         "INVALID_INPUT",
@@ -302,10 +292,18 @@ export function volumeCarrier(
       try {
         await check(source);
         const empty = ["find", MOUNT, "-mindepth", "1", "-delete"];
-        await withCarrier(source, [mounted(source, false)], empty, async (id) => {
-          await succeed(id, "empty", source);
+        const id = await create(source, [mounted(source, false)], empty);
+        try {
+          await docker.startContainer(id);
+          const exitCode = await docker.waitContainer(id);
+          succeeded({ exitCode, ...(await docker.containerLogs(id)) }, "empty", source);
           await docker.putArchive(id, "/", archive);
-        });
+        } catch (error) {
+          // A failure wins over the removal's: a carrier left behind is for sweepCarriers.
+          await docker.removeContainer(id).catch(() => {});
+          throw error;
+        }
+        await docker.removeContainer(id);
       } catch (error) {
         // A read carrier's archive closes once its carrier is removed: wait for that, so the
         // source's connection can be closed right after.
@@ -320,12 +318,8 @@ export function volumeCarrier(
 
     async volumeDigest(source) {
       await check(source);
-      const stdout = await withCarrier(
-        source,
-        [mounted(source, true)],
-        ["sh", "-c", DIGEST_SCRIPT],
-        (id) => succeed(id, "hash", source),
-      );
+      const result = await run(source, [mounted(source, true)], ["sh", "-c", DIGEST_SCRIPT]);
+      const stdout = succeeded(result, "hash", source);
       return printed(/^([0-9a-f]{64})\s/, stdout, "a hash", source);
     },
 
@@ -336,12 +330,8 @@ export function volumeCarrier(
       }
       // A folder, or a volume whose size Docker can't tell (another volume driver's).
       await check(source);
-      const stdout = await withCarrier(
-        source,
-        [mounted(source, true)],
-        ["du", "-sb", MOUNT],
-        (id) => succeed(id, "measure", source),
-      );
+      const result = await run(source, [mounted(source, true)], ["du", "-sb", MOUNT]);
+      const stdout = succeeded(result, "measure", source);
       return Number(printed(/^(\d+)\s/, stdout, "a size", source));
     },
   };

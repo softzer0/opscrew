@@ -3,8 +3,9 @@ import type { DockerRequest, DockerResponse, DockerTransport } from "@opscrew/co
 import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { DockerApiError, dockerClient } from "./client";
+import { tarStream } from "./tar";
 import { FakeDocker } from "./testing/fake-docker";
-import { parseTar, tarStream } from "./testing/tar";
+import { parseTar } from "./testing/tar";
 
 const IMAGE = "busybox:test";
 
@@ -27,26 +28,27 @@ function answering(status: number, body: string): DockerTransport & { requests: 
 }
 
 describe("dockerClient: containers", () => {
-  it("creates a container with its command, environment, labels, binds and network", async () => {
+  it("creates a container with its command, environment, labels, mounts and network", async () => {
     const fake = new FakeDocker();
     fake.images.add(IMAGE);
     const docker = dockerClient(fake);
+    const mounts = [
+      { type: "volume", source: "example-data", target: "/data", readOnly: true },
+    ] as const;
     const id = await docker.createContainer({
-      name: "example-app-job",
       image: IMAGE,
       cmd: ["sh", "-c", "true"],
       env: { MODE: "copy" },
       labels: { "opscrew.test": "1" },
-      binds: ["example-data:/data:ro"],
+      mounts,
       network: "none",
     });
     expect(fake.containers.get(id)).toMatchObject({
-      name: "example-app-job",
       image: IMAGE,
       cmd: ["sh", "-c", "true"],
       env: ["MODE=copy"],
       labels: { "opscrew.test": "1" },
-      binds: ["example-data:/data:ro"],
+      mounts,
       network: "none",
     });
   });
@@ -80,10 +82,11 @@ describe("dockerClient: containers", () => {
     fake.images.add(IMAGE);
     const docker = dockerClient(fake);
     const web = await docker.createContainer({
-      name: "example-app-web-1",
       image: IMAGE,
       labels: { "com.docker.compose.project": "example-app", "com.docker.compose.service": "web" },
     });
+    // Compose names its containers; Docker reports the name.
+    Object.assign(fake.containers.get(web) ?? {}, { name: "example-app-web-1" });
     await docker.createContainer({
       image: IMAGE,
       labels: { "com.docker.compose.project": "other" },
@@ -109,13 +112,19 @@ describe("dockerClient: containers", () => {
   it("reports each container's mounts: named volumes, bound folders and others", async () => {
     const fake = new FakeDocker();
     fake.images.add(IMAGE);
+    fake.addFolder("/srv/data/example-app/postgres");
     const docker = dockerClient(fake);
     await docker.createContainer({
       image: IMAGE,
       labels: { "com.docker.compose.project": "example-app" },
-      binds: [
-        "example-app_data:/var/lib/data",
-        "/srv/data/example-app/postgres:/var/lib/postgresql/data:ro",
+      mounts: [
+        { type: "volume", source: "example-app_data", target: "/var/lib/data" },
+        {
+          type: "bind",
+          source: "/srv/data/example-app/postgres",
+          target: "/var/lib/postgresql/data",
+          readOnly: true,
+        },
       ],
     });
     const [container] = await docker.listContainers(["com.docker.compose.project=example-app"]);
@@ -222,14 +231,20 @@ describe("dockerClient: archives", () => {
       "notes.txt": { type: "file", mode: 0o640, uid: 1000, gid: 1001, data: Buffer.from("hi") },
     });
     const docker = dockerClient(fake);
-    const reader = await docker.createContainer({ image: IMAGE, binds: ["example-data:/data:ro"] });
+    const reader = await docker.createContainer({
+      image: IMAGE,
+      mounts: [{ type: "volume", source: "example-data", target: "/data", readOnly: true }],
+    });
     const archive = await docker.getArchive(reader, "/data");
     expect(archive).toBeInstanceOf(Readable);
     const entries = parseTar(await readAll(archive));
     expect(entries.map((entry) => entry.name)).toEqual(["data/", "data/notes.txt"]);
 
     fake.addVolume("example-copy");
-    const writer = await docker.createContainer({ image: IMAGE, binds: ["example-copy:/data"] });
+    const writer = await docker.createContainer({
+      image: IMAGE,
+      mounts: [{ type: "volume", source: "example-copy", target: "/data" }],
+    });
     const upload = tarStream(entries);
     await docker.putArchive(writer, "/", upload);
     expect(fake.streamedBodies).toEqual([upload]);
@@ -252,16 +267,18 @@ describe("dockerClient: archives", () => {
 });
 
 describe("dockerClient: volumes and images", () => {
-  it("lists, creates and removes volumes, with labels", async () => {
+  it("lists volumes with their labels, creates and removes them", async () => {
     const fake = new FakeDocker();
     const docker = dockerClient(fake);
-    await docker.createVolume("example-app_data", { "com.docker.compose.volume": "data" });
+    await docker.createVolume("example-app_data");
+    fake.addVolume("example-app_cache", {}, { "com.docker.compose.volume": "cache" });
     fake.addVolume("unrelated");
-    expect(await docker.listVolumes(["com.docker.compose.volume=data"])).toEqual([
-      { name: "example-app_data", labels: { "com.docker.compose.volume": "data" } },
+    expect(await docker.listVolumes(["com.docker.compose.volume=cache"])).toEqual([
+      { name: "example-app_cache", labels: { "com.docker.compose.volume": "cache" } },
     ]);
     expect((await docker.listVolumes()).map((volume) => volume.name)).toEqual([
       "example-app_data",
+      "example-app_cache",
       "unrelated",
     ]);
     await docker.removeVolume("example-app_data");
@@ -318,7 +335,10 @@ describe("dockerClient: errors", () => {
     fake.addVolume("example-data");
     fake.images.add(IMAGE);
     const docker = dockerClient(fake);
-    await docker.createContainer({ image: IMAGE, binds: ["example-data:/data"] });
+    await docker.createContainer({
+      image: IMAGE,
+      mounts: [{ type: "volume", source: "example-data", target: "/data" }],
+    });
     const error = await docker.removeVolume("example-data").catch((reason: unknown) => reason);
     expect(error).toBeInstanceOf(DockerApiError);
     expect(error).toMatchObject({ code: "PROVIDER_ERROR", status: 409 });

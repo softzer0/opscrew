@@ -7,6 +7,7 @@ import {
   FakeDocker,
   type FakeFile,
   type FakeRun,
+  fakeDialStdio,
 } from "@opscrew/connector-docker/testing";
 import {
   COMPOSE_PROJECT_LABEL,
@@ -54,7 +55,6 @@ import {
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { PortainerServices } from "../provision/types";
-import { fakeDialStdio } from "../retarget/sides/ssh.fakes";
 import { isMaintenanceWindowRequest } from "../retarget/texts";
 import type { RetargetGitHubApi, RetargetServices } from "../retarget/types";
 import { ensureDeployKey, ensureStatePassphrase } from "../shared";

@@ -301,7 +301,8 @@ function needsState(plan: DeployPlan): boolean {
   if (!managedDns(plan)) return false;
   return (
     from.provider === "own" ||
-    (from.provider === "portainer" && portainerCloudflare({ ...plan, target: from })?.records === true)
+    (from.provider === "portainer" &&
+      portainerCloudflare({ ...plan, target: from })?.records === true)
   );
 }
 

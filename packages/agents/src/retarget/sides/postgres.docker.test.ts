@@ -19,12 +19,13 @@ import { NodeStreamRunner } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  checkCopiedDump,
   dumpPostgres,
   ensureDumpVolume,
   type MovePostgres,
   moveDumpVolume,
   removeDumpVolume,
-  restorePostgres,
+  restoreCheckedDump,
 } from "./postgres";
 import type { SideDocker } from "./types";
 
@@ -185,7 +186,8 @@ describe.skipIf(reason !== undefined)("Postgres in a move against the local Dock
     expect(await fresh.carrier.volumeDigest(to)).toBe(await old.carrier.volumeDigest(from));
 
     // It checks the copy's SHA-256 against the dump's before dropping anything.
-    await restorePostgres(fresh, newDb, digest);
+    await checkCopiedDump(fresh, newDb, digest);
+    await restoreCheckedDump(fresh, newDb);
     expect(psql(newDb, "select string_agg(item, ',' order by id) from orders")).toBe("tea,cake");
     expect(psql(newDb, "select to_regclass('stale') is null")).toBe("t");
 

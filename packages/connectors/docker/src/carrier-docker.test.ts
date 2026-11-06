@@ -58,12 +58,17 @@ describe.skipIf(reason !== undefined)("the carrier against the local Docker", ()
   const helpers: string[] = [];
   let hadImage = false;
 
-  /** Runs `script` in a busybox with `bind`, and fails with its output if it fails. */
+  /**
+   * Runs `script` in a busybox with `bind` (`<volume or host folder>:<path>`) mounted, and fails
+   * with its output if it fails.
+   */
   async function shell(bind: string, script: string): Promise<void> {
+    const [source = "", target = ""] = bind.split(":");
+    const type = source.startsWith("/") ? "bind" : "volume";
     const id = await here.createContainer({
       image: BUSYBOX,
       cmd: ["sh", "-c", script],
-      binds: [bind],
+      mounts: [{ type, source, target }],
       labels: { "opscrew.test": run },
       network: "none",
     });
@@ -89,8 +94,7 @@ describe.skipIf(reason !== undefined)("the carrier against the local Docker", ()
     const source = { kind: "volume", name: `opscrew-test-${run}-source` } as const;
     const target = { kind: "volume", name: `opscrew-test-${run}-target` } as const;
     try {
-      for (const { name } of [source, target])
-        await here.createVolume(name, { "opscrew.test": run });
+      for (const { name } of [source, target]) await here.createVolume(name);
       await shell(`${source.name}:/data`, SEED);
       await shell(`${target.name}:/data`, STALE);
 
@@ -107,9 +111,10 @@ describe.skipIf(reason !== undefined)("the carrier against the local Docker", ()
       );
       expect(copied).toBe(digest);
 
-      expect((await here.listVolumes([`opscrew.test=${run}`])).map((v) => v.name).sort()).toEqual(
-        [source.name, target.name].sort(),
+      const ours = (await here.listVolumes()).filter((v) =>
+        v.name.startsWith(`opscrew-test-${run}-`),
       );
+      expect(ours.map((v) => v.name).sort()).toEqual([source.name, target.name].sort());
       expect(await reader.sourceSize(source)).toBeGreaterThan(4 * 1024 * 1024);
       for (const { name } of [source, target]) {
         expect(await here.listContainers([`opscrew.carrier=${name}`])).toEqual([]);
@@ -149,7 +154,7 @@ describe.skipIf(reason !== undefined)("the carrier against the local Docker", ()
       expect(copied).toBe(digest);
       expect(await reader.sourceSize(source)).toBeGreaterThan(4 * 1024 * 1024);
 
-      await here.createVolume(volume.name, { "opscrew.test": run });
+      await here.createVolume(volume.name);
       await shell(`${volume.name}:/data`, SEED);
       await writer.writeVolume(target, await reader.readVolume(volume));
       expect(await writer.volumeDigest(target)).toBe(await reader.volumeDigest(volume));

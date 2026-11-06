@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import type { DockerRequest, DockerResponse, DockerTransport } from "@opscrew/contracts";
-import { parseTar, type TarEntry, tarStream } from "./tar";
+import { type TarEntry, tarStream } from "../tar";
+import { parseTar } from "./tar";
 
 /** A file, folder or link in a fake volume. */
 export type FakeFile = Omit<TarEntry, "name">;

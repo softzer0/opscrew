@@ -6,8 +6,9 @@ import { OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { type CarrierSource, sweepCarriers, volumeCarrier } from "./carrier";
 import { dockerClient } from "./client";
+import { tarStream } from "./tar";
 import { FakeDocker, type FakeFile } from "./testing/fake-docker";
-import { parseTar, tarStream } from "./testing/tar";
+import { parseTar } from "./testing/tar";
 
 const IMAGE = "busybox:1.38.0@sha256:0000";
 const ROOTS = ["/srv/data/"];
@@ -460,17 +461,22 @@ describe("sweepCarriers", () => {
   it("removes the carriers left for the given volumes and folders, and nothing else", async () => {
     const { fake } = host();
     fake.addVolume("other-app_data");
+    fake.addFolder(PG_PATH);
     const docker = dockerClient(fake);
-    const carrierOf = (label: string, bind: string) =>
-      docker.createContainer({ image: IMAGE, labels: { "opscrew.carrier": label }, binds: [bind] });
+    const carrierOf = (type: "volume" | "bind", source: string) =>
+      docker.createContainer({
+        image: IMAGE,
+        labels: { "opscrew.carrier": source },
+        mounts: [{ type, source, target: "/data", readOnly: true }],
+      });
     const leftovers = [
-      await carrierOf("example-app_data", "example-app_data:/data:ro"),
-      await carrierOf(PG_PATH, `${PG_PATH}:/data:ro`),
+      await carrierOf("volume", "example-app_data"),
+      await carrierOf("bind", PG_PATH),
     ];
-    const otherMove = await carrierOf("other-app_data", "other-app_data:/data:ro");
+    const otherMove = await carrierOf("volume", "other-app_data");
     const service = await docker.createContainer({
       image: IMAGE,
-      binds: ["example-app_data:/var/lib/data"],
+      mounts: [{ type: "volume", source: "example-app_data", target: "/var/lib/data" }],
     });
     await sweepCarriers(docker, [DATA, PG]);
     expect([...fake.containers.keys()].sort()).toEqual([otherMove, service].sort());

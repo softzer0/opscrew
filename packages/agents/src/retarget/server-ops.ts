@@ -111,7 +111,7 @@ function excerpt(text: string, redact: RedactText): string {
  * data or SQL (`DETAIL:`, `CONTEXT:`, `Command was:`, a tool's `pg_dump: detail:` and `hint:`
  * lines, indented continuations, ...) are dropped.
  */
-function withoutData(stderr: string): string {
+export function withoutData(stderr: string): string {
   const dataLine =
     /^(DETAIL|CONTEXT|HINT|QUERY|STATEMENT|LINE \d+|Command was):|^[\w.-]+: (detail|hint):/i;
   return stderr

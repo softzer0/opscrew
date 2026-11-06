@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { dockerClient } from "@opscrew/connector-docker";
-import { FakeDocker } from "@opscrew/connector-docker/testing";
+import { FakeDocker, fakeDialStdio } from "@opscrew/connector-docker/testing";
 import { type HostFacts, HostFactsSchema } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
@@ -39,7 +39,6 @@ import {
 } from "../../testing";
 import type { MoveSession } from "../session";
 import { ownSide } from "./own";
-import { fakeDialStdio } from "./ssh.fakes";
 
 const closers: (() => void)[] = [];
 afterEach(() => {

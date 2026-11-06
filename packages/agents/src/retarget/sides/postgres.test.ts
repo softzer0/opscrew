@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
-import { dockerClient, volumeCarrier } from "@opscrew/connector-docker";
+import { dockerClient, type TarEntry, volumeCarrier } from "@opscrew/connector-docker";
 import {
   type FakeContainer,
   FakeDocker,
   type FakeRun,
   parseTar,
-  type TarEntry,
 } from "@opscrew/connector-docker/testing";
 import type { DockerTransport } from "@opscrew/contracts";
 import { errorMessage } from "@opscrew/core";
@@ -14,12 +13,13 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { IMAGES } from "@opscrew/iac-templates";
 import { describe, expect, it } from "vitest";
 import {
+  checkCopiedDump,
   dumpPostgres,
   ensureDumpVolume,
   type MovePostgres,
   moveDumpVolume,
   removeDumpVolume,
-  restorePostgres,
+  restoreCheckedDump,
 } from "./postgres";
 import type { SideDocker } from "./types";
 
@@ -176,7 +176,8 @@ describe("Postgres in a move: waiting for the new side's database", () => {
     next.database.startingChecks = 3;
     const digest = await dumpPostgres(old.docker, old.db);
     await copyDump(old, next);
-    await restorePostgres(next.docker, next.db, digest, waits());
+    await checkCopiedDump(next.docker, next.db, digest);
+    await restoreCheckedDump(next.docker, next.db, waits());
     expect(next.database.checks).toBe(4);
     expect(next.database.dropped).toBe(1);
   });
@@ -188,7 +189,8 @@ describe("Postgres in a move: waiting for the new side's database", () => {
     const digest = await dumpPostgres(old.docker, old.db);
     await copyDump(old, next);
     const clock = waits();
-    await expect(restorePostgres(next.docker, next.db, digest, clock)).rejects.toThrow(
+    await checkCopiedDump(next.docker, next.db, digest);
+    await expect(restoreCheckedDump(next.docker, next.db, clock)).rejects.toThrow(
       "Could not reach the database within 2 minutes",
     );
     expect(clock.now()).toBeGreaterThanOrEqual(120_000);
@@ -205,7 +207,8 @@ describe("Postgres in a move", () => {
     const digest = await dumpPostgres(old.docker, old.db);
     expect(old.fake.volumes.has(VOLUME)).toBe(true);
     await copyDump(old, next);
-    await restorePostgres(next.docker, next.db, digest);
+    await checkCopiedDump(next.docker, next.db, digest);
+    await restoreCheckedDump(next.docker, next.db);
 
     expect(next.restored.map(String)).toEqual(["PGDMP rows of example-app"]);
     expect(next.database.dropped).toBe(1);
@@ -275,7 +278,8 @@ describe("Postgres in a move", () => {
     const next = fakeSide("opscrew-example-app");
     const digest = await dumpPostgres(old.docker, old.db);
     await copyDump(old, next);
-    await restorePostgres(next.docker, next.db, digest);
+    await checkCopiedDump(next.docker, next.db, digest);
+    await restoreCheckedDump(next.docker, next.db);
 
     for (const side of [old, next]) {
       expect(containerText(side)).not.toContain(PASSWORD);
@@ -316,7 +320,7 @@ describe("Postgres in a move", () => {
     const copy = next.fake.volumes.get(VOLUME)?.files.get("app.dump");
     if (copy?.data !== undefined) copy.data = Buffer.from("PGDMP cut short");
 
-    await expect(restorePostgres(next.docker, next.db, digest)).rejects.toThrow(
+    await expect(checkCopiedDump(next.docker, next.db, digest)).rejects.toThrow(
       "differs from the dump on the old side",
     );
     expect(next.database.dropped).toBe(0);
@@ -358,9 +362,11 @@ describe("Postgres in a move", () => {
       // In the restore, the first archive PUT is the password file of the container that empties
       // the database (the copy's check logs in nowhere); the first wait is the copy's check.
       next.fake.fail(method, path, 500, "the Docker daemon is unavailable");
-      await expect(restorePostgres(next.docker, next.db, digest)).rejects.toThrow(
-        "the Docker daemon is unavailable",
-      );
+      const restore = async () => {
+        await checkCopiedDump(next.docker, next.db, digest);
+        await restoreCheckedDump(next.docker, next.db);
+      };
+      await expect(restore()).rejects.toThrow("the Docker daemon is unavailable");
       expect(next.fake.containers.size).toBe(0);
       expect(next.database.dropped).toBe(0);
     }
@@ -409,7 +415,8 @@ describe("Postgres in a move", () => {
       await copyDump(old, next);
       next.database[tool] = stderr;
 
-      const error = await restorePostgres(next.docker, next.db, digest).catch(
+      await checkCopiedDump(next.docker, next.db, digest);
+      const error = await restoreCheckedDump(next.docker, next.db).catch(
         (caught: unknown) => caught,
       );
       expect(errorMessage(error)).toBe(wording);
@@ -435,12 +442,12 @@ describe("Postgres in a move", () => {
     await old.docker.client.createContainer({
       image: IMAGES.postgres.ref,
       labels: { "opscrew.move-dump": VOLUME },
-      binds: [`${VOLUME}:/dump`],
+      mounts: [{ type: "volume", source: VOLUME, target: "/dump" }],
     });
     await old.docker.client.createContainer({
       image: IMAGES.busybox.ref,
       labels: { "opscrew.carrier": VOLUME },
-      binds: [`${VOLUME}:/data:ro`],
+      mounts: [{ type: "volume", source: VOLUME, target: "/data", readOnly: true }],
     });
     old.fake.addVolume("other-volume");
 

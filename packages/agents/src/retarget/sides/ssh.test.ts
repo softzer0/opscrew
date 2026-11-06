@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dockerClient, type MountSpec } from "@opscrew/connector-docker";
-import { FakeDocker } from "@opscrew/connector-docker/testing";
+import { FakeDocker, fakeDialStdio } from "@opscrew/connector-docker/testing";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
@@ -17,7 +17,6 @@ import {
 } from "../../testing";
 import type { MoveSession } from "../session";
 import { cloudSide } from "./cloud";
-import { fakeDialStdio } from "./ssh.fakes";
 
 const NEW = NEW_SERVERS.digitalocean;
 const closers: (() => void)[] = [];

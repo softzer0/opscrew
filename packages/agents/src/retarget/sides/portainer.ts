@@ -9,6 +9,7 @@ import {
   type DockerClient,
   type DockerContainer,
   dockerClient,
+  runOneOff,
   volumeCarrier,
 } from "@opscrew/connector-docker";
 import {
@@ -63,7 +64,7 @@ import {
   waitsOf,
 } from "../session";
 import { pendingStop } from "../steps";
-import { runOneOff } from "./postgres";
+
 import { type MoveSide, type SideDocker, type SideVolume, STOP_SECONDS } from "./types";
 
 /** The Compose label that names a container's service. */
