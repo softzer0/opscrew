@@ -844,7 +844,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: medium
 
-- [ ] T1941 The detect tests in one home, and the small leftovers, in `packages/detect/src/release/*.test.ts`, `packages/agents/src/design/{kept-edits,strategy}.ts` and `packages/cli/src/commands/rollback.ts`
+- [x] T1941 The detect tests in one home, and the small leftovers, in `packages/detect/src/release/*.test.ts`, `packages/agents/src/design/{kept-edits,strategy}.ts` and `packages/cli/src/commands/rollback.ts`
   - Owns: those files (+ their tests)
   - Accept:
     - **The detect tests:** the "tools without down migrations" `it.each` block and the two positive cases (Rails, Alembic) that `migrations.test.ts` repeats from the per-tool files have one home (the per-tool files keep theirs; `migrations.test.ts` keeps what only it checks).
