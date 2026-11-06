@@ -2045,9 +2045,10 @@ function checkDatabaseRollback(plan: DeployPlanFields, ctx: z.RefinementCtx): vo
 }
 
 /**
- * The services a snapshot stops are the plan's, of the stop-only kinds. Scheduled snapshots run
- * on a server or a Portainer, not on this computer; neither they nor the off-server copy exist on
- * a site target or in a preview environment.
+ * The services a snapshot stops are the plan's, turned on, of the stop-only kinds. Scheduled
+ * snapshots run on a server or a Portainer (which stops none: the stack has no Docker socket), not
+ * on this computer; neither they nor the off-server copy exist on a site target or in a preview
+ * environment.
  */
 function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   const checkStop = (names: readonly string[] | undefined, path: string[]) => {
@@ -2059,6 +2060,12 @@ function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
           code: "custom",
           path: [...path, index],
           message: `names no service of the plan ("${name}"); use a name from services, or remove it from ${field}`,
+        });
+      } else if (!service.enabled) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...path, index],
+          message: `can't name "${name}": that service is turned off, so there is nothing to snapshot; remove it from ${field}`,
         });
       } else if (ONLINE_SNAPSHOT_KINDS.some((kind) => kind === service.kind)) {
         ctx.addIssue({
@@ -2073,6 +2080,14 @@ function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
   const { snapshots } = plan;
   if (snapshots === undefined) return;
   checkStop(snapshots.schedule?.stop, ["snapshots", "schedule", "stop"]);
+  if (plan.target.provider === "portainer" && (snapshots.schedule?.stop ?? []).length > 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["snapshots", "schedule", "stop"],
+      message:
+        "must be empty on a Portainer target: stopping a service needs Docker on the host, which the stack has no access to; snapshot those services by hand with opscrew snapshot, and remove snapshots.schedule.stop",
+    });
+  }
   const where =
     plan.environment?.previews !== undefined
       ? "a preview environment, whose previews come and go"

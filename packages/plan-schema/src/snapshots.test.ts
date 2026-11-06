@@ -67,6 +67,37 @@ describe("deploy.snapshotStop and snapshots.schedule.stop", () => {
     );
   });
 
+  it("refuse a service that is turned off", async () => {
+    const plan = await prodPlan();
+    const services = plan.services.map((service: Loose) =>
+      service.name === "mq" ? { ...service, enabled: false } : service,
+    );
+    expect(issues({ ...plan, services, deploy: { snapshotStop: ["mq"] } })).toEqual([
+      {
+        path: "deploy.snapshotStop.0",
+        message:
+          'can\'t name "mq": that service is turned off, so there is nothing to snapshot; remove it from deploy.snapshotStop',
+      },
+    ]);
+    const scheduled = issues({ ...plan, services, snapshots: { schedule: { stop: ["mq"] } } });
+    expect(scheduled.map((issue) => issue.path)).toEqual(["snapshots.schedule.stop.0"]);
+  });
+
+  it("refuse a scheduled stop on Portainer, which has no Docker socket", async () => {
+    const plan: Loose = await targetPlan("portainer");
+    const mq = { ...plan.services[0], name: "mq", kind: "rabbitmq", options: {} };
+    const services = [...plan.services, mq];
+    expect(issues({ ...plan, services, snapshots: { schedule: { stop: ["mq"] } } })).toEqual([
+      {
+        path: "snapshots.schedule.stop",
+        message:
+          "must be empty on a Portainer target: stopping a service needs Docker on the host, which the stack has no access to; snapshot those services by hand with opscrew snapshot, and remove snapshots.schedule.stop",
+      },
+    ]);
+    const empty = { ...plan, services, snapshots: { schedule: { stop: [] } } };
+    expect(DeployPlanSchema.safeParse(empty).success).toBe(true);
+  });
+
   it("refuse the kinds a snapshot copies while they run", async () => {
     const plan = await prodPlan();
     const db = plan.services[0];
