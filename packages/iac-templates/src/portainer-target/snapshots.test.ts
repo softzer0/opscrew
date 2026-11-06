@@ -1,7 +1,18 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: Compose interpolation and shell syntax in expected contents, not JavaScript templates.
 import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
@@ -186,7 +197,7 @@ describe("the scheduled snapshots in a stack", () => {
     expect(snapshots?.environment).toEqual({ OPSCREW_SNAPSHOT_GIVE_UP: "21600" });
     const text = script(snapshots);
     expect(text).toContain(
-      '{ [ -e "$d"/db.done ] || [ -e "$d"/db.failed ]; } && { [ -e "$d"/queue.done ] || [ -e "$d"/queue.failed ]; } && { [ -e "$d"/sqlite.done ] || [ -e "$d"/sqlite.failed ]; }',
+      '{ [ -e "$d"/db.done ] || [ -e "$d"/db.failed ] || [ -e "$d"/db.skipped ]; } && { [ -e "$d"/queue.done ] || [ -e "$d"/queue.failed ] || [ -e "$d"/queue.skipped ]; } && { [ -e "$d"/sqlite.done ] || [ -e "$d"/sqlite.failed ] || [ -e "$d"/sqlite.skipped ]; }',
     );
     expect(text).toContain('finish "$d" "$id" scheduled && prune scheduled 5');
     expect(text).toContain(
@@ -340,6 +351,8 @@ describe("the off-server copy in a stack", () => {
   it("streams each file through age into rclone rcat, about.json last, then offsite.done", () => {
     const text = script(offsite);
     expect(text).toContain("set -o pipefail");
+    // Never a snapshot being written: the schedule's and a release's, or one by hand.
+    expect(text).toContain('case "$d" in *.partial|*.taking) continue ;; esac');
     expect(text).toContain(
       `/tools/age -r "$OPSCREW_OFFSITE_RECIPIENT" < "$1" | rclone rcat 'offsite:shop-prod-backups/backups/'"$2"`,
     );
@@ -381,5 +394,160 @@ describe("a stack without snapshots", () => {
         false,
       );
     }
+  });
+});
+
+const SH = spawnSync("sh", ["-c", "true"]).status === 0;
+
+/** The shell function `name` of `text`: from `name() {` to its closing `}`. */
+function shFunction(text: string, name: string): string {
+  const lines = text.split("\n");
+  const start = lines.indexOf(`${name}() {`);
+  const end = lines.indexOf("}", start);
+  if (start < 0 || end < 0) throw new Error(`The script has no function ${name}.`);
+  return lines.slice(start, end + 1).join("\n");
+}
+
+describe.skipIf(!SH)("the snapshot scripts under sh", () => {
+  let root = "";
+  /** A fresh folder that stands for the snapshots volume (`/snapshots` in the scripts). */
+  const volume = () => {
+    root = mkdtempSync(join(tmpdir(), "opscrew-portainer-snapshots-")).replaceAll("\\", "/");
+    return root;
+  };
+  afterEach(() => {
+    if (root !== "") rmSync(root, { recursive: true, force: true });
+  });
+  /** `text` under sh, `/snapshots` being the test's folder. */
+  const run = (text: string, env: Record<string, string> = {}) => {
+    const result = spawnSync("sh", ["-c", text.replaceAll("/snapshots", root)], {
+      env: { ...process.env, ...env },
+      encoding: "utf8",
+    });
+    return { status: result.status, stdout: result.stdout.trim(), stderr: result.stderr };
+  };
+  /** A finished snapshot `name` of `kind`, taken at `taken`. */
+  const snapshot = (name: string, kind: string, taken: string) => {
+    mkdirSync(join(root, name));
+    writeFileSync(
+      join(root, name, "about.json"),
+      `{"id":"${name}","kind":"${kind}","taken":"${taken}","version":"","services":[]}\n`,
+    );
+  };
+
+  it("prune keeps the newest scheduled snapshots, never another kind or one being written", () => {
+    volume();
+    snapshot("20261101T000000Z", "scheduled", "2026-11-01T00:00:00Z");
+    snapshot("20261102T000000Z", "scheduled", "2026-11-02T00:00:00Z");
+    snapshot("20261103T000000Z", "scheduled", "2026-11-03T00:00:00Z");
+    snapshot("20261030T000000Z", "manual", "2026-10-30T00:00:00Z");
+    snapshot("e".repeat(64), "release", "2026-10-29T00:00:00Z");
+    // Being written, with about.json already there and newer than any finished one.
+    snapshot("20261104T000000Z.taking", "scheduled", "2026-11-04T00:00:00Z");
+    snapshot("20261105T000000Z.partial", "scheduled", "2026-11-05T00:00:00Z");
+    const prune = shFunction(script(scheduled.stack.services.snapshots), "prune");
+    const result = run(`${prune}\nprune scheduled 2`);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readdirSync(root).sort()).toEqual([
+      "20261030T000000Z",
+      "20261102T000000Z",
+      "20261103T000000Z",
+      "20261104T000000Z.taking",
+      "20261105T000000Z.partial",
+      "e".repeat(64),
+    ]);
+  });
+
+  describe("the outgoing version before a release", () => {
+    const OLD = `ghcr.io/acme/shop@sha256:${"0a".repeat(32)}`;
+    // The part's script, which prints the snapshot's key instead of taking it.
+    const part = script(release.stack.services["snapshot-db"]).replace(
+      'take /snapshots/"$hex".partial',
+      'echo "hex=$hex"',
+    );
+    const outgoing = (running: string | undefined, env: Record<string, string>) => {
+      volume();
+      if (running !== undefined) writeFileSync(join(root, ".running"), `${running}\n`);
+      return run(part, { OPSCREW_RELEASE: "run", OPSCREW_APP_IMAGE: IMAGE, ...env });
+    };
+
+    it("is none before the stamp named a running image, in a rollback, or for the same image", () => {
+      const cases: [string | undefined, Record<string, string>][] = [
+        [undefined, {}],
+        [OLD, { OPSCREW_RELEASE: "skip" }],
+        [IMAGE, {}],
+      ];
+      for (const [running, env] of cases) {
+        expect(outgoing(running, env)).toMatchObject({ status: 0, stdout: "" });
+      }
+    });
+
+    it("is the running image's digest", () => {
+      expect(outgoing(OLD, {})).toMatchObject({ status: 0, stdout: `hex=${"0a".repeat(32)}` });
+    });
+
+    it("stops the deploy when the running image is not pinned by digest", () => {
+      const malformed = ["ghcr.io/acme/shop:latest", `ghcr.io/acme/shop@sha256:${"0a".repeat(31)}`];
+      for (const running of malformed) {
+        const result = outgoing(running, {});
+        expect(result.status, running).toBe(1);
+        expect(result.stderr).toContain("names no image pinned by digest");
+      }
+    });
+  });
+
+  describe("a part and the finished snapshot", () => {
+    const take = shFunction(script(scheduled.stack.services["snapshots-sqlite"]), "take");
+    /** The SQLite part's `take` with Python exiting `code` (after writing its copy, for 0). */
+    const taking = (code: number) => {
+      const python = `python3() { if [ ${code} = 0 ]; then echo copy > "$3"; fi; return ${code}; }`;
+      return run(`${python}\n${take}\ntake /snapshots/slot.partial`);
+    };
+
+    it("records an app's SQLite volume without a database as skipped, never failed", () => {
+      volume();
+      expect(taking(3).status).toBe(0);
+      expect(readdirSync(join(root, "slot.partial"))).toEqual(["sqlite.skipped"]);
+      expect(taking(0).status).toBe(0);
+      expect(readdirSync(join(root, "slot.partial")).sort()).toEqual(["sqlite.db", "sqlite.done"]);
+      const failed = taking(1);
+      expect(failed.status).toBe(1);
+      expect(failed.stderr).toContain("the snapshot of sqlite failed");
+      expect(readdirSync(join(root, "slot.partial")).sort()).toEqual([
+        "sqlite.db",
+        "sqlite.failed",
+      ]);
+    });
+
+    it("writes about.json with each part's file and size, skipped or failed, and drops the markers", () => {
+      volume();
+      const slot = join(root, "20261106T120000Z.partial");
+      mkdirSync(slot);
+      writeFileSync(join(root, ".running"), `${IMAGE}\n`);
+      writeFileSync(join(slot, "db.dump"), "dump");
+      for (const marker of ["db.done", "queue.failed", "sqlite.skipped"]) {
+        writeFileSync(join(slot, marker), "");
+      }
+      const finish = shFunction(script(scheduled.stack.services.snapshots), "finish");
+      // chown to root needs root; the owner and modes are checked in Docker.
+      const result = run(
+        `chown() { :; }\n${finish}\nfinish /snapshots/20261106T120000Z.partial 20261106T120000Z scheduled`,
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(existsSync(slot)).toBe(false);
+      const done = join(root, "20261106T120000Z");
+      expect(readdirSync(done).sort()).toEqual(["about.json", "db.dump"]);
+      expect(JSON.parse(readFileSync(join(done, "about.json"), "utf8"))).toEqual({
+        id: "20261106T120000Z",
+        kind: "scheduled",
+        taken: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
+        version: IMAGE.slice(IMAGE.indexOf("@") + 1),
+        services: [
+          { name: "db", kind: "postgres", file: "db.dump", size: 4 },
+          { name: "queue", kind: "valkey", failed: true },
+          { name: "sqlite", kind: "sqlite", skipped: true },
+        ],
+      });
+    });
   });
 });

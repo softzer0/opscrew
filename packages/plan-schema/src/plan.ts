@@ -2074,18 +2074,22 @@ function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
       }
     }
   };
-  checkStop(plan.deploy.snapshotStop, ["deploy", "snapshotStop"]);
+  const stops: [readonly string[] | undefined, string[]][] = [
+    [plan.deploy.snapshotStop, ["deploy", "snapshotStop"]],
+    [plan.snapshots?.schedule?.stop, ["snapshots", "schedule", "stop"]],
+  ];
+  for (const [names, path] of stops) {
+    checkStop(names, path);
+    if (plan.target.provider === "portainer" && (names ?? []).length > 0) {
+      ctx.addIssue({
+        code: "custom",
+        path,
+        message: `must be empty on a Portainer target: stopping a service needs Docker on the host, which the stack has no access to; snapshot those services by hand with opscrew snapshot, and remove ${path.join(".")}`,
+      });
+    }
+  }
   const { snapshots } = plan;
   if (snapshots === undefined) return;
-  checkStop(snapshots.schedule?.stop, ["snapshots", "schedule", "stop"]);
-  if (plan.target.provider === "portainer" && (snapshots.schedule?.stop ?? []).length > 0) {
-    ctx.addIssue({
-      code: "custom",
-      path: ["snapshots", "schedule", "stop"],
-      message:
-        "must be empty on a Portainer target: stopping a service needs Docker on the host, which the stack has no access to; snapshot those services by hand with opscrew snapshot, and remove snapshots.schedule.stop",
-    });
-  }
   const where =
     plan.environment?.previews !== undefined
       ? "a preview environment, whose previews come and go"

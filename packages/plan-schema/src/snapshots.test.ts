@@ -98,6 +98,23 @@ describe("deploy.snapshotStop and snapshots.schedule.stop", () => {
     expect(DeployPlanSchema.safeParse(empty).success).toBe(true);
   });
 
+  it("refuse a stop before each release on Portainer too", async () => {
+    const plan: Loose = await targetPlan("portainer");
+    const mq = { ...plan.services[0], name: "mq", kind: "rabbitmq", options: {} };
+    const services = [...plan.services, mq];
+    const deploy = (snapshotStop: string[]) => ({ ...plan.deploy, snapshotStop });
+    expect(issues({ ...plan, services, deploy: deploy(["mq"]) })).toEqual([
+      {
+        path: "deploy.snapshotStop",
+        message:
+          "must be empty on a Portainer target: stopping a service needs Docker on the host, which the stack has no access to; snapshot those services by hand with opscrew snapshot, and remove deploy.snapshotStop",
+      },
+    ]);
+    expect(DeployPlanSchema.safeParse({ ...plan, services, deploy: deploy([]) }).success).toBe(
+      true,
+    );
+  });
+
   it("refuse the kinds a snapshot copies while they run", async () => {
     const plan = await prodPlan();
     const db = plan.services[0];

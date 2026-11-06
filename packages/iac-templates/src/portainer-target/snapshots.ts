@@ -92,7 +92,8 @@ const SQLITE_MOUNT = "/sqlite";
  * Python's online copy of the app's SQLite database (research R7, S1), into `sys.argv[1]`. It
  * starts as root only to take the volume's owner, the app's user, and runs as that user, so no
  * `-wal`/`-shm` file it opens belongs to root; the volume is read-write, since a stopped app leaves
- * no `-wal`/`-shm` for a read-only open. The folder must hold exactly one database.
+ * no `-wal`/`-shm` for a read-only open. The folder must hold one database; with none yet (an app
+ * that hasn't made it) it exits 3, which the part records as skipped.
  */
 const SQLITE_COPY = [
   "import os, sqlite3, sys",
@@ -102,7 +103,10 @@ const SQLITE_COPY = [
   "def is_db(p):",
   '    with open(p, "rb") as f: return f.read(16) == b"SQLite format 3\\x00"',
   'dbs = [n for n in sorted(os.listdir(d)) if not n.endswith(("-wal", "-shm", "-journal")) and os.path.isfile(os.path.join(d, n)) and is_db(os.path.join(d, n))]',
-  'if len(dbs) != 1: sys.exit("OpsCrew found %d SQLite databases in the SQLite folder of the app; a snapshot copies exactly one." % len(dbs))',
+  "if not dbs:",
+  '    print("OpsCrew: the app has no SQLite database yet, so the snapshot holds none.", file=sys.stderr)',
+  "    sys.exit(3)",
+  'if len(dbs) > 1: sys.exit("OpsCrew found %d SQLite databases in the SQLite folder of the app; a snapshot copies exactly one." % len(dbs))',
   'src = sqlite3.connect("file:" + os.path.join(d, dbs[0]) + "?mode=rw", uri=True)',
   "dst = sqlite3.connect(sys.argv[1])",
   "src.backup(dst)",
@@ -143,16 +147,20 @@ function parts(plan: DeployPlan): Part[] {
 /**
  * The shell function `take <folder>` of one part (R7, S2): makes the folder (mode 1777, since the
  * SQLite part writes as the app's user), writes the copy as `<file>.tmp`, renames it, then touches
- * `<name>.done`, or `<name>.failed` when the copy failed.
+ * `<name>.done`; `<name>.skipped` when the copy exits 3 (nothing to copy yet), and
+ * `<name>.failed` (returning 1) when it failed.
  */
 function takeFunction(part: Part): string[] {
   const marker = (end: string) => `"$1"/${part.name}.${end}`;
   return [
     "take() {",
-    `  mkdir -p "$1" && chmod 1777 "$1" && rm -f ${marker("done")} ${marker("failed")} || return 1`,
+    `  mkdir -p "$1" && chmod 1777 "$1" && rm -f ${marker("done")} ${marker("failed")} ${marker("skipped")} || return 1`,
     `  t="$1"/${part.file}.tmp`,
-    `  if (umask 077 && ${part.copy}) && mv "$t" "$1"/${part.file}; then`,
+    `  (umask 077 && ${part.copy}); r=$?`,
+    `  if [ "$r" = 0 ] && mv "$t" "$1"/${part.file}; then`,
     `    touch ${marker("done")}`,
+    `  elif [ "$r" = 3 ]; then`,
+    `    rm -f "$t"; touch ${marker("skipped")}`,
     "  else",
     `    rm -f "$t"; touch ${marker("failed")}`,
     `    echo ${shellQuote(`OpsCrew: the snapshot of ${part.name} failed; its output is above.`)} >&2`,
@@ -191,15 +199,18 @@ const GIVE_UP_SECONDS = 6 * 3600;
 /**
  * The finalizers' functions (busybox sh, as root):
  * - `finish <folder> <id> <kind>`: writes `about.json` (plan.md 1.: the id, the kind, when, the
- *   running version's digest and each part's kind, file and size, or `failed`), drops the markers,
+ *   running version's digest and each part's kind, file and size, or `skipped` or `failed`), drops the markers,
  *   makes the files 600 and the folder 700, root's, and renames `<id>.partial` to `<id>`;
- * - `prune <kind> <n>`: keeps only the newest `n` snapshots of that kind.
+ * - `prune <kind> <n>`: keeps only the newest `n` finished snapshots of that kind, never one being
+ *   written (`.partial`, or `.taking` by hand).
  */
 function finalizerFunctions(all: Part[]): string[] {
   const entries = all.flatMap((part, index) => [
     ...(index > 0 ? ["    printf ,"] : []),
     `    if [ -f "$1"/${part.name}.done ] && [ -f "$1"/${part.file} ]; then`,
     `      printf '{"name":"${part.name}","kind":"${part.kind}","file":"${part.file}","size":%s}' "$(stat -c %s "$1"/${part.file})"`,
+    `    elif [ -f "$1"/${part.name}.skipped ]; then`,
+    `      printf '{"name":"${part.name}","kind":"${part.kind}","skipped":true}'`,
     "    else",
     `      printf '{"name":"${part.name}","kind":"${part.kind}","failed":true}'`,
     "    fi",
@@ -212,12 +223,13 @@ function finalizerFunctions(all: Part[]): string[] {
     ...entries,
     "    printf ']}\\n'",
     '  } > "$1"/.about || return 1',
-    '  rm -f "$1"/*.done "$1"/*.failed "$1"/*.tmp',
+    '  rm -f "$1"/*.done "$1"/*.failed "$1"/*.skipped "$1"/*.tmp',
     '  mv "$1"/.about "$1"/about.json && chown -R 0:0 "$1" && chmod 600 "$1"/* && chmod 700 "$1" || return 1',
     `  rm -rf ${DIR}/"$2" && mv "$1" ${DIR}/"$2"`,
     "}",
     "prune() {",
     `  for d in ${DIR}/*; do`,
+    '    case "$d" in *.partial|*.taking) continue ;; esac',
     `    if [ -f "$d"/about.json ] && grep -q "\\"kind\\":\\"$1\\"" "$d"/about.json; then echo "$(sed -n 's/.*"taken":"\\([^"]*\\)".*/\\1/p' "$d"/about.json) $d"; fi`,
     `  done | sort -r | sed "1,$2d" | while read -r _ d; do rm -rf "$d"; done`,
     "}",
@@ -345,7 +357,10 @@ function scheduled(
     );
   }
   const settled = all
-    .map((part) => `{ [ -e "$d"/${part.name}.done ] || [ -e "$d"/${part.name}.failed ]; }`)
+    .map(
+      (part) =>
+        `{ [ -e "$d"/${part.name}.done ] || [ -e "$d"/${part.name}.failed ] || [ -e "$d"/${part.name}.skipped ]; }`,
+    )
     .join(" && ");
   services.snapshots = finalizer(
     [
@@ -466,7 +481,8 @@ function offsite(plan: DeployPlan): Record<string, object> {
     "umask 077",
     "while :; do",
     `  for d in ${DIR}/*; do`,
-    '    case "$d" in *.partial) continue ;; esac',
+    // A snapshot being written: the schedule's and a release's `.partial`, one by hand `.taking`.
+    '    case "$d" in *.partial|*.taking) continue ;; esac',
     '    if [ ! -f "$d"/about.json ] || [ -e "$d"/offsite.done ]; then continue; fi',
     "    id=${d##*/}; ok=1",
     '    for f in "$d"/*; do',

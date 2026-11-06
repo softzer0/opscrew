@@ -380,5 +380,25 @@ describe.skipIf(reason !== undefined)(
         expect(JSON.stringify(about)).not.toContain(secret);
       }
     });
+
+    it("skips an app's SQLite volume that holds no database yet, which never fails a snapshot", () => {
+      if (spawnSync("docker", ["image", "inspect", IMAGES.python.ref]).status !== 0) {
+        pulled.push(IMAGES.python.ref);
+      }
+      const stack = parse(renderPortainerStack(plan(), testContext()).content) as {
+        services: Record<string, Service>;
+      };
+      const entrypoint = stack.services["snapshots-sqlite"]?.entrypoint as string[] | undefined;
+      const text = entrypoint?.[2] ?? "";
+      const lines = text.replaceAll("$$", "$").split("\n");
+      const take = lines.slice(0, lines.indexOf("}") + 1).join("\n");
+      // A fresh anonymous volume, removed with the container.
+      const output = inside(
+        IMAGES.python.ref,
+        ["/sqlite"],
+        `${take}\ntake /snapshots/slot.partial; echo "r=$?"; ls /snapshots/slot.partial`,
+      );
+      expect(output.split("\n")).toEqual(["r=0", "sqlite.skipped"]);
+    });
   },
 );

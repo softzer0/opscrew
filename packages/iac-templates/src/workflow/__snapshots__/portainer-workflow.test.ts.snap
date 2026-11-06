@@ -367,7 +367,9 @@ jobs:
           fi
           export GIT_AUTHOR_NAME='github-actions[bot]' GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com'
           export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-          if ! restored="$(git commit-tree "$PREVIOUS^{tree}" -p "$DEPLOYED" -m "Roll back to the previous version" -m "$IMAGE did not come up; OpsCrew wrote the version before it back.")" ||
+          if ! git show "$PREVIOUS:compose.yaml" | sed 's/^\\([[:space:]]*OPSCREW_RELEASE: \\)run$/\\1skip/' > "$RUNNER_TEMP/revert.yaml" ||
+            ! tree="$(printf '100644 blob %s\\tcompose.yaml\\n' "$(git hash-object -w "$RUNNER_TEMP/revert.yaml")" | git mktree)" ||
+            ! restored="$(git commit-tree "$tree" -p "$DEPLOYED" -m "Roll back to the previous version" -m "$IMAGE did not come up; OpsCrew wrote the version before it back, without its release command.")" ||
             ! git push origin "$restored:refs/heads/opscrew-deploy"; then
             echo "::error::The deploy failed and OpsCrew could not write the previous version back to the opscrew-deploy branch. Write the compose.yaml of the commit before the newest one back to that branch by hand."
             exit 1
@@ -1005,7 +1007,9 @@ jobs:
           fi
           export GIT_AUTHOR_NAME='github-actions[bot]' GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com'
           export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
-          if ! restored="$(git commit-tree "$PREVIOUS^{tree}" -p "$DEPLOYED" -m "Roll back to the previous version" -m "$IMAGE did not come up; OpsCrew wrote the version before it back.")" ||
+          if ! git show "$PREVIOUS:compose.yaml" | sed 's/^\\([[:space:]]*OPSCREW_RELEASE: \\)run$/\\1skip/' > "$RUNNER_TEMP/revert.yaml" ||
+            ! tree="$(printf '100644 blob %s\\tcompose.yaml\\n' "$(git hash-object -w "$RUNNER_TEMP/revert.yaml")" | git mktree)" ||
+            ! restored="$(git commit-tree "$tree" -p "$DEPLOYED" -m "Roll back to the previous version" -m "$IMAGE did not come up; OpsCrew wrote the version before it back, without its release command.")" ||
             ! git push origin "$restored:refs/heads/opscrew-deploy"; then
             echo "::error::The deploy failed and OpsCrew could not write the previous version back to the opscrew-deploy branch. Write the compose.yaml of the commit before the newest one back to that branch by hand."
             exit 1

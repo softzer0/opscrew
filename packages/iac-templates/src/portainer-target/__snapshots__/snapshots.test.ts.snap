@@ -202,7 +202,7 @@ services:
         umask 077
         while :; do
           for d in /snapshots/*; do
-            case "$$d" in *.partial) continue ;; esac
+            case "$$d" in *.partial|*.taking) continue ;; esac
             if [ ! -f "$$d"/about.json ] || [ -e "$$d"/offsite.done ]; then continue; fi
             id=$\${d##*/}; ok=1
             for f in "$$d"/*; do
@@ -550,10 +550,13 @@ services:
       - -c
       - |-
         take() {
-          mkdir -p "$$1" && chmod 1777 "$$1" && rm -f "$$1"/db.done "$$1"/db.failed || return 1
+          mkdir -p "$$1" && chmod 1777 "$$1" && rm -f "$$1"/db.done "$$1"/db.failed "$$1"/db.skipped || return 1
           t="$$1"/db.dump.tmp
-          if (umask 077 && PGPASSWORD="$$POSTGRES_PASSWORD" pg_dump -h db -U "$$POSTGRES_USER" -Fc -f "$$t" "$$POSTGRES_DB") && mv "$$t" "$$1"/db.dump; then
+          (umask 077 && PGPASSWORD="$$POSTGRES_PASSWORD" pg_dump -h db -U "$$POSTGRES_USER" -Fc -f "$$t" "$$POSTGRES_DB"); r=$$?
+          if [ "$$r" = 0 ] && mv "$$t" "$$1"/db.dump; then
             touch "$$1"/db.done
+          elif [ "$$r" = 3 ]; then
+            rm -f "$$t"; touch "$$1"/db.skipped
           else
             rm -f "$$t"; touch "$$1"/db.failed
             echo 'OpsCrew: the snapshot of db failed; its output is above.' >&2
@@ -595,10 +598,13 @@ services:
       - -c
       - |-
         take() {
-          mkdir -p "$$1" && chmod 1777 "$$1" && rm -f "$$1"/queue.done "$$1"/queue.failed || return 1
+          mkdir -p "$$1" && chmod 1777 "$$1" && rm -f "$$1"/queue.done "$$1"/queue.failed "$$1"/queue.skipped || return 1
           t="$$1"/queue.rdb.tmp
-          if (umask 077 && REDISCLI_AUTH="$$VALKEY_PASSWORD" valkey-cli -h queue --rdb "$$t") && mv "$$t" "$$1"/queue.rdb; then
+          (umask 077 && REDISCLI_AUTH="$$VALKEY_PASSWORD" valkey-cli -h queue --rdb "$$t"); r=$$?
+          if [ "$$r" = 0 ] && mv "$$t" "$$1"/queue.rdb; then
             touch "$$1"/queue.done
+          elif [ "$$r" = 3 ]; then
+            rm -f "$$t"; touch "$$1"/queue.skipped
           else
             rm -f "$$t"; touch "$$1"/queue.failed
             echo 'OpsCrew: the snapshot of queue failed; its output is above.' >&2
@@ -640,22 +646,28 @@ services:
       - -c
       - |-
         take() {
-          mkdir -p "$$1" && chmod 1777 "$$1" && rm -f "$$1"/sqlite.done "$$1"/sqlite.failed || return 1
+          mkdir -p "$$1" && chmod 1777 "$$1" && rm -f "$$1"/sqlite.done "$$1"/sqlite.failed "$$1"/sqlite.skipped || return 1
           t="$$1"/sqlite.db.tmp
-          if (umask 077 && python3 -c 'import os, sqlite3, sys
+          (umask 077 && python3 -c 'import os, sqlite3, sys
         d = "/sqlite"
         s = os.stat(d)
         os.setgroups([]); os.setgid(s.st_gid); os.setuid(s.st_uid)
         def is_db(p):
             with open(p, "rb") as f: return f.read(16) == b"SQLite format 3\\x00"
         dbs = [n for n in sorted(os.listdir(d)) if not n.endswith(("-wal", "-shm", "-journal")) and os.path.isfile(os.path.join(d, n)) and is_db(os.path.join(d, n))]
-        if len(dbs) != 1: sys.exit("OpsCrew found %d SQLite databases in the SQLite folder of the app; a snapshot copies exactly one." % len(dbs))
+        if not dbs:
+            print("OpsCrew: the app has no SQLite database yet, so the snapshot holds none.", file=sys.stderr)
+            sys.exit(3)
+        if len(dbs) > 1: sys.exit("OpsCrew found %d SQLite databases in the SQLite folder of the app; a snapshot copies exactly one." % len(dbs))
         src = sqlite3.connect("file:" + os.path.join(d, dbs[0]) + "?mode=rw", uri=True)
         dst = sqlite3.connect(sys.argv[1])
         src.backup(dst)
         dst.execute("pragma journal_mode=delete")
-        dst.close(); src.close()' "$$t") && mv "$$t" "$$1"/sqlite.db; then
+        dst.close(); src.close()' "$$t"); r=$$?
+          if [ "$$r" = 0 ] && mv "$$t" "$$1"/sqlite.db; then
             touch "$$1"/sqlite.done
+          elif [ "$$r" = 3 ]; then
+            rm -f "$$t"; touch "$$1"/sqlite.skipped
           else
             rm -f "$$t"; touch "$$1"/sqlite.failed
             echo 'OpsCrew: the snapshot of sqlite failed; its output is above.' >&2
@@ -697,29 +709,36 @@ services:
             printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$$2" "$$3" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$\${img##*@}"
             if [ -f "$$1"/db.done ] && [ -f "$$1"/db.dump ]; then
               printf '{"name":"db","kind":"postgres","file":"db.dump","size":%s}' "$$(stat -c %s "$$1"/db.dump)"
+            elif [ -f "$$1"/db.skipped ]; then
+              printf '{"name":"db","kind":"postgres","skipped":true}'
             else
               printf '{"name":"db","kind":"postgres","failed":true}'
             fi
             printf ,
             if [ -f "$$1"/queue.done ] && [ -f "$$1"/queue.rdb ]; then
               printf '{"name":"queue","kind":"valkey","file":"queue.rdb","size":%s}' "$$(stat -c %s "$$1"/queue.rdb)"
+            elif [ -f "$$1"/queue.skipped ]; then
+              printf '{"name":"queue","kind":"valkey","skipped":true}'
             else
               printf '{"name":"queue","kind":"valkey","failed":true}'
             fi
             printf ,
             if [ -f "$$1"/sqlite.done ] && [ -f "$$1"/sqlite.db ]; then
               printf '{"name":"sqlite","kind":"sqlite","file":"sqlite.db","size":%s}' "$$(stat -c %s "$$1"/sqlite.db)"
+            elif [ -f "$$1"/sqlite.skipped ]; then
+              printf '{"name":"sqlite","kind":"sqlite","skipped":true}'
             else
               printf '{"name":"sqlite","kind":"sqlite","failed":true}'
             fi
             printf ']}\\n'
           } > "$$1"/.about || return 1
-          rm -f "$$1"/*.done "$$1"/*.failed "$$1"/*.tmp
+          rm -f "$$1"/*.done "$$1"/*.failed "$$1"/*.skipped "$$1"/*.tmp
           mv "$$1"/.about "$$1"/about.json && chown -R 0:0 "$$1" && chmod 600 "$$1"/* && chmod 700 "$$1" || return 1
           rm -rf /snapshots/"$$2" && mv "$$1" /snapshots/"$$2"
         }
         prune() {
           for d in /snapshots/*; do
+            case "$$d" in *.partial|*.taking) continue ;; esac
             if [ -f "$$d"/about.json ] && grep -q "\\"kind\\":\\"$$1\\"" "$$d"/about.json; then echo "$$(sed -n 's/.*"taken":"\\([^"]*\\)".*/\\1/p' "$$d"/about.json) $$d"; fi
           done | sort -r | sed "1,$$2d" | while read -r _ d; do rm -rf "$$d"; done
         }
@@ -730,7 +749,7 @@ services:
             id=$\${d##*/}; id=$\${id%.partial}
             if [ -e /snapshots/"$$id" ]; then rm -rf "$$d"; continue; fi
             start=$$(date -u -D %Y%m%dT%H%M%SZ -d "$$id" +%s) || continue
-            if { [ -e "$$d"/db.done ] || [ -e "$$d"/db.failed ]; } && { [ -e "$$d"/queue.done ] || [ -e "$$d"/queue.failed ]; } && { [ -e "$$d"/sqlite.done ] || [ -e "$$d"/sqlite.failed ]; } || [ "$$now" -ge $$(( start + $$OPSCREW_SNAPSHOT_GIVE_UP )) ]; then
+            if { [ -e "$$d"/db.done ] || [ -e "$$d"/db.failed ] || [ -e "$$d"/db.skipped ]; } && { [ -e "$$d"/queue.done ] || [ -e "$$d"/queue.failed ] || [ -e "$$d"/queue.skipped ]; } && { [ -e "$$d"/sqlite.done ] || [ -e "$$d"/sqlite.failed ] || [ -e "$$d"/sqlite.skipped ]; } || [ "$$now" -ge $$(( start + $$OPSCREW_SNAPSHOT_GIVE_UP )) ]; then
               finish "$$d" "$$id" scheduled && prune scheduled 5
             fi
           done

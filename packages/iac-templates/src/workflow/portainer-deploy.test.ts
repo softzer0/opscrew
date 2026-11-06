@@ -3,12 +3,14 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import {
   fillPortainerStack,
+  PORTAINER_RELEASE_PLACEHOLDER,
   portainerImageVersion,
   renderPlaceholderStack,
   renderPortainerStack,
@@ -417,6 +419,48 @@ describe.skipIf(!bashWorks())("the Portainer deploy job's scripts (bash + git)",
         "Roll back to the previous version",
       );
       expect(readFileSync(join(work, "curl.log"), "utf8")).toContain(WEBHOOK);
+    },
+    timeout,
+  );
+
+  it(
+    "rolls back with the release switch off, so neither the release command nor the snapshot before it runs",
+    () => {
+      // Staging with PostgreSQL and a release command: its stack takes a snapshot before each release.
+      const base = portainerTestPlan({ postgres: true, releaseCommand: "npm run migrate" });
+      const staging = DeployPlanSchema.parse({
+        ...base,
+        environment: { name: "staging" },
+        app: { ...base.app, name: `${base.app.name}-staging` },
+      });
+      const stagingTemplate = renderPortainerStack(staging, ctx).content;
+      const previousFile = fillPortainerStack(stagingTemplate, OLD);
+      // The release command's, the database part's and the `snapshot` finalizer's switch.
+      expect(previousFile.match(/OPSCREW_RELEASE: run\n/g)).toHaveLength(3);
+      const previous = pushBranch(previousFile);
+      writeFileSync(join(work, "repo", "opscrew", "runtime", "compose.yaml"), stagingTemplate);
+      expect(sh(steps.write ?? "", { IMAGE: NEW }).status).toBe(0);
+      const written = outputs();
+      expect(written.previous).toBe(previous);
+
+      const run = sh(steps["Roll back to the previous version"] ?? "", {
+        PREVIOUS: written.previous ?? "",
+        DEPLOYED: written.deployed ?? "",
+        IMAGE: NEW,
+        WEBHOOK_URL: WEBHOOK,
+        ACCESS_CLIENT_ID: ACCESS_ID,
+        ACCESS_CLIENT_SECRET: ACCESS_SECRET,
+      });
+      expect(run.status, run.output).toBe(1);
+      fetchBranch();
+      // Exactly what a rollback dispatch to the previous image writes.
+      expect(branchFile()).toBe(
+        fillPortainerStack(
+          stagingTemplate.replaceAll(PORTAINER_RELEASE_PLACEHOLDER, "skip"),
+          OLD,
+        ).trimEnd(),
+      );
+      expect(git("rev-parse", "origin-deploy^")).toBe(written.deployed);
     },
     timeout,
   );

@@ -164,7 +164,8 @@ describe("renderWorkflow for a Portainer target", () => {
         DEPLOYED: "${{ steps.write.outputs.deployed }}",
       });
       expect(rollback.run?.trim().endsWith("exit 1")).toBe(true);
-      expect(rollback.run).toContain('git commit-tree "$PREVIOUS^{tree}" -p "$DEPLOYED"');
+      expect(rollback.run).toContain('git show "$PREVIOUS:compose.yaml"');
+      expect(rollback.run).toContain('git commit-tree "$tree" -p "$DEPLOYED"');
     }
   });
 

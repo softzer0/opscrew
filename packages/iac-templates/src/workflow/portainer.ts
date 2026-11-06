@@ -205,7 +205,11 @@ const PROBE_SCRIPT = [
   "fi",
 ];
 
-/** Writes the previous version back to the deploy branch (and asks Portainer to deploy it). */
+/**
+ * Writes the previous version back to the deploy branch (and asks Portainer to deploy it), with its
+ * release switch ({@link PORTAINER_RELEASE_PLACEHOLDER}) `skip` as a rollback dispatch writes it: neither
+ * the release command nor the snapshot before it runs again.
+ */
 function rollbackScript(branch: string, cloudflare: boolean): string[] {
   const done = cloudflare
     ? [
@@ -226,7 +230,11 @@ function rollbackScript(branch: string, cloudflare: boolean): string[] {
     "  exit 1",
     "fi",
     ...GIT_IDENTITY,
-    'if ! restored="$(git commit-tree "$PREVIOUS^{tree}" -p "$DEPLOYED" -m "Roll back to the previous version" -m "$IMAGE did not come up; OpsCrew wrote the version before it back.")" ||',
+    // As a rollback's: the release switch is `skip`, so neither the release command nor the
+    // snapshot before it runs again.
+    `if ! git show "$PREVIOUS:compose.yaml" | sed 's/^\\([[:space:]]*OPSCREW_RELEASE: \\)run$/\\1skip/' > "$RUNNER_TEMP/revert.yaml" ||`,
+    `  ! tree="$(printf '100644 blob %s\\tcompose.yaml\\n' "$(git hash-object -w "$RUNNER_TEMP/revert.yaml")" | git mktree)" ||`,
+    '  ! restored="$(git commit-tree "$tree" -p "$DEPLOYED" -m "Roll back to the previous version" -m "$IMAGE did not come up; OpsCrew wrote the version before it back, without its release command.")" ||',
     `  ! git push origin "$restored:refs/heads/${branch}"; then`,
     `  echo "::error::The deploy failed and OpsCrew could not write the previous version back to the ${branch} branch. Write the compose.yaml of the commit before the newest one back to that branch by hand."`,
     "  exit 1",
