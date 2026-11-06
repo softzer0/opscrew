@@ -532,7 +532,7 @@ describe.skipIf(reason !== undefined)(
               `target=${HEX.v1}`,
               `running=${HEX.v2}`,
               "if ! (",
-              ...migrationDown(plan).map((line) => `        ${line}`),
+              ...migrationDown(plan, c.migrations).map((line) => `        ${line}`),
               "      ); then echo 'the step failed'; exit 1; fi",
             ],
             HEX.v1,

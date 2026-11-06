@@ -8,7 +8,6 @@ import {
   DeployPlanSchema,
   DeploySettingsSchema,
   keepSnapshotsOf,
-  MIGRATION_TOOLS,
   parseArtifact,
   snapshotsOn,
 } from "./index";
@@ -170,19 +169,6 @@ describe("deploy.snapshots: true where snapshots aren't offered", () => {
 });
 
 describe("app.migrations", () => {
-  it("gives each of the eight tools its unit and down's placeholders", () => {
-    expect(MIGRATION_TOOLS).toEqual({
-      rails: { unit: "version", placeholders: ["version"] },
-      django: { unit: "apps", placeholders: ["app", "name"] },
-      alembic: { unit: "version", placeholders: ["version"] },
-      "flask-migrate": { unit: "version", placeholders: ["version"] },
-      knex: { unit: "each", placeholders: [] },
-      sequelize: { unit: "each", placeholders: [] },
-      typeorm: { unit: "each", placeholders: [] },
-      laravel: { unit: "count", placeholders: ["count"] },
-    });
-  });
-
   const downs: Record<string, string> = {
     rails: "bin/rails db:migrate VERSION={version}",
     django: "python manage.py migrate {app} {name} --noinput",

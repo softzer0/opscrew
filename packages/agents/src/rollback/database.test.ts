@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { shellQuote } from "@opscrew/iac-templates";
+import { ROLLBACK_APPROVAL_FILE, shellQuote } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -15,7 +15,6 @@ import {
   createTestPhaseDeps,
   OWN_IPV4,
   ownPlan,
-  portainerPlan,
   SERVER_IPV4,
   type TestPhaseDeps,
   testPlan,
@@ -23,10 +22,10 @@ import {
 import { FakeAppFolder, SH_AVAILABLE } from "./__fixtures__/folder";
 import { failure } from "./__fixtures__/versions";
 import {
-  APPROVAL_FILE,
   type DatabaseQuestion,
   databaseOutcome,
   databaseStep,
+  hexOf,
   readScript,
   readSections,
   removeScript,
@@ -38,15 +37,12 @@ import { rollbackRun } from "./run";
 /** The version running now and the one a rollback goes back to. */
 const CURRENT = digestOf("c");
 const TARGET = digestOf("b");
-const hex = (digest: string) => digest.slice("sha256:".length);
+const hex = (digest: string) => hexOf(digest) as string;
 const WORDS = '1a2b3c4 "b"';
 /** The test deps' clock, and when a one-time approval left then expires. */
 const NOW = "2026-10-11T12:00:00.000Z";
 const EXPIRY = Date.parse(NOW) / 1000 + 30 * 60;
 const TAKEN = "2026-10-11T11:30:00Z";
-/** Why staging's rollback offers only keep when this computer can't reach its server. */
-const UNREACHABLE =
-  "This computer can't reach staging's app server, so OpsCrew offers only to keep the database as it is: the snapshot and down migrations need this computer to reach the server (the computer that deployed it, or one restored from the recovery copy).";
 
 /** A deployed plan of `shop`, as prod (or with `environment`, that environment's). */
 function serverPlan(o: { environment?: string; extra?: Record<string, unknown> } = {}): DeployPlan {
@@ -107,21 +103,23 @@ describe.skipIf(!SH_AVAILABLE)("the app folder's scripts, under sh", () => {
 
   it("writes the one-time approval, mode 600, over an earlier one, and removes it", async () => {
     const folder = await FakeAppFolder.create("/srv/apps/shop");
-    await folder.write(APPROVAL_FILE, "earlier\n");
+    await folder.write(ROLLBACK_APPROVAL_FILE, "earlier\n");
     const line = `${hex(TARGET)} snapshot ${EXPIRY}`;
     expect(folder.sh(writeScript("/srv/apps/shop", line)).exitCode).toBe(0);
-    expect(await folder.read(APPROVAL_FILE)).toBe(`${line}\n`);
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBe(`${line}\n`);
     if (process.platform !== "win32") {
-      expect((await stat(join(folder.dir, APPROVAL_FILE))).mode & 0o777).toBe(0o600);
+      expect((await stat(join(folder.dir, ROLLBACK_APPROVAL_FILE))).mode & 0o777).toBe(0o600);
     }
     expect(folder.sh(removeScript("/srv/apps/shop")).exitCode).toBe(0);
-    expect(await folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
     expect(folder.sh(removeScript("/srv/apps/shop")).exitCode).toBe(0);
   });
 
   it("hands the file to the folder's owner when it runs as root, and every script is valid sh", () => {
     const write = writeScript("/srv/apps/shop", `${hex(TARGET)} snapshot ${EXPIRY}`);
-    expect(write).toContain(`if [ "$(id -u)" = 0 ]; then chown --reference=. ${APPROVAL_FILE}; fi`);
+    expect(write).toContain(
+      `if [ "$(id -u)" = 0 ]; then chown --reference=. ${ROLLBACK_APPROVAL_FILE}; fi`,
+    );
     for (const script of [
       write,
       removeScript("/srv/apps/shop"),
@@ -166,9 +164,9 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
 
     // The one-time approval: the target's hex, the choice and an expiry 30 minutes on.
     expect(await chosen.leave()).toBe(new Date(EXPIRY * 1000).toISOString());
-    expect(await folder.read(APPROVAL_FILE)).toBe(`${hex(TARGET)} snapshot ${EXPIRY}\n`);
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBe(`${hex(TARGET)} snapshot ${EXPIRY}\n`);
     await chosen.clear();
-    expect(await folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
   });
 
   it("asks a terminal which, with the snapshot first and staging's default", async () => {
@@ -197,27 +195,9 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
     expect(chosen.confirmPhrase).toBeUndefined();
     expect(chosen.flags).toBe(" --database keep");
     // Keep removes a one-time approval an earlier run left.
-    await folder.write(APPROVAL_FILE, `${hex(TARGET)} snapshot ${EXPIRY}\n`);
+    await folder.write(ROLLBACK_APPROVAL_FILE, `${hex(TARGET)} snapshot ${EXPIRY}\n`);
     expect(await chosen.leave()).toBeUndefined();
-    expect(await folder.read(APPROVAL_FILE)).toBeUndefined();
-  });
-
-  it("keeps prod's database by default, even with snapshots on and one taken", async () => {
-    const { folder, step } = await world(serverPlan({ extra: { deploy: { snapshots: true } } }));
-    await folder.write(`.snapshots/${hex(TARGET)}/taken`, TAKEN);
-    const defaults: string[] = [];
-    const chosen = await step({
-      chooseDatabase: async (question) => {
-        defaults.push(question.default);
-        return question.default;
-      },
-    });
-    expect(defaults).toEqual(["keep"]);
-    expect(chosen.choice).toBe("keep");
-    expect((await step()).choice).toBe("keep");
-    const snapshot = await step({ database: "snapshot" });
-    expect(snapshot.choice).toBe("snapshot");
-    expect(snapshot.confirmPhrase).toBe("shop");
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
   });
 
   it("offers only keep without a complete snapshot, and refuses --database snapshot", async () => {
@@ -243,7 +223,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
       `The server keeps no complete snapshot of ${WORDS}: a deploy takes one when it replaces a version, and the server keeps those of the last 3. Nothing was changed.`,
     );
     expect(error.hint).toBe("Run `opscrew rollback --env staging` with --database keep.");
-    expect(await folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
   });
 
   it("reads nothing on prod without snapshots or down migrations, and says why each is refused", async () => {
@@ -264,9 +244,9 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
     expect(folder.commands).toEqual([]);
 
     // Keep still removes a one-time approval an earlier run left, expired or not.
-    await folder.write(APPROVAL_FILE, `${hex(TARGET)} snapshot ${EXPIRY - 3600}\n`);
+    await folder.write(ROLLBACK_APPROVAL_FILE, `${hex(TARGET)} snapshot ${EXPIRY - 3600}\n`);
     expect(await chosen.leave()).toBeUndefined();
-    expect(await folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
     expect(folder.commands).toEqual([removeScript("/srv/apps/shop")]);
   });
 
@@ -306,7 +286,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
       `sudo -n sh -c ${shellQuote(read)}`,
       `sudo -n sh -c ${shellQuote(write)}`,
     ]);
-    expect(await folder.read(APPROVAL_FILE)).toBe(`${hex(TARGET)} snapshot ${EXPIRY}\n`);
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBe(`${hex(TARGET)} snapshot ${EXPIRY}\n`);
   });
 
   it("offers down migrations when both records are there and the count went down", async () => {
@@ -331,7 +311,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
     expect(chosen.record).toEqual({ choice: "migrations" });
     expect(chosen.confirmPhrase).toBe("shop-staging");
     await chosen.leave();
-    expect(await folder.read(APPROVAL_FILE)).toBe(`${hex(TARGET)} migrations ${EXPIRY}\n`);
+    expect(await folder.read(ROLLBACK_APPROVAL_FILE)).toBe(`${hex(TARGET)} migrations ${EXPIRY}\n`);
     // Without a snapshot, staging keeps its data unless asked.
     expect((await step()).choice).toBe("keep");
 
@@ -371,23 +351,6 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
     await folder.write(`.schema/${hex(TARGET)}`, "version=0001\n");
     const chosen = await step({ database: "migrations" });
     expect(chosen.choice).toBe("migrations");
-  });
-
-  it("offers only keep, as without snapshots, when the server does not answer, and refuses --database snapshot", async () => {
-    const { deps, folder, step } = await world(serverPlan({ environment: "staging" }));
-    await folder.write(`.snapshots/${hex(TARGET)}/taken`, TAKEN);
-    folder.failWith = 255;
-    const chosen = await step();
-    expect(chosen).toMatchObject({ choice: "keep", flags: "", record: { choice: "keep" } });
-    expect(chosen.binding).toBeUndefined();
-    expect(deps.reporter.text()).toContain(UNREACHABLE);
-    // Nothing to remove there: the rollback goes on.
-    expect(await chosen.leave()).toBeUndefined();
-
-    const error = await failure(step({ database: "snapshot" }));
-    expect(error.code).toBe("PHASE_PRECONDITION");
-    expect(error.message).toBe(`${UNREACHABLE} Nothing was changed.`);
-    expect(error.hint).toBe("Run `opscrew rollback --env staging` with --database keep.");
   });
 
   it("stops on a read the server answered with a failure, before any change", async () => {
@@ -446,24 +409,6 @@ describe("databaseOutcome", () => {
 });
 
 describe("the database step elsewhere", () => {
-  it("in the user's Portainer offers only keep, saying snapshots there come later", async () => {
-    const { folder, step } = await world(
-      inEnvironment(portainerPlan({ deployed: true }), "staging"),
-    );
-    const chosen = await step();
-    expect(chosen.choice).toBe("keep");
-    expect(chosen.lines).toContain(
-      "Kept as they are in your Portainer: db. Snapshots there come in a later release.",
-    );
-    expect(folder.commands).toEqual([]);
-    for (const database of ["snapshot", "migrations"] as const) {
-      const error = await failure(step({ database }));
-      expect(error.message).toBe(
-        "In your Portainer, a rollback keeps the database as it is: snapshots and down migrations there come in a later release. Nothing was changed.",
-      );
-    }
-  });
-
   it("names a database on another server and the app's own files as kept", async () => {
     const plan = {
       ...splitPlan(),
@@ -510,7 +455,7 @@ describe("the database step elsewhere", () => {
     });
     expect(chosen.choice).toBe("snapshot");
     await chosen.leave();
-    const file = join(folder, APPROVAL_FILE);
+    const file = join(folder, ROLLBACK_APPROVAL_FILE);
     expect(await readFile(file, "utf8")).toBe(`${hex(TARGET)} snapshot ${EXPIRY}\n`);
     if (process.platform !== "win32") {
       expect((await stat(file)).mode & 0o777).toBe(0o600);

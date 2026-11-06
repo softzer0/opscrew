@@ -44,20 +44,12 @@ export interface ImageRollbackParts {
 
 /**
  * The rollback's approval hash: SHA-256 of the canonical `{ environment, current, target,
- * targetPlanHash }`, with `database` when there is one, so a change of any of them needs a new
- * approval.
+ * targetPlanHash }`, with `database` when there is one (`canonicalJson` leaves out an undefined
+ * member), so a change of any of them needs a new approval.
  */
 export function imageRollbackHash(parts: ImageRollbackParts): string {
   const { environment, current, target, targetPlanHash, database } = parts;
-  return sha256Hex(
-    canonicalJson({
-      environment,
-      current,
-      target,
-      targetPlanHash,
-      ...(database !== undefined ? { database } : {}),
-    }),
-  );
+  return sha256Hex(canonicalJson({ environment, current, target, targetPlanHash, database }));
 }
 
 /** What a rollback did with the database (`rollback.json`): the choice, and the snapshot's time. */

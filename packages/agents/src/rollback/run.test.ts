@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { DEPLOY_PAUSED_VARIABLE } from "@opscrew/iac-templates";
+import { DEPLOY_PAUSED_VARIABLE, ROLLBACK_APPROVAL_FILE } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, serializeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { selfHostedServices } from "../design/sizing";
@@ -38,7 +38,7 @@ import {
   versionsWorld,
   YES_KINDS,
 } from "./__fixtures__/versions";
-import { APPROVAL_FILE } from "./database";
+import { hexOf } from "./database";
 import { type RollbackOptions, type RollbackServices, rollback } from "./index";
 import {
   type DatabaseBinding,
@@ -1201,12 +1201,12 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     const c = world.deploy("c", 3, on);
     world.label("staging", c);
     world.label("staging", b, true);
-    const hexB = b.digest.slice("sha256:".length);
+    const hexB = hexOf(b.digest);
     if (o.snapshot !== false) await world.folder.write(`.snapshots/${hexB}/taken`, TAKEN);
     const atDispatch: (string | undefined)[] = [];
     const dispatch = world.github.dispatchWorkflow.bind(world.github);
     world.github.dispatchWorkflow = async (...args: Parameters<typeof dispatch>) => {
-      atDispatch.push(await world.folder.read(APPROVAL_FILE));
+      atDispatch.push(await world.folder.read(ROLLBACK_APPROVAL_FILE));
       return dispatch(...args);
     };
     return { world, b, c, hexB, atDispatch };
@@ -1281,12 +1281,12 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     );
     expect(error.hint).toContain(`--to ${b.digest} --database snapshot --confirm shop-staging`);
     expect(world.events).toEqual([]);
-    expect(await world.folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(await world.folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
   });
 
   it("keeps the data with --database keep, removing a one-time approval an earlier run left", async () => {
     const { world, hexB, atDispatch } = await stagingWorld();
-    await world.folder.write(APPROVAL_FILE, `${hexB} snapshot ${EXPIRY}\n`);
+    await world.folder.write(ROLLBACK_APPROVAL_FILE, `${hexB} snapshot ${EXPIRY}\n`);
     const result = await world.run({ database: "keep" });
     expect(result).toMatchObject({ database: { choice: "keep" } });
     expect(world.handler.requests[0]?.allowDestroy).toBeUndefined();
@@ -1323,7 +1323,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     }
     const error = await failure(world.run());
     expect(atDispatch).toEqual([`${hexB} snapshot ${EXPIRY}\n`]);
-    expect(await world.folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(await world.folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
     expect(paused(world)).toBeUndefined();
     if (how === "failed") {
       expect(error.message).toContain(
@@ -1337,7 +1337,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     const { world, hexB } = await stagingWorld();
     world.github.reviewer = "pending";
     await world.run();
-    expect(await world.folder.read(APPROVAL_FILE)).toBe(`${hexB} snapshot ${EXPIRY}\n`);
+    expect(await world.folder.read(ROLLBACK_APPROVAL_FILE)).toBe(`${hexB} snapshot ${EXPIRY}\n`);
     expect(world.deps.reporter.text()).toContain(
       `The database step's one-time approval on the server expires at 2026-10-11 12:30 UTC: if the run starts later, it stops before any change and \`${STAGING}\` asks again.`,
     );
@@ -1366,13 +1366,13 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     const { world, hexB } = await stagingWorld({ approve: () => approves });
     world.github.reviewer = "pending";
     await world.run();
-    expect(await world.folder.read(APPROVAL_FILE)).toBe(`${hexB} snapshot ${EXPIRY}\n`);
+    expect(await world.folder.read(ROLLBACK_APPROVAL_FILE)).toBe(`${hexB} snapshot ${EXPIRY}\n`);
     world.github.reviewer = "none";
     world.github.conclusion = "failure";
     // The next run forgets the failed one; the new rollback it goes on with is not approved.
     approves = false;
     expect((await failure(world.run())).code).toBe("APPROVAL_REFUSED");
-    expect(await world.folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(await world.folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
     expect(world.deps.reporter.text()).toContain(
       `did not succeed (failure): ${DEPLOY_RUN_URL}. When its database step failed, the start step put the database back as it was just before, and the run's log names the step's own log. When the one-time approval of the database step had expired, the start step stopped before any change. OpsCrew put staging's deploy pause back as it was, and goes on with a new rollback.`,
     );
@@ -1431,18 +1431,18 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
   it("removes an earlier one-time approval on a keep rollback, even with nothing to read", async () => {
     const { world, b, c } = await prodWorld();
     await world.folder.write(
-      APPROVAL_FILE,
-      `${b.digest.slice("sha256:".length)} snapshot ${EXPIRY - 3600}\n`,
+      ROLLBACK_APPROVAL_FILE,
+      `${hexOf(b.digest)} snapshot ${EXPIRY - 3600}\n`,
     );
     await world.run();
-    expect(await world.folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(await world.folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
     expect(world.handler.requests[0]?.planHash).toBe(hashOf(world, c, b));
   });
 
   it("keeps prod's database by default, even with snapshots on and one taken", async () => {
     const plan = DeployPlanSchema.parse({ ...prodPlan(), deploy: { snapshots: true } });
     const { world, b } = await prodWorld({ plan });
-    await world.folder.write(`.snapshots/${b.digest.slice("sha256:".length)}/taken`, TAKEN);
+    await world.folder.write(`.snapshots/${hexOf(b.digest)}/taken`, TAKEN);
     const result = await world.run();
     expect(result).toMatchObject({ database: { choice: "keep" } });
     expect(world.handler.requests[0]?.allowDestroy).toBeUndefined();

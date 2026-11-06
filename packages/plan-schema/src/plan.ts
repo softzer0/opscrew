@@ -5,6 +5,7 @@ import { AppKeySchema, infraDirFor, workflowPathFor } from "./apps";
 import {
   APP_SERVER,
   ComponentNameSchema,
+  type PlanService,
   PlanServiceSchema,
   ProcessesSchema,
   ServerNameSchema,
@@ -1560,13 +1561,19 @@ export function keepSnapshotsOf(plan: { deploy: { keepSnapshots?: number | undef
   return plan.deploy.keepSnapshots ?? 3;
 }
 
-/** The service kinds a snapshot dumps and a rollback restores. */
-export const SNAPSHOT_KINDS: ReadonlySet<string> = new Set([
-  "postgres",
-  "mysql",
-  "mariadb",
-  "mongodb",
-]);
+/** The database kinds a snapshot dumps and a rollback restores. */
+export const DATABASE_KINDS = ["postgres", "mysql", "mariadb", "mongodb"] as const;
+
+type DatabaseService = PlanService & { kind: (typeof DATABASE_KINDS)[number] };
+
+/** The plan's services of the {@link DATABASE_KINDS} on the app's server, enabled. */
+export function snapshotDatabases(plan: {
+  readonly services: readonly PlanService[];
+}): DatabaseService[] {
+  return servicesOn(plan, APP_SERVER).filter((service): service is DatabaseService =>
+    DATABASE_KINDS.some((kind) => kind === service.kind),
+  );
+}
 
 /**
  * True when each release snapshots the databases on the app's server: on a cloud server, the
@@ -1579,9 +1586,7 @@ export function snapshotsOn(
   const { provider } = plan.target;
   if (!onOneServer(provider) && provider !== "localhost") return false;
   if (plan.environment?.previews !== undefined) return false;
-  if (!servicesOn(plan, APP_SERVER).some((service) => SNAPSHOT_KINDS.has(service.kind))) {
-    return false;
-  }
+  if (snapshotDatabases(plan).length === 0) return false;
   return plan.deploy.snapshots ?? plan.environment?.name !== undefined;
 }
 

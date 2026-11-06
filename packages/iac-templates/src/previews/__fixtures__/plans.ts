@@ -145,7 +145,6 @@ export function directPreview(
     environment,
     app: { ...plan.app, name: `${plan.app.name}-pr-${n}` },
     dns: { ...plan.dns, domain: `pr-${n}-${random}.${previews.domain}` },
-    deploy: { ...plan.deploy, snapshots: false },
   };
   const runtime = runtimeDir(own);
   const files: Record<string, string> = {};

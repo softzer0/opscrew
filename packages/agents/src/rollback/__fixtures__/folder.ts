@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
-import { shellQuote } from "@opscrew/iac-templates";
-import { APPROVAL_FILE, removeScript } from "../database";
+import { ROLLBACK_APPROVAL_FILE, shellQuote } from "@opscrew/iac-templates";
+import { removeScript } from "../database";
 
 /** True when `sh` runs here (Git's on Windows), which the app folder's scripts need. */
 export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
@@ -46,7 +46,7 @@ export class FakeAppFolder {
           return { exitCode: this.failWith, stdout: "", stderr: "failed" };
         }
         if (command === removeScript(this.serverDir)) {
-          await rm(join(this.dir, APPROVAL_FILE), { force: true });
+          await rm(join(this.dir, ROLLBACK_APPROVAL_FILE), { force: true });
           return { exitCode: 0, stdout: "", stderr: "" };
         }
         return this.sh(command.replace(/^sudo -n /, ""));

@@ -442,25 +442,8 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
-          snapshot_room() {
-            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
-            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/environments/staging/plan.yaml).\\n' "$APPS_DIR"/shop-staging
-            rm -rf .snapshots/*.partial
-            return 1
-          }
           snapshot_run() {
             (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop-staging/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
-          }
-          snapshot_take() {
-            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
-            snapshot_room || return 2
-            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
-            snapshot_room || return 2
-            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
-            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
-          }
-          snapshot_complete() {
-            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
           }
           snapshot_restore() {
             snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1

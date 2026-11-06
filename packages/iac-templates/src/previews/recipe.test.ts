@@ -1,5 +1,5 @@
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, snapshotsOn } from "@opscrew/plan-schema";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { CF_RANGES, testCloudflare, testContext, testPlan } from "../__fixtures__/plans";
@@ -154,7 +154,6 @@ describe("renderPreviewRecipe", () => {
 
   it("takes no snapshot of a preview's databases, and never changes its data on a rollback", () => {
     const plan = previewPlan();
-    expect(snapshotsOn(previewTemplatePlan(plan))).toBe(false);
     const files = recipe(plan);
     const start = files["template/start.sh"] ?? "";
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, not a JavaScript template.

@@ -1,8 +1,12 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { type DeployPlan, MIGRATION_TOOLS, type MigrationTool } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  MIGRATION_TOOLS,
+  type Migrations,
+  type MigrationTool,
+} from "@opscrew/plan-schema";
 import { shellQuote } from "../runtime/services";
-import { planFilePath, runbookFilePath } from "./shared";
-import type { ScriptOptions } from "./switch";
+import { planFilePath, printfFormat, RELEASE_LOG, runbookFilePath, serverLogNote } from "./shared";
 
 /** The migration records' folder in the app's folder (plan.md 12.3). */
 export const SCHEMA_DIR = ".schema";
@@ -14,12 +18,6 @@ export function schemaRecordPath(hex: string): string {
 
 /** How many records the deploy keeps, the newest. */
 const KEEP_RECORDS = 20;
-
-/**
- * Where the release command's output stays, in the app's folder (`switch.ts`); the record's errors
- * and the down migrations' output go there too, never to the workflow's log.
- */
-const RELEASE_LOG = "release.log";
 
 /**
  * The awk program that turns each tool's status output (research R9, as the tools print it without
@@ -99,13 +97,12 @@ function recordFailed(plan: DeployPlan): string {
  * its output is turned into {@link schemaRecordPath}'s lines ({@link NORMALIZE}) and the newest
  * {@link KEEP_RECORDS} records stay. Folder 0700, files 0600. Nothing the command prints reaches
  * the log: its errors go to `release.log`. A failure only warns, and leaves no record: down
- * migrations are then not offered for this version. None without `app.migrations`, in a preview's
- * scripts (`o.preview`: no rollback changes a preview's data), and for an image without a digest
- * (provision's first start on this computer).
+ * migrations are then not offered for this version. None without `app.migrations`, and for an
+ * image without a digest (provision's first start on this computer).
  */
-export function migrationRecord(plan: DeployPlan, o: ScriptOptions = {}): string[] {
+export function migrationRecord(plan: DeployPlan): string[] {
   const migrations = plan.app.migrations;
-  if (migrations === undefined || o.preview === true) return [];
+  if (migrations === undefined) return [];
   const record = `${SCHEMA_DIR}/"$schema_hex"`;
   const several = SEVERAL[migrations.tool];
   return [
@@ -127,7 +124,7 @@ export function migrationRecord(plan: DeployPlan, o: ScriptOptions = {}): string
         ]),
     "    *)",
     `      rm -f ${record}`,
-    `      printf ${shellQuote(`${recordFailed(plan)}\\n`)} "$PWD" ;;`,
+    `      printf ${printfFormat(recordFailed(plan))} "$PWD" ;;`,
     "  esac ;;",
     "esac",
   ];
@@ -224,16 +221,9 @@ function downScript(tool: MigrationTool, down: string): string[] {
  * a value that isn't one, or a count that grew going back exits non-zero before any change. The
  * command runs in one one-off of the running version's image (the `release` service with the
  * image `.env` names: `APP_IMAGE` is `$1`'s, the earlier version's, in the script), its output in
- * `release.log`, never printed. Without `app.migrations`, it always exits non-zero.
+ * `release.log`, never printed.
  */
-export function migrationDown(plan: DeployPlan): string[] {
-  const migrations = plan.app.migrations;
-  if (migrations === undefined) {
-    return [
-      `echo ${shellQuote("::error::Down migrations aren't available for this app.")}`,
-      "exit 1",
-    ];
-  }
+export function migrationDown(plan: DeployPlan, migrations: Migrations): string[] {
   const { tool, down } = migrations;
   const error = (text: string) => `echo ${shellQuote(`::error::${text}`)}; exit 1;`;
   return [
@@ -251,7 +241,7 @@ export function migrationDown(plan: DeployPlan): string[] {
     "fi",
     "image=\"$(sed -n 's/^APP_IMAGE=//p' .env)\"",
     `if ! (umask 077; APP_IMAGE="$image" docker compose run --rm --no-deps -T release sh -c "$script" < /dev/null > ${RELEASE_LOG} 2>&1); then`,
-    `  printf ${shellQuote(`::error::The down migrations with ${tool} failed. Their output stays on the server in %s/${RELEASE_LOG} (it can quote data from the database, so it is not printed here; ${runbookFilePath(plan)} has the SSH command).\\n`)} "$PWD"`,
+    `  printf ${printfFormat(`::error::The down migrations with ${tool} failed. Their output ${serverLogNote(plan, RELEASE_LOG)}`)} "$PWD"`,
     "  exit 1",
     "fi",
     `echo ${shellQuote(`OpsCrew migrated the database down with ${tool} to the migrations of the version rolled back to.`)}`,

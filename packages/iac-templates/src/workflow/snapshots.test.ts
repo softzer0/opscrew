@@ -22,12 +22,7 @@ import { localhostPlan } from "../edge/__fixtures__/localhost";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import { inEnvironment, NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
-import {
-  type DatabaseChoice,
-  ROLLBACK_APPROVAL_FILE,
-  rollbackApprovalLine,
-  snapshotFunctions,
-} from "./snapshots";
+import { ROLLBACK_APPROVAL_FILE, rollbackApprovalLine, snapshotFunctions } from "./snapshots";
 import { rollbackCommands, switchCommands } from "./switch";
 
 /** The digests of the earlier and the later version, and of another one. */
@@ -233,7 +228,12 @@ function snapshot(hex: string, taken: string, content: Record<string, string> = 
 function approve(hex: string, choice: string, seconds = 1800): void {
   const expiresAt = Math.floor(Date.now() / 1000) + seconds;
   // `choice` may be one the script refuses: the line is the exported format all the same.
-  write(at(ROLLBACK_APPROVAL_FILE), rollbackApprovalLine(hex, choice as DatabaseChoice, expiresAt));
+  const line = rollbackApprovalLine(hex, choice as "snapshot" | "migrations", expiresAt);
+  write(
+    at(ROLLBACK_APPROVAL_FILE),
+    `${line}
+`,
+  );
 }
 
 /**

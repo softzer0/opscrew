@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApprovalRequest, CommandResult } from "@opscrew/contracts";
-import { DEPLOY_PAUSED_VARIABLE, shellQuote } from "@opscrew/iac-templates";
+import { DEPLOY_PAUSED_VARIABLE, ROLLBACK_APPROVAL_FILE, shellQuote } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { FakeComputer, localPlan } from "../localhost/__fixtures__/computer";
@@ -18,7 +18,7 @@ import {
   ScriptedRunner,
 } from "../testing";
 import { FakeRollbackGitHub, failure, planHash, YES_KINDS } from "./__fixtures__/versions";
-import { APPROVAL_FILE } from "./database";
+import { hexOf } from "./database";
 import { type RollbackOptions, rollback } from "./index";
 import { imageRollbackHash, readRollback, rollbackFile } from "./record";
 import { shortImage } from "./versions";
@@ -90,7 +90,7 @@ async function localWorld(
   const approvals: (string | undefined)[] = [];
   computer.script = (script) => {
     if (SWITCH.test(script)) {
-      const file = join(folder, APPROVAL_FILE);
+      const file = join(folder, ROLLBACK_APPROVAL_FILE);
       approvals.push(existsSync(file) ? readFileSync(file, "utf8") : undefined);
     }
     events.push(
@@ -240,7 +240,7 @@ describe("opscrew rollback on this computer", () => {
 
   it("restores the snapshot with --database snapshot: the name typed, the one-time approval for the start script, gone after", async () => {
     const world = await localWorld({ snapshots: true });
-    const hex = digestOf("previous").slice("sha256:".length);
+    const hex = hexOf(digestOf("previous")) as string;
     await mkdir(join(world.folder, ".snapshots", hex), { recursive: true });
     await writeFile(join(world.folder, ".snapshots", hex, "taken"), "2026-10-11T11:30:00Z");
 
@@ -271,7 +271,7 @@ describe("opscrew rollback on this computer", () => {
     );
     const expiry = Date.parse(CLOCK) / 1000 + 30 * 60;
     expect(world.approvals).toEqual([`${hex} snapshot ${expiry}\n`]);
-    expect(existsSync(join(world.folder, APPROVAL_FILE))).toBe(false);
+    expect(existsSync(join(world.folder, ROLLBACK_APPROVAL_FILE))).toBe(false);
     expect((await readRollback(world.deps.paths))?.database).toEqual({
       choice: "snapshot",
       taken: "2026-10-11T11:30:00Z",
@@ -283,7 +283,7 @@ describe("opscrew rollback on this computer", () => {
 
   it("removes the one-time approval when the switch fails, and leaves none when it keeps the data", async () => {
     const world = await localWorld({ snapshots: true });
-    const hex = digestOf("previous").slice("sha256:".length);
+    const hex = hexOf(digestOf("previous")) as string;
     await mkdir(join(world.folder, ".snapshots", hex), { recursive: true });
     await writeFile(join(world.folder, ".snapshots", hex, "taken"), "2026-10-11T11:30:00Z");
     world.computer.script = (script) => {
@@ -291,17 +291,17 @@ describe("opscrew rollback on this computer", () => {
       return ok();
     };
     await expect(world.run({ database: "snapshot" })).rejects.toThrow();
-    expect(existsSync(join(world.folder, APPROVAL_FILE))).toBe(false);
+    expect(existsSync(join(world.folder, ROLLBACK_APPROVAL_FILE))).toBe(false);
 
     const again = await localWorld({ snapshots: true });
-    await writeFile(join(again.folder, APPROVAL_FILE), `${hex} snapshot 9999999999\n`);
+    await writeFile(join(again.folder, ROLLBACK_APPROVAL_FILE), `${hex} snapshot 9999999999\n`);
     await again.run({ database: "keep" });
     expect(again.approvals).toEqual([undefined]);
     expect(again.handler.requests[0]?.allowDestroy).toBeUndefined();
 
     // Without snapshots or down migrations too: an earlier approval, even expired, goes.
     const plain = await localWorld();
-    await writeFile(join(plain.folder, APPROVAL_FILE), `${hex} snapshot 1\n`);
+    await writeFile(join(plain.folder, ROLLBACK_APPROVAL_FILE), `${hex} snapshot 1\n`);
     await plain.run();
     expect(plain.approvals).toEqual([undefined]);
   });

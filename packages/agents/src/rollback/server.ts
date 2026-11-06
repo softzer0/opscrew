@@ -30,6 +30,7 @@ import {
 import { auditFinishedRun, deployRunFailure, dispatchAndFollow } from "../shared/deploy-run";
 import { codeOf } from "../shared/errors";
 import {
+  APPROVAL_SECONDS,
   type DatabaseStep,
   databaseOutcome,
   databaseStep,
@@ -317,7 +318,7 @@ async function clearApproval(run: RollbackRun, remove: () => Promise<void>): Pro
     await remove();
   } catch (error) {
     run.deps.reporter.warn(
-      `${errorMessage(error)} The one-time approval of the database step stays on the server until it expires, 30 minutes after OpsCrew left it.`,
+      `${errorMessage(error)} The one-time approval of the database step stays on the server until it expires, ${APPROVAL_SECONDS / 60} minutes after OpsCrew left it.`,
     );
   }
 }

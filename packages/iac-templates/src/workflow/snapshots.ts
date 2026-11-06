@@ -1,27 +1,18 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import {
-  APP_SERVER,
+  type DATABASE_KINDS,
   type DeployPlan,
   keepSnapshotsOf,
-  type PlanService,
-  servicesOn,
+  snapshotDatabases,
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { shellQuote } from "../runtime/services";
-import { planFilePath, runbookFilePath } from "./shared";
+import { planFilePath, printfFormat, serverLogNote } from "./shared";
 
-/**
- * The snapshots' folder in the app's folder (plan.md 12.3), mode 0700: `<hex>/` holds the
- * databases as they were when version `<hex>` stopped running, one `<service>.dump` each and
- * `taken` (the ISO time, written last); `<hex>.partial/` is one being written.
- */
+/** The snapshots' folder in the app's folder (plan.md 12.3). */
 export const SNAPSHOTS_DIR = ".snapshots";
 
-/**
- * The output of the last run's dumps and restores, in {@link SNAPSHOTS_DIR}: emptied when a run
- * takes its snapshot, appended to by every dump and restore after it. It can quote data from the
- * database, so it is never printed.
- */
+/** The last run's dumps' and restores' output, never printed (plan.md 12.3). */
 export const SNAPSHOT_LOG = `${SNAPSHOTS_DIR}/snapshot.log`;
 
 /** The file whose ISO time says that `.snapshots/<hex>` is complete (written last). */
@@ -32,19 +23,13 @@ export function snapshotTakenPath(hex: string): string {
 /** The one-time approval of a rollback that changes the data (plan.md 12.3), in the app's folder. */
 export const ROLLBACK_APPROVAL_FILE = ".rollback-database";
 
-/** What a rollback that changes the data does: restore the snapshot, or migrate down. */
-export type DatabaseChoice = "snapshot" | "migrations";
-
-/**
- * The line of {@link ROLLBACK_APPROVAL_FILE}: the digest of the version rolled back to (its 64 hex
- * characters), the choice, and when the approval expires (Unix seconds).
- */
+/** The line of {@link ROLLBACK_APPROVAL_FILE}, without its newline (plan.md 12.3). */
 export function rollbackApprovalLine(
   hex: string,
-  choice: DatabaseChoice,
+  choice: "snapshot" | "migrations",
   expiresAt: number,
 ): string {
-  return `${hex} ${choice} ${expiresAt}\n`;
+  return `${hex} ${choice} ${expiresAt}`;
 }
 
 /** Where a one-off container of a database's service mounts the snapshot's folder. */
@@ -85,7 +70,7 @@ function mongoLogin(host: string): string {
  * from the service's env file inside the container, in the client's variable or a file there.
  * Each restore is exact: the tables and collections created since go too.
  */
-const DATABASES: Record<string, DatabaseCommands> = {
+const DATABASES: Record<(typeof DATABASE_KINDS)[number], DatabaseCommands> = {
   postgres: {
     login: 'export PGPASSWORD="$POSTGRES_PASSWORD"',
     dump: (host, file) => `pg_dump -h ${host} -U app -Fc -f ${file} app`,
@@ -104,19 +89,6 @@ const DATABASES: Record<string, DatabaseCommands> = {
   },
 };
 
-/** The plan's PostgreSQL, MySQL, MariaDB and MongoDB services on the app's server. */
-export function snapshotDatabases(plan: DeployPlan): PlanService[] {
-  return servicesOn(plan, APP_SERVER).filter((service) => Object.hasOwn(DATABASES, service.kind));
-}
-
-/**
- * printf's format `text` (`%s` for each argument, `%%` for a percent sign) as one shell word,
- * ending the line.
- */
-export function printfFormat(text: string): string {
-  return shellQuote(`${text}\\n`);
-}
-
 /** The warning when the disk is too full for a snapshot; `%s` is the app's folder. */
 function lowDisk(plan: DeployPlan): string {
   return `::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can't restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in ${planFilePath(plan)}).`;
@@ -124,12 +96,21 @@ function lowDisk(plan: DeployPlan): string {
 
 /** FR-1922: a dump failed at a deploy; `%s` is the app's folder. */
 function snapshotFailed(plan: DeployPlan): string {
-  return `::error::The snapshot of the databases before this release failed, so the new version was not started and the previous version keeps serving. The dump's output stays on the server in %s/${SNAPSHOT_LOG} (it can quote data from the database, so it is not printed here; ${runbookFilePath(plan)} has the SSH command). Fix its cause and push again, or set deploy.snapshots: false in ${planFilePath(plan)} to deploy without snapshots.`;
+  return `::error::The snapshot of the databases before this release failed, so the new version was not started and the previous version keeps serving. The dump's output ${serverLogNote(plan, SNAPSHOT_LOG)} Fix its cause and push again, or set deploy.snapshots: false in ${planFilePath(plan)} to deploy without snapshots.`;
 }
+
+/** The shell functions {@link snapshotFunctions} renders. */
+type SnapshotFunction =
+  | "snapshot_room"
+  | "snapshot_run"
+  | "snapshot_take"
+  | "snapshot_complete"
+  | "snapshot_restore";
 
 /**
  * The start script's snapshot functions (POSIX sh, in the app's folder; `folder` is that folder in
- * the script, `"$APPS_DIR"/<app>`), none without a database ({@link snapshotDatabases}):
+ * the script, `"$APPS_DIR"/<app>`), those of `names` only, none without a database
+ * ({@link snapshotDatabases}):
  * - `snapshot_room`: whether the folder's disk has 1 GiB and 10% free; otherwise it warns, removes
  *   the partial snapshots and fails;
  * - `snapshot_run <folder> <rw|ro> <service> <script>`: `script` in a one-off container of the
@@ -144,12 +125,16 @@ function snapshotFailed(plan: DeployPlan): string {
  *   added to the log; returns 1 when one failed.
  * Every folder is 0700 and every file 0600.
  */
-export function snapshotFunctions(plan: DeployPlan, folder: string): string[] {
-  const databases = snapshotDatabases(plan).map(({ name, kind }) => {
-    const commands = DATABASES[kind];
-    if (commands === undefined) throw new Error(`A snapshot holds no ${kind} service.`);
-    return { name, commands, file: `${MOUNT}/${name}.dump` };
-  });
+export function snapshotFunctions(
+  plan: DeployPlan,
+  folder: string,
+  names?: readonly SnapshotFunction[],
+): string[] {
+  const databases = snapshotDatabases(plan).map(({ name, kind }) => ({
+    name,
+    commands: DATABASES[kind],
+    file: `${MOUNT}/${name}.dump`,
+  }));
   if (databases.length === 0) return [];
   /** `command` in a one-off container of `name` that mounts the snapshot's folder `rw` or `ro`. */
   const run = (
@@ -158,36 +143,52 @@ export function snapshotFunctions(plan: DeployPlan, folder: string): string[] {
     command: string,
   ) =>
     `snapshot_run "$1"${mode === "rw" ? ".partial" : ""} ${mode} ${name} ${shellQuote(`umask 077 && ${commands.login} && ${command}`)}`;
-  return [
-    "snapshot_room() {",
-    "  if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi",
-    `  printf ${printfFormat(lowDisk(plan))} ${folder}`,
-    `  rm -rf ${SNAPSHOTS_DIR}/*.partial`,
-    "  return 1",
-    "}",
-    "snapshot_run() {",
-    `  (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v ${folder}/${SNAPSHOTS_DIR}/"$1":${MOUNT}:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> ${SNAPSHOT_LOG} 2>&1)`,
-    "}",
-    "snapshot_take() {",
-    `  (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && rm -rf ${SNAPSHOTS_DIR}/*.partial && mkdir ${SNAPSHOTS_DIR}/"$1".partial && : > ${SNAPSHOT_LOG}) || return 1`,
-    "  snapshot_room || return 2",
-    ...databases.flatMap((database) => [
-      `  ${run("rw", database, database.commands.dump(database.name, database.file))} || { rm -rf ${SNAPSHOTS_DIR}/"$1".partial; return 1; }`,
-      "  snapshot_room || return 2",
-    ]),
-    `  (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > ${SNAPSHOTS_DIR}/"$1".partial/taken) || return 1`,
-    `  rm -rf ${SNAPSHOTS_DIR}/"$1" && mv ${SNAPSHOTS_DIR}/"$1".partial ${SNAPSHOTS_DIR}/"$1"`,
-    "}",
-    "snapshot_complete() {",
-    `  [ -f ${snapshotTakenPath('"$1"')} ]${databases.map(({ name }) => ` && [ -f ${SNAPSHOTS_DIR}/"$1"/${name}.dump ]`).join("")}`,
-    "}",
-    "snapshot_restore() {",
-    ...databases.map(
-      (database) =>
-        `  ${run("ro", database, database.commands.restore(database.name, database.file))} || return 1`,
-    ),
-    "}",
+  const functions: [SnapshotFunction, string[]][] = [
+    [
+      "snapshot_room",
+      [
+        "  if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi",
+        `  printf ${printfFormat(lowDisk(plan))} ${folder}`,
+        `  rm -rf ${SNAPSHOTS_DIR}/*.partial`,
+        "  return 1",
+      ],
+    ],
+    [
+      "snapshot_run",
+      [
+        `  (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v ${folder}/${SNAPSHOTS_DIR}/"$1":${MOUNT}:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> ${SNAPSHOT_LOG} 2>&1)`,
+      ],
+    ],
+    [
+      "snapshot_take",
+      [
+        `  (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && rm -rf ${SNAPSHOTS_DIR}/*.partial && mkdir ${SNAPSHOTS_DIR}/"$1".partial && : > ${SNAPSHOT_LOG}) || return 1`,
+        "  snapshot_room || return 2",
+        ...databases.flatMap((database) => [
+          `  ${run("rw", database, database.commands.dump(database.name, database.file))} || { rm -rf ${SNAPSHOTS_DIR}/"$1".partial; return 1; }`,
+          "  snapshot_room || return 2",
+        ]),
+        `  (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > ${SNAPSHOTS_DIR}/"$1".partial/taken) || return 1`,
+        `  rm -rf ${SNAPSHOTS_DIR}/"$1" && mv ${SNAPSHOTS_DIR}/"$1".partial ${SNAPSHOTS_DIR}/"$1"`,
+      ],
+    ],
+    [
+      "snapshot_complete",
+      [
+        `  [ -f ${snapshotTakenPath('"$1"')} ]${databases.map(({ name }) => ` && [ -f ${SNAPSHOTS_DIR}/"$1"/${name}.dump ]`).join("")}`,
+      ],
+    ],
+    [
+      "snapshot_restore",
+      databases.map(
+        (database) =>
+          `  ${run("ro", database, database.commands.restore(database.name, database.file))} || return 1`,
+      ),
+    ],
   ];
+  return functions
+    .filter(([name]) => names?.includes(name) ?? true)
+    .flatMap(([name, body]) => [`${name}() {`, ...body, "}"]);
 }
 
 /**

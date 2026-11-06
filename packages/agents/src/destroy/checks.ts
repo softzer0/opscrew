@@ -5,6 +5,7 @@ import { cloudTarget, type ServerModule, serviceSpec } from "@opscrew/iac-templa
 import {
   APP_SERVER,
   type CloudDeployTarget,
+  DATABASE_KINDS,
   type DeployPlan,
   isServerlessProvider,
   servicesOn,
@@ -328,9 +329,6 @@ export function removeHostKeys(
   return { text: kept.length > 0 ? `${kept.join("\n")}\n` : "", removed };
 }
 
-/** Service kinds whose data is a database, said as `the MySQL database`. */
-const DATABASE_KINDS: ReadonlySet<string> = new Set(["postgres", "mysql", "mariadb", "mongodb"]);
-
 /**
  * The data the plan's components keep on the server, in words, from the catalog: each running
  * service's (`the MySQL database`, `the RabbitMQ data`; a service in cache mode, such as a Valkey
@@ -342,7 +340,9 @@ export function serverData(plan: Pick<DeployPlan, "services" | "storage">): stri
     .filter((service) => !("mode" in service.options && service.options.mode === "cache"))
     .map((service) => {
       const title = serviceSpec(service.kind).title;
-      return DATABASE_KINDS.has(service.kind) ? `the ${title} database` : `the ${title} data`;
+      return DATABASE_KINDS.some((kind) => kind === service.kind)
+        ? `the ${title} database`
+        : `the ${title} data`;
     });
   if (plan.storage?.sqlite !== undefined) items.push("the SQLite database");
   return [...new Set(items)];

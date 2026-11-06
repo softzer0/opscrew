@@ -269,11 +269,18 @@ function rollback(plan: DeployPlan, env: Record<string, string> = {}) {
     `target=${A}`,
     `running=${B}`,
     "if ! (",
-    ...migrationDown(plan).map((line) => `        ${line}`),
+    ...migrationDown(plan, migrationsOf(plan)).map((line) => `        ${line}`),
     "      ); then echo 'the step failed'; exit 1; fi",
     "echo 'the step finished'",
   ];
   return run(script, image(A), env);
+}
+
+/** `plan's` `app.migrations`, which every plan the down step runs for has. */
+function migrationsOf(plan: DeployPlan): Migrations {
+  const { migrations } = plan.app;
+  if (migrations === undefined) throw new Error("The test plan has no app.migrations.");
+  return migrations;
 }
 
 /** The records of A, the version rolled back to, and B, the running one; `undefined` leaves one out. */
@@ -620,12 +627,8 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
       expect(read("release.log")).toContain(`the tool read ${SECRET_ROW}`);
     });
 
-    it("fails without app.migrations", () => {
-      const plain = testPlan();
-      expect(migrationRecord(plain)).toEqual([]);
-      const result = rollback(plain);
-      expect(result.status).toBe(1);
-      expect(result.output).toContain("::error::Down migrations aren't available for this app.");
+    it("records nothing without app.migrations", () => {
+      expect(migrationRecord(testPlan())).toEqual([]);
     });
   });
 });

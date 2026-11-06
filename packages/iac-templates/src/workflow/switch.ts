@@ -1,5 +1,11 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { APP_SERVER, type DeployPlan, type ImageBuilder, servicesOn } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  type ImageBuilder,
+  servicesOn,
+  snapshotDatabases,
+} from "@opscrew/plan-schema";
 import {
   APPS_DIR,
   additionsPath,
@@ -29,13 +35,21 @@ import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
 import { migrationDown, migrationRecord } from "./migrations";
 import { portRepair } from "./servers";
-import { appFlag, hasCronJobs, healthPath, opscrew, planFilePath, runbookFilePath } from "./shared";
 import {
+  appFlag,
+  hasCronJobs,
+  healthPath,
+  opscrew,
+  planFilePath,
   printfFormat,
+  RELEASE_LOG,
+  runbookFilePath,
+  serverLogNote,
+} from "./shared";
+import {
   ROLLBACK_APPROVAL_FILE,
   SNAPSHOT_LOG,
   SNAPSHOTS_DIR,
-  snapshotDatabases,
   snapshotFunctions,
   snapshotStep,
   snapshotTakenPath,
@@ -76,7 +90,7 @@ function shellMessage(text: string): string {
  * migration can quote rows of the database.
  */
 function releaseLog(plan: DeployPlan): string {
-  return `${appFolder(plan)}/release.log`;
+  return `${appFolder(plan)}/${RELEASE_LOG}`;
 }
 
 /**
@@ -783,32 +797,22 @@ function edgeCommands(plan: DeployPlan, o: EdgeFiles): string[] {
   ];
 }
 
-/**
- * Whether a rollback can change the app's data (plan.md 12.4): outside a preview environment,
- * with a database a snapshot holds ({@link snapshotDatabases}) or down migrations.
- */
-function databaseRollback(plan: DeployPlan): boolean {
-  if (plan.environment?.previews !== undefined) return false;
-  return snapshotDatabases(plan).length > 0 || plan.app.migrations !== undefined;
-}
-
 /** How {@link switchCommands} and {@link rollbackCommands} render a script. */
 export interface ScriptOptions {
-  /**
-   * A preview's scripts (the preview recipe's template, whose plan has no `environment.previews`):
-   * no rollback changes a preview's data, so they have no database step.
-   */
+  /** A preview's scripts: no rollback changes a preview's data. */
   preview?: boolean;
 }
 
 /**
- * The marker of a rollback's database step (in the app's folder, mode 0600), written before it
- * stops the app: `target=<hex>`, the version rolled back to; `APP_IMAGE=<image>`, the version that
- * ran before; `saved=<hex>`, the snapshot of its database ({@link databaseStep}'s step 3), empty
- * when none was taken; and `changed=1` from step 4 on, `0` before. {@link rollbackCommands} puts
- * the database back with it, and starts the version that ran before, when the run then fails.
- * Every start step removes an earlier one first (`SAVE_PREVIOUS` and the start script).
+ * Whether a rollback can change the app's data (plan.md 12.4): not in a preview's scripts, with a
+ * database a snapshot holds ({@link snapshotDatabases}) or down migrations.
  */
+function databaseRollback(plan: DeployPlan, o: ScriptOptions): boolean {
+  if (o.preview === true) return false;
+  return snapshotDatabases(plan).length > 0 || plan.app.migrations !== undefined;
+}
+
+/** The marker of a rollback's database step, in the app's folder (plan.md 12.4). */
 export const DATABASE_CHANGED = ".database.changed";
 
 /**
@@ -857,7 +861,7 @@ function approvalCheck(plan: DeployPlan): string[] {
 
 /** Where the dumps' and restores' output is, in a printf format whose `%s` is the app's folder. */
 function snapshotLogNote(plan: DeployPlan): string {
-  return `The output of the dumps and restores stays on the server in %s/${SNAPSHOT_LOG} (it can quote data from the database, so it is not printed here; ${runbookFilePath(plan)} has the SSH command).`;
+  return `The output of the dumps and restores ${serverLogNote(plan, SNAPSHOT_LOG)}`;
 }
 
 /**
@@ -885,6 +889,7 @@ function databaseStep(plan: DeployPlan): string[] {
   const folder = appFolder(plan);
   const databases = snapshotDatabases(plan);
   const processes = processServices(plan);
+  const { migrations } = plan.app;
   const note = snapshotLogNote(plan);
   /** The stopped web, and the workers and cron that ran, of the version `.env` names, start again. */
   const start = `docker compose start app${processes.length === 0 ? "" : ` $(cat ${PREVIOUS_PROCESSES} 2> /dev/null || true)`}`;
@@ -960,13 +965,13 @@ function databaseStep(plan: DeployPlan): string[] {
     "  failed=0",
     '  case "$database" in',
     ...restore,
-    ...(plan.app.migrations === undefined
+    ...(migrations === undefined
       ? []
       : [
           "    migrations)",
           '      what="Migrating the database down"',
           "      if ! (",
-          ...migrationDown(plan).map((line) => `        ${line}`),
+          ...migrationDown(plan, migrations).map((line) => `        ${line}`),
           "      ); then failed=1; fi ;;",
         ]),
     "  esac",
@@ -1017,7 +1022,7 @@ export function switchCommands(
   o: ScriptOptions = {},
 ): string[] {
   const steady = steadyServices(plan);
-  const data = o.preview !== true && databaseRollback(plan);
+  const data = databaseRollback(plan, o);
   const release =
     plan.app.releaseCommand === undefined
       ? []
@@ -1032,7 +1037,7 @@ export function switchCommands(
           "    exit 1",
           "  fi",
           `  echo ${shellMessage(`The release command finished; its output is in ${releaseLog(plan)} on the server.`)}`,
-          ...migrationRecord(plan, o).map((line) => `  ${line}`),
+          ...(data ? migrationRecord(plan) : []).map((line) => `  ${line}`),
           "fi",
         ];
   const hosts = proxyHosts(plan, edgeFiles.localhost);
@@ -1076,7 +1081,7 @@ export function switchCommands(
     ...(steady.length === 0 ? [] : [`docker compose up -d --no-deps --wait ${steady.join(" ")}`]),
     ...portRepair(plan, APP_SERVER),
     ...serviceInit(plan, init, initLog(plan)),
-    ...snapshotStep(plan, appFolder(plan)),
+    ...(data ? snapshotStep(plan, appFolder(plan)) : []),
     ...release,
     // Before the switch: `recreate` writes `.env` first, and from then on the rollback acts.
     ...recordProcesses(processServices(plan)),
@@ -1145,7 +1150,7 @@ export function rollbackCommands(
     ]),
     ...restoreProcesses(processServices(plan)),
   ];
-  const data = o.preview !== true && databaseRollback(plan);
+  const data = databaseRollback(plan, o);
   return [
     ...SCRIPT_ROOTS,
     "set -eu",
@@ -1157,7 +1162,7 @@ export function rollbackCommands(
     'RUN_IMAGE="$1"',
     ...keepFailed(plan),
     EDGE_FUNCTION,
-    ...(data ? snapshotFunctions(plan, appFolder(plan)) : []),
+    ...(data ? snapshotFunctions(plan, appFolder(plan), ["snapshot_run", "snapshot_restore"]) : []),
     ...(data ? databaseBack(plan, keepLines, back(recreatePlan(plan))) : []),
     'if ! grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then echo unchanged; exit 0; fi',
     "if [ ! -f .env.previous ] || cmp -s .env .env.previous; then echo no-previous; exit 0; fi",

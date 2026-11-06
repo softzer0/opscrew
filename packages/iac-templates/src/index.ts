@@ -48,14 +48,11 @@ export * from "./serverless";
 export * from "./tunnel";
 export * from "./types";
 export * from "./workflow";
-export { SCHEMA_DIR, schemaRecordPath } from "./workflow/migrations";
+export { schemaRecordPath } from "./workflow/migrations";
 export { previewWorkflowPath, renderPreviewWorkflow } from "./workflow/preview";
 export {
-  type DatabaseChoice,
   ROLLBACK_APPROVAL_FILE,
   rollbackApprovalLine,
-  SNAPSHOT_LOG,
-  SNAPSHOTS_DIR,
   snapshotTakenPath,
 } from "./workflow/snapshots";
 export { FAILED_DEPLOY_DIR } from "./workflow/switch";

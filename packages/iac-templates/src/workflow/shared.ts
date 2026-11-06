@@ -9,6 +9,7 @@ import {
 } from "@opscrew/plan-schema";
 import { appRoot } from "../app-root";
 import { ACTIONS, type PinArch } from "../pins";
+import { shellQuote } from "../runtime/services";
 import { type AppEnvironment, artefactsFolder } from "../runtime-dir";
 import type { RenderContext } from "../types";
 
@@ -458,6 +459,25 @@ export function planFilePath(plan: AppEnvironment, environment?: string): string
  */
 export function runbookFilePath(plan: AppEnvironment): string {
   return `${artefactsFolder(plan)}/RUNBOOK.md`;
+}
+
+/** The release command's and down migrations' output, in the app's folder. */
+export const RELEASE_LOG = "release.log";
+
+/**
+ * Where a log that can quote data stays: `stays on the server in %s/<log> …`, a printf format
+ * whose `%s` is the app's folder.
+ */
+export function serverLogNote(plan: AppEnvironment, log: string): string {
+  return `stays on the server in %s/${log} (it can quote data from the database, so it is not printed here; ${runbookFilePath(plan)} has the SSH command).`;
+}
+
+/**
+ * printf's format `text` (`%s` for each argument, `%%` for a percent sign) as one shell word,
+ * ending the line.
+ */
+export function printfFormat(text: string): string {
+  return shellQuote(`${text}\\n`);
 }
 
 /**

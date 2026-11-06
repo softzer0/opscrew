@@ -1,5 +1,10 @@
 import { imageReleaseCommand, serviceSpec } from "@opscrew/iac-templates";
-import type { DeployPlan, Migrations, ProjectFacts } from "@opscrew/plan-schema";
+import {
+  DATABASE_KINDS,
+  type DeployPlan,
+  type Migrations,
+  type ProjectFacts,
+} from "@opscrew/plan-schema";
 import { planFile } from "../runners/words";
 
 /** The database-migrations note and whether it needs the user's attention. */
@@ -43,7 +48,9 @@ export function releaseCommandNote(
     return { warning: true, text: `${notRun}${extra}` };
   }
   if (detected !== undefined) return { warning: !detected.atStartup, text: detected.text };
-  const database = plan.services.find((s) => s.enabled && DATABASES.has(s.kind));
+  const database = plan.services.find(
+    (s) => s.enabled && DATABASE_KINDS.some((kind) => kind === s.kind),
+  );
   if (database === undefined) return undefined;
   return {
     warning: false,
@@ -69,6 +76,3 @@ export function migrationsInImage(
   const down = inImage(detected.down);
   return status === undefined || down === undefined ? undefined : { ...detected, status, down };
 }
-
-/** The services whose tables an app migrates. */
-const DATABASES: ReadonlySet<string> = new Set(["postgres", "mysql", "mariadb", "mongodb"]);

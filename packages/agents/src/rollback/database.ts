@@ -8,16 +8,23 @@ import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CommandResult } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
-import { appDir, shellQuote } from "@opscrew/iac-templates";
+import {
+  appDir,
+  ROLLBACK_APPROVAL_FILE,
+  rollbackApprovalLine,
+  schemaRecordPath,
+  shellQuote,
+  snapshotTakenPath,
+} from "@opscrew/iac-templates";
 import {
   APP_SERVER,
+  DATABASE_KINDS,
   type DeployPlan,
   keepSnapshotsOf,
   MIGRATION_TOOLS,
   type Migrations,
   onOneServer,
-  SNAPSHOT_KINDS,
-  servicesOn,
+  snapshotDatabases,
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
@@ -43,25 +50,12 @@ export interface DatabaseQuestion {
   default: DatabaseChoice;
 }
 
-/** The one-time approval in the app's folder (plan.md 12.3): `<hex> <choice> <expiry epoch>`. */
-export const APPROVAL_FILE = ".rollback-database";
-
 /** How long the start script accepts the one-time approval. */
-const APPROVAL_SECONDS = 30 * 60;
+export const APPROVAL_SECONDS = 30 * 60;
 
 /** The 64 hex digits of the digest a digest or an image reference ends with, as the files name it. */
 export function hexOf(image: string): string | undefined {
   return /sha256:([0-9a-f]{64})$/.exec(image)?.[1];
-}
-
-/** A version's complete snapshot: written last, so it exists only once every dump is in. */
-function takenFile(hex: string): string {
-  return `.snapshots/${hex}/taken`;
-}
-
-/** A version's migration record. */
-function recordFile(hex: string): string {
-  return `.schema/${hex}`;
 }
 
 /**
@@ -85,12 +79,12 @@ export function readScript(dir: string, paths: readonly string[]): string {
  * the file to the folder's owner, the deploy user, whose start script reads it.
  */
 export function writeScript(dir: string, line: string): string {
-  return `set -e; cd ${shellQuote(dir)}; umask 077; printf '%s\\n' ${shellQuote(line)} > ${APPROVAL_FILE}; chmod 600 ${APPROVAL_FILE}; if [ "$(id -u)" = 0 ]; then chown --reference=. ${APPROVAL_FILE}; fi`;
+  return `set -e; cd ${shellQuote(dir)}; umask 077; printf '%s\\n' ${shellQuote(line)} > ${ROLLBACK_APPROVAL_FILE}; chmod 600 ${ROLLBACK_APPROVAL_FILE}; if [ "$(id -u)" = 0 ]; then chown --reference=. ${ROLLBACK_APPROVAL_FILE}; fi`;
 }
 
 /** Removes the one-time approval, if any. */
 export function removeScript(dir: string): string {
-  return `cd ${shellQuote(dir)} || exit 3; rm -f ${APPROVAL_FILE}`;
+  return `cd ${shellQuote(dir)} || exit 3; rm -f ${ROLLBACK_APPROVAL_FILE}`;
 }
 
 /** The files {@link readScript} printed, by path; a path it did not print does not exist. */
@@ -117,17 +111,6 @@ async function serverFolder(
   const { docker } = await serverShell(deps, plan, APP_SERVER, services);
   const dir = appDir(plan);
   const answered = (result: CommandResult) => result.exitCode !== 255 && result.timedOut !== true;
-  const run = async (script: string, what: string): Promise<string> => {
-    const result = await docker.run(script, { timeoutMs: 60_000 });
-    if (result.exitCode === 0) return result.stdout;
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      answered(result)
-        ? `OpsCrew could not ${what} on the app's server (exit code ${result.exitCode}).`
-        : `The app's server did not answer over SSH, so OpsCrew could not ${what}.`,
-      { hint: "Check that the server is on and answers (`opscrew status`), then try again." },
-    );
-  };
   return {
     async read(paths) {
       const result = await docker.run(readScript(dir, paths), { timeoutMs: 60_000 });
@@ -141,12 +124,17 @@ async function serverFolder(
       }
       return readSections(result.stdout, paths);
     },
-    approval: async (line) => {
-      await run(
-        line === undefined ? removeScript(dir) : writeScript(dir, line),
-        line === undefined
-          ? "remove the one-time approval of the database step"
-          : "leave the one-time approval of the database step",
+    async approval(line) {
+      const script = line === undefined ? removeScript(dir) : writeScript(dir, line);
+      const result = await docker.run(script, { timeoutMs: 60_000 });
+      if (result.exitCode === 0) return;
+      const what = `${line === undefined ? "remove" : "leave"} the one-time approval of the database step`;
+      throw new OpsCrewError(
+        "COMMAND_FAILED",
+        answered(result)
+          ? `OpsCrew could not ${what} on the app's server (exit code ${result.exitCode}).`
+          : `The app's server did not answer over SSH, so OpsCrew could not ${what}.`,
+        { hint: "Check that the server is on and answers (`opscrew status`), then try again." },
       );
     },
   };
@@ -168,7 +156,7 @@ function localFolder(deps: PhaseDeps, plan: DeployPlan): AppFolder {
       return files;
     },
     async approval(line) {
-      const file = join(folder, APPROVAL_FILE);
+      const file = join(folder, ROLLBACK_APPROVAL_FILE);
       if (line === undefined) {
         await rm(file, { force: true });
         return;
@@ -235,7 +223,7 @@ function keptLines(plan: DeployPlan): string[] {
   const elsewhere = plan.services.filter(
     (service) =>
       service.enabled &&
-      SNAPSHOT_KINDS.has(service.kind) &&
+      DATABASE_KINDS.some((kind) => kind === service.kind) &&
       (portainer || (service.server ?? APP_SERVER) !== APP_SERVER),
   );
   const items = [
@@ -359,8 +347,8 @@ export async function databaseStep(
   const targetHex = hexOf(input.target);
   const currentHex = hexOf(input.current);
   const paths = [
-    ...(targetHex !== undefined ? [takenFile(targetHex), recordFile(targetHex)] : []),
-    ...(currentHex !== undefined ? [recordFile(currentHex)] : []),
+    ...(targetHex !== undefined ? [snapshotTakenPath(targetHex), schemaRecordPath(targetHex)] : []),
+    ...(currentHex !== undefined ? [schemaRecordPath(currentHex)] : []),
   ];
   deps.reporter.step(`Reading ${environment}'s database snapshots and migration records`);
   // No address or login for the server on this computer, or no answer from it.
@@ -374,10 +362,11 @@ export async function databaseStep(
     keepOnly(() => unreachable, unreachable);
     return keep();
   }
-  const takenText = targetHex === undefined ? undefined : files.get(takenFile(targetHex));
+  const takenText = targetHex === undefined ? undefined : files.get(snapshotTakenPath(targetHex));
   const taken = TakenSchema.safeParse(takenText).success ? takenText : undefined;
-  const targetRecord = targetHex === undefined ? undefined : files.get(recordFile(targetHex));
-  const currentRecord = currentHex === undefined ? undefined : files.get(recordFile(currentHex));
+  const targetRecord = targetHex === undefined ? undefined : files.get(schemaRecordPath(targetHex));
+  const currentRecord =
+    currentHex === undefined ? undefined : files.get(schemaRecordPath(currentHex));
 
   // 2. The offers, and why each other one is not.
   const offers: DatabaseOffer[] = [];
@@ -446,7 +435,7 @@ export async function databaseStep(
       `Database: ${offer.text}`,
       ...(choice === "snapshot" ? kept : []),
       "The app's settings and secrets stay as they are now. The release command does not run.",
-      `Typing ${name} approves it. OpsCrew then leaves a one-time approval in the app's folder, valid for 30 minutes, which the deploy's start step uses once.`,
+      `Typing ${name} approves it. OpsCrew then leaves a one-time approval in the app's folder, valid for ${APPROVAL_SECONDS / 60} minutes, which the deploy's start step uses once.`,
     ],
     confirmPhrase: name,
     flags: ` --database ${choice} --confirm ${name}`,
@@ -454,7 +443,7 @@ export async function databaseStep(
     outcome: databaseOutcome(record, plan, input.words),
     leave: async () => {
       const expiry = Math.floor(deps.clock.now().getTime() / 1000) + APPROVAL_SECONDS;
-      await folder.approval(`${hex} ${choice} ${expiry}`);
+      await folder.approval(rollbackApprovalLine(hex, choice, expiry));
       return new Date(expiry * 1000).toISOString();
     },
     clear: () => folder.approval(undefined),
@@ -470,7 +459,7 @@ function unreadReason(run: RollbackRun, choice: "snapshot" | "migrations"): stri
   if (choice === "migrations") {
     return `${environment}'s plan has no app.migrations, so OpsCrew knows no down migrations for its app. It sets them for Rails, Django, Alembic, Flask-Migrate, Knex, Sequelize, TypeORM and Laravel.`;
   }
-  if (!servicesOn(plan, APP_SERVER).some((service) => SNAPSHOT_KINDS.has(service.kind))) {
+  if (snapshotDatabases(plan).length === 0) {
     return `No PostgreSQL, MySQL, MariaDB or MongoDB runs on ${environment}'s app server, so OpsCrew takes no snapshots there.`;
   }
   return `${environment} takes no snapshots before its releases: deploy.snapshots is off in its plan (prod takes them only with deploy.snapshots: true).`;

@@ -37,6 +37,21 @@ describe("imageRollbackHash", () => {
     expect(imageRollbackHash({ targetPlanHash, target, current, environment })).toBe(hash);
   });
 
+  it("keeps the same bytes, with and without the database", () => {
+    expect(imageRollbackHash(parts)).toBe(
+      "3e9cec37b8be08d3b6d8381edee5725dc4053aa9dada3b488b59c46d52e34fcc",
+    );
+    const database = {
+      choice: "snapshot",
+      taken: "2026-10-11T11:30:00Z",
+      currentRecord: "count=3",
+      targetRecord: null,
+    } as const;
+    expect(imageRollbackHash({ ...parts, database })).toBe(
+      "c1a37925cee78c0f6562fedfedb3591b68442626589f6a6f099a3442e6a4b42c",
+    );
+  });
+
   it("changes with each of its four parts", () => {
     const changed = [
       { ...parts, environment: "shop/staging" },
