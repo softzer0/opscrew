@@ -871,7 +871,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, and the Docker test with `OPSCREW_DOCKER_TESTS=1` (its output in the report)
   - Effort: high
 
-- [ ] T1943 Alembic projects with several heads deploy with `alembic upgrade heads`, in `packages/detect/src/release/python.ts` (+ tests)
+- [x] T1943 Alembic projects with several heads deploy with `alembic upgrade heads`, in `packages/detect/src/release/python.ts` (+ tests)
   - Owns: `packages/detect/src/release/python.ts`, `python.test.ts`, `migrations.test.ts` (its Alembic cases)
   - Why:
     - A project whose migrations have several heads cannot deploy with OpsCrew's detected `alembic upgrade head` (or `flask db upgrade`): Alembic refuses "Multiple head revisions are present".
