@@ -9,7 +9,8 @@ Done: 000–022. [022 preview environments](022-preview-environments/) was built
 with addresses nobody can guess on a domain of their own (the founder's change that day), and
 passed its live pass on the final code. Being built now: 022's two opt-ins (research R7: previews on
 another environment's server, and under the app's own zone with Advanced Certificate Manager). Then
-023 retarget anywhere (the founder's go-ahead, 2026-11-05). Both ship in one release once 023 is done.
+023 retarget anywhere (the founder's go-ahead, 2026-11-05), then 019's database rollback (below).
+All three ship in one release once they are done (founder, 2026-11-06).
 
 ## 019 Rollback
 
@@ -46,6 +47,20 @@ The lead's sketch, to settle in the spec:
   - a worker's failure hint (`docker compose logs <service>`) shows the old version's lines
     after the switch back;
   - say what to do about a migration that was half-applied when the release command failed.
+
+**019 follow-up: a rollback undoes the database too** (founder, 2026-11-06, in the same release
+as 023). 019 left the data and the schema as they are, so the earlier version had to work with the
+newer schema. Now a rollback asks how to undo the database:
+- **A snapshot before every release, the default:** before a deploy runs the release command
+  (migrations), OpsCrew dumps the app's databases on the server; a rollback restores the dump taken
+  just before the version being undone migrated. It works for every migration tool and can't stop
+  halfway, but loses what was written since. **On by default for every environment except prod**;
+  prod keeps its data as it is unless the user turns snapshots on.
+- **Down migrations, per framework, when the user picks them:** the current image migrates the
+  database down to the version the earlier one ran. Offered only where the app's migration tool
+  has down migrations; rows the undone migrations don't touch stay.
+- Research first: each detected migration tool's down and current-version commands, and the dump,
+  restore and hold mechanics per database and target.
 
 **Also in 019: logins for Kafka, Redpanda and OpenSearch** (founder, 2026-11-01). They get a login
 of their own, generated like every other service's password. Today only the network protects
@@ -93,7 +108,7 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (024), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (025), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
 
@@ -113,7 +128,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (023), or to AWS (024) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (025) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -184,7 +199,16 @@ own servers, Portainer, and stateful services other than Postgres and Valkey. Th
 
 Placed before AWS so AWS joins as just another target.
 
-## 024 AWS
+## 024 Snapshots and restores as commands
+
+Placed before AWS by the founder on 2026-11-06. Today a snapshot is taken only by `destroy`, and
+a restore is done by hand in the provider's console or from a database dump (lead, 2026-10-31,
+from the failed-deploy guide page). 019's database rollback (in the same release as 023) dumps
+the app's databases before each release; this feature turns that into commands the user runs:
+take a snapshot of an environment's databases or its whole server, list them, and restore one,
+each restore approved like any other change that deletes data.
+
+## 025 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps
@@ -291,22 +315,18 @@ never runs, they stay "not tested live" on the coverage page.
 
 ## Later, not yet placed
 
+- **A password in front of an environment, as a follow-up to 022** (founder, 2026-11-05, from
+  022; kept for later as 022's follow-up, founder, 2026-11-06): HTTP basic authentication in the
+  Caddy site (a bcrypt hash made on the user's computer; the health route left open), opt-in per
+  environment, because a login can break what calls the app (webhooks, OAuth callbacks, API and
+  mobile clients). 022 gave previews and the other environments hidden addresses instead (022
+  research R6). Cloudflare Access in front of Cloudflare-hosted sites belongs here too.
 - **Moves between a site and a server, through a Cloudflare Tunnel, or between two Portainer
   environments** (lead, 2026-11-05, from 023's plan): `retarget` moves between any two server
   targets and between site hosts. A site becoming a server app (or back) changes its whole design.
   A tunnel on either side needs two DNS changes with an outage between them. Two Portainer
   environments would share one deploy branch and webhook. All three stay refused with the steps to
   do them by hand.
-- **A password in front of an environment** (founder, 2026-11-05, from 022): HTTP basic
-  authentication in the Caddy site (a bcrypt hash made on the user's computer; the health route
-  left open), opt-in per environment, because a login can break what calls the app (webhooks,
-  OAuth callbacks, API and mobile clients). 022 gave previews and the other environments hidden
-  addresses instead (022 research R6). Cloudflare Access in front of Cloudflare-hosted sites
-  belongs here too.
-
-- **Snapshots and restores as commands** (lead, 2026-10-31, from the failed-deploy guide page):
-  today a snapshot is taken only by `destroy`, and a restore is done by hand in the provider's
-  console or from a database dump.
 - **Azure, Google Cloud and Contabo** after AWS, as provider plugins, reusing Azure Verified
   Modules, terraform-google-modules and Infracost.
 - **Tailscale or Headscale as the private network** (lead proposal, 2026-10-18; the founder is
