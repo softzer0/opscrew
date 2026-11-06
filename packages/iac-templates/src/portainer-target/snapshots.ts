@@ -15,9 +15,10 @@ import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { portainerTarget } from "../providers";
 import { memoryLimit, type RenderedServices } from "../runtime/components";
 import { composeLiteral, hardened, shellQuote } from "../runtime/services";
+import { SQLITE_COPY } from "../workflow/snapshots";
 
-/** The snapshots volume's key in the stack, and where every snapshot service mounts it. */
-const VOLUME = "snapshots";
+/** The snapshots volume's key in the stack (`opscrew-<app>_snapshots`, D12), and where every snapshot service mounts it. */
+export const SNAPSHOTS_VOLUME = "snapshots";
 const DIR = "/snapshots";
 
 /**
@@ -28,7 +29,7 @@ const DIR = "/snapshots";
 export const RUNNING_IMAGE_FILE = `${DIR}/.running`;
 
 /** The snapshots volume's mount in a service of the stack. */
-export const SNAPSHOTS_MOUNT = `${VOLUME}:${DIR}`;
+export const SNAPSHOTS_MOUNT = `${SNAPSHOTS_VOLUME}:${DIR}`;
 
 /** The off-server copy's tools volume, where it keeps the checked age binary. */
 const TOOLS_VOLUME = "snapshot_tools";
@@ -37,23 +38,38 @@ const TOOLS_VOLUME = "snapshot_tools";
 const OFFSITE_PREFIX = "backups";
 
 /**
- * The Docker volume that holds the app's snapshots on Portainer (plan.md 1.): one folder per
- * snapshot, its `about.json` written last.
+ * The stack's volumes for its snapshots, by their keys: `snapshots` whenever the stack takes or
+ * copies any (the schedule with an online part, the snapshot before each release, the off-server
+ * copy), and the off-server copy's `snapshot_tools`; none otherwise.
  */
-export function portainerSnapshotsVolume(plan: DeployPlan): string {
-  return `opscrew-snapshots-${plan.app.name}`;
+export function snapshotVolumes(plan: DeployPlan): string[] {
+  const offsite = snapshotOffsiteOf(plan) !== undefined;
+  const scheduled =
+    snapshotScheduleOf(plan) !== undefined && portainerSnapshotParts(plan).length > 0;
+  if (!scheduled && !snapshotsOn(plan) && !offsite) return [];
+  return [SNAPSHOTS_VOLUME, ...(offsite ? [TOOLS_VOLUME] : [])];
 }
 
-/** One file of a snapshot: a service's dump, or the app's SQLite database. */
-interface Part {
-  /** The service's name (`sqlite` for the app's database), also its markers' name. */
+/**
+ * One file of a snapshot on Portainer: a service's dump, or the tar of the app's SQLite volume. The
+ * stack's scheduled and pre-release parts run `copy`, and so can a one-off by hand.
+ */
+export interface PortainerSnapshotPart {
+  /** The service's name (`sqlite` for the app's SQLite volume), also its markers' name. */
   name: string;
   kind: string;
   /** The file in the snapshot's folder. */
   file: string;
   /** The service it copies; undefined for SQLite. */
   service?: PlanService;
-  /** Writes the copy to the file `"$t"`, inside the part's container. */
+  /** The image that runs `copy`: the service's own pinned image, the pinned python for SQLite. */
+  image: string;
+  /**
+   * Writes the copy to the file `"$t"` (sh, as root), inside the part's container: a service's
+   * part with the service's environment (`portainerServiceEnvironment`) on the stack's network
+   * and its data volumes read-only; SQLite with the `sqlite` volume read-write at `/sqlite`. Exit
+   * 3: nothing to copy yet (an empty SQLite volume), the part is skipped.
+   */
   copy: string;
 }
 
@@ -89,34 +105,11 @@ const COPIES: Record<(typeof ONLINE_SNAPSHOT_KINDS)[number], (host: string) => s
 const SQLITE_MOUNT = "/sqlite";
 
 /**
- * Python's online copy of the app's SQLite database (research R7, S1), into `sys.argv[1]`. It
- * starts as root only to take the volume's owner, the app's user, and runs as that user, so no
- * `-wal`/`-shm` file it opens belongs to root; the volume is read-write, since a stopped app leaves
- * no `-wal`/`-shm` for a read-only open. The folder must hold one database; with none yet (an app
- * that hasn't made it) it exits 3, which the part records as skipped.
+ * The copies a snapshot of `plan` makes on Portainer while everything runs, in the plan's order:
+ * each service of the online kinds, then the app's SQLite volume. The stack's parts run these.
  */
-const SQLITE_COPY = [
-  "import os, sqlite3, sys",
-  `d = "${SQLITE_MOUNT}"`,
-  "s = os.stat(d)",
-  "os.setgroups([]); os.setgid(s.st_gid); os.setuid(s.st_uid)",
-  "def is_db(p):",
-  '    with open(p, "rb") as f: return f.read(16) == b"SQLite format 3\\x00"',
-  'dbs = [n for n in sorted(os.listdir(d)) if not n.endswith(("-wal", "-shm", "-journal")) and os.path.isfile(os.path.join(d, n)) and is_db(os.path.join(d, n))]',
-  "if not dbs:",
-  '    print("OpsCrew: the app has no SQLite database yet, so the snapshot holds none.", file=sys.stderr)',
-  "    sys.exit(3)",
-  'if len(dbs) > 1: sys.exit("OpsCrew found %d SQLite databases in the SQLite folder of the app; a snapshot copies exactly one." % len(dbs))',
-  'src = sqlite3.connect("file:" + os.path.join(d, dbs[0]) + "?mode=rw", uri=True)',
-  "dst = sqlite3.connect(sys.argv[1])",
-  "src.backup(dst)",
-  'dst.execute("pragma journal_mode=delete")',
-  "dst.close(); src.close()",
-].join("\n");
-
-/** The copies a snapshot of `plan` makes while everything runs: the online kinds, then SQLite. */
-function parts(plan: DeployPlan): Part[] {
-  const services = enabledServices(plan).flatMap((service): Part[] => {
+export function portainerSnapshotParts(plan: DeployPlan): PortainerSnapshotPart[] {
+  const services = enabledServices(plan).flatMap((service): PortainerSnapshotPart[] => {
     const kind = ONLINE_SNAPSHOT_KINDS.find((online) => online === service.kind);
     if (kind === undefined) return [];
     const database = DATABASE_KINDS.some((db) => db === kind);
@@ -126,19 +119,23 @@ function parts(plan: DeployPlan): Part[] {
         kind,
         file: `${service.name}.${database ? "dump" : "rdb"}`,
         service,
+        image: IMAGES[serviceSpec(kind).image].ref,
         copy: COPIES[kind](service.name),
       },
     ];
   });
-  const sqlite: Part[] =
+  const sqlite: PortainerSnapshotPart[] =
     plan.storage?.sqlite === undefined
       ? []
       : [
           {
             name: "sqlite",
             kind: "sqlite",
-            file: "sqlite.db",
-            copy: `python3 -c ${shellQuote(SQLITE_COPY)} "$t"`,
+            file: "sqlite.tar",
+            image: IMAGES.python.ref,
+            // The servers' program (plan.md D6): the whole volume as one tar, every database copied
+            // online; exit 3 when the volume is empty, which `take` records as skipped.
+            copy: `python3 -c ${shellQuote(SQLITE_COPY)} ${SQLITE_MOUNT} > "$t"`,
           },
         ];
   return [...services, ...sqlite];
@@ -150,7 +147,7 @@ function parts(plan: DeployPlan): Part[] {
  * `<name>.done`; `<name>.skipped` when the copy exits 3 (nothing to copy yet), and
  * `<name>.failed` (returning 1) when it failed.
  */
-function takeFunction(part: Part): string[] {
+function takeFunction(part: PortainerSnapshotPart): string[] {
   const marker = (end: string) => `"$1"/${part.name}.${end}`;
   return [
     "take() {",
@@ -204,7 +201,7 @@ const GIVE_UP_SECONDS = 6 * 3600;
  * - `prune <kind> <n>`: keeps only the newest `n` finished snapshots of that kind, never one being
  *   written (`.partial`, or `.taking` by hand).
  */
-function finalizerFunctions(all: Part[]): string[] {
+function finalizerFunctions(all: PortainerSnapshotPart[]): string[] {
   const entries = all.flatMap((part, index) => [
     ...(index > 0 ? ["    printf ,"] : []),
     `    if [ -f "$1"/${part.name}.done ] && [ -f "$1"/${part.file} ]; then`,
@@ -248,8 +245,6 @@ export interface DeployFilled {
 /** What the snapshots add to the app's stack. */
 export interface StackSnapshots {
   services: Record<string, object>;
-  /** The stack's volumes they add. */
-  volumes: Record<string, object>;
   /** What the release command and the app wait for: the snapshot before the release. */
   ready: Record<string, { condition: string }>;
   /** True when the stamp writes the running image into the snapshots volume. */
@@ -272,7 +267,7 @@ const OFFSITE_MEMORY_MB = 256;
  * part on the pinned python image with the `sqlite` volume read-write and no network.
  */
 function partContainer(
-  part: Part,
+  part: PortainerSnapshotPart,
   backing: RenderedServices,
   restart: "no" | "unless-stopped",
   environment: Record<string, string>,
@@ -281,7 +276,7 @@ function partContainer(
   const run = { entrypoint: ["sh", "-c", composeLiteral(script.join("\n"))] };
   if (part.service === undefined) {
     return {
-      image: IMAGES.python.ref,
+      image: part.image,
       restart,
       user: "0:0",
       network_mode: "none",
@@ -297,7 +292,7 @@ function partContainer(
     volumes?: string[];
   };
   return {
-    image: IMAGES[serviceSpec(part.service.kind).image].ref,
+    image: part.image,
     restart,
     user: "0:0",
     environment: { ...service.environment, ...environment },
@@ -332,7 +327,7 @@ function finalizer(script: string[], fields: object): object {
  */
 function scheduled(
   plan: DeployPlan,
-  all: Part[],
+  all: PortainerSnapshotPart[],
   backing: RenderedServices,
 ): Record<string, object> {
   const schedule = snapshotScheduleOf(plan);
@@ -397,7 +392,7 @@ function scheduled(
  */
 function beforeRelease(
   plan: DeployPlan,
-  all: Part[],
+  all: PortainerSnapshotPart[],
   backing: RenderedServices,
   deploy: DeployFilled,
 ): Record<string, object> {
@@ -525,30 +520,23 @@ function offsite(plan: DeployPlan): Record<string, object> {
 /**
  * The snapshots of the app's stack (plan.md 4.): the scheduled services, the snapshot before each
  * release and the off-server copy, each only when the plan asks for it, all writing into the
- * {@link portainerSnapshotsVolume}. Stop-only kinds are never scheduled here (Decision D3).
+ * stack's `snapshots` volume ({@link snapshotVolumes}). Stop-only kinds are never scheduled here (Decision D3).
  */
 export function stackSnapshots(
   plan: DeployPlan,
   backing: RenderedServices,
   deploy: DeployFilled,
 ): StackSnapshots {
-  const all = parts(plan);
+  const all = portainerSnapshotParts(plan);
   const release = snapshotsOn(plan);
   const services = {
     ...(all.length > 0 ? scheduled(plan, all, backing) : {}),
     ...(release ? beforeRelease(plan, all, backing, deploy) : {}),
     ...offsite(plan),
   };
-  const used = Object.keys(services).length > 0;
   return {
     services,
-    volumes: used
-      ? {
-          [VOLUME]: { name: portainerSnapshotsVolume(plan) },
-          ...(services.offsite === undefined ? {} : { [TOOLS_VOLUME]: {} }),
-        }
-      : {},
     ready: release ? { snapshot: { condition: "service_completed_successfully" } } : {},
-    stamp: used,
+    stamp: snapshotVolumes(plan).length > 0,
   };
 }

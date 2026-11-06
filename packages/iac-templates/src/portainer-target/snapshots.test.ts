@@ -16,15 +16,20 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { testContext } from "../__fixtures__/plans";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
+import { shellQuote } from "../runtime/services";
 import { withSqlite } from "../workflow/__fixtures__/plans";
+import { SQLITE_COPY } from "../workflow/snapshots";
 import { portainerTestPlan } from "./__fixtures__/plans";
 import {
   fillPortainerStack,
   PORTAINER_IMAGE_PLACEHOLDER,
   PORTAINER_OFFSITE_VARIABLES,
   PORTAINER_RELEASE_PLACEHOLDER,
+  portainerServiceEnvironment,
+  portainerSnapshotParts,
   portainerSnapshotsVolume,
   portainerStackEnvKeys,
+  portainerStackVolumes,
   renderPortainerStack,
 } from "./index";
 
@@ -163,15 +168,20 @@ describe("the scheduled snapshots in a stack", () => {
     expect(queue?.volumes).toEqual(["queue_data:/data:ro", "snapshots:/snapshots"]);
   });
 
-  it("copies SQLite with the pinned python image as the volume's owner, the volume read-write", () => {
-    const sqlite = scheduled.stack.services["snapshots-sqlite"];
-    expect(sqlite?.image).toBe(IMAGES.python.ref);
-    expect(sqlite?.network_mode).toBe("none");
-    expect(sqlite?.volumes).toEqual(["sqlite:/sqlite", "snapshots:/snapshots"]);
-    const text = script(sqlite);
-    expect(text).toContain("os.setgid(s.st_gid); os.setuid(s.st_uid)");
-    expect(text).toContain("src.backup(dst)");
-    expect(text).toContain("pragma journal_mode=delete");
+  it("copies the SQLite volume as sqlite.tar with the servers' program on the pinned python image, read-write", () => {
+    for (const name of ["snapshots-sqlite", "snapshot-sqlite"]) {
+      const services =
+        name === "snapshots-sqlite" ? scheduled.stack.services : release.stack.services;
+      const sqlite = services[name];
+      expect(sqlite?.image, name).toBe(IMAGES.python.ref);
+      expect(sqlite?.network_mode).toBe("none");
+      expect(sqlite?.volumes).toEqual(["sqlite:/sqlite", "snapshots:/snapshots"]);
+      const text = script(sqlite);
+      expect(text).toContain('t="$1"/sqlite.tar.tmp');
+      expect(text).toContain(
+        `(umask 077 && python3 -c ${shellQuote(SQLITE_COPY)} /sqlite > "$t"); r=$?`,
+      );
+    }
   });
 
   it("sleeps to the next slot of `every` and writes <file>.tmp, then the file and <part>.done", () => {
@@ -207,9 +217,20 @@ describe("the scheduled snapshots in a stack", () => {
     expect(text).toContain('chmod 600 "$1"/* && chmod 700 "$1"');
   });
 
-  it("keeps the snapshots in the volume opscrew-snapshots-<app>, and the stamp names the running image", () => {
-    expect(portainerSnapshotsVolume(scheduledPlan)).toBe("opscrew-snapshots-shop");
-    expect(scheduled.stack.volumes.snapshots).toEqual({ name: "opscrew-snapshots-shop" });
+  it("keeps the snapshots in the stack's own volume, recorded as data, and the stamp names the running image", () => {
+    expect(portainerSnapshotsVolume(scheduledPlan)).toBe("opscrew-shop_snapshots");
+    expect(scheduled.stack.volumes.snapshots).toEqual({});
+    expect(portainerStackVolumes(scheduledPlan)).toEqual([
+      "opscrew-shop_db_data",
+      "opscrew-shop_queue_data",
+      "opscrew-shop_rabbitmq_data",
+      "opscrew-shop_sqlite",
+      "opscrew-shop_snapshots",
+      "opscrew-shop_version",
+    ]);
+    expect(Object.keys(scheduled.stack.volumes)).toEqual(
+      portainerStackVolumes(scheduledPlan).map((volume) => volume.slice("opscrew-shop_".length)),
+    );
     const stamp = scheduled.stack.services.stamp;
     expect(stamp?.environment?.OPSCREW_APP_IMAGE).toBe(PORTAINER_IMAGE_PLACEHOLDER);
     expect(stamp?.volumes).toEqual(["version:/version", "snapshots:/snapshots"]);
@@ -320,8 +341,13 @@ describe("the off-server copy in a stack", () => {
       OPSCREW_OFFSITE_RECIPIENT: "${OPSCREW_OFFSITE_RECIPIENT}",
     });
     expect(offsite?.volumes).toEqual(["snapshots:/snapshots", "snapshot_tools:/tools"]);
-    expect(stack.volumes).toMatchObject({ snapshots: { name: "opscrew-snapshots-shop" } });
+    expect(stack.volumes.snapshots).toEqual({});
     expect(stack.volumes.snapshot_tools).toEqual({});
+    expect(portainerStackVolumes(plan).slice(-3)).toEqual([
+      "opscrew-shop_snapshots",
+      "opscrew-shop_snapshot_tools",
+      "opscrew-shop_version",
+    ]);
     expect(portainerStackEnvKeys(plan).opscrew).toEqual(
       expect.arrayContaining(Object.values(PORTAINER_OFFSITE_VARIABLES)),
     );
@@ -380,6 +406,62 @@ describe("the off-server copy in a stack", () => {
   });
 });
 
+describe("the parts and environments for a snapshot by hand", () => {
+  it("lists each online part with its file, image and copy, the ones the stack runs", () => {
+    const parts = portainerSnapshotParts(scheduledPlan);
+    expect(
+      parts.map(({ name, kind, file, image, service }) => ({
+        name,
+        kind,
+        file,
+        image,
+        service: service?.name,
+      })),
+    ).toEqual([
+      { name: "db", kind: "postgres", file: "db.dump", image: IMAGES.postgres.ref, service: "db" },
+      {
+        name: "queue",
+        kind: "valkey",
+        file: "queue.rdb",
+        image: IMAGES.valkey.ref,
+        service: "queue",
+      },
+      {
+        name: "sqlite",
+        kind: "sqlite",
+        file: "sqlite.tar",
+        image: IMAGES.python.ref,
+        service: undefined,
+      },
+    ]);
+    for (const part of parts) {
+      const service = scheduled.stack.services[`snapshots-${part.name}`];
+      expect(service?.image).toBe(part.image);
+      expect(script(service)).toContain(`(umask 077 && ${part.copy}); r=$?`);
+    }
+    // Stop-only kinds are not among them.
+    expect(parts.map((part) => part.name)).not.toContain("rabbitmq");
+  });
+
+  it("gives each service's environment as the stack does, its secrets as stack variables", () => {
+    const [db, queue] = scheduledPlan.services;
+    if (db === undefined || queue === undefined) throw new Error("The plan has no services.");
+    expect(portainerServiceEnvironment(scheduledPlan, db)).toEqual({
+      POSTGRES_USER: "${OPSCREW_DB_USER}",
+      POSTGRES_DB: "${OPSCREW_DB_NAME}",
+      POSTGRES_PASSWORD: "${OPSCREW_DB_PASSWORD}",
+    });
+    expect(portainerServiceEnvironment(scheduledPlan, queue)).toEqual({
+      VALKEY_PASSWORD: "${OPSCREW_SVC_QUEUE_PASSWORD}",
+    });
+    for (const service of [db, queue]) {
+      expect(scheduled.stack.services[service.name]?.environment).toEqual(
+        portainerServiceEnvironment(scheduledPlan, service),
+      );
+    }
+  });
+});
+
 describe("a stack without snapshots", () => {
   it("has no snapshot service or volume, and the stamp writes only the version", () => {
     for (const plan of [snapshotPlan(), portainerTestPlan()]) {
@@ -388,6 +470,7 @@ describe("a stack without snapshots", () => {
         Object.keys(stack.services).filter((name) => /^(snapshot|offsite)/.test(name)),
       ).toEqual([]);
       expect(stack.volumes.snapshots).toBeUndefined();
+      expect(portainerStackVolumes(plan).some((volume) => volume.includes("snapshot"))).toBe(false);
       expect(stack.services.stamp?.volumes).toEqual(["version:/version"]);
       expect(stack.services.stamp?.environment).toEqual({
         OPSCREW_APP_VERSION: "__OPSCREW_APP_VERSION__",
@@ -502,7 +585,7 @@ describe.skipIf(!SH)("the snapshot scripts under sh", () => {
     const take = shFunction(script(scheduled.stack.services["snapshots-sqlite"]), "take");
     /** The SQLite part's `take` with Python exiting `code` (after writing its copy, for 0). */
     const taking = (code: number) => {
-      const python = `python3() { if [ ${code} = 0 ]; then echo copy > "$3"; fi; return ${code}; }`;
+      const python = `python3() { if [ ${code} = 0 ]; then echo tar; fi; return ${code}; }`;
       return run(`${python}\n${take}\ntake /snapshots/slot.partial`);
     };
 
@@ -511,13 +594,14 @@ describe.skipIf(!SH)("the snapshot scripts under sh", () => {
       expect(taking(3).status).toBe(0);
       expect(readdirSync(join(root, "slot.partial"))).toEqual(["sqlite.skipped"]);
       expect(taking(0).status).toBe(0);
-      expect(readdirSync(join(root, "slot.partial")).sort()).toEqual(["sqlite.db", "sqlite.done"]);
+      expect(readdirSync(join(root, "slot.partial")).sort()).toEqual(["sqlite.done", "sqlite.tar"]);
+      expect(readFileSync(join(root, "slot.partial", "sqlite.tar"), "utf8")).toBe("tar\n");
       const failed = taking(1);
       expect(failed.status).toBe(1);
       expect(failed.stderr).toContain("the snapshot of sqlite failed");
       expect(readdirSync(join(root, "slot.partial")).sort()).toEqual([
-        "sqlite.db",
         "sqlite.failed",
+        "sqlite.tar",
       ]);
     });
 

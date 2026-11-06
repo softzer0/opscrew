@@ -38,7 +38,14 @@ import { CONNECTOR_MEMORY_MB } from "../tunnel";
 import type { RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN, hasCronJobs, planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
-import { offsiteVariables, RUNNING_IMAGE_FILE, SNAPSHOTS_MOUNT, stackSnapshots } from "./snapshots";
+import {
+  offsiteVariables,
+  RUNNING_IMAGE_FILE,
+  SNAPSHOTS_MOUNT,
+  SNAPSHOTS_VOLUME,
+  snapshotVolumes,
+  stackSnapshots,
+} from "./snapshots";
 
 /** The repository's first app's prod's {@link portainerDeployBranch}. */
 export const PORTAINER_DEPLOY_BRANCH = "opscrew-deploy";
@@ -153,6 +160,18 @@ function stackEnvironment(plan: DeployPlan) {
     const ref = (secret: string) => `\${${portainerServiceVariable(service.name, secret)}}`;
     return spec.environment(renderContext(plan, service, ref));
   };
+}
+
+/**
+ * `service`'s environment as the app's stack gives it, its secrets as `${…}` references to the
+ * stack's variables (Postgres's to {@link PORTAINER_STACK_VARIABLES}, the others' to
+ * {@link portainerServiceVariable}): what a snapshot part's `copy` reads.
+ */
+export function portainerServiceEnvironment(
+  plan: DeployPlan,
+  service: PlanService,
+): Record<string, string> {
+  return stackEnvironment(plan)(service, serviceSpec(service.kind));
 }
 
 /** The plan's services as the stack runs them. */
@@ -460,10 +479,11 @@ export function portainerStackEnvKeys(
 }
 
 /** Named volumes of the app stack, in the order the stack declares them: the stamp's is last. */
-function volumeNames(services: RenderedServices, web: PortainerWeb): string[] {
+function volumeNames(plan: DeployPlan, services: RenderedServices, web: PortainerWeb): string[] {
   return [
     ...services.volumes,
     ...(web.mode === "caddy" ? ["caddy_data", "caddy_config"] : []),
+    ...snapshotVolumes(plan),
     VERSION_VOLUME,
   ];
 }
@@ -471,14 +491,23 @@ function volumeNames(services: RenderedServices, web: PortainerWeb): string[] {
 /**
  * The Docker volumes the app stack creates (`<stack>_<volume>`): each service's data
  * (`<service>_data`, for example `db_data`), a SQLite database's (`sqlite`), Caddy's certificates
- * in `caddy` mode, and last the stamp's {@link portainerVersionVolume}. Stack deletion keeps
- * them; they go only with data deletion.
+ * in `caddy` mode, the snapshots' `snapshots` and `snapshot_tools` when the stack uses them, and
+ * last the stamp's {@link portainerVersionVolume}. Stack deletion keeps them; they go only with data
+ * deletion.
  */
 export function portainerStackVolumes(plan: DeployPlan): string[] {
   const { web } = portainerTarget(plan.target);
-  return volumeNames(stackServices(plan), web).map(
+  return volumeNames(plan, stackServices(plan), web).map(
     (volume) => `${portainerStackName(plan)}_${volume}`,
   );
+}
+
+/**
+ * The volume of the app's snapshots on Portainer, `<stack>_snapshots` (plan.md 1., D12): one folder
+ * per snapshot, its `about.json` written last.
+ */
+export function portainerSnapshotsVolume(plan: DeployPlan): string {
+  return `${portainerStackName(plan)}_${SNAPSHOTS_VOLUME}`;
 }
 
 /** The stamp's volume (`<stack>_version`): only the version the site serves, no data. */
@@ -665,12 +694,12 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
     );
   }
 
-  const volumes = volumeNames(backing, web);
+  const volumes = volumeNames(plan, backing, web);
   const document = {
     name: portainerStackName(plan),
     services,
     networks: { internal: {} },
-    volumes: { ...Object.fromEntries(volumes.map((v) => [v, {}])), ...snapshots.volumes },
+    volumes: Object.fromEntries(volumes.map((v) => [v, {}])),
     configs: {
       caddyfile: { content: composeLiteral(config) },
       ...backing.configs,

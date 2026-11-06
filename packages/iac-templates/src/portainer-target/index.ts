@@ -1,6 +1,10 @@
 export { PORTAINER_VERSION_PATH } from "../runtime/services";
 export { renderPortainerDeployment } from "./deployment";
-export { PORTAINER_OFFSITE_VARIABLES, portainerSnapshotsVolume } from "./snapshots";
+export {
+  PORTAINER_OFFSITE_VARIABLES,
+  type PortainerSnapshotPart,
+  portainerSnapshotParts,
+} from "./snapshots";
 export {
   fillPortainerStack,
   PORTAINER_COMPOSE_FILE,
@@ -16,7 +20,9 @@ export {
   portainerHostSettingProblem,
   portainerImageVersion,
   portainerSecretVariables,
+  portainerServiceEnvironment,
   portainerServiceVariable,
+  portainerSnapshotsVolume,
   portainerStackEnvKeys,
   portainerStackName,
   portainerStackTemplatePath,

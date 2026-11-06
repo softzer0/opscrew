@@ -2,13 +2,15 @@
 /**
  * Portainer's scheduled snapshots and off-server copy on Docker (plan.md 4. and 7., research R7
  * S2), with the services as the stack renders them:
- * 1. PostgreSQL with a table, Valkey in queue mode with keys, and a SQLite database in WAL mode in
- *    the `sqlite` volume, which a writer keeps writing to as the app's uid (1002);
+ * 1. PostgreSQL with a table, Valkey in queue mode with keys, and in the `sqlite` volume two SQLite
+ *    databases (one in WAL mode, which a writer keeps writing to as the app's uid 1002) and an
+ *    upload;
  * 2. the stamp names the running image, the per-part loops run with `every` at 20 seconds, and the
  *    `snapshots` service finishes the slot: `about.json` names each part with its size and the
  *    running image's digest, the folder is 700 and its files 600, root's, and no marker is left;
- * 3. the dump restores its table's list, the RDB is an RDB, and the SQLite copy is one file
- *    holding the rows;
+ * 3. the dump restores its table's list, the RDB is an RDB, and `sqlite.tar` restored into an empty
+ *    volume gives exactly its files, the app's, with both databases whole in `delete` mode and the
+ *    upload as it was;
  * 4. the `offsite` service, its remote turned into a local folder, fetches and checks age and
  *    uploads every file encrypted, `about.json` too; each decrypts with the test's age identity to
  *    exactly the snapshot's file.
@@ -38,7 +40,10 @@ if (reason) console.warn(`[iac-templates] skipping Portainer's snapshots on Dock
 
 const RUN = randomBytes(3).toString("hex");
 const PROJECT = `opscrew-t2405-${RUN}`;
-const SNAPSHOTS_VOLUME = `opscrew-snapshots-test-${RUN}`;
+/** The stack's own `snapshots` volume, as Compose names it (D12). */
+const SNAPSHOTS_VOLUME = `${PROJECT}_snapshots`;
+/** Where the test restores `sqlite.tar`, outside the project (removed at the end). */
+const RESTORED_VOLUME = `opscrew-snapshots-test-${RUN}-restored`;
 const IMAGE = `ghcr.io/acme/shop@sha256:${randomBytes(32).toString("hex")}`;
 const BUCKET = "shop-prod-backups";
 
@@ -85,11 +90,20 @@ type Service = Record<string, unknown> & {
   depends_on?: unknown;
 };
 
-/** The writer: as root it gives the volume to uid 1002, then as that uid writes a row every 20 ms. */
+/**
+ * The writer: as root it gives the volume to uid 1002; as that uid it makes a second database with
+ * 100 rows and an upload, then writes a row every 20 ms to the first, in WAL mode.
+ */
 const WRITER = [
   "import os, sqlite3, time",
   'os.chown("/data", 1002, 1002)',
   "os.setgroups([]); os.setgid(1002); os.setuid(1002)",
+  'd = sqlite3.connect("/data/cache.sqlite3")',
+  'd.execute("create table if not exists c (k integer)")',
+  'd.executemany("insert into c values (?)", [(k,) for k in range(100)])',
+  "d.commit(); d.close()",
+  'os.makedirs("/data/uploads", exist_ok=True)',
+  'open("/data/uploads/photo.txt", "w").write("photo bytes")',
   'c = sqlite3.connect("/data/app.sqlite3", isolation_level=None)',
   'c.execute("pragma journal_mode=wal")',
   'c.execute("create table if not exists t (id integer primary key, v text)")',
@@ -158,7 +172,7 @@ function project(recipient: string): object {
       version: {},
       snapshot_tools: {},
       remote: {},
-      snapshots: { name: SNAPSHOTS_VOLUME },
+      snapshots: {},
     },
   };
 }
@@ -216,8 +230,9 @@ afterAll(() => {
     });
     rmSync(dir, { recursive: true, force: true });
   }
+  spawnSync("docker", ["volume", "rm", RESTORED_VOLUME]);
   for (const ref of pulled) spawnSync("docker", ["image", "rm", ref]);
-});
+}, 300_000);
 
 describe.skipIf(reason !== undefined)(
   "Portainer's snapshots on Docker",
@@ -314,7 +329,7 @@ describe.skipIf(reason !== undefined)(
       expect(about.services).toEqual([
         { name: "db", kind: "postgres", file: "db.dump", size: expect.any(Number) },
         { name: "queue", kind: "valkey", file: "queue.rdb", size: expect.any(Number) },
-        { name: "sqlite", kind: "sqlite", file: "sqlite.db", size: expect.any(Number) },
+        { name: "sqlite", kind: "sqlite", file: "sqlite.tar", size: expect.any(Number) },
       ]);
       for (const service of about.services) expect(service.size).toBeGreaterThan(0);
 
@@ -330,20 +345,47 @@ describe.skipIf(reason !== undefined)(
         `600 0:0 /s/${id}/db.dump`,
         `600 0:0 /s/${id}/offsite.done`,
         `600 0:0 /s/${id}/queue.rdb`,
-        `600 0:0 /s/${id}/sqlite.db`,
+        `600 0:0 /s/${id}/sqlite.tar`,
       ]);
 
       // Each file is what it should be.
       const tables = inside(IMAGES.postgres.ref, volumes, `pg_restore -l /s/${id}/db.dump`);
       expect(tables).toContain("TABLE DATA public t");
       expect(inside(IMAGES.busybox.ref, volumes, `head -c 5 /s/${id}/queue.rdb`)).toBe("REDIS");
-      const sqlite = inside(
+      // sqlite.tar restored as a restore does, into an empty volume: exactly its files, the app's.
+      const restored = [`${RESTORED_VOLUME}:/data`, ...volumes];
+      const same = inside(
+        IMAGES.busybox.ref,
+        restored,
+        [
+          "set -e",
+          `find /data -mindepth 1 -delete && tar -C /data -xpf - < /s/${id}/sqlite.tar`,
+          `for f in $(tar -tf /s/${id}/sqlite.tar); do`,
+          '  if [ ! -f /data/"$f" ]; then continue; fi',
+          `  a=$(tar -xOf /s/${id}/sqlite.tar "$f" | sha256sum)`,
+          '  b=$(sha256sum < /data/"$f")',
+          '  if [ "$a" = "$b" ]; then echo "$f same"; else echo "$f differs"; fi',
+          "done",
+          "echo $(ls -A /data | sort)",
+          "find /data ! -user 1002",
+          "cat /data/uploads/photo.txt",
+        ].join("\n"),
+      ).split("\n");
+      expect(same).toEqual([
+        "app.sqlite3 same",
+        "cache.sqlite3 same",
+        "uploads/photo.txt same",
+        "app.sqlite3 cache.sqlite3 uploads",
+        "photo bytes",
+      ]);
+      const databases = inside(
         IMAGES.python.ref,
-        volumes,
-        `python3 -c 'import sqlite3; c = sqlite3.connect("/s/${id}/sqlite.db"); print(c.execute("pragma journal_mode").fetchone()[0], c.execute("select count(*) from t").fetchone()[0])'`,
+        restored,
+        `python3 -c 'import sqlite3; a = sqlite3.connect("/data/app.sqlite3"); c = sqlite3.connect("/data/cache.sqlite3"); ids = [r[0] for r in a.execute("select id from t order by id")]; print(a.execute("pragma journal_mode").fetchone()[0], c.execute("pragma journal_mode").fetchone()[0], c.execute("select count(*) from c").fetchone()[0], len(ids), ids == list(range(1, len(ids) + 1)))'`,
       ).split(" ");
-      expect(sqlite[0]).toBe("delete");
-      expect(Number(sqlite[1])).toBeGreaterThan(0);
+      expect(databases.slice(0, 3)).toEqual(["delete", "delete", "100"]);
+      expect(Number(databases[3])).toBeGreaterThan(0);
+      expect(databases[4]).toBe("True");
 
       // The off-server copy decrypts with the identity to exactly the snapshot's files.
       const remote = `/remote/${BUCKET}/backups/${id}`;
@@ -355,7 +397,7 @@ describe.skipIf(reason !== undefined)(
           "umask 077",
           "cat > /tmp/id",
           `ls ${remote}`,
-          "for f in about.json db.dump queue.rdb sqlite.db; do",
+          "for f in about.json db.dump queue.rdb sqlite.tar; do",
           `  a=$(/tools/age -d -i /tmp/id ${remote}/$f.age | sha256sum | cut -d ' ' -f 1)`,
           `  b=$(sha256sum /s/${id}/$f | cut -d ' ' -f 1)`,
           '  if [ "$a" = "$b" ]; then echo "$f same"; else echo "$f differs"; fi',
@@ -367,11 +409,11 @@ describe.skipIf(reason !== undefined)(
         "about.json.age",
         "db.dump.age",
         "queue.rdb.age",
-        "sqlite.db.age",
+        "sqlite.tar.age",
         "about.json same",
         "db.dump same",
         "queue.rdb same",
-        "sqlite.db same",
+        "sqlite.tar same",
       ]);
 
       const logs = compose(["logs", "--no-color"]);
