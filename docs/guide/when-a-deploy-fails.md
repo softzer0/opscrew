@@ -140,8 +140,18 @@ cat /srv/apps/shop/release.log
 - **Restore a backup** taken before this deploy, when the half-applied changes can't stay (see
   [Backups and snapshots](#backups-and-snapshots)).
 
-`opscrew rollback` doesn't help here: the previous version already runs, and a rollback never
-changes the database.
+`opscrew rollback` doesn't help here: the previous version already runs, and a rollback goes to an
+earlier version than the one running.
+
+## The snapshot before the release fails
+
+On environments that take [snapshots before each release](rollback.md#snapshots-before-each-release)
+(every one but prod, by default), the deploy dumps the databases before the release command. When a
+dump fails, the deploy stops there and the previous version keeps serving. The message names the log
+on the server (`.snapshots/snapshot.log` in the app's folder), which can quote data and so is not
+printed. Fix what it shows, or set `deploy.snapshots: false` in the environment's plan and run
+`npx opscrew provision` to deploy without snapshots. Too little disk space doesn't stop a deploy:
+it goes ahead without a snapshot and its log has a warning.
 
 ## Migrations and the previous version
 
@@ -149,8 +159,10 @@ Every migration runs while the previous version still serves, and stays applied 
 fails and OpsCrew switches back. So the previous version must work with the new schema: add
 columns and tables in one release, and remove the old ones in a later release, after nothing uses
 them (see [Deploys without downtime](zero-downtime.md#limits)). The same rule keeps
-[a rollback](rollback.md#the-database-stays-as-it-is) working: the earlier version runs against
-today's schema, since a rollback runs no migration.
+[a rollback that keeps the database](rollback.md#keep-it-as-it-is) working: the earlier version
+runs against today's schema, since a rollback runs no release command. A rollback can also
+restore the snapshot taken before the release, or migrate the database down (see
+[The database](rollback.md#the-database)).
 
 ## A worker or cron job doesn't stay up
 
@@ -224,8 +236,9 @@ Roll back to the version that ran before:
 npx opscrew rollback
 ```
 
-OpsCrew shows the version running and the one before it, says that the data and the schema stay as
-they are, and asks for your approval. Then it deploys the earlier image by its digest, with the
+OpsCrew shows the version running and the one before it, asks how to treat the database (on
+staging, restoring the snapshot taken when that version stopped running is the default; on prod,
+keeping it as it is), and asks for your approval. Then it deploys the earlier image by its digest, with the
 same switch and checks as a deploy: nothing is rebuilt, and the release command does not run.
 Afterwards a push to `main` builds but does not deploy, so the bad commit can't come back by
 accident. When the fix is pushed, `npx opscrew rollback --resume --deploy` deploys `main` again.
@@ -237,10 +250,13 @@ for an environment promoted from another, and on every target. See
 To fix forward instead, `git revert` the bad commit and push to `main`: the workflow deploys the
 reverted code.
 
-**What a rollback doesn't undo.** It changes which image runs, never the data. Rows written by the
-new version stay, and so do its migrations (see
-[Migrations and the previous version](#migrations-and-the-previous-version)). To go back to older
-data, restore a backup ([below](#backups-and-snapshots)).
+**What a rollback undoes in the database.** Keeping it as it is changes only which image runs: rows
+written by the new version stay, and so do its migrations (see
+[Migrations and the previous version](#migrations-and-the-previous-version)). Restoring the
+snapshot puts back the database of the moment the new version was deployed, and loses everything
+written since; down migrations drop the tables and columns the new version added. See
+[The database](rollback.md#the-database). For data older than the snapshots, restore a backup
+([below](#backups-and-snapshots)).
 
 ## `opscrew provision` stops half-way
 
@@ -335,5 +351,5 @@ set up.
 | The migration | The version that ran | The version that ran; the database as the migration left it | Read `release.log`, then fix and push, or restore a backup |
 | A worker or cron job | The new version for a short while | The version that ran, with the new migrations applied | `logs --failed --service <name>`, fix and push |
 | The check through your domain | The new version for a few minutes | The version that ran, with the new migrations applied | Check DNS, Cloudflare and `verify` |
-| Nothing, but the release is wrong | The new version, until you roll back | The earlier version, with today's data and schema | `opscrew rollback`, then `--resume` once the fix is pushed |
+| Nothing, but the release is wrong | The new version, until you roll back | The earlier version, with today's database, its snapshot, or the database migrated down | `opscrew rollback`, then `--resume` once the fix is pushed |
 | `opscrew provision` | What the plan changed, as far as the apply got | What was created stays | Run `provision` again, or `destroy` |

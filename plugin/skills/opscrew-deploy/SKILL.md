@@ -430,7 +430,23 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   the user relies on it.
 - **Rolling back.** To undo a release that deploys fine but is wrong, the user runs
   `npx opscrew rollback` in their terminal, never a tool; follow the `opscrew-troubleshoot` skill's
-  "A release that deploys fine but is wrong", which says what to tell them first.
+  "A release that deploys fine but is wrong", which says what to tell them first. On a server or
+  this computer the rollback asks how to treat the database (`--database snapshot|migrations|keep`
+  in a script); help them choose, and name what each loses:
+  - **snapshot** (the default outside prod): when the bad release's migrations changed the schema
+    or the data and losing what was written since it deployed is fine, as on dev and staging;
+  - **migrations**: when the plan has `app.migrations` and the rows written since must stay, but
+    the tables and columns the release added (and their data) may go;
+  - **keep** (the default on prod): when the release didn't change the database, or its changes
+    only add what the earlier version ignores; with a destructive change on prod, suggest fixing
+    forward instead.
+
+  A snapshot or down migration is approved like a destroy: the user types the app's name, or a
+  script gives `--confirm <name>`; never type or pass it for them. Snapshots exist only where
+  `deploy.snapshots` is on (every environment but prod, by default; `deploy.keepSnapshots` versions
+  are kept), and need this computer to reach the server. Portainer, the app's own files (SQLite,
+  uploads) and a database on another server keep their data: their snapshots come in a later
+  release.
 - **This computer.** An environment can run on the user's computer (`localhost`, in Docker, at
   `https://<app>.localhost`). Two steps stay in their terminal: `npx opscrew localhost trust`
   (shows the command that trusts OpsCrew's local certificate authority and asks first;

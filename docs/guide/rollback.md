@@ -25,8 +25,8 @@ A deploy that fails its checks doesn't need this: OpsCrew already switches back 
   visitors get the earlier version back within the time a deploy's switch takes, and you fix the
   cause without hurry.
 - **Fix forward** (push a fix or a `git revert`) when the fix is small, or when the bad release
-  changed the database in a way the earlier version can't work with (see
-  [The database stays as it is](#the-database-stays-as-it-is)).
+  changed the database in a way the earlier version can't work with and you can neither lose what
+  was written since nor migrate it down (see [The database](#the-database)).
 
 ## What a rollback does
 
@@ -36,13 +36,17 @@ On a server OpsCrew created, [a server you already have](own-server.md) or
 1. OpsCrew reads the environment's versions: the images its deploy workflow built that are still
    in GitHub Container Registry.
 2. It picks the version before the one running, or the one you named with `--to`.
-3. It shows both versions and asks for your approval.
-4. It pauses the environment's automatic deploys, then starts its deploy workflow with the earlier
+3. On a server or your computer, it asks how to treat the database: restore the snapshot taken
+   when that version stopped running, migrate it down, or keep it as it is (see
+   [The database](#the-database)).
+4. It shows both versions and asks for your approval.
+5. It pauses the environment's automatic deploys, then starts its deploy workflow with the earlier
    image's digest.
-5. The workflow checks where the image was built, skips the build, and deploys the image through
+6. The workflow checks where the image was built, skips the build, and deploys the image through
    the same switch as a deploy: the health check, the check from outside through your domain, and
    the automatic switch back if the earlier version fails them too. The release command does not
-   run.
+   run. When you chose to restore the snapshot or migrate down, the server first holds requests,
+   stops the app and changes the database.
 
 When the run succeeds, OpsCrew says so and how to resume deploys:
 
@@ -123,21 +127,200 @@ With [image signing](supply-chain.md#signing-images) on, the approval says the w
 image's signature before anything is deployed. When the environment's GitHub environment has
 required reviewers, the approval says GitHub asks them too, before the deploy job runs.
 
-The approval is bound to a hash of the environment, the version running, the version to go back to
-and the environment's plan. If any of them changes, it no longer applies.
+The approval is bound to a hash of the environment, the version running, the version to go back to,
+the environment's plan and the database choice (with the snapshot's time and both versions'
+migration records). If any of them changes, it no longer applies.
 
-## The database stays as it is
+## The database
 
-A rollback changes only which image runs. The data, the database schema and your app's settings
-and secrets stay as they are now, and the release command (your migrations) does not run: an
-earlier version's migrations, run against a newer schema, could fail or do harm. The earlier
+A release often changes the database: its migrations add a table or a column, or change one. Once
+the version is chosen, on a server OpsCrew created, [a server you already have](own-server.md) or
+[your computer](localhost.md), the rollback asks how to treat the database:
+
+```text
+How should the rollback treat the database?
+  > Restore the snapshot taken 2026-10-31 10:01 UTC, when 3f2a1c9 "Fix checkout total" stopped running. Everything written since is lost.
+    Migrate it down with knex to 3f2a1c9 "Fix checkout total"'s migrations. The tables and columns added since are dropped, with their data.
+    Keep it as it is: 3f2a1c9 "Fix checkout total" runs against today's schema.
+```
+
+| Choice | What it does | What you lose | Offered when |
+|---|---|---|---|
+| `snapshot` | Puts back each database exactly as it was when that version stopped running | Everything written since: rows, tables and changes | The server has a complete snapshot of that version |
+| `migrations` | Runs your migration tool's down migrations, back to that version's migrations | The tables and columns added since, with their data. Rows in the tables that stay are kept | The plan has `app.migrations`, and OpsCrew recorded both versions' migrations |
+| `keep` | Changes nothing: the earlier version runs against today's schema | Nothing, but the earlier version must work with the newer schema | Always |
+
+**The default** is the snapshot on every environment except prod, when there is one, and keep
+otherwise. On prod it is always keep, unless you choose otherwise. A terminal asks with the
+default selected; when only keep is offered, it doesn't ask.
+
+`--database snapshot|migrations|keep` makes the choice without the question. A choice that isn't
+offered is refused before any change, with the reason (for example "The server keeps no complete
+snapshot of 3f2a1c9 …") and the choices there are, ending "Nothing was changed.".
+
+When it is done, the result says what happened to the database, for example "The database was
+restored from the snapshot taken 2026-10-31 10:01 UTC.".
+
+### Snapshots before each release
+
+On every environment except prod, OpsCrew dumps the app's databases before each release, while the
+running version keeps serving:
+
+- **When:** at each deploy that replaces a running version, after the services are set up and
+  before the release command. The first deploy has nothing to save, and a deploy of the image
+  already running takes none.
+- **What:** each PostgreSQL, MySQL, MariaDB and MongoDB database on the app's server, with its own
+  image's dump tool (`pg_dump`, `mysqldump`, `mariadb-dump`, `mongodump`). The snapshot is filed
+  under the version that was running, so it holds the database as it was when that version stopped
+  running.
+- **Where:** in `.snapshots` in the app's folder on the server, for example
+  `/srv/apps/shop-staging/.snapshots`, or in the app's folder on your computer. Only the deploy user
+  can read the files. No password is ever on a command line, and no dumped value is printed.
+- **How many:** the snapshots of the last 3 versions stay; older ones are deleted at the next
+  deploy. Set `deploy.keepSnapshots` (1 to 10) in `opscrew/plan.yaml` to keep more or fewer.
+- **Disk space:** each snapshot takes about as much space as the database's data, so the server
+  keeps up to three copies of each database by default. When the app's disk has less than 1 GiB or
+  10% free, before or after a dump, the deploy goes ahead without a snapshot and its log has a
+  warning; that version then has no snapshot to restore. A deploy also takes longer by the time the
+  dump takes.
+- **A dump that fails** for any other reason stops the deploy before the release command, and the
+  version running keeps serving. The run's message names the log on the server
+  (`.snapshots/snapshot.log` in the app's folder); it can quote data from the database, so it is
+  never printed.
+
+To change whether an environment takes snapshots, set `deploy.snapshots` in its plan, then run
+`npx opscrew provision` and merge its pull request:
+
+```yaml
+deploy:
+  snapshots: true      # prod takes snapshots only with this
+  keepSnapshots: 5     # the snapshots of the last 5 versions stay
+```
+
+`deploy.snapshots: false` turns them off on any environment. Preview environments never take
+snapshots.
+
+### Down migrations
+
+Down migrations undo the migrations the newer version added, with the migration tool your app
+already uses. OpsCrew offers them for eight tools:
+
+| Tool | How it goes back |
+|---|---|
+| Rails, Alembic, Flask-Migrate | To the migration version the earlier version ran with |
+| Django | Each app to the migration it had, or to `zero`, in reverse order |
+| Laravel | `migrate:rollback` with `--step` set to the number of migrations added since |
+| Knex, Sequelize, TypeORM | The newest migration undone, once for each migration added since |
+
+`npx opscrew analyze` finds the tool and design writes `app.migrations` next to the release command
+in `opscrew/plan.yaml`. A value you set yourself is kept:
+
+```yaml
+app:
+  releaseCommand: npx knex migrate:latest
+  migrations:
+    tool: knex
+    status: npx knex migrate:list   # lists the migrations applied
+    down: npx knex migrate:down     # undoes the newest one
+```
+
+After each release command, the deploy records the migrations applied (in `.schema` in the app's
+folder). A record that fails only warns. So down migrations are offered only between two versions
+both deployed with `app.migrations` in the plan. They aren't offered when the earlier version has
+more migrations applied than the one running, since migrating down would not reach its schema.
+
+The down migrations run in the image running now, the newer one, which has the migrations to undo.
+A migration your tool can't undo stops them; then OpsCrew puts the database back as it was just
+before (see [When a database step fails](#when-a-database-step-fails)).
+
+Other tools, such as Prisma and Drizzle, have no down migrations OpsCrew can run: use the snapshot.
+
+### Keep it as it is
+
+With keep, a rollback changes only which image runs. The data, the database schema and your app's
+settings and secrets stay as they are now, and the release command (your migrations) does not run:
+an earlier version's migrations, run against a newer schema, could fail or do harm. The earlier
 version runs against today's schema, with today's settings.
 
 So the earlier version must work with the newer schema. Add columns and tables in one release, and
 remove the old ones in a later release, once nothing uses them (see
 [Migrations and the previous version](when-a-deploy-fails.md#migrations-and-the-previous-version)).
-A rollback can't undo a migration. To go back to older data, restore a backup (see
+To go back to older data without a snapshot, restore a backup (see
 [Backups and snapshots](when-a-deploy-fails.md#backups-and-snapshots)).
+
+Keep is the only choice for an environment with neither snapshots nor `app.migrations`, such as
+prod by default without a migration tool OpsCrew knows.
+
+### Approving a change of data
+
+Restoring a snapshot or migrating down deletes data, so it is approved like
+[`destroy`](environments.md#removing-an-environment): you type the environment's app name
+(`shop-staging` for staging, `shop` for prod). The approval says what is lost:
+
+```text
+Database: Restore the snapshot taken 2026-10-31 10:01 UTC, when 3f2a1c9 "Fix checkout total" stopped running. Everything written since is lost.
+The app's settings and secrets stay as they are now. The release command does not run.
+Typing shop-staging approves it. OpsCrew then leaves a one-time approval in the app's folder, valid for 30 minutes, which the deploy's start step uses once.
+```
+
+The server checks that one-time approval before it changes any data:
+
+- It must name the version the run deploys and must not have expired. The start step deletes it
+  before anything else, so it works once.
+- When it expired before the run started (for example while the run waited for a required
+  reviewer), the run stops before any change, says so, and `npx opscrew rollback` asks again.
+- When the dispatch or the run fails before its start step, OpsCrew removes it.
+- Without it, the server keeps the database. So a deploy workflow run started by hand with
+  `rollback` ticked (see [By hand, without OpsCrew](#by-hand-without-opscrew)) never changes data.
+
+### What happens on the server
+
+With a restore or down migrations, the start step:
+
+1. holds requests at the proxy and stops the app, its workers and cron jobs;
+2. dumps the database as it is now, filed under the version running, whether or not the
+   environment takes snapshots (so a later rollback to that version can restore it);
+3. restores each database from the snapshot, or runs the down migrations;
+4. starts the earlier version, stopping the old one first whatever `deploy.strategy` says, and lets
+   the held requests through.
+
+Visitors see a pause, not an error, as long as the dump and the restore take.
+
+### When a database step fails
+
+- **The restore or the down migrations fail:** the server puts back the dump of step 2, starts the
+  version that was running again and lets requests through. The run fails with a message naming the
+  log on the server, and `opscrew rollback` fails with the run's link.
+- **The earlier version then fails its checks:** the automatic switch back also puts back the dump
+  of step 2, then starts the version that served before the rollback.
+- **Without a dump of step 2** (down migrations on a database the step can't dump, such as one on
+  another server), the database stays as the down migrations left it, the message says so, and the
+  next deploy's release command migrates it up again.
+
+### When this computer can't reach the server
+
+OpsCrew reads the snapshots and migration records with a read-only command over SSH, through the
+login [`opscrew logs`](logs-and-status.md) uses, or in the app's folder on your computer. When this
+computer has no address or login for the server, or the server doesn't answer, the rollback offers
+only keep and says why: the snapshot and down migrations need this computer to reach the server
+(the computer that deployed it, or one restored from the
+[recovery copy](secrets-recovery.md)). The rollback then goes on through GitHub alone, and
+`--database snapshot` or `--database migrations` is refused before any change.
+
+### Not covered yet
+
+These keep their data on a rollback, and the approval names them as kept. Snapshots of them come
+in a later release:
+
+- **[Your Portainer](portainer-target.md):** a rollback there keeps the database, and
+  `deploy.snapshots: true` is refused in its plan.
+- **The app's own files,** such as a [SQLite](databases.md#sqlite) database or uploads.
+- **A database on another server** ([split placement](split-placement.md)). Down migrations still
+  reach it, since they run where the release command does.
+
+Sites ([Cloudflare's hosting](cloudflare-hosting.md), [GitHub Pages](github-pages.md)) and
+[previews](previews.md) have no rollback of their data, and refuse `--database snapshot` or
+`--database migrations`.
 
 ## Deploys pause after a rollback
 
@@ -227,6 +410,15 @@ On your computer the printed command has no `--to`, since there is only the vers
 anything the hash covers changed in between (a deploy ran, or the plan changed), OpsCrew refuses
 and shows the rollback again with its new hash.
 
+Without `--database`, a script gets the default (see [The database](#the-database)). The printed
+command names the choice, and for a restore or down migrations adds `--confirm` with the app's
+name, which approves the change of data as typing it would:
+
+```bash
+npx opscrew rollback --env staging --database snapshot                  # shows the rollback and its hash
+npx opscrew rollback --env staging --to sha256:… --database snapshot --confirm shop-staging --approve <hash>
+```
+
 Resuming is a smaller change: `npx opscrew rollback --resume --yes` resumes without asking.
 
 Flags that don't go together are refused before any work, with the right command.
@@ -256,6 +448,8 @@ refuses when:
 - **There is only one version,** or GitHub Container Registry has no image labelled
   `opscrew-<env>`, so OpsCrew can't tell which version runs.
 - **The earlier image is gone** from the registry (see [How far back](#how-far-back)).
+- **The `--database` choice isn't offered** for this version or target (see
+  [The database](#the-database)).
 
 While a rollback run waits for a required reviewer, `opscrew rollback` says so (exit 0) and
 `--resume` refuses. Once the run ended, `opscrew rollback` records it; when the run failed, it puts
@@ -277,7 +471,8 @@ which:
   version that ran before the rollback."
 
 `opscrew rollback` then fails with the run's link, and puts the deploy pause back as it was before
-the rollback.
+the rollback. After a restore or down migrations, the database is put back as it was just before
+too (see [When a database step fails](#when-a-database-step-fails)).
 
 `npx opscrew logs --failed` shows the last lines of the earlier version's copy when it failed its
 health check (see [`logs --failed`](logs-and-status.md#a-failed-deploys-lines)). Then roll back to
@@ -308,7 +503,9 @@ OpsCrew. Each environment's `opscrew/RUNBOOK.md` has the steps with its own name
    as `tag`, and tick `rollback`.
 
 The run's verify job checks the image's provenance (and with signing on, its signature), so only
-images this repository's branch built can deploy. On GitHub Pages, re-run the earlier run instead
+images this repository's branch built can deploy. A run started this way keeps the database as it
+is: restoring a snapshot or migrating down needs the one-time approval that only
+`opscrew rollback` leaves on the server (see [Approving a change of data](#approving-a-change-of-data)). On GitHub Pages, re-run the earlier run instead
 (**Re-run all jobs**).
 
 ## After upgrading OpsCrew

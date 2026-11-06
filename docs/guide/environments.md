@@ -435,6 +435,12 @@ It deploys the image the environment ran before, by its digest, with no build an
 command, after your approval, then pauses the environment's deploys until
 `npx opscrew rollback --env prod --resume`. See [Rolling back a release](rollback.md).
 
+The database's default differs by environment. Every environment but prod takes a snapshot of its
+databases before each release, and its rollback restores the snapshot of the version it goes back
+to, when the server has one. Prod takes none unless `deploy.snapshots: true` is in its plan, and its rollback keeps the
+database as it is unless you choose otherwise. Preview environments never take snapshots. See
+[The database](rollback.md#the-database).
+
 For a promoted environment, the rollback starts its deploy workflow on the default branch, as a
 promotion does. Instead of comparing prod with staging's plan, it checks that prod's plan still has
 every service the earlier image ran with, which OpsCrew records on this computer at each promotion

@@ -87,6 +87,23 @@ docker compose exec -T mongodb sh -c 'mongodump --archive -u "$MONGO_INITDB_ROOT
 On a server you already have, and in your Portainer, backups are yours: OpsCrew cannot turn them
 on there.
 
+## Snapshots for a rollback
+
+On every environment except prod, each deploy dumps PostgreSQL, MySQL, MariaDB and MongoDB on the
+app's server before its release command, so that
+[a rollback can restore them](rollback.md#the-database). The dumps stay in `.snapshots` in the
+app's folder, for example `/srv/apps/shop-staging/.snapshots`, readable only by the deploy user:
+
+- `deploy.snapshots: true` in `opscrew/plan.yaml` turns them on for prod, and `false` turns them
+  off anywhere;
+- `deploy.keepSnapshots` (1 to 10, default 3) says how many versions' snapshots stay. Each takes
+  about as much disk as the database's data; with too little free space a deploy skips its snapshot
+  with a warning.
+
+Run `npx opscrew provision` after changing either. They are not backups: they live on the same
+server as the database, so keep the server backups or dumps above too. A database on another
+server, your Portainer and SQLite get no snapshots yet; they come in a later release.
+
 ## SQLite
 
 A SQLite database is a file inside your app, so OpsCrew does not run a database for it. Instead:
