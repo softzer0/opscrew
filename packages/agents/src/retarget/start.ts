@@ -333,7 +333,7 @@ async function cloudSide(
       chosen.target.architecture === "arm" ? "arm64" : "amd64",
     ),
     deploy: {
-      ...deployStrategyFor(chosen),
+      ...deployStrategyFor(chosen, plan.storage?.sqlite !== undefined),
       drainSeconds: plan.deploy.drainSeconds,
       ...snapshotSettings(plan.deploy),
     },

@@ -643,6 +643,19 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
   });
 
+  it("keeps recreate on the new cloud server for an app with a SQLite database", async () => {
+    const h = await moveHarness();
+    const before = await readArtifact("plan", h.paths.files.plan);
+    await writeArtifact("plan", h.paths.files.plan, {
+      ...before,
+      storage: { ...before.storage, sqlite: { dir: "data" } },
+      deploy: { strategy: "recreate", drainSeconds: 30 },
+    });
+    await run(h, { confirmStart: async () => true });
+    const plan = await readArtifact("plan", h.paths.files.plan);
+    expect(plan.deploy.strategy).toBe("recreate");
+  });
+
   it("shows the builder and the deploy strategy for the new server before the start, and records them with the user's snapshot settings", async () => {
     const h = await moveHarness();
     const before = await readArtifact("plan", h.paths.files.plan);
