@@ -20,9 +20,11 @@ import {
   approvalExpiry,
   EDGE_FUNCTION,
   holdRequests,
+  pauseRequests,
   processServices,
   readApproval,
   recordProcesses,
+  resumeRequests,
   SCRIPT_ROOTS,
   startApp,
   startLock,
@@ -80,23 +82,23 @@ function pruneScheduled(keep: number): string[] {
 }
 
 /**
- * `snapshot_cmd_take <manual|release|scheduled> [--skip <service>]... [--stop <service>]...`: the
- * snapshot's id is the running image's digest for `release` (from `.env`), the hour of the
- * schedule's slot for `scheduled` (outside the schedule's hours it does nothing; its output goes to
- * {@link SCHEDULED_LOG}), and the time for `manual`. It copies every part but those `--skip`
- * names, and of the stop-only ones only those named for its kind (`deploy.snapshotStop`,
- * `snapshots.schedule.stop`) or with `--stop`; the others it lists as left out. On success it
- * prints the id, then keeps only the newest release or scheduled snapshots of the plan.
+ * `snapshot_cmd_take <manual|release|scheduled> [--skip <service>]... [--stop <service>]...
+ * [--id <id>] [--version sha256:<hex>]`:
+ * - the version that runs is `--version`'s, or `snapshot_running`'s (`.env`, or `.running` on an
+ *   extra server);
+ * - the snapshot's id is `--id` (one id for the parts on several servers, D8), or the version's
+ *   digest for `release`, the hour of the schedule's slot for `scheduled` (outside the schedule's
+ *   hours, or once that slot is taken, it does nothing; its output goes to {@link SCHEDULED_LOG}),
+ *   and the time for `manual` (a manual one never replaces another);
+ * - it copies every part but those `--skip` names, and of the stop-only ones only those named for
+ *   its kind (`deploy.snapshotStop`, `snapshots.schedule.stop`) or with `--stop`; the others it
+ *   lists as left out.
+ * On success it prints the id, then keeps only the newest release or scheduled snapshots.
  */
 function takeCommand(plan: DeployPlan, server: string): string[] {
   const folder = appFolder(plan);
   const schedule = snapshotScheduleOf(plan);
   const file = planFilePath(plan);
-  const left = {
-    manual: `%s was left out: it must stop for its copy. Name it with --stop %s to stop it for its copy.`,
-    release: `%s was left out of the snapshot before this release: it must stop for its copy. Name it in deploy.snapshotStop in ${file} to copy it before each release.`,
-    scheduled: `%s was left out of the scheduled snapshot: it must stop for its copy. Name it in snapshots.schedule.stop in ${file} to copy it on the schedule.`,
-  };
   return [
     "snapshot_cmd_take() {",
     '  _kind="${1:-}"',
@@ -106,56 +108,71 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
     `    scheduled) _stop=${shellQuote(stopOnly(plan, server, schedule?.stop ?? []))} ;;`,
     '    *) _stop="" ;;',
     "  esac",
-    '  _skip=""',
+    '  _skip=""; _id=""; _hex="$(snapshot_running)"',
     '  while [ "$#" -gt 0 ]; do',
-    '    case "$1" in --skip | --stop) [ "$#" -ge 2 ] || { snapshot_usage; return 1; } ;; *) snapshot_usage; return 1 ;; esac',
-    '    snapshot_known "$2" || return 1',
-    '    if [ "$1" = --skip ]; then',
-    '      _skip="$_skip $2"',
-    "    else",
-    '      case " $SNAPSHOT_ONLINE " in *" $2 "*)',
-    `        printf ${printfFormat("%s is copied while it runs, so it never stops: leave out --stop %s.")} "$2" "$2" >&2`,
-    "        return 1 ;;",
-    "      esac",
-    '      _stop="$_stop $2"',
-    "    fi",
+    '    [ "$#" -ge 2 ] || { snapshot_usage; return 1; }',
+    '    case "$1" in',
+    '      --skip) snapshot_known "$2" || return 1; _skip="$_skip $2" ;;',
+    "      --stop)",
+    '        snapshot_known "$2" || return 1',
+    '        case " $SNAPSHOT_ONLINE " in *" $2 "*)',
+    `          printf ${printfFormat("%s is copied while it runs, so it never stops: leave out --stop %s.")} "$2" "$2" >&2`,
+    "          return 1 ;;",
+    "        esac",
+    '        _stop="$_stop $2" ;;',
+    '      --id) snapshot_id "$2" || return 1; _id="$2" ;;',
+    "      --version)",
+    '        case "$2" in sha256:*) _hex="${2#sha256:}" ;; *) _hex="" ;; esac',
+    '        case "$_hex" in *[!0-9a-f]*) _hex="" ;; esac',
+    '        if [ "${#_hex}" -ne 64 ]; then',
+    `          echo ${shellQuote("--version needs an image digest: sha256: and 64 lower-case hexadecimal digits.")} >&2`,
+    "          return 1",
+    "        fi ;;",
+    "      *) snapshot_usage; return 1 ;;",
+    "    esac",
     "    shift 2",
     "  done",
     '  case "$_kind" in',
     "    release)",
-    "      _id=\"$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)\"",
-    '      if [ -z "$_id" ]; then',
-    `        echo ${shellQuote("The app's .env on this server names no version by its image digest, so there is no running release to take a snapshot of.")} >&2`,
+    '      if [ -z "$_hex" ]; then',
+    `        echo ${shellQuote("No version runs here by its image digest (the app's .env, or .running on an extra server), and no --version names one, so there is no release to take a snapshot of.")} >&2`,
     "        return 1",
-    "      fi ;;",
+    "      fi",
+    '      _id="${_id:-$_hex}" ;;',
     "    scheduled)",
-    "      _hour=$(( $(date +%s) / 3600 ))",
     ...(schedule === undefined
       ? [
           `      echo ${shellQuote(`Scheduled snapshots are off (snapshots.schedule in ${file}).`)} >&2`,
           "      return 1 ;;",
         ]
       : [
+          "      _hour=$(( $(date +%s) / 3600 ))",
           `      if [ $(( _hour % ${scheduleHours(schedule.every)} )) -ne 0 ]; then return 0; fi`,
-          '      _id="$(date -u -d "@$(( _hour * 3600 ))" +%Y%m%dT%H%M%SZ)"',
+          '      _id="${_id:-$(date -u -d "@$(( _hour * 3600 ))" +%Y%m%dT%H%M%SZ)}"',
+          // A deploy held the lock past the slot's tick, or the slot ran already.
+          `      if [ -e ${SNAPSHOTS_DIR}/"$_id" ]; then return 0; fi`,
           `      (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && : > ${SCHEDULED_LOG})`,
           `      exec >> ${SCHEDULED_LOG} 2>&1 ;;`,
         ]),
-    '    *) _id="$(snapshot_new_id)" ;;',
+    "    *)",
+    `      if [ -n "$_id" ] && [ -e ${SNAPSHOTS_DIR}/"$_id" ]; then`,
+    `        printf ${printfFormat(`There is already a snapshot %s on ${server === APP_SERVER ? "the app's server" : `the server ${server}`}.`)} "$_id" >&2`,
+    "        return 1",
+    "      fi",
+    '      _id="${_id:-$(snapshot_new_id)}" ;;',
     "  esac",
     '  _parts=""',
     "  for _each in $SNAPSHOT_PARTS; do",
     '    case " $_skip " in *" $_each "*) continue ;; esac',
     '    case " $SNAPSHOT_ONLINE $_stop " in *" $_each "*) _parts="$_parts $_each"; continue ;; esac',
     '    case "$_kind" in',
-    ...(["manual", "release", "scheduled"] as const).map(
-      (kind) =>
-        `      ${kind}) printf ${printfFormat(left[kind])} "$_each"${kind === "manual" ? ' "$_each"' : ""} >&2 ;;`,
-    ),
+    `      manual) printf ${printfFormat("%s was left out: it must stop for its copy. Name it with --stop %s to stop it for its copy.")} "$_each" "$_each" >&2 ;;`,
+    `      release) printf ${printfFormat(`%s was left out of the snapshot before this release: it must stop for its copy. Name it in deploy.snapshotStop in ${file} to copy it before each release.`)} "$_each" >&2 ;;`,
+    `      scheduled) printf ${printfFormat(`%s was left out of the scheduled snapshot: it must stop for its copy. Name it in snapshots.schedule.stop in ${file} to copy it on the schedule.`)} "$_each" >&2 ;;`,
     "    esac",
     "  done",
     "  _rc=0",
-    '  snapshot_take "$_id" "$_kind" $_parts || _rc=$?',
+    '  snapshot_take "$_id" "$_kind" "$_hex" $_parts || _rc=$?',
     '  if [ "$_rc" -eq 2 ]; then',
     `    printf ${printfFormat("The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew took no snapshot. Free some space, or delete snapshots you no longer need (opscrew snapshot delete).")} ${folder} >&2`,
     "    return 2",
@@ -186,9 +203,11 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
  * without the one-time approval for exactly this restore ({@link RESTORE_APPROVAL_FILE}, read and
  * removed at once, as the rollback's), or when the snapshot is not complete. On the app's server
  * the app's requests wait and its web, workers and cron stop ({@link holdRequests},
- * {@link stopApp}); then the parts it restores are copied as they are now (a `manual` snapshot), and
- * each is restored exactly. When a restore fails, that copy is put back; the app starts again
- * unless the put-back failed too. Each outcome is a message on stderr.
+ * {@link stopApp}), also after `hold` (which recorded the workers and cron that ran); then the
+ * parts it restores are copied as they are now (a `manual` snapshot), and each is restored exactly.
+ * When a restore fails, that copy is put back; the app starts again unless the put-back failed
+ * too. Each outcome is a message on stderr. On an extra server it neither holds nor stops the app:
+ * the CLI holds it first (D8).
  */
 function restoreCommand(plan: DeployPlan, server: string): string[] {
   const folder = appFolder(plan);
@@ -237,14 +256,14 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
     ...(app
       ? [
           `  ${said("OpsCrew restores the snapshot %s: the app's requests wait, and the app stops until its data is back.")} "$_id" >&2`,
-          ...recordProcesses(processServices(plan)).map((line) => `  ${line}`),
+          ...recordRunning(plan).map((line) => `  ${line}`),
           ...holdRequests(plan, []).map((line) => `  ${line}`),
           `  ${stopApp(plan)}`,
         ]
       : []),
     '  _saved="$(snapshot_new_id)"',
     "  _rc=0",
-    '  snapshot_take "$_saved" manual $_parts || _rc=$?',
+    '  snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?',
     '  if [ "$_rc" -ne 0 ]; then',
     ...start,
     '    if [ "$_rc" -eq 2 ]; then',
@@ -271,16 +290,53 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
 }
 
 /**
+ * Records which workers and cron run ({@link recordProcesses}) while the web runs: after `hold`,
+ * which stopped them, its record stays.
+ */
+function recordRunning(plan: DeployPlan): string[] {
+  const record = recordProcesses(processServices(plan));
+  if (record.length === 0) return [];
+  return [
+    'if [ -n "$(docker compose ps -q app)" ]; then',
+    ...record.map((line) => `  ${line}`),
+    "fi",
+  ];
+}
+
+/**
+ * The app's server's `snapshot_cmd_hold` and `snapshot_cmd_resume` (D8), 019's code to hold the
+ * app's requests and stop its web, workers and cron ({@link pauseRequests}, {@link stopApp}), and
+ * to start them again and let the requests through ({@link startApp}, {@link resumeRequests}).
+ * `opscrew restore` runs them around the restores on extra servers. They change no data, so they
+ * need no approval; kamal-proxy lets requests through itself after its longest hold.
+ */
+function holdCommands(plan: DeployPlan): string[] {
+  return [
+    "snapshot_cmd_hold() {",
+    ...recordRunning(plan).map((line) => `  ${line}`),
+    `  ${pauseRequests(plan)}`,
+    `  ${stopApp(plan)}`,
+    "}",
+    "snapshot_cmd_resume() {",
+    `  ${startApp(plan)}`,
+    `  ${resumeRequests(plan)}`,
+    "}",
+  ];
+}
+
+/**
  * {@link SNAPSHOT_SCRIPT} for `server` (the app's by default, or an extra server's name), rendered
  * from the plan (024 plan.md 1.–3.): POSIX sh that runs in the app's folder there, with
  * {@link snapshotFunctions} and these commands:
- * - `take <manual|release|scheduled> [--skip <service>]... [--stop <service>]...` prints the new
- *   snapshot's id; exits 1 when a copy failed, 2 when the disk is too full;
+ * - `take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>]
+ *   [--version sha256:<hex>]` prints the new snapshot's id; exits 1 when a copy failed, 2 when the
+ *   disk is too full;
  * - `restore <id> [--only <service>]` (its approval: {@link restoreApprovalLine});
+ * - on the app's server, `hold` and `resume` ({@link holdCommands});
  * - `list` prints each snapshot's `about.json`, one per line;
  * - `delete <id>` removes a snapshot;
  * - `offsite <id>` does nothing yet (T2406).
- * `take`, `restore` and `delete` first take the app's start lock, which a deploy's start script
+ * All but `list` and `offsite` first take the app's start lock, which a deploy's start script
  * holds, so none runs during a deploy and none at once. The start and rollback scripts read its
  * functions alone ({@link SNAPSHOT_FUNCTIONS}). Messages go to stderr and never quote data or a
  * secret. Empty without a part on the server ({@link snapshotParts}).
@@ -289,21 +345,27 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
   const folder = appFolder(plan);
   const functions = snapshotFunctions(plan, server, folder);
   if (functions.length === 0) return [];
-  const where = server === APP_SERVER ? "the app's server" : `the server ${server}`;
+  const app = server === APP_SERVER;
+  const where = app ? "the app's server" : `the server ${server}`;
+  const take = `take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>]`;
+  const commands = [
+    take,
+    "restore <id> [--only <service>]",
+    ...(app ? ["hold", "resume"] : []),
+    "list",
+    "delete <id>",
+    "offsite <id>",
+  ];
   return [
     `# OpsCrew's snapshots of ${plan.app.name}'s data on ${where}, generated from ${planFilePath(plan)}; each deploy uploads it.`,
-    `#   sh ${SNAPSHOT_SCRIPT} take <manual|release|scheduled> [--skip <service>]... [--stop <service>]...`,
-    `#   sh ${SNAPSHOT_SCRIPT} restore <id> [--only <service>]`,
-    `#   sh ${SNAPSHOT_SCRIPT} list`,
-    `#   sh ${SNAPSHOT_SCRIPT} delete <id>`,
-    `#   sh ${SNAPSHOT_SCRIPT} offsite <id>`,
+    ...commands.map((command) => `#   sh ${SNAPSHOT_SCRIPT} ${command}`),
     ...SCRIPT_ROOTS,
     "set -eu",
     `cd ${folder}`,
-    ...(server === APP_SERVER ? [EDGE_FUNCTION] : []),
+    ...(app ? [EDGE_FUNCTION] : []),
     ...functions,
     "snapshot_usage() {",
-    `  echo ${shellQuote(`Usage: sh ${SNAPSHOT_SCRIPT} take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... | restore <id> [--only <service>] | list | delete <id> | offsite <id>`)} >&2`,
+    `  echo ${shellQuote(`Usage: sh ${SNAPSHOT_SCRIPT} ${commands.join(" | ")}`)} >&2`,
     "}",
     "snapshot_id() {",
     '  case "$1" in',
@@ -323,21 +385,32 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
     "}",
     ...takeCommand(plan, server),
     ...restoreCommand(plan, server),
+    ...(app ? holdCommands(plan) : []),
     // Read by the start and rollback scripts for these functions alone.
     'if [ "${OPSCREW_SNAPSHOT_FUNCTIONS:-}" = 1 ]; then return 0; fi',
     'case "${1:-}" in',
     "  list)",
-    `    for _each in ${SNAPSHOTS_DIR}/*/about.json; do if [ -f "$_each" ]; then cat "$_each"; fi; done ;;`,
+    `    for _each in ${SNAPSHOTS_DIR}/*/about.json; do`,
+    // A snapshot being taken has no place in the list.
+    '      case "$_each" in *.partial/* | *.taking/*) continue ;; esac',
+    '      if [ -f "$_each" ]; then cat "$_each"; fi',
+    "    done ;;",
     "  offsite)",
     '    [ "$#" -eq 2 ] || { snapshot_usage; exit 1; }',
     '    snapshot_id "$2" ;;',
-    "  take | restore | delete)",
+    `  take | restore | delete${app ? " | hold | resume" : ""})`,
     ...startLock(plan).map((line) => `    ${line}`),
     '    _command="$1"',
     "    shift",
     '    case "$_command" in',
     '      take) snapshot_cmd_take "$@" ;;',
     '      restore) snapshot_cmd_restore "$@" ;;',
+    ...(app
+      ? [
+          '      hold) [ "$#" -eq 0 ] || { snapshot_usage; exit 1; }; snapshot_cmd_hold ;;',
+          '      resume) [ "$#" -eq 0 ] || { snapshot_usage; exit 1; }; snapshot_cmd_resume ;;',
+        ]
+      : []),
     "      delete)",
     '        [ "$#" -eq 1 ] || { snapshot_usage; exit 1; }',
     '        snapshot_id "$1"',

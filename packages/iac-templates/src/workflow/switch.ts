@@ -46,6 +46,7 @@ import {
   SNAPSHOT_LOG,
   SNAPSHOTS_DIR,
   snapshotParts,
+  snapshotRunning,
   snapshotScheduleLines,
   snapshotStep,
   snapshotTakenPath,
@@ -436,13 +437,21 @@ const LOGOUT = "docker logout ghcr.io > /dev/null 2>&1";
  * not have yet (the first deploy) has nothing to hold, and the script goes on.
  */
 export function holdRequests(plan: DeployPlan, onExit: readonly string[]): string[] {
-  const app = plan.app.name;
-  // Resuming a service that is not paused, or that kamal-proxy does not have, changes nothing.
-  const trap = [`${kamalProxy(`resume ${app}`)} > /dev/null 2>&1 || true`, ...onExit].join("; ");
-  return [
-    `trap '${trap}' EXIT`,
-    `${kamalProxy(`pause ${app} --drain-timeout ${plan.deploy.drainSeconds}s --max-pause ${MAX_PAUSE_SECONDS}s`)} > /dev/null 2>&1 || true`,
-  ];
+  const trap = [resumeRequests(plan), ...onExit].join("; ");
+  return [`trap '${trap}' EXIT`, pauseRequests(plan)];
+}
+
+/** kamal-proxy holds the app's requests: the line of {@link holdRequests} without its trap. */
+export function pauseRequests(plan: DeployPlan): string {
+  return `${kamalProxy(`pause ${plan.app.name} --drain-timeout ${plan.deploy.drainSeconds}s --max-pause ${MAX_PAUSE_SECONDS}s`)} > /dev/null 2>&1 || true`;
+}
+
+/**
+ * kamal-proxy lets the app's requests through again. Resuming a service that is not paused, or
+ * that kamal-proxy does not have, changes nothing.
+ */
+export function resumeRequests(plan: DeployPlan): string {
+  return `${kamalProxy(`resume ${plan.app.name}`)} > /dev/null 2>&1 || true`;
 }
 
 /**
@@ -874,7 +883,8 @@ function approvalCheck(plan: DeployPlan): string[] {
     `rm -f ${DATABASE_CHANGED}`,
     "database=keep",
     'target="${1##*@sha256:}"',
-    "running=\"$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)\"",
+    ...snapshotRunning(),
+    'running="$(snapshot_running)"',
     `if [ "$MODE" = rollback ] && [ -f ${file} ]; then`,
     ...readApproval(file).map((line) => `  ${line}`),
     '  if [ "$approved" != "$target" ]; then',
@@ -948,7 +958,7 @@ function databaseStep(plan: DeployPlan): string[] {
           "  esac",
           '  if [ -n "$parts" ]; then',
           "    snap=0",
-          '    snapshot_take "$running" release $parts || snap=$?',
+          '    snapshot_take "$running" release "$running" $parts || snap=$?',
           '    if [ "$snap" -eq 1 ]; then',
           `      printf ${printfFormat(`::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. ${note} Fix the cause and run opscrew rollback again, or keep the database as it is.`)} ${folder}`,
           `      ${giveUp.join("; ")}`,

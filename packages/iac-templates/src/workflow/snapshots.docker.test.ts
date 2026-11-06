@@ -865,7 +865,7 @@ describe.skipIf(reason !== undefined)("snapshot.sh on Docker", { timeout: 3_600_
     });
   }
 
-  it("copies SQLite while the app's user writes in WAL mode, then restores it exactly", async () => {
+  it("copies the SQLite volume, two databases and an upload, while the app's user writes, then restores it exactly", async () => {
     const plan = DeployPlanSchema.parse({
       ...casePlan([]),
       storage: { sqlite: { dir: "data" } },
@@ -879,12 +879,29 @@ describe.skipIf(reason !== undefined)("snapshot.sh on Docker", { timeout: 3_600_
     await withProject("sqlite", plan, "app", {}, app, async (project) => {
       // The volume is the app's user's, as the image's folder makes it.
       project.sh("chown 1002:1002 /app/data");
+      // Before the app made anything, the volume is empty and skipped.
+      const empty = project.take();
+      const skipped = JSON.parse(
+        readFileSync(join(project.dir, ".snapshots", empty.id, "about.json"), "utf8"),
+      );
+      expect(skipped.services).toEqual([{ name: "sqlite", kind: "sqlite", skipped: true }]);
+      expect(existsSync(join(project.dir, ".snapshots", empty.id, "sqlite.tar"))).toBe(false);
+
       const python = (script: string) =>
         project.compose(["exec", "-T", "-u", "1002", "app", "python", "-c", script]);
       const DB = '"/app/data/app.sqlite3"';
+      const CACHE = '"/app/data/cache.sqlite3"';
       python(
         `import sqlite3; c = sqlite3.connect(${DB}); c.execute("pragma journal_mode=wal"); c.execute("create table t (id integer primary key)"); c.commit()`,
       );
+      // A second database in rollback-journal mode, and the app's uploads beside them.
+      python(
+        `import os, sqlite3; c = sqlite3.connect(${CACHE}); c.execute("create table c (k integer)"); c.executemany("insert into c values (?)", [(k,) for k in range(100)]); c.commit(); os.makedirs("/app/data/uploads"); open("/app/data/uploads/photo.txt", "w").write("photo bytes")`,
+      );
+      const cacheRows = () =>
+        python(
+          `import sqlite3; print(sqlite3.connect(${CACHE}).execute("select count(*) from c").fetchone()[0])`,
+        );
       const writer = spawn(
         "docker",
         [
@@ -915,8 +932,11 @@ describe.skipIf(reason !== undefined)("snapshot.sh on Docker", { timeout: 3_600_
       // No file in the volume is root's: the copy ran as the app's user.
       expect(project.sh("find /app/data ! -user 1002")).toBe("");
 
+      expect(existsSync(join(project.dir, ".snapshots", id, "sqlite.tar"))).toBe(true);
+
+      // After the copy: a late row, the second database emptied, the upload replaced.
       python(
-        `import sqlite3; c = sqlite3.connect(${DB}); c.execute("insert into t values (9999999)"); c.commit()`,
+        `import os, sqlite3; c = sqlite3.connect(${DB}); c.execute("insert into t values (9999999)"); c.commit(); d = sqlite3.connect(${CACHE}); d.execute("delete from c"); d.commit(); os.remove("/app/data/uploads/photo.txt"); open("/app/data/uploads/new.txt", "w").write("new")`,
       );
       project.restore(id);
       const ids = python(
@@ -927,24 +947,52 @@ describe.skipIf(reason !== undefined)("snapshot.sh on Docker", { timeout: 3_600_
       expect(ids).toEqual(Array.from({ length: ids.length }, (_, i) => i + 1));
       expect(ids.length).toBeGreaterThanOrEqual(first);
       expect(ids.length).toBeLessThanOrEqual(last);
-      expect(
-        python(
-          `import sqlite3; print(sqlite3.connect(${DB}).execute("pragma journal_mode").fetchone()[0])`,
-        ),
-      ).toBe("delete");
-      expect(project.sh("ls /app/data")).toBe("app.sqlite3");
-      expect(project.sh("stat -c %u:%g /app/data/app.sqlite3")).toBe("1002:1002");
-
-      // A second database in the folder: a snapshot holds exactly one.
-      python(
-        `import sqlite3; sqlite3.connect("/app/data/other.sqlite3").execute("create table x (y)")`,
+      expect(cacheRows()).toBe("100");
+      for (const file of [DB, CACHE]) {
+        expect(
+          python(
+            `import sqlite3; print(sqlite3.connect(${file}).execute("pragma journal_mode").fetchone()[0])`,
+          ),
+        ).toBe("delete");
+      }
+      expect(project.sh("cat /app/data/uploads/photo.txt")).toBe("photo bytes");
+      // No -wal, -shm or -journal file, and nothing written after the copy.
+      expect(project.sh("ls -A /app/data | sort | tr '\\n' ' '")).toBe(
+        "app.sqlite3 cache.sqlite3 uploads",
       );
-      const refused = project.snap(["take", "manual"]);
-      expect(refused.status).toBe(1);
-      expect(project.log()).toContain(
-        "OpsCrew found 2 SQLite databases in the app's SQLite folder",
-      );
+      expect(project.sh("ls -A /app/data/uploads")).toBe("photo.txt");
+      expect(project.sh("find /app/data ! -user 1002")).toBe("");
     });
+  });
+
+  it("untars a stop-only service's copy only into its own folders", () => {
+    remember(IMAGES.busybox.ref);
+    const plan = casePlan([{ kind: "rabbitmq" }]);
+    const line = snapshotScript(plan).find((l) => l.includes("snapshot_untar rabbitmq")) ?? "";
+    const command = /'([^']*)'$/.exec(line)?.[1] ?? "";
+    expect(command).toContain("tar -C / -xpf - var/lib/rabbitmq");
+    // A tar with a member in another folder, and a stray file in the service's: the restore
+    // empties the service's folder, puts back its member and writes nothing elsewhere.
+    const seen = docker([
+      "run",
+      "--rm",
+      "-e",
+      `UNTAR=${command}`,
+      IMAGES.busybox.ref,
+      "sh",
+      "-c",
+      [
+        "mkdir -p /var/lib/rabbitmq /var/lib/other",
+        "echo kept > /var/lib/rabbitmq/x",
+        "echo outside > /var/lib/other/evil",
+        "tar -C / -cf /tmp/all.tar var/lib/rabbitmq var/lib/other",
+        "rm /var/lib/other/evil",
+        "echo stray > /var/lib/rabbitmq/stray",
+        'sh -c "$UNTAR" < /tmp/all.tar',
+        'echo "service: $(ls -A /var/lib/rabbitmq) other: $(ls -A /var/lib/other)"',
+      ].join(" && "),
+    ]);
+    expect(seen).toBe("service: x other:");
   });
 
   for (const kind of ["valkey", "redis", "dragonfly"] as const) {

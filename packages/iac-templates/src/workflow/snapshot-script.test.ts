@@ -10,7 +10,7 @@ import { testContext } from "../__fixtures__/plans";
 import { serviceSpec } from "../catalog";
 import { withServices } from "../catalog/__fixtures__/plans";
 import { localhostPlan } from "../edge/__fixtures__/localhost";
-import { inEnvironment, splitPlan, withProcesses, withSqlite } from "./__fixtures__/plans";
+import { inEnvironment, ofApp, splitPlan, withProcesses, withSqlite } from "./__fixtures__/plans";
 import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
 import { renderWorkflow } from "./index";
 import { RESTORE_APPROVAL_FILE, restoreApprovalLine, snapshotScript } from "./snapshot-script";
@@ -73,8 +73,10 @@ function withSnapshots(
  *   data to `<folder>/<file>` (failing for DUMP_FAIL), a restore copies the file back, Dragonfly's
  *   `SAVE RDB` keeps the data as `<service>.saved`, its `DFLY LOAD` loads `<service>.placed`;
  * - busybox with `--volumes-from c-<service>`: a tar or `cat` of the saved file to stdout, and
- *   every write from stdin into the data (`<service>.placed` for Dragonfly's cache);
- * - python with `-v <volume>:/data`: the SQLite copy to stdout, or its restore from stdin.
+ *   every write from stdin into the data (`<service>.placed` for Dragonfly's cache), and with
+ *   `-v <volume>:/data` the SQLite volume's restore;
+ * - python with `-v <volume>:/data`: the SQLite volume's copy to stdout, or exit 3 when its data
+ *   is empty.
  * A restore of content that matches the pattern RESTORE_FAIL fails and leaves `partial`. Failures
  * print SECRET_ROW, as a database's error can quote a row. kamal-proxy's `pause` and `resume` mark
  * $WORK/paused.
@@ -134,8 +136,7 @@ const FAKE_DOCKER = [
   '      p1="$arg"',
   "    done",
   '    case "$script" in',
-  '      *"sys.stdout"*) dump_fail sqlite; cat "$d/sqlite" ;;',
-  '      *"sys.stdin"*) from_stdin "$d/sqlite" ;;',
+  '      *"sys.stdout"*) dump_fail sqlite; if [ -s "$d/sqlite" ]; then cat "$d/sqlite"; else exit 3; fi ;;',
   '      *"-cf -"*) dump_fail "$service"; cat "$d/$service" ;;',
   '      *"cat > /data/opscrew-snapshot.rdb"*) cat > "$d/$service.placed" ;;',
   '      *"cat /data/opscrew-snapshot.rdb"*) cat "$d/$service.saved" ;;',
@@ -349,6 +350,63 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(running("kafka")).toBe(true);
     });
 
+    it("lists an empty SQLite volume as skipped", () => {
+      server();
+      write(`${work}/data/sqlite`, "");
+      const result = snap(["take", "manual"]);
+      expect(result.status, result.output).toBe(0);
+      const id = result.stdout;
+      expect(existsSync(at(`.snapshots/${id}/sqlite.tar`))).toBe(false);
+      expect(about(id).services).toContainEqual({ name: "sqlite", kind: "sqlite", skipped: true });
+    });
+
+    it("takes one id across servers with --id, and the version from .running on an extra server or --version", () => {
+      const plan = splitPlan();
+      const data = (name: string) => `${appDir(plan)}/${name}`;
+      write(data("snapshot.sh"), `${snapshotScript(plan, "data").join("\n")}\n`);
+      for (const part of ["db", "docs"]) write(`${work}/data/${part}`, `${part} rows`);
+      const B = "b".repeat(64);
+      write(data(".running"), `ghcr.io/acme/shop@sha256:${B}\n`);
+      const extra = (args: string[]) => snap(args, {}, plan);
+      const ID = "20261106T120000Z";
+      const manual = extra(["take", "manual", "--id", ID]);
+      expect(manual.status, manual.output).toBe(0);
+      expect(manual.stdout).toBe(ID);
+      const json = JSON.parse(read(data(`.snapshots/${ID}/about.json`)) ?? "");
+      expect(json).toMatchObject({ id: ID, kind: "manual", version: `sha256:${B}` });
+      expect(extra(["take", "manual", "--id", ID]).stderr).toContain(
+        `There is already a snapshot ${ID} on the server data.`,
+      );
+      // The version the CLI names wins, and a release snapshot is named by it.
+      const release = extra(["take", "release", "--version", `sha256:${A}`]);
+      expect(release.status, release.output).toBe(0);
+      expect(release.stdout).toBe(A);
+      expect(JSON.parse(read(data(`.snapshots/${A}/about.json`)) ?? "").version).toBe(
+        `sha256:${A}`,
+      );
+      for (const [args, said] of [
+        [["--version", A], "--version needs an image digest"],
+        [["--version", `sha256:${A.slice(1)}X`], "--version needs an image digest"],
+        [["--id", "../x"], "A snapshot's id has only letters and digits."],
+      ] as const) {
+        const refused = extra(["take", "manual", ...args]);
+        expect(refused.status).toBe(1);
+        expect(refused.stderr).toContain(said);
+      }
+      rmSync(data(".running"));
+      expect(extra(["take", "release"]).stderr).toContain("no --version names one");
+    });
+
+    it("says how to start a stop-only service that did not start again after its copy", () => {
+      server();
+      const result = snap(["take", "manual", "--stop", "kafka"], { START_FAIL: "kafka" });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        `kafka did not start again after its copy. Its output is in ${appDir()}/.snapshots/snapshot.log; start it with docker compose up -d kafka in ${appDir()}.`,
+      );
+      expect(snapshots()).toEqual([]);
+    });
+
     it("never replaces a snapshot taken by hand in the same second", () => {
       server();
       const first = snap(["take", "manual"]);
@@ -442,7 +500,9 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       write(at(".env"), "APP_IMAGE=opscrew-local/shop:latest\n");
       const result = snap(["take", "release"]);
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain("names no version by its image digest");
+      expect(result.stderr).toContain(
+        "No version runs here by its image digest (the app's .env, or .running on an extra server), and no --version names one",
+      );
     });
 
     it("takes a scheduled snapshot only in its hours, under the slot's id, with snapshots.schedule.stop, keeping snapshots.schedule.keep", () => {
@@ -476,6 +536,12 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(read(at(`.snapshots/${id}/mq.tar`))).toBe("mq rows of before");
       expect(callAt(`.snapshots/${id}.partial:/snapshot:rw`)).toBeGreaterThan(-1);
       expect(snapshots()).toEqual(["20261104T000000Z", "20261105T060000Z", id]);
+
+      // The same slot again, as after a deploy held the lock past its tick: nothing more.
+      rmSync(`${work}/docker.log`);
+      const again = snap(["take", "scheduled"], { FAKE_NOW: String(slot + 900) }, plan);
+      expect(again.status, again.output).toBe(0);
+      expect(calls().filter((call) => !call.startsWith("flock"))).toEqual([]);
     });
 
     it("says scheduled snapshots are off without snapshots.schedule", () => {
@@ -628,6 +694,31 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(existsSync(`${work}/paused`)).toBe(false);
     });
 
+    it("holds the app and resumes it, with no approval, and a restore after the hold keeps its record", () => {
+      const id = taken();
+      const held = snap(["hold"]);
+      expect(held.status, held.output).toBe(0);
+      expect(existsSync(`${work}/paused`)).toBe(true);
+      expect(running("app")).toBe(false);
+      expect(running("worker")).toBe(false);
+      expect(calls()).toContain("docker compose stop app worker");
+
+      approve(id);
+      const restored = snap(["restore", id]);
+      expect(restored.status, restored.output).toBe(0);
+      // The workers that ran before the hold start again with the web.
+      expect(calls()).toContain("docker compose start app worker");
+      expect(running("worker")).toBe(true);
+
+      expect(snap(["hold"]).status).toBe(0);
+      const resumed = snap(["resume"]);
+      expect(resumed.status, resumed.output).toBe(0);
+      expect(running("app")).toBe(true);
+      expect(running("worker")).toBe(true);
+      expect(existsSync(`${work}/paused`)).toBe(false);
+      expect(snap(["hold", "now"]).stderr).toContain("Usage:");
+    });
+
     it("changes nothing when the data can't be copied first", () => {
       const id = taken();
       approve(id);
@@ -647,6 +738,9 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       server();
       const first = snap(["take", "manual"]).stdout;
       write(at(".snapshots/20251231T000000Z/about.json"), '{"id":"20251231T000000Z"}\n');
+      // Snapshots being taken are not listed.
+      write(at(".snapshots/20251230T000000Z.partial/about.json"), '{"id":"partial"}\n');
+      write(at(".snapshots/20251230T000000Z.taking/about.json"), '{"id":"taking"}\n');
       rmSync(`${work}/docker.log`);
       const list = snap(["list"]);
       expect(list.status).toBe(0);
@@ -657,6 +751,8 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(calls()).toEqual([]);
 
       expect(snap(["delete", "20251231T000000Z"]).status).toBe(0);
+      rmSync(at(".snapshots/20251230T000000Z.partial"), { recursive: true });
+      rmSync(at(".snapshots/20251230T000000Z.taking"), { recursive: true });
       expect(snapshots()).toEqual([first]);
       const missing = snap(["delete", "20251231T000000Z"]);
       expect(missing.status).toBe(1);
@@ -717,6 +813,32 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(calls()).toEqual([]);
     });
 
+    it("never touches the line of another app whose name starts with this one's", () => {
+      const daily = { snapshots: { schedule: { every: "daily" as const } } };
+      const shop = withSnapshots(withServices([{ kind: "postgres", name: "db" }]), daily);
+      const admin = ofApp(shop, "shop-admin");
+      const lineOf = (app: string) =>
+        `0 * * * * sh ${appsDir()}/${app}/snapshot.sh take scheduled > /dev/null 2>&1 # opscrew-snapshots ${app}`;
+      const deploy = (plan: DeployPlan) => {
+        const result = runSh(lines(plan), [], env());
+        expect(result.status, result.output).toBe(0);
+      };
+      deploy(shop);
+      deploy(admin);
+      expect(read(`${work}/crontab`)).toBe(`${lineOf("shop")}\n${lineOf("shop-admin")}\n`);
+      deploy(shop);
+      expect(read(`${work}/crontab`)).toBe(`${lineOf("shop-admin")}\n${lineOf("shop")}\n`);
+      // Off for shop: only its own line goes, and then shop's deploy writes nothing.
+      const off = withServices([{ kind: "postgres", name: "db" }]);
+      deploy(off);
+      expect(read(`${work}/crontab`)).toBe(`${lineOf("shop-admin")}\n`);
+      rmSync(`${work}/docker.log`, { force: true });
+      deploy(off);
+      expect(calls()).toEqual([]);
+      deploy(ofApp(off, "shop-admin"));
+      expect(read(`${work}/crontab`)).toBe("");
+    });
+
     it("stops the deploy on a server without crontab while a schedule is on", () => {
       rmSync(`${work}/bin/crontab`);
       // Only the fakes, without crontab, on PATH.
@@ -762,10 +884,16 @@ describe("the script's text", () => {
   it("has each extra server's own services, and no hold or stop of the app there", () => {
     const script = snapshotScript(splitPlan(), "data").join("\n");
     expect(script).toContain("SNAPSHOT_PARTS='db docs'");
-    expect(script).not.toMatch(/kamal-proxy|docker compose stop app|edge\(\)/);
+    expect(script).not.toMatch(/kamal-proxy|docker compose stop app|edge\(\)|snapshot_cmd_hold/);
     expect(script).toContain("is no service with data on the server data.");
     const app = snapshotScript(splitPlan()).join("\n");
     expect(app).toContain("SNAPSHOT_PARTS='cache'");
+  });
+
+  it("untars a stop-only service's copy only into its own folders", () => {
+    expect(snapshotScript(BASE).join("\n")).toContain(
+      `snapshot_untar kafka "$2" 'find /var/lib/kafka/data /etc/kafka/secrets /mnt/shared/config -mindepth 1 -delete && tar -C / -xpf - var/lib/kafka/data etc/kafka/secrets mnt/shared/config'`,
+    );
   });
 
   it("logs each one-off in with the password from the service's env file, never in an argument", () => {

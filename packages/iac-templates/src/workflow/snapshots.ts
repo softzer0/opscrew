@@ -4,7 +4,6 @@ import {
   type DATABASE_KINDS,
   type DeployPlan,
   ONLINE_SNAPSHOT_KINDS,
-  type PlanService,
   type SelfHostedServiceKind,
   servicesOn,
   snapshotScheduleOf,
@@ -60,6 +59,8 @@ export interface SnapshotPart {
   file: string;
   /** Copied while it runs; otherwise stopped alone for its copy. */
   online: boolean;
+  /** Valkey's, Redis's and Dragonfly's mode (`options.mode`). */
+  mode?: "cache" | "queue";
 }
 
 /** True for a kind a snapshot copies while it runs ({@link ONLINE_SNAPSHOT_KINDS}). */
@@ -75,8 +76,8 @@ function databaseKind(kind: string): kind is (typeof DATABASE_KINDS)[number] {
 /**
  * The parts of a snapshot on `server` (the app's by default, or an extra server's name), in the
  * plan's order: each enabled service placed there, then on the app's server the app's SQLite
- * database. The four databases' dumps are `<service>.dump`, Valkey's, Redis's and Dragonfly's
- * copies `<service>.rdb`, the SQLite database `sqlite.db` and every other kind's volumes
+ * volume. The four databases' dumps are `<service>.dump`, Valkey's, Redis's and Dragonfly's
+ * copies `<service>.rdb`, the SQLite volume `sqlite.tar` (D6) and every other kind's volumes
  * `<service>.tar` (024 plan.md 1., the store's contract).
  */
 export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): SnapshotPart[] {
@@ -91,13 +92,36 @@ export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): Sn
       kind: service.kind,
       file: `${service.name}.${extension}`,
       online: onlineKind(service.kind),
+      ...("mode" in service.options ? { mode: service.options.mode } : {}),
     };
   });
   const sqlite: SnapshotPart[] =
     server === APP_SERVER && plan.storage?.sqlite !== undefined
-      ? [{ name: "sqlite", kind: "sqlite", file: "sqlite.db", online: true }]
+      ? [{ name: "sqlite", kind: "sqlite", file: "sqlite.tar", online: true }]
       : [];
   return [...services, ...sqlite];
+}
+
+/**
+ * The file in the app's folder on an extra server that names the image running on the app's
+ * server (`ghcr.io/…@sha256:<hex>`), which the deploy writes there once the app answers (T2417):
+ * extra servers have no `.env`.
+ */
+export const RUNNING_FILE = ".running";
+
+/**
+ * `snapshot_running`, which prints the 64-hex digest of the version that runs, in the app's
+ * folder: the one `.env` names, or on an extra server {@link RUNNING_FILE}'s; nothing when neither
+ * names one by digest. The start script and the snapshot script read it alone.
+ */
+export function snapshotRunning(): string[] {
+  return shellFunction("snapshot_running", [
+    "  if [ -f .env ]; then",
+    "    sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env",
+    `  elif [ -f ${RUNNING_FILE} ]; then`,
+    `    sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' ${RUNNING_FILE}`,
+    "  fi",
+  ]);
 }
 
 /** Where a one-off container of a service mounts the snapshot's folder. */
@@ -176,64 +200,77 @@ const REDIS_CLIENTS: Record<"valkey" | "redis" | "dragonfly", { cli: string; pas
 /** The name of the file Dragonfly's `SAVE RDB` writes in its data folder (`<name>.rdb`). */
 const DRAGONFLY_SAVE = "opscrew-snapshot";
 
-/** A restore's file beside the SQLite database before it takes the database's place. */
-const SQLITE_NEW = ".opscrew-restore";
-
 /**
- * The start of both SQLite scripts, in a one-off of the pinned Python image that mounts the app's
- * SQLite volume read-write at /data (research R7, S1): it starts as root only to take the volume's
- * owner, the app's user, and runs as that user, so no `-wal` or `-shm` file it opens belongs to
- * root. `db` is the folder's one database (T2405's rule, the same on Portainer); none or several
- * stop it. Each script is one line of statements, as the deploy embeds the script in its YAML.
+ * The copy of the app's SQLite volume (plan.md D6, research R7 S1): a Python program for the pinned
+ * Python image, run as root with the volume mounted read-write at `sys.argv[1]` while the app runs.
+ * It takes the volume's owner, the app's user, so no `-wal` or `-shm` file it opens belongs to root,
+ * and writes one tar of the volume to stdout:
+ * - every SQLite database, found by its 16-byte header, copied through
+ *   `sqlite3.connect(src).backup(dst)`, then `journal_mode=delete` on the copy, so it is one file;
+ * - every other file and folder as it is, without the databases' `-wal`, `-shm` and `-journal`;
+ * - numeric owners, which busybox's tar keeps when it restores the volume.
+ * An empty volume exits 3 and writes nothing: the snapshot lists the part as skipped. Servers and
+ * Portainer run this same program.
  */
-const SQLITE_DATABASE = [
-  "import os, shutil, sqlite3, sys, tempfile",
-  'd = "/data"',
+export const SQLITE_COPY = [
+  "import os, sqlite3, sys, tarfile, tempfile",
+  "d = sys.argv[1]",
   "s = os.stat(d)",
   "os.setgroups([])",
   "os.setgid(s.st_gid)",
   "os.setuid(s.st_uid)",
-  'is_db = lambda p: os.path.isfile(p) and open(p, "rb").read(16) == b"SQLite format 3\\x00"',
-  `dbs = [n for n in sorted(os.listdir(d)) if not n.endswith(("-wal", "-shm", "-journal", "${SQLITE_NEW}")) and is_db(os.path.join(d, n))]`,
-  'len(dbs) == 1 or sys.exit("OpsCrew found %d SQLite databases in the app\'s SQLite folder; a snapshot holds exactly one." % len(dbs))',
-  "db = os.path.join(d, dbs[0])",
-];
-
-/**
- * The SQLite database's copy on stdout: the backup API while the app runs, then
- * `journal_mode=delete`, so the copy is one file.
- */
-const SQLITE_COPY = [
-  ...SQLITE_DATABASE,
+  "if not os.listdir(d):",
+  `    print("OpsCrew: the app's SQLite volume is empty, so the snapshot holds nothing of it.", file=sys.stderr)`,
+  "    sys.exit(3)",
+  "def numeric(info):",
+  '    info.uname = info.gname = ""',
+  "    return info",
+  "def database(path):",
+  "    if os.path.islink(path) or not os.path.isfile(path):",
+  "        return False",
+  '    with open(path, "rb") as f:',
+  '        return f.read(16) == b"SQLite format 3\\x00"',
   'copy = os.path.join(tempfile.mkdtemp(), "copy")',
-  'src = sqlite3.connect("file:" + db + "?mode=rw", uri=True)',
-  "dst = sqlite3.connect(copy)",
-  "src.backup(dst)",
-  'dst.execute("pragma journal_mode=delete")',
-  "dst.close()",
-  "src.close()",
-  'shutil.copyfileobj(open(copy, "rb"), sys.stdout.buffer)',
-].join("; ");
+  'with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.GNU_FORMAT) as tar:',
+  "    for root, dirs, files in os.walk(d):",
+  "        dirs.sort()",
+  "        tar.add(root, os.path.relpath(root, d), recursive=False, filter=numeric)",
+  "        for name in sorted(files):",
+  "            path = os.path.join(root, name)",
+  "            arcname = os.path.relpath(path, d)",
+  '            if name.endswith(("-wal", "-shm", "-journal")):',
+  "                continue",
+  "            if not database(path):",
+  "                tar.add(path, arcname, recursive=False, filter=numeric)",
+  "                continue",
+  '            src = sqlite3.connect("file:" + path + "?mode=rw", uri=True)',
+  "            dst = sqlite3.connect(copy)",
+  "            src.backup(dst)",
+  "            src.close()",
+  '            dst.execute("pragma journal_mode=delete")',
+  "            dst.close()",
+  "            info = numeric(tar.gettarinfo(path, arcname))",
+  "            info.size = os.path.getsize(copy)",
+  '            with open(copy, "rb") as f:',
+  "                tar.addfile(info, f)",
+  "            os.remove(copy)",
+].join("\n");
 
 /**
- * The SQLite database's restore from stdin, the app stopped: the copy, written beside it first,
- * replaces the database with its mode, then its `-wal`, `-shm` and `-journal` files go.
+ * `python -c` with `program` as one line, `exec` of its text as a string literal: the deploy embeds
+ * the script in its YAML one line at a time.
  */
-const SQLITE_RESTORE = [
-  ...SQLITE_DATABASE,
-  `tmp = db + "${SQLITE_NEW}"`,
-  "mode = os.stat(db).st_mode & 0o777",
-  'out = open(tmp, "wb")',
-  "shutil.copyfileobj(sys.stdin.buffer, out)",
-  "out.close()",
-  "os.chmod(tmp, mode)",
-  "os.replace(tmp, db)",
-  '[os.remove(db + end) for end in ("-wal", "-shm", "-journal") if os.path.exists(db + end)]',
-].join("; ");
+function pythonOneLine(program: string): string {
+  return `python -c ${shellQuote(`exec(${JSON.stringify(program)})`)}`;
+}
 
-/** Busybox's commands that put a tar on stdin back into `dirs` exactly, emptying them first. */
+/**
+ * Busybox's commands that put a tar on stdin back into the stopped service's `dirs` exactly: each
+ * emptied first, then only those folders' members extracted.
+ */
 function untar(dirs: readonly string[]): string {
-  return `find ${dirs.join(" ")} -mindepth 1 -delete && tar -C / -xpf -`;
+  const members = dirs.map((dir) => dir.replace(/^\//, "")).join(" ");
+  return `find ${dirs.join(" ")} -mindepth 1 -delete && tar -C / -xpf - ${members}`;
 }
 
 /** `script` in a busybox one-off with `service`'s volumes (`ro` or `rw`), stdin and stdout passed. */
@@ -253,21 +290,22 @@ interface PartCommands {
  * one-off of their own image (a cache restored as `dump.rdb`, removed once it is loaded; a queue
  * as the base of a new append-only folder); Dragonfly with `SAVE RDB`, copied out read-only (a
  * queue restored as its only `dump` file, a cache loaded with `DFLY LOAD` while it runs); the
- * SQLite volume with {@link SQLITE_COPY}; every other kind stopped alone, its volumes tarred.
+ * SQLite volume with {@link SQLITE_COPY} (exit 3 when it is empty: the part is skipped), restored
+ * the app stopped by emptying it and untarring; every other kind stopped alone, its volumes
+ * tarred.
  */
-function partCommands(plan: DeployPlan, part: SnapshotPart): PartCommands {
+function partCommands(part: SnapshotPart): PartCommands {
   const file = `.snapshots/"$2"/${part.file}`;
   if (part.kind === "sqlite") {
-    const python = (script: string) =>
-      `docker run --rm -i --network none -v "$_volume":/data ${IMAGES.python.ref} python -c ${shellQuote(script)}`;
+    const volume = `--network none -v "$_volume":/data`;
     return {
       take: [
         "snapshot_sqlite_volume || return 1",
-        `${python(SQLITE_COPY)} < /dev/null > ${file} 2>> ${SNAPSHOT_LOG}`,
+        `docker run --rm ${volume} ${IMAGES.python.ref} ${pythonOneLine(SQLITE_COPY)} /data < /dev/null > ${file} 2>> ${SNAPSHOT_LOG}`,
       ],
       restore: [
         "snapshot_sqlite_volume || return 1",
-        `${python(SQLITE_RESTORE)} < ${file} >> ${SNAPSHOT_LOG} 2>&1`,
+        `docker run --rm -i ${volume} ${IMAGES.busybox.ref} sh -c ${shellQuote("find /data -mindepth 1 -delete && tar -C /data -xpf -")} < ${file} >> ${SNAPSHOT_LOG} 2>&1`,
       ],
     };
   }
@@ -292,7 +330,7 @@ function partCommands(plan: DeployPlan, part: SnapshotPart): PartCommands {
       `snapshot_run "$2" ${mode} ${service} ${shellQuote(`${login} && ${command}`)}`;
     const owner = `o="$(stat -c %u:%g ${data})"`;
     const stop = `docker compose stop -t 120 ${service} >> ${SNAPSHOT_LOG} 2>&1`;
-    const queue = modeOf(plan, service) === "queue";
+    const queue = part.mode === "queue";
     if (kind !== "dragonfly") {
       const dir = `${data}/appendonlydir`;
       const base = "appendonly.aof.1.base.rdb";
@@ -340,12 +378,6 @@ function partCommands(plan: DeployPlan, part: SnapshotPart): PartCommands {
   };
 }
 
-/** The mode of the Valkey, Redis or Dragonfly service `name`. */
-function modeOf(plan: DeployPlan, name: string): "cache" | "queue" | undefined {
-  const service: PlanService | undefined = plan.services.find((s) => s.name === name);
-  return service !== undefined && "mode" in service.options ? service.options.mode : undefined;
-}
-
 /** A shell function `name` with `body`'s lines. */
 function shellFunction(name: string, body: readonly string[]): string[] {
   return [`${name}() {`, ...body, "}"];
@@ -387,14 +419,19 @@ function partCase(
  *   on its own (not killed: exit 137) or never started;
  * - `snapshot_start <service>`: its own container started again, once healthy;
  * - `snapshot_tar` and `snapshot_untar`: a stop-only service's copy (stopped cleanly alone, its
- *   volumes tarred, started again when it ran) and restore (stopped, emptied, untarred, started);
- * - `part_take <part> <folder>`, `part_restore <part> <folder>` ({@link partCommands});
- * - `snapshot_about <id> <kind> <taken> <folder> [<part>]...`: prints `about.json`, one line, as
- *   the store's contract has it (024 plan.md 1.): each part's kind, file and size, or `skipped`;
- * - `snapshot_take <id> <kind> [<part>]...`: empties the log, copies each part into
+ *   volumes tarred, started again when it ran, or a message how to start it) and restore (stopped,
+ *   emptied, its folders untarred, started);
+ * - `part_take <part> <folder>` (3: nothing to copy), `part_restore <part> <folder>`
+ *   ({@link partCommands});
+ * - `snapshot_running` ({@link snapshotRunning});
+ * - `snapshot_about <id> <kind> <taken> <version> <folder> [<part>]...`: prints `about.json`, one
+ *   line, as the store's contract has it (024 plan.md 1.): `version` the 64-hex digest or empty,
+ *   each part's kind, file and size, or `skipped` for the parts not given;
+ * - `snapshot_take <id> <kind> <version> [<part>]...`: empties the log, copies each part into
  *   `.snapshots/<id>.taking` (by hand) or `<id>.partial`, the disk checked before and after each,
- *   writes `taken` and then `about.json`, and renames it `.snapshots/<id>`, replacing an earlier
- *   one; returns 1 when a copy failed and 2 when the disk was too full, with no partial left;
+ *   writes `taken` and then `about.json` (a part with nothing to copy skipped), and renames it
+ *   `.snapshots/<id>`, replacing an earlier one; returns 1 when a copy failed and 2 when the disk
+ *   was too full, with no partial left;
  * - `snapshot_complete <id>`: whether `.snapshots/<id>` has `about.json` and each file it names;
  * - `snapshot_parts <id>`: the parts whose file `.snapshots/<id>` holds;
  * - `snapshot_restore <id> [<part>]...`: restores each part (every one the snapshot holds by
@@ -404,7 +441,7 @@ function partCase(
 export function snapshotFunctions(plan: DeployPlan, server: string, folder: string): string[] {
   const parts = snapshotParts(plan, server);
   if (parts.length === 0) return [];
-  const commands = new Map(parts.map((part) => [part.name, partCommands(plan, part)]));
+  const commands = new Map(parts.map((part) => [part.name, partCommands(part)]));
   const names = (list: readonly SnapshotPart[]) => list.map((part) => part.name).join(" ");
   const log = SNAPSHOT_LOG;
   const box = `docker run --rm -i --network none --volumes-from "$_box:$1" ${IMAGES.busybox.ref} sh -c "$3" 2>> ${log}`;
@@ -453,7 +490,10 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       `  elif snapshot_box ro "$1" "tar -C / -cf - $3" < /dev/null > ${SNAPSHOTS_DIR}/"$2"/"$1".tar; then`,
       "    _copied=0",
       "  fi",
-      '  if [ -n "$_ran" ]; then snapshot_start "$1" || return 1; fi',
+      '  if [ -n "$_ran" ] && ! snapshot_start "$1"; then',
+      `    printf ${printfFormat(`%s did not start again after its copy. Its output is in %s/${SNAPSHOT_LOG}; start it with docker compose up -d %s in %s.`)} "$1" ${folder} "$1" ${folder} >&2`,
+      "    return 1",
+      "  fi",
       '  return "$_copied"',
     ]),
     ...shellFunction("snapshot_untar", [
@@ -477,11 +517,13 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       "part_restore",
       partCase(parts, (part) => commands.get(part.name)?.restore ?? []),
     ),
+    ...snapshotRunning(),
     ...shellFunction("snapshot_about", [
-      "  _about_version=\"$(sed -n 's/^APP_IMAGE=.*@\\(sha256:[0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)\"",
+      '  _about_version=""',
+      '  if [ -n "$4" ]; then _about_version="sha256:$4"; fi',
       `  printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$1" "$2" "$3" "$_about_version"`,
-      '  _about_folder="$4"',
-      "  shift 4",
+      '  _about_folder="$5"',
+      "  shift 5",
       '  _about_sep=""',
       "  for _about_part in $SNAPSHOT_PARTS; do",
       '    printf %s "$_about_sep"',
@@ -496,23 +538,31 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       `  printf ']}\\n'`,
     ]),
     ...shellFunction("snapshot_take", [
-      '  _take_id="$1"; _take_kind="$2"; shift 2',
+      '  _take_id="$1"; _take_kind="$2"; _take_version="$3"; shift 3',
       // T2405's store: Portainer's finisher claims the scheduled `*.partial` folders.
       '  _take_folder="$_take_id.partial"',
       '  if [ "$_take_kind" = manual ]; then _take_folder="$_take_id.taking"; fi',
       `  _take_in=${SNAPSHOTS_DIR}/"$_take_folder"`,
       `  (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && rm -rf ${TEMPORARY} && mkdir "$_take_in" && : > ${log}) || return 1`,
       "  snapshot_room || return 2",
+      '  _take_done=""',
       '  for _take_part in "$@"; do',
-      '    if ! (umask 077; part_take "$_take_part" "$_take_folder"); then',
+      "    _take_rc=0",
+      '    (umask 077; part_take "$_take_part" "$_take_folder") || _take_rc=$?',
+      // 3: nothing to copy (an empty SQLite volume), which the snapshot lists as skipped.
+      '    if [ "$_take_rc" -eq 3 ]; then',
+      '      rm -f "$_take_in"/"$(part_file "$_take_part")"',
+      '    elif [ "$_take_rc" -ne 0 ]; then',
       `      printf ${printfFormat("The copy of %s failed.")} "$_take_part" >&2`,
       '      rm -rf "$_take_in"',
       "      return 1",
+      "    else",
+      '      _take_done="$_take_done $_take_part"',
       "    fi",
       "    snapshot_room || return 2",
       "  done",
       '  _taken="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
-      '  (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_in" "$@" > "$_take_in"/about.json) || return 1',
+      '  (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_version" "$_take_in" $_take_done > "$_take_in"/about.json) || return 1',
       `  rm -rf ${SNAPSHOTS_DIR}/"$_take_id" && mv "$_take_in" ${SNAPSHOTS_DIR}/"$_take_id"`,
     ]),
     ...shellFunction("snapshot_complete", [
@@ -601,11 +651,13 @@ export function scheduleHours(every: string): number {
  */
 export function snapshotScheduleLines(plan: DeployPlan, server: string): string[] {
   if (plan.target.provider === "localhost") return [];
-  const tag = shellQuote(scheduleTag(plan));
+  // The app's line ends with its tag: another app whose name starts with this one's keeps its own.
+  // App names hold only letters, digits and hyphens, which a basic pattern reads as they are.
+  const mine = shellQuote(` ${scheduleTag(plan)}$`);
   const schedule = snapshotScheduleOf(plan);
   if (schedule === undefined || snapshotParts(plan, server).length === 0) {
     return [
-      `if crontab -l 2> /dev/null | grep -qF ${tag}; then crontab -l | grep -vF ${tag} | crontab -; fi`,
+      `if crontab -l 2> /dev/null | grep -q ${mine}; then crontab -l | grep -v ${mine} | crontab -; fi`,
     ];
   }
   const where = server === APP_SERVER ? "This server" : `The server ${server}`;
@@ -615,6 +667,6 @@ export function snapshotScheduleLines(plan: DeployPlan, server: string): string[
     `  echo ${shellQuote(`::error::${where} has no crontab, which runs the scheduled snapshots (snapshots.schedule in ${planFilePath(plan)}). Install cron there (on Debian and Ubuntu: apt install cron) and push again, or turn the schedule off with opscrew snapshot schedule off.`)}`,
     "  exit 1",
     "fi",
-    `{ crontab -l 2> /dev/null | grep -vF ${tag} || true; printf ${shellQuote(line)} "$APPS_DIR" ${tag}; } | crontab -`,
+    `{ crontab -l 2> /dev/null | grep -v ${mine} || true; printf ${shellQuote(line)} "$APPS_DIR" ${shellQuote(scheduleTag(plan))}; } | crontab -`,
   ];
 }

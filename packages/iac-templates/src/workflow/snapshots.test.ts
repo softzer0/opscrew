@@ -975,7 +975,7 @@ describe.skipIf(!shWorks())(
         deploy: { ...base.deploy, snapshotStop: ["kafka"] },
       });
       const PARTS = ["db", "queue", "kafka", "mq", "sqlite"];
-      const FILES = ["db.dump", "queue.rdb", "kafka.tar", "sqlite.db"];
+      const FILES = ["db.dump", "queue.rdb", "kafka.tar", "sqlite.tar"];
       const each = (content: string) => {
         for (const part of PARTS) setDb(`${part} ${content}\n`, part);
       };

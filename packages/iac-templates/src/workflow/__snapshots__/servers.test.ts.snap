@@ -57,7 +57,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           printf '%s\\n' "\${OPSCREW_SERVICE_DOCS_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/docs.env'
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/snapshot.sh.new && mv -f /srv/apps/shop/snapshot.sh.new /srv/apps/shop/snapshot.sh' <<'SNAPSHOT'
           # OpsCrew's snapshots of shop's data on the server data, generated from opscrew/plan.yaml; each deploy uploads it.
-          #   sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]...
+          #   sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>]
           #   sh snapshot.sh restore <id> [--only <service>]
           #   sh snapshot.sh list
           #   sh snapshot.sh delete <id>
@@ -124,7 +124,10 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             elif snapshot_box ro "$1" "tar -C / -cf - $3" < /dev/null > .snapshots/"$2"/"$1".tar; then
               _copied=0
             fi
-            if [ -n "$_ran" ]; then snapshot_start "$1" || return 1; fi
+            if [ -n "$_ran" ] && ! snapshot_start "$1"; then
+              printf '%s did not start again after its copy. Its output is in %s/.snapshots/snapshot.log; start it with docker compose up -d %s in %s.\\n' "$1" "$APPS_DIR"/shop "$1" "$APPS_DIR"/shop >&2
+              return 1
+            fi
             return "$_copied"
           }
           snapshot_untar() {
@@ -154,11 +157,19 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               *) return 1 ;;
             esac
           }
+          snapshot_running() {
+            if [ -f .env ]; then
+              sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env
+            elif [ -f .running ]; then
+              sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .running
+            fi
+          }
           snapshot_about() {
-            _about_version="$(sed -n 's/^APP_IMAGE=.*@\\(sha256:[0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+            _about_version=""
+            if [ -n "$4" ]; then _about_version="sha256:$4"; fi
             printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$1" "$2" "$3" "$_about_version"
-            _about_folder="$4"
-            shift 4
+            _about_folder="$5"
+            shift 5
             _about_sep=""
             for _about_part in $SNAPSHOT_PARTS; do
               printf %s "$_about_sep"
@@ -173,22 +184,29 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             printf ']}\\n'
           }
           snapshot_take() {
-            _take_id="$1"; _take_kind="$2"; shift 2
+            _take_id="$1"; _take_kind="$2"; _take_version="$3"; shift 3
             _take_folder="$_take_id.partial"
             if [ "$_take_kind" = manual ]; then _take_folder="$_take_id.taking"; fi
             _take_in=.snapshots/"$_take_folder"
             (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial .snapshots/*.taking && mkdir "$_take_in" && : > .snapshots/snapshot.log) || return 1
             snapshot_room || return 2
+            _take_done=""
             for _take_part in "$@"; do
-              if ! (umask 077; part_take "$_take_part" "$_take_folder"); then
+              _take_rc=0
+              (umask 077; part_take "$_take_part" "$_take_folder") || _take_rc=$?
+              if [ "$_take_rc" -eq 3 ]; then
+                rm -f "$_take_in"/"$(part_file "$_take_part")"
+              elif [ "$_take_rc" -ne 0 ]; then
                 printf 'The copy of %s failed.\\n' "$_take_part" >&2
                 rm -rf "$_take_in"
                 return 1
+              else
+                _take_done="$_take_done $_take_part"
               fi
               snapshot_room || return 2
             done
             _taken="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_in" "$@" > "$_take_in"/about.json) || return 1
+            (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_version" "$_take_in" $_take_done > "$_take_in"/about.json) || return 1
             rm -rf .snapshots/"$_take_id" && mv "$_take_in" .snapshots/"$_take_id"
           }
           snapshot_complete() {
@@ -210,7 +228,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             done
           }
           snapshot_usage() {
-            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... | restore <id> [--only <service>] | list | delete <id> | offsite <id>' >&2
+            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>] | restore <id> [--only <service>] | list | delete <id> | offsite <id>' >&2
           }
           snapshot_id() {
             case "$1" in
@@ -235,33 +253,46 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               scheduled) _stop='' ;;
               *) _stop="" ;;
             esac
-            _skip=""
+            _skip=""; _id=""; _hex="$(snapshot_running)"
             while [ "$#" -gt 0 ]; do
-              case "$1" in --skip | --stop) [ "$#" -ge 2 ] || { snapshot_usage; return 1; } ;; *) snapshot_usage; return 1 ;; esac
-              snapshot_known "$2" || return 1
-              if [ "$1" = --skip ]; then
-                _skip="$_skip $2"
-              else
-                case " $SNAPSHOT_ONLINE " in *" $2 "*)
-                  printf '%s is copied while it runs, so it never stops: leave out --stop %s.\\n' "$2" "$2" >&2
-                  return 1 ;;
-                esac
-                _stop="$_stop $2"
-              fi
+              [ "$#" -ge 2 ] || { snapshot_usage; return 1; }
+              case "$1" in
+                --skip) snapshot_known "$2" || return 1; _skip="$_skip $2" ;;
+                --stop)
+                  snapshot_known "$2" || return 1
+                  case " $SNAPSHOT_ONLINE " in *" $2 "*)
+                    printf '%s is copied while it runs, so it never stops: leave out --stop %s.\\n' "$2" "$2" >&2
+                    return 1 ;;
+                  esac
+                  _stop="$_stop $2" ;;
+                --id) snapshot_id "$2" || return 1; _id="$2" ;;
+                --version)
+                  case "$2" in sha256:*) _hex="\${2#sha256:}" ;; *) _hex="" ;; esac
+                  case "$_hex" in *[!0-9a-f]*) _hex="" ;; esac
+                  if [ "\${#_hex}" -ne 64 ]; then
+                    echo '--version needs an image digest: sha256: and 64 lower-case hexadecimal digits.' >&2
+                    return 1
+                  fi ;;
+                *) snapshot_usage; return 1 ;;
+              esac
               shift 2
             done
             case "$_kind" in
               release)
-                _id="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
-                if [ -z "$_id" ]; then
-                  echo 'The app'\\''s .env on this server names no version by its image digest, so there is no running release to take a snapshot of.' >&2
+                if [ -z "$_hex" ]; then
+                  echo 'No version runs here by its image digest (the app'\\''s .env, or .running on an extra server), and no --version names one, so there is no release to take a snapshot of.' >&2
                   return 1
-                fi ;;
+                fi
+                _id="\${_id:-$_hex}" ;;
               scheduled)
-                _hour=$(( $(date +%s) / 3600 ))
                 echo 'Scheduled snapshots are off (snapshots.schedule in opscrew/plan.yaml).' >&2
                 return 1 ;;
-              *) _id="$(snapshot_new_id)" ;;
+              *)
+                if [ -n "$_id" ] && [ -e .snapshots/"$_id" ]; then
+                  printf 'There is already a snapshot %s on the server data.\\n' "$_id" >&2
+                  return 1
+                fi
+                _id="\${_id:-$(snapshot_new_id)}" ;;
             esac
             _parts=""
             for _each in $SNAPSHOT_PARTS; do
@@ -274,7 +305,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               esac
             done
             _rc=0
-            snapshot_take "$_id" "$_kind" $_parts || _rc=$?
+            snapshot_take "$_id" "$_kind" "$_hex" $_parts || _rc=$?
             if [ "$_rc" -eq 2 ]; then
               printf 'The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew took no snapshot. Free some space, or delete snapshots you no longer need (opscrew snapshot delete).\\n' "$APPS_DIR"/shop >&2
               return 2
@@ -335,7 +366,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             fi
             _saved="$(snapshot_new_id)"
             _rc=0
-            snapshot_take "$_saved" manual $_parts || _rc=$?
+            snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?
             if [ "$_rc" -ne 0 ]; then
               if [ "$_rc" -eq 2 ]; then
                 printf 'The disk that holds %s has too little free space to copy the current data before the restore, so nothing was changed. Free some space and run opscrew restore again.\\n' "$APPS_DIR"/shop >&2
@@ -358,7 +389,10 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           if [ "\${OPSCREW_SNAPSHOT_FUNCTIONS:-}" = 1 ]; then return 0; fi
           case "\${1:-}" in
             list)
-              for _each in .snapshots/*/about.json; do if [ -f "$_each" ]; then cat "$_each"; fi; done ;;
+              for _each in .snapshots/*/about.json; do
+                case "$_each" in *.partial/* | *.taking/*) continue ;; esac
+                if [ -f "$_each" ]; then cat "$_each"; fi
+              done ;;
             offsite)
               [ "$#" -eq 2 ] || { snapshot_usage; exit 1; }
               snapshot_id "$2" ;;
@@ -414,7 +448,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               exit 1
             fi
           fi
-          if crontab -l 2> /dev/null | grep -qF '# opscrew-snapshots shop'; then crontab -l | grep -vF '# opscrew-snapshots shop' | crontab -; fi
+          if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots shop$'; then crontab -l | grep -v ' # opscrew-snapshots shop$' | crontab -; fi
           REMOTE
       - name: Update the services on the server box-2
         env:
@@ -429,7 +463,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           printf '%s\\n' "\${OPSCREW_SERVICE_ORDERS_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/orders.env'
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/snapshot.sh.new && mv -f /srv/apps/shop/snapshot.sh.new /srv/apps/shop/snapshot.sh' <<'SNAPSHOT'
           # OpsCrew's snapshots of shop's data on the server box-2, generated from opscrew/plan.yaml; each deploy uploads it.
-          #   sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]...
+          #   sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>]
           #   sh snapshot.sh restore <id> [--only <service>]
           #   sh snapshot.sh list
           #   sh snapshot.sh delete <id>
@@ -490,7 +524,10 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             elif snapshot_box ro "$1" "tar -C / -cf - $3" < /dev/null > .snapshots/"$2"/"$1".tar; then
               _copied=0
             fi
-            if [ -n "$_ran" ]; then snapshot_start "$1" || return 1; fi
+            if [ -n "$_ran" ] && ! snapshot_start "$1"; then
+              printf '%s did not start again after its copy. Its output is in %s/.snapshots/snapshot.log; start it with docker compose up -d %s in %s.\\n' "$1" "$APPS_DIR"/shop "$1" "$APPS_DIR"/shop >&2
+              return 1
+            fi
             return "$_copied"
           }
           snapshot_untar() {
@@ -514,11 +551,19 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               *) return 1 ;;
             esac
           }
+          snapshot_running() {
+            if [ -f .env ]; then
+              sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env
+            elif [ -f .running ]; then
+              sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .running
+            fi
+          }
           snapshot_about() {
-            _about_version="$(sed -n 's/^APP_IMAGE=.*@\\(sha256:[0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+            _about_version=""
+            if [ -n "$4" ]; then _about_version="sha256:$4"; fi
             printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$1" "$2" "$3" "$_about_version"
-            _about_folder="$4"
-            shift 4
+            _about_folder="$5"
+            shift 5
             _about_sep=""
             for _about_part in $SNAPSHOT_PARTS; do
               printf %s "$_about_sep"
@@ -533,22 +578,29 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             printf ']}\\n'
           }
           snapshot_take() {
-            _take_id="$1"; _take_kind="$2"; shift 2
+            _take_id="$1"; _take_kind="$2"; _take_version="$3"; shift 3
             _take_folder="$_take_id.partial"
             if [ "$_take_kind" = manual ]; then _take_folder="$_take_id.taking"; fi
             _take_in=.snapshots/"$_take_folder"
             (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial .snapshots/*.taking && mkdir "$_take_in" && : > .snapshots/snapshot.log) || return 1
             snapshot_room || return 2
+            _take_done=""
             for _take_part in "$@"; do
-              if ! (umask 077; part_take "$_take_part" "$_take_folder"); then
+              _take_rc=0
+              (umask 077; part_take "$_take_part" "$_take_folder") || _take_rc=$?
+              if [ "$_take_rc" -eq 3 ]; then
+                rm -f "$_take_in"/"$(part_file "$_take_part")"
+              elif [ "$_take_rc" -ne 0 ]; then
                 printf 'The copy of %s failed.\\n' "$_take_part" >&2
                 rm -rf "$_take_in"
                 return 1
+              else
+                _take_done="$_take_done $_take_part"
               fi
               snapshot_room || return 2
             done
             _taken="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_in" "$@" > "$_take_in"/about.json) || return 1
+            (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_version" "$_take_in" $_take_done > "$_take_in"/about.json) || return 1
             rm -rf .snapshots/"$_take_id" && mv "$_take_in" .snapshots/"$_take_id"
           }
           snapshot_complete() {
@@ -570,7 +622,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             done
           }
           snapshot_usage() {
-            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... | restore <id> [--only <service>] | list | delete <id> | offsite <id>' >&2
+            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>] | restore <id> [--only <service>] | list | delete <id> | offsite <id>' >&2
           }
           snapshot_id() {
             case "$1" in
@@ -595,33 +647,46 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               scheduled) _stop='' ;;
               *) _stop="" ;;
             esac
-            _skip=""
+            _skip=""; _id=""; _hex="$(snapshot_running)"
             while [ "$#" -gt 0 ]; do
-              case "$1" in --skip | --stop) [ "$#" -ge 2 ] || { snapshot_usage; return 1; } ;; *) snapshot_usage; return 1 ;; esac
-              snapshot_known "$2" || return 1
-              if [ "$1" = --skip ]; then
-                _skip="$_skip $2"
-              else
-                case " $SNAPSHOT_ONLINE " in *" $2 "*)
-                  printf '%s is copied while it runs, so it never stops: leave out --stop %s.\\n' "$2" "$2" >&2
-                  return 1 ;;
-                esac
-                _stop="$_stop $2"
-              fi
+              [ "$#" -ge 2 ] || { snapshot_usage; return 1; }
+              case "$1" in
+                --skip) snapshot_known "$2" || return 1; _skip="$_skip $2" ;;
+                --stop)
+                  snapshot_known "$2" || return 1
+                  case " $SNAPSHOT_ONLINE " in *" $2 "*)
+                    printf '%s is copied while it runs, so it never stops: leave out --stop %s.\\n' "$2" "$2" >&2
+                    return 1 ;;
+                  esac
+                  _stop="$_stop $2" ;;
+                --id) snapshot_id "$2" || return 1; _id="$2" ;;
+                --version)
+                  case "$2" in sha256:*) _hex="\${2#sha256:}" ;; *) _hex="" ;; esac
+                  case "$_hex" in *[!0-9a-f]*) _hex="" ;; esac
+                  if [ "\${#_hex}" -ne 64 ]; then
+                    echo '--version needs an image digest: sha256: and 64 lower-case hexadecimal digits.' >&2
+                    return 1
+                  fi ;;
+                *) snapshot_usage; return 1 ;;
+              esac
               shift 2
             done
             case "$_kind" in
               release)
-                _id="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
-                if [ -z "$_id" ]; then
-                  echo 'The app'\\''s .env on this server names no version by its image digest, so there is no running release to take a snapshot of.' >&2
+                if [ -z "$_hex" ]; then
+                  echo 'No version runs here by its image digest (the app'\\''s .env, or .running on an extra server), and no --version names one, so there is no release to take a snapshot of.' >&2
                   return 1
-                fi ;;
+                fi
+                _id="\${_id:-$_hex}" ;;
               scheduled)
-                _hour=$(( $(date +%s) / 3600 ))
                 echo 'Scheduled snapshots are off (snapshots.schedule in opscrew/plan.yaml).' >&2
                 return 1 ;;
-              *) _id="$(snapshot_new_id)" ;;
+              *)
+                if [ -n "$_id" ] && [ -e .snapshots/"$_id" ]; then
+                  printf 'There is already a snapshot %s on the server box-2.\\n' "$_id" >&2
+                  return 1
+                fi
+                _id="\${_id:-$(snapshot_new_id)}" ;;
             esac
             _parts=""
             for _each in $SNAPSHOT_PARTS; do
@@ -634,7 +699,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               esac
             done
             _rc=0
-            snapshot_take "$_id" "$_kind" $_parts || _rc=$?
+            snapshot_take "$_id" "$_kind" "$_hex" $_parts || _rc=$?
             if [ "$_rc" -eq 2 ]; then
               printf 'The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew took no snapshot. Free some space, or delete snapshots you no longer need (opscrew snapshot delete).\\n' "$APPS_DIR"/shop >&2
               return 2
@@ -695,7 +760,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             fi
             _saved="$(snapshot_new_id)"
             _rc=0
-            snapshot_take "$_saved" manual $_parts || _rc=$?
+            snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?
             if [ "$_rc" -ne 0 ]; then
               if [ "$_rc" -eq 2 ]; then
                 printf 'The disk that holds %s has too little free space to copy the current data before the restore, so nothing was changed. Free some space and run opscrew restore again.\\n' "$APPS_DIR"/shop >&2
@@ -718,7 +783,10 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           if [ "\${OPSCREW_SNAPSHOT_FUNCTIONS:-}" = 1 ]; then return 0; fi
           case "\${1:-}" in
             list)
-              for _each in .snapshots/*/about.json; do if [ -f "$_each" ]; then cat "$_each"; fi; done ;;
+              for _each in .snapshots/*/about.json; do
+                case "$_each" in *.partial/* | *.taking/*) continue ;; esac
+                if [ -f "$_each" ]; then cat "$_each"; fi
+              done ;;
             offsite)
               [ "$#" -eq 2 ] || { snapshot_usage; exit 1; }
               snapshot_id "$2" ;;
@@ -760,7 +828,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               exit 1
             fi
           fi
-          if crontab -l 2> /dev/null | grep -qF '# opscrew-snapshots shop'; then crontab -l | grep -vF '# opscrew-snapshots shop' | crontab -; fi
+          if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots shop$'; then crontab -l | grep -v ' # opscrew-snapshots shop$' | crontab -; fi
           REMOTE
       - name: Configure SSH with the pinned host key
         env:
@@ -786,8 +854,10 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           printf '%s\\n' "\${OPSCREW_SERVICE_CACHE_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/cache.env'
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/snapshot.sh.new && mv -f /srv/apps/shop/snapshot.sh.new /srv/apps/shop/snapshot.sh' <<'SNAPSHOT'
           # OpsCrew's snapshots of shop's data on the app's server, generated from opscrew/plan.yaml; each deploy uploads it.
-          #   sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]...
+          #   sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>]
           #   sh snapshot.sh restore <id> [--only <service>]
+          #   sh snapshot.sh hold
+          #   sh snapshot.sh resume
           #   sh snapshot.sh list
           #   sh snapshot.sh delete <id>
           #   sh snapshot.sh offsite <id>
@@ -848,7 +918,10 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             elif snapshot_box ro "$1" "tar -C / -cf - $3" < /dev/null > .snapshots/"$2"/"$1".tar; then
               _copied=0
             fi
-            if [ -n "$_ran" ]; then snapshot_start "$1" || return 1; fi
+            if [ -n "$_ran" ] && ! snapshot_start "$1"; then
+              printf '%s did not start again after its copy. Its output is in %s/.snapshots/snapshot.log; start it with docker compose up -d %s in %s.\\n' "$1" "$APPS_DIR"/shop "$1" "$APPS_DIR"/shop >&2
+              return 1
+            fi
             return "$_copied"
           }
           snapshot_untar() {
@@ -875,11 +948,19 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               *) return 1 ;;
             esac
           }
+          snapshot_running() {
+            if [ -f .env ]; then
+              sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env
+            elif [ -f .running ]; then
+              sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .running
+            fi
+          }
           snapshot_about() {
-            _about_version="$(sed -n 's/^APP_IMAGE=.*@\\(sha256:[0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+            _about_version=""
+            if [ -n "$4" ]; then _about_version="sha256:$4"; fi
             printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$1" "$2" "$3" "$_about_version"
-            _about_folder="$4"
-            shift 4
+            _about_folder="$5"
+            shift 5
             _about_sep=""
             for _about_part in $SNAPSHOT_PARTS; do
               printf %s "$_about_sep"
@@ -894,22 +975,29 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             printf ']}\\n'
           }
           snapshot_take() {
-            _take_id="$1"; _take_kind="$2"; shift 2
+            _take_id="$1"; _take_kind="$2"; _take_version="$3"; shift 3
             _take_folder="$_take_id.partial"
             if [ "$_take_kind" = manual ]; then _take_folder="$_take_id.taking"; fi
             _take_in=.snapshots/"$_take_folder"
             (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial .snapshots/*.taking && mkdir "$_take_in" && : > .snapshots/snapshot.log) || return 1
             snapshot_room || return 2
+            _take_done=""
             for _take_part in "$@"; do
-              if ! (umask 077; part_take "$_take_part" "$_take_folder"); then
+              _take_rc=0
+              (umask 077; part_take "$_take_part" "$_take_folder") || _take_rc=$?
+              if [ "$_take_rc" -eq 3 ]; then
+                rm -f "$_take_in"/"$(part_file "$_take_part")"
+              elif [ "$_take_rc" -ne 0 ]; then
                 printf 'The copy of %s failed.\\n' "$_take_part" >&2
                 rm -rf "$_take_in"
                 return 1
+              else
+                _take_done="$_take_done $_take_part"
               fi
               snapshot_room || return 2
             done
             _taken="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_in" "$@" > "$_take_in"/about.json) || return 1
+            (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_version" "$_take_in" $_take_done > "$_take_in"/about.json) || return 1
             rm -rf .snapshots/"$_take_id" && mv "$_take_in" .snapshots/"$_take_id"
           }
           snapshot_complete() {
@@ -931,7 +1019,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             done
           }
           snapshot_usage() {
-            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... | restore <id> [--only <service>] | list | delete <id> | offsite <id>' >&2
+            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>] | restore <id> [--only <service>] | hold | resume | list | delete <id> | offsite <id>' >&2
           }
           snapshot_id() {
             case "$1" in
@@ -956,33 +1044,46 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               scheduled) _stop='' ;;
               *) _stop="" ;;
             esac
-            _skip=""
+            _skip=""; _id=""; _hex="$(snapshot_running)"
             while [ "$#" -gt 0 ]; do
-              case "$1" in --skip | --stop) [ "$#" -ge 2 ] || { snapshot_usage; return 1; } ;; *) snapshot_usage; return 1 ;; esac
-              snapshot_known "$2" || return 1
-              if [ "$1" = --skip ]; then
-                _skip="$_skip $2"
-              else
-                case " $SNAPSHOT_ONLINE " in *" $2 "*)
-                  printf '%s is copied while it runs, so it never stops: leave out --stop %s.\\n' "$2" "$2" >&2
-                  return 1 ;;
-                esac
-                _stop="$_stop $2"
-              fi
+              [ "$#" -ge 2 ] || { snapshot_usage; return 1; }
+              case "$1" in
+                --skip) snapshot_known "$2" || return 1; _skip="$_skip $2" ;;
+                --stop)
+                  snapshot_known "$2" || return 1
+                  case " $SNAPSHOT_ONLINE " in *" $2 "*)
+                    printf '%s is copied while it runs, so it never stops: leave out --stop %s.\\n' "$2" "$2" >&2
+                    return 1 ;;
+                  esac
+                  _stop="$_stop $2" ;;
+                --id) snapshot_id "$2" || return 1; _id="$2" ;;
+                --version)
+                  case "$2" in sha256:*) _hex="\${2#sha256:}" ;; *) _hex="" ;; esac
+                  case "$_hex" in *[!0-9a-f]*) _hex="" ;; esac
+                  if [ "\${#_hex}" -ne 64 ]; then
+                    echo '--version needs an image digest: sha256: and 64 lower-case hexadecimal digits.' >&2
+                    return 1
+                  fi ;;
+                *) snapshot_usage; return 1 ;;
+              esac
               shift 2
             done
             case "$_kind" in
               release)
-                _id="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
-                if [ -z "$_id" ]; then
-                  echo 'The app'\\''s .env on this server names no version by its image digest, so there is no running release to take a snapshot of.' >&2
+                if [ -z "$_hex" ]; then
+                  echo 'No version runs here by its image digest (the app'\\''s .env, or .running on an extra server), and no --version names one, so there is no release to take a snapshot of.' >&2
                   return 1
-                fi ;;
+                fi
+                _id="\${_id:-$_hex}" ;;
               scheduled)
-                _hour=$(( $(date +%s) / 3600 ))
                 echo 'Scheduled snapshots are off (snapshots.schedule in opscrew/plan.yaml).' >&2
                 return 1 ;;
-              *) _id="$(snapshot_new_id)" ;;
+              *)
+                if [ -n "$_id" ] && [ -e .snapshots/"$_id" ]; then
+                  printf 'There is already a snapshot %s on the app'\\''s server.\\n' "$_id" >&2
+                  return 1
+                fi
+                _id="\${_id:-$(snapshot_new_id)}" ;;
             esac
             _parts=""
             for _each in $SNAPSHOT_PARTS; do
@@ -995,7 +1096,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               esac
             done
             _rc=0
-            snapshot_take "$_id" "$_kind" $_parts || _rc=$?
+            snapshot_take "$_id" "$_kind" "$_hex" $_parts || _rc=$?
             if [ "$_rc" -eq 2 ]; then
               printf 'The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew took no snapshot. Free some space, or delete snapshots you no longer need (opscrew snapshot delete).\\n' "$APPS_DIR"/shop >&2
               return 2
@@ -1060,7 +1161,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             docker compose stop app
             _saved="$(snapshot_new_id)"
             _rc=0
-            snapshot_take "$_saved" manual $_parts || _rc=$?
+            snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?
             if [ "$_rc" -ne 0 ]; then
               docker compose start app
               if [ "$_rc" -eq 2 ]; then
@@ -1083,14 +1184,25 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             printf 'Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed, and the app was not started. The copy from just before the restore stays in %s/.snapshots/%s: restore it with opscrew restore %s once the cause is fixed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$APPS_DIR"/shop "$_saved" "$_saved" "$APPS_DIR"/shop >&2
             return 1
           }
+          snapshot_cmd_hold() {
+            edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            docker compose stop app
+          }
+          snapshot_cmd_resume() {
+            docker compose start app
+            edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true
+          }
           if [ "\${OPSCREW_SNAPSHOT_FUNCTIONS:-}" = 1 ]; then return 0; fi
           case "\${1:-}" in
             list)
-              for _each in .snapshots/*/about.json; do if [ -f "$_each" ]; then cat "$_each"; fi; done ;;
+              for _each in .snapshots/*/about.json; do
+                case "$_each" in *.partial/* | *.taking/*) continue ;; esac
+                if [ -f "$_each" ]; then cat "$_each"; fi
+              done ;;
             offsite)
               [ "$#" -eq 2 ] || { snapshot_usage; exit 1; }
               snapshot_id "$2" ;;
-            take | restore | delete)
+            take | restore | delete | hold | resume)
               exec 7> .start.lock
               flock 7
               _command="$1"
@@ -1098,6 +1210,8 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               case "$_command" in
                 take) snapshot_cmd_take "$@" ;;
                 restore) snapshot_cmd_restore "$@" ;;
+                hold) [ "$#" -eq 0 ] || { snapshot_usage; exit 1; }; snapshot_cmd_hold ;;
+                resume) [ "$#" -eq 0 ] || { snapshot_usage; exit 1; }; snapshot_cmd_resume ;;
                 delete)
                   [ "$#" -eq 1 ] || { snapshot_usage; exit 1; }
                   snapshot_id "$1"
@@ -1149,7 +1263,14 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           rm -f .database.changed
           database=keep
           target="\${1##*@sha256:}"
-          running="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+          snapshot_running() {
+            if [ -f .env ]; then
+              sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env
+            elif [ -f .running ]; then
+              sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .running
+            fi
+          }
+          running="$(snapshot_running)"
           if [ "$MODE" = rollback ] && [ -f .rollback-database ]; then
             approved=""; choice=""; expiry=""
             read -r approved choice expiry < .rollback-database || true
@@ -1237,7 +1358,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               exit 1
             fi
           fi
-          if crontab -l 2> /dev/null | grep -qF '# opscrew-snapshots shop'; then crontab -l | grep -vF '# opscrew-snapshots shop' | crontab -; fi
+          if crontab -l 2> /dev/null | grep -q ' # opscrew-snapshots shop$'; then crontab -l | grep -v ' # opscrew-snapshots shop$' | crontab -; fi
           if [ "$database" != keep ]; then
             if [ -z "$running" ] || [ "$running" = "$target" ]; then
               echo '::error::The server'\\''s .env names no other version by its image digest, so OpsCrew can'\\''t save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.'
@@ -1261,7 +1382,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
             esac
             if [ -n "$parts" ]; then
               snap=0
-              snapshot_take "$running" release $parts || snap=$?
+              snapshot_take "$running" release "$running" $parts || snap=$?
               if [ "$snap" -eq 1 ]; then
                 printf '::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again, or keep the database as it is.\\n' "$APPS_DIR"/shop
                 rm -f .database.changed; docker compose start app; exit 1
