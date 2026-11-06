@@ -91,6 +91,9 @@ const RAILS_IMAGE = [
   "ENV RAILS_ENV=production",
 ];
 
+/** Rails' status as detection writes it: each database.yml entry and its version. */
+const RAILS_STATUS = `bin/rails runner "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }"`;
+
 const TSC = "RUN npx tsc -p tsconfig.build.json";
 
 /** One tool's app and what its two versions record. */
@@ -229,7 +232,7 @@ const CASES: Case[] = [
     releaseCommand: "bin/rails db:migrate",
     migrations: {
       tool: "rails",
-      status: "bin/rails db:version",
+      status: RAILS_STATUS,
       down: "bin/rails db:migrate VERSION={version}",
     },
     database: "postgres",
@@ -245,15 +248,15 @@ const CASES: Case[] = [
     releaseCommand: "bin/rails db:migrate",
     migrations: {
       tool: "rails",
-      status: "bin/rails db:version",
+      status: RAILS_STATUS,
       down: "bin/rails db:migrate VERSION={version}",
     },
     database: "postgres",
     databases: ["app_queue"],
     env: { SECRET_KEY_BASE: secret() },
     records: [
-      "database=app 20261101000000\ndatabase=app_queue 20261102000000\n",
-      "database=app 20261106000000\ndatabase=app_queue 20261107000000\n",
+      "database=primary 20261101000000\ndatabase=queue 20261102000000\n",
+      "database=primary 20261106000000\ndatabase=queue 20261107000000\n",
     ],
     added: ["visits.note", "app_queue:jobs.attempts"],
   },

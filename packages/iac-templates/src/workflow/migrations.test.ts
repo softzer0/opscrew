@@ -34,11 +34,14 @@ function withMigrations(releaseCommand: string, migrations: Migrations): DeployP
   return DeployPlanSchema.parse({ ...plan, app: { ...plan.app, releaseCommand, migrations } });
 }
 
+/** Rails' status as detection writes it: each database.yml entry and its version. */
+const RAILS_STATUS = `bin/rails runner "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }"`;
+
 /** Each tool's plan; Django and Knex run from a folder, Flask-Migrate with a quoted `FLASK_APP`. */
 const PLANS: Record<MigrationTool, DeployPlan> = {
   rails: withMigrations("bin/rails db:migrate", {
     tool: "rails",
-    status: "bin/rails db:version",
+    status: RAILS_STATUS,
     down: "bin/rails db:migrate VERSION={version}",
   }),
   django: withMigrations("cd web && python manage.py migrate --noinput", {
@@ -86,15 +89,15 @@ const STATUS: [string, MigrationTool, string, string][] = [
   [
     "Rails",
     "rails",
-    "\ndatabase: app\nCurrent version: 20261106000000\n\n",
+    "database: primary\nCurrent version: 20261106000000\n",
     "version=20261106000000\n",
   ],
-  ["Rails before any migration", "rails", "\ndatabase: app\nCurrent version: 0\n\n", "version=0\n"],
+  ["Rails before any migration", "rails", "database: primary\nCurrent version: 0\n", "version=0\n"],
   [
     "Rails with several databases, one before any migration",
     "rails",
-    "\ndatabase: app\nCurrent version: 20261106000000\n\ndatabase: app_queue\nCurrent version: 20261101000000\n\ndatabase: app_cache\nCurrent version: 0\n\n",
-    "database=app 20261106000000\ndatabase=app_queue 20261101000000\ndatabase=app_cache 0\n",
+    "database: primary\nCurrent version: 20261106000000\ndatabase: queue\nCurrent version: 20261101000000\ndatabase: cache\nCurrent version: 0\n",
+    "database=primary 20261106000000\ndatabase=queue 20261101000000\ndatabase=cache 0\n",
   ],
   ["Alembic", "alembic", "7c9d1e2f3a4b (head)\n", "version=7c9d1e2f3a4b\n"],
   ["Alembic before any migration", "alembic", "", "version=base\n"],
@@ -356,7 +359,7 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
         "Rails names a database OpsCrew won't put in a command",
         "rails",
         {},
-        "\ndatabase: app\nCurrent version: 20261106000000\n\ndatabase: $(touch pwned)\nCurrent version: 20261101000000\n\n",
+        "database: primary\nCurrent version: 20261106000000\ndatabase: $(touch pwned)\nCurrent version: 20261101000000\n",
       ],
       [
         "Rails shows several versions without their databases",
@@ -439,20 +442,20 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
       [
         "Rails per database, newest first, VERSION=0 for a database the earlier version lacks",
         "rails",
-        "database=app 20261101000000\ndatabase=app_cache 20261102000000\n",
-        "database=app 20261106000000\ndatabase=app_cache 20261107000000\ndatabase=app_queue 20261105000000\n",
+        "database=primary 20261101000000\ndatabase=cache 20261102000000\n",
+        "database=primary 20261106000000\ndatabase=cache 20261107000000\ndatabase=queue 20261105000000\n",
         [
-          "rails db:migrate:app_queue VERSION=0 in .",
-          "rails db:migrate:app_cache VERSION=20261102000000 in .",
-          "rails db:migrate:app VERSION=20261101000000 in .",
+          "rails db:migrate:queue VERSION=0 in .",
+          "rails db:migrate:cache VERSION=20261102000000 in .",
+          "rails db:migrate:primary VERSION=20261101000000 in .",
         ],
       ],
       [
         "Rails per database, leaving one already there and one the running version lacks",
         "rails",
-        "database=app 20261101000000\ndatabase=app_legacy 20261001000000\ndatabase=app_queue 20261102000000\n",
-        "database=app 20261106000000\ndatabase=app_queue 20261102000000\n",
-        ["rails db:migrate:app VERSION=20261101000000 in ."],
+        "database=primary 20261101000000\ndatabase=legacy 20261001000000\ndatabase=queue 20261102000000\n",
+        "database=primary 20261106000000\ndatabase=queue 20261102000000\n",
+        ["rails db:migrate:primary VERSION=20261101000000 in ."],
       ],
       [
         "Alembic to before any migration",
@@ -530,8 +533,8 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
       ["rails", "version=20261101000000\n", "version=20261101000000\n"],
       [
         "rails",
-        "database=app 20261101000000\ndatabase=app_queue 0\n",
-        "database=app 20261101000000\ndatabase=app_queue 0\n",
+        "database=primary 20261101000000\ndatabase=queue 0\n",
+        "database=primary 20261101000000\ndatabase=queue 0\n",
       ],
       ["knex", "count=2\n", "count=2\n"],
       ["laravel", "count=3\n", "count=3\n"],
@@ -618,28 +621,28 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
       [
         "a Rails database name would run a command",
         "rails",
-        "database=app;touch$IFS-pwned 20261101000000\ndatabase=app_queue 0\n",
-        "database=app 20261106000000\ndatabase=app_queue 20261102000000\n",
+        "database=primary;touch$IFS-pwned 20261101000000\ndatabase=queue 0\n",
+        "database=primary 20261106000000\ndatabase=queue 20261102000000\n",
         "holds a value OpsCrew won't put in a command",
       ],
       [
         "a Rails database line has no version",
         "rails",
-        "database=app 20261101000000\ndatabase=app_queue 0\n",
-        "database=app 20261106000000\ndatabase=app_queue\n",
+        "database=primary 20261101000000\ndatabase=queue 0\n",
+        "database=primary 20261106000000\ndatabase=queue\n",
         "holds a value OpsCrew won't put in a command",
       ],
       [
         "Rails records one database for the earlier version and several for the running one",
         "rails",
         "version=20261101000000\n",
-        "database=app 20261106000000\ndatabase=app_queue 20261102000000\n",
+        "database=primary 20261106000000\ndatabase=queue 20261102000000\n",
         "::error::The version rolled back to and the version running now record a different number of databases (their records in .schema on the server), so OpsCrew can't tell which to undo and nothing was migrated down.",
       ],
       [
         "Rails records several databases for the earlier version and one for the running one",
         "rails",
-        "database=app 20261101000000\ndatabase=app_queue 20261102000000\n",
+        "database=primary 20261101000000\ndatabase=queue 20261102000000\n",
         "version=20261106000000\n",
         "record a different number of databases",
       ],
@@ -657,12 +660,12 @@ describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 6
 
     it("changes nothing for several Rails databases when down has no db:migrate to point at each", () => {
       recorded(
-        "database=app 20261101000000\ndatabase=app_queue 0\n",
-        "database=app 20261106000000\ndatabase=app_queue 20261102000000\n",
+        "database=primary 20261101000000\ndatabase=queue 0\n",
+        "database=primary 20261106000000\ndatabase=queue 20261102000000\n",
       );
       const plan = withMigrations("bin/rails db:migrate", {
         tool: "rails",
-        status: "bin/rails db:version",
+        status: RAILS_STATUS,
         down: "bin/rails db:migrate:primary VERSION={version}",
       });
       const result = rollback(plan);

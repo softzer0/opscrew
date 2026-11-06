@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { detectProjectDetails } from "../index";
 import { makeTree, removeTree } from "../test-helpers";
 
+/** Rails' status: each database.yml entry and its version, read by `rails runner`. */
+const RAILS_VERSIONS =
+  "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }";
+
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map(removeTree));
@@ -45,7 +49,7 @@ describe("Ruby release commands", () => {
       note: undefined,
       migrations: {
         tool: "rails",
-        status: "bin/rails db:version",
+        status: `bin/rails runner "${RAILS_VERSIONS}"`,
         down: "bin/rails db:migrate VERSION={version}",
       },
     });

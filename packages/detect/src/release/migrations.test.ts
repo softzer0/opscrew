@@ -3,6 +3,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { detectProjectDetails } from "../index";
 import { makeTree, removeTree } from "../test-helpers";
 
+/** Rails' status: each database.yml entry and its version, read by `rails runner`. */
+const RAILS_VERSIONS =
+  "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }";
+
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map(removeTree));
@@ -54,10 +58,10 @@ const RAILS = {
 };
 
 describe("down migrations of the release command's tool", () => {
-  it("Rails: db:version and db:migrate VERSION through bundle exec without bin/rails", async () => {
+  it("Rails: each database.yml entry's version and db:migrate VERSION through bundle exec without bin/rails", async () => {
     expect((await migrationsOf(RAILS)).migrations).toEqual({
       tool: "rails",
-      status: "bundle exec rails db:version",
+      status: `bundle exec rails runner "${RAILS_VERSIONS}"`,
       down: "bundle exec rails db:migrate VERSION={version}",
     });
   });

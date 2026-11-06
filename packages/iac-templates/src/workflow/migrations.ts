@@ -27,9 +27,11 @@ const KEEP_RECORDS = 20;
  * a terminal) into its record. It exits 1 when the output holds nothing it knows, or a line it
  * doesn't know where every line counts, and 2 when it shows more than one version
  * ({@link SEVERAL}):
- * - Rails `db:version`: `Current version: <v>` (0 when none ran), after `database: <name>`; one
- *   pair per database. One database records `version=<v>`, several a `database=<name> <v>` line
- *   each, in the order Rails prints them; a name that isn't a value makes the output unknown;
+ * - Rails (detection's `rails runner` status, printed as `db:version` does): `database: <name>`,
+ *   the database.yml entry `db:migrate:<name>` takes, then `Current version: <v>` (0 when none
+ *   ran); one pair per database. One database records `version=<v>`, several a
+ *   `database=<name> <v>` line each, in database.yml's order; a name that isn't a value makes the
+ *   output unknown;
  * - Alembic and Flask-Migrate `current`: `<revision> (head)`, one per head, nothing at all when
  *   none ran (`base`);
  * - Django `showmigrations --plan`: `[X]  <app>.<name>` for each applied migration, in the order
