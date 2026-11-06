@@ -44,6 +44,9 @@ const WORDS = '1a2b3c4 "b"';
 const NOW = "2026-10-11T12:00:00.000Z";
 const EXPIRY = Date.parse(NOW) / 1000 + 30 * 60;
 const TAKEN = "2026-10-11T11:30:00Z";
+/** Why staging's rollback offers only keep when this computer can't reach its server. */
+const UNREACHABLE =
+  "This computer can't reach staging's app server, so OpsCrew offers only to keep the database as it is: the snapshot and down migrations need this computer to reach the server (the computer that deployed it, or one restored from the recovery copy).";
 
 /** A deployed plan of `shop`, as prod (or with `environment`, that environment's). */
 function serverPlan(o: { environment?: string; extra?: Record<string, unknown> } = {}): DeployPlan {
@@ -370,13 +373,30 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
     expect(chosen.choice).toBe("migrations");
   });
 
-  it("says when the server does not answer, and changes nothing", async () => {
-    const { folder, step } = await world(serverPlan({ environment: "staging" }));
+  it("offers only keep, as without snapshots, when the server does not answer, and refuses --database snapshot", async () => {
+    const { deps, folder, step } = await world(serverPlan({ environment: "staging" }));
+    await folder.write(`.snapshots/${hex(TARGET)}/taken`, TAKEN);
     folder.failWith = 255;
+    const chosen = await step();
+    expect(chosen).toMatchObject({ choice: "keep", flags: "", record: { choice: "keep" } });
+    expect(chosen.binding).toBeUndefined();
+    expect(deps.reporter.text()).toContain(UNREACHABLE);
+    // Nothing to remove there: the rollback goes on.
+    expect(await chosen.leave()).toBeUndefined();
+
+    const error = await failure(step({ database: "snapshot" }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(`${UNREACHABLE} Nothing was changed.`);
+    expect(error.hint).toBe("Run `opscrew rollback --env staging` with --database keep.");
+  });
+
+  it("stops on a read the server answered with a failure, before any change", async () => {
+    const { folder, step } = await world(serverPlan({ environment: "staging" }));
+    folder.failWith = 4;
     const error = await failure(step());
     expect(error.code).toBe("COMMAND_FAILED");
     expect(error.message).toBe(
-      "The app's server did not answer over SSH, so OpsCrew could not read the database's snapshots and migration records.",
+      "OpsCrew could not read the database's snapshots and migration records on the app's server (exit code 4). Nothing was changed.",
     );
   });
 

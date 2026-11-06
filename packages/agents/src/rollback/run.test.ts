@@ -1378,6 +1378,56 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     );
   });
 
+  it.each([
+    ["has no address for the server", "address"],
+    ["gets no answer from the server", "answer"],
+  ] as const)(
+    "offers only keep when this computer %s, and rolls back through GitHub as before",
+    async (_what, missing) => {
+      const { world, b, c, atDispatch } = await stagingWorld();
+      if (missing === "address") await recordServerAddress(world.deps.paths, undefined);
+      else world.folder.failWith = 255;
+
+      const result = await world.run();
+
+      expect(result).toMatchObject({ status: "deployed", database: { choice: "keep" } });
+      const request = world.handler.requests[0] as ApprovalRequest;
+      // The hash and the text of a rollback without snapshots.
+      expect(request.planHash).toBe(hashOf(world, c, b, "shop/staging"));
+      expect(request.allowDestroy).toBeUndefined();
+      expect(request.details).toContain(KEEP_LINE);
+      expect(request.details).not.toContain("Database:");
+      expect(world.deps.reporter.text()).toContain(
+        "This computer can't reach staging's app server, so OpsCrew offers only to keep the database as it is: the snapshot and down migrations need this computer to reach the server (the computer that deployed it, or one restored from the recovery copy).",
+      );
+      expect(world.events).toEqual(["pause", "sleep", "dispatch"]);
+      expect(atDispatch).toEqual([undefined]);
+      // Nothing was written there; the one read was all it tried.
+      expect(world.folder.commands).toHaveLength(missing === "address" ? 0 : 1);
+    },
+  );
+
+  it("refuses --database snapshot when this computer can't reach the server, before any change", async () => {
+    const { world } = await stagingWorld();
+    await recordServerAddress(world.deps.paths, undefined);
+    const error = await failure(world.run({ database: "snapshot" }));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toMatch(
+      /^This computer can't reach staging's app server, so OpsCrew offers only to keep the database as it is: .* Nothing was changed\.$/,
+    );
+    await nothingChanged(world, error);
+  });
+
+  it("rolls prod back through GitHub alone when this computer has no address for its server", async () => {
+    const { world, b, c } = await prodWorld();
+    await recordServerAddress(world.deps.paths, undefined);
+    const result = await world.run();
+    expect(result).toMatchObject({ status: "deployed", database: { choice: "keep" } });
+    expect(world.handler.requests[0]?.planHash).toBe(hashOf(world, c, b));
+    expect(world.deps.reporter.text()).not.toContain("can't reach");
+    expect(world.folder.commands).toEqual([]);
+  });
+
   it("removes an earlier one-time approval on a keep rollback, even with nothing to read", async () => {
     const { world, b, c } = await prodWorld();
     await world.folder.write(

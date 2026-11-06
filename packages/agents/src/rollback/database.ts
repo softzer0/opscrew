@@ -6,6 +6,7 @@
  */
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { CommandResult } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
 import { appDir, shellQuote } from "@opscrew/iac-templates";
 import {
@@ -68,8 +69,8 @@ function recordFile(hex: string): string {
  * hex, and every line written is checked words: never text a user typed.
  */
 interface AppFolder {
-  /** The text of each of `paths` that exists, trimmed. */
-  read(paths: readonly string[]): Promise<Map<string, string>>;
+  /** The text of each of `paths` that exists, trimmed; `undefined` when the server did not answer. */
+  read(paths: readonly string[]): Promise<Map<string, string> | undefined>;
   /** Writes the one-time approval `line` (mode 600, the folder's owner's), or removes it. */
   approval(line: string | undefined): Promise<void>;
 }
@@ -115,23 +116,31 @@ async function serverFolder(
 ): Promise<AppFolder> {
   const { docker } = await serverShell(deps, plan, APP_SERVER, services);
   const dir = appDir(plan);
+  const answered = (result: CommandResult) => result.exitCode !== 255 && result.timedOut !== true;
   const run = async (script: string, what: string): Promise<string> => {
     const result = await docker.run(script, { timeoutMs: 60_000 });
     if (result.exitCode === 0) return result.stdout;
     throw new OpsCrewError(
       "COMMAND_FAILED",
-      result.exitCode === 255 || result.timedOut === true
-        ? `The app's server did not answer over SSH, so OpsCrew could not ${what}.`
-        : `OpsCrew could not ${what} on the app's server (exit code ${result.exitCode}).`,
+      answered(result)
+        ? `OpsCrew could not ${what} on the app's server (exit code ${result.exitCode}).`
+        : `The app's server did not answer over SSH, so OpsCrew could not ${what}.`,
       { hint: "Check that the server is on and answers (`opscrew status`), then try again." },
     );
   };
   return {
-    read: async (paths) =>
-      readSections(
-        await run(readScript(dir, paths), "read the database's snapshots and migration records"),
-        paths,
-      ),
+    async read(paths) {
+      const result = await docker.run(readScript(dir, paths), { timeoutMs: 60_000 });
+      if (!answered(result)) return undefined;
+      if (result.exitCode !== 0) {
+        throw new OpsCrewError(
+          "COMMAND_FAILED",
+          `OpsCrew could not read the database's snapshots and migration records on the app's server (exit code ${result.exitCode}). ${NOTHING_CHANGED}`,
+          { hint: "Run `opscrew status` to see what runs there, then try again." },
+        );
+      }
+      return readSections(result.stdout, paths);
+    },
     approval: async (line) => {
       await run(
         line === undefined ? removeScript(dir) : writeScript(dir, line),
@@ -264,10 +273,11 @@ export interface DatabaseStep {
   outcome: string;
   /**
    * Before the deploy runs: leaves the one-time approval of a choice that changes data and returns
-   * when it expires (ISO), or removes an earlier one; nothing without {@link binding}.
+   * when it expires (ISO); for keep, removes an earlier one where the folder is reachable, and
+   * never fails.
    */
   leave(): Promise<string | undefined>;
-  /** Removes the one-time approval once no run can use it; nothing without {@link binding}. */
+  /** Removes the one-time approval of a choice that changes data once no run can use it. */
   clear(): Promise<void>;
 }
 
@@ -295,8 +305,12 @@ function notOffered(
  *    nothing changed); else, with several offers, asks `chooseDatabase`; else the default: the
  *    snapshot on an environment other than prod, keep otherwise.
  *
- * On a server or this computer, keep's `leave` removes any one-time approval an earlier run left,
- * so the start script neither changes this rollback's data nor stops on an expired one.
+ * When this computer cannot reach the server (no address or login here, or no answer), it offers
+ * only keep and says why, and the rollback goes on through GitHub as without snapshots.
+ *
+ * Keep's `leave` removes a one-time approval an earlier run left, when the folder is reachable, so
+ * the start script neither changes this rollback's data nor stops on an expired one; it never
+ * stops the rollback.
  */
 export async function databaseStep(
   run: RollbackRun,
@@ -310,30 +324,37 @@ export async function databaseStep(
     choice: "keep",
     text: `Keep it as it is: ${input.words} runs against today's schema.`,
   };
-  // Connected before the approval, so a server OpsCrew cannot reach stops before any change.
-  const folder = await folderOf(run);
-  const keep = (binding?: DatabaseBinding): DatabaseStep => ({
-    choice: "keep",
-    ...(binding !== undefined ? { binding } : {}),
-    lines: [KEEP_LINE, ...kept],
-    flags: binding !== undefined ? " --database keep" : "",
-    record: { choice: "keep" },
-    outcome: databaseOutcome({ choice: "keep" }, plan, input.words),
-    // A one-time approval an earlier run left must not change the data of this one, nor stop it.
-    leave: async () => {
-      await folder?.approval(undefined);
-      return undefined;
-    },
-    clear: async () => {},
-  });
-
-  // 1. Nothing to read (or nowhere to read it): the database stays as it is.
-  if (folder === undefined || (!snapshots && migrations === undefined)) {
+  const keep = (binding?: DatabaseBinding, folder?: () => Promise<AppFolder | undefined>) => {
+    const step: DatabaseStep = {
+      choice: "keep",
+      ...(binding !== undefined ? { binding } : {}),
+      lines: [KEEP_LINE, ...kept],
+      flags: binding !== undefined ? " --database keep" : "",
+      record: { choice: "keep" },
+      outcome: databaseOutcome({ choice: "keep" }, plan, input.words),
+      // An approval an earlier run left must not change this one's data, nor stop it: best effort.
+      leave: async () => {
+        await folder?.()
+          .then((reached) => reached?.approval(undefined))
+          .catch(() => undefined);
+        return undefined;
+      },
+      clear: async () => {},
+    };
+    return step;
+  };
+  // The only choice that needs nothing of the server, and why the others are not offered.
+  const keepOnly = (reason: (choice: "snapshot" | "migrations") => string, warn?: string) => {
     const asked = options.database;
-    if (asked !== undefined && asked !== "keep") {
-      throw notOffered(run, unreadReason(run, asked), [keepOffer]);
-    }
-    return keep();
+    if (asked !== undefined && asked !== "keep") throw notOffered(run, reason(asked), [keepOffer]);
+    if (warn !== undefined) deps.reporter.warn(warn);
+  };
+
+  // 1. Nothing to read: the database stays as it is.
+  if (!snapshots && migrations === undefined) {
+    keepOnly((choice) => unreadReason(run, choice));
+    // Connected only after the approval, to remove an earlier one-time approval.
+    return keep(undefined, () => folderOf(run));
   }
   const targetHex = hexOf(input.target);
   const currentHex = hexOf(input.current);
@@ -342,7 +363,17 @@ export async function databaseStep(
     ...(currentHex !== undefined ? [recordFile(currentHex)] : []),
   ];
   deps.reporter.step(`Reading ${environment}'s database snapshots and migration records`);
-  const files = paths.length > 0 ? await folder.read(paths) : new Map<string, string>();
+  // No address or login for the server on this computer, or no answer from it.
+  const folder = await folderOf(run).catch((error: unknown) => {
+    if (error instanceof OpsCrewError) return undefined;
+    throw error;
+  });
+  const files = await folder?.read(paths);
+  if (folder === undefined || files === undefined) {
+    const unreachable = `This computer can't reach ${environment}'s app server, so OpsCrew offers only to keep the database as it is: the snapshot and down migrations need this computer to reach the server (the computer that deployed it, or one restored from the recovery copy).`;
+    keepOnly(() => unreachable, unreachable);
+    return keep();
+  }
   const takenText = targetHex === undefined ? undefined : files.get(takenFile(targetHex));
   const taken = TakenSchema.safeParse(takenText).success ? takenText : undefined;
   const targetRecord = targetHex === undefined ? undefined : files.get(recordFile(targetHex));
@@ -399,7 +430,7 @@ export async function databaseStep(
     currentRecord: currentRecord ?? null,
     targetRecord: targetRecord ?? null,
   };
-  if (choice === "keep") return keep(binding);
+  if (choice === "keep") return keep(binding, async () => folder);
 
   // Only a target with a digest has a snapshot or a record to offer.
   const hex = targetHex as string;
