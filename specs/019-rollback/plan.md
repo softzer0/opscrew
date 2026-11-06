@@ -774,6 +774,13 @@ database as it was when that version stopped running.
 - **Reading the server:** after choosing the version, the command reads the snapshot list, each
   `taken`, and the two records. It uses a fixed read-only script over the access `opscrew logs`
   uses, or locally on this computer.
+  - **When this computer can't reach the server** (no address or login for it here, or no
+    answer), the rollback offers only keep and says why in one line: the snapshot and down
+    migrations need this computer to reach the server (the computer that deployed it, or one
+    restored from the recovery copy). It then runs exactly as before this follow-up, through
+    GitHub alone. An explicit `--database snapshot|migrations` is refused before any change.
+  - A keep rollback removes an earlier `.rollback-database` when the folder is reachable, as a
+    best effort that never blocks it.
 - **The choice:** "How should the rollback treat the database?":
   - **the snapshot**, offered when the target has one: "Restore the snapshot taken <time>, when
     <version> stopped running. Everything written since is lost.";
