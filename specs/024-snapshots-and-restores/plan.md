@@ -60,6 +60,10 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
   - SQLite's file is `sqlite.db`;
   - on Portainer, `/snapshots/.running` names the running image, written by the stamp after a
     new version starts.
+  - a snapshot taken before any `.running` exists records `"version":""`: restores treat it
+    as an unknown version (refused unless `--allow-other-version`);
+  - the bucket holds `backups/<id>/<file>.age`, `about.json.age` written last; the snapshot
+    folder gains an `offsite.done` marker once uploaded.
 
 ### 2. Per kind (R2)
 
