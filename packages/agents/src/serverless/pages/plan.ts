@@ -103,13 +103,14 @@ export function claimsDomain(site: PagesState, cname: string): boolean {
  * `cname`: the site turned on (or switched from a branch to the workflow), then the domain. Once
  * the site claims the domain, GitHub's `health` decides: with the DNS valid and no certificate
  * yet the domain is saved again, once (`savedAgain`: an applied plan of this app did that
- * already); with the certificate issued, HTTPS is enforced.
+ * already); with the certificate issued, HTTPS is enforced. Without `cname` (a site moving here
+ * from Cloudflare's hosting, before its hostnames do) the plan has only the site's steps.
  */
 export function planPages(input: {
   owner: string;
   repo: string;
   site: PagesSite | undefined;
-  cname: string;
+  cname?: string;
   health?: PagesHealth;
   savedAgain: boolean;
 }): PagesPlan {
@@ -118,6 +119,9 @@ export function planPages(input: {
   if (!site.enabled) steps.push({ kind: "create" });
   else if (site.buildType === "legacy") steps.push({ kind: "use-workflow" });
   const { health } = input;
+  if (input.cname === undefined) {
+    return { owner: input.owner, repo: input.repo, site, steps };
+  }
   if (!claimsDomain(site, input.cname)) {
     const replaces = site.enabled ? site.cname : undefined;
     steps.push({
@@ -279,11 +283,15 @@ export function describePagesPlan(plan: PagesPlan, hash: string): string {
   } else if (site.enabled && site.httpsEnforced) {
     items.push({ title: "HTTPS enforced", state: "in-place" });
   }
+  const records =
+    domain === undefined && !(site.enabled && site.cname !== undefined)
+      ? `The site gets no custom domain in this plan, so it answers on GitHub's own address (${plan.owner}.github.io) until one is set.`
+      : "The site's DNS records come in the infrastructure plan after this one.";
   return describeAdapterPlan({
     heading: `Pages plan for the GitHub Pages site of ${repository}`,
     items,
     findings: [],
-    note: "OpsCrew changes only this repository's GitHub Pages settings, and it reads the site again before it does: if the site changed since this plan, nothing changes. The site's DNS records come in the infrastructure plan after this one.",
+    note: `OpsCrew changes only this repository's GitHub Pages settings, and it reads the site again before it does: if the site changed since this plan, nothing changes. ${records}`,
     hashLabel: "Pages plan hash",
     hash,
   });

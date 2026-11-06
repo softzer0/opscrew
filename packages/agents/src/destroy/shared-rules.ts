@@ -8,7 +8,7 @@
  * goes first).
  */
 import { type CloudflareClient, SHARED_RULES } from "@opscrew/connector-cloudflare";
-import type { ApprovalRecord } from "@opscrew/contracts";
+import type { ApprovalRecord, PhaseName } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
@@ -39,12 +39,13 @@ export interface SharedRemoval {
  * and every one it replaced are revoked. The zone's minimum TLS stays. The `www` redirect rule's
  * phase is read only when the record has (or created) it, as for a site on Cloudflare's hosting.
  * A damaged record, and a finding of the plan (OpsCrew's rule changed by someone, a refused read),
- * stop before anything changes.
+ * stop before anything changes. Its hints name `command` (default `opscrew destroy`).
  */
 export async function planSharedRemoval(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: Pick<DestroyServices, "sharedCloudflare">,
+  command = COMMAND,
 ): Promise<SharedRemoval | undefined> {
   const record = await readCloudflareRecord(deps.paths);
   if (record === undefined) return undefined;
@@ -65,7 +66,7 @@ export async function planSharedRemoval(
       ...(tls ? { tls: { proxied: [], served: { requiring: [] } } } : {}),
     },
     record,
-    command: COMMAND,
+    command,
     ...(redirect ? { redirect: true } : {}),
   });
   return { client, zone };
@@ -85,11 +86,14 @@ export function removalDetails(removal: SharedRemoval | undefined): string | und
  * Applies the planned removal (see the module's note for when): approved by its hash with
  * `allowDestroy` and the typed app name, then applied, and the record written (it then lists no
  * hostnames). Without changes only the record is written. Returns the approval, when one was asked.
+ * `run` names the command its hints give and the phase of its audit entries (default
+ * `opscrew destroy`, provision's).
  */
 export async function applySharedRemoval(
   deps: PhaseDeps,
   plan: DeployPlan,
   removal: SharedRemoval | undefined,
+  run: { command: string; phase: PhaseName } = { command: COMMAND, phase: "provision" },
 ): Promise<ApprovalRecord | undefined> {
   if (removal === undefined) return undefined;
   if (removal.zone.plan.changes.length === 0) {
@@ -99,8 +103,8 @@ export async function applySharedRemoval(
   const { approval } = await applyZonePlan(deps, removal.client, removal.zone, {
     app: plan.app.name,
     planOnly: false,
-    command: COMMAND,
-    phase: "provision",
+    command: run.command,
+    phase: run.phase,
     allowDestroy: true,
   });
   return approval;

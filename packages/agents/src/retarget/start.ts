@@ -67,7 +67,7 @@ import {
 } from "./texts";
 import type { MoveData, MoveTargetId, RetargetOptions, RetargetSummary } from "./types";
 
-function nothingLive(plan: DeployPlan): OpsCrewError {
+export function nothingLive(plan: DeployPlan): OpsCrewError {
   return new OpsCrewError(
     "PHASE_PRECONDITION",
     `${plan.app.name} has no live deployment on this computer, so there is nothing to move. Nothing was changed.`,
@@ -121,7 +121,7 @@ function thisComputerNoMove(): OpsCrewError {
 }
 
 /** A site and a server are different designs: no move between them. */
-function siteServerNoMove(plan: DeployPlan): OpsCrewError {
+export function siteServerNoMove(plan: Pick<DeployPlan, "app">): OpsCrewError {
   return new OpsCrewError(
     "PHASE_PRECONDITION",
     `Moving ${plan.app.name} between a site host and a server changes the app's whole design, so OpsCrew does not do it as a move. Nothing was changed.`,
@@ -339,7 +339,7 @@ async function cloudSide(
 }
 
 /** `opscrew/requirements.yaml`, which a cloud provider's options are priced for. */
-async function requireRequirements(deps: PhaseDeps) {
+export async function requireRequirements(deps: PhaseDeps) {
   const requirements = await readRequirements(deps);
   if (requirements === undefined) {
     throw new OpsCrewError(
@@ -703,9 +703,16 @@ async function liveOldSide(
   return address;
 }
 
-/** The new target the move goes to: `--to`, else the requirements' provider. */
-async function newTargetId(deps: PhaseDeps, options: RetargetOptions): Promise<MoveTargetId> {
-  if (options.to !== undefined) return options.to;
+/** The new target the move goes to: `--to`, else the requirements' provider; never a site host. */
+async function newTargetId(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  options: RetargetOptions,
+): Promise<MoveTargetId> {
+  if (options.to !== undefined) {
+    if (isServerlessProvider(options.to)) throw siteServerNoMove(plan);
+    return options.to;
+  }
   const { provider } = await requireRequirements(deps);
   if (provider === "localhost") throw thisComputerNoMove();
   if (isServerlessProvider(provider)) {
@@ -756,7 +763,7 @@ export async function startMove(
   }
   requireAddressedOldSide(plan);
   const oldAddress = await liveOldSide(deps, plan, options);
-  const to = await newTargetId(deps, options);
+  const to = await newTargetId(deps, plan, options);
   if (to === from.provider) {
     if (to === "portainer") throw betweenPortainers();
     if (to !== "own") {

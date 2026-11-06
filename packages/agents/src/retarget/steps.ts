@@ -475,7 +475,7 @@ export async function storeDeploySecrets(session: MoveSession, which: MoveServer
 }
 
 /** Line endings and the trailing newline do not count when two workflows are compared. */
-function normalised(text: string): string {
+export function normalised(text: string): string {
   return text.replace(/\r\n/g, "\n").trimEnd();
 }
 
@@ -483,8 +483,8 @@ function normalised(text: string): string {
  * The deploy workflow at `path` on GitHub's `branch` (what a dispatched run runs), fetched from
  * where pushes go; `undefined` when it cannot be read there.
  */
-async function workflowOnGitHub(
-  session: MoveSession,
+export async function workflowOnGitHub(
+  session: Pick<MoveSession, "deps">,
   branch: string,
   path: string,
 ): Promise<string | undefined> {

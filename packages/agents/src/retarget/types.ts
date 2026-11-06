@@ -7,7 +7,13 @@ import type {
   VpsProviderId,
 } from "@opscrew/contracts";
 import type { EnginePreference } from "@opscrew/iac-engine";
-import type { CloudProvider, DeployTarget, DesignOption, Retarget } from "@opscrew/plan-schema";
+import type {
+  CloudProvider,
+  DeployTarget,
+  DesignOption,
+  Retarget,
+  ServerlessProvider,
+} from "@opscrew/plan-schema";
 import type { DestroyPreview } from "../destroy";
 import type { OwnServerAnswers } from "../interview/own-server";
 import type { PortainerAnswers } from "../interview/portainer";
@@ -47,6 +53,9 @@ export interface RetargetServices
     | "own"
     | "runnerGitHub"
     | "portainer"
+    // A site's move: OpsCrew's rules in the zone, and the Pages verification record's value.
+    | "sharedCloudflare"
+    | "askPagesVerification"
   > {
   /** Credential checks per provider (default: `vpsConnector(id).verifyCredentials`). */
   providers?: Partial<
@@ -121,8 +130,11 @@ export interface EmptyQuestion {
 }
 
 export interface RetargetOptions {
-  /** Where to move to (default: `requirements.provider`). Must be another place than the plan's. */
-  to?: MoveTargetId;
+  /**
+   * Where to move to (default: `requirements.provider`). Must be another place than the plan's: a
+   * server target for an app on a server, the other site host for a site.
+   */
+  to?: MoveTargetId | ServerlessProvider;
   /** Design option id to use instead of asking (a move to a cloud provider). */
   option?: string;
   /**
@@ -147,6 +159,11 @@ export interface RetargetOptions {
   portainerAddress?: ServerAddress;
   /** `--public-image`: the app's image is public on GitHub Container Registry (Portainer). */
   publicImage?: boolean;
+  /**
+   * `--pages-verification <value>`: the value of GitHub's domain verification record, for a site
+   * moving to GitHub Pages (as `opscrew provision` takes it).
+   */
+  pagesVerification?: string;
   /**
    * `--empty <service>`: what starts empty on the new side instead of being copied: a service on
    * the app's server, `app` for the app's own files, `monitoring` for its stack's.

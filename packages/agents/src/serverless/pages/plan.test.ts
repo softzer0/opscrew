@@ -42,6 +42,20 @@ describe("planPages", () => {
     ]);
   });
 
+  it("sets no custom domain without one: a site moving here before its hostnames do", () => {
+    const none = { cname: undefined };
+    expect(steps(none)).toEqual([{ kind: "create" }]);
+    expect(steps({ ...none, site: { buildType: "legacy", httpsEnforced: false } })).toEqual([
+      { kind: "use-workflow" },
+    ]);
+    expect(steps({ ...none, site: { buildType: "workflow", httpsEnforced: false } })).toEqual([]);
+    const plan = planPages({ owner, repo, site: undefined, savedAgain: false });
+    expect(pagesPlanDeletes(plan)).toBe(false);
+    const text = describePagesPlan(plan, pagesPlanHash(plan));
+    expect(text).toContain(`${owner}.github.io`);
+    expect(text).not.toContain("DNS records come in the infrastructure plan after this one");
+  });
+
   it("replaces another custom domain, which takes it away from the site", () => {
     const plan = planPages({
       owner,

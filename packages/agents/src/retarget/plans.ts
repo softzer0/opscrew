@@ -27,6 +27,12 @@ import {
 } from "./pending";
 import type { MoveSession } from "./session";
 
+/** What a plan step needs of a run: a server move's session, or a site move's. */
+export type PlanSession = Pick<
+  MoveSession,
+  "deps" | "engine" | "dir" | "env" | "plan" | "command" | "approve"
+>;
+
 /** What a plan step came to. */
 export type PlanStep =
   | {
@@ -82,7 +88,7 @@ export function quietly(deps: PhaseDeps): PhaseDeps {
   };
 }
 
-function planAndApplyOptions(session: MoveSession, input: InfraPlanInput): PlanAndApplyOptions {
+function planAndApplyOptions(session: PlanSession, input: InfraPlanInput): PlanAndApplyOptions {
   return {
     engine: session.engine,
     dir: session.dir,
@@ -107,7 +113,7 @@ export async function discardSaved(planFile: string): Promise<void> {
  * The saved plan `--approve <hash>` names, when its file still has that hash and was made with
  * this run's engine; otherwise the waiting plan is forgotten and the run stops (nothing changed).
  */
-async function approvedSavedPlan(session: MoveSession, planHash: string): Promise<SavedPlan> {
+async function approvedSavedPlan(session: PlanSession, planHash: string): Promise<SavedPlan> {
   const { deps } = session;
   let saved: SavedPlan | undefined;
   try {
@@ -144,7 +150,7 @@ async function approvedSavedPlan(session: MoveSession, planHash: string): Promis
  * waits for. The approval is used up either way.
  */
 async function approvedPending(
-  session: MoveSession,
+  session: PlanSession,
   action: MoveAction,
   check: (saved: SavedPlan) => void,
 ): Promise<SavedPlan | undefined> {
@@ -170,7 +176,7 @@ async function approvedPending(
  * the hash (constitution I: scripts name every plan they apply).
  */
 export async function prepareInfraPlan(
-  session: MoveSession,
+  session: PlanSession,
   input: InfraPlanInput,
 ): Promise<PreparedPlan> {
   const { deps } = session;
@@ -202,7 +208,7 @@ export async function prepareInfraPlan(
  * forgets it.
  */
 export async function applyInfraPlan(
-  session: MoveSession,
+  session: PlanSession,
   input: InfraPlanInput,
   planHash: string,
 ): Promise<{ outputs: Record<string, unknown>; approval?: ApprovalRecord }> {
@@ -223,7 +229,7 @@ export async function applyInfraPlan(
 
 /** {@link prepareInfraPlan} then, when a plan is ready, {@link applyInfraPlan}. */
 export async function planThenApply(
-  session: MoveSession,
+  session: PlanSession,
   input: InfraPlanInput,
 ): Promise<PlanStep> {
   const prepared = await prepareInfraPlan(session, input);

@@ -57,7 +57,7 @@ import { pagesPlanStep } from "./step";
 import { pagesVerificationValue, verificationPage, verifyStepNote } from "./verification";
 
 /** The ending of the verification root's saved plans, which tells them from the site's own. */
-const VERIFICATION_PLAN_SUFFIX = "-pages-verification.tfplan";
+export const VERIFICATION_PLAN_SUFFIX = "-pages-verification.tfplan";
 
 /**
  * The saved, not yet applied infrastructure plans the `--approve` hashes name, by root: the site's

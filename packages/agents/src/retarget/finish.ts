@@ -1,6 +1,6 @@
 import { rm } from "node:fs/promises";
 import { isUserFacingError, lowerFirst, OpsCrewError, upperFirst } from "@opscrew/core";
-import { type PortainerDeployTarget, readArtifact } from "@opscrew/plan-schema";
+import { isServerlessTarget, type PortainerDeployTarget, readArtifact } from "@opscrew/plan-schema";
 import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import {
@@ -31,6 +31,7 @@ import {
   writeFinalFiles,
 } from "./session";
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
+import { finishSiteMove } from "./site-end";
 import { requireSwitchSettled } from "./switch";
 import {
   ABORT_COMMAND,
@@ -249,6 +250,8 @@ export async function finishRetarget(
       { hint: START_MOVE_HINT },
     );
   }
+  // A site's move between site hosts finishes in steps of its own (plan.md "6.").
+  if (isServerlessTarget(plan.target)) return finishSiteMove(deps, plan, options);
   if (move.abort !== undefined) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",

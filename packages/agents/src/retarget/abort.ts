@@ -6,6 +6,7 @@ import {
   type CloudDeployTarget,
   type CostEstimate,
   type DeployPlan,
+  isServerlessTarget,
   readArtifact,
 } from "@opscrew/plan-schema";
 import { resumeCheck } from "../check/provision";
@@ -41,6 +42,7 @@ import {
   writeFinalFiles,
 } from "./session";
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
+import { abortSiteMove } from "./site-end";
 import {
   assertRenameOnly,
   pendingStop,
@@ -434,6 +436,8 @@ export async function abortRetarget(
       { hint: START_MOVE_HINT },
     );
   }
+  // A site's move between site hosts is undone in steps of its own (plan.md "6.").
+  if (isServerlessTarget(plan.target)) return abortSiteMove(deps, plan, options);
   if (move.step === "switched") {
     const from = move.from.target;
     throw new OpsCrewError(

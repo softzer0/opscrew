@@ -1,12 +1,18 @@
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  isServerlessProvider,
+  isServerlessTarget,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { requireNoSharedPreviews } from "../previews/host";
 import { runPhase } from "../shared/phase-status";
 import { type MoveSession, moveBase, moveOf, openSession, warnUnusedApproval } from "./session";
 import { cloudProviders, placeWords } from "./sides";
-import { startMove } from "./start";
+import { runSiteMove } from "./site";
+import { siteServerNoMove, startMove } from "./start";
 import { deployStep, prepareStep, renameStep } from "./steps";
 import { completeSwitch, switchStep } from "./switch";
 import { ABORT_COMMAND, FINISH_ABORT_HINT, RUN_COMMAND } from "./texts";
@@ -116,7 +122,8 @@ async function runSteps(session: MoveSession, options: RetargetOptions): Promise
  * dumped, rolled back on any failure) → switch (DNS plan, or the user's confirmation without
  * managed DNS) → the new edge, URL check, old app stopped. Every plan goes through its approval
  * bound to its hash; non-interactive runs stop with the hash (`pendingPlanHash`) and continue
- * with `approvePlanHash`.
+ * with `approvePlanHash`. A site moves between Cloudflare's hosting and GitHub Pages in steps of
+ * its own (`runSiteMove`); between a site and a server nothing moves.
  */
 export async function runRetarget(
   deps: PhaseDeps,
@@ -140,6 +147,12 @@ export async function runRetarget(
     `opscrew retarget${await commandFlags(deps.paths.root, name, deps.paths.app)}`,
   );
   return runPhase(deps, "retarget", async () => {
+    // A site moves between site hosts, in steps of its own (plan.md "6."); an app with a server
+    // never moves to one.
+    if (isServerlessTarget(plan.target)) return runSiteMove(deps, plan, options);
+    if (options.to !== undefined && isServerlessProvider(options.to)) {
+      throw siteServerNoMove(plan);
+    }
     const session =
       plan.retarget === undefined
         ? await startMove(deps, plan, options)
