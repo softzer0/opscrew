@@ -250,7 +250,7 @@ export function cloudflareTokenMissing(
  */
 export function portainerCloudflare(
   plan: Pick<DeployPlan, "target" | "dns">,
-): { appTunnel: boolean; webhook: boolean; originTls: boolean } | undefined {
+): { appTunnel: boolean; webhook: boolean; originTls: boolean; records: boolean } | undefined {
   const { target, dns } = plan;
   if (target.provider !== "portainer") return undefined;
   const cloudflare = dns.provider === "cloudflare" && dns.domain !== undefined;
@@ -258,6 +258,8 @@ export function portainerCloudflare(
     appTunnel: cloudflare && target.web.mode === "tunnel",
     webhook: cloudflare && target.redeploy === "cloudflare",
     originTls: cloudflare && target.web.mode === "caddy" && dns.proxied,
+    // The app's records, which OpsCrew manages since a move adopted them.
+    records: cloudflare && target.web.mode === "caddy" && target.web.records === true,
   };
 }
 
@@ -316,6 +318,7 @@ export async function setupCloudflare(
     !portainer.appTunnel &&
     !portainer.webhook &&
     !portainer.originTls &&
+    !portainer.records &&
     !r2
   ) {
     return undefined;

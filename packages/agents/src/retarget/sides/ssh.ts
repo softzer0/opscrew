@@ -191,10 +191,17 @@ export function sshSide(input: SshSideInput): SshSideParts {
     ];
     const transport = dialStdioTransport(() => streams.open("ssh", args));
     const client = dockerClient(transport);
+    // ssh's own messages (a lost connection, a timeout) reach the errors and name the server:
+    // they name it in words instead.
+    const words = input.words(session);
     return {
-      client,
+      client: inWordsApi(client, host, words),
       // Only the app's own data folder may be bound into a carrier.
-      carrier: volumeCarrier(client, IMAGES.busybox.ref, [dataRoot(session)]),
+      carrier: inWordsApi(
+        volumeCarrier(client, IMAGES.busybox.ref, [dataRoot(session)]),
+        host,
+        words,
+      ),
       close: async () => {
         await transport.close?.();
       },
@@ -336,6 +343,36 @@ export function sshSide(input: SshSideInput): SshSideParts {
       return withDocker(session, (side) => dataMounts(session, side, monitoring));
     },
   };
+}
+
+/**
+ * `api` (a Docker client or a carrier: an object of functions) whose errors name the server in
+ * `words` instead of `host`. The error itself is kept (its message, and an `OpsCrewError`'s hint,
+ * changed in place), so a caller that tests its class (Docker's 404 for a missing image) still can.
+ */
+function inWordsApi<T extends object>(api: T, host: string, words: string): T {
+  const rename = (error: unknown): unknown => {
+    if (!(error instanceof Error)) return error;
+    error.message = replaceNames(error.message, [host], words);
+    if (error instanceof OpsCrewError && error.hint !== undefined) {
+      (error as { hint?: string }).hint = replaceNames(error.hint, [host], words);
+    }
+    return error;
+  };
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(api)) {
+    wrapped[name] =
+      typeof value === "function"
+        ? async (...args: unknown[]) => {
+            try {
+              return await value(...args);
+            } catch (error) {
+              throw rename(error);
+            }
+          }
+        : value;
+  }
+  return wrapped as T;
 }
 
 /**

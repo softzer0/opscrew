@@ -94,9 +94,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       `${OLD_IPV4} stop app`,
       `${OLD_IPV4} dump`,
       `${OLD_IPV4} stop db`,
+      // The new server's Postgres keeps running: its database is restored, not copied.
       `${n} stop app`,
-      `${n} stop db`,
-      `${n} start db`,
       `${n} empty db`,
       `${n} restore`,
       `${n} start app`,
@@ -104,6 +103,15 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       "apply updates=2",
       `${n} start caddy`,
     ]);
+    // No deploy ran during the window: they were paused, and resumed afterwards.
+    const actions = h.audit.entries.map((e) => e.action);
+    const paused = actions.findIndex((a) => a.startsWith("pause the deploys of"));
+    expect(paused).toBeGreaterThanOrEqual(0);
+    expect(paused).toBeLessThan(actions.indexOf("dump database"));
+    expect(actions.findIndex((a) => a.startsWith("resume the deploys of"))).toBeGreaterThan(
+      actions.indexOf("start app"),
+    );
+    expect(h.github.variables.has("OPSCREW_DEPLOY_PAUSED")).toBe(false);
     // The dump volume is gone from both servers.
     for (const ip of [OLD_IPV4, n]) {
       expect(h.hosts.docker(ip).volumes.has("opscrew-move-dump-shop")).toBe(false);
@@ -279,7 +287,6 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     { what: "stopping the old services", on: "old", op: "stop db" },
     { what: "stopping the new app", on: "new", op: "stop app" },
     { what: "the copy of the dump", on: "new", op: "PUT archive" },
-    { what: "starting the new services", on: "new", op: "start db" },
     { what: "emptying the new database", on: "new", op: "empty db" },
     { what: "the restore", on: "new", op: "restore" },
     { what: "deleting the old dump volume", on: "old", op: "DELETE volume" },
@@ -334,7 +341,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
           .filter((c) => c.labels["com.docker.compose.service"] === "db")
           .map((c) => c.state);
       expect(running(OLD_IPV4)).toEqual(["running"]);
-      expect(h.hosts.host(n).app).toBe(true);
+      // The new side stays stopped, nothing of a part copy on it, until the window runs again.
+      expect(h.hosts.host(n).app).toBe(false);
       expect(applies(h)).toHaveLength(2);
       expect(h.engine.dnsServer()?.ipv4).toBe(OLD_IPV4);
       expect(h.audit.entries).toContainEqual(
@@ -358,8 +366,8 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(error.message).toContain("The app on the old server on Hetzner Cloud runs again");
     // Stopped with 120 seconds to stop cleanly; nothing reached the new side.
     expect(ops(h, OLD_IPV4, "stop db")).toBe(1);
-    expect(ops(h, n, "stop app")).toBe(0);
     expect(ops(h, n, "restore")).toBe(0);
+    expect(ops(h, n, "empty db")).toBe(0);
     expect((await move(h))?.step).toBe("deployed");
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
 
@@ -379,8 +387,6 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       `${OLD_IPV4} dump`,
       `${OLD_IPV4} stop db`,
       `${n} stop app`,
-      `${n} stop db`,
-      `${n} start db`,
       `${n} empty db`,
       `${n} restore`,
       `${n} release`,
@@ -426,10 +432,11 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
       const printed = `${everythingPrinted(h)}\n${error.message}\n${error.hint}`;
       for (const fragment of RELEASE_OUTPUT_FRAGMENTS) expect(printed).not.toContain(fragment);
       const lines = trail(h.events);
+      // The new side stops again, its database emptied of the restore; the old side starts.
       expect(lines.slice(lines.indexOf(`${n} release`))).toEqual([
         `${n} release`,
-        `${n} start db`,
-        `${n} start app`,
+        `${n} stop app`,
+        `${n} empty db`,
         `${OLD_IPV4} start db`,
         `${OLD_IPV4} start app`,
       ]);
@@ -1215,8 +1222,9 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(trail(h.events)).toEqual(
       expect.arrayContaining([
         `${OLD_IPV4} stop db mysql rabbitmq`,
-        `${n} stop db mysql rabbitmq`,
-        `${n} start db mysql rabbitmq`,
+        // The new side's Postgres keeps running; the others stop for the copy.
+        `${n} stop mysql rabbitmq`,
+        `${n} start mysql rabbitmq`,
       ]),
     );
     const window = h.handler.requests.find((r) => r.title.startsWith("Maintenance window"));

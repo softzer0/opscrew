@@ -1,5 +1,5 @@
 import { Readable } from "node:stream";
-import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
+import { listText, OpsCrewError, replaceNames, upperFirst } from "@opscrew/core";
 import { portainerStackName } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
@@ -11,7 +11,8 @@ import {
 } from "@opscrew/plan-schema";
 import { changeCheckPause } from "../check/pause";
 import { failureReason } from "../destroy/deletion";
-import { pollUntil, readValidJson } from "../shared";
+import { withDeploysPaused } from "../move/deploys";
+import { pollUntil, readServerAddresses, readValidJson, type ServerAddress } from "../shared";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { codeOf, hintOf } from "../shared/errors";
 import { assertDistinctServers } from "./servers";
@@ -24,14 +25,16 @@ import {
   saveMove,
   waitsOf,
 } from "./session";
-import { moveSide, sideWords } from "./sides";
+import { composeProject, moveSide, sideWords } from "./sides";
 import {
+  checkCopiedDump,
   dumpPostgres,
+  emptyPostgres,
   ensureDumpVolume,
   type MovePostgres,
   moveDumpVolume,
   removeDumpVolume,
-  restorePostgres,
+  restoreCheckedDump,
 } from "./sides/postgres";
 import type { MoveSide, SideDocker, SideSource } from "./sides/types";
 import {
@@ -176,13 +179,7 @@ async function postgresOn(
     );
   }
   deps.redactor.addLiteral(password, "app-env");
-  const app = plan.app.name;
-  return {
-    app,
-    project: side.kind === "portainer" ? portainerStackName(plan) : app,
-    service,
-    password,
-  };
+  return { app: plan.app.name, project: composeProject(side, plan), service, password };
 }
 
 /** The approval's list of what the window does, on both sides (never an address). */
@@ -290,6 +287,12 @@ export async function maintenanceWindow(
   deps.reporter.step(`Measuring the app's data on ${oldWords}`);
   const window = await planWindow(session, old, fresh);
   if (window.copies.length === 0 && window.postgres === undefined) return "done";
+  // The database's logins on both sides, before anything is asked or changed.
+  const db = window.postgres;
+  const logins =
+    db === undefined
+      ? undefined
+      : { old: await postgresOn(session, old, db), fresh: await postgresOn(session, fresh, db) };
   const minutes = windowMinutes(
     window.bytes,
     old.kind === "portainer" || fresh.kind === "portainer",
@@ -348,8 +351,12 @@ export async function maintenanceWindow(
     );
   }
   const docker = { old: await old.docker(session), fresh: await fresh.docker(session) };
+  const clean = await withoutAddresses(session);
   try {
-    await runWindow(session, { old, fresh, docker, window, minutes });
+    // No deploy runs during the window: each would restart the app on one side or the other.
+    await withDeploysPaused(deps, session.github, plan, session.services, () =>
+      runWindow(session, { old, fresh, docker, window, minutes, logins, clean }),
+    );
   } finally {
     await docker.old.close();
     await docker.fresh.close();
@@ -362,6 +369,25 @@ export async function maintenanceWindow(
   return "done";
 }
 
+/**
+ * A function that puts each side's words in place of its addresses (its public address and the
+ * login of the user's own server): ssh's and Docker's own messages may name them.
+ */
+async function withoutAddresses(session: MoveBase): Promise<(text: string) => string> {
+  const local = await readServerAddresses(session.deps.paths);
+  const { from, next } = session.servers;
+  const names = (
+    address: ServerAddress | undefined,
+    login: { host: string } | undefined,
+  ): string[] =>
+    [address?.ipv4, address?.ipv6, login?.host].filter((name): name is string => !!name);
+  const old = names(from, local.retarget?.fromOwn);
+  const fresh = names(next, local.own);
+  const oldWords = sideWords(moveOf(session).from.target, "old");
+  const freshWords = sideWords(session.plan.target, "new");
+  return (text) => replaceNames(replaceNames(text, old, oldWords), fresh, freshWords);
+}
+
 /** The window's changes, from `oldAppStoppedAt` on; any failure rolls them back. */
 async function runWindow(
   session: MoveSession,
@@ -371,12 +397,17 @@ async function runWindow(
     docker: { old: SideDocker; fresh: SideDocker };
     window: WindowPlan;
     minutes: number;
+    /** The database's logins on each side, when it is copied. */
+    logins: { old: MovePostgres; fresh: MovePostgres } | undefined;
+    clean: (text: string) => string;
   },
 ): Promise<void> {
   const { deps, plan } = session;
-  const { old, fresh, docker, window } = ctx;
+  const { old, fresh, docker, window, logins } = ctx;
   const oldWords = sideWords(moveOf(session).from.target, "old");
   const freshWords = sideWords(plan.target, "new");
+  // The new side's Postgres keeps running: its data is not copied, its database is restored.
+  const freshServices = window.services.filter((name) => name !== window.postgres);
   await saveMove(session, { ...moveOf(session), oldAppStoppedAt: deps.clock.now().toISOString() });
   await auditMove(session, {
     kind: "remote-exec",
@@ -389,20 +420,18 @@ async function runWindow(
     await run();
     await auditMove(session, { kind: "remote-exec", action, target: where, decision: "approved" });
   };
-  /** The new side's mounts that may hold part of a copy: emptied on a rollback. */
-  const written: MountCopy[] = [];
+  /** What the window changed on the new side so far: a rollback undoes it. */
+  const changed: Changed = { written: [], restoring: false };
   const app = plan.app.name;
   try {
     deps.reporter.step(`Stopping ${app} on ${oldWords}`);
     await audited("stop app", oldWords, () => old.stopApp(session));
     let dump: string | undefined;
-    if (window.postgres !== undefined) {
-      const db = window.postgres;
-      deps.reporter.step(`Dumping the database (${db}) on ${oldWords}`);
+    if (window.postgres !== undefined && logins !== undefined) {
+      deps.reporter.step(`Dumping the database (${window.postgres}) on ${oldWords}`);
       await ensureDumpVolume(docker.fresh.client, app);
-      const login = await postgresOn(session, old, db);
       await audited("dump database", oldWords, async () => {
-        dump = await dumpPostgres(docker.old, login);
+        dump = await dumpPostgres(docker.old, logins.old);
       });
     }
     await audited("stop services", oldWords, async () => {
@@ -410,10 +439,10 @@ async function runWindow(
       await requireCleanStop(session, old, docker.old, window.services);
     });
     await audited("stop app", freshWords, () => fresh.stopApp(session));
-    await audited("stop services", freshWords, () => fresh.stopServices(session, window.services));
+    await audited("stop services", freshWords, () => fresh.stopServices(session, freshServices));
     for (const copy of window.copies) {
       deps.reporter.step(`Copying ${mountWords(copy)} (${sizeText(copy.bytes)}) to ${freshWords}`);
-      written.push(copy);
+      changed.written.push(copy);
       await audited(`copy ${copy.owner} ${copy.key}`, freshWords, () =>
         copyMount(session, docker, copy),
       );
@@ -425,17 +454,15 @@ async function runWindow(
         await docker.fresh.carrier.writeVolume(volume, await docker.old.carrier.readVolume(volume));
       });
     }
-    await audited("start services", freshWords, () =>
-      fresh.startServices(session, window.services),
-    );
-    if (window.postgres !== undefined && dump !== undefined) {
-      const db = window.postgres;
-      const login = await postgresOn(session, fresh, db);
+    await audited("start services", freshWords, () => fresh.startServices(session, freshServices));
+    if (window.postgres !== undefined && logins !== undefined && dump !== undefined) {
       const sha = dump;
-      deps.reporter.step(`Restoring the database (${db}) on ${freshWords}`);
+      deps.reporter.step(`Restoring the database (${window.postgres}) on ${freshWords}`);
       // The copy is checked against the old side's dump before the database is dropped.
+      await checkCopiedDump(docker.fresh, logins.fresh, sha);
+      changed.restoring = true;
       await audited("restore database", freshWords, () =>
-        restorePostgres(docker.fresh, login, sha),
+        restoreCheckedDump(docker.fresh, logins.fresh, waitsOf(session.services)),
       );
     }
     if (plan.app.releaseCommand !== undefined) {
@@ -456,17 +483,27 @@ async function runWindow(
     await audited("start app", freshWords, () => fresh.startApp(session));
     await waitHealthy(session, fresh);
   } catch (error) {
-    throw await rollBackWindow(session, error, { old, fresh, docker, window, written });
+    throw await rollBackWindow(session, error, { ...ctx, freshServices, changed });
   }
+}
+
+/** What a window changed on the new side so far. */
+interface Changed {
+  /** The new side's mounts that may hold part of a copy. */
+  written: MountCopy[];
+  /** The restore began: the new side's database may hold part of the copy. */
+  restoring: boolean;
 }
 
 /** Docker's exit code of a container it killed: at the end of its stop timeout, or out of memory. */
 const KILLED = 137;
 
 /**
- * Stops unless each of the old side's stateful services `names` stopped cleanly (T2306): one still
- * running, or one Docker killed (exit 137: its stop timeout ran out, or it ran out of memory),
- * may have left its files half-written, so they are not copied.
+ * Stops unless each of the old side's stateful services `names` stopped cleanly (T2306), failing
+ * closed: only a container that exited on its own (any code but 137) or never ran (`created`)
+ * counts. One still running, restarting or paused, or one Docker killed (exit 137: its stop
+ * timeout ran out, or it ran out of memory), may have left its files half-written, so they are
+ * not copied.
  */
 async function requireCleanStop(
   session: MoveBase,
@@ -476,25 +513,21 @@ async function requireCleanStop(
 ): Promise<void> {
   if (names.length === 0) return;
   const { plan } = session;
-  const project = side.kind === "portainer" ? portainerStackName(plan) : plan.app.name;
+  const project = composeProject(side, plan);
   const unclean: string[] = [];
   for (const container of await docker.client.listContainers([
     `com.docker.compose.project=${project}`,
   ])) {
     const service = container.labels["com.docker.compose.service"] ?? "";
-    if (!names.includes(service)) continue;
-    if (container.state === "running") unclean.push(service);
-    else if (
-      container.state === "exited" &&
-      (await docker.client.waitContainer(container.id)) === KILLED
-    ) {
-      unclean.push(service);
-    }
+    if (!names.includes(service) || container.state === "created") continue;
+    const clean =
+      container.state === "exited" && (await docker.client.waitContainer(container.id)) !== KILLED;
+    if (!clean) unclean.push(service);
   }
   if (unclean.length === 0) return;
   throw new OpsCrewError(
     "COMMAND_FAILED",
-    `${listText(unclean)} did not stop cleanly on ${sideWords(moveOf(session).from.target, "old")} (Docker killed ${unclean.length === 1 ? "it" : "them"} when the 120 seconds to stop ran out, or for lack of memory), so OpsCrew does not copy ${unclean.length === 1 ? "its" : "their"} files.`,
+    `${listText(unclean)} did not stop cleanly on ${sideWords(moveOf(session).from.target, "old")} (Docker killed ${unclean.length === 1 ? "it" : "them"} when the 120 seconds to stop ran out or for lack of memory, or ${unclean.length === 1 ? "it" : "they"} did not stop), so OpsCrew does not copy ${unclean.length === 1 ? "its" : "their"} files.`,
     {
       hint: "Check the service's logs there and give it more memory if it ran out, then run the move again.",
     },
@@ -518,22 +551,32 @@ async function waitHealthy(session: MoveBase, fresh: MoveSide): Promise<void> {
   );
 }
 
-/** Runs `act`; a failure is only a warning `what` (best effort while rolling back). */
-async function quietly(session: MoveBase, what: string, act: () => Promise<void>): Promise<void> {
+/**
+ * Runs `act`; a failure is only a warning `what` (best effort while rolling back), with the sides'
+ * addresses in words (`clean`) and redacted.
+ */
+async function quietly(
+  session: MoveBase,
+  clean: (text: string) => string,
+  what: string,
+  act: () => Promise<void>,
+): Promise<void> {
   try {
     await act();
   } catch (error) {
     session.deps.reporter.warn(
-      session.deps.redactor.redact(`OpsCrew could not ${what}: ${failureReason(error)}.`),
+      session.deps.redactor.redact(clean(`OpsCrew could not ${what}: ${failureReason(error)}.`)),
     );
   }
 }
 
 /**
  * Undoes a failed window and returns the error to throw (with the cause and the next step): the
- * new side's mounts written so far are emptied, both dump volumes removed, the new side's services
- * and app started as the deploy left them, then the old side's services and app (SC-2302: the old
- * side's data was only read).
+ * new side's app and services stop (Postgres keeps running), the mounts written so far are
+ * emptied and the database recreated empty when its restore began, so nothing of a part copy
+ * stays there; they stay stopped until the window runs again. Both dump volumes go, then the old
+ * side's services and app start (SC-2302: the old side's data was only read). Every text names
+ * the sides in words, never their addresses.
  */
 async function rollBackWindow(
   session: MoveSession,
@@ -542,49 +585,64 @@ async function rollBackWindow(
     old: MoveSide;
     fresh: MoveSide;
     docker: { old: SideDocker; fresh: SideDocker };
-    window: WindowPlan;
-    written: readonly MountCopy[];
+    freshServices: readonly string[];
+    logins: { old: MovePostgres; fresh: MovePostgres } | undefined;
+    changed: Changed;
+    clean: (text: string) => string;
   },
 ): Promise<OpsCrewError> {
   const { deps, plan } = session;
+  const { clean, docker, fresh } = ctx;
   const oldWords = sideWords(moveOf(session).from.target, "old");
   const freshWords = sideWords(plan.target, "new");
   const app = plan.app.name;
+  const reason = clean(deps.redactor.redact(failureReason(cause)));
   await auditMove(session, {
     kind: "remote-exec",
     action: "maintenance window",
     target: oldWords,
     decision: "refused",
-    detail: `maintenance window failed: ${failureReason(cause)}`,
+    detail: `maintenance window failed: ${reason}`,
   });
   deps.reporter.warn(
-    `The maintenance window failed: ${failureReason(cause)}. OpsCrew empties what it wrote on ${freshWords} and starts the app on ${oldWords} again.`,
+    `The maintenance window failed: ${reason}. OpsCrew empties what it wrote on ${freshWords} and starts the app on ${oldWords} again.`,
   );
-  for (const copy of ctx.written) {
-    await quietly(session, `empty ${mountWords(copy)} on ${freshWords}`, () =>
-      ctx.docker.fresh.carrier.writeVolume(copy.to, emptyArchive()),
+  await quietly(session, clean, `stop the app and its services on ${freshWords}`, async () => {
+    await fresh.stopApp(session);
+    await fresh.stopServices(session, ctx.freshServices);
+  });
+  for (const copy of ctx.changed.written) {
+    await quietly(session, clean, `empty ${mountWords(copy)} on ${freshWords}`, () =>
+      docker.fresh.carrier.writeVolume(copy.to, emptyArchive()),
     );
   }
-  await quietly(session, `remove the database dump on ${oldWords}`, () =>
-    removeDumpVolume(ctx.docker.old.client, app),
+  const login = ctx.logins?.fresh;
+  if (ctx.changed.restoring && login !== undefined) {
+    await quietly(session, clean, `empty the database on ${freshWords}`, () =>
+      emptyPostgres(docker.fresh, login),
+    );
+  }
+  await quietly(session, clean, `remove the database dump on ${oldWords}`, () =>
+    removeDumpVolume(docker.old.client, app),
   );
-  await quietly(session, `remove the database dump on ${freshWords}`, () =>
-    removeDumpVolume(ctx.docker.fresh.client, app),
+  await quietly(session, clean, `remove the database dump on ${freshWords}`, () =>
+    removeDumpVolume(docker.fresh.client, app),
   );
-  await quietly(session, `start the services and the app on ${freshWords}`, async () => {
-    await ctx.fresh.startServices(session, ctx.window.services);
-    await ctx.fresh.startApp(session);
-  });
   try {
-    await restartOldApp(session, `The maintenance window failed (${failureReason(cause)}), and `);
+    await restartOldApp(session, `The maintenance window failed (${reason}), and `);
   } catch (error) {
-    return asOpsCrewError(error);
+    const failed = asOpsCrewError(error);
+    return new OpsCrewError(failed.code, clean(failed.message), {
+      ...(failed.hint !== undefined ? { hint: clean(failed.hint) } : {}),
+    });
   }
   return new OpsCrewError(
     codeOf(cause),
-    `The maintenance window failed: ${failureReason(cause)}. The app on ${oldWords} runs again with its data unchanged, and nothing else changed.`,
+    `The maintenance window failed: ${reason}. The app on ${oldWords} runs again with its data unchanged, and nothing else changed.`,
     {
-      hint: `${hintOf(cause)}Then run \`${RUN_COMMAND}\` again (it repeats the maintenance window), or \`${ABORT_COMMAND}\` to undo the move.`,
+      hint: clean(
+        `${hintOf(cause)}Then run \`${RUN_COMMAND}\` again (it repeats the maintenance window), or \`${ABORT_COMMAND}\` to undo the move.`,
+      ),
     },
   );
 }
@@ -665,15 +723,26 @@ export async function restartOldApp(session: MoveBase, before = ""): Promise<voi
 }
 
 /** Removes the dump volume on a side; a failure is only a warning (best effort). */
-async function removeDumpQuietly(session: MoveBase, side: MoveSide, words: string): Promise<void> {
-  await quietly(session, `remove the database dump on ${words}`, async () => {
-    const docker = await side.docker(session);
-    try {
-      await removeDumpVolume(docker.client, session.plan.app.name);
-    } finally {
-      await docker.close();
-    }
-  });
+async function removeDumpQuietly(
+  session: MoveBase,
+  which: "old" | "new",
+  clean: (text: string) => string,
+): Promise<void> {
+  const side = moveSide(session, which);
+  const target = which === "old" ? moveOf(session).from.target : session.plan.target;
+  await quietly(
+    session,
+    clean,
+    `remove the database dump on ${sideWords(target, which)}`,
+    async () => {
+      const docker = await side.docker(session);
+      try {
+        await removeDumpVolume(docker.client, session.plan.app.name);
+      } finally {
+        await docker.close();
+      }
+    },
+  );
 }
 
 /**
@@ -690,9 +759,10 @@ export async function recoverInterruptedWindow(session: MoveBase): Promise<void>
   );
   await restartOldApp(session);
   if (serviceOf(session.plan, "postgres") === undefined) return;
-  await removeDumpQuietly(session, moveSide(session, "old"), sideWords(move.from.target, "old"));
+  const clean = await withoutAddresses(session);
+  await removeDumpQuietly(session, "old", clean);
   if (stepBefore(move.step, "deployed")) return;
-  await removeDumpQuietly(session, moveSide(session, "new"), sideWords(session.plan.target, "new"));
+  await removeDumpQuietly(session, "new", clean);
 }
 
 /** `error` itself when it is an `OpsCrewError`, else a plain internal error. */

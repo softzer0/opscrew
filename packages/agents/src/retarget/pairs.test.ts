@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
 import { OLD_IPV4, PORTAINER_URL } from "../testing";
@@ -143,6 +143,101 @@ describe.skipIf(!findExecutable("git"))("the maintenance window, for every pair 
     expect(h.handler.requests.some((r) => r.title.startsWith("Maintenance"))).toBe(false);
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
   });
+
+  it("keeps the new side's Postgres running, and pauses the deploys while the window runs", async () => {
+    const h = await pairHarness("hetzner", "own", { cache: true });
+    expect(await maintenanceWindow(h.session, { allowDowntime: true })).toBe("done");
+    // Its data is not copied: its database is restored into it.
+    expect(states(h, NEW_IPV4, "db")).toEqual(["running"]);
+    expect(h.events).toContainEqual({ type: "remote", host: NEW_IPV4, op: "stop cache" });
+    expect(h.events).not.toContainEqual({ type: "remote", host: NEW_IPV4, op: "stop db cache" });
+    const actions = h.audit.entries.map((e) => e.action);
+    const paused = actions.findIndex((a) => a.startsWith("pause the deploys of"));
+    expect(paused).toBeGreaterThanOrEqual(0);
+    expect(paused).toBeLessThan(actions.indexOf("dump database"));
+    expect(actions.some((a) => a.startsWith("resume the deploys of"))).toBe(true);
+  });
+
+  it.each([
+    { at: "the release command", op: "release" },
+    { at: "the health check", op: "health" },
+  ])(
+    "a failure at $at empties the copied mount and the restored database, and leaves the new side stopped",
+    async ({ op }) => {
+      const h = await pairHarness("hetzner", "own", { cache: true, release: true });
+      h.hosts.fail = (ip, o) =>
+        ip === NEW_IPV4 && o === op && h.handler.requests.some((r) => r.kind === "remote-exec")
+          ? { exitCode: 1, stdout: "", stderr: `${op} failed` }
+          : undefined;
+      const error = await maintenanceWindow(h.session, { allowDowntime: true }).catch(
+        (e: unknown) => e,
+      );
+      expect((error as OpsCrewError).message).toContain("The maintenance window failed");
+      // Nothing of the copy stays on the new side, and it stays stopped.
+      expect(cacheFiles(h, NEW_IPV4)).toEqual([""]);
+      expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: false, db: "empty" });
+      expect(states(h, NEW_IPV4, "cache")).toEqual(["exited"]);
+      // The old side serves again, its data as it was.
+      expect(h.hosts.host(OLD_IPV4)).toMatchObject({ app: true, db: "orders before the move" });
+      expect(cacheFiles(h, OLD_IPV4)).toContain("dump.rdb");
+      expect(h.session.plan.retarget?.step).toBe("deployed");
+    },
+  );
+
+  it("fails closed on a service that is neither exited nor never started", async () => {
+    const h = await pairHarness("portainer", "own");
+    for (const container of h.hosts.docker(PORTAINER).containers.values()) {
+      if (container.labels["com.docker.compose.service"] === "db") {
+        // A state the fake never sets itself.
+        (container as { state: string }).state = "paused";
+      }
+    }
+    const error = await maintenanceWindow(h.session, { allowDowntime: true }).catch(
+      (e: unknown) => e,
+    );
+    expect((error as OpsCrewError).message).toContain("db did not stop cleanly");
+    expect(h.hosts.host(NEW_IPV4).db).not.toBe("orders before the move");
+  });
+
+  it("needs the database's password before it asks for the window or changes anything", async () => {
+    const h = await pairHarness("hetzner", "own");
+    await rm(`${h.paths.projectHomeDir}/generated_values.json`);
+    const error = await maintenanceWindow(h.session, { allowDowntime: true }).catch(
+      (e: unknown) => e,
+    );
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("does not have the database's password"),
+    });
+    expect(h.handler.requests.some((r) => r.title.startsWith("Maintenance"))).toBe(false);
+    expect(h.hosts.host(OLD_IPV4).app).toBe(true);
+  });
+
+  it.each([
+    { side: "new", ip: NEW_IPV4 },
+    { side: "old", ip: OLD_IPV4 },
+  ] as const)(
+    "ssh's own words about a lost $side side never show its address: warnings, audit, error",
+    async ({ ip }) => {
+      const h = await pairHarness("hetzner", "own", { cache: true });
+      // Once the window began, ssh loses the server: its stderr names the address.
+      h.hosts.fail = (host, op) => {
+        if (host === OLD_IPV4 && op === "stop app") {
+          h.hosts.breakDocker(ip, `Timeout, server ${ip} not responding.`);
+        }
+        return undefined;
+      };
+      const error = await maintenanceWindow(h.session, { allowDowntime: true }).catch(
+        (e: unknown) => e,
+      );
+      expect(error).toBeInstanceOf(OpsCrewError);
+      expect((error as OpsCrewError).message).toContain("not responding");
+      const text = shown(h, error);
+      expect(h.reporter.text()).toContain("The maintenance window failed");
+      expect(text).not.toContain(OLD_IPV4);
+      expect(text).not.toContain(NEW_IPV4);
+    },
+  );
 
   it("leaks no token, password, key or address, also when the window fails", async () => {
     for (const [from, to] of [

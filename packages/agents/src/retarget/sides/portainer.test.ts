@@ -289,27 +289,6 @@ describe("the Portainer side of a move", () => {
     }
   });
 
-  it("refuses a move from another Portainer environment before any change", async () => {
-    const h = await harness({ fromPortainer: true });
-    const error = await h.side.prepare(h.session).catch((caught: unknown) => caught);
-    expect(errorMessage(error)).toBe(
-      "Moving an app between two Portainer environments isn't possible yet. Nothing was changed.",
-    );
-    await expect(h.side.deploy(h.session)).rejects.toThrow("two Portainer environments");
-    expect(h.portainer.calls).toEqual([]);
-    expect(h.proxyCalls).toEqual([]);
-    // The old side refuses it as well.
-    const old = await harness({ fromPortainer: true, which: "old" });
-    await expect(old.side.stopApp(old.session)).rejects.toThrow(
-      "Moving an app between two Portainer environments isn't possible yet.",
-    );
-    await expect(old.side.remove(old.session, async () => true)).rejects.toThrow(
-      "two Portainer environments",
-    );
-    expect(old.portainer.calls).toEqual([]);
-    expect(old.proxyCalls).toEqual([]);
-  });
-
   it("says how to give the new side's Portainer when this computer has no record of it", async () => {
     const h = await harness({ unrecorded: true });
     const error = await h.side.prepare(h.session).catch((caught: unknown) => caught);

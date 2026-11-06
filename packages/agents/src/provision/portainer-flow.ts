@@ -48,6 +48,7 @@ import {
   type ProjectEngine,
   pinnedPublicKey,
   portainerClientFor,
+  readServerAddresses,
   stateContents,
   stringOutput,
   writePlanIfChanged,
@@ -522,8 +523,9 @@ export async function provisionPortainer(
     appTunnel: false,
     webhook: false,
     originTls: false,
+    records: false,
   };
-  const hasRoot = cloudflareRoot.appTunnel || cloudflareRoot.webhook;
+  const hasRoot = cloudflareRoot.appTunnel || cloudflareRoot.webhook || cloudflareRoot.records;
   // The app's bucket at a provider: an R2 bucket needs the plan's Cloudflare account.
   const bucket = providerBucket(plan);
   const usesCloudflare = hasRoot || cloudflareRoot.originTls || bucket?.provider === "r2";
@@ -633,6 +635,17 @@ export async function provisionPortainer(
     if (setup === undefined) {
       setup = await provisionEngine(deps, plan, options);
       delete setup.env.TF_VAR_portainer_origin;
+      // The app's records OpsCrew manages (a move adopted them) point at the Portainer host's
+      // public address, which OpsCrew keeps in its local state, never in a file.
+      delete setup.env.TF_VAR_server_ipv4;
+      delete setup.env.TF_VAR_server_ipv6;
+      if (target.web.mode === "caddy" && target.web.records === true) {
+        const address = (await readServerAddresses(deps.paths)).deployment;
+        if (address !== undefined) {
+          setup.env.TF_VAR_server_ipv4 = address.ipv4;
+          if (address.ipv6 !== undefined) setup.env.TF_VAR_server_ipv6 = address.ipv6;
+        }
+      }
     }
     return setup;
   };

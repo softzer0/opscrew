@@ -28,6 +28,8 @@ import {
   fakePortainer,
   moveHarness,
   movePlan,
+  NEW_SERVERS,
+  OLD_IDS,
   OLD_IPV4,
   OLD_IPV6,
   ownRunner,
@@ -114,6 +116,8 @@ export interface PairOptions {
   cache?: boolean;
   /** A Portainer old side's DNS records are still the user's (its `web.records` not true). */
   userRecords?: boolean;
+  /** The app has a release command (`app.releaseCommand`), which the window runs on the new side. */
+  release?: boolean;
 }
 
 /**
@@ -137,9 +141,14 @@ export async function pairHarness(from: PairSide, to: PairSide, options: PairOpt
     licence: "BSD-3-Clause",
   };
   if (options.cache === true) h.hosts.services = ["db", "cache"];
+  h.hosts.release = options.release === true;
   const plan = DeployPlanSchema.parse({
     ...base,
     services: options.cache === true ? [...base.services, cache] : base.services,
+    app:
+      options.release === true
+        ? { ...base.app, releaseCommand: "python manage.py migrate --noinput" }
+        : base.app,
     target: toTarget,
     dns: { ...base.dns, proxied: false },
     retarget: {
@@ -149,6 +158,35 @@ export async function pairHarness(from: PairSide, to: PairSide, options: PairOpt
     },
   });
   await writeArtifact("plan", h.paths.files.plan, plan);
+
+  // The infrastructure state at `step`: a cloud old side's server (renamed from the start's
+  // `server` on), a cloud new side's once created, and DNS at the old side.
+  const step = plan.retarget?.step ?? "deployed";
+  const cloud = (kind: PairSide): kind is "hetzner" | "digitalocean" =>
+    kind === "hetzner" || kind === "digitalocean";
+  const servers: typeof h.engine.state.servers = {};
+  if (cloud(from)) {
+    servers[step === "started" ? "server" : "server_previous"] = {
+      id: OLD_IDS[from],
+      provider: from,
+      ipv4: OLD_IPV4,
+      ipv6: OLD_IPV6,
+      protected: from === "hetzner",
+    };
+  }
+  if (cloud(to) && !["started", "renamed"].includes(step)) {
+    servers.server = {
+      id: NEW_SERVERS[to].id,
+      provider: to,
+      ipv4: NEW_IPV4,
+      ipv6: NEW_IPV6,
+      protected: to === "hetzner",
+    };
+  }
+  h.engine.state.servers = servers;
+  if (h.engine.state.dns !== undefined) {
+    h.engine.state.dns = cloud(from) ? OLD_IDS[from] : OLD_IPV4;
+  }
 
   // Each side's address and logins in OpsCrew's local state.
   const oldAddress: ServerAddress = { ipv4: OLD_IPV4, ipv6: OLD_IPV6 };

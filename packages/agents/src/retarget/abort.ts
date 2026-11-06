@@ -15,6 +15,7 @@ import { forgetHostKeys } from "../destroy/deletion";
 import type { DestroyPreview } from "../destroy/types";
 import { providerProfile, vpsConnector } from "../providers";
 import { restoreOldConnection, type ServerAddress } from "../shared";
+import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { previousTarget } from "./layouts";
 import { clearPending } from "./pending";
@@ -37,7 +38,13 @@ import {
   writeFinalFiles,
 } from "./session";
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
-import { assertRenameOnly, pendingStop, storeDeploySecrets } from "./steps";
+import {
+  assertRenameOnly,
+  pendingStop,
+  proposeWorkflow,
+  storeDeploySecrets,
+  workflowChanged,
+} from "./steps";
 import { assertDnsUpdatesOnly } from "./switch";
 import { ABORT_COMMAND, FINISH_COMMAND, managedDns, RUN_COMMAND, START_MOVE_HINT } from "./texts";
 import type { AbortRetargetOptions, RetargetResult } from "./types";
@@ -249,6 +256,7 @@ export async function reportAborted(
         plan.app.port,
         plan.app.healthPath,
         edgeProxy(plan),
+        app,
       ).catch(() => false))
     : // `new` is the plan's target: with the move cleared, that is the old side.
       await moveSide(session, "new")
@@ -308,7 +316,9 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   }
 
   // 4. The old side's connection back in its usual slot, the plan as before the move, and the
-  // original files.
+  // original files; the deploy workflow too when the move changed it (asked while the old side's
+  // login is still set aside).
+  const workflowMoved = await workflowChanged(session);
   await restoreOldConnection(deps.paths, { from: from.provider, to: to.provider });
   const cost = await oldCost(session);
   const { retarget: _aborted, ...rest } = session.plan;
@@ -336,14 +346,47 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   });
 
   await reportAborted(session, oldAddress);
+  // A deploy workflow the move merged for the new side goes back to the old side's.
+  const workflow = workflowMoved ? await restoreWorkflow(session, restored) : undefined;
   return {
     step: "aborted",
     done: true,
     next: [
-      `${app} stays on ${place}; pushes to ${restored.cicd.branch} deploy there again.`,
+      ...(workflow === undefined
+        ? [`${app} stays on ${place}; pushes to ${restored.cicd.branch} deploy there again.`]
+        : [workflow]),
       `To move later, run \`${RUN_COMMAND} --to ${to.provider}\` again.`,
     ],
   };
+}
+
+/**
+ * The old side's deploy workflow back on GitHub, after a move whose new side has another one (its
+ * pull request may have put that one there): a pull request of its own. Returns what remains to do
+ * (merge it, or commit it by hand when the pull request could not be opened), or `undefined` when
+ * GitHub has the old one.
+ */
+async function restoreWorkflow(
+  session: MoveSession,
+  restored: DeployPlan,
+): Promise<string | undefined> {
+  const { deps } = session;
+  const path = restored.cicd.workflowPath;
+  const byHand = `Commit ${path} as it is in this folder and merge it into ${restored.cicd.branch}, so pushes deploy to ${placeWords(restored.target)} again.`;
+  try {
+    const proposal = await proposeWorkflow(session, restored);
+    if (proposal.kind === "merged") return undefined;
+    return proposal.kind === "proposed"
+      ? `${proposal.merge}: it puts the deploy workflow for ${placeWords(restored.target)} back, so pushes deploy there again.`
+      : `${proposal.why.join(" ")} ${byHand}`;
+  } catch (error) {
+    deps.reporter.warn(
+      deps.redactor.redact(
+        `The move is aborted, but OpsCrew could not propose the deploy workflow back: ${reasonOf(error)}.`,
+      ),
+    );
+    return byHand;
+  }
 }
 
 /**

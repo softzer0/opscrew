@@ -15,11 +15,12 @@ import {
   type Retarget,
   readArtifact,
   servicesOn,
+  targetArch,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
 import { chooseBuilder } from "../design/builder";
-import { noServerCost } from "../design/own";
+import { buildOwnServerOption, noServerCost } from "../design/own";
 import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
 import { commandFlags } from "../environments/choice";
 import { recordOwnServerAnswers } from "../interview/own-server";
@@ -37,7 +38,7 @@ import {
   serverAddress,
   setAsideOldConnection,
 } from "../shared";
-import { connectAndInspectOwnServer } from "../shared/own-server";
+import { connectAndInspectOwnServer, ownServerFacts } from "../shared/own-server";
 import { extraServers, hasExtraServers } from "../shared/servers";
 import { endMoveServers, startMoveServers } from "./servers";
 import { auditStep, type MoveSession, openSession, saveMove, userRecords } from "./session";
@@ -400,6 +401,23 @@ async function ownServerSide(
       { hint: `Choose another server, then run \`${RUN_COMMAND} --to own\` again.` },
     );
   }
+  // Its memory and free disk, as design checks a server of the user's for the app.
+  const { warnings } = await buildOwnServerOption({
+    facts,
+    requirements: await requireRequirements(deps),
+    catalog: vpsConnector("own", deps, { ownServer: ownServerFacts(host) }).catalog(),
+    access: "public",
+    edge: oldEdge(plan),
+  });
+  if (warnings.length > 0) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `Your new server is too small for ${plan.app.name}: ${warnings.join(" ")} Nothing was changed.`,
+      {
+        hint: `Choose a bigger server, or free memory or disk on it, then run \`${RUN_COMMAND} --to own\` again.`,
+      },
+    );
+  }
   const now = deps.clock.now().toISOString();
   return {
     target: {
@@ -451,6 +469,17 @@ async function portainerSide(
       "OpsCrew needs the public address of your Portainer host, where its Caddy serves the app and the app's DNS records point. Nothing was changed.",
       {
         hint: `Run \`${RUN_COMMAND} --to portainer\` in a terminal to give it, or with --answers.`,
+      },
+    );
+  }
+  // Portainer runs the image the old side runs, built for that side's processor.
+  const arch = targetArch(plan.target);
+  if (answers.arch !== arch) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `Your Portainer environment runs on ${answers.arch}, but the app's image is built for ${arch}, and a move to Portainer deploys the image the app runs now. Nothing was changed.`,
+      {
+        hint: `Move the app to a server of ${answers.arch} first (\`${RUN_COMMAND} --to <hetzner|digitalocean|own>\`), or run \`opscrew design\` and \`opscrew provision\` to build it for ${answers.arch}, then move it to your Portainer.`,
       },
     );
   }
@@ -558,7 +587,7 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
     ...(summary.data.length === 0
       ? [`Data: none on ${old}, so the app stays online until the switch.`]
       : [
-          `Data on ${old}:`,
+          `Data on ${old} (OpsCrew read these sizes with a small read-only container there):`,
           ...summary.data.map((mount) => `  - ${dataLine(plan, mount)}`),
           ...(copies
             ? downtimeUntilDnsChange(plan, true)
@@ -741,6 +770,7 @@ export async function startMove(
   // From here the old side's connection is set aside, and the new side's takes its slot: a stop
   // before the move is recorded puts it back, so nothing is changed.
   await setAsideOldConnection(deps.paths, from.provider);
+  let started: { session: MoveSession; next: NewSide; empty: string[] };
   try {
     const next =
       to === "own"
@@ -816,21 +846,23 @@ export async function startMove(
     // The sides' addresses go to the local state, never into opscrew/plan.yaml.
     await startMoveServers(deps, session.servers);
     await saveMove(session, { ...retarget, empty });
-    deps.reporter.success(
-      `Started the move of ${plan.app.name} to ${placeWords(next.target)}; opscrew/plan.yaml records each step.`,
-    );
-    await auditStep(
-      session,
-      "started",
-      `move from ${from.provider} to ${next.target.provider}${empty.length > 0 ? `, starting empty: ${empty.join(", ")}` : ""}`,
-    );
-    return session;
+    started = { session, next, empty };
   } catch (error) {
     // Nothing of the move stays: the old side's connection back in its slot, no move record.
     await restoreOldConnection(deps.paths, { from: from.provider, to });
     await endMoveServers(deps, undefined);
     throw error;
   }
+  const { session, next, empty } = started;
+  deps.reporter.success(
+    `Started the move of ${plan.app.name} to ${placeWords(next.target)}; opscrew/plan.yaml records each step.`,
+  );
+  await auditStep(
+    session,
+    "started",
+    `move from ${from.provider} to ${next.target.provider}${empty.length > 0 ? `, starting empty: ${empty.join(", ")}` : ""}`,
+  );
+  return session;
 }
 
 /** The plain stop for a move from one Portainer environment to another, before any change. */

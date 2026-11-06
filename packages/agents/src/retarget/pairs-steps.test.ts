@@ -4,12 +4,13 @@ import { findExecutable } from "@opscrew/core";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { readServerAddresses } from "../shared";
-import { DOMAIN, ED25519, OLD_IPV4 } from "../testing";
+import { DOMAIN, ED25519, freshFacts, OLD_IPV4 } from "../testing";
 import { NEW_IPV4, PORTAINER, pairHarness } from "./__fixtures__/pairs";
 import { abortRetarget } from "./abort";
 import { finishRetarget } from "./finish";
 import { moveOf, useLayout } from "./session";
 import { deployStep, prepareStep, storeDeploySecrets } from "./steps";
+import { switchStep } from "./switch";
 
 const MAIN_TF = "opscrew/infra/prod/main.tf";
 
@@ -39,6 +40,38 @@ describe.skipIf(!findExecutable("git"))(
       expect(moveOf(h.session).step).toBe("deployed");
       expect(h.github.runs).toHaveLength(1);
       expect(h.hosts.host(NEW_IPV4)).toMatchObject({ app: true, caddy: false });
+    });
+
+    it("an abort after the workflow's pull request was merged proposes the old side's workflow back", async () => {
+      const h = await pairHarness("hetzner", "own", { step: "created", ownPort: 2222 });
+      await deployStep(h.session, {});
+      await h.git(h.root, "push", h.bare, "HEAD:refs/heads/main");
+      expect(await deployStep(h.session, {})).toBeUndefined();
+      // The user is back on the merged main, as after any merged pull request.
+      await h.git(h.root, "fetch", h.bare, "main");
+      await h.git(h.root, "checkout", "-B", "main", "FETCH_HEAD");
+      const before = h.handler.requests.filter((r) => r.kind === "pull-request").length;
+      const result = await abortRetarget(h.deps, {
+        services: h.services,
+        confirm: async () => true,
+      });
+      expect(result).toMatchObject({ step: "aborted", done: true });
+      expect(h.handler.requests.filter((r) => r.kind === "pull-request").length).toBe(before + 1);
+      expect(result.next.join(" ")).toContain("it puts the deploy workflow for Hetzner Cloud back");
+    });
+
+    it("a password-logins choice on the new own server names what the move offers", async () => {
+      const h = await pairHarness("hetzner", "own", { step: "renamed" });
+      h.services.own.host.facts = freshFacts({
+        loginUsers: [{ name: "alice", uid: 1001, password: true, keys: false }],
+      });
+      const error = await prepareStep(h.session, {}).catch((e: unknown) => e);
+      expect(error).toMatchObject({
+        code: "PHASE_PRECONDITION",
+        hint: expect.stringContaining("`opscrew retarget --password-logins off`"),
+      });
+      expect((error as { hint: string }).hint).not.toContain("opscrew provision --password-logins");
+      expect(h.services.own.host.applies).toEqual([]);
     });
 
     it("a workflow that stays the same deploys at once", async () => {
@@ -101,6 +134,25 @@ describe.skipIf(!findExecutable("git"))("the DNS switch's layouts, for every pai
     // The old side's address is where the user's record points.
     expect(h.session.env.TF_VAR_previous_server_ipv4).toBe(OLD_IPV4);
     expect(DOMAIN).toBeTruthy();
+  });
+
+  it("switches end to end between two address sides: the adopting plan passes the update-only check", async () => {
+    const h = await pairHarness("portainer", "own", { step: "migrated", userRecords: true });
+    h.hosts.host(NEW_IPV4).caddy = false;
+    expect(await switchStep(h.session, {})).toBeUndefined();
+    expect(moveOf(h.session).step).toBe("switched");
+    // The records were imported and updated in place to the new side's address.
+    const main = await readFile(join(h.root, MAIN_TF), "utf8");
+    expect(main).toContain("to = module.dns.cloudflare_dns_record.a");
+    expect(h.events.filter((e) => e.type === "apply")).toEqual([
+      expect.objectContaining({
+        updates: expect.arrayContaining([expect.stringMatching(/^module\.dns\./)]),
+      }),
+    ]);
+    expect(h.engine.dnsServer()?.ipv4).toBe(NEW_IPV4);
+    // Applied, they are OpsCrew's now: the old target says so.
+    expect(moveOf(h.session).from.target).toMatchObject({ web: { records: true } });
+    expect(h.session.adoptRecords).toBeUndefined();
   });
 
   it("once a plan adopted them, the Portainer old side's records are OpsCrew's, so an abort keeps them", async () => {

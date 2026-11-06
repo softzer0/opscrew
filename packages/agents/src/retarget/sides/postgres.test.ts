@@ -51,7 +51,7 @@ function fakeSide(project: string) {
   const ran: FakeContainer[] = [];
   const restored: Buffer[] = [];
   /** What each tool prints to stderr when it fails (empty: it succeeds). */
-  const database = { dropped: 0, stderr: "", psql: "", restore: "" };
+  const database = { dropped: 0, stderr: "", psql: "", restore: "", checks: 0, startingChecks: 0 };
   const transport: DockerTransport = {
     async request(request) {
       const archive = /^\/containers\/([^/]+)\/archive/.exec(request.path);
@@ -125,6 +125,13 @@ function fakeSide(project: string) {
       restored.push(file.data);
       return { exitCode: 0 };
     }
+    // The database takes connections once it has started (`ready` checks to wait for).
+    if (container.cmd[0] === "pg_isready") {
+      database.checks += 1;
+      return database.checks > database.startingChecks
+        ? { exitCode: 0 }
+        : { exitCode: 2, stderr: "db:5432 - no response\n" };
+    }
     return { exitCode: 127, stderr: "unknown command\n" };
   };
   const client = dockerClient(transport);
@@ -151,6 +158,45 @@ async function copyDump(old: ReturnType<typeof fakeSide>, next: ReturnType<typeo
   await next.docker.carrier.writeVolume(source, await old.docker.carrier.readVolume(source));
 }
 
+describe("Postgres in a move: waiting for the new side's database", () => {
+  /** A clock and sleep for the wait, faked. */
+  function waits() {
+    let now = 0;
+    return {
+      now: () => now,
+      sleep: async (ms: number) => {
+        now += ms;
+      },
+    };
+  }
+
+  it("waits until Postgres takes connections before it drops anything", async () => {
+    const old = fakeSide("example-app");
+    const next = fakeSide("opscrew-example-app");
+    next.database.startingChecks = 3;
+    const digest = await dumpPostgres(old.docker, old.db);
+    await copyDump(old, next);
+    await restorePostgres(next.docker, next.db, digest, waits());
+    expect(next.database.checks).toBe(4);
+    expect(next.database.dropped).toBe(1);
+  });
+
+  it("stops plainly after about 2 minutes when Postgres never takes connections, dropping nothing", async () => {
+    const old = fakeSide("example-app");
+    const next = fakeSide("opscrew-example-app");
+    next.database.startingChecks = Number.POSITIVE_INFINITY;
+    const digest = await dumpPostgres(old.docker, old.db);
+    await copyDump(old, next);
+    const clock = waits();
+    await expect(restorePostgres(next.docker, next.db, digest, clock)).rejects.toThrow(
+      "Could not reach the database within 2 minutes",
+    );
+    expect(clock.now()).toBeGreaterThanOrEqual(120_000);
+    expect(clock.now()).toBeLessThan(130_000);
+    expect(next.database.dropped).toBe(0);
+  });
+});
+
 describe("Postgres in a move", () => {
   it("dumps on the old side and restores on the new one through one-off postgres containers", async () => {
     const old = fakeSide("example-app");
@@ -176,9 +222,11 @@ describe("Postgres in a move", () => {
       ],
       ["sh", "-c", "pg_restore --list /dump/app.dump > /dev/null && sha256sum /dump/app.dump"],
     ]);
-    // On the new side: the copy checked first, then the database recreated, then the restore.
+    // On the new side: the copy checked first, then Postgres ready, then the database
+    // recreated, then the restore.
     expect(pgOneOffs(next).map((container) => container.cmd)).toEqual([
       ["sh", "-c", "pg_restore --list /dump/app.dump > /dev/null && sha256sum /dump/app.dump"],
+      ["pg_isready", "-h", "db", "-U", "app", "-d", "postgres"],
       [
         "psql",
         "-h",

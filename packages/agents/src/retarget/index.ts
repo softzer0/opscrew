@@ -2,6 +2,7 @@
 export { abortRetarget } from "./abort";
 export { finishRetarget } from "./finish";
 export { runRetarget } from "./run";
+export { placeWords } from "./sides";
 export {
   ABORT_COMMAND,
   FINISH_COMMAND,

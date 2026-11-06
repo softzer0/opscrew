@@ -117,17 +117,6 @@ function edgeRefused(environment: string): OpsCrewError {
   );
 }
 
-/** The plain stop for a move from one Portainer environment to another, before any change. */
-function betweenPortainers(): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    "Moving an app between two Portainer environments isn't possible yet. Nothing was changed.",
-    {
-      hint: "Move the app to a server first, then into the other environment; or remove it with `opscrew destroy` and set it up there with `opscrew provision`.",
-    },
-  );
-}
-
 /**
  * Portainer's 401 and 403 through its Docker proxy, in plain words: the token, and that a
  * standard user's token reaches only the containers of the stacks that user deployed (R5).
@@ -215,14 +204,10 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
 
   /**
    * The side's Portainer from its record (read each time: a stack step changes it), with the
-   * session's client; stops on a move between two Portainer environments and on an Edge Agent
-   * environment.
+   * session's client; stops on an Edge Agent environment. (A move between two Portainer
+   * environments never starts.)
    */
   async function connect(session: MoveBase): Promise<Connected> {
-    const from = session.plan.retarget?.from.target;
-    if (session.plan.target.provider === "portainer" && from?.provider === "portainer") {
-      throw betweenPortainers();
-    }
     const plan = sidePlan(session);
     const target = portainerTarget(plan.target);
     const connection = await input.record.read();

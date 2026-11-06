@@ -53,7 +53,15 @@ export async function runMove(
         },
       );
     }
-    if (await isAppHealthy(app.remote, plan.app.port, plan.app.healthPath, edgeProxy(plan))) {
+    if (
+      await isAppHealthy(
+        app.remote,
+        plan.app.port,
+        plan.app.healthPath,
+        edgeProxy(plan),
+        plan.app.name,
+      )
+    ) {
       // A window an earlier run was stopped in must not leave the deploys paused.
       const github = await setupGitHub(deps, await requireGitRepo(deps), services);
       await resumeDeploys(deps, github, plan);

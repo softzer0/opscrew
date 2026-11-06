@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { duplexPair } from "node:stream";
 import {
   type FakeContainer,
   FakeDocker,
@@ -154,6 +155,8 @@ interface FakeConfig {
   modules: Map<ModuleName, CloudProvider>;
   moved?: [ModuleName, ModuleName];
   dns?: ModuleName;
+  /** The DNS module points at an address side's variable (`server` or `previous_server`). */
+  dnsVariable?: string;
   live?: ModuleName;
   variables: Set<string>;
 }
@@ -173,11 +176,15 @@ async function readConfig(dir: string): Promise<FakeConfig> {
   }
   const moved = /moved \{\s*from\s*=\s*module\.(\w+)\s*to\s*=\s*module\.(\w+)/.exec(main);
   const dns = /module "dns" \{[\s\S]*?ipv4\s*=\s*module\.(\w+)\.ipv4_address/.exec(main);
+  const dnsVariable = /module "dns" \{[\s\S]*?ipv4\s*=\s*var\.((?:previous_)?server)_ipv4/.exec(
+    main,
+  );
   const live = /output "server_ipv4" \{\s*value\s*=\s*module\.(\w+)\./.exec(outputs);
   return {
     modules,
     ...(moved ? { moved: [moved[1] as ModuleName, moved[2] as ModuleName] } : {}),
     ...(dns ? { dns: dns[1] as ModuleName } : {}),
+    ...(dnsVariable?.[1] !== undefined ? { dnsVariable: dnsVariable[1] } : {}),
     ...(live ? { live: live[1] as ModuleName } : {}),
     variables: new Set([...variables.matchAll(/variable "(\w+)"/g)].map((v) => v[1] as string)),
   };
@@ -273,9 +280,14 @@ export class FakeMoveEngine implements IacEngine {
     };
   }
 
-  /** The server whose id DNS points at. */
-  dnsServer(): FakeServer | undefined {
-    return Object.values(this.state.servers).find((s) => s?.id === this.state.dns);
+  /**
+   * Where DNS points: the server whose id it holds, or the address of a side that is the user's
+   * own server or Portainer.
+   */
+  dnsServer(): Pick<FakeServer, "ipv4"> | undefined {
+    const dns = this.state.dns;
+    const server = Object.values(this.state.servers).find((s) => s?.id === dns);
+    return server ?? (dns?.includes(".") ? { ipv4: dns } : undefined);
   }
 
   async init(dir: string, _options?: IacInitOptions): Promise<void> {
@@ -288,7 +300,11 @@ export class FakeMoveEngine implements IacEngine {
     return { valid: true, diagnostics: [] };
   }
 
-  #compute(config: FakeConfig, vars: Record<string, string>): Effect {
+  #compute(
+    config: FakeConfig,
+    vars: Record<string, string>,
+    env: Record<string, string | undefined> = {},
+  ): Effect {
     for (const [m, p] of config.modules) {
       if (!this.#installed.has(`${m}:${p}`)) {
         throw new Error(`Module not installed: module.${m} (run init)`);
@@ -379,8 +395,15 @@ export class FakeMoveEngine implements IacEngine {
         });
       }
     }
-    if (config.dns !== undefined && this.state.dns !== undefined) {
-      const target = servers[config.dns]?.id;
+    if (
+      (config.dns !== undefined || config.dnsVariable !== undefined) &&
+      this.state.dns !== undefined
+    ) {
+      // A side that is an address: what the engine is given as its TF_VAR.
+      const target =
+        config.dns !== undefined
+          ? servers[config.dns]?.id
+          : env[`TF_VAR_${config.dnsVariable}_ipv4`];
       if (target !== undefined && target !== this.state.dns) {
         effect.dnsTo = target;
         for (const name of ["a", "aaaa"]) {
@@ -411,7 +434,7 @@ export class FakeMoveEngine implements IacEngine {
   ): Promise<PlanSummary> {
     if (options.destroy) throw new Error("a move never plans a whole-root destroy");
     const config = await readConfig(dir);
-    const effect = this.#compute(config, options.vars ?? {});
+    const effect = this.#compute(config, options.vars ?? {}, options.env);
     this.tamper?.(effect);
     const failure = this.failPlan?.(effect);
     if (failure) throw failure;
@@ -550,7 +573,10 @@ function opOf(command: string): string {
   // The app's stateful services, which a move's window stops (with time to stop cleanly) and starts.
   const services = /docker compose (stop -t \d+|up -d) ([a-z0-9 -]+)$/.exec(command);
   if (services) return `${services[1] === "up -d" ? "start" : "stop"} ${services[2]}`;
-  if (/--entrypoint wget (caddy|nginx) /.test(command)) return "health";
+  // The app's web container by its name: the `app` alias may be another app's on a shared edge.
+  if (/--entrypoint wget (caddy|nginx) /.test(command)) {
+    return command.includes(`'http://${APP}-app-1:`) ? "health" : "health by the app alias";
+  }
   if (command.includes("pg_database_size")) return "db size";
   if (command.includes("pg_dump")) return "dump";
   if (command.includes("pg_restore --list")) return "verify dump";
@@ -587,11 +613,33 @@ export class FakeHosts {
   dbSize = 52_428_800;
   readonly #dialers = new Map<string, ReturnType<typeof fakeDialStdio>>();
 
+  readonly #broken = new Map<string, string>();
+
+  /**
+   * From now on ssh cannot reach `host`'s Docker: each connection closes at once, ssh saying
+   * `stderr` (which may name the server), as a lost link does; open connections end.
+   */
+  breakDocker(host: string, stderr: string): void {
+    this.#broken.set(host, stderr);
+    this.#dialers.get(host)?.close();
+    this.#dialers.delete(host);
+  }
+
   /** `ssh … deploy@<host> … docker system dial-stdio`: a byte pipe to that server's Docker. */
   readonly streams: StreamRunner = {
     open: (command, args, options) => {
       const login = args.find((arg) => arg.startsWith("deploy@")) ?? "";
       const host = login.slice("deploy@".length);
+      const broken = this.#broken.get(host);
+      if (broken !== undefined) {
+        const [local, remote] = duplexPair();
+        const kill = () => {
+          local.destroy();
+          remote.destroy();
+        };
+        setImmediate(kill);
+        return { stream: local, exit: Promise.resolve({ exitCode: 255, stderr: broken }), kill };
+      }
       let dialer = this.#dialers.get(host);
       if (dialer === undefined) {
         dialer = fakeDialStdio(this.docker(host));
@@ -794,6 +842,8 @@ export class FakeHosts {
         return ok();
       case "health":
         return h.app ? ok() : { exitCode: 1, stdout: "", stderr: "wget: can't connect" };
+      case "health by the app alias":
+        return { exitCode: 1, stdout: "", stderr: "wget: bad address 'app'" };
       case "db size":
         return ok(`${this.dbSize}\n`);
       case "dump":

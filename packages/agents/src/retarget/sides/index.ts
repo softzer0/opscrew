@@ -1,6 +1,7 @@
 import type { ProjectPaths } from "@opscrew/core";
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployTarget } from "@opscrew/plan-schema";
+import { portainerStackName } from "@opscrew/iac-templates";
+import type { DeployPlan, DeployTarget } from "@opscrew/plan-schema";
 import {
   readPortainerConnection,
   readServerAddresses,
@@ -102,6 +103,11 @@ function portainerRecord(paths: ProjectPaths, which: MoveServer): PortainerRecor
       }));
     },
   };
+}
+
+/** The Compose project of the app's containers on a side: `opscrew-<app>` in Portainer, else `<app>`. */
+export function composeProject(side: Pick<MoveSide, "kind">, plan: DeployPlan): string {
+  return side.kind === "portainer" ? portainerStackName(plan) : plan.app.name;
 }
 
 /** The VPS providers whose tokens a move needs: those of its sides that are cloud servers. */

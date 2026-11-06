@@ -15,6 +15,7 @@ import {
 } from "@opscrew/connector-docker";
 import { errorMessage, OpsCrewError } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
+import { pollUntil } from "../../shared";
 import type { SideDocker } from "./types";
 
 /** The app's Postgres on one side of a move. */
@@ -234,29 +235,44 @@ export async function dumpPostgres(docker: SideDocker, db: MovePostgres): Promis
   return dumpDigest(client, db);
 }
 
+/** How long the new side's Postgres has to take connections before a restore: about 2 minutes. */
+const READY_MS = 2 * 60_000;
+
 /**
- * The new side, after the window copied the move volume: checks the copy (`pg_restore --list`,
- * and its SHA-256 must be `sha256`, the dump's on the old side), then drops the `app` database
- * and creates it again empty (owner `app`, from the `postgres` database, `WITH (FORCE)`), then
- * restores the dump into it in one transaction (`--no-owner --single-transaction`).
+ * Polls `pg_isready` in one-off containers until the Postgres service takes connections, for at
+ * most {@link READY_MS}; stops plainly when it never does.
  */
-export async function restorePostgres(
-  docker: SideDocker,
-  db: MovePostgres,
-  sha256: string,
-): Promise<void> {
-  const { client } = docker;
-  if ((await dumpDigest(client, db)) !== sha256) {
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      "The database dump copied to the new side differs from the dump on the old side.",
-      {
-        hint: "Check the free disk space on both sides; running the command again makes and copies a new dump.",
-      },
-    );
-  }
+async function waitReady(client: DockerClient, db: MovePostgres, waits: Waits): Promise<void> {
+  let last: OneOffResult = { exitCode: 1, stdout: "", stderr: "" };
+  const ready = await pollUntil(
+    async () => {
+      last = await postgresOneOff(
+        client,
+        db,
+        ["pg_isready", "-h", db.service, "-U", "app", "-d", "postgres"],
+        false,
+      );
+      return last.exitCode === 0 ? true : undefined;
+    },
+    { timeoutMs: READY_MS, intervalMs: 2000, ...waits },
+  );
+  if (!ready) throw failed("reach the database within 2 minutes", last, DATABASE_HINT);
+}
+
+/** The clock and sleep of a wait (fakes in tests). */
+export interface Waits {
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/**
+ * Drops the `app` database and creates it again empty (owner `app`, from the `postgres` database,
+ * `WITH (FORCE)`, which ends any session still connected): a restore afterwards holds exactly the
+ * dump, and a rolled-back window leaves no part of a copy.
+ */
+export async function emptyPostgres(docker: SideDocker, db: MovePostgres): Promise<void> {
   const recreated = await postgresOneOff(
-    client,
+    docker.client,
     db,
     [
       "psql",
@@ -276,6 +292,57 @@ export async function restorePostgres(
     true,
   );
   if (recreated.exitCode !== 0) throw failed("empty the database", recreated, DATABASE_HINT);
+}
+
+/**
+ * The new side, after the window copied the move volume: checks the copy (`pg_restore --list`,
+ * and its SHA-256 must be `sha256`, the dump's on the old side), waits until Postgres takes
+ * connections (`pg_isready`, about 2 minutes at most), then recreates the `app` database empty
+ * ({@link emptyPostgres}) and restores the dump into it in one transaction (`--no-owner
+ * --single-transaction`).
+ */
+export async function restorePostgres(
+  docker: SideDocker,
+  db: MovePostgres,
+  sha256: string,
+  waits: Waits = {},
+): Promise<void> {
+  await checkCopiedDump(docker, db, sha256);
+  await restoreCheckedDump(docker, db, waits);
+}
+
+/**
+ * The new side's copy of the dump: `pg_restore --list` reads it, and its SHA-256 must be
+ * `sha256`, the dump's on the old side. Nothing is dropped before it passes.
+ */
+export async function checkCopiedDump(
+  docker: SideDocker,
+  db: MovePostgres,
+  sha256: string,
+): Promise<void> {
+  if ((await dumpDigest(docker.client, db)) !== sha256) {
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      "The database dump copied to the new side differs from the dump on the old side.",
+      {
+        hint: "Check the free disk space on both sides; running the command again makes and copies a new dump.",
+      },
+    );
+  }
+}
+
+/**
+ * The restore of a dump {@link checkCopiedDump} passed: once Postgres takes connections, the
+ * `app` database is recreated empty and the dump restored into it in one transaction.
+ */
+export async function restoreCheckedDump(
+  docker: SideDocker,
+  db: MovePostgres,
+  waits: Waits = {},
+): Promise<void> {
+  const { client } = docker;
+  await waitReady(client, db, waits);
+  await emptyPostgres(docker, db);
   const restored = await postgresOneOff(
     client,
     db,

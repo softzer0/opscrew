@@ -4,10 +4,9 @@ import {
   type ComponentStatusOptions,
   componentStatusReport,
   moveInProgress,
-  moveProvider,
   type PhaseDeps,
   phaseStatusLines,
-  providerProfile,
+  placeWords,
   readOwnServer,
   supplyChainLines,
   type TlsStatusOptions,
@@ -171,8 +170,8 @@ export function registerStatusTool(
           plan?.retarget === undefined
             ? undefined
             : {
-                from: moveProvider(plan.retarget.from.target),
-                to: moveProvider(plan.target),
+                from: plan.retarget.from.target.provider,
+                to: plan.target.provider,
                 step: plan.retarget.step,
                 abortStep: plan.retarget.abort?.step,
                 startedAt: plan.retarget.startedAt,
@@ -182,7 +181,7 @@ export function registerStatusTool(
             ? []
             : [
                 "",
-                `Move: from ${providerProfile(moveData.from).displayName} to ${providerProfile(moveData.to).displayName}, last completed step: ${moveData.step}${plan.retarget.abort === undefined ? "" : ` (being aborted, last abort step: ${plan.retarget.abort.step})`}.`,
+                `Move: from ${placeWords(plan.retarget.from.target)} to ${placeWords(plan.target)}, last completed step: ${moveData.step}${plan.retarget.abort === undefined ? "" : ` (being aborted, last abort step: ${plan.retarget.abort.step})`}.`,
                 billing(plan.retarget),
               ];
         const step =

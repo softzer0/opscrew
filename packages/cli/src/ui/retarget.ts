@@ -1,8 +1,7 @@
 import {
   ABORT_COMMAND,
   FINISH_COMMAND,
-  moveProvider,
-  providerProfile,
+  placeWords,
   type RetargetSummary,
   RUN_COMMAND,
 } from "@opscrew/agents";
@@ -26,8 +25,8 @@ const STEP_WORDS: Record<Retarget["step"], string> = {
 export function retargetStatusLine(plan: DeployPlan): string | undefined {
   const move = plan.retarget;
   if (move === undefined) return undefined;
-  const from = providerProfile(moveProvider(move.from.target)).displayName;
-  const to = providerProfile(moveProvider(plan.target)).displayName;
+  const from = placeWords(move.from.target);
+  const to = placeWords(plan.target);
   let state: string;
   let next: string;
   if (move.abort !== undefined) {
@@ -47,10 +46,10 @@ export function retargetStatusLine(plan: DeployPlan): string | undefined {
 
 /** The yes/no question asked after the move's summary (printed by the phase) in a terminal. */
 export function startQuestion(summary: RetargetSummary): string {
-  const to = providerProfile(summary.to.provider);
+  const to = placeWords(summary.to);
   const downtime =
     summary.expectedDowntimeMinutes === undefined
       ? "no maintenance window"
       : `about ${summary.expectedDowntimeMinutes} minutes of downtime during the database copy`;
-  return `Start the move to ${to.displayName}? It costs ${formatMoney(summary.extraMonthly)} per month extra while both servers run, with ${downtime}.`;
+  return `Start the move to ${to}? It costs ${formatMoney(summary.extraMonthly)} per month extra while both servers run, with ${downtime}.`;
 }

@@ -14,6 +14,7 @@ import {
 import {
   ED25519_FINGERPRINT,
   FakeHostServer,
+  freshFacts,
   type MoveHarness,
   moveHarness,
   OLD_IPV4,
@@ -242,6 +243,55 @@ describe.skipIf(!findExecutable("git"))("startMove: every refusal comes before a
     });
     expect(await snapshot(h)).toBe(before);
     expect(h.events.filter((e) => e.type === "plan" || e.type === "remote")).toEqual([]);
+  });
+});
+
+describe.skipIf(!findExecutable("git"))("startMove: the new side must run the app", () => {
+  it("refuses a Portainer of another architecture than the app's image, changing nothing", async () => {
+    const h = await moveHarness();
+    h.deps.env.PORTAINER_API_KEY = PORTAINER_TOKEN;
+    const before = await snapshot(h);
+    const error = await refused(h, {
+      services: { ...h.services, portainer: portainerServices(h.hosts.docker(PORTAINER), 1) },
+      to: "portainer",
+      portainer: { ...PORTAINER_ANSWERS, arch: "arm64" },
+      portainerAddress: { ipv4: NEW_IPV4 },
+    });
+    expect(error).toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining(
+        "Your Portainer environment runs on arm64, but the app's image is built for amd64",
+      ),
+      hint: expect.stringContaining("opscrew design"),
+    });
+    expect(error.message).toContain("Nothing was changed.");
+    expect(await snapshot(h)).toBe(before);
+  });
+
+  it("refuses an own server with too little memory, as design checks it, changing nothing", async () => {
+    const h = await moveHarness();
+    const keys = ownRunner();
+    const previous = h.deps.runner;
+    h.deps.runner = new ScriptedRunner(async (command, args, options) =>
+      command === "ssh-keyscan"
+        ? keys.run(command, args, options)
+        : previous.run(command, args, options),
+    );
+    const before = await snapshot(h);
+    const error = await refused(h, {
+      services: {
+        ...h.services,
+        own: { host: new FakeHostServer(freshFacts({ memoryGb: 0.25 })), homeDir: h.root },
+      },
+      to: "own",
+      ownServer: OWN_ANSWERS,
+      hostKey: ED25519_FINGERPRINT,
+    });
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toContain("Your new server is too small for shop");
+    expect(error.message).toContain("memory");
+    expect(error.message).toContain("Nothing was changed.");
+    expect(await snapshot(h)).toBe(before);
   });
 });
 
