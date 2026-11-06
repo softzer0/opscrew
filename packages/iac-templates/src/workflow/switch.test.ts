@@ -1,8 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
@@ -12,6 +11,7 @@ import { FAILED_DEPLOY_DIR } from "../index";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import { NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
+import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
 import { type EdgeFiles, rollbackCommands, switchCommands } from "./switch";
 
 const ROOTS = [
@@ -138,18 +138,7 @@ const FAKE_DOCKER = [
   "#!/bin/sh",
   'echo "docker $*" >> "$WORK/docker.log"',
   'case " $* " in *" /srv/"*) echo "docker was given a server folder: $*" >&2; exit 9 ;; esac',
-  'project="$(basename "$PWD")"',
-  'if [ "$1" = compose ]; then',
-  "  shift",
-  '  while [ "$1" = -p ] || [ "$1" = -f ]; do',
-  '    if [ "$1" = -p ]; then project="$2"; fi',
-  "    shift 2",
-  "  done",
-  '  set -- compose "$@"',
-  "fi",
-  'for last in "$@"; do :; done',
-  'state="$WORK/containers-$project"',
-  'touch "$state"',
+  ...COMPOSE_PROLOGUE,
   'case "$1 $2" in',
   '  "network inspect") test -f "$WORK/network-$3" ;;',
   '  "network create") touch "$WORK/network-$3" ;;',
@@ -183,23 +172,11 @@ const FAKE_DOCKER = [
 /** The fake `flock`: the edge's lock, logged. */
 const FAKE_FLOCK = ["#!/bin/sh", 'echo "flock $*" >> "$WORK/flock.log"'].join("\n");
 
-function shWorks(): boolean {
-  try {
-    return spawnSync("sh", ["-c", "echo ok"], { encoding: "utf8" }).stdout?.trim() === "ok";
-  } catch {
-    return false;
-  }
-}
-
 let work = "";
 /** The roots the local executor sets, under the test's folder. */
 const appsDir = () => `${work}/local/srv/apps`;
 const edgeDir = () => `${work}/local/srv/edge`;
 
-function write(file: string, content: string): void {
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, content);
-}
 const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : undefined);
 
 /** The localhost edge's files for `hostname`. */
@@ -232,22 +209,12 @@ function upload(plan: DeployPlan, hostname: string, leaf: string | false = hostn
  * OPSCREW_APPS_DIR and OPSCREW_EDGE_DIR, and the fakes first on PATH.
  */
 function run(script: readonly string[], env: Record<string, string> = {}) {
-  const result = spawnSync(
-    "sh",
-    ["-c", 'PATH="$(cd "$WORK/bin" && pwd):$PATH"; export PATH; exec sh -s -- "$1"', "sh", IMAGE],
-    {
-      input: `${script.join("\n")}\n`,
-      env: {
-        ...process.env,
-        WORK: work,
-        OPSCREW_APPS_DIR: appsDir(),
-        OPSCREW_EDGE_DIR: edgeDir(),
-        ...env,
-      },
-      encoding: "utf8",
-    },
-  );
-  return { status: result.status, output: `${result.stdout}${result.stderr}` };
+  return runSh(script, [IMAGE], {
+    WORK: work,
+    OPSCREW_APPS_DIR: appsDir(),
+    OPSCREW_EDGE_DIR: edgeDir(),
+    ...env,
+  });
 }
 
 /** Where kamal-proxy routes `service`: its target and host. */
@@ -261,9 +228,7 @@ describe.skipIf(!shWorks())(
   () => {
     beforeEach(() => {
       work = mkdtempSync(join(tmpdir(), "opscrew-switch-")).replaceAll("\\", "/");
-      write(`${work}/bin/docker`, `${FAKE_DOCKER}\n`);
-      write(`${work}/bin/flock`, `${FAKE_FLOCK}\n`);
-      for (const fake of ["docker", "flock"]) spawnSync("chmod", ["755", `${work}/bin/${fake}`]);
+      fakeBin(work, { docker: FAKE_DOCKER, flock: FAKE_FLOCK });
     });
     afterEach(() => rmSync(work, { recursive: true, force: true }));
 

@@ -1,5 +1,4 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -9,10 +8,9 @@ import {
   rmSync,
   statSync,
   utimesSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   type DeployPlan,
   DeployPlanSchema,
@@ -21,6 +19,7 @@ import {
 } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testPlan } from "../__fixtures__/plans";
+import { fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
 import { migrationDown, migrationRecord, schemaRecordPath } from "./migrations";
 import { switchCommands } from "./switch";
 
@@ -182,7 +181,7 @@ const FAKE_DOCKER = [
   "#!/bin/sh",
   'echo "docker $* | APP_IMAGE=$APP_IMAGE" >> "$WORK/docker.log"',
   'for last in "$@"; do :; done',
-  'tools="$(cd "$WORK/tools" && pwd)"',
+  'tools="$(cd "$WORK/tools/bin" && pwd)"',
   'cd "$WORK/container" && PATH="$tools:$PATH" exec sh -c "$last"',
 ].join("\n");
 
@@ -202,14 +201,6 @@ const FAKE_TOOL = [
 
 const SECRET_ROW = "row-value-from-the-database";
 
-function shWorks(): boolean {
-  try {
-    return spawnSync("sh", ["-c", "echo ok"], { encoding: "utf8" }).stdout?.trim() === "ok";
-  } catch {
-    return false;
-  }
-}
-
 let work = "";
 const at = (name: string) => `${work}/app/${name}`;
 const read = (name: string) => (existsSync(at(name)) ? readFileSync(at(name), "utf8") : undefined);
@@ -221,24 +212,9 @@ const records = () => (existsSync(at(".schema")) ? readdirSync(at(".schema")).so
 const mode = (name: string) => (statSync(at(name)).mode & 0o777).toString(8);
 const windows = process.platform === "win32";
 
-function write(file: string, content: string, executable = false): void {
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, content);
-  if (executable) spawnSync("chmod", ["755", file]);
-}
-
 /** Runs `script` as the workflow does: piped to `sh -s` with `image` as `$1`, the fakes first. */
 function run(script: readonly string[], ref: string, env: Record<string, string> = {}) {
-  const result = spawnSync(
-    "sh",
-    ["-c", 'PATH="$(cd "$WORK/bin" && pwd):$PATH"; export PATH; exec sh -s -- "$@"', "sh", ref],
-    {
-      input: `${script.join("\n")}\n`,
-      env: { ...process.env, WORK: work, SECRET_ROW, ...env },
-      encoding: "utf8",
-    },
-  );
-  return { status: result.status, output: `${result.stdout}${result.stderr}` };
+  return runSh(script, [ref], { WORK: work, SECRET_ROW, ...env });
 }
 
 /** The deploy's lines after the release command: the record, as `switchCommands` places it. */
@@ -292,11 +268,10 @@ function recorded(was: string | undefined, now: string | undefined): void {
 describe.skipIf(!shWorks())("the migrations' record and down step", { timeout: 60_000 }, () => {
   beforeEach(() => {
     work = mkdtempSync(join(tmpdir(), "opscrew-migrations-")).replaceAll("\\", "/");
-    write(`${work}/bin/docker`, `${FAKE_DOCKER}\n`, true);
-    for (const tool of ["npx", "python", "alembic", "flask", "php"]) {
-      write(`${work}/tools/${tool}`, `${FAKE_TOOL}\n`, true);
-    }
-    write(`${work}/container/bin/rails`, `${FAKE_TOOL}\n`, true);
+    fakeBin(work, { docker: FAKE_DOCKER });
+    const tools = ["npx", "python", "alembic", "flask", "php"];
+    fakeBin(`${work}/tools`, Object.fromEntries(tools.map((tool) => [tool, FAKE_TOOL])));
+    fakeBin(`${work}/container`, { rails: FAKE_TOOL });
     mkdirSync(`${work}/container/web`, { recursive: true });
     mkdirSync(`${work}/container/api`, { recursive: true });
     // The release command just wrote its output there.

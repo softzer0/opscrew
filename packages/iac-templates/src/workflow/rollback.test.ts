@@ -38,6 +38,7 @@ import {
   withProcesses,
   withSqlite,
 } from "./__fixtures__/plans";
+import { fakeBin } from "./__fixtures__/sh";
 import { renderWorkflow } from "./index";
 import { type ServiceInitStep, switchCommands } from "./switch";
 
@@ -454,12 +455,10 @@ const runningProcesses = (image: string, services = ["worker", "beat", "cron"]) 
 function setUp(): void {
   if (work !== "") rmSync(work, { recursive: true, force: true });
   work = mkdtempSync(join(tmpdir(), "opscrew-rollback-")).replaceAll("\\", "/");
-  for (const dir of ["repos/shop", "srv/edge", "tmp", "bin"]) {
+  for (const dir of ["repos/shop", "srv/edge", "tmp"]) {
     mkdirSync(join(work, dir), { recursive: true });
   }
-  writeFileSync(join(work, "bin", "docker"), `${FAKE_DOCKER}\n`, { mode: 0o755 });
-  writeFileSync(join(work, "bin", "sleep"), `${FAKE_SLEEP}\n`, { mode: 0o755 });
-  writeFileSync(join(work, "bin", "flock"), `${FAKE_FLOCK}\n`, { mode: 0o755 });
+  fakeBin(work, { docker: FAKE_DOCKER, sleep: FAKE_SLEEP, flock: FAKE_FLOCK });
   // The server after an upload: the app's folder with its runtime files and the edge's.
   uploaded(plan);
 }

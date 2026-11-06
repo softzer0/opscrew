@@ -45,17 +45,8 @@ import { serviceSpec } from "../catalog";
 import { onThisComputer } from "../edge/__fixtures__/localhost";
 import { IMAGES } from "../pins";
 import { renderCompose } from "../runtime";
+import { skipReason } from "./__fixtures__/sh";
 import { migrationDown, migrationRecord, schemaRecordPath } from "./migrations";
-
-function skipReason(): string | undefined {
-  if (process.env.OPSCREW_DOCKER_TESTS !== "1") return "set OPSCREW_DOCKER_TESTS=1 to run it";
-  const info = spawnSync("docker", ["info", "--format", "{{.OSType}}"], { encoding: "utf8" });
-  if (info.status !== 0 || info.stdout.trim() !== "linux") {
-    return "no Docker engine for Linux containers is running";
-  }
-  const compose = spawnSync("docker", ["compose", "version"], { encoding: "utf8" });
-  return compose.status === 0 ? undefined : "docker compose is not available";
-}
 
 const reason = skipReason();
 if (reason) console.warn(`[iac-templates] skipping the down migrations on Docker: ${reason}`);

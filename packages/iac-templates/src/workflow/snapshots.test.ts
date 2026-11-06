@@ -1,5 +1,4 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
-import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   existsSync,
@@ -12,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testContext, testPlan } from "../__fixtures__/plans";
@@ -22,6 +21,7 @@ import { localhostPlan } from "../edge/__fixtures__/localhost";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import { inEnvironment, NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
+import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
 import { ROLLBACK_APPROVAL_FILE, rollbackApprovalLine, snapshotFunctions } from "./snapshots";
 import { rollbackCommands, switchCommands } from "./switch";
 
@@ -80,18 +80,7 @@ const fourDatabases = inEnvironment(
 const FAKE_DOCKER = [
   "#!/bin/sh",
   'echo "docker $*" >> "$WORK/docker.log"',
-  'project="$(basename "$PWD")"',
-  'if [ "$1" = compose ]; then',
-  "  shift",
-  '  while [ "$1" = -p ] || [ "$1" = -f ]; do',
-  '    if [ "$1" = -p ]; then project="$2"; fi',
-  "    shift 2",
-  "  done",
-  '  set -- compose "$@"',
-  "fi",
-  'for last in "$@"; do :; done',
-  'state="$WORK/containers-$project"',
-  'touch "$state"',
+  ...COMPOSE_PROLOGUE,
   'case "$1 $2" in',
   '  "network inspect") test -f "$WORK/network-$3" ;;',
   '  "network create") touch "$WORK/network-$3" ;;',
@@ -165,14 +154,6 @@ const FAKE_DF = [
   'echo "/dev/sda1 $total 0 $free 50% /"',
 ].join("\n");
 
-function shWorks(): boolean {
-  try {
-    return spawnSync("sh", ["-c", "echo ok"], { encoding: "utf8" }).stdout?.trim() === "ok";
-  } catch {
-    return false;
-  }
-}
-
 let work = "";
 const appsDir = () => `${work}/srv/apps`;
 const appDir = () => `${appsDir()}/${APP}`;
@@ -184,11 +165,6 @@ const calls = () =>
   existsSync(`${work}/docker.log`) ? readFileSync(`${work}/docker.log`, "utf8").split("\n") : [];
 const paused = () => existsSync(`${work}/paused`);
 const windows = process.platform === "win32";
-
-function write(file: string, content: string): void {
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, content);
-}
 
 /** The app's runtime files in its folder, as the upload leaves them, and its services' env files. */
 function upload(plan: DeployPlan, secrets: Record<string, Record<string, string>> = {}): void {
@@ -246,34 +222,13 @@ function run(
   mode?: "deploy" | "rollback",
   env: Record<string, string> = {},
 ) {
-  const result = spawnSync(
-    "sh",
-    [
-      "-c",
-      'PATH="$(cd "$WORK/bin" && pwd):$PATH"; export PATH; exec sh -s -- "$@"',
-      "sh",
-      image(hex),
-      ...(mode === undefined ? [] : [mode]),
-    ],
-    {
-      input: `${script.join("\n")}\n`,
-      env: {
-        ...process.env,
-        WORK: work,
-        OPSCREW_APPS_DIR: appsDir(),
-        OPSCREW_EDGE_DIR: `${work}/srv/edge`,
-        SECRET_ROW: "row-value-from-the-database",
-        ...env,
-      },
-      encoding: "utf8",
-    },
-  );
-  return {
-    status: result.status,
-    output: `${result.stdout}${result.stderr}`,
-    /** What a script prints on stdout alone: the rollback script's outcome word there. */
-    stdout: result.stdout.trim(),
-  };
+  return runSh(script, [image(hex), ...(mode === undefined ? [] : [mode])], {
+    WORK: work,
+    OPSCREW_APPS_DIR: appsDir(),
+    OPSCREW_EDGE_DIR: `${work}/srv/edge`,
+    SECRET_ROW: "row-value-from-the-database",
+    ...env,
+  });
 }
 
 /** The index of the first call that contains `text`, or -1. */
@@ -303,13 +258,7 @@ describe.skipIf(!shWorks())(
   () => {
     beforeEach(() => {
       work = mkdtempSync(join(tmpdir(), "opscrew-snapshots-")).replaceAll("\\", "/");
-      write(`${work}/bin/docker`, `${FAKE_DOCKER}\n`);
-      write(`${work}/bin/df`, `${FAKE_DF}\n`);
-      write(`${work}/bin/flock`, `${FAKE_FLOCK}\n`);
-      write(`${work}/bin/sleep`, "#!/bin/sh\n");
-      for (const fake of ["docker", "df", "flock", "sleep"]) {
-        spawnSync("chmod", ["755", `${work}/bin/${fake}`]);
-      }
+      fakeBin(work, { docker: FAKE_DOCKER, df: FAKE_DF, flock: FAKE_FLOCK, sleep: "#!/bin/sh" });
     });
     afterEach(() => rmSync(work, { recursive: true, force: true }));
 
