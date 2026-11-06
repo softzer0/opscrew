@@ -667,6 +667,11 @@ function workflowId(workflowFile: string): string {
 
 const DEFAULT_RUN_TIMEOUT_MS = 30 * 60_000;
 const DEFAULT_RUN_POLL_MS = 5_000;
+/**
+ * How long a run being followed may answer 404: GitHub can say it has no such run for a moment
+ * right after the dispatch that returned its id (seen live on 2026-11-06).
+ */
+const RUN_MISSING_GRACE_MS = 60_000;
 
 const SECRET_NAME = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -1722,6 +1727,22 @@ export class GitHubClient {
     return toWorkflowRun(this.#parse(RunSchema, json, what));
   }
 
+  /** One workflow run, or `undefined` when GitHub answers 404 for it. */
+  async #runOrMissing(
+    owner: string,
+    repo: string,
+    runId: number,
+  ): Promise<WorkflowRun | undefined> {
+    const what = `read workflow run ${runId}`;
+    const { status, json } = await this.#request(
+      "GET",
+      `/repos/${owner}/${repo}/actions/runs/${runId}`,
+      what,
+      { ok: [404] },
+    );
+    return status === 404 ? undefined : toWorkflowRun(this.#parse(RunSchema, json, what));
+  }
+
   /** Where a workflow run came from; `undefined` when GitHub has no such run (404). */
   async workflowRun(
     owner: string,
@@ -1827,7 +1848,8 @@ export class GitHubClient {
    * run link on timeout. With `onWaiting`, a run that waits for a required reviewer of its
    * environment (status `waiting`) is reported once through it, and a run still waiting when the
    * time is up is returned with status `waiting` instead of timing out: a review may take any
-   * time. When a run stops waiting, its time starts again.
+   * time. When a run stops waiting, its time starts again. A run GitHub answers 404 for is read
+   * again for up to a minute before the 404 counts.
    */
   async waitForWorkflowRun(
     owner: string,
@@ -1856,8 +1878,20 @@ export class GitHubClient {
     let reported = false;
     // Whether the run waited for a reviewer at the last read.
     let waited = false;
+    // Since when GitHub answers 404 for the run, while it does.
+    let missingSince: number | undefined;
     for (;;) {
-      const run = await this.getWorkflowRun(owner, repo, options.runId);
+      const found = await this.#runOrMissing(owner, repo, options.runId);
+      if (found === undefined) {
+        missingSince ??= this.#now();
+        if (this.#now() - missingSince < RUN_MISSING_GRACE_MS) {
+          await this.#sleep(pollMs);
+          continue;
+        }
+      }
+      missingSince = undefined;
+      // Still missing after the grace: the plain read throws GitHub's own refusal.
+      const run = found ?? (await this.getWorkflowRun(owner, repo, options.runId));
       if (run.status === "completed") {
         return {
           id: run.id,
