@@ -666,6 +666,6 @@ then T2233, then T2234.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew && node plugin/validate.mjs && pnpm lint`
   - Effort: high
 
-- [ ] T2235 Live runs (lead): T2234's pass on the final code, recorded in `docs/e2e-coverage.md`.
+- [x] T2235 Live runs (lead): T2234's pass on the final code, recorded in `docs/e2e-coverage.md`.
 
 - [ ] T2236 Simplify (lead): a review of the opt-ins' diff for reuse and simplicity.
