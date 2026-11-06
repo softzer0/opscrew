@@ -115,11 +115,30 @@ description: "Tasks for 024-snapshots-and-restores"
   - Accept:
     - **The version check:** a snapshot of another version is refused with the rollback command; `--allow-other-version` restores the data alone.
     - **The approval:** destroy-grade, its hash covering the id, the services and `about.json`; the one-time approval file on servers.
-    - **Restoring:** `--only` restores one service. Servers run the script; Portainer goes through the carrier.
+    - **Restoring:** `--only` restores one service. Servers run the script; Portainer goes through the carrier. With parts on extra servers, the CLI runs the app server's `snapshot.sh hold` first, restores each server's part, and runs `snapshot.sh resume` after, including on failure (plan.md D8).
     - **`--from offsite`:** downloads and decrypts on this computer with the recovery key file, then streams to the target.
     - **Tests:** fakes for each path, with a failure that puts the copy back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
+
+- [ ] T2417 [US7] The release snapshot for every kind and extra server (plan.md D7), in `packages/plan-schema/src/plan.ts` (`snapshotsOn` only), `packages/agents/src/rollback/**` and `packages/iac-templates/src/workflow/{servers,switch,snapshots}.ts` (+ tests)
+  - Owns: those paths, their tests and stored snapshots
+  - Reads: plan.md 1.–3. and D7, specs/019-rollback/plan.md 12.
+  - Depends: T2404
+  - Accept:
+    - **`snapshotsOn`** is true for any stateful service or `sqlite` volume, on the app's server or an extra one: online kinds always, stop-only kinds when named in `deploy.snapshotStop`.
+    - **Extra servers:** the workflow reads the outgoing digest from the app's server before their deploy step. Each extra server runs `snapshot.sh take release --version <digest>` before its services change. Once the app answers, and after a rollback, the workflow writes the running digest to `.running` on each.
+    - **The rollback** restores on each extra server that holds a part, and the offers cover every kind. Only folders with an `about.json` are offered.
+    - **Tests:** an app with only SQLite, one with only Valkey, and one with a database on an extra server, each snapshotted before its release and restored by `rollback --database snapshot`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents`
+  - Effort: xhigh
+
+- [ ] T2418 [US1] [US7] Portainer's SQLite as `sqlite.tar` (plan.md D6), in `packages/iac-templates/src/portainer-target/**` (+ tests, Docker test)
+  - Owns: `packages/iac-templates/src/portainer-target/**`
+  - Depends: T2404
+  - Accept: the scheduled and pre-release SQLite parts use the Python program from `workflow/snapshots.ts`; a volume with several databases and other files gives one `sqlite.tar`; an empty volume is `skipped`. The Docker test covers both.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, the Docker test with `OPSCREW_DOCKER_TESTS=1`
+  - Effort: high
 
 ## Phase 4: Wave 3 (parallel)
 

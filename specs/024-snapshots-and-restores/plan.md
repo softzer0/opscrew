@@ -43,9 +43,9 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 - **`about.json`, written last:** id, kind (`manual`, `release`, `scheduled`), the version that ran
   (image digest), and each service's kind, size and file. 019's pre-release snapshots keep their
   digest folders and gain an `about.json`.
-- **Files:** one per service: the four databases' dumps as in 019; `sqlite.db` (Python's backup
-  API); `<service>.rdb` (Valkey, Redis, Dragonfly); `<service>.tar` (a stopped volume, through a
-  busybox one-off on servers and 023's carrier on Portainer).
+- **Files:** one per service: the four databases' dumps as in 019; `sqlite.tar` (the `sqlite`
+  volume, D6); `<service>.rdb` (Valkey, Redis, Dragonfly); `<service>.tar` (a stopped volume,
+  through a busybox one-off on servers and 023's carrier on Portainer).
 - **Modes:** files 600, folders 700, owned by the deploy user.
 - **The contract** (T2405, 2026-11-06), the same on servers and Portainer:
   - `about.json` is one line:
@@ -57,7 +57,7 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
   - pre-release folders are named by the 64-hex digest, the others by `YYYYMMDDTHHMMSSZ`;
   - a scheduled snapshot is written in `<id>.partial`, a manual one in `<id>.taking`, each
     renamed when complete;
-  - SQLite's file is `sqlite.db`;
+  - SQLite's file is `sqlite.tar` (D6); a `sqlite` volume with nothing in it is `skipped`;
   - on Portainer, `/snapshots/.running` names the running image, written by the stamp after a
     new version starts.
   - a snapshot taken before any `.running` exists records `"version":""`: restores treat it
@@ -70,7 +70,7 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 | Kinds | Copy | Restore |
 |---|---|---|
 | PostgreSQL, MySQL, MariaDB, MongoDB | 019's dumps | 019's exact restores |
-| SQLite (the `sqlite` volume) | a pinned `python` one-off mounting the volume read-write as the app's uid: `sqlite3.connect(src).backup(dst)`, then `journal_mode=delete` on the copy, the app running | stop the app, replace the file, remove `-wal`/`-shm`, start |
+| SQLite (the `sqlite` volume) | a pinned `python` one-off mounting the volume read-write as the app's uid, the app running: every SQLite database in the volume (by its header) through `sqlite3.connect(src).backup(dst)`, then `journal_mode=delete` on the copy; the volume's other files as they are, without `-wal`, `-shm` or `-journal` files; all in one `sqlite.tar` (D6) | stop the app, empty the volume, untar, start |
 | Valkey, Redis | `valkey-cli`/`redis-cli -h <service> --rdb <file>` from a one-off of the service's own image, the password in `REDISCLI_AUTH` from an env file, the server running | cache mode: stop, place `dump.rdb`, start; queue mode (AOF): stop, replace `appendonlydir/` with the RDB as `appendonly.aof.1.base.rdb` and its one-line manifest, start (R7) |
 | Dragonfly | `SAVE RDB <name>` against the running server, then copied out by a one-off mounting its volume read-only | queue mode: stop, move old `dump*` files away, place `dump.rdb`, start; cache mode: `DFLY LOAD <file>`, running (R7) |
 | Every other kind | stop only that service (`-t 120` and the clean-exit check, 023), tar its volumes, start it | stop it, empty and untar its volumes, start |
@@ -211,10 +211,33 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 - **D4:** restores of the off-server copy decrypt on this computer only.
 - **D5:** a whole-server restore is a rebuild through the connectors, with `ignore_changes` on the
   image.
+- **D6 (T2404's report):** SQLite is copied as the whole `sqlite` volume in one `sqlite.tar`.
+  - Every database in the volume is copied online through the backup API; the other files are
+    copied as they are.
+  - **Why:** a Rails 8 app keeps several databases there (the app's, plus cache, queue and cable)
+    and its uploads beside them, and a single `sqlite.db` missed them.
+  - The Python program is written once in `workflow/snapshots.ts`; Portainer imports it.
+- **D7 (T2404's report):** the release snapshot covers every kind of US7.
+  - `snapshotsOn` is true for any stateful service or `sqlite` volume, on the app's server or an
+    extra one.
+  - On extra servers, the workflow reads the outgoing digest from the app's server before their
+    deploy step. Each extra server then runs `snapshot.sh take release --version <digest>` before
+    its services change.
+  - The rollback's database step restores there too, from the runner, as the deploy reaches them.
+  - The rollback offers only folders with an `about.json`.
+  - Once the app answers (and after a rollback), the workflow writes the running digest to
+    `.running` in the app folder on each extra server. `snapshot.sh` records it there, so their
+    scheduled and manual snapshots know their version. `take --version sha256:<hex>` overrides
+    it.
+- **D8:** `take --id <id>` lets the CLI give one id to the parts of a snapshot spread over several
+  servers. A restore on an extra server doesn't hold or stop the app. The CLI runs the app
+  server's `snapshot.sh hold` first and `snapshot.sh resume` after (019's code; no approval file,
+  since they lose no data) (T2408).
 
 ## Order
 
 T2401 (spikes) → T2402 (contracts and plan fields, lead) → {T2403 connectors, T2404 server script,
-T2405 Portainer} → {T2406 off-server, T2407 the commands, T2408 restore} → {T2409 whole server,
+T2405 Portainer} → {T2406 off-server, T2407 the commands, T2408 restore, T2417 every kind before a
+release, T2418 Portainer's SQLite} → {T2409 whole server,
 T2410 design/advise/status/MCP} → {T2411 CLI and plugin, T2412 guide} → T2413 live tests →
 T2414 live runs → T2415 simplify → T2416 release.
