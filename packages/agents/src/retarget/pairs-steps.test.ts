@@ -1,18 +1,28 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { findExecutable } from "@opscrew/core";
+import { PORTAINER_IMAGE_PLACEHOLDER } from "@opscrew/iac-templates";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { readServerAddresses } from "../shared";
+import { readServerAddresses, writeRenderedFiles } from "../shared";
 import { DOMAIN, ED25519, freshFacts, OLD_IPV4 } from "../testing";
 import { NEW_IPV4, PORTAINER, pairHarness } from "./__fixtures__/pairs";
 import { abortRetarget } from "./abort";
 import { finishRetarget } from "./finish";
-import { moveOf, useLayout } from "./session";
-import { deployStep, prepareStep, storeDeploySecrets } from "./steps";
+import { oldSideTarget } from "./layouts";
+import { moveOf, renderFiles, useLayout } from "./session";
+import {
+  deployFilesChanged,
+  deployStep,
+  prepareStep,
+  proposeDeployFiles,
+  storeDeploySecrets,
+} from "./steps";
 import { switchStep } from "./switch";
 
 const MAIN_TF = "opscrew/infra/prod/main.tf";
+/** The server's committed Compose file and Portainer's stack template share this path. */
+const COMPOSE = "opscrew/runtime/compose.yaml";
 
 describe.skipIf(!findExecutable("git"))(
   "step deployed, for the user's own server and Portainer",
@@ -21,7 +31,7 @@ describe.skipIf(!findExecutable("git"))(
       const h = await pairHarness("hetzner", "own", { step: "created", ownPort: 2222 });
       const stop = await deployStep(h.session, {});
       expect(stop).toMatchObject({ step: "created", done: false });
-      expect(stop?.next.join(" ")).toContain("The deploy workflow for your new server differs");
+      expect(stop?.next.join(" ")).toContain("The deploy files for your new server differ");
       expect(stop?.next.join(" ")).toContain("opscrew retarget");
       expect(h.github.runs).toEqual([]);
       expect(h.handler.requests.some((r) => r.kind === "pull-request")).toBe(true);
@@ -57,7 +67,7 @@ describe.skipIf(!findExecutable("git"))(
       });
       expect(result).toMatchObject({ step: "aborted", done: true });
       expect(h.handler.requests.filter((r) => r.kind === "pull-request").length).toBe(before + 1);
-      expect(result.next.join(" ")).toContain("it puts the deploy workflow for Hetzner Cloud back");
+      expect(result.next.join(" ")).toContain("it puts the deploy files for Hetzner Cloud back");
     });
 
     it("a password-logins choice on the new own server names what the move offers", async () => {
@@ -72,6 +82,62 @@ describe.skipIf(!findExecutable("git"))(
       });
       expect((error as { hint: string }).hint).not.toContain("opscrew provision --password-logins");
       expect(h.services.own.host.applies).toEqual([]);
+    });
+
+    it("from Portainer to a cloud server: the server's Compose file goes into the pull request with the workflow, replacing Portainer's stack template", async () => {
+      const h = await pairHarness("portainer", "hetzner", { step: "created" });
+      // GitHub's branch holds the Portainer side's deploy files, as after a move into Portainer.
+      const portainerPlan = { ...h.session.plan, target: oldSideTarget(moveOf(h.session)) };
+      const committed = (await renderFiles(h.session, undefined, portainerPlan, "fromOwn")).filter(
+        (file) => file.kind !== "infra",
+      );
+      expect(committed.find((f) => f.path === COMPOSE)?.content).toContain(
+        PORTAINER_IMAGE_PLACEHOLDER,
+      );
+      await writeRenderedFiles(h.root, committed);
+      await h.git(h.root, "add", ...committed.map((file) => file.path));
+      await h.git(h.root, "commit", "-m", "Portainer's deploy files");
+      await h.git(h.root, "push", h.bare, "HEAD:refs/heads/main");
+
+      const stop = await deployStep(h.session, {});
+      expect(stop?.next.join(" ")).toContain(
+        "The deploy files for the new server on Hetzner Cloud differ",
+      );
+      expect(h.github.runs).toEqual([]);
+      const proposed = (await h.git(h.root, "show", "--name-only", "--format=", "HEAD")).split(
+        "\n",
+      );
+      expect(proposed).toEqual(expect.arrayContaining([COMPOSE, h.plan.cicd.workflowPath]));
+      const compose = await h.git(h.root, "show", `HEAD:${COMPOSE}`);
+      expect(compose).not.toContain(PORTAINER_IMAGE_PLACEHOLDER);
+      expect(compose).toContain("services:");
+
+      // Merged on GitHub: the server's deploy runs with them.
+      await h.git(h.root, "push", h.bare, "HEAD:refs/heads/main");
+      expect(await deployStep(h.session, {})).toBeUndefined();
+      expect(h.github.runs).toHaveLength(1);
+    });
+
+    it("from a server to Portainer: Portainer's stack template goes into the pull request with its workflow", async () => {
+      const h = await pairHarness("own", "portainer", { step: "created" });
+      expect(await deployFilesChanged(h.session)).toBe(true);
+      expect(await proposeDeployFiles(h.session, h.session.plan)).toMatchObject({
+        kind: "proposed",
+      });
+      const proposed = (await h.git(h.root, "show", "--name-only", "--format=", "HEAD")).split(
+        "\n",
+      );
+      expect(proposed).toEqual(expect.arrayContaining([COMPOSE, h.plan.cicd.workflowPath]));
+      expect(await h.git(h.root, "show", `HEAD:${COMPOSE}`)).toContain(PORTAINER_IMAGE_PLACEHOLDER);
+    });
+
+    it("between two cloud servers whose deploy files are the same: no pull request, the deploy runs at once", async () => {
+      const h = await pairHarness("hetzner", "digitalocean", { step: "created" });
+      expect(await deployFilesChanged(h.session)).toBe(false);
+      expect(await deployStep(h.session, {})).toBeUndefined();
+      expect(moveOf(h.session).step).toBe("deployed");
+      expect(h.handler.requests.some((r) => r.kind === "pull-request")).toBe(false);
+      expect(h.github.runs).toHaveLength(1);
     });
 
     it("a workflow that stays the same deploys at once", async () => {

@@ -76,7 +76,7 @@ import {
   siteContext,
   useSiteRoot,
 } from "./site-session";
-import { appliesNow, normalised, pendingStop, workflowOnGitHub } from "./steps";
+import { appliesNow, fileOnGitHub, normalised, pendingStop } from "./steps";
 import { ABORT_COMMAND, FINISH_COMMAND, RUN_COMMAND } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
 
@@ -344,7 +344,7 @@ export async function proposeSiteSetup(
   const branch = workflowBranch(plan, github.defaultBranch);
   let merged = true;
   for (const file of files) {
-    const committed = await workflowOnGitHub(session, branch, file.path);
+    const committed = await fileOnGitHub(session, branch, file.path);
     if (committed === undefined || normalised(committed) !== normalised(file.content)) {
       merged = false;
       break;
@@ -352,7 +352,7 @@ export async function proposeSiteSetup(
   }
   for (const path of removed) {
     if (!merged) break;
-    if ((await workflowOnGitHub(session, branch, path)) !== undefined) merged = false;
+    if ((await fileOnGitHub(session, branch, path)) !== undefined) merged = false;
   }
   if (merged) return { kind: "merged" };
   deps.reporter.step(`Proposing the deploy setup for ${hostWords(newSite(plan))} on GitHub`);

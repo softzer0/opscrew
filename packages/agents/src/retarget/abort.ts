@@ -1,7 +1,7 @@
 import { rm } from "node:fs/promises";
 import type { ComputeCatalog } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import { appDir, edgeProxy } from "@opscrew/iac-templates";
+import { appDir, edgeProxy, runtimeDir } from "@opscrew/iac-templates";
 import {
   type CloudDeployTarget,
   type CostEstimate,
@@ -44,7 +44,7 @@ import {
 } from "./session";
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
 import { abortSiteMove } from "./site-end";
-import { pendingStop, proposeWorkflow, storeDeploySecrets, workflowChanged } from "./steps";
+import { deployFilesChanged, pendingStop, proposeDeployFiles, storeDeploySecrets } from "./steps";
 import { dnsSwitchPlan } from "./switch";
 import {
   ABORT_COMMAND,
@@ -344,9 +344,9 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   }
 
   // 4. The old side's connection back in its usual slot, the plan as before the move, and the
-  // original files; the deploy workflow too when the move changed it (asked while the old side's
+  // original files; the deploy files too when the move changed them (asked while the old side's
   // login is still set aside).
-  const workflowMoved = await workflowChanged(session);
+  const filesMoved = await deployFilesChanged(session);
   await restoreOldConnection(deps.paths, { from: from.provider, to: to.provider });
   const cost = await oldCost(session);
   const { retarget: _aborted, ...rest } = session.plan;
@@ -383,43 +383,42 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   });
 
   await reportAborted(session, oldAddress);
-  // A deploy workflow the move merged for the new side goes back to the old side's.
-  const workflow = workflowMoved ? await restoreWorkflow(session, restored) : undefined;
+  // Deploy files the move merged for the new side go back to the old side's.
+  const files = filesMoved ? await restoreDeployFiles(session, restored) : undefined;
   return {
     step: "aborted",
     done: true,
     next: [
-      ...(workflow === undefined
+      ...(files === undefined
         ? [`${app} stays on ${place}; pushes to ${restored.cicd.branch} deploy there again.`]
-        : [workflow]),
+        : [files]),
       `To move later, run \`${RUN_COMMAND} --to ${to.provider}\` again.`,
     ],
   };
 }
 
 /**
- * The old side's deploy workflow back on GitHub, after a move whose new side has another one (its
- * pull request may have put that one there): a pull request of its own. Returns what remains to do
- * (merge it, or commit it by hand when the pull request could not be opened), or `undefined` when
- * GitHub has the old one.
+ * The old side's deploy files back on GitHub, after a move whose new side has other ones (its pull
+ * request may have put those there): a pull request of its own. Returns what remains to do (merge
+ * it, or commit them by hand when the pull request could not be opened), or `undefined` when
+ * GitHub has the old ones.
  */
-async function restoreWorkflow(
+async function restoreDeployFiles(
   session: MoveSession,
   restored: DeployPlan,
 ): Promise<string | undefined> {
   const { deps } = session;
-  const path = restored.cicd.workflowPath;
-  const byHand = `Commit ${path} as it is in this folder and merge it into ${restored.cicd.branch}, so pushes deploy to ${placeWords(restored.target)} again.`;
+  const byHand = `Commit ${restored.cicd.workflowPath} and the files in ${runtimeDir(restored)} as they are in this folder and merge them into ${restored.cicd.branch}, so pushes deploy to ${placeWords(restored.target)} again.`;
   try {
-    const proposal = await proposeWorkflow(session, restored);
+    const proposal = await proposeDeployFiles(session, restored);
     if (proposal.kind === "merged") return undefined;
     return proposal.kind === "proposed"
-      ? `${proposal.merge}: it puts the deploy workflow for ${placeWords(restored.target)} back, so pushes deploy there again.`
+      ? `${proposal.merge}: it puts the deploy files for ${placeWords(restored.target)} back, so pushes deploy there again.`
       : `${proposal.why.join(" ")} ${byHand}`;
   } catch (error) {
     deps.reporter.warn(
       deps.redactor.redact(
-        `The move is aborted, but OpsCrew could not propose the deploy workflow back: ${reasonOf(error)}.`,
+        `The move is aborted, but OpsCrew could not propose the deploy files back: ${reasonOf(error)}.`,
       ),
     );
     return byHand;

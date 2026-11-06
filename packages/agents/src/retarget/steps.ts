@@ -8,7 +8,13 @@ import {
   readTextIfExists,
   writeFileAtomic,
 } from "@opscrew/core";
-import { checkServerSecret, EDGE_PROXIES, edgeProxy, keepNewerPins } from "@opscrew/iac-templates";
+import {
+  checkServerSecret,
+  EDGE_PROXIES,
+  edgeProxy,
+  keepNewerPins,
+  type RenderedFile,
+} from "@opscrew/iac-templates";
 import {
   APP_SERVER,
   type DeployPlan,
@@ -462,10 +468,10 @@ export function normalised(text: string): string {
 }
 
 /**
- * The deploy workflow at `path` on GitHub's `branch` (what a dispatched run runs), fetched from
- * where pushes go; `undefined` when it cannot be read there.
+ * The file at `path` on GitHub's `branch` (what a dispatched run reads), fetched from where pushes
+ * go; `undefined` when it cannot be read there.
  */
-export async function workflowOnGitHub(
+export async function fileOnGitHub(
   session: Pick<MoveSession, "deps">,
   branch: string,
   path: string,
@@ -482,42 +488,53 @@ export async function workflowOnGitHub(
   return shown.exitCode === 0 ? shown.stdout : undefined;
 }
 
-/** Where a deploy workflow stands on GitHub against the one a plan renders. */
-export type WorkflowProposal =
+/**
+ * The files a side's deploy reads from the repository: the deploy workflow and the runtime files
+ * it uploads to a server (Compose files, the edge's sites) or Portainer's stack template, which
+ * share the path `<runtimeDir>/compose.yaml`.
+ */
+function deployFiles(files: readonly RenderedFile[]): RenderedFile[] {
+  return files.filter((file) => file.kind === "workflow" || file.kind === "runtime");
+}
+
+/** Where a side's deploy files stand on GitHub against the ones a plan renders. */
+export type DeployFilesProposal =
   | { kind: "merged" }
   | { kind: "proposed"; merge: string; branch: string }
   | { kind: "waiting"; why: string[]; branch: string };
 
 /**
- * Proposes `plan`'s rendered deploy workflow in a pull request unless GitHub's branch holds it
- * already (newer action pins there, Dependabot's, are kept): `merged` then. `waiting` when an
- * earlier run's pull request is in the way (this clone is on its branch). `login` is the slot of
- * the user's own server whose SSH port the workflow uses.
+ * Proposes `plan`'s rendered deploy files that GitHub's branch does not hold in one pull request
+ * (newer action pins there, Dependabot's, are kept): `merged` when it holds them all. `waiting`
+ * when an earlier run's pull request is in the way (this clone is on its branch). `login` is the
+ * slot of the user's own server whose SSH port the workflow uses.
  */
-export async function proposeWorkflow(
+export async function proposeDeployFiles(
   session: MoveSession,
   plan: DeployPlan,
   login: "own" | "fromOwn" = "own",
-): Promise<WorkflowProposal> {
+): Promise<DeployFilesProposal> {
   const { deps } = session;
-  const path = plan.cicd.workflowPath;
-  const fresh = (await renderFiles(session, undefined, plan, login)).find((f) => f.path === path);
-  if (fresh === undefined) return { kind: "merged" };
   const branch = workflowBranch(plan, session.github.defaultBranch);
-  const committed = await workflowOnGitHub(session, branch, path);
-  if (
-    committed !== undefined &&
-    normalised(keepNewerPins(committed, fresh.content)) === normalised(committed)
-  ) {
-    return { kind: "merged" };
+  const differing: RenderedFile[] = [];
+  for (const file of deployFiles(await renderFiles(session, undefined, plan, login))) {
+    const committed = await fileOnGitHub(session, branch, file.path);
+    const fresh =
+      committed !== undefined && file.kind === "workflow"
+        ? keepNewerPins(committed, file.content)
+        : file.content;
+    if (committed === undefined || normalised(fresh) !== normalised(committed)) {
+      differing.push(file);
+    }
   }
-  await writeRenderedFiles(deps.paths.root, [fresh]);
+  if (differing.length === 0) return { kind: "merged" };
+  await writeRenderedFiles(deps.paths.root, differing);
   try {
     const published = await publishDeploySetup(deps, {
       git: session.git,
       github: session.github,
       plan,
-      paths: [path],
+      paths: differing.map((file) => file.path),
       push: true,
       phase: "retarget",
     });
@@ -542,13 +559,13 @@ export async function proposeWorkflow(
 }
 
 /**
- * True when the move's new side renders another deploy workflow than the old side (the SSH port,
- * the build runner's architecture, Portainer's): GitHub's must change for the new side's deploys.
- * Asked while the old side's login is still set aside.
+ * True when the move's new side renders other deploy files than the old side (the workflow's SSH
+ * port or build runner's architecture, Portainer's workflow and stack template against a server's
+ * Compose and edge files): GitHub's must change for the new side's deploys. Asked while the old
+ * side's login is still set aside.
  */
-export async function workflowChanged(session: MoveSession): Promise<boolean> {
+export async function deployFilesChanged(session: MoveSession): Promise<boolean> {
   const { plan } = session;
-  const path = plan.cicd.workflowPath;
   const move = moveOf(session);
   const oldPlan: DeployPlan = {
     ...plan,
@@ -556,36 +573,40 @@ export async function workflowChanged(session: MoveSession): Promise<boolean> {
     deploy: move.from.deploy,
     app: { ...plan.app, ...(move.from.build !== undefined ? { build: move.from.build } : {}) },
   };
-  const workflow = async (render: Promise<Awaited<ReturnType<typeof renderFiles>>>) =>
-    (await render).find((file) => file.path === path)?.content;
-  const fresh = await workflow(renderFiles(session));
-  const old = await workflow(renderFiles(session, undefined, oldPlan, "fromOwn"));
-  return fresh !== undefined && (old === undefined || normalised(old) !== normalised(fresh));
+  const old = new Map(
+    deployFiles(await renderFiles(session, undefined, oldPlan, "fromOwn")).map((file) => [
+      file.path,
+      normalised(file.content),
+    ]),
+  );
+  return deployFiles(await renderFiles(session)).some(
+    (file) => old.get(file.path) !== normalised(file.content),
+  );
 }
 
 /**
- * Before the new side's first deploy: when its deploy workflow (the SSH port, the build runner's
- * architecture, Portainer's) differs from the old side's, the workflow on GitHub must be the new
- * one first. Until it is, the new workflow goes into a pull request and the move stops; the next
+ * Before the new side's first deploy: when its deploy files (the workflow, the runtime files the
+ * deploy uploads or Portainer's stack template) differ from the old side's, GitHub's branch must
+ * hold the new ones first. Until it does, they go into a pull request and the move stops; the next
  * run continues once it is merged.
  */
-async function workflowStop(session: MoveSession): Promise<RetargetResult | undefined> {
+async function deployFilesStop(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps, plan } = session;
   const move = moveOf(session);
-  if (!(await workflowChanged(session))) return undefined;
+  if (!(await deployFilesChanged(session))) return undefined;
   const words = sideWords(plan.target, "new");
-  deps.reporter.step(`Checking the deploy workflow for ${words} on GitHub`);
-  const proposal = await proposeWorkflow(session, plan);
+  deps.reporter.step(`Checking the deploy files for ${words} on GitHub`);
+  const proposal = await proposeDeployFiles(session, plan);
   if (proposal.kind === "merged") return undefined;
-  const differs = `The deploy workflow for ${words} differs from the one on ${proposal.branch}`;
+  const differs = `The deploy files for ${words} differ from those on ${proposal.branch}`;
   return {
     step: move.step,
     done: false,
     next:
       proposal.kind === "waiting"
         ? [
-            `${differs}, and it is not merged yet: ${proposal.why.join(" ")}`,
-            `Once it is merged, run \`${RUN_COMMAND}\` again to deploy the app there and continue the move.`,
+            `${differs}, and they are not merged yet: ${proposal.why.join(" ")}`,
+            `Once they are merged, run \`${RUN_COMMAND}\` again to deploy the app there and continue the move.`,
           ]
         : [
             `${differs}. ${proposal.merge}: once it is merged, every push deploys to ${words}, where the deploy secrets point now.`,
@@ -666,8 +687,8 @@ async function deployedInThisMove(session: MoveSession): Promise<boolean> {
 /**
  * Step 4: with a private network, the new app server joins it first (`joinMoveNetwork`); the
  * deploy secrets point to the new side (a server's over SSH, or the build values for
- * the user's Portainer); a deploy workflow that differs for the new side waits for its pull
- * request first; then the new side's deploy: on a server the deploy workflow puts the app there,
+ * the user's Portainer); deploy files that differ for the new side wait for their pull request
+ * first; then the new side's deploy: on a server the deploy workflow puts the app there,
  * and the side checks it and stops its edge until the switch; in Portainer its stacks are applied
  * with the version the old side runs; then self-hosted monitoring's host plans for the new app
  * server (`moveMonitoring`).
@@ -699,7 +720,7 @@ export async function deployStep(
   } else {
     await storeDeploySecrets(session, "new");
   }
-  const pending = await workflowStop(session);
+  const pending = await deployFilesStop(session);
   if (pending !== undefined) return pending;
   // A script that stopped after the deploy (at a host plan's hash) does not deploy again.
   if (!portainer && !(await deployedInThisMove(session))) {
