@@ -112,3 +112,18 @@ app's.
 - Design turns on the cloud provider's backups when it matters (`design/options.ts:133`), and
   says backups are the user's on Portainer (`design/portainer.ts:29`) and on their own server.
 - Advise proposes turning backups on (`advise/rules/reliability.ts` `backupProposals`).
+
+## R6. The founder's decisions (2026-11-06)
+
+1. **Services without a safe online copy** (RabbitMQ's messages, Kafka, Redpanda, Neo4j, Garage,
+   OpenSearch and Elasticsearch, and the other engines OpsCrew doesn't configure for their own
+   snapshot APIs): a snapshot stops only that service for its copy (023's clean stop and carrier).
+   A snapshot taken by hand shows and approves the stop; a scheduled one leaves such a service out
+   unless the user opts it in per service. SQLite, Valkey, Redis, Dragonfly and the four databases
+   are always copied while they run.
+2. **A whole-server snapshot is live by default**; `--stop` stops the server first for a
+   consistent one. Whole-server snapshots are taken by hand only.
+3. **The off-server copy is encrypted to the recovery copy's age key**, the one the user already
+   keeps: one key restores both, and the server only ever holds the public half.
+4. **Scheduled snapshots' defaults:** weekly, the last 4 kept on the server, the off-server copies
+   kept 90 days; each changeable in the plan.

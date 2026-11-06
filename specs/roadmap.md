@@ -225,6 +225,10 @@ New beside the rollback's snapshots:
   - a timer on the server runs the same snapshot at the interval the user picks and keeps the last
     N; on Portainer, which has no timer, a scheduled container in the stack does;
   - off by default, turned on per environment;
+- **The founder's choices before the spec** (2026-11-06, research R6): a brief stop of a service
+  without a safe online copy (approved by hand, opt-in for schedules); whole-server snapshots live
+  by default (`--stop` for a consistent one); the off-server copy encrypted to the recovery copy's
+  age key; schedules weekly, keep 4, off-server 90 days.
 - **an opt-in copy off the server** (founder, 2026-11-06), so that losing the server doesn't lose
   the data: each snapshot is encrypted on the server before it leaves, then copied to object
   storage (R2, Hetzner Object Storage or Spaces), with its own retention.
