@@ -29,6 +29,7 @@ import {
 } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { moveProvider } from "../shared/vps-target";
+import { bucketKeys, copyBucket, createBucket, movingBucket, renameBucket } from "./bucket";
 import { oldSideTarget, previousCloud } from "./layouts";
 import { planThenApply } from "./plans";
 import type { MoveServer } from "./removal";
@@ -116,6 +117,9 @@ export async function renameStep(session: MoveSession): Promise<RetargetResult |
     await auditStep(session, "renamed", "nothing to rename: the old side is no server module");
     return undefined;
   }
+  // The bucket the move takes along is renamed first in its own root's state.
+  const bucketStop = await renameBucket(session);
+  if (bucketStop !== undefined) return bucketStop;
   const old = providerWords(previousCloud(move).provider);
   deps.reporter.step(
     `Renaming the current ${old.noun} in the infrastructure state (nothing changes in your cloud)`,
@@ -219,6 +223,9 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
     await recordAdopted(session);
   }
   await waitForNewServer(session, next.ipv4);
+  // The new bucket, when the move takes the bucket along.
+  const bucketStop = await createBucket(session);
+  if (bucketStop !== undefined) return bucketStop;
   await saveMove(session, { ...moveOf(session), step: "created" });
   await auditStep(session, "created", `the new ${fresh.noun} on ${fresh.name} is ready`);
   return undefined;
@@ -359,10 +366,19 @@ async function secretsReach(session: MoveSession, which: MoveServer): Promise<Se
 export async function storeDeploySecrets(session: MoveSession, which: MoveServer): Promise<void> {
   const { deps } = session;
   const target = which === "new" ? session.plan.target : oldSideTarget(moveOf(session));
-  // The plan as that side runs the app: its secrets are the ones its deploy workflow reads.
-  const plan: DeployPlan = { ...session.plan, target };
+  // The plan as that side runs the app: its secrets are the ones its deploy workflow reads. The
+  // old side's is the bucket being left, when the move takes the bucket along.
+  const leaving = which === "old" ? moveOf(session).from.objectStorage : undefined;
+  const plan: DeployPlan = {
+    ...session.plan,
+    target,
+    ...(leaving !== undefined
+      ? { storage: { ...session.plan.storage, objectStorage: leaving } }
+      : {}),
+  };
   const words = sideWords(target, which);
-  // The bucket stays where it is (FR-1332): the app keeps its key (`startMove` checked it is known).
+  // A bucket that stays where it is (FR-1332) keeps its key (`startMove` checked it is known); a
+  // bucket that moves gives each side its own bucket's login.
   const key =
     providerBucket(plan) === undefined
       ? undefined
@@ -686,6 +702,9 @@ export async function deployStep(
   if (!portainer) await runDeployWorkflow(session);
   const stop = await side.deploy(session);
   if (stop !== undefined) return stop;
+  // The bucket's first copy, before the maintenance window (which copies only what changed).
+  const bucket = movingBucket(plan);
+  if (bucket !== undefined) await copyBucket(session, "copy", await bucketKeys(session, bucket));
   await saveMove(session, { ...moveOf(session), step: "deployed" });
   deps.reporter.success(`The app runs on ${words}; the old side still serves users.`);
   await auditStep(session, "deployed", `app deployed and healthy on ${words}`);

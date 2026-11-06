@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import { isUserFacingError, lowerFirst, OpsCrewError, upperFirst } from "@opscrew/core";
 import { type PortainerDeployTarget, readArtifact } from "@opscrew/plan-schema";
 import { resumeCheck } from "../check/provision";
@@ -10,9 +11,11 @@ import {
 } from "../destroy/deletion";
 import { deleteDeployBranch } from "../destroy/portainer";
 import { publishDeploySetup } from "../provision";
+import { previousBucketKeyFile } from "../provision/storage";
 import { deployBranchOf, readOldOwnServer, trackedFiles } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
+import { deleteOldBucket, movingBucketKeys, writeStorageFiles } from "./bucket";
 import { previousCloud, previousTarget } from "./layouts";
 import { clearPending } from "./pending";
 import { endMoveServers } from "./servers";
@@ -110,6 +113,8 @@ async function finish(
   // 0. The new side must answer through the app's URL (edge started, URL checked); else the old
   // side is kept. `switched` is recorded right after the DNS switch, before this check.
   await requireSwitchSettled(session);
+  // Both buckets' keys when the move took the bucket along, before anything is deleted.
+  const keys = await movingBucketKeys(session);
 
   // 1. The old side's removal, after the typed name.
   const removed = await removeOldSide(session, options);
@@ -119,8 +124,12 @@ async function finish(
     ? `${old} is deleted`
     : `the app is removed from ${from.provider === "own" ? old : "your Portainer"}`;
 
+  // 1b. The bucket the move took along: the one being left, after its own typed name (FR-2311).
+  const bucket = keys === undefined ? { remaining: [] } : await deleteOldBucket(session, keys);
+  if ("stop" in bucket) return bucket.stop;
+
   // 2. Cleanup: host keys, the Portainer deploy branch, final files, plan, snapshot record, phase.
-  const remaining: string[] = [];
+  const remaining: string[] = [...bucket.remaining];
   if (from.provider === "portainer") {
     const branch = await deleteOldDeployBranch(session, from);
     if (branch !== undefined) remaining.push(branch);
@@ -141,9 +150,12 @@ async function finish(
   }
   const { retarget: _finished, ...finalPlan } = session.plan;
   const written = await writeFinalFiles(session, finalPlan, layoutOf(session, "switched"), "all");
+  const storage = keys === undefined ? [] : await writeStorageFiles(session, finalPlan);
   await savePlan(session, finalPlan);
   await removeSnapshotRecord(deps, "retarget");
   await clearPending(deps);
+  // A run killed while the engine ran may have left the key of the bucket being left there.
+  await rm(previousBucketKeyFile(deps.paths), { force: true });
   await endMoveServers(deps, session.servers.next);
   const place = placeWords(fresh);
   await deps.state.markPhase("retarget", "ok", `moved to ${place}`);
@@ -175,6 +187,7 @@ async function finish(
       plan: finalPlan,
       paths: [
         ...written.files.map((file) => file.path),
+        ...storage.map((file) => file.path),
         planFilePath(session),
         ...(await trackedPaths(session, written.removed)),
       ],

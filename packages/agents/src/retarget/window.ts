@@ -15,6 +15,15 @@ import { withDeploysPaused } from "../move/deploys";
 import { pollUntil, readServerAddresses, readValidJson, type ServerAddress } from "../shared";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { codeOf, hintOf } from "../shared/errors";
+import {
+  type BucketKeys,
+  bucketKeys,
+  copyBucket,
+  type MovingBucket,
+  measureBucket,
+  movingBucket,
+  syncMinutes,
+} from "./bucket";
 import { assertDistinctServers } from "./servers";
 import {
   auditMove,
@@ -79,11 +88,13 @@ function statefulServices(plan: DeployPlan): string[] {
 
 /**
  * True when the move copies data in its window: a service on the app's server, the app's own
- * SQLite file or monitoring on the app's server, any of them not started empty.
+ * SQLite file or monitoring on the app's server, any of them not started empty, or the bucket the
+ * move takes along.
  */
 export function copiesData(plan: DeployPlan): boolean {
   const empty = new Set(plan.retarget?.empty ?? []);
   return (
+    movingBucket(plan) !== undefined ||
     statefulServices(plan).some((name) => !empty.has(name)) ||
     (plan.storage?.sqlite !== undefined && !empty.has("app")) ||
     (monitoringServerName(plan) === APP_SERVER && !empty.has("monitoring"))
@@ -183,7 +194,12 @@ async function postgresOn(
 }
 
 /** The approval's list of what the window does, on both sides (never an address). */
-function windowCommands(session: MoveBase, window: WindowPlan, minutes: number): string[] {
+function windowCommands(
+  session: MoveBase,
+  window: WindowPlan,
+  minutes: number,
+  bucket: MovingBucket | undefined,
+): string[] {
   const { plan } = session;
   const move = moveOf(session);
   const old = sideWords(move.from.target, "old");
@@ -202,9 +218,18 @@ function windowCommands(session: MoveBase, window: WindowPlan, minutes: number):
     ...(services !== undefined ? [`  stop ${services} cleanly`] : []),
     `On ${fresh}:`,
     `  stop the app${services !== undefined ? ` and ${services}` : ""}`,
-    "Copy, each through Docker's archive API, with a SHA-256 of it on both sides that must match:",
-    ...window.copies.map((copy) => `  ${mountWords(copy)} (${sizeText(copy.bytes)})`),
-    ...(window.postgres !== undefined ? ["  the database dump"] : []),
+    ...(bucket !== undefined
+      ? [
+          `  copy what changed in the bucket ${bucket.old.bucket} since the first copy into the new bucket ${bucket.next.bucket} (rclone sync in a one-off container, the keys on its standard input only)`,
+        ]
+      : []),
+    ...(window.copies.length > 0 || window.postgres !== undefined
+      ? [
+          "Copy, each through Docker's archive API, with a SHA-256 of it on both sides that must match:",
+          ...window.copies.map((copy) => `  ${mountWords(copy)} (${sizeText(copy.bytes)})`),
+          ...(window.postgres !== undefined ? ["  the database dump"] : []),
+        ]
+      : []),
     `On ${fresh}:`,
     ...(services !== undefined ? [`  start ${services}`] : []),
     ...(window.postgres !== undefined
@@ -286,17 +311,25 @@ export async function maintenanceWindow(
 
   deps.reporter.step(`Measuring the app's data on ${oldWords}`);
   const window = await planWindow(session, old, fresh);
-  if (window.copies.length === 0 && window.postgres === undefined) return "done";
-  // The database's logins on both sides, before anything is asked or changed.
+  const bucket = movingBucket(plan);
+  if (window.copies.length === 0 && window.postgres === undefined && bucket === undefined) {
+    return "done";
+  }
+  // The database's logins and the buckets' keys, before anything is asked or changed.
   const db = window.postgres;
   const logins =
     db === undefined
       ? undefined
       : { old: await postgresOn(session, old, db), fresh: await postgresOn(session, fresh, db) };
-  const minutes = windowMinutes(
-    window.bytes,
-    old.kind === "portainer" || fresh.kind === "portainer",
-  );
+  const keys = bucket === undefined ? undefined : await bucketKeys(session, bucket);
+  // The bucket's last copy compares each of its objects: its count, read before the window.
+  const sync =
+    bucket === undefined || keys === undefined
+      ? undefined
+      : { keys, minutes: syncMinutes((await measureBucket(session, bucket, keys.old)).count) };
+  const minutes =
+    windowMinutes(window.bytes, old.kind === "portainer" || fresh.kind === "portainer") +
+    (sync?.minutes ?? 0);
   const downtime = `about ${minutes} minutes`;
   // Without managed DNS the old app stays stopped after the copy until the user's switch is live.
   const byHand = downtimeUntilDnsChange(plan, true);
@@ -326,7 +359,7 @@ export async function maintenanceWindow(
     kind: "remote-exec",
     title: `${MAINTENANCE_WINDOW_TITLE} stop ${plan.app.name} on ${oldWords} and copy its data (${sizeText(window.bytes)}) to ${freshWords} (${byHand ? `downtime: ${downtime} for the copy, plus ${plan.dns.domain !== undefined ? "your DNS change" : "your users' move to the new address"}` : `${downtime} of downtime`})`,
     details: [
-      ...windowCommands(session, window, minutes),
+      ...windowCommands(session, window, minutes, bucket),
       ...(byHand ? ["", ...warning] : []),
     ].join("\n"),
   });
@@ -355,7 +388,7 @@ export async function maintenanceWindow(
   try {
     // No deploy runs during the window: each would restart the app on one side or the other.
     await withDeploysPaused(deps, session.github, plan, session.services, RUN_COMMAND, () =>
-      runWindow(session, { old, fresh, docker, window, minutes, logins, clean }),
+      runWindow(session, { old, fresh, docker, window, minutes, logins, sync, clean }),
     );
   } finally {
     await docker.old.close();
@@ -399,11 +432,13 @@ async function runWindow(
     minutes: number;
     /** The database's logins on each side, when it is copied. */
     logins: { old: MovePostgres; fresh: MovePostgres } | undefined;
+    /** The bucket's last copy (its keys and minutes), when the move takes the bucket along. */
+    sync: { keys: BucketKeys; minutes: number } | undefined;
     clean: (text: string) => string;
   },
 ): Promise<void> {
   const { deps, plan } = session;
-  const { old, fresh, docker, window, logins } = ctx;
+  const { old, fresh, docker, window, logins, sync } = ctx;
   const oldWords = sideWords(moveOf(session).from.target, "old");
   const freshWords = sideWords(plan.target, "new");
   // The new side's Postgres keeps running: its data is not copied, its database is restored.
@@ -440,6 +475,10 @@ async function runWindow(
     });
     await audited("stop app", freshWords, () => fresh.stopApp(session));
     await audited("stop services", freshWords, () => fresh.stopServices(session, freshServices));
+    // The bucket's last copy: nothing writes to it while the old app is stopped.
+    if (sync !== undefined) {
+      await copyBucket(session, "sync", sync.keys, (3 * sync.minutes + 5) * 60_000);
+    }
     for (const copy of window.copies) {
       deps.reporter.step(`Copying ${mountWords(copy)} (${sizeText(copy.bytes)}) to ${freshWords}`);
       changed.written.push(copy);

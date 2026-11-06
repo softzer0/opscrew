@@ -68,7 +68,7 @@ export interface InfraPlanInput {
  * an interactive run plans first (to check the plan) and `planAndApply` prints the plan again
  * with the approval, so it is shown once.
  */
-function quietly(deps: PhaseDeps): PhaseDeps {
+export function quietly(deps: PhaseDeps): PhaseDeps {
   const shown = deps.reporter;
   return {
     ...deps,
@@ -98,7 +98,7 @@ function planAndApplyOptions(session: MoveSession, input: InfraPlanInput): PlanA
 }
 
 /** Deletes a saved plan and its sidecar so it can never be applied later. */
-async function discardSaved(planFile: string): Promise<void> {
+export async function discardSaved(planFile: string): Promise<void> {
   await rm(planFile, { force: true });
   await rm(`${planFile}.json`, { force: true });
 }

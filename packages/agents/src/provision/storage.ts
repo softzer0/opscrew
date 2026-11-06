@@ -12,6 +12,7 @@ import {
 } from "@opscrew/core";
 import {
   type BucketProvider,
+  PREVIOUS_BUCKET_PROFILE,
   type ProviderBucket,
   providerBucket,
   type RenderedFile,
@@ -46,6 +47,14 @@ export const STORAGE_KEY_VARS = {
   secretAccessKey: "OPSCREW_STORAGE_SECRET_ACCESS_KEY",
 } as const;
 
+/** The variables of the new bucket's key while a move takes the bucket along (read only then). */
+export const NEW_STORAGE_KEY_VARS = {
+  accessKeyId: "OPSCREW_NEW_STORAGE_ACCESS_KEY_ID",
+  secretAccessKey: "OPSCREW_NEW_STORAGE_SECRET_ACCESS_KEY",
+} as const;
+
+type KeyVars = typeof STORAGE_KEY_VARS | typeof NEW_STORAGE_KEY_VARS;
+
 /** The steps to create the key in each provider's console, for `app` and `bucket`. */
 const KEY_STEPS: Readonly<Record<BucketProvider, (app: string, bucket: string) => string[]>> = {
   hetzner: (app) => [
@@ -75,7 +84,10 @@ const StoredKeySchema = z.object({
   secretAccessKey: z.string().regex(KEY_PART),
 });
 
-/** Where the key is kept between runs: a private file (0600) beside the deploy key. */
+/**
+ * Where the keys are kept between runs: a private file (0600) beside the deploy key, one line for
+ * each bucket's key (a move that takes the bucket along needs both buckets' keys).
+ */
 export function storageKeyFile(paths: Pick<ProjectPaths, "projectHomeDir">): string {
   return join(paths.projectHomeDir, "storage_key.json");
 }
@@ -88,27 +100,38 @@ export function storageStateFile(paths: Pick<ProjectPaths, "files">): string {
 /** File name ending of a saved plan of the `storage` root. */
 export const STORAGE_PLAN_SUFFIX = "-storage.tfplan";
 
-/** The steps and where the key goes, for the stop when no key is known. */
-function keyHint(bucket: ProviderBucket, app: string, command: string, asks: boolean): string {
+/**
+ * The steps and where the key goes, for the stop when no key is known: `vars` are the variables
+ * it is read from ({@link NEW_STORAGE_KEY_VARS} for the new bucket of a move).
+ */
+function keyHint(
+  bucket: ProviderBucket,
+  app: string,
+  command: string,
+  how: { asks: boolean; vars: KeyVars },
+): string {
   const steps = KEY_STEPS[bucket.provider](app, bucket.bucket).map(
     (step, i) => `${i + 1}. ${step}`,
   );
-  const variables = `${STORAGE_KEY_VARS.accessKeyId} and ${STORAGE_KEY_VARS.secretAccessKey}`;
-  return asks
-    ? `${steps.join(" ")} Then run \`${command}\` in a terminal to paste it once, or set ${variables} to it and run \`${command}\` again.`
-    : `${steps.join(" ")} Then set ${variables} to it and run \`${command}\` again.`;
+  const variables = `${how.vars.accessKeyId} and ${how.vars.secretAccessKey}`;
+  const moving =
+    how.vars === NEW_STORAGE_KEY_VARS
+      ? ` While a move takes the bucket along, ${STORAGE_KEY_VARS.accessKeyId} and ${STORAGE_KEY_VARS.secretAccessKey} hold the key of the bucket being left.`
+      : "";
+  return how.asks
+    ? `${steps.join(" ")} Then run \`${command}\` in a terminal to paste it once, or set ${variables} to it and run \`${command}\` again.${moving}`
+    : `${steps.join(" ")} Then set ${variables} to it and run \`${command}\` again.${moving}`;
 }
 
-/** The key the variables of {@link STORAGE_KEY_VARS} hold, or undefined when neither is set. */
-function keyFromEnv(env: PhaseDeps["env"]): StorageKey | undefined {
-  const accessKeyId = env[STORAGE_KEY_VARS.accessKeyId]?.trim() ?? "";
-  const secretAccessKey = env[STORAGE_KEY_VARS.secretAccessKey]?.trim() ?? "";
+/** The key the variables `vars` hold, or undefined when neither is set. */
+function keyFromEnv(env: PhaseDeps["env"], vars: KeyVars): StorageKey | undefined {
+  const accessKeyId = env[vars.accessKeyId]?.trim() ?? "";
+  const secretAccessKey = env[vars.secretAccessKey]?.trim() ?? "";
   if (accessKeyId === "" && secretAccessKey === "") return undefined;
-  const missing =
-    accessKeyId === "" ? STORAGE_KEY_VARS.accessKeyId : STORAGE_KEY_VARS.secretAccessKey;
+  const missing = accessKeyId === "" ? vars.accessKeyId : vars.secretAccessKey;
   if (accessKeyId === "" || secretAccessKey === "") {
     throw new OpsCrewError("INVALID_INPUT", `${missing} is not set, but its pair is.`, {
-      hint: `Set both ${STORAGE_KEY_VARS.accessKeyId} and ${STORAGE_KEY_VARS.secretAccessKey} to the bucket's key, then run the command again.`,
+      hint: `Set both ${vars.accessKeyId} and ${vars.secretAccessKey} to the bucket's key, then run the command again.`,
     });
   }
   return checkedKey({ accessKeyId, secretAccessKey }, "The key in the environment");
@@ -124,14 +147,26 @@ function checkedKey(key: StorageKey, what: string): StorageKey {
   );
 }
 
-/** The kept key for this bucket, or undefined (none, or one for another bucket). */
-async function storedKey(deps: PhaseDeps, bucket: ProviderBucket): Promise<StorageKey | undefined> {
+type StoredKey = z.infer<typeof StoredKeySchema>;
+
+/** True when `a` and `b` name the same bucket (provider and name). */
+function sameBucket(
+  a: { provider: string; bucket: string },
+  b: { provider: string; bucket: string },
+): boolean {
+  return a.provider === b.provider && a.bucket === b.bucket;
+}
+
+/** Every kept key, one line each in {@link storageKeyFile}; none without the file. */
+async function keptKeys(deps: Pick<PhaseDeps, "paths">): Promise<StoredKey[]> {
   const file = storageKeyFile(deps.paths);
   const text = await readTextIfExists(file);
-  if (text === undefined) return undefined;
-  let parsed: z.infer<typeof StoredKeySchema>;
+  if (text === undefined) return [];
   try {
-    parsed = StoredKeySchema.parse(JSON.parse(text));
+    return text
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => StoredKeySchema.parse(JSON.parse(line)));
   } catch {
     throw new OpsCrewError(
       "ARTIFACT_INVALID",
@@ -139,16 +174,46 @@ async function storedKey(deps: PhaseDeps, bucket: ProviderBucket): Promise<Stora
       { hint: "Delete that file, then run the command again to paste the key once more." },
     );
   }
-  if (parsed.provider !== bucket.provider || parsed.bucket !== bucket.bucket) return undefined;
-  return { accessKeyId: parsed.accessKeyId, secretAccessKey: parsed.secretAccessKey };
+}
+
+/** Writes `keys` to {@link storageKeyFile} (mode 0600), or removes the file when none is left. */
+async function keepKeys(deps: Pick<PhaseDeps, "paths">, keys: readonly StoredKey[]) {
+  const file = storageKeyFile(deps.paths);
+  if (keys.length === 0) {
+    await rm(file, { force: true });
+    return;
+  }
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const lines = keys.map((key) => JSON.stringify(key));
+  await writeFileAtomic(file, `${lines.join("\n")}\n`, { mode: 0o600 });
+}
+
+/** The kept key for this bucket, or undefined (none kept for it). */
+async function storedKey(deps: PhaseDeps, bucket: ProviderBucket): Promise<StorageKey | undefined> {
+  const kept = (await keptKeys(deps)).find((key) => sameBucket(key, bucket));
+  if (kept === undefined) return undefined;
+  return { accessKeyId: kept.accessKeyId, secretAccessKey: kept.secretAccessKey };
+}
+
+/** Drops the kept key of `bucket` (one a move deleted); the other buckets' keys stay. */
+export async function forgetStorageKey(
+  deps: Pick<PhaseDeps, "paths">,
+  bucket: Pick<ProviderBucket, "provider" | "bucket">,
+): Promise<void> {
+  const keys = await keptKeys(deps);
+  const rest = keys.filter((key) => !sameBucket(key, bucket));
+  if (rest.length !== keys.length) await keepKeys(deps, rest);
 }
 
 /**
- * The user's key for the plan's provider bucket (FR-1318): from {@link STORAGE_KEY_VARS} when they
- * are set (never saved), else the key kept for this bucket, else asked once with the console steps
- * (`askStorageKey`, interactive runs only) and kept like a provider token in a private file
- * ({@link storageKeyFile}, mode 0600, outside the repository). Hetzner's and Spaces' key is needed
- * before the bucket, R2's (a token limited to the bucket) after it. Registered with the redactor.
+ * The user's key for the plan's provider bucket (FR-1318), or for `options.bucket`: from
+ * {@link STORAGE_KEY_VARS} when they are set (never saved), else the key kept for this bucket, else
+ * asked once with the console steps (`askStorageKey`, interactive runs only) and kept like a
+ * provider token in a private file ({@link storageKeyFile}, mode 0600, outside the repository,
+ * beside the other buckets' keys). While a move takes the bucket along
+ * (`plan.retarget.from.objectStorage`), those variables hold only the key of the bucket being left,
+ * and the new bucket's is read from {@link NEW_STORAGE_KEY_VARS} instead. Hetzner's and Spaces' key is needed before the bucket, R2's (a
+ * token limited to the bucket) after it. Registered with the redactor.
  * @throws OpsCrewError `CREDENTIALS_MISSING` with the steps when no key is known and nobody can be
  * asked; `already` says what is done (default: nothing was changed), and with `asks: false` (a
  * command that never asks) the hint names only the variables.
@@ -157,12 +222,15 @@ export async function requireStorageKey(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: Pick<ProvisionServices, "askStorageKey">,
-  options: { command: string; already?: string; asks?: boolean },
+  options: { command: string; already?: string; asks?: boolean; bucket?: ProviderBucket },
 ): Promise<StorageKey> {
-  const bucket = providerBucket(plan);
+  const bucket = options.bucket ?? providerBucket(plan);
   if (bucket === undefined) throw new Error("The plan has no bucket at a provider.");
   const name = STORAGE_NAMES[bucket.provider];
-  let key = keyFromEnv(deps.env) ?? (await storedKey(deps, bucket));
+  const leaving = plan.retarget?.from.objectStorage;
+  const vars =
+    leaving !== undefined && !sameBucket(bucket, leaving) ? NEW_STORAGE_KEY_VARS : STORAGE_KEY_VARS;
+  let key = keyFromEnv(deps.env, vars) ?? (await storedKey(deps, bucket));
   if (key === undefined && deps.interactive && services.askStorageKey !== undefined) {
     deps.reporter.info(
       `The app's bucket ${bucket.bucket} on ${name} needs a key that you create, so OpsCrew never holds one in infrastructure state.`,
@@ -176,19 +244,19 @@ export async function requireStorageKey(
       { accessKeyId: answer.accessKeyId.trim(), secretAccessKey: answer.secretAccessKey.trim() },
       "The key you entered",
     );
-    const file = storageKeyFile(deps.paths);
-    await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-    await writeFileAtomic(
-      file,
-      `${JSON.stringify({ provider: bucket.provider, bucket: bucket.bucket, ...key })}\n`,
-      { mode: 0o600 },
-    );
+    const others = (await keptKeys(deps)).filter((kept) => !sameBucket(kept, bucket));
+    await keepKeys(deps, [...others, { provider: bucket.provider, bucket: bucket.bucket, ...key }]);
   }
   if (key === undefined) {
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
       `The app's bucket ${bucket.bucket} on ${name} needs a key you create in ${bucket.provider === "r2" ? "Cloudflare's dashboard" : "the provider's console"}; OpsCrew never creates one. ${options.already ?? "Nothing was changed."}`,
-      { hint: keyHint(bucket, plan.app.name, options.command, options.asks !== false) },
+      {
+        hint: keyHint(bucket, plan.app.name, options.command, {
+          asks: options.asks !== false,
+          vars,
+        }),
+      },
     );
   }
   deps.redactor.addLiteral(key.accessKeyId, "storage-key");
@@ -226,12 +294,15 @@ export function storageLogin(
  * reads the user's key from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, never a `TF_VAR_`
  * (the saved plan would keep it); every other `AWS_*` variable is left out and the AWS config and
  * credentials files point at the null device, so the user's own AWS login (a session token, a
- * profile, a role) is never used. R2 uses the Cloudflare token as the other roots do.
+ * profile, a role) is never used. In a move that takes the bucket along, `previousKeyFile` is the
+ * credentials file the `aws.previous` provider reads the key of the bucket being left from
+ * ({@link withPreviousBucketKey}). R2 uses the Cloudflare token as the other roots do.
  */
 export function storageEngineEnv(
   env: Record<string, string | undefined>,
   plan: DeployPlan,
   key: StorageKey | undefined,
+  previousKeyFile?: string,
 ): Record<string, string | undefined> {
   if (providerBucket(plan)?.provider === "r2") return { ...env };
   const out = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("AWS_")));
@@ -241,8 +312,41 @@ export function storageEngineEnv(
     AWS_ACCESS_KEY_ID: key.accessKeyId,
     AWS_SECRET_ACCESS_KEY: key.secretAccessKey,
     AWS_CONFIG_FILE: devNull,
-    AWS_SHARED_CREDENTIALS_FILE: devNull,
+    AWS_SHARED_CREDENTIALS_FILE: previousKeyFile ?? devNull,
   };
+}
+
+/**
+ * Where the `aws.previous` provider of a move's `storage` root reads the key of the bucket being
+ * left: a private file in OpsCrew's folder of the project, there only while the engine runs.
+ */
+export function previousBucketKeyFile(paths: Pick<ProjectPaths, "stateDir">): string {
+  return join(paths.stateDir, "storage-previous.credentials");
+}
+
+/**
+ * Runs `act` while {@link previousBucketKeyFile} holds `key` under the `PREVIOUS_BUCKET_PROFILE`
+ * profile (mode 0600), and removes the file afterwards, whatever happened: the key never reaches
+ * a rendered file, a plan or the state.
+ */
+export async function withPreviousBucketKey<T>(
+  deps: Pick<PhaseDeps, "paths">,
+  key: StorageKey,
+  act: (file: string) => Promise<T>,
+): Promise<T> {
+  const file = previousBucketKeyFile(deps.paths);
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const profile = [
+    `[${PREVIOUS_BUCKET_PROFILE}]`,
+    `aws_access_key_id = ${key.accessKeyId}`,
+    `aws_secret_access_key = ${key.secretAccessKey}`,
+  ];
+  await writeFileAtomic(file, `${profile.join("\n")}\n`, { mode: 0o600 });
+  try {
+    return await act(file);
+  } finally {
+    await rm(file, { force: true });
+  }
 }
 
 /** The bucket's resource in the `storage` root at Hetzner and Spaces. */
@@ -472,6 +576,8 @@ export async function applyStorage(
     /** The rendered `storage` root (`renderStorage`). */
     files: readonly RenderedFile[];
     key: StorageKey | undefined;
+    /** A move's root: the credentials file with the key of the bucket being left. */
+    previousKeyFile?: string;
     approvePlanHash?: string;
     planOnly?: boolean;
     command: string;
@@ -484,7 +590,7 @@ export async function applyStorage(
   if (bucket === undefined) throw new Error("The plan has no bucket at a provider.");
   const name = STORAGE_NAMES[bucket.provider];
   const dir = join(deps.paths.root, storageRootDir(plan));
-  const env = storageEngineEnv(input.env, plan, input.key);
+  const env = storageEngineEnv(input.env, plan, input.key, input.previousKeyFile);
   deps.reporter.step(`Planning the app's bucket ${bucket.bucket} on ${name}`);
   let failedLog: string | undefined;
   let createdEarlier = false;

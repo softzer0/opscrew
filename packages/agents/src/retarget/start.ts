@@ -26,7 +26,7 @@ import { commandFlags } from "../environments/choice";
 import { recordOwnServerAnswers } from "../interview/own-server";
 import { recordPortainerAnswers } from "../interview/portainer";
 import { providerProfile, vpsConnector } from "../providers";
-import { providerBucket, readRequirements, requireStorageKey } from "../provision";
+import { readRequirements, requireStorageKey } from "../provision";
 import {
   boundHostAdapter,
   designOptionLine,
@@ -40,6 +40,15 @@ import {
 } from "../shared";
 import { connectAndInspectOwnServer, ownServerFacts } from "../shared/own-server";
 import { extraServers, hasExtraServers } from "../shared/servers";
+import {
+  bucketChoice,
+  bucketKeys,
+  bucketStep,
+  bucketSummaryLines,
+  type MovingBucket,
+  measureBucket,
+  syncMinutes,
+} from "./bucket";
 import { endMoveServers, startMoveServers } from "./servers";
 import { auditStep, type MoveSession, openSession, saveMove, userRecords } from "./session";
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
@@ -516,21 +525,28 @@ function targetLine(target: DeployTarget, which: "old" | "new"): string {
   return sideWords(target, which);
 }
 
-/** The summary shown before the first change. */
+/**
+ * The summary shown before the first change; `bucket` when the move takes the bucket along, with
+ * its object count, which the window's last copy compares.
+ */
 export function moveSummary(
   plan: DeployPlan,
   next: Pick<NewSide, "target" | "cost">,
   data: MoveData[],
   changes: string[],
   portainer: boolean,
+  bucket?: { moves: MovingBucket; count: number },
 ): RetargetSummary {
   const from = plan.target;
   const to = next.target;
   const old = sideWords(from, "old");
   const fresh = sideWords(to, "new");
-  const copies = data.some((mount) => mount.copy);
+  // The bucket's last copy needs the old app stopped too.
+  const copies = data.some((mount) => mount.copy) || bucket !== undefined;
   const bytes = data.filter((mount) => mount.copy).reduce((sum, mount) => sum + mount.bytes, 0);
-  const minutes = copies ? windowMinutes(bytes, portainer) : undefined;
+  const minutes = copies
+    ? windowMinutes(bytes, portainer) + syncMinutes(bucket?.count ?? 0)
+    : undefined;
   // Without managed DNS the old app stays stopped until the user's own switch has taken effect.
   const offline = downtimeUntilDnsChange(plan, copies)
     ? `; the app stays offline from then ${untilSwitched(plan)}`
@@ -554,6 +570,7 @@ export function moveSummary(
         ? `Rename ${old} in OpsCrew's infrastructure state (nothing changes in your cloud).`
         : `Keep ${old} as it is: nothing in OpsCrew's infrastructure state is renamed.`,
       prepare,
+      ...(bucket !== undefined ? [bucketStep(bucket.moves)] : []),
       deploy,
       copies
         ? `Maintenance window (about ${minutes} minutes for ${sizeText(bytes)}): stop the app on ${old}, copy its data to ${fresh} and start the app there${offline}.`
@@ -574,9 +591,8 @@ function dataLine(plan: DeployPlan, mount: MoveData): string {
   return mount.copy ? `${what}, copied` : `${what}, starts empty. ${emptyLoses(plan, mount.owner)}`;
 }
 
-function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
+function summaryText(summary: RetargetSummary, plan: DeployPlan, bucketLines: string[]): string {
   const old = sideWords(summary.from, "old");
-  const copies = summary.data.some((mount) => mount.copy);
   const free = summary.extraMonthly.amount === 0;
   return [
     `Moving ${plan.app.name} from ${targetLine(summary.from, "old")} to ${targetLine(summary.to, "new")}:`,
@@ -585,11 +601,15 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
       ? `Extra cost: none for ${sideWords(summary.to, "new")}${summary.from.provider === "hetzner" || summary.from.provider === "digitalocean" ? `; ${old} is billed until the move is finished` : ""}.`
       : `Extra cost while both run: ${formatMoney(summary.extraMonthly)} per month for ${sideWords(summary.to, "new")}${summary.from.provider === "hetzner" || summary.from.provider === "digitalocean" ? `; ${old} is billed until the move is finished` : ""}.`,
     ...(summary.data.length === 0
-      ? [`Data: none on ${old}, so the app stays online until the switch.`]
+      ? summary.expectedDowntimeMinutes === undefined
+        ? [`Data: none on ${old}, so the app stays online until the switch.`]
+        : [
+            `Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes, for the bucket's last copy.`,
+          ]
       : [
           `Data on ${old} (OpsCrew read these sizes with a small read-only container there):`,
           ...summary.data.map((mount) => `  - ${dataLine(plan, mount)}`),
-          ...(copies
+          ...(summary.expectedDowntimeMinutes !== undefined
             ? downtimeUntilDnsChange(plan, true)
               ? [
                   `Expected downtime: about ${summary.expectedDowntimeMinutes} minutes for the copy, plus the time ${plan.dns.domain !== undefined ? "your DNS change takes to reach your users" : "your users take to switch to the new address"}.`,
@@ -598,7 +618,7 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
               : [`Expected maintenance window: about ${summary.expectedDowntimeMinutes} minutes.`]
             : []),
         ]),
-    ...bucketLines(plan),
+    ...bucketLines,
     ...(summary.changes.length === 0
       ? []
       : [
@@ -607,15 +627,6 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan): string {
         ]),
     `While the move runs, ${plan.infra.dir} holds a transitional version of the infrastructure files; \`${FINISH_COMMAND}\` publishes the final ones in a pull request.`,
   ].join("\n");
-}
-
-/** What happens to the app's bucket at a provider, for the summary (it stays where it is). */
-function bucketLines(plan: DeployPlan): string[] {
-  const bucket = providerBucket(plan);
-  if (bucket === undefined) return [];
-  return [
-    `Bucket: ${bucket.bucket} stays where it is; the app on the new side keeps using it with the same key.`,
-  ];
 }
 
 /**
@@ -745,10 +756,6 @@ export async function startMove(
   }
   requireAddressedOldSide(plan);
   const oldAddress = await liveOldSide(deps, plan, options);
-  // The bucket stays where it is: the app on the new side needs its key, known before any change.
-  if (providerBucket(plan) !== undefined) {
-    await requireStorageKey(deps, plan, options.services ?? {}, { command: RUN_COMMAND });
-  }
   const to = await newTargetId(deps, options);
   if (to === from.provider) {
     if (to === "portainer") throw betweenPortainers();
@@ -763,8 +770,20 @@ export async function startMove(
       );
     }
   }
-  const facts = (await readArtifact("architecture", deps.paths.files.architecture)).facts;
   const services = options.services ?? {};
+  // The app's bucket at a provider moves with it to the other cloud provider, else it stays.
+  const bucket = bucketChoice(plan, to, {
+    keep: options.keepBucket === true,
+    ...(to === "hetzner" || to === "digitalocean"
+      ? { requirements: await requireRequirements(deps) }
+      : {}),
+  });
+  const moves = bucket !== undefined && "moves" in bucket ? bucket.moves : undefined;
+  // A bucket that stays: the app on the new side needs its key, known before any change.
+  if (bucket !== undefined && moves === undefined) {
+    await requireStorageKey(deps, plan, services, { command: RUN_COMMAND });
+  }
+  const facts = (await readArtifact("architecture", deps.paths.files.architecture)).facts;
   const fromOwn = from.provider === "own" ? (await readServerAddresses(deps.paths)).own : undefined;
 
   // From here the old side's connection is set aside, and the new side's takes its slot: a stop
@@ -787,6 +806,7 @@ export async function startMove(
         target: plan.target,
         deploy: plan.deploy,
         ...(plan.app.build === undefined ? {} : { build: plan.app.build }),
+        ...(moves !== undefined ? { objectStorage: moves.old } : {}),
       },
       step: "started",
       empty: [],
@@ -799,8 +819,17 @@ export async function startMove(
       cost: next.cost,
       app: { ...plan.app, build: next.build },
       deploy: next.deploy,
+      ...(moves !== undefined ? { storage: { ...plan.storage, objectStorage: moves.next } } : {}),
       retarget,
     };
+    // Both buckets' keys, before any change: the new one's is asked once in a terminal.
+    const moved =
+      moves === undefined
+        ? undefined
+        : {
+            moves,
+            keys: await bucketKeys({ deps, plan: moving, services, command: RUN_COMMAND }, moves),
+          };
     // A Portainer old side's address is where the user's records on Cloudflare point.
     const fromAddress = oldAddress ?? (await userRecords(deps, moving, services))?.address;
     const session = await openSession(deps, moving, {
@@ -830,14 +859,26 @@ export async function startMove(
       bytes: volume.bytes,
       copy: !empty.includes(volume.owner),
     }));
+    // The bucket's size and object count, read on the old server with its key on standard input.
+    const measured =
+      moved === undefined
+        ? undefined
+        : { moves: moved.moves, size: await measureBucket(session, moved.moves, moved.keys.old) };
+    const bucketLines =
+      measured === undefined
+        ? bucket !== undefined && "stays" in bucket
+          ? [bucket.stays]
+          : []
+        : bucketSummaryLines(measured.moves, measured.size);
     const summary = moveSummary(
       plan,
       next,
       data,
       buildChanges(plan, next),
       old.kind === "portainer" || fresh.kind === "portainer",
+      measured && { moves: measured.moves, count: measured.size.count },
     );
-    deps.reporter.info(summaryText(summary, plan));
+    deps.reporter.info(summaryText(summary, plan, bucketLines));
     if (options.confirmStart !== undefined && !(await options.confirmStart(summary))) {
       throw new OpsCrewError("APPROVAL_REFUSED", "The move was not started. Nothing was changed.", {
         hint: `Run \`${RUN_COMMAND}\` again when you are ready.`,

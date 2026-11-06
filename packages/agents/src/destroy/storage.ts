@@ -170,9 +170,10 @@ export interface BucketDeleted {
  * Confirms that a Hetzner or Spaces bucket the engine deleted is gone: both providers can still
  * answer for a deleted bucket for a while, and keep billing it. Checks it over about 20 s, deletes
  * it again when it still answers and checks again. Returns what to say when it is still there;
- * never says it is gone before it answers 404.
+ * never says it is gone before it answers 404. A move's `--finish` and `--abort` check the bucket
+ * they deleted the same way.
  */
-async function confirmBucketGone(
+export async function confirmBucketGone(
   deps: PhaseDeps,
   bucket: ProviderBucket,
   key: StorageKey,

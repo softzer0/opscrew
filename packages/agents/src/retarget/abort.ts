@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import type { ComputeCatalog } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { appDir, edgeProxy } from "@opscrew/iac-templates";
@@ -14,9 +15,11 @@ import { noServerCost } from "../design/own";
 import { forgetHostKeys } from "../destroy/deletion";
 import type { DestroyPreview } from "../destroy/types";
 import { providerProfile, vpsConnector } from "../providers";
+import { previousBucketKeyFile } from "../provision/storage";
 import { restoreOldConnection, type ServerAddress } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
+import { movingBucketKeys, removeNewBucket, renameBucketBack, writeStorageFiles } from "./bucket";
 import { previousTarget } from "./layouts";
 import { clearPending } from "./pending";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
@@ -286,6 +289,8 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   const move = moveOf(session);
   const from = move.from.target;
   const to = session.plan.target;
+  // Both buckets' keys when the move takes the bucket along, before anything is changed.
+  const keys = await movingBucketKeys(session);
 
   // 1. DNS back to the old side, then the new side (it can only exist once the rename was
   // recorded).
@@ -298,6 +303,13 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     }
     await forgetHostKeys(deps, [session.servers.next?.ipv4, session.servers.next?.ipv6]);
     await recordAbortStep(session, "new-removed", "the new side is removed");
+  }
+
+  // 1b. The new bucket of a move that takes the bucket along, after its own typed name (its plan
+  // finds nothing to delete once it is gone).
+  if (keys !== undefined) {
+    const bucketStop = await removeNewBucket(session, keys, () => recordAbort(session));
+    if (bucketStop !== undefined) return bucketStop;
   }
 
   // 2. The deploy secrets (they may point to the new side from the deploy step on).
@@ -313,6 +325,11 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   if (from.provider === "hetzner" || from.provider === "digitalocean") {
     const stop = await renameBack(session, flags);
     if (stop !== undefined) return stop;
+  }
+  // The bucket being left is the app's bucket again in its root's state.
+  if (keys !== undefined) {
+    const bucketStop = await renameBucketBack(session, keys);
+    if (bucketStop !== undefined) return bucketStop;
   }
 
   // 4. The old side's connection back in its usual slot, the plan as before the move, and the
@@ -330,11 +347,17 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
     target: from.provider === "own" || from.provider === "portainer" ? from : previousTarget(move),
     deploy: move.from.deploy,
     ...(cost !== undefined ? { cost } : {}),
+    ...(move.from.objectStorage !== undefined
+      ? { storage: { ...rest.storage, objectStorage: move.from.objectStorage } }
+      : {}),
   };
   await writeFinalFiles(session, restored, layoutOf(session, "both"), "infra");
+  if (keys !== undefined) await writeStorageFiles(session, restored);
   const oldAddress = session.servers.from;
   await savePlan(session, restored);
   await clearPending(deps);
+  // A run killed while the engine ran may have left the key of the bucket being left there.
+  await rm(previousBucketKeyFile(deps.paths), { force: true });
   await endMoveServers(deps, oldAddress);
   const place = placeWords(from);
   await deps.state.markPhase("retarget", "skipped", `move to ${placeWords(to)} aborted`);

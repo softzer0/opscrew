@@ -157,6 +157,11 @@ export interface RetargetOptions {
    * start it empty; without it everything else is copied.
    */
   chooseEmpty?: (question: EmptyQuestion) => Promise<boolean>;
+  /**
+   * `--keep-bucket`: the app's bucket at the cloud provider being left stays there (and keeps
+   * billing) instead of moving to the new provider's object storage.
+   */
+  keepBucket?: boolean;
   /** Apply the saved plan with this hash (from an earlier non-interactive run) and continue. */
   approvePlanHash?: string;
   /** Allow the maintenance window without a prompt (non-interactive runs). */

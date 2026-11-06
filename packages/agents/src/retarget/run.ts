@@ -51,6 +51,11 @@ async function continueMove(
       `The new side's answers and --empty only apply when a move starts; the move to ${to} continues as it started.`,
     );
   }
+  if (options.keepBucket !== undefined) {
+    deps.reporter.warn(
+      "--keep-bucket: the bucket's choice was made at the start; it stays as chosen.",
+    );
+  }
   const services = options.services ?? {};
   // Users first: an interrupted maintenance window left the old app stopped. Starting it again
   // only needs the deploy key (and the infrastructure state when the local record is gone; the

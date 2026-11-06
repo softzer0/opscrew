@@ -26,6 +26,10 @@ import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 import {
   applyStorage,
+  forgetStorageKey,
+  NEW_STORAGE_KEY_VARS,
+  previousBucketKeyFile,
+  providerBucket,
   requireR2Cloudflare,
   requireStorageKey,
   STORAGE_KEY_VARS,
@@ -36,6 +40,7 @@ import {
   storageKeyFile,
   storageLogin,
   storageStateFile,
+  withPreviousBucketKey,
 } from "./storage";
 import type { ProvisionServices } from "./types";
 
@@ -200,6 +205,87 @@ describe("requireStorageKey", () => {
     await expect(readTextIfExists(storageKeyFile(typed.paths))).resolves.toBeUndefined();
   });
 
+  it("keeps each bucket's key on a line of its own, and forgets one without the others", async () => {
+    const d = await deps({ interactive: true });
+    const other = {
+      accessKeyId: fakeSecret("aws-access-key-id", "other"),
+      secretAccessKey: fakeSecret("aws-secret-access-key", "other"),
+    };
+    const options = { command: "opscrew retarget" };
+    await requireStorageKey(d, hetzner(), { askStorageKey: async () => KEY }, options);
+    const spaces = withBucket(testPlan(), "digitalocean");
+    await requireStorageKey(d, spaces, { askStorageKey: async () => other }, options);
+    // Both are kept: neither is asked again.
+    const never = async (): Promise<typeof KEY> => {
+      throw new Error("asked again");
+    };
+    await expect(
+      requireStorageKey(d, hetzner(), { askStorageKey: never }, options),
+    ).resolves.toEqual(KEY);
+    await expect(requireStorageKey(d, spaces, { askStorageKey: never }, options)).resolves.toEqual(
+      other,
+    );
+    const lines = ((await readTextIfExists(storageKeyFile(d.paths))) ?? "").trim().split("\n");
+    expect(lines.map((line) => JSON.parse(line).provider)).toEqual(["hetzner", "digitalocean"]);
+    await forgetStorageKey(d, { provider: "hetzner", bucket: "shop-uploads" });
+    expect(await readTextIfExists(storageKeyFile(d.paths))).not.toContain(KEY.secretAccessKey);
+    await forgetStorageKey(d, { provider: "digitalocean", bucket: "shop-uploads" });
+    await expect(readTextIfExists(storageKeyFile(d.paths))).resolves.toBeUndefined();
+  });
+
+  it("while a move takes the bucket along, reads the variables for the bucket being left only", async () => {
+    const d = await deps({ env: KEY_ENV });
+    const old = withBucket(testPlan(), "hetzner");
+    const leaving = old.storage?.objectStorage;
+    const next = withBucket(testPlan(), "digitalocean");
+    const moving: DeployPlan = {
+      ...next,
+      retarget: {
+        from: { target: old.target, deploy: old.deploy, objectStorage: leaving },
+        step: "started",
+        empty: [],
+        startedAt: "2026-11-06T12:00:00.000Z",
+      },
+    };
+    const options = { command: "opscrew retarget" };
+    const bucket = providerBucket(old);
+    await expect(requireStorageKey(d, moving, {}, { ...options, bucket })).resolves.toEqual(KEY);
+    const error = await requireStorageKey(d, moving, {}, options).catch((e: unknown) => e);
+    expect(error).toMatchObject({
+      code: "CREDENTIALS_MISSING",
+      message: expect.stringContaining("shop-uploads on DigitalOcean Spaces"),
+      hint: expect.stringContaining(
+        "Then run `opscrew retarget` in a terminal to paste it once, or set OPSCREW_NEW_STORAGE_ACCESS_KEY_ID and OPSCREW_NEW_STORAGE_SECRET_ACCESS_KEY to it and run `opscrew retarget` again. While a move takes the bucket along, OPSCREW_STORAGE_ACCESS_KEY_ID and OPSCREW_STORAGE_SECRET_ACCESS_KEY hold the key of the bucket being left.",
+      ),
+    });
+    // The new bucket's key from its own variables, never kept, registered with the redactor.
+    const fresh = {
+      accessKeyId: fakeSecret("aws-access-key-id", "new"),
+      secretAccessKey: fakeSecret("aws-secret-access-key", "new"),
+    };
+    const both = await deps({
+      env: {
+        ...KEY_ENV,
+        [NEW_STORAGE_KEY_VARS.accessKeyId]: fresh.accessKeyId,
+        [NEW_STORAGE_KEY_VARS.secretAccessKey]: fresh.secretAccessKey,
+      },
+    });
+    await expect(requireStorageKey(both, moving, {}, options)).resolves.toEqual(fresh);
+    await expect(requireStorageKey(both, moving, {}, { ...options, bucket })).resolves.toEqual(KEY);
+    await expect(readTextIfExists(storageKeyFile(both.paths))).resolves.toBeUndefined();
+    expect(both.redactor.redact(fresh.secretAccessKey)).not.toContain(fresh.secretAccessKey);
+    // Without a move they are never read.
+    const plain = await deps({
+      env: {
+        [NEW_STORAGE_KEY_VARS.accessKeyId]: fresh.accessKeyId,
+        [NEW_STORAGE_KEY_VARS.secretAccessKey]: fresh.secretAccessKey,
+      },
+    });
+    await expect(requireStorageKey(plain, next, {}, options)).rejects.toMatchObject({
+      code: "CREDENTIALS_MISSING",
+    });
+  });
+
   it("stops on a damaged copy of the key instead of asking again", async () => {
     const d = await deps({ interactive: true });
     const file = storageKeyFile(d.paths);
@@ -247,6 +333,29 @@ describe("the storage root's engine environment and the app's login", () => {
     expect(Object.keys(out).some((name) => name.startsWith("TF_VAR_"))).toBe(false);
     // R2's root uses the Cloudflare token as the other roots do.
     expect(storageEngineEnv(env, withBucket(testPlan(), "r2"), undefined)).toEqual(env);
+  });
+
+  it("gives a move's aws.previous provider the bucket being left's key in a file there only while it runs", async () => {
+    const d = await createTestPhaseDeps({ env: {} });
+    const file = previousBucketKeyFile(d.paths);
+    const seen = await withPreviousBucketKey(d, KEY, async (path) => {
+      expect(path).toBe(file);
+      const out = storageEngineEnv(env, withBucket(testPlan(), "digitalocean"), KEY, path);
+      expect(out.AWS_SHARED_CREDENTIALS_FILE).toBe(file);
+      if (process.platform !== "win32") expect((await stat(file)).mode & 0o777).toBe(0o600);
+      return readTextIfExists(file);
+    });
+    expect(seen).toBe(
+      `[opscrew-previous]\naws_access_key_id = ${KEY.accessKeyId}\naws_secret_access_key = ${KEY.secretAccessKey}\n`,
+    );
+    await expect(readTextIfExists(file)).resolves.toBeUndefined();
+    // Removed when the engine fails too.
+    await expect(
+      withPreviousBucketKey(d, KEY, async () => {
+        throw new Error("engine failed");
+      }),
+    ).rejects.toThrow("engine failed");
+    await expect(readTextIfExists(file)).resolves.toBeUndefined();
   });
 
   it("gives the app R2's endpoint from the zone's Cloudflare account", () => {
