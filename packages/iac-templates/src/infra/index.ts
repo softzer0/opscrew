@@ -40,6 +40,7 @@ import { portainerRoot } from "./portainer";
 import { siteRootModule } from "./serverless";
 import {
   addressVariables,
+  borrowedShared,
   checkKeyArgument,
   type ExtraServerCall,
   extraServerCalls,
@@ -47,9 +48,12 @@ import {
   extraServersOutput,
   keyTfvars,
   keyVariables,
+  previousWireguardArgument,
   providerBlock,
+  type SharedLayout,
   serverTfvars,
   serverVariables,
+  sharedMoves,
   wireguardArgument,
 } from "./servers";
 import { type TunnelPieces, tunnelPieces } from "./tunnel";
@@ -126,6 +130,8 @@ interface RootShape {
   providers: ProviderText[];
   /** True while a move is in progress (a layout was given). */
   moving: boolean;
+  /** Which server modules hold the deploy key and app tag the extra servers use. */
+  shared: SharedLayout;
 }
 
 /** The HCL expressions of a side's addresses. */
@@ -185,6 +191,11 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
       );
     }
   }
+  const moving = ctx.layout !== undefined;
+  const slotProvider = (slot: ServerModule) =>
+    servers.find((server) => server.slot === slot)?.target.provider;
+  const finishing = moving && layout.previous === undefined && moved === undefined;
+  const server = slotProvider("server");
   return {
     sides,
     servers,
@@ -193,7 +204,15 @@ function rootShape(plan: DeployPlan, ctx: RenderContext): RootShape {
     moved,
     extras,
     providers: providers.map((provider) => PROVIDER_TEXT[provider]),
-    moving: ctx.layout !== undefined,
+    moving,
+    shared: {
+      server,
+      previous: slotProvider("server_previous"),
+      bothSides: moving && layout.previous !== undefined,
+      finishing,
+      // Every layout of a move renders the old cloud side's provider.
+      leaving: finishing ? layout.providers.find((provider) => provider !== server) : undefined,
+    },
   };
 }
 
@@ -266,8 +285,12 @@ function mainTf(
   for (const provider of shape.providers) lines.push(...providerBlock(provider));
   const zone = serverZoneUse(plan);
   if (zone !== undefined) lines.push(...CLOUDFLARE_PROVIDER_BLOCK);
+  const borrowed = borrowedShared(shape.extras, shape.shared);
   for (const server of shape.servers) {
     const previous = server.slot === "server_previous";
+    // The old app server: `server_previous`, or `server` again while an abort renames it back.
+    const old = previous || shape.moved?.to === "server";
+    const shared = previous ? undefined : borrowed;
     lines.push(
       ...moduleBlock({
         comment: previous
@@ -278,15 +301,19 @@ function mainTf(
         name: server.slot,
         source: server.provider.module,
         args: [
-          ...server.provider.moduleArguments({ prefix: server.prefix }),
-          ...wireguardArgument(plan, APP_SERVER),
+          ...server.provider.moduleArguments({
+            prefix: server.prefix,
+            ...(shared?.appTag === undefined ? {} : { appTag: shared.appTag }),
+          }),
+          ...(old ? previousWireguardArgument(plan) : wireguardArgument(plan, APP_SERVER)),
+          ...(shared === undefined ? [] : [["ssh_key_id", shared.sshKeyId] as const]),
           ...checkKeyArgument(checkKey && !previous),
         ],
       }),
     );
   }
-  const app = shape.servers.find((server) => server.slot === "server");
-  lines.push(...extraServerModules(plan, shape.extras, app?.target.provider, checkKey));
+  lines.push(...extraServerModules(plan, shape.extras, shape.shared, checkKey));
+  lines.push(...sharedMoves(shape.extras, shape.shared));
   if (shape.moved) {
     const { from, to } = shape.moved;
     lines.push(

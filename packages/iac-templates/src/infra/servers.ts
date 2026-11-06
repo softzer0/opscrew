@@ -85,6 +85,15 @@ export function wireguardArgument(plan: DeployPlan, member: string): (readonly [
 }
 
 /**
+ * `wireguard_port = <port>` for the old app server during a move: its member of the private
+ * network until `--finish` (`retarget.from.member`); none without one.
+ */
+export function previousWireguardArgument(plan: DeployPlan): (readonly [string, string])[] {
+  const port = plan.retarget?.from.member?.port;
+  return port === undefined ? [] : [["wireguard_port", String(port)]];
+}
+
+/**
  * A server's own variables: `location`, `server_type`, `image`, `backups` and, for Hetzner,
  * `delete_protection`, under its prefix. `label` names the server in the descriptions:
  * `previous` for `module "server_previous"`, an extra server's name, none for the app's server.
@@ -194,32 +203,127 @@ export function keyTfvars(plan: DeployPlan, ctx: RenderContext): Record<string, 
   };
 }
 
-/** The deploy key (and DigitalOcean app tag) `module "server"` holds, for extra servers beside it. */
-const APP_SERVER_SHARED = {
-  sshKeyId: "module.server.ssh_key_id",
-  appTag: "module.server.app_tag_name",
+/**
+ * Which server modules the root holds, for where the extra servers get the deploy key (and
+ * DigitalOcean's app tag) from. Without a move only `server` is set.
+ */
+export interface SharedLayout {
+  /** The provider of `module "server"`, when it is a server module. */
+  server?: CloudProvider | undefined;
+  /** The provider of `module "server_previous"`, when it is a server module. */
+  previous?: CloudProvider | undefined;
+  /**
+   * A move before `--finish` (both sides in the root): `module "server"` is the new server, which
+   * holds no key or tag of its own while extra servers on its provider use the root's.
+   */
+  bothSides: boolean;
+  /** The layout of `--finish`: the old side has gone and the root becomes the final one. */
+  finishing: boolean;
+  /** At `--finish`, the old side's cloud provider, whose server module goes. */
+  leaving?: CloudProvider | undefined;
+}
+
+/** The resources a provider's deploy key and app tag are, in the root and in a server module. */
+const SHARED_RESOURCES: Record<CloudProvider, readonly string[]> = {
+  hetzner: ["hcloud_ssh_key.deploy"],
+  digitalocean: ["digitalocean_ssh_key.deploy", "digitalocean_tag.app"],
 };
+
+/** The deploy key and DigitalOcean's app tag a server module holds, for extra servers beside it. */
+function moduleShared(module: "server" | "server_previous") {
+  return { sshKeyId: `module.${module}.ssh_key_id`, appTag: `module.${module}.app_tag_name` };
+}
+
+/**
+ * Where the extra servers on `provider` get the deploy key and app tag: the server module on it
+ * that holds them (`server_previous` during a move, `server` otherwise), else the root, which
+ * also holds them for the new `module "server"` while a move has both sides.
+ */
+function sharedSource(
+  layout: SharedLayout,
+  provider: CloudProvider,
+): "server" | "server_previous" | "root" {
+  if (provider === layout.previous) return "server_previous";
+  if (provider === layout.server && !layout.bothSides) return "server";
+  return "root";
+}
+
+/**
+ * The arguments that give `module "server"` the root's deploy key and app tag: during a move with
+ * both sides, when extra servers on its provider use them (both providers refuse the same key
+ * twice, and a DigitalOcean tag is deleted from every Droplet with it). None otherwise.
+ */
+export function borrowedShared(
+  calls: readonly ExtraServerCall[],
+  layout: SharedLayout,
+): { sshKeyId: string; appTag?: string } | undefined {
+  const provider = layout.server;
+  if (!layout.bothSides || !calls.some((call) => call.target.provider === provider)) {
+    return undefined;
+  }
+  return provider === undefined ? undefined : PROVIDER_TEXT[provider].extraShared;
+}
+
+/**
+ * The `moved` blocks of `--finish` for the deploy key and app tag the extra servers keep using:
+ * the old server module's go to the root (the extra servers on its provider use the root's from
+ * now on), and the root's go to the new `module "server"` (which holds them from now on). Nothing
+ * is deleted from under the extra servers.
+ */
+export function sharedMoves(calls: readonly ExtraServerCall[], layout: SharedLayout): string[] {
+  if (!layout.finishing) return [];
+  const used = (provider: CloudProvider | undefined) =>
+    provider !== undefined && calls.some((call) => call.target.provider === provider);
+  const moved = (from: string, to: string) => [
+    "moved {",
+    `  from = ${from}`,
+    `  to   = ${to}`,
+    "}",
+  ];
+  const lines: string[] = [];
+  if (used(layout.leaving)) {
+    lines.push(
+      "# The old server's deploy key (and app tag) stay for the extra servers on its provider.",
+      ...SHARED_RESOURCES[layout.leaving as CloudProvider].flatMap((resource) =>
+        moved(`module.server_previous.${resource}[0]`, resource),
+      ),
+      "",
+    );
+  }
+  if (used(layout.server)) {
+    lines.push(
+      "# The new server holds the deploy key (and app tag) the extra servers on its provider use.",
+      ...SHARED_RESOURCES[layout.server as CloudProvider].flatMap((resource) =>
+        moved(resource, `module.server.${resource}[0]`),
+      ),
+      "",
+    );
+  }
+  return lines;
+}
 
 /**
  * The extra servers' module blocks: named `<app>-<name>`, no web traffic, the network's port.
- * On `appProvider` (the provider of `module "server"`) they get its deploy key and DigitalOcean app
- * tag; on any other provider the root creates both once, before the modules, so removing or
+ * Each gets the deploy key and DigitalOcean app tag where {@link sharedSource} says; on a provider
+ * no server module holds them the root creates both once, before the modules, so removing or
  * reordering an extra server never deletes or moves them.
  */
 export function extraServerModules(
   plan: DeployPlan,
   calls: readonly ExtraServerCall[],
-  appProvider: CloudProvider | undefined,
+  layout: SharedLayout,
   checkKey: boolean,
 ): string[] {
-  const others = new Set(
-    calls.filter((call) => call.target.provider !== appProvider).map((call) => call.provider),
+  const roots = new Set(
+    calls
+      .filter((call) => sharedSource(layout, call.target.provider) === "root")
+      .map((call) => call.provider),
   );
   return [
-    ...[...others].flatMap((provider) => provider.extraShared.resources),
+    ...[...roots].flatMap((provider) => provider.extraShared.resources),
     ...calls.flatMap((call) => {
-      const shared =
-        call.target.provider === appProvider ? APP_SERVER_SHARED : call.provider.extraShared;
+      const source = sharedSource(layout, call.target.provider);
+      const shared = source === "root" ? call.provider.extraShared : moduleShared(source);
       return moduleBlock({
         comment: [
           `# The ${call.name} ${call.provider.serverNoun}: no web traffic, only its services on the private network.`,

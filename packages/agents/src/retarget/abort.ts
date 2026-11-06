@@ -188,11 +188,13 @@ async function renameBack(
   const from = previousTarget(moveOf(session));
   const old = sideWords(from, "old");
   deps.reporter.step(`Renaming ${old} back in the infrastructure state`);
+  // The layout renders the old server with its own WireGuard port (`retarget.from.member`).
   const files = await useLayout(session, "abort-rename");
+  const network = networkBeforeMove(session.plan);
   const input: InfraPlanInput = {
     action: "abort-rename",
     files,
-    deployPlan: { ...session.plan, target: from },
+    deployPlan: { ...session.plan, target: from, ...(network !== undefined ? { network } : {}) },
     check: (saved) =>
       assertRenameOnly(saved, {
         fromPrefix: "module.server_previous.",
@@ -365,7 +367,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   await writeFinalFiles(session, restored, layoutOf(session, "both"), "infra");
   if (keys !== undefined) await writeStorageFiles(session, restored);
   const oldAddress = session.servers.from;
-  await endMoveKey(deps, "aborted");
+  await endMoveKey(deps, move, "aborted");
   await savePlan(session, restored);
   await clearPending(deps);
   // A run killed while the engine ran may have left the key of the bucket being left there.

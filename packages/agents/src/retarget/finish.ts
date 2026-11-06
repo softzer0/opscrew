@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { isUserFacingError, lowerFirst, OpsCrewError, upperFirst } from "@opscrew/core";
+import { isUserFacingError, listText, lowerFirst, OpsCrewError, upperFirst } from "@opscrew/core";
 import { isServerlessTarget, type PortainerDeployTarget, readArtifact } from "@opscrew/plan-schema";
 import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
@@ -10,6 +10,7 @@ import {
   removeSnapshotRecord,
 } from "../destroy/deletion";
 import { deleteDeployBranch } from "../destroy/portainer";
+import { commandFlags } from "../environments/choice";
 import { publishDeploySetup } from "../provision";
 import { previousBucketKeyFile } from "../provision/storage";
 import { deployBranchOf, readOldOwnServer, trackedFiles } from "../shared";
@@ -136,6 +137,14 @@ async function finish(
 
   // 2. Cleanup: host keys, the Portainer deploy branch, final files, plan, snapshot record, phase.
   const remaining: string[] = [...bucket.remaining];
+  // The devices' configurations name the old app server, with its key and address.
+  const devices = session.plan.network?.devices.map((device) => device.name) ?? [];
+  if (move.from.member !== undefined && devices.length > 0) {
+    const flag = await commandFlags(deps.paths.root, deps.paths.environment, deps.paths.app);
+    remaining.push(
+      `The WireGuard configurations of your devices (${listText(devices)}) name the old app server, which is gone: get each device a new one with \`opscrew vpn add <device> --again${flag}\` and import it in its WireGuard app.`,
+    );
+  }
   if (from.provider === "portainer") {
     const branch = await deleteOldDeployBranch(session, from);
     if (branch !== undefined) remaining.push(branch);
@@ -157,7 +166,7 @@ async function finish(
   const { retarget: _finished, ...finalPlan } = session.plan;
   const written = await writeFinalFiles(session, finalPlan, layoutOf(session, "switched"), "all");
   const storage = keys === undefined ? [] : await writeStorageFiles(session, finalPlan);
-  await endMoveKey(deps, "finished");
+  await endMoveKey(deps, move, "finished");
   await savePlan(session, finalPlan);
   await removeSnapshotRecord(deps, "retarget");
   await clearPending(deps);

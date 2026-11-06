@@ -793,7 +793,7 @@ export async function startMove(
   // From here the old side's connection is set aside, and the new side's takes its slot: a stop
   // before the move is recorded puts it back, so nothing is changed.
   await setAsideOldConnection(deps.paths, from.provider);
-  let started: { session: MoveSession; next: NewSide; empty: string[]; key?: string };
+  let started: { session: MoveSession; next: NewSide; empty: string[] };
   try {
     const next =
       to === "own"
@@ -898,21 +898,16 @@ export async function startMove(
     // The sides' addresses go to the local state, never into opscrew/plan.yaml.
     await startMoveServers(deps, session.servers);
     await saveMove(session, { ...retarget, empty });
-    started = {
-      session,
-      next,
-      empty,
-      ...(network !== undefined ? { key: network.privateKey } : {}),
-    };
+    // The new member's key stays on this computer, with the generated values.
+    if (network !== undefined) await recordMoveKey(deps, network.privateKey);
+    started = { session, next, empty };
   } catch (error) {
     // Nothing of the move stays: the old side's connection back in its slot, no move record.
     await restoreOldConnection(deps.paths, { from: from.provider, to });
     await endMoveServers(deps, undefined);
     throw error;
   }
-  const { session, next, empty, key } = started;
-  // The new member's key stays on this computer, with the generated values.
-  if (key !== undefined) await recordMoveKey(deps, key);
+  const { session, next, empty } = started;
   deps.reporter.success(
     `Started the move of ${plan.app.name} to ${placeWords(next.target)}; opscrew/plan.yaml records each step.`,
   );

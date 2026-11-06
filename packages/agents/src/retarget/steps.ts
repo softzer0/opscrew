@@ -1,7 +1,20 @@
-import { posix } from "node:path";
-import { formatMoney, isUserFacingError, OpsCrewError, readTextIfExists } from "@opscrew/core";
+import { rm } from "node:fs/promises";
+import { join, posix } from "node:path";
+import {
+  formatMoney,
+  isUserFacingError,
+  OpsCrewError,
+  readTextIfExists,
+  writeFileAtomic,
+} from "@opscrew/core";
 import { checkServerSecret, EDGE_PROXIES, edgeProxy, keepNewerPins } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, type DeployTarget, monitoringOf } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  type DeployTarget,
+  monitoringServerName,
+} from "@opscrew/plan-schema";
+import { z } from "zod";
 import { checkReachesOverSsh } from "../check/provision";
 import { workflowBranch } from "../environments/branches";
 import { providerProfile } from "../providers";
@@ -23,6 +36,7 @@ import {
   knownHostsName,
   planStop,
   readServerAddresses,
+  readValidJson,
   readyNewServer,
   serverOfProvider,
   writeRenderedFiles,
@@ -669,6 +683,20 @@ async function runDeployWorkflow(session: MoveSession): Promise<void> {
 }
 
 /**
+ * `.opscrew/retarget-deployed.json`: the move (its `startedAt`) whose new side the deploy workflow
+ * deployed, while step `deployed` is not recorded yet. Machine-local.
+ */
+function deployedFile(session: Pick<MoveSession, "deps">): string {
+  return join(session.deps.paths.stateDir, "retarget-deployed.json");
+}
+
+/** True when the deploy workflow already deployed this move's new side. */
+async function deployedInThisMove(session: MoveSession): Promise<boolean> {
+  const startedAt = await readValidJson(deployedFile(session), z.string());
+  return startedAt === moveOf(session).startedAt;
+}
+
+/**
  * Step 4: with a private network, the new app server joins it first (`joinMoveNetwork`); the
  * deploy secrets point to the new side (a server's over SSH, or the build values for
  * the user's Portainer); a deploy workflow that differs for the new side waits for its pull
@@ -706,18 +734,27 @@ export async function deployStep(
   }
   const pending = await workflowStop(session);
   if (pending !== undefined) return pending;
-  if (!portainer) await runDeployWorkflow(session);
+  // A script that stopped after the deploy (at a host plan's hash) does not deploy again.
+  if (!portainer && !(await deployedInThisMove(session))) {
+    await runDeployWorkflow(session);
+    await writeFileAtomic(deployedFile(session), `${JSON.stringify(moveOf(session).startedAt)}\n`);
+  }
   const stop = await side.deploy(session);
   if (stop !== undefined) return stop;
-  // Self-hosted monitoring on the new app server, once the deploy made the networks Alloy joins.
-  if (monitoringOf(plan) !== undefined) {
-    const monitored = await moveMonitoring(session, plan, await sideServer(session, "new"));
+  // Self-hosted monitoring on the new app server (and the stack's own server), once the deploy
+  // made the networks Alloy joins; the other servers' Alloy follows after the window.
+  const stack = monitoringServerName(plan);
+  if (stack !== undefined) {
+    const monitored = await moveMonitoring(session, plan, () => sideServer(session, "new"), {
+      servers: [APP_SERVER, stack],
+    });
     if (monitored !== undefined) return monitored;
   }
   // The bucket's first copy, before the maintenance window (which copies only what changed).
   const bucket = movingBucket(plan);
   if (bucket !== undefined) await copyBucket(session, "copy", await bucketKeys(session, bucket));
   await saveMove(session, { ...moveOf(session), step: "deployed" });
+  await rm(deployedFile(session), { force: true });
   deps.reporter.success(`The app runs on ${words}; the old side still serves users.`);
   await auditStep(session, "deployed", `app deployed and healthy on ${words}`);
   return undefined;

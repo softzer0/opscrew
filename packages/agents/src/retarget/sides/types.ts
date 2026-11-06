@@ -82,9 +82,12 @@ export interface MoveSide {
   stopApp(session: MoveBase): Promise<void>;
   /** Starts what {@link stopApp} stopped. */
   startApp(session: MoveBase): Promise<void>;
-  /** Stops the named stateful services cleanly (Compose service names). */
+  /**
+   * Stops the named stateful services cleanly (Compose service names), and the app's own
+   * monitoring stack when it runs on this side's server.
+   */
   stopServices(session: MoveBase, names: readonly string[]): Promise<void>;
-  /** Starts the named stateful services. */
+  /** Starts the named stateful services, and the monitoring stack {@link stopServices} stopped. */
   startServices(session: MoveBase, names: readonly string[]): Promise<void>;
   /** Stops the edge (Caddy or nginx and kamal-proxy, or the stack's Caddy on Portainer). */
   stopEdge(session: MoveBase): Promise<void>;

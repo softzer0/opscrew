@@ -14,6 +14,7 @@ import {
   sameIp,
 } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
+import { pointMonitoringAfterWindow } from "./network";
 import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
 import {
   auditMove,
@@ -195,6 +196,11 @@ async function switchManagedDns(
   const move = moveOf(session);
   const fresh = sideWords(plan.target, "new");
   const old = sideWords(move.from.target, "old");
+  // Past the window (or without one): the other servers' Alloy sends to the new stack.
+  if (!windowAhead) {
+    const monitored = await pointMonitoringAfterWindow(session);
+    if (monitored !== undefined) return monitored;
+  }
   deps.reporter.step(`Planning the switch of ${plan.dns.domain} to ${fresh}`);
   const files = await useLayout(session, "switched");
   const adopted =
@@ -243,6 +249,8 @@ async function switchManagedDns(
       prepared.kind === "ready" ? prepared.planHash : undefined,
     );
     if (window !== "done") return window;
+    const monitored = await pointMonitoringAfterWindow(session);
+    if (monitored !== undefined) return monitored;
   }
   if (prepared.kind === "unchanged") {
     deps.reporter.info(`The DNS records of ${plan.dns.domain} already point to ${fresh}.`);
@@ -285,6 +293,9 @@ async function switchByHand(
     const window = await maintenanceWindow(session, options);
     if (window !== "done") return window;
   }
+  // The other servers' Alloy sends to the new stack from now on.
+  const monitored = await pointMonitoringAfterWindow(session);
+  if (monitored !== undefined) return monitored;
   const fresh = sideWords(plan.target, "new");
   const old = sideWords(move.from.target, "old");
   const records = manualRecords(plan, next);

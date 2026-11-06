@@ -50,6 +50,7 @@ import { connectAndInspectOwnServer } from "../shared/own-server";
 import { networkSshPort } from "../shared/server-address";
 import { extraServers } from "../shared/servers";
 import { oldSideTarget } from "./layouts";
+import { quietly } from "./plans";
 import type { MoveServer } from "./removal";
 import { oldServer } from "./servers";
 import { auditMove, type MoveSession, moveOf, newServer, remoteFor } from "./session";
@@ -116,15 +117,18 @@ export async function recordMoveKey(
 }
 
 /**
- * The generated values' keys when the move ends: after `--finish` the old app server's key goes;
- * after `--abort` it is `app`'s again.
+ * The generated values' keys when a move of an app with a private network ends (`move`, whose
+ * old member says the move made a new key): after `--finish` the old app server's key goes;
+ * after `--abort` it is `app`'s again, or, when this computer never had it, the new server's key
+ * goes, so `app` never holds a key its server does not use.
  */
 export async function endMoveKey(
   deps: Pick<PhaseDeps, "paths">,
+  move: Pick<NonNullable<DeployPlan["retarget"]>, "from">,
   ended: "finished" | "aborted",
 ): Promise<void> {
+  if (move.from.member === undefined) return;
   const previous = (await networkKeys(deps))[PREVIOUS_MEMBER];
-  if (previous === undefined) return;
   await recordGeneratedEntries(deps, "network", {
     [PREVIOUS_MEMBER]: undefined,
     ...(ended === "aborted" ? { [APP_SERVER]: previous } : {}),
@@ -343,44 +347,64 @@ export async function undoMoveNetwork(
   );
   if (stop !== undefined) return stop;
   if (monitoringOf(before)?.where.kind !== "app") return undefined;
-  return moveMonitoring(session, before, await sideServer(session, "old"), beforeChange);
+  return moveMonitoring(session, before, () => sideServer(session, "old"), { beforeChange });
 }
 
 /**
- * The monitoring's host plans of `plan` (provision's, `monitoringHostPlans`) with the app's server
- * reached as `app` says, each shown and approved by its hash. A script stops at the first plan
- * with changes that `--approve` does not name, with its hash (a later one then stops the run with
- * its own hash, as provision's do). `beforeChange` runs before any is asked for: they are planned
- * first only to know whether one changes something.
+ * The monitoring's host plans of `plan` (provision's, `monitoringHostPlans`) on `servers` (default
+ * every one), the app's server reached as `app` gives it (inspected again for each plan), one at
+ * a time: planned quietly, then the first with changes is shown and approved by its hash and
+ * applied alone, until none changes. A script stops at a plan `--approve` does not name, with its
+ * hash; `beforeChange` runs before a plan is asked for.
+ * @throws Error when a plan still has changes after its apply.
  */
 export async function moveMonitoring(
   session: MoveSession,
   plan: DeployPlan,
-  app: NetworkServer,
-  beforeChange?: () => Promise<void>,
+  app: () => Promise<NetworkServer>,
+  options: { servers?: readonly string[]; beforeChange?: () => Promise<void> } = {},
 ): Promise<RetargetResult | undefined> {
   const { deps } = session;
   if (monitoringOf(plan) === undefined) return undefined;
-  const input = {
-    services: session.services,
-    ownRun: undefined,
-    extraOwn: [],
-    command: session.command,
-    phase: "retarget",
-    app,
-  } as const;
-  if (deps.interactive && beforeChange === undefined) {
-    await monitoringHostPlans(deps, plan, { ...input, planOnly: false });
-    return undefined;
+  const applied = new Set<string>();
+  for (;;) {
+    const input = {
+      services: session.services,
+      ownRun: undefined,
+      extraOwn: [],
+      command: session.command,
+      phase: "retarget",
+      app: await app(),
+      ...(options.servers !== undefined ? { servers: options.servers } : {}),
+    } as const;
+    const planned = await monitoringHostPlans(quietly(deps), plan, { ...input, planOnly: true });
+    const next = planned.find((outcome) => outcome.plan.steps.some((s) => s.state === "change"));
+    if (next === undefined) return undefined;
+    if (applied.has(next.hash)) {
+      throw new Error(`The monitoring's host plan ${next.hash} still has changes after its apply.`);
+    }
+    applied.add(next.hash);
+    if (!deps.interactive) {
+      if (session.approve !== next.hash) {
+        await monitoringHostPlans(deps, plan, { ...input, planOnly: true, only: next.hash });
+        return pendingStop(session, next.hash);
+      }
+      session.approve = undefined;
+    }
+    await options.beforeChange?.();
+    await monitoringHostPlans(deps, plan, { ...input, planOnly: false, only: next.hash });
   }
-  const shown = await monitoringHostPlans(deps, plan, { ...input, planOnly: true });
-  const next = shown.find((outcome) => outcome.plan.steps.some((s) => s.state === "change"));
-  if (next === undefined) return undefined;
-  if (!deps.interactive) {
-    if (session.approve !== next.hash) return pendingStop(session, next.hash);
-    session.approve = undefined;
-  }
-  await beforeChange?.();
-  await monitoringHostPlans(deps, plan, { ...input, planOnly: false });
-  return undefined;
+}
+
+/**
+ * After the move's window, with self-hosted monitoring on the app's server: the other servers'
+ * Alloy sends to the new app server's stack from now on (the stack holds the copied figures and
+ * logs), each plan approved by its hash. Nothing with the stack elsewhere: their Alloy is as it
+ * was.
+ */
+export async function pointMonitoringAfterWindow(
+  session: MoveSession,
+): Promise<RetargetResult | undefined> {
+  if (monitoringOf(session.plan)?.where.kind !== "app") return undefined;
+  return moveMonitoring(session, session.plan, () => sideServer(session, "new"));
 }

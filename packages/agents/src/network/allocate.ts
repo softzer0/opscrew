@@ -67,6 +67,28 @@ export interface AllocatedNetwork {
   privateKeys: Record<string, string>;
 }
 
+/**
+ * The first server address of `range` from `.from` that `taken` leaves free, for server `name`.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when servers' addresses (up to `.99`) are all taken.
+ */
+function freeServerHost(
+  range: string,
+  taken: ReadonlySet<number>,
+  from: number,
+  name: string,
+): number {
+  let host = from;
+  while (taken.has(host)) host += 1;
+  if (host >= FIRST_DEVICE) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The private network ${range} has no free address for server ${name}: servers use .2 to .99.`,
+      { hint: "Remove servers the app no longer uses from servers in the plan." },
+    );
+  }
+  return host;
+}
+
 /** A server the user owns takes its port from its facts; one OpsCrew creates listens on 51820. */
 function ownServer(target: { provider: string }): { needsFacts?: string } {
   return target.provider === "own" ? { needsFacts: "the user's own" } : {};
@@ -127,15 +149,7 @@ export function allocateNetwork(
   const members = servers.map(({ name, needsFacts }) => {
     const member = kept.get(name);
     if (member !== undefined) return member;
-    let host = name === APP_SERVER ? 1 : FIRST_SERVER;
-    while (taken.has(host)) host += 1;
-    if (host >= FIRST_DEVICE) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `The private network ${range} has no free address for server ${name}: servers use .2 to .99.`,
-        { hint: "Remove servers the app no longer uses from servers in the plan." },
-      );
-    }
+    const host = freeServerHost(range, taken, name === APP_SERVER ? 1 : FIRST_SERVER, name);
     taken.add(host);
     let port = FIRST_PORT;
     if (needsFacts !== undefined) {
@@ -176,15 +190,7 @@ export function moveAppMember(
   keys: KeyMaker = x25519KeyPair,
 ): { member: NetworkMember; privateKey: string } {
   const taken = new Set(network.members.map((m) => hostOf(m.address)));
-  let host = FIRST_SERVER;
-  while (taken.has(host)) host += 1;
-  if (host >= FIRST_DEVICE) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The private network ${network.range} has no free address for the new app server: servers use .2 to .99. Nothing was changed.`,
-      { hint: "Remove servers the app no longer uses from servers in the plan." },
-    );
-  }
+  const host = freeServerHost(network.range, taken, FIRST_SERVER, APP_SERVER);
   const pair = keys();
   return {
     member: {

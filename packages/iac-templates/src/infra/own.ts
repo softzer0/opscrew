@@ -94,7 +94,7 @@ function mainTf(
   lines.push(...(extras.length > 0 ? OWN_NOTE_WITH_EXTRAS : OWN_NOTE));
   if (!tunnelMode(plan)) lines.push("#", ...ADDRESS_NOTE);
   lines.push("");
-  lines.push(...extraServerModules(plan, extras, undefined, checkKey));
+  lines.push(...extraServerModules(plan, extras, { bothSides: false, finishing: false }, checkKey));
   if (zone === "records" || zone === "previews") {
     lines.push(
       ...dnsModule(

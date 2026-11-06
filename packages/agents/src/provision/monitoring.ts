@@ -14,6 +14,8 @@
 import { join } from "node:path";
 import {
   type AddonEnable,
+  type HostPlan,
+  hostPlanHash,
   MONITOR_LOGIN,
   planAddon,
   planGrant,
@@ -48,7 +50,7 @@ import { appPaths } from "../apps/list";
 import type { PhaseDeps } from "../context";
 import { commandFlags } from "../environments/choice";
 import { readOwnerPlan, senderPlans } from "../monitoring/repository";
-import { monitoringOwner, networkRemovalSteps } from "../network";
+import { monitoringOwner, networkHostPlan, networkRemovalSteps, publicEndpoints } from "../network";
 import { currentOwner, joinedOn, otherServer } from "../network/owner";
 import { planFile } from "../runners/words";
 import {
@@ -75,7 +77,18 @@ import { type ServerHostPlansInput, serverForNetwork } from "./servers";
 export type MonitoringHostPlansInput = Pick<
   ServerHostPlansInput,
   "services" | "ownRun" | "extraOwn" | "planOnly" | "command" | "phase" | "app"
->;
+> & {
+  /**
+   * Only the plan with this hash is shown and applied, the others are left for a later run (a
+   * move's script approves one plan per run).
+   */
+  only?: string;
+  /**
+   * Only these of the plan's servers are reached (default every one): a move sets up the new app
+   * server (and the stack's server) before its window, and the others' Alloy after it.
+   */
+  servers?: readonly string[];
+};
 
 /** A server the monitoring's host plans reach, inspected now. */
 interface Reached extends NetworkServer {
@@ -154,14 +167,17 @@ export async function monitoringHostPlans(
   const monitoring = monitoringOf(plan);
   const kept = await monitoringValues(deps);
   if (monitoring === undefined && kept === undefined) return [];
-  if (input.planOnly && !(await serversKnown(deps, plan))) {
+  if (input.planOnly && !(await serversKnown(deps, plan, input))) {
     deps.reporter.info(
       "The monitoring's host plans follow once every server exists: they need each server's address and what it runs. Applying the plans above shows them and asks for their approval.",
     );
     return [];
   }
   const servers: Reached[] = [];
-  for (const name of appServers(plan)) servers.push(await reachServer(deps, input, plan, name));
+  for (const name of appServers(plan)) {
+    if (input.servers !== undefined && !input.servers.includes(name)) continue;
+    servers.push(await reachServer(deps, input, plan, name));
+  }
   const run: Run = { deps, plan, input, servers, kept: kept ?? {} };
   if (monitoring === undefined) return applyChanges(run, await removals(run));
   const needs = await setupNeeds(run, monitoring);
@@ -221,10 +237,25 @@ async function setupNeeds(run: Run, monitoring: MonitoringSettings): Promise<Set
 async function applyChanges(run: Run, changes: readonly Change[]): Promise<HostPlanOutcome[]> {
   const { deps, plan, input } = run;
   const outcomes: HostPlanOutcome[] = [];
+  /** True when `input.only` names another plan than `hostPlan`'s: it is left for later. */
+  const later = (hostPlan: HostPlan) =>
+    input.only !== undefined && hostPlanHash(hostPlan) !== input.only;
   for (const change of changes) {
     if ("local" in change) {
       if (!input.planOnly) await change.local();
     } else if ("network" in change) {
+      if (input.only !== undefined) {
+        const { name, facts, sshPort, alone } = change.network;
+        const endpoints = await publicEndpoints(deps, plan);
+        const planned = networkHostPlan(
+          plan,
+          name,
+          facts,
+          { endpoints, sshPort, alone },
+          input.command,
+        );
+        if (later(planned)) continue;
+      }
       const applied = await applyNetworkPlans(deps, {
         plan,
         servers: [change.network],
@@ -234,16 +265,25 @@ async function applyChanges(run: Run, changes: readonly Change[]): Promise<HostP
       });
       outcomes.push(...applied.values());
     } else {
+      if (later(change.host.plan)) continue;
       outcomes.push(await approveAndApplyHostPlan(deps, change.host));
     }
   }
   return outcomes;
 }
 
-/** True when this computer knows the address of every server OpsCrew creates for the plan. */
-async function serversKnown(deps: PhaseDeps, plan: DeployPlan): Promise<boolean> {
+/**
+ * True when this computer knows the address of every server OpsCrew creates for the plan; the
+ * app's server is known when it is reached as given (`input.app`: a move's new app server).
+ */
+async function serversKnown(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  input: MonitoringHostPlansInput,
+): Promise<boolean> {
   const record = await readServerAddresses(deps.paths);
-  const app = plan.target.provider === "own" || record.deployment !== undefined;
+  const app =
+    input.app !== undefined || plan.target.provider === "own" || record.deployment !== undefined;
   return app && extraCloudServers(plan).every((s) => record.servers?.[s.name] !== undefined);
 }
 
