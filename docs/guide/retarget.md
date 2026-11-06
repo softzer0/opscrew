@@ -82,9 +82,11 @@ expected length. Nothing changes until you continue.
 3. **Deploy and check.** The GitHub deploy secrets point to the new side (an approval), the app is
    deployed there and OpsCrew checks that it answers. Your visitors are still served by the old
    side, and the new side's web server stays stopped until the switch.
-   - On a server, the deploy workflow runs. If the new side needs a different workflow (another
-     SSH port, or an image built for another processor), OpsCrew opens a pull request with it and
-     stops; merge it and run `npx opscrew retarget` again.
+   - On a server, the deploy workflow runs. If the new side needs different deploy files (the
+     workflow for another SSH port or an image built for another processor, or the Compose and
+     web server files when the app comes from your Portainer, or Portainer's stack template when
+     it goes there), OpsCrew opens one pull request with them and stops; merge it and run
+     `npx opscrew retarget` again.
    - In Portainer, the app's stacks are planned and approved by hash, as `opscrew provision` does,
      with the exact version the old side runs (the deploy branch is written with it, after your
      approval).
