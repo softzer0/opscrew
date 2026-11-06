@@ -144,8 +144,9 @@ export async function wildcardRecords(run: LiveRun, zone: CloudflareZone) {
 
 /**
  * The cleanup's last part: removes the previews' wildcard records left in the preview zone `zone`
- * (the pass may stop before `destroy --env preview`); one a finished destroy (`destroyed`) left is
- * a problem. Returns the problems.
+ * (the pass may stop before `destroy --env preview`) and, once nothing in the zone serves, OpsCrew's
+ * shared rules that list only the zone's names and the previews' origin certificate; what a
+ * finished destroy (`destroyed`) left is a problem. Returns the problems.
  */
 export async function removeWildcards(
   run: LiveRun,
@@ -161,7 +162,58 @@ export async function removeWildcards(
     if (!removed) problems.push(`Cloudflare did not delete ${what}`);
     else if (destroyed) problems.push(`destroy left ${what}; the cleanup removed it`);
   }
+  // A destroy that stopped partway leaves the zone's names in OpsCrew's shared rules and the
+  // previews' origin certificate; once nothing in the zone serves, the next pass's provision would
+  // refuse them as another app's. Removed here, labels only.
+  const web = (await run.cloudflare.zoneRecords(zone)).filter((r) =>
+    ["A", "AAAA", "CNAME"].includes(r.type),
+  );
+  if (web.length > 0) return problems;
+  const names = new Set([zone.name, `*.${zone.name}`]);
+  for (const phase of ["http_request_firewall_custom", "http_config_settings"]) {
+    const got = await run.cloudflare.call(
+      "GET",
+      `/zones/${zone.id}/rulesets/phases/${phase}/entrypoint`,
+    );
+    const ruleset = (got.json as { result?: { id: string; rules?: RulesetRule[] } } | undefined)
+      ?.result;
+    for (const rule of ruleset?.rules ?? []) {
+      if (!String(rule.ref).startsWith("opscrew-")) continue;
+      const expression = rule.expression ?? "";
+      const plain = [
+        ...(/http.host in {([^}]*)}/.exec(expression)?.[1] ?? "").matchAll(/"([^"]+)"/g),
+      ].map((m) => m[1] ?? "");
+      const wild = [...expression.matchAll(/ends_with(http.host, ".([^"]+)")/g)].map(
+        (m) => `*.${m[1]}`,
+      );
+      const hosts = [...plain, ...wild];
+      if (hosts.length === 0 || !hosts.every((host) => names.has(host))) continue;
+      const removed = await retryDelete(() =>
+        run.cloudflare.call("DELETE", `/zones/${zone.id}/rulesets/${ruleset?.id}/rules/${rule.id}`),
+      );
+      if (!removed) problems.push(`Cloudflare did not delete OpsCrew's rule ${rule.ref}`);
+      else if (destroyed)
+        problems.push(`destroy left OpsCrew's rule ${rule.ref}; the cleanup removed it`);
+    }
+  }
+  const certificates = await run.cloudflare.call("GET", `/certificates?zone_id=${zone.id}`);
+  for (const certificate of (certificates.json as { result?: { id: string }[] } | undefined)
+    ?.result ?? []) {
+    const revoked = await retryDelete(() =>
+      run.cloudflare.call("DELETE", `/certificates/${certificate.id}`),
+    );
+    if (!revoked) problems.push("Cloudflare did not revoke the previews' origin certificate");
+    else if (destroyed)
+      problems.push("destroy left the previews' origin certificate; the cleanup revoked it");
+  }
   return problems;
+}
+
+/** One rule of a zone's ruleset, as far as the cleanup reads it. */
+interface RulesetRule {
+  id: string;
+  ref?: string;
+  expression?: string;
 }
 
 /**
