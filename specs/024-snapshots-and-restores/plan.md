@@ -238,6 +238,6 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 
 T2401 (spikes) → T2402 (contracts and plan fields, lead) → {T2403 connectors, T2404 server script,
 T2405 Portainer} → {T2406 off-server, T2407 the commands, T2408 restore, T2417 every kind before a
-release, T2418 Portainer's SQLite} → {T2409 whole server,
+release, T2418 Portainer's SQLite, T2419 no schedule left behind} → {T2409 whole server,
 T2410 design/advise/status/MCP} → {T2411 CLI and plugin, T2412 guide} → T2413 live tests →
 T2414 live runs → T2415 simplify → T2416 release.

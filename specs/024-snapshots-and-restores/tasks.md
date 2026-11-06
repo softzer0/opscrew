@@ -140,6 +140,17 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, the Docker test with `OPSCREW_DOCKER_TESTS=1`
   - Effort: high
 
+- [ ] T2419 [US5] Destroy and retarget leave no snapshot schedule behind, in `packages/agents/src/destroy/{own,portainer}.ts` and `packages/agents/src/retarget/removal.ts` (+ tests)
+  - Owns: those files and their tests
+  - Reads: plan.md 1., 3.–4.; `packages/iac-templates/src/workflow/snapshots.ts` (the crontab tag)
+  - Depends: T2404
+  - Accept:
+    - **Own servers:** destroy and a move off a server remove the app's crontab line (the end-anchored tag ` # opscrew-snapshots <app>`) on the app's and extra servers. Other apps' lines stay.
+    - **Portainer:** destroy removes the `opscrew-snapshots-<app>` volume and the stack's `snapshot_tools` volume, and its summary names them.
+    - **Tests:** with the existing fakes; a second app's line survives.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: high
+
 ## Phase 4: Wave 3 (parallel)
 
 - [ ] T2409 [US4] `opscrew snapshot --server` and `opscrew restore --server`, in `packages/agents/src/snapshot/server.ts` and the server modules' `ignore_changes` in `packages/iac-templates/src/{hetzner,digitalocean}/**` (+ tests)
