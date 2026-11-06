@@ -4,14 +4,26 @@ import { describe, expect, it } from "vitest";
 import { textTable } from "../../src/ui/output";
 import type { CliRun } from "./harness";
 import {
+  COLUMNS_SQL,
+  insertRowsSql,
+  jobTimes,
+  LABELS_SQL,
   listedVersions,
+  NOTE_COLUMN,
+  NOTE_MIGRATION,
   neverAnswering,
   pauseEntryOf,
+  psqlLines,
   RELEASE_COMMAND,
   RELEASE_MARKER,
+  ROLLBACK_DATABASE_GATE,
   ROLLBACK_GATE,
   ROLLBACK_VARIABLES,
+  ROWS_MIGRATION,
+  ROWS_TABLE,
   rollbackApproval,
+  rollbackDispatchInputs,
+  rowLabels,
   runIdIn,
   shownRollback,
   statusDeploys,
@@ -53,6 +65,18 @@ describe("the rollback live test's helpers", () => {
       `To roll back later without prompts, run: opscrew rollback --app web --env prod --to 9a8b7c --allow-old-secrets STRIPE_SECRET_KEY,OTHER --approve ${HASH}`,
     ].join("\n");
     expect(rollbackApproval(output)).toEqual({ to: "9a8b7c", hash: HASH });
+  });
+
+  it("reads a database choice's --database and --confirm from the printed command", () => {
+    const output = `  To roll back later without prompts, run: opscrew rollback --env staging --to ${A.digest} --database snapshot --confirm shop-staging --approve ${HASH}`;
+    expect(rollbackApproval(output)).toEqual({
+      to: A.digest,
+      hash: HASH,
+      database: "snapshot",
+      confirm: "shop-staging",
+    });
+    const keep = `run: opscrew rollback --env staging --to ${A.digest} --database keep --approve ${HASH}`;
+    expect(rollbackApproval(keep)).toEqual({ to: A.digest, hash: HASH, database: "keep" });
   });
 
   it("finds no rollback in an output without the printed command", () => {
@@ -218,5 +242,99 @@ describe("shownRollback", () => {
     await expect(shownRollback(changed)).rejects.not.toThrow(HASH);
     const none = cli({ exitCode: 1, stdout: "", output: "Nothing was changed." });
     await expect(shownRollback(none)).rejects.toThrow(/printed no command to approve/);
+  });
+});
+
+describe("jobTimes", () => {
+  it("says when the run's first job started after the approval, then each finished job", () => {
+    const approvedAt = Date.parse("2026-11-06T10:00:00Z");
+    const job = (name: string, startedAt: string | null, completedAt: string | null) => ({
+      name,
+      conclusion: completedAt === null ? null : "success",
+      steps: [],
+      startedAt,
+      completedAt,
+    });
+    expect(
+      jobTimes(
+        [
+          job("Check the image", "2026-11-06T10:00:20Z", "2026-11-06T10:00:50Z"),
+          job("Deploy to the server", "2026-11-06T10:00:55Z", "2026-11-06T10:02:10Z"),
+        ],
+        approvedAt,
+      ),
+    ).toBe(
+      "the run's first job started 0 min 20 s after the approval; Check the image 0 min 30 s, Deploy to the server 1 min 15 s",
+    );
+  });
+});
+
+describe("the database pass's helpers", () => {
+  it("runs with its own gate and the image pass's variables", () => {
+    const env = Object.fromEntries(ROLLBACK_VARIABLES.map((name) => [name, "set"]));
+    expect(
+      missingVariables(
+        { ...env, [ROLLBACK_DATABASE_GATE]: "1" },
+        ROLLBACK_DATABASE_GATE,
+        ROLLBACK_VARIABLES,
+      ),
+    ).toEqual([]);
+    expect(
+      missingVariables(
+        { ...env, [ROLLBACK_GATE]: "1" },
+        ROLLBACK_DATABASE_GATE,
+        ROLLBACK_VARIABLES,
+      ),
+    ).toEqual([`${ROLLBACK_DATABASE_GATE}=1`]);
+  });
+
+  it("adds the table in v1's migration and the column in v2's, which Knex runs in file order", () => {
+    expect(ROWS_MIGRATION.path < NOTE_MIGRATION.path).toBe(true);
+    expect(ROWS_MIGRATION.path > "migrations/20261014073237_create_visits.js").toBe(true);
+    expect(ROWS_MIGRATION.text).toContain(`createTable("${ROWS_TABLE}"`);
+    expect(ROWS_MIGRATION.text).toContain(`dropTable("${ROWS_TABLE}")`);
+    expect(NOTE_MIGRATION.text).toContain(`table.text("${NOTE_COLUMN}")`);
+    expect(NOTE_MIGRATION.text).toContain(`table.dropColumn("${NOTE_COLUMN}")`);
+  });
+
+  it("reads the table's columns and labels in order, with SQL psql takes in double quotes", () => {
+    for (const sql of [COLUMNS_SQL, LABELS_SQL]) expect(sql).not.toMatch(/["$`]/);
+    expect(COLUMNS_SQL).toContain("order by ordinal_position");
+    expect(LABELS_SQL).toBe(`select label from ${ROWS_TABLE} order by id`);
+    expect(psqlLines("id\r\nlabel\n\n note \n")).toEqual(["id", "label", "note"]);
+    expect(psqlLines("")).toEqual([]);
+  });
+
+  it("names each row of a batch apart, so no label is a part of another", () => {
+    const labels = rowLabels("run1", "a", 3);
+    expect(labels).toEqual(["e2e-row-run1-a1", "e2e-row-run1-a2", "e2e-row-run1-a3"]);
+    const all = [...labels, ...rowLabels("run1", "b", 3)];
+    expect(all.filter((one) => all.some((other) => other !== one && other.includes(one)))).toEqual(
+      [],
+    );
+  });
+
+  it("writes rows with or without v2's column, and only plain values", () => {
+    expect(insertRowsSql(["a1", "a2"])).toBe(
+      `insert into ${ROWS_TABLE} (label) values ('a1'), ('a2')`,
+    );
+    expect(insertRowsSql(["b1"], "n-1")).toBe(
+      `insert into ${ROWS_TABLE} (label, ${NOTE_COLUMN}) values ('b1', 'n-1')`,
+    );
+    expect(insertRowsSql(["a1"], "n")).not.toMatch(/["$`]/);
+    expect(() => insertRowsSql(["x'); drop table e2e_rows; --"])).toThrow(/not plain/);
+    expect(() => insertRowsSql(["a1"], 'n"')).toThrow(/not plain/);
+    expect(() => insertRowsSql([])).toThrow(/No rows/);
+  });
+
+  it("dispatches a rollback with the inputs opscrew rollback gives, the environment's commit tag", () => {
+    const digest = `sha256:${hex(32)}`;
+    const commit = hex(20);
+    expect(rollbackDispatchInputs(digest, commit, "staging")).toEqual({
+      digest,
+      tag: `${commit}-staging`,
+      rollback: "true",
+    });
+    expect(rollbackDispatchInputs(digest, commit, "prod").tag).toBe(commit);
   });
 });

@@ -1,14 +1,17 @@
 /**
  * Pure helpers of feature 019's live test (`rollback.test.ts`, docs/e2e.md "Rollback") and of the
- * site passes' rollback steps: the gate, the test's own release command, the deploy workflow's job
- * names, and what the tests read in OpsCrew's output (the rollback a script is asked to approve,
- * the run it started, `rollback --list`'s table, `status`' Deploys lines) and in the deploy pause
- * variable, the Dockerfile change whose image never answers, and `opscrew rollback` run as a script
- * runs it (the CLI injected). No network, no processes of their own; unit-tested in
- * `rollback-support.test.ts`.
+ * site passes' rollback steps: the gates, the test's own release command, the deploy workflow's
+ * job names, and what the tests read in OpsCrew's output (the rollback a script is asked to
+ * approve, the run it started and where its time went, `rollback --list`'s table, `status`'
+ * Deploys lines) and in the deploy pause variable, the Dockerfile change whose image never
+ * answers, and `opscrew rollback` run as a script runs it (the CLI injected). The database pass's
+ * (US8): its table and migrations, its SQL, and the inputs of a rollback dispatched by hand. No
+ * network, no processes of their own; unit-tested in `rollback-support.test.ts`.
  */
+import { environmentTag, ROLLBACK_INPUTS } from "@opscrew/iac-templates";
 import { ENVIRONMENT_E2E_VARIABLES } from "./environments-support";
 import type { CliRun } from "./harness";
+import { type DeployJob, duration } from "./support";
 
 /** The test's gate. */
 export const ROLLBACK_GATE = "OPSCREW_E2E_ROLLBACK";
@@ -37,11 +40,14 @@ export const PAUSED_JOB = "Report the deploy pause";
 
 /**
  * The rollback a run without `--approve` showed: the version the printed command goes back to
- * (`--to`), its hash, and the approval's `Now:` and `Back to:` lines on a server.
+ * (`--to`), its hash, the database choice and typed name it gives (`--database`, `--confirm`),
+ * and the approval's `Now:` and `Back to:` lines on a server.
  */
 export interface RollbackApproval {
   to: string;
   hash: string;
+  database?: string;
+  confirm?: string;
   now?: string;
   backTo?: string;
 }
@@ -49,15 +55,16 @@ export interface RollbackApproval {
 /**
  * The rollback an `opscrew rollback` run showed, from the command it printed to apply it
  * (`opscrew rollback [--app <key>] --env <env> --to <version> [--allow-old-secrets <names>]
- * --approve <hash>`): the last one when it printed several, `undefined` when none.
+ * [--database <choice>] [--confirm <name>] --approve <hash>`): the last one when it printed
+ * several, `undefined` when none.
  */
 export function rollbackApproval(output: string): RollbackApproval | undefined {
   const printed = [
     ...output.matchAll(
-      /opscrew rollback\b[^\n`]*? --to (\S+)(?: --allow-old-secrets \S+)? --approve ([0-9a-f]{64})\b/g,
+      /opscrew rollback\b[^\n`]*? --to (\S+)(?: --allow-old-secrets \S+)?(?: --database (\S+))?(?: --confirm (\S+))? --approve ([0-9a-f]{64})\b/g,
     ),
   ].at(-1);
-  const [, to, hash] = printed ?? [];
+  const [, to, database, confirm, hash] = printed ?? [];
   if (to === undefined || hash === undefined) return undefined;
   const line = (label: string) => new RegExp(`^\\s*${label}: (.+)$`, "m").exec(output)?.[1]?.trim();
   const now = line("Now");
@@ -65,9 +72,26 @@ export function rollbackApproval(output: string): RollbackApproval | undefined {
   return {
     to,
     hash,
+    ...(database !== undefined ? { database } : {}),
+    ...(confirm !== undefined ? { confirm } : {}),
     ...(now !== undefined ? { now } : {}),
     ...(backTo !== undefined ? { backTo } : {}),
   };
+}
+
+/**
+ * Where a rollback run's time went, for its `observed:` line: when its first job started after
+ * the approval (`approvedAt`, epoch milliseconds), then each finished job's duration.
+ */
+export function jobTimes(jobs: readonly DeployJob[], approvedAt: number): string {
+  const firstStart = Math.min(...jobs.map((job) => Date.parse(job.startedAt ?? "")));
+  const each = jobs
+    .filter((job) => job.startedAt && job.completedAt)
+    .map(
+      (job) =>
+        `${job.name} ${duration(Date.parse(job.completedAt as string) - Date.parse(job.startedAt as string))}`,
+    );
+  return `the run's first job started ${duration(firstStart - approvedAt)} after the approval; ${each.join(", ")}`;
 }
 
 /** The workflow run an output names last (`…/actions/runs/<id>`), if any. */
@@ -180,4 +204,114 @@ export async function shownRollback(
     throw new Error(`opscrew rollback printed no command to approve:\n${cli.tail(shown.output)}`);
   }
   return { ...approval, output: shown.output };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The database pass (US8): staging with examples/koa-knex, a table only the test writes, and v2's
+// migration that adds a column to it.
+
+/** The database pass's gate, apart from the image pass's: it pays for a deployment of its own. */
+export const ROLLBACK_DATABASE_GATE = "OPSCREW_E2E_ROLLBACK_DATABASE";
+
+/** The database pass's example: Knex migrations on PostgreSQL. */
+export const DATABASE_EXAMPLE = "koa-knex";
+
+/**
+ * SC-1907: a rollback with the snapshot gives the earlier version its database within 5 minutes
+ * of its approval.
+ */
+export const SC_1907_MS = 5 * 60_000;
+
+/** The test's table: no route of the app writes it, so its rows are exactly the test's. */
+export const ROWS_TABLE = "e2e_rows";
+
+/** The column v2's migration adds to {@link ROWS_TABLE}. */
+export const NOTE_COLUMN = "note";
+
+/** A migration the throwaway copy gets: its path in the repository and its text. */
+export interface Migration {
+  path: string;
+  text: string;
+}
+
+/** v1's migration, in the throwaway copy from the start: creates {@link ROWS_TABLE}. */
+export const ROWS_MIGRATION: Migration = {
+  path: "migrations/20261106000001_create_e2e_rows.js",
+  text: [
+    "// The live rollback test's table, which only the test writes.",
+    `exports.up = (knex) => knex.schema.createTable("${ROWS_TABLE}", (table) => {`,
+    '  table.increments("id");',
+    '  table.text("label").notNullable();',
+    "});",
+    `exports.down = (knex) => knex.schema.dropTable("${ROWS_TABLE}");`,
+    "",
+  ].join("\n"),
+};
+
+/** v2's migration: adds {@link NOTE_COLUMN} to {@link ROWS_TABLE}, and its down drops it. */
+export const NOTE_MIGRATION: Migration = {
+  path: "migrations/20261106000002_add_e2e_note.js",
+  text: [
+    "// The live rollback test's v2: a column its down migration drops.",
+    `exports.up = (knex) => knex.schema.alterTable("${ROWS_TABLE}", (table) => {`,
+    `  table.text("${NOTE_COLUMN}");`,
+    "});",
+    `exports.down = (knex) => knex.schema.alterTable("${ROWS_TABLE}", (table) => {`,
+    `  table.dropColumn("${NOTE_COLUMN}");`,
+    "});",
+    "",
+  ].join("\n"),
+};
+
+/** SQL: {@link ROWS_TABLE}'s columns, in order. */
+export const COLUMNS_SQL = `select column_name from information_schema.columns where table_name = '${ROWS_TABLE}' order by ordinal_position`;
+
+/** SQL: {@link ROWS_TABLE}'s labels, in the order they were written. */
+export const LABELS_SQL = `select label from ${ROWS_TABLE} order by id`;
+
+/** `count` row labels of the run `runId`'s batch `batch` (`e2e-row-<run>-<batch><n>`). */
+export function rowLabels(runId: string, batch: string, count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `e2e-row-${runId}-${batch}${index + 1}`);
+}
+
+/**
+ * SQL that writes a row of {@link ROWS_TABLE} for each of `labels`, with `note` in
+ * {@link NOTE_COLUMN} when given (v2's schema). Every value must be plain: letters, digits and
+ * dashes.
+ */
+export function insertRowsSql(labels: readonly string[], note?: string): string {
+  if (labels.length === 0) throw new Error("No rows to write.");
+  for (const value of [...labels, ...(note === undefined ? [] : [note])]) {
+    if (!/^[A-Za-z0-9-]+$/.test(value)) throw new Error(`The value "${value}" is not plain.`);
+  }
+  const rows = labels.map((label) =>
+    note === undefined ? `('${label}')` : `('${label}', '${note}')`,
+  );
+  const columns = note === undefined ? "label" : `label, ${NOTE_COLUMN}`;
+  return `insert into ${ROWS_TABLE} (${columns}) values ${rows.join(", ")}`;
+}
+
+/** The values `psql -tA` printed, one per line, without blank lines. */
+export function psqlLines(stdout: string): string[] {
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+}
+
+/**
+ * The inputs `opscrew rollback` dispatches the deploy workflow of `environment` with to roll back
+ * to `digest`, built from `commit`: the digest, the commit tag of that environment's build, and
+ * `rollback`.
+ */
+export function rollbackDispatchInputs(
+  digest: string,
+  commit: string,
+  environment: string,
+): Record<string, string> {
+  return {
+    [ROLLBACK_INPUTS.digest]: digest,
+    [ROLLBACK_INPUTS.tag]: environmentTag(commit, environment),
+    [ROLLBACK_INPUTS.rollback]: "true",
+  };
 }

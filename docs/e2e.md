@@ -1961,13 +1961,21 @@ repository). The deploy jobs run on the server.
 
 ## Rollback
 
-`packages/cli/test/live/rollback.test.ts`, with `OPSCREW_E2E_ROLLBACK=1`, runs feature 019's
-`opscrew rollback` on one server OpsCrew creates at Hetzner, behind Cloudflare, in the throwaway
-repository `OPSCREW_E2E_GITHUB_REPO`. It always deploys `examples/nextjs-postgres`
-(`OPSCREW_E2E_APP` is ignored). OpsCrew gets the Hetzner and Cloudflare tokens, as a user's run
-does, and `OPSCREW_E2E_GHCR_READ_TOKEN` as `OPSCREW_GHCR_READ_TOKEN`. Every rollback runs
-as a script runs it: the first run without `--approve` shows the rollback and its hash and stops
-(exit 1), and the second gives `--approve <hash>`. `--yes` never grants a rollback.
+`packages/cli/test/live/rollback.test.ts` runs feature 019's `opscrew rollback` in two passes,
+each on its own server OpsCrew creates at Hetzner, behind Cloudflare, in the throwaway repository
+`OPSCREW_E2E_GITHUB_REPO`:
+
+- **the image pass**, with `OPSCREW_E2E_ROLLBACK=1`, on `examples/nextjs-postgres`;
+- **[the database pass](#the-database-pass)**, with `OPSCREW_E2E_ROLLBACK_DATABASE=1`, on
+  `examples/koa-knex`.
+
+With both set, they run one after the other. `OPSCREW_E2E_APP` is ignored. OpsCrew gets the
+Hetzner and Cloudflare tokens, as a user's run does, and `OPSCREW_E2E_GHCR_READ_TOKEN` as
+`OPSCREW_GHCR_READ_TOKEN`. Every rollback runs as a script runs it: the first run without
+`--approve` shows the rollback and its hash and stops (exit 1), and the second gives
+`--approve <hash>`. `--yes` never grants a rollback.
+
+The image pass's steps:
 
 1. **Two versions:** prod is designed as for [environments](#environments-and-promotion). Then,
    as a user edits `opscrew/plan.yaml`, `app.releaseCommand: "echo opscrew-e2e-release"` (no
@@ -2011,10 +2019,61 @@ as a script runs it: the first run without `--approve` shows the rollback and it
    file, and no secret or server address in any value of `OPSCREW_DEPLOY_PAUSED` the test read
    while prod was paused.
 
+### The database pass
+
+With `OPSCREW_E2E_ROLLBACK_DATABASE=1`, the rollback's database steps (US8) run on staging, where
+snapshots are on by default. The example is `examples/koa-knex`, which runs Knex on PostgreSQL.
+The throwaway copy gets one more Knex migration, which creates the test's table `e2e_rows`
+(`id`, `label`). No route of the app writes that table, so its rows are exactly the ones the test
+writes. The test reads and writes the table with `psql` in the database's container over SSH, as
+`deploy` with OpsCrew's key, and keeps every value it writes as a dumped value for the leak search.
+
+- **D1. v1:** prod is designed as for [environments](#environments-and-promotion), and
+  `adapt`'s pull request merged. Prod is never provisioned: `env add staging --target hetzner
+  --from main` starts from its design. Staging's plan must take snapshots and have Knex's
+  `app.migrations`. Provision staging until done and merge its deploy-setup pull request (v1).
+  Then the table must have the columns `id` and `label` and no row, and the test writes three
+  rows.
+- **D2. v2:** a merged change adds a Knex migration that adds the column `note` to the table, and
+  its down migration drops it. Its staging run must deploy a new image. The table must then have
+  `note` and the same rows. Those rows are the ones the snapshot taken at this deploy holds. The
+  test writes three more rows, with a `note`.
+- **D3. The snapshot** (SC-1907):
+  - `opscrew rollback --env staging --to <v1's commit> --database snapshot` without `--approve`
+    must exit 1. Its printed command must name v1's digest, `--database snapshot` and
+    `--confirm <staging's app name>`, the name `destroy --env staging` asks for. Its approval
+    must say "Restore the snapshot taken" and "Everything written since is lost.". Nothing may
+    change: the server still runs v2, and its app folder has no `.rollback-database`.
+  - The printed command, with `--approve <hash>` and `--confirm`, must succeed. The time from its
+    start to its success is logged, with the run's jobs; over 5 minutes is a finding that fails
+    the run at the end.
+  - Its result must say "The database was restored from the snapshot taken". The server's `.env`
+    names v1's digest, and the one-time approval is gone. The table has no `note` column, and
+    exactly the rows it had when v2 deployed: the three written since are gone.
+- **D4. Back to v2:** `opscrew rollback --env staging --resume --deploy --yes` must name a run
+  of v2's commit. The server runs a new image, whose release command adds `note` back; the rows
+  stay. The test writes three more rows, with a `note`.
+- **D5. Down migrations** (SC-1907): as D3, with `--database migrations`. The approval must say
+  "Migrate it down with knex" and "dropped, with their data.". The result must say "The database
+  was migrated down with knex". The server runs v1 again, and the table has no `note` column and
+  every row.
+- **D6. A rollback dispatched by hand** (SC-1909): the app folder has no `.rollback-database`, and
+  holds a complete snapshot of the image D5 replaced, which an approval would restore. The test
+  starts staging's deploy workflow with GitHub's API exactly as `opscrew rollback` does: on the
+  branch, with the inputs `digest` (that image's), `tag` (`<commit>-staging`) and
+  `rollback: true`. The run must succeed without a build. The server then runs that image, and
+  the table has the same columns and rows as before.
+- **D7. Destroy:** nothing of staging may be left at Hetzner, in Cloudflare or at GitHub.
+- **D8. Nothing leaked** (SC-1909): as step 9, over every CLI output, commit, pull request, audit
+  entry, plan and state file, with the database's password and every value the test wrote
+  searched for. The log of the deploy job of each run (v1's, v2's, the resume's, both rollbacks'
+  and the hand-made one) is searched for the same values. No rollback output may name the
+  server's address.
+
 **Cleanup.** The cleanup is the one for environments: `opscrew destroy` if needed, then
 Hetzner's API by the app's labels, the GitHub environments and deploy secrets, and Cloudflare.
-Then prod's entry in `OPSCREW_DEPLOY_PAUSED` is removed (and the variable, when nothing else is in
-it), since a run stopped between the rollback and `--resume` leaves it paused.
+Then each environment's entry in `OPSCREW_DEPLOY_PAUSED` is removed (and the variable, when
+nothing else is in it), since a run stopped between a rollback and `--resume` leaves it paused.
 
 **If a run was interrupted**, delete by hand what the environments test lists, and the variable
 `OPSCREW_DEPLOY_PAUSED` under the repository's Settings → Secrets and variables → Actions →
@@ -2022,9 +2081,10 @@ Variables.
 
 | Variable | What it is |
 |---|---|
-| `OPSCREW_E2E_ROLLBACK` | `1` runs this test. |
+| `OPSCREW_E2E_ROLLBACK` | `1` runs the image pass. |
+| `OPSCREW_E2E_ROLLBACK_DATABASE` | `1` runs [the database pass](#the-database-pass). |
 | `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for environments. The GitHub token needs Variables (read and write), as in [Setup](#setup): the rollback sets the pause, and `--resume` removes it. |
-| `OPSCREW_E2E_GHCR_READ_TOKEN` | Required: the classic `read:packages` token of [the builders](#the-builders). OpsCrew lists the image's tags in GitHub's registry with it, which refuses a fine-grained token (403 `DENIED`, specs/019-rollback/research.md R6, S2). Without it the test is skipped with a message. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | Required: the classic `read:packages` token of [the builders](#the-builders). OpsCrew lists the image's tags in GitHub's registry with it, which refuses a fine-grained token (403 `DENIED`, specs/019-rollback/research.md R6, S2). Without it each pass is skipped with a message. |
 | `OPSCREW_E2E_REGION`, `OPSCREW_E2E_APP_ENV` | Optional, as above. |
 
 ```bash
@@ -2033,12 +2093,14 @@ cd packages/cli
 OPSCREW_E2E_ROLLBACK=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
   OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_GHCR_READ_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… \
   OPSCREW_E2E_DOMAIN=e2e.example.com npx vitest run test/live/rollback.test.ts
+# The database pass alone: OPSCREW_E2E_ROLLBACK_DATABASE=1 instead of OPSCREW_E2E_ROLLBACK=1.
 ```
 
-Not measured yet: about 90 minutes, with one of the smallest servers for that time (a few
-cents). It makes six deploy runs with a build (A, B, C, the resume's, the failing version and
-its revert) and one rollback run without a build: about 25 to 35 Actions minutes in a private
-repository.
+Not measured yet: the image pass about 90 minutes, with one of the smallest servers for that time
+(a few cents). It makes six deploy runs with a build (A, B, C, the resume's, the failing version
+and its revert) and one rollback run without a build: about 25 to 35 Actions minutes in a private
+repository. The database pass about an hour, with one server: three deploy runs with a build (v1,
+v2, the resume's) and three rollback runs without one.
 
 The site passes roll back too: step 5 and S3 of [Cloudflare's hosting](#cloudflares-hosting) and
 step 4b of [GitHub Pages](#github-pages) run `opscrew rollback` as above, then
