@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
@@ -173,7 +174,12 @@ describe("the example's data", () => {
     const seeds = seedScripts("run1");
     expect(seeds.postgres).toContain(`generate_series(1, ${ROWS})`);
     expect(seeds.mysql).toContain(`n < ${ROWS}`);
-    expect(seeds.valkey).toContain(`job-${JOBS}-run1`);
+    // The jobs are made in the container, job-1-run1 to job-${JOBS}-run1 in order.
+    const loop = `${seeds.valkey.split(" && ")[1]}; printf '%s\\n' "$@"`;
+    const made = spawnSync("sh", ["-c", loop], { encoding: "utf8" }).stdout.trim().split("\n");
+    expect(made).toHaveLength(JOBS);
+    expect(made[0]).toBe("job-1-run1");
+    expect(made.at(-1)).toBe(`job-${JOBS}-run1`);
     expect(seeds.valkey).toContain("SAVE");
   });
 

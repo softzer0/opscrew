@@ -198,7 +198,9 @@ const valkey = (args: string) => `REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli ${
  * failure (a database still starting) and leaves the same data.
  */
 export function seedScripts(marker: string): Record<keyof typeof MOVE_SERVICES, string> {
-  const jobs = Array.from({ length: JOBS }, (_, at) => `job-${at + 1}-${marker}`).join(" ");
+  // The jobs are made in a loop in the container: a list of them on the command line is long
+  // enough to break the remote shell (run 1 of the own-server leg).
+  const jobs = `{ i=1; set --; while [ "$i" -le ${JOBS} ]; do set -- "$@" "job-$i-${marker}"; i=$((i + 1)); done; }`;
   return {
     postgres: psql(
       `create table if not exists ${TABLE} (id integer primary key, v text not null); insert into ${TABLE} select g, md5(g::text) from generate_series(1, ${ROWS}) g on conflict do nothing`,
@@ -208,9 +210,7 @@ export function seedScripts(marker: string): Record<keyof typeof MOVE_SERVICES, 
       `CREATE TABLE IF NOT EXISTS ${TABLE} (id INT PRIMARY KEY, v VARCHAR(64) NOT NULL); INSERT IGNORE INTO ${TABLE} (id, v) WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < ${ROWS}) SELECT n, MD5(n) FROM s`,
     ),
     // SAVE writes the snapshot at once, so the jobs are on disk before any window.
-    valkey: [`DEL ${JOB_LIST}`, `RPUSH ${JOB_LIST} ${jobs}`, "SAVE"]
-      .map((args) => `${valkey(args)} >/dev/null`)
-      .join(" && "),
+    valkey: `${valkey(`DEL ${JOB_LIST}`)} >/dev/null && ${jobs} && ${valkey(`RPUSH ${JOB_LIST}`)} "$@" >/dev/null && ${valkey("SAVE")} >/dev/null`,
   };
 }
 
