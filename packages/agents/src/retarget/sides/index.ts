@@ -53,7 +53,7 @@ export function moveSide(
   switch (target.provider) {
     case "hetzner":
     case "digitalocean":
-      return cloudSide(which, options.snapshot !== undefined ? { snapshot: options.snapshot } : {});
+      return cloudSide(which, options);
     case "own":
       return ownSide(
         which,
@@ -61,12 +61,7 @@ export function moveSide(
           ...(services.own !== undefined ? { own: services.own } : {}),
           ...(services.runnerGitHub !== undefined ? { runnerGitHub: services.runnerGitHub } : {}),
         },
-        {
-          ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
-          ...(options.passwordLogins !== undefined
-            ? { passwordLogins: options.passwordLogins }
-            : {}),
-        },
+        options,
       );
     case "portainer":
       return portainerSide({

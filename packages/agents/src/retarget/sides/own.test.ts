@@ -209,26 +209,6 @@ describe.skipIf(!findExecutable("git"))("a side on a server the user owns", () =
     expect(s.handler.requests.filter((r) => r.kind === "host-apply")).toHaveLength(0);
   });
 
-  it.each([
-    ["tunnel access", { access: "tunnel" }, "it serves the app through a Cloudflare Tunnel"],
-    ["Portainer on a subdomain", { portainer: "subdomain" }, "Portainer is on a subdomain"],
-  ] as const)(
-    "refuses a new server that needs a tunnel (%s), before connecting",
-    async (_what, own, why) => {
-      const s = await moving({ own });
-      const error = (await ownSide("new", s.services)
-        .prepare(s.session)
-        .catch((e: unknown) => e)) as OpsCrewError;
-      expect(error).toBeInstanceOf(OpsCrewError);
-      expect(error.code).toBe("PHASE_PRECONDITION");
-      expect(error.message).toContain(why);
-      expect(error.message).toMatch(/Nothing was changed\.$/);
-      expect(error.hint).toContain("opscrew retarget --abort");
-      expect(s.runner.calls).toHaveLength(0);
-      expect(s.host.inspections).toBe(0);
-    },
-  );
-
   it("lists the monitoring stack's volumes only when the server's record says it is the app's", async () => {
     const s = await moving();
     const session = {

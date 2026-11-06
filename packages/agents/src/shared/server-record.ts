@@ -514,21 +514,6 @@ export async function restoreOldConnection(
 }
 
 /**
- * Records the address of a move's side (`from`, the side being left, or `next`, the new one) and
- * keeps the rest of the move's record, such as the old side's set-aside connection.
- */
-export async function recordMoveAddress(
-  paths: ProjectPaths,
-  which: "from" | "next",
-  address: ServerAddress,
-): Promise<void> {
-  await updateServerAddresses(paths, (current) => ({
-    ...current,
-    retarget: { ...current.retarget, [which]: address },
-  }));
-}
-
-/**
  * The old side's login during a move away from a server the user owns (`retarget.fromOwn`);
  * `undefined` when none is set aside. A damaged file stops with `ARTIFACT_INVALID`.
  */

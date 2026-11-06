@@ -1,13 +1,5 @@
-import {
-  appDirs,
-  type HostPlan,
-  hostPlanHash,
-  otherActiveApps,
-  planTeardown,
-} from "@opscrew/connector-ssh-host";
-import { listText, OpsCrewError, plural } from "@opscrew/core";
-import { beszelHostname, portainerHostname, tunnelMode, usesTunnel } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { appDirs, hostPlanHash, otherActiveApps, planTeardown } from "@opscrew/connector-ssh-host";
+import { listText, plural } from "@opscrew/core";
 import { serverData } from "../../destroy/checks";
 import { confirmDeletion } from "../../destroy/deletion";
 import { applyHostPlanApproved, type OwnHost } from "../../destroy/own";
@@ -18,21 +10,15 @@ import { edgeSwitch, readEdgeOver } from "../../provision/origin-tls";
 import { applyOwnHostPlan, prepareOwnServer } from "../../provision/own";
 import type { ProvisionOptions, ProvisionServices } from "../../provision/types";
 import { lazyRepository } from "../../runners";
-import {
-  adapterBlocked,
-  approveAndApplyHostPlan,
-  boundHostAdapter,
-  recordMoveAddress,
-} from "../../shared";
+import { adapterBlocked, approveAndApplyHostPlan, boundHostAdapter } from "../../shared";
 import {
   connectAndInspectOwnServer,
   ownServerLoginCheck,
   requireOwnServerRecord,
 } from "../../shared/own-server";
 import type { MoveServer } from "../removal";
-import { auditStep, type MoveSession, moveOf, saveMove } from "../session";
-import { pendingStop } from "../steps";
-import { ABORT_COMMAND } from "../texts";
+import { auditStep, type MoveSession, moveOf, recordNewServer, saveMove } from "../session";
+import { appliesNow, pendingStop } from "../steps";
 import { sshSide } from "./ssh";
 import type { MoveSide, SideStop } from "./types";
 
@@ -92,35 +78,6 @@ export function ownSide(
 }
 
 /**
- * The stop when the new side's plan needs a Cloudflare Tunnel (tunnel access, or Portainer or
- * Beszel on a subdomain): a move switches only between address records.
- */
-function tunnelRefused(plan: DeployPlan): OpsCrewError {
-  const reasons = [
-    ...(tunnelMode(plan) ? ["it serves the app through a Cloudflare Tunnel"] : []),
-    ...(portainerHostname(plan) !== undefined ? ["Portainer is on a subdomain"] : []),
-    ...(beszelHostname(plan) !== undefined ? ["Beszel's hub is on a subdomain"] : []),
-  ];
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `Your new server would need a Cloudflare Tunnel (${listText(reasons)}), which a move cannot set up yet. Nothing was changed.`,
-    {
-      hint: `Run \`${ABORT_COMMAND}\`. Before you move again, serve the app on the server's public address, and turn off Portainer and Beszel on a subdomain (\`opscrew portainer disable\`, \`opscrew addon disable beszel\`) or reach them over the private network. Turn them back on once the move is finished.`,
-    },
-  );
-}
-
-/** Whether a script waits for `--approve <hash>` of a host plan: consumed when it names it. */
-function waitsForApproval(session: MoveSession, plan: HostPlan): boolean {
-  if (!plan.steps.some((step) => step.state === "change")) return false;
-  if (session.approve === hostPlanHash(plan)) {
-    session.approve = undefined;
-    return false;
-  }
-  return !session.deps.interactive;
-}
-
-/**
  * Step `created` on a server the user owns: connected (pinned host key) and inspected, checked as
  * provision checks it before any change, then the own host plan, shown and approved by its hash
  * (`host-apply`). A script stops with the hash. The server's public address becomes the move's new
@@ -132,14 +89,10 @@ async function prepare(
   options: OwnSideOptions,
 ): Promise<SideStop> {
   const { deps, plan, command } = session;
-  if (usesTunnel(plan)) throw tunnelRefused(plan);
   const deployPublicKey = session.deployKey.publicKeyOpenSsh;
   const run = await prepareOwnServer(deps, {
     plan,
-    options: {
-      ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
-      ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
-    },
+    options,
     services: {
       ...services,
       ...(session.services.cloudflare !== undefined
@@ -181,8 +134,7 @@ async function prepare(
   // Public mode always has the address DNS points to (prepareOwnServer stops without one). It goes
   // to OpsCrew's local state, beside the old side's set-aside login.
   if (run.address !== undefined) {
-    await recordMoveAddress(deps.paths, "next", run.address);
-    session.servers = { ...session.servers, next: run.address };
+    await recordNewServer(session, run.address);
   }
   await saveMove(session, { ...moveOf(session), step: "created" });
   await auditStep(session, "created", "your new server is ready for the app");
@@ -279,7 +231,10 @@ async function remove(
     dataWarning,
     SERVER_STAYS,
   ];
-  if (waitsForApproval(session, teardown)) {
+  if (
+    teardown.steps.some((step) => step.state === "change") &&
+    !appliesNow(session, hostPlanHash(teardown))
+  ) {
     // Shown and saved for `--approve <hash>`; the typed name comes with `--confirm`.
     const shown = await approveAndApplyHostPlan(deps, {
       plan: teardown,

@@ -5,7 +5,6 @@ import {
   type PortainerConnectionInput,
   readOldOwnServer,
   readServerAddresses,
-  recordMoveAddress,
   recordOwnServer,
   recordPortainerConnection,
   restoreOldConnection,
@@ -74,7 +73,10 @@ describe("a move's connections in server.json", () => {
     "stops when the old %s connection is not on this computer, changing nothing",
     async (from, what) => {
       const p = await paths();
-      await recordMoveAddress(p, "from", OLD_ADDRESS);
+      await updateServerAddresses(p, (current) => ({
+        ...current,
+        retarget: { from: OLD_ADDRESS },
+      }));
       const before = await readServerAddresses(p);
       const error = await setAsideOldConnection(p, from).catch((e: unknown) => e);
       expect(error).toMatchObject({
@@ -132,18 +134,5 @@ describe("a move's connections in server.json", () => {
     expect(record.own).toBeUndefined();
     expect(record.portainer?.environmentId).toBe(2);
     expect(record.retarget?.fromPortainer).toBeUndefined();
-  });
-
-  it("keeps the set-aside logins when the move's addresses are written", async () => {
-    const p = await paths();
-    await recordOwnServer(p, OLD_OWN);
-    await setAsideOldConnection(p, "own");
-    await recordMoveAddress(p, "from", OLD_ADDRESS);
-    await recordMoveAddress(p, "next", { ipv4: "198.51.100.20" });
-    expect((await readServerAddresses(p)).retarget).toEqual({
-      from: OLD_ADDRESS,
-      next: { ipv4: "198.51.100.20" },
-      fromOwn: { ...OLD_OWN },
-    });
   });
 });

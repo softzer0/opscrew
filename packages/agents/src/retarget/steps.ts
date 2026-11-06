@@ -44,7 +44,7 @@ import { moveProvider } from "../shared/vps-target";
 import { bucketKeys, copyBucket, createBucket, movingBucket, renameBucket } from "./bucket";
 import { oldSideTarget, previousCloud } from "./layouts";
 import { joinMoveNetwork, moveMonitoring, sideServer } from "./network";
-import { planBounded, planThenApply } from "./plans";
+import { type PlanSession, planBounded, planThenApply } from "./plans";
 import type { MoveServer } from "./removal";
 import { oldServer } from "./servers";
 import {
@@ -62,7 +62,7 @@ import {
   useLayout,
   withApply,
 } from "./session";
-import { composeProject, type MoveSideOptions, moveSide, sideWords } from "./sides";
+import { composeProject, moveSide, sideWords } from "./sides";
 import { ABORT_COMMAND, approveCommand, providerWords, RUN_COMMAND } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
 
@@ -70,7 +70,7 @@ const WORKFLOW_WAIT_MS = 30 * 60_000;
 
 /** A non-interactive run stopped before an apply: the plan's hash and the command that applies it. */
 export function pendingStop(
-  session: MoveSession,
+  session: Pick<MoveSession, "plan" | "command">,
   planHash: string,
   flags: readonly string[] = [],
   before: readonly string[] = [],
@@ -84,6 +84,19 @@ export function pendingStop(
       `Review the plan above, then run \`${approveCommand(session.command, planHash, flags)}\` to apply it and continue.`,
     ],
   };
+}
+
+/**
+ * True when this run applies the hash-bound plan `hash` now: an interactive run (its approval is
+ * asked for), or `--approve <hash>` names exactly it (used up here). A non-interactive run without
+ * it only shows the plan and stops ({@link pendingStop}).
+ */
+export function appliesNow(session: Pick<PlanSession, "approve" | "deps">, hash: string): boolean {
+  if (session.approve === hash) {
+    session.approve = undefined;
+    return true;
+  }
+  return session.deps.interactive;
 }
 
 const DRIFT_HINT = `The infrastructure no longer matches what OpsCrew applied. Run \`${ABORT_COMMAND}\` to undo the move, then \`opscrew drift\` to see the differences and \`opscrew provision\` to bring them back in line, and start the move again.`;
@@ -213,13 +226,7 @@ type SideChoices = Pick<RetargetOptions, "hostKey" | "passwordLogins" | "publicI
 
 /** The new side with the command line's choices and the image the old side runs. */
 function newSide(session: MoveSession, options: SideChoices) {
-  const choices: MoveSideOptions = {
-    ...(options.hostKey !== undefined ? { hostKey: options.hostKey } : {}),
-    ...(options.passwordLogins !== undefined ? { passwordLogins: options.passwordLogins } : {}),
-    ...(options.publicImage !== undefined ? { publicImage: options.publicImage } : {}),
-    image: runningImage,
-  };
-  return moveSide(session, "new", choices);
+  return moveSide(session, "new", { ...options, image: runningImage });
 }
 
 /**

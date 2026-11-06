@@ -66,7 +66,6 @@ import { runningVersions, versionBuild } from "../status/site";
 import { planBounded, planThenApply } from "./plans";
 import { auditMove, auditStep, moveOf, recordApply, saveMove, savePlan, waitsOf } from "./session";
 import {
-  appliesNow,
   hostWords,
   movingWorker,
   newSite,
@@ -75,10 +74,9 @@ import {
   renderSiteFiles,
   type SiteSession,
   siteContext,
-  sitePending,
   useSiteRoot,
 } from "./site-session";
-import { normalised, workflowOnGitHub } from "./steps";
+import { appliesNow, normalised, pendingStop, workflowOnGitHub } from "./steps";
 import { ABORT_COMMAND, FINISH_COMMAND, RUN_COMMAND } from "./texts";
 import type { RetargetOptions, RetargetResult } from "./types";
 
@@ -131,7 +129,7 @@ export async function pagesStep(
     app: session.plan.app.name,
   });
   if (plan.steps.length > 0 && !now) {
-    return sitePending(session, hash, pagesPlanDeletes(plan) ? confirmFlags(session) : []);
+    return pendingStop(session, hash, pagesPlanDeletes(plan) ? confirmFlags(session) : []);
   }
   if (step.approval !== undefined) await recordApproval(session, step.approval);
   return undefined;
@@ -237,7 +235,7 @@ async function preparePages(
   });
   const waits =
     approved === undefined && !deps.interactive && (record.plan?.changes.length ?? 0) > 0;
-  if (waits && record.planHash !== undefined) return sitePending(session, record.planHash);
+  if (waits && record.planHash !== undefined) return pendingStop(session, record.planHash);
   if (record.approval !== undefined) await recordApproval(session, record.approval);
   if (record.applied) deps.reporter.info(verifyStepNote({ owner, domain, page }));
 
@@ -305,7 +303,7 @@ async function prepareWorker(session: SiteSession): Promise<RetargetResult | und
         !customDomain(change.address),
     }),
   });
-  if (step.kind === "pending") return sitePending(session, step.planHash);
+  if (step.kind === "pending") return pendingStop(session, step.planHash);
   if (step.kind === "applied") await recordApply(session, step);
 
   if (deployToken !== undefined) {
@@ -592,7 +590,7 @@ export async function siteSwitchStep(session: SiteSession): Promise<RetargetResu
             (change.action === "create" && customDomain(change.address)),
     }),
   });
-  if (step.kind === "pending") return sitePending(session, step.planHash, confirmFlags(session));
+  if (step.kind === "pending") return pendingStop(session, step.planHash, confirmFlags(session));
   if (step.kind === "applied") await recordApply(session, step);
   await saveMove(session, { ...moveOf(session), step: "switched" });
   deps.reporter.success(`${domain} now goes to ${hostWords(newSite(plan))}.`);
@@ -621,7 +619,7 @@ export async function workerRules(session: SiteSession): Promise<RetargetResult 
     planOnly: !now,
   });
   if (changes && !now) {
-    return sitePending(
+    return pendingStop(
       session,
       hash,
       applied.fields.cloudflarePlanDeletes ? confirmFlags(session) : [],

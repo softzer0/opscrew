@@ -106,6 +106,18 @@ describe.skipIf(!findExecutable("git"))("startMove: every refusal comes before a
       says: "behind your own proxy with its DNS on Cloudflare",
     },
     {
+      what: "an app with Portainer on a subdomain, through a Cloudflare Tunnel",
+      addon: {
+        enabled: true,
+        version: "2.33.1",
+        access: "subdomain",
+        hostname: "portainer.example.com",
+        allowedEmails: ["owner@example.com"],
+      },
+      options: { to: "own", ownServer: OWN_ANSWERS },
+      says: "has Portainer or Beszel's hub on a subdomain, through a Cloudflare Tunnel",
+    },
+    {
       what: "a new own server reached through a tunnel",
       options: { to: "own", ownServer: { ...OWN_ANSWERS, reachable: false } },
       says: "Your new server would serve the app through a Cloudflare Tunnel",
@@ -153,6 +165,17 @@ describe.skipIf(!findExecutable("git"))("startMove: every refusal comes before a
           ...h.plan,
           target: rest.target,
           dns: { ...h.plan.dns, proxied: false },
+        }),
+      );
+    }
+    if ("addon" in rest) {
+      await writeArtifact(
+        "plan",
+        h.paths.files.plan,
+        DeployPlanSchema.parse({
+          ...h.plan,
+          portainer: rest.addon,
+          dns: { ...h.plan.dns, zone: "example.com" },
         }),
       );
     }

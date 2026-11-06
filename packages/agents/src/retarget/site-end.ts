@@ -43,7 +43,6 @@ import { auditStep, moveOf, recordApply, saveMove, savePlan, warnUnusedApproval 
 import { sitePrice } from "./site";
 import {
   afterMove,
-  appliesNow,
   beforeMove,
   hostWords,
   newSite,
@@ -53,7 +52,6 @@ import {
   type SiteSession,
   type SiteTarget,
   siteContext,
-  sitePending,
 } from "./site-session";
 import {
   answers,
@@ -64,6 +62,7 @@ import {
   siteBounds,
   workerRules,
 } from "./site-steps";
+import { appliesNow, pendingStop } from "./steps";
 import { ABORT_COMMAND, FINISH_ABORT_HINT, FINISH_COMMAND, RUN_COMMAND } from "./texts";
 import type { AbortRetargetOptions, FinishRetargetOptions, RetargetResult } from "./types";
 
@@ -179,13 +178,13 @@ async function rootPlan(
   if (removal !== undefined) {
     // Without changes in the zone only the record is written: it lists no hostnames any more.
     const hash = removal.zone.plan.hash;
-    if (rules !== undefined && !appliesNow(session, hash)) return sitePending(session, hash, flags);
+    if (rules !== undefined && !appliesNow(session, hash)) return pendingStop(session, hash, flags);
     await applySharedRemoval(deps, input.plan, removal, {
       command: session.command,
       phase: "retarget",
     });
   }
-  if (prepared.kind === "pending") return sitePending(session, prepared.planHash, flags);
+  if (prepared.kind === "pending") return pendingStop(session, prepared.planHash, flags);
   if (prepared.kind === "ready") {
     const applied = await applyInfraPlan(session, plan, prepared.planHash);
     await recordApply(session, { planHash: prepared.planHash, ...applied });

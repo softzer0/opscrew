@@ -33,8 +33,7 @@ import {
 } from "../shared";
 import type { PlanSession } from "./plans";
 import { moveOf, requireState } from "./session";
-import { approveCommand } from "./texts";
-import type { RetargetGitHubApi, RetargetResult, RetargetServices } from "./types";
+import type { RetargetGitHubApi, RetargetServices } from "./types";
 
 /** A site's target: Cloudflare's hosting or GitHub Pages. */
 export type SiteTarget = CloudflareWorkersDeployTarget | GithubPagesDeployTarget;
@@ -235,33 +234,4 @@ export async function useSiteRoot(
     backendConfig: { path: tfstateFile(deps.paths) },
   });
   return files;
-}
-
-/** A non-interactive run stopped before an apply: the plan's hash and the command that applies it. */
-export function sitePending(
-  session: SiteSession,
-  planHash: string,
-  flags: readonly string[] = [],
-): RetargetResult {
-  return {
-    step: moveOf(session).step,
-    done: false,
-    pendingPlanHash: planHash,
-    next: [
-      `Review the plan above, then run \`${approveCommand(session.command, planHash, flags)}\` to apply it and continue.`,
-    ],
-  };
-}
-
-/**
- * True when this run applies the hash-bound plan `hash` now: an interactive run (its approval is
- * asked for), or `--approve <hash>` names it (used up here). A non-interactive run without it
- * only shows the plan and stops.
- */
-export function appliesNow(session: SiteSession, hash: string): boolean {
-  if (session.approve?.toLowerCase() === hash.toLowerCase()) {
-    session.approve = undefined;
-    return true;
-  }
-  return session.deps.interactive;
 }
