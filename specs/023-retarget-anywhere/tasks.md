@@ -312,6 +312,18 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
   - Effort: high
 
+- [ ] T2322 [US3] Found live (T2317 own run 4): after a failed window's rollback the old side's Valkey comes back unhealthy
+  - Owns: `packages/iac-templates/src/catalog/**`, `packages/agents/src/retarget/{window.ts,sides/**}`, the catalog copy Docker test (+ tests)
+  - Depends: T2321
+  - Why: the window stops the stateful services and its rollback starts the same containers again,
+    something deploys (which recreate containers) never did. In run 4 the old side's `queue` (Valkey)
+    started unhealthy, so the app stayed down: SC-2302 broken.
+  - Accept: the root cause reproduced locally; every stateful catalog kind comes back healthy with its data
+    after the window's stop, the carrier's reads, and the rollback's start (the Docker-gated test); the fix
+    is at its root.
+  - Verify: `OPSCREW_DOCKER_TESTS=1` catalog copy test, plus agents and iac-templates
+  - Effort: high
+
 ## Phase 7: Live
 
 - [x] T2316 [US1] [US2] [US3] [US4] [US5] The live pass, in `packages/cli/test/live/`
