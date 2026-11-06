@@ -721,7 +721,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, and the Docker test with `OPSCREW_DOCKER_TESTS=1` (its output in the report)
   - Effort: xhigh
 
-- [ ] T1934 [US8] The rollback's database choice, approval and one-time approval file, in `packages/agents/src/rollback/**` and `packages/cli/src/commands/rollback.ts` (+ tests)
+- [x] T1934 [US8] The rollback's database choice, approval and one-time approval file, in `packages/agents/src/rollback/**` and `packages/cli/src/commands/rollback.ts` (+ tests)
   - Owns: `packages/agents/src/rollback/**`, `packages/cli/src/commands/rollback.ts`, `packages/cli/src/commands/rollback.test.ts`, `packages/cli/src/ui/rollback*.ts` if it exists
   - Reads: plan.md 12.3 and 12.5, FR-1924–FR-1926 and FR-1930, `agents/src/logs/failed.ts` (how a server's files are read, with `sudo` on own servers), `agents/src/rollback/{server,local,record,versions}.ts`, `agents/src/promote/site.ts` `approve`
   - Depends: T1930
