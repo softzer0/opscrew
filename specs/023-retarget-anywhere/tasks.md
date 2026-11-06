@@ -283,7 +283,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm lint`
   - Effort: medium
 
-- [ ] T2320 [US2] Found in T2309: a Portainer target whose records OpsCrew manages, and the paused deploys' hint
+- [x] T2320 [US2] Found in T2309: a Portainer target whose records OpsCrew manages, and the paused deploys' hint
   - Owns: `packages/agents/src/destroy/portainer*.ts`, `packages/agents/src/drift/portainer*.ts`, `packages/agents/src/move/deploys.ts` (+ tests)
   - Depends: T2309
   - Accept:
@@ -317,5 +317,5 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 8: Finish
 
-- [ ] T2318 Simplify (lead): a review of the feature's diff for reuse and simplicity.
+- [ ] T2318 Simplify (lead): a review of the feature's diff for reuse and simplicity. Known so far: provision/portainer-flow.ts sets the Portainer records' TF_VARs inline, beside T2320's `setPortainerRecordsAddress` (move it to shared/ and use it in all three); postgres.ts's one-file tar writer; the shared output filter (S4 from T2308's review).
 - [ ] T2319 Release (lead): `docs/releasing.md`, with 022's opt-ins in the same release.
