@@ -79,8 +79,6 @@ describe("digitaloceanConnector credentials", () => {
         "image:create",
         "image:read",
         "snapshot:read",
-        "snapshot:delete",
-        "droplet:admin",
       ],
     });
   });
@@ -410,22 +408,45 @@ function textOf(error: OpsCrewError): string {
 }
 
 describe("digitaloceanConnector.servers snapshots and rebuilds", () => {
-  it("lists a Droplet's snapshots oldest first, with sizes where known and no labels", async () => {
+  it("lists OpsCrew's snapshots of a Droplet oldest first, with sizes where known", async () => {
     const { connector: c, calls } = connector({
       "/v2/droplets/3164444/snapshots": {
         body: {
           snapshots: [
-            { id: 3, name: "c", created_at: "2026-10-12T11:00:00Z" },
-            { id: 1, name: "a", created_at: "2026-10-12T10:05:00Z", size_gigabytes: 2.34 },
-            { id: 2, name: "b", created_at: "2026-10-12T10:20:00Z", size_gigabytes: "1.5" },
+            { id: 3, name: "opscrew-shop-c", created_at: "2026-10-12T11:00:00Z" },
+            {
+              id: 1,
+              name: "opscrew-shop-a",
+              created_at: "2026-10-12T10:05:00Z",
+              size_gigabytes: 2.34,
+            },
+            { id: 4, name: "my-own-snapshot", created_at: "2026-10-12T10:00:00Z" },
+            {
+              id: 2,
+              name: "opscrew-shop-b",
+              created_at: "2026-10-12T10:20:00Z",
+              size_gigabytes: "1.5",
+            },
           ],
         },
       },
     });
     expect(await c.servers?.listSnapshots("3164444")).toEqual([
-      { id: "1", name: "a", createdAt: "2026-10-12T10:05:00Z", sizeGb: 2.34, labels: {} },
-      { id: "2", name: "b", createdAt: "2026-10-12T10:20:00Z", sizeGb: 1.5, labels: {} },
-      { id: "3", name: "c", createdAt: "2026-10-12T11:00:00Z", labels: {} },
+      {
+        id: "1",
+        name: "opscrew-shop-a",
+        createdAt: "2026-10-12T10:05:00Z",
+        sizeGb: 2.34,
+        labels: {},
+      },
+      {
+        id: "2",
+        name: "opscrew-shop-b",
+        createdAt: "2026-10-12T10:20:00Z",
+        sizeGb: 1.5,
+        labels: {},
+      },
+      { id: "3", name: "opscrew-shop-c", createdAt: "2026-10-12T11:00:00Z", labels: {} },
     ]);
     expect(calls.map((call) => call.method)).toEqual(["GET"]);
   });
@@ -435,6 +456,49 @@ describe("digitaloceanConnector.servers snapshots and rebuilds", () => {
     await expect(c.servers?.deleteSnapshot("6372399")).resolves.toBeUndefined();
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
       "DELETE /v2/snapshots/6372399",
+    ]);
+  });
+
+  it("names the snapshot scopes after a 403 on a deletion or a rebuild", async () => {
+    const forbidden = {
+      status: 403,
+      body: { id: "forbidden", message: "You are not authorized to perform this operation" },
+    };
+    const { connector: c } = connector({
+      "DELETE /v2/snapshots/6372399": forbidden,
+      "POST /v2/droplets/7/actions": forbidden,
+    });
+    for (const attempt of [
+      c.servers?.deleteSnapshot("6372399"),
+      c.servers?.rebuild("7", "6372399"),
+    ]) {
+      const error = await errorOf(attempt);
+      expect(error.code).toBe("CREDENTIALS_INVALID");
+      expect(error.hint).toContain(
+        "This needs a token with the scopes snapshot:delete, droplet:admin",
+      );
+      expect(error.hint).toContain("DigitalOcean's API settings");
+      expect(textOf(error)).not.toContain(token);
+    }
+  });
+
+  it("sends a deletion and a rebuild once after a 5xx and says they may already be done", async () => {
+    const failing = { status: 503, body: { id: "service_unavailable", message: "try later" } };
+    const { connector: c, calls } = connector({
+      "DELETE /v2/snapshots/6372399": failing,
+      "POST /v2/droplets/7/actions": failing,
+    });
+    for (const attempt of [
+      c.servers?.deleteSnapshot("6372399"),
+      c.servers?.rebuild("7", "6372399"),
+    ]) {
+      const error = await errorOf(attempt);
+      expect(error.code).toBe("PROVIDER_ERROR");
+      expect(error.hint).toContain("The change may still have been made");
+    }
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "DELETE /v2/snapshots/6372399",
+      "POST /v2/droplets/7/actions",
     ]);
   });
 
@@ -513,7 +577,9 @@ describe("digitaloceanConnector.servers snapshots and rebuilds", () => {
     const error = await errorOf(c.servers?.rebuild("7", "900"));
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("invalid image");
-    expect(error.hint).toContain("If image 900 is one of the Droplet's backups");
+    expect(error.hint).toMatch(
+      /^Fix the value DigitalOcean named above and try again\. If image 900 is one of the Droplet's backups/,
+    );
     expect(error.hint).toContain("convert it to a snapshot first");
     expect(textOf(error)).not.toContain(token);
     expect(calls).toHaveLength(1);

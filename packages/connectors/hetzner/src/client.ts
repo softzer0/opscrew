@@ -158,7 +158,7 @@ const actionSchema = z.looseObject({
 export type HetznerAction = z.infer<typeof actionSchema>;
 
 const errorBodySchema = z.looseObject({
-  error: z.looseObject({ message: z.string().optional() }),
+  error: z.looseObject({ code: z.string().optional(), message: z.string().optional() }),
 });
 
 // --- Client -------------------------------------------------------------------------------------
@@ -264,12 +264,15 @@ export class HetznerClient {
   }
 
   /**
-   * The snapshots taken of a server (`GET /images?type=snapshot`, every page). Hetzner's
-   * `bound_to` filter only applies to backups, so snapshots are matched to the server by their
-   * `created_from` here.
+   * The snapshots of a server matching `labelSelector` (`GET /images?type=snapshot`, every page).
+   * Hetzner's `bound_to` filter only applies to backups, so snapshots are matched to the server by
+   * their `created_from` here.
    */
-  async listSnapshots(serverId: number): Promise<HetznerImage[]> {
-    const images = await this.#listAll("/images", "images", imageSchema, { type: "snapshot" });
+  async listSnapshots(serverId: number, labelSelector: string): Promise<HetznerImage[]> {
+    const images = await this.#listAll("/images", "images", imageSchema, {
+      type: "snapshot",
+      label_selector: labelSelector,
+    });
     return images.filter((image) => image.created_from?.id === serverId);
   }
 
@@ -436,9 +439,10 @@ export class HetznerClient {
 
 async function statusError(response: Response, path: string): Promise<OpsCrewError> {
   let apiMessage: string | undefined;
+  let apiCode: string | undefined;
   try {
     const parsed = errorBodySchema.safeParse(await response.json());
-    if (parsed.success) apiMessage = parsed.data.error.message;
+    if (parsed.success) ({ message: apiMessage, code: apiCode } = parsed.data.error);
   } catch {
     // Body was not JSON; fall back to the status text.
   }
@@ -456,14 +460,17 @@ async function statusError(response: Response, path: string): Promise<OpsCrewErr
   return new OpsCrewError(
     "PROVIDER_ERROR",
     `Hetzner API request ${path} failed (HTTP ${response.status}): ${detail}`,
-    { hint: statusHint(response.status) },
+    { hint: statusHint(response.status, apiCode) },
   );
 }
 
-/** The next step after Hetzner answered with an error `status`. */
-function statusHint(status: number): string {
+/** The next step after Hetzner answered with an error `status` and error `code`. */
+function statusHint(status: number, code: string | undefined): string {
   switch (status) {
     case 403:
+      if (code === "protected") {
+        return "Remove its delete protection in the Hetzner Cloud Console first, then try again.";
+      }
       return "Check that the token belongs to the right project and has Read & Write permission.";
     case 404:
       return "It may have been deleted: check the Hetzner Cloud Console and use an id that exists there.";

@@ -1,4 +1,4 @@
-import type { VpsConnector } from "@opscrew/contracts";
+import type { FetchLike, VpsConnector } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { type FakeReply, fakeSecret } from "@opscrew/core/testing";
 import { describe, expect, it } from "vitest";
@@ -197,14 +197,18 @@ function textOf(error: OpsCrewError): string {
 }
 
 describe("servers.listSnapshots", () => {
-  it("lists the server's snapshots across pages, oldest first, with labels and sizes", async () => {
-    const opscrew = { "managed-by": "opscrew", "opscrew-app": "shop", "opscrew-env": "production" };
+  const ours = { "created-by": "opscrew", app: "shop", reason: "destroy" };
+
+  it("lists OpsCrew's snapshots of the server across pages, oldest first, with sizes", async () => {
     const { connector, calls } = setup({
       "/images?page=1": {
         body: {
           images: [
-            image(12, "2026-11-05T10:00:00+00:00", { labels: opscrew }),
-            image(20, "2026-11-01T10:00:00+00:00", { created_from: { id: 8, name: "other" } }),
+            image(12, "2026-11-05T10:00:00+00:00", { labels: ours }),
+            image(20, "2026-11-01T10:00:00+00:00", {
+              labels: ours,
+              created_from: { id: 8, name: "other" },
+            }),
           ],
           meta: { pagination: { next_page: 2 } },
         },
@@ -212,27 +216,53 @@ describe("servers.listSnapshots", () => {
       "/images?page=2": {
         body: {
           images: [
-            image(11, "2026-11-02T10:00:00+00:00", { description: null, labels: undefined }),
-            image(13, "2026-11-06T10:00:00+00:00", { status: "creating", image_size: null }),
-            image(30, "2026-11-03T10:00:00+00:00", { created_from: null }),
+            image(11, "2026-11-02T10:00:00+00:00", { description: null, labels: ours }),
+            image(13, "2026-11-06T10:00:00+00:00", {
+              labels: ours,
+              status: "creating",
+              image_size: null,
+            }),
+            image(30, "2026-11-03T10:00:00+00:00", { labels: ours, created_from: null }),
           ],
           meta: { pagination: { next_page: null } },
         },
       },
     });
     expect(await connector.servers?.listSnapshots("7")).toEqual([
-      { id: "11", name: "", createdAt: "2026-11-02T10:00:00+00:00", sizeGb: 1.25, labels: {} },
+      { id: "11", name: "", createdAt: "2026-11-02T10:00:00+00:00", sizeGb: 1.25, labels: ours },
       {
         id: "12",
         name: "snapshot 12",
         createdAt: "2026-11-05T10:00:00+00:00",
         sizeGb: 1.25,
-        labels: opscrew,
+        labels: ours,
       },
-      { id: "13", name: "snapshot 13", createdAt: "2026-11-06T10:00:00+00:00", labels: {} },
+      { id: "13", name: "snapshot 13", createdAt: "2026-11-06T10:00:00+00:00", labels: ours },
     ]);
     expect(calls.map((call) => param(call, "type"))).toEqual(["snapshot", "snapshot"]);
+    expect(calls.map((call) => param(call, "label_selector"))).toEqual([
+      "created-by=opscrew",
+      "created-by=opscrew",
+    ]);
     expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("leaves out the user's own snapshots, which lack OpsCrew's label", async () => {
+    const all: { labels: Record<string, string> }[] = [
+      image(12, "2026-11-05T10:00:00+00:00", { labels: ours }),
+      image(14, "2026-11-04T10:00:00+00:00", { labels: {} }),
+      image(15, "2026-11-04T11:00:00+00:00", { labels: { "created-by": "someone" } }),
+    ];
+    // Answers as Hetzner does: only images matching the `key=value` label selector.
+    const fetch: FetchLike = async (input) => {
+      const selector = new URL(String(input)).searchParams.get("label_selector") ?? "";
+      const [key = "", value] = selector.split("=");
+      const images = all.filter((i) => key === "" || i.labels[key] === value);
+      return Response.json({ images, meta: { pagination: { next_page: null } } });
+    };
+    const connector = hetznerConnector({ env: { HCLOUD_TOKEN: token }, fetch });
+    const listed = await connector.servers?.listSnapshots("7");
+    expect(listed?.map((snapshot) => snapshot.id)).toEqual(["12"]);
   });
 
   it("rejects a non-numeric server id without calling the API", async () => {
@@ -277,6 +307,20 @@ describe("servers.deleteSnapshot", () => {
     const error = await errorOf(connector.servers?.deleteSnapshot("4711"));
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(calls).toHaveLength(1);
+  });
+
+  it("asks to remove the delete protection of a protected snapshot", async () => {
+    const { connector } = setup({
+      "DELETE /images/4711": {
+        status: 403,
+        body: { error: { code: "protected", message: "image is protected" } },
+      },
+    });
+    const error = await errorOf(connector.servers?.deleteSnapshot("4711"));
+    expect(error.message).toContain("image is protected");
+    expect(error.hint).toBe(
+      "Remove its delete protection in the Hetzner Cloud Console first, then try again.",
+    );
   });
 
   it("rejects a non-numeric snapshot id without calling the API", async () => {

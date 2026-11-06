@@ -26,10 +26,7 @@ const ACTION_POLL_MS = 5_000;
 /** Page where DigitalOcean API tokens are created. */
 export const DIGITALOCEAN_TOKEN_URL = "https://cloud.digitalocean.com/account/api/tokens";
 
-/**
- * Least-privilege custom scopes OpsCrew needs (provision, drift, destroy with snapshot, deleting a
- * snapshot, and `droplet:admin` to rebuild a Droplet from one).
- */
+/** Least-privilege custom scopes OpsCrew needs (provision, drift, destroy with snapshot). */
 export const DIGITALOCEAN_SCOPES: readonly string[] = [
   "account:read",
   "regions:read",
@@ -52,9 +49,21 @@ export const DIGITALOCEAN_SCOPES: readonly string[] = [
   "image:create",
   "image:read",
   "snapshot:read",
-  "snapshot:delete",
-  "droplet:admin",
 ];
+
+/** The extra scopes deleting a snapshot and rebuilding a Droplet from one need. */
+export const DIGITALOCEAN_SNAPSHOT_SCOPES: readonly string[] = ["snapshot:delete", "droplet:admin"];
+
+/** The next step after a 403 on deleting a snapshot or rebuilding a Droplet. */
+const SNAPSHOT_SCOPE_HINT = `This needs a token with the scopes ${DIGITALOCEAN_SNAPSHOT_SCOPES.join(", ")}; add them to the token in DigitalOcean's API settings (${DIGITALOCEAN_TOKEN_URL}), then try again.`;
+/** The next step after a 422. */
+const REFUSED_HINT = "Fix the value DigitalOcean named above and try again.";
+
+/** Hints that replace (`forbidden`, for a 403) or extend (`refused`, for a 422) the defaults. */
+interface StatusHints {
+  forbidden?: string;
+  refused?: string;
+}
 
 /** Hint after a write whose outcome is unknown: repeating it could do it twice. */
 const MAYBE_DONE_HINT =
@@ -309,9 +318,7 @@ export class DigitalOceanClient {
       `/v2/snapshots/${encodeURIComponent(String(snapshotId))}`,
       z.undefined(),
       {},
-      {
-        method: "DELETE",
-      },
+      { method: "DELETE", hints: { forbidden: SNAPSHOT_SCOPE_HINT } },
     );
   }
 
@@ -331,7 +338,10 @@ export class DigitalOceanClient {
       {
         method: "POST",
         body: { type: "rebuild", image: Number(imageId) },
-        refusedHint: `If image ${imageId} is one of the Droplet's backups, convert it to a snapshot first (the Droplet's Backups tab in the DigitalOcean control panel, More, Convert to snapshot), then rebuild from that snapshot.`,
+        hints: {
+          forbidden: SNAPSHOT_SCOPE_HINT,
+          refused: `If image ${imageId} is one of the Droplet's backups, convert it to a snapshot first (the Droplet's Backups tab in the DigitalOcean control panel, More, Convert to snapshot), then rebuild from that snapshot.`,
+        },
       },
     );
     return body.action;
@@ -362,7 +372,7 @@ export class DigitalOceanClient {
     path: string,
     schema: S,
     query: Record<string, string> = {},
-    init: { method?: "GET" | "POST" | "DELETE"; body?: unknown; refusedHint?: string } = {},
+    init: { method?: "GET" | "POST" | "DELETE"; body?: unknown; hints?: StatusHints } = {},
   ): Promise<z.infer<S>> {
     const method = init.method ?? "GET";
     return requestJson(this.#http, {
@@ -372,7 +382,7 @@ export class DigitalOceanClient {
       headers: { Authorization: `Bearer ${this.#token}`, "User-Agent": this.#userAgent },
       ...(init.body !== undefined && { body: init.body }),
       schema,
-      fail: (failure) => this.#error(failure, method, path, init.refusedHint),
+      fail: (failure) => this.#error(failure, method, path, init.hints),
     });
   }
 
@@ -380,7 +390,7 @@ export class DigitalOceanClient {
     failure: RequestFailure,
     method: string,
     path: string,
-    refusedHint: string | undefined,
+    hints: StatusHints | undefined,
   ): Promise<OpsCrewError> {
     const { idempotent } = failure;
     switch (failure.kind) {
@@ -416,7 +426,7 @@ export class DigitalOceanClient {
           },
         );
       case "status":
-        return this.#statusError(failure.response, `${method} ${path}`, idempotent, refusedHint);
+        return this.#statusError(failure.response, `${method} ${path}`, idempotent, hints);
     }
   }
 
@@ -424,7 +434,7 @@ export class DigitalOceanClient {
     response: Response,
     request: string,
     idempotent: boolean,
-    refusedHint: string | undefined,
+    hints: StatusHints | undefined,
   ): Promise<OpsCrewError> {
     let apiMessage: string | undefined;
     try {
@@ -448,7 +458,7 @@ export class DigitalOceanClient {
         return new OpsCrewError(
           "CREDENTIALS_INVALID",
           `DigitalOcean refused ${request} (HTTP 403: ${detail}). The token is probably missing a scope OpsCrew needs.`,
-          { hint: SCOPE_HINT },
+          { hint: hints?.forbidden ?? SCOPE_HINT },
         );
       case 404:
         return new OpsCrewError(
@@ -460,7 +470,7 @@ export class DigitalOceanClient {
         );
       case 422:
         return new OpsCrewError("PROVIDER_ERROR", `DigitalOcean rejected ${request}: ${detail}`, {
-          hint: refusedHint ?? "Fix the value DigitalOcean named above and try again.",
+          hint: hints?.refused === undefined ? REFUSED_HINT : `${REFUSED_HINT} ${hints.refused}`,
         });
       case 429:
         return new OpsCrewError(

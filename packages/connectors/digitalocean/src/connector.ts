@@ -34,6 +34,8 @@ const MANAGED_TAG = "managed-by:opscrew";
 /** Tag naming the app a Droplet belongs to. */
 const appTag = (app: string) => `opscrew-app:${app}`;
 const ACCOUNT_URL = "https://cloud.digitalocean.com/account";
+/** How the names of the snapshots OpsCrew takes start (DigitalOcean has no labels on them). */
+const SNAPSHOT_PREFIX = "opscrew-";
 /** Default wait for a snapshot or a rebuild to finish (15 minutes). */
 const ACTION_TIMEOUT_MS = 15 * 60_000;
 /** Extra reads of the snapshot list after the action completes (the list can lag behind). */
@@ -223,6 +225,7 @@ function serverApi(
     async listSnapshots(serverId: string): Promise<ServerSnapshot[]> {
       const snapshots = await client.listDropletSnapshots(numericId(serverId, "Droplet"));
       return snapshots
+        .filter((snapshot) => snapshot.name.startsWith(SNAPSHOT_PREFIX))
         .map((snapshot) => ({
           id: snapshot.id,
           name: snapshot.name,

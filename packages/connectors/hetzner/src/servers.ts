@@ -9,6 +9,8 @@ import type { HetznerClient } from "./client";
 
 /** Default wait for a snapshot or a rebuild to finish (15 minutes). */
 const ACTION_TIMEOUT_MS = 15 * 60_000;
+/** The label every snapshot OpsCrew takes carries (never `managed-by`, so cleanups keep it). */
+const OPSCREW_SNAPSHOTS = "created-by=opscrew";
 
 /**
  * Server lookup, snapshots and rebuilds for the provider-neutral teardown and snapshot commands,
@@ -30,7 +32,7 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
       serverId: string,
       request: SnapshotRequest,
     ): Promise<{ snapshotId: string }> {
-      const { imageId, actionId } = await client.createSnapshot(serverIdOf(serverId), {
+      const { imageId, actionId } = await client.createSnapshot(numericId(serverId, "server"), {
         description: request.description,
         labels: request.labels,
       });
@@ -40,7 +42,7 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
       return { snapshotId: String(imageId) };
     },
     async listSnapshots(serverId: string): Promise<ServerSnapshot[]> {
-      const images = await client.listSnapshots(serverIdOf(serverId));
+      const images = await client.listSnapshots(numericId(serverId, "server"), OPSCREW_SNAPSHOTS);
       return images
         .map((image) => ({
           id: String(image.id),
@@ -52,39 +54,25 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     },
     async deleteSnapshot(snapshotId: string): Promise<void> {
-      await client.deleteImage(snapshotIdOf(snapshotId));
+      await client.deleteImage(numericId(snapshotId, "snapshot"));
     },
     async rebuild(serverId: string, snapshotId: string): Promise<void> {
       const { actionId } = await client.rebuildServer(
-        serverIdOf(serverId),
-        snapshotIdOf(snapshotId),
+        numericId(serverId, "server"),
+        numericId(snapshotId, "snapshot"),
       );
       await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
     },
   };
 }
 
-function serverIdOf(value: string): number {
-  return numericId(
-    value,
-    "server",
-    "Use the numeric id shown for the server in the Hetzner Cloud Console.",
-  );
-}
-
-function snapshotIdOf(value: string): number {
-  return numericId(
-    value,
-    "snapshot",
-    "Use the numeric id shown for the snapshot in the Hetzner Cloud Console (Snapshots).",
-  );
-}
-
 /** `value` as a Hetzner numeric id; anything else is refused before calling the API. */
-function numericId(value: string, what: string, hint: string): number {
+function numericId(value: string, what: "server" | "snapshot"): number {
   const id = Number(value);
   if (!/^\d+$/.test(value) || !Number.isSafeInteger(id)) {
-    throw new OpsCrewError("INVALID_INPUT", `"${value}" is not a Hetzner ${what} id.`, { hint });
+    throw new OpsCrewError("INVALID_INPUT", `"${value}" is not a Hetzner ${what} id.`, {
+      hint: `Use the numeric id shown for the ${what} in the Hetzner Cloud Console.`,
+    });
   }
   return id;
 }
