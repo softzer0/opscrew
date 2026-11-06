@@ -386,6 +386,12 @@ never runs, they stay "not tested live" on the coverage page.
 
 ## Later, not yet placed
 
+- **Down migrations for Alembic projects with several heads, if users ask** (founder, 2026-11-06,
+  from 019's database rollback): Alembic's several bases or `branch_labels`, which modular
+  codebases use on purpose; no widely used package is known to ship its own branch. Since T1943
+  they deploy with `alembic upgrade heads` and their rollback offers the snapshot or keep. Down
+  migrations would record one revision per head and migrate each branch down
+  (`alembic downgrade <branch>@<rev>`, to check against a real container).
 - **A password in front of an environment, as a follow-up to 022** (founder, 2026-11-05, from
   022; kept for later as 022's follow-up, founder, 2026-11-06): HTTP basic authentication in the
   Caddy site (a bcrypt hash made on the user's computer; the health route left open), opt-in per

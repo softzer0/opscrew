@@ -10,7 +10,7 @@ description: "Tasks for 019-rollback"
 
 plus `docs/adr/0023-rollback-and-deploy-pause.md`, and features 000–018.
 
-**Numbering**: T1901–T1999 (the database follow-up: T1930–T1941).
+**Numbering**: T1901–T1999 (the database follow-up: T1930–T1943).
 
 **Format**: `- [ ] T#### [P] [USn] description` + `Owns / Reads / Depends / Accept / Verify / Effort`.
 
@@ -852,6 +852,36 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
     - **The CLI:** `rollback.ts`'s one-use `CheckedFlags` is inlined.
     - No behaviour change.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect --filter=@opscrew/agents --filter=opscrew`
+  - Effort: medium
+
+### Several databases and several heads (founder, 2026-11-06)
+
+- [ ] T1942 Down migrations for a Rails app with several databases, in `packages/iac-templates/src/workflow/migrations.ts` (+ tests, the Docker test)
+  - Owns: `packages/iac-templates/src/workflow/migrations.ts`, `migrations.test.ts`, `migrations.docker.test.ts` and its fixtures
+  - Reads: research R9 ("Several databases or heads", the real outputs), plan.md 12.4
+  - Why:
+    - Rails 8 can keep Solid Cache, Queue and Cable in databases of their own.
+    - `bin/rails db:version` then prints one `database: <name>` / `Current version: <v>` pair per database.
+    - Today the record refuses that, so such an app gets no down migrations.
+  - Accept:
+    - **The record:** with several databases it writes one `database=<name> <version>` line per database (12.3's format gains that line kind); one database keeps `version=<v>`.
+    - **The down step:** per database in the current record, in reverse order, runs the plan's `down` with `db:migrate` turned into `db:migrate:<name>` (`bin/rails db:migrate:<name> VERSION=<v>`, `VERSION=0` for a database the earlier record lacks). A `down` without `db:migrate ` in it exits non-zero before any change.
+    - Every value is checked as today.
+    - **Tests:** shim tests for the record and the down step. The Docker test gains a Rails fixture with two databases (PostgreSQL primary and a second database), proving each goes down to its first migration's schema.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, and the Docker test with `OPSCREW_DOCKER_TESTS=1` (its output in the report)
+  - Effort: high
+
+- [ ] T1943 Alembic projects with several heads deploy with `alembic upgrade heads`, in `packages/detect/src/release/python.ts` (+ tests)
+  - Owns: `packages/detect/src/release/python.ts`, `python.test.ts`, `migrations.test.ts` (its Alembic cases)
+  - Why:
+    - A project whose migrations have several heads cannot deploy with OpsCrew's detected `alembic upgrade head` (or `flask db upgrade`): Alembic refuses "Multiple head revisions are present".
+    - Several heads come from several `version_locations` bases or `branch_labels`, used on purpose by modular codebases, or from two branches' migrations not merged yet.
+  - Accept:
+    - **Detection:** detection reads the migration files' `revision` and `down_revision` (a tuple counts as a merge). When more than one revision is nobody's parent, the release command is `alembic upgrade heads` (`flask db upgrade heads`), the analysis gets a note, and no `migrations` is returned.
+    - **The note's words:** plain, for example: "This app's Alembic migrations have several heads (branches of migrations), so OpsCrew runs `alembic upgrade heads`. Down migrations aren't offered for it yet: a rollback can restore a snapshot or keep the database."
+    - **One head:** keeps `upgrade head` and its `migrations`.
+    - **Tests:** one head, two heads, and a merge revision joining two heads (one head again). Check with a real Alembic container, or Alembic's documentation and source if no container fits, that `upgrade heads` and `flask db upgrade heads` are the right commands, and say which in the report.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect`
   - Effort: medium
 
 - [ ] T1938 The live runs and the simplify pass (lead): T1937's pass until it passes, `docs/e2e-coverage.md` per run, then `/simplify` over the follow-up's diff. It ships in 023's release (T2319).
