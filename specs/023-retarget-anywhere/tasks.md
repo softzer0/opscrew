@@ -228,7 +228,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 5: Wave 4 (parallel)
 
-- [ ] T2311 [US4] Buckets
+- [x] T2311 [US4] Buckets
   - Owns: `packages/agents/src/retarget/bucket*.ts`, `packages/agents/src/provision/storage.ts`, `packages/agents/src/destroy/storage.ts`, and the bucket call sites in `retarget/{start,steps,window,finish,abort}.ts` (+ tests)
   - Depends: T2309, T2310
   - Accept:
