@@ -284,7 +284,8 @@ column, and write more rows. Then:
    Knex, Sequelize, TypeORM or Laravel), **When** the user picks down migrations, **Then**:
    - the newer version's image migrates the database down to the schema the earlier version ran
      with;
-   - the output says what the undone migrations drop.
+   - the output says that the tables and columns the undone migrations added are dropped, with
+     their data.
 
    It is offered only when OpsCrew recorded both versions' migration state.
 4. **Given** prod, **Then** no snapshot is taken unless `deploy.snapshots` is `true` in its plan,

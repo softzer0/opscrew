@@ -771,7 +771,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, and the Docker tests with `OPSCREW_DOCKER_TESTS=1` (their output in the report)
   - Effort: xhigh
 
-- [ ] T1936 [US8] The guide and the plugin's skill: `docs/guide/{rollback,when-a-deploy-fails,environments,databases}.md`, `plugin/skills/opscrew-deploy/SKILL.md`
+- [x] T1936 [US8] The guide and the plugin's skill: `docs/guide/{rollback,when-a-deploy-fails,environments,databases}.md`, `plugin/skills/opscrew-deploy/SKILL.md`
   - Owns: those files
   - Reads: plan.md 12.6, spec US8, the merged T1932–T1934 for the exact words and flags
   - Depends: T1934
