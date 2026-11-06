@@ -354,7 +354,7 @@ export async function maintenanceWindow(
   const clean = await withoutAddresses(session);
   try {
     // No deploy runs during the window: each would restart the app on one side or the other.
-    await withDeploysPaused(deps, session.github, plan, session.services, () =>
+    await withDeploysPaused(deps, session.github, plan, session.services, RUN_COMMAND, () =>
       runWindow(session, { old, fresh, docker, window, minutes, logins, clean }),
     );
   } finally {

@@ -24,6 +24,7 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, ghcrImageFor, type PortainerDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import { setPortainerRecordsAddress } from "../destroy/portainer";
 import { builderBranch } from "../environments/branches";
 import {
   type CloudflareSetup,
@@ -488,7 +489,8 @@ async function deployBranchDifferences(
 /**
  * `opscrew drift` for the user's Portainer (FR-1013), read-only: the generated files against what
  * OpsCrew renders; the Cloudflare root (when the plan has one) with a refresh-only and a normal
- * plan, Portainer's address only in the sensitive `TF_VAR_portainer_origin`; then, through the
+ * plan, Portainer's address only in the sensitive `TF_VAR_portainer_origin` and the host's (for
+ * the app's records OpsCrew manages) only in `TF_VAR_server_ipv4`/`_ipv6`; then, through the
  * pinned client, the stacks OpsCrew created against what it sets up now: their files, the
  * variables' names and (with the value key on this computer) their values as keyed fingerprints,
  * the webhook (`AutoUpdate`), the registry entry, and the redeploy mode; and the deploy branch's
@@ -502,8 +504,8 @@ export async function portainerDrift(
 ): Promise<DriftReport> {
   const services = options.services ?? {};
   const target = portainerTarget(plan.target);
-  const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
-  const hasRoot = root.appTunnel || root.webhook;
+  const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false, records: false };
+  const hasRoot = root.appTunnel || root.webhook || root.records;
   const bucket = providerBucket(plan);
   const usesCloudflare = hasRoot || bucket?.provider === "r2";
   const statePath = tfstateFile(deps.paths);
@@ -558,6 +560,7 @@ export async function portainerDrift(
   const differences: PortainerDifference[] = [];
   if (hasRoot) {
     if (root.webhook) setPortainerOrigin(deps.redactor, env, connection.url);
+    await setPortainerRecordsAddress(deps.paths, plan, env);
     const compared = await compareInfrastructure(deps, {
       plan: current,
       engine,

@@ -163,7 +163,7 @@ export async function moveWindow(run: MoveRun): Promise<DeployPlan> {
   }
   const sized = { ...run, plan };
   const approval = await approveWindow(sized, ops, env, copies ? size : undefined);
-  return withDeploysPaused(deps, github, plan, run.services, async () => {
+  return withDeploysPaused(deps, github, plan, run.services, "opscrew provision", async () => {
     // The scheduled check opens no issue while the app is offline for the window.
     await changeCheckPause(deps, target, plan, "retarget", "provision", approval);
     // Each flag is set before its change: a change that fails half way is undone too.
@@ -225,7 +225,7 @@ async function rollForward(
     `An earlier run stopped during the maintenance window after it switched the app's settings to ${move.service} on ${serverWords(to.name)}, where its data was copied. OpsCrew finishes the switch.`,
   );
   const approval = await approveWindow(run, ops, { ...env, switched: true }, undefined);
-  return withDeploysPaused(deps, github, plan, run.services, async () => {
+  return withDeploysPaused(deps, github, plan, run.services, "opscrew provision", async () => {
     await changeCheckPause(deps, target, plan, "retarget", "provision", approval);
     try {
       if (env.after !== env.before) await storeAppEnv(deps, github, plan, env.after);

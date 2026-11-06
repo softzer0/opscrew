@@ -43,6 +43,7 @@ import {
   type PortainerConnection,
   type ProjectEngine,
   readPortainerConnection,
+  readServerAddresses,
   refusalReason,
   stateContents,
 } from "../shared";
@@ -109,6 +110,26 @@ const WORDS: CloudflareRemovalWords = {
   tunnelAfter: TUNNEL_AFTER_STACKS,
   stays: PORTAINER_STAYS,
 };
+
+/**
+ * Hands the engine the Portainer host's recorded public address as `TF_VAR_server_ipv4` and
+ * `TF_VAR_server_ipv6` when the Cloudflare root manages the app's records (web mode `caddy` with
+ * `records`, its `module "dns"`), as provision does; never in a file. Otherwise both are dropped,
+ * so no address from this computer's environment reaches the engine.
+ */
+export async function setPortainerRecordsAddress(
+  paths: PhaseDeps["paths"],
+  plan: Pick<DeployPlan, "target" | "dns">,
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  delete env.TF_VAR_server_ipv4;
+  delete env.TF_VAR_server_ipv6;
+  if (portainerCloudflare(plan)?.records !== true) return;
+  const address = (await readServerAddresses(paths)).deployment;
+  if (address === undefined) return;
+  env.TF_VAR_server_ipv4 = address.ipv4;
+  if (address.ipv6 !== undefined) env.TF_VAR_server_ipv6 = address.ipv6;
+}
 
 /** Stops (`PHASE_PRECONDITION`, nothing changed) when the teardown plan cannot run. */
 function requireNoStackBlockers(plan: StackPlan, name: string): void {
@@ -433,8 +454,8 @@ export async function destroyPortainer(
     (stateHere && plan.deployment.destroyedAt === undefined);
   const dataOnly = !removeApp && deleteData && record.volumes.length > 0;
   if (!removeApp && !dataOnly) throw nothingDeployed(plan);
-  const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false };
-  if (removeApp && (root.appTunnel || root.webhook) && !stateHere)
+  const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false, records: false };
+  if (removeApp && (root.appTunnel || root.webhook || root.records) && !stateHere)
     throw await teardownStateNotHere(deps.paths.root, plan);
   const cloudflareState = removeApp && stateHere;
   if (cloudflareState) {
@@ -486,6 +507,7 @@ export async function destroyPortainer(
   if (cloudflareState) {
     setup = await setupEngine(deps, plan, options);
     setPortainerOrigin(deps.redactor, setup.env, connection.url);
+    await setPortainerRecordsAddress(deps.paths, plan, setup.env);
     session = deletionSession(scope, { ...setup, dir: join(deps.paths.root, plan.infra.dir) });
     ({ resources, confirmed } = await previewCloudflareRemoval(session, WORDS));
   }

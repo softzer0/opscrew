@@ -18,13 +18,15 @@ type GitHub = Pick<GitHubSetup, "api" | "owner" | "repo">;
 /**
  * Runs `window` with the app's deploys paused: the variable set, then a wait for the deploys that
  * run, and the variable cleared however `window` ends (a failure to clear it is a warning saying
- * how to clear it by hand).
+ * how to clear it by hand). `command` holds the pause (`opscrew retarget` in a move between
+ * targets, else `opscrew provision`): a deploy that still runs says to run it again.
  */
 export async function withDeploysPaused<T>(
   deps: Deps,
   github: GitHub,
   plan: DeployPlan,
   services: Pick<ProvisionServices, "sleep" | "now">,
+  command: string,
   window: () => Promise<T>,
 ): Promise<T> {
   await setDeployPause(deps, github, plan, {
@@ -34,7 +36,7 @@ export async function withDeploysPaused<T>(
   try {
     await waitForDeploys(deps, github, plan, services, {
       outcome: "the maintenance window did not start. Nothing was changed on the servers.",
-      hint: `Let it end (https://github.com/${github.owner}/${github.repo}/actions), then run \`opscrew provision\` again.`,
+      hint: `Let it end (https://github.com/${github.owner}/${github.repo}/actions), then run \`${command}\` again.`,
     });
     return await window();
   } finally {
