@@ -134,7 +134,8 @@ export interface JsonRequest<S extends z.ZodType> {
  * a write may already have been carried out, so it is never sent twice. Any request answered with
  * 429 is repeated (the provider did not accept it), after waiting until `RateLimit-Reset` (epoch
  * seconds) when the answer has one and otherwise `retry.rateLimitDelayMs`, never more than 60 s.
- * Every other failure throws what `request.fail` returns.
+ * An empty success body (a 204) parses as `undefined`, for a `z.undefined()` schema. Every other
+ * failure throws what `request.fail` returns.
  */
 export async function requestJson<S extends z.ZodType>(
   client: JsonClient,
@@ -187,7 +188,7 @@ export async function requestJson<S extends z.ZodType>(
 
     let json: unknown;
     try {
-      json = JSON.parse(text);
+      json = text === "" ? undefined : JSON.parse(text);
     } catch (cause) {
       throw await request.fail({ kind: "invalid-json", idempotent, cause });
     }

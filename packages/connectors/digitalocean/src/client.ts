@@ -26,7 +26,10 @@ const ACTION_POLL_MS = 5_000;
 /** Page where DigitalOcean API tokens are created. */
 export const DIGITALOCEAN_TOKEN_URL = "https://cloud.digitalocean.com/account/api/tokens";
 
-/** Least-privilege custom scopes OpsCrew needs (provision, drift, destroy with snapshot). */
+/**
+ * Least-privilege custom scopes OpsCrew needs (provision, drift, destroy with snapshot, deleting a
+ * snapshot, and `droplet:admin` to rebuild a Droplet from one).
+ */
 export const DIGITALOCEAN_SCOPES: readonly string[] = [
   "account:read",
   "regions:read",
@@ -49,6 +52,8 @@ export const DIGITALOCEAN_SCOPES: readonly string[] = [
   "image:create",
   "image:read",
   "snapshot:read",
+  "snapshot:delete",
+  "droplet:admin",
 ];
 
 /** Hint after a write whose outcome is unknown: repeating it could do it twice. */
@@ -154,6 +159,8 @@ const snapshotSchema = z.looseObject({
   id: idSchema,
   name: z.string(),
   created_at: z.string().nullable().optional(),
+  /** GB billed for the snapshot. */
+  size_gigabytes: decimal.nullable().optional(),
 });
 /** A Droplet snapshot (`GET /v2/droplets/{id}/snapshots`); `id` is a string. */
 export type DigitalOceanSnapshot = z.infer<typeof snapshotSchema>;
@@ -183,7 +190,8 @@ export interface DigitalOceanClientOptions {
 
 /**
  * Typed DigitalOcean API v2 client with pagination, rate-limit handling and plain-English errors
- * that never contain the token. The only write is {@link snapshotDroplet}, called after approval.
+ * that never contain the token. Its writes (snapshots, their deletion and rebuilds) are only called
+ * after an approval.
  */
 export class DigitalOceanClient {
   readonly #token: string;
@@ -295,6 +303,40 @@ export class DigitalOceanClient {
     );
   }
 
+  /** Deletes a snapshot (`DELETE /v2/snapshots/{id}`); DigitalOcean answers 204 once it is gone. */
+  async deleteSnapshot(snapshotId: string | number): Promise<void> {
+    await this.#request(
+      `/v2/snapshots/${encodeURIComponent(String(snapshotId))}`,
+      z.undefined(),
+      {},
+      {
+        method: "DELETE",
+      },
+    );
+  }
+
+  /**
+   * Starts rebuilding a Droplet from an image (`POST /v2/droplets/{id}/actions`, `type: "rebuild"`),
+   * keeping its id and address, and returns the action; use {@link waitForAction} to wait for it.
+   * DigitalOcean rebuilds from snapshots: a refusal says a backup must be converted first.
+   */
+  async rebuildDroplet(
+    dropletId: string | number,
+    imageId: string | number,
+  ): Promise<DigitalOceanAction> {
+    const body = await this.#request(
+      `/v2/droplets/${encodeURIComponent(String(dropletId))}/actions`,
+      z.looseObject({ action: actionSchema }),
+      {},
+      {
+        method: "POST",
+        body: { type: "rebuild", image: Number(imageId) },
+        refusedHint: `If image ${imageId} is one of the Droplet's backups, convert it to a snapshot first (the Droplet's Backups tab in the DigitalOcean control panel, More, Convert to snapshot), then rebuild from that snapshot.`,
+      },
+    );
+    return body.action;
+  }
+
   /** Every page of a list, following `links.pages.next` until a page without one or an empty page. */
   async #listAll<T>(
     path: string,
@@ -320,7 +362,7 @@ export class DigitalOceanClient {
     path: string,
     schema: S,
     query: Record<string, string> = {},
-    init: { method?: "GET" | "POST"; body?: unknown } = {},
+    init: { method?: "GET" | "POST" | "DELETE"; body?: unknown; refusedHint?: string } = {},
   ): Promise<z.infer<S>> {
     const method = init.method ?? "GET";
     return requestJson(this.#http, {
@@ -330,11 +372,16 @@ export class DigitalOceanClient {
       headers: { Authorization: `Bearer ${this.#token}`, "User-Agent": this.#userAgent },
       ...(init.body !== undefined && { body: init.body }),
       schema,
-      fail: (failure) => this.#error(failure, method, path),
+      fail: (failure) => this.#error(failure, method, path, init.refusedHint),
     });
   }
 
-  async #error(failure: RequestFailure, method: string, path: string): Promise<OpsCrewError> {
+  async #error(
+    failure: RequestFailure,
+    method: string,
+    path: string,
+    refusedHint: string | undefined,
+  ): Promise<OpsCrewError> {
     const { idempotent } = failure;
     switch (failure.kind) {
       case "unreachable":
@@ -369,7 +416,7 @@ export class DigitalOceanClient {
           },
         );
       case "status":
-        return this.#statusError(failure.response, `${method} ${path}`, idempotent);
+        return this.#statusError(failure.response, `${method} ${path}`, idempotent, refusedHint);
     }
   }
 
@@ -377,6 +424,7 @@ export class DigitalOceanClient {
     response: Response,
     request: string,
     idempotent: boolean,
+    refusedHint: string | undefined,
   ): Promise<OpsCrewError> {
     let apiMessage: string | undefined;
     try {
@@ -412,7 +460,7 @@ export class DigitalOceanClient {
         );
       case 422:
         return new OpsCrewError("PROVIDER_ERROR", `DigitalOcean rejected ${request}: ${detail}`, {
-          hint: "Fix the value DigitalOcean named above and try again.",
+          hint: refusedHint ?? "Fix the value DigitalOcean named above and try again.",
         });
       case 429:
         return new OpsCrewError(

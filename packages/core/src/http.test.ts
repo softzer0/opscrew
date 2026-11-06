@@ -168,6 +168,19 @@ describe("requestJson", () => {
     expect((wrong.failures[0] as { issues: string }).issues).toMatch(/^thing\.id: /);
   });
 
+  it("parses an empty success body as undefined, which only an undefined schema accepts", async () => {
+    const h = setup({ "DELETE /things/7": { status: 204 } });
+    const remove = (schema: z.ZodType) =>
+      requestJson(h.client, {
+        url: `${BASE}/things/7`,
+        method: "DELETE",
+        schema,
+        fail: (failure) => new Error(`failed: ${failure.kind}`),
+      });
+    await expect(remove(z.undefined())).resolves.toBeUndefined();
+    await expect(remove(ThingSchema)).rejects.toThrow("failed: unexpected");
+  });
+
   it("reports a 4xx at once, without retrying", async () => {
     const h = setup({ "/things/7": { status: 404 } });
     await expect(h.send("GET")).rejects.toThrow("failed: status");

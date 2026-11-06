@@ -34,7 +34,8 @@ const MANAGED_TAG = "managed-by:opscrew";
 /** Tag naming the app a Droplet belongs to. */
 const appTag = (app: string) => `opscrew-app:${app}`;
 const ACCOUNT_URL = "https://cloud.digitalocean.com/account";
-const DEFAULT_SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
+/** Default wait for a snapshot or a rebuild to finish (15 minutes). */
+const ACTION_TIMEOUT_MS = 15 * 60_000;
 /** Extra reads of the snapshot list after the action completes (the list can lag behind). */
 const SNAPSHOT_LOOKUP_RETRIES = 3;
 const SNAPSHOT_LOOKUP_POLL_MS = 5_000;
@@ -173,7 +174,7 @@ function withoutEmail(text: string, email: string | null | undefined): string {
   return email ? text.split(email).join("your email address") : text;
 }
 
-/** Droplet lookup by OpsCrew's tags and snapshots through Droplet actions. */
+/** Droplet lookup by OpsCrew's tags, and snapshots and rebuilds through Droplet actions. */
 function serverApi(
   client: DigitalOceanClient,
   sleep: (ms: number) => Promise<void>,
@@ -190,14 +191,9 @@ function serverApi(
       serverId: string,
       request: SnapshotRequest,
     ): Promise<{ snapshotId: string }> {
-      if (!/^\d+$/.test(serverId)) {
-        throw new OpsCrewError("INVALID_INPUT", `Not a DigitalOcean Droplet id: ${serverId}.`, {
-          hint: "Pass the numeric Droplet id reported by findAppServers.",
-        });
-      }
-      const action = await client.snapshotDroplet(serverId, request.name);
+      const action = await client.snapshotDroplet(numericId(serverId, "Droplet"), request.name);
       const done = await client.waitForAction(action.id, {
-        timeoutMs: request.timeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS,
+        timeoutMs: request.timeoutMs ?? ACTION_TIMEOUT_MS,
       });
       const startedAt = Date.parse(done.started_at ?? action.started_at ?? "");
       let snapshot: DigitalOceanSnapshot | undefined;
@@ -224,16 +220,41 @@ function serverApi(
       }
       return { snapshotId: snapshot.id };
     },
-    async listSnapshots(): Promise<ServerSnapshot[]> {
-      throw new Error("listSnapshots is not implemented yet");
+    async listSnapshots(serverId: string): Promise<ServerSnapshot[]> {
+      const snapshots = await client.listDropletSnapshots(numericId(serverId, "Droplet"));
+      return snapshots
+        .map((snapshot) => ({
+          id: snapshot.id,
+          name: snapshot.name,
+          createdAt: snapshot.created_at ?? "",
+          ...(typeof snapshot.size_gigabytes === "number" && {
+            sizeGb: snapshot.size_gigabytes,
+          }),
+          labels: {},
+        }))
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     },
-    async deleteSnapshot(): Promise<void> {
-      throw new Error("deleteSnapshot is not implemented yet");
+    async deleteSnapshot(snapshotId: string): Promise<void> {
+      await client.deleteSnapshot(numericId(snapshotId, "snapshot"));
     },
-    async rebuild(): Promise<void> {
-      throw new Error("rebuild is not implemented yet");
+    async rebuild(serverId: string, snapshotId: string): Promise<void> {
+      const action = await client.rebuildDroplet(
+        numericId(serverId, "Droplet"),
+        numericId(snapshotId, "snapshot"),
+      );
+      await client.waitForAction(action.id, { timeoutMs: ACTION_TIMEOUT_MS });
     },
   };
+}
+
+/** `value` when it is a numeric DigitalOcean id; anything else is refused before calling the API. */
+function numericId(value: string, what: "Droplet" | "snapshot"): string {
+  if (!/^\d+$/.test(value)) {
+    throw new OpsCrewError("INVALID_INPUT", `Not a DigitalOcean ${what} id: ${value}.`, {
+      hint: `Pass the numeric ${what} id shown in the DigitalOcean control panel.`,
+    });
+  }
+  return value;
 }
 
 /** True when both times are known and the snapshot was created before the action started. */

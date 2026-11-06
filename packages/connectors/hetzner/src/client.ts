@@ -130,6 +130,20 @@ export interface CreateSnapshotOptions {
   labels?: Record<string, string>;
 }
 
+const imageSchema = z.looseObject({
+  id: z.number(),
+  type: z.string(),
+  description: z.string().nullable().optional(),
+  /** ISO 8601 creation time. */
+  created: z.string(),
+  /** GB in Hetzner's storage, what a snapshot is billed by; null while it is being created. */
+  image_size: z.number().nullable().optional(),
+  labels: z.record(z.string(), z.string()).optional(),
+  created_from: z.looseObject({ id: z.number() }).nullable().optional(),
+});
+/** A Hetzner Cloud image (`GET /images`). */
+export type HetznerImage = z.infer<typeof imageSchema>;
+
 const actionSchema = z.looseObject({
   id: z.number(),
   command: z.string().optional(),
@@ -249,6 +263,43 @@ export class HetznerClient {
     return { imageId: body.image.id, actionId: body.action.id };
   }
 
+  /**
+   * The snapshots taken of a server (`GET /images?type=snapshot`, every page). Hetzner's
+   * `bound_to` filter only applies to backups, so snapshots are matched to the server by their
+   * `created_from` here.
+   */
+  async listSnapshots(serverId: number): Promise<HetznerImage[]> {
+    const images = await this.#listAll("/images", "images", imageSchema, { type: "snapshot" });
+    return images.filter((image) => image.created_from?.id === serverId);
+  }
+
+  /** Deletes an image (`DELETE /images/{id}`); Hetzner answers 204 once it is gone. */
+  async deleteImage(imageId: number): Promise<void> {
+    await this.#request(
+      `/images/${encodeURIComponent(String(imageId))}`,
+      z.undefined(),
+      {},
+      {
+        method: "DELETE",
+      },
+    );
+  }
+
+  /**
+   * Starts rebuilding a server from an image (`POST /servers/{id}/actions/rebuild`), keeping its
+   * id and addresses. Use {@link waitForAction} with the returned `actionId`. The `root_password`
+   * Hetzner may answer with is stripped while parsing and never kept.
+   */
+  async rebuildServer(serverId: number, imageId: number): Promise<{ actionId: number }> {
+    const body = await this.#request(
+      `/servers/${encodeURIComponent(String(serverId))}/actions/rebuild`,
+      z.object({ action: actionSchema }),
+      {},
+      { method: "POST", body: { image: String(imageId) } },
+    );
+    return { actionId: body.action.id };
+  }
+
   /** One action by id (`GET /actions/{id}`). */
   async getAction(actionId: number): Promise<HetznerAction> {
     const body = await this.#request(
@@ -326,7 +377,7 @@ export class HetznerClient {
     path: string,
     schema: S,
     query: Record<string, string> = {},
-    init: { method?: "GET" | "POST"; body?: unknown } = {},
+    init: { method?: "GET" | "POST" | "DELETE"; body?: unknown } = {},
   ): Promise<z.infer<S>> {
     const method = init.method ?? "GET";
     return requestJson(this.#http, {
@@ -405,11 +456,24 @@ async function statusError(response: Response, path: string): Promise<OpsCrewErr
   return new OpsCrewError(
     "PROVIDER_ERROR",
     `Hetzner API request ${path} failed (HTTP ${response.status}): ${detail}`,
-    {
-      hint:
-        response.status === 403
-          ? "Check that the token belongs to the right project and has Read & Write permission."
-          : statusPageHint("https://status.hetzner.com/"),
-    },
+    { hint: statusHint(response.status) },
   );
+}
+
+/** The next step after Hetzner answered with an error `status`. */
+function statusHint(status: number): string {
+  switch (status) {
+    case 403:
+      return "Check that the token belongs to the right project and has Read & Write permission.";
+    case 404:
+      return "It may have been deleted: check the Hetzner Cloud Console and use an id that exists there.";
+    case 409:
+    case 423:
+      return "Another action is still running on it: wait until it has finished in the Hetzner Cloud Console, then try again.";
+    case 400:
+    case 422:
+      return "Hetzner refused the request as sent: fix what it named above, then try again.";
+    default:
+      return statusPageHint("https://status.hetzner.com/");
+  }
 }

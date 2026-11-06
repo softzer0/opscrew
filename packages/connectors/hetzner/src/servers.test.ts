@@ -164,3 +164,228 @@ describe("servers.snapshotServer", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+const password = fakeSecret("generic-password");
+
+function image(id: number, created: string, extra: Record<string, unknown> = {}) {
+  return {
+    id,
+    type: "snapshot",
+    status: "available",
+    description: `snapshot ${id}`,
+    created,
+    image_size: 1.25,
+    disk_size: 40,
+    created_from: { id: 7, name: "shop-web" },
+    bound_to: null,
+    labels: {},
+    ...extra,
+  };
+}
+
+function errorOf(promise: Promise<unknown> | undefined): Promise<OpsCrewError> {
+  return (promise ?? Promise.resolve()).then(
+    () => {
+      throw new Error("expected a failure");
+    },
+    (e: unknown) => e as OpsCrewError,
+  );
+}
+
+function textOf(error: OpsCrewError): string {
+  return `${error.message} ${error.hint ?? ""}`;
+}
+
+describe("servers.listSnapshots", () => {
+  it("lists the server's snapshots across pages, oldest first, with labels and sizes", async () => {
+    const opscrew = { "managed-by": "opscrew", "opscrew-app": "shop", "opscrew-env": "production" };
+    const { connector, calls } = setup({
+      "/images?page=1": {
+        body: {
+          images: [
+            image(12, "2026-11-05T10:00:00+00:00", { labels: opscrew }),
+            image(20, "2026-11-01T10:00:00+00:00", { created_from: { id: 8, name: "other" } }),
+          ],
+          meta: { pagination: { next_page: 2 } },
+        },
+      },
+      "/images?page=2": {
+        body: {
+          images: [
+            image(11, "2026-11-02T10:00:00+00:00", { description: null, labels: undefined }),
+            image(13, "2026-11-06T10:00:00+00:00", { status: "creating", image_size: null }),
+            image(30, "2026-11-03T10:00:00+00:00", { created_from: null }),
+          ],
+          meta: { pagination: { next_page: null } },
+        },
+      },
+    });
+    expect(await connector.servers?.listSnapshots("7")).toEqual([
+      { id: "11", name: "", createdAt: "2026-11-02T10:00:00+00:00", sizeGb: 1.25, labels: {} },
+      {
+        id: "12",
+        name: "snapshot 12",
+        createdAt: "2026-11-05T10:00:00+00:00",
+        sizeGb: 1.25,
+        labels: opscrew,
+      },
+      { id: "13", name: "snapshot 13", createdAt: "2026-11-06T10:00:00+00:00", labels: {} },
+    ]);
+    expect(calls.map((call) => param(call, "type"))).toEqual(["snapshot", "snapshot"]);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("rejects a non-numeric server id without calling the API", async () => {
+    const { connector, calls } = setup({});
+    const error = await errorOf(connector.servers?.listSnapshots("7; rm"));
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("servers.deleteSnapshot", () => {
+  it("deletes the image and resolves on Hetzner's 204", async () => {
+    const { connector, calls } = setup({ "DELETE /images/4711": { status: 204 } });
+    await expect(connector.servers?.deleteSnapshot("4711")).resolves.toBeUndefined();
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual(["DELETE /images/4711"]);
+    expect(calls[0]?.headers.Authorization).toBe(`Bearer ${token}`);
+  });
+
+  it("says a missing snapshot may be deleted already, without the token", async () => {
+    const { connector, calls } = setup({
+      "DELETE /images/4711": {
+        status: 404,
+        body: { error: { code: "not_found", message: "image with ID '4711' not found" } },
+      },
+    });
+    const error = await errorOf(connector.servers?.deleteSnapshot("4711"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("HTTP 404");
+    expect(error.message).toContain("not found");
+    expect(error.hint).toContain("may have been deleted");
+    expect(textOf(error)).not.toContain(token);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("never sends a delete twice after a 5xx", async () => {
+    const { connector, calls } = setup({
+      "DELETE /images/4711": {
+        status: 503,
+        body: { error: { code: "unavailable", message: "maintenance" } },
+      },
+    });
+    const error = await errorOf(connector.servers?.deleteSnapshot("4711"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects a non-numeric snapshot id without calling the API", async () => {
+    const { connector, calls } = setup({});
+    const error = await errorOf(connector.servers?.deleteSnapshot("../servers/7"));
+    expect(error.code).toBe("INVALID_INPUT");
+    expect(error.message).toContain("snapshot id");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("servers.rebuild", () => {
+  const rebuildAnswer = {
+    status: 201,
+    body: {
+      action: { ...action(77, "running"), command: "rebuild_server" },
+      root_password: password,
+    },
+  };
+  const rebuildAction = (status: string, error: unknown = null) => ({
+    body: { action: { ...action(77, status, error), command: "rebuild_server" } },
+  });
+
+  it("rebuilds from the image and waits for the action", async () => {
+    const { connector, calls, waits } = setup({
+      "POST /servers/7/actions/rebuild": rebuildAnswer,
+      "/actions/77": [rebuildAction("running"), rebuildAction("success")],
+    });
+    expect(await connector.servers?.rebuild("7", "4711")).toBeUndefined();
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "POST /servers/7/actions/rebuild",
+      "GET /actions/77",
+      "GET /actions/77",
+    ]);
+    expect(calls[0]?.body).toEqual({ image: "4711" });
+    expect(waits).toEqual([2000]);
+  });
+
+  it("surfaces a rebuild action that ends in error, without the password or token", async () => {
+    const { connector } = setup({
+      "POST /servers/7/actions/rebuild": rebuildAnswer,
+      "/actions/77": rebuildAction("error", { code: "action_failed", message: "rebuild failed" }),
+    });
+    const error = await errorOf(connector.servers?.rebuild("7", "4711"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("rebuild_server");
+    expect(error.message).toContain("rebuild failed");
+    expect(error.hint).toContain("Hetzner Cloud Console");
+    expect(textOf(error)).not.toContain(password);
+    expect(textOf(error)).not.toContain(token);
+  });
+
+  it("gives up after 15 minutes and says the rebuild may still be running", async () => {
+    const { connector } = setup(
+      {
+        "POST /servers/7/actions/rebuild": rebuildAnswer,
+        "/actions/77": rebuildAction("running"),
+      },
+      60_000,
+    );
+    const error = await errorOf(connector.servers?.rebuild("7", "4711"));
+    expect(error.message).toContain("did not finish within 15 minutes");
+    expect(error.hint).toContain("may still be running");
+  });
+
+  it("passes on a refusal (422) with what to do next, sent once", async () => {
+    const { connector, calls } = setup({
+      "POST /servers/7/actions/rebuild": {
+        status: 422,
+        body: { error: { code: "unsupported_error", message: "image is not compatible" } },
+      },
+    });
+    const error = await errorOf(connector.servers?.rebuild("7", "4711"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("image is not compatible");
+    expect(error.hint).toContain("fix what it named above");
+    expect(textOf(error)).not.toContain(token);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("asks to wait when another action holds the server (423)", async () => {
+    const { connector } = setup({
+      "POST /servers/7/actions/rebuild": {
+        status: 423,
+        body: { error: { code: "locked", message: "server is locked" } },
+      },
+    });
+    const error = await errorOf(connector.servers?.rebuild("7", "4711"));
+    expect(error.hint).toContain("Another action is still running");
+  });
+
+  it("says a missing server or image may have been deleted (404)", async () => {
+    const { connector } = setup({
+      "POST /servers/7/actions/rebuild": {
+        status: 404,
+        body: { error: { code: "not_found", message: "server not found" } },
+      },
+    });
+    const error = await errorOf(connector.servers?.rebuild("7", "4711"));
+    expect(error.message).toContain("server not found");
+    expect(error.hint).toContain("may have been deleted");
+  });
+
+  it("rejects non-numeric ids without calling the API", async () => {
+    const { connector, calls } = setup({});
+    expect((await errorOf(connector.servers?.rebuild("x", "4711"))).code).toBe("INVALID_INPUT");
+    expect((await errorOf(connector.servers?.rebuild("7", "ubuntu-24.04"))).code).toBe(
+      "INVALID_INPUT",
+    );
+    expect(calls).toHaveLength(0);
+  });
+});

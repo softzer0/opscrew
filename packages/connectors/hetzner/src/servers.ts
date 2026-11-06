@@ -7,10 +7,13 @@ import type {
 import { OpsCrewError } from "@opscrew/core";
 import type { HetznerClient } from "./client";
 
-/** Default wait for a snapshot to finish (15 minutes). */
-const SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
+/** Default wait for a snapshot or a rebuild to finish (15 minutes). */
+const ACTION_TIMEOUT_MS = 15 * 60_000;
 
-/** Server lookup and snapshots for the provider-neutral teardown, backed by `HetznerClient`. */
+/**
+ * Server lookup, snapshots and rebuilds for the provider-neutral teardown and snapshot commands,
+ * backed by `HetznerClient`.
+ */
 export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
   return {
     async findAppServers(app: string): Promise<AppServer[]> {
@@ -27,29 +30,61 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
       serverId: string,
       request: SnapshotRequest,
     ): Promise<{ snapshotId: string }> {
-      const id = Number(serverId);
-      if (!/^\d+$/.test(serverId) || !Number.isSafeInteger(id)) {
-        throw new OpsCrewError("INVALID_INPUT", `"${serverId}" is not a Hetzner server id.`, {
-          hint: "Use the numeric id shown for the server in the Hetzner Cloud Console.",
-        });
-      }
-      const { imageId, actionId } = await client.createSnapshot(id, {
+      const { imageId, actionId } = await client.createSnapshot(serverIdOf(serverId), {
         description: request.description,
         labels: request.labels,
       });
       await client.waitForAction(actionId, {
-        timeoutMs: request.timeoutMs ?? SNAPSHOT_TIMEOUT_MS,
+        timeoutMs: request.timeoutMs ?? ACTION_TIMEOUT_MS,
       });
       return { snapshotId: String(imageId) };
     },
-    async listSnapshots(): Promise<ServerSnapshot[]> {
-      throw new Error("listSnapshots is not implemented yet");
+    async listSnapshots(serverId: string): Promise<ServerSnapshot[]> {
+      const images = await client.listSnapshots(serverIdOf(serverId));
+      return images
+        .map((image) => ({
+          id: String(image.id),
+          name: image.description ?? "",
+          createdAt: image.created,
+          ...(typeof image.image_size === "number" && { sizeGb: image.image_size }),
+          labels: { ...image.labels },
+        }))
+        .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     },
-    async deleteSnapshot(): Promise<void> {
-      throw new Error("deleteSnapshot is not implemented yet");
+    async deleteSnapshot(snapshotId: string): Promise<void> {
+      await client.deleteImage(snapshotIdOf(snapshotId));
     },
-    async rebuild(): Promise<void> {
-      throw new Error("rebuild is not implemented yet");
+    async rebuild(serverId: string, snapshotId: string): Promise<void> {
+      const { actionId } = await client.rebuildServer(
+        serverIdOf(serverId),
+        snapshotIdOf(snapshotId),
+      );
+      await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
     },
   };
+}
+
+function serverIdOf(value: string): number {
+  return numericId(
+    value,
+    "server",
+    "Use the numeric id shown for the server in the Hetzner Cloud Console.",
+  );
+}
+
+function snapshotIdOf(value: string): number {
+  return numericId(
+    value,
+    "snapshot",
+    "Use the numeric id shown for the snapshot in the Hetzner Cloud Console (Snapshots).",
+  );
+}
+
+/** `value` as a Hetzner numeric id; anything else is refused before calling the API. */
+function numericId(value: string, what: string, hint: string): number {
+  const id = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isSafeInteger(id)) {
+    throw new OpsCrewError("INVALID_INPUT", `"${value}" is not a Hetzner ${what} id.`, { hint });
+  }
+  return id;
 }

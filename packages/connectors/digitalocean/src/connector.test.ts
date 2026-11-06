@@ -79,6 +79,8 @@ describe("digitaloceanConnector credentials", () => {
         "image:create",
         "image:read",
         "snapshot:read",
+        "snapshot:delete",
+        "droplet:admin",
       ],
     });
   });
@@ -390,6 +392,149 @@ describe("digitaloceanConnector.servers", () => {
       ?.snapshotServer("../account", { name: "snap", description: "d", labels: {} })
       .catch((e: unknown) => e)) as OpsCrewError;
     expect(error.code).toBe("INVALID_INPUT");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+function errorOf(promise: Promise<unknown> | undefined): Promise<OpsCrewError> {
+  return (promise ?? Promise.resolve()).then(
+    () => {
+      throw new Error("expected a failure");
+    },
+    (e: unknown) => e as OpsCrewError,
+  );
+}
+
+function textOf(error: OpsCrewError): string {
+  return `${error.message} ${error.hint ?? ""}`;
+}
+
+describe("digitaloceanConnector.servers snapshots and rebuilds", () => {
+  it("lists a Droplet's snapshots oldest first, with sizes where known and no labels", async () => {
+    const { connector: c, calls } = connector({
+      "/v2/droplets/3164444/snapshots": {
+        body: {
+          snapshots: [
+            { id: 3, name: "c", created_at: "2026-10-12T11:00:00Z" },
+            { id: 1, name: "a", created_at: "2026-10-12T10:05:00Z", size_gigabytes: 2.34 },
+            { id: 2, name: "b", created_at: "2026-10-12T10:20:00Z", size_gigabytes: "1.5" },
+          ],
+        },
+      },
+    });
+    expect(await c.servers?.listSnapshots("3164444")).toEqual([
+      { id: "1", name: "a", createdAt: "2026-10-12T10:05:00Z", sizeGb: 2.34, labels: {} },
+      { id: "2", name: "b", createdAt: "2026-10-12T10:20:00Z", sizeGb: 1.5, labels: {} },
+      { id: "3", name: "c", createdAt: "2026-10-12T11:00:00Z", labels: {} },
+    ]);
+    expect(calls.map((call) => call.method)).toEqual(["GET"]);
+  });
+
+  it("deletes a snapshot and resolves on DigitalOcean's 204", async () => {
+    const { connector: c, calls } = connector({ "DELETE /v2/snapshots/6372399": { status: 204 } });
+    await expect(c.servers?.deleteSnapshot("6372399")).resolves.toBeUndefined();
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "DELETE /v2/snapshots/6372399",
+    ]);
+  });
+
+  it("says a snapshot it cannot find may have been deleted, without the token", async () => {
+    const { connector: c, calls } = connector({
+      "DELETE /v2/snapshots/6372399": {
+        status: 404,
+        body: { id: "not_found", message: "The resource you requested could not be found." },
+      },
+    });
+    const error = await errorOf(c.servers?.deleteSnapshot("6372399"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("HTTP 404");
+    expect(error.hint).toContain("may have been deleted");
+    expect(textOf(error)).not.toContain(token);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rebuilds a Droplet from the snapshot and waits for the action", async () => {
+    const clock = fakeClock();
+    const rebuilding = (status: string) => ({ body: action(556, status, { type: "rebuild" }) });
+    const { connector: c, calls } = connector(
+      {
+        "POST /v2/droplets/3164444/actions": { status: 201, ...rebuilding("in-progress") },
+        "/v2/actions/556": [rebuilding("in-progress"), rebuilding("completed")],
+      },
+      undefined,
+      { clock },
+    );
+    expect(await c.servers?.rebuild("3164444", "6372399")).toBeUndefined();
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "POST /v2/droplets/3164444/actions",
+      "GET /v2/actions/556",
+      "GET /v2/actions/556",
+    ]);
+    expect(calls[0]?.body).toEqual({ type: "rebuild", image: 6372399 });
+    expect(clock.waits).toEqual([5000]);
+  });
+
+  it("stops with a PROVIDER_ERROR when the rebuild action errors", async () => {
+    const { connector: c } = connector({
+      "POST /v2/droplets/7/actions": { status: 201, body: action(2, "in-progress") },
+      "/v2/actions/2": { body: action(2, "errored", { type: "rebuild" }) },
+    });
+    const error = await errorOf(c.servers?.rebuild("7", "6372399"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("(rebuild) failed");
+    expect(error.hint).toContain("DigitalOcean control panel");
+  });
+
+  it("gives up on a rebuild after 15 minutes", async () => {
+    const clock = fakeClock();
+    const { connector: c } = connector(
+      {
+        "POST /v2/droplets/7/actions": { status: 201, body: action(2, "in-progress") },
+        "/v2/actions/2": { body: action(2, "in-progress", { type: "rebuild" }) },
+      },
+      undefined,
+      { clock },
+    );
+    const error = await errorOf(c.servers?.rebuild("7", "6372399"));
+    expect(error.message).toContain("did not finish within 15 minutes");
+    expect(error.hint).toContain("may still be running");
+  });
+
+  it("says plainly that a refused backup must be converted to a snapshot first", async () => {
+    const { connector: c, calls } = connector({
+      "POST /v2/droplets/7/actions": {
+        status: 422,
+        body: {
+          id: "unprocessable_entity",
+          message: "You specified an invalid image for Droplet creation.",
+        },
+      },
+    });
+    const error = await errorOf(c.servers?.rebuild("7", "900"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("invalid image");
+    expect(error.hint).toContain("If image 900 is one of the Droplet's backups");
+    expect(error.hint).toContain("convert it to a snapshot first");
+    expect(textOf(error)).not.toContain(token);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("says a Droplet it cannot find may have been deleted", async () => {
+    const { connector: c } = connector({
+      "POST /v2/droplets/7/actions": {
+        status: 404,
+        body: { id: "not_found", message: "The resource you requested could not be found." },
+      },
+    });
+    const error = await errorOf(c.servers?.rebuild("7", "6372399"));
+    expect(error.hint).toContain("may have been deleted");
+  });
+
+  it("rejects non-numeric ids without calling the API", async () => {
+    const { connector: c, calls } = connector({});
+    expect((await errorOf(c.servers?.listSnapshots("x"))).code).toBe("INVALID_INPUT");
+    expect((await errorOf(c.servers?.deleteSnapshot("../account"))).code).toBe("INVALID_INPUT");
+    expect((await errorOf(c.servers?.rebuild("7", "ubuntu-24-04-x64"))).code).toBe("INVALID_INPUT");
     expect(calls).toHaveLength(0);
   });
 });
