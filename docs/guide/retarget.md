@@ -1,6 +1,6 @@
 # Moving your app somewhere else: `opscrew retarget`
 
-`opscrew retarget` moves a live app, with its data, to another place: Hetzner Cloud, DigitalOcean,
+`opscrew retarget` moves a live app, with its data, to another place: [Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/),
 [a server you already have](own-server.md) or [a Portainer you already run](portainer-target.md),
 in any direction. That includes moving from one server of yours to another. A site moves between
 [Cloudflare's hosting](cloudflare-hosting.md) and [GitHub Pages](github-pages.md).
@@ -23,7 +23,7 @@ npx opscrew retarget --abort             # before the switch: back to the old si
 | `cloudflare-workers`, `github-pages` | The other site host, for a site |
 
 Without `--to`, the target in your answers (`opscrew/requirements.yaml`) is used. Moves run only in
-your terminal; in Claude Code, `opscrew_status` shows where a move stands. Like every command, it
+your terminal; in [Claude Code](https://claude.com/product/claude-code), `opscrew_status` shows where a move stands. Like every command, it
 takes `--app <key>` and `--env <name>` for [another app](several-apps.md) or
 [environment](environments.md).
 
@@ -70,7 +70,7 @@ expected length. Nothing changes until you continue.
      `opscrew interview` asks. OpsCrew connects, shows the server's SSH host key fingerprint for
      you to check, and reads its size, memory, disk and architecture without changing anything;
    - **your Portainer:** name it (address, environment), confirm its certificate, and give the
-     public address of its host, where the stack's Caddy serves the app and the DNS records point.
+     public address of its host, where the stack's [Caddy](https://caddyserver.com/) serves the app and the DNS records point.
 2. **Prepare the new side.**
    - **A cloud provider:** the current server is renamed in OpsCrew's infrastructure state, so both
      fit in it (nothing changes in your cloud), and the new server is created next to it, from an
@@ -83,7 +83,7 @@ expected length. Nothing changes until you continue.
    deployed there and OpsCrew checks that it answers. Your visitors are still served by the old
    side, and the new side's web server stays stopped until the switch.
    - On a server, the deploy workflow runs. If the new side needs different deploy files (the
-     workflow for another SSH port or an image built for another processor, or the Compose and
+     workflow for another SSH port or an image built for another processor, or the [Compose](https://docs.docker.com/compose/) and
      web server files when the app comes from your Portainer, or Portainer's stack template when
      it goes there), OpsCrew opens one pull request with them and stops; merge it and run
      `npx opscrew retarget` again.
@@ -104,12 +104,12 @@ your approval too.
 
 ## The data
 
-Every service on the app's server that keeps data moves with it: PostgreSQL, MySQL, MariaDB,
-MongoDB, Valkey, Redis, Dragonfly, RabbitMQ, NATS, Kafka, Redpanda, Garage, OpenSearch,
-Elasticsearch, Meilisearch, Typesense, ClickHouse and Neo4j, plus the app's own files (a SQLite
+Every service on the app's server that keeps data moves with it: [PostgreSQL](https://www.postgresql.org/), [MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/),
+[MongoDB](https://www.mongodb.com/), [Valkey](https://valkey.io/), [Redis](https://redis.io/), [Dragonfly](https://www.dragonflydb.io/), [RabbitMQ](https://www.rabbitmq.com/), [NATS](https://nats.io/), [Kafka](https://kafka.apache.org/), [Redpanda](https://www.redpanda.com/), [Garage](https://garagehq.deuxfleurs.fr/), [OpenSearch](https://opensearch.org/),
+[Elasticsearch](https://www.elastic.co/elasticsearch), [Meilisearch](https://www.meilisearch.com/), [Typesense](https://typesense.org/), [ClickHouse](https://clickhouse.com/) and [Neo4j](https://neo4j.com/), plus the app's own files (a [SQLite](https://www.sqlite.org/)
 database, uploads) and [self-hosted monitoring](monitoring.md) on the app's server.
 
-- **Most services:** each one is stopped cleanly, and its stopped data (its Docker volumes) is copied
+- **Most services:** each one is stopped cleanly, and its stopped data (its [Docker](https://www.docker.com/) volumes) is copied
   to the same service on the new side, which was created but not started. Both sides compute a
   SHA-256 digest of the data, and the copy counts only when they match. Logins and passwords come
   along with the data. Both sides run the same image versions, which the plan pins.
@@ -173,7 +173,7 @@ is no window: the old side serves until the switch.
 ## Buckets
 
 A bucket the app has at the provider being left moves to the new provider's object storage, when
-the new target is the other cloud provider (Hetzner Object Storage or DigitalOcean Spaces) with
+the new target is the other cloud provider ([Hetzner Object Storage](https://www.hetzner.com/storage/object-storage/) or [DigitalOcean Spaces](https://www.digitalocean.com/products/spaces)) with
 object storage in the app's region. See [Object storage](object-storage.md).
 
 - **Shown first:** the summary shows the bucket's size, its object count, the time to copy it and
@@ -195,7 +195,7 @@ object storage in the app's region. See [Object storage](object-storage.md).
 
 A bucket stays where it is, and the summary says so, when the new target is your own server or
 your Portainer: it keeps billing at its provider, and the app on the new side uses it (OpsCrew asks
-for its key if this computer doesn't have it). An R2 bucket always stays, since it's Cloudflare's.
+for its key if this computer doesn't have it). An [R2](https://developers.cloudflare.com/r2/) bucket always stays, since it's Cloudflare's.
 Garage is a service on the server, so its files are copied with the other data.
 
 ## Your own server and your Portainer
@@ -397,8 +397,8 @@ offers a snapshot first), so back up your data first and restore it on the new t
 - **An environment whose server runs another environment's previews,** while they run: remove the
   previews first with `npx opscrew destroy --env <previews environment>` (it leaves the server as it
   is), move, then set the previews up again.
-- **A Cloudflare Tunnel on either side:** an own server reached through one, Portainer's tunnel
-  modes, or Portainer or Beszel's hub on a subdomain through one. A move switches between address
+- **A [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/) on either side:** an own server reached through one, Portainer's tunnel
+  modes, or Portainer or [Beszel](https://beszel.dev/)'s hub on a subdomain through one. A move switches between address
   records only. First serve the app on a public address (`server.serve: proxy` or `dns-only` for
   your server; `portainer.web: caddy` with `portainer.redeploy: updater` for Portainer) with
   `npx opscrew interview`, `design` and `provision`, then move. Turn Portainer or Beszel on a

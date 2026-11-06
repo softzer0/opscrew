@@ -34,7 +34,7 @@ On a server OpsCrew created, [a server you already have](own-server.md) or
 [your Portainer](portainer-target.md):
 
 1. OpsCrew reads the environment's versions: the images its deploy workflow built that are still
-   in GitHub Container Registry.
+   in [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 2. It picks the version before the one running, or the one you named with `--to`.
 3. On a server or your computer, it asks how to treat the database: restore the snapshot taken
    when that version stopped running, migrate it down, or keep it as it is (see
@@ -169,7 +169,7 @@ running version keeps serving:
 - **When:** at each deploy that replaces a running version, after the services are set up and
   before the release command. The first deploy has nothing to save, and a deploy of the image
   already running takes none.
-- **What:** each PostgreSQL, MySQL, MariaDB and MongoDB database on the app's server, with its own
+- **What:** each [PostgreSQL](https://www.postgresql.org/), [MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/) and [MongoDB](https://www.mongodb.com/) database on the app's server, with its own
   image's dump tool (`pg_dump`, `mysqldump`, `mariadb-dump`, `mongodump`). The snapshot is filed
   under the version that was running, so it holds the database as it was when that version stopped
   running.
@@ -207,10 +207,10 @@ already uses. OpsCrew offers them for eight tools:
 
 | Tool | How it goes back |
 |---|---|
-| Rails, Alembic, Flask-Migrate | To the migration version the earlier version ran with |
-| Django | Each app to the migration it had, or to `zero`, in reverse order |
-| Laravel | `migrate:rollback` with `--step` set to the number of migrations added since |
-| Knex, Sequelize, TypeORM | The newest migration undone, once for each migration added since |
+| [Rails](https://rubyonrails.org/), [Alembic](https://alembic.sqlalchemy.org/), [Flask-Migrate](https://github.com/miguelgrinberg/Flask-Migrate) | To the migration version the earlier version ran with |
+| [Django](https://www.djangoproject.com/) | Each app to the migration it had, or to `zero`, in reverse order |
+| [Laravel](https://laravel.com/) | `migrate:rollback` with `--step` set to the number of migrations added since |
+| [Knex](https://knexjs.org/), [Sequelize](https://sequelize.org/), [TypeORM](https://typeorm.io/) | The newest migration undone, once for each migration added since |
 
 `npx opscrew analyze` finds the tool and design writes `app.migrations` next to the release command
 in `opscrew/plan.yaml`. A value you set yourself is kept:
@@ -233,7 +233,7 @@ The down migrations run in the image running now, the newer one, which has the m
 A migration your tool can't undo stops them; then OpsCrew puts the database back as it was just
 before (see [When a database step fails](#when-a-database-step-fails)).
 
-Other tools, such as Prisma and Drizzle, have no down migrations OpsCrew can run: use the snapshot.
+Other tools, such as [Prisma](https://www.prisma.io/) and [Drizzle](https://orm.drizzle.team/), have no down migrations OpsCrew can run: use the snapshot.
 A Rails app with several databases (Solid Cache, Queue or Cable in their own, say) migrates each
 one down in turn. Alembic with several heads (branches of migrations) gets no record: the deploy
 says so, and its rollback offers the snapshot or keep.
@@ -378,7 +378,7 @@ refuses while it is there. Your GitHub token needs the Variables permission for 
 | A server OpsCrew created, or [your own](own-server.md) | The earlier image by its digest, through the deploy workflow, as above |
 | [Your Portainer](portainer-target.md) | The deploy workflow writes the stack with the earlier image to the deploy branch, in a commit "Roll back to <image>", and Portainer redeploys it. The stack's `release` service skips the release command |
 | [An environment promoted from another](environments.md#promotion) | The image it ran before, through its deploy workflow on the default branch. Afterwards `opscrew promote --to <env>` refuses until `opscrew rollback --resume` |
-| [Your computer](localhost.md) | The image it ran before, while Docker still has it |
+| [Your computer](localhost.md) | The image it ran before, while [Docker](https://www.docker.com/) still has it |
 | [Cloudflare's hosting](cloudflare-hosting.md#rolling-back) | An earlier Worker version, activated again: no build |
 | [GitHub Pages](github-pages.md#rolling-back) | A re-run of an earlier Pages run, which builds the site again from that run's commit |
 
@@ -434,7 +434,7 @@ The exit code says how it ended:
 | 1 | Refused before any change, or not approved (no `--approve`, or a hash that is no longer this rollback's) |
 | 2 | Could not run: flags that don't go together, a `--to` that is not a commit or digest, or that matches several versions (or any `--to` on your computer), missing credentials, or a rollback run that failed |
 
-Claude Code doesn't roll back for you: the [plugin](claude-code-plugin.md) shows the versions and
+[Claude Code](https://claude.com/product/claude-code) doesn't roll back for you: the [plugin](claude-code-plugin.md) shows the versions and
 the pause, and asks you to run `opscrew rollback` in your terminal.
 
 ## When OpsCrew refuses

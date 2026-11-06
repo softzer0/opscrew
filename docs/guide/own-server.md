@@ -1,9 +1,9 @@
 # Deploy to a server you already have
 
 OpsCrew can deploy your app to a server you already pay for or run yourself: a rented server at
-Contabo, OVH, Hetzner Robot, Vultr or Linode, a machine at work, or a mini PC or Raspberry Pi at
+[Contabo](https://contabo.com/), [OVH](https://www.ovhcloud.com/), [Hetzner Robot](https://robot.hetzner.com/), [Vultr](https://www.vultr.com/) or [Linode](https://www.linode.com/), a machine at work, or a mini PC or Raspberry Pi at
 home. You get the same result as on the servers OpsCrew creates for you: a hardened server, the app
-deployed from GitHub with TLS, health checks and rollback, and the `verify`, `secure` and `drift`
+deployed from [GitHub](https://github.com/) with TLS, health checks and rollback, and the `verify`, `secure` and `drift`
 checks.
 
 OpsCrew never creates, reinstalls or deletes your server. It inspects it first, shows you every
@@ -18,12 +18,12 @@ change it would make, and changes nothing until you approve that exact list.
   SSH agent (which also covers a key with a passphrase).
 - Room for the app: one server can hold several OpsCrew apps, each with its own components and
   folders (see [Several apps on one server](#several-apps-on-one-server)).
-- On your computer: Node.js 22.9 or newer, git, OpenTofu or Terraform, and a GitHub repository with
+- On your computer: [Node.js](https://nodejs.org/) 22.9 or newer, [git](https://git-scm.com/), [OpenTofu](https://opentofu.org/) or [Terraform](https://developer.hashicorp.com/terraform), and a GitHub repository with
   your app, as for every OpsCrew deployment.
 - A domain for your site. Its DNS can be anywhere when your server serves the site directly with
   DNS only (see [How visitors reach your server](#how-visitors-reach-your-server)). A domain on
-  Cloudflare and a Cloudflare API token (`CLOUDFLARE_API_TOKEN`) are needed only for the Cloudflare
-  Tunnel, for serving behind Cloudflare's proxy and for a [Portainer](portainer.md) subdomain. A
+  [Cloudflare](https://www.cloudflare.com/) and a Cloudflare API token (`CLOUDFLARE_API_TOKEN`) are needed only for the [Cloudflare
+  Tunnel](https://www.cloudflare.com/products/tunnel/), for serving behind Cloudflare's proxy and for a [Portainer](portainer.md) subdomain. A
   server that the internet cannot reach (see
   [Home servers](#home-servers-and-the-cloudflare-tunnel)) always uses the tunnel, so it always
   needs them.
@@ -34,7 +34,7 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
 ## Step by step
 
 1. `npx opscrew interview`: choose **A server you already have**. OpsCrew then asks for the server's
-   address (IP address or host name), the SSH port this computer and GitHub Actions connect to
+   address (IP address or host name), the SSH port this computer and [GitHub Actions](https://github.com/features/actions) connect to
    (usually 22; when a router forwards another port to the server, the forwarded one), the SSH
    user, which key to use (a path such as `~/.ssh/id_ed25519`, or `agent`), whether the internet
    can reach the server and how your site is served
@@ -63,7 +63,7 @@ that user (a line in `/etc/sudoers.d/`), or connect as `root` instead.
 4. `npx opscrew provision` shows up to three plans and asks for each separately:
    - the **Cloudflare plan**, when your domain is on Cloudflare: your app's hostnames in the rules
      OpsCrew keeps in your zone for all its apps (only the probe block in tunnel mode), and in
-     tunnel mode the account's Zero Trust organization (see
+     tunnel mode the account's [Zero Trust](https://developers.cloudflare.com/cloudflare-one/) organization (see
      [Your domain on Cloudflare](cloudflare.md)), with its hash;
    - the **infrastructure plan**: the DNS records on Cloudflare, and the Cloudflare Tunnel with its
      access rules, when your site uses it, with its hash (with DNS somewhere else and DNS-only
@@ -123,7 +123,7 @@ keep it as printed. Without `--confirm` a script never removes anything.
 
 The host plan lists these steps, and only the ones that are not in place yet are changed:
 
-- **Docker Engine 28 or newer** and the Compose plugin from Docker's own repository (an older
+- **[Docker Engine](https://docs.docker.com/engine/) 28 or newer** and the [Compose](https://docs.docker.com/compose/) plugin from Docker's own repository (an older
   Docker from that repository is upgraded). Docker 28 keeps ports that are published only on the
   server itself really local.
 - **Docker settings** in `/etc/docker/daemon.json`: log rotation, no-new-privileges, live-restore.
@@ -142,23 +142,23 @@ The host plan lists these steps, and only the ones that are not in place yet are
     login;
   - only modern key exchanges, ciphers, MACs and host keys are offered, as on the servers OpsCrew
     creates (see [deeper checks](deeper-checks.md)).
-- **The ufw firewall**: incoming traffic is denied except SSH on the port your server really uses
+- **The [ufw](https://launchpad.net/ufw) firewall**: incoming traffic is denied except SSH on the port your server really uses
   (never port 22 by assumption) and, when the server serves the web itself instead of through the
   tunnel, HTTP and HTTPS. When ufw is already on but lets everything in, OpsCrew sets it to deny
   incoming traffic except SSH, web traffic (when the server serves the web) and what your own ufw
   rules already allow; if a service other machines use has no rule, OpsCrew stops and names it.
   Undoing OpsCrew's host changes puts the old default back. OpsCrew does not add a second firewall
-  when your server already uses firewalld or its own nftables rules; it stops and explains instead.
+  when your server already uses [firewalld](https://firewalld.org/) or its own [nftables](https://netfilter.org/projects/nftables/) rules; it stops and explains instead.
 - **The Cloudflare-only filter**, only when you chose to serve directly behind Cloudflare's proxy
   (see [How visitors reach your server](#how-visitors-reach-your-server)).
-- **fail2ban** for SSH, and **automatic security updates**.
+- **[fail2ban](https://github.com/fail2ban/fail2ban)** for SSH, and **automatic security updates**.
 - **The shared folders** `/srv/edge` (the edge every app sits behind), `/srv/apps` and `/srv/data`,
   and **the app's own folders**: `/srv/apps/<app>` for its Compose project and settings, and
   `/srv/data/<app>` for its data.
 - **The app's record** in `/etc/opscrew/apps/<app>.json`: its hostnames, folders and memory limits,
   which the next app's checks read.
 - **The kernel setting `vm.max_map_count`** in `/etc/sysctl.d/90-opscrew.conf`, only when the app
-  runs OpenSearch or Elasticsearch (see [Search and analytics engines](search-and-analytics.md)).
+  runs [OpenSearch](https://opensearch.org/) or [Elasticsearch](https://www.elastic.co/elasticsearch) (see [Search and analytics engines](search-and-analytics.md)).
 
 The host plan says which steps are shared with the other apps on the server and which are this
 app's own. While other apps are there, a shared part that is in place stays as it is.
@@ -180,13 +180,13 @@ It names what it found and what you can do when:
 - another web server or app already listens on ports 80 or 443 (free the ports, or use a
   Cloudflare Tunnel);
 - another firewall manages the server (firewalld, or nftables rules of its own);
-- Docker comes from Snap, from your distribution's package (`docker.io`) or is Podman;
+- Docker comes from [Snap](https://snapcraft.io/), from your distribution's package (`docker.io`) or is [Podman](https://podman.io/);
 - the operating system is not one of the supported releases;
 - your user needs a password for `sudo`;
 - another OpsCrew app on the server already uses the app's name or one of its hostnames, or the
   apps would reach visitors in different ways (see
   [Several apps on one server](#several-apps-on-one-server));
-- the app runs MongoDB and the server's x86 CPU lacks AVX, which MongoDB needs.
+- the app runs [MongoDB](https://www.mongodb.com/) and the server's x86 CPU lacks AVX, which MongoDB needs.
 
 ## Several apps on one server
 
@@ -197,8 +197,8 @@ up by its own `npx opscrew provision`, and they share only what must be shared:
   data in `/srv/data/<app>`, its deploy key, its record in `/etc/opscrew/apps/<app>.json`, its
   components with their memory limits, and, with the Cloudflare Tunnel, its own tunnel and tunnel
   connector (the Compose project `<app>-tunnel`).
-- **The edge is shared:** the server's proxy (Caddy, or nginx with certbot; see
-  [the reverse proxy](reverse-proxy.md)) and kamal-proxy in `/srv/edge` (the Compose project
+- **The edge is shared:** the server's proxy ([Caddy](https://caddyserver.com/), or [nginx](https://nginx.org/) with [certbot](https://certbot.eff.org/); see
+  [the reverse proxy](reverse-proxy.md)) and [kamal-proxy](https://github.com/basecamp/kamal-proxy) in `/srv/edge` (the Compose project
   `opscrew-edge`) serve every app, each on its own hostnames, with one site file per app in
   `/srv/edge/sites/`. Each deploy brings the edge's files along and keeps the newer
   version, so a deploy never downgrades it, and only a changed edge is
@@ -281,7 +281,7 @@ only SSH.
   OpsCrew tells you when it is not on yet, and changes nothing until it is.
 - The server must be allowed to connect out to Cloudflare on port 7844.
 - GitHub Actions still deploys after every merge: it reaches your server's SSH through a separate
-  hostname (for the app `shop` on `example.com`: `ssh-shop.example.com`) that Cloudflare Access
+  hostname (for the app `shop` on `example.com`: `ssh-shop.example.com`) that [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/)
   protects with a service token only your repository's deploy secrets hold. GitHub Actions gets
   only that hostname, never your server's address.
 - The tunnel's own token (the one its connector on your server uses) stays only on your server

@@ -2,18 +2,18 @@
 
 [Portainer CE](https://www.portainer.io/) shows the containers, logs, images and volumes on your
 server in a web browser. OpsCrew can install it on any server it deploys to: one it created on
-Hetzner Cloud or DigitalOcean, or a server you already have. It is off until you turn it on.
+[Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/), or a server you already have. It is off until you turn it on.
 
 ## Why it stays private
 
-Portainer controls Docker on the server, and control of Docker is the same as control of the whole
+Portainer controls [Docker](https://www.docker.com/) on the server, and control of Docker is the same as control of the whole
 server (root). So OpsCrew never puts it on the open internet:
 
 - it listens only on the server itself (`127.0.0.1`, port 9443), and you reach it through an SSH
   tunnel from your computer;
 - its admin account gets a password OpsCrew generates when it first starts, so nobody else can
   claim the instance;
-- a public address is only possible as an explicit opt-in, on a subdomain behind Cloudflare Access
+- a public address is only possible as an explicit opt-in, on a subdomain behind [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/)
   that lets in only the email addresses you list (Portainer's own login still applies).
 
 ## Turn it on
@@ -35,7 +35,7 @@ prints the password and never writes it into your repository, plans, logs or rep
 Commit the changed `opscrew/plan.yaml` afterwards (the next `npx opscrew provision` also includes
 it in its pull request).
 
-On servers OpsCrew created, Portainer runs as the `deploy` user and needs Docker Engine 28 or
+On servers OpsCrew created, Portainer runs as the `deploy` user and needs [Docker Engine](https://docs.docker.com/engine/) 28 or
 newer; OpsCrew checks that first and tells you what to do if the server has an older Docker. On
 your own server, OpsCrew's host setup already installs Docker 28 or newer.
 
@@ -65,13 +65,13 @@ serves Portainer on a subdomain of your Cloudflare domain as well (`portainer.ex
 domain on `example.com`). It needs:
 
 - the app's domain on Cloudflare;
-- **Cloudflare Zero Trust turned on** for your account: open
+- **[Cloudflare Zero Trust](https://developers.cloudflare.com/cloudflare-one/) turned on** for your account: open
   [one.dash.cloudflare.com](https://one.dash.cloudflare.com/), pick a team name and the Free plan;
 - these extra permissions on your `CLOUDFLARE_API_TOKEN`: Account → Cloudflare Tunnel → Edit,
   Account → Access: Apps and Policies → Edit, Account → Access: Service Tokens → Edit and
   Account → Access: Organizations, Identity Providers, and Groups → Edit.
 
-The subdomain always goes through a Cloudflare Tunnel, so the server opens no port for it.
+The subdomain always goes through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/), so the server opens no port for it.
 Cloudflare Access lets in only the email addresses you listed with `--allow-email` (repeat it for
 several), each after a one-time code sent to that address; then Portainer's own login follows. This
 adds two plans, each approved separately: the Cloudflare plan, which adds the account's Zero Trust
@@ -97,7 +97,7 @@ deletes the data.
 
 ## From Claude Code
 
-The OpsCrew plugin offers the same: Claude can show Portainer's status and turn it on or off, and
+The OpsCrew plugin offers the same: [Claude](https://claude.com/) can show Portainer's status and turn it on or off, and
 you approve each plan in a dialog. Turning it off there always keeps Portainer's data; deleting the
 data stays in the terminal (`npx opscrew portainer disable --delete-data`, typing the app's name). Claude never sees the password. Your own server's address never
 appears in the tools' results, in files or in pull requests (the tools say "your server"), but an

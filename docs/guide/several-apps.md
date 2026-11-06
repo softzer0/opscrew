@@ -2,7 +2,7 @@
 
 One repository can hold more than one app, for example a landing page in `sites/landing` and its
 documentation in `sites/docs`. OpsCrew deploys each as an app of its own, from the same checkout and
-the same GitHub repository: each has its own target, hostnames,
+the same [GitHub](https://github.com/) repository: each has its own target, hostnames,
 [environments](environments.md), deploy workflow, deploy secrets, infrastructure state and
 approvals. Destroying one leaves the other running.
 
@@ -59,7 +59,7 @@ npx opscrew env add staging --app docs
 npx opscrew provision --app docs --env staging
 ```
 
-In Claude Code, the matching OpsCrew tools take an `app` input next to `environment`, and
+In [Claude Code](https://claude.com/product/claude-code), the matching OpsCrew tools take an `app` input next to `environment`, and
 `opscrew_app_add`, `opscrew_app_list` and `opscrew_app_remove` match the commands here.
 
 ## Listing the apps
@@ -101,8 +101,8 @@ already uses.
 
 - **The security scan.** `opscrew scan` reads the whole repository, so its report
   (`opscrew/SECURITY_SCAN.md`) covers every app.
-- **Dependabot.** One `.github/dependabot.yml` covers every app's folders.
-- **GitHub Pages.** A repository has one GitHub Pages site, so only one app (or environment) of a
+- **[Dependabot](https://docs.github.com/en/code-security/dependabot).** One `.github/dependabot.yml` covers every app's folders.
+- **[GitHub Pages](https://pages.github.com/).** A repository has one GitHub Pages site, so only one app (or environment) of a
   repository can deploy there. Design says which one has it.
 - **Pushes.** Each app's workflow runs on a push to the branch it follows only when the push
   changes a path that app's deploy reads: its own folder, its `app.sharedPaths`, and its own files

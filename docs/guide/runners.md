@@ -1,13 +1,13 @@
 # Self-hosted runners: where the deploy job runs
 
 Each environment's deploy job can run in one of four places. By default the image is built on
-GitHub's machines; an environment can also build it on its own runner (see
+[GitHub](https://github.com/)'s machines; an environment can also build it on its own runner (see
 [Builds on your own hardware](#builds-on-your-own-hardware)).
 
 | `environment.runner` | Where the deploy job runs | For |
 |---|---|---|
 | `github` (the default) | on GitHub's machines, which reach your server over SSH | every target |
-| `server` | on a runner OpsCrew installs on the server itself | a server OpsCrew creates (Hetzner Cloud, DigitalOcean) or [one you already have](own-server.md) |
+| `server` | on a runner OpsCrew installs on the server itself | a server OpsCrew creates ([Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/)) or [one you already have](own-server.md) |
 | `local` | on a runner on your computer, while you run it | an environment [on your computer](localhost.md) |
 | `host` | on a [runner machine](#runner-machines) of yours: a home server, a spare PC or a VM, which reaches your server over SSH | a server OpsCrew creates or one you already have |
 
@@ -59,10 +59,10 @@ approved by its hash. Its step, `github-runner`, names:
 Its name at GitHub is `<8 hex characters>-<app>-<env>`, made from a hash of the server's address, so
 GitHub never sees the address and two servers never share a name.
 
-The runner runs as the `deploy` user's own systemd service, `opscrew-runner-<app>.service`, which
+The runner runs as the `deploy` user's own [systemd](https://systemd.io/) service, `opscrew-runner-<app>.service`, which
 restarts by itself and starts with the server.
 
-- **On a server OpsCrew creates**, the server is prepared for it from the start: cloud-init
+- **On a server OpsCrew creates**, the server is prepared for it from the start: [cloud-init](https://cloud-init.io/)
   installs the runner's system packages, makes `/srv/runners` the `deploy` user's, and lets
   `deploy`'s services run without a login session. That happens on every server OpsCrew creates,
   whatever the runner choice, so choosing a runner later never replaces the server. The host plan
@@ -85,7 +85,7 @@ server is already gone, OpsCrew removes the registration through GitHub's API.
 
 ### What it can do on the server
 
-The runner has exactly the rights `deploy` has: it runs `docker compose` for the app, and Docker
+The runner has exactly the rights `deploy` has: it runs `docker compose` for the app, and [Docker](https://www.docker.com/)
 access is close to root on a server. That is no more than today's deploys, which run as `deploy`
 over SSH: anyone who can push to your default branch can already change the workflow. A runner that
 stays installed also keeps its work folder and caches between jobs.
@@ -108,7 +108,7 @@ When you stop it (Ctrl+C, or closing the terminal), it gives a running job a min
 removes its registration from GitHub. The environment can still be provisioned from your computer
 without it.
 
-- The deploy job's steps run with your computer's shell (Git for Windows' `bash` on Windows), and
+- The deploy job's steps run with your computer's shell ([Git for Windows](https://gitforwindows.org/)' `bash` on Windows), and
   get none of your provider or model tokens and no SSH agent.
 - It deploys an image from GitHub's container registry, so the environment's plan keeps
   `target.image: registry`. Only the environment's first `provision` may start the stack from an
@@ -118,7 +118,7 @@ without it.
   workflow builds on each push and labels `opscrew-<env>`, and takes the build, the components and
   the port from its own design, not from production's. Its first `provision` comes before any such
   image, so OpsCrew starts the stack from an image built on this computer when it can build the
-  app's image as GitHub Actions does, else from the image production runs, and says which. The
+  app's image as [GitHub Actions](https://github.com/features/actions) does, else from the image production runs, and says which. The
   first deploy after a push replaces it with the environment's own image. When neither is there
   (an app this computer cannot build as GitHub Actions does, or whose Dockerfile is not in the
   repository yet, and production not deployed yet), `provision` stops before changing anything and
@@ -208,10 +208,10 @@ reloads SSH. The plan refuses it while OpsCrew logs in as root, since root could
 and while a user logs in with a password and no SSH key, whom the plan names.
 
 **The SSH firewall (`--harden firewall --ssh-from <address or network> …`)** lets only the addresses
-and networks you name reach SSH, over IPv4 and IPv6. OpsCrew adds its own nftables table,
+and networks you name reach SSH, over IPv4 and IPv6. OpsCrew adds its own [nftables](https://netfilter.org/projects/nftables/) table,
 `inet opscrew`, whose input chain accepts the ports sshd listens on (port 22, or the ports sshd is
 set up for, which the plan names) from those sources, and drops other traffic to those ports. No
-other port, rule, table or default policy changes: ufw, firewalld and your own nftables tables stay
+other port, rule, table or default policy changes: [ufw](https://launchpad.net/ufw), [firewalld](https://firewalld.org/) and your own nftables tables stay
 as they are. The service `opscrew-ssh-firewall.service` loads the table at boot from
 `/etc/opscrew/nftables-ssh.nft`. The machine needs `nft` (the `nftables` package); without it the
 plan says so and changes nothing.
@@ -283,7 +283,7 @@ SSH can be closed.
 ## Builds on your own hardware
 
 By default GitHub's machines build the image. With `build: runner`, the environment's build job runs
-on its own runner instead, with the same Buildx, build provenance, SBOM and optional signature:
+on its own runner instead, with the same [Buildx](https://github.com/docker/buildx), build provenance, SBOM and optional signature:
 
 ```bash
 npx opscrew env set staging --runner host --runner-host home --build runner
@@ -312,8 +312,8 @@ that is not the server.
 
 ### Builds on Windows and macOS
 
-On a local runner that is not Linux, a Dockerfile build uses your Docker (Docker Desktop, or Colima
-on macOS) directly. Cloud Native Buildpacks' `pack` and Railpack exist only for Linux, so OpsCrew
+On a local runner that is not Linux, a Dockerfile build uses your Docker ([Docker Desktop](https://www.docker.com/products/docker-desktop/), or [Colima](https://github.com/abiosoft/colima)
+on macOS) directly. [Cloud Native Buildpacks](https://buildpacks.io/)' `pack` and [Railpack](https://railpack.com/) exist only for Linux, so OpsCrew
 runs their pinned Linux builds inside a pinned Linux container that reaches your Docker through its
 socket; every [builder](builders.md) works there. Docker must be running while the runner takes the
 job.

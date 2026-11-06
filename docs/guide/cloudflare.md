@@ -1,6 +1,6 @@
 # Your domain on Cloudflare, and several apps in one zone
 
-When your app's domain is on Cloudflare, OpsCrew protects every hostname of the app with OpsCrew's
+When your app's domain is on [Cloudflare](https://www.cloudflare.com/), OpsCrew protects every hostname of the app with OpsCrew's
 rules in your Cloudflare zone. You can put several OpsCrew apps under one domain (`shop.example.com`,
 `api.example.com`, `status.example.com`) and in one Cloudflare account: each app gets the same
 protection, your own rules stay yours, and removing one app leaves the others as they are.
@@ -14,7 +14,7 @@ OpsCrew keeps one rule of its own of each kind in the zone, whatever the number 
   `/wp-login.php`, `/xmlrpc.php` and `/phpmyadmin`. They never reach your server.
 - **"OpsCrew: verify the origin certificate (Full (strict) TLS)"**, in **Rules → Configuration
   Rules**. Cloudflare checks your server's certificate when it connects to it. Apps served through
-  a Cloudflare Tunnel, and apps in your own Portainer, do not need it.
+  a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/), and apps in your own [Portainer](https://www.portainer.io/), do not need it.
 - **"OpsCrew: redirect www to the domain"**, in **Rules → Redirect Rules**, only once a site on
   [Cloudflare's hosting](cloudflare-hosting.md#www) has `www`. It sends `www.<domain>` to the
   domain with a 301.
@@ -63,13 +63,13 @@ infrastructure plan needs the login that the Cloudflare plan adds. In a script, 
 stops at the infrastructure plan, printing its hash for the next run. In a terminal, OpsCrew simply
 asks for one plan after the other.
 
-From Claude Code, the OpsCrew plugin shows the same Cloudflare plan, and you approve it in a dialog
+From [Claude Code](https://claude.com/product/claude-code), the OpsCrew plugin shows the same Cloudflare plan, and you approve it in a dialog
 (typing the app's name when the plan deletes OpsCrew's rule). Claude cannot approve it for you.
 
 ## Sharing a Cloudflare account between apps
 
-Cloudflare Access (used for a Cloudflare Tunnel's SSH hostname, for Portainer on a subdomain and for
-Portainer's Cloudflare redeploys) needs the account's **Zero Trust organization**. Portainer's login
+[Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) (used for a Cloudflare Tunnel's SSH hostname, for Portainer on a subdomain and for
+Portainer's Cloudflare redeploys) needs the account's **[Zero Trust](https://developers.cloudflare.com/cloudflare-one/) organization**. Portainer's login
 on a subdomain also needs the account's **one-time PIN login**, which sends a code by email.
 Every app in the account shares both. OpsCrew creates them in the Cloudflare plan only when they
 are missing, reuses them when they are there (also when you set them up yourself), and never

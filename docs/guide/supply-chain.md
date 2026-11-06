@@ -6,7 +6,7 @@ how updates reach you, and how deploys can be tagged and old images cleaned up.
 
 ## What is in an image, and where it came from
 
-Each image is pushed to GitHub Container Registry as `ghcr.io/<owner>/<repo>:<commit>` together
+Each image is pushed to [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry) as `ghcr.io/<owner>/<repo>:<commit>` together
 with two records:
 
 - an **SBOM** (software bill of materials): every package in the image, with its version;
@@ -45,7 +45,7 @@ is stored next to the image. Turn it on in the interview, or with `supplyChain.s
 `opscrew/plan.yaml`, then run `npx opscrew provision`.
 
 **For a private repository, signing makes its name public.** Keyless signatures are recorded in
-Sigstore's public transparency log, and each entry shows the repository's name and the path of the
+[Sigstore](https://www.sigstore.dev/)'s public transparency log, and each entry shows the repository's name and the path of the
 deploy workflow. OpsCrew says so in the interview before you turn it on.
 
 To check a signature, with cosign installed:
@@ -69,21 +69,21 @@ your repository instead, replace `--certificate-identity "…"` with
 
 ## Updates with Dependabot
 
-OpsCrew pins every image and tool it uses to an exact version, and GitHub's Dependabot keeps most
+OpsCrew pins every image and tool it uses to an exact version, and GitHub's [Dependabot](https://docs.github.com/en/code-security/dependabot) keeps most
 of those pins current. When your repository has no `.github/dependabot.yml`, the pull request that
 `npx opscrew provision` opens with the deployment setup adds one, together with the deploy workflow
-and the Compose files it watches, so Dependabot's first check finds them. It covers:
+and the [Compose](https://docs.docker.com/compose/) files it watches, so Dependabot's first check finds them. It covers:
 
-- your app's packages (npm, pnpm and Yarn, Bun, pip, Poetry, Pipenv, uv, Bundler, Go modules,
-  Composer, Cargo, NuGet, Maven or Gradle, whichever your app uses);
+- your app's packages ([npm](https://www.npmjs.com/), [pnpm](https://pnpm.io/) and [Yarn](https://yarnpkg.com/), [Bun](https://bun.sh/), [pip](https://pip.pypa.io/), [Poetry](https://python-poetry.org/), [Pipenv](https://pipenv.pypa.io/), [uv](https://docs.astral.sh/uv/), [Bundler](https://bundler.io/), [Go](https://go.dev/) modules,
+  [Composer](https://getcomposer.org/), [Cargo](https://doc.rust-lang.org/cargo/), [NuGet](https://www.nuget.org/), [Maven](https://maven.apache.org/) or [Gradle](https://gradle.org/), whichever your app uses);
 - the base images of the Dockerfile, when the image is built from one;
-- the images in OpsCrew's Compose files (`opscrew/runtime`): Postgres, the cache, Caddy and the
+- the images in OpsCrew's Compose files (`opscrew/runtime`): [Postgres](https://www.postgresql.org/), the cache, [Caddy](https://caddyserver.com/) and the
   others;
-- the GitHub Actions in your workflows.
+- the [GitHub Actions](https://github.com/features/actions) in your workflows.
 
 Dependabot checks weekly. Minor and patch updates come grouped, one pull request per ecosystem, so
-you get few of them. Major updates of your libraries come as separate pull requests. The Node.js,
-Python, Caddy and Postgres images get no major updates at all: a new major version can break your
+you get few of them. Major updates of your libraries come as separate pull requests. The [Node.js](https://nodejs.org/),
+[Python](https://www.python.org/), Caddy and Postgres images get no major updates at all: a new major version can break your
 app's libraries, and a new Postgres major cannot read the old one's data. Those moves are yours (see
 [Runtime versions](builders.md#runtime-versions)).
 
@@ -93,8 +93,8 @@ the entries it would add, in the output of `npx opscrew provision` and in that p
 When Dependabot updates a pin in a file OpsCrew generated, OpsCrew keeps the newer pin on the next
 `npx opscrew provision` and does not put the old one back.
 
-Dependabot cannot update the pins in the deploy workflow's own build steps: the Buildpacks builder
-and run images, Railpack's frontend, the pack and Railpack versions, and Trivy. Those pins move with
+Dependabot cannot update the pins in the deploy workflow's own build steps: the [Buildpacks](https://buildpacks.io/) builder
+and run images, [Railpack](https://railpack.com/)'s frontend, the [pack](https://github.com/buildpacks/pack) and Railpack versions, and [Trivy](https://trivy.dev/). Those pins move with
 OpsCrew's releases: update OpsCrew and run `npx opscrew provision` to get the new ones.
 
 ## Deploy tags

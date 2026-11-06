@@ -15,7 +15,7 @@ OpsCrew closes public SSH only when both hold, so that neither the deploys nor y
 
 1. **The deploys run inside the network:** the environment's deploy job runs on the
    [server's own runner](runners.md) (or on this computer's, when this computer is a device on the
-   network), not on GitHub's machines or a runner machine elsewhere. Move it to the server with:
+   network), not on [GitHub](https://github.com/)'s machines or a runner machine elsewhere. Move it to the server with:
 
    ```bash
    npx opscrew env set prod --runner server
@@ -28,7 +28,7 @@ OpsCrew closes public SSH only when both hold, so that neither the deploys nor y
    npx opscrew vpn add laptop --this-computer
    ```
 
-   then import the configuration into the WireGuard app and turn the tunnel on. OpsCrew checks that
+   then import the configuration into the [WireGuard](https://www.wireguard.com/) app and turn the tunnel on. OpsCrew checks that
    the tunnel had a handshake with every server in the last 3 minutes.
 
 When one is missing, OpsCrew refuses, says which one and how to meet it, and changes nothing.
@@ -103,9 +103,9 @@ OpsCrew) before you close public SSH, so this way stays open to you.
 
 Every provider lets you log in on a server's own screen from its website, without SSH:
 
-- **Hetzner Cloud:** open the server in the Hetzner Console, reset the root password under
+- **[Hetzner Cloud](https://www.hetzner.com/cloud):** open the server in the [Hetzner Console](https://console.hetzner.cloud), reset the root password under
   **Rescue**, then open the **Console** and log in as `root`.
-- **DigitalOcean:** open the Droplet, reset the root password under **Access**, then launch the
+- **[DigitalOcean](https://www.digitalocean.com/):** open the Droplet, reset the root password under **Access**, then launch the
   **Recovery Console** and log in as `root`.
 - **A server you already have:** your provider's console, or a keyboard and screen.
 

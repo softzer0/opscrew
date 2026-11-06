@@ -1,20 +1,20 @@
 # Host your site on Cloudflare, with no server
 
 Many apps never need a server: a static site, a single-page app that talks to services by URL, or
-a server-rendered front end. OpsCrew can host them on Cloudflare (Workers with static assets).
+a server-rendered front end. OpsCrew can host them on [Cloudflare](https://www.cloudflare.com/) ([Workers](https://workers.cloudflare.com/) with static assets).
 Cloudflare serves the site's files from its edge on your domain, and runs the server-rendered
 pages as a Worker. There is no server to rent, patch or pay for.
 
-Nothing changes at Cloudflare or GitHub until you approve the exact plan. OpsCrew shows it with its
+Nothing changes at Cloudflare or [GitHub](https://github.com/) until you approve the exact plan. OpsCrew shows it with its
 SHA-256 hash first, as for every other target.
 
 ## When to choose it
 
-- **Static sites:** Astro, Hugo, a Vite or React single-page app, a Next.js static export, Nuxt's
-  `nuxt generate` or SvelteKit's static adapter. Static files cost nothing on every plan.
+- **Static sites:** [Astro](https://astro.build/), [Hugo](https://gohugo.io/), a [Vite](https://vite.dev/) or [React](https://react.dev/) single-page app, a [Next.js](https://nextjs.org/) static export, [Nuxt](https://nuxt.com/)'s
+  `nuxt generate` or [SvelteKit](https://svelte.dev/docs/kit)'s static adapter. Static files cost nothing on every plan.
 - **Server-rendered apps** with a Cloudflare adapter OpsCrew sets up:
   - Astro (`@astrojs/cloudflare`);
-  - Next.js through OpenNext (`@opennextjs/cloudflare`);
+  - Next.js through [OpenNext](https://opennext.js.org/) (`@opennextjs/cloudflare`);
   - Nuxt (Nitro's `cloudflare_module` preset);
   - SvelteKit (`@sveltejs/adapter-cloudflare`).
 
@@ -23,7 +23,7 @@ SHA-256 hash first, as for every other target.
   server-rendered request hangs on Workers.
 
 Design does not offer Cloudflare's hosting, and says why, when the app needs a server:
-- a database, cache, queue, worker, cron job or SQLite of its own;
+- a database, cache, queue, worker, cron job or [SQLite](https://www.sqlite.org/) of its own;
 - a bucket OpsCrew would create;
 - a process that keeps running, such as WebSockets held open or background work;
 - server rendering with a framework that has no adapter in the list above.
@@ -107,7 +107,7 @@ request.
 
 - **The Worker** `<app>` (`<app>-<env>` for another [environment](environments.md)), and a custom
   domain for each hostname. Cloudflare creates each custom domain's DNS record and certificate
-  itself. OpenTofu or Terraform creates the Worker once and never changes its code: the deploy
+  itself. [OpenTofu](https://opentofu.org/) or [Terraform](https://developer.hashicorp.com/terraform) creates the Worker once and never changes its code: the deploy
   workflow uploads it.
 - **The Worker's settings** in `opscrew/cloudflare/wrangler.jsonc`, a plain file in your repository:
   - the static files folder;
@@ -126,8 +126,8 @@ request.
 
 1. You push to the deploy branch (a push deploys when it changes a path the site's build reads:
    [When a push deploys your app](when-deploys-run.md)), or run the workflow by hand.
-2. GitHub Actions builds the site and checks it against the files per version. For server
-   rendering, Wrangler then bundles the Worker with its packages. The build is kept as the
+2. [GitHub Actions](https://github.com/features/actions) builds the site and checks it against the files per version. For server
+   rendering, [Wrangler](https://developers.cloudflare.com/workers/wrangler/) then bundles the Worker with its packages. The build is kept as the
    artifact `opscrew-site`, and its SHA-256 is recorded.
 3. The deploy job adds OpsCrew's security headers to the site's `_headers` file, then uploads the
    build as a new version of the Worker. The version's message, `opscrew <run id> <sha256>`, names
@@ -253,7 +253,7 @@ domain. To turn either on, set `target.previewUrls` or `target.workersDev` to `t
   its errors, and `npx opscrew status` its requests, errors and CPU time of the last day: see
   [logs and resource figures](logs-and-status.md#cloudflares-hosting). A static site has no request
   logs.
-- [`npx opscrew retarget --to github-pages`](retarget.md#sites) moves the site to GitHub Pages, with
+- [`npx opscrew retarget --to github-pages`](retarget.md#sites) moves the site to [GitHub Pages](https://pages.github.com/), with
   no maintenance window. A site doesn't move to or from a server yet: remove it with `destroy` and
   set it up on the new target.
 

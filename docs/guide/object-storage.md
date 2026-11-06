@@ -2,7 +2,7 @@
 
 When your app stores files through an S3 client (uploads, images, exports), OpsCrew can give it a
 private bucket of its own, on the provider that is cheapest for the use it expects, and shows the
-other options with their monthly prices. The bucket is created through OpenTofu or Terraform after
+other options with their monthly prices. The bucket is created through [OpenTofu](https://opentofu.org/) or [Terraform](https://developer.hashicorp.com/terraform) after
 you approve its plan, like the rest of your infrastructure. The key the app uses is one you create
 yourself: OpsCrew never creates storage keys.
 
@@ -13,10 +13,10 @@ keep the storage the app uses now, or let OpsCrew create a bucket. The next ques
 storage OpsCrew offers where the app runs, with their prices, for you to choose from.
 
 - **Your app already uses hosted storage.** When an endpoint your app's env example sets is at
-  Amazon S3, Backblaze B2, Wasabi, DigitalOcean Spaces, Cloudflare R2, Hetzner Object Storage or
-  Supabase Storage, the question names it. Keeping it is the default, and an unanswered question
+  [Amazon S3](https://aws.amazon.com/s3/), [Backblaze B2](https://www.backblaze.com/cloud-storage), [Wasabi](https://wasabi.com/), [DigitalOcean Spaces](https://www.digitalocean.com/products/spaces), [Cloudflare R2](https://developers.cloudflare.com/r2/), [Hetzner Object Storage](https://www.hetzner.com/storage/object-storage/) or
+  [Supabase Storage](https://supabase.com/docs/guides/storage), the question names it. Keeping it is the default, and an unanswered question
   keeps it too. If you let OpsCrew create a bucket instead, move the files yourself.
-- **Your app sets no endpoint, or one OpsCrew does not know** (a local MinIO, for example). The
+- **Your app sets no endpoint, or one OpsCrew does not know** (a local [MinIO](https://min.io/), for example). The
   question is the same, and without an answer OpsCrew plans no bucket either. Design then says so
   in one line, with how to ask for one.
 
@@ -39,11 +39,11 @@ in `opscrew/plan.yaml`, as below.
 | **Cloudflare R2** | your domain is on Cloudflare | per GB stored and per million requests, no charge for downloads |
 | **DigitalOcean Spaces** | the app runs on DigitalOcean | a monthly base per account, with storage and downloads included |
 | **Hetzner Object Storage** | the app runs on Hetzner Cloud in Falkenstein (fsn1), Nuremberg (nbg1) or Helsinki (hel1) | a monthly base per account, with storage and downloads included |
-| **Garage** | always; on Hetzner Cloud and DigitalOcean only when you choose it | free: it keeps the files on the server's own disk and uses 64 MB of its memory |
+| **[Garage](https://garagehq.deuxfleurs.fr/)** | always; on Hetzner Cloud and DigitalOcean only when you choose it | free: it keeps the files on the server's own disk and uses 64 MB of its memory |
 
 Garage is a small S3-compatible storage server (AGPL 3.0) that OpsCrew runs as one of the app's
 components, without replication: the files are as safe as the server's disk and your backups of
-it. On a server you already have, or in your Portainer, it can be the default. On a cloud server
+it. On a server you already have, or in your [Portainer](https://www.portainer.io/), it can be the default. On a cloud server
 OpsCrew never picks it by itself, because the files then live only on that server, but you can
 choose it in the interview (`objectStorage: garage`) or in `opscrew/plan.yaml`
 (`storage.objectStorage.provider: garage`). Its memory counts when design sizes the server.
@@ -123,10 +123,10 @@ bucket and warns you; its files stay where they are.
   also gets a CORS rule that accepts uploads from your app's own domain only.
 - **The app's settings:** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`,
   `AWS_ENDPOINT_URL_S3`, and the bucket and endpoint under the variables your app already reads
-  (Laravel's `AWS_BUCKET`, `AWS_DEFAULT_REGION` and `AWS_USE_PATH_STYLE_ENDPOINT` included).
+  ([Laravel](https://laravel.com/)'s `AWS_BUCKET`, `AWS_DEFAULT_REGION` and `AWS_USE_PATH_STYLE_ENDPOINT` included).
 
 Most S3 clients read `AWS_ENDPOINT_URL_S3` on their own. A few older ones do not (the AWS SDK for
-JavaScript v2, Go v1 and Java 1.x): pass the endpoint to the client from that variable in your
+JavaScript v2, [Go](https://go.dev/) v1 and [Java](https://dev.java/) 1.x): pass the endpoint to the client from that variable in your
 code. Garage needs path-style requests (`forcePathStyle: true` in the JavaScript SDK).
 
 ## The storage key

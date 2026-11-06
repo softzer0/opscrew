@@ -2,7 +2,7 @@
 
 When you merge a change, the deploy workflow builds a new image and switches your server to it.
 Visitors keep being served during the switch, and a release that does not work never replaces one
-that does. This works on Hetzner Cloud, DigitalOcean and a server you already have.
+that does. This works on [Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/) and a server you already have.
 
 ## How a deploy switches
 
@@ -11,7 +11,7 @@ that does. This works on Hetzner Cloud, DigitalOcean and a server you already ha
    image. If it fails, the deploy stops and the running version keeps serving.
 2. **A new copy starts** next to the running one. The database, the cache and the proxy keep
    running; a deploy never restarts them, unless their own image or settings changed (for example
-   a Dependabot update), which restarts them once.
+   a [Dependabot](https://docs.github.com/en/code-security/dependabot) update), which restarts them once.
 3. **The health check.** A small proxy in front of the app, [kamal-proxy](https://github.com/basecamp/kamal-proxy),
    asks the new copy for its health route. Only when it answers does the proxy send it traffic.
 4. **The drain.** The old copy gets no new requests and has 30 seconds to finish the ones it has.
@@ -19,7 +19,7 @@ that does. This works on Hetzner Cloud, DigitalOcean and a server you already ha
 6. **A last check** from outside, through your domain when the app has one. If the app does not
    answer there, OpsCrew switches the server back to the previous version and the run fails.
 
-Caddy stays in front and passes every request to kamal-proxy.
+[Caddy](https://caddyserver.com/) stays in front and passes every request to kamal-proxy.
 
 ## A broken release never gets traffic
 
@@ -46,7 +46,7 @@ message also names the builder that made the image and the setting that switches
 
 Each of an app's [environments](environments.md) switches the same way, with its own workflow and
 its own drain time and strategy. Deploys of one environment never run at the same time: a deploy
-waits for the running one, and if several wait, GitHub keeps only the newest and cancels the older
+waits for the running one, and if several wait, [GitHub](https://github.com/) keeps only the newest and cancels the older
 waiting ones. A running deploy is never cancelled. Different environments may deploy at once, also
 when they share a server: each switches only its own app (`shop` or `shop-staging`) behind the
 shared edge.
@@ -60,7 +60,7 @@ too, run by the same scripts.
 
 Two copies of the app run during a switch. On a server with less than 1 GB of memory, OpsCrew
 records `deploy.strategy: recreate` in `opscrew/plan.yaml` and says why: each deploy stops the old
-version before the new one starts. An app that keeps its data in SQLite deploys this way on every
+version before the new one starts. An app that keeps its data in [SQLite](https://www.sqlite.org/) deploys this way on every
 server. kamal-proxy holds the requests meanwhile: the old version first finishes the requests it
 has, and requests that arrive during the switch wait, for up to 90 seconds, until the new version
 passes its health check and answers them. Visitors see a short pause, not an error.
@@ -78,7 +78,7 @@ strategy in use.
 
 ## In your Portainer
 
-In a Portainer you already run, Portainer itself redeploys the app's stack. Standalone Docker cannot
+In a [Portainer](https://www.portainer.io/) you already run, Portainer itself redeploys the app's stack. Standalone [Docker](https://www.docker.com/) cannot
 start the new copy before it stops the old one, so the app restarts in place. Caddy keeps running
 through the redeploy and holds each request for up to 30 seconds until the new version answers, so
 visitors see a short pause instead of an error. Only the app's own containers restart; the database,
@@ -87,6 +87,6 @@ the cache and Caddy stay up. OpsCrew says so at design and records `deploy.strat
 The deploy workflow waits until the site serves the new version and its health route answers. If
 the new version does not answer in time, it writes the previous version back.
 
-A Docker Swarm environment in Portainer would give true rolling updates, with the new copy started
+A [Docker Swarm](https://docs.docker.com/engine/swarm/) environment in Portainer would give true rolling updates, with the new copy started
 before the old one stops. OpsCrew does not support Swarm environments yet; it is planned for a later
 release.

@@ -1,6 +1,6 @@
 # Databases
 
-When your app uses PostgreSQL, MySQL, MariaDB, MongoDB or SQLite, OpsCrew runs the database next to
+When your app uses [PostgreSQL](https://www.postgresql.org/), [MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/), [MongoDB](https://www.mongodb.com/) or [SQLite](https://www.sqlite.org/), OpsCrew runs the database next to
 it on the same server, with a memory limit, a generated password and a data folder that every
 deploy keeps. It costs nothing beyond the server memory it takes, which design shows with its
 share of the server's price (see [Components](components.md)).
@@ -15,12 +15,12 @@ share of the server's price (see [Components](components.md)).
 | MongoDB | 8.0 | 512 MB (384 MB) | 1 GB | SSPL |
 
 OpsCrew picks the database from the client library your app uses (`pg`, `mysql2`, `mongoose`,
-`pymongo` …). MariaDB runs only when your app asks for MariaDB itself (for example Laravel's
+`pymongo` …). MariaDB runs only when your app asks for MariaDB itself (for example [Laravel](https://laravel.com/)'s
 `DB_CONNECTION=mariadb`); a MySQL app gets MySQL, since some of its data types do not load in
 MariaDB. The GPL and the SSPL put no conditions on your app's own code when you run the database
 for it; they are about sharing or offering the database software itself.
 
-Each database runs from its official image, pinned by digest. Dependabot proposes newer releases
+Each database runs from its official image, pinned by digest. [Dependabot](https://docs.github.com/en/code-security/dependabot) proposes newer releases
 of the same major version in your repository, never a new major one: moving to a new major version
 can need a data migration, so that choice is yours.
 
@@ -46,7 +46,7 @@ port is open to the internet, or to other apps on the server.
   `opscrew/runtime/compose.yaml`. A larger memory limit gives it a larger buffer pool.
 - **MongoDB** gets a cache of half its memory limit (at least 0.25 GB), set explicitly, because
   MongoDB may not see the container's limit on its own.
-  - **A replica set of one member**, which Prisma and multi-document transactions need. OpsCrew
+  - **A replica set of one member**, which [Prisma](https://www.prisma.io/) and multi-document transactions need. OpsCrew
     turns it on for a Prisma app; for transactions without Prisma, set
     `options: { replicaSet: true }` on the service in `opscrew/plan.yaml`. The deploy sets it up
     the first time, and the address then names it.
@@ -59,20 +59,20 @@ port is open to the internet, or to other apps on the server.
 
 On a server, each database keeps its files in `/srv/data/<app>/<name>`, for example
 `/srv/data/shop/db` for PostgreSQL. The folder belongs to your app alone, so several apps on one
-server never share one. In your Portainer, the data is in the named volumes of the app's stack.
+server never share one. In your [Portainer](https://www.portainer.io/), the data is in the named volumes of the app's stack.
 
 Deploys never recreate a database container unless its own settings or image changed.
 `npx opscrew destroy` keeps the data unless you add `--delete-data` and type the app's name.
 
 ## A database you already host elsewhere
 
-When your app already uses a hosted database (a `mongodb+srv://` address from MongoDB Atlas,
-PlanetScale, Neon …), the interview asks whether to keep it or let OpsCrew run one on the server.
+When your app already uses a hosted database (a `mongodb+srv://` address from [MongoDB Atlas](https://www.mongodb.com/atlas),
+[PlanetScale](https://planetscale.com/), [Neon](https://neon.com/) …), the interview asks whether to keep it or let OpsCrew run one on the server.
 If you keep it, OpsCrew runs nothing for it: set its address in your app's production environment.
 
 ## Backups
 
-On Hetzner Cloud and DigitalOcean, the provider's server backups cover the database folders. They
+On [Hetzner Cloud](https://www.hetzner.com/cloud) and [DigitalOcean](https://www.digitalocean.com/), the provider's server backups cover the database folders. They
 copy a running server, so they are crash-consistent only: the database recovers from them as after
 a power cut, and the last seconds of writes can be missing. For a copy you can restore anywhere,
 dump the database from the app's folder on the server, for example:
@@ -109,17 +109,17 @@ server, your Portainer and SQLite get no snapshots yet; they come in a later rel
 A SQLite database is a file inside your app, so OpsCrew does not run a database for it. Instead:
 
 - **The database's folder is a persistent volume.** `storage.sqlite.dir` in `opscrew/plan.yaml`
-  names the folder, relative to your app (for example `storage` for Rails 8). It is mounted from
-  the Docker volume `<app>_sqlite`, which every deploy keeps, together with SQLite's `-wal` and
+  names the folder, relative to your app (for example `storage` for [Rails](https://rubyonrails.org/) 8). It is mounted from
+  the [Docker](https://www.docker.com/) volume `<app>_sqlite`, which every deploy keeps, together with SQLite's `-wal` and
   `-shm` files.
 - **The folder must hold only the database**, or the volume would hide your other files from the
   app. Laravel's `database/database.sqlite` (next to the migrations) moves to `storage/database`,
   and a Prisma database inside `prisma/` (next to the schema) moves to `data`, with the app's
   variable (`DB_DATABASE`, `DATABASE_URL`) pointed at the new place. For a database anywhere else
-  next to your code, such as Django's `db.sqlite3` beside `manage.py`, design stops and asks you to
+  next to your code, such as [Django](https://www.djangoproject.com/)'s `db.sqlite3` beside `manage.py`, design stops and asks you to
   move it into a folder of its own, for example `data/app.sqlite3`.
 - **Where the folder is in the image:** under the app's folder there: `/workspace` with
-  Buildpacks, `/app` with Railpack and with OpsCrew's Dockerfile (`/app/<folder>` for a Node.js app
+  [Buildpacks](https://buildpacks.io/), `/app` with [Railpack](https://railpack.com/) and with OpsCrew's Dockerfile (`/app/<folder>` for a [Node.js](https://nodejs.org/) app
   in a subfolder of the repository), and the last `WORKDIR` of your own Dockerfile.
 - **Deploys stop the old version before the new one starts**, so two copies never write to the
   database at once (`deploy.strategy: recreate`). Requests wait meanwhile, so visitors see a short
@@ -145,13 +145,13 @@ the app cannot write its database until the volume's owner changes too:
 
 - **When you change the builder** (`app.build.builder` in `opscrew/plan.yaml`), the image's user
   changes with it: Buildpacks runs apps as `1002:1001`, Railpack as `10001:10001`, OpsCrew's
-  Dockerfile as `1000:1000` (Node.js) or `10001:10001` (Python). `npx opscrew design` warns you and
+  Dockerfile as `1000:1000` (Node.js) or `10001:10001` ([Python](https://www.python.org/)). `npx opscrew design` warns you and
   prints the command for your app.
 - **When you change `USER` in your own Dockerfile**, OpsCrew does not notice. Change the owner
   yourself before you deploy the new image.
 
 When you change the builder, `npx opscrew design` prints the exact command for your app, with the
-edge's Caddy image as OpsCrew pins it (the image is already on the server and has `chown`). It has
+edge's [Caddy](https://caddyserver.com/) image as OpsCrew pins it (the image is already on the server and has `chown`). It has
 this form, with the new user's numbers:
 
 ```bash

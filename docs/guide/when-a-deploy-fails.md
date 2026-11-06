@@ -17,10 +17,10 @@ The rules behind every case:
 
 ## The app in this walkthrough
 
-`shop` is a Next.js app with PostgreSQL, like
+`shop` is a [Next.js](https://nextjs.org/) app with [PostgreSQL](https://www.postgresql.org/), like
 [`examples/nextjs-postgres`](https://github.com/softzer0/opscrew/tree/main/examples/nextjs-postgres),
-with Prisma migrations. It runs on a Hetzner Cloud server, and visitors reach it at
-`shop.example.com` through Cloudflare's proxy. Its plan in `opscrew/plan.yaml` has:
+with [Prisma](https://www.prisma.io/) migrations. It runs on a [Hetzner Cloud](https://www.hetzner.com/cloud) server, and visitors reach it at
+`shop.example.com` through [Cloudflare](https://www.cloudflare.com/)'s proxy. Its plan in `opscrew/plan.yaml` has:
 
 - `app.healthPath: /api/health` and `app.port: 3000`;
 - `app.releaseCommand: npx prisma migrate deploy`, which OpsCrew picks when the app has
@@ -33,7 +33,7 @@ then **Deploy to the server**.
 
 ## Where to look
 
-- **The workflow run** (GitHub → **Actions** → **OpsCrew deploy**): which step failed, with
+- **The workflow run** ([GitHub](https://github.com/) → **Actions** → **OpsCrew deploy**): which step failed, with
   OpsCrew's message.
 - **`npx opscrew verify`**: whether the site is up and healthy, and whether the latest deploy run
   succeeded.
@@ -211,7 +211,7 @@ cause and push again, or re-run the workflow when the cause was outside the app.
 These fail the run before the new version starts. Visitors keep the version that ran, and the run
 says so:
 
-- **Caddy refused the app's site,** checked before anything reaches the server.
+- **[Caddy](https://caddyserver.com/) refused the app's site,** checked before anything reaches the server.
 - **The shared proxy on the server did not start** or did not accept the app's site.
 - **A service's one-time setup failed.**
 - **A service on another of the app's servers did not update** (see
@@ -296,12 +296,12 @@ The server at … did not open SSH within 5 minutes.
 The server at … did not finish its first-boot setup within 8 minutes.
 ```
 
-Check the server in Hetzner Console (the second message gives a command that shows what the
+Check the server in [Hetzner Console](https://console.hetzner.cloud) (the second message gives a command that shows what the
 server is doing), then run `npx opscrew provision` again: it continues where it stopped.
 
 ## When the server itself is in trouble
 
-- **A reboot or a crash:** every running container restarts by itself when Docker starts, and
+- **A reboot or a crash:** every running container restarts by itself when [Docker](https://www.docker.com/) starts, and
   Docker starts with the server; `npx opscrew status` flags containers that restarted (see
   [Your app's logs and resource figures](logs-and-status.md)). The server installs security updates
   on its own but OpsCrew never reboots it: `npx opscrew secure` says when a reboot is pending.

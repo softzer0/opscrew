@@ -1,6 +1,6 @@
 # Only Cloudflare reaches your server: origin protection
 
-When your app's hostnames are behind Cloudflare's proxy (the orange cloud), visitors meet
+When your app's hostnames are behind [Cloudflare](https://www.cloudflare.com/)'s proxy (the orange cloud), visitors meet
 Cloudflare first: its firewall, OpsCrew's probe block and your own rules. Limiting your server to
 Cloudflare's addresses is not enough on its own, because anyone with a Cloudflare account can point
 their own zone at your server's address and reach it through Cloudflare. Origin protection closes
@@ -27,14 +27,14 @@ as a deploy secret, and the client certificate's key only to Cloudflare. Both ar
 generated values on your computer, which the [recovery copy](secrets-recovery.md) encrypts. No key
 is ever in a plan, a log, a report or your repository.
 
-It works on servers OpsCrew creates (Hetzner Cloud, DigitalOcean), on
+It works on servers OpsCrew creates ([Hetzner Cloud](https://www.hetzner.com/cloud), [DigitalOcean](https://www.digitalocean.com/)), on
 [a server you already have](own-server.md) with either [proxy](reverse-proxy.md), and in
-[your Portainer](portainer-target.md) when OpsCrew's Caddy serves the app's stack (web mode
+[your Portainer](portainer-target.md) when OpsCrew's [Caddy](https://caddyserver.com/) serves the app's stack (web mode
 `caddy`).
 
 Not covered, because there is no public origin to protect or OpsCrew does not run the proxy:
 
-- hostnames served through a Cloudflare Tunnel;
+- hostnames served through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/);
 - an app in your Portainer behind your own reverse proxy (web mode `proxy`); `opscrew secure` says
   so;
 - hostnames with DNS only (the grey cloud). They get a public certificate instead, with

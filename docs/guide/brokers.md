@@ -1,8 +1,8 @@
 # Message brokers and queues
 
 When your app sends work or events through a queue or a broker, OpsCrew runs it next to the app on
-the same server: Valkey (or Redis 8 or Dragonfly) for Redis-based queues and caches, RabbitMQ,
-NATS, and Apache Kafka or Redpanda. Each runs as a container with a memory limit and no open port,
+the same server: [Valkey](https://valkey.io/) (or [Redis](https://redis.io/) 8 or [Dragonfly](https://www.dragonflydb.io/)) for Redis-based queues and caches, [RabbitMQ](https://www.rabbitmq.com/),
+[NATS](https://nats.io/), and [Apache Kafka](https://kafka.apache.org/) or [Redpanda](https://www.redpanda.com/). Each runs as a container with a memory limit and no open port,
 and costs nothing beyond
 the server memory it takes, which design shows with its share of the server's price (see
 [Components](components.md)).
@@ -20,11 +20,11 @@ the server memory it takes, which design shows with its share of the server's pr
 | Redpanda | 26.2 | 1536 MB (1024 MB) | 2 GB | Business Source License 1.1 | user `app`, generated password, when you turn it on |
 
 OpsCrew picks the broker from your app's client library (`amqplib`, `pika`, `nats`, `kafkajs`,
-`confluent-kafka` …) and the address variables it reads. Celery's broker follows the scheme of its
+`confluent-kafka` …) and the address variables it reads. [Celery](https://docs.celeryq.dev/)'s broker follows the scheme of its
 broker URL (`redis://` runs Valkey, `amqp://` RabbitMQ).
 
 Every broker listens only on the app's own network: no port is open to the internet or to other
-apps on the server. Like the databases, each runs from an image pinned by digest, and Dependabot
+apps on the server. Like the databases, each runs from an image pinned by digest, and [Dependabot](https://docs.github.com/en/code-security/dependabot)
 proposes newer releases of the same major version, never a new major one.
 
 ## What your app receives
@@ -45,7 +45,7 @@ gets the address too.
 Valkey is the open-source continuation of Redis, and Redis clients work with it unchanged. It runs
 in one of two modes, because a queue and a cache need opposite settings:
 
-- **Queue mode** (`queue`), when a job library uses it (BullMQ, Sidekiq, Celery, RQ, Laravel's
+- **Queue mode** (`queue`), when a job library uses it ([BullMQ](https://bullmq.io/), [Sidekiq](https://sidekiq.org/), Celery, [RQ](https://python-rq.org/), [Laravel](https://laravel.com/)'s
   queue): it never evicts keys and keeps an append-only file on disk, so no job is lost. When its
   memory is full, it refuses new writes instead of dropping jobs.
 - **Cache mode** (`cache`): it evicts the least recently used keys when its memory is full and
@@ -65,10 +65,10 @@ Valkey is the default, and OpsCrew picks another engine only when your app shows
 
 - **Redis 8** runs when your app's client uses Redis's own data types, which Valkey does not have
   together: Search and Query, JSON, Time Series and probabilistic structures. OpsCrew sees this in
-  `redis-om` (Node.js and Python), `@redis/search`, `@redis/json`, `@redis/time-series`,
-  `@redis/bloom` and NRedisStack, and in redis-py or Jedis when the code calls `.ft()`,
+  `redis-om` ([Node.js](https://nodejs.org/) and [Python](https://www.python.org/)), `@redis/search`, `@redis/json`, `@redis/time-series`,
+  `@redis/bloom` and [NRedisStack](https://github.com/redis/NRedisStack), and in [redis-py](https://github.com/redis/redis-py) or [Jedis](https://github.com/redis/jedis) when the code calls `.ft()`,
   `.json().set()` and the like, or `ftCreate()`, `jsonSet()` and the like. Redis 8 also runs when
-  your app's own Compose file runs Redis: the official `redis` image, `bitnami/redis`, or
+  your app's own [Compose](https://docs.docker.com/compose/) file runs Redis: the official `redis` image, `bitnami/redis`, or
   `redis/redis-stack` or `redis/redis-stack-server`. Its image includes those data types,
   and it requires a generated password. Redis 8 is under your choice of the RSALv2, the SSPLv1 or the
   AGPLv3: running its unmodified image for your own app puts no conditions on your app's code; they
@@ -80,7 +80,7 @@ Valkey is the default, and OpsCrew picks another engine only when your app shows
   vCPUs. Dragonfly needs 256 MB of memory per thread, so OpsCrew always sets its threads and memory
   from the limit: three quarters of the limit, and one thread for each 256 MB of that, at most
   `options.threads`, which design sets to the server's vCPUs when it writes the plan (in your
-  Portainer, whose host it does not know, at most 2; set it yourself there). Its lowest
+  [Portainer](https://www.portainer.io/), whose host it does not know, at most 2; set it yourself there). Its lowest
   limit is 384 MB, and it shines from about 4 GB. A Dragonfly queue keeps a snapshot on disk, saved
   every minute and when it stops, so a crash can lose the jobs of the last minute; a Dragonfly cache
   keeps nothing. Dragonfly is under the Business Source License 1.1: running it for your own app is
@@ -111,9 +111,9 @@ cluster password.
 
 ## Apache Kafka and Redpanda
 
-Kafka runs as one combined broker and controller (KRaft mode, no ZooKeeper), with every
-replication factor at 1 and a heap of half its memory limit. A Kafka node is a Java program that
-needs about 1 GB of memory on its own, so OpsCrew sizes Hetzner and DigitalOcean servers to at
+Kafka runs as one combined broker and controller (KRaft mode, no [ZooKeeper](https://zookeeper.apache.org/)), with every
+replication factor at 1 and a heap of half its memory limit. A Kafka node is a [Java](https://dev.java/) program that
+needs about 1 GB of memory on its own, so OpsCrew sizes [Hetzner](https://www.hetzner.com/) and [DigitalOcean](https://www.digitalocean.com/) servers to at
 least 2 GB for it. Logs are kept for 168 hours by default; set `options.retentionHours` and, to cap
 the disk each partition takes, `options.retentionGb` on the service in `opscrew/plan.yaml`.
 
@@ -154,7 +154,7 @@ more variables:
 | `KAFKA_SASL_PASSWORD` | `<password>`, generated by OpsCrew |
 | `KAFKA_SECURITY_PROTOCOL` | `SASL_PLAINTEXT` |
 
-Your app's code must send them. With kafkajs:
+Your app's code must send them. With [kafkajs](https://kafka.js.org/):
 
 ```js
 import { Kafka } from "kafkajs";
@@ -209,7 +209,7 @@ pull request turns its login off with the deploy after it.
 
 On a server, RabbitMQ, NATS and a Valkey, Redis 8 or Dragonfly queue keep their data in
 `/srv/data/<app>/<name>`; Kafka
-and Redpanda, whose images run as their own users, in a Docker volume of the app's Compose project
+and Redpanda, whose images run as their own users, in a [Docker](https://www.docker.com/) volume of the app's Compose project
 (`<app>_kafka_data`, `<app>_redpanda_data`). In your Portainer, every broker's data is in the named
 volumes of the app's stack. `npx opscrew destroy` keeps the data unless you add `--delete-data` and
 type the app's name.

@@ -1,6 +1,6 @@
 # OpsCrew in Claude Code: the plugin
 
-The OpsCrew plugin lets you run OpsCrew from a Claude Code chat: the security scan, the interview,
+The OpsCrew plugin lets you run OpsCrew from a [Claude Code](https://claude.com/product/claude-code) chat: the security scan, the interview,
 the design with real prices, the code changes and the deploy. Your Claude Code session does the
 reasoning and talks to you. OpsCrew's MCP server supplies safe, deterministic tools and never calls
 a model itself, so the plugin needs no extra API key.
@@ -23,13 +23,13 @@ claude plugin marketplace add softzer0/opscrew
 claude plugin install opscrew@opscrew
 ```
 
-The first command adds OpsCrew's plugin marketplace, the `softzer0/opscrew` repository on GitHub.
+The first command adds OpsCrew's plugin marketplace, the `softzer0/opscrew` repository on [GitHub](https://github.com/).
 The second installs the `opscrew` plugin from it.
 
 ## What it runs
 
 When Claude Code installs the plugin, it also installs the OpsCrew CLI at the plugin's version
-(`opscrew` from npm) and its dependencies, exactly as the plugin's `package-lock.json` pins them,
+(`opscrew` from [npm](https://www.npmjs.com/)) and its dependencies, exactly as the plugin's `package-lock.json` pins them,
 with npm and without running any install script. The plugin then starts OpsCrew's MCP server on
 your computer from that copy:
 
@@ -37,7 +37,7 @@ your computer from that copy:
 node ${CLAUDE_PLUGIN_ROOT}/node_modules/opscrew/dist/opscrew.js mcp
 ```
 
-You need Node.js 22 or newer and npm on your `PATH`. The download is about 35 MB. The MCP server
+You need [Node.js](https://nodejs.org/) 22 or newer and npm on your `PATH`. The download is about 35 MB. The MCP server
 never calls a model, so it needs none of the Claude Agent SDK that the CLI's own AI steps install
 once, when you first run one.
 

@@ -11,24 +11,24 @@ log, a report, a pull request or your repository (only the encrypted
 plan):
 
 - a `deploy` user with key-only SSH, no password logins, and SSH limited to modern algorithms;
-- a firewall that lets in only SSH and web traffic, fail2ban, and automatic security updates;
-- Docker with log limits, and every container port kept on the server except the proxy's 80 and
+- a firewall that lets in only SSH and web traffic, [fail2ban](https://github.com/fail2ban/fail2ban), and automatic security updates;
+- [Docker](https://www.docker.com/) with log limits, and every container port kept on the server except the proxy's 80 and
   443.
 
 **In front of the app:**
 
 - HTTPS only, with TLS 1.2 and 1.3, the same security headers on [Caddy and nginx](reverse-proxy.md),
   and a refusal for hostnames the server does not serve;
-- behind Cloudflare's proxy: [origin protection](origin-protection.md), so only Cloudflare acting
+- behind [Cloudflare](https://www.cloudflare.com/)'s proxy: [origin protection](origin-protection.md), so only Cloudflare acting
   for your zone reaches the server, plus OpsCrew's [Cloudflare rules](cloudflare.md) (the probe
   block for paths like `/.env`, and Full (strict) TLS);
 - [CAA records and the zone's minimum TLS version](tls-and-caa.md);
 - your own [proxy rules](reverse-proxy.md#your-own-rules), checked before they go live.
 
 **For the app's services:** every database and cache OpsCrew runs gets a generated password,
-Valkey included, and every service is reachable only from the app's own containers. A service on a
+[Valkey](https://valkey.io/) included, and every service is reachable only from the app's own containers. A service on a
 [server of its own](split-placement.md) answers only the app's servers, over the app's private
-WireGuard network.
+[WireGuard](https://www.wireguard.com/) network.
 
 **Your own access:** your devices can join that [private network](private-network.md) to reach SSH
 and the dashboards privately, after which you can [close public SSH](public-ssh.md). A device can
@@ -38,9 +38,9 @@ get its own [read-only login to a database](database-access.md), off by default.
 
 | Command | What it checks |
 |---|---|
-| `npx opscrew scan` | the repository: leaked secrets, exposed Supabase or Firebase data, risky configuration |
+| `npx opscrew scan` | the repository: leaked secrets, exposed [Supabase](https://supabase.com/) or [Firebase](https://firebase.google.com/) data, risky configuration |
 | `npx opscrew secure` | the server's hardening over SSH, the ports that answer from outside, the plan's policies, the certificates, the Cloudflare settings and the recovery copy; writes `opscrew/SECURITY_REPORT.md` |
-| `npx opscrew secure --deep` | also Lynis, ssh-audit and testssl.sh: see [deeper checks](deeper-checks.md) |
+| `npx opscrew secure --deep` | also [Lynis](https://cisofy.com/lynis/), [ssh-audit](https://github.com/jtesta/ssh-audit) and [testssl.sh](https://testssl.sh/): see [deeper checks](deeper-checks.md) |
 | `npx opscrew verify` | the live site: DNS, HTTPS, the health endpoint, the headers, that `.env` and `.git` are not served, and that the server cannot be reached around Cloudflare |
 | `npx opscrew drift` | changes made outside OpsCrew, on the server, at the provider and at Cloudflare |
 | `npx opscrew status` | each certificate's expiry, the proxy and the recovery copy's state |
@@ -54,7 +54,7 @@ get its own [read-only login to a database](database-access.md), off by default.
 - a repository that became public with the recovery copy in it;
 - Valkey answering without its password;
 - a [self-hosted runner](runners.md#status-and-updates) that is offline or more than 21 days behind
-  GitHub's runner release, and, as high, a public repository with a self-hosted runner whose outside
+  [GitHub](https://github.com/)'s runner release, and, as high, a public repository with a self-hosted runner whose outside
   contributors' workflow runs need no approval.
 
 For a stack [on your computer](localhost.md#what-secure-checks-here), `secure` checks only what
@@ -82,14 +82,14 @@ Cloudflare's hosting also needs a second token for the deploy workflow,
 `OPSCREW_CLOUDFLARE_DEPLOY_TOKEN`, with only Account → Workers Scripts → Edit.
 `npx opscrew provision` stores it as a GitHub secret; it never stores `CLOUDFLARE_API_TOKEN` there.
 
-Tunnels, Cloudflare Access and R2 need a few more; see
+[Tunnels](https://www.cloudflare.com/products/tunnel/), [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) and [R2](https://developers.cloudflare.com/r2/) need a few more; see
 [Cloudflare token permissions](cloudflare.md#cloudflare-token-permissions).
 
 ## The GitHub token
 
 Give `GITHUB_TOKEN` (or `GH_TOKEN`) a fine-grained token for your app's repository only, created at
 <https://github.com/settings/personal-access-tokens/new>, with these repository permissions
-(`npx opscrew init` lists them). A logged-in GitHub CLI (`gh auth login`) works too.
+(`npx opscrew init` lists them). A logged-in [GitHub CLI](https://cli.github.com/) (`gh auth login`) works too.
 
 - Contents: Read and write
 - Pull requests: Read and write
@@ -116,7 +116,7 @@ Give `GITHUB_TOKEN` (or `GH_TOKEN`) a fine-grained token for your app's reposito
 - Variables: Read and write, for the scheduled check (OpsCrew pauses it while it moves or removes
   an app), for moving an app to another target, and for [`opscrew rollback`](rollback.md) (it
   pauses an environment's deploys after a rollback)
-- Dependabot alerts: Read (optional, for [`opscrew advise`](advise.md#the-permissions-it-uses))
+- [Dependabot](https://docs.github.com/en/code-security/dependabot) alerts: Read (optional, for [`opscrew advise`](advise.md#the-permissions-it-uses))
 
 GitHub's container registry may not accept a fine-grained token. Where OpsCrew reads it
 ([`opscrew promote`](environments.md#the-registry-token-for-promote) and

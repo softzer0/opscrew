@@ -1,7 +1,7 @@
 # How OpsCrew builds your app's image
 
 Your app runs on the server as a container image. OpsCrew builds that image in your repository's
-GitHub Actions on every deploy, with one of four builders, and holds every builder to the same
+[GitHub Actions](https://github.com/features/actions) on every deploy, with one of four builders, and holds every builder to the same
 security baseline. You do not need to write a Dockerfile.
 
 ## How OpsCrew chooses
@@ -11,14 +11,14 @@ security baseline. You do not need to write a Dockerfile.
 this order:
 
 1. **Your own Dockerfile**, when the repository already has one. OpsCrew uses it as it is.
-2. **OpsCrew's Dockerfile**, for the Node.js and Python apps it has one for: Next.js, Node.js
-   servers such as Express, Fastify, NestJS, Hono or Koa, static sites (Vite, Astro, Angular,
-   Create React App), FastAPI, Django and Flask. It works with npm, pnpm and Yarn, and with pip,
-   Poetry, Pipenv and uv.
-3. **Cloud Native Buildpacks** (Paketo), for Go, Java, .NET and Ruby, when the pinned Buildpacks
+2. **OpsCrew's Dockerfile**, for the [Node.js](https://nodejs.org/) and [Python](https://www.python.org/) apps it has one for: [Next.js](https://nextjs.org/), Node.js
+   servers such as [Express](https://expressjs.com/), [Fastify](https://fastify.dev/), [NestJS](https://nestjs.com/), [Hono](https://hono.dev/) or [Koa](https://koajs.com/), static sites ([Vite](https://vite.dev/), [Astro](https://astro.build/), [Angular](https://angular.dev/),
+   [Create React App](https://create-react-app.dev/)), [FastAPI](https://fastapi.tiangolo.com/), [Django](https://www.djangoproject.com/) and [Flask](https://flask.palletsprojects.com/). It works with [npm](https://www.npmjs.com/), [pnpm](https://pnpm.io/) and [Yarn](https://yarnpkg.com/), and with [pip](https://pip.pypa.io/),
+   [Poetry](https://python-poetry.org/), [Pipenv](https://pipenv.pypa.io/) and [uv](https://docs.astral.sh/uv/).
+3. **[Cloud Native Buildpacks](https://buildpacks.io/)** ([Paketo](https://paketo.io/)), for [Go](https://go.dev/), [Java](https://dev.java/), [.NET](https://dotnet.microsoft.com/) and [Ruby](https://www.ruby-lang.org/), when the pinned Buildpacks
    builder offers the app's runtime version.
-4. **Railpack** for everything else: Bun projects (Railpack builds and runs them with Bun), Rust,
-   PHP (Laravel), other languages, and Go, Java, .NET or Ruby versions that Buildpacks does not
+4. **[Railpack](https://railpack.com/)** for everything else: [Bun](https://bun.sh/) projects (Railpack builds and runs them with Bun), [Rust](https://www.rust-lang.org/),
+   [PHP](https://www.php.net/) ([Laravel](https://laravel.com/)), other languages, and Go, Java, .NET or Ruby versions that Buildpacks does not
    offer. Railpack also replaces Buildpacks when the build
    needs a secret value, because Buildpacks has no way to keep one out of the image.
 
@@ -31,18 +31,18 @@ OpsCrew built its example apps with every builder that applies to them and compa
 The builder OpsCrew picks for each app is in bold. Build times are in seconds, for a first build
 and a repeat build with the cache; they were measured on one machine and vary by about 20%.
 Buildpacks times leave out a one-off setup step that takes a few seconds on GitHub's runners.
-Vulnerabilities are the HIGH and CRITICAL findings of a Trivy scan on the day of the comparison
+Vulnerabilities are the HIGH and CRITICAL findings of a [Trivy](https://trivy.dev/) scan on the day of the comparison
 (2026-10-18).
 
 | App | Builder | Image size | Build, first / repeat | Runs as | HIGH / CRITICAL | Starts |
 |---|---|---|---|---|---|---|
-| Next.js 16 with Postgres (npm) | Buildpacks | fails: it cannot build Next.js 16 | | | | |
+| Next.js 16 with [Postgres](https://www.postgresql.org/) (npm) | Buildpacks | fails: it cannot build Next.js 16 | | | | |
 | | Railpack | 1,113 MB | 53 / 33 s | root¹ | 51 / 0 | yes |
 | | **OpsCrew's Dockerfile** | 304 MB | 31 / 38 s | uid 1000 | 11 / 0 | yes |
 | Express API (npm) | Buildpacks | 514 MB | 34 / 23 s | uid 1002 | 45 / 0 | yes |
 | | Railpack | 657 MB | 37 / 21 s | root¹ | 51 / 0 | yes |
 | | **OpsCrew's Dockerfile** | 272 MB | 11 / 12 s | uid 1000 | 11 / 0 | yes |
-| FastAPI with Redis (pip) | Buildpacks | 527 MB | 35 / 17 s | uid 1002 | 19 / 0 | yes |
+| FastAPI with [Redis](https://redis.io/) (pip) | Buildpacks | 527 MB | 35 / 17 s | uid 1002 | 19 / 0 | yes |
 | | Railpack | 571 MB | 67 / 23 s | root¹ | 47 / 0 | yes |
 | | **OpsCrew's Dockerfile** | 240 MB | 25 / 4 s | uid 10001 | 48 / 0 | yes |
 | Django with Postgres (pip) | Buildpacks | 693 MB² | 42 / 20 s | uid 1002 | 19 / 0 | yes |
@@ -56,11 +56,11 @@ Vulnerabilities are the HIGH and CRITICAL findings of a Trivy scan on the day of
 | | **OpsCrew's Dockerfile** | 339 MB | 46 / 47 s | uid 1000 | 13 / 0 | yes |
 | Go API | **Buildpacks** | 204 MB | 32 / 21 s | uid 1002 | 21 / 0 | yes |
 | | Railpack | 159 MB | 20 / 12 s | root¹ | 43 / 0 | yes |
-| Rails API (Ruby 4.0.6) | **Buildpacks** | 731 MB | 52 / 17 s | uid 1002 | 13 / 1 | yes |
+| [Rails](https://rubyonrails.org/) API (Ruby 4.0.6) | **Buildpacks** | 731 MB | 52 / 17 s | uid 1002 | 13 / 1 | yes |
 | | Railpack | 1,033 MB | 81 / 15 s | root¹ | 43 / 1 | yes |
 | Laravel app | Buildpacks | 1,095 MB | 89 / 24 s | uid 1002 | 19 / 0 | no: its web server does not route Laravel |
 | | **Railpack** | 1,637 MB | 62 / 36 s | root¹ | 141 / 4 | yes |
-| Spring Boot API (Maven) | **Buildpacks** | 530 MB | 104 / 32 s | uid 1002 | 29 / 6 | yes |
+| [Spring Boot](https://spring.io/projects/spring-boot) API ([Maven](https://maven.apache.org/)) | **Buildpacks** | 530 MB | 104 / 32 s | uid 1002 | 29 / 6 | yes |
 | | Railpack | 954 MB | 74 / 33 s | root¹ | 48 / 3 | yes |
 | .NET API | **Buildpacks** | 427 MB | 120 / 44 s | uid 1002 | 25 / 2 | yes |
 | | Railpack | 1,201 MB | 81 / 28 s | root¹ | 131 / 4 | yes |
@@ -108,7 +108,7 @@ To let OpsCrew choose again, set `chosen: auto` and run `npx opscrew design`.
   `storage`, `db` for Rails; `storage`, `bootstrap/cache`, `database` for Laravel).
 - **Everything is pinned.** Base images (OpsCrew warns when it could only pin a tag), the
   Buildpacks builder and run images and Railpack's frontend are pinned by digest, the GitHub
-  Actions by commit, and the pack and Railpack versions exactly. The Railpack download is checked against its SHA-256 checksum.
+  Actions by commit, and the [pack](https://github.com/buildpacks/pack) and Railpack versions exactly. The Railpack download is checked against its SHA-256 checksum.
 - **No secret is in the image.** Secret build values reach the build only as secret mounts, never as
   build arguments, so they are not in any layer, the image configuration or the provenance record.
 - **It is scanned.** After each build, Trivy lists the image's HIGH and CRITICAL vulnerabilities in
@@ -125,7 +125,7 @@ adapt` checks it against the baseline and lists each finding with its fix in its
 - a base image is pinned by tag only, not by digest;
 - a secret value is written into an `ENV` or `ARG` line;
 - a build argument's name says it holds a secret (`ARG NPM_TOKEN`), even without a value: a value
-  passed with `--build-arg` is recorded in the image history, so the fix is a BuildKit secret mount
+  passed with `--build-arg` is recorded in the image history, so the fix is a [BuildKit](https://docs.docker.com/build/buildkit/) secret mount
   (`RUN --mount=type=secret,id=NPM_TOKEN,env=NPM_TOKEN npm ci`).
 
 The app must listen on the port in its `PORT` variable and answer its health route. When the new
@@ -142,7 +142,7 @@ Every builder uses the runtime version your app declares:
 - Python: `requires-python`, `.python-version`, `runtime.txt` or the Pipfile;
 - Ruby: `.ruby-version` or the Gemfile;
 - Go: `go.mod`;
-- Java: the release level in `pom.xml` or the Gradle build;
+- Java: the release level in `pom.xml` or the [Gradle](https://gradle.org/) build;
 - .NET: the target framework in the project file;
 - PHP: `require.php` in `composer.json`;
 - Rust: `rust-toolchain.toml` or `rust-toolchain`.
@@ -179,7 +179,7 @@ the adapt pull request adds one (`.nvmrc`, `.python-version`, `.ruby-version` or
 `rust-toolchain.toml`), so the version is written down in your repository too.
 
 Moving to a new major version is up to you, because your libraries may not support it yet.
-Dependabot proposes only minor and patch updates for the Node.js and Python images (see
+[Dependabot](https://docs.github.com/en/code-security/dependabot) proposes only minor and patch updates for the Node.js and Python images (see
 [The image supply chain](supply-chain.md)). To move, change the version your app declares (for
 example `.nvmrc`), or `app.build.runtime.version` when it declares none, and run
 `npx opscrew design`. OpsCrew warns that libraries may break.

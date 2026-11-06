@@ -1,8 +1,8 @@
 # The reverse proxy: Caddy or nginx, and your own rules
 
 Every OpsCrew app on a server sits behind one shared edge in `/srv/edge`: a reverse proxy that
-serves HTTPS, and kamal-proxy behind it, which switches deploys without downtime. The proxy is
-**Caddy** by default, or **nginx** with certbot if you prefer it. Either way you can add your own
+serves HTTPS, and [kamal-proxy](https://github.com/basecamp/kamal-proxy) behind it, which switches deploys without downtime. The proxy is
+**[Caddy](https://caddyserver.com/)** by default, or **[nginx](https://nginx.org/)** with [certbot](https://certbot.eff.org/) if you prefer it. Either way you can add your own
 rules for each app.
 
 ## Choosing the proxy
@@ -35,7 +35,7 @@ while the new proxy gets its certificates). Switching several apps at once is no
 
 ## Certificates
 
-- **Proxied hostnames** use a Cloudflare origin certificate on both proxies; see
+- **Proxied hostnames** use a [Cloudflare](https://www.cloudflare.com/) origin certificate on both proxies; see
   [origin protection](origin-protection.md).
 - **DNS-only hostnames with Caddy:** Caddy gets and renews the certificates itself.
 - **DNS-only hostnames with nginx:** certbot gets the first certificate during the first deploy,
@@ -45,7 +45,7 @@ while the new proxy gets its certificates). Switching several apps at once is no
 With nginx, if the first certificate cannot be obtained, for example because the domain does not
 point at the server yet, the deploy says why and keeps the site on plain HTTP until the next deploy
 (Caddy keeps trying by itself). When you hit
-Let's Encrypt's rate limit (after repeated failed deploys), the message names the limit and when to
+[Let's Encrypt](https://letsencrypt.org/)'s rate limit (after repeated failed deploys), the message names the limit and when to
 try again. `npx opscrew status`, `verify` and `secure` warn 30 days before a certificate expires,
 with certbot's reason when its renewal keeps failing. See also
 [CAA records](tls-and-caa.md#caa-records).
@@ -82,9 +82,9 @@ the reason, while the running configuration stays as it was:
    unsafe: TLS settings (OpsCrew manages TLS), admin or status endpoints, traffic sent anywhere but
    the app, another app's hostnames, files served from the server, includes, scripting, Caddy
    placeholders that read files or the environment, and request logs sent off the server.
-2. **The proxy's own checker** (`caddy validate` or `nginx -t`) on your computer when Docker is
+2. **The proxy's own checker** (`caddy validate` or `nginx -t`) on your computer when [Docker](https://www.docker.com/) is
    there, and always in the deploy job before anything is uploaded.
-3. **gixy-ng**, an nginx configuration analyser, when it is installed on your computer.
+3. **[gixy-ng](https://gixy.getpagespeed.com/)**, an nginx configuration analyser, when it is installed on your computer.
 
 A file for the other proxy (an `additions.nginx` on a Caddy server, for instance) is refused with
 how to convert it.
@@ -104,9 +104,9 @@ that is missing.
 When your app has routing rules in `vercel.json` (`redirects`, `rewrites`, `headers`, `cleanUrls`
 and `trailingSlash`), `npx opscrew design` writes them into the app's additions file for the chosen
 proxy, but only when the app has no additions file yet. Rules in `next.config.js` need nothing:
-Next.js applies them itself.
+[Next.js](https://nextjs.org/) applies them itself.
 
-- **Vercel's order is kept:** headers, then redirects (with `cleanUrls` and `trailingSlash` first),
+- **[Vercel](https://vercel.com/)'s order is kept:** headers, then redirects (with `cleanUrls` and `trailingSlash` first),
   then rewrites. Redirects keep their status codes, and headers apply to the matching paths.
 - **A rewrite to a path of the app applies the way Vercel applies it:** only when the app answers
   404 for the original path, because Vercel serves the app's own files first.
@@ -132,4 +132,4 @@ together, an unknown path tries `<path>.html`, and then gets the app's own 404 i
 
 - **Portainer:** the stack's Caddy does not use your additions yet; provision warns when you have
   them.
-- **Apache and Traefik** are not offered.
+- **[Apache](https://httpd.apache.org/) and [Traefik](https://traefik.io/)** are not offered.

@@ -7,7 +7,7 @@ its own copy of the app, at its own address nobody can guess, with its own data:
 https://pr-42-k3x9q7m2ab.example.net
 ```
 
-GitHub Actions builds it when the pull request opens, updates it on each push and removes it, with
+[GitHub Actions](https://github.com/features/actions) builds it when the pull request opens, updates it on each push and removes it, with
 its data, when the pull request is closed or merged. Nobody runs anything: a comment on the pull
 request gives the address and says what happened.
 
@@ -34,7 +34,7 @@ npx opscrew env add preview --previews --domain example.net
 
 OpsCrew asks only what previews need:
 
-- **Where they run.** A new small server at Hetzner Cloud or DigitalOcean (prod's provider by
+- **Where they run.** A new small server at [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/) (prod's provider by
   default), or [a server you already have](own-server.md) with a public address and nothing else
   on it. OpsCrew refuses a server another environment or app runs on: a pull request's code would
   run beside it. Another environment's server is offered too, after a warning: see
@@ -154,7 +154,7 @@ A pull request gets a preview when:
 - it comes from a branch of the same repository. Pull requests from forks never get one, and their
   job never sees a secret;
 - it isn't a draft. A draft gets its preview when it is marked ready for review;
-- it isn't from Dependabot;
+- it isn't from [Dependabot](https://docs.github.com/en/code-security/dependabot);
 - it changes your app's files, by the same rules as [push deploys](when-deploys-run.md).
 
 It is created when the pull request opens (or is reopened, or marked ready), and updated on each
@@ -193,8 +193,8 @@ request reopened after its preview was removed gets a new address.
 preview, the wildcard `*.<domain>`, proxied by Cloudflare, and one Cloudflare Origin CA certificate
 for `*.<domain>`, which the preview server serves every preview with. So:
 
-- **No public certificate names a preview.** Every certificate a public authority issues, Let's
-  Encrypt's included, is published in Certificate Transparency logs that anyone can search within
+- **No public certificate names a preview.** Every certificate a public authority issues, [Let's
+  Encrypt](https://letsencrypt.org/)'s included, is published in Certificate Transparency logs that anyone can search within
   minutes, so a random name with a certificate of its own would be found anyway. Visitors get
   Cloudflare's certificate, which names only the domain and `*.<domain>`, and the Origin CA
   certificate on the server comes from Cloudflare's private authority, which publishes nothing.
@@ -263,13 +263,13 @@ OpsCrew refuses, before anything changes:
 - **prod**, or any server prod runs on: previews never run beside prod's data;
 - **a server with other apps** than dev's (OpsCrew reads the server first);
 - **a server without public SSH**: one whose public SSH was closed with
-  `opscrew secure --close-public-ssh`, or one served through a Cloudflare Tunnel, because GitHub's
+  `opscrew secure --close-public-ssh`, or one served through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/), because GitHub's
   machines reach previews over SSH;
-- **a server whose proxy is nginx**: previews are served by Caddy, which every app on a server
+- **a server whose proxy is [nginx](https://nginx.org/)**: previews are served by [Caddy](https://caddyserver.com/), which every app on a server
   shares;
 - **a server on a private network** (other servers, your devices, services or dashboards you
   granted): a preview's containers could reach them without escaping anything;
-- **a preview environment, a Portainer, this computer or a site**;
+- **a preview environment, a [Portainer](https://www.portainer.io/), this computer or a site**;
 - **an environment not provisioned yet**: it has no server yet;
 - **a cap that doesn't fit** the memory dev's server has left after dev's own needs. OpsCrew says
   the cap that fits;
@@ -305,7 +305,7 @@ In a terminal, a name below your app's domain shows the warning and asks you to 
 is no unless you change it. In a script, `--app-zone` is your choice, and OpsCrew prints the
 warning. Without it, OpsCrew refuses the name and says to add `--app-zone`.
 
-**What it costs: Advanced Certificate Manager.** Cloudflare's free certificate covers names one
+**What it costs: [Advanced Certificate Manager](https://developers.cloudflare.com/ssl/edge-certificates/advanced-certificate-manager/).** Cloudflare's free certificate covers names one
 level below your domain, not `pr-42-k3x9q7m2ab.previews.example.com`. To keep previews hidden
 behind the proxy, OpsCrew orders an advanced certificate for `*.previews.example.com` (and
 `example.com`), which needs Cloudflare's Advanced Certificate Manager (ACM) on your domain. ACM is
@@ -365,7 +365,7 @@ its preview was removed gets a new one, empty and seeded again.
 ### The preview values: test keys only
 
 Your app's own values for previews (API keys, mail settings, and the like) come from `.env.preview`,
-which `opscrew provision --env preview` reads. Prod's `.env` never goes to previews. Git must ignore
+which `opscrew provision --env preview` reads. Prod's `.env` never goes to previews. [Git](https://git-scm.com/) must ignore
 `.env.preview`: add `.env.*` to your `.gitignore` (with `!.env.example` if you commit an example
 file). Provision stops before reading the file when git would commit it.
 
@@ -387,7 +387,7 @@ stopped.
 Nothing lingers:
 
 - **Closed or merged:** the preview's containers, volumes, site and address are removed, and its
-  images are deleted from GitHub Container Registry.
+  images are deleted from [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 - **Idle:** a timer on the server removes a preview that has had no push for its lifetime (7 days
   by default). Its next push brings it back, empty and seeded.
 - **Images:** every preview run also deletes the images of pull requests no longer open, and your

@@ -1,6 +1,6 @@
 # Deeper security checks
 
-`npx opscrew secure` checks what OpsCrew set up: SSH, the firewall, fail2ban, updates, Docker, the
+`npx opscrew secure` checks what OpsCrew set up: SSH, the firewall, [fail2ban](https://github.com/fail2ban/fail2ban), updates, [Docker](https://www.docker.com/), the
 ports that answer from outside, and the certificates. With `--deep` it also asks three well-known
 auditing tools for a second, independent opinion:
 
@@ -45,8 +45,8 @@ its version (and Lynis's hardening index), ranked with OpsCrew's own severities:
 | testssl.sh | critical, high, medium, low | the same |
 
 **Known noise** is listed apart, each with its reason, and not counted. For example: separate disk
-partitions and a GRUB password (Lynis), NIST curves that current clients still use (ssh-audit), and
-OCSP stapling, which Let's Encrypt no longer offers (testssl.sh).
+partitions and a [GRUB](https://www.gnu.org/software/grub/) password (Lynis), NIST curves that current clients still use (ssh-audit), and
+OCSP stapling, which [Let's Encrypt](https://letsencrypt.org/) no longer offers (testssl.sh).
 
 When a finding is something OpsCrew manages, such as an SSH setting, the report names the change.
 It happens only through OpsCrew's own plans, which you approve, never by itself. OpsCrew's servers
@@ -56,7 +56,7 @@ same settings.
 
 ## Behind Cloudflare's proxy
 
-For a proxied hostname, testssl.sh tests what visitors see, which is Cloudflare's edge, and the
+For a proxied hostname, testssl.sh tests what visitors see, which is [Cloudflare](https://www.cloudflare.com/)'s edge, and the
 report labels it so. Your server's own certificate and its client-certificate requirement are
 checked separately by `secure`, from the server itself (see
 [origin protection](origin-protection.md)).
@@ -65,6 +65,6 @@ checked separately by `secure`, from the server itself (see
 
 - **Your address is blocked** (by fail2ban or a firewall, for example after many SSH attempts): the
   run says the connection was refused or timed out. It never reports a pass it did not see.
-- **Your Portainer:** only testssl.sh runs. OpsCrew has no SSH access to the host there, so Lynis
+- **Your [Portainer](https://www.portainer.io/):** only testssl.sh runs. OpsCrew has no SSH access to the host there, so Lynis
   and ssh-audit are skipped, and the report says why.
 - **No domain yet:** testssl.sh is skipped until the app has one.

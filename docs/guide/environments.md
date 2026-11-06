@@ -30,19 +30,19 @@ npx opscrew env add staging
 OpsCrew asks only what differs from prod, then designs the environment and shows its monthly cost
 before anything is created:
 
-- **Where it runs.** By default the same kind of target as prod: on Hetzner Cloud or DigitalOcean,
+- **Where it runs.** By default the same kind of target as prod: on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/),
   its own server, the smallest size by default; on [a server you already have](own-server.md), the
   same server, beside prod (no extra cost); in [your Portainer](portainer-target.md), another stack.
   `dev` defaults to [this computer](localhost.md), which costs nothing.
 - **Its size**, from the number of people who will use it each month.
-- **Its hostname.** Every environment needs its own. When prod's DNS goes through Cloudflare's
+- **Its hostname.** Every environment needs its own. When prod's DNS goes through [Cloudflare](https://www.cloudflare.com/)'s
   proxy, OpsCrew suggests a name nobody can guess, such as `staging-k3x9q7m2ab.example.com`;
   otherwise `staging.<your domain>`. See [Hidden addresses](#hidden-addresses).
 - **Where it gets new versions:** built and deployed on each push to a branch (your repository's
   default branch, or the one you name with `--branch`), or promoted from another environment. See
   [Two setups](#two-setups-promotion-first-or-a-branch-per-environment) and
   [Promotion](#promotion).
-- **Where its deploy job runs:** on GitHub's machines (the default), on a runner on the server, on
+- **Where its deploy job runs:** on [GitHub](https://github.com/)'s machines (the default), on a runner on the server, on
   a runner on this computer, or on a [runner machine](runners.md#runner-machines) of yours. See
   [Self-hosted runners](runners.md).
 - **Where its image is built:** on GitHub's machines (the default), or on its own runner: a runner
@@ -117,7 +117,7 @@ chats, referrer headers and browser sync. Keep test data in environments other t
 ## Working with several environments
 
 Every command that acts on a deployment takes `--env <name>`: `provision`, `destroy`, `drift`,
-`status`, `verify`, `secure`, [`retarget`](retarget.md), `secrets` and `promote`. In Claude Code,
+`status`, `verify`, `secure`, [`retarget`](retarget.md), `secrets` and `promote`. In [Claude Code](https://claude.com/product/claude-code),
 the matching OpsCrew tools take an `environment` input. In a repository with
 [several apps](several-apps.md), each app has its own environments, and `--app <key>` says whose.
 
@@ -150,7 +150,7 @@ server, a Portainer and a Cloudflare zone the way two apps do.
 
 Every environment runs the same app: how it is built, its port, its health route, its release
 command, its workers and cron jobs, which components it uses (databases, caches and the other
-services, SQLite), which external services it uses, and image signing. This definition goes with
+services, [SQLite](https://www.sqlite.org/)), which external services it uses, and image signing. This definition goes with
 the image, because the image is what needs it:
 
 - An environment that builds its own image (it follows a branch, prod too when it does) takes the
@@ -163,7 +163,7 @@ the image, because the image is what needs it:
   the [local runner](runners.md#the-local-runner) builds its own image, so it takes the definition
   from its own design.
 
-So a new service starts where the new code first runs. Say you add Redis to the app, with
+So a new service starts where the new code first runs. Say you add [Redis](https://redis.io/) to the app, with
 promotion first (dev → staging → prod):
 
 1. On dev: `npx opscrew design --env dev` adds Redis to dev's plan, and
@@ -185,8 +185,8 @@ A service you remove in dev stays in staging and prod until their next promotion
 they run may still use it. Until an environment runs its source's image, its design keeps the
 service and says why. After the promotion, the next `npx opscrew design --env staging` drops the
 service from staging's plan, and `npx opscrew provision --env staging` removes it, asking as usual
-before any data is deleted. OpsCrew tells which image each environment runs from its label in GitHub
-Container Registry (`opscrew-<env>`), read with your GitHub token. Without a token, design keeps the
+before any data is deleted. OpsCrew tells which image each environment runs from its label in [GitHub
+Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry) (`opscrew-<env>`), read with your GitHub token. Without a token, design keeps the
 service.
 
 Change one environment at a time. Finish the change in dev (its design, its provision, and the
@@ -217,7 +217,7 @@ Give an external service the app uses, such as a hosted database or a payment pr
 connection value per environment: a staging database, a test-mode key. Then staging never touches
 prod's data or money.
 
-Keep `.env.staging` and every other `.env.*` file out of git, as you do `.env`. Many `.gitignore`
+Keep `.env.staging` and every other `.env.*` file out of [git](https://git-scm.com/), as you do `.env`. Many `.gitignore`
 files list only `.env`, so add `.env.*` too (with `!.env.example` if you commit an example file).
 `npx opscrew scan` flags an env file that git does not ignore.
 
@@ -417,7 +417,7 @@ The provenance record sits next to the image in GitHub Container Registry. Witho
 who can push to the image's package could also write a matching record, so the check confirms that
 the image is consistent with a build of the branch it names, not that it really came from one.
 [Signing](supply-chain.md#signing-images) (`supplyChain.sign: true`) is the real gate: with it,
-prod's verify job checks the image's cosign signature before its deploy job runs, and fails closed
+prod's verify job checks the image's [cosign](https://github.com/sigstore/cosign) signature before its deploy job runs, and fails closed
 when the signature is missing or does not match. The promotion's approval says which applies.
 
 Signing is shared by every environment, since the environment that builds signs and the promoted

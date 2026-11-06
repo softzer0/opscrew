@@ -1,7 +1,7 @@
 # Publish your site on GitHub Pages
 
-GitHub Pages publishes a static site from your repository's own workflow, on your domain, at no
-cost. OpsCrew sets it up: the Pages site, its custom domain, the DNS records on Cloudflare and the
+[GitHub Pages](https://pages.github.com/) publishes a static site from your repository's own workflow, on your domain, at no
+cost. OpsCrew sets it up: the Pages site, its custom domain, the DNS records on [Cloudflare](https://www.cloudflare.com/) and the
 workflow, each change after you approve its plan by its hash.
 
 GitHub Pages has more limits than [Cloudflare's hosting](cloudflare-hosting.md): no security
@@ -10,8 +10,8 @@ projects and documentation.
 
 ## When to choose it
 
-- **The site is static:** Astro, Hugo, a Vite or React single-page app, a Next.js static export,
-  Nuxt's `nuxt generate` or SvelteKit's static adapter. A server-rendered app needs
+- **The site is static:** [Astro](https://astro.build/), [Hugo](https://gohugo.io/), a [Vite](https://vite.dev/) or [React](https://react.dev/) single-page app, a [Next.js](https://nextjs.org/) static export,
+  [Nuxt](https://nuxt.com/)'s `nuxt generate` or [SvelteKit](https://svelte.dev/docs/kit)'s static adapter. A server-rendered app needs
   [Cloudflare's hosting](cloudflare-hosting.md) or a server.
 - **The repository is public**, on any GitHub plan. A private repository works only on GitHub Pro,
   Team or Enterprise, and the site is public even then. On GitHub's free plan, GitHub refuses Pages
@@ -21,7 +21,7 @@ projects and documentation.
   [Buying or connecting a domain](domains.md)).
 
 Design does not offer GitHub Pages, and says why, when the app needs a server (a database, cache,
-queue, worker, cron job or SQLite of its own), or renders on the server. When the build is given
+queue, worker, cron job or [SQLite](https://www.sqlite.org/) of its own), or renders on the server. When the build is given
 secrets, design warns that they end up in the published site.
 
 For a private repository, OpsCrew reads the owner's GitHub plan when the GitHub token holds the
@@ -61,7 +61,7 @@ refuses it for these hostnames. That also means Cloudflare's WAF, and OpsCrew's 
 see the site's traffic.
 
 A CAA record that lets only other certificate authorities issue certificates for the domain would
-keep GitHub from Let's Encrypt. `provision` stops before any change and names it.
+keep GitHub from [Let's Encrypt](https://letsencrypt.org/). `provision` stops before any change and names it.
 
 ## The tokens
 
@@ -132,7 +132,7 @@ and GitHub redirects `http://` to `https://`. `verify` never changes anything it
 
 1. You push to the deploy branch (a push deploys when it changes a path the site's build reads:
    [When a push deploys your app](when-deploys-run.md)), or run the workflow by hand.
-2. GitHub Actions builds the site, checks it against the 1 GB, and hands it to GitHub Pages with
+2. [GitHub Actions](https://github.com/features/actions) builds the site, checks it against the 1 GB, and hands it to GitHub Pages with
    GitHub's own Pages actions, pinned by their commits.
 3. The deploy job publishes it in the `github-pages` environment, then checks that the site answers.
 

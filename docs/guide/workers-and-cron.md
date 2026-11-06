@@ -10,10 +10,10 @@ shows with its share of the server's price (see [Components](components.md)).
 
 - **A `Procfile`:** every process type except `web` and `release` becomes a worker with that
   command (`worker: bundle exec sidekiq` becomes the worker `worker`).
-- **A background-job library** with a usual command: Celery (`celery -A <app> worker`), RQ,
-  Dramatiq, Huey, Sidekiq (`bundle exec sidekiq`), GoodJob, Solid Queue, Resque, Laravel's queue
-  (`php artisan queue:work`) and Horizon.
-- **A library without one** (BullMQ, asynq, river): `npx opscrew interview` asks for the command
+- **A background-job library** with a usual command: [Celery](https://docs.celeryq.dev/) (`celery -A <app> worker`), [RQ](https://python-rq.org/),
+  [Dramatiq](https://dramatiq.io/), [Huey](https://github.com/coleifer/huey), [Sidekiq](https://sidekiq.org/) (`bundle exec sidekiq`), [GoodJob](https://github.com/bensheldon/good_job), [Solid Queue](https://github.com/rails/solid_queue), [Resque](https://github.com/resque/resque), [Laravel](https://laravel.com/)'s queue
+  (`php artisan queue:work`) and [Horizon](https://laravel.com/docs/horizon).
+- **A library without one** ([BullMQ](https://bullmq.io/), [asynq](https://github.com/hibiken/asynq), [river](https://github.com/riverqueue/river)): `npx opscrew interview` asks for the command
   that starts the worker from your code, for example `node dist/worker.js`.
 
 Schedulers that must run only once, such as Celery beat or Laravel's `php artisan schedule:work`,
@@ -40,7 +40,7 @@ processes:
 Change them there, then run `npx opscrew design` (it keeps your values and checks that they fit
 the server) and `npx opscrew provision`.
 
-A worker publishes no port and has no health check: Docker restarts it if it stops. When it is
+A worker publishes no port and has no health check: [Docker](https://www.docker.com/) restarts it if it stops. When it is
 stopped (by a deploy, a restart or a scale-down), it gets SIGTERM and `stopGraceSeconds` to finish
 its current job. OpsCrew starts the command so that the signal reaches it directly; your worker
 only needs to handle SIGTERM, as Celery, Sidekiq and Laravel's queue already do.
@@ -76,11 +76,11 @@ processes:
 - **Times are in UTC.** There is no time zone setting: a cron container runs every job in one
   time zone, and many small images have no time zone data at all.
 - **A `command` job** runs in your app's image, with the app's environment.
-- **A `route` job** calls your app's route with `Authorization: Bearer <CRON_SECRET>`, as Vercel
+- **A `route` job** calls your app's route with `Authorization: Bearer <CRON_SECRET>`, as [Vercel](https://vercel.com/)
   does. OpsCrew generates `CRON_SECRET` and gives it to your app; your route should refuse a
   request without it. The `crons` of a `vercel.json` become route jobs, so Vercel cron routes keep
-  working unchanged. OpsCrew calls the route with a tool your image already has (Node.js, Python,
-  Ruby, PHP or bash). When the image has none of these, design plans the job turned off and says
+  working unchanged. OpsCrew calls the route with a tool your image already has ([Node.js](https://nodejs.org/), [Python](https://www.python.org/),
+  [Ruby](https://www.ruby-lang.org/), [PHP](https://www.php.net/) or [bash](https://www.gnu.org/software/bash/)). When the image has none of these, design plans the job turned off and says
   why: give it a `command` that runs the job's code instead.
 - **A run that is still going** when the next one is due is skipped, so jobs never pile up.
 

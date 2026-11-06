@@ -1,10 +1,10 @@
 # Search and analytics engines
 
 When your app uses a search engine, an analytics database or a graph database, OpsCrew can run it
-as one node next to the app: OpenSearch, Elasticsearch, Meilisearch, Typesense, ClickHouse or
-Neo4j Community. Each gets a memory limit, its engine's own memory settings below that limit, a
+as one node next to the app: [OpenSearch](https://opensearch.org/), [Elasticsearch](https://www.elastic.co/elasticsearch), [Meilisearch](https://www.meilisearch.com/), [Typesense](https://typesense.org/), [ClickHouse](https://clickhouse.com/) or
+[Neo4j](https://neo4j.com/) Community. Each gets a memory limit, its engine's own memory settings below that limit, a
 generated key or password where the engine has a login, and no open port. These engines are heavy
-for a small server: each has a server size it is comfortable on. On Hetzner Cloud and DigitalOcean,
+for a small server: each has a server size it is comfortable on. On [Hetzner Cloud](https://www.hetzner.com/cloud) and [DigitalOcean](https://www.digitalocean.com/),
 design picks a server at least that big; on a smaller server you already have, it warns you.
 Like every component, an engine costs nothing beyond the server memory it takes, which design shows
 with its share of the server's price (see [Components](components.md)).
@@ -22,8 +22,8 @@ with its share of the server's price (see [Components](components.md)).
 
 OpsCrew adds an engine when it finds your app's client library for it. Turn one off with
 `enabled: false` on the service in `opscrew/plan.yaml`, and give the app a hosted engine's address
-instead. Cassandra is never run on the server: it is built for a ring of several nodes, so OpsCrew
-keeps it where the app reaches it now (a hosted Cassandra such as DataStax Astra DB works with the
+instead. [Cassandra](https://cassandra.apache.org/) is never run on the server: it is built for a ring of several nodes, so OpsCrew
+keeps it where the app reaches it now (a hosted Cassandra such as [DataStax](https://www.datastax.com/) Astra DB works with the
 app's driver).
 
 Elasticsearch's official image is under the Elastic License 2.0, and Typesense and Neo4j Community
@@ -48,12 +48,12 @@ your repository.
 ## Each engine's settings
 
 - **OpenSearch** runs its security plugin, with one user, `admin`, and a generated password, over
-  plain HTTP on the app's internal network. The login is inside `OPENSEARCH_URL`, and opensearch-js
-  and opensearch-py read it from there: an app that connects with that address needs no change. A
+  plain HTTP on the app's internal network. The login is inside `OPENSEARCH_URL`, and [opensearch-js](https://github.com/opensearch-project/opensearch-js)
+  and [opensearch-py](https://github.com/opensearch-project/opensearch-py) read it from there: an app that connects with that address needs no change. A
   request without the login gets 401. The security plugin also needs a certificate for the
   traffic between nodes: OpsCrew's start command makes it with the JDK's keytool inside the
   container, and it never leaves it. OpsCrew generates the password once and keeps it; it has no
-  command to change it. Its Java heap is half the memory limit.
+  command to change it. Its [Java](https://dev.java/) heap is half the memory limit.
 
   An app that already runs OpenSearch gets the login at its next `npx opscrew provision` and the
   deploy after its pull request. `OPENSEARCH_URL` then carries the login, and the indexes stay.
@@ -72,7 +72,7 @@ your repository.
   servers: it refuses more work once it uses three quarters of its memory limit, keeps small
   caches, runs at most 20 queries at once and two threads per query, and leaves out the system log
   tables that grow on their own. Only the user `app` can log in from the network. ClickHouse's long-term releases are
-  the ones numbered YY.3 and YY.8 (26.3, 26.8 …); Dependabot also proposes the releases between
+  the ones numbered YY.3 and YY.8 (26.3, 26.8 …); [Dependabot](https://docs.github.com/en/code-security/dependabot) also proposes the releases between
   them, which are supported for a shorter time, so prefer merging the YY.3 and YY.8 updates.
 - **Neo4j Community** has one database, the `neo4j` user and its password. Its heap and its page
   cache each get a third of the memory limit. Its versions are named after the year and month, so
@@ -84,16 +84,16 @@ OpenSearch and Elasticsearch map their indexes into memory, and the server's ker
 many maps: `vm.max_map_count` must be at least 262144. That is a setting of the host, not of a
 container:
 
-- **On Hetzner Cloud and DigitalOcean**, the app's Compose project has a small one-off container
+- **On Hetzner Cloud and DigitalOcean**, the app's [Compose](https://docs.docker.com/compose/) project has a small one-off container
   that raises the setting before the engine starts on every deploy, and writes it to
   `/etc/sysctl.d/90-opscrew.conf` so a restart of the server keeps it. A value that is already
   higher stays.
 - **On a server you already have**, the host plan sets it in `/etc/sysctl.d/90-opscrew.conf`, as a
   step you see and approve with the rest of the plan. `npx opscrew drift` reports it when it is
   lowered later.
-- **In your Portainer**, OpsCrew never changes the Docker host, so it does not run OpenSearch or
-  Elasticsearch there. Design keeps the engine the app uses now (for example Amazon OpenSearch
-  Service, Aiven for OpenSearch or Elastic Cloud). To run one next to your Portainer yourself, set
+- **In your [Portainer](https://www.portainer.io/)**, OpsCrew never changes the [Docker](https://www.docker.com/) host, so it does not run OpenSearch or
+  Elasticsearch there. Design keeps the engine the app uses now (for example [Amazon OpenSearch
+  Service](https://aws.amazon.com/opensearch-service/), [Aiven](https://aiven.io/) for OpenSearch or [Elastic Cloud](https://www.elastic.co/cloud)). To run one next to your Portainer yourself, set
   it on the Docker host as root (`sysctl -w vm.max_map_count=262144`, and the line
   `vm.max_map_count = 262144` in a file in `/etc/sysctl.d/` so a restart keeps it), and give the app
   its address.

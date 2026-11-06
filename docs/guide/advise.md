@@ -23,12 +23,12 @@ through `opscrew provision` and your approval (see [Applying a proposal](#applyi
   read-only queries on the monitoring server.
 - **Your plan and the interview's answers:** what runs where, the budget you gave, the region, and
   how much the app's data matters.
-- **The providers' prices,** live from Hetzner's and DigitalOcean's price lists when their tokens
+- **The providers' prices,** live from [Hetzner](https://www.hetzner.com/)'s and [DigitalOcean](https://www.digitalocean.com/)'s price lists when their tokens
   can read them, otherwise OpsCrew's dated list, and it says so with the date.
-- **GitHub:** the repository's Dependabot alerts and Dependabot's open pull requests, the
+- **[GitHub](https://github.com/):** the repository's [Dependabot](https://docs.github.com/en/code-security/dependabot) alerts and Dependabot's open pull requests, the
   [scheduled check](alerts.md)'s issues of the last 14 days when the check is on, and when your
   GitHub token expires.
-- **Cloudflare:** when your Cloudflare token expires, when it has an expiry date.
+- **[Cloudflare](https://www.cloudflare.com/):** when your Cloudflare token expires, when it has an expiry date.
 - **[`secure`](security.md)'s host checks** on each server it reaches over SSH: pending security
   updates, a required reboot, and any check that fails.
 
@@ -109,8 +109,8 @@ Prices are monthly, before VAT, with the server's IPv4 address and backups when 
 
 | Proposal | When |
 |---|---|
-| **A server of its own for Postgres** | With history, the app's server's memory is above 85% at the 95th percentile and Postgres uses more than 50% of it: an alternative to a larger server, [split placement](split-placement.md), priced |
-| **Object storage** | The disk is filling (as above) while Garage keeps the app's files on the server: the cheapest [object storage](object-storage.md) that keeps them off it, priced |
+| **A server of its own for [Postgres](https://www.postgresql.org/)** | With history, the app's server's memory is above 85% at the 95th percentile and Postgres uses more than 50% of it: an alternative to a larger server, [split placement](split-placement.md), priced |
+| **Object storage** | The disk is filling (as above) while [Garage](https://garagehq.deuxfleurs.fr/) keeps the app's files on the server: the cheapest [object storage](object-storage.md) that keeps them off it, priced |
 
 ## How urgent
 
@@ -183,7 +183,7 @@ Advise uses the tokens you already gave OpsCrew, and only reads with them:
 
 ## From Claude Code
 
-The [OpsCrew plugin](claude-code-plugin.md) gives Claude the same proposals through a read-only tool
+The [OpsCrew plugin](claude-code-plugin.md) gives [Claude](https://claude.com/) the same proposals through a read-only tool
 when you ask "is it the right size?", "why is it slow?" or "can it cost less?". Applying stays in
 your terminal (see [Applying a proposal](#applying-a-proposal)).
 

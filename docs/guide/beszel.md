@@ -2,7 +2,7 @@
 
 [Beszel](https://beszel.dev/) is a light monitoring dashboard. It shows your server's CPU, memory,
 disk and network, and each container's CPU and memory, over time, and it can send its own alerts.
-OpsCrew can add it to a server it deploys to: one it created on Hetzner Cloud or DigitalOcean, or a
+OpsCrew can add it to a server it deploys to: one it created on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/), or a
 [server you already have](own-server.md). It is off until you turn it on.
 
 `npx opscrew status` already shows the figures of the moment. Turn Beszel on when you want charts
@@ -27,7 +27,7 @@ OpsCrew first reads the server's memory, then shows the host plan of what it add
 
 - the hub (128 MB);
 - the agent (64 MB);
-- OpsCrew's read-only Docker proxy (32 MB).
+- OpsCrew's read-only [Docker](https://www.docker.com/) proxy (32 MB).
 
 On a server OpsCrew created, each memory limit comes with its share of the server's monthly price,
 as [components](components.md) do; on your own server, with the server's memory. The plan has its
@@ -81,11 +81,11 @@ npx opscrew addon enable beszel --access subdomain --hostname beszel --allow-ema
 
 serves the dashboard at `beszel.example.com` for an app on `example.com` as well, the way
 [Portainer's web UI](portainer.md#optional-a-subdomain-behind-cloudflare-access) does, with the same
-needs: the app's domain on Cloudflare, Cloudflare Zero Trust turned on, and the extra token
+needs: the app's domain on [Cloudflare](https://www.cloudflare.com/), [Cloudflare Zero Trust](https://developers.cloudflare.com/cloudflare-one/) turned on, and the extra token
 permissions listed there.
 
-- **It goes through a Cloudflare Tunnel,** so the server opens no port for it.
-- **Cloudflare Access lets in only the addresses you list** with `--allow-email` (repeat it for
+- **It goes through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/),** so the server opens no port for it.
+- **[Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) lets in only the addresses you list** with `--allow-email` (repeat it for
   several), each after a one-time code sent to that address. Beszel's own login follows.
 - **OpsCrew never makes the dashboard public:** a subdomain without `--allow-email` is refused.
 - **The name must be its own:** a hostname Portainer's web UI already uses on the server is refused.
@@ -143,7 +143,7 @@ reporting. Set them in the dashboard, under **Settings** → **Notifications** (
 [Beszel's notifications](https://beszel.dev/guide/notifications)). OpsCrew doesn't manage them.
 
 A hub on the same server can't tell you that the server itself is down. The
-[scheduled check](alerts.md) does, from GitHub.
+[scheduled check](alerts.md) does, from [GitHub](https://github.com/).
 
 ## Turn it off
 
@@ -178,7 +178,7 @@ turn it off, then on with the new one:
 
 ## What it can't do
 
-- **Run in a Portainer, on your computer, or on Cloudflare's hosting or GitHub Pages:** it needs a
+- **Run in a Portainer, on your computer, or on Cloudflare's hosting or [GitHub Pages](https://pages.github.com/):** it needs a
   server OpsCrew deploys to. `npx opscrew logs` and `npx opscrew status` work on every target.
 - **Show log lines or container settings:** the proxy keeps them from Beszel. `npx opscrew logs`
   shows the lines.

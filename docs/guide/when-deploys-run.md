@@ -16,12 +16,12 @@ A push deploys the app when it changes any of these:
 - **The app's folder** (`app.buildContext` in `opscrew/plan.yaml`), with everything in it.
 - **The folders and files in `app.sharedPaths`**: what the build uses outside the app's folder,
   such as the workspace packages of a monorepo.
-- **The repository root's files, except Markdown**, for a Node.js site in a folder: the
+- **The repository root's files, except Markdown**, for a [Node.js](https://nodejs.org/) site in a folder: the
   workspace's `package.json`, lockfile and workspace file, `.npmrc`, `tsconfig.base.json`,
   `turbo.json` and the like.
 - **The Dockerfile** the app's image is built from, also when it lies outside the app's folder.
 - **The files OpsCrew wrote that the run reads**: the compose file, the proxy's configuration and
-  the other files the deploy copies to the server, or the Portainer stack.
+  the other files the deploy copies to the server, or the [Portainer](https://www.portainer.io/) stack.
 - **The workflow file itself.**
 
 An app whose folder is the repository root reads nearly everything, so its deploy runs on any
@@ -48,7 +48,7 @@ pull request.
 
 ## Pushes with many files
 
-GitHub looks at only the first 300 changed files of a push when it checks a workflow's paths. A
+[GitHub](https://github.com/) looks at only the first 300 changed files of a push when it checks a workflow's paths. A
 push that changes more files (a large merge, a mass rename) can skip a deploy even though it
 changed the app. When that happens, run the workflow by hand: open the repository's **Actions**
 tab on GitHub, pick the app's deploy workflow and choose **Run workflow** on the deploy branch.

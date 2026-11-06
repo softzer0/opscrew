@@ -1,13 +1,13 @@
 # Your devices on the private network
 
-Each OpsCrew app has a private WireGuard network that links its servers (see
+Each OpsCrew app has a private [WireGuard](https://www.wireguard.com/) network that links its servers (see
 [split placement](split-placement.md)). Your laptop and your phone can join it too. With the tunnel
 on, you reach each server's SSH, and the dashboards of [Beszel](beszel.md) and
 [Portainer](portainer.md), on the network's private addresses: no SSH tunnel, and no dashboard on the
 internet. Once this computer is on it, you can also [close public SSH](public-ssh.md).
 
 This works for an app on one server too: the first device creates the network. It works on servers
-OpsCrew created on Hetzner Cloud or DigitalOcean and on [servers you already have](own-server.md),
+OpsCrew created on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/) and on [servers you already have](own-server.md),
 not on a Portainer, your computer or the server-less targets.
 
 It costs nothing: WireGuard is free and open source, and OpsCrew needs no account and no third
@@ -78,7 +78,7 @@ open instead of starting an SSH tunnel, when this computer is on the network and
 is one OpsCrew created.
 
 With [self-hosted monitoring](monitoring.md) on, `npx opscrew addon open monitoring` likewise gives
-you Grafana's private address on the monitoring server.
+you [Grafana](https://grafana.com/oss/grafana/)'s private address on the monitoring server.
 
 A device reaches the servers' SSH and these dashboards, nothing else: the app's databases and
 caches answer a device only when you [grant it access](database-access.md).
@@ -123,8 +123,8 @@ OpsCrew keeps no copy of a device's key, so it can't show an old configuration a
 - **The address range clashes with your own network:** if your home or office network uses the
   same range, change `network.range` in `opscrew/plan.yaml` before the first provision (see
   [split placement](split-placement.md#what-can-go-wrong)).
-- **The app's server has no public address** (a server of yours reached through a Cloudflare
-  Tunnel): devices connect only to servers the internet reaches, so `vpn add` refuses when the app
+- **The app's server has no public address** (a server of yours reached through a [Cloudflare
+  Tunnel](https://www.cloudflare.com/products/tunnel/)): devices connect only to servers the internet reaches, so `vpn add` refuses when the app
   has no such server.
 
 ## From Claude Code

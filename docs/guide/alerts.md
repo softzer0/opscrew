@@ -1,9 +1,9 @@
 # Alerts: the scheduled check
 
-OpsCrew adds a scheduled check to your repository that runs in GitHub Actions. On a schedule, it
+OpsCrew adds a scheduled check to your repository that runs in [GitHub Actions](https://github.com/features/actions). On a schedule, it
 checks that your app answers, that its certificate is valid and that its server's disk has room.
 When something fails, it opens a GitHub issue, so everyone watching the repository is told, and it
-can post the same message to Slack, Discord or ntfy. When the app recovers, it closes the issue and
+can post the same message to [Slack](https://slack.com/), [Discord](https://discord.com/) or [ntfy](https://ntfy.sh/). When the app recovers, it closes the issue and
 says how long the problem lasted.
 
 Nothing runs on your server for it, apart from a disk job on a server that deploys from its own
@@ -62,7 +62,7 @@ writing issues.
 | Each hostname's certificate | Fewer than 14 days left. Certificates are renewed 30 days before they expire, so this means the renewal is failing | The days left, and the command to see why |
 | Each server's disk | 85% full, and again at 95% | The server, its free space and what usually fills it (old images and logs) |
 
-On a hostname behind Cloudflare's proxy, the certificate the check sees is Cloudflare's.
+On a hostname behind [Cloudflare](https://www.cloudflare.com/)'s proxy, the certificate the check sees is Cloudflare's.
 `npx opscrew secure` and `npx opscrew status` check the server's own.
 
 A server that several environments share is checked once.
@@ -221,12 +221,12 @@ each.
   minutes, sometimes more), plus up to a minute of retries.
 - **Check your computer:** GitHub can't reach an app running [on your computer](localhost.md), so
   design offers no check there.
-- **Read the disk of a Portainer's server:** OpsCrew reaches your Portainer only through its API.
+- **Read the disk of a [Portainer](https://www.portainer.io/)'s server:** OpsCrew reaches your Portainer only through its API.
   The check still checks the app's hostnames.
-- **Read the disk of your own server reached through a Cloudflare Tunnel,** unless the server
+- **Read the disk of your own server reached through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/),** unless the server
   deploys from [its own runner](runners.md#the-servers-runner): the check's SSH can't pass the
-  tunnel's Cloudflare Access login.
-- **Disks on Cloudflare's hosting and GitHub Pages:** there is no server of yours. Their hostnames
+  tunnel's [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) login.
+- **Disks on Cloudflare's hosting and [GitHub Pages](https://pages.github.com/):** there is no server of yours. Their hostnames
   and certificates are checked.
 - **Watch memory and CPU:** `npx opscrew status` shows them, and [Beszel](beszel.md) can alert on
   them.

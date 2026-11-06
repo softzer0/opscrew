@@ -1,16 +1,16 @@
 # Buying or connecting a domain
 
-OpsCrew can find and buy a domain for your app, or move a domain you already own to Cloudflare. The
+OpsCrew can find and buy a domain for your app, or move a domain you already own to [Cloudflare](https://www.cloudflare.com/). The
 domain's DNS always ends up on Cloudflare, where OpsCrew sets up the records, TLS and protection for
 your app (see [Your domain on Cloudflare](cloudflare.md)).
 
 ## Finding and buying a domain
 
-- `npx opscrew domain search <name>` checks availability and prices with Cloudflare Registrar.
+- `npx opscrew domain search <name>` checks availability and prices with [Cloudflare Registrar](https://www.cloudflare.com/products/registrar/).
 - `npx opscrew domain buy <domain>` buys the domain at cost after you confirm the price. It then sets
   up its Cloudflare zone, DNSSEC and auto-renew, and uses the domain for your deployment.
 
-Prefer another registrar? Add `--registrar <id>` to buy through Porkbun, Namecheap or GoDaddy
+Prefer another registrar? Add `--registrar <id>` to buy through [Porkbun](https://porkbun.com/), [Namecheap](https://www.namecheap.com/) or [GoDaddy](https://www.godaddy.com/)
 instead of Cloudflare, the default. The domain's DNS still moves to Cloudflare.
 
 `npx opscrew domain search <name> --compare` lists the live prices of every registrar you set up,

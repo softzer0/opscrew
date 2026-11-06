@@ -9,7 +9,7 @@ OpsCrew can then give that one service a server of its own. The servers are join
 [private network](private-network.md), the service listens only there, and only the app's servers
 reach it. Your app's code and settings files don't change: only the address the app is given does.
 
-This works on servers: ones OpsCrew creates on Hetzner Cloud or DigitalOcean (mixed freely), and
+This works on servers: ones OpsCrew creates on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/) (mixed freely), and
 [servers you already have](own-server.md) that the internet reaches at a public address. It doesn't
 apply to a [Portainer](portainer-target.md), [your computer](localhost.md),
 [Cloudflare's hosting](cloudflare-hosting.md) or [GitHub Pages](github-pages.md): design refuses it
@@ -34,7 +34,7 @@ services:
 - **Leave `location` and `serverType` out** and design fills them in: the app's server's location
   (the shortest hop), and the smallest type whose memory holds the services you put there, plus the
   system's share.
-- **Only services move.** The web process, workers, cron jobs, the release command, SQLite and the
+- **Only services move.** The web process, workers, cron jobs, the release command, [SQLite](https://www.sqlite.org/) and the
   reverse proxy stay on the app's server. An extra server serves no web traffic.
 - **Your own server as the extra one:** give it `target: { provider: own, mode: vps-compose, arch: amd64 }`.
   Design asks for its address and login once and keeps them on this computer, as it does for the
@@ -54,7 +54,7 @@ services on it with their memory limits, and the total for the app. An extra ser
 Cloud or DigitalOcean is billed like any other server of that size; a server you already have adds
 no server cost. A budget you gave in the interview counts every server.
 
-The private network itself costs nothing: OpsCrew sets up WireGuard on the servers, with no account
+The private network itself costs nothing: OpsCrew sets up [WireGuard](https://www.wireguard.com/) on the servers, with no account
 and no third party. The traffic between the servers counts toward each server's traffic at its
 provider, as the app's own traffic does.
 
@@ -96,7 +96,7 @@ app's server by removing `server`), its data moves with it.
      window skips its deploy job), and the window waits until no deploy runs;
    - the [scheduled check](alerts.md) is paused, if it is on;
    - the app, its workers and cron jobs stop;
-   - Postgres's data is dumped on the old server, copied to the new one, checked and restored;
+   - [Postgres](https://www.postgresql.org/)'s data is dumped on the old server, copied to the new one, checked and restored;
    - the app's settings get the new address, and the app starts against the new copy and must
      pass its health check;
    - the deploys and the check resume.
@@ -125,9 +125,9 @@ type its name, as [destroy](#removing-a-server) does.
 Which services can move with their data:
 
 - **Postgres:** its data is copied, as above.
-- **Valkey, Redis and Dragonfly:** they start empty on the new server, and design says so. Jobs
+- **[Valkey](https://valkey.io/), [Redis](https://redis.io/) and [Dragonfly](https://www.dragonflydb.io/):** they start empty on the new server, and design says so. Jobs
   waiting in a queue there are lost: let the queue drain first.
-- **Every other service that keeps data** (MySQL, MariaDB, MongoDB, the brokers and the engines) is
+- **Every other service that keeps data** ([MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/), [MongoDB](https://www.mongodb.com/), the brokers and the engines) is
   refused on a live app, before any change. On an app that was never deployed, every service can be
   placed on any server.
 
@@ -138,12 +138,12 @@ keep a service at the old provider, place it on an extra server first, then move
 
 ## Kafka, Redpanda and OpenSearch
 
-Kafka and Redpanda run without a login unless you set `login: true` in their options, because
+[Kafka](https://kafka.apache.org/) and [Redpanda](https://www.redpanda.com/) run without a login unless you set `login: true` in their options, because
 the app's code must send it (see [their login](brokers.md#kafkas-and-redpandas-login)). Without
 it, the network protects them. On the app's server, only the app's containers reach them. On
 another server, design says so: only the app's servers reach them, through the private network.
 
-OpenSearch always has a login, inside `OPENSEARCH_URL` (see
+[OpenSearch](https://opensearch.org/) always has a login, inside `OPENSEARCH_URL` (see
 [Search and analytics engines](search-and-analytics.md#each-engines-settings)). No device can
 be given access to Kafka, Redpanda or OpenSearch: with a login, it is the app's only one; without
 one, only the app's servers reach them. See [devices](private-network.md).
@@ -196,7 +196,7 @@ first step.
 ## What can go wrong
 
 - **Design refuses the placement:** two servers without a public address (a server of yours behind
-  a home router, reached through a Cloudflare Tunnel) can't be linked. Such a server can be the
+  a home router, reached through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/)) can't be linked. Such a server can be the
   app's server, with services on servers that have one, but no service can be placed on it. Design
   says what would work before anything changes.
 - **The address range is taken:** the private network uses a range such as `10.200.4.0/24`. When

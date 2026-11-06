@@ -1,6 +1,6 @@
 # Your production database from your device
 
-Sometimes you want to look at production data yourself, with `psql`, DBeaver or `redis-cli`. OpsCrew
+Sometimes you want to look at production data yourself, with `psql`, [DBeaver](https://dbeaver.io/) or `redis-cli`. OpsCrew
 can give one of your [devices](private-network.md) access to one database or cache, over the app's
 private network:
 
@@ -9,8 +9,8 @@ private network:
 - **read-only** (recommended) **or full;**
 - **listed** in `npx opscrew status` and `npx opscrew secure`, and removed with one command.
 
-It covers Postgres, MySQL, MariaDB, MongoDB, Valkey, Redis and Dragonfly. Kafka, Redpanda,
-OpenSearch and the other brokers and engines can't be granted: OpsCrew refuses with the reason.
+It covers [Postgres](https://www.postgresql.org/), [MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/), [MongoDB](https://www.mongodb.com/), [Valkey](https://valkey.io/), [Redis](https://redis.io/) and [Dragonfly](https://www.dragonflydb.io/). [Kafka](https://kafka.apache.org/), [Redpanda](https://www.redpanda.com/),
+[OpenSearch](https://opensearch.org/) and the other brokers and engines can't be granted: OpsCrew refuses with the reason.
 
 ## Before you start
 
@@ -18,7 +18,7 @@ OpenSearch and the other brokers and engines can't be granted: OpsCrew refuses w
   [your devices on the private network](private-network.md)), with its tunnel on.
 - The service runs on a server the internet reaches: one OpsCrew created, a server of its own (see
   [split placement](split-placement.md)), or a server you already have with a public address. A
-  service on a server of yours reached only through a Cloudflare Tunnel can't be granted.
+  service on a server of yours reached only through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/) can't be granted.
 
 ## Grant read-only access
 
@@ -53,7 +53,7 @@ OpsCrew folder on this computer, readable only by you.
 - **Postgres, MySQL, MariaDB and MongoDB:** right after the host plan, when the service already
   answers on the private network.
 - **Valkey, Redis and Dragonfly:** their logins live in the service's settings (only the password's
-  SHA-256 is stored, in GitHub). OpsCrew says to run `npx opscrew provision`, and the login works
+  SHA-256 is stored, in [GitHub](https://github.com/)). OpsCrew says to run `npx opscrew provision`, and the login works
   from the next deploy.
 - **A service that didn't answer on the private network yet** (it only served the app on its own
   server): OpsCrew says to run `npx opscrew provision`; the grant works once its deploy has run.

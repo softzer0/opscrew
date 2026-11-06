@@ -1,13 +1,13 @@
 # Deploy to a Portainer you already run
 
 Many people already run [Portainer](https://www.portainer.io/) on a NAS (Synology, Unraid, TrueNAS)
-or on any Docker host, and manage everything there. OpsCrew can deploy your app into that Portainer
+or on any [Docker](https://www.docker.com/) host, and manage everything there. OpsCrew can deploy your app into that Portainer
 as a stack, through Portainer's API. It needs no SSH and changes nothing on the host. You get the
 same app runtime as on the servers OpsCrew creates: the app, its release command, and its
-[components](components.md) (workers, cron jobs, databases, queues, brokers, Garage for object
+[components](components.md) (workers, cron jobs, databases, queues, brokers, [Garage](https://garagehq.deuxfleurs.fr/) for object
 storage, and the search and analytics engines that need no setting on the host). Every merged
 change deploys by itself, with a health check and a rollback when
-it fails wherever GitHub can reach the site (see
+it fails wherever [GitHub](https://github.com/) can reach the site (see
 [How new versions reach Portainer](#how-new-versions-reach-portainer)), and `verify`, `secure` and
 `drift` work as for every other deployment.
 
@@ -19,18 +19,18 @@ to, see [Portainer: a web UI for your containers](portainer.md).
 
 ## What you need
 
-- Portainer CE or Business Edition **2.45 or newer** with Docker Compose 2.23 or newer. OpsCrew
+- Portainer CE or Business Edition **2.45 or newer** with [Docker Compose](https://docs.docker.com/compose/) 2.23 or newer. OpsCrew
   checks both first and tells you when one is too old.
 - An environment that is **a single Docker host**, either local or through the Portainer agent, on
-  amd64 (x86-64) or arm64. OpsCrew refuses Docker Swarm, Kubernetes and Edge agent environments for
+  amd64 (x86-64) or arm64. OpsCrew refuses [Docker Swarm](https://docs.docker.com/engine/swarm/), [Kubernetes](https://kubernetes.io/) and Edge agent environments for
   now.
 - Portainer's **HTTPS address**, for example `https://nas.local:9443`. OpsCrew sends the access
   token only over HTTPS. Plain `http://` works only for a Portainer on the same computer as OpsCrew.
 - The tokens listed below, in environment variables of your own shell.
-- On your computer: Node.js 22.9 or newer, git, OpenTofu or Terraform, and a GitHub repository with
+- On your computer: [Node.js](https://nodejs.org/) 22.9 or newer, [git](https://git-scm.com/), [OpenTofu](https://opentofu.org/) or [Terraform](https://developer.hashicorp.com/terraform), and a GitHub repository with
   your app, as for every OpsCrew deployment.
-- A domain for your site (optional with your own reverse proxy). With the Cloudflare Tunnel or
-  Cloudflare redeploys, its DNS must be on Cloudflare. With your own reverse proxy or Caddy, DNS can
+- A domain for your site (optional with your own reverse proxy). With the [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/) or
+  Cloudflare redeploys, its DNS must be on Cloudflare. With your own reverse proxy or [Caddy](https://caddyserver.com/), DNS can
   be anywhere.
 
 ## The tokens and what they may do
@@ -43,7 +43,7 @@ Portainer password. Give each token only the access listed here.
 | `PORTAINER_API_KEY` | Always | A Portainer access token: in Portainer, open your user menu → **My account** → **Access tokens** → **Add access token**. Use an administrator's account, or a standard user whom an administrator gave access to the chosen environment (in Portainer's environment settings) and who may manage stacks there. |
 | `OPSCREW_GHCR_READ_TOKEN` | Your app's image is private (the default) | A GitHub classic token with only the `read:packages` scope: <https://github.com/settings/tokens/new?scopes=read:packages>. GitHub's fine-grained tokens cannot read packages. OpsCrew puts it only into Portainer's registry entry. |
 | `OPSCREW_REPO_READ_TOKEN` | Your repository is private | A GitHub fine-grained token for only this repository with **Contents: Read-only**: <https://github.com/settings/personal-access-tokens/new>. Portainer reads the deploy branch with it; OpsCrew sends it only to Portainer, for this stack. |
-| `CLOUDFLARE_API_TOKEN` | Visitors come through the Cloudflare Tunnel (web mode `tunnel`) | A Cloudflare API token with Zone → Zone → Read, Zone → DNS → Edit, Zone → Zone WAF → Edit, Zone → Config Rules → Edit, Zone → SSL and Certificates → Edit and Zone → Zone Settings → Edit for your zone, plus Account → Cloudflare Tunnel → Edit. Turn on Cloudflare Zero Trust for the account (the free plan is enough). |
+| `CLOUDFLARE_API_TOKEN` | Visitors come through the Cloudflare Tunnel (web mode `tunnel`) | A Cloudflare API token with Zone → Zone → Read, Zone → DNS → Edit, Zone → Zone WAF → Edit, Zone → Config Rules → Edit, Zone → SSL and Certificates → Edit and Zone → Zone Settings → Edit for your zone, plus Account → Cloudflare Tunnel → Edit. Turn on [Cloudflare Zero Trust](https://developers.cloudflare.com/cloudflare-one/) for the account (the free plan is enough). |
 | `CLOUDFLARE_API_TOKEN` | New versions reach Portainer through Cloudflare (redeploy mode `cloudflare`) | A Cloudflare API token with Zone → Zone → Read, Zone → DNS → Edit, Zone → Zone WAF → Edit, Zone → Config Rules → Edit, Zone → SSL and Certificates → Edit and Zone → Zone Settings → Edit for your zone, plus Account → Cloudflare Tunnel → Edit, Account → Access: Apps and Policies → Edit, Account → Access: Service Tokens → Edit and Account → Access: Organizations, Identity Providers, and Groups → Edit. With both modes, give one token both lists. Turn on Cloudflare Zero Trust for the account. |
 | `GITHUB_TOKEN` (or `gh auth login`) | Always | As for every OpsCrew deployment: OpsCrew pushes the deploy branch and opens the pull request with it. |
 
@@ -188,7 +188,7 @@ token with only `read:packages` from your GitHub account does that: use it as
 
 ## How new versions reach Portainer
 
-After each merge, GitHub Actions builds the image, pushes it to GitHub Container Registry and writes
+After each merge, [GitHub Actions](https://github.com/features/actions) builds the image, pushes it to [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry) and writes
 the stack file with the new image to the `opscrew-deploy` branch. Then it checks the site's health.
 When the check fails, it writes the previous image back, so the previous version runs again, and the
 run fails.
@@ -209,7 +209,7 @@ See [Rolling back a release](rollback.md).
   network and with Portainer's certificate pinned, to redeploy when the branch changed. Nothing is
   opened to the internet and no Cloudflare is needed. A merged change is live within a few minutes.
 - **`cloudflare`**: the workflow asks Portainer to redeploy at once, through a hostname
-  (`portainer-<app>.<your zone>`) protected by Cloudflare Access with a service token. Only Portainer's
+  (`portainer-<app>.<your zone>`) protected by [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) with a service token. Only Portainer's
   webhook path is reachable there, and only with that token. It needs your domain on Cloudflare and
   Cloudflare Zero Trust.
 
@@ -218,12 +218,12 @@ See [Rolling back a release](rollback.md).
 - **`tunnel`** (recommended with a domain on Cloudflare): a Cloudflare Tunnel runs in the app's
   stack. No port is opened on your host, and it works behind a router with no open ports.
 - **`proxy`**: the app listens on a port of your host that you choose, for example `8080`. You route
-  your domain to it with the reverse proxy you already run (Nginx Proxy Manager, Traefik, your NAS's
+  your domain to it with the reverse proxy you already run ([Nginx Proxy Manager](https://nginxproxymanager.com/), [Traefik](https://traefik.io/), your NAS's
   own proxy) and manage its certificate there.
 - **`caddy`**: Caddy serves the app on ports 80 and 443 of the host with automatic certificates.
   OpsCrew checks that the ports are free first. Your NAS's own web interface often uses them, and
   only one app on the host can have them. OpsCrew also waits for your DNS record before it starts
-  Caddy, so Let's Encrypt issues the certificate at once. Without the record,
+  Caddy, so [Let's Encrypt](https://letsencrypt.org/) issues the certificate at once. Without the record,
   `npx opscrew provision` stops before Caddy can start and names the record to create: Caddy asks
   for the certificate as soon as it starts, and DNS resolvers can remember a missing record for up
   to 30 minutes. Create the record, then run `npx opscrew provision` again: it continues from
@@ -309,7 +309,7 @@ deploys already need no SSH.
 ## Backups
 
 OpsCrew cannot back up a Portainer host. The app's data lives in the stack's named volumes (for
-example the Postgres volume) on that host. Back it up yourself: with your NAS's snapshot or backup
+example the [Postgres](https://www.postgresql.org/) volume) on that host. Back it up yourself: with your NAS's snapshot or backup
 feature, or by copying the volumes regularly to somewhere else.
 
 ## Removing the app
@@ -337,7 +337,7 @@ never Portainer or the environment ([Your own server and your Portainer](retarge
 ## From Claude Code
 
 The [OpsCrew plugin](../../plugin/README.md) offers the same choices. Every change in Portainer is
-approved by you in a dialog, and you confirm Portainer's certificate in a dialog too; Claude never
+approved by you in a dialog, and you confirm Portainer's certificate in a dialog too; [Claude](https://claude.com/) never
 confirms either for you. The access token comes only from `PORTAINER_API_KEY`, and the tools show
 "your Portainer" instead of its address. Removing the app and deleting its data stay in your
 terminal.

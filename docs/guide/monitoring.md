@@ -6,7 +6,7 @@ the figures, [Loki](https://grafana.com/oss/loki/) keeps the log lines, and
 your own servers: no third party gets your data, and nothing limits how much you keep but your disk.
 Nobody on the internet can reach it. It is off until you turn it on.
 
-It works on servers OpsCrew deploys to: ones it created on Hetzner Cloud or DigitalOcean, and
+It works on servers OpsCrew deploys to: ones it created on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/), and
 [servers you already have](own-server.md).
 
 Not sure you need it? `npx opscrew status` and `npx opscrew logs` show
@@ -21,12 +21,12 @@ servers.
   By default it runs on a small server of its own, at your app's provider and location, with nothing
   else on it.
 - **The agent:** [Grafana Alloy](https://grafana.com/docs/alloy/latest/) on every server of the
-  environment, with OpsCrew's read-only Docker proxy next to it. It sends:
+  environment, with OpsCrew's read-only [Docker](https://www.docker.com/) proxy next to it. It sends:
   - the server's CPU, load, memory, disk and network traffic;
   - each container's CPU, its memory against its limit, and its restarts;
   - your app's log lines;
-  - Caddy's figures, on the server that runs the reverse proxy;
-  - Postgres's figures, on the server that runs it, through a login of its own that can only read
+  - [Caddy](https://caddyserver.com/)'s figures, on the server that runs the reverse proxy;
+  - [Postgres](https://www.postgresql.org/)'s figures, on the server that runs it, through a login of its own that can only read
     the database's statistics.
 
 The monitoring server and your app's servers talk over the app's
@@ -37,7 +37,7 @@ with the app's server and the monitoring server as its members.
 
 Alloy masks every log line on the server it comes from, before it is sent, as it does for
 [Grafana Cloud](grafana-cloud.md#secrets-are-masked-before-they-leave-the-server): values shaped
-like known kinds of secret, Gitleaks' rules, and your app's own secret values from a masking file the
+like known kinds of secret, [Gitleaks](https://github.com/gitleaks/gitleaks)' rules, and your app's own secret values from a masking file the
 deploy writes on each server. The stack only ever stores the masked lines: a masked value shows as
 OpsCrew's marker, such as `<opscrew:known-value>`.
 
@@ -133,7 +133,7 @@ npx opscrew addon open monitoring
 ```
 
 - **This computer is a [device on the private network](private-network.md):** it prints Grafana's
-  private address. Open it with the WireGuard tunnel on.
+  private address. Open it with the [WireGuard](https://www.wireguard.com/) tunnel on.
 - **Otherwise:** it opens an SSH tunnel to the monitoring server and keeps it open until you stop it
   with Ctrl+C. While it runs, open <http://localhost:3000>. `--port <local>` picks another local
   port.
@@ -174,13 +174,13 @@ app, the environment and the server:
 
 Good to know:
 
-- **HTTP traffic and Caddy need Caddy,** the default [reverse proxy](reverse-proxy.md). With nginx or
+- **HTTP traffic and Caddy need Caddy,** the default [reverse proxy](reverse-proxy.md). With [nginx](https://nginx.org/) or
   your own proxy, those two dashboards say so instead of showing empty panels. Caddy's figures are on
   in every OpsCrew edge, since every app on a server shares it, but they stay inside the server and
   are read only when monitoring is on.
 - **An app with no domain yet has no HTTP figures:** Caddy serves it for any hostname, so the HTTP
   traffic and Caddy dashboards fill once the app has [its domain](domains.md).
-- **MySQL, MariaDB, MongoDB and the other services** are on the Containers dashboard. Postgres is the
+- **[MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/), [MongoDB](https://www.mongodb.com/) and the other services** are on the Containers dashboard. Postgres is the
   only database with a dashboard of its own.
 - **OpsCrew's dashboards are read-only.** Change one and Grafana asks you to save it as a copy.
   OpsCrew replaces its own whenever its version of one changes; your copies and your own dashboards
@@ -283,9 +283,9 @@ plans of your next `npx opscrew provision`.
 - **Say what to change:** that is [`opscrew advise`](advise.md), which reads 14 days of the stack's
   figures to propose a larger or smaller server, a higher memory limit or a fix for the disk.
 - **Alerts:** the stack sends none. The [scheduled check](alerts.md) stays the alert path: it checks
-  your app from GitHub and opens an issue when something fails, the monitoring server's disk
+  your app from [GitHub](https://github.com/) and opens an issue when something fails, the monitoring server's disk
   included.
-- **Run in a Portainer, on your computer, or on Cloudflare's hosting or GitHub Pages:** OpsCrew
+- **Run in a [Portainer](https://www.portainer.io/), on your computer, or on [Cloudflare](https://www.cloudflare.com/)'s hosting or [GitHub Pages](https://pages.github.com/):** OpsCrew
   doesn't manage those hosts, or there is no host.
 - **Two apps on one of your own servers:** a server runs one Alloy, so the second app's monitoring is
   refused with the reason, as for Grafana Cloud.

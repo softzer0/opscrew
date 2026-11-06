@@ -1,7 +1,7 @@
 # The recovery copy of your app's secrets
 
 OpsCrew generates secrets for your app (database passwords, service keys, the deploy key) and keeps
-them, with the infrastructure state, on the computer that ran `npx opscrew provision`. GitHub only
+them, with the infrastructure state, on the computer that ran `npx opscrew provision`. [GitHub](https://github.com/) only
 holds them as write-only deploy secrets. If that computer is lost, so are they, and a new computer
 could not manage the deployment without resetting every database.
 
@@ -16,8 +16,8 @@ Everything OpsCrew keeps on your computer for the app and cannot rebuild:
 
 - the generated values (service passwords and keys, route-job secrets) and the deploy key;
 - the infrastructure state and its passphrase;
-- OpsCrew's records of the server and of the app's Cloudflare settings;
-- in your Portainer, the stack's key, webhook and Portainer password files.
+- OpsCrew's records of the server and of the app's [Cloudflare](https://www.cloudflare.com/) settings;
+- in your [Portainer](https://www.portainer.io/), the stack's key, webhook and Portainer password files.
 
 Values you supplied yourself (provider tokens, your app's own API keys, the storage key) are not in
 it: they are already yours. Neither is history, such as approvals, costs and saved plans.
@@ -134,7 +134,7 @@ A folder copy is named after the environment's app name, such as `shop-staging.s
 ## From Claude Code
 
 The OpsCrew plugin has the same tools. A new key goes only to the file you name (`keyOut`), and a
-restore reads only a key file you name (`keyFile`). Claude never sees, prints or asks for the key
+restore reads only a key file you name (`keyFile`). [Claude](https://claude.com/) never sees, prints or asks for the key
 itself.
 
 ## Known limits

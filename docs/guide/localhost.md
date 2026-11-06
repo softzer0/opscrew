@@ -1,8 +1,8 @@
 # Your app's production stack on your own computer
 
-OpsCrew can run your app on your own computer exactly as production runs it: the same Docker
-Compose project, the same components with the same memory limits, and the same proxy in front
-(Caddy or nginx, with kamal-proxy). You see it at a local HTTPS address such as
+OpsCrew can run your app on your own computer exactly as production runs it: the same [Docker
+Compose](https://docs.docker.com/compose/) project, the same components with the same memory limits, and the same proxy in front
+([Caddy](https://caddyserver.com/) or [nginx](https://nginx.org/), with [kamal-proxy](https://github.com/basecamp/kamal-proxy)). You see it at a local HTTPS address such as
 `https://shop.localhost`. You need no server, no cloud account and no domain, and it costs nothing.
 
 It is the cheapest place to try a change with real containers, and with the
@@ -12,10 +12,10 @@ workflow, the deploy job) against your own computer before it touches a server.
 ## What you need
 
 - **Docker** that runs Linux containers, with Docker Compose 2.23 or newer:
-  - Windows and macOS: Docker Desktop, or one of the free alternatives below;
-  - Linux: Docker Engine;
-  - macOS: Colima works too.
-- **On Windows: Git for Windows.** OpsCrew runs the same deploy scripts a server runs, with Git for
+  - Windows and macOS: [Docker Desktop](https://www.docker.com/products/docker-desktop/), or one of the free alternatives below;
+  - Linux: [Docker Engine](https://docs.docker.com/engine/);
+  - macOS: [Colima](https://github.com/abiosoft/colima) works too.
+- **On Windows: [Git for Windows](https://gitforwindows.org/).** OpsCrew runs the same deploy scripts a server runs, with Git for
   Windows' `bash`.
 - **Enough memory for Docker:** the stack's memory limits must fit in the memory Docker has (see
   [When OpsCrew stops](#when-opscrew-stops-without-changing-anything)).
@@ -24,8 +24,8 @@ workflow, the deploy job) against your own computer before it touches a server.
 
 Docker Desktop is free for personal use, education, open-source projects and companies with fewer
 than 250 employees and less than US$10 million in yearly revenue. Larger companies and governments
-need a paid subscription. Free alternatives: Docker Engine on Linux, Colima on macOS, Rancher
-Desktop and Podman. OpsCrew works with any of them and enforces nothing; it says this once when
+need a paid subscription. Free alternatives: Docker Engine on Linux, Colima on macOS, [Rancher
+Desktop](https://rancherdesktop.io/) and [Podman](https://podman.io/). OpsCrew works with any of them and enforces nothing; it says this once when
 Docker Desktop is, or may become, your computer's Docker.
 
 ## Step by step
@@ -67,8 +67,8 @@ work as on a server.
 - The address answers only on this computer: every port is bound to 127.0.0.1, never to your
   network.
 
-Browsers and curl resolve every `*.localhost` name to your own computer by themselves. Not every
-program does: on Windows and macOS, the system's resolver and Node.js do not know `app.localhost`.
+Browsers and [curl](https://curl.se/) resolve every `*.localhost` name to your own computer by themselves. Not every
+program does: on Windows and macOS, the system's resolver and [Node.js](https://nodejs.org/) do not know `app.localhost`.
 That is why OpsCrew's own checks never look the name up: they connect to 127.0.0.1 and send the
 hostname in the request and in the TLS handshake. If another tool of yours cannot find the name,
 point it at `127.0.0.1` with the hostname as its `Host` header.
@@ -76,7 +76,7 @@ point it at `127.0.0.1` with the hostname as its `Host` header.
 ### Ports 443 and 8443
 
 The proxy listens on ports 443 and 80 when they are free. When another program holds one (on
-Windows often IIS or another web server), design picks 8443 and 8080 instead, and every address
+Windows often [IIS](https://www.iis.net/) or another web server), design picks 8443 and 8080 instead, and every address
 OpsCrew prints says the port, such as `https://shop.localhost:8443`. Every OpsCrew app on this
 computer uses the same two ports, since they share the proxy. A port that becomes taken later stops
 `provision` with what to do.
@@ -123,10 +123,10 @@ never needed for OpsCrew's own checks.
 
 The stack is the production stack, with exactly these differences, each stated in the local plan:
 
-- no SSH, no server hardening, no firewall, no DNS records and no Cloudflare;
+- no SSH, no server hardening, no firewall, no DNS records and no [Cloudflare](https://www.cloudflare.com/);
 - every published port bound to 127.0.0.1 only;
-- certificates from OpsCrew's local certificate authority instead of a public one (no Let's
-  Encrypt, no certbot, no origin certificate, no Cloudflare-only filter);
+- certificates from OpsCrew's local certificate authority instead of a public one (no [Let's
+  Encrypt](https://letsencrypt.org/), no [certbot](https://certbot.eff.org/), no origin certificate, no Cloudflare-only filter);
 - the image built on this computer when its CPU differs from production's (below);
 - the data the server keeps in `/srv/data/<app>` kept in Docker volumes,
   `opscrew-<app>_<component>_data`.
@@ -138,16 +138,16 @@ instead of `/srv/apps` and `/srv/edge`. OpsCrew never runs it as root.
 ### Your computer's processor, and the image
 
 - **The same CPU as production** (for example an x86 laptop and a cloud server): the stack runs the
-  image production runs, from GitHub Container Registry by its digest, byte for byte. For a private
+  image production runs, from [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry) by its digest, byte for byte. For a private
   image, set `OPSCREW_GHCR_READ_TOKEN` to a classic token with only `read:packages`
   (<https://github.com/settings/tokens/new?scopes=read:packages>), since the registry may not
   accept a fine-grained token.
 - **Another CPU** (an Apple silicon Mac and an x86 server): when this computer can build the image
-  as GitHub Actions does, OpsCrew builds it here for its own CPU with `docker build`, and says that
+  as [GitHub Actions](https://github.com/features/actions) does, OpsCrew builds it here for its own CPU with `docker build`, and says that
   it differs from production's image. That is the case for OpsCrew's own Dockerfile, and for your
-  own Dockerfile when the app has no cron jobs and no SQLite. To run production's image under
+  own Dockerfile when the app has no cron jobs and no [SQLite](https://www.sqlite.org/). To run production's image under
   emulation instead (slower), set `target.image: registry` in the environment's plan. Every other
-  app (built with Buildpacks or Railpack, or from your own Dockerfile with cron jobs or SQLite,
+  app (built with [Buildpacks](https://buildpacks.io/) or [Railpack](https://railpack.com/), or from your own Dockerfile with cron jobs or SQLite,
   which the build on GitHub adds to) runs production's image here, under emulation, with a warning.
 - **No other environment builds the image** (an app that runs only on this computer): OpsCrew
   builds it on this computer, in the same cases. Otherwise `provision` needs an image of the app on
@@ -187,8 +187,8 @@ instead of `/srv/apps` and `/srv/edge`. OpsCrew never runs it as root.
   was lowered later;
 - a port the stack needs is taken by another program;
 - on Windows, Git for Windows' `bash` is not found;
-- a component needs a kernel setting of the Docker host (such as OpenSearch or Elasticsearch), or
-  the app's bucket is at a cloud provider: on this computer, use the hosted service, or Garage for
+- a component needs a kernel setting of the Docker host (such as [OpenSearch](https://opensearch.org/) or [Elasticsearch](https://www.elastic.co/elasticsearch)), or
+  the app's bucket is at a cloud provider: on this computer, use the hosted service, or [Garage](https://garagehq.deuxfleurs.fr/) for
   the bucket.
 
 ## What `secure` checks here
@@ -201,7 +201,7 @@ instead of `/srv/apps` and `/srv/edge`. OpsCrew never runs it as root.
   folder, where file modes do not apply);
 - the site's certificate is valid and comes from OpsCrew's local CA.
 
-It does not harden your computer: a server's checks (SSH, firewall, fail2ban, automatic updates,
+It does not harden your computer: a server's checks (SSH, firewall, [fail2ban](https://github.com/fail2ban/fail2ban), automatic updates,
 kernel settings) do not apply, and your computer's own security stays yours. Nothing probes it from
 outside.
 

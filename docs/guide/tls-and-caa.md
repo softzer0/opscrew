@@ -2,16 +2,16 @@
 
 Every OpsCrew app is served over HTTPS only, with TLS 1.2 and 1.3. This page explains where the
 certificates come from, how they are renewed, and two cheap protections OpsCrew adds in your
-Cloudflare zone: CAA records and the zone's minimum TLS version.
+[Cloudflare](https://www.cloudflare.com/) zone: CAA records and the zone's minimum TLS version.
 
 ## Where each certificate comes from
 
 | The hostname is | Its certificate | Renewed by |
 |---|---|---|
 | behind Cloudflare's proxy | a Cloudflare origin certificate on your server, valid for 15 years (see [origin protection](origin-protection.md)); visitors see Cloudflare's own certificate | `npx opscrew provision`, when fewer than 30 days are left |
-| DNS only, with Caddy | Let's Encrypt, with ZeroSSL as Caddy's fallback | Caddy, by itself |
-| DNS only, with nginx | Let's Encrypt, obtained by certbot during the first deploy | certbot, twice a day when it is due, with a reload that drops no connection |
-| served through a Cloudflare Tunnel | Cloudflare's edge | Cloudflare |
+| DNS only, with [Caddy](https://caddyserver.com/) | [Let's Encrypt](https://letsencrypt.org/), with [ZeroSSL](https://zerossl.com/) as Caddy's fallback | Caddy, by itself |
+| DNS only, with [nginx](https://nginx.org/) | Let's Encrypt, obtained by [certbot](https://certbot.eff.org/) during the first deploy | certbot, twice a day when it is due, with a reload that drops no connection |
+| served through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/) | Cloudflare's edge | Cloudflare |
 
 `npx opscrew status` lists each certificate OpsCrew manages with its expiry. `status`,
 `npx opscrew verify` and `npx opscrew secure` warn when fewer than 30 days are left, and on nginx

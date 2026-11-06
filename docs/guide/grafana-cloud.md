@@ -6,7 +6,7 @@ and lets you search and chart them in Grafana. OpsCrew can connect your server t
 log lines and the server's metrics to your own Grafana Cloud account. You run no monitoring stack.
 It is off until you turn it on.
 
-It works on a server OpsCrew deploys to: one it created on Hetzner Cloud or DigitalOcean, or a
+It works on a server OpsCrew deploys to: one it created on [Hetzner Cloud](https://www.hetzner.com/cloud) or [DigitalOcean](https://www.digitalocean.com/), or a
 [server you already have](own-server.md).
 
 ## The account and the token
@@ -16,8 +16,8 @@ OpsCrew can't create the account for you:
 1. Sign up at <https://grafana.com/auth/sign-up/create-user> and choose the free plan. Grafana Cloud
    creates a stack for you.
 2. On the stack's details page in the [Grafana Cloud Portal](https://grafana.com/profile/org), note:
-   - the Prometheus **remote write** URL (`https://…/api/prom/push`) and its user id, a number;
-   - the Loki URL (the push URL ends in `/loki/api/v1/push`) and its user id, another number.
+   - the [Prometheus](https://prometheus.io/) **remote write** URL (`https://…/api/prom/push`) and its user id, a number;
+   - the [Loki](https://grafana.com/oss/loki/) URL (the push URL ends in `/loki/api/v1/push`) and its user id, another number.
 3. Create an access policy token under **Administration** → **Users and access** →
    **Cloud access policies** (see
    [Grafana's access policies](https://grafana.com/docs/grafana-cloud/account-management/authentication-and-permissions/access-policies/)).
@@ -39,7 +39,7 @@ In a terminal, OpsCrew asks for any value you leave out, and for the token witho
 
 OpsCrew reads the server first, then shows the host plan with:
 
-- **Alloy and OpsCrew's read-only Docker proxy,** each with its memory limit (256 MB and 32 MB) and
+- **Alloy and OpsCrew's read-only [Docker](https://www.docker.com/) proxy,** each with its memory limit (256 MB and 32 MB) and
   next to its share of the server's monthly price on a server OpsCrew created, or the server's memory
   on your own. Measured in OpsCrew's tests, Alloy used 70 to 80 MB;
 - **OpsCrew's estimate** of what the server will send, next to the free tier's limits.
@@ -80,7 +80,7 @@ Alloy masks every line on your server, before it is sent:
 
 - values shaped like known kinds of secret, with OpsCrew's own patterns (shown as
   `<opscrew:github-token>`, for example);
-- Grafana's secret filter, built on Gitleaks' rules (shown as `<secretfilter:aws-access-token>`, for
+- Grafana's secret filter, built on [Gitleaks](https://github.com/gitleaks/gitleaks)' rules (shown as `<secretfilter:aws-access-token>`, for
   example);
 - your app's own secret values, from a masking file the deploy job writes next to the app's
   environment file at each deploy (shown as `<opscrew:known-value>`). Values shorter than 8
@@ -167,7 +167,7 @@ Then delete the old token in Grafana Cloud.
 
 ## What it can't do
 
-- **Run in a Portainer, on your computer, or on Cloudflare's hosting or GitHub Pages:** it needs a
+- **Run in a [Portainer](https://www.portainer.io/), on your computer, or on [Cloudflare](https://www.cloudflare.com/)'s hosting or [GitHub Pages](https://pages.github.com/):** it needs a
   server OpsCrew deploys to.
 - **Container metrics and network figures:** see above.
 - **Mask a secret it can't recognise** before the first deploy with the updated workflow, or one
@@ -178,4 +178,4 @@ Then delete the old token in Grafana Cloud.
 ## From Claude Code
 
 The [OpsCrew plugin](claude-code-plugin.md) can show the add-on's status and turn it on or off. You
-approve each plan in a dialog. Claude never sees the token.
+approve each plan in a dialog. [Claude](https://claude.com/) never sees the token.

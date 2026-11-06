@@ -15,7 +15,7 @@ is created.
 - **Services**: databases, caches, queues, brokers, and search and analytics engines that OpsCrew
   runs as containers on the server. See [Databases](databases.md), [Message brokers and
   queues](brokers.md) and [Search and analytics engines](search-and-analytics.md).
-- **Storage**: a persistent volume for a SQLite database, and a bucket for the app's files only
+- **Storage**: a persistent volume for a [SQLite](https://www.sqlite.org/) database, and a bucket for the app's files only
   when you ask for one in the interview: otherwise the app keeps the storage it uses now. See
   [Object storage](object-storage.md).
 
@@ -26,10 +26,10 @@ is created.
 - the client libraries your app depends on at runtime (for example `mysql2`, `pymongo`, `amqplib`,
   `@aws-sdk/client-s3` or `meilisearch`), and the address variables it reads (`DATABASE_URL`,
   `MONGODB_URI`, `AMQP_URL` …);
-- the process types of a `Procfile`, and background-job libraries such as Celery, Sidekiq, BullMQ
-  or Laravel's queue;
+- the process types of a `Procfile`, and background-job libraries such as [Celery](https://docs.celeryq.dev/), [Sidekiq](https://sidekiq.org/), [BullMQ](https://bullmq.io/)
+  or [Laravel](https://laravel.com/)'s queue;
 - the `crons` of a `vercel.json`;
-- a hosted service the app already uses, such as a MongoDB Atlas address in `.env.example`.
+- a hosted service the app already uses, such as a [MongoDB Atlas](https://www.mongodb.com/atlas) address in `.env.example`.
 
 `npx opscrew interview` asks only what it cannot tell: the command of a worker whose library has
 no usual one, and, for each hosted service, whether to keep it or let OpsCrew run one on the server.
@@ -38,7 +38,7 @@ A hosted service you do not answer for is kept, so OpsCrew never replaces one un
 ## What design shows you
 
 `npx opscrew design` prints one line per component with its version, its memory limit and why it
-is there. For example, for a Django app with MySQL and Celery on a 4 GB server that costs €8.00 a
+is there. For example, for a [Django](https://www.djangoproject.com/) app with [MySQL](https://www.mysql.com/) and Celery on a 4 GB server that costs €8.00 a
 month:
 
 ```text
@@ -50,16 +50,16 @@ Memory limits: the app 512 MB (€1.00/month), worker 512 MB (€1.00/month), cr
 
 The last line is the server's memory, shared out: each component's limit with its share of the
 server's monthly price, the part OpsCrew's edge and the system keep, and what stays free. On a
-server you already have, or in your Portainer, there is no price to share.
+server you already have, or in your [Portainer](https://www.portainer.io/), there is no price to share.
 
 Licences are said in plain words when a component's licence is not a permissive one. MongoDB
-(SSPL), MySQL and MariaDB (GPL 2.0), Redis 8 (RSALv2, SSPLv1 or AGPLv3), Redpanda and Dragonfly
-(Business Source License), Elasticsearch (Elastic License 2.0), Garage (AGPL 3.0), Typesense and
-Neo4j Community (GPL 3.0) all allow running them for your own app; their conditions are about
+(SSPL), MySQL and [MariaDB](https://mariadb.org/) (GPL 2.0), [Redis](https://redis.io/) 8 (RSALv2, SSPLv1 or AGPLv3), [Redpanda](https://www.redpanda.com/) and [Dragonfly](https://www.dragonflydb.io/)
+(Business Source License), [Elasticsearch](https://www.elastic.co/elasticsearch) (Elastic License 2.0), [Garage](https://garagehq.deuxfleurs.fr/) (AGPL 3.0), [Typesense](https://typesense.org/) and
+[Neo4j](https://neo4j.com/) Community (GPL 3.0) all allow running them for your own app; their conditions are about
 sharing or offering that software itself.
 
-For Redis, OpsCrew runs Valkey unless your app shows it needs Redis 8 (Redis's own data types, or
-Redis in its Compose file) or Dragonfly (in its Compose file, or your choice in `opscrew/plan.yaml`
+For Redis, OpsCrew runs [Valkey](https://valkey.io/) unless your app shows it needs Redis 8 (Redis's own data types, or
+Redis in its [Compose](https://docs.docker.com/compose/) file) or Dragonfly (in its Compose file, or your choice in `opscrew/plan.yaml`
 on a server with 2 vCPUs or more); see
 [Redis 8 or Dragonfly instead of Valkey](brokers.md#redis-8-or-dragonfly-instead-of-valkey).
 
@@ -71,17 +71,17 @@ When it reaches its limit, only that container is restarted. Design adds up:
 - every component's limit (a worker's limit counts once per copy; the cron container gets the
   app's limit when a job runs a command, since it runs the app's code, and 64 MB when every job
   calls a route);
-- 128 MB for OpsCrew's edge (Caddy, kamal-proxy, and the Cloudflare Tunnel connector when the app
+- 128 MB for OpsCrew's edge ([Caddy](https://caddyserver.com/), [kamal-proxy](https://github.com/basecamp/kamal-proxy), and the [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/) connector when the app
   uses one);
 - 384 MB for the system.
 
-On Hetzner Cloud and DigitalOcean it picks a server that fits. Design refuses when the limits do not
+On [Hetzner Cloud](https://www.hetzner.com/cloud) and [DigitalOcean](https://www.digitalocean.com/) it picks a server that fits. Design refuses when the limits do not
 fit the server, and warns when less than 15% of its memory stays free. On a server you already
 have, it uses the memory it reads there, minus the limits of the other OpsCrew apps on it (see
 [Deploy to a server you already have](own-server.md)).
 
-Each service also has a smallest server it runs well on, from 512 MB for NATS or Valkey to 4 GB
-for OpenSearch, Elasticsearch and Neo4j. On Hetzner Cloud and DigitalOcean, design picks a server
+Each service also has a smallest server it runs well on, from 512 MB for [NATS](https://nats.io/) or Valkey to 4 GB
+for [OpenSearch](https://opensearch.org/), Elasticsearch and Neo4j. On Hetzner Cloud and DigitalOcean, design picks a server
 at least that big. On a server you already have, it warns you when the server is smaller.
 
 ## Changing a component
@@ -92,7 +92,7 @@ service's memory or settings, or turn a component off with `enabled: false` (the
 nothing runs). Then run `npx opscrew design`: it keeps your edits, says what changed, and checks
 that everything still fits. `npx opscrew provision` applies the change after you approve it.
 
-OpsCrew runs one version of each service, pinned by its image digest. Dependabot proposes newer
+OpsCrew runs one version of each service, pinned by its image digest. [Dependabot](https://docs.github.com/en/code-security/dependabot) proposes newer
 releases of the same major version in your repository; a new major version of a database or a
 broker is yours to choose, because its data may need a migration.
 
@@ -115,7 +115,7 @@ broker is yours to choose, because its data may need a migration.
 - **A server you already have:** several OpsCrew apps can share it, each with its own components
   and folders; see [Deploy to a server you already have](own-server.md).
 - **Your Portainer:** the components run in the app's stack, with their data in named volumes.
-  OpenSearch and Elasticsearch need a kernel setting on the Docker host that a stack cannot make,
+  OpenSearch and Elasticsearch need a kernel setting on the [Docker](https://www.docker.com/) host that a stack cannot make,
   so OpsCrew does not run them there (see
   [Search and analytics engines](search-and-analytics.md#the-kernel-setting-of-opensearch-and-elasticsearch)
   and [Deploy to a Portainer you already run](portainer-target.md)).

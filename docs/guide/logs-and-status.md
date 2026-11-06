@@ -28,7 +28,7 @@ back they go.
 | `--follow` | After the lines read, shows new ones as they arrive, until you stop it with Ctrl+C |
 | `--service <name>` | Another part of the app: a worker, a cron job or a service by its name in `opscrew/plan.yaml` (such as `db`), `cron` for the cron jobs, or `edge` for the reverse proxy in front of the app. Without it, the web process (`app`) |
 | `--since <duration>` | Only the lines of the last `30s`, `15m`, `2h` or `3d` |
-| `--tail <lines>` | How many of the latest lines (200 without it); on Cloudflare's hosting, requests |
+| `--tail <lines>` | How many of the latest lines (200 without it); on [Cloudflare](https://www.cloudflare.com/)'s hosting, requests |
 | `--failed` | The lines OpsCrew kept of the last copy that failed its checks in a deploy (see [below](#a-failed-deploys-lines)); not with `--follow` or `--since` |
 | `--app <key>`, `--env <name>` | Another [app](several-apps.md) or [environment](environments.md), as every command takes them |
 
@@ -38,7 +38,7 @@ A name `--service` doesn't know is refused, and the refusal lists the names the 
   lines of every cron job.
 - **The edge** on a server is the reverse proxy every OpsCrew app on that server shares, so its lines
   are of all of them. In [a Portainer](portainer-target.md), `edge` exists only when the stack's web
-  mode is `caddy`: it is then the Caddy in the app's own stack.
+  mode is `caddy`: it is then the [Caddy](https://caddyserver.com/) in the app's own stack.
 
 ### A failed deploy's lines
 
@@ -67,7 +67,7 @@ deploy starts no copy that could fail a health check.
 |---|---|
 | A server OpsCrew created | `docker logs` over SSH, as the `deploy` user with the project's deploy key, as `status` does |
 | [Your own server](own-server.md) | `docker logs` over SSH, through the login OpsCrew uses there |
-| [A Portainer](portainer-target.md) | Docker's API through Portainer, with `PORTAINER_API_KEY` |
+| [A Portainer](portainer-target.md) | [Docker](https://www.docker.com/)'s API through Portainer, with `PORTAINER_API_KEY` |
 | [Your computer](localhost.md) | Your local Docker |
 | [Cloudflare's hosting](cloudflare-hosting.md), server-rendered | Cloudflare's logs of the Worker's requests; `--follow` uses Cloudflare's live tail |
 | Cloudflare's hosting with a static site, and [GitHub Pages](github-pages.md) | No request logs: the last deploy runs instead |
@@ -193,8 +193,8 @@ Deploys (read from the server and GitHub now):
 ```
 
 On a server and on your computer it reads the app's `.env` and `.env.previous`, which the switch
-writes; in a Portainer, the images labelled `opscrew-<env>` and `opscrew-<env>-previous` in GitHub
-Container Registry. The commit, its message and the build time come from the image's provenance;
+writes; in a Portainer, the images labelled `opscrew-<env>` and `opscrew-<env>-previous` in [GitHub
+Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry). The commit, its message and the build time come from the image's provenance;
 when OpsCrew can't read them from GitHub, it shows the short digest and says why. A site shows its
 versions in its own section.
 
