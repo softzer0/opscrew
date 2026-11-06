@@ -39,7 +39,7 @@ description: "Tasks for 024-snapshots-and-restores"
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2403 [US4] The providers' snapshots and rebuilds in `packages/connectors/{hetzner,digitalocean}/**` (+ tests)
+- [x] T2403 [US4] The providers' snapshots and rebuilds in `packages/connectors/{hetzner,digitalocean}/**` (+ tests)
   - Owns: those packages
   - Reads: research R1, plan.md 5.
   - Depends: T2402
