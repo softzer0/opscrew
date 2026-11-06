@@ -76,11 +76,37 @@ function pythonTool(
 const MAX_REVISIONS = 400;
 
 /**
- * True when the Alembic migrations in `versions` folders have more than one head (a revision no
- * other names as its `down_revision`); a tuple or list `down_revision` is a merge, `None` a base.
+ * The app-relative folders `version_locations` in the Alembic `ini` names: split by
+ * `version_path_separator` (`:` for `os`, as on the Linux image; space or comma when unset),
+ * `%(here)s` meaning the ini's folder and other relative paths the folder Alembic runs from (`run`).
  */
-async function severalHeads(ctx: ReleaseContext): Promise<boolean> {
-  const files = ctx.matching(/(?:^|\/)versions\/[^/]+\.py$/);
+async function versionLocations(ctx: ReleaseContext, ini: string, run: string): Promise<string[]> {
+  const values = iniValues((await ctx.read(ini)) ?? "");
+  const separator = values.get("version_path_separator");
+  const split = separator === "os" || separator === ":" ? ":" : separator === ";" ? ";" : /[\s,]+/;
+  return (values.get("version_locations") ?? "")
+    .split(split)
+    .map((location) => location.trim())
+    .filter(Boolean)
+    .map((location) => {
+      const here = /^%\(here\)s(?:\/|$)/.test(location);
+      const path = location.replace(/^%\(here\)s\/?/, "") || ".";
+      const from = here ? ctx.dirOf(ini) : run;
+      return cleanPath(from === "." ? path : `${from}/${path}`);
+    });
+}
+
+/**
+ * True when the Alembic migrations, in `versions` folders and the folders the `ini`'s
+ * `version_locations` names, have more than one head (a revision no other names as its
+ * `down_revision`); a tuple or list `down_revision` is a merge, `None` a base.
+ */
+async function severalHeads(ctx: ReleaseContext, ini: string, run: string): Promise<boolean> {
+  const locations = await versionLocations(ctx, ini, run);
+  const files = ctx.matching(/\.py$/).filter((file) => {
+    const dir = ctx.dirOf(file);
+    return /(?:^|\/)versions$/.test(dir) || locations.includes(dir);
+  });
   if (files.length > MAX_REVISIONS) return false;
   const revisions = new Set<string>();
   const parents = new Set<string>();
@@ -213,9 +239,12 @@ export async function pythonRelease(
     });
   }
   const flask = () => flaskApp(inputs.flaskenv, ctx.startCommand);
-  if (pypi("flask-migrate") && ctx.has(/(?:^|\/)migrations\/env\.py$/)) {
+  const flaskEnv = pypi("flask-migrate")
+    ? ctx.matching(/(?:^|\/)migrations\/env\.py$/)[0]
+    : undefined;
+  if (flaskEnv) {
     const target = flask();
-    if (await severalHeads(ctx)) {
+    if (await severalHeads(ctx, `${ctx.dirOf(flaskEnv)}/alembic.ini`, ".")) {
       return upgradeHeads(
         ctx,
         "Flask-Migrate",
@@ -235,7 +264,7 @@ export async function pythonRelease(
   }
   const alembicIni = pypi("alembic") ? shallowest(ctx.rel, "alembic.ini") : undefined;
   if (alembicIni) {
-    if (await severalHeads(ctx)) {
+    if (await severalHeads(ctx, alembicIni, ctx.dirOf(alembicIni))) {
       return upgradeHeads(
         ctx,
         "Alembic",

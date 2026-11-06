@@ -98,6 +98,34 @@ describe("Python release commands", () => {
       expect(await alembic(merged)).toEqual(oneHead);
     });
 
+    it("Alembic: reads the folders version_locations names", async () => {
+      const modules = (ini: string, files: Record<string, string>) =>
+        releaseOf({
+          "requirements.txt": "fastapi\nuvicorn\nsqlalchemy\nalembic\n",
+          "main.py": FASTAPI,
+          "db/alembic.ini": `[alembic]\nscript_location = migrations\n${ini}`,
+          "db/migrations/env.py": "",
+          ...files,
+        });
+      const billing = {
+        "db/billing/b1_init.py": revision("b1", "None"),
+        "db/billing/b2_invoices.py": revision("b2", "'b1'"),
+      };
+      const twoBases = await modules(
+        "version_path_separator = ;\nversion_locations = %(here)s/billing;shop\n",
+        { ...billing, "db/shop/s1_init.py": revision("s1", "None", true) },
+      );
+      expect(twoBases).toEqual({
+        command: "cd db && alembic upgrade heads",
+        note: { atStartup: false, text: NOTE.replace("CMD", "alembic upgrade heads") },
+        migrations: undefined,
+      });
+      const oneFolder = await modules("version_locations = %(here)s/billing\n", billing);
+      expect(oneFolder.command).toBe("cd db && alembic upgrade head");
+      expect(oneFolder.note).toBeUndefined();
+      expect(oneFolder.migrations?.tool).toBe("alembic");
+    });
+
     it("Flask-Migrate: several heads run flask db upgrade heads with the same FLASK_APP", async () => {
       const oneHead = {
         command: "FLASK_APP=run:app flask db upgrade",
