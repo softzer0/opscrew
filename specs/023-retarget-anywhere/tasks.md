@@ -328,7 +328,8 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
       Hetzner to it and back; its environment is never removed.
     - **A site** (found in T2312): GitHub Pages to Cloudflare's hosting and back on the e2e domain,
       checking that the Pages to Workers switch finishes (in one run or two).
-    - **DigitalOcean and a bucket**, only when `OPSCREW_E2E_DIGITALOCEAN_TOKEN` is set: Hetzner with a
+    - **DigitalOcean and a bucket**, only when `OPSCREW_E2E_DIGITALOCEAN_TOKEN` is set (not available:
+      the founder's DigitalOcean account is suspended, 2026-11-06; the leg skips, and fakes cover it): Hetzner with a
       Hetzner bucket to DigitalOcean, the bucket's files in the new Spaces bucket, the old bucket deleted at
       `--finish` after its typed name. The harness makes a throwaway Spaces key through DigitalOcean's API
       and deletes it afterwards.
