@@ -58,6 +58,8 @@ import {
   serviceEnvSecret,
   workflowStart,
 } from "./shared";
+import { snapshotScript } from "./snapshot-script";
+import { SNAPSHOT_SCRIPT } from "./snapshots";
 import {
   DATABASE_CHANGED,
   dockerConfig,
@@ -84,6 +86,12 @@ export {
   sqliteFolder,
   supercronicArch,
 } from "./shared";
+export {
+  RESTORE_APPROVAL_FILE,
+  restoreApprovalLine,
+  SCHEDULED_LOG,
+} from "./snapshot-script";
+export { SNAPSHOT_SCRIPT, type SnapshotPart, snapshotParts } from "./snapshots";
 export { type EdgeFiles, processServices, rollbackCommands, switchCommands } from "./switch";
 
 /**
@@ -458,6 +466,22 @@ export function maskFileScript(plan: DeployPlan): string {
 }
 
 /**
+ * The upload of `server`'s {@link snapshotScript} into the app's folder `dir` there, on the stdin
+ * of a command `on` the machine: written as `snapshot.sh.new` and renamed in place, so a snapshot
+ * that runs meanwhile keeps reading its own copy. None without data on the server.
+ */
+function snapshotUpload(plan: DeployPlan, server: string, dir: string, on: On): string[] {
+  const script = snapshotScript(plan, server);
+  if (script.length === 0) return [];
+  const path = `${dir}/${SNAPSHOT_SCRIPT}`;
+  return [
+    `    ${on(`umask 077 && cat > ${path}.new && mv -f ${path}.new ${path}`)} <<'SNAPSHOT'`,
+    ...script.map((line) => (line.length > 0 ? `    ${line}` : "")),
+    "    SNAPSHOT",
+  ];
+}
+
+/**
  * Saves the running version as `.env.previous` and prints its image, in the app's folder; an
  * earlier run's database marker ({@link DATABASE_CHANGED}) goes, so this run's rollback step never
  * acts on it.
@@ -619,7 +643,8 @@ interface Upload {
 /**
  * The deploy from GitHub's machines or a runner machine over SSH (as `deploy`, with the pinned host
  * key; in tunnel mode through Cloudflare Access to the SSH hostname, with the service token from
- * {@link TUNNEL_DEPLOY_SECRETS}): the upload, then the start and rollback steps over SSH. A runner
+ * {@link TUNNEL_DEPLOY_SECRETS}): the upload (with the app's server's `snapshot.sh`, {@link
+ * snapshotUpload}), then the start and rollback steps over SSH. A runner
  * machine runs the same steps with the job's own SSH files ({@link sshFile}) and cloudflared
  * ({@link cloudflaredPath}).
  */
@@ -681,6 +706,7 @@ function sshDeploy(
     ...(upload.edgeFiles.originTls
       ? originTlsUpload(plan, `${EDGE_DIR}/tls/${plan.app.name}`, OVER_SSH)
       : []),
+    ...snapshotUpload(plan, APP_SERVER, dir, OVER_SSH),
   ];
   return {
     setup,
@@ -725,8 +751,9 @@ function extraServerHost(plan: DeployPlan, server: ExtraServer): string {
  *    `ctx.serverSshPorts`): its Compose file ({@link renderServerCompose}'s) as `compose.yaml` in the
  *    app's folder, its services' settings folders and env files, with monitoring on the masking
  *    file ({@link maskFileWrite}) from the env values of every service running there (a moving
- *    service's old copy's too, until its switch), then {@link serverCommands}
- *    (pull, start and wait, the published-port repair, the services' one-time setup).
+ *    service's old copy's too, until its switch), its own `snapshot.sh` ({@link snapshotUpload}),
+ *    then {@link serverCommands} (pull, start and wait, the published-port repair, the services'
+ *    one-time setup, the scheduled snapshots' crontab line).
  */
 function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
   const servers = (plan.servers ?? []).filter(
@@ -776,6 +803,7 @@ function extraServerSteps(plan: DeployPlan, ctx: RuntimeContext): string[] {
             ]),
         ...envFileWrites(envFiles, dir, OVER_SSH),
         ...mask.map((line) => `    ${line}`),
+        ...snapshotUpload(plan, server.name, dir, OVER_SSH),
         `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'`,
         ...remote(serverCommands(plan, server.name, initStepsFor(plan, server.name))),
       ];
@@ -835,7 +863,8 @@ function localDeployLock(plan: DeployPlan): string[] {
 
 /**
  * The deploy on the server's or the local runner's own machine, with no SSH and no host, key or
- * known-hosts secret: the runtime files and env files are copied into the app's folder, and the
+ * known-hosts secret: the runtime files, env files and `snapshot.sh` are copied into the app's
+ * folder, and the
  * same switch and rollback scripts run with the local `sh`, with the same arguments and stdin. The
  * server's runner runs as `deploy`, with the server's folders; the local runner takes this
  * computer's folders from its environment (`OPSCREW_APPS_DIR`, `OPSCREW_EDGE_DIR`, set by
@@ -866,6 +895,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): { setup: string[]; reach
     ...envFileWrites(upload.envFiles, '"$dir"', HERE),
     ...maskFileWrite(plan, APP_SERVER, [APP_ENV_FILE], '"$dir"', HERE).map((line) => `    ${line}`),
     ...(upload.edgeFiles.originTls ? [tls, ...originTlsUpload(plan, '"$tls"', HERE)] : []),
+    ...snapshotUpload(plan, APP_SERVER, '"$dir"', HERE),
   ];
   return {
     setup,

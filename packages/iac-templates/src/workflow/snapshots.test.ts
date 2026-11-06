@@ -20,8 +20,16 @@ import { withServices } from "../catalog/__fixtures__/plans";
 import { localhostPlan } from "../edge/__fixtures__/localhost";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
-import { inEnvironment, NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
+import {
+  inEnvironment,
+  NIGHTLY,
+  withBuild,
+  withPlan,
+  withProcesses,
+  withSqlite,
+} from "./__fixtures__/plans";
 import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
+import { snapshotScript } from "./snapshot-script";
 import { ROLLBACK_APPROVAL_FILE, rollbackApprovalLine, snapshotFunctions } from "./snapshots";
 import { rollbackCommands, switchCommands } from "./switch";
 
@@ -66,13 +74,14 @@ const fourDatabases = inEnvironment(
 
 /**
  * The fake `docker`: logs every call to $WORK/docker.log. The app's containers live in
- * $WORK/containers-<project>, and its workers and cron always run (`p-<service>`). A one-off
- * container of a database's service (`--entrypoint sh <service> -c <script>`, the snapshot's
- * folder at `-v <folder>:/snapshot`) plays the database, whose content is the file
- * $WORK/db-<service>: a restore (the script names `pg_restore`, `mongorestore` or `DROP DATABASE`)
- * copies `<folder>/<service>.dump` there, unless RESTORE_FAIL names the folder (it then leaves the
- * database `partial`); a dump copies it to `<folder>/<service>.dump`, unless DUMP_FAIL names the
- * service, and with FILL_DISK fills the disk ($WORK/disk-full). Failures print SECRET_ROW, as a
+ * $WORK/containers-<project>, and its workers, cron and services always run (`p-<service>`, which
+ * stop cleanly). A one-off container of a service (`--entrypoint sh <service> -c <script>`, the
+ * snapshot's folder at `-v <folder>:/snapshot`) plays its data, the file $WORK/db-<service>: a
+ * restore (the script names `pg_restore`, `mongorestore` or `DROP DATABASE`) copies the script's
+ * `/snapshot/<file>` there, unless RESTORE_FAIL names the folder (it then leaves the database
+ * `partial`); a copy writes it to `<folder>/<file>`, unless DUMP_FAIL names the service, and with
+ * FILL_DISK fills the disk ($WORK/disk-full). A busybox one-off with a service's volumes, or the
+ * SQLite volume's Python one-off, reads or writes the data on stdin and stdout. Failures print SECRET_ROW, as a
  * database's error can quote a row. kamal-proxy's `deploy` routes to a copy ($WORK/routes/<app>)
  * unless the copy's image is in UNHEALTHY; its `pause` and `resume` mark $WORK/paused. With
  * KILL_AT_STOP, `compose stop` kills the script that runs it, as a cancelled run would end.
@@ -102,14 +111,27 @@ const FAKE_DOCKER = [
   '      p2="$p1"; p1="$arg"',
   "    done",
   '    folder="$(basename "$host")"',
+  "    file=\"$host/$(printf '%s' \"$script\" | grep -o '/snapshot/[^ ]*' | head -n 1 | cut -d / -f 3)\"",
   '    case "$script" in',
   '      *pg_restore* | *mongorestore* | *"DROP DATABASE"*)',
   '        case " ${RESTORE_FAIL:-} " in *" $folder "*) echo "restore failed at $SECRET_ROW"; echo partial > "$WORK/db-$service"; exit 1 ;; esac',
-  '        cp "$host/$service.dump" "$WORK/db-$service" ;;',
+  '        cp "$file" "$WORK/db-$service" ;;',
   "      *)",
   '        case " ${DUMP_FAIL:-} " in *" $service "*) echo "dump failed at $SECRET_ROW"; exit 1 ;; esac',
-  '        cp "$WORK/db-$service" "$host/$service.dump"',
+  '        cp "$WORK/db-$service" "$file"',
   '        if [ -n "${FILL_DISK:-}" ]; then touch "$WORK/disk-full"; fi ;;',
+  "    esac ;;",
+  '  "run --rm")',
+  '    service=""; script=""; p1=""',
+  '    for arg in "$@"; do',
+  '      if [ "$p1" = --volumes-from ]; then service="${arg%%:*}"; service="${service#p-}"; fi',
+  '      if [ "$p1" = -v ]; then service=sqlite; fi',
+  '      if [ "$p1" = -c ]; then script="$arg"; fi',
+  '      p1="$arg"',
+  "    done",
+  '    case "$script" in',
+  '      *"sys.stdout"* | *"-cf -"*) cat "$WORK/db-$service" ;;',
+  '      *"sys.stdin"* | *"-xpf -"* | *"> /data/dump.rdb"* | *appendonlydir*) cat > "$WORK/db-$service" ;;',
   "    esac ;;",
   '  "compose exec")',
   '    if [ "$5 $6" = "kamal-proxy pause" ]; then touch "$WORK/paused"; fi',
@@ -122,8 +144,11 @@ const FAKE_DOCKER = [
   '      mkdir -p "$WORK/routes"; echo "$target" > "$WORK/routes/$7"',
   "    fi ;;",
   '  "inspect --format")',
+  '    case "$3:$last" in',
+  '      "{{.State.Status}} {{.State.ExitCode}}":*) echo "exited 0" ;;',
+  "    esac",
   '    case "$last" in',
-  '      p-*) if [ "$3" = "{{.RestartCount}}" ]; then echo 0; else echo running:0; fi ;;',
+  '      p-*) if [ "$3" = "{{.RestartCount}}" ]; then echo 0; elif [ "$3" = "{{.State.Status}}:{{.RestartCount}}" ]; then echo running:0; fi ;;',
   `      *) cat "$WORK"/containers-* | awk -v id="$last" '$1 == id { print "/" $2 }' ;;`,
   "    esac ;;",
   '  "logs --timestamps") echo "copy-line of $last" ;;',
@@ -166,7 +191,10 @@ const calls = () =>
 const paused = () => existsSync(`${work}/paused`);
 const windows = process.platform === "win32";
 
-/** The app's runtime files in its folder, as the upload leaves them, and its services' env files. */
+/**
+ * The app's runtime files in its folder, as the upload leaves them, with its snapshot script, and
+ * its services' env files.
+ */
 function upload(plan: DeployPlan, secrets: Record<string, Record<string, string>> = {}): void {
   const dir = runtimeDir(plan);
   const files = [
@@ -176,6 +204,8 @@ function upload(plan: DeployPlan, secrets: Record<string, Record<string, string>
   ];
   const folder = `${appsDir()}/${plan.app.name}`;
   for (const file of files) write(`${folder}/${file.path.slice(dir.length + 1)}`, file.content);
+  const script = snapshotScript(plan);
+  if (script.length > 0) write(`${folder}/snapshot.sh`, `${script.join("\n")}\n`);
   for (const service of plan.services) {
     const values = secrets[service.name] ?? {};
     const env = serviceSpec(service.kind).environment({
@@ -192,12 +222,18 @@ function upload(plan: DeployPlan, secrets: Record<string, Record<string, string>
   }
 }
 
-/** A complete snapshot of version `hex` taken at `taken`, holding `content` for each service. */
+/**
+ * A complete release snapshot of version `hex` taken at `taken`, holding `content` for each of
+ * its PostgreSQL services, with its `about.json`.
+ */
 function snapshot(hex: string, taken: string, content: Record<string, string> = {}): void {
   write(at(`.snapshots/${hex}/taken`), `${taken}\n`);
-  for (const [service, dump] of Object.entries(content)) {
+  const services = Object.entries(content).map(([service, dump]) => {
     write(at(`.snapshots/${hex}/${service}.dump`), dump);
-  }
+    return { name: service, kind: "postgres", file: `${service}.dump`, size: dump.length };
+  });
+  const about = { id: hex, kind: "release", taken, version: `sha256:${hex}`, services };
+  write(at(`.snapshots/${hex}/about.json`), `${JSON.stringify(about)}\n`);
 }
 
 /** The one-time approval for `hex`, valid for `seconds` more (negative: expired). */
@@ -289,9 +325,7 @@ describe.skipIf(!shWorks())(
         expect(calls().find((call) => call.includes(" --entrypoint sh db "))).toMatch(
           /^docker compose run --rm --no-deps -T --user \d+:\d+ -v \S+\/srv\/apps\/shop-staging\/\.snapshots\/a{64}\.partial:\/snapshot:rw --entrypoint sh db -c /,
         );
-        expect(result.output).toContain(
-          "OpsCrew took a snapshot of the databases before this release",
-        );
+        expect(result.output).toContain("OpsCrew took a snapshot of the data before this release");
         expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
         if (!windows) {
           expect(mode(".snapshots")).toBe("700");
@@ -330,7 +364,7 @@ describe.skipIf(!shWorks())(
           const result = deploy(release, disk);
           expect(result.status, result.output).toBe(0);
           expect(result.output).toContain(
-            `::warning::The disk that holds ${appDir()} has less than 1 GiB or 10% free, so OpsCrew takes no snapshot of the databases this time`,
+            `::warning::The disk that holds ${appDir()} has less than 1 GiB or 10% free, so OpsCrew takes no snapshot of the data this time`,
           );
           expect(result.output).toContain(
             "deploy.keepSnapshots in opscrew/environments/staging/plan.yaml",
@@ -356,7 +390,7 @@ describe.skipIf(!shWorks())(
         const result = deploy(release, { DUMP_FAIL: "db" });
         expect(result.status).toBe(1);
         expect(result.output).toContain(
-          `::error::The snapshot of the databases before this release failed, so the new version was not started and the previous version keeps serving. The dump's output stays on the server in ${appDir()}/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix its cause and push again, or set deploy.snapshots: false in opscrew/environments/staging/plan.yaml to deploy without snapshots.`,
+          `::error::The snapshot of the data before this release failed, so the new version was not started and the previous version keeps serving. The copies' output stays on the server in ${appDir()}/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command). Fix its cause and push again, or set deploy.snapshots: false in opscrew/environments/staging/plan.yaml to deploy without snapshots.`,
         );
         expect(result.output).not.toContain("row-value-from-the-database");
         expect(read(".snapshots/snapshot.log")).toContain("row-value-from-the-database");
@@ -375,8 +409,11 @@ describe.skipIf(!shWorks())(
         expect(deploy(release).status).toBe(0);
         expect(snapshots()).toEqual(["2".repeat(64), "3".repeat(64), A].sort());
 
+        // Each deploy uploads the snapshot script of its plan.
         write(at(".env"), `APP_IMAGE=${image(A)}\n`);
-        expect(deploy(withPlan(release, { deploy: { keepSnapshots: 1 } })).status).toBe(0);
+        const keepOne = withPlan(release, { deploy: { keepSnapshots: 1 } });
+        upload(keepOne);
+        expect(deploy(keepOne).status).toBe(0);
         expect(snapshots()).toEqual([A]);
       });
 
@@ -715,7 +752,7 @@ describe.skipIf(!shWorks())(
         const result = rollback(knex);
         expect(result.status).toBe(1);
         expect(result.output).toContain(
-          "::error::Migrating the database down failed, and no copy of the database from before the rollback was saved (OpsCrew dumps only the PostgreSQL, MySQL, MariaDB and MongoDB databases on the app's server), so the database may be partly changed; the running version starts again.",
+          "::error::Migrating the database down failed, and no copy of the database from before the rollback was saved (OpsCrew saves only the PostgreSQL, MySQL, MariaDB, MongoDB and SQLite databases on the app's server), so the database may be partly changed; the running version starts again.",
         );
         expect(oneOffs()).toEqual([]);
         expect(callAt("docker compose start app")).toBeGreaterThan(-1);
@@ -913,6 +950,105 @@ describe.skipIf(!shWorks())(
       });
     });
 
+    describe("with every kind of data (US7)", () => {
+      /**
+       * `shop` in staging on SQLite with PostgreSQL `db`, a Valkey queue and the stop-only Kafka,
+       * which the release snapshot copies (`deploy.snapshotStop`), and RabbitMQ (`mq`), which it
+       * leaves out.
+       */
+      const base = withSqlite(
+        withBuild(
+          inEnvironment(
+            withServices([
+              { kind: "postgres", name: "db" },
+              { kind: "valkey", name: "queue", options: { mode: "queue" } },
+              { kind: "kafka", name: "kafka" },
+              { kind: "rabbitmq", name: "mq" },
+            ]),
+            { name: "staging" },
+          ),
+          "generated-dockerfile",
+        ),
+      );
+      const every = DeployPlanSchema.parse({
+        ...base,
+        deploy: { ...base.deploy, snapshotStop: ["kafka"] },
+      });
+      const PARTS = ["db", "queue", "kafka", "mq", "sqlite"];
+      const FILES = ["db.dump", "queue.rdb", "kafka.tar", "sqlite.db"];
+      const each = (content: string) => {
+        for (const part of PARTS) setDb(`${part} ${content}\n`, part);
+      };
+      /** A's release snapshot, taken by the deploy of B, then B's newer data. */
+      const deployedB = () => {
+        upload(every);
+        write(at(".env"), `APP_IMAGE=${image(A)}\n`);
+        each("rows of A");
+        const deployed = run(switchCommands(every, []), B, "deploy");
+        expect(deployed.status, deployed.output).toBe(0);
+        each("rows of B");
+        rmSync(`${work}/docker.log`);
+        return deployed;
+      };
+
+      it("copies every kind before a release, stop-only ones only in deploy.snapshotStop", () => {
+        const deployed = deployedB();
+        for (const file of FILES) {
+          expect(read(`.snapshots/${A}/${file}`)).toBe(`${file.split(".")[0]} rows of A\n`);
+        }
+        expect(existsSync(at(`.snapshots/${A}/mq.tar`))).toBe(false);
+        const about = JSON.parse(read(`.snapshots/${A}/about.json`) ?? "");
+        expect(about).toMatchObject({ id: A, kind: "release", version: `sha256:${A}` });
+        expect(about.services.map((s: { name: string; skipped?: true }) => s)).toContainEqual({
+          name: "mq",
+          kind: "rabbitmq",
+          skipped: true,
+        });
+        expect(deployed.output).toContain(
+          "mq was left out of the snapshot before this release: it must stop for its copy.",
+        );
+        expect(deployed.output).toContain(
+          "OpsCrew took a snapshot of the data before this release",
+        );
+      });
+
+      it("restores every kind on a rollback, after copying each under the running version", () => {
+        deployedB();
+        approve(A, "snapshot");
+        const result = run(switchCommands(every, []), A, "rollback");
+        expect(result.status, result.output).toBe(0);
+        for (const part of ["db", "queue", "kafka", "sqlite"]) {
+          expect(db(part)).toBe(`${part} rows of A\n`);
+        }
+        expect(db("mq")).toBe("mq rows of B\n");
+        for (const file of FILES) {
+          expect(read(`.snapshots/${B}/${file}`)).toBe(`${file.split(".")[0]} rows of B\n`);
+        }
+        const order = [
+          "compose stop app",
+          `${B}.partial:/snapshot:rw --entrypoint sh db `,
+          "docker compose stop -t 120 kafka",
+          `${A}:/snapshot:ro --entrypoint sh db `,
+          "appendonly.aof.1.base.rdb",
+          "kamal-proxy deploy shop-staging",
+        ].map(callAt);
+        expect(order).toEqual([...order].sort((x, y) => x - y));
+        expect(order.every((index) => index > -1)).toBe(true);
+      });
+
+      it("puts every kind back when the restore fails", () => {
+        deployedB();
+        approve(A, "snapshot");
+        const result = run(switchCommands(every, []), A, "rollback", { RESTORE_FAIL: A });
+        expect(result.status).toBe(1);
+        for (const part of PARTS) expect(db(part)).toBe(`${part} rows of B\n`);
+        expect(result.output).toContain(
+          "failed, so OpsCrew put the database back as it was before the rollback",
+        );
+        expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+      });
+    });
+
     describe("with snapshots off and no approval", () => {
       const prod = withProcesses(withPlan(testPlan(), { releaseCommand: "npm run migrate" }), {
         workers: [{ name: "worker", command: "node worker.js" }],
@@ -953,7 +1089,7 @@ describe.skipIf(!shWorks())(
 );
 
 describe("the scripts' database commands", () => {
-  const four = snapshotFunctions(fourDatabases, '"$APPS_DIR"/shop-staging');
+  const four = snapshotFunctions(fourDatabases, "app", '"$APPS_DIR"/shop-staging');
   const line = (service: string, access: "rw" | "ro") =>
     four.find((l) => l.includes(` ${access} ${service} '`)) ?? "";
 
@@ -998,18 +1134,22 @@ describe("the scripts' database commands", () => {
   });
 
   it("are not in a plan without a database on the app's server", () => {
-    expect(snapshotFunctions(testPlan({ postgres: false }), '"$APPS_DIR"/shop')).toEqual([]);
+    expect(snapshotFunctions(testPlan({ postgres: false }), "app", '"$APPS_DIR"/shop')).toEqual([]);
   });
 });
 
 describe("the start script's database lines", () => {
   const script = (plan: DeployPlan) => switchCommands(plan, []).join("\n");
 
-  it("take no snapshot and read no approval without a database or down migrations", () => {
+  it("take no snapshot and read no approval without data or down migrations", () => {
     const plain = testPlan({ postgres: false });
     for (const plan of [plain, inEnvironment(plain, { name: "staging" })]) {
       for (const text of [script(plan), rollbackCommands(plan).join("\n")]) {
-        expect(text).not.toMatch(/snapshot|rollback-database|database\.changed|database=/);
+        // Only an earlier schedule's crontab line goes.
+        const lines = text.split("\n").filter((line) => !line.startsWith("if crontab -l "));
+        expect(lines.join("\n")).not.toMatch(
+          /snapshot|rollback-database|database\.changed|database=/,
+        );
       }
     }
   });

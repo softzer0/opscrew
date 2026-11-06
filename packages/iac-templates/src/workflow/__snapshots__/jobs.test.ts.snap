@@ -358,6 +358,331 @@ jobs:
           scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/edge "deploy@\${HOST}:/srv/apps/shop/"
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/app.env'
           printf '%s\\n' "\${OPSCREW_SERVICE_DB_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/db.env'
+          ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/snapshot.sh.new && mv -f /srv/apps/shop/snapshot.sh.new /srv/apps/shop/snapshot.sh' <<'SNAPSHOT'
+          # OpsCrew's snapshots of shop's data on the app's server, generated from opscrew/plan.yaml; each deploy uploads it.
+          #   sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]...
+          #   sh snapshot.sh restore <id> [--only <service>]
+          #   sh snapshot.sh list
+          #   sh snapshot.sh delete <id>
+          #   sh snapshot.sh offsite <id>
+          APPS_DIR="\${OPSCREW_APPS_DIR:-/srv/apps}"
+          EDGE_DIR="\${OPSCREW_EDGE_DIR:-/srv/edge}"
+          set -eu
+          cd "$APPS_DIR"/shop
+          edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
+          SNAPSHOT_PARTS='db'
+          SNAPSHOT_ONLINE='db'
+          part_file() {
+            case "$1" in
+              db)
+                echo db.dump
+                ;;
+              *) return 1 ;;
+            esac
+          }
+          part_kind() {
+            case "$1" in
+              db)
+                echo postgres
+                ;;
+              *) return 1 ;;
+            esac
+          }
+          snapshot_room() {
+            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
+            rm -rf .snapshots/*.partial .snapshots/*.taking
+            return 1
+          }
+          snapshot_run() {
+            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
+          }
+          snapshot_box() {
+            _box="$(docker compose ps -aq "$2")"
+            [ -n "$_box" ] || return 1
+            docker run --rm -i --network none --volumes-from "$_box:$1" <pin:IMAGES.busybox> sh -c "$3" 2>> .snapshots/snapshot.log
+          }
+          snapshot_stop() {
+            docker compose stop -t 120 "$1" >> .snapshots/snapshot.log 2>&1 || return 1
+            for _stopped in $(docker compose ps -aq "$1"); do
+              case "$(docker inspect --format '{{.State.Status}} {{.State.ExitCode}}' "$_stopped")" in
+                "exited 137") return 1 ;;
+                "exited "* | "created "*) ;;
+                *) return 1 ;;
+              esac
+            done
+          }
+          snapshot_start() {
+            docker compose up -d --no-deps --no-recreate --wait "$1" >> .snapshots/snapshot.log 2>&1
+          }
+          snapshot_tar() {
+            _ran="$(docker compose ps -q "$1")"
+            _copied=1
+            if ! snapshot_stop "$1"; then
+              printf '%s did not stop cleanly within 120 seconds (Docker killed it when the time ran out, or it ran out of memory), so OpsCrew did not copy its files.\\n' "$1" >&2
+            elif snapshot_box ro "$1" "tar -C / -cf - $3" < /dev/null > .snapshots/"$2"/"$1".tar; then
+              _copied=0
+            fi
+            if [ -n "$_ran" ]; then snapshot_start "$1" || return 1; fi
+            return "$_copied"
+          }
+          snapshot_untar() {
+            docker compose stop -t 120 "$1" >> .snapshots/snapshot.log 2>&1 || return 1
+            snapshot_box rw "$1" "$3" < .snapshots/"$2"/"$1".tar || return 1
+            snapshot_start "$1"
+          }
+          part_take() {
+            case "$1" in
+              db)
+                snapshot_run "$2" rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app'
+                ;;
+              *) return 1 ;;
+            esac
+          }
+          part_restore() {
+            case "$1" in
+              db)
+                snapshot_run "$2" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump'
+                ;;
+              *) return 1 ;;
+            esac
+          }
+          snapshot_about() {
+            _about_version="$(sed -n 's/^APP_IMAGE=.*@\\(sha256:[0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+            printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$1" "$2" "$3" "$_about_version"
+            _about_folder="$4"
+            shift 4
+            _about_sep=""
+            for _about_part in $SNAPSHOT_PARTS; do
+              printf %s "$_about_sep"
+              _about_sep=","
+              case " $* " in
+                *" $_about_part "*)
+                  _about_file="$(part_file "$_about_part")"
+                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" ;;
+                *) printf '{"name":"%s","kind":"%s","skipped":true}' "$_about_part" "$(part_kind "$_about_part")" ;;
+              esac
+            done
+            printf ']}\\n'
+          }
+          snapshot_take() {
+            _take_id="$1"; _take_kind="$2"; shift 2
+            _take_folder="$_take_id.partial"
+            if [ "$_take_kind" = manual ]; then _take_folder="$_take_id.taking"; fi
+            _take_in=.snapshots/"$_take_folder"
+            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial .snapshots/*.taking && mkdir "$_take_in" && : > .snapshots/snapshot.log) || return 1
+            snapshot_room || return 2
+            for _take_part in "$@"; do
+              if ! (umask 077; part_take "$_take_part" "$_take_folder"); then
+                printf 'The copy of %s failed.\\n' "$_take_part" >&2
+                rm -rf "$_take_in"
+                return 1
+              fi
+              snapshot_room || return 2
+            done
+            _taken="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            (umask 077 && echo "$_taken" > "$_take_in"/taken && snapshot_about "$_take_id" "$_take_kind" "$_taken" "$_take_in" "$@" > "$_take_in"/about.json) || return 1
+            rm -rf .snapshots/"$_take_id" && mv "$_take_in" .snapshots/"$_take_id"
+          }
+          snapshot_complete() {
+            [ -f .snapshots/"$1"/about.json ] || return 1
+            for _complete_file in $(grep -o '"file":"[^"]*"' .snapshots/"$1"/about.json | cut -d '"' -f 4); do
+              [ -f .snapshots/"$1"/"$_complete_file" ] || return 1
+            done
+          }
+          snapshot_parts() {
+            for _listed in $SNAPSHOT_PARTS; do
+              if [ -f .snapshots/"$1"/"$(part_file "$_listed")" ]; then echo "$_listed"; fi
+            done
+          }
+          snapshot_restore() {
+            _restore_id="$1"; shift
+            if [ "$#" -eq 0 ]; then set -- $(snapshot_parts "$_restore_id"); fi
+            for _restore_part in "$@"; do
+              part_restore "$_restore_part" "$_restore_id" || return 1
+            done
+          }
+          snapshot_usage() {
+            echo 'Usage: sh snapshot.sh take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... | restore <id> [--only <service>] | list | delete <id> | offsite <id>' >&2
+          }
+          snapshot_id() {
+            case "$1" in
+              "" | *[!0-9A-Za-z]*) echo 'A snapshot'\\''s id has only letters and digits.' >&2; return 1 ;;
+            esac
+          }
+          snapshot_known() {
+            case " $SNAPSHOT_PARTS " in *" $1 "*) return 0 ;; esac
+            printf '%s is no service with data on the app'\\''s server.\\n' "$1" >&2
+            return 1
+          }
+          snapshot_new_id() {
+            _new="$(date -u +%Y%m%dT%H%M%SZ)"
+            while [ -e .snapshots/"$_new" ]; do sleep 1; _new="$(date -u +%Y%m%dT%H%M%SZ)"; done
+            echo "$_new"
+          }
+          snapshot_cmd_take() {
+            _kind="\${1:-}"
+            case "$_kind" in manual | release | scheduled) shift ;; *) snapshot_usage; return 1 ;; esac
+            case "$_kind" in
+              release) _stop='' ;;
+              scheduled) _stop='' ;;
+              *) _stop="" ;;
+            esac
+            _skip=""
+            while [ "$#" -gt 0 ]; do
+              case "$1" in --skip | --stop) [ "$#" -ge 2 ] || { snapshot_usage; return 1; } ;; *) snapshot_usage; return 1 ;; esac
+              snapshot_known "$2" || return 1
+              if [ "$1" = --skip ]; then
+                _skip="$_skip $2"
+              else
+                case " $SNAPSHOT_ONLINE " in *" $2 "*)
+                  printf '%s is copied while it runs, so it never stops: leave out --stop %s.\\n' "$2" "$2" >&2
+                  return 1 ;;
+                esac
+                _stop="$_stop $2"
+              fi
+              shift 2
+            done
+            case "$_kind" in
+              release)
+                _id="$(sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .env 2> /dev/null || true)"
+                if [ -z "$_id" ]; then
+                  echo 'The app'\\''s .env on this server names no version by its image digest, so there is no running release to take a snapshot of.' >&2
+                  return 1
+                fi ;;
+              scheduled)
+                _hour=$(( $(date +%s) / 3600 ))
+                echo 'Scheduled snapshots are off (snapshots.schedule in opscrew/plan.yaml).' >&2
+                return 1 ;;
+              *) _id="$(snapshot_new_id)" ;;
+            esac
+            _parts=""
+            for _each in $SNAPSHOT_PARTS; do
+              case " $_skip " in *" $_each "*) continue ;; esac
+              case " $SNAPSHOT_ONLINE $_stop " in *" $_each "*) _parts="$_parts $_each"; continue ;; esac
+              case "$_kind" in
+                manual) printf '%s was left out: it must stop for its copy. Name it with --stop %s to stop it for its copy.\\n' "$_each" "$_each" >&2 ;;
+                release) printf '%s was left out of the snapshot before this release: it must stop for its copy. Name it in deploy.snapshotStop in opscrew/plan.yaml to copy it before each release.\\n' "$_each" >&2 ;;
+                scheduled) printf '%s was left out of the scheduled snapshot: it must stop for its copy. Name it in snapshots.schedule.stop in opscrew/plan.yaml to copy it on the schedule.\\n' "$_each" >&2 ;;
+              esac
+            done
+            _rc=0
+            snapshot_take "$_id" "$_kind" $_parts || _rc=$?
+            if [ "$_rc" -eq 2 ]; then
+              printf 'The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew took no snapshot. Free some space, or delete snapshots you no longer need (opscrew snapshot delete).\\n' "$APPS_DIR"/shop >&2
+              return 2
+            fi
+            if [ "$_rc" -ne 0 ]; then
+              printf 'OpsCrew took no snapshot. The output of the copies stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+              return 1
+            fi
+            case "$_kind" in
+              release)
+                for _each in .snapshots/*/taken; do
+                  _folder="\${_each%/taken}"
+                  case "\${_folder#.snapshots/}" in *[!0-9a-f]*) continue ;; esac
+                  if [ -f "$_each" ]; then echo "$(cat "$_each") $_folder"; fi
+                done | sort -r | sed '1,3d' | while read -r _ _folder; do rm -rf "$_folder"; done
+                ;;
+            esac
+            echo "$_id"
+          }
+          snapshot_cmd_restore() {
+            [ "$#" -ge 1 ] || { snapshot_usage; return 1; }
+            _id="$1"
+            shift
+            snapshot_id "$_id" || return 1
+            _only=""
+            if [ "$#" -gt 0 ]; then
+              if [ "$#" -ne 2 ] || [ "$1" != --only ]; then snapshot_usage; return 1; fi
+              snapshot_known "$2" || return 1
+              _only="$2"
+            fi
+            if [ ! -f .restore-snapshot ]; then
+              echo 'A restore needs its one-time approval on this server (.restore-snapshot), which opscrew restore writes once you approve it, so nothing was changed. Run opscrew restore.' >&2
+              return 1
+            fi
+            approved=""; choice=""; expiry=""
+            read -r approved choice expiry < .restore-snapshot || true
+            rm -f .restore-snapshot
+            if [ "$approved" != "$_id" ] || [ "$choice" != "\${_only:--}" ]; then
+              echo 'The one-time approval on this server (.restore-snapshot) is for another restore, so OpsCrew removed it and changed nothing. Run opscrew restore again.' >&2
+              return 1
+            fi
+            case "$expiry" in "" | *[!0-9]* | ???????????*) expiry=0 ;; esac
+            if [ "$expiry" -le "$(date +%s)" ]; then
+              echo 'The one-time approval of this restore expired before it started, so nothing was changed. Run opscrew restore again.' >&2
+              return 1
+            fi
+            if ! snapshot_complete "$_id"; then
+              printf 'The snapshot %s is not complete on this server, so nothing was changed.\\n' "$_id" >&2
+              return 1
+            fi
+            if [ -z "$_only" ]; then
+              _parts="$(snapshot_parts "$_id")"
+            elif [ -f .snapshots/"$_id"/"$(part_file "$_only")" ]; then
+              _parts="$_only"
+            else
+              printf 'The snapshot %s holds no copy of %s, so nothing was changed.\\n' "$_id" "$_only" >&2
+              return 1
+            fi
+            printf 'OpsCrew restores the snapshot %s: the app'\\''s requests wait, and the app stops until its data is back.\\n' "$_id" >&2
+            trap 'edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true' EXIT
+            edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            docker compose stop app
+            _saved="$(snapshot_new_id)"
+            _rc=0
+            snapshot_take "$_saved" manual $_parts || _rc=$?
+            if [ "$_rc" -ne 0 ]; then
+              docker compose start app
+              if [ "$_rc" -eq 2 ]; then
+                printf 'The disk that holds %s has too little free space to copy the current data before the restore, so nothing was changed. Free some space and run opscrew restore again.\\n' "$APPS_DIR"/shop >&2
+              else
+                printf 'OpsCrew could not copy the current data before the restore, so nothing was changed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$APPS_DIR"/shop >&2
+              fi
+              return 1
+            fi
+            if snapshot_restore "$_id" $_parts; then
+              docker compose start app
+              printf 'OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.\\n' "$_id" "$_saved" >&2
+              return 0
+            fi
+            if snapshot_restore "$_saved" $_parts; then
+              docker compose start app
+              printf 'Restoring the snapshot %s failed, so OpsCrew put the data back as it was before the restore (the snapshot %s), and the app starts again: nothing changed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$_saved" "$APPS_DIR"/shop >&2
+              return 1
+            fi
+            printf 'Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed, and the app was not started. The copy from just before the restore stays in %s/.snapshots/%s: restore it with opscrew restore %s once the cause is fixed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$APPS_DIR"/shop "$_saved" "$_saved" "$APPS_DIR"/shop >&2
+            return 1
+          }
+          if [ "\${OPSCREW_SNAPSHOT_FUNCTIONS:-}" = 1 ]; then return 0; fi
+          case "\${1:-}" in
+            list)
+              for _each in .snapshots/*/about.json; do if [ -f "$_each" ]; then cat "$_each"; fi; done ;;
+            offsite)
+              [ "$#" -eq 2 ] || { snapshot_usage; exit 1; }
+              snapshot_id "$2" ;;
+            take | restore | delete)
+              exec 7> .start.lock
+              flock 7
+              _command="$1"
+              shift
+              case "$_command" in
+                take) snapshot_cmd_take "$@" ;;
+                restore) snapshot_cmd_restore "$@" ;;
+                delete)
+                  [ "$#" -eq 1 ] || { snapshot_usage; exit 1; }
+                  snapshot_id "$1"
+                  if [ ! -d .snapshots/"$1" ]; then
+                    printf 'There is no snapshot %s on the app'\\''s server.\\n' "$1" >&2
+                    exit 1
+                  fi
+                  rm -rf .snapshots/"$1" ;;
+              esac ;;
+            *)
+              snapshot_usage
+              exit 1 ;;
+          esac
+          SNAPSHOT
       - id: start
         name: Start the new version
         env:
@@ -426,29 +751,6 @@ jobs:
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
-          snapshot_room() {
-            if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
-            printf '::warning::The disk that holds %s has less than 1 GiB or 10%% free, so OpsCrew takes no snapshot of the databases this time, and a rollback can'\\''t restore them to this moment. Free some space, or keep fewer snapshots (deploy.keepSnapshots in opscrew/plan.yaml).\\n' "$APPS_DIR"/shop
-            rm -rf .snapshots/*.partial
-            return 1
-          }
-          snapshot_run() {
-            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
-          }
-          snapshot_take() {
-            (umask 077 && mkdir -p .snapshots && rm -rf .snapshots/*.partial && mkdir .snapshots/"$1".partial && : > .snapshots/snapshot.log) || return 1
-            snapshot_room || return 2
-            snapshot_run "$1".partial rw db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f /snapshot/db.dump app' || { rm -rf .snapshots/"$1".partial; return 1; }
-            snapshot_room || return 2
-            (umask 077 && date -u +%Y-%m-%dT%H:%M:%SZ > .snapshots/"$1".partial/taken) || return 1
-            rm -rf .snapshots/"$1" && mv .snapshots/"$1".partial .snapshots/"$1"
-          }
-          snapshot_complete() {
-            [ -f .snapshots/"$1"/taken ] && [ -f .snapshots/"$1"/db.dump ]
-          }
-          snapshot_restore() {
-            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
-          }
           docker compose pull
           mkdir -p "$EDGE_DIR"/sites "$EDGE_DIR"/tls
           (
@@ -497,11 +799,13 @@ jobs:
             rm -rf "$EDGE_DIR"/tls/shop
           ) 9> "$EDGE_DIR"/.lock
           docker compose up -d --no-deps --wait db
+          if crontab -l 2> /dev/null | grep -qF '# opscrew-snapshots shop'; then crontab -l | grep -vF '# opscrew-snapshots shop' | crontab -; fi
           if [ "$database" != keep ]; then
             if [ -z "$running" ] || [ "$running" = "$target" ]; then
               echo '::error::The server'\\''s .env names no other version by its image digest, so OpsCrew can'\\''t save its database before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is.'
               exit 1
             fi
+            OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
             if [ "$database" = snapshot ] && ! snapshot_complete "$target"; then
               echo '::error::The snapshot this rollback was approved to restore is no longer complete on the server (in .snapshots), so the rollback changed nothing. Run opscrew rollback again to choose again.'
               exit 1
@@ -513,30 +817,36 @@ jobs:
             trap 'edge exec -T kamal-proxy kamal-proxy resume shop < /dev/null > /dev/null 2>&1 || true; docker logout ghcr.io > /dev/null 2>&1' EXIT
             edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             docker compose stop app
-            snap=0
-            snapshot_take "$running" || snap=$?
-            if [ "$snap" -eq 1 ]; then
-              printf '::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again, or keep the database as it is.\\n' "$APPS_DIR"/shop
-              rm -f .database.changed; docker compose start app; exit 1
+            parts=""
+            case "$database" in
+              snapshot) parts="$(snapshot_parts "$target")" ;;
+            esac
+            if [ -n "$parts" ]; then
+              snap=0
+              snapshot_take "$running" release $parts || snap=$?
+              if [ "$snap" -eq 1 ]; then
+                printf '::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again, or keep the database as it is.\\n' "$APPS_DIR"/shop
+                rm -f .database.changed; docker compose start app; exit 1
+              fi
+              if [ "$snap" -eq 2 ]; then
+                echo '::error::The server has too little free disk to save the current database before changing it, so the rollback changed nothing and the running version starts again. Free some space and run opscrew rollback again.'
+                rm -f .database.changed; docker compose start app; exit 1
+              fi
+              saved="$running"
             fi
-            if [ "$snap" -eq 2 ]; then
-              echo '::error::The server has too little free disk to save the current database before changing it, so the rollback changed nothing and the running version starts again. Free some space and run opscrew rollback again.'
-              rm -f .database.changed; docker compose start app; exit 1
-            fi
-            saved="$running"
             (umask 077; printf 'target=%s\\nAPP_IMAGE=%s\\nsaved=%s\\nchanged=%s\\n' "$target" "$before" "$saved" 1 > .database.changed)
             failed=0
             case "$database" in
               snapshot)
                 what="Restoring the snapshot of the database"
-                if snapshot_restore "$target"; then
+                if snapshot_restore "$target" $parts; then
                   echo "OpsCrew restored the database from the snapshot taken $(cat .snapshots/"$target"/taken)."
                 else
                   failed=1
                 fi ;;
             esac
             if [ "$failed" -ne 0 ]; then
-              if snapshot_restore "$saved"; then
+              if snapshot_restore "$saved" $parts; then
                 printf '::error::%s failed, so OpsCrew put the database back as it was before the rollback, and the running version starts again: the rollback changed nothing. The output of the dumps and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/RUNBOOK.md has the SSH command). Fix the cause and run opscrew rollback again.\\n' "$what" "$APPS_DIR"/shop
                 rm -f .database.changed; docker compose start app; exit 1
               fi
@@ -641,12 +951,6 @@ jobs:
             ) || true
           }
           edge() { docker compose -p opscrew-edge -f "$EDGE_DIR"/compose.yaml "$@"; }
-          snapshot_run() {
-            (umask 077; docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" -v "$APPS_DIR"/shop/.snapshots/"$1":/snapshot:"$2" --entrypoint sh "$3" -c "$4" < /dev/null >> .snapshots/snapshot.log 2>&1)
-          }
-          snapshot_restore() {
-            snapshot_run "$1" ro db 'umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction /snapshot/db.dump' || return 1
-          }
           if [ -f .database.changed ]; then
             marked="$(sed -n 's/^target=//p' .database.changed)"
             before="$(sed -n 's/^APP_IMAGE=//p' .database.changed)"
@@ -655,6 +959,7 @@ jobs:
             fi
           fi
           if [ -f .database.changed ]; then
+            OPSCREW_SNAPSHOT_FUNCTIONS=1 . ./snapshot.sh
             result=unchanged
             if grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then
               result=restored

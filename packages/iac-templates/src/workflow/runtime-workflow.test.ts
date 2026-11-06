@@ -252,7 +252,10 @@ describe("renderWorkflow", () => {
   });
 
   it("runs no release step without a release command", () => {
-    expect(serverScript(plan({ domain: "shop.example.com" }))).not.toContain("release");
+    // A snapshot's kind `release` may be there; no release command.
+    expect(serverScript(plan({ domain: "shop.example.com" }))).not.toMatch(
+      /-T release|release\.log/,
+    );
     expect(withDomain.content).not.toContain("-T release");
   });
 

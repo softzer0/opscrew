@@ -910,8 +910,8 @@ describe("the deploy job on a self-hosted runner", { timeout: 60_000 }, () => {
 
   it("uses the server's folders on the server's runner, and the local runner's own", () => {
     expect(runOf(server, UPLOAD)).toContain("\ndir=/srv/apps/shop-staging\n");
-    // Only the start and rollback scripts' roots name this computer's folders, as defaults that
-    // keep the server's: the server's runner does not set them.
+    // Only the snapshot, start and rollback scripts' roots name this computer's folders, as
+    // defaults that keep the server's: the server's runner does not set them.
     const roots = [
       'APPS_DIR="${OPSCREW_APPS_DIR:-/srv/apps}"',
       'EDGE_DIR="${OPSCREW_EDGE_DIR:-/srv/edge}"',
@@ -920,7 +920,7 @@ describe("the deploy job on a self-hosted runner", { timeout: 60_000 }, () => {
       .split("\n")
       .filter((line) => /OPSCREW_(APPS|EDGE)_DIR/.test(line))
       .map((line) => line.trim());
-    expect(named).toEqual([...roots, ...roots]);
+    expect(named).toEqual([...roots, ...roots, ...roots]);
     // The local runner's scripts start with them, and take its folders from its environment.
     for (const step of ["start", ROLLBACK]) {
       const lines = heredoc(runOf(local, step)).split("\n");
