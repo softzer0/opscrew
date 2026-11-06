@@ -42,17 +42,30 @@ interface AddFlags extends RunnerFlags {
   hostKey?: string;
   /** `--hostname`: the environment's hostname, answer `domain` (not with `--previews`). */
   hostname?: string;
-  /** `--previews`, with `--cap`, `--size`, `--lifetime`, `--domain` and `--seed` or `--no-seed`. */
+  /**
+   * `--previews`, with `--cap`, `--size`, `--lifetime`, `--domain`, `--seed` or `--no-seed`,
+   * and the opt-ins `--share-server <env>` and `--app-zone`.
+   */
   previews?: boolean;
   cap?: string;
   size?: string;
   lifetime?: string;
   domain?: string;
   seed?: string | false;
+  shareServer?: string;
+  appZone?: boolean;
 }
 
-/** The flags that go only with `--previews`, by their key in {@link AddFlags}. */
-const PREVIEW_FLAGS = ["cap", "size", "lifetime", "domain", "seed"] as const;
+/** The flags that go only with `--previews`: their key in {@link AddFlags}, and their name. */
+const PREVIEW_FLAGS = {
+  cap: "--cap",
+  size: "--size",
+  lifetime: "--lifetime",
+  domain: "--domain",
+  seed: "--seed",
+  shareServer: "--share-server",
+  appZone: "--app-zone",
+} as const;
 
 /**
  * Refuses, before anything is asked, flags that don't go together: a previews flag without
@@ -61,9 +74,9 @@ const PREVIEW_FLAGS = ["cap", "size", "lifetime", "domain", "seed"] as const;
  * (each preview gets its own address in `--domain`).
  */
 function checkPreviewFlags(flags: AddFlags, command: string): void {
-  const given = PREVIEW_FLAGS.filter((key) => flags[key] !== undefined).map((key) =>
-    flags[key] === false ? "--no-seed" : `--${key}`,
-  );
+  const given = Object.entries(PREVIEW_FLAGS)
+    .filter(([key]) => flags[key as keyof typeof PREVIEW_FLAGS] !== undefined)
+    .map(([key, flag]) => (key === "seed" && flags.seed === false ? "--no-seed" : flag));
   if (flags.previews !== true) {
     if (given.length === 0) return;
     throw new OpsCrewError(
@@ -161,8 +174,13 @@ async function add(ctx: CliContext, named: string | undefined, flags: AddFlags):
   const ask = (questions: Parameters<typeof askQuestions>[0]) =>
     askQuestions(questions, { prompts });
   const optionId = flags.option?.trim() || undefined;
+  const shareServer = flags.shareServer?.trim();
   await addEnvironment(deps, {
     ...(previews ? { previews: true } : {}),
+    // The opt-ins (spec.md US9, US10): the agent prints their warnings; without them a terminal
+    // offers the choice and asks a confirmation that defaults to no.
+    ...(shareServer === undefined ? {} : { shareServer }),
+    ...(flags.appZone === true ? { appZone: true } : {}),
     ...(ctx.isInteractive
       ? {
           ask: async (questions) => ({
@@ -350,7 +368,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--previews",
-      "A preview environment: one preview of the app per pull request, built and deployed by GitHub Actions on a server of its own (--target hetzner, digitalocean or own; default prod's provider)",
+      "A preview environment: one preview of the app per pull request, built and deployed by GitHub Actions on a server of its own (--target hetzner, digitalocean or own; default prod's provider) or, with --share-server, another environment's",
     )
     .option("--cap <n>", "With --previews: how many previews run at once, 1 to 20 (default 3)")
     .option(
@@ -363,7 +381,15 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .option(
       "--domain <name>",
-      "With --previews: a domain used only for previews, a Cloudflare zone of yours, where each preview gets an address nobody can guess (pr-<number>-<random>.<name>); no default, and not the app's own domain (`opscrew domain buy <name>` buys one)",
+      "With --previews: a domain used only for previews, a Cloudflare zone of yours, where each preview gets an address nobody can guess (pr-<number>-<random>.<name>); no default, and not the app's own domain (`opscrew domain buy <name>` buys one) unless --app-zone",
+    )
+    .option(
+      "--share-server <env>",
+      "With --previews: run the previews on that environment's server, beside it, instead of a server of their own (never prod's); anyone who can push a branch then runs code beside its data and secrets, so only for an environment with test data and test keys",
+    )
+    .option(
+      "--app-zone",
+      "With --previews: --domain may be a name below the app's own domain (previews.<domain>); needs Cloudflare's Advanced Certificate Manager, a paid add-on, and Total TLS off, and cookies the app sets for the whole domain reach previews",
     )
     .option(
       "--seed <command>",

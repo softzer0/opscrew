@@ -397,6 +397,27 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   deployment". They are not for sites without a server, a Portainer or
   this computer; each runs its own empty databases (seeded when there is a seed), never prod's
   data.
+- **Previews with fewer servers or one domain, only by the user's choice.** A server and a domain
+  of their own stay the default: suggest neither opt-in, and when the user asks, say what it risks
+  before they choose. `--share-server <env>` (for example `dev`; in the terminal, a choice in
+  "Where should previews run?" with a confirmation that defaults to no) runs previews on that
+  environment's server, adding no server to the cost: anyone who can push a branch then runs code
+  beside that environment's data and secrets, which escaping its container would reach, and
+  reaches what its server serves on its web ports, so only for an environment with test data and
+  test keys. It is refused for prod or a server prod runs on, a server with other apps, without
+  public SSH (closed, or a Cloudflare Tunnel), with nginx as its proxy, on a private network, not
+  yet provisioned, or with a cap that doesn't fit (it says the cap that fits). While previews run
+  there, that environment's `destroy`, `retarget`, proxy switch and `env remove` are refused, and
+  `npx opscrew destroy --env preview` removes the previews, recipe and wildcard but never the
+  server. `--app-zone` with `--domain previews.<app's domain>` puts previews below the app's own
+  domain: it needs Cloudflare's Advanced Certificate Manager on that domain, a paid add-on turned
+  on in Cloudflare's dashboard (which shows its price; name no figure), and Total TLS off, and
+  cookies the app sets for the whole domain reach previews, where a pull request's code can read
+  them, and previews can set such cookies too. It is refused without ACM, with Total TLS on, with
+  records at or below the domain, or for a domain that is an app or environment hostname or a
+  parent of one, each with the dashboard steps. `destroy --env preview` removes the advanced
+  certificate; ACM stays on (and billed) until the user turns it off in the dashboard. Both are
+  set up in the user's terminal; the previews page of the guide has the details.
 - **Promotion.** An environment promoted from another (for example prod from staging) gets no
   build of its own: `opscrew_promote` with `to` deploys exactly the image its source runs. To roll
   it back, the user runs `npx opscrew rollback --env <name>` in their terminal (see "Rolling back"

@@ -13,7 +13,8 @@ request gives the address and says what happened.
 
 Previews run on one small server of their own, beside nothing else: no prod, no staging, no other
 app. That server is their whole cost. OpsCrew shows its monthly price, against your budget, when it
-designs the previews, before anything is created.
+designs the previews, before anything is created. If you'd rather run them on your dev or staging
+server, or below your app's own domain, see [Fewer servers or one domain](#fewer-servers-or-one-domain).
 
 Previews are an [environment](environments.md), named `preview` by default, so they have their own
 files, secrets, plans and approvals, and prod's plan, state, site and secrets stay exactly as they
@@ -36,13 +37,15 @@ OpsCrew asks only what previews need:
 - **Where they run.** A new small server at Hetzner Cloud or DigitalOcean (prod's provider by
   default), or [a server you already have](own-server.md) with a public address and nothing else
   on it. OpsCrew refuses a server another environment or app runs on: a pull request's code would
-  run beside it.
+  run beside it. Another environment's server is offered too, after a warning: see
+  [On another environment's server](#on-another-environments-server).
 - **How many run at once:** the cap, 3 by default (1 to 20). The server's size follows from the
   memory each preview needs, the app and its own services. Or you pick the size and the cap
   follows.
 - **Their domain**, if `--domain` didn't give it: there's no default. OpsCrew refuses your app's own
   domain, a name inside another zone, and a zone that already has web records (A, AAAA or CNAME),
-  because the previews' wildcard record and certificate cover every name in it.
+  because the previews' wildcard record and certificate cover every name in it. A name below your
+  app's domain works only by choice: see [Below your app's own domain](#below-your-apps-own-domain).
 - **Their data:** the seed command OpsCrew found in your app (for example
   `php artisan db:seed --force`), to confirm, another command, or none. See
   [Data and seeds](#data-and-seeds).
@@ -67,6 +70,8 @@ npx opscrew env add preview --previews --domain example.net --target own --seed 
 | `--seed <command>` | the command that fills a new preview's database, once |
 | `--no-seed` | no seed: each preview starts with empty databases |
 | `--target <provider>` | where they run: `hetzner`, `digitalocean` or `own` |
+| `--share-server <env>` | run them on that environment's server instead (see [On another environment's server](#on-another-environments-server)) |
+| `--app-zone` | let `--domain` be a name below your app's domain (see [Below your app's own domain](#below-your-apps-own-domain)) |
 
 Previews are always built and deployed on GitHub's machines: a pull request's code runs in the job,
 so a [self-hosted runner](runners.md) of yours is not offered for them.
@@ -213,6 +218,137 @@ deployment** button show the address to everyone who can read the pull request. 
 never real users' data. Previews also tell search engines not to index them
 (`X-Robots-Tag: noindex`).
 
+## Fewer servers or one domain
+
+A server and a domain of their own keep previews fully apart from everything else, which is why
+they are the default. Two choices trade some of that away: previews on a server you already pay
+for, or below your app's own domain. Each is off until you choose it, OpsCrew tells you what it
+risks before you do, and you can choose either, both or neither.
+
+### On another environment's server
+
+If you already have a dev or staging server, previews can run on it, beside that environment,
+instead of on a server of their own:
+
+```bash
+npx opscrew env add preview --previews --domain example.net --share-server dev
+```
+
+In a terminal, "Where should previews run?" also lists each environment's server that previews
+can share. Choosing one shows the warning and asks you to confirm; the answer is no unless you
+change it. In a script, `--share-server <env>` is your choice, and OpsCrew prints the warning:
+
+> Anyone who can push a branch to this repository then runs code on dev's server, beside its data
+> and secrets. If that code escaped its container, it could reach them. Without escaping, it
+> reaches whatever dev's server serves to the internet (its web ports), as any visitor can. Use it
+> only when dev holds test data and test keys.
+
+**Choose it** when dev holds only test data and test keys, and everyone who can push a branch may
+see them. **Keep a server of their own** when dev holds anything real, or when people you trust
+less than dev's own users can push branches.
+
+What changes:
+
+- **No server is created**, so the previews add no server to your monthly cost. Instead, dev's
+  design and [`advise`](advise.md) count the previews' memory (the cap times a preview's memory
+  limits) in what dev's server needs.
+- **One login.** Provision points the wildcard record at dev's server and installs the recipe
+  there through dev's own login, and the approval names dev and repeats the warning. `preview
+  list`, `logs` and `destroy`, and `status`, `verify` and `drift` with `--env preview`, reach the
+  server the way dev's own commands do. Nothing of dev's server address or logins is copied into
+  the preview environment's files.
+
+OpsCrew refuses, before anything changes:
+
+- **prod**, or any server prod runs on: previews never run beside prod's data;
+- **a server with other apps** than dev's (OpsCrew reads the server first);
+- **a server without public SSH**: one whose public SSH was closed with
+  `opscrew secure --close-public-ssh`, or one served through a Cloudflare Tunnel, because GitHub's
+  machines reach previews over SSH;
+- **a server whose proxy is nginx**: previews are served by Caddy, which every app on a server
+  shares;
+- **a server on a private network** (other servers, your devices, services or dashboards you
+  granted): a preview's containers could reach them without escaping anything;
+- **a preview environment, a Portainer, this computer or a site**;
+- **an environment not provisioned yet**: it has no server yet;
+- **a cap that doesn't fit** the memory dev's server has left after dev's own needs. OpsCrew says
+  the cap that fits;
+- **`--target` or `--size`** beside `--share-server`: the server is dev's, with its own size.
+
+While previews run on dev's server, dev refuses what would break them: `destroy --env dev`,
+`retarget --env dev`, a switch of its server to another proxy or to a Cloudflare Tunnel, closing
+its public SSH, and putting its server on a private network. `env remove dev` is refused while the
+preview environment names dev's server. Each refusal says to remove the previews first.
+
+**To undo it**, remove the previews; dev and its server stay as they are:
+
+```bash
+npx opscrew destroy --env preview --confirm shop-preview
+npx opscrew env remove preview
+```
+
+`destroy --env preview` removes the previews, the recipe and the wildcard record, never dev's
+server. To have previews on a server of their own again, add them again without
+`--share-server`.
+
+### Below your app's own domain
+
+Previews can use a name below your app's domain instead of a domain of their own. If your app runs
+at `shop.example.com`, previews could use `previews.example.com`, so that each preview is
+`pr-42-k3x9q7m2ab.previews.example.com`:
+
+```bash
+npx opscrew env add preview --previews --domain previews.example.com --app-zone
+```
+
+In a terminal, a name below your app's domain shows the warning and asks you to confirm; the answer
+is no unless you change it. In a script, `--app-zone` is your choice, and OpsCrew prints the
+warning. Without it, OpsCrew refuses the name and says to add `--app-zone`.
+
+**What it costs: Advanced Certificate Manager.** Cloudflare's free certificate covers names one
+level below your domain, not `pr-42-k3x9q7m2ab.previews.example.com`. To keep previews hidden
+behind the proxy, OpsCrew orders an advanced certificate for `*.previews.example.com` (and
+`example.com`), which needs Cloudflare's Advanced Certificate Manager (ACM) on your domain. ACM is
+a paid add-on you turn on in Cloudflare's dashboard, which shows its price; OpsCrew adds nothing for
+it to your budget. Public certificate logs then show `*.previews.example.com`, never a preview's
+name.
+
+**What it shares: your app's cookies.** In the warning's words, a cookie your app sets for the
+whole domain (`Domain=example.com`) reaches every preview, where a pull request's code can read it,
+and a preview can set such cookies for your app too. A login cookie set that way could be read by
+anyone who can push a branch. **Choose it** when your app sets its cookies for its own hostname
+only (no `Domain` attribute), and **keep a domain of their own** otherwise.
+
+OpsCrew refuses, before anything changes, and says where to fix it:
+
+- **ACM off** on your domain: turn it on in the Cloudflare dashboard (your domain → **SSL/TLS →
+  Edge Certificates**).
+- **Total TLS on**: it gives each proxied name a certificate of its own, and every public
+  certificate is published, so each preview's name would be too. Turn it off on the same page.
+- **Records at or below the domain** (`previews.example.com` or any name under it): delete them in
+  the dashboard if nothing uses them, or choose another name.
+- **A domain that is your app's or an environment's hostname, or a parent of one**: previews take
+  every name below their domain.
+- **Your app's domain itself** (`example.com`): previews need a name below it.
+
+Provision's plan then holds the proxied wildcard record and the advanced certificate, which you
+approve with the rest. Cloudflare issues the certificate after the plan is applied; provision waits
+up to 10 minutes for it. If it isn't ready by then, previews answer once it is, and
+`opscrew verify --env preview` shows when. `verify` and `drift` also check that the certificate is
+active and that Total TLS is still off.
+
+**To undo it**, remove the previews:
+
+```bash
+npx opscrew destroy --env preview --confirm shop-preview
+npx opscrew env remove preview
+```
+
+`destroy --env preview` removes the previews, the wildcard record and the advanced certificate.
+ACM stays on, and Cloudflare bills it, until you turn it off in Cloudflare's dashboard once nothing
+else of yours uses it; OpsCrew reminds you. To have previews on a domain of their own again, add them again with that domain and without
+`--app-zone`.
+
 ## Data and seeds
 
 Each preview runs its own copies of your app's databases and other services, on its own network,
@@ -303,8 +439,9 @@ npx opscrew env remove preview
 ```
 
 `destroy --env preview` removes every preview, the server (or, on a server you already have, the
-recipe and everything OpsCrew installed for it), the wildcard record, the environment's GitHub
-secrets and its GitHub environment. Prod and the other environments keep working. Images of
+recipe and everything OpsCrew installed for it; on another environment's server, only the recipe),
+the wildcard record (and the advanced certificate below your app's domain), the environment's
+GitHub secrets and its GitHub environment. Prod and the other environments keep working. Images of
 previews that were still running are deleted by your deploy workflows' image cleanup within 31
 days. `env remove` then deletes the environment's files, the preview workflow and the committed
 recipe.

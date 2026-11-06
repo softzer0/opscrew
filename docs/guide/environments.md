@@ -11,7 +11,9 @@ A change can then be tried somewhere first, and the live site is never the first
 it works in staging, you promote exactly that image to prod: nothing is rebuilt.
 
 A preview environment goes one step earlier: every pull request gets its own copy of the app at
-its own address, before anything is merged. See [Previews](previews.md).
+its own address, before anything is merged. See [Previews](previews.md). Previews get a server and a
+domain of their own, unless you choose to run them on your dev or staging server or below your
+app's domain: see [Fewer servers or one domain](previews.md#fewer-servers-or-one-domain).
 
 ## Prod is the default environment
 
@@ -483,7 +485,10 @@ rule entries and deploy secrets, its runner on a [runner machine](runners.md#run
 its GitHub environment when OpsCrew created it. Prod and the
 other environments keep working. `env remove` then deletes staging's files, and refuses while
 staging is still deployed or while another environment is promoted from it (set that one's source
-first, for example `npx opscrew env set prod --from main`).
+first, for example `npx opscrew env set prod --from main`). While previews run on staging's server
+([by your choice](previews.md#on-another-environments-server)), `destroy --env staging` and
+`env remove staging` are refused until the previews are removed (`destroy --env preview`, then
+`env remove preview`).
 
 ## The GitHub token
 

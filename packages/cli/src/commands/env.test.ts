@@ -1,10 +1,22 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { makeRequirements, nextPostgresFacts, TOKEN, testPlan } from "@opscrew/agents/testing";
+import { recordOwnServer } from "@opscrew/agents";
+import {
+  ED25519_FINGERPRINT,
+  FakeHostServer,
+  freshFacts,
+  hostTestPlan,
+  makeRequirements,
+  nextPostgresFacts,
+  OWN_IPV4,
+  TOKEN,
+  testPlan,
+} from "@opscrew/agents/testing";
 import type { CommandRunner, FetchLike } from "@opscrew/contracts";
-import { exists } from "@opscrew/core";
+import { exists, resolveProjectPaths } from "@opscrew/core";
 import { type Requirements, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
+import { withServices } from "../deps";
 import { inEnvironment, planFile, withEnvironments } from "../ui/__fixtures__/environments";
 import {
   projectContext,
@@ -13,6 +25,7 @@ import {
   type TempProject,
   tempProject,
 } from "../ui/__fixtures__/harness";
+import { fakeHome, OwnRunner, ownServices } from "../ui/__fixtures__/own";
 import type { UiChoice, UiPrompts } from "../ui/prompts";
 
 /** Prompts that take every question's default, recording what was asked. */
@@ -44,11 +57,32 @@ class DefaultPrompts implements UiPrompts {
 
 const PREVIEW_DOMAIN_QUESTION = "Which domain should previews use?";
 
-/** The defaults, and example.net for the preview domain, which has none. */
+/**
+ * The defaults, and example.net for the preview domain, which has none; `answers` answers the
+ * questions whose message starts with its keys instead.
+ */
 class PreviewDomainPrompts extends DefaultPrompts {
+  constructor(readonly answers: Record<string, string | boolean> = {}) {
+    super();
+  }
+  #answer(message: string): string | boolean | undefined {
+    const key = Object.keys(this.answers).find((prefix) => message.startsWith(prefix));
+    return key === undefined ? undefined : this.answers[key];
+  }
+  override async select(options: { message: string; options: UiChoice[]; initialValue?: string }) {
+    const answer = await super.select(options);
+    return String(this.#answer(options.message) ?? answer);
+  }
   override async text(options: { message: string; initialValue?: string }) {
     const answer = await super.text(options);
+    const given = this.#answer(options.message);
+    if (given !== undefined) return String(given);
     return options.message.startsWith(PREVIEW_DOMAIN_QUESTION) ? "example.net" : answer;
+  }
+  override async confirm(options: { message: string; initialValue?: boolean }) {
+    const answer = await super.confirm(options);
+    const given = this.#answer(options.message);
+    return given === undefined ? answer : given === true;
   }
 }
 
@@ -358,25 +392,37 @@ describe("opscrew env add", () => {
   describe("--previews", () => {
     const API = "https://api.cloudflare.com/client/v4";
 
-    /** Cloudflare's API with the app's zone example.com and the preview zone example.net, empty. */
+    /**
+     * Cloudflare's API with the app's zone example.com and the preview zone example.net, empty;
+     * example.com has Advanced Certificate Manager (`allocated` packs, 10 by default, 0 without
+     * it) and Total TLS off.
+     */
     const ZONES: Record<string, string> = { "example.com": "z1", "example.net": "z2" };
-    const cloudflare: FetchLike = async (input) => {
-      const url = new URL(String(input));
-      const ok = (result: unknown) =>
-        new Response(JSON.stringify({ success: true, errors: [], messages: [], result }), {
-          headers: { "content-type": "application/json" },
-        });
-      if (url.href.startsWith(`${API}/zones?`)) {
-        const name = url.searchParams.get("name") ?? "";
-        const id = ZONES[name];
-        return ok(id === undefined ? [] : [{ id, name, status: "active", name_servers: [] }]);
-      }
-      if (/^\/client\/v4\/zones\/z[12]\/dns_records$/.test(url.pathname)) return ok([]);
-      return new Response("unavailable in tests", { status: 503 });
-    };
+    const cloudflare =
+      (allocated = 10): FetchLike =>
+      async (input) => {
+        const url = new URL(String(input));
+        const ok = (result: unknown) =>
+          new Response(JSON.stringify({ success: true, errors: [], messages: [], result }), {
+            headers: { "content-type": "application/json" },
+          });
+        if (url.href.startsWith(`${API}/zones?`)) {
+          const name = url.searchParams.get("name") ?? "";
+          const id = ZONES[name];
+          return ok(id === undefined ? [] : [{ id, name, status: "active", name_servers: [] }]);
+        }
+        if (/^\/client\/v4\/zones\/z[12]\/dns_records$/.test(url.pathname)) return ok([]);
+        if (url.pathname === "/client/v4/zones/z1/ssl/certificate_packs/quota") {
+          return ok({ advanced: { allocated, used: 0 } });
+        }
+        if (url.pathname === "/client/v4/zones/z1/acm/total_tls") return ok({ enabled: false });
+        return new Response("unavailable in tests", { status: 503 });
+      };
 
     /** prod on shop.example.com in Cloudflare, and a context with a Cloudflare token. */
-    async function previewsApp(options: { interactive?: boolean; prompts?: UiPrompts } = {}) {
+    async function previewsApp(
+      options: { interactive?: boolean; prompts?: UiPrompts; allocated?: number } = {},
+    ) {
       project = await prodApp(
         makeRequirements({ domain: "shop.example.com", dnsProvider: "cloudflare" }),
       );
@@ -384,7 +430,7 @@ describe("opscrew env add", () => {
       return projectContext(project, {
         interactive: options.interactive ?? false,
         services: {
-          fetch: cloudflare,
+          fetch: cloudflare(options.allocated),
           ...(options.prompts === undefined ? {} : { prompts: options.prompts }),
         },
       });
@@ -415,6 +461,7 @@ describe("opscrew env add", () => {
         2,
       );
       expect(ctx.errors).toContain("is in your app's own domain example.com");
+      expect(ctx.errors).toContain("add --app-zone to put the previews below example.com");
       expect(await exists(planFile(ctx.cwd, "preview"))).toBe(false);
     });
 
@@ -438,6 +485,10 @@ describe("opscrew env add", () => {
         [["--previews", "--build", "runner"], "--build runner is not available with --previews"],
         [["--previews", "--hostname", "x.example.net"], "--hostname doesn't go with --previews"],
         [["staging", "--cap", "2", "--no-seed"], "--cap and --no-seed go only with --previews"],
+        [
+          ["staging", "--share-server", "dev", "--app-zone"],
+          "--share-server and --app-zone go only with --previews",
+        ],
         [[], "Name the environment to add."],
       ];
       for (const [args, message] of refusals) {
@@ -470,6 +521,125 @@ describe("opscrew env add", () => {
       expect(await run(ctx, "env", "add", "--previews", "--runner", "server")).toBe(2);
       expect(ctx.errors).toContain("--runner server is not available with --previews");
       expect(prompts.messages).toEqual([]);
+    });
+
+    describe("--app-zone", () => {
+      const BELOW = "previews.example.com";
+      const ACM =
+        "need Cloudflare's Advanced Certificate Manager on example.com, a paid add-on you turn on in Cloudflare's dashboard";
+      const COOKIES =
+        "a cookie your app sets for the whole domain (Domain=example.com) reaches every preview, where a pull request's code can read it";
+      const SCRIPTED = ["env", "add", "--previews", "--domain", BELOW, "--app-zone"];
+
+      it("in a script, prints what it costs and shares, and designs previews below the app's domain", async () => {
+        const ctx = await previewsApp();
+        expect(await run(ctx, ...SCRIPTED), ctx.errors).toBe(0);
+        const said = `${ctx.output}${ctx.errors}`;
+        expect(said).toContain(ACM);
+        expect(said).toContain(COOKIES);
+        expect(said).not.toContain(TOKEN);
+        const plan = await readArtifact("plan", planFile(ctx.cwd, "preview"));
+        expect(plan.environment?.previews?.domain).toBe(BELOW);
+        expect(plan.dns.zone).toBe("example.com");
+      });
+
+      it("refuses a zone without Advanced Certificate Manager, and writes nothing", async () => {
+        const ctx = await previewsApp({ allocated: 0 });
+        expect(await run(ctx, ...SCRIPTED)).not.toBe(0);
+        expect(ctx.errors).toContain(
+          "Previews below example.com need Cloudflare's Advanced Certificate Manager on example.com for the certificate of *.previews.example.com, and it is off there. Nothing was changed.",
+        );
+        expect(ctx.errors).toContain(
+          "Turn on Advanced Certificate Manager, a paid add-on, in the Cloudflare dashboard (example.com → SSL/TLS → Edge Certificates)",
+        );
+        expect(await exists(planFile(ctx.cwd, "preview"))).toBe(false);
+      });
+
+      it("in a terminal, warns and asks a confirmation that defaults to no", async () => {
+        const declined = new PreviewDomainPrompts({ [PREVIEW_DOMAIN_QUESTION]: BELOW });
+        const ctx = await previewsApp({ interactive: true, prompts: declined });
+        expect(await run(ctx, "env", "add", "--previews", "--no-seed")).not.toBe(0);
+        expect(declined.messages.join("\n")).toContain(`Put the previews below example.com?\n`);
+        expect(ctx.errors).toContain(ACM);
+        expect(ctx.errors).toContain(
+          "The previews were not set up below example.com. Nothing was changed.",
+        );
+        expect(await exists(planFile(ctx.cwd, "preview"))).toBe(false);
+
+        const confirmed = new PreviewDomainPrompts({
+          [PREVIEW_DOMAIN_QUESTION]: BELOW,
+          "Put the previews below": true,
+        });
+        const yes = await previewsApp({ interactive: true, prompts: confirmed });
+        expect(await run(yes, "env", "add", "--previews", "--no-seed"), yes.errors).toBe(0);
+        const plan = await readArtifact("plan", planFile(yes.cwd, "preview"));
+        expect(plan.environment?.previews?.domain).toBe(BELOW);
+      });
+    });
+
+    describe("--share-server", () => {
+      const WHERE = "Where should the preview environment's previews run?";
+      const WARNING =
+        "Anyone who can push a branch to this repository then runs code on dev's server, beside its data and secrets.";
+
+      /**
+       * previewsApp with dev provisioned on a server of the user's (8 GB, running nothing of
+       * OpsCrew's yet), its login recorded; the context reaches it through the fake host adapter.
+       */
+      async function withDev(options: { prompts?: UiPrompts } = {}) {
+        const ctx = await previewsApp({
+          interactive: options.prompts !== undefined,
+          ...(options.prompts === undefined ? {} : { prompts: options.prompts }),
+        });
+        const created = project as TempProject;
+        await writeArtifact("plan", planFile(created.root, "dev"), hostTestPlan({ own: true }));
+        await recordOwnServer(
+          resolveProjectPaths(created.root, { env: created.env, environment: "dev" }),
+          { host: OWN_IPV4, port: 22, user: "root", agent: true, reachable: true },
+        );
+        const host = new FakeHostServer(freshFacts({ memoryGb: 8 }));
+        withServices(ctx, {
+          runner: new OwnRunner(),
+          provision: { own: ownServices(host, await fakeHome(created)) },
+        });
+        return { ctx, host };
+      }
+
+      it("in a script, prints the warning and designs previews on dev's server", async () => {
+        const { ctx, host } = await withDev();
+        const args = ["--previews", "--share-server", "dev", "--domain", "example.net"];
+        const hostKey = ["--host-key", ED25519_FINGERPRINT];
+        expect(await run(ctx, "env", "add", ...args, ...hostKey), ctx.errors).toBe(0);
+        expect(`${ctx.output}${ctx.errors}`).toContain(WARNING);
+        expect(host.inspections).toBe(1);
+        const plan = await readArtifact("plan", planFile(ctx.cwd, "preview"));
+        expect(plan.target.provider).toBe("own");
+        expect(plan.environment?.previews?.server).toEqual({ environment: "dev" });
+        expect(JSON.stringify(plan)).not.toContain(OWN_IPV4);
+      });
+
+      it("refuses prod's server before anything is written", async () => {
+        const { ctx, host } = await withDev();
+        const args = ["--previews", "--share-server", "prod", "--domain", "example.net"];
+        expect(await run(ctx, "env", "add", ...args)).toBe(2);
+        expect(ctx.errors).toContain("Previews never run on prod's server");
+        expect(host.inspections).toBe(0);
+        expect(await exists(planFile(ctx.cwd, "preview"))).toBe(false);
+      });
+
+      it("in a terminal, offers dev's server, then warns and confirms, no by default", async () => {
+        const prompts = new PreviewDomainPrompts({ [WHERE]: "share:dev" });
+        const { ctx, host } = await withDev({ prompts });
+        expect(await run(ctx, "env", "add", "--previews", "--no-seed")).not.toBe(0);
+        const asked = prompts.messages.join("\n");
+        expect(asked).toContain(WHERE);
+        expect(asked).toContain(`Run the previews on dev's server?\n${WARNING}`);
+        expect(ctx.errors).toContain(
+          "The previews were not set up on dev's server. Nothing was changed.",
+        );
+        expect(host.inspections).toBe(0);
+        expect(await exists(planFile(ctx.cwd, "preview"))).toBe(false);
+      });
     });
   });
 });

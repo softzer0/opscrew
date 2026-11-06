@@ -5,7 +5,8 @@
  * preview workflow answer (the page, the pull request's comment, `opscrew preview list --json`,
  * the workflow run's jobs, the pull request's deployment, the server command's last line), the
  * requests the restricted key must be refused, the shell commands that read a preview's leftovers
- * and the server's state, and the pull requests' image tags in GitHub Container Registry. No
+ * and the server's state, the pull requests' image tags in GitHub Container Registry, and what
+ * the opt-ins' pass checks (the shared server's warning and refusal, the refusal without ACM). No
  * network, no processes; unit-tested in `previews-support.test.ts`.
  */
 import { posix } from "node:path";
@@ -155,13 +156,62 @@ export function e2ePage(body: string): z.infer<typeof E2ePageSchema> {
 const NO_BRANCH_RULES = "can read every secret of the repository";
 
 /**
- * Whether a `provision --env preview` output is the secrets check's refusal naming prod, with the
- * command that moves prod's secrets apart.
+ * The environments a `provision --env preview` output's secrets check refusal says to provision
+ * first (each `` `opscrew provision --env <name>` `` it names, the preview environment's own
+ * command to run again left out), in order; none when the output is no such refusal.
  */
-export function refusedForProd(output: string): boolean {
+export function secretsRefusedFor(output: string): string[] {
+  if (!output.includes("A pull request could read the deploy key of ")) return [];
+  const named = [...output.matchAll(/`opscrew provision --env ([a-z][a-z0-9-]*)`/g)].map(
+    (match) => match[1] as string,
+  );
+  return [...new Set(named)].filter((name) => name !== PREVIEW_ENV);
+}
+
+// ---------------------------------------------------------------------------------------------
+// The opt-ins: previews on another environment's server, and below the app's zone.
+
+/** The gate of the pass of previews on another environment's server. */
+export const SHARED_GATE = "OPSCREW_E2E_PREVIEWS_SHARED";
+
+/** Its variables besides the gate: the environments test's and the previews' own domain. */
+export const SHARED_E2E_VARIABLES = [
+  ...ENVIRONMENT_E2E_VARIABLES,
+  "OPSCREW_E2E_PREVIEW_DOMAIN",
+] as const;
+
+/** The environment whose server the previews share in that pass. */
+export const HOST_ENV = "dev";
+
+/**
+ * The first sentence of the warning that `env add --share-server <host>` prints and the previews'
+ * approval repeats.
+ */
+export function sharedServerWarning(host: string): string {
+  return `Anyone who can push a branch to this repository then runs code on ${host}'s server, beside its data and secrets.`;
+}
+
+/**
+ * Whether an output is the refusal of `destroy --env <host>` while the previews of `preview` run
+ * on its server, naming `opscrew destroy --env <preview>`.
+ */
+export function hostDestroyRefused(output: string, host: string, preview: string): boolean {
   return (
-    output.includes("A pull request could read the deploy key of prod") &&
-    output.includes("opscrew provision --env prod")
+    output.includes(
+      `The previews of the ${preview} environment run on ${host}'s server, and destroying ${host} would break them. Nothing was changed.`,
+    ) && output.includes(`opscrew destroy --env ${preview}`)
+  );
+}
+
+/** The name below the app's zone `zone` the refusal without ACM is asked for, unique to the run. */
+export function appZonePreviewDomain(zone: string, runId: string): string {
+  return `previews-${runId.toLowerCase().replace(/[^a-z0-9]/g, "")}.${zone}`;
+}
+
+/** Whether an output is the refusal of previews at `domain` below `zone` without ACM. */
+export function acmRefused(output: string, zone: string, domain: string): boolean {
+  return output.includes(
+    `Previews below ${zone} need Cloudflare's Advanced Certificate Manager on ${zone} for the certificate of *.${domain}, and it is off there. Nothing was changed.`,
   );
 }
 

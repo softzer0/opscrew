@@ -2358,13 +2358,85 @@ pnpm --filter opscrew build
 cd packages/cli
 OPSCREW_E2E_PREVIEWS=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
   OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_GHCR_READ_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… \
-  OPSCREW_E2E_DOMAIN=e2e.example.com OPSCREW_E2E_PREVIEW_DOMAIN=example.net \n  npx vitest run test/live/previews.test.ts
+  OPSCREW_E2E_DOMAIN=e2e.example.com OPSCREW_E2E_PREVIEW_DOMAIN=example.net \
+  npx vitest run test/live/previews.test.ts
 ```
 
 Not measured yet: about 1.5 hours, with two small servers (prod's and the preview server) for
 that time (a few cents), two or three deploy runs and six preview runs, most with a build (about
 40 Actions minutes in a private repository). The previews need no Let's Encrypt certificate: the
 preview server serves one Cloudflare Origin CA certificate for the preview zone.
+
+## Previews on dev's server
+
+`packages/cli/test/live/previews-shared.test.ts`, with `OPSCREW_E2E_PREVIEWS_SHARED=1`, runs the
+previews' two opt-ins ([the guide](guide/previews.md#fewer-servers-or-one-domain)) on the same
+seeded `examples/koa-knex` as [Previews](#previews), in `OPSCREW_E2E_GITHUB_REPO`, with prod at
+Hetzner behind Cloudflare. Previews on another environment's server run in full; previews below
+the app's own domain only to their refusal, since a zone with Advanced Certificate Manager costs
+money every month.
+
+The steps:
+
+1. **Prod:** as step 1 of [Previews](#previews).
+2. **Below the app's domain, refused:** `env add preview --previews --app-zone --domain
+   previews-<run>.<the app's zone>`, where the app's zone is `OPSCREW_E2E_DOMAIN`'s, which must
+   not have Advanced Certificate Manager. It must fail with the refusal that names ACM ("need
+   Cloudflare's Advanced Certificate Manager on <zone> for the certificate of *.<domain>, and it
+   is off there. Nothing was changed."), and leave the checkout (`git status`), prod's plan and
+   the zone's records at or below that name as they were, with no preview plan written.
+3. **dev:** `env add dev --target hetzner --from main`, its provision and first deploy; dev's
+   `/e2e` answers through Cloudflare (main's marker, no row), `verify --env dev` passes, and dev
+   has one server at Hetzner.
+4. **Previews on dev's server:** `env add preview --previews --share-server dev --cap 1 --lifetime
+   1 --domain <OPSCREW_E2E_PREVIEW_DOMAIN>` must print the warning ("Anyone who can push a branch
+   to this repository then runs code on dev's server, beside its data and secrets.") and plan
+   `previews.server: { environment: dev }` on an own target. `.env.preview` is written as for
+   previews, then `provision --env preview` runs until done, with the secrets check's refusal
+   handled as for previews (each environment it names is provisioned first). Its output must
+   repeat the warning; Hetzner must list no server of the preview environment, and dev's server
+   must be the same one. The deploy-setup pull request is merged; dev still answers.
+5. **Pull request A:** its preview run must succeed, its comment give
+   `https://pr-<n>-<random>.<preview zone>` and A's commit, that address serve A's marker and the
+   three seeded rows through Cloudflare, and `preview list --json` list it, 1 of at most 1. dev
+   must keep answering, with no row.
+6. **dev's destroy refused:** `destroy --env dev --confirm <dev's app> --no-snapshot` must fail
+   with "The previews of the preview environment run on dev's server, and destroying dev would
+   break them. Nothing was changed." and name `opscrew destroy --env preview`. dev's server, dev
+   and preview A must be as before.
+7. **The previews removed:** A is closed (its removal run succeeds, the comment says removed),
+   then `destroy --env preview`. The preview environment's GitHub secrets, its wildcard record and,
+   on dev's server, the recipe and every preview folder must be gone; dev's server must be the
+   same one, dev must answer, and `verify --env dev` must pass.
+8. **Destroy:** dev's, then prod's; nothing of either left at Hetzner or in Cloudflare.
+9. **Nothing leaked:** as step 12 of [Previews](#previews).
+
+**Cleanup** is the same as for [Previews](#previews): the run's pull requests still open are
+closed first; then `opscrew destroy` of whatever is left, newest first (the previews before dev,
+whose destroy they would refuse, then prod), Hetzner's API by the apps' labels, GitHub's
+environments and secrets, Cloudflare, and the wildcard record in the preview zone. **If a run was
+interrupted**, close its pull request (`e2e: preview a`), run `opscrew destroy --env preview`
+before dev's (or delete by hand the `*.<preview zone>` record), then delete what the environments
+test lists for prod and dev.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_PREVIEWS_SHARED` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | As for environments. Without any of them the test is skipped with a message naming it. `OPSCREW_E2E_DOMAIN`'s zone must not have Advanced Certificate Manager. |
+| `OPSCREW_E2E_PREVIEW_DOMAIN` | Needed, as for [Previews](#previews): a Cloudflare zone of the token's used only for previews. |
+| `OPSCREW_E2E_REGION` | Optional, as above. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+OPSCREW_E2E_PREVIEWS_SHARED=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… \
+  OPSCREW_E2E_DOMAIN=e2e.example.com OPSCREW_E2E_PREVIEW_DOMAIN=example.net \
+  npx vitest run test/live/previews-shared.test.ts
+```
+
+Not measured yet: about 1.5 hours, with two small servers (prod's and dev's) for that time (a few
+cents), three or four deploy runs and two preview runs.
 
 ## Price tables
 

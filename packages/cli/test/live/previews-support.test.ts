@@ -5,12 +5,16 @@ import { Script } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { EXAMPLES } from "./harness";
 import {
+  acmRefused,
+  appZonePreviewDomain,
   CAPPED,
   commentMarker,
   commentState,
   deploymentStatus,
   e2eOverlay,
   e2ePage,
+  HOST_ENV,
+  hostDestroyRefused,
   keyRefusals,
   leftovers,
   leftoversCommand,
@@ -29,11 +33,14 @@ import {
   previewValues,
   pullImageTags,
   REMOVED,
-  refusedForProd,
   SEED_ROWS,
+  SHARED_E2E_VARIABLES,
+  SHARED_GATE,
   STARTED,
+  secretsRefusedFor,
   serverReply,
   serverStateCommand,
+  sharedServerWarning,
 } from "./previews-support";
 import { missingVariables } from "./support";
 
@@ -61,6 +68,50 @@ describe("the gate", () => {
       "OPSCREW_E2E_GHCR_READ_TOKEN",
       "OPSCREW_E2E_PREVIEW_DOMAIN",
     ]);
+  });
+});
+
+describe("the opt-ins' pass", () => {
+  it("needs its gate, the environments test's variables and the preview domain", () => {
+    expect(missingVariables({}, SHARED_GATE, SHARED_E2E_VARIABLES)).toEqual([
+      "OPSCREW_E2E_PREVIEWS_SHARED=1",
+      "OPSCREW_E2E_HCLOUD_TOKEN",
+      "OPSCREW_E2E_GITHUB_REPO",
+      "OPSCREW_E2E_GITHUB_TOKEN",
+      "OPSCREW_E2E_CLOUDFLARE_TOKEN",
+      "OPSCREW_E2E_DOMAIN",
+      "OPSCREW_E2E_PREVIEW_DOMAIN",
+    ]);
+  });
+
+  it("recognises the host's destroy refused while previews run on its server", () => {
+    // T2232's text (packages/agents/src/previews/host.ts, requireNoSharedPreviews).
+    const refusal = [
+      `✗ The previews of the preview environment run on ${HOST_ENV}'s server, and destroying ${HOST_ENV} would break them. Nothing was changed.`,
+      `  Remove them first with \`opscrew destroy --env preview\` (it leaves ${HOST_ENV}'s server as it is), then run \`opscrew destroy --env ${HOST_ENV}\` again.`,
+    ].join("\n");
+    expect(hostDestroyRefused(refusal, HOST_ENV, "preview")).toBe(true);
+    expect(hostDestroyRefused(refusal, "staging", "preview")).toBe(false);
+    expect(hostDestroyRefused("Destroyed dev.", HOST_ENV, "preview")).toBe(false);
+  });
+
+  it("words the shared server's warning as env add prints it", () => {
+    expect(sharedServerWarning("dev")).toBe(
+      "Anyone who can push a branch to this repository then runs code on dev's server, beside its data and secrets.",
+    );
+  });
+
+  it("asks for a name below the app's zone unique to the run, and recognises the refusal without ACM", () => {
+    const domain = appZonePreviewDomain("example.com", "Mx1-ab");
+    expect(domain).toBe("previews-mx1ab.example.com");
+    // T2233's text (packages/agents/src/previews/app-zone.ts, requireAppZonePreviews).
+    const refusal = [
+      `✗ Previews below example.com need Cloudflare's Advanced Certificate Manager on example.com for the certificate of *.${domain}, and it is off there. Nothing was changed.`,
+      "  Turn on Advanced Certificate Manager, a paid add-on, in the Cloudflare dashboard (example.com → SSL/TLS → Edge Certificates), then run `opscrew env add preview --previews` again.",
+    ].join("\n");
+    expect(acmRefused(refusal, "example.com", domain)).toBe(true);
+    expect(acmRefused(refusal, "example.com", "previews.example.com")).toBe(false);
+    expect(acmRefused("Total TLS is on for example.com", "example.com", domain)).toBe(false);
   });
 });
 
@@ -153,10 +204,15 @@ describe("what provision --env preview says", () => {
   const free =
     "GitHub enforces no branch rules on the environments of you/e2e (GitHub Free has none in private repositories), so any workflow, a pull request's included, can read every secret of the repository.";
 
-  it("recognises the secrets check's refusal naming prod", () => {
-    expect(refusedForProd(refusal)).toBe(true);
-    expect(refusedForProd("A pull request could read the deploy key of staging")).toBe(false);
-    expect(refusedForProd(plan(""))).toBe(false);
+  it("names the environments the secrets check's refusal says to provision first", () => {
+    expect(secretsRefusedFor(refusal)).toEqual(["prod"]);
+    const two = [
+      "✗ A pull request could read the deploy key of prod and dev: their deploy secrets are repository secrets, which every workflow in you/e2e can read, a pull request's included. Nothing was changed.",
+      "  Run `opscrew provision --env prod` and `opscrew provision --env dev` first, which move their secrets into a GitHub environment only their branch can use, then run `opscrew provision --env preview` again.",
+    ].join("\n");
+    expect(secretsRefusedFor(two)).toEqual(["prod", "dev"]);
+    expect(secretsRefusedFor("Run `opscrew provision --env prod` first")).toEqual([]);
+    expect(secretsRefusedFor(plan(""))).toEqual([]);
   });
 
   it("wants the standing approval and its bounds, and the Free line only where it applies", () => {
