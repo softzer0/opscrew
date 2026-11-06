@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { PinnedRequest, PinnedRequestInit } from "@opscrew/connector-portainer";
+import {
+  COMPOSE_PROJECT_LABEL,
+  type PinnedRequest,
+  type PinnedRequestInit,
+} from "@opscrew/connector-portainer";
 import { type DeployPlan, DeployPlanSchema, type PortainerWeb } from "@opscrew/plan-schema";
 import { testPlan } from "./deploy";
 
@@ -92,6 +96,8 @@ export interface FakePortainerOptions {
   /** The token's user is an administrator (default) or a limited user. */
   admin?: boolean;
   environmentId?: number;
+  /** The environment's type in Portainer (default 1, a Docker host; 4 or 7 an Edge Agent). */
+  environmentType?: number;
   architecture?: string;
   version?: string;
   composeVersion?: string;
@@ -150,7 +156,7 @@ export function fakePortainer(options: FakePortainerOptions): FakePortainer {
     for (const match of stack.file.matchAll(/^ {2}([a-z_]+_data|caddy_config): \{\}$/gm)) {
       const name = `${stack.Name}_${match[1]}`;
       if (!volumes.some((volume) => volume.Name === name)) {
-        volumes.push({ Name: name, Labels: { "com.docker.compose.project": stack.Name } });
+        volumes.push({ Name: name, Labels: { [COMPOSE_PROJECT_LABEL]: stack.Name } });
       }
     }
   };
@@ -194,7 +200,13 @@ export function fakePortainer(options: FakePortainerOptions): FakePortainer {
       }
       if (path === "/api/endpoints") {
         return json(200, [
-          { Id: envId, Name: "local", Type: 1, Status: 1, Snapshots: [{ Swarm: false }] },
+          {
+            Id: envId,
+            Name: "local",
+            Type: options.environmentType ?? 1,
+            Status: 1,
+            Snapshots: [{ Swarm: false }],
+          },
         ]);
       }
       if (path === `/api/endpoints/${envId}/docker/info`) {
@@ -244,7 +256,7 @@ export function fakePortainer(options: FakePortainerOptions): FakePortainer {
                 Labels:
                   container.project === undefined
                     ? {}
-                    : { "com.docker.compose.project": container.project },
+                    : { [COMPOSE_PROJECT_LABEL]: container.project },
                 State: container.running === false ? "exited" : "running",
                 Ports: (container.ports ?? []).map((port) => ({ PublicPort: port })),
               })),

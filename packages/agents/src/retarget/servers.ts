@@ -1,5 +1,6 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudProvider, DeployPlan, DeployTarget } from "@opscrew/plan-schema";
+import { isCloudProvider } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import {
   readServerAddresses,
@@ -81,9 +82,7 @@ function hintFor(command: string): string {
 
 /** The cloud provider of a side's target, or `undefined` for the user's own server or Portainer. */
 function cloudOf(target: Pick<DeployTarget, "provider">): CloudProvider | undefined {
-  return target.provider === "hetzner" || target.provider === "digitalocean"
-    ? target.provider
-    : undefined;
+  return isCloudProvider(target.provider) ? target.provider : undefined;
 }
 
 /**

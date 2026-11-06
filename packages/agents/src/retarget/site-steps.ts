@@ -21,7 +21,6 @@ import {
   findSavedPlan,
   planAndApply,
   publishDeploySetup,
-  type SavedPlan,
 } from "../provision";
 import { missing } from "../provision/credentials";
 import {
@@ -58,14 +57,13 @@ import {
   approvalEntry,
   githubClientFromToken,
   pagesVerificationStateFile,
-  planStop,
   pollUntil,
   trackedFiles,
   writeRenderedFiles,
 } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { runningVersions, versionBuild } from "../status/site";
-import { planThenApply } from "./plans";
+import { planBounded, planThenApply } from "./plans";
 import { auditMove, auditStep, moveOf, recordApply, saveMove, savePlan, waitsOf } from "./session";
 import {
   appliesNow,
@@ -140,21 +138,18 @@ export async function pagesStep(
 }
 
 /**
- * Stops (`PHASE_PRECONDITION`, nothing changed) unless every change of a step's plan is one
- * `allowed` lets through: the step's own, and nothing else.
+ * The {@link planBounded} words of a site step's plan (`what`), whose state moves pass: the step
+ * passes its own changes, and nothing else.
  */
-export function onlyChanges(
-  what: string,
-  allowed: (change: SavedPlan["changes"][number]) => boolean,
-): (saved: SavedPlan) => void {
-  return (saved) => {
-    const others = saved.changes.filter((change) => !allowed(change));
-    if (others.length === 0) return;
-    throw planStop(
-      `The ${what} would change more than it should, so OpsCrew stopped. Nothing was changed.`,
-      others.map((change) => `${change.action} ${change.address}`),
-      `The infrastructure no longer matches what OpsCrew applied. Run \`${ABORT_COMMAND}\` to undo the move, then \`opscrew drift\` to see the differences, and start the move again.`,
-    );
+export function siteBounds(what: string): {
+  lead: string;
+  move: () => true;
+  hint: string;
+} {
+  return {
+    lead: `The ${what} would change more than it should, so OpsCrew stopped. Nothing was changed.`,
+    move: () => true,
+    hint: `The infrastructure no longer matches what OpsCrew applied. Run \`${ABORT_COMMAND}\` to undo the move, then \`opscrew drift\` to see the differences, and start the move again.`,
   };
 }
 
@@ -302,13 +297,13 @@ async function prepareWorker(session: SiteSession): Promise<RetargetResult | und
     files,
     costDelta: null,
     notes: ["The Worker gets no custom domains yet: GitHub Pages keeps serving the hostnames."],
-    check: onlyChanges(
-      "plan of the new Worker",
-      (change) =>
+    check: planBounded({
+      ...siteBounds("plan of the new Worker"),
+      change: (change) =>
         change.action === "create" &&
         change.address.startsWith("module.worker.") &&
         !customDomain(change.address),
-    ),
+    }),
   });
   if (step.kind === "pending") return sitePending(session, step.planHash);
   if (step.kind === "applied") await recordApply(session, step);
@@ -587,13 +582,15 @@ export async function siteSwitchStep(session: SiteSession): Promise<RetargetResu
     notes: [
       `The plan moves ${domain} from ${hostWords(oldSite(plan))} to ${hostWords(newSite(plan))}: the site is unreachable for the seconds between the deletes and the creates.`,
     ],
-    check: onlyChanges("switch plan", (change) =>
-      toPages
-        ? (change.action === "delete" && customDomain(change.address)) ||
-          (change.action === "create" && change.address.startsWith("module.dns."))
-        : (change.action === "delete" && change.address.startsWith("module.dns.")) ||
-          (change.action === "create" && customDomain(change.address)),
-    ),
+    check: planBounded({
+      ...siteBounds("switch plan"),
+      change: (change) =>
+        toPages
+          ? (change.action === "delete" && customDomain(change.address)) ||
+            (change.action === "create" && change.address.startsWith("module.dns."))
+          : (change.action === "delete" && change.address.startsWith("module.dns.")) ||
+            (change.action === "create" && customDomain(change.address)),
+    }),
   });
   if (step.kind === "pending") return sitePending(session, step.planHash, confirmFlags(session));
   if (step.kind === "applied") await recordApply(session, step);

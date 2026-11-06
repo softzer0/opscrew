@@ -59,6 +59,7 @@ import {
   requireNoBlockers,
   type SecretFile,
   type ServerAddress,
+  setAddressVariables,
   stringOutput,
   updateServerAddresses,
 } from "../shared";
@@ -583,11 +584,7 @@ export async function ownEngineEnv(
     run.address ??
     recorded ??
     (outputs === undefined ? undefined : addressFromOutputs((await outputs()) ?? {}));
-  delete env.TF_VAR_server_ipv4;
-  delete env.TF_VAR_server_ipv6;
-  if (address === undefined) return;
-  env.TF_VAR_server_ipv4 = address.ipv4;
-  if (address.ipv6 !== undefined) env.TF_VAR_server_ipv6 = address.ipv6;
+  setAddressVariables(env, address);
 }
 
 const MODE_TEXT = {

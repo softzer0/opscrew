@@ -1,5 +1,12 @@
 import { rm } from "node:fs/promises";
-import type { ApprovalRecord, ApprovalRequest, Money, PlanSummary } from "@opscrew/contracts";
+import type {
+  ApprovalRecord,
+  ApprovalRequest,
+  Money,
+  PlanSummary,
+  ResourceChange,
+  ResourceMove,
+} from "@opscrew/contracts";
 import { isUserFacingError, OpsCrewError, upperFirst } from "@opscrew/core";
 import { engineLabel, hashFile } from "@opscrew/iac-engine";
 import type { RenderedFile } from "@opscrew/iac-templates";
@@ -18,6 +25,7 @@ import {
   type SavedPlan,
 } from "../provision";
 import { savedPlanOf, writePlanSidecar } from "../provision/plan-apply";
+import { planStop } from "../shared";
 import {
   clearPending,
   type MoveAction,
@@ -67,6 +75,30 @@ export interface InfraPlanInput {
   costDelta?: Money | null;
   /** The next step when the new provider cannot create the server's size in its location. */
   redesignHint?: string;
+}
+
+/**
+ * A plan check that stops (`PHASE_PRECONDITION`, before any approval) with `lead` and `hint`
+ * unless every change is one `change` lets through and every state move one `move` lets through:
+ * without `change` no change is allowed, without `move` no move.
+ */
+export function planBounded(bounds: {
+  lead: string;
+  change?: (change: ResourceChange) => boolean;
+  move?: (move: ResourceMove) => boolean;
+  hint: string;
+}): (saved: Pick<SavedPlan, "changes" | "moves">) => void {
+  return (saved) => {
+    const problems = [
+      ...saved.changes
+        .filter((change) => bounds.change?.(change) !== true)
+        .map((change) => `${change.action} ${change.address}`),
+      ...(saved.moves ?? [])
+        .filter((move) => bounds.move?.(move) !== true)
+        .map((move) => `move ${move.from} → ${move.to}`),
+    ];
+    if (problems.length > 0) throw planStop(bounds.lead, problems, bounds.hint);
+  };
 }
 
 /**

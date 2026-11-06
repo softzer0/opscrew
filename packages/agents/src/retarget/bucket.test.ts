@@ -24,13 +24,8 @@ import {
   movePlan,
   OLD_IPV4,
 } from "../testing";
-import {
-  bucketChange,
-  FakeBucketEngine,
-  FakeRclone,
-  MoveRootsEngine,
-} from "../testing/bucket-move";
-import { withBucket } from "../testing/storage";
+import { bucketChange, FakeBucketEngine, FakeRclone } from "../testing/bucket-move";
+import { RootEngine, withBucket } from "../testing/storage";
 import { caught, crashAfter, drive, moveOnDisk, run } from "./__fixtures__/assert";
 import { abortRetarget } from "./abort";
 import { bucketChoice } from "./bucket";
@@ -68,7 +63,7 @@ async function bucketHarness(options: MoveHarnessOptions & { newVars?: boolean }
     return newKey;
   };
   const storage = new FakeBucketEngine(h.events, { bucket: BUCKET, region: "fsn1" });
-  const engine = new MoveRootsEngine(h.engine, storage);
+  const engine = new RootEngine<FakeBucketEngine>(h.engine, storage);
   h.services.engine = async () => engine;
   const rclone = new FakeRclone(h.events);
   for (const name of ["a.png", "b.png", "c.pdf"]) rclone.old.set(name, `${name} bytes`);

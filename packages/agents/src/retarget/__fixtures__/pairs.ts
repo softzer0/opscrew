@@ -1,18 +1,12 @@
 import { writeFile } from "node:fs/promises";
-import {
-  type PinnedRequest,
-  type PinnedStream,
-  portainerClient,
-} from "@opscrew/connector-portainer";
 import { fakeSecret } from "@opscrew/core/testing";
-import type { FakeDocker } from "@opscrew/connector-docker/testing";
 import {
   type DeployPlan,
   DeployPlanSchema,
   type Retarget,
   writeArtifact,
+  isCloudProvider,
 } from "@opscrew/plan-schema";
-import type { PortainerServices } from "../../provision/types";
 import {
   type OwnServerConnectionInput,
   recordOwnServer,
@@ -24,27 +18,24 @@ import {
   ED25519,
   ED25519_FINGERPRINT,
   FakeHostServer,
-  fakeCertificate,
-  fakePortainer,
+  type MoveSideKind,
   moveHarness,
-  movePlan,
   NEW_SERVERS,
   OLD_IDS,
   OLD_IPV4,
   OLD_IPV6,
   ownRunner,
+  PORTAINER_CERT,
+  PORTAINER_TOKEN,
   PORTAINER_URL,
+  portainerServices,
   preparedServerFacts,
   ScriptedRunner,
+  targetOf,
 } from "../../testing";
 import { openSession } from "../session";
 import { cloudProviders } from "../sides";
 
-/** A side of a move in these tests: a cloud provider, the user's own server, their Portainer. */
-export type PairSide = "hetzner" | "digitalocean" | "own" | "portainer";
-
-/** The Portainer token the fake accepts (synthetic). */
-export const PORTAINER_TOKEN = fakeSecret("generic-password", "portainer-token");
 /** The Postgres password the app's generated values hold (synthetic). */
 export const DB_PASSWORD = fakeSecret("generic-password", "move db password");
 /** Where the new side is: a server's address, or the Portainer host's public one. */
@@ -52,64 +43,10 @@ export const NEW_IPV4 = "198.51.100.30";
 export const NEW_IPV6 = "2001:db8:30::1";
 /** The Docker fake's host name for the user's Portainer environment. */
 export const PORTAINER = "portainer";
-/** The certificate the fake Portainer presents. */
-export const PORTAINER_CERT = fakeCertificate();
-const CERT = PORTAINER_CERT;
-
-/** The target of a side kind, as a plan records it. */
-function targetOf(kind: PairSide, records = true): DeployPlan["target"] {
-  switch (kind) {
-    case "hetzner":
-    case "digitalocean":
-      return movePlan({ from: kind }).target;
-    case "own":
-      return { provider: "own", mode: "vps-compose", arch: "amd64", access: "public", edge: "caddy" };
-    case "portainer":
-      return {
-        provider: "portainer",
-        mode: "portainer-stack",
-        environmentId: 3,
-        arch: "amd64",
-        redeploy: "updater",
-        web: records ? { mode: "caddy", records: true } : { mode: "caddy" },
-      };
-  }
-}
-
-/**
- * The user's Portainer: its API (environment 3 of `environmentType`: 1 is the Docker socket, 4 an
- * Edge Agent) and its Docker proxy to `docker`.
- */
-export function portainerServices(docker: FakeDocker, environmentType: number): PortainerServices {
-  const portainer = fakePortainer({ token: PORTAINER_TOKEN });
-  const request: PinnedRequest = async (init) =>
-    init.method === "GET" && init.path === "/api/endpoints/3"
-      ? {
-          status: 200,
-          body: JSON.stringify({ Id: 3, Name: "local", Type: environmentType, URL: "" }),
-        }
-      : portainer.request(init);
-  const prefix = "/api/endpoints/3/docker";
-  const stream: PinnedStream = (init) =>
-    docker.request({
-      method: init.method,
-      path: init.path.slice(prefix.length),
-      headers: init.headers,
-      ...(init.body !== undefined ? { body: init.body } : {}),
-    });
-  return {
-    client: (endpoint, token, clientDeps) =>
-      portainerClient(endpoint, token, { ...clientDeps, request, stream }),
-    inspectCertificate: async () => CERT,
-    wait: { now: () => 0, sleep: async () => undefined },
-  };
-}
 
 export interface PairOptions {
   step?: Retarget["step"];
   dns?: "cloudflare" | "none";
-  /** The Portainer environment's type (1: the Docker socket; 4: an Edge Agent). */
-  environmentType?: number;
   /** The own server's SSH login port (default 22). */
   ownPort?: number;
   /** A Valkey cache beside Postgres, whose files the old side holds. */
@@ -127,7 +64,7 @@ export interface PairOptions {
  * server's logins and host adapter, and the user's Portainer, whose Docker proxy reaches the
  * `portainer` Docker fake. Each side's app is deployed and healthy; the new side's edge stopped.
  */
-export async function pairHarness(from: PairSide, to: PairSide, options: PairOptions = {}) {
+export async function pairHarness(from: MoveSideKind, to: MoveSideKind, options: PairOptions = {}) {
   const h = await moveHarness({ dns: options.dns ?? "cloudflare" });
   const fromTarget = targetOf(from, options.userRecords !== true);
   const toTarget = targetOf(to);
@@ -162,10 +99,8 @@ export async function pairHarness(from: PairSide, to: PairSide, options: PairOpt
   // The infrastructure state at `step`: a cloud old side's server (renamed from the start's
   // `server` on), a cloud new side's once created, and DNS at the old side.
   const step = plan.retarget?.step ?? "deployed";
-  const cloud = (kind: PairSide): kind is "hetzner" | "digitalocean" =>
-    kind === "hetzner" || kind === "digitalocean";
   const servers: typeof h.engine.state.servers = {};
-  if (cloud(from)) {
+  if (isCloudProvider(from)) {
     servers[step === "started" ? "server" : "server_previous"] = {
       id: OLD_IDS[from],
       provider: from,
@@ -174,7 +109,7 @@ export async function pairHarness(from: PairSide, to: PairSide, options: PairOpt
       protected: from === "hetzner",
     };
   }
-  if (cloud(to) && !["started", "renamed"].includes(step)) {
+  if (isCloudProvider(to) && !["started", "renamed"].includes(step)) {
     servers.server = {
       id: NEW_SERVERS[to].id,
       provider: to,
@@ -185,7 +120,7 @@ export async function pairHarness(from: PairSide, to: PairSide, options: PairOpt
   }
   h.engine.state.servers = servers;
   if (h.engine.state.dns !== undefined) {
-    h.engine.state.dns = cloud(from) ? OLD_IDS[from] : OLD_IPV4;
+    h.engine.state.dns = isCloudProvider(from) ? OLD_IDS[from] : OLD_IPV4;
   }
 
   // Each side's address and logins in OpsCrew's local state.
@@ -202,7 +137,7 @@ export async function pairHarness(from: PairSide, to: PairSide, options: PairOpt
   });
   const portainerConnection = {
     url: PORTAINER_URL,
-    certFingerprint: CERT.fingerprint,
+    certFingerprint: PORTAINER_CERT.fingerprint,
     environmentId: 3,
     environmentName: "local",
     arch: "amd64" as const,
@@ -242,7 +177,7 @@ export async function pairHarness(from: PairSide, to: PairSide, options: PairOpt
   h.deps.env.PORTAINER_API_KEY = PORTAINER_TOKEN;
 
   // The old side runs the app with its data; the new side's deploy ran (its edge stopped).
-  const hostOf = (kind: PairSide, address: string) => (kind === "portainer" ? PORTAINER : address);
+  const hostOf = (kind: MoveSideKind, address: string) => (kind === "portainer" ? PORTAINER : address);
   const oldHost = hostOf(from, OLD_IPV4);
   const newHost = hostOf(to, NEW_IPV4);
   const file = (data: Buffer) => ({ type: "file" as const, mode: 0o600, uid: 999, gid: 999, data });
@@ -264,7 +199,7 @@ export async function pairHarness(from: PairSide, to: PairSide, options: PairOpt
   const services = {
     ...h.services,
     own: { host: new FakeHostServer(preparedServerFacts(h.paths.projectId)), homeDir: h.root },
-    portainer: portainerServices(portainer, options.environmentType ?? 1),
+    portainer: portainerServices(portainer),
   };
   // The own servers' host keys, as `ssh-keyscan` reads them; every other command as before.
   const own = ownRunner();

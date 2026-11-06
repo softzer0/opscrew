@@ -6,14 +6,11 @@
  * binaries that copies between the fake servers, and a CLI context for each run. Tests only.
  */
 import { writeFile } from "node:fs/promises";
-import { Readable } from "node:stream";
 import path from "node:path";
 import {
-  type PortainerAccess,
-
   type HostAdapterApi,
   NEW_STORAGE_KEY_VARS,
-  type RetargetServices,
+  type PortainerAccess,
   recordOwnServer,
   recordPortainerConnection,
   STORAGE_KEY_VARS,
@@ -24,7 +21,6 @@ import {
   FakeBucketEngine,
   type FakeHosts,
   FakeHostServer,
-  fakeCertificate,
   type FakePortainer,
   fakePortainer,
   FakeRclone,
@@ -32,18 +28,22 @@ import {
   freshFacts,
   HOST_KEY,
   moveFakes,
-  MoveRootsEngine,
   movePlan,
   OLD_IPV4,
   OLD_IPV6,
+  PORTAINER_CERT,
+  PORTAINER_TOKEN,
   PORTAINER_URL,
+  portainerServices,
   preparedServerFacts,
   projectRunner,
+  RootEngine,
   siteMoveHarness,
+  targetOf,
   withBucket,
 } from "@opscrew/agents/testing";
 import type { FakeDocker } from "@opscrew/connector-docker/testing";
-import { portainerClient } from "@opscrew/connector-portainer";
+import { COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL } from "@opscrew/connector-portainer";
 import type {
   CommandOptions,
   CommandResult,
@@ -67,16 +67,10 @@ export const HOST_KEY_FINGERPRINT = fingerprintOf(HOST_KEY.split(" ")[1] ?? "");
 export const OWN_NEW_IPV4 = "198.51.100.40";
 /** The public address of the user's Portainer host, where its Caddy serves the app. */
 export const PORTAINER_IPV4 = "198.51.100.50";
-/** The Portainer token the fake accepts (synthetic). */
-export const PORTAINER_TOKEN = fakeSecret("generic-password", "portainer-token");
 /** The repository's read-only token for Portainer (synthetic). */
 export const REPO_READ_TOKEN = fakeSecret("github-pat");
-/** The certificate the fake Portainer presents. */
-export const PORTAINER_CERT = fakeCertificate();
 /** The Docker fake's name for the user's Portainer environment. */
 const PORTAINER_DOCKER = "portainer";
-const COMPOSE_PROJECT = "com.docker.compose.project";
-const COMPOSE_SERVICE = "com.docker.compose.service";
 
 /** Real git; `ssh-keyscan` answers with {@link HOST_KEY}; `scp` copies between the fake hosts. */
 class MoveRunner implements CommandRunner {
@@ -103,25 +97,6 @@ class MoveRunner implements CommandRunner {
   }
 }
 
-/** The target of a side kind, as a plan records it. */
-function targetOf(from: MoveFrom): DeployPlan["target"] {
-  switch (from) {
-    case "hetzner":
-      return movePlan().target;
-    case "own":
-      return { provider: "own", mode: "vps-compose", arch: "amd64", access: "public", edge: "caddy" };
-    case "portainer":
-      return {
-        provider: "portainer",
-        mode: "portainer-stack",
-        environmentId: 3,
-        arch: "amd64",
-        redeploy: "updater",
-        web: { mode: "caddy", records: true },
-      };
-  }
-}
-
 /**
  * The user's Portainer with environment 3 (a Docker host): with `live`, the app's stack is there
  * already (OpsCrew's record lists it as id 7).
@@ -140,52 +115,6 @@ function userPortainer(live: boolean): FakePortainer {
   return fakePortainer({ token: PORTAINER_TOKEN, stacks: live ? [stack] : [] });
 }
 
-/**
- * The services over the user's Portainer: its API (`portainer`), and its Docker proxy to the
- * `portainer` Docker fake. Creating the app's stack starts its containers there, its Caddy
- * included, as Portainer's deploy would.
- */
-function portainerServices(
-  hosts: FakeHosts,
-  portainer: FakePortainer,
-): NonNullable<RetargetServices["portainer"]> {
-  const docker = hosts.docker(PORTAINER_DOCKER);
-  return {
-    client: (endpoint, token, clientDeps) =>
-      portainerClient(endpoint, token, {
-        ...clientDeps,
-        request: async (init) => {
-          const response =
-            init.method === "GET" && init.path === "/api/endpoints/3"
-              ? { status: 200, body: JSON.stringify({ Id: 3, Name: "local", Type: 1, URL: "" }) }
-              : await portainer.request(init);
-          if (init.method === "POST" && init.path.startsWith("/api/stacks/create/")) {
-            seedStack(hosts, docker);
-          }
-          return response;
-        },
-        stream: async (init) => {
-          const path = init.path.slice("/api/endpoints/3/docker".length);
-          // The stack's containers keep running once started (the fake runs others to their end).
-          const id = /\/containers\/([^/?]+)\/start(?:\?|$)/.exec(path)?.[1];
-          const service = id === undefined ? undefined : docker.containers.get(id);
-          if (init.method === "POST" && service?.labels[COMPOSE_PROJECT] === "opscrew-shop") {
-            service.state = "running";
-            return { status: 204, headers: {}, body: Readable.from([]) };
-          }
-          return docker.request({
-            method: init.method,
-            path,
-            headers: init.headers,
-            ...(init.body !== undefined ? { body: init.body } : {}),
-          });
-        },
-      }),
-    inspectCertificate: async () => PORTAINER_CERT,
-    wait: { now: () => 0, sleep: async () => undefined },
-  };
-}
-
 /** The app's stack in the Portainer environment: the app, its services and the stack's Caddy. */
 function seedStack(hosts: FakeHosts, docker: FakeDocker): void {
   hosts.seed(PORTAINER_DOCKER, {}, true);
@@ -197,7 +126,7 @@ function seedStack(hosts: FakeHosts, docker: FakeDocker): void {
     image: "caddy",
     cmd: [],
     env: [],
-    labels: { [COMPOSE_PROJECT]: "opscrew-shop", [COMPOSE_SERVICE]: "caddy" },
+    labels: { [COMPOSE_PROJECT_LABEL]: "opscrew-shop", [COMPOSE_SERVICE_LABEL]: "caddy" },
     binds: [],
     mounts: [],
     state: "running",
@@ -212,8 +141,8 @@ function portainerServes(docker: FakeDocker): boolean {
   const running = (service: string) =>
     [...docker.containers.values()].some(
       (c) =>
-        c.labels[COMPOSE_PROJECT] === "opscrew-shop" &&
-        c.labels[COMPOSE_SERVICE] === service &&
+        c.labels[COMPOSE_PROJECT_LABEL] === "opscrew-shop" &&
+        c.labels[COMPOSE_SERVICE_LABEL] === service &&
         c.state === "running",
     );
   return running("app") && running("caddy");
@@ -359,13 +288,16 @@ export async function moveProject(options: { from?: MoveFrom; bucket?: boolean }
     inspect: (remote) => ownHost(remote).inspect(remote),
     apply: (remote, plan, applyOptions) => ownHost(remote).apply(remote, plan, applyOptions),
   };
-  const moveEngine = new MoveRootsEngine(engine, storage);
+  const moveEngine = new RootEngine<FakeBucketEngine>(engine, storage);
   const services = {
     ...fakes.services,
     engine: async () => moveEngine,
     remote: rclone.wrap(hosts.remote),
     own: { host, homeDir: project.root },
-    portainer: portainerServices(hosts, portainerApi),
+    portainer: portainerServices(portainerDocker, {
+      portainer: portainerApi,
+      onStackCreate: () => seedStack(hosts, portainerDocker),
+    }),
   };
 
   /** A test context for one `opscrew` run in the project, with every fake attached. */

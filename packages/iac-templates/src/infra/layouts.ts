@@ -1,4 +1,5 @@
 import type { CloudDeployTarget, DeployTarget } from "@opscrew/plan-schema";
+import { isCloudProvider } from "@opscrew/plan-schema";
 import { wrongTarget } from "../providers";
 import type { InfraLayout, LayoutSide } from "../types";
 
@@ -19,8 +20,7 @@ export const MOVE_LAYOUTS = [
 ] as const;
 export type MoveLayoutName = (typeof MOVE_LAYOUTS)[number];
 
-const isCloud = (side: LayoutSide): side is CloudDeployTarget =>
-  side.provider === "hetzner" || side.provider === "digitalocean";
+const isCloud = (side: LayoutSide): side is CloudDeployTarget => isCloudProvider(side.provider);
 
 /**
  * `target` as a side of a move: a server OpsCrew creates, a server the user owns in public mode,

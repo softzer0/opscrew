@@ -1,6 +1,11 @@
 import { rm } from "node:fs/promises";
 import { isUserFacingError, listText, lowerFirst, OpsCrewError, upperFirst } from "@opscrew/core";
-import { isServerlessTarget, type PortainerDeployTarget, readArtifact } from "@opscrew/plan-schema";
+import {
+  isCloudProvider,
+  isServerlessTarget,
+  type PortainerDeployTarget,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import { resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import {
@@ -111,7 +116,7 @@ async function finish(
   const from = move.from.target;
   const fresh = session.plan.target;
   const old = sideWords(from, "old");
-  const cloud = from.provider === "hetzner" || from.provider === "digitalocean";
+  const cloud = isCloudProvider(from.provider);
 
   // 0. The new side must answer through the app's URL (edge started, URL checked); else the old
   // side is kept. `switched` is recorded right after the DNS switch, before this check.

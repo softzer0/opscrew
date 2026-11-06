@@ -2,11 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { type FakeContainer, FakeDocker } from "@opscrew/connector-docker/testing";
-import {
-  type PinnedRequest,
-  type PinnedStream,
-  portainerClient,
-} from "@opscrew/connector-portainer";
+import { type PinnedStream, portainerClient } from "@opscrew/connector-portainer";
 import { errorMessage } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { IMAGES } from "@opscrew/iac-templates";
@@ -43,11 +39,6 @@ const GHCR_TOKEN = fakeSecret("github-token", "ghcr read token");
 const CERT = fakeCertificate();
 const IMAGE = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
 const STACK = "opscrew-shop";
-const ENVIRONMENTS = {
-  socket: { Type: 1, URL: "unix:///var/run/docker.sock" },
-  edge: { Type: 4, URL: "", Edge: { AsyncMode: false } },
-  "edge-async": { Type: 7, URL: "", Edge: { AsyncMode: true } },
-};
 
 interface HarnessOptions {
   /** The side under test (default: the new one). */
@@ -58,7 +49,8 @@ interface HarnessOptions {
   unrecorded?: boolean;
   /** The move comes from another Portainer environment (default: a Hetzner server). */
   fromPortainer?: boolean;
-  environment?: keyof typeof ENVIRONMENTS;
+  /** The environment's type in Portainer (default 1, a Docker host; 4 or 7 an Edge Agent). */
+  environmentType?: number;
   interactive?: boolean;
   approve?: string;
   /** Docker calls through the proxy that Portainer refuses with this status. */
@@ -124,7 +116,10 @@ async function harness(options: HarnessOptions = {}) {
   });
   const project = await createProject(plan);
   await writeFile(join(project.root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
-  const portainer = fakePortainer({ token: TOKEN });
+  const portainer = fakePortainer({
+    token: TOKEN,
+    ...(options.environmentType !== undefined ? { environmentType: options.environmentType } : {}),
+  });
   const docker = new FakeDocker();
   docker.images.add(IMAGES.busybox.ref);
   const app = { healthy: true };
@@ -145,11 +140,6 @@ async function harness(options: HarnessOptions = {}) {
   stackContainer(docker, "app", ["opscrew-other_sqlite:/data"], "opscrew-other");
 
   const proxyCalls: string[] = [];
-  const environment = ENVIRONMENTS[options.environment ?? "socket"];
-  const request: PinnedRequest = async (init) =>
-    init.method === "GET" && init.path === "/api/endpoints/3"
-      ? { status: 200, body: JSON.stringify({ Id: 3, Name: "local", ...environment }) }
-      : portainer.request(init);
   const stream: PinnedStream = async (init) => {
     const prefix = "/api/endpoints/3/docker";
     proxyCalls.push(`${init.method} ${init.path}`);
@@ -172,7 +162,7 @@ async function harness(options: HarnessOptions = {}) {
   };
   const services: PortainerServices = {
     client: (endpoint, token, clientDeps) =>
-      portainerClient(endpoint, token, { ...clientDeps, request, stream }),
+      portainerClient(endpoint, token, { ...clientDeps, request: portainer.request, stream }),
     inspectCertificate: async () => CERT,
     randomUUID: () => "6f1c2d3e-4a5b-4c6d-8e7f-901a2b3c4d5e",
     wait: { now: () => 0, sleep: async () => undefined },
@@ -277,13 +267,12 @@ const idOf = (docker: FakeDocker, project: string, service: string) =>
   containerOf(docker, project, service)?.id;
 
 describe("the Portainer side of a move", () => {
-  it("refuses an Edge Agent environment before any change", async () => {
-    for (const environment of ["edge", "edge-async"] as const) {
-      const h = await harness({ environment });
+  it("refuses an Edge Agent environment at its inspection, before any change", async () => {
+    for (const environmentType of [4, 7]) {
+      const h = await harness({ environmentType });
       const error = await h.side.prepare(h.session).catch((caught: unknown) => caught);
-      expect(errorMessage(error)).toContain("Edge Agent environment");
-      expect(errorMessage(error)).toContain("Nothing was changed.");
-      await expect(h.side.stopApp(h.session)).rejects.toThrow("Edge Agent environment");
+      expect(errorMessage(error)).toContain("is an Edge agent environment");
+      expect(errorMessage(error)).toContain("so it changed nothing");
       expect(h.portainer.mutations()).toEqual([]);
       expect(h.proxyCalls).toEqual([]);
     }

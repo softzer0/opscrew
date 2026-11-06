@@ -6,6 +6,7 @@ import {
   type CloudDeployTarget,
   type CostEstimate,
   type DeployPlan,
+  isCloudProvider,
   isServerlessTarget,
   readArtifact,
 } from "@opscrew/plan-schema";
@@ -24,7 +25,7 @@ import { movingBucketKeys, removeNewBucket, renameBucketBack, writeStorageFiles 
 import { previousTarget } from "./layouts";
 import { endMoveKey, networkBeforeMove, undoMoveNetwork } from "./network";
 import { clearPending } from "./pending";
-import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
+import { applyInfraPlan, type InfraPlanInput, planBounded, prepareInfraPlan } from "./plans";
 import { isAppHealthy } from "./server-ops";
 import { endMoveServers } from "./servers";
 import {
@@ -44,14 +45,8 @@ import {
 } from "./session";
 import { cloudProviders, moveSide, placeWords, sideWords } from "./sides";
 import { abortSiteMove } from "./site-end";
-import {
-  assertRenameOnly,
-  pendingStop,
-  proposeWorkflow,
-  storeDeploySecrets,
-  workflowChanged,
-} from "./steps";
-import { assertDnsUpdatesOnly } from "./switch";
+import { pendingStop, proposeWorkflow, storeDeploySecrets, workflowChanged } from "./steps";
+import { dnsOnlyLead, dnsUpdate } from "./switch";
 import { ABORT_COMMAND, FINISH_COMMAND, managedDns, RUN_COMMAND, START_MOVE_HINT } from "./texts";
 import type { AbortRetargetOptions, RetargetResult } from "./types";
 import { recoverInterruptedWindow, restartOldApp, stepBefore } from "./window";
@@ -157,11 +152,11 @@ async function pointDnsBack(
     action: "abort-dns",
     files,
     costDelta: null,
-    check: (saved) =>
-      assertDnsUpdatesOnly(saved, {
-        what: "DNS restore",
-        hint: `Check the records in the Cloudflare dashboard (DNS → Records), then run \`${ABORT_COMMAND}\` again.`,
-      }),
+    check: planBounded({
+      lead: dnsOnlyLead("DNS restore"),
+      change: dnsUpdate,
+      hint: `Check the records in the Cloudflare dashboard (DNS → Records), then run \`${ABORT_COMMAND}\` again.`,
+    }),
     notes: [
       `A switch that failed half-way left some DNS records of ${plan.dns.domain} pointing at the new side; this points them back to ${old}, where the app runs.`,
     ],
@@ -195,13 +190,12 @@ async function renameBack(
     action: "abort-rename",
     files,
     deployPlan: { ...session.plan, target: from, ...(network !== undefined ? { network } : {}) },
-    check: (saved) =>
-      assertRenameOnly(saved, {
-        fromPrefix: "module.server_previous.",
-        toPrefix: "module.server.",
-        what: "rename-back",
-        hint: `The infrastructure no longer matches what OpsCrew applied. Check the servers in your provider consoles (\`opscrew drift\` works again once the move is cleared), then run \`${ABORT_COMMAND}\` again.`,
-      }),
+    check: planBounded({
+      lead: "The rename-back plan would do more than rename resources in the infrastructure state, so OpsCrew stopped. Nothing was changed.",
+      move: (m) =>
+        m.from.startsWith("module.server_previous.") && m.to.startsWith("module.server."),
+      hint: `The infrastructure no longer matches what OpsCrew applied. Check the servers in your provider consoles (\`opscrew drift\` works again once the move is cleared), then run \`${ABORT_COMMAND}\` again.`,
+    }),
     notes: [
       `This only renames ${old} from module.server_previous back to module.server in OpsCrew's infrastructure state. Nothing changes in your cloud.`,
     ],
@@ -222,7 +216,7 @@ async function renameBack(
 async function oldCost(session: MoveSession): Promise<CostEstimate | undefined> {
   const { deps, plan } = session;
   const target = moveOf(session).from.target;
-  if (target.provider === "hetzner" || target.provider === "digitalocean") {
+  if (isCloudProvider(target.provider)) {
     const from = previousTarget(moveOf(session));
     const cost = await previousCost(session, from);
     if (cost === undefined) {
@@ -256,7 +250,7 @@ export async function reportAborted(
   const { target } = plan;
   const app = plan.app.name;
   const words = sideWords(target, "old");
-  const cloud = target.provider === "hetzner" || target.provider === "digitalocean";
+  const cloud = isCloudProvider(target.provider);
   const healthy = cloud
     ? oldAddress !== undefined &&
       (await isAppHealthy(
@@ -333,7 +327,7 @@ async function abort(session: MoveSession, options: AbortRetargetOptions): Promi
   }
 
   // 3. A cloud old server's rename back to `module.server`.
-  if (from.provider === "hetzner" || from.provider === "digitalocean") {
+  if (isCloudProvider(from.provider)) {
     const stop = await renameBack(session, flags);
     if (stop !== undefined) return stop;
   }

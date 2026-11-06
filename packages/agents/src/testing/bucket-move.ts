@@ -198,50 +198,6 @@ export class FakeBucketEngine implements IacEngine {
   async importResource(): Promise<void> {}
 }
 
-/** One engine for a move's roots: the `storage` root's fake, and every other root's (`main`). */
-export class MoveRootsEngine implements IacEngine {
-  readonly info = { name: "tofu" as const, version: "1.13.1", binary: "/fake/tofu" };
-
-  constructor(
-    readonly main: IacEngine,
-    readonly storage: FakeBucketEngine,
-  ) {}
-
-  #pick(dir: string): IacEngine {
-    return /[\\/]storage$/.test(dir) ? this.storage : this.main;
-  }
-
-  init(dir: string, options?: IacInitOptions) {
-    return this.#pick(dir).init(dir, options);
-  }
-  validate(dir: string, options?: IacRunOptions) {
-    return this.#pick(dir).validate(dir, options);
-  }
-  plan(dir: string, planFile: string, options?: IacRunOptions & { destroy?: boolean }) {
-    return this.#pick(dir).plan(dir, planFile, options);
-  }
-  apply(dir: string, planFile: string, approval: IacApproval, options?: IacRunOptions) {
-    return this.#pick(dir).apply(dir, planFile, approval, options);
-  }
-  output(dir: string, options?: IacRunOptions) {
-    return this.#pick(dir).output(dir, options);
-  }
-  providerSchemas(dir: string, options?: IacRunOptions) {
-    return this.#pick(dir).providerSchemas(dir, options);
-  }
-  stateResources(stateFile: string, options?: IacRunOptions) {
-    return /storage\.tfstate$/.test(stateFile)
-      ? this.storage.stateResources()
-      : this.main.stateResources(stateFile, options);
-  }
-  untaint(dir: string, address: string, options?: IacRunOptions) {
-    return this.#pick(dir).untaint(dir, address, options);
-  }
-  importResource(dir: string, address: string, id: string, options?: IacRunOptions) {
-    return this.#pick(dir).importResource(dir, address, id, options);
-  }
-}
-
 /** One run of the rclone one-off container: where, its command line and its standard input. */
 export interface RcloneRun {
   host: string;

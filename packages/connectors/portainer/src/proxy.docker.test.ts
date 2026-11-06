@@ -347,11 +347,6 @@ describe.skipIf(SKIP !== undefined)("Portainer's Docker proxy on Docker", () => 
     if (added.length > 0) await remove(["image", "rm", "-f", ...added]);
   }, 5 * MINUTES);
 
-  it("reads the environment as Portainer's own Docker socket", async () => {
-    expect(await admin.environmentKind(environmentId)).toBe("socket");
-    expect(await standard.environmentKind(environmentId)).toBe("socket");
-  });
-
   it(
     "writes 1 GiB chunked into a created container's volume and reads it back, same SHA-256",
     async () => {

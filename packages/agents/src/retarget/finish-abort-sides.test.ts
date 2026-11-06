@@ -300,20 +300,6 @@ async function portainerMove(
   const base = portainerPlan();
   const s = await portainerProject({ plan: base, portainer: { stacks: [DECOY] }, answer });
   await provisionPortainerProject(s);
-  // The environment reaches Docker through its socket (not an Edge Agent).
-  const original = s.fake.request;
-  s.fake.request = async (init) =>
-    init.method === "GET" && init.path === "/api/endpoints/3"
-      ? {
-          status: 200,
-          body: JSON.stringify({
-            Id: 3,
-            Name: "local",
-            Type: 1,
-            URL: "unix:///var/run/docker.sock",
-          }),
-        }
-      : original(init);
   s.fake.volumes.push(
     ...["opscrew-shop_db_data", "opscrew-shop_version"].map((Name) => ({
       Name,

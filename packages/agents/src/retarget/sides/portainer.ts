@@ -2,7 +2,7 @@
  * The side of a move in the user's Portainer (ADR 0027 D1, plan.md "1. Sides"): the app's stacks
  * through stack plans approved by hash (`preparePortainerStacks`, as provision sets them up), its
  * containers and volumes through Portainer's Docker proxy. It changes only the app's stacks,
- * containers and volumes, never Portainer or its environment (SC-2304), and refuses Edge Agent
+ * containers and volumes, never Portainer or its environment (SC-2304); its inspection refuses Edge Agent
  * environments before any change.
  */
 import {
@@ -106,17 +106,6 @@ interface Connected {
   valueKey: Uint8Array;
 }
 
-/** The plain stop for an Edge Agent environment, before any change. */
-function edgeRefused(environment: string): OpsCrewError {
-  return new OpsCrewError(
-    "PHASE_PRECONDITION",
-    `Your Portainer environment "${environment}" is an Edge Agent environment, which OpsCrew cannot move an app to or from yet: its Docker API is reached only through the Edge Agent, and OpsCrew has not checked copying volumes that way. Nothing was changed.`,
-    {
-      hint: "Move the app to or from an environment Portainer reaches through its Docker socket or the Portainer Agent, or choose a server instead.",
-    },
-  );
-}
-
 /**
  * Portainer's 401 and 403 through its Docker proxy, in plain words: the token, and that a
  * standard user's token reaches only the containers of the stacks that user deployed (R5).
@@ -180,11 +169,10 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
   /** The client of each session's Portainer, made and checked once. */
   const clients = new WeakMap<MoveBase, Promise<Pick<Connected, "client" | "valueKey">>>();
 
-  /** A client for the recorded Portainer, with the token; stops on an Edge Agent environment. */
+  /** A client for the recorded Portainer, with the token. */
   async function openClient(
     session: MoveBase,
     connection: PortainerConnection,
-    target: PortainerDeployTarget,
   ): Promise<Pick<Connected, "client" | "valueKey">> {
     const { deps } = session;
     // Portainer's address (and its host name) is never printed.
@@ -197,14 +185,12 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
       client: services.client,
       valueKey,
     });
-    const kind = await client.environmentKind(target.environmentId);
-    if (kind === "edge" || kind === "edge-async") throw edgeRefused(connection.environmentName);
     return { client, valueKey };
   }
 
   /**
    * The side's Portainer from its record (read each time: a stack step changes it), with the
-   * session's client; stops on an Edge Agent environment. (A move between two Portainer
+   * session's client. (A move between two Portainer
    * environments never starts.)
    */
   async function connect(session: MoveBase): Promise<Connected> {
@@ -225,7 +211,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
     }
     let opened = clients.get(session);
     if (opened === undefined) {
-      opened = openClient(session, connection, target);
+      opened = openClient(session, connection);
       clients.set(session, opened);
       // A failure is tried again on the next call.
       opened.catch(() => clients.delete(session));

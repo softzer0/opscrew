@@ -11,7 +11,7 @@ import { checkServerSecret, EDGE_PROXIES, edgeProxy, keepNewerPins } from "@opsc
 import {
   APP_SERVER,
   type DeployPlan,
-  type DeployTarget,
+  isCloudProvider,
   monitoringServerName,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -25,7 +25,6 @@ import {
   providerBucket,
   publishDeploySetup,
   requireStorageKey,
-  type SavedPlan,
   setDeploySecrets,
   storageLogin,
 } from "../provision";
@@ -34,7 +33,6 @@ import { PORTAINER_SECRETS_RECORD, portainerDeploySecrets } from "../provision/s
 import {
   continuesHint,
   knownHostsName,
-  planStop,
   readServerAddresses,
   readValidJson,
   readyNewServer,
@@ -46,7 +44,7 @@ import { moveProvider } from "../shared/vps-target";
 import { bucketKeys, copyBucket, createBucket, movingBucket, renameBucket } from "./bucket";
 import { oldSideTarget, previousCloud } from "./layouts";
 import { joinMoveNetwork, moveMonitoring, sideServer } from "./network";
-import { planThenApply } from "./plans";
+import { planBounded, planThenApply } from "./plans";
 import type { MoveServer } from "./removal";
 import { oldServer } from "./servers";
 import {
@@ -88,36 +86,7 @@ export function pendingStop(
   };
 }
 
-/**
- * Stops unless a moves-only plan only renames resources from `fromPrefix` to `toPrefix` (or
- * nothing at all: the state is renamed already).
- */
-export function assertRenameOnly(
-  saved: Pick<SavedPlan, "changes" | "moves">,
-  bounds: { fromPrefix: string; toPrefix: string; what: string; hint: string },
-): void {
-  const problems = [
-    ...saved.changes.map((change) => `${change.action} ${change.address}`),
-    ...(saved.moves ?? [])
-      .filter(
-        (move) => !move.from.startsWith(bounds.fromPrefix) || !move.to.startsWith(bounds.toPrefix),
-      )
-      .map((move) => `move ${move.from} → ${move.to}`),
-  ];
-  if (problems.length === 0) return;
-  throw planStop(
-    `The ${bounds.what} plan would do more than rename resources in the infrastructure state, so OpsCrew stopped. Nothing was changed.`,
-    problems,
-    bounds.hint,
-  );
-}
-
 const DRIFT_HINT = `The infrastructure no longer matches what OpsCrew applied. Run \`${ABORT_COMMAND}\` to undo the move, then \`opscrew drift\` to see the differences and \`opscrew provision\` to bring them back in line, and start the move again.`;
-
-/** True for a server OpsCrew created on a cloud provider. */
-function isCloud(target: Pick<DeployTarget, "provider">): boolean {
-  return target.provider === "hetzner" || target.provider === "digitalocean";
-}
 
 /**
  * Step 2: the moves-only plan that renames a cloud old side's server to `module.server_previous`.
@@ -127,7 +96,7 @@ function isCloud(target: Pick<DeployTarget, "provider">): boolean {
 export async function renameStep(session: MoveSession): Promise<RetargetResult | undefined> {
   const { deps } = session;
   const move = moveOf(session);
-  if (!isCloud(move.from.target)) {
+  if (!isCloudProvider(move.from.target.provider)) {
     await saveMove(session, { ...move, step: "renamed" });
     await auditStep(session, "renamed", "nothing to rename: the old side is no server module");
     return undefined;
@@ -143,13 +112,12 @@ export async function renameStep(session: MoveSession): Promise<RetargetResult |
   const outcome = await planThenApply(session, {
     action: "rename",
     files,
-    check: (saved) =>
-      assertRenameOnly(saved, {
-        fromPrefix: "module.server.",
-        toPrefix: "module.server_previous.",
-        what: "rename",
-        hint: DRIFT_HINT,
-      }),
+    check: planBounded({
+      lead: "The rename plan would do more than rename resources in the infrastructure state, so OpsCrew stopped. Nothing was changed.",
+      move: (m) =>
+        m.from.startsWith("module.server.") && m.to.startsWith("module.server_previous."),
+      hint: DRIFT_HINT,
+    }),
     notes: [
       `This only renames the current ${old.noun} from module.server to module.server_previous in OpsCrew's infrastructure state, so that the new server can take its place. Nothing changes in your cloud.`,
     ],
@@ -166,21 +134,6 @@ export async function renameStep(session: MoveSession): Promise<RetargetResult |
   );
   await auditStep(session, "renamed", "the live server is module.server_previous in the state");
   return undefined;
-}
-
-function assertCreateOnly(saved: Pick<SavedPlan, "changes">): void {
-  const problems = saved.changes.filter(
-    (change) =>
-      change.action === "delete" ||
-      change.action === "replace" ||
-      change.address.startsWith("module.server_previous."),
-  );
-  if (problems.length === 0) return;
-  throw planStop(
-    "The plan for the new server would also change, replace or delete what is already running, so OpsCrew stopped. Nothing was changed.",
-    problems.map((change) => `${change.action} ${change.address}`),
-    DRIFT_HINT,
-  );
 }
 
 /** Waits for SSH on the new server, pins its host key and waits for its first-boot setup. */
@@ -211,7 +164,16 @@ export async function createStep(session: MoveSession): Promise<RetargetResult |
   const outcome = await planThenApply(session, {
     action: "create",
     files,
-    check: assertCreateOnly,
+    check: planBounded({
+      lead: "The plan for the new server would also change, replace or delete what is already running, so OpsCrew stopped. Nothing was changed.",
+      change: (c) =>
+        c.action !== "delete" &&
+        c.action !== "replace" &&
+        !c.address.startsWith("module.server_previous."),
+      // State moves change nothing that runs.
+      move: () => true,
+      hint: DRIFT_HINT,
+    }),
     notes: [
       `This creates the new ${fresh.noun} on ${fresh.name} next to ${old}; your app keeps running there.`,
       `The new ${fresh.noun} is billed until the move is finished or aborted: about ${formatMoney(session.plan.cost.monthly)} per month extra while both run.`,
@@ -350,7 +312,7 @@ async function ownKnownHosts(
 async function secretsReach(session: MoveSession, which: MoveServer): Promise<SecretsReach> {
   const target = which === "new" ? session.plan.target : moveOf(session).from.target;
   const address = which === "new" ? newServer(session) : oldServer(session);
-  if (target.provider === "hetzner" || target.provider === "digitalocean") {
+  if (isCloudProvider(target.provider)) {
     const pinned = await pinHost(session, address.ipv4, target.provider);
     return { host: address.ipv4, port: 22, knownHosts: pinned.knownHostsLines };
   }

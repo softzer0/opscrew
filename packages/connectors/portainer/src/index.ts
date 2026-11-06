@@ -23,7 +23,6 @@ export {
   type PortainerClient,
   type PortainerClientDeps,
   type PortainerEnvironment,
-  type ProxyEnvironmentKind,
   portainerClient,
 } from "./client";
 export { type ContainerFigures, type ContainerLogLine, sinceAfter } from "./docker";
@@ -32,6 +31,7 @@ export { normalizeCertFingerprint, sameCertFingerprint } from "./fingerprint";
 export { dockerArchitecture, environmentKind, inspectPortainer } from "./inspect";
 export {
   COMPOSE_PROJECT_LABEL,
+  COMPOSE_SERVICE_LABEL,
   DEPLOY_BRANCH,
   DEPLOY_COMPOSE_FILE,
   DEPLOY_REFERENCE,

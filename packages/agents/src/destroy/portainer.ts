@@ -43,8 +43,8 @@ import {
   type PortainerConnection,
   type ProjectEngine,
   readPortainerConnection,
-  readServerAddresses,
   refusalReason,
+  setPortainerRecordsAddress,
   stateContents,
 } from "../shared";
 import { serverData } from "./checks";
@@ -110,26 +110,6 @@ const WORDS: CloudflareRemovalWords = {
   tunnelAfter: TUNNEL_AFTER_STACKS,
   stays: PORTAINER_STAYS,
 };
-
-/**
- * Hands the engine the Portainer host's recorded public address as `TF_VAR_server_ipv4` and
- * `TF_VAR_server_ipv6` when the Cloudflare root manages the app's records (web mode `caddy` with
- * `records`, its `module "dns"`), as provision does; never in a file. Otherwise both are dropped,
- * so no address from this computer's environment reaches the engine.
- */
-export async function setPortainerRecordsAddress(
-  paths: PhaseDeps["paths"],
-  plan: Pick<DeployPlan, "target" | "dns">,
-  env: Record<string, string | undefined>,
-): Promise<void> {
-  delete env.TF_VAR_server_ipv4;
-  delete env.TF_VAR_server_ipv6;
-  if (portainerCloudflare(plan)?.records !== true) return;
-  const address = (await readServerAddresses(paths)).deployment;
-  if (address === undefined) return;
-  env.TF_VAR_server_ipv4 = address.ipv4;
-  if (address.ipv6 !== undefined) env.TF_VAR_server_ipv6 = address.ipv6;
-}
 
 /** Stops (`PHASE_PRECONDITION`, nothing changed) when the teardown plan cannot run. */
 function requireNoStackBlockers(plan: StackPlan, name: string): void {

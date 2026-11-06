@@ -14,23 +14,21 @@ import {
 import {
   ED25519_FINGERPRINT,
   FakeHostServer,
+  fakePortainer,
   freshFacts,
   type MoveHarness,
   moveHarness,
   OLD_IPV4,
   OLD_IPV6,
   ownRunner,
+  PORTAINER_CERT,
+  PORTAINER_TOKEN,
   PORTAINER_URL,
+  portainerServices,
   preparedServerFacts,
   ScriptedRunner,
 } from "../testing";
-import {
-  NEW_IPV4,
-  PORTAINER,
-  PORTAINER_CERT,
-  PORTAINER_TOKEN,
-  portainerServices,
-} from "./__fixtures__/pairs";
+import { NEW_IPV4, PORTAINER } from "./__fixtures__/pairs";
 import { runRetarget } from "./run";
 import { startMove } from "./start";
 import type { RetargetOptions, RetargetServices, RetargetSummary } from "./types";
@@ -223,14 +221,14 @@ describe.skipIf(!findExecutable("git"))("startMove: every refusal comes before a
     expect(await snapshot(o)).toBe(kept);
   });
 
-  it("refuses an Edge Agent environment once Portainer is reached, and forgets its answers again", async () => {
+  it("refuses an Edge Agent environment when it inspects the new side, before any change there or in the cloud", async () => {
     const h = await moveHarness();
     h.deps.env.PORTAINER_API_KEY = PORTAINER_TOKEN;
+    const portainer = fakePortainer({ token: PORTAINER_TOKEN, environmentType: 4 });
     const services: RetargetServices = {
       ...h.services,
-      portainer: portainerServices(h.hosts.docker(PORTAINER), 4),
+      portainer: portainerServices(h.hosts.docker(PORTAINER), { portainer }),
     };
-    const before = await snapshot(h);
     const error = await runRetarget(h.deps, {
       services,
       to: "portainer",
@@ -239,10 +237,14 @@ describe.skipIf(!findExecutable("git"))("startMove: every refusal comes before a
     }).catch((e: unknown) => e);
     expect(error).toMatchObject({
       code: "PHASE_PRECONDITION",
-      message: expect.stringContaining("is an Edge Agent environment"),
+      message: expect.stringContaining("is an Edge agent environment"),
     });
-    expect(await snapshot(h)).toBe(before);
-    expect(h.events.filter((e) => e.type === "plan" || e.type === "remote")).toEqual([]);
+    expect(portainer.mutations()).toEqual([]);
+    expect(h.events.filter((e) => e.type === "remote")).toEqual([]);
+    // Only the old server's moves-only rename in the infrastructure state was applied.
+    expect(
+      h.events.filter((e) => e.type === "apply").map((e) => [e.creates, e.updates, e.deletes]),
+    ).toEqual([[[], [], []]]);
   });
 });
 
@@ -252,7 +254,7 @@ describe.skipIf(!findExecutable("git"))("startMove: the new side must run the ap
     h.deps.env.PORTAINER_API_KEY = PORTAINER_TOKEN;
     const before = await snapshot(h);
     const error = await refused(h, {
-      services: { ...h.services, portainer: portainerServices(h.hosts.docker(PORTAINER), 1) },
+      services: { ...h.services, portainer: portainerServices(h.hosts.docker(PORTAINER)) },
       to: "portainer",
       portainer: { ...PORTAINER_ANSWERS, arch: "arm64" },
       portainerAddress: { ipv4: NEW_IPV4 },
@@ -356,7 +358,7 @@ describe.skipIf(!findExecutable("git"))("startMove onto the user's own server or
     h.deps.env.PORTAINER_API_KEY = PORTAINER_TOKEN;
     const services: RetargetServices = {
       ...h.services,
-      portainer: portainerServices(h.hosts.docker(PORTAINER), 1),
+      portainer: portainerServices(h.hosts.docker(PORTAINER)),
     };
     let summary: RetargetSummary | undefined;
     const session = await startMove(h.deps, h.plan, {

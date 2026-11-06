@@ -5,13 +5,14 @@ import {
   escapeRegExp,
   normalizeHostName,
   OpsCrewError,
+  type ProjectPaths,
   type Redactor,
   readTextIfExists,
 } from "@opscrew/core";
 import { APP_SERVER, type DeployPlan, readOptionalArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { hasPublicAddress } from "../network/endpoints";
-
+import { portainerCloudflare } from "../provision/credentials";
 import { type EngineDeps, infrastructureOutputs, type OutputsOptions } from "./engine";
 import { lastHostSetup, lastServerSetup } from "./host-plan";
 import { ownServerKeyFile } from "./own-server";
@@ -52,6 +53,37 @@ function addressOf(ipv4: unknown, ipv6: unknown): ServerAddress | undefined {
  */
 export function addressFromOutputs(outputs: Record<string, unknown>): ServerAddress | undefined {
   return addressOf(outputs.server_ipv4, outputs.server_ipv6);
+}
+
+/**
+ * Hands the engine `address` as `TF_VAR_<prefix>server_ipv4` and `TF_VAR_<prefix>server_ipv6`,
+ * never in a file (FR-902). Both are dropped first, so without an address none from this
+ * computer's environment reaches the engine.
+ */
+export function setAddressVariables(
+  env: Record<string, string | undefined>,
+  address: ServerAddress | undefined,
+  prefix = "",
+): void {
+  delete env[`TF_VAR_${prefix}server_ipv4`];
+  delete env[`TF_VAR_${prefix}server_ipv6`];
+  if (address === undefined) return;
+  env[`TF_VAR_${prefix}server_ipv4`] = address.ipv4;
+  if (address.ipv6 !== undefined) env[`TF_VAR_${prefix}server_ipv6`] = address.ipv6;
+}
+
+/**
+ * {@link setAddressVariables} with the Portainer host's recorded public address when the
+ * Cloudflare root manages the app's records (web mode `caddy` with `records`, its `module "dns"`,
+ * which a move adopted), else none.
+ */
+export async function setPortainerRecordsAddress(
+  paths: Pick<ProjectPaths, "stateDir">,
+  plan: Pick<DeployPlan, "target" | "dns">,
+  env: Record<string, string | undefined>,
+): Promise<void> {
+  const records = portainerCloudflare(plan)?.records === true;
+  setAddressVariables(env, records ? (await readServerAddresses(paths)).deployment : undefined);
 }
 
 const ServersOutputSchema = z.record(

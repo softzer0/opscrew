@@ -8,6 +8,7 @@ import {
   type DeployPlan,
   type DeployTarget,
   type DesignOption,
+  isCloudProvider,
   isServerlessProvider,
   monitoringOf,
   monitoringServerName,
@@ -200,7 +201,7 @@ async function pickOption(
 /** The new cloud target from the chosen option, with the provider's default image and the old proxy. */
 export function targetOf(option: DesignOption, edge: CloudDeployTarget["edge"]): CloudDeployTarget {
   const { provider } = option.target;
-  if (provider !== "hetzner" && provider !== "digitalocean") {
+  if (!isCloudProvider(provider)) {
     throw new OpsCrewError("INTERNAL", `A cloud provider's options include ${provider}.`, {
       hint: "This is a bug in OpsCrew; please report it.",
     });
@@ -546,13 +547,13 @@ export function moveSummary(
   const offline = downtimeUntilDnsChange(plan, copies)
     ? `; the app stays offline from then ${untilSwitched(plan)}`
     : "";
-  const cloudOld = from.provider === "hetzner" || from.provider === "digitalocean";
+  const cloudOld = isCloudProvider(from.provider);
   const prepare =
     to.provider === "hetzner" || to.provider === "digitalocean"
-      ? `Create ${fresh} (${to.serverType} in ${to.location}) next to ${old}.`
-      : to.provider === "own"
-        ? `Set up ${fresh} for the app with a host plan you approve by its hash, beside any other apps there.`
-        : "Check your Portainer environment for the app's stacks.";
+    ? `Create ${fresh} (${to.serverType} in ${to.location}) next to ${old}.`
+    : to.provider === "own"
+      ? `Set up ${fresh} for the app with a host plan you approve by its hash, beside any other apps there.`
+      : "Check your Portainer environment for the app's stacks.";
   const deploy =
     to.provider === "portainer"
       ? `Point the GitHub deploy secrets at ${fresh}, set up the app's stacks there with the version ${old} runs (a stack plan you approve by its hash) and check the app; the stack's Caddy stays stopped until the switch.`
@@ -593,8 +594,8 @@ function summaryText(summary: RetargetSummary, plan: DeployPlan, bucketLines: st
     `Moving ${plan.app.name} from ${targetLine(summary.from, "old")} to ${targetLine(summary.to, "new")}:`,
     ...summary.steps.map((step, i) => `  ${i + 1}. ${step}`),
     free
-      ? `Extra cost: none for ${sideWords(summary.to, "new")}${summary.from.provider === "hetzner" || summary.from.provider === "digitalocean" ? `; ${old} is billed until the move is finished` : ""}.`
-      : `Extra cost while both run: ${formatMoney(summary.extraMonthly)} per month for ${sideWords(summary.to, "new")}${summary.from.provider === "hetzner" || summary.from.provider === "digitalocean" ? `; ${old} is billed until the move is finished` : ""}.`,
+      ? `Extra cost: none for ${sideWords(summary.to, "new")}${isCloudProvider(summary.from.provider) ? `; ${old} is billed until the move is finished` : ""}.`
+      : `Extra cost while both run: ${formatMoney(summary.extraMonthly)} per month for ${sideWords(summary.to, "new")}${isCloudProvider(summary.from.provider) ? `; ${old} is billed until the move is finished` : ""}.`,
     ...(summary.data.length === 0
       ? summary.expectedDowntimeMinutes === undefined
         ? [`Data: none on ${old}, so the app stays online until the switch.`]
@@ -726,7 +727,7 @@ async function newTargetId(
  * Step 1 of a move (plan.md "2." started): every refusal of plan.md "4." and the spec's edge cases
  * before any change (this computer, a site and a server, previews, a tunnel or Portainer behind the
  * user's own proxy with Cloudflare DNS on either side, two Portainers, the same place, public SSH
- * closed, Edge Agent environments, an app that cannot be built for the new side, Portainer for an
+ * closed, an app that cannot be built for the new side, Portainer for an
  * app with a private network or self-hosted monitoring); the new side
  * (a cloud provider's options and the choice, the user's own server inspected, or the user's
  * Portainer reached); the old side's data mounts and their sizes, copied or started empty
@@ -778,9 +779,7 @@ export async function startMove(
   // The app's bucket at a provider moves with it to the other cloud provider, else it stays.
   const bucket = bucketChoice(plan, to, {
     keep: options.keepBucket === true,
-    ...(to === "hetzner" || to === "digitalocean"
-      ? { requirements: await requireRequirements(deps) }
-      : {}),
+    ...(isCloudProvider(to) ? { requirements: await requireRequirements(deps) } : {}),
   });
   const moves = bucket !== undefined && "moves" in bucket ? bucket.moves : undefined;
   // A bucket that stays: the app on the new side needs its key, known before any change.
@@ -858,8 +857,7 @@ export async function startMove(
     });
     const old = moveSide(session, "old");
     const fresh = moveSide(session, "new");
-    // An Edge Agent environment is refused when Portainer is reached (either side), before any
-    // change.
+    // The new Portainer's record and token, before any change.
     if (fresh.kind === "portainer") await (await fresh.docker(session)).close();
     deps.reporter.step(`Measuring the app's data on ${sideWords(plan.target, "old")}`);
     const volumes = await old.volumes(session);

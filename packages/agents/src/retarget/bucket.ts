@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import type { ResourceChange, ResourceMove } from "@opscrew/contracts";
 import {
   durationText,
   exists,
@@ -21,6 +20,7 @@ import {
   storageRootDir,
 } from "@opscrew/iac-templates";
 import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
+import { isCloudProvider } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { storageOffers } from "../design/storage";
 import { confirmBucketGone } from "../destroy/storage";
@@ -36,9 +36,9 @@ import {
   storageStateFile,
   withPreviousBucketKey,
 } from "../provision/storage";
-import { planStop, writeRenderedFiles } from "../shared";
+import { writeRenderedFiles } from "../shared";
 import { STORAGE_ENDPOINTS } from "../shared/app-env";
-import { discardSaved, quietly } from "./plans";
+import { discardSaved, planBounded, quietly } from "./plans";
 import { oldServer } from "./servers";
 import {
   auditMove,
@@ -108,7 +108,7 @@ export function bucketChoice(
     return { stays: `Bucket: ${bucketWords(old)} stays where it is; ${same}.` };
   }
   const billing = `Bucket: ${bucketWords(old)} stays there and keeps billing after the move`;
-  if (to !== "hetzner" && to !== "digitalocean") {
+  if (!isCloudProvider(to)) {
     return {
       stays: `${billing}: a bucket moves only to another cloud provider's object storage; ${same}.`,
     };
@@ -340,30 +340,11 @@ function slotOf(address: string): "this" | "previous" | undefined {
     | undefined;
 }
 
-/**
- * A check that stops (before any approval) unless the plan only makes `changes` of the move's
- * buckets and only renames `moves` in the state.
- */
-function bounded(
-  what: string,
-  allowed: { change?: (change: ResourceChange) => boolean; move?: (move: ResourceMove) => boolean },
-  command: string,
-): (saved: Pick<SavedPlan, "changes" | "moves">) => void {
-  return (saved) => {
-    const problems = [
-      ...saved.changes
-        .filter((change) => allowed.change?.(change) !== true)
-        .map((change) => `${change.action} ${change.address}`),
-      ...(saved.moves ?? [])
-        .filter((move) => allowed.move?.(move) !== true)
-        .map((move) => `move ${move.from} → ${move.to}`),
-    ];
-    if (problems.length === 0) return;
-    throw planStop(
-      `The plan of the app's bucket would do more than ${what}, so OpsCrew stopped. Nothing was changed.`,
-      problems,
-      `The bucket's infrastructure no longer matches what OpsCrew applied. Check the buckets in your providers' consoles, then run \`${command}\` again.`,
-    );
+/** The words of a bucket plan's {@link planBounded} stop: it would do more than `what`. */
+function bucketStop(what: string, command: string): { lead: string; hint: string } {
+  return {
+    lead: `The plan of the app's bucket would do more than ${what}, so OpsCrew stopped. Nothing was changed.`,
+    hint: `The bucket's infrastructure no longer matches what OpsCrew applied. Check the buckets in your providers' consoles, then run \`${command}\` again.`,
   };
 }
 
@@ -532,11 +513,10 @@ export async function renameBucket(session: MoveSession): Promise<RetargetResult
     layout: "rename",
     key: keys.next,
     previous: keys.old,
-    check: bounded(
-      "renaming the bucket in its state",
-      { move: (m) => slotOf(m.from) === "this" && slotOf(m.to) === "previous" },
-      session.command,
-    ),
+    check: planBounded({
+      ...bucketStop("renaming the bucket in its state", session.command),
+      move: (m) => slotOf(m.from) === "this" && slotOf(m.to) === "previous",
+    }),
   });
   return typeof done === "string" ? undefined : done;
 }
@@ -552,11 +532,10 @@ export async function createBucket(session: MoveSession): Promise<RetargetResult
     key: keys.next,
     previous: keys.old,
     creates: true,
-    check: bounded(
-      "creating the new bucket",
-      { change: (c) => c.action === "create" && slotOf(c.address) === "this" },
-      session.command,
-    ),
+    check: planBounded({
+      ...bucketStop("creating the new bucket", session.command),
+      change: (c) => c.action === "create" && slotOf(c.address) === "this",
+    }),
   });
   return typeof done === "string" ? undefined : done;
 }
@@ -601,11 +580,10 @@ export async function deleteOldBucket(
     key: keys.next,
     previous: keys.old,
     deletes: bucket.old,
-    check: bounded(
-      "deleting the bucket being left",
-      { change: (c) => c.action === "delete" && slotOf(c.address) === "previous" },
-      session.command,
-    ),
+    check: planBounded({
+      ...bucketStop("deleting the bucket being left", session.command),
+      change: (c) => c.action === "delete" && slotOf(c.address) === "previous",
+    }),
   });
   if (typeof done !== "string") return { stop: done };
   if (done === "unchanged") return { remaining: [] };
@@ -633,11 +611,10 @@ export async function removeNewBucket(
     previous: keys.old,
     deletes: bucket.next,
     beforeApply,
-    check: bounded(
-      "deleting the new bucket",
-      { change: (c) => c.action === "delete" && slotOf(c.address) === "this" },
-      session.command,
-    ),
+    check: planBounded({
+      ...bucketStop("deleting the new bucket", session.command),
+      change: (c) => c.action === "delete" && slotOf(c.address) === "this",
+    }),
   });
   if (typeof done !== "string") return done;
   if (done === "applied") await afterDeletion(session, bucket.next, keys.next);
@@ -659,11 +636,10 @@ export async function renameBucketBack(
     // Only the bucket being left's provider is in this layout (the new bucket is gone).
     layout: "abort-rename",
     key: keys.old,
-    check: bounded(
-      "renaming the bucket back in its state",
-      { move: (m) => slotOf(m.from) === "previous" && slotOf(m.to) === "this" },
-      session.command,
-    ),
+    check: planBounded({
+      ...bucketStop("renaming the bucket back in its state", session.command),
+      move: (m) => slotOf(m.from) === "previous" && slotOf(m.to) === "this",
+    }),
   });
   return typeof done === "string" ? undefined : done;
 }

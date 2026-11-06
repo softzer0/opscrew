@@ -8,6 +8,7 @@ import {
   DeployProviderSchema,
   DesignOptionSchema,
   type GithubPagesDeployTarget,
+  isCloudProvider,
   isServerlessProvider,
   isServerlessTarget,
   onOneServer,
@@ -750,17 +751,20 @@ describe("onServer: the runners that deploy on or to a server", () => {
 });
 
 describe("the unions", () => {
-  it("have one predicate each: a server, and server-less", async () => {
+  it("have one predicate each: a server, a cloud server, and server-less", async () => {
     const servers = ["hetzner", "digitalocean", "own"];
+    const clouds = ["hetzner", "digitalocean"];
     const serverless = ["cloudflare-workers", "github-pages"];
     for (const provider of DeployProviderSchema.options) {
       expect(onOneServer(provider), provider).toBe(servers.includes(provider));
+      expect(isCloudProvider(provider), provider).toBe(clouds.includes(provider));
       expect(isServerlessProvider(provider), provider).toBe(serverless.includes(provider));
       expect(isServerlessTarget({ provider }), provider).toBe(serverless.includes(provider));
     }
     expect(isServerlessProvider(undefined)).toBe(false);
     expect(isServerlessProvider("aws")).toBe(false);
     expect(onOneServer("aws")).toBe(false);
+    expect(isCloudProvider(undefined)).toBe(false);
     const target = DeployPlanSchema.parse(await serverlessPlan(pages())).target;
     expect(isServerlessTarget(target) && target.site).toEqual(pages().site);
   });

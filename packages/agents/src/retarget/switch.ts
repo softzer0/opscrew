@@ -1,13 +1,12 @@
 import { lookup } from "node:dns/promises";
-import type { ApprovalRecord, FetchLike } from "@opscrew/contracts";
+import type { ApprovalRecord, FetchLike, ResourceChange } from "@opscrew/contracts";
 import { OpsCrewError, upperFirst } from "@opscrew/core";
 import { EDGE_PROXIES, edgeProxy, portainerStackName } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
+import { isCloudProvider } from "@opscrew/plan-schema";
 import { z } from "zod";
-import type { SavedPlan } from "../provision";
 import {
   committableUrl,
-  planStop,
   pollUntil,
   recordServerAddress,
   type ServerAddress,
@@ -15,7 +14,7 @@ import {
 } from "../shared";
 import { codeOf, hintOf, reasonOf } from "../shared/errors";
 import { pointMonitoringAfterWindow } from "./network";
-import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
+import { applyInfraPlan, type InfraPlanInput, planBounded, prepareInfraPlan } from "./plans";
 import {
   auditMove,
   auditStep,
@@ -42,36 +41,17 @@ function publicUrl(plan: DeployPlan, ipv4: string): string {
   return plan.dns.domain !== undefined ? `https://${plan.dns.domain}` : `http://${ipv4}`;
 }
 
-/** The DNS switch plan may only update the DNS records, in place. */
-function assertDnsOnly(saved: Pick<SavedPlan, "changes" | "moves">): void {
-  assertDnsUpdatesOnly(saved, {
-    what: "DNS switch",
-    hint: `The infrastructure no longer matches what OpsCrew applied. Run \`${ABORT_COMMAND}\` to undo the move, then \`opscrew drift\` to see the differences.`,
-  });
-}
-
 /**
- * Stops unless every change of a plan is an in-place `update` of a record under `module.dns.`
- * (no creates, deletes or replacements, nothing outside DNS, no moves). A record the plan adopts
- * with an `import` block (a Portainer old side's, still the user's) is updated in place too.
+ * True for an in-place `update` of a record under `module.dns.`: all a DNS switch or restore plan
+ * may do (no creates, deletes or replacements, nothing outside DNS, no moves). A record the plan
+ * adopts with an `import` block (a Portainer old side's, still the user's) is updated in place too.
  */
-export function assertDnsUpdatesOnly(
-  saved: Pick<SavedPlan, "changes" | "moves">,
-  wording: { what: string; hint: string },
-): void {
-  const problems = [
-    ...saved.changes
-      .filter((change) => !change.address.startsWith("module.dns.") || change.action !== "update")
-      .map((change) => `${change.action} ${change.address}`),
-    ...(saved.moves ?? []).map((move) => `move ${move.from} → ${move.to}`),
-  ];
-  if (problems.length === 0) return;
-  throw planStop(
-    `The ${wording.what} plan would do more than update the DNS records in place, so OpsCrew stopped. Nothing was changed.`,
-    problems,
-    wording.hint,
-  );
-}
+export const dnsUpdate = (change: ResourceChange): boolean =>
+  change.address.startsWith("module.dns.") && change.action === "update";
+
+/** The lead of a DNS plan's stop: the `what` plan would do more than update the records. */
+export const dnsOnlyLead = (what: string): string =>
+  `The ${what} plan would do more than update the DNS records in place, so OpsCrew stopped. Nothing was changed.`;
 
 /**
  * A failed (or refused) switch: the app on the old side runs again (when OpsCrew stopped it) and
@@ -212,7 +192,11 @@ async function switchManagedDns(
   const input: InfraPlanInput = {
     action: "switch",
     files,
-    check: assertDnsOnly,
+    check: planBounded({
+      lead: dnsOnlyLead("DNS switch"),
+      change: dnsUpdate,
+      hint: `The infrastructure no longer matches what OpsCrew applied. Run \`${ABORT_COMMAND}\` to undo the move, then \`opscrew drift\` to see the differences.`,
+    }),
     // DNS records are not billed: the new side's price was shown with the plan that created it.
     costDelta: null,
     notes: [
@@ -554,7 +538,7 @@ export async function completeSwitch(session: MoveSession): Promise<RetargetResu
   // The new side receives the traffic (again in the local state if that record was lost).
   await recordServerAddress(deps.paths, newServer(session));
   deps.reporter.success(`${plan.app.name} now runs on ${placeWords(plan.target)} at ${site}.`);
-  const cloud = from.provider === "hetzner" || from.provider === "digitalocean";
+  const cloud = isCloudProvider(from.provider);
   return {
     step: "switched",
     done: true,

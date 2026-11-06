@@ -67,8 +67,8 @@ export function withBucket(plan: DeployPlan, provider: "r2" | "hetzner" | "digit
 
 /**
  * One engine for two roots: the `storage` root's fake (`storage`, also for its deletion copy in
- * `.opscrew/storage-delete`) and every other root's (`main`), picked by the root module's folder.
- * Records the environment of each `storage` call.
+ * `.opscrew/storage-delete`, and its state file `storage.tfstate`) and every other root's (`main`),
+ * picked by the root module's folder. Records the environment of each `storage` call.
  */
 export class RootEngine<S extends IacEngine = FakeEngine> implements IacEngine {
   readonly info = { name: "tofu" as const, version: "1.13.1", binary: "/fake/tofu" };
@@ -105,7 +105,10 @@ export class RootEngine<S extends IacEngine = FakeEngine> implements IacEngine {
     return this.#pick(dir, options).providerSchemas(dir, options);
   }
   stateResources(stateFile: string, options?: IacRunOptions) {
-    return this.main.stateResources(stateFile, options);
+    return (/storage\.tfstate$/.test(stateFile) ? this.storage : this.main).stateResources(
+      stateFile,
+      options,
+    );
   }
   untaint(dir: string, address: string, options?: IacRunOptions) {
     return this.#pick(dir, options).untaint(dir, address, options);

@@ -1,5 +1,6 @@
 import { cloudTarget, type InfraLayout, type ServerModule } from "@opscrew/iac-templates";
 import type { CloudDeployTarget, DeployTarget, Retarget } from "@opscrew/plan-schema";
+import { isCloudProvider } from "@opscrew/plan-schema";
 import { providerProfile } from "../providers";
 
 /**
@@ -43,7 +44,7 @@ export function protectionVariable(layout: InfraLayout, module: ServerModule): s
   // Only a server OpsCrew created has a module, and so delete protection, in the root.
   if (
     target === undefined ||
-    (target.provider !== "hetzner" && target.provider !== "digitalocean") ||
+    !isCloudProvider(target.provider) ||
     !providerProfile(target.provider).deleteProtection
   ) {
     return undefined;

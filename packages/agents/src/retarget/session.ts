@@ -20,7 +20,7 @@ import {
 } from "@opscrew/iac-templates";
 import {
   type DeployPlan,
-  type DeployTarget,
+  isCloudProvider,
   type Requirements,
   type Retarget,
   writeArtifact,
@@ -41,6 +41,7 @@ import {
   setupCloudflare,
   setupGitHub,
 } from "../provision";
+import { portainerCloudflare } from "../provision/credentials";
 import { recordedEdge, withCloudflareZone } from "../provision/render";
 import { planWhere } from "../runners/words";
 import {
@@ -61,6 +62,7 @@ import {
   requireGitRepo,
   type ServerAddress,
   SshRemoteExec,
+  setAddressVariables,
   stateCopyPaths,
   stateNotHere,
   writeRenderedFiles,
@@ -135,7 +137,7 @@ export async function userRecords(
   const from = plan.retarget?.from.target;
   const domain = plan.dns.domain;
   if (from?.provider !== "portainer" || !managedDns(plan) || domain === undefined) return undefined;
-  if (from.web.mode === "caddy" && from.web.records === true) return undefined;
+  if (portainerCloudflare({ ...plan, target: from })?.records === true) return undefined;
   const api =
     services.cloudflare === undefined
       ? (cloudflareConnector(deps).client ?? null)
@@ -295,13 +297,11 @@ export interface OpenSessionInput {
  */
 function needsState(plan: DeployPlan): boolean {
   const from = moveOf({ plan }).from.target;
-  const cloud = (target: Pick<DeployTarget, "provider">) =>
-    target.provider === "hetzner" || target.provider === "digitalocean";
-  if (cloud(from) || cloud(plan.target)) return true;
+  if (isCloudProvider(from.provider) || isCloudProvider(plan.target.provider)) return true;
   if (!managedDns(plan)) return false;
   return (
     from.provider === "own" ||
-    (from.provider === "portainer" && from.web.mode === "caddy" && from.web.records === true)
+    (from.provider === "portainer" && portainerCloudflare({ ...plan, target: from })?.records === true)
   );
 }
 
@@ -484,14 +484,8 @@ function addressVariables(session: MoveSession, layout: InfraLayout): void {
     { side: layout.previous, prefix: "previous_", address: session.servers.from },
   ];
   for (const { side, prefix, address } of slots) {
-    delete session.env[`TF_VAR_${prefix}server_ipv4`];
-    delete session.env[`TF_VAR_${prefix}server_ipv6`];
-    if (side === undefined || side.provider === "hetzner" || side.provider === "digitalocean") {
-      continue;
-    }
-    if (address === undefined) continue;
-    session.env[`TF_VAR_${prefix}server_ipv4`] = address.ipv4;
-    if (address.ipv6 !== undefined) session.env[`TF_VAR_${prefix}server_ipv6`] = address.ipv6;
+    const addressed = side !== undefined && !isCloudProvider(side.provider);
+    setAddressVariables(session.env, addressed ? address : undefined, prefix);
   }
 }
 

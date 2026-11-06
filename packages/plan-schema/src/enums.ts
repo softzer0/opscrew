@@ -173,6 +173,11 @@ export function onOneServer(provider: string): provider is VpsProvider {
   return VpsProviderSchema.safeParse(provider).success;
 }
 
+/** True for a cloud provider on which OpsCrew creates the server itself (Hetzner, DigitalOcean). */
+export function isCloudProvider(provider: string | undefined): provider is CloudProvider {
+  return CloudProviderSchema.safeParse(provider).success;
+}
+
 /** True for a server-less target's provider: Cloudflare's hosting or GitHub Pages. */
 export function isServerlessProvider(provider: string | undefined): provider is ServerlessProvider {
   return ServerlessProviderSchema.safeParse(provider).success;

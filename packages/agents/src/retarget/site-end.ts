@@ -38,7 +38,7 @@ import { describeChanges, trackedFiles, writeRenderedFiles } from "../shared";
 import { reasonOf } from "../shared/errors";
 import { runPhase } from "../shared/phase-status";
 import { clearPending, type MoveAction } from "./pending";
-import { applyInfraPlan, type InfraPlanInput, prepareInfraPlan } from "./plans";
+import { applyInfraPlan, type InfraPlanInput, planBounded, prepareInfraPlan } from "./plans";
 import { auditStep, moveOf, recordApply, saveMove, savePlan, warnUnusedApproval } from "./session";
 import { sitePrice } from "./site";
 import {
@@ -58,10 +58,10 @@ import {
 import {
   answers,
   customDomain,
-  onlyChanges,
   pagesClient,
   pagesStep,
   proposeSiteSetup,
+  siteBounds,
   workerRules,
 } from "./site-steps";
 import { ABORT_COMMAND, FINISH_ABORT_HINT, FINISH_COMMAND, RUN_COMMAND } from "./texts";
@@ -141,7 +141,7 @@ async function rootPlan(
     files: input.files.filter((file) => file.kind === "infra"),
     deployPlan: input.plan,
     costDelta: null,
-    check: onlyChanges(input.what, input.allowed),
+    check: planBounded({ ...siteBounds(input.what), change: input.allowed }),
   };
   const prepared = await prepareInfraPlan(session, plan);
   const removal = input.rules

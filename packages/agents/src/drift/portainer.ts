@@ -24,7 +24,6 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, ghcrImageFor, type PortainerDeployTarget } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { setPortainerRecordsAddress } from "../destroy/portainer";
 import { builderBranch } from "../environments/branches";
 import {
   type CloudflareSetup,
@@ -70,6 +69,7 @@ import {
   readValidJson,
   recordedStack,
   type StorageLogin,
+  setPortainerRecordsAddress,
   stateContents,
   stringOutput,
 } from "../shared";

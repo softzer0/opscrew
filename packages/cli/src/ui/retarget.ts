@@ -8,10 +8,7 @@ import {
 } from "@opscrew/agents";
 import { formatMoney } from "@opscrew/core";
 import type { DeployPlan, DeployTarget, Retarget } from "@opscrew/plan-schema";
-
-/** True for a server OpsCrew creates at a cloud provider (not the user's own server or Portainer). */
-const isCloud = (target: Pick<DeployTarget, "provider">) =>
-  target.provider === "hetzner" || target.provider === "digitalocean";
+import { isCloudProvider } from "@opscrew/plan-schema";
 
 /** `on the new server …`, `in your Portainer`: where the app runs on a side. */
 const onSide = (target: Pick<DeployTarget, "provider">, which: "old" | "new") =>
@@ -27,11 +24,11 @@ function stepWords(
     case "started":
       return "move started, nothing created yet";
     case "renamed":
-      return isCloud(from)
+      return isCloudProvider(from.provider)
         ? "current server renamed in the infrastructure state"
         : "infrastructure state ready for the move";
     case "created":
-      return `${sideWords(to, "new")} ${isCloud(to) ? "created" : "prepared"}`;
+      return `${sideWords(to, "new")} ${isCloudProvider(to.provider) ? "created" : "prepared"}`;
     case "deployed":
       return `app deployed ${onSide(to, "new")}`;
     case "migrated":
@@ -59,7 +56,7 @@ export function retargetStatusLine(plan: DeployPlan): string | undefined {
   } else if (move.step === "switched") {
     state = `last completed step: switched (${stepWords("switched", from, to)})`;
     const old = sideWords(from, "old");
-    next = `run \`${FINISH_COMMAND}\` to ${isCloud(from) ? `delete ${old}` : `remove the app from ${old}`} once the app works ${onSide(to, "new")}`;
+    next = `run \`${FINISH_COMMAND}\` to ${isCloudProvider(from.provider) ? `delete ${old}` : `remove the app from ${old}`} once the app works ${onSide(to, "new")}`;
   } else {
     const stopped =
       move.oldAppStoppedAt !== undefined ? `; the app ${onSide(from, "old")} is stopped` : "";

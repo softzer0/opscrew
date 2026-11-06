@@ -1,13 +1,20 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { duplexPair } from "node:stream";
+import { duplexPair, Readable } from "node:stream";
 import {
   type FakeContainer,
   FakeDocker,
   type FakeFile,
   type FakeRun,
 } from "@opscrew/connector-docker/testing";
+import {
+  COMPOSE_PROJECT_LABEL,
+  COMPOSE_SERVICE_LABEL,
+  type PinnedRequest,
+  type PinnedStream,
+  portainerClient,
+} from "@opscrew/connector-portainer";
 import type {
   ApprovalDecision,
   ApprovalHandler,
@@ -46,6 +53,7 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
+import type { PortainerServices } from "../provision/types";
 import { fakeDialStdio } from "../retarget/sides/ssh.fakes";
 import { isMaintenanceWindowRequest } from "../retarget/texts";
 import type { RetargetGitHubApi, RetargetServices } from "../retarget/types";
@@ -63,6 +71,7 @@ import {
   testPlan,
 } from "./deploy";
 import { MemoryReporter, ScriptedRunner } from "./deps";
+import { type FakePortainer, fakeCertificate, fakePortainer } from "./portainer";
 import { noProviderSchemas, plainStateResources } from "./state";
 
 export { HOST_KEY, SERVER_IPV4 as OLD_IPV4, SERVER_IPV6 as OLD_IPV6 };
@@ -588,9 +597,6 @@ function opOf(command: string): string {
   return command;
 }
 
-/** The Compose label of a container's project, and of its service. */
-const PROJECT_LABEL = "com.docker.compose.project";
-const SERVICE_LABEL = "com.docker.compose.service";
 /** Where the app's services keep their data on a server OpsCrew deploys to over SSH. */
 const DATA_ROOT = `/srv/data/${APP}`;
 
@@ -680,7 +686,7 @@ export class FakeHosts {
         docker.addFolder(source, data);
       }
       if (source !== undefined && stack && !docker.volumes.has(source)) {
-        docker.addVolume(source, data, { [PROJECT_LABEL]: project });
+        docker.addVolume(source, data, { [COMPOSE_PROJECT_LABEL]: project });
       }
       docker.containers.set(id, {
         id,
@@ -689,7 +695,7 @@ export class FakeHosts {
           service === "app" ? `ghcr.io/acme/shop@sha256:${"c".repeat(64)}` : IMAGES.postgres.ref,
         cmd: [],
         env: [],
-        labels: { [PROJECT_LABEL]: project, [SERVICE_LABEL]: service },
+        labels: { [COMPOSE_PROJECT_LABEL]: project, [COMPOSE_SERVICE_LABEL]: service },
         binds: [],
         mounts:
           source === undefined
@@ -716,8 +722,8 @@ export class FakeHosts {
   /** Sets the state of the containers of `services` on `ip` (Compose's stop or start). */
   #compose(ip: string, verb: "stop" | "start", services: readonly string[]): void {
     for (const container of this.docker(ip).containers.values()) {
-      const service = container.labels[SERVICE_LABEL] ?? "";
-      if (container.labels[PROJECT_LABEL] !== APP || !services.includes(service)) continue;
+      const service = container.labels[COMPOSE_SERVICE_LABEL] ?? "";
+      if (container.labels[COMPOSE_PROJECT_LABEL] !== APP || !services.includes(service)) continue;
       container.state = verb === "stop" ? "exited" : "running";
       container.exitCode = verb === "stop" && this.killed.has(`${ip} ${service}`) ? 137 : 0;
     }
@@ -1248,3 +1254,83 @@ export async function moveHarness(options: MoveHarnessOptions = {}) {
 }
 
 export type MoveHarness = Awaited<ReturnType<typeof moveHarness>>;
+
+/** A side of a move in the tests: a cloud provider, the user's own server, their Portainer. */
+export type MoveSideKind = CloudProvider | "own" | "portainer";
+
+/**
+ * The target of a side `kind`, as a plan records it: {@link movePlan}'s server at a cloud
+ * provider, the user's own server, or environment 3 of their Portainer, whose DNS records are
+ * OpsCrew's unless `records` is false.
+ */
+export function targetOf(kind: MoveSideKind, records = true): DeployPlan["target"] {
+  switch (kind) {
+    case "hetzner":
+    case "digitalocean":
+      return movePlan({ from: kind }).target;
+    case "own":
+      return {
+        provider: "own",
+        mode: "vps-compose",
+        arch: "amd64",
+        access: "public",
+        edge: "caddy",
+      };
+    case "portainer":
+      return {
+        provider: "portainer",
+        mode: "portainer-stack",
+        environmentId: 3,
+        arch: "amd64",
+        redeploy: "updater",
+        web: records ? { mode: "caddy", records: true } : { mode: "caddy" },
+      };
+  }
+}
+
+/** The Portainer token {@link portainerServices}'s fake accepts (synthetic). */
+export const PORTAINER_TOKEN = fakeSecret("generic-password", "portainer-token");
+/** The certificate the fake Portainer presents. */
+export const PORTAINER_CERT = fakeCertificate();
+
+/**
+ * The user's Portainer as a move reaches it: its API (`portainer`, by default a fresh
+ * {@link fakePortainer} of environment 3 that accepts {@link PORTAINER_TOKEN}) and its Docker
+ * proxy to `docker`, where the app's stack containers keep running once started (the fake runs
+ * others to their end). `onStackCreate` runs once Portainer has created a stack.
+ */
+export function portainerServices(
+  docker: FakeDocker,
+  options: { portainer?: FakePortainer; onStackCreate?: () => void } = {},
+): PortainerServices {
+  const portainer = options.portainer ?? fakePortainer({ token: PORTAINER_TOKEN });
+  const prefix = "/api/endpoints/3/docker";
+  const request: PinnedRequest = async (init) => {
+    const response = await portainer.request(init);
+    if (init.method === "POST" && init.path.startsWith("/api/stacks/create/")) {
+      options.onStackCreate?.();
+    }
+    return response;
+  };
+  const stream: PinnedStream = async (init) => {
+    const path = init.path.slice(prefix.length);
+    const id = /\/containers\/([^/?]+)\/start(?:\?|$)/.exec(path)?.[1];
+    const container = id === undefined ? undefined : docker.containers.get(id);
+    if (init.method === "POST" && container?.labels[COMPOSE_PROJECT_LABEL] === `opscrew-${APP}`) {
+      container.state = "running";
+      return { status: 204, headers: {}, body: Readable.from([]) };
+    }
+    return docker.request({
+      method: init.method,
+      path,
+      headers: init.headers,
+      ...(init.body !== undefined ? { body: init.body } : {}),
+    });
+  };
+  return {
+    client: (endpoint, token, clientDeps) =>
+      portainerClient(endpoint, token, { ...clientDeps, request, stream }),
+    inspectCertificate: async () => PORTAINER_CERT,
+    wait: { now: () => 0, sleep: async () => undefined },
+  };
+}

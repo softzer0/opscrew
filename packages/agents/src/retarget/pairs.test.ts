@@ -1,20 +1,18 @@
 import { readFile, rm } from "node:fs/promises";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { describe, expect, it } from "vitest";
-import { OLD_IPV4, PORTAINER_URL } from "../testing";
+import { type MoveSideKind, OLD_IPV4, PORTAINER_TOKEN, PORTAINER_URL } from "../testing";
 import {
   DB_PASSWORD,
   NEW_IPV4,
   type PairHarness,
-  type PairSide,
   PORTAINER,
-  PORTAINER_TOKEN,
   pairHarness,
 } from "./__fixtures__/pairs";
 import { maintenanceWindow } from "./window";
 
 /** Every pair of sides a move goes between, and the move between two clouds. */
-const PAIRS: readonly [PairSide, PairSide][] = [
+const PAIRS: readonly [MoveSideKind, MoveSideKind][] = [
   ["hetzner", "own"],
   ["own", "hetzner"],
   ["own", "own"],

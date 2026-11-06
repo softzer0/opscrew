@@ -1,7 +1,12 @@
 import type { ProjectPaths } from "@opscrew/core";
 import { OpsCrewError } from "@opscrew/core";
 import { portainerStackName } from "@opscrew/iac-templates";
-import { type DeployPlan, type DeployTarget, isServerlessProvider } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  type DeployTarget,
+  isCloudProvider,
+  isServerlessProvider,
+} from "@opscrew/plan-schema";
 import {
   readPortainerConnection,
   readServerAddresses,
@@ -115,7 +120,7 @@ export function composeProject(side: Pick<MoveSide, "kind">, plan: DeployPlan): 
 export function cloudProviders(session: Pick<MoveBase, "plan">) {
   return (["old", "new"] as const).flatMap((which) => {
     const { provider } = sideTarget(session, which);
-    return provider === "hetzner" || provider === "digitalocean" ? [provider] : [];
+    return isCloudProvider(provider) ? [provider] : [];
   });
 }
 
@@ -125,7 +130,7 @@ export function cloudProviders(session: Pick<MoveBase, "plan">) {
  */
 export function placeWords(target: Pick<DeployTarget, "provider">): string {
   const { provider } = target;
-  if (provider === "hetzner" || provider === "digitalocean") return providerWords(provider).name;
+  if (isCloudProvider(provider)) return providerWords(provider).name;
   if (isServerlessProvider(provider)) return serverlessName(provider);
   return provider === "own" ? "your own server" : "your Portainer";
 }
@@ -136,7 +141,7 @@ export function placeWords(target: Pick<DeployTarget, "provider">): string {
  */
 export function sideWords(target: Pick<DeployTarget, "provider">, which: MoveServer): string {
   const { provider } = target;
-  if (provider === "hetzner" || provider === "digitalocean") {
+  if (isCloudProvider(provider)) {
     const words = providerWords(provider);
     return `the ${which} ${words.noun} on ${words.name}`;
   }
