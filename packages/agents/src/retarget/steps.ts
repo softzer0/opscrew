@@ -14,6 +14,7 @@ import {
   edgeProxy,
   keepNewerPins,
   type RenderedFile,
+  serverDeploySecrets,
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
@@ -427,20 +428,26 @@ export async function storeDeploySecrets(session: MoveSession, which: MoveServer
         }),
         environment.names,
         "retarget",
-        // The scheduled check reads this server's disk over SSH with its key: its reach follows.
-        plan.observability?.check?.enabled === true && checkReachesOverSsh(plan)
-          ? {
-              checkServer: checkServerSecret([
-                {
-                  id: APP_SERVER,
-                  host: reach.host,
-                  port: reach.port,
-                  user: "deploy",
-                  knownHosts: reach.knownHosts,
-                },
-              ]),
-            }
-          : {},
+        {
+          // The extra servers stay where they are: their address and host key secrets stay too.
+          keep: (plan.servers ?? []).flatMap((server) =>
+            Object.values(serverDeploySecrets(server.name)),
+          ),
+          // The scheduled check reads this server's disk over SSH with its key: its reach follows.
+          ...(plan.observability?.check?.enabled === true && checkReachesOverSsh(plan)
+            ? {
+                checkServer: checkServerSecret([
+                  {
+                    id: APP_SERVER,
+                    host: reach.host,
+                    port: reach.port,
+                    user: "deploy",
+                    knownHosts: reach.knownHosts,
+                  },
+                ]),
+              }
+            : {}),
+        },
       );
     }
   } catch (error) {

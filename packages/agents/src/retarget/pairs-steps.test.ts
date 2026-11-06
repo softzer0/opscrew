@@ -5,6 +5,7 @@ import {
   DEPLOY_SECRETS,
   PORTAINER_DEPLOY_SECRETS,
   PORTAINER_IMAGE_PLACEHOLDER,
+  serverDeploySecrets,
 } from "@opscrew/iac-templates";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
@@ -251,6 +252,40 @@ describe.skipIf(!findExecutable("git"))("the deploy secrets of the other kind of
     await storeDeploySecrets(h.session, "new");
     for (const name of SERVER_ONLY) expect(h.github.secrets.has(name)).toBe(false);
     expect(h.github.secrets.has(DEPLOY_SECRETS.buildEnv)).toBe(true);
+  });
+
+  it("a move between two clouds keeps the secrets of the app's extra server, which stays where it is", async () => {
+    const h = await pairHarness("hetzner", "digitalocean", { step: "created" });
+    const data = {
+      name: "data",
+      target: {
+        provider: "hetzner" as const,
+        mode: "vps-compose" as const,
+        location: "nbg1",
+        serverType: "cx23",
+        backups: true,
+      },
+    };
+    h.session.plan = { ...h.session.plan, servers: [data] };
+    // Provision stored the old side's secrets with the extra server's address and host key.
+    await storeDeploySecrets(h.session, "old");
+    const extra = Object.values(serverDeploySecrets("data"));
+    for (const name of extra) h.github.secrets.set(name, "stored by provision");
+    const record = JSON.parse(await readFile(h.paths.files.deploySecrets, "utf8"));
+    await writeFile(
+      h.paths.files.deploySecrets,
+      `${JSON.stringify({ ...record, names: [...record.names, ...extra] })}\n`,
+    );
+
+    h.handler.requests.length = 0;
+    await storeDeploySecrets(h.session, "new");
+    expect(h.github.secrets.get(DEPLOY_SECRETS.host)).toBe(NEW_IPV4);
+    for (const name of extra) expect(h.github.secrets.get(name)).toBe("stored by provision");
+    const approval = h.handler.requests.find((r) => r.kind === "github-secrets");
+    expect(approval?.details).not.toContain("Deleted");
+    // Still recorded, so provision deletes them once the server goes.
+    const after = JSON.parse(await readFile(h.paths.files.deploySecrets, "utf8"));
+    expect(after.names).toEqual(expect.arrayContaining(extra));
   });
 
   it("a move between two servers deletes nothing the new one still needs", async () => {

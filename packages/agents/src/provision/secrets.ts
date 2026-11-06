@@ -960,9 +960,9 @@ export async function readSecretsRecord(
  * repository), each where it is. `stale`: every deploy secret the record names that `names` no
  * longer holds (the env file secrets of services that no longer run, the addresses of extra
  * servers that are gone, origin TLS turned off, or the other kind of side's after a move between a
- * server and Portainer); only names OpsCrew recorded, never the scheduled check's, and never one
- * holding an app variable of the plan (`siteEnvSecret`: a value not given this run keeps the earlier
- * one).
+ * server and Portainer); only names OpsCrew recorded, never the scheduled check's, `keep`'s, or
+ * one holding an app variable of the plan (`siteEnvSecret`: a value not given this run keeps the
+ * earlier one).
  * `moved`: on a move between a GitHub environment and repository secrets (`environment` is where
  * they go now), the old copies: into a GitHub environment, the repository secrets of the same
  * names (GitHub would read them instead of a missing environment secret, also without a record of
@@ -973,15 +973,18 @@ function secretsToDelete(
   previous: SecretsRecord | undefined,
   names: readonly string[],
   environment: string | undefined,
+  keep: readonly string[],
 ): { stale: SecretPlace[]; moved: SecretPlace[] } {
   const was = previous?.environment;
   const at = (name: string, where: string | undefined): SecretPlace =>
     where === undefined ? { name } : { name, environment: where };
   // The build values stay repository secrets beside a GitHub environment.
   const build = BUILD_VALUES.map((name) => deploySecretName(plan, name));
-  const appValues = plan.app.env.map((v) => deploySecretName(plan, siteEnvSecret(v.name)));
+  const kept = [...plan.app.env.map((v) => siteEnvSecret(v.name)), ...keep].map((name) =>
+    deploySecretName(plan, name),
+  );
   const stale = (previous?.names ?? [])
-    .filter((name) => !names.includes(name) && !appValues.includes(name))
+    .filter((name) => !names.includes(name) && !kept.includes(name))
     .sort()
     .map((name) => at(name, build.includes(name) ? undefined : was));
   if (environment === was) return { stale, moved: [] };
@@ -1039,6 +1042,8 @@ export async function setDeploySecrets(
     checkServer?: string;
     /** What the approval says of the values instead of the app environment's names. */
     about?: string;
+    /** Deploy secrets (unprefixed names) that stay although this set does not hold them. */
+    keep?: readonly string[];
   } = {},
 ): Promise<void> {
   const { api, owner } = github;
@@ -1062,7 +1067,11 @@ export async function setDeploySecrets(
   const inEnvironment = all.filter((place) => place.environment !== undefined);
   const record = await readSecretsRecord(deps);
   const previous = record?.repo === repo ? record : undefined;
-  const { stale, moved } = secretsToDelete(plan, previous, names, environment);
+  const { stale, moved } = secretsToDelete(plan, previous, names, environment, options.keep ?? []);
+  const deleted = new Set([...stale, ...moved].map((place) => place.name));
+  const left = (previous?.names ?? []).filter(
+    (name) => !names.includes(name) && !deleted.has(name),
+  );
   const list = (places: readonly SecretPlace[]) => places.map((place) => `  ${placeText(place)}`);
   const approval = await deps.approvals.request({
     kind: "github-secrets",
@@ -1145,8 +1154,9 @@ export async function setDeploySecrets(
     `${JSON.stringify({
       host: secrets[DEPLOY_SECRETS.host] ?? options.record,
       repo,
-      // The check's secret is the check's, never a deploy secret to move or delete.
-      names: names.filter((name) => name !== checkName),
+      // The check's secret is the check's, never a deploy secret to move or delete. The recorded
+      // ones this run keeps without storing them stay recorded.
+      names: [...names.filter((name) => name !== checkName), ...left].sort(),
       ...(environment !== undefined ? { environment } : {}),
       ...(previous?.createdEnvironment === true ? { createdEnvironment: true } : {}),
       ...(previous?.reviewersDeclined === true ? { reviewersDeclined: true } : {}),

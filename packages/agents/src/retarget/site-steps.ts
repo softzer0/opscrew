@@ -239,7 +239,8 @@ async function preparePages(
   if (record.approval !== undefined) await recordApproval(session, record.approval);
   if (record.applied) deps.reporter.info(verifyStepNote({ owner, domain, page }));
 
-  // The app's values for its build; a site without values has none.
+  // The app's values for its build; a site without values has none. The Worker's deploy secrets
+  // stay: it deploys with them again after an abort.
   const where = { host: plan.target.provider, owner, repo };
   if (plan.app.env.length > 0 && !(await deploySecretsStoredFor(deps, plan, where))) {
     await storeSiteSecrets(deps, {
@@ -247,6 +248,7 @@ async function preparePages(
       plan,
       services,
       store: true,
+      keep: Object.values(CLOUDFLARE_DEPLOY_SECRETS),
       done: "GitHub Pages is on for the site, without its custom domain; its build gets none of the app's values yet.",
     });
   }

@@ -1,6 +1,7 @@
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { exists, findExecutable, OpsCrewError, tfstateFile } from "@opscrew/core";
+import { CLOUDFLARE_DEPLOY_SECRETS, siteEnvSecret } from "@opscrew/iac-templates";
 import type { ServerlessProvider } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { pagesVerificationStateFile } from "../shared";
@@ -107,6 +108,9 @@ async function end(
 }
 
 const HASH = /^[0-9a-f]{64}$/;
+
+/** The Worker's deploy secrets, which only its deploys read. */
+const WORKER_SECRETS = Object.values(CLOUDFLARE_DEPLOY_SECRETS);
 
 describe.skipIf(!findExecutable("git"))("a site's move between site hosts", () => {
   it("moves from GitHub Pages to Cloudflare's hosting and back, each change approved by its hash", async () => {
@@ -244,7 +248,9 @@ describe.skipIf(!findExecutable("git"))("a site's move between site hosts", () =
     expect(onPages.dns.proxied).toBe(false);
     expect(onPages.security.wafCustomRules).toBe(false);
     expect(await exists(join(s.root, "opscrew/cloudflare/wrangler.jsonc"))).toBe(false);
+    // The Worker's deploy secrets are still there for the user to delete, as the output says.
     expect(done.next.join("\n")).toContain("OPSCREW_CLOUDFLARE_API_TOKEN");
+    for (const name of WORKER_SECRETS) expect(s.github.secrets.has(name)).toBe(true);
 
     // Nothing secret anywhere: output, audit, approvals, pull requests, Cloudflare calls, files.
     const text = await everything(s);
@@ -255,9 +261,20 @@ describe.skipIf(!findExecutable("git"))("a site's move between site hosts", () =
 
   it("aborts a move to GitHub Pages before the switch: the Pages site goes, the Worker keeps the domain", async () => {
     const s = await setup("cloudflare-workers");
+    // The Worker's provision stored its deploy secrets and the site's value from this computer.
+    const stored = [...WORKER_SECRETS, siteEnvSecret("API_KEY")];
+    for (const name of stored) s.github.secrets.set(name, "stored");
+    await mkdir(dirname(s.paths.files.deploySecrets), { recursive: true });
+    await writeFile(
+      s.paths.files.deploySecrets,
+      `${JSON.stringify({ host: "cloudflare-workers", repo: "example-org/example-app", names: stored })}\n`,
+    );
     const first = await move(s, { to: "github-pages", pagesVerification: VERIFICATION });
     expect(first.result).toMatchObject({ step: "started", done: false });
     expect(s.pages.state.site).toEqual({ buildType: "workflow", httpsEnforced: false });
+    // The site's values for the Pages build are stored; the Worker's deploy secrets stay.
+    expect(kinds(first.handler)).toContain("github-secrets");
+    for (const name of WORKER_SECRETS) expect(s.github.secrets.has(name)).toBe(true);
 
     const aborted = await s.run();
     const result = await abortRetarget(aborted.deps, {
@@ -278,6 +295,8 @@ describe.skipIf(!findExecutable("git"))("a site's move between site hosts", () =
     expect(plan.target.provider).toBe("cloudflare-workers");
     expect(plan.dns.proxied).toBe(true);
     expect(result.next.join("\n")).toContain("stays, so docs.example.com stays verified");
+    // The Worker deploys again with its own deploy secrets.
+    for (const name of WORKER_SECRETS) expect(s.github.secrets.has(name)).toBe(true);
   });
 
   it("refuses to abort once the hostnames moved, and to finish before they did", async () => {

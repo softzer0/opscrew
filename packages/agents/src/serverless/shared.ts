@@ -31,6 +31,8 @@ export async function storeSiteSecrets(
     /** Store them in this run (false with `--no-secrets`). */
     store: boolean;
     deploy?: Record<string, string>;
+    /** Deploy secrets (unprefixed names) another host still reads: never deleted as stale. */
+    keep?: readonly string[];
     done: string;
   },
 ): Promise<boolean> {
@@ -57,7 +59,11 @@ export async function storeSiteSecrets(
         { ...input.deploy, ...site },
         environment.names,
         "provision",
-        { record: plan.target.provider, refusedState: input.done },
+        {
+          record: plan.target.provider,
+          refusedState: input.done,
+          ...(input.keep !== undefined ? { keep: input.keep } : {}),
+        },
       );
     },
     where: { host: plan.target.provider, owner: github.owner, repo: github.repo },
