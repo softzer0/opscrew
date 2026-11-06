@@ -296,23 +296,26 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 7: Live
 
-- [ ] T2316 [US1] [US2] [US3] [US4] The live pass, in `packages/cli/test/live/`
+- [ ] T2316 [US1] [US2] [US3] [US4] [US5] The live pass, in `packages/cli/test/live/`
   - Owns: `packages/cli/test/live/retarget-anywhere*.ts`, `docs/e2e.md`
   - Depends: T2314
-  - Accept, gated on `OPSCREW_E2E_RETARGET_ANYWHERE=1`:
-    - An example app with Postgres, MySQL, Valkey holding jobs and a SQLite file moves from
-      Hetzner, to a throwaway server provisioned as the user's own, to DigitalOcean. The own server
-      is arm64 (a Hetzner CAX type), so the copy crosses architectures for real (T2306: QEMU can't run
-      most kinds). Every row, job
-      and file is there afterwards.
-    - A Hetzner bucket moves.
-    - A Portainer leg: to it and back.
-    - A site leg (found in T2312): GitHub Pages to Cloudflare's hosting and back on the e2e domain.
-      It checks that the Pages to Workers switch, whose record deletes and creates run in parallel,
-      finishes (in one run or two).
-    - A forced copy failure leaves the old app serving.
-    - A leak search.
-    - Cleanup always runs.
+  - Accept, gated on `OPSCREW_E2E_RETARGET_ANYWHERE=1`, in legs that each clean up after themselves:
+    - **Own server, across architectures:** an example app with Postgres, MySQL, Valkey holding jobs and a
+      SQLite file moves from Hetzner (amd64) to a throwaway Hetzner CAX server (arm64) provisioned as the
+      user's own, then back to Hetzner. Every row, job and file is there after each move. The own server is
+      never deleted by `--finish`, only the app on it (the harness deletes the throwaway server itself).
+    - **A forced copy failure** in that leg's window leaves the old side serving, with its data unchanged
+      (SC-2302).
+    - **Portainer:** a Portainer on a throwaway Hetzner server (the e2e's Portainer setup), a move from
+      Hetzner to it and back; its environment is never removed.
+    - **A site** (found in T2312): GitHub Pages to Cloudflare's hosting and back on the e2e domain,
+      checking that the Pages to Workers switch finishes (in one run or two).
+    - **DigitalOcean and a bucket**, only when `OPSCREW_E2E_DIGITALOCEAN_TOKEN` is set: Hetzner with a
+      Hetzner bucket to DigitalOcean, the bucket's files in the new Spaces bucket, the old bucket deleted at
+      `--finish` after its typed name. The harness makes a throwaway Spaces key through DigitalOcean's API
+      and deletes it afterwards.
+    - A leak search over every output, commit, plan and audit entry; leftovers checked at the end.
+    - docs/e2e.md says how to run each leg.
   - Verify: `pnpm turbo run typecheck --filter=opscrew`
   - Effort: high
 
