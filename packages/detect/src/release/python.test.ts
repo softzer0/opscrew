@@ -43,6 +43,82 @@ describe("Python release commands", () => {
     expect(await releaseOf(app)).toEqual({ command: undefined, note: undefined });
   });
 
+  describe("Alembic migrations with several heads", () => {
+    /** A migration file in Alembic's generated form (`typed` adds Alembic 1.13's annotations). */
+    const revision = (id: string, down: string, typed = false) =>
+      typed
+        ? `"""Revision ID: ${id}"""\nrevision: str = "${id}"\ndown_revision: Union[str, Sequence[str], None] = ${down}\nbranch_labels = None\n`
+        : `"""Revision ID: ${id}\nRevises: \n"""\nrevision = '${id}'\ndown_revision = ${down}\n`;
+    const base = { "a1_init.py": revision("a1", "None"), "b2_users.py": revision("b2", "'a1'") };
+    const twoHeads = { ...base, "c3_posts.py": revision("c3", '"a1"', true) };
+    const merged = {
+      ...twoHeads,
+      "d4_merge.py": `revision = "d4"\ndown_revision = (\n    "b2",\n    "c3",\n)\n`,
+    };
+    const NOTE =
+      "This app's Alembic migrations have several heads (branches of migrations), so OpsCrew runs `CMD`. Down migrations aren't offered for it yet: a rollback can restore a snapshot or keep the database.";
+
+    const alembic = (versions: Record<string, string>) =>
+      releaseOf({
+        "requirements.txt": "fastapi\nuvicorn\nsqlalchemy\nalembic\n",
+        "main.py": FASTAPI,
+        "db/alembic.ini": "[alembic]\nscript_location = migrations\n",
+        "db/migrations/env.py": "",
+        ...Object.fromEntries(
+          Object.entries(versions).map(([name, text]) => [`db/migrations/versions/${name}`, text]),
+        ),
+      });
+    const flask = (versions: Record<string, string>) =>
+      releaseOf({
+        "requirements.txt": "Flask\nFlask-Migrate\ngunicorn\n",
+        "run.py": "from flask import Flask\napp = Flask(__name__)\n",
+        Procfile: "web: gunicorn run:app\n",
+        "migrations/env.py": "",
+        ...Object.fromEntries(
+          Object.entries(versions).map(([name, text]) => [`migrations/versions/${name}`, text]),
+        ),
+      });
+
+    it("Alembic: one head keeps upgrade head, several run upgrade heads with a note", async () => {
+      const oneHead = {
+        command: "cd db && alembic upgrade head",
+        note: undefined,
+        migrations: {
+          tool: "alembic",
+          status: "cd db && alembic current",
+          down: "cd db && alembic downgrade {version}",
+        },
+      };
+      expect(await alembic(base)).toEqual(oneHead);
+      expect(await alembic(twoHeads)).toEqual({
+        command: "cd db && alembic upgrade heads",
+        note: { atStartup: false, text: NOTE.replace("CMD", "alembic upgrade heads") },
+        migrations: undefined,
+      });
+      expect(await alembic(merged)).toEqual(oneHead);
+    });
+
+    it("Flask-Migrate: several heads run flask db upgrade heads with the same FLASK_APP", async () => {
+      const oneHead = {
+        command: "FLASK_APP=run:app flask db upgrade",
+        note: undefined,
+        migrations: {
+          tool: "flask-migrate",
+          status: "FLASK_APP=run:app flask db current",
+          down: "FLASK_APP=run:app flask db downgrade {version}",
+        },
+      };
+      expect(await flask(base)).toEqual(oneHead);
+      const command = "FLASK_APP=run:app flask db upgrade heads";
+      expect(await flask(twoHeads)).toEqual({
+        command,
+        note: { atStartup: false, text: NOTE.replace("CMD", command) },
+        migrations: undefined,
+      });
+      expect(await flask(merged)).toEqual(oneHead);
+    });
+  });
+
   it("leaves out a tool the image would not install, saying why", async () => {
     const found = await releaseOf({
       "requirements.txt": "fastapi\nuvicorn\nsqlalchemy\n",

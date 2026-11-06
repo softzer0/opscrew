@@ -72,6 +72,48 @@ function pythonTool(
   return migrations ? ctx.migrating(dir, command, migrations) : { command: ctx.at(dir, command) };
 }
 
+/** Most Alembic migration files read to find its heads; beyond it, one head is assumed. */
+const MAX_REVISIONS = 400;
+
+/**
+ * True when the Alembic migrations in `versions` folders have more than one head (a revision no
+ * other names as its `down_revision`); a tuple or list `down_revision` is a merge, `None` a base.
+ */
+async function severalHeads(ctx: ReleaseContext): Promise<boolean> {
+  const files = ctx.matching(/(?:^|\/)versions\/[^/]+\.py$/);
+  if (files.length > MAX_REVISIONS) return false;
+  const revisions = new Set<string>();
+  const parents = new Set<string>();
+  for (const file of files) {
+    const text = (await ctx.read(file)) ?? "";
+    const revision = /^revision\s*(?::[^=\n]*)?=\s*["']([^"']+)["']/m.exec(text)?.[1];
+    if (revision === undefined) continue;
+    revisions.add(revision);
+    const down = /^down_revision\s*(?::[^=\n]*)?=\s*([([][^)\]]*[)\]]|.*)$/m.exec(text)?.[1];
+    for (const match of (down ?? "").matchAll(/["']([^"']+)["']/g)) parents.add(match[1] ?? "");
+  }
+  return [...revisions].filter((revision) => !parents.has(revision)).length > 1;
+}
+
+/** `upgrade heads` for Alembic migrations with several heads: no down migrations, and a note why. */
+function upgradeHeads(
+  ctx: ReleaseContext,
+  tool: string,
+  pkg: string,
+  dir: string,
+  command: string,
+): ReleaseDetection {
+  const found = pythonTool(ctx, tool, pkg, dir, command);
+  if (found.note) return found;
+  return {
+    ...found,
+    note: {
+      atStartup: false,
+      text: `This app's Alembic migrations have several heads (branches of migrations), so OpsCrew runs \`${command}\`. Down migrations aren't offered for it yet: a rollback can restore a snapshot or keep the database.`,
+    },
+  };
+}
+
 /** Values of a simple INI file (`key = value`, any section; later sections win). */
 function iniValues(text: string): Map<string, string> {
   const values = new Map<string, string>();
@@ -146,7 +188,8 @@ async function pyprojectTool(ctx: ReleaseContext): Promise<Record<string, unknow
  * Python release commands, in order: Django `python manage.py migrate --noinput` (from the folder
  * holding `manage.py`), Flask-Migrate `flask db upgrade` (with `migrations/env.py`), Flask-DB
  * `flask db migrate` (with `db/alembic.ini` or `db/env.py`), Alembic `alembic upgrade head` (from
- * the folder holding `alembic.ini`; SQLModel apps use Alembic too), Masonite
+ * the folder holding `alembic.ini`; SQLModel apps use Alembic too; both `upgrade heads` without
+ * down migrations when the migrations have several heads), Masonite
  * `python craft migrate --force` (with `databases/migrations/`), Aerich `aerich upgrade` (with
  * `[tool.aerich]` in pyproject.toml and migrations in its `location`, `./migrations` by default),
  * Tortoise ORM's own `tortoise migrate` (with `[tool.tortoise]` and a `migrations` package),
@@ -172,6 +215,15 @@ export async function pythonRelease(
   const flask = () => flaskApp(inputs.flaskenv, ctx.startCommand);
   if (pypi("flask-migrate") && ctx.has(/(?:^|\/)migrations\/env\.py$/)) {
     const target = flask();
+    if (await severalHeads(ctx)) {
+      return upgradeHeads(
+        ctx,
+        "Flask-Migrate",
+        "Flask-Migrate",
+        ".",
+        flaskDb("upgrade heads", target),
+      );
+    }
     return pythonTool(ctx, "Flask-Migrate", "Flask-Migrate", ".", flaskDb("upgrade", target), {
       tool: "flask-migrate",
       status: flaskDb("current", target),
@@ -183,6 +235,15 @@ export async function pythonRelease(
   }
   const alembicIni = pypi("alembic") ? shallowest(ctx.rel, "alembic.ini") : undefined;
   if (alembicIni) {
+    if (await severalHeads(ctx)) {
+      return upgradeHeads(
+        ctx,
+        "Alembic",
+        "alembic",
+        ctx.dirOf(alembicIni),
+        "alembic upgrade heads",
+      );
+    }
     return pythonTool(ctx, "Alembic", "alembic", ctx.dirOf(alembicIni), "alembic upgrade head", {
       tool: "alembic",
       status: "alembic current",
