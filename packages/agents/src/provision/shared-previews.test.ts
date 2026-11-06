@@ -5,8 +5,8 @@
  * the preview environment's state.
  */
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { appendFile, readdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
 import {
   type ApplyOptions,
@@ -16,7 +16,6 @@ import {
   type HostFacts,
   HostFactsSchema,
   type HostPlan,
-  hostPlanHash,
 } from "@opscrew/connector-ssh-host";
 import type { RemoteExec } from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
@@ -31,21 +30,16 @@ import { describe, expect, it } from "vitest";
 import { ownProject } from "../drift/__fixtures__/own-project";
 import { runDrift } from "../drift/run";
 import { environmentPaths } from "../environments/paths";
-import { allocateNetwork } from "../network";
-import { withNetwork } from "../network/__fixtures__/plans";
+import { HOST_SSH_PORT, recordHostLogin } from "../previews/__fixtures__/plan";
 import { sharedServerWarning } from "../previews/host";
-import {
-  knownHostsName,
-  readServerAddresses,
-  recordOwnServer,
-  updateServerAddresses,
-} from "../shared";
+import { readServerAddresses } from "../shared";
 import {
   createProject,
   createTestPhaseDeps,
   ED25519_FINGERPRINT,
   FakeEngine,
   FakeGitHub,
+  FakeHostServer,
   fakeCloudflare,
   fakeSharedCloudflare,
   freshFacts,
@@ -61,9 +55,8 @@ import {
   ScriptedApprovalHandler,
   sharedPreviewTestPlan,
   type TestPhaseDeps,
-  testKeyMaker,
-  testKeyPair,
   testPlan,
+  withLaptop,
   writeArchitecture,
   writeFakeState,
 } from "../testing";
@@ -71,8 +64,6 @@ import { runProvision } from "./run";
 import type { ProvisionServices } from "./types";
 
 const HCLOUD = "hcloud-test-token-not-a-real-value";
-/** The port of dev's admin login on the user's own server. */
-const OWN_PORT = 2222;
 
 /** `prod` as the plan of the environment `name`, as design writes it. */
 function namedOf(prod: DeployPlan, name: string): DeployPlan {
@@ -82,34 +73,6 @@ function namedOf(prod: DeployPlan, name: string): DeployPlan {
     app: { ...prod.app, name: `${prod.app.name}-${name}` },
     infra: { ...prod.infra, dir: `opscrew/infra/${name}` },
     cicd: { ...prod.cicd, workflowPath: `.github/workflows/opscrew-deploy-${name}.yml` },
-  });
-}
-
-/** The preview environment's plan on dev's server, as `env add --share-server dev` designs it. */
-function sharedOf(prod: DeployPlan): DeployPlan {
-  return DeployPlanSchema.parse({
-    ...prod,
-    app: { ...prod.app, name: "shop-preview" },
-    target: { provider: "own", mode: "vps-compose", arch: "amd64", access: "public" },
-    environment: {
-      name: "preview",
-      previews: {
-        cap: 3,
-        lifetimeDays: 7,
-        domain: PREVIEW_ZONE,
-        seed: null,
-        server: { environment: "dev" },
-      },
-    },
-    infra: { ...prod.infra, dir: "opscrew/infra/preview" },
-    dns: { provider: "cloudflare", zone: PREVIEW_ZONE, proxied: true, www: false },
-    security: { ...prod.security, httpAllowedFrom: "cloudflare" },
-    supplyChain: { ...prod.supplyChain, sign: false },
-    cicd: {
-      ...prod.cicd,
-      workflowPath: ".github/workflows/opscrew-deploy-preview.yml",
-      deployTags: { enabled: false, release: false },
-    },
   });
 }
 
@@ -132,46 +95,38 @@ function recordOf(app: string): AppRecord {
 
 /**
  * dev's server as the host adapter reaches it: dev's app is there (its folders and record), and
- * the previews host plan's apply is kept; the shell each connection went to is kept too.
+ * the host plans' applies are kept; the shell each connection went to is kept too.
  */
-class DevServer {
-  readonly applies: { plan: HostPlan; options: ApplyOptions }[] = [];
+class DevServer extends FakeHostServer {
   readonly hosts: string[] = [];
-  facts: HostFacts;
 
   constructor(own: boolean) {
     const fresh = freshFacts({ user: own ? "root" : "deploy" });
-    this.facts = HostFactsSchema.parse({
-      ...fresh,
-      deployUser: { groups: ["deploy", "docker"], keys: [] },
-      apps: [{ name: "shop-dev", record: recordOf("shop-dev") }],
-      dirs: [
-        ...fresh.dirs,
-        { path: "/srv/apps/shop-dev", kind: "dir" },
-        { path: "/srv/data/shop-dev", kind: "dir" },
-      ],
-    });
+    super(
+      HostFactsSchema.parse({
+        ...fresh,
+        deployUser: { groups: ["deploy", "docker"], keys: [] },
+        apps: [{ name: "shop-dev", record: recordOf("shop-dev") }],
+        dirs: [
+          ...fresh.dirs,
+          { path: "/srv/apps/shop-dev", kind: "dir" },
+          { path: "/srv/data/shop-dev", kind: "dir" },
+        ],
+      }),
+    );
+    // Bound: a shared server's network host plan is handed `apply` as a function.
+    this.apply = this.apply.bind(this);
   }
 
-  readonly inspect = async (remote: RemoteExec): Promise<HostFacts> => {
+  override inspect(remote: RemoteExec): Promise<HostFacts> {
     this.hosts.push(remote.host);
-    return this.facts;
-  };
+    return super.inspect(remote);
+  }
 
-  readonly apply = async (
-    remote: RemoteExec,
-    plan: HostPlan,
-    options: ApplyOptions,
-  ): Promise<ApplyResult> => {
-    if (options.approvedHash !== hostPlanHash(plan)) throw new Error("host plan hash mismatch");
+  override apply(remote: RemoteExec, plan: HostPlan, options: ApplyOptions): Promise<ApplyResult> {
     this.hosts.push(remote.host);
-    this.applies.push({ plan, options });
-    const changes = plan.steps.filter((step) => step.state === "change");
-    return {
-      applied: changes.map((step) => step.id),
-      skipped: plan.steps.filter((step) => step.state !== "change").map((step) => step.id),
-    };
-  };
+    return super.apply(remote, plan, options);
+  }
 }
 
 /** Every file under `dir`, with its text. */
@@ -241,20 +196,7 @@ async function sharedApp(own: boolean) {
         deployment: { lastApplyAt: "2026-10-11T11:00:00.000Z" },
       }),
     );
-    await updateServerAddresses(dev, (current) => ({
-      ...current,
-      deployment: { ipv4: HOST_IPV4 },
-    }));
-    await recordOwnServer(dev, {
-      host: HOST_IPV4,
-      port: OWN_PORT,
-      user: HOST_ADMIN,
-      agent: true,
-      reachable: true,
-    });
-    await mkdir(dirname(dev.files.deployKey), { recursive: true });
-    await writeFile(dev.files.deployKey, "dev-deploy-key-placeholder-not-a-key\n");
-    await writeFile(dev.files.knownHosts, `${knownHostsName(HOST_IPV4, OWN_PORT)} ${HOST_KEY}\n`);
+    await recordHostLogin(dev, true);
   } else {
     await writeArtifact("plan", dev.files.plan, namedOf(prod, "dev"));
     const created = new FakeEngine({
@@ -266,7 +208,13 @@ async function sharedApp(own: boolean) {
   await writeArtifact(
     "plan",
     environmentPaths(prodDeps.paths, "preview").files.plan,
-    sharedOf(prod),
+    // As `env add --share-server dev` designs it, not provisioned yet.
+    sharedPreviewTestPlan({
+      createdAt: prod.createdAt,
+      updatedAt: prod.updatedAt,
+      cost: prod.cost,
+      deployment: undefined,
+    }),
   );
   await writeFile(join(root, ".env.preview"), "");
   return { ...project, deps, services, github, server, zone, dev, merge };
@@ -321,12 +269,12 @@ describe.skipIf(!findExecutable("git"))("provisioning previews on dev's server (
       // GitHub's machines reach dev's server as dev's deploy does.
       const secrets = github.environments.get("preview");
       expect(secrets?.get("OPSCREW_PREVIEW_HOST")).toBe(HOST_IPV4);
-      const pinned = own ? `[${HOST_IPV4}]:${OWN_PORT}` : HOST_IPV4;
+      const pinned = own ? `[${HOST_IPV4}]:${HOST_SSH_PORT}` : HOST_IPV4;
       expect(secrets?.get("OPSCREW_PREVIEW_SSH_KNOWN_HOSTS")).toBe(`${pinned} ${HOST_KEY}\n`);
       const workflow = await readFile(join(root, ".github/workflows/opscrew-preview.yml"), "utf8");
-      expect(workflow.includes(`-p ${OWN_PORT}`) || workflow.includes(`Port=${OWN_PORT}`)).toBe(
-        own,
-      );
+      expect(
+        workflow.includes(`-p ${HOST_SSH_PORT}`) || workflow.includes(`Port=${HOST_SSH_PORT}`),
+      ).toBe(own);
 
       // The recipe's edge is dev's, byte for byte: dev's deploys and a preview's `up` put the same
       // /srv/edge/compose.yaml (web ports as dev's plan has them, not the previews' web filter).
@@ -478,67 +426,37 @@ describe.skipIf(!findExecutable("git"))("provisioning previews on dev's server (
     expect(engine.calls).not.toContain("apply");
   });
 
-  it("refuses before any change when dev's server is on a private network with a device", async () => {
-    const app = await sharedApp(false);
-    const devPlan = await readArtifact("plan", app.dev.files.plan);
-    const { network } = allocateNetwork(devPlan, {}, testKeyMaker("shop-dev"));
-    const prefix = network.range.split(".").slice(0, 3).join(".");
-    const laptop = {
-      name: "laptop",
-      address: `${prefix}.100`,
-      publicKey: testKeyPair("laptop").publicKey,
-      addedAt: "2026-10-30T10:00:00.000Z",
-    };
-    await writeArtifact(
-      "plan",
-      app.dev.files.plan,
-      withNetwork(devPlan, { ...network, devices: [laptop] }),
-    );
-    const preview = await app.deps("preview");
-    const engine = new OwnEngine(PUBLIC_CHANGES, {});
-    await expect(
-      runProvision(preview, { services: app.services(async () => engine) }),
-    ).rejects.toMatchObject({
-      code: "PHASE_PRECONDITION",
-      message: expect.stringContaining(
-        "dev's server is on a private network, and a preview's containers there could reach your device",
-      ),
-    });
-    expect(engine.plans).toEqual([]);
-    expect(app.server.applies).toEqual([]);
-  });
-
-  it("dev's own provision refuses a private network on its server while the preview environment names it", async () => {
-    const app = await sharedApp(false);
-    const devPlan = await readArtifact("plan", app.dev.files.plan);
-    const { network } = allocateNetwork(devPlan, {}, testKeyMaker("shop-dev"));
-    const prefix = network.range.split(".").slice(0, 3).join(".");
-    const laptop = {
-      name: "laptop",
-      address: `${prefix}.100`,
-      publicKey: testKeyPair("laptop").publicKey,
-      addedAt: "2026-10-30T10:00:00.000Z",
-    };
-    await writeArtifact(
-      "plan",
-      app.dev.files.plan,
-      withNetwork(devPlan, { ...network, devices: [laptop] }),
-    );
-    const dev = await app.deps("dev");
-    const engine = new FakeEngine();
-    await expect(
-      runProvision(dev, { services: app.services(async () => engine) }),
-    ).rejects.toMatchObject({
-      code: "PHASE_PRECONDITION",
-      // The words of the previews' own refusal.
-      message:
-        "dev's server is on a private network, and a preview's containers there could reach your device without escaping anything: traffic within the server passes no firewall. Turn it off on dev first, or give the previews a server of their own. Nothing was changed.",
-      hint: "To put that on dev's server anyway, remove the previews of preview first with `opscrew env remove preview`; then run `opscrew provision --env dev` again.",
-    });
-    expect(engine.calls).toEqual([]);
-    expect(requestsOf(dev)).toEqual([]);
-    expect(app.server.applies).toEqual([]);
-  });
+  // The words of the previews' own refusal both ways: the previews' provision, and dev's own.
+  it.each([
+    [
+      "preview",
+      "Name another environment's server, or leave the option out for a server of the previews' own, then run `opscrew provision --env preview` again.",
+    ],
+    [
+      "dev",
+      "To put that on dev's server anyway, remove the previews of preview first with `opscrew env remove preview`; then run `opscrew provision --env dev` again.",
+    ],
+  ])(
+    "%s's provision refuses before any change while dev's server is on a private network with a device",
+    async (environment, hint) => {
+      const app = await sharedApp(false);
+      const devPlan = await readArtifact("plan", app.dev.files.plan);
+      await writeArtifact("plan", app.dev.files.plan, withLaptop(devPlan));
+      const deps = await app.deps(environment);
+      const engine = new OwnEngine(PUBLIC_CHANGES, {});
+      await expect(
+        runProvision(deps, { services: app.services(async () => engine) }),
+      ).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message:
+          "dev's server is on a private network, and a preview's containers there could reach your device without escaping anything: traffic within the server passes no firewall. Turn it off on dev first, or give the previews a server of their own. Nothing was changed.",
+        hint,
+      });
+      expect(engine.calls).toEqual([]);
+      expect(requestsOf(deps)).toEqual([]);
+      expect(app.server.applies).toEqual([]);
+    },
+  );
 
   it("refuses before any change when dev's server runs prod too", async () => {
     const app = await sharedApp(true);

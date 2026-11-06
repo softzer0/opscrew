@@ -112,6 +112,14 @@ export function noServerCost(item: string, currency: Currency, asOf: string): Co
   });
 }
 
+/**
+ * What is said of another environment's server (`env`'s) instead of the own server's price and
+ * backups.
+ */
+export function hostServerNote(env: string): string {
+  return `The server is ${env}'s: it is priced and backed up with ${env}.`;
+}
+
 export interface OwnServerOptionInput {
   facts: ProjectFacts;
   requirements: Requirements;
@@ -222,11 +230,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
   }
 
   const host = input.previewHost;
-  /** On another environment's server, what is said instead of the own server's price and backups. */
-  const hostLine =
-    host === undefined
-      ? undefined
-      : `The server is ${host.environment}'s: it is priced and backed up with ${host.environment}.`;
+  const hostLine = host === undefined ? undefined : hostServerNote(host.environment);
   const cost = noServerCost(
     host === undefined
       ? "Your own server (you already pay for it)"

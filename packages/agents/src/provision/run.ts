@@ -446,22 +446,21 @@ async function provisionFlow(
   requireCheckSettingsPlace(deps.paths, plan);
   const requirements = await readRequirements(deps);
   const ownServer = plan.target.provider === "own";
+  const flags = await commandFlags(root, deps.paths.environment, deps.paths.app);
+  /** The command again for this environment. */
+  const rerun = `${command}${flags}`;
   // A server another environment's previews are set up on keeps public SSH, which GitHub's
   // machines reach them over: no switch to a Cloudflare Tunnel meanwhile (FR-2228).
   if (plan.target.provider === "own" && plan.target.access === "tunnel") {
     await requireNoSharedPreviews(
       deps.paths,
       `serving ${deps.paths.environment}'s server through a Cloudflare Tunnel`,
-      `${command}${await commandFlags(root, deps.paths.environment, deps.paths.app)}`,
+      rerun,
       true,
     );
   }
   // Nor a private network on it: a preview's containers would reach what it connects.
-  await requireNoNetworkBesidePreviews(
-    deps.paths,
-    plan,
-    `${command}${await commandFlags(root, deps.paths.environment, deps.paths.app)}`,
-  );
+  await requireNoNetworkBesidePreviews(deps.paths, plan, rerun);
 
   // 1–2. Preconditions and credentials. A promoted environment's plan must have its source's
   // build, components and port (FR-1539), and every environment serves hostnames of its own; a
@@ -492,9 +491,7 @@ async function provisionFlow(
   // which git must ignore and which must hold every value the app needs, before any change.
   const previews = plan.environment?.previews !== undefined;
   /** The command again for this environment, as the preview steps name it. */
-  const again = previews
-    ? `${command}${await commandFlags(root, deps.paths.environment, deps.paths.app)}`
-    : command;
+  const again = previews ? rerun : command;
   if (previews) await requireIgnoredValues(deps, again);
   const previewEnv = previews ? await previewEnvironment(deps, plan) : undefined;
   if (previewEnv !== undefined) requirePreviewValues(deps, previewEnv, again);
@@ -642,7 +639,7 @@ async function provisionFlow(
   const switchNote = ownServer ? undefined : edgeSwitch(plan, served, []);
   // Except while another environment's previews run there too (FR-2230).
   if (switchNote !== undefined) {
-    await requireNoProxySwitch(deps, command);
+    await requireNoProxySwitch(deps, rerun);
     edgeNotes.push(switchNote);
   }
   // The saved infrastructure plans the `--approve` hashes name (applied instead of planning again).
@@ -756,19 +753,14 @@ async function provisionFlow(
       ...(inspected !== undefined ? { inspected } : {}),
     });
     // Never beside previews it doesn't host by its own choice: pull requests' code runs there.
-    await requireNoForeignPreviews(
-      deps.paths,
-      plan,
-      ownRun.facts,
-      `${command}${await commandFlags(root, deps.paths.environment, deps.paths.app)}`,
-    );
+    await requireNoForeignPreviews(deps.paths, plan, ownRun.facts, rerun);
     // The server's proxy, which every OpsCrew app on it shares: another one is refused while other
     // apps are there, and planned with its interruption while this app is alone (FR-1440, FR-1444).
     const running = await readEdgeOver(deps, ownRun.session.remote, plan.app.name);
     const others = otherActiveApps(ownRun.facts.apps, plan.app.name).map((r) => r.app);
     const ownSwitch = edgeSwitch(plan, running, others);
     if (ownSwitch !== undefined) {
-      await requireNoProxySwitch(deps, command);
+      await requireNoProxySwitch(deps, rerun);
       edgeNotes.push(ownSwitch);
     }
     await ownEngineEnv(deps, ownRun, engineEnv, () =>
@@ -1523,12 +1515,9 @@ async function provisionFlow(
       {
         zoneId: cloudflare.zoneId,
         domain: belowZone,
-        verifyCommand: `opscrew verify${await commandFlags(root, deps.paths.environment, deps.paths.app)}`,
+        verifyCommand: `opscrew verify${flags}`,
       },
-      {
-        ...(services.now !== undefined ? { now: services.now } : {}),
-        ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
-      },
+      services,
     );
   }
   return {
@@ -1553,14 +1542,14 @@ async function provisionFlow(
 
 /**
  * Refuses a switch of the server's proxy while another environment's previews run on the server
- * of the environment `deps.paths` belong to (FR-2230): they need Caddy.
+ * of the environment `deps.paths` belong to (FR-2230): they need Caddy. `again` is the command
+ * a refusal says to run again.
  */
-async function requireNoProxySwitch(deps: PhaseDeps, command: string): Promise<void> {
-  const { root, environment, app } = deps.paths;
+async function requireNoProxySwitch(deps: PhaseDeps, again: string): Promise<void> {
   await requireNoSharedPreviews(
     deps.paths,
-    `switching ${environment}'s server to another proxy`,
-    `${command}${await commandFlags(root, environment, app)}`,
+    `switching ${deps.paths.environment}'s server to another proxy`,
+    again,
   );
 }
 

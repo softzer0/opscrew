@@ -30,8 +30,9 @@ import {
   projectRunner,
   publicOutputs,
   type ScriptedApprovalHandler,
+  type TestPhaseDeps,
 } from "../testing";
-import { isSavedPreviewsRemoval } from "./own";
+import { savedHostPlanPurpose } from "./own";
 import { runDestroy } from "./run";
 import type { DestroyPreview, DestroyServices } from "./types";
 
@@ -133,8 +134,8 @@ describe.skipIf(!findExecutable("git"))("destroy --env <preview> on dev's server
         confirmPhrase: "shop-preview",
       });
       // Saved as a previews removal, which `opscrew destroy --confirm` approves as the teardown.
-      expect(await isSavedPreviewsRemoval(deps.paths, approved?.planHash)).toBe(true);
-      expect(await isSavedPreviewsRemoval(deps.paths, "0".repeat(64))).toBe(false);
+      expect(await savedHostPlanPurpose(deps.paths, approved?.planHash)).toBe("previews-removal");
+      expect(await savedHostPlanPurpose(deps.paths, "0".repeat(64))).toBeUndefined();
       // The wildcard goes with dev's address only as TF_VAR_*.
       const destroyPlan = engine.plans.find((p) => p.destroy);
       expect(destroyPlan?.env.TF_VAR_server_ipv4).toBe(HOST_IPV4);
@@ -179,33 +180,32 @@ describe.skipIf(!findExecutable("git"))("dev while previews run on its server", 
     return createTestPhaseDeps({ root: deps.paths.root, env: deps.env, environment: "dev" });
   }
 
-  it("refuses destroy, naming `opscrew destroy --env preview`", async () => {
+  it.each([
+    [
+      "destroy",
+      "destroying dev",
+      (dev: TestPhaseDeps) => runDestroy(dev, { confirm: async () => true }),
+      "Remove them first with `opscrew destroy --env preview` (it leaves dev's server as it is), then run `opscrew destroy --env dev` again.",
+    ],
+    [
+      "retarget",
+      "moving dev to another provider",
+      (dev: TestPhaseDeps) => runRetarget(dev, {}),
+      expect.stringContaining("`opscrew destroy --env preview`"),
+    ],
+    [
+      // GitHub's machines reach the previews over public SSH.
+      "closing public SSH",
+      "closing public SSH on dev's server",
+      (dev: TestPhaseDeps) => closePublicSsh(dev),
+      "Remove them first with `opscrew destroy --env preview` (it leaves dev's server as it is), then run `opscrew secure --close-public-ssh --env dev` again.",
+    ],
+  ])("refuses %s, naming `opscrew destroy --env preview`", async (_name, what, run, hint) => {
     const dev = await devDeps();
-    await expect(runDestroy(dev, { confirm: async () => true })).rejects.toMatchObject({
+    await expect(run(dev)).rejects.toMatchObject({
       code: "PHASE_PRECONDITION",
-      message:
-        "The previews of the preview environment run on dev's server, and destroying dev would break them. Nothing was changed.",
-      hint: "Remove them first with `opscrew destroy --env preview` (it leaves dev's server as it is), then run `opscrew destroy --env dev` again.",
-    });
-  });
-
-  it("refuses retarget, naming `opscrew destroy --env preview`", async () => {
-    const dev = await devDeps();
-    await expect(runRetarget(dev, {})).rejects.toMatchObject({
-      code: "PHASE_PRECONDITION",
-      message:
-        "The previews of the preview environment run on dev's server, and moving dev to another provider would break them. Nothing was changed.",
-      hint: expect.stringContaining("`opscrew destroy --env preview`"),
-    });
-  });
-
-  it("refuses closing public SSH, which GitHub's machines reach the previews over", async () => {
-    const dev = await devDeps();
-    await expect(closePublicSsh(dev)).rejects.toMatchObject({
-      code: "PHASE_PRECONDITION",
-      message:
-        "The previews of the preview environment run on dev's server, and closing public SSH on dev's server would break them. Nothing was changed.",
-      hint: "Remove them first with `opscrew destroy --env preview` (it leaves dev's server as it is), then run `opscrew secure --close-public-ssh --env dev` again.",
+      message: `The previews of the preview environment run on dev's server, and ${what} would break them. Nothing was changed.`,
+      hint,
     });
   });
 

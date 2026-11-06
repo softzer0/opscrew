@@ -12,27 +12,13 @@ import { addonEnable } from "../addons";
 import { allocateNetwork } from "../network";
 import { withNetwork } from "../network/__fixtures__/plans";
 import { portainerEnable } from "../portainer";
-import { createTestPhaseDeps, hostTestPlan, testKeyMaker, testKeyPair } from "../testing";
+import { createTestPhaseDeps, hostTestPlan, testKeyMaker, withLaptop } from "../testing";
 import { deviceConfigFile, vpnAdd, vpnGrant, vpnRemove } from "../vpn";
 import { sharedPreviewProject } from "./__fixtures__/plan";
 
 /** The refusal's words, as the previews' own refusal has them, for what dev's server would reach. */
 const refusalOf = (reach: string, one = true) =>
   `dev's server is on a private network, and a preview's containers there could reach ${reach} without escaping anything: traffic within the server passes no firewall. Turn ${one ? "it" : "them"} off on dev first, or give the previews a server of their own. Nothing was changed.`;
-
-/** dev's plan on its private network with the device laptop. */
-function devWithLaptop(): DeployPlan {
-  const plan = hostTestPlan();
-  const { network } = allocateNetwork(plan, {}, testKeyMaker("shop-dev"));
-  const prefix = network.range.split(".").slice(0, 3).join(".");
-  const laptop = {
-    name: "laptop",
-    address: `${prefix}.100`,
-    publicKey: testKeyPair("laptop").publicKey,
-    addedAt: "2026-10-30T10:00:00.000Z",
-  };
-  return withNetwork(plan, { ...network, devices: [laptop] });
-}
 
 /** dev's plan on its private network, with no device. */
 function devOnNetwork(): DeployPlan {
@@ -88,7 +74,7 @@ describe("dev's commands while previews run on its server (US9)", () => {
   });
 
   it("vpn grant refuses a service for a device before any change", async () => {
-    const { dev, unchanged } = await devBesidePreviews(devWithLaptop());
+    const { dev, unchanged } = await devBesidePreviews(withLaptop(hostTestPlan()));
     const error = await vpnGrant(dev, "laptop", "db", { services: nowhere }).catch(
       (e: unknown) => e,
     );
@@ -117,7 +103,7 @@ describe("dev's commands while previews run on its server (US9)", () => {
         ).catch((e: unknown) => e);
         return { error, unchanged };
       };
-      const beside = await run(devWithLaptop());
+      const beside = await run(withLaptop(hostTestPlan()));
       expect(beside.error).toMatchObject({
         code: "PHASE_PRECONDITION",
         message: refusalOf(`your device and ${dashboard}`, false),
@@ -132,7 +118,7 @@ describe("dev's commands while previews run on its server (US9)", () => {
   );
 
   it("vpn remove is not refused: it takes the device off the network", async () => {
-    const { dev } = await devBesidePreviews(devWithLaptop());
+    const { dev } = await devBesidePreviews(withLaptop(hostTestPlan()));
     const error = await vpnRemove(dev, "laptop", { services: nowhere }).catch((e: unknown) => e);
     // It goes on to the servers, which this test never reaches.
     expect(String((error as Error | undefined)?.message)).not.toContain("a preview's containers");

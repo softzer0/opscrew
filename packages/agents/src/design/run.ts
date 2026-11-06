@@ -119,6 +119,7 @@ import { keptEdits } from "./kept-edits";
 import { buildDesignOptionSet, lowHeadroomText, minimumMonthlyCost } from "./options";
 import {
   buildOwnServerOption,
+  hostServerNote,
   mayHavePublicIpv4,
   OWN_SERVER_BACKUPS_NOTE,
   OWN_SERVER_PRICE_NOTE,
@@ -501,10 +502,7 @@ async function priceOwnServer(
   const { option } = own;
   const host = previews?.host?.environment;
   // Another environment's server is priced and backed up with that environment.
-  const priced =
-    host === undefined
-      ? OWN_SERVER_PRICE_NOTE
-      : `The server is ${host}'s: it is priced and backed up with ${host}.`;
+  const priced = host === undefined ? OWN_SERVER_PRICE_NOTE : hostServerNote(host);
   deps.reporter.info(say(`${option.title} (${option.id}): ${lowerFirst(priced)} — recommended`));
   if (host === undefined) deps.reporter.info(OWN_SERVER_BACKUPS_NOTE);
   appWarnings(facts, designed.components, warn);

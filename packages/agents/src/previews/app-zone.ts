@@ -11,7 +11,6 @@ import {
   errorText,
   isUserFacingError,
   listText,
-  OpsCrewError,
   type ProjectPaths,
   realSleep,
 } from "@opscrew/core";
@@ -20,6 +19,7 @@ import type { DeployPlan } from "@opscrew/plan-schema";
 import { environmentText, repositoryEnvironments } from "../apps/names";
 import type { PhaseDeps } from "../context";
 import { checkResult } from "../shared/check-results";
+import { refusedBeforeChange } from "./host";
 
 /** How long provision waits for Cloudflare to issue the previews' pack (FR-2232). */
 export const PACK_WAIT_MS = 10 * 60_000;
@@ -46,14 +46,13 @@ export function appZoneWarning(domain: string, zone: string): string {
 const edgeCertificates = (zone: string) =>
   `the Cloudflare dashboard (${zone} → SSL/TLS → Edge Certificates)`;
 
-/** A refusal before any change, ending as every one does. */
-function refusal(
-  code: "INVALID_INPUT" | "PHASE_PRECONDITION",
-  message: string,
-  hint: string,
-): OpsCrewError {
-  return new OpsCrewError(code, `${message} Nothing was changed.`, { hint });
+/** Why Total TLS on for `zone` is refused: each preview's name would be published. */
+function totalTlsOn(zone: string): string {
+  return `Total TLS is on for ${zone}: it gives each proxied name a certificate of its own, and every public certificate is published, so each preview's name would be too.`;
 }
+
+/** The title of the check of the previews' pack for `*.<domain>`. */
+const packTitle = (domain: string) => `The previews' certificate for *.${domain} is active`;
 
 /** True for a name at `domain` or below it. */
 const atOrBelow = (name: string, domain: string) => name === domain || name.endsWith(`.${domain}`);
@@ -96,7 +95,7 @@ export async function requireAppZonePreviews(
     if (theirs !== undefined && (atOrBelow(theirs, domain) || atOrBelow(domain, theirs))) {
       const how =
         theirs === domain ? "is" : atOrBelow(theirs, domain) ? "is a parent of" : "is below";
-      throw refusal(
+      throw refusedBeforeChange(
         "INVALID_INPUT",
         `${domain} ${how} ${theirs}, the previews' domain of ${environmentText(entry)}, and two preview environments can't share names.`,
         `Choose another name below ${zone} for the previews, ${rerun}.`,
@@ -104,23 +103,23 @@ export async function requireAppZonePreviews(
     }
     const host = siteHosts(entry.plan).find((name) => atOrBelow(name, domain));
     if (host === undefined) continue;
-    throw refusal(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
       `${domain} ${host === domain ? "is" : "is a parent of"} ${host}, ${environmentText(entry)}'s hostname, and previews take every name below ${domain}.`,
       `Choose another name below ${zone} for the previews, ${rerun}.`,
     );
   }
   if ((await client.certificatePackQuota(zoneId)).allocated === 0) {
-    throw refusal(
+    throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `Previews below ${zone} need Cloudflare's Advanced Certificate Manager on ${zone} for the certificate of *.${domain}, and it is off there.`,
       `Turn on Advanced Certificate Manager, a paid add-on, in ${edgeCertificates(zone)}, ${rerun}.`,
     );
   }
   if ((await client.totalTls(zoneId)).enabled) {
-    throw refusal(
+    throw refusedBeforeChange(
       "PHASE_PRECONDITION",
-      `Total TLS is on for ${zone}: it gives each proxied name a certificate of its own, and every public certificate is published, so each preview's name would be too.`,
+      totalTlsOn(zone),
       `Turn Total TLS off in ${edgeCertificates(zone)}, ${rerun}.`,
     );
   }
@@ -134,7 +133,7 @@ export async function requireAppZonePreviews(
   );
   if (taken.length > 0) {
     const one = taken.length === 1;
-    throw refusal(
+    throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `${zone} already has ${listText(taken.map((r) => `${r.name} (${r.type})`))} at or below ${domain}, and previews take every name there: the proxied wildcard *.${domain} and the previews' certificate cover them.`,
       `Delete ${one ? "it" : "them"} in the Cloudflare dashboard (${zone} → DNS → Records) if nothing uses ${one ? "it" : "them"}, or choose another name below ${zone} for the previews, ${rerun}.`,
@@ -240,7 +239,7 @@ export async function appZoneChecks(
     return [
       checkResult(
         "previews-certificate",
-        `The previews' certificate for *.${domain} is active`,
+        packTitle(domain),
         "high",
         "fail",
         `No Cloudflare zone your token sees is ${zone}.`,
@@ -252,7 +251,7 @@ export async function appZoneChecks(
   const pending = status !== undefined && inProgress(status);
   const pack = checkResult(
     "previews-certificate",
-    `The previews' certificate for *.${domain} is active`,
+    packTitle(domain),
     "high",
     status === "active" ? "pass" : pending ? "warn" : "fail",
     status === "active"
@@ -280,7 +279,7 @@ export async function appZoneChecks(
     "high",
     totalTls ? "fail" : "pass",
     totalTls
-      ? `Total TLS is on for ${zone}: it gives each proxied name a certificate of its own, and every public certificate is published, so each preview's name would be too.`
+      ? totalTlsOn(zone)
       : `Total TLS is off, so no preview's name gets a published certificate of its own.`,
     totalTls ? { remediation: `Turn Total TLS off in ${edgeCertificates(zone)}.` } : {},
   );

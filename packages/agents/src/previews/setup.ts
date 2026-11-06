@@ -259,9 +259,8 @@ export async function prepareSharedServer(
     readableRecords(network.facts.apps)
       .filter((record) => record.state === "active")
       .map((record) => record.app),
+    server,
     {
-      host,
-      hostApp: server.plan.app.name,
       previewApp: plan.app.name,
       prodApp: prod.app.name,
       again: input.again,

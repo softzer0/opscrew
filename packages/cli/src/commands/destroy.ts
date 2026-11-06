@@ -4,7 +4,6 @@ import {
   type DestroyResult,
   destroyConfirmPrompt,
   extraCloudServers,
-  isSavedPreviewsRemoval,
   type PhaseDeps,
   providerBucket,
   runDestroy,
@@ -331,14 +330,8 @@ export async function runDestroyCommand(
     if (scripted) typed = name;
     // The typed name covers only a saved teardown plan: on this computer the local plan's, else
     // the host plan's of the user's own server.
-    // A preview environment's removal from a server it shares is told apart from other setup plans.
-    const purposeOf = async (hash: string | undefined) => {
-      if (local) return savedLocalPlanPurpose(deps0.paths, hash);
-      const purpose = await savedHostPlanPurpose(deps0.paths, hash);
-      return purpose === "setup" && (await isSavedPreviewsRemoval(deps0.paths, hash))
-        ? "previews-removal"
-        : purpose;
-    };
+    const purposeOf = (hash: string | undefined) =>
+      local ? savedLocalPlanPurpose(deps0.paths, hash) : savedHostPlanPurpose(deps0.paths, hash);
     const deps = createPhaseDeps(ctx, {
       ai: false,
       app: environment.app,

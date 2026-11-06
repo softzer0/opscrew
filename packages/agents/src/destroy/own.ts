@@ -291,36 +291,24 @@ export async function applyHostPlanApproved(
  * The purpose (`setup`, `teardown` or `undo`) of the host plan saved as
  * `.opscrew/plans/host-<hash>.json`, or `undefined` when no valid plan with exactly that hash is
  * there. Lets an approval handler tell the undo host plan from the teardown, which ask for the same
- * typed app name but are approved separately.
+ * typed app name but are approved separately. A setup plan that is a preview environment's removal
+ * from a server it shares (only `previews` steps that remove them, deleting data) is
+ * `previews-removal`, which `opscrew destroy` approves with the typed name as it approves the
+ * teardown.
  */
 export async function savedHostPlanPurpose(
   paths: Pick<PhaseDeps["paths"], "files">,
   hash: string | undefined,
-): Promise<HostPlan["purpose"] | undefined> {
+): Promise<HostPlan["purpose"] | "previews-removal" | undefined> {
   if (hash === undefined || !/^[0-9a-f]{64}$/.test(hash)) return undefined;
   const saved = await readValidJson(hostPlanFile(paths, hash), HostPlanSchema);
-  return saved !== undefined && hostPlanHash(saved) === hash ? saved.purpose : undefined;
-}
-
-/**
- * Whether the host plan saved as `.opscrew/plans/host-<hash>.json` is a preview environment's
- * removal from a server it shares (only `previews` steps that remove them, deleting data), which
- * `opscrew destroy` approves with the typed name as it approves the teardown. Fails closed: false
- * for any other plan, a plan whose hash differs, or none.
- */
-export async function isSavedPreviewsRemoval(
-  paths: Pick<PhaseDeps["paths"], "files">,
-  hash: string | undefined,
-): Promise<boolean> {
-  if (hash === undefined || !/^[0-9a-f]{64}$/.test(hash)) return false;
-  const saved = await readValidJson(hostPlanFile(paths, hash), HostPlanSchema);
-  return (
-    saved !== undefined &&
-    hostPlanHash(saved) === hash &&
+  if (saved === undefined || hostPlanHash(saved) !== hash) return undefined;
+  const previewsRemoval =
+    saved.purpose === "setup" &&
     saved.deleteData === true &&
     saved.steps.length > 0 &&
-    saved.steps.every((step) => step.id === "previews" && step.params.remove === true)
-  );
+    saved.steps.every((step) => step.id === "previews" && step.params.remove === true);
+  return previewsRemoval ? "previews-removal" : saved.purpose;
 }
 
 /** The server's address and host names as OpsCrew knows them (kept out of errors). */

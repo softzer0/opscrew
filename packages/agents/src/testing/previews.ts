@@ -3,7 +3,9 @@ import { FAKE_ZONE_ID, type FakeZone } from "@opscrew/connector-cloudflare/testi
 import type { FetchLike } from "@opscrew/contracts";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { allocateNetwork } from "../network";
 import { testPlan } from "./deploy";
+import { testKeyMaker, testKeyPair } from "./network";
 import { ownPlan } from "./own";
 
 /**
@@ -188,8 +190,11 @@ export function certificateCloudflare(
   return { client, reads };
 }
 
-/** {@link previewTestPlan} on `dev`'s server: an own target with `previews.server`. */
-export function sharedPreviewTestPlan(): DeployPlan {
+/**
+ * {@link previewTestPlan} on `dev`'s server: an own target with `previews.server`, with
+ * `overrides` on top.
+ */
+export function sharedPreviewTestPlan(overrides: Partial<DeployPlan> = {}): DeployPlan {
   const plan = previewTestPlan({ own: true });
   return DeployPlanSchema.parse({
     ...plan,
@@ -197,5 +202,22 @@ export function sharedPreviewTestPlan(): DeployPlan {
       ...plan.environment,
       previews: { ...plan.environment?.previews, server: { environment: HOST_ENV } },
     },
+    ...overrides,
   });
+}
+
+/**
+ * `plan` on its private network (keys from the test key maker of its app's name) with the device
+ * `laptop`.
+ */
+export function withLaptop(plan: DeployPlan): DeployPlan {
+  const { network } = allocateNetwork(plan, {}, testKeyMaker(plan.app.name));
+  const prefix = network.range.split(".").slice(0, 3).join(".");
+  const laptop = {
+    name: "laptop",
+    address: `${prefix}.100`,
+    publicKey: testKeyPair("laptop").publicKey,
+    addedAt: "2026-10-30T10:00:00.000Z",
+  };
+  return DeployPlanSchema.parse({ ...plan, network: { ...network, devices: [laptop] } });
 }

@@ -29,7 +29,7 @@ import {
   type RunExpectation,
   secretsRefusedFor,
 } from "./previews-support";
-import { approveHashes, leakedLabels } from "./support";
+import { approveHashes, leakedLabels, rulesCleanup } from "./support";
 
 /**
  * `<origin>/e2e`: the marker, the seeded rows, the `X-Robots-Tag` header and whether Cloudflare
@@ -143,12 +143,32 @@ export async function wildcardRecords(run: LiveRun, zone: CloudflareZone) {
 }
 
 /**
+ * Registers the harness's cleanup of `envs` (see {@link AppEnvironments.registerCleanup}) with
+ * {@link removeWildcards} of the preview zone `zone()` gives (none yet: nothing to remove) last.
+ */
+export function registerPreviewZoneCleanup(
+  run: LiveRun,
+  envs: AppEnvironments,
+  zone: () => CloudflareZone | undefined,
+): void {
+  envs.registerCleanup({
+    last: async (attempt) => {
+      const found = zone();
+      if (found === undefined) return;
+      await attempt("remove the previews' wildcard record", () =>
+        removeWildcards(run, found, envs.destroyed.has(PREVIEW_ENV)),
+      );
+    },
+  });
+}
+
+/**
  * The cleanup's last part: removes the previews' wildcard records left in the preview zone `zone`
  * (the pass may stop before `destroy --env preview`) and, once nothing in the zone serves, OpsCrew's
  * shared rules that list only the zone's names and the previews' origin certificate; what a
  * finished destroy (`destroyed`) left is a problem. Returns the problems.
  */
-export async function removeWildcards(
+async function removeWildcards(
   run: LiveRun,
   zone: CloudflareZone,
   destroyed: boolean,
@@ -169,51 +189,34 @@ export async function removeWildcards(
     ["A", "AAAA", "CNAME"].includes(r.type),
   );
   if (web.length > 0) return problems;
-  const names = new Set([zone.name, `*.${zone.name}`]);
-  for (const phase of ["http_request_firewall_custom", "http_config_settings"]) {
-    const got = await run.cloudflare.call(
-      "GET",
-      `/zones/${zone.id}/rulesets/phases/${phase}/entrypoint`,
-    );
-    const ruleset = (got.json as { result?: { id: string; rules?: RulesetRule[] } } | undefined)
-      ?.result;
-    for (const rule of ruleset?.rules ?? []) {
-      if (!String(rule.ref).startsWith("opscrew-")) continue;
-      const expression = rule.expression ?? "";
-      const plain = [
-        ...(/http.host in {([^}]*)}/.exec(expression)?.[1] ?? "").matchAll(/"([^"]+)"/g),
-      ].map((m) => m[1] ?? "");
-      const wild = [...expression.matchAll(/ends_with(http.host, ".([^"]+)")/g)].map(
-        (m) => `*.${m[1]}`,
-      );
-      const hosts = [...plain, ...wild];
-      if (hosts.length === 0 || !hosts.every((host) => names.has(host))) continue;
+  const names = [zone.name, `*.${zone.name}`];
+  for (const [phase, entrypoint] of Object.entries(await run.cloudflare.sharedEntrypoints(zone))) {
+    if (entrypoint === undefined) continue;
+    const decision = rulesCleanup(entrypoint.rules, { hostnames: names, createdByRun: false });
+    problems.push(...decision.problems);
+    for (const rule of decision.deletes) {
       const removed = await retryDelete(() =>
-        run.cloudflare.call("DELETE", `/zones/${zone.id}/rulesets/${ruleset?.id}/rules/${rule.id}`),
+        run.cloudflare.call(
+          "DELETE",
+          `/zones/${zone.id}/rulesets/${entrypoint.id}/rules/${rule.id}`,
+        ),
       );
-      if (!removed) problems.push(`Cloudflare did not delete OpsCrew's rule ${rule.ref}`);
+      if (!removed) problems.push(`${rule.what} (${phase}): Cloudflare did not delete it`);
       else if (destroyed)
-        problems.push(`destroy left OpsCrew's rule ${rule.ref}; the cleanup removed it`);
+        problems.push(`destroy left ${rule.what} (${phase}); the cleanup removed it`);
     }
   }
-  const certificates = await run.cloudflare.call("GET", `/certificates?zone_id=${zone.id}`);
-  for (const certificate of (certificates.json as { result?: { id: string }[] } | undefined)
-    ?.result ?? []) {
-    const revoked = await retryDelete(() =>
-      run.cloudflare.call("DELETE", `/certificates/${certificate.id}`),
-    );
-    if (!revoked) problems.push("Cloudflare did not revoke the previews' origin certificate");
-    else if (destroyed)
-      problems.push("destroy left the previews' origin certificate; the cleanup revoked it");
+  const tls = await run.cloudflare.removeTlsOfRun(
+    zone,
+    await run.cloudflare.zoneTls(zone, names),
+    names,
+    run.log,
+  );
+  problems.push(...tls.problems);
+  if (destroyed) {
+    problems.push(...tls.removed.map((what) => `destroy left ${what}; the cleanup removed it`));
   }
   return problems;
-}
-
-/** One rule of a zone's ruleset, as far as the cleanup reads it. */
-interface RulesetRule {
-  id: string;
-  ref?: string;
-  expression?: string;
 }
 
 /**

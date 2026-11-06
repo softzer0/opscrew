@@ -33,6 +33,7 @@ import {
 import { buildQuestions, type InterviewAnswers } from "../interview/questions";
 import { appZoneWarning, requireAppZonePreviews } from "../previews/app-zone";
 import {
+  refusedBeforeChange,
   requireHostApps,
   shareableHost,
   shareableHosts,
@@ -172,11 +173,6 @@ export function previewRunnerRefusal(flag: "runner" | "build", value: string): s
   return `Previews are built and deployed on GitHub's machines only, never on a runner of yours: a pull request's code runs in the job, so --${flag} ${value} is not available with --previews.`;
 }
 
-/** A refusal before any change, ending as every one does. */
-function refuse(code: "INVALID_INPUT" | "PHASE_PRECONDITION", message: string, hint: string) {
-  return new OpsCrewError(code, `${message} Nothing was changed.`, { hint });
-}
-
 /** The answer `id` as trimmed text, `undefined` when absent or blank. */
 function textOf(answers: InterviewAnswers, id: string): string | undefined {
   const value = answers[id];
@@ -227,7 +223,7 @@ async function previewZone(
   const inAppZone = appZone !== undefined && (domain === appZone || domain.endsWith(`.${appZone}`));
   const below = inAppZone && domain !== appZone;
   if (inAppZone && (!below || (optIn.appZone !== true && optIn.ask === undefined))) {
-    throw refuse(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
       `${domain} is in your app's own domain ${appZone}, and previews need a domain of their own: behind its proxy Cloudflare would name the app's domain on every preview, and a preview's records would sit beside the app's.`,
       below
@@ -254,7 +250,7 @@ async function previewZone(
     if (client === undefined) throw missing("Cloudflare", connector.credentials);
     const zone = await client.findZone(domain);
     if (zone?.name !== appZone) {
-      throw refuse(
+      throw refusedBeforeChange(
         "PHASE_PRECONDITION",
         `Previews below ${appZone} go in its Cloudflare zone, and no Cloudflare zone your token sees is ${appZone}.`,
         `Give the Cloudflare token access to ${appZone}, ${again}.`,
@@ -271,14 +267,14 @@ async function previewZone(
   if (client === undefined) throw missing("Cloudflare", connector.credentials);
   const zone = await client.findZone(domain);
   if (zone === undefined) {
-    throw refuse(
+    throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `Previews need a domain of their own on Cloudflare, and no Cloudflare zone your token sees is ${domain}.`,
       `Add ${domain} to your Cloudflare account, or buy a domain for previews with ${BUY}, ${again}.`,
     );
   }
   if (zone.name !== domain) {
-    throw refuse(
+    throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `${domain} is a name inside your Cloudflare zone ${zone.name}, and previews need a zone of their own, used for nothing else.`,
       `Give a domain used only for previews with --domain (${BUY} buys one), ${again}.`,
@@ -286,7 +282,7 @@ async function previewZone(
   }
   const web = (await client.listDnsRecords(zone.id)).filter((r) => WEB_RECORDS.has(r.type));
   if (web.length > 0) {
-    throw refuse(
+    throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `Your Cloudflare zone ${zone.name} already has ${listText(web.map((r) => `${r.name} (${r.type})`))}, and previews need a zone used for nothing else: the proxied wildcard *.${zone.name} and the previews' certificate cover every name in it.`,
       `Give a domain used only for previews with --domain (${BUY} buys one), or delete those records in Cloudflare if nothing uses them, ${again}.`,
@@ -326,7 +322,7 @@ export async function addPreviewEnvironment(
   const { name, app, prodPlan, base, facts } = context;
   const command = `opscrew env add ${name}${app} --previews`;
   if (isServerlessTarget(prodPlan.target)) {
-    throw refuse(
+    throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `The app is a site without a server, and previews run on a server of their own, as a copy of the app beside its own databases.`,
       "Check a site's changes in their pull request before you merge them, or move the app to a server with `opscrew interview` and `opscrew design` first.",
@@ -334,7 +330,7 @@ export async function addPreviewEnvironment(
   }
   const other = await previewEnvironmentOf(paths.root, paths.app);
   if (other !== undefined) {
-    throw refuse(
+    throw refusedBeforeChange(
       "PHASE_PRECONDITION",
       `The app already has a preview environment, ${other}, and an app has one.`,
       `Change it with \`opscrew design${app} --env ${other}\`, or remove it with \`opscrew env remove ${other}${app}\` first.`,
@@ -342,7 +338,7 @@ export async function addPreviewEnvironment(
   }
   const appName = `${prodPlan.app.name}-${name}`;
   if (appName.length > PREVIEW_APP_NAME_MAX) {
-    throw refuse(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
       `The ${name} environment's app would be named ${appName}, and a preview environment's app name has at most ${PREVIEW_APP_NAME_MAX} characters, so that each preview's (${appName}-pr-<number>) fits.`,
       `Choose a shorter environment name, for example preview, then run \`opscrew env add <name>${app} --previews\` again.`,
@@ -363,7 +359,7 @@ export async function addPreviewEnvironment(
   for (const field of ["runner", "build"] as const) {
     const value = textOf(answers, field);
     if (value === undefined || value === "github") continue;
-    throw refuse(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
       previewRunnerRefusal(field, value),
       `Leave --${field} out, then run \`${command}\` again.`,
@@ -384,7 +380,7 @@ export async function addPreviewEnvironment(
   const picked = textOf(rest, "provider");
   const chosenHost = picked?.startsWith(SHARE) ? picked.slice(SHARE.length) : undefined;
   if (options.shareServer !== undefined && textOf(given, "provider") !== undefined) {
-    throw refuse(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
       `--share-server runs previews on ${options.shareServer}'s server, and --target names a server of their own.`,
       `Give one of them, then run \`${command}\` again.`,
@@ -393,7 +389,7 @@ export async function addPreviewEnvironment(
   const host = options.shareServer?.trim() ?? chosenHost;
   const target = host === undefined ? picked?.toLowerCase() : "own";
   if (target === undefined || !PREVIEW_TARGETS.has(target)) {
-    throw refuse(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
       `Previews run on a server of their own that GitHub's machines reach over SSH: a new server at Hetzner or DigitalOcean, or a server you already have, not ${target ?? "no target"}.`,
       `Run \`${command}\` with --target hetzner, digitalocean or own.`,
@@ -406,7 +402,7 @@ export async function addPreviewEnvironment(
       : await shareableHost(deps, host, { preview: name, again: command });
   const size = textOf(answers, "size");
   if (size !== undefined && target === "own") {
-    throw refuse(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
       `--size picks a new server's type, and ${host === undefined ? "your own server" : `${host}'s server`} has its own size.`,
       `Give --cap instead (how many previews run at once), then run \`${command}\` again.`,
@@ -414,7 +410,7 @@ export async function addPreviewEnvironment(
   }
   const domain = textOf(answers, "domain");
   if (domain === undefined) {
-    throw refuse(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
       "Previews need a domain of their own on Cloudflare, where each preview gets an address nobody can guess (pr-<number>-<random>.<domain>), and none was given.",
       `Give it with --domain (${BUY} buys one), then run \`${command}\` again.`,
@@ -431,7 +427,7 @@ export async function addPreviewEnvironment(
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const field = String(issue?.path[0] ?? "");
-    throw refuse(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
       `${FLAGS[field] ?? field} ${issue?.message ?? "is not valid"}.`,
       `Fix it, then run \`${command}\` again.`,
@@ -456,10 +452,10 @@ export async function addPreviewEnvironment(
   let inspected: OwnServerDesignInput | undefined;
   if (shared !== undefined) {
     // The opt-in (FR-2228): the warning both ways; picked interactively, a confirmation too.
-    const warning = sharedServerWarning(shared.host as string);
+    const warning = sharedServerWarning(shared.host);
     reporter.warn(warning);
     if (chosenHost !== undefined && ask !== undefined) {
-      const confirmed = await ask([shareQuestion(shared.host as string, warning)]);
+      const confirmed = await ask([shareQuestion(shared.host, warning)]);
       if (confirmed.share !== true) {
         throw new OpsCrewError(
           "APPROVAL_REFUSED",
@@ -471,19 +467,11 @@ export async function addPreviewEnvironment(
       }
     }
     // Inspected now, before anything is written; nothing of its login is copied here.
-    inspected =
-      options.design?.ownServer ??
-      (await sharedServerDesign(shared, {
-        ...(options.ownServer?.hostKey !== undefined ? { hostKey: options.ownServer.hostKey } : {}),
-        ...(options.ownServer?.services !== undefined
-          ? { services: options.ownServer.services }
-          : {}),
-      }));
+    inspected = options.design?.ownServer ?? (await sharedServerDesign(shared, options.ownServer));
     requireHostApps(
       (inspected.apps ?? []).map((app) => app.name),
+      shared,
       {
-        host: shared.host as string,
-        hostApp: shared.plan.app.name,
         previewApp: appName,
         prodApp: prodPlan.app.name,
         again: command,
@@ -506,7 +494,7 @@ export async function addPreviewEnvironment(
       ownContext,
     );
     if (!own.reachable) {
-      throw refuse(
+      throw refusedBeforeChange(
         "INVALID_INPUT",
         "Previews need a server the internet reaches: GitHub's machines connect to it over SSH, and Cloudflare's proxy sends visitors to it.",
         `Use a server with a public address, or a new one (--target hetzner or digitalocean), then run \`${command}\` again.`,
@@ -514,16 +502,10 @@ export async function addPreviewEnvironment(
     }
     await recordOwnServerAnswers(paths, own);
     inspected =
-      options.design?.ownServer ??
-      (await inspectOwnServerForDesign(deps, {
-        ...(options.ownServer?.hostKey !== undefined ? { hostKey: options.ownServer.hostKey } : {}),
-        ...(options.ownServer?.services !== undefined
-          ? { services: options.ownServer.services }
-          : {}),
-      }));
+      options.design?.ownServer ?? (await inspectOwnServerForDesign(deps, options.ownServer));
     const apps = inspected.apps ?? [];
     if (apps.length > 0) {
-      throw refuse(
+      throw refusedBeforeChange(
         "PHASE_PRECONDITION",
         `Your server runs ${listText(apps.map((a) => `"${a.name}"`))}, and previews run pull requests' code: it would run beside ${apps.length === 1 ? "it" : "them"}, so previews need a server with nothing else on it.`,
         `Use another server of yours, or a new one (--target hetzner or digitalocean), then run \`${command}\` again.`,

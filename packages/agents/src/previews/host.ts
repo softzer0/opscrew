@@ -46,9 +46,13 @@ export interface PreviewServer<D extends Pick<PhaseDeps, "paths"> = PhaseDeps> {
   host?: string;
 }
 
-/** A refusal that ends as every one before a change does. */
-function refusal(message: string, hint: string): OpsCrewError {
-  return new OpsCrewError("PHASE_PRECONDITION", `${message} Nothing was changed.`, { hint });
+/** A refusal before any change, ending as every one does. */
+export function refusedBeforeChange(
+  code: "INVALID_INPUT" | "PHASE_PRECONDITION",
+  message: string,
+  hint: string,
+): OpsCrewError {
+  return new OpsCrewError(code, `${message} Nothing was changed.`, { hint });
 }
 
 /**
@@ -71,7 +75,8 @@ export async function previewServer<D extends Pick<PhaseDeps, "paths">>(
   const hostPlan = await readOptionalArtifact("plan", paths.files.plan);
   if (hostPlan === undefined || !hasDeployment(hostPlan)) {
     const flags = await commandFlags(paths.root, host, paths.app);
-    throw refusal(
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
       `The previews run on ${host}'s server, and ${host} ${hostPlan === undefined ? "has no plan" : "is not provisioned"} on this computer.`,
       `Run \`opscrew provision${flags}\` on the computer that set ${host} up, or run the command there.`,
     );
@@ -94,7 +99,8 @@ export async function previewServerAddress(server: PreviewServer): Promise<Serve
     server.deps.paths.environment,
     server.deps.paths.app,
   );
-  throw refusal(
+  throw refusedBeforeChange(
+    "PHASE_PRECONDITION",
     `OpsCrew does not know the address of ${server.host ?? "the preview"}'s server on this computer.`,
     `Run the command on the computer that ran \`opscrew provision${flags}\`.`,
   );
@@ -113,19 +119,14 @@ export async function sharedServerReach(
   const { paths } = server.deps;
   const flags = await commandFlags(paths.root, paths.environment, paths.app);
   const again = `Run the command on the computer that ran \`opscrew provision${flags}\`.`;
-  const login = await deployLogin(server.deps, server.plan);
-  if (login === undefined) {
-    throw refusal(
-      `OpsCrew has no deploy login to ${server.host}'s server on this computer (its address or ${server.host}'s deploy key is missing).`,
-      again,
-    );
-  }
+  const login = await hostDeployLogin(server);
   const pinned = keysFor(
     (await readTextIfExists(paths.files.knownHosts)) ?? "",
     knownHostsName(login.host, login.port),
   );
   if (pinned.length === 0) {
-    throw refusal(
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
       `The SSH host key of ${server.host}'s server is not pinned on this computer.`,
       again,
     );
@@ -137,6 +138,25 @@ export async function sharedServerReach(
     knownHosts: pinned.map((key) => `${name} ${key}\n`).join(""),
     sshPort: login.port,
   };
+}
+
+/**
+ * Where the host's deploy login reaches the server previews share (`deployLogin` of the host's
+ * paths and plan): for design's inspection of it and for what GitHub's machines reach.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when this computer has no deploy login there.
+ */
+export async function hostDeployLogin(
+  server: PreviewServer<Pick<PhaseDeps, "paths">>,
+): Promise<{ host: string; port: number }> {
+  const login = await deployLogin(server.deps, server.plan);
+  if (login !== undefined) return login;
+  const { paths } = server.deps;
+  const flags = await commandFlags(paths.root, paths.environment, paths.app);
+  throw refusedBeforeChange(
+    "PHASE_PRECONDITION",
+    `OpsCrew has no deploy login to ${server.host}'s server on this computer (its address or ${server.host}'s deploy key is missing).`,
+    `Run the command on the computer that ran \`opscrew provision${flags}\`.`,
+  );
 }
 
 /** The previews' memory on their server: `cap` previews, each with the plan's memory limits. */
@@ -171,12 +191,20 @@ export async function sharedPreviewsOn(
   paths: ProjectPaths,
   environment: string,
 ): Promise<SharedPreviews | undefined> {
-  const name = await previewEnvironmentOf(paths.root, paths.app);
-  if (name === undefined || name === environment) return undefined;
-  const plan = await readOptionalArtifact("plan", environmentPaths(paths, name).files.plan);
-  return plan?.environment?.previews?.server?.environment === environment
-    ? { name, plan }
+  const previews = await appPreviews(paths);
+  return previews !== undefined &&
+    previews.name !== environment &&
+    previews.plan.environment?.previews?.server?.environment === environment
+    ? previews
     : undefined;
+}
+
+/** The app's preview environment with its plan; `undefined` without one or without its plan. */
+async function appPreviews(paths: ProjectPaths): Promise<SharedPreviews | undefined> {
+  const name = await previewEnvironmentOf(paths.root, paths.app);
+  if (name === undefined) return undefined;
+  const plan = await readOptionalArtifact("plan", environmentPaths(paths, name).files.plan);
+  return plan === undefined ? undefined : { name, plan };
 }
 
 /**
@@ -197,13 +225,15 @@ export async function requireNoSharedPreviews(
   if (shared === undefined) return;
   if (hasDeployment(shared.plan)) {
     const flags = await commandFlags(paths.root, shared.name, paths.app);
-    throw refusal(
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
       `The previews of the ${shared.name} environment run on ${env}'s server, and ${what} would break them.`,
       `Remove them first with \`opscrew destroy${flags}\` (it leaves ${env}'s server as it is), then run \`${again}\` again.`,
     );
   }
   if (!named) return;
-  throw refusal(
+  throw refusedBeforeChange(
+    "PHASE_PRECONDITION",
     `The previews of the ${shared.name} environment are set up to run on ${env}'s server, and ${what} would break them.`,
     `Remove that environment first with \`opscrew env remove ${shared.name}${await appFlag(paths.root, paths.app)}\`, then run \`${again}\` again.`,
   );
@@ -222,21 +252,21 @@ export async function requireNoForeignPreviews(
   facts: Pick<HostFacts, "previews">,
   again: string,
 ): Promise<void> {
-  const shared = await sharedPreviewsOn(paths, paths.environment);
-  const allowed = new Set([plan.app.name, ...(shared === undefined ? [] : [shared.plan.app.name])]);
+  const previews = await appPreviews(paths);
+  // The previews of the preview environment that names this server may run beside it.
+  const shared =
+    previews !== undefined &&
+    previews.plan.environment?.previews?.server?.environment === paths.environment;
+  const allowed = new Set([plan.app.name, ...(shared ? [previews.plan.app.name] : [])]);
   const foreign = facts.previews.map((recipe) => recipe.app).filter((app) => !allowed.has(app));
   if (foreign.length === 0) return;
   // The app's own preview environment, when the previews are its.
-  const name = await previewEnvironmentOf(paths.root, paths.app);
-  const preview =
-    name === undefined
-      ? undefined
-      : await readOptionalArtifact("plan", environmentPaths(paths, name).files.plan);
   const remove =
-    name !== undefined && preview !== undefined && foreign.includes(preview.app.name)
-      ? `\`opscrew destroy${await commandFlags(paths.root, name, paths.app)}\``
+    previews !== undefined && foreign.includes(previews.plan.app.name)
+      ? `\`opscrew destroy${await commandFlags(paths.root, previews.name, paths.app)}\``
       : "`opscrew destroy` of their preview environment";
-  throw refusal(
+  throw refusedBeforeChange(
+    "PHASE_PRECONDITION",
     `Your server runs the previews of ${listText(foreign.map((app) => `"${app}"`))}, which run pull requests' code, and ${paths.environment} would run beside them.`,
     `Remove them first with ${remove}, or give ${paths.environment} another server, then run \`${again}\` again.`,
   );
@@ -262,40 +292,40 @@ export async function shareableHost<D extends Pick<PhaseDeps, "paths">>(
   deps: D,
   host: string,
   check: HostCheck,
-): Promise<PreviewServer<D>> {
+): Promise<PreviewServer<D> & { host: string }> {
   const { preview, again } = check;
   const paths = environmentPaths(deps.paths, host);
-  const rerun = `then run \`${again}\` again`;
-  const instead = `Name another environment's server, or leave the option out for a server of the previews' own, ${rerun}.`;
+  const instead = shareInstead(again);
   if (host === "prod") {
-    throw new OpsCrewError(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
-      "Previews never run on prod's server: anyone who can push a branch would run code beside prod's data. Nothing was changed.",
-      { hint: instead },
+      "Previews never run on prod's server: anyone who can push a branch would run code beside prod's data.",
+      instead,
     );
   }
   if (host === preview) {
-    throw new OpsCrewError(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
-      `${host} is the preview environment itself; previews share another environment's server, such as dev's. Nothing was changed.`,
-      { hint: instead },
+      `${host} is the preview environment itself; previews share another environment's server, such as dev's.`,
+      instead,
     );
   }
   const plan = await readOptionalArtifact("plan", paths.files.plan);
   if (plan === undefined) {
-    throw new OpsCrewError(
+    throw refusedBeforeChange(
       "INVALID_INPUT",
-      `The app has no ${host} environment. Nothing was changed.`,
-      { hint: `\`opscrew env list\` shows the app's environments. ${instead}` },
+      `The app has no ${host} environment.`,
+      `\`opscrew env list\` shows the app's environments. ${instead}`,
     );
   }
   const why = hostProblem(plan, host);
-  if (why !== undefined) throw refusal(why, instead);
+  if (why !== undefined) throw refusedBeforeChange("PHASE_PRECONDITION", why, instead);
   if (!hasDeployment(plan)) {
     const flags = await commandFlags(paths.root, host, paths.app);
-    throw refusal(
+    throw refusedBeforeChange(
+      "PHASE_PRECONDITION",
       `${host} is not provisioned yet, so it has no server for previews to share.`,
-      `Run \`opscrew provision${flags}\` first, ${rerun}.`,
+      `Run \`opscrew provision${flags}\` first, then run \`${again}\` again.`,
     );
   }
   // prod on the same server of the user's, by the addresses this computer recorded.
@@ -309,10 +339,15 @@ export async function shareableHost<D extends Pick<PhaseDeps, "paths">>(
       hostAddress !== undefined &&
       sameIp(prodAddress.ipv4, hostAddress.ipv4)
     ) {
-      throw refusal(prodBeside(host), instead);
+      throw refusedBeforeChange("PHASE_PRECONDITION", prodBeside(host), instead);
     }
   }
   return { deps: { ...deps, paths }, plan, host };
+}
+
+/** The hint of a refused shared server: name another, or leave the option out, then `again`. */
+function shareInstead(again: string): string {
+  return `Name another environment's server, or leave the option out for a server of the previews' own, then run \`${again}\` again.`;
 }
 
 /** Why previews never share a server prod runs on. */
@@ -384,7 +419,8 @@ export async function requireNoNetworkBesidePreviews(
   const remove = hasDeployment(shared.plan)
     ? `\`opscrew destroy${await commandFlags(paths.root, shared.name, paths.app)}\``
     : `\`opscrew env remove ${shared.name}${await appFlag(paths.root, paths.app)}\``;
-  throw refusal(
+  throw refusedBeforeChange(
+    "PHASE_PRECONDITION",
     why,
     `To put that on ${paths.environment}'s server anyway, remove the previews of ${shared.name} first with ${remove}; then run \`${again}\` again.`,
   );
@@ -441,23 +477,28 @@ export async function shareableHosts(
 }
 
 /**
- * Refuses a shared server whose inspection shows another OpsCrew app than the host's and the
- * previews' own (`apps`, by name): prod's, which previews never run beside, or any other.
+ * Refuses the shared `server` when its inspection shows another OpsCrew app than the host's and
+ * the previews' own (`apps`, by name): prod's, which previews never run beside, or any other.
  * @throws OpsCrewError `PHASE_PRECONDITION`, before any change.
  */
 export function requireHostApps(
   apps: readonly string[],
-  input: { host: string; hostApp: string; previewApp: string; prodApp: string; again: string },
+  server: Pick<PreviewServer, "plan"> & { host: string },
+  input: { previewApp: string; prodApp: string; again: string },
 ): void {
+  const { host } = server;
   const own = new RegExp(`^${input.previewApp}(-pr-[1-9][0-9]{0,5})?$`);
-  const others = [...new Set(apps)].filter((app) => app !== input.hostApp && !own.test(app)).sort();
+  const others = [...new Set(apps)]
+    .filter((app) => app !== server.plan.app.name && !own.test(app))
+    .sort();
   if (others.length === 0) return;
-  const rerun = `Name another environment's server, or leave the option out for a server of the previews' own, then run \`${input.again}\` again.`;
+  const instead = shareInstead(input.again);
   if (others.includes(input.prodApp)) {
-    throw refusal(prodBeside(input.host), rerun);
+    throw refusedBeforeChange("PHASE_PRECONDITION", prodBeside(host), instead);
   }
-  throw refusal(
-    `${input.host}'s server also runs ${listText(others.map((app) => `"${app}"`))}, and previews may share a server only with ${input.host} itself.`,
-    rerun,
+  throw refusedBeforeChange(
+    "PHASE_PRECONDITION",
+    `${host}'s server also runs ${listText(others.map((app) => `"${app}"`))}, and previews may share a server only with ${host} itself.`,
+    instead,
   );
 }

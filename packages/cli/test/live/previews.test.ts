@@ -42,7 +42,7 @@ import {
   type Pull,
   previewPage,
   provisionPreviews,
-  removeWildcards,
+  registerPreviewZoneCleanup,
   wildcardRecords,
 } from "./previews-checks";
 import {
@@ -687,15 +687,7 @@ describe.skipIf(MISSING.length > 0)(
     // API by the apps' labels, GitHub's environments and secrets, Cloudflare, then the wildcard
     // record in the preview zone (a finished destroy must have removed it), then the
     // repository's reset.
-    envs.registerCleanup({
-      last: async (attempt) => {
-        const zone = previewZone;
-        if (zone === undefined) return;
-        await attempt("remove the previews' wildcard record", () =>
-          removeWildcards(run, zone, envs.destroyed.has(PREVIEW_ENV)),
-        );
-      },
-    });
+    registerPreviewZoneCleanup(run, envs, () => previewZone);
     // Registered after the harness's cleanup, so it runs before it: while the preview server may
     // still run, each of the run's pull requests still open is closed and its preview run awaited
     // (its remove job takes the preview down and deletes its images), so no preview run starts

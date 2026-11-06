@@ -4,14 +4,12 @@ import {
   readableRecords,
   tunnelOf,
 } from "@opscrew/connector-ssh-host";
-import { OpsCrewError } from "@opscrew/core";
 import { IMAGES } from "@opscrew/iac-templates";
 import { readOptionalArtifact } from "@opscrew/plan-schema";
 import type { OwnServerDesignInput } from "../design";
 import { onAppServer } from "../design/placement";
-import { type PreviewServer, previewServer } from "../previews/host";
+import { hostDeployLogin, type PreviewServer, previewServer } from "../previews/host";
 import type { OwnServerServices } from "../provision";
-import { deployShell } from "../status/certificates";
 import { appMemoryMb } from "./memory";
 import {
   connectOwnServer,
@@ -19,6 +17,7 @@ import {
   type OwnServerDeps,
   ownServerFacts,
 } from "./own-server";
+import { appServerShell } from "./server-address";
 
 /** Options of {@link inspectOwnServerForDesign}. */
 interface DesignInspectOptions {
@@ -91,14 +90,7 @@ export async function sharedServerDesign(
     input = await inspectOwnServerForDesign(deps, options);
   } else {
     deps.reporter.step(`Connecting to ${host}'s server to read its size (read-only)`);
-    const remote = await deployShell(deps, plan);
-    if (remote === undefined) {
-      throw new OpsCrewError(
-        "PHASE_PRECONDITION",
-        `OpsCrew has no deploy login to ${host}'s server on this computer (its address or ${host}'s deploy key is missing), so it could not read the server's size. Nothing was changed.`,
-        { hint: `Run the command on the computer that provisioned ${host}.` },
-      );
-    }
+    const remote = await appServerShell(deps, plan, await hostDeployLogin(server));
     const adapter = options.services?.host;
     const facts =
       adapter === undefined

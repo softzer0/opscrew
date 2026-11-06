@@ -120,6 +120,16 @@ export async function sharedPreviewProject(
   const host = environmentPaths(deps.paths, HOST_ENV);
   await writeArtifact("plan", host.files.plan, hostTestPlan({ own }));
   await writeArtifact("plan", deps.paths.files.plan, plan);
+  await recordHostLogin(host, own);
+  return { deps, plan, host, root: project.root };
+}
+
+/**
+ * What dev's provision leaves on this computer for its server at {@link HOST_IPV4} (`host`, dev's
+ * paths): its address, a deploy key and the pinned host key, and on the user's own server (`own`)
+ * its admin login on {@link HOST_SSH_PORT}.
+ */
+export async function recordHostLogin(host: ProjectPaths, own: boolean): Promise<void> {
   await updateServerAddresses(host, (current) => ({
     ...current,
     deployment: { ipv4: HOST_IPV4 },
@@ -136,7 +146,6 @@ export async function sharedPreviewProject(
   }
   await mkdir(dirname(host.files.deployKey), { recursive: true });
   // Only its presence matters: the fake shells never read it.
-  await writeFile(host.files.deployKey, "placeholder\n");
+  await writeFile(host.files.deployKey, "dev-deploy-key-placeholder-not-a-key\n");
   await writeFile(host.files.knownHosts, `${knownHostsName(HOST_IPV4, port)} ${HOST_KEY}\n`);
-  return { deps, plan, host, root: project.root };
 }

@@ -4,8 +4,7 @@ import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-
 import { describe, expect, it } from "vitest";
 import { environmentPaths } from "../environments/paths";
 import { localPlan } from "../localhost/__fixtures__/computer";
-import { allocateNetwork } from "../network";
-import { networked, splitPlan, withNetwork } from "../network/__fixtures__/plans";
+import { networked, splitPlan } from "../network/__fixtures__/plans";
 import { readServerAddresses, serverAddress, updateServerAddresses } from "../shared";
 import { appMemoryMb } from "../shared/memory";
 import {
@@ -17,8 +16,7 @@ import {
   portainerPlan,
   previewTestPlan,
   sharedPreviewTestPlan,
-  testKeyMaker,
-  testKeyPair,
+  withLaptop,
 } from "../testing";
 import { sitePlan } from "../testing/serverless";
 import { fakeShell, HOST_SSH_PORT, LIST_OUTPUT, sharedPreviewProject } from "./__fixtures__/plan";
@@ -282,21 +280,13 @@ describe("shareableHost", () => {
     );
 
     // One server, with a device that has its own login to the database, and Beszel's hub.
-    const base = hostTestPlan();
-    const { network } = allocateNetwork(base, {}, testKeyMaker("shop-dev"));
-    const prefix = network.range.split(".").slice(0, 3).join(".");
-    const laptop = {
-      name: "laptop",
-      address: `${prefix}.100`,
-      publicKey: testKeyPair("laptop").publicKey,
-      addedAt: "2026-10-30T10:00:00.000Z",
-    };
+    const laptop = withLaptop(hostTestPlan());
     const devices = DeployPlanSchema.parse({
-      ...withNetwork(base, {
-        ...network,
-        devices: [laptop],
+      ...laptop,
+      network: {
+        ...laptop.network,
         grants: [{ device: "laptop", service: "db", access: "read-only" }],
-      }),
+      },
       observability: {
         beszel: {
           enabled: true,
@@ -366,23 +356,22 @@ describe("requireNoForeignPreviews", () => {
 });
 
 describe("requireHostApps", () => {
+  const server = { host: HOST_ENV, plan: hostTestPlan() };
   const input = {
-    host: "dev",
-    hostApp: "shop-dev",
     previewApp: "shop-preview",
     prodApp: "shop",
     again: "opscrew env add preview --previews",
   };
 
   it("allows dev's app and the previews' own", () => {
-    requireHostApps(["shop-dev", "shop-preview", "shop-preview-pr-42"], input);
+    requireHostApps(["shop-dev", "shop-preview", "shop-preview-pr-42"], server, input);
   });
 
   it("refuses a server prod runs on, and one with other apps", () => {
-    expect(() => requireHostApps(["shop-dev", "shop"], input)).toThrow(
+    expect(() => requireHostApps(["shop-dev", "shop"], server, input)).toThrow(
       "prod runs on dev's server too, and previews never run beside prod's data. Nothing was changed.",
     );
-    expect(() => requireHostApps(["shop-dev", "blog"], input)).toThrow(
+    expect(() => requireHostApps(["shop-dev", "blog"], server, input)).toThrow(
       'dev\'s server also runs "blog", and previews may share a server only with dev itself. Nothing was changed.',
     );
   });

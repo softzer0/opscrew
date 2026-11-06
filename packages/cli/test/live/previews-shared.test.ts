@@ -24,7 +24,7 @@ import {
   type Pull,
   previewPage,
   provisionPreviews,
-  removeWildcards,
+  registerPreviewZoneCleanup,
   wildcardRecords,
 } from "./previews-checks";
 import {
@@ -370,15 +370,7 @@ describe.skipIf(MISSING.length > 0)(
     // destroy they would refuse, then prod), Hetzner's API by the apps' labels, GitHub's
     // environments and secrets, Cloudflare, then the wildcard record in the preview zone, then
     // the repository's reset.
-    envs.registerCleanup({
-      last: async (attempt) => {
-        const zone = previewZone;
-        if (zone === undefined) return;
-        await attempt("remove the previews' wildcard record", () =>
-          removeWildcards(run, zone, envs.destroyed.has(PREVIEW_ENV)),
-        );
-      },
-    });
+    registerPreviewZoneCleanup(run, envs, () => previewZone);
     // Registered after the harness's cleanup, so it runs before it: the run's pull requests still
     // open are closed while the previews may still run (see previews.test.ts).
     afterAll(async () => {
