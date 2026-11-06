@@ -2063,7 +2063,9 @@ writes. The test reads and writes the table with `psql` in the database's contai
   branch, with the inputs `digest` (that image's), `tag` (`<commit>-staging`) and
   `rollback: true`. The run must succeed without a build. The server then runs that image, and
   the table has the same columns and rows as before.
-- **D7. Destroy:** nothing of staging may be left at Hetzner, in Cloudflare or at GitHub.
+- **D7. Destroy:** nothing of staging may be left at Hetzner, in Cloudflare or at GitHub. Its
+  deploy secrets must be where its plan says before the destroy, as for
+  [environments](#environments-and-promotion), and gone after it.
 - **D8. Nothing leaked** (SC-1909): as step 9, over every CLI output, commit, pull request, audit
   entry, plan and state file, with the database's password and every value the test wrote
   searched for. The log of the deploy job of each run (v1's, v2's, the resume's, both rollbacks'

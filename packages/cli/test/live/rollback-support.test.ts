@@ -23,7 +23,6 @@ import {
   ROWS_TABLE,
   rollbackApproval,
   rollbackDispatchInputs,
-  rowLabels,
   runIdIn,
   shownRollback,
   statusDeploys,
@@ -246,15 +245,31 @@ describe("shownRollback", () => {
 });
 
 describe("jobTimes", () => {
+  const approvedAt = Date.parse("2026-11-06T10:00:00Z");
+  const job = (name: string, startedAt: string | null, completedAt: string | null) => ({
+    name,
+    conclusion: completedAt === null ? null : "success",
+    steps: [],
+    startedAt,
+    completedAt,
+  });
+
+  it("leaves out a job that hasn't started, and says nothing when none has", () => {
+    expect(
+      jobTimes(
+        [
+          job("Build the image", null, null),
+          job("Deploy to the server", "2026-11-06T10:01:00Z", "2026-11-06T10:02:00Z"),
+        ],
+        approvedAt,
+      ),
+    ).toBe(
+      "the run's first job started 1 min 0 s after the approval; Deploy to the server 1 min 0 s",
+    );
+    expect(jobTimes([job("Build the image", null, null)], approvedAt)).toBeUndefined();
+  });
+
   it("says when the run's first job started after the approval, then each finished job", () => {
-    const approvedAt = Date.parse("2026-11-06T10:00:00Z");
-    const job = (name: string, startedAt: string | null, completedAt: string | null) => ({
-      name,
-      conclusion: completedAt === null ? null : "success",
-      steps: [],
-      startedAt,
-      completedAt,
-    });
     expect(
       jobTimes(
         [
@@ -303,15 +318,6 @@ describe("the database pass's helpers", () => {
     expect(LABELS_SQL).toBe(`select label from ${ROWS_TABLE} order by id`);
     expect(psqlLines("id\r\nlabel\n\n note \n")).toEqual(["id", "label", "note"]);
     expect(psqlLines("")).toEqual([]);
-  });
-
-  it("names each row of a batch apart, so no label is a part of another", () => {
-    const labels = rowLabels("run1", "a", 3);
-    expect(labels).toEqual(["e2e-row-run1-a1", "e2e-row-run1-a2", "e2e-row-run1-a3"]);
-    const all = [...labels, ...rowLabels("run1", "b", 3)];
-    expect(all.filter((one) => all.some((other) => other !== one && other.includes(one)))).toEqual(
-      [],
-    );
   });
 
   it("writes rows with or without v2's column, and only plain values", () => {

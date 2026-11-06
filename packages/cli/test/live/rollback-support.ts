@@ -81,10 +81,13 @@ export function rollbackApproval(output: string): RollbackApproval | undefined {
 
 /**
  * Where a rollback run's time went, for its `observed:` line: when its first job started after
- * the approval (`approvedAt`, epoch milliseconds), then each finished job's duration.
+ * the approval (`approvedAt`, epoch milliseconds), then each finished job's duration;
+ * `undefined` when no job has started.
  */
-export function jobTimes(jobs: readonly DeployJob[], approvedAt: number): string {
-  const firstStart = Math.min(...jobs.map((job) => Date.parse(job.startedAt ?? "")));
+export function jobTimes(jobs: readonly DeployJob[], approvedAt: number): string | undefined {
+  const starts = jobs.flatMap((job) => (job.startedAt ? [Date.parse(job.startedAt)] : []));
+  if (starts.length === 0) return undefined;
+  const firstStart = Math.min(...starts);
   const each = jobs
     .filter((job) => job.startedAt && job.completedAt)
     .map(

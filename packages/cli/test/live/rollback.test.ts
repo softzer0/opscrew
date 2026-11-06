@@ -260,7 +260,9 @@ describe.skipIf(MISSING.length > 0)(
         }
         const jobs = await run.github.jobs(runId);
         // Where SC-1901's time goes: before the run's first job, then each job.
-        log(`observed: the rollback run: ${jobTimes(jobs, started)}`);
+        log(
+          `observed: the rollback run: ${jobTimes(jobs, started) ?? "GitHub lists no job started"}`,
+        );
         const build = conclusionOf(jobs, BUILD_JOB);
         expect(build ?? "skipped", `the build job of the rollback run ${runId}`).toBe("skipped");
         expect(
@@ -475,8 +477,8 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
     const { log } = run;
     const v1: Deployed = { commit: "", digest: "" };
     const v2: Deployed = { commit: "", digest: "" };
-    /** v2 deployed again by `--resume --deploy`: the same commit, built again. */
-    const v2Again: Deployed = { commit: "", digest: "" };
+    /** The digest of v2 deployed again by `--resume --deploy`: v2's commit, built again. */
+    let v2AgainDigest = "";
     /** The value v2's rows have in the column v2's migration adds. */
     const note = `e2e-note-${run.runId}`;
     /** The labels the test's table must hold now, in the order written. */
@@ -568,7 +570,7 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
         throw new Error("The printed command gives no --database or no --confirm.");
       }
       const started = Date.now();
-      const applied = await run.opscrewOk(
+      const applied = await run.opscrew(
         "rollback",
         "--env",
         STAGING,
@@ -583,12 +585,22 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
       );
       const took = Date.now() - started;
       const runId = runIdIn(applied.output);
+      // Before the exit code: a failed rollback's deploy job log is leak-searched too.
+      if (runId !== undefined) {
+        deployRuns.push({ what: `the rollback with --database ${database}`, id: runId });
+      }
+      if (applied.exitCode !== 0) {
+        throw new Error(
+          `opscrew rollback --database ${database} exited with ${applied.exitCode}:\n${run.tail(applied.output)}`,
+        );
+      }
       if (runId === undefined) {
         throw new Error(`The rollback named no workflow run:\n${run.tail(applied.output)}`);
       }
-      deployRuns.push({ what: `the rollback with --database ${database}`, id: runId });
+      const times =
+        jobTimes(await run.github.jobs(runId), started) ?? "GitHub lists no job started";
       log(
-        `observed: the rollback with --database ${database} succeeded ${duration(took)} after its approval; ${jobTimes(await run.github.jobs(runId), started)}`,
+        `observed: the rollback with --database ${database} succeeded ${duration(took)} after its approval; ${times}`,
       );
       expect(await envs.runningDigest(STAGING), "the image after the rollback").toBe(v1.digest);
       expect(
@@ -709,7 +721,7 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
       "D4. rollback --resume --deploy --yes deploys v2 again: its release command adds the column back; more rows written",
       minutes(45),
       async () => {
-        const resumed = await run.opscrewOk(
+        const resumed = await run.opscrew(
           "rollback",
           "--env",
           STAGING,
@@ -717,19 +729,24 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
           "--deploy",
           "--yes",
         );
+        const runId = runIdIn(resumed.output);
+        // Before the exit code: a failed deploy's job log is leak-searched too.
+        if (runId !== undefined) deployRuns.push({ what: "the resume's deploy", id: runId });
+        if (resumed.exitCode !== 0) {
+          throw new Error(
+            `opscrew rollback --resume --deploy exited with ${resumed.exitCode}:\n${run.tail(resumed.output)}`,
+          );
+        }
         expect(
           resumed.output.includes(`${STAGING} runs ${short(v2.commit)} (`),
           `the resume deployed v2's commit:\n${run.tail(resumed.output)}`,
         ).toBe(true);
-        const runId = runIdIn(resumed.output);
         if (runId === undefined) {
           throw new Error(`The resume named no workflow run:\n${run.tail(resumed.output)}`);
         }
-        deployRuns.push({ what: "the resume's deploy", id: runId });
         await run.waitForHealth(minutes(10), true, health);
-        v2Again.commit = v2.commit;
-        v2Again.digest = await envs.runningDigest(STAGING);
-        expect(v2Again.digest, "the image after --resume --deploy").not.toBe(v1.digest);
+        v2AgainDigest = await envs.runningDigest(STAGING);
+        expect(v2AgainDigest, "the image after --resume --deploy").not.toBe(v1.digest);
         expect(await table(), "the test's table after v2's release command ran again").toEqual({
           columns: ["id", "label", NOTE_COLUMN],
           labels: rows,
@@ -746,7 +763,7 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
         const shown = await shownDatabaseRollback(
           "migrations",
           ["Migrate it down with knex", "dropped, with their data."],
-          v2Again.digest,
+          v2AgainDigest,
         );
         const { output } = await applyRollback(shown);
         expect(
@@ -773,7 +790,7 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
         ).toBe(false);
         // The rollback before took it when v2 stopped running: an approval would restore it.
         expect(
-          await onServer(snapshotTakenPath(v2Again.digest.replace(/^sha256:/, ""))),
+          await onServer(snapshotTakenPath(v2AgainDigest.replace(/^sha256:/, ""))),
           "a complete snapshot of v2's running image on the server",
         ).toBe(true);
         await run.checkoutMain();
@@ -784,7 +801,7 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
           `/repos/${run.github.name}/actions/workflows/${workflow}/dispatches`,
           {
             ref: plan.cicd.branch,
-            inputs: rollbackDispatchInputs(v2Again.digest, v2Again.commit, STAGING),
+            inputs: rollbackDispatchInputs(v2AgainDigest, v2.commit, STAGING),
           },
         );
         if (started.status !== 204) {
@@ -810,7 +827,7 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
         expect(
           await envs.runningDigest(STAGING),
           "the image after the hand-made dispatch: v2's, run against today's data",
-        ).toBe(v2Again.digest);
+        ).toBe(v2AgainDigest);
         expect(await table(), "the test's table after the hand-made dispatch").toEqual(before);
         await run.waitForHealth(minutes(2), true, health);
         log(
@@ -823,8 +840,10 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
       "D7. destroy leaves nothing at Hetzner, in Cloudflare or at GitHub",
       minutes(30),
       async () => {
+        const secrets = await envs.expectSecretsPlaced(STAGING);
         await envs.destroy(STAGING);
         await envs.expectNothingLeft(STAGING);
+        await envs.expectSecretsGone(STAGING, secrets);
         await run.expectCloudflareClean();
       },
     );
