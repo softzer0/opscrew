@@ -612,8 +612,15 @@ export class LiveRun {
       this.scrub(`#${this.outputs.size + 1} ${app}opscrew ${args.join(" ")}`),
       output,
     );
-    const record = await readFile(this.paths().files.cloudflareRecord, "utf8").catch(() => "");
-    if (record !== "") this.cloudflareRecords.add(record);
+    // Prod's record, and the one of the environment the command names (`--env <name>`).
+    const named = args[args.indexOf("--env") + 1];
+    const environments =
+      args.includes("--env") && named !== undefined ? [undefined, named] : [undefined];
+    for (const environment of environments) {
+      const file = this.paths(environment).files.cloudflareRecord;
+      const record = await readFile(file, "utf8").catch(() => "");
+      if (record !== "") this.cloudflareRecords.add(record);
+    }
     await this.options.afterCli?.();
     if (result.timedOut === true) {
       throw new Error(
