@@ -856,7 +856,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
 
 ### Several databases and several heads (founder, 2026-11-06)
 
-- [ ] T1942 Down migrations for a Rails app with several databases, in `packages/iac-templates/src/workflow/migrations.ts` (+ tests, the Docker test)
+- [x] T1942 Down migrations for a Rails app with several databases, in `packages/iac-templates/src/workflow/migrations.ts` (+ tests, the Docker test)
   - Owns: `packages/iac-templates/src/workflow/migrations.ts`, `migrations.test.ts`, `migrations.docker.test.ts` and its fixtures
   - Reads: research R9 ("Several databases or heads", the real outputs), plan.md 12.4
   - Why:

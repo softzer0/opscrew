@@ -623,8 +623,9 @@ Not offered in this release:
 - **Several Rails databases, supported since T1942** (founder, 2026-11-06): `db:version` prints
   each database's own name (`shop_production_queue`) while `db:migrate:<name>` takes the
   `config/database.yml` entry's (`queue`). So the detected status is
-  `bin/rails runner "ActiveRecord::Tasks::DatabaseTasks.with_temporary_pool_for_each(env: Rails.env) { |p| puts 'database: ' + p.db_config.name, 'Current version: ' + p.migration_context.current_version.to_s }"`
-  (`with_temporary_pool` is private in Rails 8.1.0). Several databases record
+  `bin/rails runner "ActiveRecord::Base.configurations.configs_for(env_name: Rails.env).each { |c| ActiveRecord::Base.establish_connection(c); puts 'database: ' + c.name, 'Current version: ' + ActiveRecord::Base.connection_pool.with_connection { |x| x.schema_version }.to_s }"`,
+  public API since Rails 6.1 (the internal pool helpers exist only from 7.2), checked on Rails 7.1.6
+  and 8.1.0. Several databases record
   `database=<entry> <v>` lines and go down with `db:migrate:<entry> VERSION=<v>`, checked on Rails
   8.1.0 with PostgreSQL entries `primary` and `queue`.
 
