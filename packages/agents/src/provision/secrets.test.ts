@@ -35,10 +35,12 @@ import { runProvision } from "./run";
 import {
   buildAppEnvironment,
   deploySecretNames,
+  deploySecrets,
   keepMonitoringValues,
   monitoringPassword,
   monitoringValues,
   serviceEnvSecrets,
+  setDeploySecrets,
 } from "./secrets";
 import type { ProvisionServices } from "./types";
 
@@ -929,5 +931,43 @@ describe("deploySecretNames on the server-less targets", () => {
     // GitHub Pages publishes with the workflow's own token: only the app's values are secrets.
     expect(deploySecretNames(pagesTestPlan({ env: ["API_KEY"] }))).toEqual(["OPSCREW_ENV_API_KEY"]);
     expect(deploySecretNames(pagesTestPlan())).toEqual([]);
+  });
+});
+
+describe("the deploy secrets OpsCrew stored before", () => {
+  it("deletes those the deploy no longer reads, named in the same approval: origin TLS turned off", async () => {
+    const handler = new ScriptedApprovalHandler();
+    const deps = await createTestPhaseDeps({ approvalHandler: handler });
+    const plan = testPlan({ userSecret: false });
+    const github = new FakeGitHub();
+    const setup = { api: github, owner: "acme", repo: "shop", defaultBranch: "main" };
+    const environment = await buildAppEnvironment(deps, plan, {});
+    const reach = {
+      plan,
+      host: "203.0.113.10",
+      privateKey: "key",
+      knownHosts: "hosts",
+      environment,
+    };
+    await setDeploySecrets(
+      deps,
+      setup,
+      plan,
+      deploySecrets({ ...reach, originTls: "origin pem" }),
+      environment.names,
+    );
+    expect(github.secrets.has(DEPLOY_SECRETS.originTls)).toBe(true);
+
+    handler.requests.length = 0;
+    await setDeploySecrets(deps, setup, plan, deploySecrets(reach), environment.names);
+    expect(github.secrets.has(DEPLOY_SECRETS.originTls)).toBe(false);
+    expect(github.secrets.has(DEPLOY_SECRETS.host)).toBe(true);
+    expect(handler.requests.find((r) => r.kind === "github-secrets")?.details).toContain(
+      `Deleted, since the deploy no longer reads them (names only):
+  ${DEPLOY_SECRETS.originTls}`,
+    );
+    expect(deps.audit.entries.map((e) => e.action)).toContain(
+      `delete secret ${DEPLOY_SECRETS.originTls}`,
+    );
   });
 });

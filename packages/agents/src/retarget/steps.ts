@@ -505,7 +505,7 @@ export type DeployFilesProposal =
 
 /**
  * Proposes `plan`'s rendered deploy files that GitHub's branch does not hold in one pull request
- * (newer action pins there, Dependabot's, are kept): `merged` when it holds them all. `waiting`
+ * (newer image and action pins there, Dependabot's, are kept): `merged` when it holds them all. `waiting`
  * when an earlier run's pull request is in the way (this clone is on its branch). `login` is the
  * slot of the user's own server whose SSH port the workflow uses.
  */
@@ -519,12 +519,9 @@ export async function proposeDeployFiles(
   const differing: RenderedFile[] = [];
   for (const file of deployFiles(await renderFiles(session, undefined, plan, login))) {
     const committed = await fileOnGitHub(session, branch, file.path);
-    const fresh =
-      committed !== undefined && file.kind === "workflow"
-        ? keepNewerPins(committed, file.content)
-        : file.content;
+    const fresh = committed === undefined ? file.content : keepNewerPins(committed, file.content);
     if (committed === undefined || normalised(fresh) !== normalised(committed)) {
-      differing.push(file);
+      differing.push({ ...file, content: fresh });
     }
   }
   if (differing.length === 0) return { kind: "merged" };

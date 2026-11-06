@@ -956,9 +956,10 @@ export async function readSecretsRecord(
 
 /**
  * What to delete of the secrets OpsCrew stored last time (`previous`, the record for this
- * repository), each where it is. `stale`: the env file secrets of this environment's services that
- * no longer run, and the address and known hosts of its extra servers that are gone (`names` no
- * longer holds them; only names of those forms, never another secret).
+ * repository), each where it is. `stale`: every deploy secret the record names that `names` no
+ * longer holds (the env file secrets of services that no longer run, the addresses of extra
+ * servers that are gone, origin TLS turned off, or the other kind of side's after a move between a
+ * server and Portainer); only names OpsCrew recorded, never the scheduled check's.
  * `moved`: on a move between a GitHub environment and repository secrets (`environment` is where
  * they go now), the old copies: into a GitHub environment, the repository secrets of the same
  * names (GitHub would read them instead of a missing environment secret, also without a record of
@@ -973,27 +974,24 @@ function secretsToDelete(
   const was = previous?.environment;
   const at = (name: string, where: string | undefined): SecretPlace =>
     where === undefined ? { name } : { name, environment: where };
-  // `OPSCREW_SERVICE_<NAME>_ENV` (`serviceEnvSecret`), `OPSCREW_<ENV>_SERVICE_<NAME>_ENV` outside prod.
-  const service = new RegExp(`^${deploySecretName(plan, "OPSCREW_SERVICE_")}[A-Z0-9_]+_ENV$`);
-  // `OPSCREW_SERVER_<NAME>_HOST` and `_KNOWN_HOSTS` (`serverDeploySecrets`).
-  const server = new RegExp(
-    `^${deploySecretName(plan, "OPSCREW_SERVER_")}[A-Z0-9_]+_(?:HOST|KNOWN_HOSTS)$`,
-  );
+  // The build values stay repository secrets beside a GitHub environment.
+  const build = BUILD_VALUES.map((name) => deploySecretName(plan, name));
   const stale = (previous?.names ?? [])
-    .filter((name) => (service.test(name) || server.test(name)) && !names.includes(name))
+    .filter((name) => !names.includes(name))
     .sort()
-    .map((name) => at(name, was));
+    .map((name) => at(name, build.includes(name) ? undefined : was));
   if (environment === was) return { stale, moved: [] };
   if (environment !== undefined) {
+    // A stale one (read, but no longer stored) is deleted once.
     const moved = deploySecretNamesFor(plan)
       .filter((name) => !BUILD_VALUES.includes(name))
       .map((name) => deploySecretName(plan, name))
+      .filter((name) => !stale.some((place) => place.name === name))
       .sort()
       .map((name) => at(name, undefined));
     return { stale, moved };
   }
   // Out of a GitHub environment: everything the record lists there goes, the stale ones too.
-  const build = BUILD_VALUES.map((name) => deploySecretName(plan, name));
   const moved = (previous?.names ?? [])
     .filter((name) => !build.includes(name))
     .sort()
@@ -1011,7 +1009,7 @@ const SEALED = "(names only; values are encrypted on this computer before upload
  * there (`deploySecretName`: `OPSCREW_<ENV>_…` outside prod). With `environment.secrets:
  * environment` they go into the environment's GitHub environment ({@link secretsEnvironment}),
  * apart from the build values, which stay repository secrets. Also deletes, named in the same
- * approval, the env file secrets of services that no longer run and, on a move between a GitHub
+ * approval, the recorded deploy secrets the deploy no longer reads and, on a move between a GitHub
  * environment and repository secrets, the old copies ({@link secretsToDelete}). Values are sealed
  * locally; only names reach the reporter and audit log.
  */
@@ -1081,12 +1079,7 @@ export async function setDeploySecrets(
       options.about ??
         `The app environment contains: ${variableNames.length > 0 ? variableNames.join(", ") : "no variables"}.`,
       ...(stale.length > 0
-        ? [
-            stale.some((place) => !place.name.endsWith("_ENV"))
-              ? "Deleted, since their services no longer run or their servers are gone (names only):"
-              : "Deleted, since their services no longer run (names only):",
-            ...list(stale),
-          ]
+        ? ["Deleted, since the deploy no longer reads them (names only):", ...list(stale)]
         : []),
       ...(moved.length > 0
         ? [

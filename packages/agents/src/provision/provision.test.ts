@@ -344,7 +344,7 @@ describe.skipIf(!findExecutable("git"))("runProvision", () => {
     expect(github.secrets.get("OPSCREW_SERVICE_NOTES")).toBe("the user's own");
     expect(github.secrets.has("OPSCREW_SERVICE_ORDERS_DB_ENV")).toBe(true);
     expect(handler.requests.find((r) => r.kind === "github-secrets")?.details).toContain(
-      "Deleted, since their services no longer run (names only):\n  OPSCREW_SERVICE_RABBITMQ_ENV",
+      "Deleted, since the deploy no longer reads them (names only):\n  OPSCREW_SERVICE_RABBITMQ_ENV",
     );
     expect(deps.audit.entries.map((e) => e.action)).toContain(
       "delete secret OPSCREW_SERVICE_RABBITMQ_ENV",

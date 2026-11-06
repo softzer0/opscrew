@@ -1004,7 +1004,7 @@ describe.skipIf(!findExecutable("git"))("runProvision with extra servers", () =>
     // Gone from the state, it is forgotten on this computer too, and so are its deploy secrets.
     expect((await readServerAddresses(s.deps.paths)).servers).toBeUndefined();
     expect(s.handler.requests.find((r) => r.kind === "github-secrets")?.details).toContain(
-      "Deleted, since their services no longer run or their servers are gone (names only):\n  OPSCREW_SERVER_DATA_HOST\n  OPSCREW_SERVER_DATA_KNOWN_HOSTS",
+      "Deleted, since the deploy no longer reads them (names only):\n  OPSCREW_SERVER_DATA_HOST\n  OPSCREW_SERVER_DATA_KNOWN_HOSTS",
     );
     expect(s.github.secrets.has("OPSCREW_SERVER_DATA_HOST")).toBe(false);
   });

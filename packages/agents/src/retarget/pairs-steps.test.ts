@@ -1,7 +1,11 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { findExecutable } from "@opscrew/core";
-import { PORTAINER_IMAGE_PLACEHOLDER } from "@opscrew/iac-templates";
+import {
+  DEPLOY_SECRETS,
+  PORTAINER_DEPLOY_SECRETS,
+  PORTAINER_IMAGE_PLACEHOLDER,
+} from "@opscrew/iac-templates";
 import { readArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { readServerAddresses, writeRenderedFiles } from "../shared";
@@ -118,6 +122,33 @@ describe.skipIf(!findExecutable("git"))(
       expect(h.github.runs).toHaveLength(1);
     });
 
+    it("keeps a newer image pin GitHub's branch holds (Dependabot's) in the proposed Compose file", async () => {
+      const h = await pairHarness("portainer", "hetzner", { step: "created" });
+      const portainerPlan = { ...h.session.plan, target: oldSideTarget(moveOf(h.session)) };
+      const template = (await renderFiles(h.session, undefined, portainerPlan, "fromOwn")).find(
+        (file) => file.path === COMPOSE,
+      );
+      const server = (await renderFiles(h.session)).find((file) => file.path === COMPOSE);
+      // An image both files pin, with another digest on GitHub's branch.
+      const pins = (text = ""): string[] =>
+        text.match(/[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}/g) ?? [];
+      const shared = pins(server?.content).find((pin) => pins(template?.content).includes(pin));
+      expect(shared).toBeDefined();
+      const bumped = `${shared?.split("@")[0]}@sha256:${"0".repeat(64)}`;
+      await mkdir(dirname(join(h.root, COMPOSE)), { recursive: true });
+      await writeFile(join(h.root, COMPOSE), template?.content.replace(shared ?? "", bumped) ?? "");
+      await h.git(h.root, "add", COMPOSE);
+      await h.git(h.root, "commit", "-m", "Dependabot's newer pin");
+      await h.git(h.root, "push", h.bare, "HEAD:refs/heads/main");
+
+      expect(await proposeDeployFiles(h.session, h.session.plan)).toMatchObject({
+        kind: "proposed",
+      });
+      const compose = await h.git(h.root, "show", `HEAD:${COMPOSE}`);
+      expect(compose).toContain(bumped);
+      expect(compose).not.toContain(PORTAINER_IMAGE_PLACEHOLDER);
+    });
+
     it("from a server to Portainer: Portainer's stack template goes into the pull request with its workflow", async () => {
       const h = await pairHarness("own", "portainer", { step: "created" });
       expect(await deployFilesChanged(h.session)).toBe(true);
@@ -165,6 +196,75 @@ describe.skipIf(!findExecutable("git"))(
     });
   },
 );
+
+describe.skipIf(!findExecutable("git"))("the deploy secrets of the other kind of side", () => {
+  /** What only a side over SSH stores: the deploy key, its address and host key, the app's values. */
+  const SERVER_ONLY = [
+    DEPLOY_SECRETS.appEnv,
+    DEPLOY_SECRETS.host,
+    DEPLOY_SECRETS.originTls,
+    DEPLOY_SECRETS.knownHosts,
+    DEPLOY_SECRETS.sshKey,
+  ];
+
+  it("an abort back to Portainer deletes the secrets the new server's side stored", async () => {
+    const h = await pairHarness("portainer", "hetzner", { step: "deployed" });
+    // The app's domain has origin TLS: its certificate is among the server's secrets.
+    h.session.site = {
+      edge: { originTls: { hostnames: [DOMAIN] } },
+      values: { ORIGIN_TLS_CERT: "origin certificate", ORIGIN_TLS_KEY: "origin key" },
+    };
+    await storeDeploySecrets(h.session, "new");
+    for (const name of SERVER_ONLY) expect(h.github.secrets.has(name)).toBe(true);
+
+    const result = await abortRetarget(h.deps, { services: h.services, confirm: async () => true });
+    expect(result).toMatchObject({ step: "aborted", done: true });
+    for (const name of SERVER_ONLY) expect(h.github.secrets.has(name)).toBe(false);
+    expect(h.github.secrets.has(DEPLOY_SECRETS.buildEnv)).toBe(true);
+    const approval = h.handler.requests.filter((r) => r.kind === "github-secrets").at(-1);
+    expect(approval?.details).toContain("Deleted, since the deploy no longer reads them");
+  });
+
+  it("a move from Portainer to a server deletes the secrets only Portainer's deploy read", async () => {
+    const h = await pairHarness("portainer", "hetzner", { step: "created" });
+    // Portainer's redeploy through Cloudflare stored its webhook's secrets from this computer.
+    const portainerOnly = Object.values(PORTAINER_DEPLOY_SECRETS);
+    const stored = [DEPLOY_SECRETS.buildEnv, DEPLOY_SECRETS.buildSecrets, ...portainerOnly];
+    for (const name of stored) h.github.secrets.set(name, "stored");
+    const repo = `${h.session.github.owner}/${h.session.github.repo}`;
+    await writeFile(
+      h.paths.files.deploySecrets,
+      `${JSON.stringify({ host: "portainer", repo, names: stored })}
+`,
+    );
+
+    await storeDeploySecrets(h.session, "new");
+    for (const name of portainerOnly) expect(h.github.secrets.has(name)).toBe(false);
+    expect(h.github.secrets.get(DEPLOY_SECRETS.host)).toBe(NEW_IPV4);
+    expect(h.github.secrets.has(DEPLOY_SECRETS.buildEnv)).toBe(true);
+  });
+
+  it("a move from a server to Portainer deletes the server's secrets once they point to Portainer, so a finished move leaves none", async () => {
+    const h = await pairHarness("own", "portainer", { step: "created" });
+    await storeDeploySecrets(h.session, "old");
+    expect(h.github.secrets.has(DEPLOY_SECRETS.host)).toBe(true);
+    await storeDeploySecrets(h.session, "new");
+    for (const name of SERVER_ONLY) expect(h.github.secrets.has(name)).toBe(false);
+    expect(h.github.secrets.has(DEPLOY_SECRETS.buildEnv)).toBe(true);
+  });
+
+  it("a move between two servers deletes nothing the new one still needs", async () => {
+    const h = await pairHarness("own", "hetzner", { step: "created" });
+    await storeDeploySecrets(h.session, "old");
+    const before = [...h.github.secrets.keys()].sort();
+    h.handler.requests.length = 0;
+    await storeDeploySecrets(h.session, "new");
+    expect([...h.github.secrets.keys()].sort()).toEqual(before);
+    expect(h.github.secrets.get(DEPLOY_SECRETS.host)).toBe(NEW_IPV4);
+    const approval = h.handler.requests.find((r) => r.kind === "github-secrets");
+    expect(approval?.details).not.toContain("Deleted");
+  });
+});
 
 describe.skipIf(!findExecutable("git"))("the DNS switch's layouts, for every pair", () => {
   it.each([
