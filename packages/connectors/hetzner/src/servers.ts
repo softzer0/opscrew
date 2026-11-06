@@ -1,4 +1,9 @@
-import type { AppServer, ServerSnapshotApi, SnapshotRequest } from "@opscrew/contracts";
+import type {
+  AppServer,
+  ServerSnapshot,
+  ServerSnapshotApi,
+  SnapshotRequest,
+} from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { HetznerClient } from "./client";
 
@@ -36,6 +41,15 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
         timeoutMs: request.timeoutMs ?? SNAPSHOT_TIMEOUT_MS,
       });
       return { snapshotId: String(imageId) };
+    },
+    async listSnapshots(): Promise<ServerSnapshot[]> {
+      throw new Error("listSnapshots is not implemented yet");
+    },
+    async deleteSnapshot(): Promise<void> {
+      throw new Error("deleteSnapshot is not implemented yet");
+    },
+    async rebuild(): Promise<void> {
+      throw new Error("rebuild is not implemented yet");
     },
   };
 }

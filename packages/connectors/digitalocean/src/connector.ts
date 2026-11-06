@@ -4,6 +4,7 @@ import type {
   CredentialCheck,
   CredentialRequirement,
   FetchLike,
+  ServerSnapshot,
   ServerSnapshotApi,
   SnapshotRequest,
   VpsConnector,
@@ -222,6 +223,15 @@ function serverApi(
         );
       }
       return { snapshotId: snapshot.id };
+    },
+    async listSnapshots(): Promise<ServerSnapshot[]> {
+      throw new Error("listSnapshots is not implemented yet");
+    },
+    async deleteSnapshot(): Promise<void> {
+      throw new Error("deleteSnapshot is not implemented yet");
+    },
+    async rebuild(): Promise<void> {
+      throw new Error("rebuild is not implemented yet");
     },
   };
 }

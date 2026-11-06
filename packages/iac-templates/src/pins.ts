@@ -316,6 +316,17 @@ export const TOOLS = {
       arm64: "a1c0af9872e8de89a1ce5c1b596e26c42917d5a2cf914d98faee2e28156899e2",
     },
   },
+  /**
+   * age, which encrypts each snapshot before it leaves the server (the release tarballs
+   * `age-v<version>-linux-amd64.tar.gz` and `-arm64`, with `age/age` inside).
+   */
+  age: {
+    version: "1.3.2",
+    sha256: {
+      amd64: "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10",
+      arm64: "6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4",
+    },
+  },
   /** The cosign release `sigstore/cosign-installer` installs; the installer verifies it. */
   cosign: {
     version: "v3.1.3",
@@ -424,6 +435,14 @@ export const TOOL_RELEASES: Record<
     tag: (v) => `v${v}`,
     asset: { amd64: () => "supercronic-linux-amd64", arm64: () => "supercronic-linux-arm64" },
     sha1InReleaseNotes: true,
+  },
+  age: {
+    repo: "FiloSottile/age",
+    tag: (v) => `v${v}`,
+    asset: {
+      amd64: (v) => `age-v${v}-linux-amd64.tar.gz`,
+      arm64: (v) => `age-v${v}-linux-arm64.tar.gz`,
+    },
   },
 };
 

@@ -8,6 +8,7 @@ import {
   type PlanService,
   PlanServiceSchema,
   ProcessesSchema,
+  REDIS_PROTOCOL_KINDS,
   ServerNameSchema,
   StorageSchema,
   serviceOf,
@@ -1554,6 +1555,11 @@ export const DeploySettingsSchema = z.strictObject({
   snapshots: z.boolean().optional(),
   /** How many versions' snapshots stay on the server. Absent: 3 (read it with `keepSnapshotsOf`). */
   keepSnapshots: z.int().min(1).max(10).optional(),
+  /**
+   * Services of the stop-only kinds (every kind but {@link ONLINE_SNAPSHOT_KINDS}) the pre-release
+   * snapshot also copies, each stopped while it is copied. Absent: none.
+   */
+  snapshotStop: z.array(ComponentNameSchema).optional(),
 });
 
 /** How many versions' snapshots stay on the server: `deploy.keepSnapshots`, or 3. */
@@ -1563,6 +1569,68 @@ export function keepSnapshotsOf(plan: { deploy: { keepSnapshots?: number | undef
 
 /** The database kinds a snapshot dumps and a rollback restores. */
 export const DATABASE_KINDS = ["postgres", "mysql", "mariadb", "mongodb"] as const;
+
+/**
+ * The kinds a snapshot copies while they run. Every other kind is stop-only: a snapshot includes
+ * it only when named in `deploy.snapshotStop` or `snapshots.schedule.stop`, and stops it meanwhile.
+ */
+export const ONLINE_SNAPSHOT_KINDS = [...DATABASE_KINDS, ...REDIS_PROTOCOL_KINDS] as const;
+
+/**
+ * `plan.snapshots`: snapshots on a schedule and an encrypted copy of each off the server. Absent
+ * fields take their defaults through `snapshotScheduleOf` and `snapshotOffsiteOf`, so a plan file
+ * keeps its shape.
+ */
+export const SnapshotsSchema = z.strictObject({
+  schedule: z
+    .strictObject({
+      /** `daily`, `weekly` or every `<n>h` (1 to 168 hours). Absent: weekly. */
+      every: z
+        .union([
+          z.enum(["daily", "weekly"]),
+          z.string().regex(/^(?:[1-9]|[1-9][0-9]|1[0-5][0-9]|16[0-8])h$/, {
+            message: 'must be "daily", "weekly" or a number of hours from 1 to 168, such as "12h"',
+          }),
+        ])
+        .optional(),
+      /** How many scheduled snapshots stay. Absent: 4. */
+      keep: z.int().min(1).max(30).optional(),
+      /** Services of the stop-only kinds the scheduled snapshot also copies. Absent: none. */
+      stop: z.array(ComponentNameSchema).optional(),
+    })
+    .optional(),
+  offsite: z
+    .strictObject({
+      provider: z.enum(["r2", "hetzner", "digitalocean"]),
+      bucket: StorageSchema.shape.objectStorage.unwrap().shape.bucket,
+      /** Days a copy is kept. Absent: 90. */
+      days: z.int().min(1).max(3650).optional(),
+    })
+    .optional(),
+});
+export type Snapshots = z.output<typeof SnapshotsSchema>;
+
+/** `snapshots.schedule` with its defaults (weekly, keep 4, stop none), or undefined when off. */
+export function snapshotScheduleOf(plan: {
+  snapshots?: Snapshots | undefined;
+}): { every: string; keep: number; stop: string[] } | undefined {
+  const schedule = plan.snapshots?.schedule;
+  if (schedule === undefined) return undefined;
+  return {
+    every: schedule.every ?? "weekly",
+    keep: schedule.keep ?? 4,
+    stop: schedule.stop ?? [],
+  };
+}
+
+/** `snapshots.offsite` with its default (90 days), or undefined when off. */
+export function snapshotOffsiteOf(plan: {
+  snapshots?: Snapshots | undefined;
+}): { provider: "r2" | "hetzner" | "digitalocean"; bucket: string; days: number } | undefined {
+  const offsite = plan.snapshots?.offsite;
+  if (offsite === undefined) return undefined;
+  return { ...offsite, days: offsite.days ?? 90 };
+}
 
 type DatabaseService = PlanService & { kind: (typeof DATABASE_KINDS)[number] };
 
@@ -1725,6 +1793,8 @@ const DeployPlanFieldsSchema = z.strictObject({
   servers: z.array(ExtraServerSchema).optional(),
   /** How a new version replaces the running one. */
   deploy: DeploySettingsSchema.prefault({}),
+  /** Scheduled snapshots and their off-server copy; absent: neither. */
+  snapshots: SnapshotsSchema.optional(),
   /** Workers and cron jobs, from the app's image. */
   processes: ProcessesSchema,
   /** The backing services OpsCrew runs next to the app (read them with `serviceOf`). */
@@ -1939,6 +2009,7 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   checkComponents(plan, ctx);
   checkPlacement(plan, ctx);
   checkDatabaseRollback(plan, ctx);
+  checkSnapshots(plan, ctx);
 });
 
 /**
@@ -1970,6 +2041,60 @@ function checkDatabaseRollback(plan: DeployPlanFields, ctx: z.RefinementCtx): vo
       message:
         "needs app.releaseCommand: the down commands undo what the release command migrates; add the release command, or remove app.migrations",
     });
+  }
+}
+
+/**
+ * The services a snapshot stops are the plan's, of the stop-only kinds. Scheduled snapshots run
+ * on a server or a Portainer, not on this computer; neither they nor the off-server copy exist on
+ * a site target or in a preview environment.
+ */
+function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  const checkStop = (names: readonly string[] | undefined, path: string[]) => {
+    for (const [index, name] of (names ?? []).entries()) {
+      const service = plan.services.find((candidate) => candidate.name === name);
+      const field = path.join(".");
+      if (service === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...path, index],
+          message: `names no service of the plan ("${name}"); use a name from services, or remove it from ${field}`,
+        });
+      } else if (ONLINE_SNAPSHOT_KINDS.some((kind) => kind === service.kind)) {
+        ctx.addIssue({
+          code: "custom",
+          path: [...path, index],
+          message: `can't name "${name}": a snapshot copies ${service.kind} while it runs, so it is never stopped; remove it from ${field}`,
+        });
+      }
+    }
+  };
+  checkStop(plan.deploy.snapshotStop, ["deploy", "snapshotStop"]);
+  const { snapshots } = plan;
+  if (snapshots === undefined) return;
+  checkStop(snapshots.schedule?.stop, ["snapshots", "schedule", "stop"]);
+  const where =
+    plan.environment?.previews !== undefined
+      ? "a preview environment, whose previews come and go"
+      : isServerlessTarget(plan.target)
+        ? "a site target, which keeps no data"
+        : undefined;
+  for (const field of ["schedule", "offsite"] as const) {
+    if (snapshots[field] === undefined) continue;
+    if (where !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["snapshots", field],
+        message: `is refused on ${where}; remove snapshots.${field}`,
+      });
+    } else if (field === "schedule" && plan.target.provider === "localhost") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["snapshots", field],
+        message:
+          "is refused with the localhost target: this computer isn't always on to take them; take one when you need it with opscrew snapshot, and remove snapshots.schedule",
+      });
+    }
   }
 }
 

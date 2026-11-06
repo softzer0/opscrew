@@ -9,6 +9,7 @@ import type {
   IacRunOptions,
   PlanSummary,
   ResourceChange,
+  ServerSnapshot,
   ServerSnapshotApi,
   SnapshotRequest,
 } from "@opscrew/contracts";
@@ -313,6 +314,18 @@ export class FakeServers implements ServerSnapshotApi {
     if (this.waitError) throw this.waitError;
     this.events.push("snapshot:ready");
     return { snapshotId: this.snapshotId };
+  }
+
+  async listSnapshots(): Promise<ServerSnapshot[]> {
+    throw new Error("listSnapshots is not implemented yet");
+  }
+
+  async deleteSnapshot(): Promise<void> {
+    throw new Error("deleteSnapshot is not implemented yet");
+  }
+
+  async rebuild(): Promise<void> {
+    throw new Error("rebuild is not implemented yet");
   }
 }
 

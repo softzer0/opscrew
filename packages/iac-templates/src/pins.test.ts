@@ -168,8 +168,9 @@ describe("pins.ts", () => {
     );
   });
 
-  it("pins pack, Railpack and supercronic by version and a SHA-256 per architecture, cosign by version", async () => {
+  it("pins pack, Railpack, supercronic and age by version and a SHA-256 per architecture, cosign by version", async () => {
     expect(TOOLS.pack.version).toBe("0.40.9");
+    expect(TOOLS.age.version).toBe("1.3.2");
     expect(TOOLS.railpack.version).toBe("0.42.0");
     expect(TOOLS.supercronic.version).toBe("0.2.50");
     expect(TOOLS.cosign).not.toHaveProperty("sha256");
@@ -452,6 +453,7 @@ describe("the pin script's helpers", () => {
     );
     expect(TOOL_RELEASES.pack.asset.arm64("0.40.9")).toBe("pack-v0.40.9-linux-arm64.tgz");
     expect(Object.keys(TOOL_RELEASES).sort()).toEqual([
+      "age",
       "cloudflared",
       "pack",
       "railpack",
@@ -464,6 +466,12 @@ describe("the pin script's helpers", () => {
     expect(TOOL_RELEASES.pack.sha1InReleaseNotes).toBeUndefined();
     expect(toolDownloadUrl("railpack", "arm64")).toBe(
       `https://github.com/railwayapp/railpack/releases/download/v${TOOLS.railpack.version}/railpack-v${TOOLS.railpack.version}-arm64-unknown-linux-musl.tar.gz`,
+    );
+    expect(toolDownloadUrl("age", "amd64")).toBe(
+      "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz",
+    );
+    expect(toolDownloadUrl("age", "arm64")).toBe(
+      "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-arm64.tar.gz",
     );
     expect(toolDownloadUrl("cloudflared", "amd64")).toBe(
       `https://github.com/cloudflare/cloudflared/releases/download/${TOOLS.cloudflared.version}/cloudflared-linux-amd64`,

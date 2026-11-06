@@ -106,12 +106,39 @@ export interface SnapshotRequest {
   timeoutMs?: number;
 }
 
-/** Server lookup and snapshots, used before a teardown. The snapshot only adds a resource. */
+/** A whole-server snapshot, as the provider reports it. */
+export interface ServerSnapshot {
+  /** Provider image or snapshot id as a string. */
+  id: string;
+  /** The snapshot's name (DigitalOcean) or description (Hetzner). */
+  name: string;
+  /** ISO 8601 time the provider created it. */
+  createdAt: string;
+  /** Size in GB as the provider bills it; absent while the provider doesn't know it yet. */
+  sizeGb?: number;
+  /** The snapshot's labels where the provider has them (Hetzner); empty otherwise. */
+  labels: Record<string, string>;
+}
+
+/**
+ * Server lookup, snapshots and rebuilds: a snapshot before a teardown, and whole-server snapshots
+ * taken, listed, deleted and restored by command. Taking one only adds a resource.
+ */
 export interface ServerSnapshotApi {
   /** Servers labelled or tagged as created by OpsCrew for `app`. */
   findAppServers(app: string): Promise<AppServer[]>;
   /** Snapshots the server and resolves when the provider reports it complete. */
   snapshotServer(serverId: string, request: SnapshotRequest): Promise<{ snapshotId: string }>;
+  /** The server's snapshots OpsCrew took, oldest first. */
+  listSnapshots(serverId: string): Promise<ServerSnapshot[]>;
+  /** Deletes a snapshot and resolves when the provider reports it gone. Destroy-grade. */
+  deleteSnapshot(snapshotId: string): Promise<void>;
+  /**
+   * Rebuilds the server in place from the snapshot, keeping its id and addresses, and resolves
+   * when the provider reports it done. Destroy-grade: the server's disk is replaced. Any password
+   * the provider answers with is dropped, never returned or logged.
+   */
+  rebuild(serverId: string, snapshotId: string): Promise<void>;
 }
 
 /** A VPS provider connector: credentials, price catalogue and server API. */

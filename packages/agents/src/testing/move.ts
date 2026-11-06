@@ -1159,6 +1159,15 @@ export async function moveFakes(
       events.push({ type: "snapshot", serverId });
       return { snapshotId: `snap-${serverId}` };
     },
+    listSnapshots: async () => {
+      throw new Error("listSnapshots is not implemented yet");
+    },
+    deleteSnapshot: async () => {
+      throw new Error("deleteSnapshot is not implemented yet");
+    },
+    rebuild: async () => {
+      throw new Error("rebuild is not implemented yet");
+    },
   });
   let monotonic = 0;
   const ok = { configured: true, verify: async () => ({ ok: true, message: "ok" }) };
