@@ -294,7 +294,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
 
-- [ ] T2321 [US1] Found live (T2317 own run 2): the AAAA record when one side has no IPv6 address
+- [x] T2321 [US1] Found live (T2317 own run 2): the AAAA record when one side has no IPv6 address
   - Owns: `packages/iac-templates/src/infra/{layouts,cloudflare,index,own,portainer}.ts` (+ tests), `packages/agents/src/retarget/{switch,abort,layouts}.ts` (+ tests)
   - Depends: T2318
   - Why: a move from Hetzner (IPv4 and IPv6) to a server of the user's recorded with IPv4 only. The `both`
