@@ -4,6 +4,65 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.4] - 2026-11-06
+
+Every server deploy workflow changes. Run `npx opscrew provision` for each environment and merge
+its pull request, and approve a preview environment's recipe again with
+`npx opscrew provision --env preview`. Your plans keep working as they are.
+
+### Added
+
+- **Move your app anywhere: `opscrew retarget`** now moves a live app with its data between any
+  two of Hetzner Cloud, DigitalOcean, a server you already have and a Portainer you already run,
+  in any direction, and a site between Cloudflare's hosting and GitHub Pages.
+  - Every service's data moves in a maintenance window: PostgreSQL through its dump, the others
+    (MySQL, MariaDB, MongoDB, Valkey, Redis, Dragonfly, the brokers, the search engines, Garage,
+    your app's own files, self-hosted monitoring) by copying their stopped volumes, checked by
+    SHA-256 on both sides. `--empty <service>` starts one empty instead.
+  - A bucket at Hetzner Object Storage or DigitalOcean Spaces moves with the app, its size, copy
+    time and cost shown first; `--keep-bucket` keeps it where it is.
+  - Apps on several servers and self-hosted monitoring move too, and a move to an Arm server
+    builds the image for it.
+  - Your own server and your Portainer are never removed: `--finish` removes only the app.
+  - A copy that fails puts the old side back with its data unchanged.
+
+  See [Moving your app somewhere else](docs/guide/retarget.md).
+- **A rollback can undo the database too.** `opscrew rollback` asks how to treat it:
+  - **restore the snapshot** OpsCrew took before the release you undo: on by default for every
+    environment except prod, for PostgreSQL, MySQL, MariaDB and MongoDB on the app's server, the
+    last 3 kept (`deploy.snapshots`, `deploy.keepSnapshots` in the plan);
+  - **migrate it down** with your app's own tool: Rails (with several databases too), Django,
+    Alembic, Flask-Migrate, Knex, Sequelize, TypeORM or Laravel;
+  - **or keep it** as it is.
+
+  `--database snapshot|migrations|keep` chooses in a script. A choice that changes data is
+  approved like a destroy, with the environment's name typed (`--confirm`). The server changes
+  data only with a one-time approval OpsCrew leaves there, so a hand-made "Run workflow" can't,
+  and a restore that fails puts the database back. See [The database](docs/guide/rollback.md#the-database).
+- **Previews on your dev or staging server, or below your app's domain**, each opt-in:
+  `opscrew env add preview --previews --share-server dev` runs them on that environment's server
+  instead of one of their own, and `--app-zone` lets their domain sit below your app's (with
+  Cloudflare's Advanced Certificate Manager). See
+  [Fewer servers or one domain](docs/guide/previews.md#fewer-servers-or-one-domain).
+- **The Claude Code plugin** knows the moves and the rollback's database choice.
+
+### Changed
+
+- A deploy run you cancel during its start step goes back to the version that ran before, as a
+  failed one does.
+- When OpsCrew stores deploy secrets, it also deletes the ones it stored earlier that the deploy
+  no longer reads (for example `OPSCREW_ORIGIN_TLS` once origin TLS is off), named in the same
+  approval. Your app's own variables are never deleted.
+- Alembic and Flask-Migrate projects whose migrations have several heads deploy with
+  `alembic upgrade heads` (`flask db upgrade heads`), and analyze says why.
+
+### Fixed
+
+- Valkey and Redis 8 couldn't start again in the same container on Ubuntu servers, for example
+  after a reboot: each start now removes the previous start's password file first.
+- Following a deploy run no longer fails when GitHub answers "Not Found" for a moment right after
+  the run starts.
+
 ## [0.2.3] - 2026-11-05
 
 Nothing to redo for an app without previews: your plans keep working as they are.
@@ -368,6 +427,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.4]: https://github.com/softzer0/opscrew/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/softzer0/opscrew/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/softzer0/opscrew/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/softzer0/opscrew/compare/v0.2.0...v0.2.1
