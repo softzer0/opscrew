@@ -41,8 +41,10 @@ resource "cloudflare_workers_script_subdomain" "this" {
   previews_enabled = var.preview_urls
 }
 
-# One custom domain per hostname. Each creates its own proxied DNS record and certificate.
+# One custom domain per hostname. Each creates its own proxied DNS record and certificate. While a
+# move between site hosts leaves the hostnames with the other host, there are none (custom_domains).
 resource "cloudflare_workers_custom_domain" "domain" {
+  count      = var.custom_domains ? 1 : 0
   account_id = var.account_id
   zone_id    = var.zone_id
   hostname   = var.domain
@@ -52,7 +54,7 @@ resource "cloudflare_workers_custom_domain" "domain" {
 # www is a custom domain too, for its record and certificate. The zone's shared redirect rule
 # sends its requests to the domain.
 resource "cloudflare_workers_custom_domain" "www" {
-  count      = var.www ? 1 : 0
+  count      = var.custom_domains && var.www ? 1 : 0
   account_id = var.account_id
   zone_id    = var.zone_id
   hostname   = "www.${var.domain}"

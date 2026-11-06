@@ -108,6 +108,11 @@ export interface RenderContext {
    */
   layout?: InfraLayout;
   /**
+   * Which hosts the root module contains during a move between Cloudflare's hosting and GitHub
+   * Pages (`opscrew retarget`): see {@link SiteLayout}. Without it the root deploys `plan.target`.
+   */
+  siteLayout?: SiteLayout;
+  /**
    * During a move with a Portainer side whose DNS records are still the user's (`web.records`
    * not true): the Cloudflare ids of those records, which the move's root adopts into
    * `module "dns"` with `import` blocks. `a` is the domain's A record, `aaaa` its AAAA record and
@@ -142,6 +147,17 @@ export interface InfraLayout {
   live: ServerModule;
   /** Every provider whose `required_providers` entry, provider block and module are rendered. */
   providers: readonly CloudProvider[];
+}
+
+/**
+ * The hosts of the root module while a site moves between Cloudflare's hosting and GitHub Pages,
+ * in one root and state: the Worker (`module "worker"`) holding the hostnames as its custom domains
+ * (`bound`) or as a shell without them (`shell`), and GitHub Pages' DNS records (`module "dns"`,
+ * `pages`). At most one of them holds the hostnames.
+ */
+export interface SiteLayout {
+  worker?: "bound" | "shell";
+  pages?: boolean;
 }
 
 /**

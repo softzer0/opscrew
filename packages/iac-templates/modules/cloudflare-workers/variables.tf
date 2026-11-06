@@ -35,3 +35,9 @@ variable "preview_urls" {
   type        = bool
   default     = false
 }
+
+variable "custom_domains" {
+  description = "Give the Worker its custom domains; false while a move between site hosts leaves the hostnames with the other host."
+  type        = bool
+  default     = true
+}

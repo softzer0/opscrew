@@ -1,7 +1,8 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
-import type { RenderContext, RenderedFile } from "../types";
+import { wrongTarget } from "../providers";
+import type { RenderContext, RenderedFile, SiteLayout } from "../types";
 import { planFilePath } from "../workflow/shared";
 import { accountId, WWW_VARIABLE, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
@@ -29,27 +30,40 @@ function githubOwner(ctx: RenderContext): string {
   return ctx.github.owner.toLowerCase();
 }
 
+/** A host of a site's root: its module call, variables, values and vendored module. */
+interface SiteHost {
+  /** The module's name in the root (`worker`, `dns`), which the `url` output follows. */
+  name: string;
+  module: string[];
+  variables: VariableSpec[];
+  tfvars: Record<string, unknown>;
+  /** The vendored module it uses. */
+  source: string;
+}
+
 /**
- * The root module of an app on Cloudflare's hosting: `module "worker"` (`cloudflare-workers`)
- * creates the Worker's shell and one custom domain per hostname (the domain, and `www.` when on),
- * which bring their own DNS records and certificates. The deploy workflow owns the Worker's code,
- * files, secrets and settings; this root never changes them. `target` is the plan's target. Needs
- * `ctx.cloudflare.accountId`.
+ * `module "worker"` (`cloudflare-workers`) for `target`: the Worker's shell and, unless `shell`,
+ * one custom domain per hostname (the domain, and `www.` when on), which bring their own DNS
+ * records and certificates. Needs `ctx.cloudflare.accountId`.
  */
-export function workersRoot(
-  plan: DeployPlan,
+function workerHost(
   target: CloudflareWorkersDeployTarget,
   ctx: RenderContext,
-): RootFiles {
-  const main = [
-    rootHeader(plan),
-    "",
-    ...CLOUDFLARE_PROVIDER_BLOCK,
-    ...moduleBlock({
+  shell: boolean,
+): SiteHost {
+  return {
+    name: "worker",
+    source: "cloudflare-workers",
+    module: moduleBlock({
       comment: [
         "# The app on Cloudflare's hosting: a Worker with the site's files, and a custom domain for each",
         "# hostname. This configuration creates the Worker's shell once; OpsCrew's deploy workflow",
         "# uploads its code, files and secrets with Wrangler, and its settings are in the Wrangler config.",
+        ...(shell
+          ? [
+              "# During the move GitHub Pages holds the hostnames, so the Worker has no custom domains.",
+            ]
+          : []),
       ],
       name: "worker",
       source: "cloudflare-workers",
@@ -61,15 +75,10 @@ export function workersRoot(
         ["www", "var.www"],
         ["workers_dev", "var.workers_dev"],
         ["preview_urls", "var.preview_urls"],
+        ...(shell ? ([["custom_domains", "false"]] as const) : []),
       ],
     }),
-  ];
-  return {
-    versions: versionsTf(plan, [CLOUDFLARE_PROVIDER]),
-    main: main.join("\n"),
-    variables: variablesTf(plan, [
-      ...zoneVariables("domain"),
-      WWW_VARIABLE,
+    variables: [
       {
         name: "cloudflare_account_id",
         type: "string",
@@ -90,17 +99,13 @@ export function workersRoot(
         type: "bool",
         description: "Give each version of the Worker its own preview URL.",
       },
-    ]),
-    outputs: [rootHeader(plan), "", ...output("url", "module.worker.url")].join("\n"),
+    ],
     tfvars: {
-      ...zoneTfvars(plan, ctx, "domain"),
-      www: plan.dns.www,
       cloudflare_account_id: accountId(ctx),
       worker: target.worker,
       workers_dev: target.workersDev,
       preview_urls: target.previewUrls,
     },
-    modules: ["cloudflare-workers"],
   };
 }
 
@@ -123,20 +128,24 @@ function onApex(plan: DeployPlan): boolean {
 }
 
 /**
- * The root module of a site on GitHub Pages: only `module "dns"`, the `cloudflare-dns` module's
- * GitHub Pages mode (`cloudflare-dns/github-pages`), all DNS only. GitHub's domain verification
- * record has a root of its own ({@link renderPagesVerification}), so destroying this one keeps it.
+ * `module "dns"`, the `cloudflare-dns` module's GitHub Pages mode (`cloudflare-dns/github-pages`),
+ * all DNS only. With `afterWorker` its records wait for `module "worker"`'s changes
+ * (`depends_on`), so when the hostnames move to GitHub Pages the custom domains go first.
  */
-export function pagesRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
-  const main = [
-    rootHeader(plan),
-    "",
-    ...CLOUDFLARE_PROVIDER_BLOCK,
-    ...moduleBlock({
+function pagesHost(plan: DeployPlan, ctx: RenderContext, afterWorker: boolean): SiteHost {
+  return {
+    name: "dns",
+    source: "cloudflare-dns/github-pages",
+    module: moduleBlock({
       comment: [
         "# The site on GitHub Pages: its DNS records, all DNS only, since Cloudflare's proxy would stop",
         "# GitHub from issuing and renewing the site's certificate. GitHub's domain verification record",
         `# has a root of its own (${pagesVerificationRootDir(plan)}), so destroying this one keeps it.`,
+        ...(afterWorker
+          ? [
+              "# The records wait for the Worker: when they take the hostnames, its custom domains go first.",
+            ]
+          : []),
       ],
       name: "dns",
       source: "cloudflare-dns/github-pages",
@@ -147,30 +156,130 @@ export function pagesRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
         ["owner", "var.github_owner"],
         ["www", "var.www"],
       ],
+      ...(afterWorker ? { body: ["  depends_on = [module.worker]"] } : {}),
     }),
-  ];
-  return {
-    versions: versionsTf(plan, [CLOUDFLARE_PROVIDER]),
-    main: main.join("\n"),
-    variables: variablesTf(plan, [
-      ...zoneVariables("domain"),
-      WWW_VARIABLE,
+    variables: [
       {
         name: "apex",
         type: "bool",
         description: "The domain is the zone's apex (A and AAAA records) rather than a subdomain.",
       },
       GITHUB_OWNER_VARIABLE,
-    ]),
-    outputs: [rootHeader(plan), "", ...output("url", "module.dns.url")].join("\n"),
-    tfvars: {
-      ...zoneTfvars(plan, ctx, "domain"),
-      www: plan.dns.www,
-      apex: onApex(plan),
-      github_owner: githubOwner(ctx),
-    },
-    modules: ["cloudflare-dns/github-pages"],
+    ],
+    tfvars: { apex: onApex(plan), github_owner: githubOwner(ctx) },
   };
+}
+
+/**
+ * A site's root from its `hosts`, the `url` output following `live` (the host that holds the
+ * hostnames); `note` goes below the header.
+ */
+function siteRoot(
+  plan: DeployPlan,
+  ctx: RenderContext,
+  hosts: readonly SiteHost[],
+  live: SiteHost,
+  note: readonly string[] = [],
+): RootFiles {
+  return {
+    versions: versionsTf(plan, [CLOUDFLARE_PROVIDER]),
+    main: [
+      rootHeader(plan),
+      "",
+      ...(note.length > 0 ? [...note, ""] : []),
+      ...CLOUDFLARE_PROVIDER_BLOCK,
+      ...hosts.flatMap((host) => host.module),
+    ].join("\n"),
+    variables: variablesTf(plan, [
+      ...zoneVariables("domain"),
+      WWW_VARIABLE,
+      ...hosts.flatMap((host) => host.variables),
+    ]),
+    outputs: [rootHeader(plan), "", ...output("url", `module.${live.name}.url`)].join("\n"),
+    tfvars: Object.assign(
+      { ...zoneTfvars(plan, ctx, "domain"), www: plan.dns.www },
+      ...hosts.map((host) => host.tfvars),
+    ),
+    modules: hosts.map((host) => host.source),
+  };
+}
+
+/** The root of one host: the plan's site without a move. */
+function singleHostRoot(plan: DeployPlan, ctx: RenderContext, host: SiteHost): RootFiles {
+  return siteRoot(plan, ctx, [host], host);
+}
+
+/**
+ * The root module of an app on Cloudflare's hosting: `module "worker"` (`cloudflare-workers`)
+ * creates the Worker's shell and one custom domain per hostname (the domain, and `www.` when on),
+ * which bring their own DNS records and certificates. The deploy workflow owns the Worker's code,
+ * files, secrets and settings; this root never changes them. `target` is the plan's target. Needs
+ * `ctx.cloudflare.accountId`.
+ */
+function workersRoot(
+  plan: DeployPlan,
+  target: CloudflareWorkersDeployTarget,
+  ctx: RenderContext,
+): RootFiles {
+  return singleHostRoot(plan, ctx, workerHost(target, ctx, false));
+}
+
+/**
+ * The root module of a site on GitHub Pages: only `module "dns"`, the `cloudflare-dns` module's
+ * GitHub Pages mode (`cloudflare-dns/github-pages`), all DNS only. GitHub's domain verification
+ * record has a root of its own ({@link renderPagesVerification}), so destroying this one keeps it.
+ */
+function pagesRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
+  return singleHostRoot(plan, ctx, pagesHost(plan, ctx, false));
+}
+
+/** The Worker of a move between site hosts: the plan's target, else the move's old side. */
+function movingWorker(plan: DeployPlan): CloudflareWorkersDeployTarget {
+  if (plan.target.provider === "cloudflare-workers") return plan.target;
+  const from = plan.retarget?.from.target;
+  if (from?.provider === "cloudflare-workers") return from;
+  throw wrongTarget("A site move's root renders a Worker only when one side of the move is one.");
+}
+
+/**
+ * The root module of a move between Cloudflare's hosting and GitHub Pages (`layout`), in one root
+ * and state, so one plan moves the hostnames from one host to the other: the Worker
+ * (`module "worker"`, the plan's or the old side's) with its custom domains (`bound`) or as a shell
+ * without them (`shell`), and GitHub Pages' DNS records (`module "dns"`), which wait for the
+ * Worker's changes when both are there. The Worker `bound` alone renders the plain Worker root
+ * under the move's note. Throws when both hosts would hold the hostnames, or neither is rendered.
+ */
+function siteMoveRoot(plan: DeployPlan, layout: SiteLayout, ctx: RenderContext): RootFiles {
+  const { worker, pages = false } = layout;
+  if (worker === "bound" && pages) {
+    throw wrongTarget(
+      "A site move's root cannot give the hostnames to both the Worker and GitHub Pages.",
+    );
+  }
+  const workers =
+    worker === undefined ? [] : [workerHost(movingWorker(plan), ctx, worker === "shell")];
+  const records = pages ? [pagesHost(plan, ctx, worker !== undefined)] : [];
+  const live = worker === "bound" ? workers[0] : (records[0] ?? workers[0]);
+  if (live === undefined) {
+    throw wrongTarget("A site move's root renders neither the Worker nor GitHub Pages.");
+  }
+  return siteRoot(plan, ctx, [...workers, ...records], live, [
+    "# A move to another site host is in progress: `opscrew retarget` manages these files until the",
+    "# move is finished (`opscrew retarget --finish`) or aborted (`opscrew retarget --abort`).",
+  ]);
+}
+
+/**
+ * The root module of a site: both hosts' during a move between site hosts (`ctx.siteLayout`,
+ * {@link siteMoveRoot}), else the plan's target's ({@link workersRoot}, {@link pagesRoot});
+ * `undefined` for a plan on another target.
+ */
+export function siteRootModule(plan: DeployPlan, ctx: RenderContext): RootFiles | undefined {
+  if (ctx.siteLayout !== undefined) return siteMoveRoot(plan, ctx.siteLayout, ctx);
+  const { target } = plan;
+  if (target.provider === "cloudflare-workers") return workersRoot(plan, target, ctx);
+  if (target.provider === "github-pages") return pagesRoot(plan, ctx);
+  return undefined;
 }
 
 /**

@@ -37,7 +37,7 @@ import {
 } from "./hcl";
 import { ownRoot } from "./own";
 import { portainerRoot } from "./portainer";
-import { pagesRoot, workersRoot } from "./serverless";
+import { siteRootModule } from "./serverless";
 import {
   addressVariables,
   checkKeyArgument,
@@ -439,8 +439,8 @@ function rootModule(plan: DeployPlan, ctx: RenderContext): RootFiles | undefined
     const { target } = plan;
     if (target.provider === "portainer") return portainerRoot(plan, ctx);
     if (target.provider === "own") return ownRoot(plan, ctx);
-    if (target.provider === "cloudflare-workers") return workersRoot(plan, target, ctx);
-    if (target.provider === "github-pages") return pagesRoot(plan, ctx);
+    const site = siteRootModule(plan, ctx);
+    if (site !== undefined) return site;
   }
   return cloudRoot(plan, ctx);
 }
@@ -522,6 +522,11 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  * module's GitHub Pages mode (`cloudflare-dns/github-pages`), DNS only: an apex domain's A and AAAA
  * records, or a subdomain's CNAME, to GitHub Pages, and `www.` when on; output `url`. GitHub's
  * domain verification record is in a root of its own ({@link renderPagesVerification}).
+ *
+ * While a site moves between the two (`ctx.siteLayout`), the root holds the layout's hosts: the
+ * Worker with its custom domains or as a shell without them (`custom_domains = false`), and GitHub
+ * Pages' records, which then wait for the Worker's changes (`depends_on`); `url` follows the host
+ * that holds the hostnames.
  *
  * A preview environment's root (`environment.previews`: a zone, no domain) gets its server as
  * usual, its web ports open to Cloudflare only, and, in place of the app's records, `module "dns"`

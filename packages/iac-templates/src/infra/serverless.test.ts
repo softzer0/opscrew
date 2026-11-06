@@ -191,6 +191,79 @@ describe("renderInfra on GitHub Pages", () => {
   });
 });
 
+/** A plan moving from the site host `from` to `to`, as `opscrew retarget` records it. */
+function movingSite(from: Record<string, unknown>, to: Record<string, unknown>): DeployPlan {
+  return DeployPlanSchema.parse({
+    ...serverlessPlan(to),
+    retarget: { from: { target: from }, step: "started", startedAt: "2026-11-06T10:00:00.000Z" },
+  });
+}
+
+describe("renderInfra during a move between site hosts (ctx.siteLayout)", () => {
+  const toWorkers = movingSite(PAGES, WORKERS);
+  const toPages = movingSite(WORKERS, PAGES);
+  const beside = { siteLayout: { worker: "shell", pages: true } } as const;
+
+  it("renders the Worker's shell beside GitHub Pages' records in one root and state", () => {
+    const files = renderInfra(toWorkers, ctx(beside));
+    expect(files.map((f) => f.path)).toEqual([
+      ...ROOT_FILES.map((name) => `opscrew/infra/prod/${name}`),
+      "opscrew/infra/modules/cloudflare-dns/github-pages/main.tf",
+      "opscrew/infra/modules/cloudflare-dns/github-pages/outputs.tf",
+      "opscrew/infra/modules/cloudflare-dns/github-pages/variables.tf",
+      "opscrew/infra/modules/cloudflare-dns/github-pages/versions.tf",
+      "opscrew/infra/modules/cloudflare-workers/main.tf",
+      "opscrew/infra/modules/cloudflare-workers/outputs.tf",
+      "opscrew/infra/modules/cloudflare-workers/variables.tf",
+      "opscrew/infra/modules/cloudflare-workers/versions.tf",
+    ]);
+    const main = file(files, "prod/main.tf");
+    expect(main).toContain("# A move to another site host is in progress");
+    expect(block(main, 'module "worker"')).toMatch(/^ {2}custom_domains += false$/m);
+    // The records wait for the Worker's changes: at the switch, its custom domains go first.
+    expect(block(main, 'module "dns"')).toMatch(/^ {2}depends_on = \[module\.worker\]$/m);
+    // The records hold the hostnames, so the URL is theirs.
+    expect(file(files, "prod/outputs.tf")).toContain("module.dns.url");
+    expect(JSON.parse(file(files, "terraform.tfvars.json"))).toEqual({
+      domain: "docs.example.com",
+      cloudflare_zone_id: testCloudflare().zoneId,
+      www: false,
+      cloudflare_account_id: ACCOUNT_ID,
+      worker: "example-app",
+      workers_dev: false,
+      preview_urls: false,
+      apex: false,
+      github_owner: "example-org",
+    });
+  });
+
+  it("finds the Worker on whichever side it is, so both directions render the same root", () => {
+    const content = (plan: DeployPlan) =>
+      renderInfra(plan, ctx(beside)).map((f) => `${f.path}\n${f.content}`);
+    expect(content(toPages)).toEqual(content(toWorkers));
+  });
+
+  it("gives the Worker its custom domains once it holds the hostnames, with no records of GitHub Pages", () => {
+    const moving = renderInfra(toWorkers, ctx({ siteLayout: { worker: "bound" } }));
+    const plain = renderInfra(serverlessPlan(WORKERS), ctx());
+    expect(moving.map((f) => f.path)).toEqual(plain.map((f) => f.path));
+    const main = file(moving, "prod/main.tf");
+    expect(main).not.toMatch(/custom_domains|module "dns"/);
+    expect(main).toContain(block(file(plain, "prod/main.tf"), 'module "worker"'));
+    for (const name of ["variables.tf", "outputs.tf", "terraform.tfvars.json"]) {
+      expect(file(moving, `prod/${name}`), name).toBe(file(plain, `prod/${name}`));
+    }
+  });
+
+  it("refuses a layout where both hosts hold the hostnames, nothing is rendered, or no side is a Worker", () => {
+    expect(() =>
+      renderInfra(toPages, ctx({ siteLayout: { worker: "bound", pages: true } })),
+    ).toThrow(/both/);
+    expect(() => renderInfra(toPages, ctx({ siteLayout: {} }))).toThrow(/neither/);
+    expect(() => renderInfra(serverlessPlan(PAGES), ctx(beside))).toThrow(/Worker/);
+  });
+});
+
 describe("renderPagesVerification", () => {
   const plan = serverlessPlan(PAGES);
   const files = renderPagesVerification(plan, ctx(), VERIFICATION);
@@ -284,10 +357,16 @@ describe("the cloudflare-workers module", () => {
     expect(domain).toMatch(/^ {2}hostname += var\.domain$/m);
     expect(domain).toMatch(/^ {2}service += cloudflare_workers_script\.this\.script_name$/m);
     const www = block(main, 'resource "cloudflare_workers_custom_domain" "www"');
-    expect(www).toMatch(/^ {2}count += var\.www \? 1 : 0$/m);
+    expect(www).toMatch(/^ {2}count += var\.custom_domains && var\.www \? 1 : 0$/m);
     expect(www).toMatch(/^ {2}hostname += "www\.\$\{var\.domain\}"$/m);
     // Each custom domain creates its own DNS record.
     expect(main).not.toContain("cloudflare_dns_record");
+  });
+
+  it("leaves the custom domains out while a move between site hosts keeps the hostnames elsewhere", () => {
+    const domain = block(main, 'resource "cloudflare_workers_custom_domain" "domain"');
+    expect(domain).toMatch(/^ {2}count += var\.custom_domains \? 1 : 0$/m);
+    expect(variables).toMatch(/variable "custom_domains" \{[^}]*default {5}= true\n\}/);
   });
 });
 
@@ -397,10 +476,25 @@ const ROOTS = {
       "module.worker.terraform_data.worker",
       "module.worker.cloudflare_workers_script.this",
       "module.worker.cloudflare_workers_script_subdomain.this",
-      "module.worker.cloudflare_workers_custom_domain.domain",
+      "module.worker.cloudflare_workers_custom_domain.domain[0]",
       "module.worker.cloudflare_workers_custom_domain.www[0]",
     ],
     absent: ["cloudflare_dns_record"],
+  },
+  "a site move: the Worker's shell beside GitHub Pages' records": {
+    files: () =>
+      renderInfra(
+        movingSite(PAGES, WORKERS),
+        ctx({ siteLayout: { worker: "shell", pages: true } }),
+      ),
+    dir: "opscrew/infra/prod",
+    creates: [
+      "module.worker.terraform_data.worker",
+      "module.worker.cloudflare_workers_script.this",
+      "module.worker.cloudflare_workers_script_subdomain.this",
+      "module.dns.cloudflare_dns_record.cname[0]",
+    ],
+    absent: ["cloudflare_workers_custom_domain"],
   },
   "GitHub Pages on an apex": {
     files: () => renderInfra(serverlessPlan(PAGES, { domain: "example.com", www: true }), ctx()),
