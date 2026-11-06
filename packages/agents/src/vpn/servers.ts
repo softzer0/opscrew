@@ -99,7 +99,7 @@ export async function networkServer(
     facts,
     apply:
       rootImage === undefined
-        ? host.apply
+        ? (remote, applied, options) => host.apply(remote, applied, options)
         : (remote, applied, options) => host.apply(remote, applied, { ...options, rootImage }),
     // The network's steps change no SSH setting the host adapter guards.
     verifyLogin: async () => true,
