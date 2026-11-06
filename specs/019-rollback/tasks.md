@@ -799,7 +799,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
 
 ### The simplify pass's findings (T1938; two reviewers by side, 2026-11-06)
 
-- [ ] T1939 One owner of the server contract and the database kinds, and the scripts' simplifications, in `packages/plan-schema/src/**`, `packages/iac-templates/src/{index.ts,shared.ts,workflow/**,previews/**}`, `packages/agents/src/{rollback,destroy}/**` and `packages/agents/src/design/release.ts` (+ tests)
+- [x] T1939 One owner of the server contract and the database kinds, and the scripts' simplifications, in `packages/plan-schema/src/**`, `packages/iac-templates/src/{index.ts,shared.ts,workflow/**,previews/**}`, `packages/agents/src/{rollback,destroy}/**` and `packages/agents/src/design/release.ts` (+ tests)
   - Owns: those paths, except `workflow/__fixtures__/sh.ts` (T1940)
   - Reads: the two simplify reviews' findings as listed here; plan.md 12.3–12.4
   - Accept:
