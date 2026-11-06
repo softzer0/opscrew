@@ -176,6 +176,34 @@
           "type": "string",
           "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
         },
+        "migrations": {
+          "type": "object",
+          "properties": {
+            "tool": {
+              "type": "string",
+              "enum": [
+                "rails",
+                "django",
+                "alembic",
+                "flask-migrate",
+                "knex",
+                "sequelize",
+                "typeorm",
+                "laravel"
+              ]
+            },
+            "status": {
+              "type": "string",
+              "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+            },
+            "down": {
+              "type": "string",
+              "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+            }
+          },
+          "required": ["tool", "status", "down"],
+          "additionalProperties": false
+        },
         "memoryMb": {
           "default": 512,
           "type": "integer",
@@ -656,6 +684,14 @@
         "reason": {
           "type": "string",
           "minLength": 1
+        },
+        "snapshots": {
+          "type": "boolean"
+        },
+        "keepSnapshots": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
         }
       },
       "additionalProperties": false
@@ -2327,6 +2363,14 @@
                 "reason": {
                   "type": "string",
                   "minLength": 1
+                },
+                "snapshots": {
+                  "type": "boolean"
+                },
+                "keepSnapshots": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10
                 }
               },
               "additionalProperties": false

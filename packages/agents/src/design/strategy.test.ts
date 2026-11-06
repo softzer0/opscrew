@@ -111,6 +111,25 @@ describe("keptDeploy", () => {
     expect(keptDeploy(planOn(OWN, 0.5), user)).toEqual({ strategy: "rolling", drainSeconds: 45 });
   });
 
+  it("keeps the user's snapshot settings, whichever strategy wins", () => {
+    const snapshots = { snapshots: true, keepSnapshots: 5 };
+    const user: PlanDeploy = {
+      target: HETZNER,
+      deploy: { strategy: "recreate", drainSeconds: 60, ...snapshots },
+    };
+    expect(keptDeploy(planOn(HETZNER, 4), user)).toEqual({
+      strategy: "recreate",
+      drainSeconds: 60,
+      ...snapshots,
+    });
+    const resized = planOn({ ...HETZNER, serverType: "cx33" }, 8);
+    expect(keptDeploy(resized, user)).toEqual({
+      strategy: "rolling",
+      drainSeconds: 60,
+      ...snapshots,
+    });
+  });
+
   it("always recreates in Portainer", () => {
     const portainer = {
       provider: "portainer",

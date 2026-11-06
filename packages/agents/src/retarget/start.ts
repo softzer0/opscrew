@@ -29,7 +29,7 @@ import type { PhaseDeps } from "../context";
 import { buildDesignOptions } from "../design";
 import { chooseBuilder } from "../design/builder";
 import { buildOwnServerOption } from "../design/own";
-import { deployStrategyFor, ROLLING_NOTE } from "../design/strategy";
+import { deployStrategyFor, ROLLING_NOTE, snapshotSettings } from "../design/strategy";
 import { recordOwnServerAnswers } from "../interview/own-server";
 import { recordPortainerAnswers } from "../interview/portainer";
 import type { NetworkHostFacts } from "../network";
@@ -332,7 +332,11 @@ async function cloudSide(
       plan,
       chosen.target.architecture === "arm" ? "arm64" : "amd64",
     ),
-    deploy: { ...deployStrategyFor(chosen), drainSeconds: plan.deploy.drainSeconds },
+    deploy: {
+      ...deployStrategyFor(chosen),
+      drainSeconds: plan.deploy.drainSeconds,
+      ...snapshotSettings(plan.deploy),
+    },
   };
 }
 

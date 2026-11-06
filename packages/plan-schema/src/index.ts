@@ -30,6 +30,12 @@ export {
   serializeArtifact,
   writeArtifact,
 } from "./io";
+export {
+  MIGRATION_TOOLS,
+  type Migrations,
+  MigrationsSchema,
+  type MigrationTool,
+} from "./migrations";
 export { isOutsideMember, monitoringOf, monitoringServerName } from "./monitoring";
 export {
   DeviceNameSchema,

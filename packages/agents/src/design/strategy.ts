@@ -58,8 +58,20 @@ function serverOf({ target }: PlanDeploy): string {
     : target.provider;
 }
 
+/** The user's snapshot settings of `deploy` (`snapshots`, `keepSnapshots`), those that are set. */
+export function snapshotSettings(
+  deploy: DeployPlan["deploy"],
+): Pick<DeployPlan["deploy"], "snapshots" | "keepSnapshots"> {
+  const { snapshots, keepSnapshots } = deploy;
+  return {
+    ...(snapshots === undefined ? {} : { snapshots }),
+    ...(keepSnapshots === undefined ? {} : { keepSnapshots }),
+  };
+}
+
 /**
- * The new plan's deploy settings on a later design: the previous drain time, and the previous
+ * The new plan's deploy settings on a later design: the previous drain time and snapshot settings,
+ * and the previous
  * strategy when the user changed it, that is when it differs from the fresh one on the same server
  * (the user's own server counts as the same one whatever its memory). A recreate with the reason
  * design wrote is design's own and gives way to the fresh strategy. A Portainer and an app on
@@ -75,8 +87,8 @@ export function keptDeploy(fresh: PlanDeploy, previous: PlanDeploy): DeployPlan[
     serverOf(fresh) === serverOf(previous) &&
     before.strategy !== fresh.deploy.strategy;
   return userStrategy
-    ? { strategy: before.strategy, drainSeconds: before.drainSeconds }
-    : { ...fresh.deploy, drainSeconds: before.drainSeconds };
+    ? { strategy: before.strategy, drainSeconds: before.drainSeconds, ...snapshotSettings(before) }
+    : { ...fresh.deploy, drainSeconds: before.drainSeconds, ...snapshotSettings(before) };
 }
 
 /**

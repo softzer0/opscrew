@@ -3,6 +3,7 @@ import { ENVIRONMENT_NAME_MESSAGE, ENVIRONMENT_NAME_PATTERN } from "@opscrew/cor
 import { z } from "zod";
 import { AppKeySchema, infraDirFor, workflowPathFor } from "./apps";
 import {
+  APP_SERVER,
   ComponentNameSchema,
   PlanServiceSchema,
   ProcessesSchema,
@@ -34,8 +35,9 @@ import {
   UrlPathSchema,
 } from "./enums";
 import { AbsolutePathSchema } from "./facts";
+import { MigrationsSchema } from "./migrations";
 import { isOutsideMember, monitoringOf } from "./monitoring";
-import { checkPlacement, MoveSchema, NetworkSchema } from "./placement";
+import { checkPlacement, MoveSchema, NetworkSchema, servicesOn } from "./placement";
 
 /** Services that conflict with a self-hosted Postgres container. */
 const POSTGRES_PROVIDERS = new Set(["postgres", "supabase"]);
@@ -1543,7 +1545,40 @@ export const DeploySettingsSchema = z.strictObject({
   drainSeconds: z.int().min(5).max(300).default(30),
   /** Why the strategy is not `rolling`, for example "the server has 512 MB of memory". */
   reason: z.string().min(1).optional(),
+  /**
+   * A snapshot of the databases on the app's server before each release, which a rollback can
+   * restore. Absent: on in every environment except prod and a preview environment (read it with
+   * `snapshotsOn`).
+   */
+  snapshots: z.boolean().optional(),
+  /** How many versions' snapshots stay on the server. Absent: 3 (read it with `keepSnapshotsOf`). */
+  keepSnapshots: z.int().min(1).max(10).optional(),
 });
+
+/** How many versions' snapshots stay on the server: `deploy.keepSnapshots`, or 3. */
+export function keepSnapshotsOf(plan: { deploy: { keepSnapshots?: number | undefined } }): number {
+  return plan.deploy.keepSnapshots ?? 3;
+}
+
+/** The service kinds a snapshot dumps and a rollback restores. */
+const SNAPSHOT_KINDS = new Set(["postgres", "mysql", "mariadb", "mongodb"]);
+
+/**
+ * True when each release snapshots the databases on the app's server: on a cloud server, the
+ * user's own server or this computer, outside a preview environment, with PostgreSQL, MySQL,
+ * MariaDB or MongoDB on the app's server, and `deploy.snapshots` true, or absent outside prod.
+ */
+export function snapshotsOn(
+  plan: Pick<DeployPlan, "target" | "environment" | "services" | "deploy">,
+): boolean {
+  const { provider } = plan.target;
+  if (!onOneServer(provider) && provider !== "localhost") return false;
+  if (plan.environment?.previews !== undefined) return false;
+  if (!servicesOn(plan, APP_SERVER).some((service) => SNAPSHOT_KINDS.has(service.kind))) {
+    return false;
+  }
+  return plan.deploy.snapshots ?? plan.environment?.name !== undefined;
+}
 
 /**
  * A move to another target in progress (`opscrew retarget`): between two server targets (a cloud
@@ -1643,6 +1678,11 @@ const DeployPlanFieldsSchema = z.strictObject({
      * while analyze finds a command (a later design says so).
      */
     releaseCommand: CommandLineSchema.optional(),
+    /**
+     * How a rollback undoes the newer version's migrations: the tool, and its commands that print
+     * the applied migrations and undo them. Requires `releaseCommand`.
+     */
+    migrations: MigrationsSchema.optional(),
     /** The web process's memory limit. */
     memoryMb: MemoryMbSchema.default(512),
     /** The largest request body nginx accepts, in MB (`client_max_body_size`); Caddy sets none. */
@@ -1888,7 +1928,40 @@ const DeployPlanObjectSchema = DeployPlanFieldsSchema.superRefine((plan, ctx) =>
   checkCloudflareEdgeNames(plan, ctx);
   checkComponents(plan, ctx);
   checkPlacement(plan, ctx);
+  checkDatabaseRollback(plan, ctx);
 });
+
+/**
+ * Snapshots only where a release can take them (a cloud server, the user's own server, this
+ * computer, outside a preview environment), and down migrations only beside a release command.
+ */
+function checkDatabaseRollback(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
+  if (plan.deploy.snapshots === true) {
+    const where =
+      plan.environment?.previews !== undefined
+        ? "a preview environment"
+        : plan.target.provider === "portainer"
+          ? "a Portainer target"
+          : isServerlessTarget(plan.target)
+            ? "a site target"
+            : undefined;
+    if (where !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["deploy", "snapshots"],
+        message: `can't be true on ${where}: snapshots there come in a later release; set deploy.snapshots to false, or remove it`,
+      });
+    }
+  }
+  if (plan.app.migrations !== undefined && plan.app.releaseCommand === undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["app", "migrations"],
+      message:
+        "needs app.releaseCommand: the down commands undo what the release command migrates; add the release command, or remove app.migrations",
+    });
+  }
+}
 
 /**
  * Worker and service names are unique within the app (each is a Compose service), a self-hosted

@@ -641,7 +641,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     expect(h.hosts.host(OLD_IPV4).app).toBe(true);
   });
 
-  it("shows the builder and the deploy strategy for the new server before the start, and records them", async () => {
+  it("shows the builder and the deploy strategy for the new server before the start, and records them with the user's snapshot settings", async () => {
     const h = await moveHarness();
     const before = await readArtifact("plan", h.paths.files.plan);
     const earlier = {
@@ -654,7 +654,7 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     await writeArtifact("plan", h.paths.files.plan, {
       ...before,
       app: { ...before.app, build: earlier },
-      deploy: { strategy: "recreate", drainSeconds: 45 },
+      deploy: { strategy: "recreate", drainSeconds: 45, snapshots: true, keepSnapshots: 5 },
     });
     let summary: RetargetSummary | undefined;
     const refused = await caught(
@@ -679,7 +679,12 @@ describe.skipIf(!findExecutable("git"))("runRetarget", () => {
     await run(h, { confirmStart: async () => true });
     const plan = await readArtifact("plan", h.paths.files.plan);
     expect(plan.app.build).toMatchObject({ builder: "generated-dockerfile", chosen: "auto" });
-    expect(plan.deploy).toEqual({ strategy: "rolling", drainSeconds: 45 });
+    expect(plan.deploy).toEqual({
+      strategy: "rolling",
+      drainSeconds: 45,
+      snapshots: true,
+      keepSnapshots: 5,
+    });
   });
 
   it("stops before anything is created when the new server's builder needs a missing Dockerfile", async () => {
