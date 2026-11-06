@@ -59,6 +59,7 @@ import {
   workflowStart,
 } from "./shared";
 import {
+  DATABASE_CHANGED,
   dockerConfig,
   type EdgeFiles,
   rollbackCommands,
@@ -456,9 +457,12 @@ export function maskFileScript(plan: DeployPlan): string {
   return `${script.join("\n")}\n`;
 }
 
-/** Saves the running version as `.env.previous` and prints its image, in the app's folder. */
-const SAVE_PREVIOUS =
-  'rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi';
+/**
+ * Saves the running version as `.env.previous` and prints its image, in the app's folder; an
+ * earlier run's database marker ({@link DATABASE_CHANGED}) goes, so this run's rollback step never
+ * acts on it.
+ */
+const SAVE_PREVIOUS = `rm -f .env.previous ${DATABASE_CHANGED} && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi`;
 
 /** How the start and rollback steps reach the app's machine: over SSH, or on the runner's own. */
 interface Reach {
@@ -534,9 +538,11 @@ function rolledBackStep(plan: DeployPlan): string[] {
 
 /**
  * The rollback step: runs only when starting or checking the new version failed (not for upload
- * or setup errors), and always fails the job. `localhost` is the app's hostname on the localhost
- * target, as the start script has it. In a rollback dispatch (`MODE` `rollback`) its messages say
- * that the rollback failed, and that the version restored is the one that ran before it.
+ * or setup errors), or the run was cancelled while it started, so a cancelled database step still
+ * gets its database back and the app started; it always fails the job. `localhost` is the app's
+ * hostname on the localhost target, as the start script has it. In a rollback dispatch (`MODE`
+ * `rollback`) its messages say that the rollback failed, and that the version restored is the one
+ * that ran before it.
  */
 function rollbackStep(
   plan: DeployPlan,
@@ -545,7 +551,7 @@ function rollbackStep(
 ): string[] {
   return [
     "- name: Roll back to the previous version",
-    "  if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')",
+    "  if: (failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure')",
     "  env:",
     ...reach.env,
     `    IMAGE: ${imageOutput(plan, "image")}`,

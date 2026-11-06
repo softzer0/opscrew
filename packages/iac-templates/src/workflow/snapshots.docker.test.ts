@@ -10,7 +10,8 @@
  *    there as it was, and nothing written after it is; PostgreSQL, MySQL and MariaDB hold every
  *    row up to one moment, with no gap;
  * 5. a second restore after more changes gives exactly the same rows.
- * Neither the scripts' output nor `snapshot.log` holds a password.
+ * After each restore the app's own login writes and reads a row (MySQL's and MariaDB's `app` user
+ * keeps its password and grants). Neither the scripts' output nor `snapshot.log` holds a password.
  *
  * It pulls the pinned images, so it runs only with OPSCREW_DOCKER_TESTS=1. The kinds run one at a
  * time; each removes its project with its volumes, and the image when this test pulled it.
@@ -65,7 +66,20 @@ interface Kind {
   change: string;
   /** A shell loop in the container that inserts rows from 101 on until /tmp/stop exists. */
   writer: string;
+  /**
+   * The app's own login (MySQL's and MariaDB's `app` user, with its own password and grants; the
+   * other two log in as `app` already): a client like {@link Kind.client}, and the queries that
+   * write row 2000000, print its value and remove it.
+   */
+  asApp: { client: string; write: string; read: string; remove: string };
 }
+
+/** The SQL kinds' queries of the app's own login. */
+const SQL_AS_APP = {
+  write: "INSERT INTO t VALUES (2000000, 'row-2000000')",
+  read: "SELECT v FROM t WHERE id = 2000000",
+  remove: "DELETE FROM t WHERE id = 2000000",
+};
 
 const values = (from: number, to: number) =>
   Array.from({ length: to - from + 1 }, (_, i) => `(${from + i}, 'row-${from + i}')`).join(", ");
@@ -80,8 +94,8 @@ const SQL = {
 const sqlWriter = (client: string) =>
   `i=101; while [ ! -f /tmp/stop ]; do echo "INSERT INTO t VALUES ($i, 'row-$i');"; i=$((i + 1)); sleep 0.01; done | ${client}`;
 
-const mysqlLike = (kind: "mysql" | "mariadb", tool: string, root: string): Kind => {
-  const session = `MYSQL_PWD="$${root}" ${tool} -h 127.0.0.1 -u root -N -B app`;
+const mysqlLike = (kind: "mysql" | "mariadb", tool: string, prefix: "MYSQL" | "MARIADB"): Kind => {
+  const session = `MYSQL_PWD="$${prefix}_ROOT_PASSWORD" ${tool} -h 127.0.0.1 -u root -N -B app`;
   return {
     kind,
     image: kind === "mysql" ? IMAGES.mysql.ref : IMAGES.mariadb.ref,
@@ -91,6 +105,10 @@ const mysqlLike = (kind: "mysql" | "mariadb", tool: string, root: string): Kind 
     tables: "SHOW TABLES",
     change: SQL.change,
     writer: sqlWriter(session),
+    asApp: {
+      client: `MYSQL_PWD="$${prefix}_PASSWORD" ${tool} -h 127.0.0.1 -u app -N -B app -e "$Q"`,
+      ...SQL_AS_APP,
+    },
   };
 };
 
@@ -109,9 +127,13 @@ const KINDS: Kind[] = [
     writer: sqlWriter(
       'PGPASSWORD="$POSTGRES_PASSWORD" psql -X -q -h 127.0.0.1 -U app -d app -v ON_ERROR_STOP=1',
     ),
+    asApp: {
+      client: `PGPASSWORD="$POSTGRES_PASSWORD" psql -X -q -t -A -h 127.0.0.1 -U app -d app -v ON_ERROR_STOP=1 -c "$Q"`,
+      ...SQL_AS_APP,
+    },
   },
-  mysqlLike("mysql", "mysql", "MYSQL_ROOT_PASSWORD"),
-  mysqlLike("mariadb", "mariadb", "MARIADB_ROOT_PASSWORD"),
+  mysqlLike("mysql", "mysql", "MYSQL"),
+  mysqlLike("mariadb", "mariadb", "MARIADB"),
   {
     kind: "mongodb",
     image: IMAGES.mongodb.ref,
@@ -121,6 +143,12 @@ const KINDS: Kind[] = [
     tables: `app.getCollectionNames().sort().forEach((c) => print(c))`,
     change: `app.t.updateOne({ _id: 1 }, { $set: { v: "changed" } }); app.t.deleteOne({ _id: 2 }); app.t.insertOne({ _id: 1000000, v: "late" }); app.added.insertOne({ x: 1 })`,
     writer: `HOME=/tmp mongosh --quiet --nodb --eval 'const db = connect("mongodb://127.0.0.1:27017/admin"); db.auth("app", process.env.MONGO_INITDB_ROOT_PASSWORD); const fs = require("fs"); for (let i = 101; !fs.existsSync("/tmp/stop"); i++) { db.getSiblingDB("app").t.insertOne({ _id: i, v: "row-" + i }); sleep(10); }'`,
+    asApp: {
+      client: MONGOSH,
+      write: `app.t.insertOne({ _id: 2000000, v: "row-2000000" })`,
+      read: `print(app.t.findOne({ _id: 2000000 }).v)`,
+      remove: `app.t.deleteOne({ _id: 2000000 })`,
+    },
   },
 ];
 
@@ -167,7 +195,20 @@ class Project {
 
   /** `query` through the kind's client in the service's container. */
   query(kind: Kind, query: string): string {
-    return this.compose(["exec", "-T", "-e", `Q=${query}`, "db", "sh", "-c", kind.client]);
+    return this.queryWith(kind.client, query);
+  }
+
+  /** `query` through `client` (a shell command that runs `$Q`) in the service's container. */
+  queryWith(client: string, query: string): string {
+    return this.compose(["exec", "-T", "-e", `Q=${query}`, "db", "sh", "-c", client]);
+  }
+
+  /** The app's own login writes a row, reads it back and removes it. */
+  writesAsApp(kind: Kind): void {
+    const { client, write, read, remove } = kind.asApp;
+    this.queryWith(client, write);
+    expect(this.queryWith(client, read)).toBe("row-2000000");
+    this.queryWith(client, remove);
   }
 
   /** The output lines of `query`, each one's fields separated by one space. */
@@ -331,12 +372,15 @@ describe.skipIf(reason !== undefined)("the snapshots on Docker", { timeout: 900_
           // One moment: every row up to the last one, with no gap.
           expect(ids).toEqual(Array.from({ length: ids.length }, (_, i) => i + 1));
         }
+        // The app's own login writes to the restored database.
+        project.writesAsApp(kind);
 
         // A second restore after more changes gives exactly the same rows.
         project.query(kind, kind.change);
         const again = snapshotScript(plan, apps, project, "snapshot_restore", hex);
         expect(again.status, again.output).toBe(0);
         expect(project.lines(kind, kind.rows)).toEqual(rows);
+        project.writesAsApp(kind);
 
         const log = readFileSync(join(project.dir, ".snapshots", "snapshot.log"), "utf8");
         for (const secret of Object.values(secrets)) {

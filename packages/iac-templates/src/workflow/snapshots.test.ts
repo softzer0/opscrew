@@ -21,7 +21,6 @@ import { withServices } from "../catalog/__fixtures__/plans";
 import { renderCompose, renderEdgeSite, renderRuntimeFiles } from "../runtime";
 import { runtimeDir } from "../runtime-dir";
 import { inEnvironment, NIGHTLY, withPlan, withProcesses } from "./__fixtures__/plans";
-import { migrationDown, migrationRecord } from "./migrations";
 import {
   type DatabaseChoice,
   ROLLBACK_APPROVAL_FILE,
@@ -30,9 +29,10 @@ import {
 } from "./snapshots";
 import { rollbackCommands, switchCommands } from "./switch";
 
-/** The digests of the earlier and the later version. */
+/** The digests of the earlier and the later version, and of another one. */
 const A = "a".repeat(64);
 const B = "b".repeat(64);
+const C = "c".repeat(64);
 const image = (hex: string) => `ghcr.io/acme/shop@sha256:${hex}`;
 
 /** `shop` in staging (snapshots on by default) with PostgreSQL `db`, a worker and a cron job. */
@@ -41,6 +41,21 @@ const staging = withProcesses(inEnvironment(testPlan(), { name: "staging" }), {
   cron: [NIGHTLY],
 });
 const APP = staging.app.name;
+
+/** `plan` with Knex's down migrations (`app.migrations`) and its release command. */
+const withMigrations = (plan: DeployPlan) =>
+  DeployPlanSchema.parse({
+    ...plan,
+    app: {
+      ...plan.app,
+      releaseCommand: "npx knex migrate:latest",
+      migrations: {
+        tool: "knex",
+        status: "npx knex migrate:list",
+        down: "npx knex migrate:down",
+      },
+    },
+  });
 
 /** The same app in staging with each of the four databases on its server. */
 const fourDatabases = inEnvironment(
@@ -63,7 +78,8 @@ const fourDatabases = inEnvironment(
  * database `partial`); a dump copies it to `<folder>/<service>.dump`, unless DUMP_FAIL names the
  * service, and with FILL_DISK fills the disk ($WORK/disk-full). Failures print SECRET_ROW, as a
  * database's error can quote a row. kamal-proxy's `deploy` routes to a copy ($WORK/routes/<app>)
- * unless the copy's image is in UNHEALTHY; its `pause` and `resume` mark $WORK/paused.
+ * unless the copy's image is in UNHEALTHY; its `pause` and `resume` mark $WORK/paused. With
+ * KILL_AT_STOP, `compose stop` kills the script that runs it, as a cancelled run would end.
  */
 const FAKE_DOCKER = [
   "#!/bin/sh",
@@ -90,6 +106,7 @@ const FAKE_DOCKER = [
   '    echo "$n" > "$WORK/next"',
   '    case " $* " in *" --scale "*) ;; *) : > "$state" ;; esac',
   '    echo "c$n $project-app-$n $APP_IMAGE" >> "$state" ;;',
+  '  "compose stop") if [ -n "${KILL_AT_STOP:-}" ]; then kill -9 "$PPID"; fi ;;',
   '  "compose run")',
   '    if [ "$last" = release ]; then exit 0; fi',
   '    host=""; service=""; script=""; p1=""; p2=""',
@@ -505,7 +522,9 @@ describe.skipIf(!shWorks())(
           "OpsCrew restored the database from the snapshot taken 2026-11-05T09:30:00Z.",
         );
         // The marker that this run changed the database, for the workflow's rollback script.
-        expect(read(".database.changed")).toBe(`APP_IMAGE=${image(B)}\nsaved=${B}\n`);
+        expect(read(".database.changed")).toBe(
+          `target=${A}\nAPP_IMAGE=${image(B)}\nsaved=${B}\nchanged=1\n`,
+        );
         if (!windows) expect(mode(".database.changed")).toBe("600");
         expect(result.output).not.toContain("row-value-from-the-database");
       });
@@ -552,17 +571,17 @@ describe.skipIf(!shWorks())(
       });
 
       it("changes nothing, not even the image, with an approval for this version past its time or with another choice", () => {
+        const expired =
+          "::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.";
+        const unusable =
+          "::error::The one-time approval to change the database on this rollback (.rollback-database on the server) names a choice this server can't carry out, so nothing was changed. Run opscrew rollback again.";
         for (const [choice, seconds, said] of [
-          [
-            "snapshot",
-            -1,
-            "::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.",
-          ],
-          [
-            "keep",
-            1800,
-            "::error::The one-time approval to change the database on this rollback (.rollback-database on the server) names a choice this server can't carry out, so nothing was changed. Run opscrew rollback again.",
-          ],
+          ["snapshot", -1, expired],
+          // An expiry of more than ten digits is none.
+          ["snapshot", 100_000_000_000, expired],
+          ["keep", 1800, unusable],
+          // Down migrations only with app.migrations.
+          ["migrations", 1800, unusable],
         ] as const) {
           rmSync(`${work}/docker.log`, { force: true });
           runningB();
@@ -589,6 +608,10 @@ describe.skipIf(!shWorks())(
           `::error::Restoring the snapshot of the database failed, so OpsCrew put the database back as it was before the rollback, and the running version starts again: the rollback changed nothing. The output of the dumps and restores stays on the server in ${appDir()}/.snapshots/snapshot.log (it can quote data from the database, so it is not printed here; opscrew/environments/staging/RUNBOOK.md has the SSH command).`,
         );
         expect(result.output).not.toContain("row-value-from-the-database");
+        // The failed restore's lines survive the put-back's.
+        expect(read(".snapshots/snapshot.log")).toContain(
+          "restore failed at row-value-from-the-database",
+        );
         expect(oneOffs()).toEqual([`db ${B}.partial rw`, `db ${A} ro`, `db ${B} ro`]);
         expect(db()).toBe("rows of B\n");
         expect(callAt(START)).toBeGreaterThan(callAt(`${B}:/snapshot:ro`));
@@ -601,18 +624,38 @@ describe.skipIf(!shWorks())(
         expect(back.stdout).toBe("unchanged");
       });
 
-      it("says where the saved copy is when putting it back fails too", () => {
+      it("starts no version on a database it could not put back, and the rollback step tries once more", () => {
         runningB();
         approve(A, "snapshot");
         const result = rollback(staging, { RESTORE_FAIL: `${A} ${B}` });
         expect(result.status).toBe(1);
         expect(result.output).toContain(
-          `::error::Restoring the snapshot of the database failed, and putting the database back as it was before the rollback failed too, so it may be partly changed; the running version starts again. Its copy from before the rollback stays in ${appDir()}/.snapshots/${B}: restore it before the app writes more.`,
+          `::error::Restoring the snapshot of the database failed, and putting the database back as it was before the rollback failed too, so it may be partly changed, and no version of the app starts on it. Its copy from before the rollback stays in ${appDir()}/.snapshots/${B}: the rollback step tries once more to restore it.`,
         );
-        expect(callAt(START)).toBeGreaterThan(-1);
+        expect(callAt("compose start")).toBe(-1);
         expect(read(`.snapshots/${B}/db.dump`)).toBe("rows of B\n");
         expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+        expect(read(".database.changed")).toContain("changed=1\n");
+        // The trap still lets requests through.
         expect(paused()).toBe(false);
+
+        // The rollback step's put-back fails too: it stops, starting nothing.
+        write(at(".env.previous"), `APP_IMAGE=${image(B)}\n`);
+        rmSync(`${work}/docker.log`);
+        const again = run(rollbackCommands(staging), A, undefined, { RESTORE_FAIL: B });
+        expect(again.status).toBe(1);
+        expect(again.stdout).toBe("");
+        expect(again.output).toContain(
+          `::error::The earlier version failed after the rollback changed the database, and putting the database back as it was before the rollback failed, so it may be partly changed, and no version of the app starts on it. Its copy from before the rollback stays in ${appDir()}/.snapshots/${B}: restore it, then start the app.`,
+        );
+        expect(callAt("compose up")).toBe(-1);
+        expect(paused()).toBe(false);
+
+        // Once it can, the rollback step puts it back and starts the version that ran.
+        const last = run(rollbackCommands(staging), A);
+        expect(last.stdout).toBe("unchanged");
+        expect(db()).toBe("rows of B\n");
+        expect(existsSync(at(".database.changed"))).toBe(false);
       });
 
       it("changes nothing when saving the current database fails", () => {
@@ -629,26 +672,24 @@ describe.skipIf(!shWorks())(
         expect(db()).toBe("rows of B\n");
         expect(snapshots()).toEqual([A]);
         expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+        expect(existsSync(at(".database.changed"))).toBe(false);
         expect(paused()).toBe(false);
       });
 
-      it("restores without a saved copy when the disk is too full, and says so if the restore then fails", () => {
+      it("changes nothing when the disk is too full to save the current database first", () => {
         runningB();
         approve(A, "snapshot");
-        const low = { DISK_TOTAL_KB: "5000000", DISK_FREE_KB: "900000" };
-        const result = rollback(staging, low);
-        expect(result.status, result.output).toBe(0);
-        expect(result.output).toContain("::warning::The disk that holds");
-        expect(db()).toBe("rows of A\n");
-
-        runningB();
-        approve(A, "snapshot");
-        const failed = rollback(staging, { ...low, RESTORE_FAIL: A });
-        expect(failed.status).toBe(1);
-        expect(failed.output).toContain(
-          "::error::Restoring the snapshot of the database failed, and no copy of the database from before the rollback was saved (the disk was too full), so the database may be partly changed; the running version starts again.",
+        const result = rollback(staging, { DISK_TOTAL_KB: "5000000", DISK_FREE_KB: "900000" });
+        expect(result.status).toBe(1);
+        expect(result.output).toContain(
+          "::error::The server has too little free disk to save the current database before changing it, so the rollback changed nothing and the running version starts again. Free some space and run opscrew rollback again.",
         );
+        expect(oneOffs()).toEqual([]);
+        expect(callAt(START)).toBeGreaterThan(callAt(STOP));
+        expect(db()).toBe("rows of B\n");
         expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+        expect(existsSync(at(".database.changed"))).toBe(false);
+        expect(run(rollbackCommands(staging), A).stdout).toBe("unchanged");
       });
 
       it("refuses before any change when the snapshot is not complete or .env names no other digest", () => {
@@ -676,12 +717,12 @@ describe.skipIf(!shWorks())(
         expect(db()).toBe("rows of B\n");
       });
 
-      it("runs the down migrations, which aren't available yet, and puts the database back", () => {
-        runningB();
+      it("runs the down migrations and puts the database back when they fail", () => {
+        const knex = withMigrations(staging);
+        runningB(knex);
         approve(A, "migrations");
-        const result = rollback();
+        const result = rollback(knex);
         expect(result.status).toBe(1);
-        expect(result.output).toContain("::error::Down migrations aren't available for this app.");
         expect(result.output).toContain(
           "::error::Migrating the database down failed, so OpsCrew put the database back as it was before the rollback",
         );
@@ -691,7 +732,7 @@ describe.skipIf(!shWorks())(
       });
 
       it("saves the current database first with snapshots off too, and puts it back when the step fails", () => {
-        const off = withPlan(staging, { deploy: { snapshots: false } });
+        const off = withMigrations(withPlan(staging, { deploy: { snapshots: false } }));
         runningB(off);
         approve(A, "migrations");
         const result = rollback(off);
@@ -704,18 +745,9 @@ describe.skipIf(!shWorks())(
       });
 
       it("says no copy was saved when the app has no database the step can dump", () => {
-        const knex = DeployPlanSchema.parse({
-          ...inEnvironment(testPlan({ postgres: false }), { name: "staging" }),
-          app: {
-            ...staging.app,
-            releaseCommand: "npx knex migrate:latest",
-            migrations: {
-              tool: "knex",
-              status: "npx knex migrate:list",
-              down: "npx knex migrate:down",
-            },
-          },
-        });
+        const knex = withMigrations(
+          inEnvironment(testPlan({ postgres: false }), { name: "staging" }),
+        );
         upload(knex);
         write(at(".env"), `APP_IMAGE=${image(B)}\n`);
         write(`${work}/containers-${APP}`, `c90 ${APP}-app-90 ${image(B)}\n`);
@@ -752,7 +784,7 @@ describe.skipIf(!shWorks())(
         approve(A, "snapshot");
       };
       /** The marker of a database step that saved B's database, as the start script leaves it. */
-      const MARKER = `APP_IMAGE=${image(B)}\nsaved=${B}\n`;
+      const MARKER = `target=${A}\nAPP_IMAGE=${image(B)}\nsaved=${B}\nchanged=1\n`;
       const routedImage = () => {
         const name = readFileSync(`${work}/routes/${APP}`, "utf8").trim().split(":")[0];
         return readFileSync(`${work}/containers-${APP}`, "utf8")
@@ -817,22 +849,53 @@ describe.skipIf(!shWorks())(
         expect(existsSync(at(".database.changed"))).toBe(false);
       });
 
-      it("switches back to the version the marker names without .env.previous", () => {
+      it("starts the version that ran again, restoring nothing, when the run stopped before step 4", () => {
         approved();
-        write(at(".env"), `APP_IMAGE=${image(A)}\n`);
-        rmSync(at(".env.previous"));
-        write(at(".database.changed"), MARKER);
-        snapshot(B, "2026-11-06T10:00:00Z", { db: "rows of B\n" });
+        const killed = rollback({ KILL_AT_STOP: "1" });
+        expect(killed.status).not.toBe(0);
+        expect(read(".database.changed")).toBe(
+          `target=${A}\nAPP_IMAGE=${image(B)}\nsaved=\nchanged=0\n`,
+        );
+        expect(paused()).toBe(true);
+        rmSync(`${work}/docker.log`);
         const result = back();
-        expect(result.stdout).toBe("restored");
+        expect(result.status, result.output).toBe(0);
+        expect(result.stdout).toBe("unchanged");
+        expect(oneOffs()).toEqual([]);
         expect(db()).toBe("rows of B\n");
-        expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+        expect(callAt("compose up -d --no-deps --remove-orphans app")).toBeGreaterThan(
+          callAt("compose stop app worker cron"),
+        );
+        expect(routedImage()).toBe(image(B));
+        expect(existsSync(at(".database.changed"))).toBe(false);
+        expect(paused()).toBe(false);
+      });
+
+      it("ignores an earlier run's marker: for another version, or not this run's .env.previous", () => {
+        approved();
+        expect(rollback().status).toBe(0);
+        expect(db()).toBe("rows of A\n");
+        // A later run of another image that never reached its start script.
+        rmSync(`${work}/docker.log`);
+        const other = run(rollbackCommands(staging), C);
+        expect(other.stdout).toBe("unchanged");
+        expect(oneOffs()).toEqual([]);
+        expect(db()).toBe("rows of A\n");
+        expect(existsSync(at(".database.changed"))).toBe(false);
+        // The same target, but .env.previous names a version the marker didn't record.
+        write(at(".database.changed"), MARKER);
+        write(at(".env.previous"), `APP_IMAGE=${image(C)}\n`);
+        const stale = back();
+        expect(stale.stdout).toBe("restored");
+        expect(oneOffs()).toEqual([]);
+        expect(db()).toBe("rows of A\n");
+        expect(read(".env")).toBe(`APP_IMAGE=${image(C)}\n`);
       });
 
       it("says the database stays as the step left it when no copy was saved", () => {
         approved();
         write(at(".env"), `APP_IMAGE=${image(A)}\n`);
-        write(at(".database.changed"), `APP_IMAGE=${image(B)}\nsaved=\n`);
+        write(at(".database.changed"), `target=${A}\nAPP_IMAGE=${image(B)}\nsaved=\nchanged=1\n`);
         setDb("rows of A\n");
         const result = back();
         expect(result.stdout).toBe("restored");
@@ -970,14 +1033,6 @@ describe("the start script's database lines", () => {
     expect(text).toContain(
       `if [ "$database" = keep ]; then echo 'A rollback runs no release command: the data and the schema stay as they are.'; else echo 'A rollback runs no release command.'; fi`,
     );
-  });
-
-  it("call the migrations' record after the release command and their down step in the rollback", () => {
-    expect(migrationRecord(staging)).toEqual([]);
-    expect(migrationDown(staging)).toEqual([
-      `echo '::error::Down migrations aren'\\''t available for this app.'`,
-      "exit 1",
-    ]);
   });
 
   it("read the approval on prod too, where snapshots are off unless deploy.snapshots is true", () => {

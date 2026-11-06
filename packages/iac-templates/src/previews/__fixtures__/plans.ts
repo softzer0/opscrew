@@ -156,8 +156,9 @@ export function directPreview(
   ]) {
     files[file.path.slice(runtime.length + 1)] = file.content;
   }
-  files["start.sh"] = `${switchCommands(own, initStepsFor(own)).join("\n")}\n`;
-  files["rollback.sh"] = `${rollbackCommands(own).join("\n")}\n`;
+  const preview = { preview: true };
+  files["start.sh"] = `${switchCommands(own, initStepsFor(own), undefined, preview).join("\n")}\n`;
+  files["rollback.sh"] = `${rollbackCommands(own, undefined, preview).join("\n")}\n`;
   const env = envFor(own, secret);
   files["env/app.env"] = env.app;
   for (const [name, content] of Object.entries(env.services)) files[`env/${name}.env`] = content;

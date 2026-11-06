@@ -18,7 +18,8 @@ import { planFilePath, runbookFilePath } from "./shared";
 export const SNAPSHOTS_DIR = ".snapshots";
 
 /**
- * The last dump's or restore's output, in {@link SNAPSHOTS_DIR}: it can quote data from the
+ * The output of the last run's dumps and restores, in {@link SNAPSHOTS_DIR}: emptied when a run
+ * takes its snapshot, appended to by every dump and restore after it. It can quote data from the
  * database, so it is never printed.
  */
 export const SNAPSHOT_LOG = `${SNAPSHOTS_DIR}/snapshot.log`;
@@ -134,13 +135,13 @@ function snapshotFailed(plan: DeployPlan): string {
  * - `snapshot_run <folder> <rw|ro> <service> <script>`: `script` in a one-off container of the
  *   service (its pinned image and env file, on its network, as the deploy user), with
  *   `.snapshots/<folder>` at `/snapshot`, its output appended to {@link SNAPSHOT_LOG};
- * - `snapshot_take <hex>`: dumps every database into `.snapshots/<hex>.partial`, the disk checked
- *   before and after each dump, writes `taken` and renames it `.snapshots/<hex>`, replacing an
- *   earlier one; returns 1 when a dump failed and 2 when the disk was too full, with no partial
- *   left either way;
+ * - `snapshot_take <hex>`: empties the log, dumps every database into `.snapshots/<hex>.partial`,
+ *   the disk checked before and after each dump, writes `taken` and renames it `.snapshots/<hex>`,
+ *   replacing an earlier one; returns 1 when a dump failed and 2 when the disk was too full, with
+ *   no partial left either way;
  * - `snapshot_complete <hex>`: whether `.snapshots/<hex>` has `taken` and every database's dump;
- * - `snapshot_restore <hex>`: restores every database exactly from `.snapshots/<hex>`; returns 1
- *   when one failed.
+ * - `snapshot_restore <hex>`: restores every database exactly from `.snapshots/<hex>`, its output
+ *   added to the log; returns 1 when one failed.
  * Every folder is 0700 and every file 0600.
  */
 export function snapshotFunctions(plan: DeployPlan, folder: string): string[] {
@@ -181,7 +182,6 @@ export function snapshotFunctions(plan: DeployPlan, folder: string): string[] {
     `  [ -f ${snapshotTakenPath('"$1"')} ]${databases.map(({ name }) => ` && [ -f ${SNAPSHOTS_DIR}/"$1"/${name}.dump ]`).join("")}`,
     "}",
     "snapshot_restore() {",
-    `  (umask 077 && : > ${SNAPSHOT_LOG}) || return 1`,
     ...databases.map(
       (database) =>
         `  ${run("ro", database, database.commands.restore(database.name, database.file))} || return 1`,

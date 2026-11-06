@@ -262,8 +262,17 @@ export function renderPreviewRecipe(plan: DeployPlan, o: PreviewRecipeOptions): 
   const script = (lines: readonly string[]) => `${lines.join("\n")}\n`;
   const files = [
     ...rendered,
-    { path: "start.sh", content: script(switchCommands(template, initStepsFor(template))) },
-    { path: "rollback.sh", content: script(rollbackCommands(template)) },
+    // A preview's data is never restored: its scripts have no database step.
+    {
+      path: "start.sh",
+      content: script(
+        switchCommands(template, initStepsFor(template), undefined, { preview: true }),
+      ),
+    },
+    {
+      path: "rollback.sh",
+      content: script(rollbackCommands(template, undefined, { preview: true })),
+    },
     { path: "env/app.env", content: o.env.app },
     ...Object.entries(o.env.services).map(([name, content]) => ({
       path: `env/${name}.env`,

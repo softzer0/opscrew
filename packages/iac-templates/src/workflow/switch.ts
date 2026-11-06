@@ -763,27 +763,41 @@ function databaseRollback(plan: DeployPlan): boolean {
   return snapshotDatabases(plan).length > 0 || plan.app.migrations !== undefined;
 }
 
+/** How {@link switchCommands} and {@link rollbackCommands} render a script. */
+export interface ScriptOptions {
+  /**
+   * A preview's scripts (the preview recipe's template, whose plan has no `environment.previews`):
+   * no rollback changes a preview's data, so they have no database step.
+   */
+  preview?: boolean;
+}
+
 /**
- * The marker that a rollback is changing, or changed, the database (in the app's folder, mode
- * 0600): `APP_IMAGE=<image>`, the version that ran before, and `saved=<hex>`, the snapshot of its
- * database ({@link databaseStep}'s step 3), empty when none was taken. Written before step 4, so
- * {@link rollbackCommands} puts the database back when the earlier version then fails; every
- * start script removes an earlier one first.
+ * The marker of a rollback's database step (in the app's folder, mode 0600), written before it
+ * stops the app: `target=<hex>`, the version rolled back to; `APP_IMAGE=<image>`, the version that
+ * ran before; `saved=<hex>`, the snapshot of its database ({@link databaseStep}'s step 3), empty
+ * when none was taken; and `changed=1` from step 4 on, `0` before. {@link rollbackCommands} puts
+ * the database back with it, and starts the version that ran before, when the run then fails.
+ * Every start step removes an earlier one first (`SAVE_PREVIOUS` and the start script).
  */
-const DATABASE_CHANGED = ".database.changed";
+export const DATABASE_CHANGED = ".database.changed";
 
 /**
  * The approval's check, first in the script: `$target` is `$1`'s digest and `$running` the one
  * `.env` names, if any. In `MODE` `rollback`, {@link ROLLBACK_APPROVAL_FILE} is read and removed
  * at once, so it is used once:
  * - one for another version is ignored with a note, and the rollback keeps the data;
- * - one for `$target` sets `$database` to its choice (`snapshot`, offered only with a database, or
- *   `migrations`), or, past its time or with another choice, stops the script before any change:
- *   the user approved the switch and the database step together.
+ * - one for `$target` sets `$database` to its choice (`snapshot` with a database on the app's
+ *   server, `migrations` with `app.migrations`), or, past its time (an expiry of more than ten
+ *   digits is none) or with another choice, stops the script before any change: the user
+ *   approved the switch and the database step together.
  * The deploy's snapshot uses `$target` and `$running` too.
  */
 function approvalCheck(plan: DeployPlan): string[] {
-  const choices = [...(snapshotDatabases(plan).length > 0 ? ["snapshot"] : []), "migrations"];
+  const choices = [
+    ...(snapshotDatabases(plan).length > 0 ? ["snapshot"] : []),
+    ...(plan.app.migrations === undefined ? [] : ["migrations"]),
+  ];
   const file = ROLLBACK_APPROVAL_FILE;
   return [
     `rm -f ${DATABASE_CHANGED}`,
@@ -801,7 +815,7 @@ function approvalCheck(plan: DeployPlan): string[] {
     `      echo ${shellQuote(`::error::The one-time approval to change the database on this rollback (${file} on the server) names a choice this server can't carry out, so nothing was changed. Run opscrew rollback again.`)}`,
     "      exit 1 ;;",
     "    esac",
-    '    case "$expiry" in "" | *[!0-9]*) expiry=0 ;; esac',
+    '    case "$expiry" in "" | *[!0-9]* | ???????????*) expiry=0 ;; esac',
     '    if [ "$expiry" -le "$(date +%s)" ]; then',
     `      echo ${shellQuote("::error::The one-time approval to restore or migrate the database on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.")}`,
     "      exit 1",
@@ -819,32 +833,37 @@ function snapshotLogNote(plan: DeployPlan): string {
 
 /**
  * The rollback's database step (plan.md 12.4, FR-1927), in `MODE` `rollback` with an approval
- * (`$database` `snapshot` or `migrations`), before the switch; none without {@link
+ * (`$database` `snapshot` or `migrations`), before the switch; only with {@link
  * databaseRollback}. It refuses before any change when `.env` names no other version by digest,
- * or when the snapshot to restore is not complete on the server. Then:
+ * or when the snapshot to restore is not complete on the server. Then, with {@link
+ * DATABASE_CHANGED} written first (`changed=0`):
  * 1. kamal-proxy holds the app's requests ({@link holdRequests}, with the EXIT trap);
  * 2. the web, the workers and cron stop;
  * 3. the current databases on the app's server are dumped under the running version, as at a
- *    deploy, whether or not snapshots are on (`$saved`; none when the disk is too full or the app
- *    has none of the four), and {@link DATABASE_CHANGED} records it;
- * 4. the snapshot is restored (`snapshot_restore`), or the down migrations run ({@link
- *    migrationDown}) in a subshell.
+ *    deploy, whether or not snapshots are on (`$saved`; none when the app has none of the four);
+ *    a failed dump, or too little free disk for one, changes nothing: the running version starts
+ *    again and the script exits 1;
+ * 4. the marker says `changed=1`, and the snapshot is restored (`snapshot_restore`), or the down
+ *    migrations run ({@link migrationDown}) in a subshell.
  * The switch to `$1` that follows is always `recreate`'s. When step 4 fails, step 3's dump is
- * restored, if there is one, the running version's web, workers and cron start again (the ones
- * {@link PREVIOUS_PROCESSES} lists), the marker goes, and the script exits 1 with `.env`
- * unchanged; the requests resume on the exit. When step 3's dump fails, nothing was changed yet:
- * the same, without a restore.
+ * restored, the running version's web, workers and cron start again (the ones {@link
+ * PREVIOUS_PROCESSES} lists), the marker goes, and the script exits 1 with `.env` unchanged; the
+ * requests resume on the exit. When that restore fails too, no version starts on the database and
+ * the marker stays, so the rollback script tries once more ({@link databaseBack}). Without a
+ * dump (no database the step dumps), the running version starts on the database as step 4 left it.
  */
 function databaseStep(plan: DeployPlan): string[] {
-  if (!databaseRollback(plan)) return [];
   const folder = appFolder(plan);
   const databases = snapshotDatabases(plan);
   const processes = processServices(plan);
   const note = snapshotLogNote(plan);
   /** The stopped web, and the workers and cron that ran, of the version `.env` names, start again. */
   const start = `docker compose start app${processes.length === 0 ? "" : ` $(cat ${PREVIOUS_PROCESSES} 2> /dev/null || true)`}`;
-  const lost = (why: string) =>
-    `printf ${printfFormat(`::error::%s failed, and no copy of the database from before the rollback was saved (${why}), so the database may be partly changed; the running version starts again. ${note} Fix the cause, then run opscrew rollback again or restore a backup.`)} "$what" ${folder}`;
+  /** The marker with `changed` (0 before step 4, 1 from it on). */
+  const mark = (changed: 0 | 1) =>
+    `  (umask 077; printf 'target=%s\\nAPP_IMAGE=%s\\nsaved=%s\\nchanged=%s\\n' "$target" "$before" "$saved" ${changed} > ${DATABASE_CHANGED})`;
+  /** Changes nothing more: the running version starts again, the marker goes, the script stops. */
+  const giveUp = [`rm -f ${DATABASE_CHANGED}`, start, "exit 1"];
   const save =
     databases.length > 0
       ? [
@@ -852,25 +871,28 @@ function databaseStep(plan: DeployPlan): string[] {
           '  snapshot_take "$running" || snap=$?',
           '  if [ "$snap" -eq 1 ]; then',
           `    printf ${printfFormat(`::error::OpsCrew could not save the current database before changing it, so the rollback changed nothing and the running version starts again. ${note} Fix the cause and run opscrew rollback again, or keep the database as it is.`)} ${folder}`,
-          `    ${start}`,
-          "    exit 1",
+          `    ${giveUp.join("; ")}`,
           "  fi",
-          '  if [ "$snap" -eq 0 ]; then saved="$running"; fi',
+          '  if [ "$snap" -eq 2 ]; then',
+          `    echo ${shellQuote("::error::The server has too little free disk to save the current database before changing it, so the rollback changed nothing and the running version starts again. Free some space and run opscrew rollback again.")}`,
+          `    ${giveUp.join("; ")}`,
+          "  fi",
+          '  saved="$running"',
         ]
       : [];
   const putBack =
     databases.length > 0
       ? [
-          '    if [ -z "$saved" ]; then',
-          `      ${lost("the disk was too full")}`,
-          '    elif snapshot_restore "$saved"; then',
+          '    if snapshot_restore "$saved"; then',
           `      printf ${printfFormat(`::error::%s failed, so OpsCrew put the database back as it was before the rollback, and the running version starts again: the rollback changed nothing. ${note} Fix the cause and run opscrew rollback again.`)} "$what" ${folder}`,
-          "    else",
-          `      printf ${printfFormat(`::error::%s failed, and putting the database back as it was before the rollback failed too, so it may be partly changed; the running version starts again. Its copy from before the rollback stays in %s/${SNAPSHOTS_DIR}/%s: restore it before the app writes more. ${note}`)} "$what" ${folder} "$saved" ${folder}`,
+          `      ${giveUp.join("; ")}`,
           "    fi",
+          `    printf ${printfFormat(`::error::%s failed, and putting the database back as it was before the rollback failed too, so it may be partly changed, and no version of the app starts on it. Its copy from before the rollback stays in %s/${SNAPSHOTS_DIR}/%s: the rollback step tries once more to restore it. ${note}`)} "$what" ${folder} "$saved" ${folder}`,
+          "    exit 1",
         ]
       : [
-          `    ${lost("OpsCrew dumps only the PostgreSQL, MySQL, MariaDB and MongoDB databases on the app's server")}`,
+          `    printf ${printfFormat(`::error::%s failed, and no copy of the database from before the rollback was saved (OpsCrew dumps only the PostgreSQL, MySQL, MariaDB and MongoDB databases on the app's server), so the database may be partly changed; the running version starts again. ${note} Fix the cause, then run opscrew rollback again or restore a backup.`)} "$what" ${folder}`,
+          `    ${giveUp.join("; ")}`,
         ];
   const restore =
     databases.length === 0
@@ -899,25 +921,28 @@ function databaseStep(plan: DeployPlan): string[] {
           "  fi",
         ]),
     `  echo ${shellQuote("The rollback changes the database: the app's requests wait, and the app stops until the earlier version starts.")}`,
+    '  saved=""',
+    "  before=\"$(sed -n 's/^APP_IMAGE=//p' .env)\"",
+    mark(0),
     ...holdRequests(plan, [LOGOUT]).map((line) => `  ${line}`),
     `  docker compose stop ${["app", ...processes].join(" ")}`,
-    '  saved=""',
     ...save,
-    `  (umask 077; printf 'APP_IMAGE=%s\\nsaved=%s\\n' "$(sed -n 's/^APP_IMAGE=//p' .env)" "$saved" > ${DATABASE_CHANGED})`,
+    mark(1),
     "  failed=0",
     '  case "$database" in',
     ...restore,
-    "    migrations)",
-    '      what="Migrating the database down"',
-    "      if ! (",
-    ...migrationDown(plan).map((line) => `        ${line}`),
-    "      ); then failed=1; fi ;;",
+    ...(plan.app.migrations === undefined
+      ? []
+      : [
+          "    migrations)",
+          '      what="Migrating the database down"',
+          "      if ! (",
+          ...migrationDown(plan).map((line) => `        ${line}`),
+          "      ); then failed=1; fi ;;",
+        ]),
     "  esac",
     '  if [ "$failed" -ne 0 ]; then',
     ...putBack,
-    `    rm -f ${DATABASE_CHANGED}`,
-    `    ${start}`,
-    "    exit 1",
     "  fi",
     "fi",
   ];
@@ -959,9 +984,10 @@ export function switchCommands(
   plan: DeployPlan,
   init: readonly ServiceInitStep[],
   edgeFiles: EdgeFiles = { originTls: false, additions: false },
+  o: ScriptOptions = {},
 ): string[] {
   const steady = steadyServices(plan);
-  const data = databaseRollback(plan);
+  const data = o.preview !== true && databaseRollback(plan);
   const release =
     plan.app.releaseCommand === undefined
       ? []
@@ -1023,7 +1049,7 @@ export function switchCommands(
     ...release,
     // Before the switch: `recreate` writes `.env` first, and from then on the rollback acts.
     ...recordProcesses(processServices(plan)),
-    ...databaseStep(plan),
+    ...(data ? databaseStep(plan) : []),
     ...switching,
     ...startProcesses(plan, processServices(plan)),
     `echo finished > ${START_OUTCOME}`,
@@ -1068,7 +1094,11 @@ export function serverCommands(
  * ({@link databaseBack}). On this computer `localhost` is the app's hostname there, as the start
  * script had it.
  */
-export function rollbackCommands(plan: DeployPlan, localhost?: LocalhostSite): string[] {
+export function rollbackCommands(
+  plan: DeployPlan,
+  localhost?: LocalhostSite,
+  o: ScriptOptions = {},
+): string[] {
   const keepLines = [
     `outcome="$(cat ${START_OUTCOME} 2> /dev/null || true)"`,
     'if [ "$outcome" != kept ]; then',
@@ -1083,7 +1113,7 @@ export function rollbackCommands(plan: DeployPlan, localhost?: LocalhostSite): s
     ]),
     ...restoreProcesses(processServices(plan)),
   ];
-  const data = databaseRollback(plan);
+  const data = o.preview !== true && databaseRollback(plan);
   return [
     ...SCRIPT_ROOTS,
     "set -eu",
@@ -1112,14 +1142,17 @@ function recreatePlan(plan: DeployPlan): DeployPlan {
 }
 
 /**
- * The rollback script's lines for a run whose database step changed the database (plan.md 12.4,
- * {@link DATABASE_CHANGED}), before any other check: the earlier version failed, or the start
- * script stopped, after step 3. The app's requests wait and its containers stop, step 3's dump is
- * restored (without one, the database stays as the step left it, and the next deploy's release
- * command migrates it up again), and the version that ran before the run starts again by `back`
- * (the recreate switch and the workers and cron that ran). It prints `restored` when the earlier
- * version had taken over (whose app containers' lines `keepLines` keeps first), and `unchanged`
- * otherwise.
+ * The rollback script's lines for a run whose database step began (plan.md 12.4, {@link
+ * DATABASE_CHANGED}), before any other check, so the app never stays stopped: the earlier version
+ * failed, or the start script stopped, after the step stopped the app. They act only on this
+ * run's marker, which names `$1` as its target and the version `.env.previous` (this run's start
+ * step) names; another is an earlier run's and goes. The app's requests wait and its containers
+ * stop; once step 4 began (`changed=1`), step 3's dump is restored (without one, the database
+ * stays as the step left it, and the next deploy's release command migrates it up again; when the
+ * restore fails, the script stops with no version on the database). Then the version that ran
+ * before the run starts again by `back` (the recreate switch and the workers and cron that ran).
+ * It prints `restored` when the earlier version had taken over (whose app containers' lines
+ * `keepLines` keeps first), and `unchanged` otherwise.
  */
 function databaseBack(
   plan: DeployPlan,
@@ -1127,35 +1160,47 @@ function databaseBack(
   back: readonly string[],
 ): string[] {
   const folder = appFolder(plan);
-  const failed = `::error::The earlier version failed after the rollback changed the database, and putting the database back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays in %s/${SNAPSHOTS_DIR}/%s: restore it before the app writes more. ${snapshotLogNote(plan)}`;
+  const failed = `::error::The earlier version failed after the rollback changed the database, and putting the database back as it was before the rollback failed, so it may be partly changed, and no version of the app starts on it. Its copy from before the rollback stays in %s/${SNAPSHOTS_DIR}/%s: restore it, then start the app. ${snapshotLogNote(plan)}`;
   const restore =
     snapshotDatabases(plan).length === 0
       ? []
       : [
-          'elif snapshot_restore "$saved"; then',
-          `  echo ${shellQuote("The earlier version failed after the rollback changed the database, so OpsCrew put the database back as it was before the rollback.")}`,
-          "else",
-          `  printf ${printfFormat(failed)} ${folder} "$saved" ${folder}`,
+          '  elif snapshot_restore "$saved"; then',
+          `    echo ${shellQuote("The earlier version failed after the rollback changed the database, so OpsCrew put the database back as it was before the rollback.")}`,
+          "  else",
+          `    printf ${printfFormat(failed)} ${folder} "$saved" ${folder}`,
+          "    exit 1",
         ];
+  const field = (name: string) => `"$(sed -n 's/^${name}=//p' ${DATABASE_CHANGED})"`;
   return [
+    `if [ -f ${DATABASE_CHANGED} ]; then`,
+    `  marked=${field("target")}`,
+    `  before=${field("APP_IMAGE")}`,
+    '  if [ "$marked" != "${1##*@sha256:}" ] || ! grep -qxF "APP_IMAGE=$before" .env.previous 2> /dev/null; then',
+    `    rm -f ${DATABASE_CHANGED}`,
+    "  fi",
+    "fi",
     `if [ -f ${DATABASE_CHANGED} ]; then`,
     "  result=unchanged",
     '  if grep -qxF "APP_IMAGE=$1" .env 2> /dev/null; then',
     "    result=restored",
     ...keepLines.map((line) => `    ${line}`),
     "  fi",
-    `  saved="$(sed -n 's/^saved=//p' ${DATABASE_CHANGED})"`,
-    `  APP_IMAGE="$(sed -n 's/^APP_IMAGE=//p' ${DATABASE_CHANGED})"`,
+    `  saved=${field("saved")}`,
+    `  changed=${field("changed")}`,
+    '  APP_IMAGE="$before"',
     "  export APP_IMAGE",
     "  {",
     ...[
       ...holdRequests(plan, []),
       `docker compose stop ${["app", ...processServices(plan)].join(" ")}`,
-      `rm -f ${DATABASE_CHANGED}`,
-      'if [ -z "$saved" ]; then',
-      `  echo ${shellQuote("::warning::The earlier version failed after the rollback changed the database, and no copy of the database from before the rollback was saved, so it stays as the rollback left it while the version that ran before starts again. The next deploy's release command migrates it up again.")}`,
+      'if [ "$changed" = 1 ]; then',
+      '  if [ -z "$saved" ]; then',
+      `    echo ${shellQuote("::warning::The earlier version failed after the rollback changed the database, and no copy of the database from before the rollback was saved, so it stays as the rollback left it while the version that ran before starts again. The next deploy's release command migrates it up again.")}`,
       ...restore,
+      "  fi",
       "fi",
+      `rm -f ${DATABASE_CHANGED}`,
       ...back,
     ].map((line) => `    ${line}`),
     "  } >&2",

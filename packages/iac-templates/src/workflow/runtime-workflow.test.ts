@@ -185,13 +185,15 @@ describe("renderWorkflow", () => {
     expect(rollback?.run).toContain(".env.previous");
   });
 
-  it("rolls back only when starting or checking the new version failed", () => {
+  it("rolls back only when starting or checking the new version failed, or the start was cancelled", () => {
     const deploy = steps("deploy");
     expect(deploy.find((s) => s.id === "start")?.name).toBe("Start the new version");
     expect(deploy.find((s) => s.id === "health")?.name).toBe("Check that the app is healthy");
     const rollback = deploy.find((s) => s.name?.startsWith("Roll back"));
+    // A cancel during a rollback's database step reaches the rollback script, which puts the
+    // database back and starts the app again.
     expect(rollback?.if).toBe(
-      "failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')",
+      "(failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure')",
     );
     expect(deploy.at(-1)).toBe(rollback);
     expect(rollback?.run).toMatch(/exit 1\s*$/);

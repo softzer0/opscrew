@@ -152,7 +152,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           fi
           echo "Deploying \${TAG:-the new image} as $IMAGE"
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop && rm -f .env.previous && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
+          previous="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'cd /srv/apps/shop && rm -f .env.previous .database.changed && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi')"
           if [[ "$previous" == opscrew-local/* ]]; then previous=; fi
           if [[ -n "$previous" && ! "$previous" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then previous=unknown; fi
           echo "previous=$previous" >> "$GITHUB_OUTPUT"
@@ -290,7 +290,7 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           commit="\${TAG##*:}"
           echo "Rolled back to \\\`$IMAGE\\\` (built from \\\`\${commit%%-*}\\\`): no build, no release command." >> "$GITHUB_STEP_SUMMARY"
       - name: Roll back to the previous version
-        if: failure() && (steps.start.outcome == 'failure' || steps.health.outcome == 'failure')
+        if: (failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure')
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
           IMAGE: \${{ needs.build.outputs.image || needs.verify.outputs.image }}

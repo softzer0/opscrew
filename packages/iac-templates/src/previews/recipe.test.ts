@@ -152,13 +152,17 @@ describe("renderPreviewRecipe", () => {
     expect(services.seed.profiles).toEqual(["seed"]);
   });
 
-  it("takes no snapshot of a preview's databases", () => {
+  it("takes no snapshot of a preview's databases, and never changes its data on a rollback", () => {
     const plan = previewPlan();
     expect(snapshotsOn(previewTemplatePlan(plan))).toBe(false);
-    const start = recipe(plan)["template/start.sh"] ?? "";
+    const files = recipe(plan);
+    const start = files["template/start.sh"] ?? "";
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell syntax, not a JavaScript template.
     expect(start).toContain('MODE="${2:-deploy}"');
-    expect(start).not.toContain('if [ "$MODE" = deploy ] && [ -n "$running" ]');
+    for (const script of [start, files["template/rollback.sh"] ?? ""]) {
+      expect(script).toContain("docker compose");
+      expect(script).not.toMatch(/snapshot|\.rollback-database|\.database\.changed/);
+    }
   });
 
   it("puts @N@ where the preview's number goes, @R@ where its random part goes, and the tokens nowhere", () => {
