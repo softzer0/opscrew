@@ -833,7 +833,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T1940 Shared shell-test helpers, in `packages/iac-templates/src/workflow/__fixtures__/sh.ts` and the tests that use them (+ a shared Docker skip reason)
+- [x] T1940 Shared shell-test helpers, in `packages/iac-templates/src/workflow/__fixtures__/sh.ts` and the tests that use them (+ a shared Docker skip reason)
   - Owns: `packages/iac-templates/src/workflow/__fixtures__/sh.ts`, `packages/iac-templates/src/workflow/{snapshots,migrations,switch,rollback}.test.ts`, the iac-templates Docker tests' skip reasons
   - Depends: T1939
   - Accept:
