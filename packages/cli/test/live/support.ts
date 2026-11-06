@@ -358,17 +358,19 @@ export interface ServerCandidate {
 }
 
 /**
- * The x86 server types that are not deprecated and have a price in one of `locations`, cheapest
- * first (then by location preference, then by name). `forced` keeps only that type.
+ * The server types of `architecture` (x86 by default; `arm` for Hetzner's CAX) that are not
+ * deprecated and have a price in one of `locations`, cheapest first (then by location preference,
+ * then by name). `forced` keeps only that type.
  */
 export function serverCandidates(
   types: readonly HetznerServerType[],
   locations: readonly string[],
   forced?: string,
+  architecture: "x86" | "arm" = "x86",
 ): ServerCandidate[] {
   const candidates: (ServerCandidate & { rank: number })[] = [];
   for (const type of types) {
-    if (type.architecture !== "x86") continue;
+    if (type.architecture !== architecture) continue;
     if (type.deprecated === true || (type.deprecation ?? null) !== null) continue;
     if (forced !== undefined && type.name !== forced) continue;
     for (const price of type.prices) {

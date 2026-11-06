@@ -134,8 +134,9 @@ export interface HetznerIds {
 
 /**
  * Creates the throwaway server `name`: its firewall first when `firewall` is given, then the
- * test's public key, then the cheapest x86 server types in the nearby locations until Hetzner
- * accepts one (Ubuntu 24.04, IPv4 and IPv6), and waits until it runs. Each id goes into `ids` as
+ * test's public key, then the cheapest server types of `architecture` (x86 unless `arm`) in the
+ * nearby locations until Hetzner accepts one (Ubuntu 24.04, IPv4 and IPv6), and waits until it
+ * runs. Each id goes into `ids` as
  * soon as Hetzner returns it, so cleanup finds it even when a later step fails. Everything carries
  * the labels `managed-by=opscrew-e2e` and `run=<runId>`; cleanup deletes only those.
  */
@@ -146,6 +147,7 @@ export async function createThrowawayServer(options: {
   publicKey: string;
   locations: readonly string[];
   forcedType?: string;
+  architecture?: "x86" | "arm";
   firewall?: readonly FirewallRule[];
   ids: HetznerIds;
   log: (message: string) => void;
@@ -180,10 +182,16 @@ export async function createThrowawayServer(options: {
   if (types.status !== 200 || list === undefined) {
     throw new Error(`Could not list Hetzner server types (HTTP ${types.status}).`);
   }
-  const candidates = serverCandidates(list, options.locations, options.forcedType).slice(0, 8);
+  const architecture = options.architecture ?? "x86";
+  const candidates = serverCandidates(
+    list,
+    options.locations,
+    options.forcedType,
+    architecture,
+  ).slice(0, 8);
   if (candidates.length === 0) {
     throw new Error(
-      `No x86 server type${options.forcedType ? ` named ${options.forcedType}` : ""} is offered in ${options.locations.join(", ")}.`,
+      `No ${architecture} server type${options.forcedType ? ` named ${options.forcedType}` : ""} is offered in ${options.locations.join(", ")}.`,
     );
   }
   const refusals: string[] = [];

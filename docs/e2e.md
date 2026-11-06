@@ -2438,6 +2438,187 @@ OPSCREW_E2E_PREVIEWS_SHARED=1 OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_RE
 Not measured yet: about 1.5 hours, with two small servers (prod's and dev's) for that time (a few
 cents), three or four deploy runs and two preview runs.
 
+## Retarget anywhere
+
+`packages/cli/test/live/retarget-anywhere.test.ts`, with `OPSCREW_E2E_RETARGET_ANYWHERE=1`, runs
+feature 023's live pass in four legs. Each leg has its own run id, hostname, servers and cleanup,
+and is skipped with a message naming what it is missing. The legs run one after another; run one
+alone with vitest's `-t` (below).
+
+Every `opscrew retarget` run is non-interactive, as a script runs it:
+- each run passes `--yes`, and a move's runs `--allow-downtime`;
+- at a plan's stop, the next run is the command it printed (`--approve <hash>` and the names it
+  types with `--confirm`). A name other than the ones the leg expects (the app's, and in the
+  bucket's leg the old bucket's) stops the run before anything is approved;
+- when a move stops at its deploy workflow's pull request (`opscrew/deploy-setup`), that pull
+  request is merged and the move runs again. The files a `--finish` publishes are merged too;
+- `--finish` passes `--confirm <app>` and `--no-snapshot`.
+
+After a move, the plan's target must be the new one and its step `switched`; after `--finish`,
+the plan has no move.
+
+**The data of the server legs.** `examples/flask-sqlite` (its own SQLite file, written through
+`PUT /data`), with Postgres (`db`), MySQL (`mysql`) and a Valkey queue (`queue`) added to
+`services` in `opscrew/plan.yaml`, as a user adds them, and designed again. After the first deploy
+at Hetzner the data is seeded in the containers (each script runs with `docker exec` and gets its
+password from the container's own environment):
+- 1,000 rows in a table of each database;
+- 300 jobs in a Valkey list, saved to disk at once;
+- a value written through the app into its SQLite file.
+
+The pass keeps each table's count and checksum, the jobs' count and checksum, and the SHA-256 of
+the SQLite file. After each move, the same must be on the new side and the value must read back
+through the app.
+
+### The legs
+
+**Own server, across architectures** (`-t "own Arm server"`):
+1. A throwaway Arm server (the cheapest Hetzner CAX type near `OPSCREW_E2E_REGION`) is created
+   outside OpsCrew with the run's own SSH key, as the user's own server. `uname -m` must say
+   `aarch64`.
+2. The app at Hetzner (x86) with its data, as above.
+3. `retarget --to own --answers <file> --host-key <fingerprint>`, without `--allow-downtime`, until
+   it stops at the maintenance window. The answers are `server.host`, `server.port`, `server.user`
+   (root), `server.key`, `server.reachable` and `server.serve: proxy`.
+   **A forced copy failure** (SC-2302): MySQL's volume folder on the own server is made immutable
+   (`chattr +i`), and the window runs. It must fail and say "The maintenance window failed". The
+   move must still be at `deployed`, the app must answer through Cloudflare, every row, job and
+   file must be unchanged on the Hetzner server, and the value must read back. The folder is made
+   writable again even when a check fails.
+4. The window runs again and the move finishes. Every row, job and file must be on the own server,
+   and the app's image there must be `arm64`. `--finish` must leave nothing of the app at Hetzner.
+5. `retarget --to hetzner`: every row, job and file on the new Hetzner server (`x86_64`).
+   `--finish` must remove the app's containers and volumes from the own server, while root still
+   logs in and Hetzner still lists the server (SC-2304).
+6. `destroy`: nothing of the app left at Hetzner or in Cloudflare.
+
+**Portainer** (`-t "into your Portainer"`):
+1. A throwaway Hetzner server (its firewall lets Portainer's port in from this computer only) with
+   Docker, Portainer CE in a container, its admin, the local environment and the admin's API key,
+   which OpsCrew gets as `PORTAINER_API_KEY`.
+2. The app at Hetzner with its data, as above.
+3. `retarget --to portainer --answers <file> --portainer-cert <fingerprint> --portainer-address
+   <ipv4,ipv6>`, with the stack's Caddy and the updater (`portainer.web: caddy`,
+   `portainer.redeploy: updater`). The volumes are copied through Portainer's API. Every row, job
+   and file must be in the stack's containers (`opscrew-<app>`); `--finish` must leave nothing of
+   the app at Hetzner.
+4. `retarget --to hetzner`: every row, job and file on the new Hetzner server. `--finish` must
+   remove the app's stacks and volumes, and Portainer must still run with its environment
+   (SC-2304).
+5. `destroy`, as above.
+
+**A site** (`-t "GitHub Pages"`), in the public repository `OPSCREW_E2E_GITHUB_REPO_C`:
+1. `examples/hugo-site` designed for GitHub Pages. The repository must have no Pages site yet.
+2. `provision --pages-verification <stand-in>` (as in [GitHub Pages](#github-pages)) and the first
+   deploy: the site answers over HTTP at its hostname.
+3. `retarget --to cloudflare-workers`, its workflow pull request merged on the way. The switch
+   from Pages to the Worker must finish (the log says how many runs it took). The Worker must
+   exist and serve the site over HTTPS, and no record may point at GitHub. `--finish` must turn
+   the Pages site off.
+4. `retarget --to github-pages --pages-verification <stand-in>`: a record must point at GitHub
+   Pages, which serves the site. `--finish` must delete the Worker, and the Pages site must claim
+   the hostname.
+5. `destroy --delete-verification`: no Pages site and nothing of the site in Cloudflare.
+
+**DigitalOcean and a bucket** (`-t "to DigitalOcean"`), only with `OPSCREW_E2E_DIGITALOCEAN_TOKEN`:
+1. A throwaway Spaces key with full access is made through DigitalOcean's API
+   (`POST /v2/spaces/keys`). OpsCrew reads it as the new bucket's key
+   (`OPSCREW_NEW_STORAGE_ACCESS_KEY_ID`, `OPSCREW_NEW_STORAGE_SECRET_ACCESS_KEY`), and the Hetzner
+   bucket's key as `OPSCREW_STORAGE_*`.
+2. `examples/s3-uploads` at Hetzner, its bucket at Hetzner Object Storage
+   (`opscrew-e2e-<run id>`). A value is written through the app, and 200 files go into the bucket
+   through the app's own S3 client in its container, so the bucket's key never leaves the server.
+3. `retarget --to digitalocean`: the plan's bucket must be at DigitalOcean and the move must record
+   the Hetzner bucket as the one being left. The app on the Droplet must list the same 200 files
+   (names, ETags and sizes) in the new Spaces bucket, and the value must read back.
+4. `--finish` must type the old bucket's name with `--confirm` (the printed command). Hetzner must
+   then no longer have the bucket or anything of the app.
+5. With the Spaces key as `OPSCREW_STORAGE_*`, `destroy --delete-data`: nothing of the app at
+   DigitalOcean (Droplets tagged `opscrew-app:<app>`, the firewall `<app>-firewall`, the SSH key
+   `<app>-deploy`, the tag), at Hetzner or in Cloudflare, and no Spaces bucket.
+
+Each leg then has two steps that run even after a failure:
+- **A move left half-way:** when a failed step left a move recorded, `--finish` runs (after the
+  switch) or `--abort` (before it), typing only the leg's names, so the cleanup's `destroy` can run.
+- **Nothing leaked** (SC-2303), as for environments:
+  - every known secret (the tokens, the deploy key, the state passphrase, the generated
+    passwords, Portainer's key and passwords, the bucket keys) in every output, commit of every
+    branch, pull request of the run, audit entry, plan and state file;
+  - every plan the run saved, each kept after every command since an applied move deletes its
+    plans;
+  - every server address OpsCrew recorded (both sides of each move) in commits and pull requests,
+    and in each output outside the mentions that show it on purpose ("your server at …").
+
+### Cleanup
+
+The cleanup is the one for environments, after every step and always: `opscrew destroy` if needed
+(within its 10 minutes), then Hetzner's API by the app's labels (each Hetzner server of a move has
+them), GitHub's environments and deploy secrets, `main` put back to the example's commit, the
+throwaway server (the own server or Portainer's, with its SSH key and firewall), the app's DNS
+records, Worker and custom domains in Cloudflare, the Pages site the site leg made, and the
+repository reset (pull requests closed, every branch but `main` deleted). The bucket's leg then:
+- checks every bucket its plans named, each with its key: one still there is deleted when empty
+  and reported either way;
+- deletes what is left of the app at DigitalOcean, which must then list nothing;
+- deletes the throwaway Spaces key.
+
+**If a run was interrupted**, delete by hand what the environments test lists, and:
+- the throwaway server `opscrew-e2e-move-own-<run id>` or `opscrew-e2e-move-portainer-<run id>`
+  (labelled `managed-by=opscrew-e2e`), its SSH key and firewall;
+- at DigitalOcean, the Droplet, firewall, SSH key and tag above, the Spaces bucket, and the Spaces
+  key `opscrew-e2e-<run id>` (API → Spaces Keys);
+- at Hetzner, the bucket `opscrew-e2e-<run id>` (Object Storage);
+- the site leg's Worker (named after the app) and the Pages site in `OPSCREW_E2E_GITHUB_REPO_C`'s
+  Settings → Pages.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_RETARGET_ANYWHERE` | `1` runs this test. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | The server legs (own server, Portainer, DigitalOcean), as for environments. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | The Portainer leg: as for [your existing Portainer](#your-existing-portainer), Portainer pulls the app's image with it. |
+| `OPSCREW_E2E_REPO_READ_TOKEN` | The Portainer leg, when `OPSCREW_E2E_GITHUB_REPO` is private: as for your existing Portainer. |
+| `OPSCREW_E2E_GITHUB_REPO_C`, `OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN` | The site leg, as for [GitHub Pages](#github-pages) (a public repository) and [Cloudflare's hosting](#cloudflares-hosting) (the deploy token). It also needs `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN` and `OPSCREW_E2E_DOMAIN`. |
+| `OPSCREW_E2E_DIGITALOCEAN_TOKEN` | The bucket's leg. Its scopes as in [Setup](#setup), plus Spaces keys (create, read, delete). Without it the leg is skipped with a message. |
+| `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | The bucket's leg: as for [the components](#the-components). The test never deletes them. |
+| `OPSCREW_E2E_REGION` | Optional, as above. The bucket's leg needs `eu-central` (the default) or `eu-north`, where Hetzner has Object Storage. |
+
+Requirements as for your own server. The move to the Arm server builds the app's image on GitHub's
+Arm runner (the workflow pull request sets it).
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_E2E_RETARGET_ANYWHERE=1 OPSCREW_E2E_HCLOUD_TOKEN=… \
+  OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e OPSCREW_E2E_GITHUB_TOKEN=… \
+  OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com
+# Own server, across architectures.
+npx vitest run test/live/retarget-anywhere.test.ts -t "own Arm server"
+# Portainer.
+OPSCREW_E2E_GHCR_READ_TOKEN=… npx vitest run test/live/retarget-anywhere.test.ts -t "into your Portainer"
+# The site.
+OPSCREW_E2E_GITHUB_REPO_C=you/opscrew-e2e-public OPSCREW_E2E_CLOUDFLARE_DEPLOY_TOKEN=… \
+  npx vitest run test/live/retarget-anywhere.test.ts -t "GitHub Pages"
+# DigitalOcean and a bucket.
+OPSCREW_E2E_DIGITALOCEAN_TOKEN=… OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID=… \
+  OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY=… \
+  npx vitest run test/live/retarget-anywhere.test.ts -t "to DigitalOcean"
+```
+
+Run only this file: with `OPSCREW_E2E_DIGITALOCEAN_TOKEN` set, `live.test.ts` would also run its
+DigitalOcean passes. Without `-t`, every leg whose variables are set runs, one after another.
+
+Not measured yet. What each leg runs, at about 0.01 EUR (or USD) an hour per server of the
+cheapest types (check the providers' price lists):
+- **own server:** two Hetzner servers in turn for the app (x86) and the throwaway Arm server, for
+  about 2–3 hours; about six deploy runs, one of them on GitHub's Arm runner;
+- **Portainer:** two Hetzner servers in turn for the app and the Portainer server, for about
+  2–3 hours; about six deploy runs;
+- **site:** no server; GitHub Pages and a Worker on Cloudflare's free plan, about an hour and
+  four deploy runs;
+- **DigitalOcean and a bucket:** a Hetzner server, then a Droplet (about 0.01–0.04 USD an hour
+  for the size design picks), and Hetzner Object Storage and Spaces, each billed monthly in
+  part (about 5 EUR or USD a month, a few cents for the run's hours), for about 2 hours.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still

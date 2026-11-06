@@ -828,12 +828,15 @@ export class LiveRun {
   }
 
   /**
-   * The second half of step 1: creates the throwaway server (with `firewall` when given) outside
-   * OpsCrew, masks its addresses, pins its SSH host key, waits until root logs in with the test
-   * key and cloud-init is done, and checks the host key fingerprint on the server itself, as the
-   * user guide says. Returns that fingerprint.
+   * The second half of step 1: creates the throwaway server (with `firewall` when given; an Arm
+   * server with `architecture` `arm`) outside OpsCrew, masks its addresses, pins its SSH host key,
+   * waits until root logs in with the test key and cloud-init is done, and checks the host key
+   * fingerprint on the server itself, as the user guide says. Returns that fingerprint.
    */
-  async createServer(firewall?: readonly FirewallRule[]): Promise<string> {
+  async createServer(
+    firewall?: readonly FirewallRule[],
+    architecture?: "x86" | "arm",
+  ): Promise<string> {
     const { settings } = this.options;
     this.hetznerTouched = true;
     const server = await createThrowawayServer({
@@ -843,6 +846,7 @@ export class LiveRun {
       publicKey: this.publicKey,
       locations: this.locations(),
       ...(settings.serverType === undefined ? {} : { forcedType: settings.serverType }),
+      ...(architecture === undefined ? {} : { architecture }),
       ...(firewall === undefined ? {} : { firewall }),
       ids: this.hetznerIds,
       log: this.log,
