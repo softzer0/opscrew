@@ -38,6 +38,7 @@ import { CONNECTOR_MEMORY_MB } from "../tunnel";
 import type { RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN, hasCronJobs, planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
+import { offsiteVariables, RUNNING_IMAGE_FILE, SNAPSHOTS_MOUNT, stackSnapshots } from "./snapshots";
 
 /** The repository's first app's prod's {@link portainerDeployBranch}. */
 export const PORTAINER_DEPLOY_BRANCH = "opscrew-deploy";
@@ -277,21 +278,23 @@ const CADDY_VERSION_DIR = "/srv/opscrew-version";
  * Only the stamp and the app's containers change from one image to the next, so Portainer's
  * redeploy (Compose `up`, no forced recreate) leaves Caddy running and Caddy holds requests while
  * the app restarts. It runs as root, which owns the new volume, with no capabilities and no
- * network.
+ * network. With `snapshots`, it also writes the image into the snapshots volume
+ * ({@link RUNNING_IMAGE_FILE}), the version the snapshots record.
  */
-function stampService(): object {
+function stampService(snapshots: boolean): object {
+  const version = `printf '%s\\n' "$OPSCREW_APP_VERSION" > /version/version`;
+  const running = `printf '%s\\n' "$OPSCREW_APP_IMAGE" > ${RUNNING_IMAGE_FILE}.tmp && mv ${RUNNING_IMAGE_FILE}.tmp ${RUNNING_IMAGE_FILE}`;
   return {
     image: IMAGES.curl.ref,
     restart: "no",
     user: "0:0",
     network_mode: "none",
-    environment: { OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER },
-    entrypoint: [
-      "/bin/sh",
-      "-c",
-      composeLiteral(`printf '%s\\n' "$OPSCREW_APP_VERSION" > /version/version`),
-    ],
-    volumes: [`${VERSION_VOLUME}:/version`],
+    environment: {
+      OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER,
+      ...(snapshots ? { OPSCREW_APP_IMAGE: PORTAINER_IMAGE_PLACEHOLDER } : {}),
+    },
+    entrypoint: ["/bin/sh", "-c", composeLiteral(snapshots ? `${version} && ${running}` : version)],
+    volumes: [`${VERSION_VOLUME}:/version`, ...(snapshots ? [SNAPSHOTS_MOUNT] : [])],
     depends_on: { app: { condition: "service_started" } },
     read_only: true,
     ...memoryLimit(STAMP_MEMORY_MB),
@@ -452,6 +455,7 @@ export function portainerStackEnvKeys(
   }
   if (web.mode === "tunnel") opscrew.add(PORTAINER_STACK_VARIABLES.tunnelToken);
   if (stackOriginTls(plan, ctx) !== undefined) opscrew.add(PORTAINER_STACK_VARIABLES.originTls);
+  for (const variable of offsiteVariables(plan)) opscrew.add(variable);
   return { app: appEnvKeys(plan), opscrew: [...opscrew].sort() };
 }
 
@@ -557,9 +561,13 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
     ...Object.fromEntries(appEnvKeys(plan).map((name) => [name, `\${${name}}`])),
   });
   const backing = stackServices(plan);
-  // What the release command, the app, its workers and cron wait for: the healthy services and
-  // their finished one-time setup.
-  const ready = { ...backing.dependsOn, ...stackSetup(plan, backing) };
+  const snapshots = stackSnapshots(plan, backing, {
+    image: PORTAINER_IMAGE_PLACEHOLDER,
+    release: PORTAINER_RELEASE_PLACEHOLDER,
+  });
+  // What the release command, the app, its workers and cron wait for: the healthy services, their
+  // finished one-time setup and the snapshot before the release.
+  const ready = { ...backing.dependsOn, ...stackSetup(plan, backing), ...snapshots.ready };
 
   const app: Record<string, unknown> = {
     image: PORTAINER_IMAGE_PLACEHOLDER,
@@ -602,6 +610,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
       crontab: { configs: [STACK_CRONTAB] },
     }),
     backing.services,
+    snapshots.services,
   );
 
   const origin = stackOriginTls(plan, ctx);
@@ -618,7 +627,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
   }).join("\n");
   const ports = caddyPorts(web);
   const tlsVariable = PORTAINER_STACK_VARIABLES.originTls;
-  services.stamp = stampService();
+  services.stamp = stampService(snapshots.stamp);
   // Nothing here changes with the image, so a redeploy leaves Caddy running.
   services.caddy = {
     image: IMAGES.caddy.ref,
@@ -661,7 +670,7 @@ export function renderPortainerStack(plan: DeployPlan, ctx: RuntimeContext): Ren
     name: portainerStackName(plan),
     services,
     networks: { internal: {} },
-    volumes: Object.fromEntries(volumes.map((v) => [v, {}])),
+    volumes: { ...Object.fromEntries(volumes.map((v) => [v, {}])), ...snapshots.volumes },
     configs: {
       caddyfile: { content: composeLiteral(config) },
       ...backing.configs,

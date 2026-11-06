@@ -1,5 +1,6 @@
 export { PORTAINER_VERSION_PATH } from "../runtime/services";
 export { renderPortainerDeployment } from "./deployment";
+export { PORTAINER_OFFSITE_VARIABLES, portainerSnapshotsVolume } from "./snapshots";
 export {
   fillPortainerStack,
   PORTAINER_COMPOSE_FILE,
