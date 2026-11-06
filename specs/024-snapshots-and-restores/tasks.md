@@ -32,7 +32,7 @@ description: "Tasks for 024-snapshots-and-restores"
 
 ## Phase 1: Foundation
 
-- [ ] T2401 The spikes (lead with an agent): plan.md 11. S1 and S2 in local Docker, S3 live on a throwaway Hetzner server and the e2e R2 account. Results as research.md R7, one line per question; a finding that changes a design goes into plan.md first.
+- [x] T2401 The spikes (lead with an agent): plan.md 11. S1 and S2 in local Docker, S3 live on a throwaway Hetzner server and the e2e R2 account. Results as research.md R7, one line per question; a finding that changes a design goes into plan.md first.
   - Effort: high
 
 - [ ] T2402 The plan's fields and the contracts (lead): `deploy.snapshotStop`, `snapshots.schedule`, `snapshots.offsite` (plan.md 9.), `ServerSnapshotApi`'s list, delete and rebuild, and `TOOLS.age`'s pin (linux amd64 and arm64, SHA-256).
