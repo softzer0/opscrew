@@ -6,7 +6,7 @@ import type {
   ResourceChange,
 } from "@opscrew/contracts";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
-import { FakeEngine } from "../../testing";
+import { FakeEngine } from "./deploy";
 
 /** The bucket's resources as a plan of the `storage` root creates them. */
 export function bucketChanges(

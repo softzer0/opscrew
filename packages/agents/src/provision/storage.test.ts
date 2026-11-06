@@ -20,7 +20,7 @@ import {
   ScriptedApprovalHandler,
   testPlan,
 } from "../testing";
-import { bucketChanges, bucketEngine, RootEngine, withBucket } from "./__fixtures__/storage";
+import { bucketChanges, bucketEngine, RootEngine, withBucket } from "../testing/storage";
 import { findSavedPlan } from "./plan-apply";
 import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";

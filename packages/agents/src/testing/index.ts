@@ -4,6 +4,7 @@
  * nothing here reaches the network, a real server or a real cloud.
  */
 export * from "./addons";
+export * from "./bucket-move";
 export * from "./catalog";
 export * from "./connect";
 export * from "./deploy";
@@ -15,10 +16,14 @@ export * from "./logs";
 export * from "./move";
 export * from "./network";
 export * from "./own";
+export * from "./pages";
 export * from "./portainer";
 export * from "./previews";
 export * from "./registrars";
 export * from "./runner-github";
 export * from "./runner-machine";
+export * from "./serverless";
+export * from "./site-move";
 export * from "./sops";
 export * from "./state";
+export * from "./storage";

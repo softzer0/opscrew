@@ -474,7 +474,7 @@ export class LocalEdge {
       // figures), so Pebble's CA goes into it.
       const acme = "\tacme_ca https://pebble:14000/dir\n\tacme_ca_root /test/pebble.minica.pem\n";
       const lines = main.content.split("\n");
-      const open = lines.findIndex((line) => line === "{");
+      const open = lines.indexOf("{");
       if (open === -1) throw new Error("The rendered Caddyfile has no global options block.");
       main.content = [...lines.slice(0, open + 1), acme.trimEnd(), ...lines.slice(open + 1)].join(
         "\n",

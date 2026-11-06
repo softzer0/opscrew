@@ -65,7 +65,7 @@ import {
   writeArchitecture,
   writeFakeState,
 } from "../testing";
-import { bucketEngine, RootEngine, withBucket } from "./__fixtures__/storage";
+import { bucketEngine, RootEngine, withBucket } from "../testing/storage";
 import { readOriginTlsValues, stackServed } from "./origin-tls";
 import {
   portainerContainerUrl,

@@ -3,6 +3,7 @@ import {
   finishRetarget,
   HOST_KEY_FINGERPRINT,
   type MoveTargetId,
+  NEW_STORAGE_KEY_VARS,
   placeWords,
   type RetargetResult,
   type RetargetServices,
@@ -17,15 +18,15 @@ import {
   OpsCrewError,
   systemClock,
 } from "@opscrew/core";
-import { CloudProviderSchema, readArtifact } from "@opscrew/plan-schema";
-import { type Command, Option } from "commander";
 import {
-  askTypedName,
-  checkConfirmName,
-  formatRequest,
-  hashListed,
-  withAllowDowntime,
-} from "../approval";
+  CloudProviderSchema,
+  type DeployPlan,
+  readArtifact,
+  type ServerlessProvider,
+  ServerlessProviderSchema,
+} from "@opscrew/plan-schema";
+import { type Command, Option } from "commander";
+import { askTypedName, formatRequest, hashListed, withAllowDowntime } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
 import { CliExit, REFUSED_EXIT_CODE } from "../exit";
@@ -36,12 +37,17 @@ import { printNextSteps } from "../ui/output";
 import { checkPortainerCert, PORTAINER_CERT_DESCRIPTION } from "../ui/portainer";
 import { startQuestion } from "../ui/retarget";
 import { createStorageKeyPrompt } from "../ui/storage-key-prompt";
-import { addHostKeyOption, engineOption, YES_DESCRIPTION } from "./provision";
+import {
+  addHostKeyOption,
+  engineOption,
+  pagesVerificationPrompt,
+  YES_DESCRIPTION,
+} from "./provision";
 import { chooseEmptyInTerminal, newSideAnswers, parsePortainerAddress } from "./retarget-answers";
 
 /** Flags of `opscrew retarget` (FR-501, FR-2315). */
 export interface RetargetFlags {
-  to?: MoveTargetId;
+  to?: MoveTargetId | ServerlessProvider;
   option?: string;
   /** `--answers <file>`: the own server's (`server.*`) or Portainer's (`portainer.*`) answers. */
   answers?: string;
@@ -57,6 +63,10 @@ export interface RetargetFlags {
   empty?: string[];
   /** `--public-image`: the app's image is public, so Portainer pulls it without a registry entry. */
   publicImage?: boolean;
+  /** `--keep-bucket`: the app's bucket stays at the provider being left. */
+  keepBucket?: boolean;
+  /** `--pages-verification <value>`: GitHub's domain verification value (a move to GitHub Pages). */
+  pagesVerification?: string;
   approve?: string;
   allowDowntime?: boolean;
   dnsSwitched?: boolean;
@@ -65,7 +75,8 @@ export interface RetargetFlags {
   abort?: boolean;
   /** `--snapshot` true, `--no-snapshot` false, neither undefined (finish only). */
   snapshot?: boolean;
-  confirm?: string;
+  /** Each `--confirm <name>`: the app's name, or the bucket's for its deletion. */
+  confirm?: string[];
   yes?: boolean;
   /** `--app <key>`: the repository's app. */
   app?: string;
@@ -76,12 +87,10 @@ export interface RetargetFlags {
 export interface RetargetApprovalOptions {
   /** True when a person answers the prompts (no flag approves anything then, except below). */
   interactive: boolean;
-  /** The app name a deletion plan's `confirmPhrase` must equal (finish and abort only). */
-  appName?: string;
   /** `--approve <hash>`. */
   approve?: string;
-  /** The app name typed at the prompt or given with `--confirm`, once known. */
-  typed: () => string | undefined;
+  /** The names given with `--confirm`, or typed at the confirmation prompts so far. */
+  typed: () => readonly string[];
   /** Where approved requests are shown (`ctx.stdout`, which redacts). */
   print: (text: string) => void;
   /** The run's clock (default: the real time). */
@@ -89,22 +98,25 @@ export interface RetargetApprovalOptions {
 }
 
 /**
- * The plans a move's `--finish` or `--abort` deletes with: a server's infrastructure plan, the
- * teardown host plan of the user's own server, the stack teardown in the user's Portainer.
+ * The plans of a move that can ask for a typed name: a server's or a bucket's infrastructure
+ * plan, the teardown host plan of the user's own server, the stack teardown in the user's
+ * Portainer, and a site's Cloudflare and Pages plans.
  */
-const DELETION_KINDS: readonly ApprovalRequest["kind"][] = [
+const NAMED_KINDS: readonly ApprovalRequest["kind"][] = [
   "iac-apply",
   "host-apply",
   "stack-apply",
+  "cloudflare-apply",
+  "pages-apply",
 ];
 
 /**
  * The approvals of `opscrew retarget` on top of the normal handler (`base`); the maintenance
  * window's `--allow-downtime` is `MaintenanceWindowApproval`'s, around this handler:
- * - a deletion plan (`iac-apply`, `host-apply` or `stack-apply` with `allowDestroy` and the app
- *   name as `confirmPhrase`) is approved in a script
- *   only when `--approve` names its hash and `--confirm` is the app name, and in a terminal once
- *   the app name was typed at the confirmation prompt;
+ * - a plan that asks for a typed name (its `confirmPhrase`: the app's, or the bucket's for the
+ *   bucket's deletion) is approved in a script only when `--approve` names its hash and one of the
+ *   `--confirm` values is that name, and in a terminal once that name was typed at a confirmation
+ *   prompt;
  * - everything else goes to `base`: plans by `--approve <hash>`, `--yes` for the GitHub
  *   secrets, the push and the pull request, or the interactive prompt.
  */
@@ -115,31 +127,29 @@ export class RetargetApprovalHandler implements ApprovalHandler {
   ) {}
 
   async request(request: ApprovalRequest): Promise<ApprovalDecision> {
-    const { interactive, appName, approve, typed, print } = this.options;
+    const { interactive, approve, typed, print } = this.options;
     const clock = this.options.clock ?? systemClock;
-    const deletion =
-      DELETION_KINDS.includes(request.kind) &&
-      request.allowDestroy === true &&
-      appName !== undefined &&
-      request.confirmPhrase === appName;
-    if (deletion && !interactive) {
+    const phrase = NAMED_KINDS.includes(request.kind) ? request.confirmPhrase : undefined;
+    if (phrase === undefined) return this.base.request(request);
+    const what = request.allowDestroy === true ? "deleting" : "this plan";
+    if (!interactive) {
       const named = approve !== undefined && hashListed([approve], request.planHash);
-      if (named && typed() === appName) {
+      if (named && typed().includes(phrase)) {
         print(`  ✓ ${request.title} (approved with --approve and --confirm)\n`);
         return approvalDecision(clock, "--approve and --confirm flags", true, {
-          confirmation: appName,
+          confirmation: phrase,
         });
       }
       return approvalDecision(clock, "--approve and --confirm flags", false, {
         reason: named
-          ? `deleting needs --confirm ${appName}`
-          : `deleting needs --approve with this plan's hash ${request.planHash ?? ""} and --confirm ${appName}`,
+          ? `${what} needs --confirm ${phrase}`
+          : `${what} needs --approve with this plan's hash ${request.planHash ?? ""} and --confirm ${phrase}`,
       });
     }
-    if (deletion && typed() === appName) {
+    if (typed().includes(phrase)) {
       print(formatRequest(request));
-      print(`  ✓ ${request.title} (confirmed with the app name)\n`);
-      return approvalDecision(clock, "typed app name", true, { confirmation: appName });
+      print(`  ✓ ${request.title} (confirmed with the typed name)\n`);
+      return approvalDecision(clock, "typed name", true, { confirmation: phrase });
     }
     return this.base.request(request);
   }
@@ -159,8 +169,10 @@ export function flagProblems(flags: RetargetFlags): string[] {
       ...(flags.passwordLogins !== undefined ? ["--password-logins"] : []),
       ...(flags.portainerAddress !== undefined ? ["--portainer-address"] : []),
       ...(flags.portainerCert !== undefined ? ["--portainer-cert"] : []),
+      ...(flags.pagesVerification !== undefined ? ["--pages-verification"] : []),
       ...(flags.empty !== undefined ? ["--empty"] : []),
       ...(flags.publicImage ? ["--public-image"] : []),
+      ...(flags.keepBucket ? ["--keep-bucket"] : []),
       ...(flags.allowDowntime ? ["--allow-downtime"] : []),
       ...(flags.dnsSwitched ? ["--dns-switched"] : []),
     ];
@@ -169,8 +181,6 @@ export function flagProblems(flags: RetargetFlags): string[] {
         `${runOnly.join(", ")} only ${runOnly.length === 1 ? "applies" : "apply"} when starting or continuing a move, not with ${mode}.`,
       );
     }
-  } else if (flags.confirm !== undefined) {
-    problems.push("--confirm <app name> is only used with --finish or --abort.");
   }
   if (flags.snapshot !== undefined && !flags.finish) {
     problems.push(
@@ -203,27 +213,45 @@ export function flagProblems(flags: RetargetFlags): string[] {
   return problems;
 }
 
-/** The given flags about the new side that only a move to the user's own server or Portainer uses. */
-function sideFlags(flags: RetargetFlags): { name: string; targets: MoveTargetId[] }[] {
-  const all: [given: boolean, name: string, targets: MoveTargetId[]][] = [
+/** Where a move can go: a server target, or a site host for a site. */
+type RetargetTo = NonNullable<RetargetFlags["to"]>;
+
+const SERVERS: RetargetTo[] = ["hetzner", "digitalocean", "own", "portainer"];
+
+/**
+ * The given flags that only some targets use: the own server's and Portainer's answers, the
+ * bucket's (between cloud providers), GitHub Pages' verification, and a server move's maintenance
+ * window, its option and its data (a site's move has none).
+ */
+function sideFlags(flags: RetargetFlags): { name: string; targets: RetargetTo[] }[] {
+  const all: [given: boolean, name: string, targets: RetargetTo[]][] = [
     [flags.answers !== undefined, "--answers", ["own", "portainer"]],
     [flags.hostKey !== undefined, "--host-key", ["own"]],
     [flags.passwordLogins !== undefined, "--password-logins", ["own"]],
     [flags.portainerAddress !== undefined, "--portainer-address", ["portainer"]],
     [flags.portainerCert !== undefined, "--portainer-cert", ["portainer"]],
     [flags.publicImage === true, "--public-image", ["portainer"]],
+    [flags.keepBucket === true, "--keep-bucket", ["hetzner", "digitalocean"]],
+    [flags.pagesVerification !== undefined, "--pages-verification", ["github-pages"]],
+    [flags.option !== undefined, "--option", ["hetzner", "digitalocean"]],
+    [flags.empty !== undefined, "--empty", SERVERS],
+    [flags.allowDowntime === true, "--allow-downtime", SERVERS],
   ];
   return all.filter(([given]) => given).map(([, name, targets]) => ({ name, targets }));
 }
 
+/** The flags only a move's start uses, given while a move is recorded (the agents warn of the rest). */
+const START_ONLY = ["--answers", "--host-key", "--portainer-address", "--portainer-cert"];
+
 /**
  * The flags only a move's start uses (the new side's answers and its host key), given while a move
- * is recorded. `--password-logins` and `--public-image` are left out: later steps use them too.
+ * is recorded. `--password-logins`, `--public-image` and `--pages-verification` are left out:
+ * later steps use them too.
  */
 function startOnlyFlags(flags: RetargetFlags): string[] {
   return sideFlags(flags)
     .map((flag) => flag.name)
-    .filter((name) => name !== "--password-logins" && name !== "--public-image");
+    .filter((name) => START_ONLY.includes(name));
 }
 
 /** Flags a scripted run repeats with every command it is told to run next. */
@@ -231,12 +259,18 @@ function repeatedFlags(flags: RetargetFlags, environment: ChosenEnvironment): st
   return [
     ...(environment.flag !== "" ? [environment.flag.trim()] : []),
     ...(flags.engine !== undefined ? [`--engine ${flags.engine}`] : []),
-    // The new side's choices that later steps use (the stacks, the host plan).
+    // The new side's choices that later steps use (the stacks, the host plan, the Pages record).
     ...(flags.publicImage === true ? ["--public-image"] : []),
     ...(flags.passwordLogins !== undefined ? [`--password-logins ${flags.passwordLogins}`] : []),
+    ...(flags.pagesVerification !== undefined
+      ? [`--pages-verification ${flags.pagesVerification}`]
+      : []),
     ...(flags.yes === true ? ["--yes"] : []),
   ];
 }
+
+/** The new bucket's key in a script, read from these variables (there is no flag for a key). */
+const NEW_BUCKET_KEY = `${NEW_STORAGE_KEY_VARS.accessKeyId} and ${NEW_STORAGE_KEY_VARS.secretAccessKey}`;
 
 /** Advice for an approval a non-interactive run refused (unless the error already says how). */
 function scriptHint(ctx: CliContext, flags: RetargetFlags): (error: unknown) => string | undefined {
@@ -249,8 +283,31 @@ function scriptHint(ctx: CliContext, flags: RetargetFlags): (error: unknown) => 
       flags.yes === true
         ? ""
         : "add --yes to approve storing the GitHub deploy secrets, pushing and opening the pull request; ";
-    return `This run is not interactive: ${yes}each infrastructure plan needs --approve <hash>, the maintenance window --allow-downtime, and deletions --confirm <app name> with --approve <hash>. A changed SSH host key needs an interactive terminal.`;
+    return `This run is not interactive: ${yes}each infrastructure plan needs --approve <hash>, the maintenance window --allow-downtime, and deletions --confirm <name> (the app's, or the bucket's for its deletion) with --approve <hash>. A bucket moving to the new provider takes its key from ${NEW_BUCKET_KEY}. A changed SSH host key needs an interactive terminal.`;
   };
+}
+
+/**
+ * Stops before anything runs when a `--confirm` is no name a move's plans ask to be typed: the
+ * app's, or a bucket's of the move (the one being left, or the new one).
+ */
+function checkConfirmNames(given: readonly string[], plan: DeployPlan, command: string): void {
+  const names = [
+    plan.app.name,
+    ...(plan.storage?.objectStorage?.bucket !== undefined
+      ? [plan.storage.objectStorage.bucket]
+      : []),
+    ...(plan.retarget?.from.objectStorage?.bucket !== undefined
+      ? [plan.retarget.from.objectStorage.bucket]
+      : []),
+  ];
+  const wrong = given.find((name) => !names.includes(name.trim()));
+  if (wrong === undefined) return;
+  throw new OpsCrewError(
+    "APPROVAL_REFUSED",
+    `--confirm ${wrong} does not match the app name or a bucket of the move, so nothing was changed.`,
+    { hint: `Run \`${command} --confirm ${plan.app.name}\` with the app name.` },
+  );
 }
 
 async function runCommand(
@@ -276,13 +333,24 @@ async function runCommand(
     app: environment.app,
     environment: environment.name,
   });
-  // The key of the app's bucket, which stays where it is, when this computer has none yet.
+  // A bucket's key when this computer has none yet, and GitHub Pages' verification value.
   const services: RetargetServices = {
     ...(ctx.isInteractive
-      ? { askStorageKey: createStorageKeyPrompt(promptsOf(ctx), ctx.stdout) }
+      ? {
+          askStorageKey: createStorageKeyPrompt(promptsOf(ctx), ctx.stdout),
+          askPagesVerification: pagesVerificationPrompt(promptsOf(ctx), {
+            what: "the move",
+            rerun: "opscrew retarget",
+          }),
+        }
       : {}),
     ...servicesOf(ctx).retarget,
   };
+  const plan = await readArtifact("plan", deps0.paths.files.plan);
+  const command = `opscrew retarget${environment.flag}${mode === "run" ? "" : ` --${mode}`}`;
+  checkConfirmNames(flags.confirm ?? [], plan, command);
+  // The names given with --confirm, and those typed at the prompts as they come.
+  const typed = [...(flags.confirm ?? [])];
   const common = {
     ...(approve !== undefined ? { approvePlanHash: approve } : {}),
     ...(flags.engine !== undefined ? { engine: flags.engine } : {}),
@@ -301,7 +369,7 @@ async function runCommand(
         const handler = new RetargetApprovalHandler(base, {
           interactive: ctx.isInteractive,
           ...(approve !== undefined ? { approve } : {}),
-          typed: () => undefined,
+          typed: () => typed,
           print: ctx.stdout,
           clock,
         });
@@ -309,7 +377,6 @@ async function runCommand(
       },
     });
     const option = flags.option?.trim() || undefined;
-    const plan = await readArtifact("plan", deps0.paths.files.plan);
     // The new side's answers and the data's questions only when a move starts.
     const starting = plan.retarget === undefined;
     const requirements = starting
@@ -344,6 +411,10 @@ async function runCommand(
       ...(hostKey !== undefined ? { hostKey } : {}),
       ...(flags.passwordLogins !== undefined ? { passwordLogins: flags.passwordLogins } : {}),
       ...(flags.publicImage === true ? { publicImage: true } : {}),
+      ...(flags.keepBucket === true ? { keepBucket: true } : {}),
+      ...(flags.pagesVerification !== undefined
+        ? { pagesVerification: flags.pagesVerification }
+        : {}),
       ...(flags.empty !== undefined ? { empty: flags.empty } : {}),
       ...(flags.allowDowntime === true ? { allowDowntime: true } : {}),
       ...(flags.dnsSwitched === true ? { dnsSwitched: true } : {}),
@@ -375,15 +446,8 @@ async function runCommand(
   }
 
   // --finish and --abort delete a side: the app name, typed or given with --confirm.
-  const name = (await readArtifact("plan", deps0.paths.files.plan)).app.name;
-  const command = `opscrew retarget${environment.flag} --${mode}`;
-  const scripted = flags.confirm !== undefined;
-  checkConfirmName(
-    flags.confirm,
-    name,
-    "the app name",
-    `Run \`${command} --confirm ${name}\` with the app name.`,
-  );
+  const name = plan.app.name;
+  const scripted = typed.length > 0;
   if (!scripted && !ctx.isInteractive) {
     throw new OpsCrewError(
       "APPROVAL_REFUSED",
@@ -393,7 +457,6 @@ async function runCommand(
       },
     );
   }
-  let typed = scripted ? name : undefined;
   const deps = createPhaseDeps(ctx, {
     app: environment.app,
     environment: environment.name,
@@ -403,7 +466,6 @@ async function runCommand(
     wrapApprovals: (base, clock) =>
       new RetargetApprovalHandler(base, {
         interactive: ctx.isInteractive,
-        appName: name,
         ...(approve !== undefined ? { approve } : {}),
         typed: () => typed,
         print: ctx.stdout,
@@ -411,13 +473,14 @@ async function runCommand(
       }),
   });
   const confirm = async (preview: { name: string }) => {
-    if (scripted) return typed === preview.name;
-    typed = await askTypedName(
+    if (scripted) return typed.includes(preview.name);
+    const answer = await askTypedName(
       prompts,
       `Type ${preview.name} to delete everything listed above (anything else cancels)`,
       preview.name,
     );
-    return typed === preview.name;
+    if (answer !== undefined) typed.push(answer);
+    return answer === preview.name;
   };
   if (mode === "finish") {
     return finishRetarget(deps, {
@@ -444,14 +507,19 @@ export function register(program: Command, ctx: CliContext): void {
   const command = program
     .command("retarget")
     .description(
-      "Move the live deployment to another cloud provider, your own server or your Portainer, with its data, step by step",
+      "Move the live deployment to another cloud provider, your own server or your Portainer (a site: to the other site host), with its data, step by step",
     )
     .addOption(
       new Option(
         "--to <target>",
-        "Where to move to: a cloud provider, your own server (own) or your existing Portainer (default: the one in your answers)",
+        "Where to move to: a cloud provider, your own server (own) or your existing Portainer; a site moves between cloudflare-workers and github-pages (default: the one in your answers)",
       )
-        .choices([...CloudProviderSchema.options, "own", "portainer"])
+        .choices([
+          ...CloudProviderSchema.options,
+          "own",
+          "portainer",
+          ...ServerlessProviderSchema.options,
+        ])
         .conflicts(["finish", "abort"]),
     )
     .option("--option <id>", "Server option to move to without asking (ids are listed by the run)")
@@ -480,6 +548,14 @@ export function register(program: Command, ctx: CliContext): void {
       collect,
     )
     .option(
+      "--keep-bucket",
+      "Leave the app's bucket at the cloud provider being left (it keeps billing there) instead of moving it to the new provider's object storage",
+    )
+    .option(
+      "--pages-verification <value>",
+      "A site moving to GitHub Pages: the value of GitHub's domain verification record, which GitHub shows in your account's Pages settings once you add the domain there (a terminal asks for it)",
+    )
+    .option(
       "--approve <hash>",
       "Apply exactly the saved plan with this hash (printed by the previous run) and continue",
     )
@@ -506,7 +582,8 @@ export function register(program: Command, ctx: CliContext): void {
     .option("--no-snapshot", "With --finish, do not take a snapshot of the old server first")
     .option(
       "--confirm <name>",
-      "The app name, to run --finish or --abort without prompts (for scripts and CI)",
+      "The name a deletion asks to be typed, for scripts and CI: the app's, or the bucket's for its deletion; repeat for both (--confirm shop --confirm shop-uploads)",
+      collect,
     )
     .option("--yes", YES_DESCRIPTION);
   addHostKeyOption(addEnvOption(command))
@@ -522,19 +599,25 @@ export function register(program: Command, ctx: CliContext): void {
         "  stopped) until you finish the move. Your own server and your Portainer are never",
         "  deleted: finishing removes only the app from them. The cloud providers' API tokens",
         "  (HCLOUD_TOKEN, DIGITALOCEAN_TOKEN), PORTAINER_API_KEY for Portainer and your GitHub",
-        "  access are needed for the sides involved.",
+        "  access are needed for the sides involved. A bucket at the provider being left moves to",
+        "  the new provider's object storage (--keep-bucket leaves it). A site moves between",
+        "  Cloudflare's hosting and GitHub Pages, with no maintenance window.",
         "",
         "  opscrew retarget --to digitalocean   start the move, or continue it after a stop",
         "  opscrew retarget --to own            move to your own server (asks how to reach it)",
         "  opscrew retarget --to portainer      move into your Portainer (asks for it)",
+        "  opscrew retarget --to github-pages   move a site to GitHub Pages",
         "  opscrew retarget --finish            after the switch, remove the old side",
         "  opscrew retarget --abort             before the switch, undo the move",
         "",
         "In scripts each infrastructure plan stops with its hash: run the printed command with",
         "--approve <hash> to apply it. The maintenance window needs --allow-downtime, the GitHub",
-        "steps --yes, and --finish or --abort need --confirm <app name>. A move to your own server",
-        "or Portainer takes their answers with --answers <file> (and --host-key, --portainer-cert",
-        "and --portainer-address); --empty <service> starts that service's data empty.",
+        "steps --yes, and a plan that deletes needs --confirm <name> as the run says: the app's,",
+        "or the bucket's for its deletion (--finish and --abort always need one). A move to your",
+        "own server or Portainer takes their answers with --answers <file> (and --host-key,",
+        "--portainer-cert and --portainer-address); --empty <service> starts that service's data",
+        `empty. The new bucket's key comes from ${NEW_STORAGE_KEY_VARS.accessKeyId} and`,
+        `${NEW_STORAGE_KEY_VARS.secretAccessKey}; a terminal asks for it.`,
         "`opscrew status` shows where a move stands.",
       ].join("\n"),
     )

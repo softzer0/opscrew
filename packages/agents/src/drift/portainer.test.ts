@@ -10,16 +10,11 @@ import {
   type SelfHostedServiceKind,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import {
-  bucketChanges,
-  bucketEngine,
-  RootEngine,
-  withBucket,
-} from "../provision/__fixtures__/storage";
 import { portainerValueKeyFile } from "../provision/portainer";
 import { STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import { generatedValuesFile } from "../shared/app-secrets";
 import { DATA_ZONE, encryptedState, MANAGED_TUNNEL, plainState, withStateList } from "../testing";
+import { bucketChanges, bucketEngine, RootEngine, withBucket } from "../testing/storage";
 import {
   APP_IMAGE,
   deployImage,

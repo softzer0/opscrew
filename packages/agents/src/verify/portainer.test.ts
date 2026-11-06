@@ -12,7 +12,6 @@ import {
   writeArtifact,
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { withBucket } from "../provision/__fixtures__/storage";
 import { recordPortainerConnection } from "../shared";
 import {
   CLOUDFLARE_IPV4,
@@ -25,6 +24,7 @@ import {
   portainerPlan,
   ScriptedRunner,
 } from "../testing";
+import { withBucket } from "../testing/storage";
 import type { DnsResolver, TlsConnect } from "./net";
 import { renderPortainerRunbook } from "./portainer";
 import { runVerify } from "./run";

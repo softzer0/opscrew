@@ -13,7 +13,6 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { ROLLING_NOTE } from "../design/strategy";
-import { withBucket } from "../provision/__fixtures__/storage";
 import { STORAGE_KEY_VARS } from "../provision/storage";
 import { readServerAddresses, serverAddressesFile } from "../shared";
 import {
@@ -28,6 +27,7 @@ import {
   TOKENS,
 } from "../testing";
 import { sitePlan } from "../testing/serverless";
+import { withBucket } from "../testing/storage";
 import {
   caught,
   crashAfter,

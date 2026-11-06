@@ -2,7 +2,7 @@ import { OpsCrewError } from "@opscrew/core";
 import { cloudTarget } from "@opscrew/iac-templates";
 import type { DeployPlan, Retarget } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { testPlan } from "../testing";
+import { sitePlan, testPlan } from "../testing";
 import { moveInProgress, requireNoMoveInProgress } from "./guard";
 
 /** A plan moving from Hetzner Cloud to DigitalOcean, at `step`, optionally being aborted. */
@@ -72,9 +72,14 @@ describe("moveInProgress for a move to the user's own server or Portainer", () =
     web: { mode: "caddy" },
   });
 
+  const pages = { ...moving(), target: sitePlan({ provider: "github-pages" }).target };
+  const workers = { ...moving(), target: sitePlan({ provider: "cloudflare-workers" }).target };
+
   it.each([
     [own, "A move to your own server is in progress."],
     [portainer, "A move to your Portainer is in progress."],
+    [pages, "A move to GitHub Pages is in progress."],
+    [workers, "A move to Cloudflare hosting is in progress."],
   ])("names the target in words and refuses with that notice (%#)", (plan, message) => {
     expect(moveInProgress(plan)?.message).toBe(message);
     expect(() => requireNoMoveInProgress(plan)).toThrow(message);

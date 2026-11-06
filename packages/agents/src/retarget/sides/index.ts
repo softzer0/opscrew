@@ -1,11 +1,12 @@
 import type { ProjectPaths } from "@opscrew/core";
 import { OpsCrewError } from "@opscrew/core";
 import { portainerStackName } from "@opscrew/iac-templates";
-import type { DeployPlan, DeployTarget } from "@opscrew/plan-schema";
+import { type DeployPlan, type DeployTarget, isServerlessProvider } from "@opscrew/plan-schema";
 import {
   readPortainerConnection,
   readServerAddresses,
   recordPortainerConnection,
+  serverlessName,
   updateServerAddresses,
 } from "../../shared";
 import type { MoveServer } from "../removal";
@@ -125,6 +126,7 @@ export function cloudProviders(session: Pick<MoveBase, "plan">) {
 export function placeWords(target: Pick<DeployTarget, "provider">): string {
   const { provider } = target;
   if (provider === "hetzner" || provider === "digitalocean") return providerWords(provider).name;
+  if (isServerlessProvider(provider)) return serverlessName(provider);
   return provider === "own" ? "your own server" : "your Portainer";
 }
 
@@ -138,5 +140,6 @@ export function sideWords(target: Pick<DeployTarget, "provider">, which: MoveSer
     const words = providerWords(provider);
     return `the ${which} ${words.noun} on ${words.name}`;
   }
+  if (isServerlessProvider(provider)) return serverlessName(provider);
   return provider === "own" ? `your ${which} server` : "your Portainer";
 }

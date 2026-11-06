@@ -97,16 +97,17 @@ export interface InfraFlags {
 /**
  * GitHub Pages: the question for the value of GitHub's domain verification record, which GitHub
  * shows only on its settings `page` once the domain is added there. It is public in DNS, so the
- * answer is shown as typed.
+ * answer is shown as typed. `cancel` names what a cancel stops and the command to run again.
  */
-function pagesVerificationPrompt(
+export function pagesVerificationPrompt(
   prompts: UiPrompts,
+  cancel = { what: "provisioning", rerun: "opscrew provision" },
 ): NonNullable<ProvisionOptions["services"]>["askPagesVerification"] {
   return async ({ domain, page }) => {
     const answer = await prompts.text({
       message: `GitHub's verification value for ${domain}: on ${page}, click "Add a domain", enter ${domain} and paste the value of the TXT record GitHub shows (leave Verify for later)`,
     });
-    if (prompts.isCancel(answer)) throw cancelled("provisioning", "opscrew provision");
+    if (prompts.isCancel(answer)) throw cancelled(cancel.what, cancel.rerun);
     return answer;
   };
 }

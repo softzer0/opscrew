@@ -6,12 +6,6 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { renderStorage } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import {
-  bucketChanges,
-  bucketEngine,
-  RootEngine,
-  withBucket,
-} from "../provision/__fixtures__/storage";
 import { STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import { ensureStatePassphrase } from "../shared";
 import {
@@ -25,6 +19,7 @@ import {
   ScriptedDestroyEngine,
   testPlan,
 } from "../testing";
+import { bucketChanges, bucketEngine, RootEngine, withBucket } from "../testing/storage";
 import { serverData } from "./checks";
 import { runDestroy } from "./run";
 import type { DestroyServices } from "./types";

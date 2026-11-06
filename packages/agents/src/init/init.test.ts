@@ -17,13 +17,13 @@ import {
 } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
-import { withBucket } from "../provision/__fixtures__/storage";
 import {
   createTestPhaseDeps,
   ScriptedApprovalHandler,
   ScriptedRunner,
   type TestPhaseDeps,
 } from "../testing";
+import { withBucket } from "../testing/storage";
 import { type TestPlanOptions, testPlan } from "../verify/__fixtures__/plan";
 import { missingGitignoreEntries } from "./gitignore";
 import {

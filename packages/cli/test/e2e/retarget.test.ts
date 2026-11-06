@@ -10,11 +10,21 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { readServerAddresses } from "@opscrew/agents";
-import { APP, DOMAIN, NEW_SERVERS, OLD_IPV4, PORTAINER_URL, TOKENS } from "@opscrew/agents/testing";
+import {
+  APP,
+  DOMAIN,
+  NEW_SERVERS,
+  OLD_IPV4,
+  PORTAINER_URL,
+  SITE_MOVE,
+  TOKENS,
+} from "@opscrew/agents/testing";
+import { tfstateFile } from "@opscrew/core";
 import { type DeployPlan, readArtifact } from "@opscrew/plan-schema";
 import { afterEach, describe, expect, it } from "vitest";
 import { GIT, git, run } from "../../src/ui/__fixtures__/harness";
 import {
+  BUCKET_KEYS,
   HOST_KEY_FINGERPRINT,
   type MoveProject,
   moveProject,
@@ -23,10 +33,13 @@ import {
   PORTAINER_IPV4,
   PORTAINER_TOKEN,
   REPO_READ_TOKEN,
+  type SiteMoveProject,
+  siteMoveProject,
 } from "../../src/ui/__fixtures__/retarget";
 
 const STEP_TIMEOUT = 120_000;
 const NEW = NEW_SERVERS.digitalocean;
+const BUCKET = "shop-uploads";
 
 let move: MoveProject | undefined;
 afterEach(async () => {
@@ -524,4 +537,225 @@ describe.skipIf(GIT === undefined)("opscrew retarget between every kind of side"
     },
     STEP_TIMEOUT,
   );
+});
+
+describe.skipIf(GIT === undefined)("opscrew retarget with the app's bucket", () => {
+  const keys = [...Object.values(BUCKET_KEYS.old), ...Object.values(BUCKET_KEYS.new)];
+  const finish = (...confirms: string[]) => [
+    "--finish",
+    ...confirms.flatMap((name) => ["--confirm", name]),
+    "--no-snapshot",
+    "--yes",
+  ];
+
+  it(
+    "moves the bucket from Hetzner to DigitalOcean with the app, then deletes the old one after its own name",
+    async () => {
+      move = await moveProject({ bucket: true });
+      const m = move;
+      const moved = await approveEach(m, await startFlags(m, "digitalocean"), [
+        "--allow-downtime",
+        "--yes",
+      ]);
+      expect(moved.last.code, moved.text).toBe(0);
+      expect((await readPlan(m)).storage?.objectStorage?.provider).toBe("digitalocean");
+      // Every file reached the new bucket, copied by rclone on the new server.
+      expect([...m.rclone.next.keys()].sort()).toEqual(["a.png", "b.png", "c.pdf"]);
+
+      // The app's name alone takes the move up to the bucket's deletion, which stops for its name.
+      const toBucket = await approveEach(m, finish(APP), finish(APP), (text) =>
+        text.includes(`--confirm ${BUCKET}`),
+      );
+      expect(toBucket.last.code, toBucket.text).toBe(1);
+      expect(toBucket.text).toContain(`--confirm ${BUCKET}`);
+      const hash = toBucket.last.hash ?? "";
+      // With its hash but without its name, nothing is deleted.
+      const unnamed = await retarget(m, ...finish(APP), "--approve", hash);
+      expect(unnamed.code).toBe(1);
+      expect(unnamed.applied).toEqual([]);
+      // A name that is no bucket of the move, nor the app's, is refused before anything runs.
+      const wrong = await retarget(m, ...finish(APP, "shop-uplaods"), "--approve", hash);
+      expect(wrong.code).toBe(1);
+      expect(wrong.text).toContain("--confirm shop-uplaods does not match");
+
+      const finished = await approveEach(
+        m,
+        [...finish(APP, BUCKET), "--approve", hash],
+        finish(APP, BUCKET),
+      );
+      expect(finished.last.code, finished.text).toBe(0);
+      expect(finished.text).toContain("approved with --approve and --confirm");
+      expect((await readPlan(m)).retarget).toBeUndefined();
+      const text = `${moved.text}\n${toBucket.text}\n${finished.text}`;
+      for (const key of keys) expect(text).not.toContain(key);
+    },
+    STEP_TIMEOUT,
+  );
+
+  it(
+    "aborts before the switch, deleting the new bucket only after its own name",
+    async () => {
+      move = await moveProject({ bucket: true });
+      const m = move;
+      const started = await approveEach(m, await startFlags(m, "digitalocean"), ["--yes"], (text) =>
+        text.includes("--allow-downtime --approve"),
+      );
+      expect((await readPlan(m)).retarget?.step, started.text).toBe("deployed");
+      const abort = (...confirms: string[]) => [
+        "--abort",
+        ...confirms.flatMap((name) => ["--confirm", name]),
+        "--yes",
+      ];
+      const toBucket = await approveEach(m, abort(APP), abort(APP), (text) =>
+        text.includes(`--confirm ${BUCKET}`),
+      );
+      expect(toBucket.last.code, toBucket.text).toBe(1);
+      const aborted = await approveEach(
+        m,
+        [...abort(APP, BUCKET), "--approve", toBucket.last.hash ?? ""],
+        abort(APP, BUCKET),
+      );
+      expect(aborted.last.code, aborted.text).toBe(0);
+      const plan = await readPlan(m);
+      expect(plan.retarget).toBeUndefined();
+      expect(plan.storage?.objectStorage?.provider).toBe("hetzner");
+    },
+    STEP_TIMEOUT,
+  );
+
+  it(
+    "with --keep-bucket leaves the bucket where it is, and finishes with the app's name alone",
+    async () => {
+      move = await moveProject({ bucket: true });
+      const m = move;
+      const moved = await approveEach(
+        m,
+        [...(await startFlags(m, "digitalocean")), "--keep-bucket"],
+        ["--allow-downtime", "--yes"],
+      );
+      expect(moved.last.code, moved.text).toBe(0);
+      expect((await readPlan(m)).storage?.objectStorage?.provider).toBe("hetzner");
+      expect(m.rclone.runs).toEqual([]);
+      const finished = await approveEach(m, finish(APP), finish(APP));
+      expect(finished.last.code, finished.text).toBe(0);
+      expect(finished.text).not.toContain(`--confirm ${BUCKET}`);
+      expect((await readPlan(m)).storage?.objectStorage?.provider).toBe("hetzner");
+    },
+    STEP_TIMEOUT,
+  );
+
+  it("refuses --keep-bucket for a site host, the user's own server or Portainer", async () => {
+    move = await moveProject({ bucket: true });
+    const m = move;
+    for (const to of ["own", "portainer", "github-pages"]) {
+      const refused = await retarget(m, "--to", to, "--keep-bucket");
+      expect(refused.code).toBe(2);
+      expect(refused.text).toContain(`--keep-bucket does not apply to a move to ${to}.`);
+    }
+    expect((await readPlan(m)).retarget).toBeUndefined();
+  });
+});
+
+/** Runs `opscrew retarget <args>` in the site's project, non-interactively. */
+async function siteRun(s: SiteMoveProject, ...args: string[]) {
+  const ctx = s.context();
+  const code = await run(ctx, "retarget", ...args);
+  const text = ctx.output + ctx.errors;
+  for (const secret of [SITE_MOVE.CF_TOKEN, SITE_MOVE.GITHUB_TOKEN, SITE_MOVE.API_KEY]) {
+    expect(text).not.toContain(secret);
+  }
+  const hash = /Plan hash \(SHA-256\): ([0-9a-f]{64})/.exec(ctx.output)?.[1];
+  return { code, text, hash };
+}
+
+/**
+ * A site's move run like a script: `first`, then `then` again at each stop, with the plan's
+ * `--approve <hash>`, or once the deploy setup's pull request is merged.
+ */
+async function siteSteps(s: SiteMoveProject, first: string[], then: string[]) {
+  let last = await siteRun(s, ...first);
+  const texts = [last.text];
+  for (let i = 0; last.code === 1 && i < 12; i++) {
+    if (last.hash === undefined && last.text.includes("Merge https://github.com/")) {
+      await s.merge();
+      last = await siteRun(s, ...then);
+    } else {
+      expect(last.hash, last.text).toBeDefined();
+      last = await siteRun(s, ...then, "--approve", last.hash ?? "");
+    }
+    texts.push(last.text);
+  }
+  return { last, text: texts.join("\n") };
+}
+
+describe.skipIf(GIT === undefined)("opscrew retarget for a site between site hosts", () => {
+  const SITE = "example-app";
+  const { DOMAIN: SITE_DOMAIN, VERIFICATION, CUSTOM_DOMAIN, PAGES_RECORD } = SITE_MOVE;
+
+  it(
+    "moves a site from GitHub Pages to Cloudflare's hosting and back, each plan by its hash",
+    async () => {
+      const s = await siteMoveProject("github-pages");
+      const state = () => s.engine.states.get(tfstateFile(s.paths)) ?? new Set<string>();
+      const finishFlags = ["--finish", "--confirm", SITE, "--yes"];
+
+      // To Cloudflare's hosting: a version of the Worker goes live with each deploy, and the
+      // switch takes the app's name in a script.
+      s.github.deploy = s.workerDeploys;
+      const named = ["--confirm", SITE, "--yes"];
+      const toWorkers = await siteSteps(s, ["--to", "cloudflare-workers", ...named], named);
+      expect(toWorkers.last.code, toWorkers.text).toBe(0);
+      expect(state().has(CUSTOM_DOMAIN)).toBe(true);
+      const status = s.context();
+      expect(await run(status, "status")).toBe(0);
+      expect(status.output).toContain("retarget  moving from GitHub Pages to Cloudflare hosting;");
+      const finished = await siteSteps(s, finishFlags, finishFlags);
+      expect(finished.last.code, finished.text).toBe(0);
+      let plan = await s.readPlan();
+      expect(plan.retarget).toBeUndefined();
+      expect(plan.target.provider).toBe("cloudflare-workers");
+      expect(state().has(PAGES_RECORD)).toBe(false);
+      // The user merges the pull request with the final files, as --finish says.
+      await s.merge();
+
+      // And back to GitHub Pages, with GitHub's verification value given in the script.
+      const pagesFlags = ["--pages-verification", VERIFICATION, ...named];
+      const toPages = await siteSteps(s, ["--to", "github-pages", ...pagesFlags], pagesFlags);
+      expect(toPages.last.code, toPages.text).toBe(0);
+      expect(s.pages.state.site).toMatchObject({ cname: SITE_DOMAIN });
+      const again = await siteSteps(s, finishFlags, finishFlags);
+      expect(again.last.code, again.text).toBe(0);
+      plan = await s.readPlan();
+      expect(plan.retarget).toBeUndefined();
+      expect(plan.target.provider).toBe("github-pages");
+      expect(state()).toEqual(new Set([PAGES_RECORD]));
+    },
+    STEP_TIMEOUT,
+  );
+
+  it("refuses a server move's flags for a site, and a server target for a site", async () => {
+    const s = await siteMoveProject("cloudflare-workers");
+    for (const [args, says] of [
+      [
+        ["--to", "github-pages", "--empty", "db"],
+        "--empty does not apply to a move to github-pages.",
+      ],
+      [
+        ["--to", "github-pages", "--allow-downtime"],
+        "--allow-downtime does not apply to a move to github-pages.",
+      ],
+      [
+        ["--to", "cloudflare-workers", "--pages-verification", "x"],
+        "--pages-verification does not apply to a move to cloudflare-workers.",
+      ],
+    ] as const) {
+      const refused = await siteRun(s, ...args);
+      expect(refused.code).toBe(2);
+      expect(refused.text).toContain(says);
+    }
+    const server = await siteRun(s, "--to", "hetzner", "--yes");
+    expect(server.code).toBe(1);
+    expect(server.text).toContain("Nothing was changed.");
+    expect((await s.readPlan()).retarget).toBeUndefined();
+  });
 });

@@ -18,12 +18,6 @@ import {
   provisionPortainerProject,
   writeBranch,
 } from "../drift/__fixtures__/portainer-project";
-import {
-  bucketChanges,
-  bucketEngine,
-  RootEngine,
-  withBucket,
-} from "../provision/__fixtures__/storage";
 import { STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import { readPortainerConnection } from "../shared";
 import {
@@ -34,6 +28,7 @@ import {
   tunnelDeletes,
 } from "../shared/__fixtures__/tunnel";
 import { encryptedState, plainState, withStateList, writeFakeState } from "../testing";
+import { bucketChanges, bucketEngine, RootEngine, withBucket } from "../testing/storage";
 import { scriptedConfirm } from "./__fixtures__/confirm";
 import { runDestroy } from "./run";
 import type { DestroyOptions, DestroyPreview, DestroyServices } from "./types";

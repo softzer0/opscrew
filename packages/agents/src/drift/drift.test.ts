@@ -18,7 +18,6 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { renderDeployment } from "@opscrew/iac-templates";
 import { DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { RootEngine, withBucket } from "../provision/__fixtures__/storage";
 import { deploymentRenderContext } from "../provision/render";
 import { STORAGE_KEY_VARS, storageStateFile } from "../provision/storage";
 import type { ProvisionServices } from "../provision/types";
@@ -36,6 +35,7 @@ import {
   SERVER_IPV4,
   testPlan,
 } from "../testing";
+import { RootEngine, withBucket } from "../testing/storage";
 import { driftNextSteps, renderDriftReport } from "./render";
 import { runDrift } from "./run";
 import {

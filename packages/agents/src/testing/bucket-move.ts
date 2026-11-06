@@ -16,8 +16,8 @@ import type {
   ResourceMove,
 } from "@opscrew/contracts";
 import { IMAGES } from "@opscrew/iac-templates";
-import type { MoveEvent } from "../testing";
-import { noProviderSchemas } from "../testing/state";
+import type { MoveEvent } from "./move";
+import { noProviderSchemas } from "./state";
 
 type Slot = "this" | "previous";
 

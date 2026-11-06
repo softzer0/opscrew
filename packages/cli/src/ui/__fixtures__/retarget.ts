@@ -12,27 +12,35 @@ import {
   type PortainerAccess,
 
   type HostAdapterApi,
+  NEW_STORAGE_KEY_VARS,
   type RetargetServices,
   recordOwnServer,
   recordPortainerConnection,
+  STORAGE_KEY_VARS,
   updateServerAddresses,
 } from "@opscrew/agents";
 import {
   DOMAIN,
+  FakeBucketEngine,
   type FakeHosts,
   FakeHostServer,
   fakeCertificate,
   type FakePortainer,
   fakePortainer,
+  FakeRclone,
   fingerprintOf,
   freshFacts,
   HOST_KEY,
   moveFakes,
+  MoveRootsEngine,
   movePlan,
   OLD_IPV4,
   OLD_IPV6,
   PORTAINER_URL,
   preparedServerFacts,
+  projectRunner,
+  siteMoveHarness,
+  withBucket,
 } from "@opscrew/agents/testing";
 import type { FakeDocker } from "@opscrew/connector-docker/testing";
 import { portainerClient } from "@opscrew/connector-portainer";
@@ -45,7 +53,7 @@ import type {
 } from "@opscrew/contracts";
 import { NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema, type ServerlessProvider } from "@opscrew/plan-schema";
 import { type CliServices, withServices } from "../../deps";
 import { deployProject } from "./deploy";
 import { projectContext } from "./harness";
@@ -217,14 +225,29 @@ const portainerAccess: PortainerAccess = {
   listEnvironments: async () => [{ id: 3, name: "local", kind: "docker", up: true, arch: "amd64" }],
 };
 
+/** The keys of the app's bucket at Hetzner and of its new bucket at DigitalOcean (synthetic). */
+export const BUCKET_KEYS = {
+  old: {
+    accessKeyId: fakeSecret("aws-access-key-id", "old-bucket"),
+    secretAccessKey: fakeSecret("aws-secret-access-key", "old-bucket"),
+  },
+  new: {
+    accessKeyId: fakeSecret("aws-access-key-id", "new-bucket"),
+    secretAccessKey: fakeSecret("aws-secret-access-key", "new-bucket"),
+  },
+};
+
 /**
  * A live deployment of `shop` (Cloudflare DNS, self-hosted Postgres holding `orders before the
- * move`) on `from` (default Hetzner Cloud) and its fakes.
+ * move`) on `from` (default Hetzner Cloud) and its fakes. With `bucket`, its files are in the
+ * bucket `shop-uploads` at Hetzner Object Storage (holding three files), with the bucket's root
+ * and state as provision left them, both buckets' keys in the environment, and the servers'
+ * rclone one-offs.
  */
-export async function moveProject(options: { from?: MoveFrom } = {}) {
+export async function moveProject(options: { from?: MoveFrom; bucket?: boolean } = {}) {
   const from = options.from ?? "hetzner";
   const base = movePlan();
-  const plan =
+  const placed =
     from === "hetzner"
       ? base
       : DeployPlanSchema.parse({
@@ -232,6 +255,7 @@ export async function moveProject(options: { from?: MoveFrom } = {}) {
           target: targetOf(from),
           dns: { ...base.dns, proxied: false },
         });
+  const plan = options.bucket === true ? withBucket(placed, "hetzner") : placed;
   const project = await deployProject(plan);
   const fakes = await moveFakes(project.root, project.env);
   const { hosts, engine, paths } = fakes;
@@ -243,7 +267,22 @@ export async function moveProject(options: { from?: MoveFrom } = {}) {
     PORTAINER_API_KEY: PORTAINER_TOKEN,
     // The read-only token Portainer fetches the private repository's deploy branch with.
     OPSCREW_REPO_READ_TOKEN: REPO_READ_TOKEN,
+    ...(options.bucket === true
+      ? {
+          [STORAGE_KEY_VARS.accessKeyId]: BUCKET_KEYS.old.accessKeyId,
+          [STORAGE_KEY_VARS.secretAccessKey]: BUCKET_KEYS.old.secretAccessKey,
+          [NEW_STORAGE_KEY_VARS.accessKeyId]: BUCKET_KEYS.new.accessKeyId,
+          [NEW_STORAGE_KEY_VARS.secretAccessKey]: BUCKET_KEYS.new.secretAccessKey,
+        }
+      : {}),
   };
+  // The bucket's root's state, its engine beside the move's, and rclone on the servers.
+  const storage = new FakeBucketEngine(fakes.events, { bucket: "shop-uploads", region: "fsn1" });
+  const rclone = new FakeRclone(fakes.events);
+  if (options.bucket === true) {
+    await writeFile(path.join(paths.files.tfstateDir, "storage.tfstate"), '{"version":4}\n');
+    for (const name of ["a.png", "b.png", "c.pdf"]) rclone.old.set(name, `${name} bytes`);
+  }
 
   if (from !== "hetzner") {
     // No server of OpsCrew's in the state: DNS points at the old side's public address.
@@ -294,6 +333,10 @@ export async function moveProject(options: { from?: MoveFrom } = {}) {
   const portainerDocker = hosts.docker(PORTAINER_DOCKER);
   const fetch: FetchLike = async (input, init) => {
     const url = new URL(String(input));
+    // The object storage answers 404 for a deleted bucket.
+    if (/your-objectstorage\.com|digitaloceanspaces\.com/.test(url.hostname)) {
+      return new Response(null, { status: 404 });
+    }
     const at = url.hostname === DOMAIN ? engine.dnsServer()?.ipv4 : undefined;
     if (at === (from === "portainer" ? OLD_IPV4 : PORTAINER_IPV4)) {
       const ok = portainerServes(portainerDocker);
@@ -316,8 +359,11 @@ export async function moveProject(options: { from?: MoveFrom } = {}) {
     inspect: (remote) => ownHost(remote).inspect(remote),
     apply: (remote, plan, applyOptions) => ownHost(remote).apply(remote, plan, applyOptions),
   };
+  const moveEngine = new MoveRootsEngine(engine, storage);
   const services = {
     ...fakes.services,
+    engine: async () => moveEngine,
+    remote: rclone.wrap(hosts.remote),
     own: { host, homeDir: project.root },
     portainer: portainerServices(hosts, portainerApi),
   };
@@ -342,7 +388,37 @@ export async function moveProject(options: { from?: MoveFrom } = {}) {
     return ctx;
   };
 
-  return { ...fakes, project, plan, context, ownHosts, portainerApi, portainer: portainerDocker };
+  return {
+    ...fakes,
+    project,
+    plan,
+    context,
+    ownHosts,
+    portainerApi,
+    portainer: portainerDocker,
+    storage,
+    rclone,
+  };
 }
 
 export type MoveProject = Awaited<ReturnType<typeof moveProject>>;
+
+/**
+ * A static site of `example-app` live on `from` (`siteMoveHarness`: its roots' engine, GitHub
+ * Pages, the Worker in the Cloudflare zone, GitHub's deploy runs), with a CLI context for each
+ * `opscrew` run there.
+ */
+export async function siteMoveProject(from: ServerlessProvider) {
+  const site = await siteMoveHarness(from);
+  const runner = projectRunner();
+  const project = { root: site.root, dir: site.root, env: site.env, cleanup: async () => {} };
+  /** A test context for one non-interactive `opscrew` run in the site's project. */
+  const context = () => {
+    const ctx = projectContext(project, { services: { runner, fetch: site.fetch } });
+    withServices(ctx, { retarget: site.services });
+    return ctx;
+  };
+  return { ...site, context };
+}
+
+export type SiteMoveProject = Awaited<ReturnType<typeof siteMoveProject>>;

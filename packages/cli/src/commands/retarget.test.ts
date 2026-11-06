@@ -21,6 +21,7 @@ import { flagProblems, RetargetApprovalHandler } from "./retarget";
 
 const HASH = "a".repeat(64);
 const OTHER = "b".repeat(64);
+const BUCKET = "shop-uploads";
 const KEY = `SHA256:${"A".repeat(43)}`;
 
 /** Answers yes to whatever reaches it and records the requests. */
@@ -57,9 +58,7 @@ const apply = (planHash: string): ApprovalRequest => ({
   planHash,
 });
 
-function scripted(
-  options: { approve?: string; allowDowntime?: boolean; confirm?: string; appName?: string } = {},
-) {
+function scripted(options: { approve?: string; allowDowntime?: boolean; confirm?: string[] } = {}) {
   const printed: string[] = [];
   const base = new NonInteractiveApprovalHandler({
     ...(options.approve !== undefined ? { approvePlanHashes: [options.approve] } : {}),
@@ -68,9 +67,8 @@ function scripted(
   });
   const retarget = new RetargetApprovalHandler(base, {
     interactive: false,
-    ...(options.appName !== undefined ? { appName: options.appName } : {}),
     ...(options.approve !== undefined ? { approve: options.approve } : {}),
-    typed: () => options.confirm,
+    typed: () => options.confirm ?? [],
     print: (text) => printed.push(text),
   });
   // As `opscrew retarget` wraps it with `--allow-downtime`.
@@ -96,12 +94,7 @@ describe("RetargetApprovalHandler in a non-interactive run", () => {
   });
 
   it("never approves a changed host key, not even with --allow-downtime, --yes and --approve", async () => {
-    const { handler } = scripted({
-      allowDowntime: true,
-      approve: HASH,
-      confirm: APP,
-      appName: APP,
-    });
+    const { handler } = scripted({ allowDowntime: true, approve: HASH, confirm: [APP] });
     expect((await handler.request(hostKey)).approved).toBe(false);
   });
 
@@ -111,42 +104,65 @@ describe("RetargetApprovalHandler in a non-interactive run", () => {
     expect((await scripted().handler.request(apply(HASH))).approved).toBe(false);
   });
 
-  it("approves a deletion only with its hash and --confirm <app name>", async () => {
-    const ok = scripted({ approve: HASH, confirm: APP, appName: APP });
+  it("approves a deletion only with its hash and a --confirm naming its confirmPhrase", async () => {
+    const ok = scripted({ approve: HASH, confirm: [APP] });
     expect(await ok.handler.request(deletion(HASH))).toMatchObject({
       approved: true,
       confirmation: APP,
     });
     expect(ok.printed.join("")).toContain("approved with --approve and --confirm");
 
-    const otherHash = scripted({ approve: OTHER, confirm: APP, appName: APP });
+    const otherHash = scripted({ approve: OTHER, confirm: [APP] });
     expect(await otherHash.handler.request(deletion(HASH))).toMatchObject({ approved: false });
-    const noConfirm = scripted({ approve: HASH, appName: APP });
+    const noConfirm = scripted({ approve: HASH });
     expect(await noConfirm.handler.request(deletion(HASH))).toMatchObject({
       approved: false,
       reason: "deleting needs --confirm shop",
     });
-    // In `opscrew retarget` (no --finish or --abort) nothing is deleted at all.
-    const run = scripted({ approve: HASH, confirm: APP });
-    expect((await run.handler.request(deletion(HASH))).approved).toBe(false);
+    const otherName = scripted({ approve: HASH, confirm: [BUCKET] });
+    expect((await otherName.handler.request(deletion(HASH))).approved).toBe(false);
   });
 
-  it.each(["stack-apply", "host-apply"] as const)(
-    "approves a %s teardown only with its hash and --confirm <app name>",
+  it("takes either name as each request asks: the app's, or the bucket's for its deletion", async () => {
+    const bucket: ApprovalRequest = { ...deletion(HASH), confirmPhrase: BUCKET };
+    const both = scripted({ approve: HASH, confirm: [APP, BUCKET] });
+    expect(await both.handler.request(bucket)).toMatchObject({
+      approved: true,
+      confirmation: BUCKET,
+    });
+    expect(await both.handler.request(deletion(HASH))).toMatchObject({
+      approved: true,
+      confirmation: APP,
+    });
+    const appOnly = scripted({ approve: HASH, confirm: [APP] });
+    expect(await appOnly.handler.request(bucket)).toMatchObject({
+      approved: false,
+      reason: `deleting needs --confirm ${BUCKET}`,
+    });
+  });
+
+  it.each(["stack-apply", "host-apply", "pages-apply", "cloudflare-apply"] as const)(
+    "approves a %s that asks for the name only with its hash and --confirm <app name>",
     async (kind) => {
-      const teardown: ApprovalRequest = { ...deletion(HASH), kind, title: "Remove shop" };
-      const ok = scripted({ approve: HASH, confirm: APP, appName: APP });
-      expect(await ok.handler.request(teardown)).toMatchObject({
-        approved: true,
-        confirmation: APP,
-      });
-      const noConfirm = scripted({ approve: HASH, appName: APP });
-      expect(await noConfirm.handler.request(teardown)).toMatchObject({
+      const plan: ApprovalRequest = { ...deletion(HASH), kind, title: "Change shop" };
+      expect(await scripted({ approve: HASH, confirm: [APP] }).handler.request(plan)).toMatchObject(
+        { approved: true, confirmation: APP },
+      );
+      expect(await scripted({ approve: HASH }).handler.request(plan)).toMatchObject({
         approved: false,
         reason: "deleting needs --confirm shop",
       });
-      const otherHash = scripted({ approve: OTHER, confirm: APP, appName: APP });
-      expect((await otherHash.handler.request(teardown)).approved).toBe(false);
+      const otherHash = scripted({ approve: OTHER, confirm: [APP] });
+      expect((await otherHash.handler.request(plan)).approved).toBe(false);
+    },
+  );
+
+  it.each(["pages-apply", "cloudflare-apply"] as const)(
+    "grants a %s that asks for no name by its hash only",
+    async (kind) => {
+      const plan: ApprovalRequest = { ...apply(HASH), kind };
+      expect((await scripted({ approve: HASH }).handler.request(plan)).approved).toBe(true);
+      expect((await scripted({ approve: OTHER }).handler.request(plan)).approved).toBe(false);
     },
   );
 
@@ -158,27 +174,29 @@ describe("RetargetApprovalHandler in a non-interactive run", () => {
 });
 
 describe("RetargetApprovalHandler in a terminal", () => {
-  it("approves a deletion once the app name was typed, and asks for everything else", async () => {
+  it("approves a deletion once its name was typed, and asks for everything else", async () => {
     const base = new RecordingApprovals();
-    let typed: string | undefined;
+    const typed: string[] = [];
     const printed: string[] = [];
     const handler = new RetargetApprovalHandler(base, {
       interactive: true,
-      appName: APP,
       typed: () => typed,
       print: (text) => printed.push(text),
     });
     await handler.request(deletion(HASH));
     expect(base.requests).toHaveLength(1); // not typed yet: the normal prompt
-    typed = APP;
+    typed.push(APP);
     expect(await handler.request(deletion(HASH))).toMatchObject({
       approved: true,
-      approver: "typed app name",
+      approver: "typed name",
     });
     expect(printed.join("")).toContain(`Plan hash: ${HASH}`);
+    // The bucket's name was not typed: the normal prompt asks for it.
+    await handler.request({ ...deletion(HASH), confirmPhrase: BUCKET });
     await handler.request(maintenance);
     await handler.request(apply(HASH));
     expect(base.requests.map((r) => r.title)).toEqual([
+      deletion(HASH).title,
       deletion(HASH).title,
       maintenance.title,
       apply(HASH).title,
@@ -190,11 +208,16 @@ describe("flagProblems", () => {
   it("accepts the documented combinations", () => {
     expect(flagProblems({})).toEqual([]);
     expect(flagProblems({ to: "digitalocean", option: "x", allowDowntime: true })).toEqual([]);
+    expect(flagProblems({ to: "digitalocean", keepBucket: true })).toEqual([]);
     expect(flagProblems({ approve: HASH, dnsSwitched: true, yes: true })).toEqual([]);
-    expect(flagProblems({ finish: true, snapshot: false, confirm: APP, approve: HASH })).toEqual(
+    expect(
+      flagProblems({ finish: true, snapshot: false, confirm: [APP, BUCKET], approve: HASH }),
+    ).toEqual([]);
+    expect(flagProblems({ abort: true, confirm: [APP], approve: HASH })).toEqual([]);
+    // A site's switch takes the app's name in a script.
+    expect(flagProblems({ to: "github-pages", pagesVerification: "abc", confirm: [APP] })).toEqual(
       [],
     );
-    expect(flagProblems({ abort: true, confirm: APP, approve: HASH })).toEqual([]);
   });
 
   it("explains combinations that do not fit", () => {
@@ -204,11 +227,28 @@ describe("flagProblems", () => {
     expect(flagProblems({ abort: true, to: "hetzner", allowDowntime: true })[0]).toBe(
       "--to, --allow-downtime only apply when starting or continuing a move, not with --abort.",
     );
-    expect(flagProblems({ confirm: APP })[0]).toContain("only used with --finish or --abort");
+    expect(flagProblems({ finish: true, keepBucket: true, pagesVerification: "x" })[0]).toBe(
+      "--pages-verification, --keep-bucket only apply when starting or continuing a move, not with --finish.",
+    );
     expect(flagProblems({ abort: true, snapshot: true })[0]).toContain(
       "--snapshot is only used with --finish",
     );
     expect(flagProblems({ approve: "abc" })[0]).toContain("64-character");
+  });
+
+  it("refuses a server move's flags for a site, and a site's or a bucket's elsewhere", () => {
+    expect(
+      flagProblems({ to: "github-pages", empty: ["db"], allowDowntime: true, option: "x" }),
+    ).toEqual(["--option, --empty, --allow-downtime do not apply to a move to github-pages."]);
+    expect(flagProblems({ to: "cloudflare-workers", keepBucket: true })).toEqual([
+      "--keep-bucket does not apply to a move to cloudflare-workers.",
+    ]);
+    expect(flagProblems({ to: "cloudflare-workers", pagesVerification: "x" })).toEqual([
+      "--pages-verification does not apply to a move to cloudflare-workers.",
+    ]);
+    expect(flagProblems({ to: "own", keepBucket: true })).toEqual([
+      "--keep-bucket does not apply to a move to own.",
+    ]);
   });
 
   it("refuses the own server's and Portainer's flags for a move elsewhere", () => {
@@ -341,7 +381,6 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
     [["--to", "digitalocean", "--finish"]],
     [["--to", "aws"]],
     [["--snapshot"]],
-    [["--confirm", "shop"]],
     [["--approve", "not-a-hash"]],
     [["--abort", "--allow-downtime", "--confirm", "shop"]],
   ])("exits 2 for %j before anything happens", async (args) => {
@@ -524,7 +563,7 @@ describe.skipIf(!GIT)("opscrew retarget", () => {
       services: { prompts: new ScriptedPrompts([APP]), approvalHandler: approvals },
     });
     expect(await run(finish, "retarget", "--finish", "--no-snapshot"), finish.errors).toBe(0);
-    expect(finish.output).toContain("(confirmed with the app name)");
+    expect(finish.output).toContain("(confirmed with the typed name)");
     expect(m.events.filter((e) => e.type === "snapshot")).toEqual([]);
     // The protection lift is asked for; the deletion was confirmed with the typed name.
     expect(approvals.requests.slice(before).map((r) => r.kind)).toEqual([

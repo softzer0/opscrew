@@ -85,6 +85,7 @@ export { describeStackPlan, ROUTE_CHANGE_NOTE } from "./stack-plan";
 export {
   applyStorage,
   type BucketProvider,
+  NEW_STORAGE_KEY_VARS,
   type ProviderBucket,
   providerBucket,
   requireStorageKey,

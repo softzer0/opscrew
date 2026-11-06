@@ -7,7 +7,6 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { storageRootDir } from "@opscrew/iac-templates";
 import { readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
-import { withBucket } from "../provision/__fixtures__/storage";
 import {
   NEW_STORAGE_KEY_VARS,
   previousBucketKeyFile,
@@ -25,10 +24,16 @@ import {
   movePlan,
   OLD_IPV4,
 } from "../testing";
+import {
+  bucketChange,
+  FakeBucketEngine,
+  FakeRclone,
+  MoveRootsEngine,
+} from "../testing/bucket-move";
+import { withBucket } from "../testing/storage";
 import { caught, crashAfter, drive, moveOnDisk, run } from "./__fixtures__/assert";
 import { abortRetarget } from "./abort";
 import { bucketChoice } from "./bucket";
-import { bucketChange, FakeBucketEngine, FakeRclone, MoveRootsEngine } from "./bucket.fakes";
 import { finishRetarget } from "./finish";
 import type { RetargetResult, RetargetSummary } from "./types";
 
