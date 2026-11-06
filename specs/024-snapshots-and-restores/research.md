@@ -127,3 +127,54 @@ app's.
    keeps: one key restores both, and the server only ever holds the public half.
 4. **Scheduled snapshots' defaults:** weekly, the last 4 kept on the server, the off-server copies
    kept 90 days; each changeable in the plan.
+
+## R7. The spikes (T2401, 2026-11-06)
+
+**S1, the online copies** (local Docker, the pinned images: `python:3.14-slim` with SQLite 3.46.1,
+valkey-cli 8.1.10, redis-cli 8.10.2, Dragonfly v2.0.2; a writer running during every copy):
+- **SQLite:**
+  - `sqlite3.connect(src).backup(sqlite3.connect(dst))` copies consistently under writes.
+  - The one-off must mount the volume read-write, because a stopped app leaves no `-wal`/`-shm`
+    files and a read-only open fails. It must also run as the app's uid, or it can create
+    root-owned `-wal`/`-shm` files.
+  - `pragma journal_mode=delete` on the copy makes it one self-contained file.
+  - Restore: stop, replace, remove `-wal`/`-shm`, start.
+- **Valkey and Redis 8:**
+  - The copy: `valkey-cli`/`redis-cli -h <service> --rdb <file>` from a one-off of the service's
+    image (password in `REDISCLI_AUTH` from an env file) works against the running server.
+  - Cache mode restores by placing `dump.rdb`.
+  - Queue mode (`--appendonly yes`) ignores `dump.rdb`, even with the AOF folder gone. What
+    restores: replace `appendonlydir/` with the RDB as `appendonly.aof.1.base.rdb` plus a
+    manifest `file appendonly.aof.1.base.rdb seq 1 type b`.
+- **Dragonfly:**
+  - No `SYNC`, so `--rdb` fails. `SAVE RDB <name>` works while it runs, then the file is copied
+    from a one-off mounting the volume read-only. Cache mode has no default file name, so only
+    `SAVE RDB <name>` works.
+  - Restore in queue mode: move the old `dump*` files away (it loads the newest), place
+    `dump.rdb`, start.
+  - Restore in cache mode: `DFLY LOAD <file>` against the running server.
+
+**S2, Portainer-style scheduled services without the Docker socket** (PostgreSQL 17, Valkey in
+queue mode, a SQLite app as uid 1002):
+- Per-part loops sleep to the slot (`x=$(( (n/EVERY+1)*EVERY ))`), write `<file>.tmp`, rename it,
+  then touch `<part>.done` (or `.failed`).
+- A busybox `snapshots` service writes `about.json` once every part is done or failed, or the slot
+  is older than a give-up time, then sets modes 700/600.
+- Parts run as different users, so the `snapshots` service makes the volume `1777` first and the
+  others depend on it.
+- The image digest isn't visible without the socket: the deploy passes it in the stack's
+  environment.
+- An `offsite` service (the rclone image) fetches age v1.3.2 once with `rclone copyurl`, checks the
+  archive's and the binary's SHA-256, and streams `age -r … | rclone rcat` with `pipefail`, sending
+  `about.json` last. All files decrypted with the identity and matched.
+
+**S3, live** (throwaway resources, all deleted):
+- **Hetzner Object Storage:**
+  - A prefix rule with `Expiration.Days` is accepted and read back exactly, as are versioning,
+    `NoncurrentVersionExpiration` and `AbortIncompleteMultipartUpload`.
+  - A new bucket answers 404 for a few seconds after creation (retry).
+- **R2:** after the founder added Workers R2 Storage: Edit to the e2e token, a rule through
+  Cloudflare's API (`PUT /accounts/{id}/r2/buckets/{name}/lifecycle`, `deleteObjectsTransition`
+  by age, prefix `backups/`) was accepted and read back.
+- **Hetzner rebuild from a snapshot:** keeps the server ID, IPv4, IPv6 and the firewall;
+  `root_password` null with an SSH key. A live snapshot took 15 s, the rebuild 28 s.

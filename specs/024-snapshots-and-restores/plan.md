@@ -53,8 +53,9 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 | Kinds | Copy | Restore |
 |---|---|---|
 | PostgreSQL, MySQL, MariaDB, MongoDB | 019's dumps | 019's exact restores |
-| SQLite (the `sqlite` volume) | a pinned `python` one-off: `sqlite3.connect(src).backup(dst)`, the app running | stop the app, replace the file, remove `-wal`/`-shm`, start |
-| Valkey, Redis, Dragonfly | `valkey-cli`/`redis-cli --rdb <file>` from a one-off of the service's own image (an RDB over the network, the server running); Dragonfly's `SAVE` into its own dir if `--rdb` isn't served (spike S1) | stop the service, place the RDB, start |
+| SQLite (the `sqlite` volume) | a pinned `python` one-off mounting the volume read-write as the app's uid: `sqlite3.connect(src).backup(dst)`, then `journal_mode=delete` on the copy, the app running | stop the app, replace the file, remove `-wal`/`-shm`, start |
+| Valkey, Redis | `valkey-cli`/`redis-cli -h <service> --rdb <file>` from a one-off of the service's own image, the password in `REDISCLI_AUTH` from an env file, the server running | cache mode: stop, place `dump.rdb`, start; queue mode (AOF): stop, replace `appendonlydir/` with the RDB as `appendonly.aof.1.base.rdb` and its one-line manifest, start (R7) |
+| Dragonfly | `SAVE RDB <name>` against the running server, then copied out by a one-off mounting its volume read-only | queue mode: stop, move old `dump*` files away, place `dump.rdb`, start; cache mode: `DFLY LOAD <file>`, running (R7) |
 | Every other kind | stop only that service (`-t 120` and the clean-exit check, 023), tar its volumes, start it | stop it, empty and untar its volumes, start |
 
 ### 3. Servers: one script
@@ -89,8 +90,10 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 - **Scheduled:**
   - one small service per online kind in the stack, each built on that kind's own image, sleeping
     to the next slot and writing its file into the snapshots volume;
-  - a `snapshots` service writes `about.json` once they're done (spike S2 settles the
-    coordination);
+  - per-part loops write `<file>.tmp`, rename it and touch `<part>.done` (or `.failed`); a
+    busybox `snapshots` service makes the volume `1777` first, waits for every part, and writes
+    `about.json` (R7, S2);
+  - the image digest comes from the stack's environment, which the deploy sets;
   - stop-only kinds aren't scheduled on Portainer, because stopping another container needs the
     Docker socket. The output and the guide say so.
 - **Pre-release:** a one-off `snapshot` service in the stack runs before `release`, for the online
