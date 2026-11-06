@@ -4,10 +4,17 @@
  * localhost target's Compose file, which keeps a service's data in named volumes):
  * 1. Compose project A starts, and gets one record (or message, key, object) and, where the kind
  *    keeps its users in its data, a user with a password, each through the kind's own client;
- * 2. A stops cleanly (no SIGKILL at the end of its stop grace period);
- * 3. project B is created from the same file but not started, and each of A's volumes is copied
- *    into B's volume of the same Compose key with the connector's carrier, the digests matching;
- * 4. B starts, and reads the same data with the same logins.
+ * 2. A stops cleanly as the maintenance window stops it (`stop -t 120`: no SIGKILL at the end of
+ *    its stop grace period);
+ * 3. project B starts from the same file and stops (as the deploy and the window leave a move's
+ *    new side), and each of A's volumes is copied into B's volume of the same Compose key with the
+ *    connector's carrier, the digests matching;
+ * 4. A's same containers start again (`up -d`, as a failed window's rollback starts them), become
+ *    healthy and read their data, then stop;
+ * 5. B's same containers start again, and read the same data with the same logins.
+ *
+ * A restart in place fails only where the kernel sets `fs.protected_regular` (Ubuntu does; Docker
+ * Desktop's does not): a start that cannot write over its last start's file in /tmp.
  *
  * `OPSCREW_DOCKER_CROSS_ARCH=1` repeats each kind with B on the other architecture (`platform:`),
  * when the local Docker can emulate it (Docker Desktop's QEMU).
@@ -38,6 +45,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
 import { serviceEnvFiles } from "../provision/secrets";
 import { testPlan } from "../testing";
+import { STOP_SECONDS } from "./sides/types";
 
 function skipReason(): string | undefined {
   if (process.env.OPSCREW_DOCKER_TESTS !== "1") return "set OPSCREW_DOCKER_TESTS=1 to run it";
@@ -790,6 +798,18 @@ describe.skipIf(reason !== undefined)("each catalog kind's volumes, copied on Do
 
   beforeAll(() => {
     for (const ref of [IMAGES.busybox.ref, IMAGES.curl.ref]) remember(ref);
+    const regular = docker([
+      "run",
+      "--rm",
+      IMAGES.busybox.ref,
+      "cat",
+      "/proc/sys/fs/protected_regular",
+    ]);
+    if (regular === "0") {
+      console.warn(
+        "[agents] this Docker's kernel has fs.protected_regular=0: A's restart cannot show a start that fails on its last start's file in /tmp, as on Ubuntu",
+      );
+    }
     if (process.env.OPSCREW_DOCKER_CROSS_ARCH !== "1") return;
     const other = nativeArch() === "amd64" ? "arm64" : "amd64";
     const probe = spawnSync(
@@ -849,14 +869,19 @@ describe.skipIf(reason !== undefined)("each catalog kind's volumes, copied on Do
       await kase.seed({ ...c, project: a });
 
       const stopping = Date.now();
-      a.compose(["stop"], 900_000);
+      a.compose(["stop", "-t", String(STOP_SECONDS)], 900_000);
       const stopSeconds = Math.round((Date.now() - stopping) / 1000);
       const state = JSON.parse(docker(["inspect", "--format", "{{json .State}}", a.container()]));
       expect(state.ExitCode, "killed at the end of its stop grace period").not.toBe(137);
       expect(state.OOMKilled).toBe(false);
 
       b.compose(["pull", "--quiet"], 1_800_000);
-      b.compose(["create"]);
+      // As on a move's new side: the deploy started B, the window stops it before the copy.
+      // A first start under emulation (QEMU) can take far longer than a native one.
+      const wait = platform === undefined ? "600" : "1800";
+      b.compose(["up", "-d", "--wait", "--wait-timeout", wait], 1_800_000);
+      b.compose(["stop", "-t", String(STOP_SECONDS)], 900_000);
+      const idB = b.container();
       const label = "com.docker.compose.volume";
       const volumesOf = async (p: Project) =>
         new Map(
@@ -881,15 +906,25 @@ describe.skipIf(reason !== undefined)("each catalog kind's volumes, copied on Do
         copied.push(`${key} ${mb} MB in ${Date.now() - started} ms`);
       }
 
+      // SC-2302: after a failed window, A's own containers start again with their data.
+      const id = a.container();
+      a.compose(["up", "-d", a.service]);
+      expect(a.container(), "A's container, started again rather than made anew").toBe(id);
+      const restartsA = await waitHealthy(a, 600_000);
+      await eventually(() => kase.check({ ...c, project: a }));
+      a.compose(["stop", "-t", String(STOP_SECONDS)], 900_000);
+
       b.compose(["up", "-d", "--no-recreate"]);
+      expect(b.container(), "B's container, started again rather than made anew").toBe(idB);
       const restarts = await waitHealthy(b, platform === undefined ? 600_000 : 1_800_000);
       for (const step of initStepsFor(plan)) b.exec(step.check);
       await eventually(
         () => kase.check({ ...c, project: b }),
         platform === undefined ? 180_000 : 600_000,
       );
-      const restarted = restarts > 0 ? `; B restarted ${restarts} times before it was healthy` : "";
-      return `stopped in ${stopSeconds} s (exit ${state.ExitCode}); ${copied.join(", ")}${restarted}`;
+      const restarted = (side: string, n: number) =>
+        n > 0 ? `; ${side} restarted ${n} times before it was healthy` : "";
+      return `stopped in ${stopSeconds} s (exit ${state.ExitCode}); ${copied.join(", ")}; A started again${restarted("A", restartsA)}${restarted("B", restarts)}`;
     } finally {
       for (const p of [a, b]) {
         // A carrier left by a failed copy would keep its volume.

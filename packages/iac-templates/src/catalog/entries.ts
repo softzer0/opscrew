@@ -128,7 +128,12 @@ function redisModeArgs(service: PlanService): string[] {
     : ["--save", "", "--appendonly", "no", ...maxmemory, "--maxmemory-policy", "allkeys-lru"];
 }
 
-/** Where Valkey's and Redis 8's containers write the password, readable by the server only. */
+/**
+ * Where Valkey's and Redis 8's containers write the password, readable by the server only. Each
+ * start removes the last start's file first, as with `ACL_FILE`: a container keeps its /tmp when it
+ * stops (a move's window, a reboot), and with `fs.protected_regular` (Ubuntu's default) not even
+ * root may open a file another user owns there for writing, so the start would fail at every try.
+ */
 const REDIS_AUTH_FILE = "/tmp/opscrew-auth.conf";
 
 /** `arg` as one shell word: as it is, or quoted when the shell would split or expand it. */
@@ -204,6 +209,7 @@ function aclFileCommands(variable: string, rules: AclRules, user: string): strin
     `printf 'user %s on #%s %s\\n' "$name" "$hash" "$rules"; done;`,
   ].join(" ");
   return [
+    `rm -f ${ACL_FILE}`,
     "umask 077",
     `{ h=$(printf %s "$${variable}" | sha256sum | cut -d ' ' -f 1); printf 'user %s on #%s %s\\n' default "$h" '${DEFAULT_ACL}'; ${users} } > ${ACL_FILE}`,
     `chown ${user}:${user} ${ACL_FILE}`,
@@ -232,6 +238,7 @@ function passwordServerCommand(
           [start, "--aclfile", ACL_FILE, ...args].join(" "),
         ]
       : [
+          `rm -f ${REDIS_AUTH_FILE}`,
           `umask 077 && printf 'requirepass %s\\n' "$${variable}" > ${REDIS_AUTH_FILE}`,
           `chown ${server}:${server} ${REDIS_AUTH_FILE}`,
           [start, REDIS_AUTH_FILE, ...args].join(" "),

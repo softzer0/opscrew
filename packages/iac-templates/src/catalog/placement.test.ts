@@ -256,6 +256,7 @@ describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () =>
     expect([sh, flag]).toEqual(["sh", "-c"]);
     expect(script).toBe(
       [
+        "rm -f /tmp/opscrew-users.acl",
         "umask 077",
         aclFile("VALKEY_PASSWORD", REDIS_RULES),
         "chown valkey:valkey /tmp/opscrew-users.acl",
@@ -269,6 +270,7 @@ describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () =>
     const script = serviceSpec("redis").command?.(ctx(GRANTS, "queue"))?.[2];
     expect(script).toBe(
       [
+        "rm -f /tmp/opscrew-users.acl",
         "umask 077",
         aclFile("REDIS_PASSWORD", REDIS_RULES),
         "chown redis:redis /tmp/opscrew-users.acl",
@@ -282,6 +284,7 @@ describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () =>
     expect(command?.slice(0, 2)).toEqual(["sh", "-c"]);
     expect(command?.[2]).toBe(
       [
+        "rm -f /tmp/opscrew-users.acl",
         "umask 077",
         aclFile("DFLY_requirepass", {
           readOnly: "resetkeys %R~* +@read +ping +hello -@write",
@@ -319,6 +322,29 @@ describe("device logins on Valkey, Redis and Dragonfly (the ACL wrapper)", () =>
     expect(serviceSpec("postgres").environment(ctx(onlyDb, "db"))).not.toHaveProperty(
       "OPSCREW_ACL_USERS",
     );
+  });
+
+  it("remove the file each start writes in /tmp first, so a restart of the same container starts", () => {
+    // The container keeps its /tmp when it stops; with fs.protected_regular (Ubuntu's default),
+    // root may not open the last start's file there, owned by the server's user, for writing.
+    const plain = withServices([
+      { kind: "valkey", name: "cache" },
+      { kind: "redis", name: "queue", options: { mode: "queue" } },
+    ]);
+    const scripts = [
+      ...["cache", "queue"].map((name) => [plain, name] as const),
+      ...["cache", "queue", "store"].map((name) => [GRANTS, name] as const),
+    ].map(([plan, name]) => {
+      const c = ctx(plan, name);
+      return serviceSpec(c.service.kind).command?.(c)?.[2] ?? "";
+    });
+    for (const script of scripts) {
+      const written = [...script.matchAll(/> (\/tmp\/\S+)/g)].map((m) => m[1] ?? "");
+      expect(written).toHaveLength(1);
+      for (const file of written) {
+        expect(script.indexOf(`rm -f ${file} && `)).toBe(0);
+      }
+    }
   });
 
   it("put no password and no hash in the start command", () => {

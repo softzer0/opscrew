@@ -439,7 +439,7 @@ describe("the services' settings", () => {
     // The password goes into a file valkey-server reads, never onto its command line; the
     // entrypoint drops root only for a command that is valkey-server.
     const auth =
-      "umask 077 && printf 'requirepass %s\\n' \"$VALKEY_PASSWORD\" > /tmp/opscrew-auth.conf && chown valkey:valkey /tmp/opscrew-auth.conf && exec docker-entrypoint.sh valkey-server /tmp/opscrew-auth.conf";
+      "rm -f /tmp/opscrew-auth.conf && umask 077 && printf 'requirepass %s\\n' \"$VALKEY_PASSWORD\" > /tmp/opscrew-auth.conf && chown valkey:valkey /tmp/opscrew-auth.conf && exec docker-entrypoint.sh valkey-server /tmp/opscrew-auth.conf";
     // A queue never evicts and keeps an append-only file; a cache evicts and keeps nothing.
     expect(valkey.command?.(queue)).toEqual([
       "sh",
@@ -464,7 +464,7 @@ describe("the services' settings", () => {
     // The password goes into a file redis-server reads, never onto its command line; the
     // entrypoint loads the modules and drops root only for a command that is redis-server.
     const auth =
-      "umask 077 && printf 'requirepass %s\\n' \"$REDIS_PASSWORD\" > /tmp/opscrew-auth.conf && chown redis:redis /tmp/opscrew-auth.conf && exec docker-entrypoint.sh redis-server /tmp/opscrew-auth.conf";
+      "rm -f /tmp/opscrew-auth.conf && umask 077 && printf 'requirepass %s\\n' \"$REDIS_PASSWORD\" > /tmp/opscrew-auth.conf && chown redis:redis /tmp/opscrew-auth.conf && exec docker-entrypoint.sh redis-server /tmp/opscrew-auth.conf";
     expect(redis.command?.(queue)).toEqual([
       "sh",
       "-c",

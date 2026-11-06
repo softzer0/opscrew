@@ -659,7 +659,7 @@ describe("Postgres and Valkey", () => {
     expect(all.queue?.command).toEqual([
       "sh",
       "-c",
-      "umask 077 && printf 'requirepass %s\\n' \"$$VALKEY_PASSWORD\" > /tmp/opscrew-auth.conf && chown valkey:valkey /tmp/opscrew-auth.conf && exec docker-entrypoint.sh valkey-server /tmp/opscrew-auth.conf --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction",
+      "rm -f /tmp/opscrew-auth.conf && umask 077 && printf 'requirepass %s\\n' \"$$VALKEY_PASSWORD\" > /tmp/opscrew-auth.conf && chown valkey:valkey /tmp/opscrew-auth.conf && exec docker-entrypoint.sh valkey-server /tmp/opscrew-auth.conf --appendonly yes --maxmemory 96mb --maxmemory-policy noeviction",
     ]);
     expect(all.queue?.env_file).toEqual(["queue.env"]);
     expect(all.queue?.volumes).toEqual(["/srv/data/shop/queue:/data"]);
