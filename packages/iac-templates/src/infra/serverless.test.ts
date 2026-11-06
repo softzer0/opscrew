@@ -199,10 +199,10 @@ function movingSite(from: Record<string, unknown>, to: Record<string, unknown>):
   });
 }
 
-describe("renderInfra during a move between site hosts (ctx.siteLayout)", () => {
+describe("renderInfra during a move between site hosts (ctx.siteMove)", () => {
   const toWorkers = movingSite(PAGES, WORKERS);
   const toPages = movingSite(WORKERS, PAGES);
-  const beside = { siteLayout: { worker: "shell", pages: true } } as const;
+  const beside = { siteMove: true } as const;
 
   it("renders the Worker's shell beside GitHub Pages' records in one root and state", () => {
     const files = renderInfra(toWorkers, ctx(beside));
@@ -243,23 +243,7 @@ describe("renderInfra during a move between site hosts (ctx.siteLayout)", () => 
     expect(content(toPages)).toEqual(content(toWorkers));
   });
 
-  it("gives the Worker its custom domains once it holds the hostnames, with no records of GitHub Pages", () => {
-    const moving = renderInfra(toWorkers, ctx({ siteLayout: { worker: "bound" } }));
-    const plain = renderInfra(serverlessPlan(WORKERS), ctx());
-    expect(moving.map((f) => f.path)).toEqual(plain.map((f) => f.path));
-    const main = file(moving, "prod/main.tf");
-    expect(main).not.toMatch(/custom_domains|module "dns"/);
-    expect(main).toContain(block(file(plain, "prod/main.tf"), 'module "worker"'));
-    for (const name of ["variables.tf", "outputs.tf", "terraform.tfvars.json"]) {
-      expect(file(moving, `prod/${name}`), name).toBe(file(plain, `prod/${name}`));
-    }
-  });
-
-  it("refuses a layout where both hosts hold the hostnames, nothing is rendered, or no side is a Worker", () => {
-    expect(() =>
-      renderInfra(toPages, ctx({ siteLayout: { worker: "bound", pages: true } })),
-    ).toThrow(/both/);
-    expect(() => renderInfra(toPages, ctx({ siteLayout: {} }))).toThrow(/neither/);
+  it("refuses a plan with no Worker on either side", () => {
     expect(() => renderInfra(serverlessPlan(PAGES), ctx(beside))).toThrow(/Worker/);
   });
 });
@@ -482,11 +466,7 @@ const ROOTS = {
     absent: ["cloudflare_dns_record"],
   },
   "a site move: the Worker's shell beside GitHub Pages' records": {
-    files: () =>
-      renderInfra(
-        movingSite(PAGES, WORKERS),
-        ctx({ siteLayout: { worker: "shell", pages: true } }),
-      ),
+    files: () => renderInfra(movingSite(PAGES, WORKERS), ctx({ siteMove: true })),
     dir: "opscrew/infra/prod",
     creates: [
       "module.worker.terraform_data.worker",

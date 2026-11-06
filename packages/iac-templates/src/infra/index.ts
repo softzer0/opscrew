@@ -523,10 +523,9 @@ export function tfvars(plan: DeployPlan, ctx: RenderContext): Record<string, unk
  * records, or a subdomain's CNAME, to GitHub Pages, and `www.` when on; output `url`. GitHub's
  * domain verification record is in a root of its own ({@link renderPagesVerification}).
  *
- * While a site moves between the two (`ctx.siteLayout`), the root holds the layout's hosts: the
- * Worker with its custom domains or as a shell without them (`custom_domains = false`), and GitHub
- * Pages' records, which then wait for the Worker's changes (`depends_on`); `url` follows the host
- * that holds the hostnames.
+ * While a site moves between the two (`ctx.siteMove`), the root holds the Worker as a shell
+ * without custom domains (`custom_domains = false`) beside GitHub Pages' records, which wait for
+ * the Worker's changes (`depends_on`); `url` follows the records.
  *
  * A preview environment's root (`environment.previews`: a zone, no domain) gets its server as
  * usual, its web ports open to Cloudflare only, and, in place of the app's records, `module "dns"`

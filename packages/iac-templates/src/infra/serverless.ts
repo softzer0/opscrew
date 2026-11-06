@@ -2,7 +2,7 @@
 import { OpsCrewError } from "@opscrew/core";
 import type { CloudflareWorkersDeployTarget, DeployPlan } from "@opscrew/plan-schema";
 import { wrongTarget } from "../providers";
-import type { RenderContext, RenderedFile, SiteLayout } from "../types";
+import type { RenderContext, RenderedFile } from "../types";
 import { planFilePath } from "../workflow/shared";
 import { accountId, WWW_VARIABLE, zoneTfvars, zoneVariables } from "./cloudflare";
 import {
@@ -204,35 +204,6 @@ function siteRoot(
   };
 }
 
-/** The root of one host: the plan's site without a move. */
-function singleHostRoot(plan: DeployPlan, ctx: RenderContext, host: SiteHost): RootFiles {
-  return siteRoot(plan, ctx, [host], host);
-}
-
-/**
- * The root module of an app on Cloudflare's hosting: `module "worker"` (`cloudflare-workers`)
- * creates the Worker's shell and one custom domain per hostname (the domain, and `www.` when on),
- * which bring their own DNS records and certificates. The deploy workflow owns the Worker's code,
- * files, secrets and settings; this root never changes them. `target` is the plan's target. Needs
- * `ctx.cloudflare.accountId`.
- */
-function workersRoot(
-  plan: DeployPlan,
-  target: CloudflareWorkersDeployTarget,
-  ctx: RenderContext,
-): RootFiles {
-  return singleHostRoot(plan, ctx, workerHost(target, ctx, false));
-}
-
-/**
- * The root module of a site on GitHub Pages: only `module "dns"`, the `cloudflare-dns` module's
- * GitHub Pages mode (`cloudflare-dns/github-pages`), all DNS only. GitHub's domain verification
- * record has a root of its own ({@link renderPagesVerification}), so destroying this one keeps it.
- */
-function pagesRoot(plan: DeployPlan, ctx: RenderContext): RootFiles {
-  return singleHostRoot(plan, ctx, pagesHost(plan, ctx, false));
-}
-
 /** The Worker of a move between site hosts: the plan's target, else the move's old side. */
 function movingWorker(plan: DeployPlan): CloudflareWorkersDeployTarget {
   if (plan.target.provider === "cloudflare-workers") return plan.target;
@@ -242,43 +213,38 @@ function movingWorker(plan: DeployPlan): CloudflareWorkersDeployTarget {
 }
 
 /**
- * The root module of a move between Cloudflare's hosting and GitHub Pages (`layout`), in one root
- * and state, so one plan moves the hostnames from one host to the other: the Worker
- * (`module "worker"`, the plan's or the old side's) with its custom domains (`bound`) or as a shell
- * without them (`shell`), and GitHub Pages' DNS records (`module "dns"`), which wait for the
- * Worker's changes when both are there. The Worker `bound` alone renders the plain Worker root
- * under the move's note. Throws when both hosts would hold the hostnames, or neither is rendered.
- */
-function siteMoveRoot(plan: DeployPlan, layout: SiteLayout, ctx: RenderContext): RootFiles {
-  const { worker, pages = false } = layout;
-  if (worker === "bound" && pages) {
-    throw wrongTarget(
-      "A site move's root cannot give the hostnames to both the Worker and GitHub Pages.",
-    );
-  }
-  const workers =
-    worker === undefined ? [] : [workerHost(movingWorker(plan), ctx, worker === "shell")];
-  const records = pages ? [pagesHost(plan, ctx, worker !== undefined)] : [];
-  const live = worker === "bound" ? workers[0] : (records[0] ?? workers[0]);
-  if (live === undefined) {
-    throw wrongTarget("A site move's root renders neither the Worker nor GitHub Pages.");
-  }
-  return siteRoot(plan, ctx, [...workers, ...records], live, [
-    "# A move to another site host is in progress: `opscrew retarget` manages these files until the",
-    "# move is finished (`opscrew retarget --finish`) or aborted (`opscrew retarget --abort`).",
-  ]);
-}
-
-/**
- * The root module of a site: both hosts' during a move between site hosts (`ctx.siteLayout`,
- * {@link siteMoveRoot}), else the plan's target's ({@link workersRoot}, {@link pagesRoot});
+ * The root module of a site:
+ * - On Cloudflare's hosting, `module "worker"` (`cloudflare-workers`) creates the Worker's shell
+ *   and one custom domain per hostname (the domain, and `www.` when on), which bring their own DNS
+ *   records and certificates. The deploy workflow owns the Worker's code, files, secrets and
+ *   settings; this root never changes them. Needs `ctx.cloudflare.accountId`.
+ * - On GitHub Pages, only `module "dns"`, the `cloudflare-dns` module's GitHub Pages mode
+ *   (`cloudflare-dns/github-pages`), all DNS only. GitHub's domain verification record has a root
+ *   of its own ({@link renderPagesVerification}), so destroying this one keeps it.
+ * - While a site moves between the two (`ctx.siteMove`), in one root and state: the Worker (the
+ *   plan's or the old side's) as a shell without custom domains, beside GitHub Pages' records,
+ *   which wait for the Worker's changes, so a plan moving the hostnames to GitHub Pages deletes the
+ *   custom domains first. The `url` output follows the records, which hold the hostnames then.
+ *
  * `undefined` for a plan on another target.
  */
 export function siteRootModule(plan: DeployPlan, ctx: RenderContext): RootFiles | undefined {
-  if (ctx.siteLayout !== undefined) return siteMoveRoot(plan, ctx.siteLayout, ctx);
   const { target } = plan;
-  if (target.provider === "cloudflare-workers") return workersRoot(plan, target, ctx);
-  if (target.provider === "github-pages") return pagesRoot(plan, ctx);
+  if (ctx.siteMove === true) {
+    const records = pagesHost(plan, ctx, true);
+    return siteRoot(plan, ctx, [workerHost(movingWorker(plan), ctx, true), records], records, [
+      "# A move to another site host is in progress: `opscrew retarget` manages these files until the",
+      "# move is finished (`opscrew retarget --finish`) or aborted (`opscrew retarget --abort`).",
+    ]);
+  }
+  if (target.provider === "cloudflare-workers") {
+    const worker = workerHost(target, ctx, false);
+    return siteRoot(plan, ctx, [worker], worker);
+  }
+  if (target.provider === "github-pages") {
+    const records = pagesHost(plan, ctx, false);
+    return siteRoot(plan, ctx, [records], records);
+  }
   return undefined;
 }
 
