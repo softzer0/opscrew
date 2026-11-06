@@ -674,7 +674,7 @@ Shipped with 023's release (T2319). The rules above hold. Additionally:
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema`
   - Effort: medium
 
-- [ ] T1932 [US8] Detect each down-migration tool's commands and keep them in the plan, in `packages/detect/src/release/**`, `packages/agents/src/design/{release,kept-edits}.ts` and the examples' `expected.json` (+ tests)
+- [x] T1932 [US8] Detect each down-migration tool's commands and keep them in the plan, in `packages/detect/src/release/**`, `packages/agents/src/design/{release,kept-edits}.ts` and the examples' `expected.json` (+ tests)
   - Owns: `packages/detect/src/release/**`, `packages/detect/src/detect.ts`, `packages/agents/src/design/release.ts`, `packages/agents/src/design/kept-edits.ts`, their tests, `examples/*/expected.json`
   - Reads: research R9's table, plan.md 12.1–12.2
   - Depends: T1930
