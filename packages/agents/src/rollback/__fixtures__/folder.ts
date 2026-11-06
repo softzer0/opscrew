@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { shellQuote } from "@opscrew/iac-templates";
+import { APPROVAL_FILE, removeScript } from "../database";
 
 /** True when `sh` runs here (Git's on Windows), which the app folder's scripts need. */
 export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
@@ -11,7 +12,8 @@ export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
 /**
  * The app's folder on a fake server for the database step: each command runs under `sh` with the
  * server's folder (`/srv/apps/<app>`) standing for a temp folder, through `sudo -n` as a plain
- * shell, and is recorded. `answer` answers a command first (the own server's privilege probe).
+ * shell, and is recorded. The plain removal of the one-time approval, which every server rollback
+ * sends, needs no `sh`. `answer` answers a command first (the own server's privilege probe).
  */
 export class FakeAppFolder {
   readonly commands: string[] = [];
@@ -43,14 +45,20 @@ export class FakeAppFolder {
         if (this.failWith !== undefined) {
           return { exitCode: this.failWith, stdout: "", stderr: "failed" };
         }
-        const script = command
-          .replace(/^sudo -n /, "")
-          .split(shellQuote(this.serverDir))
-          .join(shellQuote(this.dir));
-        const run = spawnSync("sh", ["-c", script], { encoding: "utf8" });
-        return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
+        if (command === removeScript(this.serverDir)) {
+          await rm(join(this.dir, APPROVAL_FILE), { force: true });
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        return this.sh(command.replace(/^sudo -n /, ""));
       },
     };
+  }
+
+  /** Runs `command` under `sh`, with the server's folder standing for this one. */
+  sh(command: string): CommandResult {
+    const script = command.split(shellQuote(this.serverDir)).join(shellQuote(this.dir));
+    const run = spawnSync("sh", ["-c", script], { encoding: "utf8" });
+    return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
   }
 
   /** Writes `text` to `path` in the folder. */

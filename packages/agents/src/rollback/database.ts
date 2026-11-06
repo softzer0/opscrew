@@ -14,6 +14,8 @@ import {
   keepSnapshotsOf,
   MIGRATION_TOOLS,
   type Migrations,
+  onOneServer,
+  SNAPSHOT_KINDS,
   servicesOn,
   snapshotsOn,
 } from "@opscrew/plan-schema";
@@ -39,9 +41,6 @@ export interface DatabaseQuestion {
   offers: DatabaseOffer[];
   default: DatabaseChoice;
 }
-
-/** The databases a snapshot dumps, as `snapshotsOn` counts them. */
-const DATABASE_KINDS: ReadonlySet<string> = new Set(["postgres", "mysql", "mariadb", "mongodb"]);
 
 /** The one-time approval in the app's folder (plan.md 12.3): `<hex> <choice> <expiry epoch>`. */
 export const APPROVAL_FILE = ".rollback-database";
@@ -171,6 +170,35 @@ function localFolder(deps: PhaseDeps, plan: DeployPlan): AppFolder {
   };
 }
 
+/** The app's folder of `run`'s target: on its server or this computer; none in a Portainer. */
+async function folderOf(run: RollbackRun): Promise<AppFolder | undefined> {
+  const { deps, plan, services } = run;
+  if (plan.target.provider === "localhost") return localFolder(deps, plan);
+  return onOneServer(plan.target.provider) ? serverFolder(deps, plan, services) : undefined;
+}
+
+/**
+ * Removes the one-time approval of the database step from the app's folder of `run`'s target, if
+ * it has one: a run that waited for a reviewer ended without using it.
+ */
+export async function removeDatabaseApproval(run: RollbackRun): Promise<void> {
+  await (await folderOf(run))?.approval(undefined);
+}
+
+/**
+ * What the result says the rollback did with the database (`record`), the target named `words`
+ * and its migration tool `plan`'s.
+ */
+export function databaseOutcome(record: DatabaseRecord, plan: DeployPlan, words: string): string {
+  if (record.choice === "snapshot") {
+    return `The database was restored from the snapshot taken ${formatUtc(record.taken ?? "")}.`;
+  }
+  if (record.choice === "migrations") {
+    return `The database was migrated down with ${plan.app.migrations?.tool ?? "its migration tool"} to ${words}'s migrations.`;
+  }
+  return "The database stayed as it was.";
+}
+
 /** A complete snapshot's `taken`: an ISO time. */
 const TakenSchema = z.iso.datetime({ offset: true });
 
@@ -198,7 +226,7 @@ function keptLines(plan: DeployPlan): string[] {
   const elsewhere = plan.services.filter(
     (service) =>
       service.enabled &&
-      DATABASE_KINDS.has(service.kind) &&
+      SNAPSHOT_KINDS.has(service.kind) &&
       (portainer || (service.server ?? APP_SERVER) !== APP_SERVER),
   );
   const items = [
@@ -266,29 +294,32 @@ function notOffered(
  * 3. it takes `--database`, refusing a choice not offered with its reason (`PHASE_PRECONDITION`,
  *    nothing changed); else, with several offers, asks `chooseDatabase`; else the default: the
  *    snapshot on an environment other than prod, keep otherwise.
+ *
+ * On a server or this computer, keep's `leave` removes any one-time approval an earlier run left,
+ * so the start script neither changes this rollback's data nor stops on an expired one.
  */
 export async function databaseStep(
   run: RollbackRun,
   input: { current: string; target: string; words: string },
 ): Promise<DatabaseStep> {
   const { deps, options, plan, environment } = run;
-  const provider = plan.target.provider;
-  const portainer = provider === "portainer";
   const snapshots = snapshotsOn(plan);
-  const migrations = portainer ? undefined : plan.app.migrations;
+  const migrations = plan.target.provider === "portainer" ? undefined : plan.app.migrations;
   const kept = keptLines(plan);
   const keepOffer: DatabaseOffer = {
     choice: "keep",
     text: `Keep it as it is: ${input.words} runs against today's schema.`,
   };
-  const keep = (binding?: DatabaseBinding, folder?: AppFolder): DatabaseStep => ({
+  // Connected before the approval, so a server OpsCrew cannot reach stops before any change.
+  const folder = await folderOf(run);
+  const keep = (binding?: DatabaseBinding): DatabaseStep => ({
     choice: "keep",
     ...(binding !== undefined ? { binding } : {}),
     lines: [KEEP_LINE, ...kept],
     flags: binding !== undefined ? " --database keep" : "",
     record: { choice: "keep" },
-    outcome: "The database stayed as it was.",
-    // A one-time approval an earlier run left must not change the data of this one.
+    outcome: databaseOutcome({ choice: "keep" }, plan, input.words),
+    // A one-time approval an earlier run left must not change the data of this one, nor stop it.
     leave: async () => {
       await folder?.approval(undefined);
       return undefined;
@@ -296,8 +327,8 @@ export async function databaseStep(
     clear: async () => {},
   });
 
-  // 1. Nothing to read: the database stays as it is.
-  if (!snapshots && migrations === undefined) {
+  // 1. Nothing to read (or nowhere to read it): the database stays as it is.
+  if (folder === undefined || (!snapshots && migrations === undefined)) {
     const asked = options.database;
     if (asked !== undefined && asked !== "keep") {
       throw notOffered(run, unreadReason(run, asked), [keepOffer]);
@@ -311,10 +342,6 @@ export async function databaseStep(
     ...(currentHex !== undefined ? [recordFile(currentHex)] : []),
   ];
   deps.reporter.step(`Reading ${environment}'s database snapshots and migration records`);
-  const folder =
-    provider === "localhost"
-      ? localFolder(deps, plan)
-      : await serverFolder(deps, plan, run.services);
   const files = paths.length > 0 ? await folder.read(paths) : new Map<string, string>();
   const takenText = targetHex === undefined ? undefined : files.get(takenFile(targetHex));
   const taken = TakenSchema.safeParse(takenText).success ? takenText : undefined;
@@ -372,13 +399,15 @@ export async function databaseStep(
     currentRecord: currentRecord ?? null,
     targetRecord: targetRecord ?? null,
   };
-  if (choice === "keep") return keep(binding, folder);
+  if (choice === "keep") return keep(binding);
 
   // Only a target with a digest has a snapshot or a record to offer.
   const hex = targetHex as string;
   const offer = offers.find((candidate) => candidate.choice === choice) as DatabaseOffer;
   // The name `destroy --env` asks for: the environment's app (`<app>-<env>` outside prod).
   const name = plan.app.name;
+  const record: DatabaseRecord =
+    choice === "snapshot" ? { choice, taken: taken as string } : { choice };
   return {
     choice,
     binding,
@@ -390,11 +419,8 @@ export async function databaseStep(
     ],
     confirmPhrase: name,
     flags: ` --database ${choice} --confirm ${name}`,
-    record: choice === "snapshot" ? { choice, taken: taken as string } : { choice },
-    outcome:
-      choice === "snapshot"
-        ? `The database was restored from the snapshot taken ${formatUtc(taken as string)}.`
-        : `The database was migrated down with ${migrations?.tool} to ${input.words}'s migrations.`,
+    record,
+    outcome: databaseOutcome(record, plan, input.words),
     leave: async () => {
       const expiry = Math.floor(deps.clock.now().getTime() / 1000) + APPROVAL_SECONDS;
       await folder.approval(`${hex} ${choice} ${expiry}`);
@@ -413,7 +439,7 @@ function unreadReason(run: RollbackRun, choice: "snapshot" | "migrations"): stri
   if (choice === "migrations") {
     return `${environment}'s plan has no app.migrations, so OpsCrew knows no down migrations for its app. It sets them for Rails, Django, Alembic, Flask-Migrate, Knex, Sequelize, TypeORM and Laravel.`;
   }
-  if (!servicesOn(plan, APP_SERVER).some((service) => DATABASE_KINDS.has(service.kind))) {
+  if (!servicesOn(plan, APP_SERVER).some((service) => SNAPSHOT_KINDS.has(service.kind))) {
     return `No PostgreSQL, MySQL, MariaDB or MongoDB runs on ${environment}'s app server, so OpsCrew takes no snapshots there.`;
   }
   return `${environment} takes no snapshots before its releases: deploy.snapshots is off in its plan (prod takes them only with deploy.snapshots: true).`;

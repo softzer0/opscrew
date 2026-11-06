@@ -1327,7 +1327,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     expect(paused(world)).toBeUndefined();
     if (how === "failed") {
       expect(error.message).toContain(
-        "When its database step failed, the start step put the database back as it was just before",
+        "When its database step failed, the start step put the database back as it was just before, and the run's log names the step's own log. When the one-time approval of the database step had expired, the start step stopped before any change.",
       );
     }
     expect(await readRollback(world.deps.paths)).toBeUndefined();
@@ -1339,18 +1339,54 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     await world.run();
     expect(await world.folder.read(APPROVAL_FILE)).toBe(`${hexB} snapshot ${EXPIRY}\n`);
     expect(world.deps.reporter.text()).toContain(
-      "The database step's one-time approval on the server expires at 2026-10-11 12:30 UTC: if the run starts later, the database stays as it is.",
+      `The database step's one-time approval on the server expires at 2026-10-11 12:30 UTC: if the run starts later, it stops before any change and \`${STAGING}\` asks again.`,
     );
     expect((await readPendingRollback(world.deps.paths))?.database).toEqual({
       choice: "snapshot",
       taken: TAKEN,
     });
     world.github.reviewer = "none";
-    await world.run();
+    const result = await world.run();
+    expect(result).toMatchObject({
+      kind: "rolled-back",
+      status: "deployed",
+      database: { choice: "snapshot", taken: TAKEN },
+    });
     expect((await readRollback(world.deps.paths))?.database).toEqual({
       choice: "snapshot",
       taken: TAKEN,
     });
+    expect(world.deps.reporter.text()).toContain(
+      `again (${DEPLOY_RUN_URL}). The database was restored from the snapshot taken 2026-10-11 11:30 UTC.`,
+    );
+  });
+
+  it("removes the one-time approval a run that waited for a reviewer left, once that run failed", async () => {
+    let approves = true;
+    const { world, hexB } = await stagingWorld({ approve: () => approves });
+    world.github.reviewer = "pending";
+    await world.run();
+    expect(await world.folder.read(APPROVAL_FILE)).toBe(`${hexB} snapshot ${EXPIRY}\n`);
+    world.github.reviewer = "none";
+    world.github.conclusion = "failure";
+    // The next run forgets the failed one; the new rollback it goes on with is not approved.
+    approves = false;
+    expect((await failure(world.run())).code).toBe("APPROVAL_REFUSED");
+    expect(await world.folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(world.deps.reporter.text()).toContain(
+      `did not succeed (failure): ${DEPLOY_RUN_URL}. When its database step failed, the start step put the database back as it was just before, and the run's log names the step's own log. When the one-time approval of the database step had expired, the start step stopped before any change. OpsCrew put staging's deploy pause back as it was, and goes on with a new rollback.`,
+    );
+  });
+
+  it("removes an earlier one-time approval on a keep rollback, even with nothing to read", async () => {
+    const { world, b, c } = await prodWorld();
+    await world.folder.write(
+      APPROVAL_FILE,
+      `${b.digest.slice("sha256:".length)} snapshot ${EXPIRY - 3600}\n`,
+    );
+    await world.run();
+    expect(await world.folder.read(APPROVAL_FILE)).toBeUndefined();
+    expect(world.handler.requests[0]?.planHash).toBe(hashOf(world, c, b));
   });
 
   it("keeps prod's database by default, even with snapshots on and one taken", async () => {

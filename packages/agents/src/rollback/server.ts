@@ -29,7 +29,12 @@ import {
 } from "../shared/deploy-pause";
 import { auditFinishedRun, deployRunFailure, dispatchAndFollow } from "../shared/deploy-run";
 import { codeOf } from "../shared/errors";
-import { type DatabaseStep, databaseStep } from "./database";
+import {
+  type DatabaseStep,
+  databaseOutcome,
+  databaseStep,
+  removeDatabaseApproval,
+} from "./database";
 import type { RollbackResult } from "./index";
 import {
   imageRollbackHash,
@@ -229,12 +234,16 @@ async function checkPending(
     return { ...result, status: "waiting" };
   }
   await auditFinishedRun(deps, last);
+  const { database } = pending;
   // The pending file goes only once what it holds is put back or recorded.
   if (last.conclusion !== "success") {
+    const changesData = database !== undefined && database.choice !== "keep";
+    // The run ended: its one-time approval, if it left one unused, is of no use now.
+    if (changesData) await clearApproval(run, () => removeDatabaseApproval(run));
     await restoreDeployPause(deps, github, plan, pending.pauseBefore ?? undefined);
     await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
     deps.reporter.warn(
-      `${environment}'s rollback run that waited for a reviewer did not succeed (${last.conclusion ?? "no result"}): ${last.htmlUrl}. OpsCrew put ${environment}'s deploy pause back as it was, and goes on with a new rollback.`,
+      `${environment}'s rollback run that waited for a reviewer did not succeed (${last.conclusion ?? "no result"}): ${last.htmlUrl}.${changesData ? ` ${DATABASE_FAILED}` : ""} OpsCrew put ${environment}'s deploy pause back as it was, and goes on with a new rollback.`,
     );
     return undefined;
   }
@@ -244,12 +253,16 @@ async function checkPending(
     runUrl: last.htmlUrl,
     at: deps.clock.now().toISOString(),
     hash: pending.hash,
-    ...(pending.database !== undefined ? { database: pending.database } : {}),
+    ...(database !== undefined ? { database } : {}),
   });
   await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
-  deps.reporter.success(`${environment} runs ${shortText(target)} again (${last.htmlUrl}).`);
+  const outcome =
+    database === undefined ? "" : ` ${databaseOutcome(database, plan, shortText(target))}`;
+  deps.reporter.success(
+    `${environment} runs ${shortText(target)} again (${last.htmlUrl}).${outcome}`,
+  );
   deps.reporter.info(pausedText(run));
-  return { ...result, status: "deployed" };
+  return { ...result, status: "deployed", ...(database !== undefined ? { database } : {}) };
 }
 
 /**
@@ -288,12 +301,20 @@ async function servicesLines(
 }
 
 /**
- * Removes the one-time approval of `database` once no run can use it: the dispatch was refused, or
- * the run ended. A removal that fails is said, since the approval stays until it expires.
+ * Why a rollback run that was to change data may have failed: its database step, or an expired
+ * one-time approval (the start script refuses one that names its image).
  */
-async function clearApproval(run: RollbackRun, database: DatabaseStep): Promise<void> {
+const DATABASE_FAILED =
+  "When its database step failed, the start step put the database back as it was just before, and the run's log names the step's own log. When the one-time approval of the database step had expired, the start step stopped before any change.";
+
+/**
+ * Removes the database step's one-time approval (`remove`) once no run can use it: the dispatch
+ * was refused, or the run ended. A removal that fails is said, since the approval stays until it
+ * expires.
+ */
+async function clearApproval(run: RollbackRun, remove: () => Promise<void>): Promise<void> {
   try {
-    await database.clear();
+    await remove();
   } catch (error) {
     run.deps.reporter.warn(
       `${errorMessage(error)} The one-time approval of the database step stays on the server until it expires, 30 minutes after OpsCrew left it.`,
@@ -360,12 +381,9 @@ async function dispatchRollback(
     const failure = deployRunFailure(error);
     if (failure.kind === "failed") {
       // The start step used the one-time approval, or never ran: it is of no use now.
-      await clearApproval(run, database);
+      await clearApproval(run, database.clear);
       await restoreDeployPause(deps, github, plan, input.pauseBefore);
-      const data =
-        database.confirmPhrase === undefined
-          ? ""
-          : " When its database step failed, the start step put the database back as it was just before, and the run's log names the step's own log.";
+      const data = database.confirmPhrase === undefined ? "" : ` ${DATABASE_FAILED}`;
       throw new OpsCrewError(
         "COMMAND_FAILED",
         `The rollback of ${environment} did not succeed (${failure.conclusion ?? "no result"}): ${failure.runUrl}. When the earlier version fails its checks, the automatic switch back returns ${environment} to the version it ran, ${input.from}.${data} OpsCrew put ${environment}'s deploy pause back as it was.`,
@@ -376,7 +394,7 @@ async function dispatchRollback(
     }
     // A definite refusal started nothing.
     if (failure.kind === "refused") {
-      await clearApproval(run, database);
+      await clearApproval(run, database.clear);
       await restoreDeployPause(deps, github, plan, input.pauseBefore);
       throw error;
     }
@@ -554,7 +572,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     const expiry =
       outcome.expires === undefined
         ? ""
-        : ` The database step's one-time approval on the server expires at ${formatUtc(outcome.expires)}: if the run starts later, the database stays as it is.`;
+        : ` The database step's one-time approval on the server expires at ${formatUtc(outcome.expires)}: if the run starts later, it stops before any change and \`${command}\` asks again.`;
     deps.reporter.warn(`${stillWaiting(run, outcome.runUrl, shortText(target))}${expiry}`);
     return { ...result, status: "waiting" };
   }

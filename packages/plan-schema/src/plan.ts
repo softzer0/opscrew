@@ -1561,7 +1561,12 @@ export function keepSnapshotsOf(plan: { deploy: { keepSnapshots?: number | undef
 }
 
 /** The service kinds a snapshot dumps and a rollback restores. */
-const SNAPSHOT_KINDS = new Set(["postgres", "mysql", "mariadb", "mongodb"]);
+export const SNAPSHOT_KINDS: ReadonlySet<string> = new Set([
+  "postgres",
+  "mysql",
+  "mariadb",
+  "mongodb",
+]);
 
 /**
  * True when each release snapshots the databases on the app's server: on a cloud server, the

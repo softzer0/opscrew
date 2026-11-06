@@ -298,6 +298,12 @@ describe("opscrew rollback on this computer", () => {
     await again.run({ database: "keep" });
     expect(again.approvals).toEqual([undefined]);
     expect(again.handler.requests[0]?.allowDestroy).toBeUndefined();
+
+    // Without snapshots or down migrations too: an earlier approval, even expired, goes.
+    const plain = await localWorld();
+    await writeFile(join(plain.folder, APPROVAL_FILE), `${hex} snapshot 1\n`);
+    await plain.run();
+    expect(plain.approvals).toEqual([undefined]);
   });
 
   it("refuses with no previous version, the same image, or the one it rolled back from, with nothing changed", async () => {
