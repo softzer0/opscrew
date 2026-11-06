@@ -305,8 +305,10 @@ export async function databaseStep(
   input: { current: string; target: string; words: string },
 ): Promise<DatabaseStep> {
   const { deps, options, plan, environment } = run;
-  const snapshots = snapshotsOn(plan);
-  const migrations = plan.target.provider === "portainer" ? undefined : plan.app.migrations;
+  // Portainer's snapshots aren't restored by a rollback yet, nor its down migrations run.
+  const portainer = plan.target.provider === "portainer";
+  const snapshots = !portainer && snapshotsOn(plan);
+  const migrations = portainer ? undefined : plan.app.migrations;
   const kept = keptLines(plan);
   const keepOffer: DatabaseOffer = {
     choice: "keep",

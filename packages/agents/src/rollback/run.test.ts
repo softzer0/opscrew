@@ -4,7 +4,12 @@ import type { ApprovalRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { DEPLOY_PAUSED_VARIABLE, ROLLBACK_APPROVAL_FILE } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema, serializeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  serializeArtifact,
+  snapshotsOn,
+} from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { selfHostedServices } from "../design/sizing";
 import { localPlan } from "../localhost/__fixtures__/computer";
@@ -1459,6 +1464,23 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     expect(world.handler.requests[0]?.details).toContain(
       "Kept as they are in your Portainer: db. Snapshots there come in a later release.",
     );
+    expect(world.folder.commands).toEqual([]);
+  });
+
+  it("offers only keep in the user's Portainer outside prod too, where releases take snapshots", async () => {
+    const plan = inEnvironment(portainerPlan({ deployed: true }), "staging");
+    expect(snapshotsOn(plan)).toBe(true);
+    const { world } = await stagingWorld({ plan, snapshot: false });
+    const error = await failure(world.run({ database: "snapshot" }));
+    expect(error.message).toBe(
+      "In your Portainer, a rollback keeps the database as it is: snapshots and down migrations there come in a later release. Nothing was changed.",
+    );
+    await nothingChanged(world, error);
+    await world.run();
+    expect(world.handler.requests[0]?.details).toContain(
+      "Kept as they are in your Portainer: db. Snapshots there come in a later release.",
+    );
+    expect(world.deps.reporter.text()).not.toContain("can't reach");
     expect(world.folder.commands).toEqual([]);
   });
 });
