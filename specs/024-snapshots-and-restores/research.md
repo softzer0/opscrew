@@ -17,7 +17,7 @@ The scope is the roadmap's 024 section:
 |---|---|---|
 | Create | `POST /servers/{id}/actions/create_image` (`type: snapshot`, `description`, `labels`); async, poll `GET /actions/{id}` | `POST /v2/droplets/{id}/actions` `{"type":"snapshot","name":…}`; no labels (the name carries them); "roughly 2 minutes per GB used" |
 | While running | the docs recommend shutting down first: a live disk "may not be readable" | "Recommended" to power off, especially with databases |
-| List / delete | `GET /images?type=snapshot&bound_to=<id>&label_selector=…`; `DELETE /images/{id}`; snapshots outlive the server | `GET /v2/droplets/{id}/snapshots`; `DELETE /v2/snapshots/{id}` |
+| List / delete | `GET /images?type=snapshot&label_selector=…`, kept by `created_from.id` (`bound_to` filters backups only, T2403); `DELETE /images/{id}` (204, no body); snapshots outlive the server | `GET /v2/droplets/{id}/snapshots`; `DELETE /v2/snapshots/{id}` |
 | Restore | `POST /servers/{id}/actions/rebuild` with `image`: powers off, wipes the disk, keeps the server ID (IPs, firewalls, networks on the same server: unverified); returns a `root_password` unless SSH keys are used | `type: rebuild` with `image`: wipes the disk, keeps the Droplet ID and IP; same OS family only; a backup must become a snapshot first |
 | Price | "billed on a per GB basis" (rate on hetzner.com/cloud: unverified) | $0.06 per GB-month, $0.01 minimum |
 | Volumes | not included | not included (volume snapshots are separate) |
