@@ -7,7 +7,12 @@
     "languages": ["php", "javascript"],
     "services": ["sqlite"],
     "clientExposedEnv": ["VITE_APP_NAME"],
-    "secretEnv": ["APP_KEY"]
+    "secretEnv": ["APP_KEY"],
+    "migrations": {
+      "tool": "laravel",
+      "status": "php artisan migrate:status",
+      "down": "php artisan migrate:rollback --step={count} --force"
+    }
   },
   "scan": { "clean": true, "mustInclude": [] },
   "codeChanges": ["dockerignore"],

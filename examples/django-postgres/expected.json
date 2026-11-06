@@ -6,7 +6,12 @@
     "port": 8000,
     "services": ["postgres"],
     "languages": ["python"],
-    "secretEnv": ["DJANGO_SECRET_KEY"]
+    "secretEnv": ["DJANGO_SECRET_KEY"],
+    "migrations": {
+      "tool": "django",
+      "status": "python manage.py showmigrations --plan",
+      "down": "python manage.py migrate {app} {name} --noinput"
+    }
   },
   "scan": { "clean": true, "mustInclude": [] },
   "codeChanges": ["dockerfile", "dockerignore", "env-example"],

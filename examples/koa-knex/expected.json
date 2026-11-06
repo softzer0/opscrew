@@ -5,7 +5,12 @@
     "frameworkNames": ["koa"],
     "port": 3000,
     "services": ["postgres"],
-    "languages": ["javascript"]
+    "languages": ["javascript"],
+    "migrations": {
+      "tool": "knex",
+      "status": "npx knex migrate:list",
+      "down": "npx knex migrate:down"
+    }
   },
   "scan": { "clean": true, "mustInclude": [] },
   "codeChanges": ["dockerfile", "dockerignore", "health-endpoint", "env-example"],

@@ -41,6 +41,7 @@ import {
 import { appNameFor, type Components, designComponents } from "./components";
 import type { OwnServerAccess, OwnServerServing } from "./own";
 import type { PortainerDesignChoice } from "./portainer";
+import { migrationsInImage } from "./release";
 import { type ServerlessDesignChoice, serverlessTargetFor } from "./serverless";
 import { sqliteMove } from "./storage";
 import { deployStrategyFor } from "./strategy";
@@ -278,6 +279,7 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
   else if (build !== undefined) buildContext = buildContextFor(facts, build.builder);
   else throw new Error("A design for a target with an image needs its image builder.");
   const releaseCommand = serverless === undefined ? releaseCommandInImage(facts) : undefined;
+  const migrations = migrationsInImage(facts, releaseCommand);
   const tags = requirements.deployTags;
   // The user's own Dockerfile is built where detection found it; OpsCrew's goes into the app's
   // folder. A server-less site is built in its own folder, with no Dockerfile.
@@ -309,6 +311,8 @@ export function optionToPlan(option: DesignOption, input: OptionToPlanInput): De
       ...(facts.workspacePackages !== undefined ? { sharedPaths: facts.workspacePackages } : {}),
       // Database migrations, run before each new version takes traffic (FR-813).
       ...(releaseCommand !== undefined ? { releaseCommand } : {}),
+      // How a rollback undoes them, when their tool can.
+      ...(migrations !== undefined ? { migrations } : {}),
       memoryMb: components.app.memoryMb,
       env: [...env.values()],
       ...(build === undefined

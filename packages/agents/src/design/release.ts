@@ -1,5 +1,5 @@
 import { imageReleaseCommand, serviceSpec } from "@opscrew/iac-templates";
-import type { DeployPlan, ProjectFacts } from "@opscrew/plan-schema";
+import type { DeployPlan, Migrations, ProjectFacts } from "@opscrew/plan-schema";
 import { planFile } from "../runners/words";
 
 /** The database-migrations note and whether it needs the user's attention. */
@@ -49,6 +49,35 @@ export function releaseCommandNote(
     warning: false,
     text: `OpsCrew found no database migration command for this app's ${serviceSpec(database.kind).title}, so deploys run none. If the app creates or updates its tables with a command, set it as \`app.releaseCommand\` in ${file}: every deploy then runs it before the new version takes traffic.`,
   };
+}
+
+/**
+ * `app.migrations` for the plan: detection's down-migration commands (`facts.build.migrations`)
+ * as the image runs them, beside `releaseCommand`, the detected release command as the image runs
+ * it (`releaseCommandInImage`). The folder prefix detection gave all three is changed the same way
+ * the release command's was. Absent without a release command in the plan.
+ */
+export function migrationsInImage(
+  facts: ProjectFacts,
+  releaseCommand: string | undefined,
+): Migrations | undefined {
+  const detected = facts.build.migrations;
+  const found = facts.build.releaseCommand;
+  if (releaseCommand === undefined || detected === undefined || found === undefined) {
+    return undefined;
+  }
+  // The text both commands end with; what precedes it is the prefix the image changed.
+  let same = 0;
+  while (
+    same < Math.min(found.length, releaseCommand.length) &&
+    found[found.length - 1 - same] === releaseCommand[releaseCommand.length - 1 - same]
+  ) {
+    same++;
+  }
+  const from = found.slice(0, found.length - same);
+  const to = releaseCommand.slice(0, releaseCommand.length - same);
+  const inImage = (line: string) => `${to}${line.slice(from.length)}`;
+  return { ...detected, status: inImage(detected.status), down: inImage(detected.down) };
 }
 
 /** The services whose tables an app migrates. */

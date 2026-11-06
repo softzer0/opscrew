@@ -34,12 +34,12 @@ function ruby(ctx: ReleaseContext): ReleaseDetection | undefined {
   if (!ctx.exists("Gemfile")) return undefined;
   const gem = (name: string) => ctx.dependency("gem", name) !== undefined;
   if (gem("rails") && ctx.has(/^db\/migrate\/\d+_\w+\.rb$/)) {
-    return {
-      command: ctx.at(
-        ".",
-        ctx.exists("bin/rails") ? "bin/rails db:migrate" : "bundle exec rails db:migrate",
-      ),
-    };
+    const rails = ctx.exists("bin/rails") ? "bin/rails" : "bundle exec rails";
+    return ctx.migrating(".", `${rails} db:migrate`, {
+      tool: "rails",
+      status: `${rails} db:version`,
+      down: `${rails} db:migrate VERSION={version}`,
+    });
   }
   // unverified: the `hanami db migrate` command (Hanami's guide documents the
   // `config/db/migrate` folder; the command is on a separate CLI page).
@@ -62,7 +62,11 @@ function php(ctx: ReleaseContext): ReleaseDetection | undefined {
     ctx.exists("artisan") &&
     ctx.has(/^database\/migrations\/[^/]+\.php$/)
   ) {
-    return { command: ctx.at(".", "php artisan migrate --force") };
+    return ctx.migrating(".", "php artisan migrate --force", {
+      tool: "laravel",
+      status: "php artisan migrate:status",
+      down: "php artisan migrate:rollback --step={count} --force",
+    });
   }
   if (
     composer("doctrine/doctrine-migrations-bundle") &&

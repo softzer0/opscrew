@@ -12,6 +12,7 @@ import {
   ServiceKindSchema,
   UrlPathSchema,
 } from "./enums";
+import { MigrationsSchema } from "./migrations";
 
 /** Normalised URL scheme of an env var's example value (see `envVars[].urlScheme`). */
 export const EnvUrlSchemeSchema = z.enum([
@@ -158,6 +159,11 @@ export const ProjectFactsSchema = z.strictObject({
      * from the repository root like `startCommand`. Absent when the app has none.
      */
     releaseCommand: CommandLineSchema.optional(),
+    /**
+     * How a rollback reads and undoes the migrations `releaseCommand` applies, when its tool has
+     * down migrations (`app.migrations`). Absent without a release command.
+     */
+    migrations: MigrationsSchema.optional(),
     /**
      * Detection's note on migrations, in plain English that says what to do next: why there is no
      * release command (the app runs them itself when it starts, `atStartup`, or the tool would be

@@ -2,6 +2,7 @@
  * Release commands of Python apps. Python images install only the app's main dependencies, so a
  * migration tool declared only for development gets a note instead of a command.
  */
+import type { Migrations } from "@opscrew/plan-schema";
 import { parse as parseToml } from "smol-toml";
 import {
   ANALYZE_AGAIN,
@@ -48,8 +49,9 @@ export interface PythonReleaseInputs {
 }
 
 /**
- * `command` run from `dir` (app-relative), or a note when `pkg` is only a development dependency
- * (the image would not install the tool).
+ * `command` run from `dir` (app-relative), with the tool's `migrations` when it has down
+ * migrations, or a note when `pkg` is only a development dependency (the image would not install
+ * the tool).
  */
 function pythonTool(
   ctx: ReleaseContext,
@@ -57,6 +59,7 @@ function pythonTool(
   pkg: string,
   dir: string,
   command: string,
+  migrations?: Migrations,
 ): ReleaseDetection {
   if (ctx.dependency("pypi", pkg)?.dev) {
     return {
@@ -66,7 +69,7 @@ function pythonTool(
       },
     };
   }
-  return { command: ctx.at(dir, command) };
+  return migrations ? ctx.migrating(dir, command, migrations) : { command: ctx.at(dir, command) };
 }
 
 /** Values of a simple INI file (`key = value`, any section; later sections win). */
@@ -159,17 +162,32 @@ export async function pythonRelease(
 ): Promise<ReleaseDetection | undefined> {
   const pypi = (name: string) => ctx.dependency("pypi", name) !== undefined;
   const manage = inputs.frameworks.has("django") ? shallowest(ctx.rel, "manage.py") : undefined;
-  if (manage) return { command: ctx.at(ctx.dirOf(manage), "python manage.py migrate --noinput") };
+  if (manage) {
+    return ctx.migrating(ctx.dirOf(manage), "python manage.py migrate --noinput", {
+      tool: "django",
+      status: "python manage.py showmigrations --plan",
+      down: "python manage.py migrate {app} {name} --noinput",
+    });
+  }
   const flask = () => flaskApp(inputs.flaskenv, ctx.startCommand);
   if (pypi("flask-migrate") && ctx.has(/(?:^|\/)migrations\/env\.py$/)) {
-    return pythonTool(ctx, "Flask-Migrate", "Flask-Migrate", ".", flaskDb("upgrade", flask()));
+    const target = flask();
+    return pythonTool(ctx, "Flask-Migrate", "Flask-Migrate", ".", flaskDb("upgrade", target), {
+      tool: "flask-migrate",
+      status: flaskDb("current", target),
+      down: flaskDb("downgrade {version}", target),
+    });
   }
   if (pypi("flask-db") && ctx.has(/(?:^|\/)db\/(?:alembic\.ini|env\.py)$/)) {
     return pythonTool(ctx, "Flask-DB", "Flask-DB", ".", flaskDb("migrate", flask()));
   }
   const alembicIni = pypi("alembic") ? shallowest(ctx.rel, "alembic.ini") : undefined;
   if (alembicIni) {
-    return pythonTool(ctx, "Alembic", "alembic", ctx.dirOf(alembicIni), "alembic upgrade head");
+    return pythonTool(ctx, "Alembic", "alembic", ctx.dirOf(alembicIni), "alembic upgrade head", {
+      tool: "alembic",
+      status: "alembic current",
+      down: "alembic downgrade {version}",
+    });
   }
 
   // unverified in Masonite's docs: `python craft migrate --force` (the `--force` flag, which skips

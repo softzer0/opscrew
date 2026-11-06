@@ -776,6 +776,7 @@ export async function detectProjectDetails(
       ...(runScript ? { runScript } : {}),
     });
     if (release.command) build.releaseCommand = release.command;
+    if (release.migrations) build.migrations = release.migrations;
     if (release.note) build.releaseNote = release.note;
     const seed = await detectSeed({
       appDir,

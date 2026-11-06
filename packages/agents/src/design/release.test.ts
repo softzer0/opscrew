@@ -52,6 +52,57 @@ describe("release command in the plan", () => {
   });
 });
 
+describe("down migrations in the plan", () => {
+  /** Django facts in `appDir` with detection's commands, all run from `prefix`. */
+  const withMigrations = (prefix: string, appDir = ".") => {
+    const facts = djangoFacts(`${prefix}python manage.py migrate --noinput`, appDir);
+    facts.build.migrations = {
+      tool: "django",
+      status: `${prefix}python manage.py showmigrations --plan`,
+      down: `${prefix}python manage.py migrate {app} {name} --noinput`,
+    };
+    return facts;
+  };
+
+  it("writes app.migrations beside the release command", async () => {
+    expect((await planFor(withMigrations(""))).app.migrations).toEqual({
+      tool: "django",
+      status: "python manage.py showmigrations --plan",
+      down: "python manage.py migrate {app} {name} --noinput",
+    });
+  });
+
+  it("changes their folder as the release command's for a Python app in a subfolder", async () => {
+    const top = await planFor(withMigrations("cd backend && ", "backend"));
+    expect(top.app.releaseCommand).toBe("python manage.py migrate --noinput");
+    expect(top.app.migrations).toEqual({
+      tool: "django",
+      status: "python manage.py showmigrations --plan",
+      down: "python manage.py migrate {app} {name} --noinput",
+    });
+    const below = await planFor(withMigrations("cd backend/src && ", "backend"));
+    expect(below.app.releaseCommand).toBe("cd src && python manage.py migrate --noinput");
+    expect(below.app.migrations).toEqual({
+      tool: "django",
+      status: "cd src && python manage.py showmigrations --plan",
+      down: "cd src && python manage.py migrate {app} {name} --noinput",
+    });
+  });
+
+  it("leaves them out when the release command is left out of the plan", async () => {
+    // The Python image OpsCrew builds cannot run a Rails command.
+    const facts = djangoFacts("bin/rails db:migrate");
+    facts.build.migrations = {
+      tool: "rails",
+      status: "bin/rails db:version",
+      down: "bin/rails db:migrate VERSION={version}",
+    };
+    const plan = await planFor(facts);
+    expect(plan.app.releaseCommand).toBeUndefined();
+    expect(plan.app.migrations).toBeUndefined();
+  });
+});
+
 describe("releaseCommandNote", () => {
   it("says which command runs, when, what a failure does and how to change it", () => {
     const note = releaseCommandNote({

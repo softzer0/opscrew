@@ -1,9 +1,14 @@
-import { type DeployPlan, isServerlessTarget, type Site } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  isServerlessTarget,
+  type Migrations,
+  type Site,
+} from "@opscrew/plan-schema";
 import { planFile } from "../runners/words";
 
 /**
  * `fresh` with the values the user set where design sets them from what analyze detects. The
- * parts environments share (`app.port`, `app.healthPath`, `app.releaseCommand`) come from
+ * parts environments share (`app.port`, `app.healthPath`, `app.releaseCommand`, `app.migrations`) come from
  * `shared`, the plan that holds them: prod's for another environment built from the same branch
  * (its own copy then follows prod's, said when it differed), else the environment's own; only
  * between plans with a server (a release command left out for a site without one is said). The
@@ -11,8 +16,8 @@ import { planFile } from "../runners/words";
  * (Cloudflare, while the site renders the same way), `target.site.command` and `outputDir` (while
  * it is the same kind of site: tool, package manager, server rendering and folder). `lines` say
  * each value kept, with what analyze found and the file to change, and each one taken from
- * analysis instead because the kept one no longer applies. A release command analyze finds is set
- * when the plan had none, and said so. The Node.js version follows the runtime rules instead
+ * analysis instead because the kept one no longer applies. A release command and down migrations
+ * analyze finds are set when the plan had none, and said so; a site without a server has neither. The Node.js version follows the runtime rules instead
  * (`resolveRuntime`), which keep the recorded one or say why not.
  */
 export function keptEdits(
@@ -32,8 +37,9 @@ export function keptEdits(
   if (shared !== undefined && isServerlessTarget(fresh.target)) {
     const before = shared.app.releaseCommand;
     if (before !== undefined) {
+      const migrations = shared.app.migrations === undefined ? "" : " and app.migrations";
       lines.push(
-        `Left out app.releaseCommand \`${before}\` from ${planFile(shared)}: a site without a server has no image to run it in before a deploy.`,
+        `Left out app.releaseCommand \`${before}\`${migrations} from ${planFile(shared)}: a site without a server has no image to run it in before a deploy.`,
       );
     }
   } else if (shared !== undefined && servers) {
@@ -58,6 +64,20 @@ export function keptEdits(
     } else if (before === undefined && found !== undefined) {
       lines.push(`Set app.releaseCommand to \`${found}\`, which analyze found; ${file} had none.`);
     }
+    const had = shared.app.migrations;
+    const detected = fresh.app.migrations;
+    if (had !== undefined && !sameMigrations(had, detected)) {
+      app = { ...app, migrations: had };
+      lines.push(
+        detected === undefined
+          ? `Kept app.migrations ${showMigrations(had)} from ${file}; analyze found none. To have rollbacks undo no migrations, remove app.migrations in ${file}.`
+          : `Kept app.migrations ${showMigrations(had)} from ${file}; analyze found ${showMigrations(detected)}. To use it, set app.migrations to that in ${file}.`,
+      );
+    } else if (had === undefined && detected !== undefined) {
+      lines.push(
+        `Set app.migrations to ${showMigrations(detected)}, which analyze found; ${file} had none.`,
+      );
+    }
   }
 
   if (previous === undefined) return { plan: { ...fresh, app }, lines };
@@ -71,6 +91,17 @@ export function keptEdits(
         value === undefined ? "none" : field === "releaseCommand" ? `\`${value}\`` : value;
       lines.push(
         `Set app.${field} to ${show(now)} as in ${planFile(shared)}: the environments built from the same code share it, so ${show(own)} from ${planFile(previous)} no longer applies.`,
+      );
+    }
+    const own = previous.app.migrations;
+    const now = app.migrations;
+    if (
+      own !== undefined &&
+      !sameMigrations(own, now) &&
+      sameMigrations(now, shared.app.migrations)
+    ) {
+      lines.push(
+        `Set app.migrations to ${now === undefined ? "none" : showMigrations(now)} as in ${planFile(shared)}: the environments built from the same code share it, so ${showMigrations(own)} from ${planFile(previous)} no longer applies.`,
       );
     }
   }
@@ -112,6 +143,16 @@ export function keptEdits(
     target = { ...target, site };
   }
   return { plan: { ...fresh, app, target }, lines };
+}
+
+/** True when both are absent or name the same tool and commands. */
+function sameMigrations(a: Migrations | undefined, b: Migrations | undefined): boolean {
+  return a?.tool === b?.tool && a?.status === b?.status && a?.down === b?.down;
+}
+
+/** `app.migrations` in a line: its tool and both commands. */
+function showMigrations(migrations: Migrations): string {
+  return `(${migrations.tool}: \`${migrations.status}\`, \`${migrations.down}\`)`;
 }
 
 /**

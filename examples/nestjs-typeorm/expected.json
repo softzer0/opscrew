@@ -5,7 +5,12 @@
     "frameworkNames": ["nestjs"],
     "port": 3000,
     "services": ["postgres"],
-    "languages": ["typescript"]
+    "languages": ["typescript"],
+    "migrations": {
+      "tool": "typeorm",
+      "status": "npx typeorm migration:show -d dist/data-source.js",
+      "down": "npx typeorm migration:revert -d dist/data-source.js"
+    }
   },
   "scan": { "clean": true, "mustInclude": [] },
   "codeChanges": ["dockerfile", "dockerignore", "env-example"],

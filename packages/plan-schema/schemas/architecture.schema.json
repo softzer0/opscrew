@@ -120,6 +120,34 @@
               "type": "string",
               "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
             },
+            "migrations": {
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string",
+                  "enum": [
+                    "rails",
+                    "django",
+                    "alembic",
+                    "flask-migrate",
+                    "knex",
+                    "sequelize",
+                    "typeorm",
+                    "laravel"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+                },
+                "down": {
+                  "type": "string",
+                  "pattern": "^[^\\r\\n\\0]*\\S[^\\r\\n\\0]*$"
+                }
+              },
+              "required": ["tool", "status", "down"],
+              "additionalProperties": false
+            },
             "releaseNote": {
               "type": "object",
               "properties": {

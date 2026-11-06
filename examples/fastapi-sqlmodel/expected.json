@@ -5,7 +5,12 @@
     "frameworkNames": ["fastapi"],
     "port": 8000,
     "services": ["postgres"],
-    "languages": ["python"]
+    "languages": ["python"],
+    "migrations": {
+      "tool": "alembic",
+      "status": "alembic current",
+      "down": "alembic downgrade {version}"
+    }
   },
   "scan": { "clean": true, "mustInclude": [] },
   "codeChanges": ["dockerfile", "dockerignore", "env-example"],

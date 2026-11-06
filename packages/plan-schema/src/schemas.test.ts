@@ -264,6 +264,20 @@ describe("ProjectFacts", () => {
     }
   });
 
+  it("records the optional down-migration commands beside the release command", async () => {
+    const f = await facts();
+    expect(ProjectFactsSchema.parse(f).build.migrations).toBeUndefined();
+    const migrations = {
+      tool: "alembic",
+      status: "alembic current",
+      down: "alembic downgrade {version}",
+    };
+    const build = { ...f.build, releaseCommand: "alembic upgrade head", migrations };
+    expect(ProjectFactsSchema.parse({ ...f, build }).build.migrations).toEqual(migrations);
+    const wrong = { ...f, build: { ...build, migrations: { ...migrations, down: "alembic x" } } };
+    expect(pathsOf(ProjectFactsSchema.safeParse(wrong))).toEqual(["build.migrations.down"]);
+  });
+
   it("records an optional note on migrations without a release command", async () => {
     const f = await facts();
     expect(ProjectFactsSchema.parse(f).build.releaseNote).toBeUndefined();

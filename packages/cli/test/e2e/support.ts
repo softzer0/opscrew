@@ -8,7 +8,12 @@ import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { ApprovalDecision, ApprovalHandler, ApprovalRequest } from "@opscrew/contracts";
 import { FAKE_SECRET_KINDS, type FakeSecretKind, fakeSecret } from "@opscrew/core/testing";
-import { type DeployPlan, ImageBuilderSchema, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  ImageBuilderSchema,
+  MigrationsSchema,
+  readArtifact,
+} from "@opscrew/plan-schema";
 import { z } from "zod";
 import { EXAMPLES_DIR, git, type TempProject } from "../../src/ui/__fixtures__/harness";
 
@@ -67,6 +72,8 @@ export const ExpectedSchema = z.strictObject({
     languages: z.array(z.string().min(1)).optional(),
     clientExposedEnv: z.array(z.string().min(1)).optional(),
     secretEnv: z.array(z.string().min(1)).optional(),
+    /** Detection's down-migration commands (`build.migrations`), exactly; absent means none. */
+    migrations: MigrationsSchema.optional(),
   }),
   scan: z.strictObject({
     clean: z.boolean(),

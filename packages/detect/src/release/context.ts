@@ -2,6 +2,7 @@
  * Shared view of an app for the release-command detectors: its files (relative to the app folder),
  * a reader, its dependencies and helpers that build commands run from the repository root.
  */
+import type { Migrations } from "@opscrew/plan-schema";
 import { type Dependency, findDependency, parseJson, type ReadText, type Unit } from "../manifests";
 import { basenameRel, depthOf, dirnameRel, isWithin, joinRel, relativeTo } from "../paths";
 
@@ -19,6 +20,8 @@ export interface ReleaseDetection {
   command?: string;
   /** Why the app's migrations get no command (they run at startup, or the image lacks the tool). */
   note?: ReleaseNote;
+  /** How a rollback reads and undoes what `command` migrates, for the tools that can (research R9). */
+  migrations?: Migrations;
 }
 
 /** A note for migrations the app runs itself when it starts (`what` says how). */
@@ -170,6 +173,18 @@ export class ReleaseContext {
   /** `cd <app-relative dir> && <command>` from the repository root. */
   at(dir: string, command: string): string {
     return inFolder(dir === "." ? this.appDir : joinRel(this.appDir, dir), command);
+  }
+
+  /**
+   * The release `command` with its tool's down-migration commands, all run from the same
+   * app-relative `dir` (see `app.migrations`).
+   */
+  migrating(dir: string, command: string, migrations: Migrations): ReleaseDetection {
+    const { tool, status, down } = migrations;
+    return {
+      command: this.at(dir, command),
+      migrations: { tool, status: this.at(dir, status), down: this.at(dir, down) },
+    };
   }
 
   /** A declared dependency of the app. */

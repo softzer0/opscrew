@@ -371,4 +371,5 @@ function expectFacts(facts: ProjectFacts, want: Expected["facts"]): void {
   for (const name of want.secretEnv ?? []) {
     expect(env.get(name)?.secretLikely, `${name} secret-likely`).toBe(true);
   }
+  expect(facts.build.migrations, "migrations").toEqual(want.migrations);
 }

@@ -191,6 +191,16 @@ async function typeormDataSource(ctx: ReleaseContext): Promise<string | undefine
   return ctx.firstMatching(candidates, /\bnew\s+DataSource\s*\(/, 20);
 }
 
+/** `npx <bin> migration:run -d <source>`, with `migration:show` and `migration:revert` alike. */
+function typeormRun(ctx: ReleaseContext, bin: string, source: string): ReleaseDetection {
+  const run = (action: string) => `npx ${bin} migration:${action} -d ${source}`;
+  return ctx.migrating(".", run("run"), {
+    tool: "typeorm",
+    status: run("show"),
+    down: run("revert"),
+  });
+}
+
 /**
  * TypeORM: `npx typeorm migration:run -d <data source>` with generated migrations
  * (`<13-digit timestamp>-<Name>.ts`). A TypeScript data source runs as the compiled file in the
@@ -214,17 +224,14 @@ async function typeorm(ctx: ReleaseContext): Promise<ReleaseDetection | undefine
       `The TypeORM data source in ${source} sets \`migrationsRun: true\`, so TypeORM applies them when the app starts`,
     );
   }
-  if (!TS_FILE.test(source))
-    return { command: ctx.at(".", `npx typeorm migration:run -d ${source}`) };
+  if (!TS_FILE.test(source)) return typeormRun(ctx, "typeorm", source);
   const tsNode = async () => {
     const pkg = parseJsonc(await ctx.read("package.json")) as { type?: unknown } | undefined;
     const bin = pkg?.type === "module" ? "typeorm-ts-node-esm" : "typeorm-ts-node-commonjs";
-    return { command: ctx.at(".", `npx ${bin} migration:run -d ${source}`) };
+    return typeormRun(ctx, bin, source);
   };
   const compiled = ctx.scripts.build ? await compiledPath(ctx, source) : undefined;
-  if (compiled && !listsOnlyTsMigrations(sourceText)) {
-    return { command: ctx.at(".", `npx typeorm migration:run -d ${compiled}`) };
-  }
+  if (compiled && !listsOnlyTsMigrations(sourceText)) return typeormRun(ctx, "typeorm", compiled);
   if (ctx.npm("ts-node")) return tsNode();
   if (compiled) {
     return leftOut(
@@ -324,7 +331,11 @@ async function knex(ctx: ReleaseContext): Promise<ReleaseDetection | undefined> 
       `OpsCrew found Knex migrations, but ${typescript} and ts-node, which the Knex CLI uses to load it, is not a dependency, so deploys could not run \`${command}\`. Add ts-node to the app's devDependencies and ${ANALYZE_AGAIN}`,
     );
   }
-  return { command: ctx.at(dir, command) };
+  return ctx.migrating(dir, command, {
+    tool: "knex",
+    status: "npx knex migrate:list",
+    down: "npx knex migrate:down",
+  });
 }
 
 /** True when the app has sequelize-cli style migrations (`<14 digits>-name.js`). */
@@ -341,7 +352,11 @@ async function hasSequelizeMigrations(ctx: ReleaseContext): Promise<boolean> {
 /** Sequelize: `npx sequelize-cli db:migrate` with `<14 digits>-name.js` migrations. */
 async function sequelize(ctx: ReleaseContext): Promise<ReleaseDetection | undefined> {
   if (!ctx.npm("sequelize-cli") || !(await hasSequelizeMigrations(ctx))) return undefined;
-  return { command: ctx.at(".", "npx sequelize-cli db:migrate") };
+  return ctx.migrating(".", "npx sequelize-cli db:migrate", {
+    tool: "sequelize",
+    status: "npx sequelize-cli db:migrate:status",
+    down: "npx sequelize-cli db:migrate:undo",
+  });
 }
 
 /**
