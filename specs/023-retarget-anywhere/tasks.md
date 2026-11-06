@@ -32,7 +32,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 1: Foundation
 
-- [ ] T2301 The lead's groundwork:
+- [x] T2301 The lead's groundwork:
   - ADR 0027: sides, the archive API, and the carrier and rclone images;
   - the contracts: `StreamRunner.open(cmd, args)` returning `{ stream: Duplex; exit }`,
     `DockerTransport.request({ method, path, headers, body?: Readable })` returning
@@ -43,7 +43,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
 
 ## Phase 2: Wave 1 (parallel)
 
-- [ ] T2302 [P] The move's schema, in `packages/plan-schema/`
+- [x] T2302 [P] The move's schema, in `packages/plan-schema/`
   - Owns: `packages/plan-schema/src/**` (+ tests, regenerated schemas)
   - Depends: T2301
   - Accept:
@@ -62,7 +62,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema`
   - Effort: high
 
-- [ ] T2303 [P] The Docker connector and the stream runner, in `packages/connectors/docker/` and `packages/core/`
+- [x] T2303 [P] The Docker connector and the stream runner, in `packages/connectors/docker/` and `packages/core/`
   - Owns: `packages/connectors/docker/src/**`, `packages/core/src/process*.ts` (+ tests)
   - Depends: T2301
   - Accept:
@@ -79,7 +79,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-docker --filter=@opscrew/core`
   - Effort: xhigh
 
-- [ ] T2304 [P] [US2] Streaming through Portainer, in `packages/connectors/portainer/`
+- [x] T2304 [P] [US2] Streaming through Portainer, in `packages/connectors/portainer/`
   - Owns: `packages/connectors/portainer/src/**` (+ tests)
   - Depends: T2301
   - Accept:
@@ -94,7 +94,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-portainer`
   - Effort: high
 
-- [ ] T2305 [P] Layouts, records and the bucket root, in `packages/iac-templates/`
+- [x] T2305 [P] Layouts, records and the bucket root, in `packages/iac-templates/`
   - Owns: `packages/iac-templates/src/infra/**` (+ snapshots, fixtures)
   - Depends: T2302
   - Accept:
@@ -126,7 +126,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `OPSCREW_DOCKER_TESTS=1 pnpm --filter @opscrew/agents exec vitest run src/retarget/catalog-copy.docker.test.ts`
   - Effort: high
 
-- [ ] T2307 [P] [US1] The SSH sides: cloud and own
+- [x] T2307 [P] [US1] The SSH sides: cloud and own
   - Owns: `packages/agents/src/retarget/sides/{ssh,cloud,own}*.ts`, `packages/agents/src/shared/{server-record,own-server}*.ts`
   - Depends: T2302, T2303
   - Accept:

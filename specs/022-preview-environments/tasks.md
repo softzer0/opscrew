@@ -525,7 +525,7 @@ then T2233, then T2234.
 
 - [x] T2228 Spec, plan, research R7, data model, ADR 0026 (D4, D6), constitution 1.8.0 (lead).
 
-- [ ] T2229 [P] [US9] [US10] The opt-ins in the schema, in `packages/plan-schema/`
+- [x] T2229 [P] [US9] [US10] The opt-ins in the schema, in `packages/plan-schema/`
   - Owns: `packages/plan-schema/src/**` (+ tests, regenerated schemas)
   - Accept:
     - `previews.server?: { environment }` (strict, an environment name, never `prod`), which needs
@@ -535,7 +535,7 @@ then T2233, then T2234.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema`
   - Effort: medium
 
-- [ ] T2230 [P] [US10] Certificate packs and Total TLS, read-only, in `packages/connectors/cloudflare/`
+- [x] T2230 [P] [US10] Certificate packs and Total TLS, read-only, in `packages/connectors/cloudflare/`
   - Owns: `packages/connectors/cloudflare/src/**` (+ tests)
   - Accept: three read-only client calls, each checked with zod, each with a plain error that
     names the token permission (Zone → SSL and Certificates → Read) when Cloudflare refuses:
@@ -548,7 +548,7 @@ then T2233, then T2234.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-cloudflare`
   - Effort: medium
 
-- [ ] T2231 [US10] The advanced certificate pack in the preview root, in `packages/iac-templates/`
+- [x] T2231 [US10] The advanced certificate pack in the preview root, in `packages/iac-templates/`
   - Owns: `packages/iac-templates/src/**` (+ tests, snapshots, fixtures)
   - Depends: T2229
   - Accept:
@@ -565,7 +565,7 @@ then T2233, then T2234.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`
   - Effort: medium
 
-- [ ] T2232 [US9] Previews on another environment's server, in `packages/agents/`
+- [x] T2232 [US9] Previews on another environment's server, in `packages/agents/`
   - Owns: `packages/agents/src/**` (+ tests)
   - Depends: T2229
   - Reads: research R7.3 (1), plan.md "12." A
@@ -608,7 +608,7 @@ then T2233, then T2234.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2233 [US10] Previews under the app's zone, in `packages/agents/`; and two fixes found in T2232
+- [x] T2233 [US10] Previews under the app's zone, in `packages/agents/`; and two fixes found in T2232
   - Owns: `packages/agents/src/**`, `packages/iac-templates/src/previews/**` (+ tests)
   - Depends: T2230, T2231, T2232
   - Reads: research R7.1 and R7.3 (2), plan.md "12." B
