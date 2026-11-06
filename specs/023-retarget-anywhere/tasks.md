@@ -137,7 +137,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2308 [P] [US2] The Portainer side, and Postgres in one-off containers
+- [x] T2308 [P] [US2] The Portainer side, and Postgres in one-off containers
   - Owns: `packages/agents/src/retarget/sides/{portainer,postgres}*.ts`, `packages/agents/src/provision/{portainer-flow,stack-plan}.ts` (+ tests)
   - Depends: T2302, T2303, T2304
   - Accept:
@@ -182,6 +182,12 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
       - No server address in the window's errors and hints (server-ops' messages, ssh's stderr
         line); the sides' wording ("your new server") everywhere.
       - `remoteFor` (session.ts) takes the port, and the sides' own `remoteOf` (sides/ssh.ts) goes.
+    - Found in T2310: `loadMoveServers`, `layoutOf`/`previousTarget` (the final files' transitional
+      layout), `requireSwitchSettled`, `storeDeploySecrets` and `restartOldApp` work for any old side
+      through `moveSide`, not `previousCloud`; then end-to-end `--finish` and `--abort` tests for an
+      own and a Portainer old side.
+    - Also from T2310: `deletionStep`'s unused `beforeApply` goes (plans.ts); `forgetHostKeys` for an
+      own old side forgets the admin login's host too, not only the move's addresses.
     - Found in T2308:
       - `RetargetServices` gains `portainer`; step `deployed` stores `portainerDeploySecrets` for a
         Portainer side.
@@ -195,7 +201,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2310 [US1] [US2] Finish and abort, by side
+- [x] T2310 [US1] [US2] Finish and abort, by side
   - Owns: `packages/agents/src/retarget/{finish,abort,removal}.ts` (+ tests)
   - Depends: T2307, T2308
   - Accept:
