@@ -324,7 +324,7 @@ features 010 (own servers), 013 (several apps), 016 (sites) and 018 (split place
   - Verify: `OPSCREW_DOCKER_TESTS=1` catalog copy test, plus agents and iac-templates
   - Effort: high
 
-- [ ] T2323 [US2] Found live (T2317 Portainer run 2): a move from Portainer back to a server deploys the Portainer template, and leaves the other side's deploy secrets
+- [x] T2323 [US2] Found live (T2317 Portainer run 2): a move from Portainer back to a server deploys the Portainer template, and leaves the other side's deploy secrets
   - Owns: `packages/agents/src/retarget/**` (+ tests)
   - Why:
     - **The template:** the Portainer stack template and a server's Compose file share
