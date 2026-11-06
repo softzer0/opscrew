@@ -644,7 +644,7 @@ then T2233, then T2234.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T2234 [US9] [US10] The CLI, the guide, the skill and the live pass for the opt-ins
+- [x] T2234 [US9] [US10] The CLI, the guide, the skill and the live pass for the opt-ins
   - Owns: `packages/cli/src/**`, `packages/cli/test/live/**` (+ tests), `plugin/skills/opscrew-deploy/**`,
     `docs/guide/previews.md`, `docs/guide/environments.md`, `docs/e2e.md`
   - Depends: T2232, T2233
@@ -660,7 +660,8 @@ then T2233, then T2234.
         server: a pull request's preview answers; dev keeps answering; `destroy --env dev` is
         refused while previews run; `destroy --env preview` leaves dev's server and dev working;
         then dev is destroyed.
-      - B's refusal runs on the preview zone, which has no ACM.
+      - B's refusal runs on a name below the app's own zone (`OPSCREW_E2E_DOMAIN`'s, which has no
+        ACM): `--app-zone` applies only below the app's zone.
       - docs/e2e.md says how to run both.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew && node plugin/validate.mjs && pnpm lint`
   - Effort: high
