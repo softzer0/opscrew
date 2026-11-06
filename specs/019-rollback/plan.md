@@ -687,7 +687,7 @@ every folder 700:
 .snapshots/<hex>/<service>.dump    one per database: PostgreSQL `-Fc`; MySQL, MariaDB SQL; MongoDB archive
 .snapshots/<hex>.partial/          a snapshot being written (removed by the next deploy)
 .snapshots/snapshot.log            the last dump's or restore's output (may quote data: never printed)
-.schema/<hex>                      the migration record: `version=<v>`, `count=<n>`, or `app=<app> <name>` lines
+.schema/<hex>                      the migration record: `version=<v>`, `count=<n>`, or `app=<app> <name>` or `database=<entry> <v>` lines
 .rollback-database                 the one-time approval: `<hex> <snapshot|migrations> <expiry epoch>`
 ```
 
