@@ -271,7 +271,8 @@ export function checkKeyComment(repository: string): string {
 /**
  * The only command the check's key can run (OpenSSH's forced command), whatever the client asks.
  * It only reads, and it is one line with no `"`, as it sits inside `command="..."`. It prints
- * `df -P -B1 /`, then, for each app folder with a scheduled snapshot's log
+ * `df -P -B1 /`, then the line `scheduled` (an older OpsCrew's key, which ran only `df`, prints
+ * none), then, for each app folder with a scheduled snapshot's log
  * (`.snapshots/scheduled.log`, feature 024), lines that start with `scheduled <app> `:
  * - `at <seconds>`: when the log was last written, in Unix seconds;
  * - `id <id>`: the log's last scheduled snapshot id line, which `snapshot.sh` prints once the
@@ -283,7 +284,7 @@ export function checkKeyComment(repository: string): string {
  * which the server's own runner runs, and its `scheduledLog` the same reading of a log's lines.
  */
 export const CHECK_KEY_COMMAND = [
-  "df -P -B1 / &&",
+  "df -P -B1 / && echo scheduled &&",
   `for d in ${APPS_DIR}/*/; do`,
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
   "a=${d%/}; a=${a##*/};",

@@ -182,7 +182,7 @@ export function keyVariables(checkKey: boolean): VariableSpec[] {
             name: CHECK_KEY_LINE,
             type: "string",
             description:
-              "The scheduled check's line for the deploy user's authorized_keys (its key, restricted to df), written at a new server's first boot.",
+              "The scheduled check's line for the deploy user's authorized_keys (its key, restricted to OpsCrew's read-only command for the disk and the scheduled snapshots), written at a new server's first boot.",
           },
         ]
       : []),

@@ -58,7 +58,8 @@ const PAUSE_REASONS = {
 /**
  * What each server runs for the check: the check key's forced command there (a copy of
  * `CHECK_KEY_COMMAND` in OpsCrew's `@opscrew/connector-ssh-host`), which the server's own runner
- * runs here. It only reads. It prints `df -P -B1 /`, then, for each app folder with a scheduled
+ * runs here. It only reads. It prints `df -P -B1 /`, then the line `scheduled` (which an older
+ * OpsCrew's key, which ran only `df`, never prints), then, for each app folder with a scheduled
  * snapshot's log, lines that start with `scheduled <app> `: `at <Unix seconds>` (when the log was
  * last written), `id <id>` (its last scheduled snapshot id line, if any), `after <n>` (how many
  * non-empty lines follow it, all of them without one: {@link scheduledLog}) and `running` (a
@@ -66,7 +67,7 @@ const PAUSE_REASONS = {
  * of the log.
  */
 export const CHECK_COMMAND = [
-  "df -P -B1 / &&",
+  "df -P -B1 / && echo scheduled &&",
   "for d in /srv/apps/*/; do",
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
   "a=${d%/}; a=${a##*/};",
@@ -476,13 +477,13 @@ async function checkDisk(check, t, read, io) {
 
 /**
  * The sizes in the last line of `df -P -B1` output, among the server's answer's lines other than
- * the scheduled snapshots' (`scheduled ...`), or undefined when it has none.
+ * the scheduled snapshots' (`scheduled...`), or undefined when it has none.
  */
 function parseDf(output) {
   const lines = output
     .trim()
     .split("\n")
-    .filter((line) => !line.startsWith("scheduled "));
+    .filter((line) => !line.startsWith("scheduled"));
   const fields = lines.at(-1)?.trim().split(/\s+/) ?? [];
   if (fields.length < 6) return undefined;
   const [total, used, free] = fields.slice(-5, -2).map(Number);
@@ -508,7 +509,11 @@ async function checkSnapshot(check, read, io) {
     .map((line) => line.slice(prefix.length));
   const seconds = /^at (\d+)$/.exec(lines.find((line) => line.startsWith("at ")) ?? "")?.[1];
   if (seconds === undefined) {
-    io.log(`${server.id}: no scheduled snapshot of ${app} is recorded there yet.`);
+    io.log(
+      output.split("\n").includes("scheduled")
+        ? `${server.id}: no scheduled snapshot of ${app} is recorded there yet.`
+        : `::warning::The server ${server.id} was set up before the scheduled check read snapshots: its check key reads only the disk, so its scheduled snapshots are not checked. \`npx opscrew provision\` gives the app's server and the servers you own the new key line; another server OpsCrew created gets it when it is created again.`,
+    );
     return undefined;
   }
   if (lines.includes("running")) {

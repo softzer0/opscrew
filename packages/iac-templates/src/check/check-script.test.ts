@@ -285,6 +285,8 @@ function df(percent: number): string {
   return [
     "Filesystem     1-blocks        Used   Available Capacity Mounted on",
     `/dev/sda1   ${total} ${used} ${total - used}      ${percent}% /`,
+    // CHECK_COMMAND's line after df's, which an older OpsCrew's key (only df) never prints.
+    "scheduled",
     "",
   ].join("\n");
 }
@@ -890,7 +892,7 @@ describe("scheduled snapshots", () => {
     expect(world.summaries.at(-1)).toContain(`- ${KEY}: passed`);
   });
 
-  it("reads only its app's lines, and counts a server without its log (an older key's answer) as not checked", async () => {
+  it("reads only its app's lines, and counts a server without its log as not checked", async () => {
     const world = new World();
     world.config = config({ environments: [SCHEDULED] });
     world.disks.set(SERVER_HOST, `${df(40)}${scheduled("example-app-admin", RAN, ["failed"])}`);
@@ -898,6 +900,20 @@ describe("scheduled snapshots", () => {
     expect(world.open()).toEqual([]);
     expect(world.logs).toContain(
       "hetzner-example-app: no scheduled snapshot of example-app is recorded there yet.",
+    );
+    expect(world.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
+    expect(world.summaries.at(-1)).toContain("- example-app/prod/disk/hetzner-example-app: passed");
+  });
+
+  it("says why a server whose check key predates the snapshot check is not checked", async () => {
+    const world = new World();
+    world.config = config({ environments: [SCHEDULED] });
+    // An older OpsCrew's key line runs only df.
+    world.disks.set(SERVER_HOST, df(40).replace("scheduled\n", ""));
+    await run(env(), world.io());
+    expect(world.open()).toEqual([]);
+    expect(world.logs).toContain(
+      "::warning::The server hetzner-example-app was set up before the scheduled check read snapshots: its check key reads only the disk, so its scheduled snapshots are not checked. `npx opscrew provision` gives the app's server and the servers you own the new key line; another server OpsCrew created gets it when it is created again.",
     );
     expect(world.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
     expect(world.summaries.at(-1)).toContain("- example-app/prod/disk/hetzner-example-app: passed");
@@ -1027,6 +1043,7 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
     expect(result.status, result.stderr).toBe(0);
     const out = result.stdout.split("\n");
     expect(out[0]).toMatch(/^Filesystem/);
+    expect(out).toContain("scheduled");
     // Only folders with OpsCrew's app names are read, and nothing a log says is printed.
     for (const text of ["Odd", "line ", "left out", "failed", "exit", secret]) {
       expect(result.stdout).not.toContain(text);
