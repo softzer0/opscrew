@@ -39,6 +39,7 @@ import { RootEngine, withBucket } from "../testing/storage";
 import { driftNextSteps, renderDriftReport } from "./render";
 import { runDrift } from "./run";
 import {
+  LIFECYCLE_IGNORED,
   mergeAttributes,
   readOnlyAttributes,
   SCHEMA_UNREADABLE_NOTE,
@@ -441,6 +442,45 @@ describe.skipIf(!findExecutable("git"))("runDrift", () => {
     const second = await runDrift(changed.deps, { services: changed.services });
     expect(second.drift).toEqual([drifted(FIREWALL, "update", ["rule"])]);
     expect(second.clean).toBe(false);
+  });
+
+  it("ignores the image a rebuild from a snapshot changed, but not the server's type", async () => {
+    // Found by the live pass of `opscrew restore --server`: the server modules ignore the image
+    // (`ignore_changes`), so provision plans nothing, yet the refresh saw it changed.
+    const rebuilt = new DriftEngine({
+      drift: [drifted(SERVER, "update", ["image", "ssh_keys", "user_data"])],
+      pending: [],
+    });
+    const clean = await setup({ engine: rebuilt });
+    const report = await runDrift(clean.deps, { services: clean.services });
+    expect(report.drift).toEqual([]);
+    expect(report.clean).toBe(true);
+
+    const resized = new DriftEngine({
+      drift: [drifted(SERVER, "update", ["image", "server_type"])],
+      pending: [change(SERVER, "update")],
+    });
+    const changed = await setup({ engine: resized });
+    const second = await runDrift(changed.deps, { services: changed.services });
+    expect(second.drift).toEqual([drifted(SERVER, "update", ["server_type"])]);
+    expect(second.clean).toBe(false);
+  });
+
+  it("ignores a rebuilt Droplet's image, but not its size", async () => {
+    const token = fakeSecret("digitalocean-token", "drift-rebuild");
+    const engine = new DriftEngine({
+      drift: [drifted(DO_DROPLET, "update", ["image"]), drifted(DO_FIREWALL, "update", ["status"])],
+      pending: [],
+    });
+    const { deps, services } = await setup({
+      plan: testPlan({ deployed: true, provider: "digitalocean" }),
+      engine,
+      env: { HCLOUD_TOKEN: undefined, DIGITALOCEAN_TOKEN: token },
+    });
+    expect((await runDrift(deps, { services })).clean).toBe(true);
+    expect(
+      withoutIgnored([drifted(DO_DROPLET, "update", ["image", "size"])], LIFECYCLE_IGNORED),
+    ).toEqual([drifted(DO_DROPLET, "update", ["size"])]);
   });
 
   it("ignores values the cloud maintains itself (read-only in the provider schema)", async () => {

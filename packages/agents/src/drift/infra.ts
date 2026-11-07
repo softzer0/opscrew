@@ -17,6 +17,7 @@ import {
 import { type ProjectEngine, projectEngine } from "../shared";
 import {
   type AttributesByType,
+  LIFECYCLE_IGNORED,
   mergeAttributes,
   providerReadOnlyAttributes,
   SCHEMA_UNREADABLE_NOTE,
@@ -179,7 +180,10 @@ export async function compareInfrastructure(
     const readOnly = refreshedDrift.some((entry) => entry.action === "update")
       ? await providerReadOnlyAttributes(engine, dir, engineEnv)
       : {};
-    const drift = withoutIgnored(refreshedDrift, mergeAttributes(input.mirrored, readOnly ?? {}));
+    const drift = withoutIgnored(
+      refreshedDrift,
+      mergeAttributes(LIFECYCLE_IGNORED, input.mirrored, readOnly ?? {}),
+    );
     if (readOnly === undefined && drift.some((entry) => entry.action === "update")) {
       notes.push(SCHEMA_UNREADABLE_NOTE);
     }
