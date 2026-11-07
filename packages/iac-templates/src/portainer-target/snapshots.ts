@@ -215,8 +215,9 @@ const GIVE_UP_SECONDS = 6 * 3600;
 /**
  * The finalizers' functions (busybox sh, as root):
  * - `finish <folder> <id> <kind>`: writes `about.json` (plan.md 1.: the id, the kind, when, the
- *   running version's digest and each part's kind, file and size, or `skipped` or `failed`), drops the markers,
- *   makes the files 600 and the folder 700, root's, and renames `<id>.partial` to `<id>`;
+ *   running version's digest and each part's kind, file, size and image (a service's), or
+ *   `skipped` or `failed`), drops the markers, makes the files 600 and the folder 700, root's, and
+ *   renames `<id>.partial` to `<id>`;
  * - `prune <kind> <n>`: keeps only the newest `n` finished snapshots of that kind, never one being
  *   written (`.partial`, or `.taking` by hand).
  */
@@ -224,7 +225,7 @@ function finalizerFunctions(all: PortainerSnapshotPart[]): string[] {
   const entries = all.flatMap((part, index) => [
     ...(index > 0 ? ["    printf ,"] : []),
     `    if [ -f "$1"/${part.name}.done ] && [ -f "$1"/${part.file} ]; then`,
-    `      printf '{"name":"${part.name}","kind":"${part.kind}","file":"${part.file}","size":%s}' "$(stat -c %s "$1"/${part.file})"`,
+    `      printf '{"name":"${part.name}","kind":"${part.kind}","file":"${part.file}","size":%s${part.service === undefined ? "" : `,"image":"${part.image}"`}}' "$(stat -c %s "$1"/${part.file})"`,
     `    elif [ -f "$1"/${part.name}.skipped ]; then`,
     `      printf '{"name":"${part.name}","kind":"${part.kind}","skipped":true}'`,
     "    else",

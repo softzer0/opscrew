@@ -35,10 +35,12 @@ import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__
 import { renderWorkflow } from "./index";
 import { snapshotScript } from "./snapshot-script";
 import {
+  partRestore,
   ROLLBACK_APPROVAL_FILE,
   RUNNING_FILE,
   rollbackApprovalLine,
   snapshotFunctions,
+  snapshotParts,
 } from "./snapshots";
 import { rollbackCommands, switchCommands } from "./switch";
 
@@ -1927,5 +1929,53 @@ describe("the start script's database lines", () => {
     expect(script(prod)).not.toContain(deployStep);
     expect(script(staging)).toContain(deployStep);
     expect(script(withPlan(prod, { deploy: { snapshots: true } }))).toContain(deployStep);
+  });
+});
+
+describe("each part's exact restore, the same on servers and in Portainer", () => {
+  const plan = withServices([
+    { kind: "postgres", name: "db" },
+    { kind: "valkey", name: "cache" },
+    { kind: "valkey", name: "queue", options: { mode: "queue" } },
+    { kind: "dragonfly", name: "dfc" },
+    { kind: "kafka", name: "kafka" },
+  ]);
+  const restoreOf = (name: string) => {
+    const part = snapshotParts(plan).find((each) => each.name === name);
+    if (part === undefined) throw new Error(`no part ${name}`);
+    return partRestore(part);
+  };
+  const FROM = "/snapshots/20261106T190000Z";
+
+  it("loads a database into its running service from a file, its password from the environment", () => {
+    const db = restoreOf("db");
+    expect(db.stop).toBe(false);
+    expect(db.put).toBeUndefined();
+    expect(db.load?.(`${FROM}/db.dump`)).toBe(
+      `umask 077 && export PGPASSWORD="$POSTGRES_PASSWORD" && psql -X -q -h db -U app -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS app WITH (FORCE)" -c "CREATE DATABASE app OWNER app" && pg_restore -h db -U app -d app --no-owner --single-transaction ${FROM}/db.dump`,
+    );
+  });
+
+  it("puts a copy back from a file or from stdin, stopping only what must stop", () => {
+    const cache = restoreOf("cache");
+    expect(cache.stop).toBe(true);
+    expect(cache.put?.(`${FROM}/cache.rdb`)).toBe(
+      `o="$(stat -c %u:%g /data)" && cat ${FROM}/cache.rdb > /data/dump.rdb && chown "$o" /data/dump.rdb`,
+    );
+    expect(cache.put?.("-")).toContain("&& cat > /data/dump.rdb &&");
+    expect(cache.after).toBe("rm -f /data/dump.rdb");
+    expect(restoreOf("queue").put?.(`${FROM}/queue.rdb`)).toContain(
+      `cat ${FROM}/queue.rdb > /data/appendonlydir/appendonly.aof.1.base.rdb`,
+    );
+    const dragonfly = restoreOf("dfc");
+    expect(dragonfly.stop).toBe(false);
+    expect(dragonfly.load?.("")).toBe(
+      `umask 077 && export REDISCLI_AUTH="$DFLY_requirepass" && [ "$(redis-cli -h dfc DFLY LOAD opscrew-snapshot.rdb)" = OK ]`,
+    );
+    const kafka = restoreOf("kafka");
+    expect(kafka.stop).toBe(true);
+    expect(kafka.put?.(`${FROM}/kafka.tar`)).toContain(
+      `tar -C / -xpf ${FROM}/kafka.tar var/lib/kafka/data`,
+    );
   });
 });

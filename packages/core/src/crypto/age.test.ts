@@ -1,6 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { Readable } from "node:stream";
+import { buffer } from "node:stream/consumers";
+import { pipeline } from "node:stream/promises";
 import { describe, expect, it } from "vitest";
 import {
+  ageDecryptStream,
+  ageEncrypt,
   ageRecipientOf,
   bech32Decode,
   bech32Encode,
@@ -98,5 +103,116 @@ describe("age keys", () => {
       expect(message).toMatch(/not an age identity/);
       if (bad !== "") expect(message).not.toContain(bad.slice(16, 40));
     }
+  });
+});
+
+/** `encrypted` through {@link ageDecryptStream}, written in `piece`-byte writes. */
+async function decrypt(encrypted: Buffer, identity: string, piece = 1000): Promise<Buffer> {
+  const pieces = function* () {
+    for (let at = 0; at < encrypted.length; at += piece) yield encrypted.subarray(at, at + piece);
+  };
+  const out = ageDecryptStream(identity);
+  const [read] = await Promise.all([buffer(out), pipeline(Readable.from(pieces()), out)]);
+  return read;
+}
+
+/** The error {@link decrypt} fails with. */
+async function refusal(encrypted: Buffer, identity: string): Promise<{ code?: string }> {
+  return decrypt(encrypted, identity).then(
+    () => ({ code: "none" }),
+    (error: { code?: string }) => error,
+  );
+}
+
+describe("age decryption", () => {
+  const sizes = [0, 1, 65_535, 65_536, 65_537, 3 * 65_536, 3 * 65_536 + 100];
+
+  it("opens what age's format encrypts to a key generated here, streaming every size whole", async () => {
+    const { identity, recipient } = generateAgeIdentity();
+    const other = generateAgeIdentity().recipient;
+    for (const size of sizes) {
+      const plain = randomBytes(size);
+      const encrypted = ageEncrypt(plain, [other, recipient]);
+      expect((await decrypt(encrypted, identity)).equals(plain), String(size)).toBe(true);
+      expect((await decrypt(encrypted, `${identity}\n`, 70_000)).equals(plain)).toBe(true);
+    }
+    // An age key file's text, as age-keygen writes it.
+    const keyFile = `# created: 2026-11-07T00:00:00Z\r\n# public key: ${recipient}\r\n${identity}\r\n`;
+    const plain = randomBytes(10);
+    expect((await decrypt(ageEncrypt(plain, [recipient]), keyFile)).equals(plain)).toBe(true);
+  });
+
+  it("refuses a file not encrypted to the key, without its identity in the message", async () => {
+    const { identity } = generateAgeIdentity();
+    const encrypted = ageEncrypt(randomBytes(100), [generateAgeIdentity().recipient]);
+    const error = (await refusal(encrypted, identity)) as { code?: string; message?: string };
+    expect(error.code).toBe("SECRETS_KEY_REJECTED");
+    expect(error.message).not.toContain(identity.slice(16));
+  });
+
+  it("refuses a changed chunk, a changed header, a truncated file and added bytes", async () => {
+    const { identity, recipient } = generateAgeIdentity();
+    const plain = randomBytes(3 * 65_536 + 100);
+    const encrypted = ageEncrypt(plain, [recipient]);
+    const headerEnd = encrypted.indexOf("\n", encrypted.indexOf("\n--- ") + 1) + 1;
+    const flip = (at: number) => {
+      const copy = Buffer.from(encrypted);
+      copy[at] = (copy[at] as number) ^ 1;
+      return copy;
+    };
+    const firstChunk = headerEnd + 16;
+    for (const bad of [
+      flip(firstChunk + 10),
+      flip(encrypted.length - 1),
+      // Another version, and a stanza added: the header's MAC covers every stanza.
+      Buffer.concat([
+        Buffer.from(
+          encrypted
+            .subarray(0, headerEnd)
+            .toString()
+            .replace("age-encryption.org/v1", "age-encryption.org/v2"),
+        ),
+        encrypted.subarray(headerEnd),
+      ]),
+      Buffer.concat([
+        Buffer.from(encrypted.subarray(0, headerEnd).toString().replace("\n---", "\n-> x\n\n---")),
+        encrypted.subarray(headerEnd),
+      ]),
+      encrypted.subarray(0, firstChunk + 2 * 65_552),
+      encrypted.subarray(0, encrypted.length - 5),
+      encrypted.subarray(0, headerEnd - 3),
+      Buffer.concat([encrypted, Buffer.from("more")]),
+    ]) {
+      const error = await refusal(bad, identity);
+      expect(error.code).toBe("ARTIFACT_INVALID");
+    }
+    // A changed MAC itself.
+    const macAt = encrypted.indexOf("\n--- ") + 6;
+    const changedMac = Buffer.from(encrypted);
+    changedMac[macAt] = changedMac[macAt] === 65 ? 66 : 65;
+    expect((await refusal(changedMac, identity)).code).toBe("ARTIFACT_INVALID");
+  });
+
+  it("writes nothing of a chunk whose tag doesn't check", async () => {
+    const { identity, recipient } = generateAgeIdentity();
+    const encrypted = ageEncrypt(randomBytes(2 * 65_536 + 7), [recipient]);
+    const headerEnd = encrypted.indexOf("\n", encrypted.indexOf("\n--- ") + 1) + 1;
+    const bad = Buffer.from(encrypted);
+    const second = headerEnd + 16 + 65_552 + 3;
+    bad[second] = (bad[second] as number) ^ 1;
+    const out = ageDecryptStream(identity);
+    const written: Buffer[] = [];
+    out.on("data", (data: Buffer) => written.push(data));
+    await expect(pipeline(Readable.from([bad]), out)).rejects.toMatchObject({
+      code: "ARTIFACT_INVALID",
+    });
+    expect(Buffer.concat(written).length).toBe(65_536);
+  });
+
+  it("refuses an identity that is not one at once", () => {
+    expect(() => ageDecryptStream(generateAgeIdentity().recipient)).toThrow(/not an age identity/);
+    expect(() => ageEncrypt(Buffer.from("x"), [generateAgeIdentity().identity])).toThrow(
+      /not an age recipient/,
+    );
   });
 });

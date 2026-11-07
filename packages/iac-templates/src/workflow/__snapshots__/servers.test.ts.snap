@@ -90,6 +90,17 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               *) return 1 ;;
             esac
           }
+          part_image() {
+            case "$1" in
+              db)
+                echo '<pin:IMAGES.postgres>'
+                ;;
+              docs)
+                echo '<pin:IMAGES.mongodb>'
+                ;;
+              *) return 1 ;;
+            esac
+          }
           snapshot_room() {
             if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
             rm -rf .snapshots/*.partial .snapshots/*.taking
@@ -177,7 +188,9 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               case " $* " in
                 *" $_about_part "*)
                   _about_file="$(part_file "$_about_part")"
-                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" ;;
+                  _about_image="$(part_image "$_about_part")"
+                  if [ -n "$_about_image" ]; then _about_image=",\\"image\\":\\"$_about_image\\""; fi
+                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" "$_about_image" ;;
                 *) printf '{"name":"%s","kind":"%s","skipped":true}' "$_about_part" "$(part_kind "$_about_part")" ;;
               esac
             done
@@ -490,6 +503,14 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               *) return 1 ;;
             esac
           }
+          part_image() {
+            case "$1" in
+              orders)
+                echo '<pin:IMAGES.mysql>'
+                ;;
+              *) return 1 ;;
+            esac
+          }
           snapshot_room() {
             if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
             rm -rf .snapshots/*.partial .snapshots/*.taking
@@ -571,7 +592,9 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               case " $* " in
                 *" $_about_part "*)
                   _about_file="$(part_file "$_about_part")"
-                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" ;;
+                  _about_image="$(part_image "$_about_part")"
+                  if [ -n "$_about_image" ]; then _about_image=",\\"image\\":\\"$_about_image\\""; fi
+                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" "$_about_image" ;;
                 *) printf '{"name":"%s","kind":"%s","skipped":true}' "$_about_part" "$(part_kind "$_about_part")" ;;
               esac
             done
@@ -884,6 +907,14 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               *) return 1 ;;
             esac
           }
+          part_image() {
+            case "$1" in
+              cache)
+                echo '<pin:IMAGES.valkey>'
+                ;;
+              *) return 1 ;;
+            esac
+          }
           snapshot_room() {
             if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
             rm -rf .snapshots/*.partial .snapshots/*.taking
@@ -968,7 +999,9 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
               case " $* " in
                 *" $_about_part "*)
                   _about_file="$(part_file "$_about_part")"
-                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" ;;
+                  _about_image="$(part_image "$_about_part")"
+                  if [ -n "$_about_image" ]; then _about_image=",\\"image\\":\\"$_about_image\\""; fi
+                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" "$_about_image" ;;
                 *) printf '{"name":"%s","kind":"%s","skipped":true}' "$_about_part" "$(part_kind "$_about_part")" ;;
               esac
             done

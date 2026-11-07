@@ -347,6 +347,8 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
                 kind: part.kind,
                 file: part.file,
                 size: `${part.name} rows of before`.length,
+                // The image the service runs, as its Compose service pins it; none for SQLite.
+                ...(part.image === undefined ? {} : { image: part.image }),
               }
             : { name: part.name, kind: part.kind, skipped: true },
         ),
@@ -382,7 +384,13 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(existsSync(at(`.snapshots/${id}/cache.rdb`))).toBe(false);
       const entry = (name: string) =>
         about(id).services.find((s: { name: string }) => s.name === name);
-      expect(entry("kafka")).toEqual({ name: "kafka", kind: "kafka", file: "kafka.tar", size: 20 });
+      expect(entry("kafka")).toEqual({
+        name: "kafka",
+        kind: "kafka",
+        file: "kafka.tar",
+        size: 20,
+        image: IMAGES.kafka.ref,
+      });
       expect(entry("cache")).toEqual({ name: "cache", kind: "valkey", skipped: true });
       expect(entry("mq")).toEqual({ name: "mq", kind: "rabbitmq", skipped: true });
       const order = [
@@ -769,6 +777,26 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(running("worker")).toBe(true);
       expect(existsSync(`${work}/paused`)).toBe(false);
       expect(snap(["hold", "now"]).stderr).toContain("Usage:");
+    });
+
+    it("holds and resumes the app on its server when only extra servers hold data (D13)", () => {
+      const plan = extraOnly();
+      write(`${appDir(plan)}/snapshot.sh`, `${snapshotScript(plan).join("\n")}\n`);
+      for (const service of ["app"]) write(`${work}/running/${service}`, "");
+      const held = snap(["hold"], {}, plan);
+      expect(held.status, held.output).toBe(0);
+      expect(existsSync(`${work}/paused`)).toBe(true);
+      expect(running("app")).toBe(false);
+      expect(calls()[0]).toBe("flock 7");
+      const resumed = snap(["resume"], {}, plan);
+      expect(resumed.status, resumed.output).toBe(0);
+      expect(running("app")).toBe(true);
+      expect(existsSync(`${work}/paused`)).toBe(false);
+      for (const other of [["take", "manual"], ["list"], ["hold", "now"]]) {
+        const refused = snap(other, {}, plan);
+        expect(refused.status).toBe(1);
+        expect(refused.stderr).toContain("Usage: sh snapshot.sh hold | resume");
+      }
     });
 
     it("changes nothing when the data can't be copied first", () => {
@@ -1200,6 +1228,19 @@ describe("the script's text", () => {
     expect(snapshotScript(splitPlan(), "missing")).toEqual([]);
   });
 
+  it("has only hold and resume on the app's server when only extra servers hold data (D13)", () => {
+    const script = snapshotScript(extraOnly());
+    const text = script.join("\n");
+    expect(text).toContain("snapshot_cmd_hold() {");
+    expect(text).toContain("snapshot_cmd_resume() {");
+    expect(text).toContain("kamal-proxy pause shop");
+    expect(text).not.toMatch(/SNAPSHOT_PARTS|snapshot_cmd_take|snapshot_cmd_restore/);
+    for (const line of script) expect(line).not.toContain("\n");
+    if (shWorks()) expect(parses(script)).toBe(true);
+    // The extra server keeps its own full script.
+    expect(snapshotScript(extraOnly(), "data").join("\n")).toContain("SNAPSHOT_PARTS='db docs'");
+  });
+
   it("has each extra server's own services, and no hold or stop of the app there", () => {
     const script = snapshotScript(splitPlan(), "data").join("\n");
     expect(script).toContain("SNAPSHOT_PARTS='db docs'");
@@ -1283,6 +1324,12 @@ describe("the deploy's upload of snapshot.sh", () => {
     );
   });
 
+  it("writes the app's server's hold and resume when only extra servers hold data (D13)", () => {
+    const upload = step(renderWorkflow(extraOnly(), testContext()).content, UPLOAD);
+    expect(upload).toContain("/srv/apps/shop/snapshot.sh.new");
+    expect(upload).toContain("          snapshot_cmd_hold() {");
+  });
+
   it("writes none for an app without data", () => {
     const content = renderWorkflow(
       inEnvironment(withServices([]), { name: "staging" }),
@@ -1329,6 +1376,16 @@ describe("the deploy's upload of snapshot.sh", () => {
     expect(deploySecretNamesFor(splitPlan())).not.toContain(OFFSITE_ENV_SECRET);
   });
 });
+
+/** {@link splitPlan} with data only on its extra servers: no service on the app's server. */
+function extraOnly(): DeployPlan {
+  const plan = splitPlan();
+  return DeployPlanSchema.parse({
+    ...plan,
+    services: plan.services.filter((service) => service.server !== undefined),
+    network: { ...plan.network, grants: [] },
+  });
+}
 
 /** The shared Hetzner test plan, which the server's runner can deploy. */
 function serverPlanWithRunner(): DeployPlan {

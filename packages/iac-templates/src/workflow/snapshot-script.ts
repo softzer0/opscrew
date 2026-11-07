@@ -28,9 +28,8 @@ import {
   EDGE_FUNCTION,
   holdRequests,
   pauseRequests,
-  processServices,
   readApproval,
-  recordProcesses,
+  recordRunning,
   resumeRequests,
   SCRIPT_ROOTS,
   startApp,
@@ -431,25 +430,13 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
 }
 
 /**
- * Records which workers and cron run ({@link recordProcesses}) while the web runs: after `hold`,
- * which stopped them, its record stays.
- */
-function recordRunning(plan: DeployPlan): string[] {
-  const record = recordProcesses(processServices(plan));
-  if (record.length === 0) return [];
-  return [
-    'if [ -n "$(docker compose ps -q app)" ]; then',
-    ...record.map((line) => `  ${line}`),
-    "fi",
-  ];
-}
-
-/**
- * The app's server's `snapshot_cmd_hold` and `snapshot_cmd_resume` (D8), 019's code to hold the
- * app's requests and stop its web, workers and cron ({@link pauseRequests}, {@link stopApp}), and
- * to start them again and let the requests through ({@link startApp}, {@link resumeRequests}).
- * `opscrew restore` runs them around the restores on extra servers. They change no data, so they
- * need no approval; kamal-proxy lets requests through itself after its longest hold.
+ * The app's server's `snapshot_cmd_hold` and `snapshot_cmd_resume` (D8), the pieces of the
+ * workflow's hold script (`appHoldCommands`): which workers and cron run is recorded while the web
+ * runs ({@link recordRunning}), the app's requests are held and its web, workers and cron stop
+ * ({@link pauseRequests}, {@link stopApp}); then they start again and the requests go through
+ * ({@link startApp}, {@link resumeRequests}). `opscrew restore` runs them around the restores on
+ * extra servers. They change no data, so they need no approval; kamal-proxy lets requests through
+ * itself after its longest hold.
  */
 function holdCommands(plan: DeployPlan): string[] {
   return [
@@ -484,13 +471,15 @@ function holdCommands(plan: DeployPlan): string[] {
  * snapshot not copied yet (D16): an upload never holds a deploy, and a snapshot before a release
  * is never uploaded. The start and rollback scripts read its
  * functions alone ({@link SNAPSHOT_FUNCTIONS}). Messages go to stderr and never quote data or a
- * secret. Empty without a part on the server ({@link snapshotParts}).
+ * secret. Without a part on the server ({@link snapshotParts}) it is empty, except on the app's
+ * server when an extra server holds data (D13): then it has only `hold` and `resume`
+ * ({@link holdScript}).
  */
 export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): string[] {
   const folder = appFolder(plan);
   const functions = snapshotFunctions(plan, server, folder);
-  if (functions.length === 0) return [];
   const app = server === APP_SERVER;
+  if (functions.length === 0) return app ? holdScript(plan) : [];
   const where = app ? "the app's server" : `the server ${server}`;
   const take = `take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>]`;
   const commands = [
@@ -579,6 +568,36 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
     "    esac ;;",
     "  *)",
     "    snapshot_usage",
+    "    exit 1 ;;",
+    "esac",
+  ];
+}
+
+/**
+ * {@link SNAPSHOT_SCRIPT} on the app's server when it holds no data but an extra server does (D13):
+ * only `hold` and `resume` ({@link holdCommands}), under the app's start lock, so `opscrew restore`
+ * can hold the app around the restores there. Empty when no server holds data.
+ */
+function holdScript(plan: DeployPlan): string[] {
+  const others = (plan.servers ?? []).some((server) => snapshotParts(plan, server.name).length > 0);
+  if (!others) return [];
+  const usage = `Usage: sh ${SNAPSHOT_SCRIPT} hold | resume`;
+  return [
+    `# OpsCrew's hold of ${plan.app.name} on the app's server while its data on the other servers is restored, generated from ${planFilePath(plan)}; each deploy uploads it.`,
+    `#   sh ${SNAPSHOT_SCRIPT} hold`,
+    `#   sh ${SNAPSHOT_SCRIPT} resume`,
+    ...SCRIPT_ROOTS,
+    "set -eu",
+    `cd ${appFolder(plan)}`,
+    EDGE_FUNCTION,
+    ...holdCommands(plan),
+    'case "${1:-}" in',
+    "  hold | resume)",
+    `    [ "$#" -eq 1 ] || { echo ${shellQuote(usage)} >&2; exit 1; }`,
+    ...startLock(plan).map((line) => `    ${line}`),
+    '    snapshot_cmd_"$1" ;;',
+    "  *)",
+    `    echo ${shellQuote(usage)} >&2`,
     "    exit 1 ;;",
     "esac",
   ];

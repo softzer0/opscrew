@@ -212,7 +212,7 @@ describe("the scheduled snapshots in a stack", () => {
     );
     expect(text).toContain('finish "$d" "$id" scheduled && prune scheduled 5');
     expect(text).toContain(
-      `printf '{"name":"db","kind":"postgres","file":"db.dump","size":%s}' "$(stat -c %s "$1"/db.dump)"`,
+      `printf '{"name":"db","kind":"postgres","file":"db.dump","size":%s,"image":"${IMAGES.postgres.ref}"}' "$(stat -c %s "$1"/db.dump)"`,
     );
     expect(text).toContain(`printf '{"name":"queue","kind":"valkey","failed":true}'`);
     expect(text).toContain('chmod 600 "$1"/* && chmod 700 "$1"');
@@ -683,7 +683,8 @@ describe.skipIf(!SH)("the snapshot scripts under sh", () => {
         taken: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
         version: IMAGE.slice(IMAGE.indexOf("@") + 1),
         services: [
-          { name: "db", kind: "postgres", file: "db.dump", size: 4 },
+          // A service's copy records the image the stack pins it to.
+          { name: "db", kind: "postgres", file: "db.dump", size: 4, image: IMAGES.postgres.ref },
           { name: "queue", kind: "valkey", failed: true },
           { name: "sqlite", kind: "sqlite", skipped: true },
         ],

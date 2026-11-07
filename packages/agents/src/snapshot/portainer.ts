@@ -42,9 +42,9 @@ import type { SnapshotRun } from "./run";
 import { type Listing, offsiteLines, readListing, versionLine } from "./store";
 
 /** Where every container of a snapshot mounts the snapshots volume. */
-const DIR = "/snapshots";
+export const DIR = "/snapshots";
 /** The label on every one-off container of a snapshot, with the snapshots volume's name. */
-const ONE_OFF_LABEL = "opscrew.snapshot";
+export const ONE_OFF_LABEL = "opscrew.snapshot";
 /** Where an online part's container finds its service's secrets (mode 600, root's). */
 const SECRETS_FILE = "/tmp/opscrew-snapshot.env";
 /** Docker's exit code of a container it killed: at the end of its stop timeout, or out of memory. */
@@ -89,7 +89,7 @@ export async function portainerPlace(run: SnapshotRun): Promise<PortainerPlace> 
 }
 
 /** A pinned busybox with the snapshots volume (read-only with `readOnly`) and `mounts`, no network. */
-function box(
+export function box(
   place: PortainerPlace,
   script: string,
   options: { readOnly?: boolean; mounts?: MountSpec[] } = {},
@@ -107,7 +107,7 @@ function box(
 }
 
 /** The plain error of a step in the user's Portainer that exited `exitCode`. */
-function failed(what: string, exitCode: number, hint?: string): OpsCrewError {
+export function failed(what: string, exitCode: number, hint?: string): OpsCrewError {
   return new OpsCrewError(
     "COMMAND_FAILED",
     `OpsCrew could not ${what} in your Portainer (exit code ${exitCode}).`,
@@ -178,7 +178,7 @@ export async function portainerProbe(place: PortainerPlace, id: string): Promise
  * values, each registered with the redactor; the database and user are the catalog's `app`, as
  * the stack's are.
  */
-async function stackValues(run: SnapshotRun): Promise<Map<string, string>> {
+export async function stackValues(run: SnapshotRun): Promise<Map<string, string>> {
   const { deps, plan } = run;
   const generated = await readValidJson(generatedValuesFile(deps), GeneratedValuesSchema);
   const values = new Map<string, string>([
@@ -205,7 +205,7 @@ const SHELL_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * one `NAME='value'` line each.
  * @throws OpsCrewError `PHASE_PRECONDITION` when this computer lacks one of its secrets.
  */
-function secretsFile(
+export function secretsFile(
   run: SnapshotRun,
   environment: Record<string, string>,
   values: Map<string, string>,
@@ -233,7 +233,7 @@ function secretsFile(
 }
 
 /** The volume mounts of the containers `of`, at the same places, read-only. */
-function volumesOf(of: readonly DockerContainer[]): MountSpec[] {
+export function volumesOf(of: readonly DockerContainer[]): MountSpec[] {
   return of.flatMap((container) =>
     container.mounts.flatMap((mount): MountSpec[] =>
       mount.type === "volume" && mount.name !== undefined
@@ -244,12 +244,12 @@ function volumesOf(of: readonly DockerContainer[]): MountSpec[] {
 }
 
 /** The stack's containers of the service `name` among `containers`. */
-function ofService(containers: readonly DockerContainer[], name: string): DockerContainer[] {
+export function ofService(containers: readonly DockerContainer[], name: string): DockerContainer[] {
   return containers.filter((container) => container.labels[COMPOSE_SERVICE_LABEL] === name);
 }
 
 /** The app stack's containers. */
-function stackContainers(place: PortainerPlace): Promise<DockerContainer[]> {
+export function stackContainers(place: PortainerPlace): Promise<DockerContainer[]> {
   return place.docker.listContainers([`${COMPOSE_PROJECT_LABEL}=${place.stack}`]);
 }
 
@@ -359,7 +359,6 @@ async function copyOnline(
   const { service } = part;
   const file = `${folder}/${part.file}`;
   const script = [
-    `. ${SECRETS_FILE} && rm -f ${SECRETS_FILE}`,
     `t=${file}.tmp`,
     `(umask 077 && ${part.copy}); r=$?`,
     `if [ "$r" = 0 ] && mv "$t" ${file}; then exit 0; fi`,
@@ -367,42 +366,23 @@ async function copyOnline(
     `if [ "$r" = ${NOTHING} ]; then exit ${NOTHING}; fi`,
     "exit 1",
   ].join("\n");
-  const secretsEntry = {
-    name: SECRETS_FILE.slice(1),
-    type: "file",
-    mode: 0o600,
-    uid: 0,
-    gid: 0,
-    data: Buffer.from(secrets),
-  } as const;
-  const result = await runOneOff(
-    place.docker,
-    {
-      image: part.image,
-      cmd: ["sh", "-c", script],
-      labels: { [ONE_OFF_LABEL]: place.volume },
-      mounts: [
-        ...part.mounts.map(
-          (mount): MountSpec => ({
-            type: "volume",
-            source: `${place.stack}_${mount.volume}`,
-            target: mount.target,
-            readOnly: mount.readOnly,
-          }),
-        ),
-        { type: "volume", source: place.volume, target: DIR },
-      ],
-      network: service === undefined ? "none" : `${place.stack}_internal`,
-    },
-    (id) => place.docker.putArchive(id, "/", tarStream([secretsEntry])),
-  ).catch((error: unknown) => {
-    // A container left behind may hold the service's secrets file: never silently.
-    if (!(error instanceof ContainerLeftError)) throw error;
-    throw new OpsCrewError(
-      "COMMAND_FAILED",
-      `${error.message} It may hold the secrets file of ${part.name}.`,
-      { ...(error.hint === undefined ? {} : { hint: error.hint }) },
-    );
+  const result = await serviceOneOff(place, {
+    name: part.name,
+    image: part.image,
+    script,
+    secrets,
+    mounts: [
+      ...part.mounts.map(
+        (mount): MountSpec => ({
+          type: "volume",
+          source: `${place.stack}_${mount.volume}`,
+          target: mount.target,
+          readOnly: mount.readOnly,
+        }),
+      ),
+      { type: "volume", source: place.volume, target: DIR },
+    ],
+    network: service === undefined ? "none" : `${place.stack}_internal`,
   });
   if (result.exitCode === NOTHING) return false;
   if (result.exitCode !== 0) {
@@ -413,6 +393,84 @@ async function copyOnline(
     );
   }
   return true;
+}
+
+/** A one-off of a service's own image: `script` (sh) with the service's secrets, filled in. */
+export interface ServiceOneOff {
+  /** The part's name, for messages. */
+  name: string;
+  image: string;
+  script: string;
+  /** The env file of the service's secrets ({@link secretsFile}), read before `script`. */
+  secrets: string;
+  mounts: MountSpec[];
+  network: string;
+}
+
+/**
+ * Runs `input.script` in a one-off of `input.image` with `input.mounts`, on `input.network`, after
+ * the secrets file (mode 600, root's, at {@link SECRETS_FILE}) is put into it before it starts and
+ * read and removed first thing. Its output can quote data: callers never show it.
+ * @throws OpsCrewError `COMMAND_FAILED` that names the secrets file when the container could not
+ * be removed.
+ */
+export async function serviceOneOff(
+  place: PortainerPlace,
+  input: ServiceOneOff,
+): Promise<OneOffResult> {
+  const secretsEntry = {
+    name: SECRETS_FILE.slice(1),
+    type: "file",
+    mode: 0o600,
+    uid: 0,
+    gid: 0,
+    data: Buffer.from(input.secrets),
+  } as const;
+  return runOneOff(
+    place.docker,
+    {
+      image: input.image,
+      cmd: ["sh", "-c", `. ${SECRETS_FILE} && rm -f ${SECRETS_FILE}\n${input.script}`],
+      labels: { [ONE_OFF_LABEL]: place.volume },
+      mounts: input.mounts,
+      network: input.network,
+    },
+    (id) => place.docker.putArchive(id, "/", tarStream([secretsEntry])),
+  ).catch((error: unknown) => {
+    // A container left behind may hold the service's secrets file: never silently.
+    if (!(error instanceof ContainerLeftError)) throw error;
+    throw new OpsCrewError(
+      "COMMAND_FAILED",
+      `${error.message} It may hold the secrets file of ${input.name}.`,
+      { ...(error.hint === undefined ? {} : { hint: error.hint }) },
+    );
+  });
+}
+
+/**
+ * Stops each of `ran` (a part's running containers) with {@link STOP_SECONDS} to stop cleanly
+ * (023's clean stop), and waits for each to exit.
+ * @throws OpsCrewError `COMMAND_FAILED` when Docker killed one (exit 137): its files are not whole,
+ * so OpsCrew does not `what` (`copy its files`).
+ */
+export async function stopCleanly(
+  place: PortainerPlace,
+  part: Pick<SnapshotPart, "name">,
+  ran: readonly DockerContainer[],
+  what: string,
+): Promise<void> {
+  for (const container of ran) await place.docker.stopContainer(container.id, STOP_SECONDS);
+  for (const container of ran) {
+    if ((await place.docker.waitContainer(container.id)) === KILLED) {
+      throw new OpsCrewError(
+        "COMMAND_FAILED",
+        `${part.name} did not stop cleanly within ${STOP_SECONDS} seconds (Docker killed it when the time ran out, or it ran out of memory), so OpsCrew did not ${what}.`,
+        {
+          hint: "Check its logs in Portainer and give it more memory if it ran out, then try again.",
+        },
+      );
+    }
+  }
 }
 
 /**
@@ -440,18 +498,7 @@ async function stopAndTar(
   const ran = containers.filter((container) => container.state === "running");
   let copyError: unknown;
   try {
-    for (const container of ran) await docker.stopContainer(container.id, STOP_SECONDS);
-    for (const container of ran) {
-      if ((await docker.waitContainer(container.id)) === KILLED) {
-        throw new OpsCrewError(
-          "COMMAND_FAILED",
-          `${part.name} did not stop cleanly within ${STOP_SECONDS} seconds (Docker killed it when the time ran out, or it ran out of memory), so OpsCrew did not copy its files.`,
-          {
-            hint: "Check its logs in Portainer and give it more memory if it ran out, then try again.",
-          },
-        );
-      }
-    }
+    await stopCleanly(place, part, ran, "copy its files");
     const dirs = volumes.map((mount) => shellQuote(mount.target.replace(/^\//, ""))).join(" ");
     const tarred = await box(place, `umask 077 && tar -C / -cf ${folder}/${part.file} ${dirs}`, {
       mounts: volumes,
@@ -481,7 +528,7 @@ const READY_TIMEOUT_MS = 5 * 60_000;
  * health check where it has one, so the next service stops only once this one serves again.
  * @throws OpsCrewError `COMMAND_FAILED` when it does not within {@link READY_TIMEOUT_MS}.
  */
-async function waitReady(
+export async function waitReady(
   run: SnapshotRun,
   place: PortainerPlace,
   part: SnapshotPart,
@@ -518,10 +565,10 @@ async function waitReady(
 }
 
 /**
- * The busybox script that writes `about.json` in `<id>.taking` (plan.md 1.: each part's kind, file
- * and size, or `skipped`), makes it root's with files 600 and the folder 700, and renames it `<id>`.
- * Every name, kind and file is the plan's (checked letters, digits and hyphens), the id letters and
- * digits, the version a checked digest.
+ * The busybox script that writes `about.json` in `<id>.taking` (plan.md 1.: each part's kind, file,
+ * size and image (a service's, the catalog's pin the stack runs), or `skipped`), makes it root's
+ * with files 600 and the folder 700, and renames it `<id>`. Every name, kind and file is the plan's
+ * (checked letters, digits and hyphens), the id letters and digits, the version a checked digest.
  */
 function finishScript(
   id: string,
@@ -532,7 +579,7 @@ function finishScript(
   const entries = parts.flatMap((part, index) => [
     ...(index > 0 ? ["  printf ,"] : []),
     part.copied === true
-      ? `  printf '{"name":"${part.name}","kind":"${part.kind}","file":"${part.file}","size":%s}' "$(stat -c %s ${folder}/${part.file})"`
+      ? `  printf '{"name":"${part.name}","kind":"${part.kind}","file":"${part.file}","size":%s${part.image === undefined ? "" : `,"image":"${part.image}"`}}' "$(stat -c %s ${folder}/${part.file})"`
       : `  printf '{"name":"${part.name}","kind":"${part.kind}","skipped":true}'`,
   ]);
   return [

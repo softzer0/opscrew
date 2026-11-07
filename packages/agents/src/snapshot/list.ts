@@ -2,9 +2,11 @@
  * `opscrew snapshot list` (US2, FR-2403): the data snapshots on the app's servers (each part where
  * its server keeps it, one snapshot per id), on this computer or in the user's Portainer, and the
  * providers' whole-server snapshots, each with whether its off-server copy is uploaded
- * (`offsite.done`). Read-only. The off-server bucket itself is not listed here (T2408).
+ * (`offsite.done`), and the copies only the off-server bucket still holds, their server gone (read
+ * from this computer). Read-only.
  */
-import { listText } from "@opscrew/core";
+import { listText, OpsCrewError } from "@opscrew/core";
+import { APP_SERVER } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { sizeText } from "../retarget/texts";
@@ -17,9 +19,19 @@ import {
   type ScriptHost,
   scriptCommand,
   serverHost,
+  serverName,
 } from "./hosts";
 import { type PortainerPlace, portainerListing, portainerPlace } from "./portainer";
 import { providerSnapshots } from "./provider";
+import {
+  bucketAbout,
+  bucketCopies,
+  bucketObjects,
+  hideIdentity,
+  type OffsiteBucket,
+  offsiteBucket,
+  type RestoreServices,
+} from "./restore-offsite";
 import { type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
 import { type About, type Listing, offsiteLines, readListing, SERVER_SNAPSHOTS } from "./store";
 import type { SnapshotCommandOptions, SnapshotEntry, SnapshotService } from "./types";
@@ -134,19 +146,92 @@ function newestFirst(a: SnapshotEntry, b: SnapshotEntry): number {
   return Date.parse(b.taken) - Date.parse(a.taken);
 }
 
+/** `opscrew snapshot list`'s options. */
+export interface ListSnapshotsOptions extends SnapshotCommandOptions {
+  /**
+   * The recovery copy's age key, or its key file's text: the records of the copies only the
+   * off-server bucket holds are decrypted with it here; without it, only their ids are said.
+   */
+  identity?: string;
+  services?: RestoreServices;
+}
+
+/**
+ * The copies in the bucket (`bucket`) whose snapshot no machine holds any more (`known` are the
+ * ids the machines hold): with `identity`, each part's `about.json` decrypted here and merged as
+ * the machines' are, `where` the bucket; without it, only their ids, said in a line, since nothing
+ * else of them can be read without the key.
+ */
+export async function bucketEntries(
+  run: SnapshotRun,
+  bucket: OffsiteBucket,
+  known: ReadonlySet<string>,
+  identity: string | undefined,
+): Promise<SnapshotEntry[]> {
+  const copies = [...bucketCopies(await bucketObjects(run, bucket))].filter(
+    ([id]) => !known.has(id),
+  );
+  if (copies.length === 0) return [];
+  if (identity === undefined) {
+    run.deps.reporter.info(
+      `The off-server bucket ${bucket.name} also holds ${copies.length === 1 ? "the copy" : "the copies"} ${listText(copies.map(([id]) => id))}, which no server holds any more. Their records are encrypted: give the recovery copy's age key file to list what they hold.`,
+    );
+    return [];
+  }
+  const listings: Pick<PlaceListing, "name" | "server" | "listing">[] = [];
+  for (const [id, servers] of copies) {
+    for (const server of servers) {
+      const { about } = await bucketAbout(run, bucket, identity, id, server);
+      listings.push({
+        name: serverName(server),
+        ...(server === APP_SERVER ? {} : { server }),
+        listing: { abouts: [about], offsite: new Set([id]), unreadable: 0 },
+      });
+    }
+  }
+  return mergeListings(listings).map((entry) => ({
+    ...entry,
+    where: `only in the off-server bucket ${bucket.name}`,
+    offsite: true,
+  }));
+}
+
+/**
+ * The bucket of `run`'s off-server copies, or `undefined` without one, or when this computer has
+ * no key for it or no rclone, which a warning says: what reads the machines goes on without it.
+ */
+export async function readableBucket(
+  run: SnapshotRun,
+  services: RestoreServices,
+  command: string,
+): Promise<OffsiteBucket | undefined> {
+  try {
+    return await offsiteBucket(run, services, command);
+  } catch (error) {
+    if (!(error instanceof OpsCrewError)) throw error;
+    if (error.code !== "CREDENTIALS_MISSING" && error.code !== "PHASE_PRECONDITION") throw error;
+    run.deps.reporter.warn(
+      `The off-server bucket is not read: ${error.message}${error.hint === undefined ? "" : ` ${error.hint}`}`,
+    );
+    return undefined;
+  }
+}
+
 /**
  * Every snapshot of the environment `deps` belong to, newest first ({@link SnapshotEntry}): its
- * data snapshots ({@link dataListings}, {@link mergeListings}) and, on servers OpsCrew created,
- * the providers' whole-server snapshots. A record that does not read as the store's contract is
- * left out with a warning.
+ * data snapshots ({@link dataListings}, {@link mergeListings}), the copies only its off-server
+ * bucket holds ({@link bucketEntries}; the bucket is left out with a warning when this computer
+ * has no key for it or no rclone) and, on servers OpsCrew created, the providers' whole-server
+ * snapshots. A record that does not read as the store's contract is left out with a warning.
  * @throws OpsCrewError `PHASE_PRECONDITION` for a site, and when a machine is not reachable or
  * its listing fails.
  */
 export async function listSnapshots(
   deps: PhaseDeps,
-  options: SnapshotCommandOptions = {},
+  options: ListSnapshotsOptions = {},
 ): Promise<SnapshotEntry[]> {
   const run = await snapshotRun(deps, options.services);
+  hideIdentity(run, options.identity);
   const listings = await dataListings(run);
   for (const { where, listing } of listings) {
     if (listing.unreadable === 0) continue;
@@ -154,11 +239,21 @@ export async function listSnapshots(
       `${listing.unreadable} snapshot record${listing.unreadable === 1 ? "" : "s"} ${where} could not be read, so ${listing.unreadable === 1 ? "it is" : "they are"} not listed.`,
     );
   }
+  const data = mergeListings(listings);
+  const bucket = await readableBucket(
+    run,
+    options.services ?? {},
+    `opscrew snapshot list${run.flags}`,
+  );
+  const copies =
+    bucket === undefined
+      ? []
+      : await bucketEntries(run, bucket, new Set(data.map((entry) => entry.id)), options.identity);
   const whole =
     snapshotTarget(run) === "servers"
       ? (await providerSnapshots(run)).map((found) => found.entry)
       : [];
-  return [...mergeListings(listings), ...whole].sort(newestFirst);
+  return [...data, ...copies, ...whole].sort(newestFirst);
 }
 
 /** A kind of snapshot in words. */

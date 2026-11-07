@@ -1,6 +1,12 @@
 export * from "./approvals";
 export * from "./audit";
-export { ageRecipientOf, generateAgeIdentity, isAgeRecipient } from "./crypto/age";
+export {
+  ageDecryptStream,
+  ageEncrypt,
+  ageRecipientOf,
+  generateAgeIdentity,
+  isAgeRecipient,
+} from "./crypto/age";
 export * from "./crypto/x509";
 export * from "./env";
 export * from "./errors";

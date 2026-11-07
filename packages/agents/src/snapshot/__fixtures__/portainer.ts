@@ -242,6 +242,18 @@ export async function portainerWorld(
       ]);
       return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
     }
+    // The restore's read of one snapshot's record.
+    const record = /^if \[ -f \/snapshots\/([0-9A-Za-z]+)\/about\.json \]; then printf 'about '/.exec(
+      script,
+    )?.[1];
+    if (record !== undefined) {
+      const about = volume.get(`${record}/about.json`)?.data?.toString().trim();
+      const lines = [
+        ...(about === undefined ? [] : [`about ${about}`]),
+        ...(volume.has(record) ? ["present"] : []),
+      ];
+      return { exitCode: 0, stdout: `${lines.join("\n")}\n` };
+    }
     if (script.startsWith("df -Pk")) {
       const id = /\[ -e \/snapshots\/([0-9A-Za-z]+) \]/.exec(script)?.[1] ?? "";
       const { totalKb, freeKb, version } = world.probe;

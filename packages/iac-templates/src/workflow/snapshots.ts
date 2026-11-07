@@ -66,6 +66,11 @@ export interface SnapshotPart {
   online: boolean;
   /** Valkey's, Redis's and Dragonfly's mode (`options.mode`). */
   mode?: "cache" | "queue";
+  /**
+   * The image the service runs, as its Compose service pins it, which `about.json` records with
+   * its copy; none for the SQLite volume.
+   */
+  image?: string;
 }
 
 /** True for a kind a snapshot copies while it runs ({@link ONLINE_SNAPSHOT_KINDS}). */
@@ -98,6 +103,7 @@ export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): Sn
       file: `${service.name}.${extension}`,
       online: onlineKind(service.kind),
       ...("mode" in service.options ? { mode: service.options.mode } : {}),
+      image: IMAGES[serviceSpec(service.kind).image].ref,
     };
   });
   const sqlite: SnapshotPart[] =
@@ -329,15 +335,6 @@ function pythonOneLine(program: string): string {
   return `python -c ${shellQuote(`exec(${JSON.stringify(program)})`)}`;
 }
 
-/**
- * Busybox's commands that put a tar on stdin back into the stopped service's `dirs` exactly: each
- * emptied first, then only those folders' members extracted.
- */
-function untar(dirs: readonly string[]): string {
-  const members = dirs.map((dir) => dir.replace(/^\//, "")).join(" ");
-  return `find ${dirs.join(" ")} -mindepth 1 -delete && tar -C / -xpf - ${members}`;
-}
-
 /** `script` in a busybox one-off with `service`'s volumes (`ro` or `rw`), stdin and stdout passed. */
 function box(mode: "ro" | "rw", service: string, script: string): string {
   return `snapshot_box ${mode} ${service} ${shellQuote(script)}`;
@@ -350,17 +347,152 @@ interface PartCommands {
 }
 
 /**
+ * How a part's copy is put back exactly (024 plan.md 2., research R7), the same on servers and in
+ * the user's Portainer, shaped like Portainer's copies: sh that runs inside containers, with no
+ * password in an argument. In this order: the service stops cleanly (with `stop`), `put` runs, the
+ * service starts again (with `stop`), then `load`, then `after`.
+ */
+export interface PartRestore {
+  /** True when the service stops for `put` and starts again after it. */
+  stop: boolean;
+  /**
+   * Busybox sh, as root, with the service's data volumes read-write at their folders (the app's
+   * SQLite volume at `/data`), that puts the copy at `from` (`-`: on stdin) back in place of the
+   * data there.
+   */
+  put?: (from: string) => string;
+  /**
+   * sh in a one-off of the service's own image with its environment, on its network, that loads
+   * the copy at `file` into the running service: the four databases' exact restores (the tables and
+   * collections made since go too), and Dragonfly's cache from the copy `put` placed.
+   */
+  load?: (file: string) => string;
+  /** Busybox sh like `put`'s, once the service runs again: a cache's placed copy removed. */
+  after?: string;
+}
+
+/** `cat` of `from`, or of stdin for `-`. */
+function catOf(from: string): string {
+  return from === "-" ? "cat" : `cat ${from}`;
+}
+
+/** Valkey's, Redis's and Dragonfly's client login, its password from the service's environment. */
+function redisLogin(kind: keyof typeof REDIS_CLIENTS): string {
+  return `umask 077 && export REDISCLI_AUTH="$${REDIS_CLIENTS[kind].password}"`;
+}
+
+/**
+ * The exact restore of `part` ({@link PartRestore}): the four databases as 019 restores them;
+ * Valkey and Redis as `dump.rdb` for a cache (removed once it is loaded), and as the base of a new
+ * append-only folder for a queue; Dragonfly as its only `dump` file for a queue, and with
+ * `DFLY LOAD` while it runs for a cache; the SQLite volume (the app stopped) and every stop-only
+ * kind's folders emptied and untarred.
+ */
+export function partRestore(part: SnapshotPart): PartRestore {
+  if (part.kind === "sqlite") {
+    return {
+      stop: false,
+      put: (from) => `find /data -mindepth 1 -delete && tar -C /data -xpf ${from}`,
+    };
+  }
+  const { name: service, kind } = part;
+  if (databaseKind(kind)) {
+    const commands = DATABASES[kind];
+    return {
+      stop: false,
+      load: (file) => `umask 077 && ${commands.login} && ${commands.restore(service, file)}`,
+    };
+  }
+  const dirs = dataDirs(serviceSpec(kind)).map(([, dir]) => dir);
+  if (kind === "valkey" || kind === "redis" || kind === "dragonfly") {
+    const [data = "/data"] = dirs;
+    const owner = `o="$(stat -c %u:%g ${data})"`;
+    const queue = part.mode === "queue";
+    if (kind !== "dragonfly") {
+      const dir = `${data}/appendonlydir`;
+      const base = "appendonly.aof.1.base.rdb";
+      return queue
+        ? {
+            stop: true,
+            put: (from) =>
+              `${owner} && rm -rf ${dir} && mkdir ${dir} && ${catOf(from)} > ${dir}/${base} && printf 'file ${base} seq 1 type b\\n' > ${dir}/appendonly.aof.manifest && chown -R "$o" ${dir}`,
+          }
+        : {
+            stop: true,
+            put: (from) =>
+              `${owner} && ${catOf(from)} > ${data}/dump.rdb && chown "$o" ${data}/dump.rdb`,
+            // A cache saves nothing: its next start must not load this copy again.
+            after: `rm -f ${data}/dump.rdb`,
+          };
+    }
+    const saved = `${data}/${DRAGONFLY_SAVE}.rdb`;
+    return queue
+      ? {
+          stop: true,
+          put: (from) =>
+            `${owner} && rm -f ${data}/dump* && ${catOf(from)} > ${data}/dump.rdb && chown "$o" ${data}/dump.rdb`,
+        }
+      : {
+          stop: false,
+          put: (from) => `${owner} && ${catOf(from)} > ${saved} && chown "$o" ${saved}`,
+          load: () =>
+            `${redisLogin(kind)} && [ "$(${REDIS_CLIENTS[kind].cli} -h ${service} DFLY LOAD ${DRAGONFLY_SAVE}.rdb)" = OK ]`,
+          after: `rm -f ${saved}`,
+        };
+  }
+  const members = dirs.map((dir) => dir.replace(/^\//, "")).join(" ");
+  return {
+    stop: true,
+    put: (from) => `find ${dirs.join(" ")} -mindepth 1 -delete && tar -C / -xpf ${from} ${members}`,
+  };
+}
+
+/**
+ * A server's lines of `part`'s exact restore ({@link partRestore}) from `file`, `$2` its folder: a
+ * stop-only kind through `snapshot_untar`, the others stopped and started as their restore says,
+ * with `put` and `after` in busybox one-offs and `load` in a one-off of the service.
+ */
+function serverRestore(part: SnapshotPart, file: string): string[] {
+  const restore = partRestore(part);
+  const { name: service } = part;
+  const put = restore.put?.("-");
+  if (part.kind === "sqlite") {
+    return [
+      "snapshot_sqlite_volume || return 1",
+      `docker run --rm -i --network none -v "$_volume":/data ${IMAGES.busybox.ref} sh -c ${shellQuote(put ?? "")} < ${file} >> ${SNAPSHOT_LOG} 2>&1`,
+    ];
+  }
+  if (!part.online) return [`snapshot_untar ${service} "$2" ${shellQuote(put ?? "")}`];
+  const more = (later: boolean) => (later ? " || return 1" : "");
+  return [
+    ...(restore.stop
+      ? [`docker compose stop -t 120 ${service} >> ${SNAPSHOT_LOG} 2>&1 || return 1`]
+      : []),
+    ...(put === undefined ? [] : [`${box("rw", service, put)} < ${file} || return 1`]),
+    ...(restore.stop
+      ? [
+          `snapshot_start ${service}${more(restore.load !== undefined || restore.after !== undefined)}`,
+        ]
+      : []),
+    ...(restore.load === undefined
+      ? []
+      : [
+          `snapshot_run "$2" ro ${service} ${shellQuote(restore.load(`${MOUNT}/${part.file}`))}${more(restore.after !== undefined)}`,
+        ]),
+    ...(restore.after === undefined ? [] : [`${box("rw", service, restore.after)} < /dev/null`]),
+  ];
+}
+
+/**
  * How each part is copied into `.snapshots/$2` and restored from there (024 plan.md 2., research
- * R7): the four databases as 019 dumps and restores them; Valkey and Redis with `--rdb` from a
- * one-off of their own image (a cache restored as `dump.rdb`, removed once it is loaded; a queue
- * as the base of a new append-only folder); Dragonfly with `SAVE RDB`, copied out read-only (a
- * queue restored as its only `dump` file, a cache loaded with `DFLY LOAD` while it runs); the
- * SQLite volume with {@link SQLITE_COPY} (exit 3 when it is empty: the part is skipped), restored
- * the app stopped by emptying it and untarring; every other kind stopped alone, its volumes
- * tarred.
+ * R7): the four databases as 019 dumps them; Valkey and Redis with `--rdb` from a one-off of their
+ * own image; Dragonfly with `SAVE RDB`, copied out read-only; the SQLite volume with
+ * {@link SQLITE_COPY} (exit 3 when it is empty: the part is skipped); every other kind stopped
+ * alone, its volumes tarred. Each is restored as {@link partRestore} says ({@link serverRestore}).
  */
 function partCommands(part: SnapshotPart): PartCommands {
   const file = `.snapshots/"$2"/${part.file}`;
+  const restore = serverRestore(part, file);
   if (part.kind === "sqlite") {
     const volume = `--network none -v "$_volume":/data`;
     return {
@@ -368,79 +500,40 @@ function partCommands(part: SnapshotPart): PartCommands {
         "snapshot_sqlite_volume || return 1",
         `docker run --rm ${volume} ${IMAGES.python.ref} ${pythonOneLine(SQLITE_COPY)} /data < /dev/null > ${file} 2>> ${SNAPSHOT_LOG}`,
       ],
-      restore: [
-        "snapshot_sqlite_volume || return 1",
-        `docker run --rm -i ${volume} ${IMAGES.busybox.ref} sh -c ${shellQuote("find /data -mindepth 1 -delete && tar -C /data -xpf -")} < ${file} >> ${SNAPSHOT_LOG} 2>&1`,
-      ],
+      restore,
     };
   }
   const { name, kind } = part;
   const service = name;
   if (databaseKind(kind)) {
     const commands = DATABASES[kind];
-    const run = (mode: "rw" | "ro", command: string) =>
-      `snapshot_run "$2" ${mode} ${service} ${shellQuote(`umask 077 && ${commands.login} && ${command}`)}`;
-    return {
-      take: [run("rw", commands.dump(service, `${MOUNT}/${part.file}`))],
-      restore: [run("ro", commands.restore(service, `${MOUNT}/${part.file}`))],
-    };
-  }
-  const spec = serviceSpec(kind);
-  const dirs = dataDirs(spec).map(([, dir]) => dir);
-  if (kind === "valkey" || kind === "redis" || kind === "dragonfly") {
-    const [data = "/data"] = dirs;
-    const { cli, password } = REDIS_CLIENTS[kind];
-    const login = `umask 077 && export REDISCLI_AUTH="$${password}"`;
-    const run = (mode: "rw" | "ro", command: string) =>
-      `snapshot_run "$2" ${mode} ${service} ${shellQuote(`${login} && ${command}`)}`;
-    const owner = `o="$(stat -c %u:%g ${data})"`;
-    const stop = `docker compose stop -t 120 ${service} >> ${SNAPSHOT_LOG} 2>&1`;
-    const queue = part.mode === "queue";
-    if (kind !== "dragonfly") {
-      const dir = `${data}/appendonlydir`;
-      const base = "appendonly.aof.1.base.rdb";
-      return {
-        take: [run("rw", `${cli} -h ${service} --rdb ${MOUNT}/${part.file}`)],
-        restore: queue
-          ? [
-              `${stop} || return 1`,
-              `${box("rw", service, `${owner} && rm -rf ${dir} && mkdir ${dir} && cat > ${dir}/${base} && printf 'file ${base} seq 1 type b\\n' > ${dir}/appendonly.aof.manifest && chown -R "$o" ${dir}`)} < ${file} || return 1`,
-              `snapshot_start ${service}`,
-            ]
-          : [
-              `${stop} || return 1`,
-              `${box("rw", service, `${owner} && cat > ${data}/dump.rdb && chown "$o" ${data}/dump.rdb`)} < ${file} || return 1`,
-              `snapshot_start ${service} || return 1`,
-              // A cache saves nothing: its next start must not load this copy again.
-              `${box("rw", service, `rm -f ${data}/dump.rdb`)} < /dev/null`,
-            ],
-      };
-    }
-    const saved = `${data}/${DRAGONFLY_SAVE}.rdb`;
     return {
       take: [
-        `${run("rw", `[ "$(${cli} -h ${service} SAVE RDB ${DRAGONFLY_SAVE})" = OK ]`)} || return 1`,
+        `snapshot_run "$2" rw ${service} ${shellQuote(`umask 077 && ${commands.login} && ${commands.dump(service, `${MOUNT}/${part.file}`)}`)}`,
+      ],
+      restore,
+    };
+  }
+  const dirs = dataDirs(serviceSpec(kind)).map(([, dir]) => dir);
+  if (kind === "valkey" || kind === "redis" || kind === "dragonfly") {
+    const { cli } = REDIS_CLIENTS[kind];
+    const run = (command: string) =>
+      `snapshot_run "$2" rw ${service} ${shellQuote(`${redisLogin(kind)} && ${command}`)}`;
+    if (kind !== "dragonfly") {
+      return { take: [run(`${cli} -h ${service} --rdb ${MOUNT}/${part.file}`)], restore };
+    }
+    const saved = `${dirs[0] ?? "/data"}/${DRAGONFLY_SAVE}.rdb`;
+    return {
+      take: [
+        `${run(`[ "$(${cli} -h ${service} SAVE RDB ${DRAGONFLY_SAVE})" = OK ]`)} || return 1`,
         `${box("ro", service, `cat ${saved}`)} < /dev/null > ${file} || return 1`,
         `${box("rw", service, `rm -f ${saved}`)} < /dev/null`,
       ],
-      restore: queue
-        ? [
-            `${stop} || return 1`,
-            `${box("rw", service, `${owner} && rm -f ${data}/dump* && cat > ${data}/dump.rdb && chown "$o" ${data}/dump.rdb`)} < ${file} || return 1`,
-            `snapshot_start ${service}`,
-          ]
-        : [
-            `${box("rw", service, `${owner} && cat > ${saved} && chown "$o" ${saved}`)} < ${file} || return 1`,
-            `${run("ro", `[ "$(${cli} -h ${service} DFLY LOAD ${DRAGONFLY_SAVE}.rdb)" = OK ]`)} || return 1`,
-            `${box("rw", service, `rm -f ${saved}`)} < /dev/null`,
-          ],
+      restore,
     };
   }
   const tarDirs = dirs.map((dir) => dir.replace(/^\//, "")).join(" ");
-  return {
-    take: [`snapshot_tar ${service} "$2" ${shellQuote(tarDirs)}`],
-    restore: [`snapshot_untar ${service} "$2" ${shellQuote(untar(dirs))}`],
-  };
+  return { take: [`snapshot_tar ${service} "$2" ${shellQuote(tarDirs)}`], restore };
 }
 
 /** A shell function `name` with `body`'s lines. */
@@ -472,7 +565,8 @@ function partCase(
  * ({@link snapshotParts}). `SNAPSHOT_PARTS` and `SNAPSHOT_ONLINE` name the parts and those copied
  * while they run; the functions' own variables start with `_`, so they never change the start
  * script's:
- * - `part_file <part>`, `part_kind <part>`: the part's file and kind;
+ * - `part_file <part>`, `part_kind <part>`, `part_image <part>`: the part's file, kind and image
+ *   (nothing for the SQLite volume);
  * - `snapshot_room`: whether the folder's disk has 1 GiB and 10% free; otherwise it removes the
  *   partial snapshots and fails;
  * - `snapshot_run <folder> <rw|ro> <service> <script>`: `script` in a one-off container of the
@@ -491,7 +585,7 @@ function partCase(
  * - `snapshot_running` ({@link snapshotRunning});
  * - `snapshot_about <id> <kind> <taken> <version> <folder> [<part>]...`: prints `about.json`, one
  *   line, as the store's contract has it (024 plan.md 1.): `version` the 64-hex digest or empty,
- *   each part's kind, file and size, or `skipped` for the parts not given;
+ *   each part's kind, file, size and image (a service's), or `skipped` for the parts not given;
  * - `snapshot_take <id> <kind> <version> [<part>]...`: empties the log, copies each part into
  *   `.snapshots/<id>.taking` (by hand) or `<id>.partial`, the disk checked before and after each,
  *   writes `taken` and then `about.json` (a part with nothing to copy skipped), and renames it
@@ -520,6 +614,12 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
     ...shellFunction(
       "part_kind",
       partCase(parts, (part) => [`echo ${part.kind}`]),
+    ),
+    ...shellFunction(
+      "part_image",
+      partCase(parts, (part) => [
+        part.image === undefined ? ":" : `echo ${shellQuote(part.image)}`,
+      ]),
     ),
     ...shellFunction("snapshot_room", [
       "  if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi",
@@ -596,7 +696,9 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       '    case " $* " in',
       '      *" $_about_part "*)',
       '        _about_file="$(part_file "$_about_part")"',
-      `        printf '{"name":"%s","kind":"%s","file":"%s","size":%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" ;;`,
+      '        _about_image="$(part_image "$_about_part")"',
+      '        if [ -n "$_about_image" ]; then _about_image=",\\"image\\":\\"$_about_image\\""; fi',
+      `        printf '{"name":"%s","kind":"%s","file":"%s","size":%s%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" "$_about_image" ;;`,
       `      *) printf '{"name":"%s","kind":"%s","skipped":true}' "$_about_part" "$(part_kind "$_about_part")" ;;`,
       "    esac",
       "  done",

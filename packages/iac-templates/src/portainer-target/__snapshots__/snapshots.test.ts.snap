@@ -726,7 +726,7 @@ services:
           {
             printf '{"id":"%s","kind":"%s","taken":"%s","version":"%s","services":[' "$$2" "$$3" "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$\${img##*@}"
             if [ -f "$$1"/db.done ] && [ -f "$$1"/db.dump ]; then
-              printf '{"name":"db","kind":"postgres","file":"db.dump","size":%s}' "$$(stat -c %s "$$1"/db.dump)"
+              printf '{"name":"db","kind":"postgres","file":"db.dump","size":%s,"image":"<pin:IMAGES.postgres>"}' "$$(stat -c %s "$$1"/db.dump)"
             elif [ -f "$$1"/db.skipped ]; then
               printf '{"name":"db","kind":"postgres","skipped":true}'
             else
@@ -734,7 +734,7 @@ services:
             fi
             printf ,
             if [ -f "$$1"/queue.done ] && [ -f "$$1"/queue.rdb ]; then
-              printf '{"name":"queue","kind":"valkey","file":"queue.rdb","size":%s}' "$$(stat -c %s "$$1"/queue.rdb)"
+              printf '{"name":"queue","kind":"valkey","file":"queue.rdb","size":%s,"image":"<pin:IMAGES.valkey>"}' "$$(stat -c %s "$$1"/queue.rdb)"
             elif [ -f "$$1"/queue.skipped ]; then
               printf '{"name":"queue","kind":"valkey","skipped":true}'
             else

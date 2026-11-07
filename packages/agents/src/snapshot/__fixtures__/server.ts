@@ -19,7 +19,9 @@ export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
  * The shim of `snapshot.sh`: `take.exit` (with `take.stderr`) makes `take` fail. `take` records
  * each part of `parts.txt` (`<name> <kind> <file> <online 1|0>` lines, as the real script renders
  * them from the plan): copied (10 bytes) unless `--skip` names it or it is stop-only without
- * `--stop`.
+ * `--stop`. `restore` needs its one-time approval, which it keeps as `approval.<id>` and removes,
+ * then says what it did (`restore.exit` with `restore.stderr` makes it fail); `hold` and
+ * `resume` fail with `hold.exit` and `resume.exit`.
  */
 const SHIM = `echo "$*" >> calls.log
 case "$1" in
@@ -29,6 +31,13 @@ case "$1" in
       if [ -f "$f" ]; then cat "$f"; fi
     done ;;
   delete) rm -rf ".snapshots/$2" ;;
+  restore)
+    if [ ! -f .restore-snapshot ]; then echo "A restore needs its one-time approval on this server." >&2; exit 1; fi
+    cp .restore-snapshot "approval.$2"; rm -f .restore-snapshot
+    if [ -f restore.exit ]; then cat restore.stderr >&2; exit "$(cat restore.exit)"; fi
+    echo "OpsCrew restored the snapshot $2. The data from just before the restore is the snapshot 20261107T120000Z." >&2 ;;
+  hold | resume)
+    if [ -f "$1.exit" ]; then exit "$(cat "$1.exit")"; fi ;;
   take)
     if [ -f take.exit ]; then cat take.stderr >&2; exit "$(cat take.exit)"; fi
     id="$(cat next.id)"; version=""; skip=" "; stop=" "; shift 2
@@ -123,8 +132,10 @@ export class FakeSnapshotServer {
   }
 
   /**
-   * Runs the command under `sh` in the folder, with `df` answering `df.out` and `flock` failing
-   * while `lock.held` exists (the start lock held by another run).
+   * Runs the command under `sh` in the folder, with `df` answering `df.out`, `flock` failing
+   * while `lock.held` exists (the start lock held by another run), and `docker` the services'
+   * containers: `images/<service>` holds the image a service's container runs (none without the
+   * file).
    */
   sh(command: string): CommandResult {
     // A login that reaches Docker through passwordless sudo: `sudo -n sh -c '<command>'`.
@@ -137,7 +148,15 @@ export class FakeSnapshotServer {
             if (unquote(wrapped[1] ?? "") !== this.serverDir) throw new Error(`cd to ${wrapped[1]}`);
             return unquote(wrapped[2] ?? "");
           })();
-    const script = `df() { cat df.out; }\nflock() { [ ! -f lock.held ]; }\ncd ${shellQuote(this.dir)} || exit 3\n${inner}`;
+    const docker = [
+      "docker() {",
+      '  case "$1" in',
+      '    compose) if [ -f "images/$4" ]; then echo "c-$4"; fi ;;',
+      '    inspect) cat "images/${4#c-}" ;;',
+      "  esac",
+      "}",
+    ].join("\n");
+    const script = `df() { cat df.out; }\nflock() { [ ! -f lock.held ]; }\n${docker}\ncd ${shellQuote(this.dir)} || exit 3\n${inner}`;
     const run = spawnSync("sh", ["-c", script], { encoding: "utf8" });
     return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
   }

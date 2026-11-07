@@ -390,6 +390,14 @@ jobs:
               *) return 1 ;;
             esac
           }
+          part_image() {
+            case "$1" in
+              db)
+                echo '<pin:IMAGES.postgres>'
+                ;;
+              *) return 1 ;;
+            esac
+          }
           snapshot_room() {
             if df -Pk . | awk 'NR == 2 { exit !($4 >= 1048576 && $4 * 10 >= $2) }'; then return 0; fi
             rm -rf .snapshots/*.partial .snapshots/*.taking
@@ -471,7 +479,9 @@ jobs:
               case " $* " in
                 *" $_about_part "*)
                   _about_file="$(part_file "$_about_part")"
-                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" ;;
+                  _about_image="$(part_image "$_about_part")"
+                  if [ -n "$_about_image" ]; then _about_image=",\\"image\\":\\"$_about_image\\""; fi
+                  printf '{"name":"%s","kind":"%s","file":"%s","size":%s%s}' "$_about_part" "$(part_kind "$_about_part")" "$_about_file" "$(wc -c < "$_about_folder/$_about_file" | tr -d ' ')" "$_about_image" ;;
                 *) printf '{"name":"%s","kind":"%s","skipped":true}' "$_about_part" "$(part_kind "$_about_part")" ;;
               esac
             done

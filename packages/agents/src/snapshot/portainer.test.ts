@@ -79,9 +79,10 @@ describe.skipIf(!SH)("a snapshot by hand in the user's Portainer", () => {
       JSON.parse(world.volume().get(`${TAKEN_ID}/about.json`)?.data?.toString() ?? ""),
     );
     expect(about).toMatchObject({ id: TAKEN_ID, kind: "manual", version: `sha256:${RUNNING}` });
+    // Each service's copy with the image the stack pins it to.
     expect(about.services).toEqual([
-      { name: "db", kind: "postgres", file: "db.dump", size: 15 },
-      { name: "kafka", kind: "kafka", file: "kafka.tar", size: 17 },
+      { name: "db", kind: "postgres", file: "db.dump", size: 15, image: IMAGES.postgres.ref },
+      { name: "kafka", kind: "kafka", file: "kafka.tar", size: 17, image: IMAGES.kafka.ref },
       { name: "sqlite", kind: "sqlite", skipped: true },
     ]);
     expect([...world.volume().keys()].some((path) => path.includes(".taking"))).toBe(false);

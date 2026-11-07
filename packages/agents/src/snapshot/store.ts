@@ -11,13 +11,18 @@ export const SNAPSHOT_ID = /^[0-9A-Za-z]+$/;
 /** The snapshots' folder in the app's folder on a server and on this computer (plan.md 1.). */
 export const SERVER_SNAPSHOTS = ".snapshots";
 
-/** A part's entry in `about.json`: its file and size, or left out (`skipped`), or `failed`. */
+/**
+ * A part's entry in `about.json`: its file and size, with the image its service ran (none for the
+ * SQLite volume, and in snapshots taken before images were recorded), or left out (`skipped`), or
+ * `failed`.
+ */
 const ServiceEntrySchema = z.union([
   z.object({
     name: z.string().min(1),
     kind: z.string().min(1),
     file: z.string().min(1),
     size: z.number().int().nonnegative(),
+    image: z.string().min(1).optional(),
   }),
   z.object({ name: z.string().min(1), kind: z.string().min(1), failed: z.literal(true) }),
   z.object({ name: z.string().min(1), kind: z.string().min(1), skipped: z.literal(true) }),

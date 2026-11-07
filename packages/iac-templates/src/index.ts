@@ -57,6 +57,8 @@ export {
   snapshotScript,
 } from "./workflow/snapshot-script";
 export {
+  type PartRestore,
+  partRestore,
   ROLLBACK_APPROVAL_FILE,
   rollbackApprovalLine,
   snapshotTakenPath,
