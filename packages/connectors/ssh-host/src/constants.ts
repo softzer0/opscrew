@@ -274,11 +274,13 @@ export function checkKeyComment(repository: string): string {
  * `df -P -B1 /`, then, for each app folder with a scheduled snapshot's log
  * (`.snapshots/scheduled.log`, feature 024), lines that start with `scheduled <app> `:
  * - `at <seconds>`: when the log was last written, in Unix seconds;
- * - `said <line>`: each of the log's last 50 lines;
+ * - `id <id>`: the log's last scheduled snapshot id line, which `snapshot.sh` prints once the
+ *   snapshot is taken; none without one;
+ * - `after <n>`: how many non-empty lines follow it (all of them without one);
  * - `running`: a snapshot is being taken (a `.partial` folder while the app's start lock is held).
  *
- * `CHECK_COMMAND` in `@opscrew/iac-templates`' `check.mjs` is a copy, which the server's own
- * runner runs.
+ * Nothing else of the log. `CHECK_COMMAND` in `@opscrew/iac-templates`' `check.mjs` is a copy,
+ * which the server's own runner runs, and its `scheduledLog` the same reading of a log's lines.
  */
 export const CHECK_KEY_COMMAND = [
   "df -P -B1 / &&",
@@ -289,7 +291,11 @@ export const CHECK_KEY_COMMAND = [
   "l=$d.snapshots/scheduled.log;",
   "test -f $l || continue;",
   "echo scheduled $a at $(stat -c %Y $l);",
-  "tail -n 50 $l | sed 's/^/scheduled '$a' said /';",
+  "m=$(grep -nE '^[0-9]{8}T[0-9]{6}Z$' $l | tail -n 1);",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
+  "test -z $m || echo scheduled $a id ${m#*:};",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
+  "echo scheduled $a after $(tail -n +$((${m%%:*}+1)) $l | grep -c '[^[:space:]]');",
   "for p in $d.snapshots/*.partial; do",
   "if test -d $p; then flock -n $d.start.lock true || echo scheduled $a running; fi;",
   "break;",

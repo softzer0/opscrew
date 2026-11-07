@@ -60,8 +60,10 @@ const PAUSE_REASONS = {
  * `CHECK_KEY_COMMAND` in OpsCrew's `@opscrew/connector-ssh-host`), which the server's own runner
  * runs here. It only reads. It prints `df -P -B1 /`, then, for each app folder with a scheduled
  * snapshot's log, lines that start with `scheduled <app> `: `at <Unix seconds>` (when the log was
- * last written), `said <line>` (each of its last 50 lines) and `running` (a snapshot is being
- * taken: a `.partial` folder while the app's start lock is held).
+ * last written), `id <id>` (its last scheduled snapshot id line, if any), `after <n>` (how many
+ * non-empty lines follow it, all of them without one: {@link scheduledLog}) and `running` (a
+ * snapshot is being taken: a `.partial` folder while the app's start lock is held). Nothing else
+ * of the log.
  */
 export const CHECK_COMMAND = [
   "df -P -B1 / &&",
@@ -72,7 +74,11 @@ export const CHECK_COMMAND = [
   "l=$d.snapshots/scheduled.log;",
   "test -f $l || continue;",
   "echo scheduled $a at $(stat -c %Y $l);",
-  "tail -n 50 $l | sed 's/^/scheduled '$a' said /';",
+  "m=$(grep -nE '^[0-9]{8}T[0-9]{6}Z$' $l | tail -n 1);",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
+  "test -z $m || echo scheduled $a id ${m#*:};",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
+  "echo scheduled $a after $(tail -n +$((${m%%:*}+1)) $l | grep -c '[^[:space:]]');",
   "for p in $d.snapshots/*.partial; do",
   "if test -d $p; then flock -n $d.start.lock true || echo scheduled $a running; fi;",
   "break;",
@@ -486,7 +492,7 @@ function parseDf(output) {
 
 /**
  * The last scheduled snapshot of the app on the server, from the `scheduled <app> ` lines of its
- * answer: a failure when it, or its copy off the server, failed ({@link scheduledFailure}).
+ * answer: a failure when it, or its copy off the server, failed ({@link scheduledFailed}).
  * Unknown while a snapshot is being taken, and without its log there: none ran yet, or the
  * server's check key is an older OpsCrew's, which reads only the disk, until its next provision.
  * Nothing the log says reaches any text.
@@ -509,23 +515,27 @@ async function checkSnapshot(check, read, io) {
     io.log(`${server.id}: a snapshot of ${app} is being taken, so the next run checks it.`);
     return undefined;
   }
-  const failure = scheduledFailure(
-    lines.filter((line) => line.startsWith("said ")).map((line) => line.slice("said ".length)),
-  );
-  if (failure === undefined) {
+  const after = /^after (\d+)$/.exec(lines.find((line) => line.startsWith("after ")) ?? "")?.[1];
+  if (after === undefined) {
+    io.log(
+      `::warning::The server ${server.id} answered about ${app}'s snapshots in a form the check cannot read.`,
+    );
+    return undefined;
+  }
+  const id = lines.find((line) => line.startsWith("id "))?.slice("id ".length);
+  if (!scheduledFailed({ ...(id === undefined ? {} : { id }), after: Number(after) })) {
     io.log(`${server.id}: the last scheduled snapshot of ${app} succeeded.`);
     return null;
   }
   const at = utc(new Date(Number(seconds) * 1000));
   const label = appLabel(check.key);
-  if (failure.id === undefined) {
+  if (id === undefined) {
     return {
       title: `OpsCrew check: ${label} scheduled snapshot failed on ${server.id}`,
       what: `The last scheduled snapshot of ${app} on the server ${server.id} failed, at ${at}: OpsCrew took no snapshot.`,
       hint: SNAPSHOT_HINT,
     };
   }
-  const id = failure.id;
   const due = `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)} ${id.slice(9, 11)}:${id.slice(11, 13)} UTC`;
   return {
     title: `OpsCrew check: ${label} scheduled snapshot's off-server copy failed on ${server.id}`,
@@ -535,20 +545,31 @@ async function checkSnapshot(check, read, io) {
 }
 
 /**
- * The rule for a scheduled snapshot's log (`.snapshots/scheduled.log` in the app's folder), whose
- * last lines are `said`: `snapshot.sh` prints the snapshot's id once it is taken, then what its
- * copy off the server says. `undefined` when the last run succeeded: its id is the last line.
- * Otherwise what failed: `id` when the snapshot was taken and only its copy
- * off the server failed, and `said`, the lines that say why (after the id, or else the last
- * line). OpsCrew's `status` uses the same rule.
- * @param {readonly string[]} said
- * @returns {{ id?: string, said: string[] } | undefined}
+ * How CHECK_COMMAND reads a scheduled snapshot's log (`.snapshots/scheduled.log` in the app's
+ * folder) from its `lines`: `snapshot.sh` prints the snapshot's id once it is taken, then what
+ * its copy off the server says. `id` is the last scheduled snapshot id line, absent without one,
+ * and `after` the non-empty lines that follow it (all of them without one). OpsCrew's `status`
+ * reads the log's lines with it, and only it shows what they say.
+ * @param {readonly string[]} lines
+ * @returns {{ id?: string, after: string[] }}
  */
-export function scheduledFailure(said) {
-  const lines = said.map((line) => line.trim()).filter((line) => line !== "");
+export function scheduledLog(lines) {
   const at = lines.findLastIndex((line) => SCHEDULED_ID.test(line));
-  if (at !== -1 && at === lines.length - 1) return undefined;
-  return at === -1 ? { said: lines.slice(-1) } : { id: lines[at], said: lines.slice(at + 1) };
+  return {
+    ...(at === -1 ? {} : { id: lines[at] }),
+    after: lines.slice(at + 1).filter((line) => line.trim() !== ""),
+  };
+}
+
+/**
+ * The rule for a scheduled snapshot's log, the scheduled check's and `status`'s: its last run
+ * failed unless it printed the snapshot's id (`id`) and nothing follows it (`after`, how many
+ * non-empty lines do: {@link scheduledLog}). With an `id`, only its copy off the server failed.
+ * @param {{ id?: string, after: number }} log
+ * @returns {boolean}
+ */
+export function scheduledFailed(log) {
+  return log.id === undefined || log.after > 0;
 }
 
 /**
@@ -932,7 +953,7 @@ function exec(file, args) {
 }
 
 // Only when this file is the program, never inside another one that bundles it (OpsCrew's CLI
-// imports scheduledFailure).
+// imports scheduledFailed and scheduledLog).
 if (
   process.argv[1] &&
   import.meta.url.endsWith("/check.mjs") &&

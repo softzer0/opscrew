@@ -9,8 +9,9 @@
  * that only runs the environments' runners) has a host plan of its own, `planRunnerHost`, hardened
  * only when asked (SSH hardening, and OpsCrew's own nftables table for port 22), and is taken back
  * with `planUndo`. No plan replaces or removes another repository's runner.
- * `planAddon` (feature 017) adds the scheduled check's key, which can run only `df`, and runs the
- * Beszel and Grafana Alloy add-ons as the deploy user, one of each per server.
+ * `planAddon` (feature 017) adds the scheduled check's key, which can run only `CHECK_KEY_COMMAND`
+ * (the disk's usage and the scheduled snapshots' results, read-only), and runs the Beszel and
+ * Grafana Alloy add-ons as the deploy user, one of each per server.
  * `planNetwork` (feature 018) joins a server to the app's private WireGuard network, also on the
  * servers OpsCrew creates, where the deploy user becomes root through Docker (the `docker`
  * privilege), and with it the network's filter, which lets only the app's servers and the granted

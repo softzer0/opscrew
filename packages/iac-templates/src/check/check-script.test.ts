@@ -12,7 +12,8 @@ import {
   run,
   type ServerEntry,
   type ServerReach,
-  scheduledFailure,
+  scheduledFailed,
+  scheduledLog,
   sshRead,
 } from "../../check/check.mjs";
 import { readCheckScript } from "../../scripts/gen-modules";
@@ -796,11 +797,16 @@ describe("check.mjs", () => {
   });
 });
 
-/** The lines CHECK_COMMAND prints about `app`'s scheduled snapshots, after `df`'s. */
-function scheduled(app: string, at: Date, said: readonly string[], running = false): string {
+/**
+ * The lines CHECK_COMMAND prints about `app`'s scheduled snapshots, after `df`'s, for a log of
+ * `lines` (the real shell's are checked against {@link scheduledLog} below).
+ */
+function scheduled(app: string, at: Date, lines: readonly string[], running = false): string {
+  const { id, after } = scheduledLog(lines);
   return [
     `scheduled ${app} at ${Math.floor(at.getTime() / 1000)}`,
-    ...said.map((line) => `scheduled ${app} said ${line}`),
+    ...(id === undefined ? [] : [`scheduled ${app} id ${id}`]),
+    `scheduled ${app} after ${after.length}`,
     ...(running ? [`scheduled ${app} running`] : []),
     "",
   ].join("\n");
@@ -815,19 +821,29 @@ describe("scheduled snapshots", () => {
   };
   const KEY = "example-app/prod/snapshot/hetzner-example-app";
 
-  it("follows status's rule for the log's last lines", () => {
-    expect(scheduledFailure(["web was left out of the scheduled snapshot", ID])).toBeUndefined();
-    expect(scheduledFailure([ID, "  "])).toBeUndefined();
-    expect(scheduledFailure(["web was left out", "OpsCrew took no snapshot."])).toEqual({
-      said: ["OpsCrew took no snapshot."],
-    });
-    expect(scheduledFailure([])).toEqual({ said: [] });
-    expect(scheduledFailure([ID, "the upload failed", "  exit 1 "])).toEqual({
+  it("reads a log's last id and the lines after it, and fails unless nothing follows the id", () => {
+    const failed = (lines: string[]) => {
+      const { id, after } = scheduledLog(lines);
+      return scheduledFailed({ ...(id === undefined ? {} : { id }), after: after.length });
+    };
+    expect(scheduledLog(["web was left out of the scheduled snapshot", ID])).toEqual({
       id: ID,
-      said: ["the upload failed", "exit 1"],
+      after: [],
     });
+    expect(failed(["web was left out of the scheduled snapshot", ID])).toBe(false);
+    expect(failed([ID, "  ", ""])).toBe(false);
+    expect(scheduledLog(["web was left out", "", "OpsCrew took no snapshot."])).toEqual({
+      after: ["web was left out", "OpsCrew took no snapshot."],
+    });
+    expect(failed(["web was left out", "OpsCrew took no snapshot."])).toBe(true);
+    expect(failed([])).toBe(true);
+    expect(scheduledLog([ID, "the upload failed", "  exit 1 "])).toEqual({
+      id: ID,
+      after: ["the upload failed", "  exit 1 "],
+    });
+    expect(failed([ID, "the upload failed"])).toBe(true);
     // An older run's id further up: the last id counts.
-    expect(scheduledFailure(["20261021T030000Z", "failed", ID])).toBeUndefined();
+    expect(failed(["20261021T030000Z", "failed", ID])).toBe(false);
   });
 
   it("opens an issue for a failed scheduled snapshot, changes it when only the copy off the server fails, and closes it once one succeeds", async () => {
@@ -970,19 +986,32 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
     if (dir !== undefined) await rm(dir, { recursive: true, force: true });
   });
 
-  it("prints df, then each app's log time, last 50 lines and whether a snapshot is being taken, and the check reads them", async () => {
+  it("prints df, then each app's log time, last id, the number of lines after it and whether a snapshot is being taken, never the log's text, and the check reads them", async () => {
     expect(CHECK_COMMAND).not.toContain('"');
     // The id line `snapshot.sh` prints once the snapshot is taken.
     const ID_LINE = "20261028T030000Z";
+    const secret = SECRETS.inBody;
     dir = await mkdtemp(join(tmpdir(), "opscrew-check-command-"));
     const write = async (path: string, text: string) => {
       await mkdir(join(dir as string, path, ".."), { recursive: true });
       await writeFile(join(dir as string, path), text);
     };
-    const lines = Array.from({ length: 60 }, (_, n) => `line ${n} * $HOME`);
-    await write("apps/example-app/.snapshots/scheduled.log", `${[...lines, ID_LINE].join("\n")}\n`);
-    await write("apps/example-app/.snapshots/20261028T030000Z/about.json", "{}");
-    await write("apps/blog/.snapshots/scheduled.log", "web was left out\nfailed\n");
+    const logs: Record<string, string[]> = {
+      // Taken: an older run's id further up, and lines with shell characters before the last id.
+      "example-app": [
+        "20261021T030000Z",
+        ...Array.from({ length: 60 }, (_, n) => `line ${n} * $HOME`),
+        ID_LINE,
+        "",
+      ],
+      // Taken, but its copy off the server failed.
+      shop: ["web was left out", ID_LINE, `upload failed: ${secret}`, "  ", "exit 1"],
+      // Not taken, and one being taken now.
+      blog: ["web was left out", `failed: ${secret}`],
+    };
+    for (const [app, lines] of Object.entries(logs)) {
+      await write(`apps/${app}/.snapshots/scheduled.log`, `${lines.join("\n")}\n`);
+    }
     await mkdir(join(dir, "apps/blog/.snapshots/20261028T030000Z.partial"), { recursive: true });
     await write("apps/Odd name/.snapshots/scheduled.log", "failed\n");
     await mkdir(join(dir, "apps/no-log"), { recursive: true });
@@ -998,31 +1027,31 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
     expect(result.status, result.stderr).toBe(0);
     const out = result.stdout.split("\n");
     expect(out[0]).toMatch(/^Filesystem/);
-    // Only folders with OpsCrew's app names are read.
-    expect(result.stdout).not.toContain("Odd");
-    const app = out.filter((line) => line.startsWith("scheduled example-app "));
-    expect(app[0]).toMatch(/^scheduled example-app at \d+$/);
-    expect(app.slice(1)).toEqual([
-      ...lines.slice(11).map((line) => `scheduled example-app said ${line}`),
-      `scheduled example-app said ${ID_LINE}`,
-    ]);
-    expect(out.filter((line) => line.startsWith("scheduled blog "))).toEqual([
-      expect.stringMatching(/^scheduled blog at \d+$/),
-      "scheduled blog said web was left out",
-      "scheduled blog said failed",
-      "scheduled blog running",
-    ]);
+    // Only folders with OpsCrew's app names are read, and nothing a log says is printed.
+    for (const text of ["Odd", "line ", "left out", "failed", "exit", secret]) {
+      expect(result.stdout).not.toContain(text);
+    }
+    // Each app's lines are what scheduledLog reads of its log.
+    for (const [app, lines] of Object.entries(logs)) {
+      const printed = out.filter((line) => line.startsWith(`scheduled ${app} `));
+      expect(printed[0]).toMatch(new RegExp(`^scheduled ${app} at \\d+$`));
+      const expected = scheduled(app, new Date(0), lines, app === "blog").split("\n");
+      expect(printed.slice(1)).toEqual(expected.slice(1, -1));
+    }
+    expect(out).toContain("scheduled shop after 2");
 
-    // The check reads that answer: the disk, a success, and a snapshot being taken.
+    // The check reads that answer: the disk, a success, a failed copy and a snapshot being taken.
     const world = new World();
+    const on = (key: string, app: string, hostname: string): CheckEnvironment => ({
+      key,
+      hosts: [{ hostname, healthPath: "/" }],
+      snapshots: { app, servers: ["hetzner-example-app"] },
+    });
     world.config = config({
       environments: [
         { ...PROD, snapshots: { app: "example-app", servers: ["hetzner-example-app"] } },
-        {
-          key: "blog/prod",
-          hosts: [{ hostname: "blog.example.com", healthPath: "/" }],
-          snapshots: { app: "blog", servers: ["hetzner-example-app"] },
-        },
+        on("shop/prod", "shop", "shop.example.com"),
+        on("blog/prod", "blog", "blog.example.com"),
       ],
     });
     world.disks.set(SERVER_HOST, result.stdout);
@@ -1030,6 +1059,9 @@ describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real s
     const summary = world.summaries.at(-1) ?? "";
     expect(summary).toContain("- example-app/prod/disk/hetzner-example-app: passed");
     expect(summary).toContain("- example-app/prod/snapshot/hetzner-example-app: passed");
+    expect(summary).toContain(
+      `- shop/prod/snapshot/hetzner-example-app: failed: The scheduled snapshot ${ID_LINE} of shop`,
+    );
     expect(summary).toContain(
       "- blog/prod/snapshot/hetzner-example-app: not checked (see the log)",
     );

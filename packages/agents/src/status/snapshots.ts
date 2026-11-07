@@ -5,7 +5,7 @@
  * the snapshot's id once it was taken, then what the off-server copy said. Read-only.
  */
 import { errorText, isUserFacingError, listText } from "@opscrew/core";
-import { SCHEDULED_LOG, scheduledFailure } from "@opscrew/iac-templates";
+import { SCHEDULED_LOG, scheduledFailed, scheduledLog } from "@opscrew/iac-templates";
 import { type DeployPlan, snapshotScheduleOf } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -52,21 +52,22 @@ const RUNNING = "scheduled-running";
 const START_LOCK = ".start.lock";
 
 /**
- * After the listing, when a scheduled snapshot ran: its log's time and last lines, and whether a
+ * After the listing, when a scheduled snapshot ran: its log's time and lines, and whether a
  * snapshot is being taken now (a `.partial` folder while the start lock is held; one left by a
  * run that stopped is stale), whose log is not finished yet.
  */
 const SCHEDULED_PROBE = [
   `if [ -f ${SCHEDULED_LOG} ]; then`,
   `echo "${AT} $(stat -c %Y ${SCHEDULED_LOG})";`,
-  `tail -n 50 ${SCHEDULED_LOG} | sed 's/^/${SAID} /';`,
+  `sed 's/^/${SAID} /' ${SCHEDULED_LOG};`,
   `for d in ${SERVER_SNAPSHOTS}/*.partial; do if [ -d "$d" ]; then flock -n ${START_LOCK} true || echo ${RUNNING}; break; fi; done;`,
   "fi",
 ].join(" ");
 
 /**
  * The failure the probe's lines in `stdout` show on `host`, if its last scheduled run failed: by
- * the scheduled check's rule (`scheduledFailure`), unless a snapshot is being taken.
+ * the scheduled check's reading of the log and rule (`scheduledLog`, `scheduledFailed`), unless a
+ * snapshot is being taken.
  */
 function failureOn(
   run: SnapshotRun,
@@ -76,15 +77,19 @@ function failureOn(
   const lines = stdout.split(/\r?\n/);
   const seconds = Number(lines.find((line) => line.startsWith(`${AT} `))?.slice(AT.length + 1));
   if (!Number.isFinite(seconds) || lines.includes(RUNNING)) return undefined;
-  const failure = scheduledFailure(
+  const { id, after } = scheduledLog(
     lines.filter((line) => line.startsWith(`${SAID} `)).map((line) => line.slice(SAID.length + 1)),
   );
-  if (failure === undefined) return undefined;
+  if (!scheduledFailed({ ...(id === undefined ? {} : { id }), after: after.length })) {
+    return undefined;
+  }
+  // What its copy off the server said after the id, or else the last line.
+  const said = (id === undefined ? after.slice(-1) : after).map((line) => line.trim());
   return {
     where: host.where,
     at: new Date(seconds * 1000).toISOString(),
-    ...(failure.id === undefined ? {} : { id: failure.id }),
-    said: run.deps.redactor.redact(failure.said.join(" ")).slice(0, 300),
+    ...(id === undefined ? {} : { id }),
+    said: run.deps.redactor.redact(said.join(" ")).slice(0, 300),
   };
 }
 

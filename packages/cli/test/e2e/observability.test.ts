@@ -51,6 +51,7 @@ import {
 } from "@opscrew/agents";
 import {
   applyHostPlan,
+  checkKeyLine,
   type HostPlan,
   hostPlanHash,
   planAddon,
@@ -900,7 +901,7 @@ RUN apt-get update -qq \\
       const lines = keys.split("\n");
       expect(lines).toHaveLength(2);
       expect(lines[1]).toBe(
-        `restrict,command="df -P -B1 /" ${checkKey.publicKeyOpenSsh.split(" ").slice(0, 2).join(" ")} opscrew-check:${repository}`,
+        checkKeyLine(checkKey.publicKeyOpenSsh.split(" ").slice(0, 2).join(" "), repository),
       );
     },
     TWO_MINUTES,

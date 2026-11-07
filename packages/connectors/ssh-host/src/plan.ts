@@ -3495,7 +3495,7 @@ function addonStep(
       `Let the scheduled check of ${repository} read this server's disk usage and scheduled snapshots' results with its own key (${keyFingerprint(enable.publicKey)}), which can run only OpsCrew's fixed command`,
       "change",
       { publicKey: keyId(enable.publicKey), repository, runAs },
-      `Its line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only OpsCrew's fixed command, which reads the disk usage (df -P -B1 /) and, for each app with a scheduled snapshot's log, when it was last written, its last 50 lines and whether a snapshot is being taken. A line with its comment (${checkKeyComment(repository)}) is replaced; the other keys stay.`,
+      `Its line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only OpsCrew's fixed command, which reads the disk usage (df -P -B1 /) and, for each app with a scheduled snapshot's log, when it was last written, its last snapshot id, how many lines follow it and whether a snapshot is being taken, never the log's text. A line with its comment (${checkKeyComment(repository)}) is replaced; the other keys stay.`,
     );
   }
   const addon = kind as AddonKind;

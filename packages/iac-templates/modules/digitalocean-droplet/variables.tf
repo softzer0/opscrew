@@ -31,7 +31,7 @@ variable "ssh_public_key" {
 }
 
 variable "check_key_line" {
-  description = "The scheduled check's authorized_keys line for the deploy user (its key, restricted to df), written at the first boot; empty for none."
+  description = "The scheduled check's authorized_keys line for the deploy user (its key, restricted to OpsCrew's read-only command for the disk and the scheduled snapshots), written at the first boot; empty for none."
   type        = string
   default     = ""
 }

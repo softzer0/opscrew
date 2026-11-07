@@ -25,7 +25,7 @@ import {
 } from "../workflow/shared";
 import { snapshotParts } from "../workflow/snapshots";
 
-export { CHECK_COMMAND, scheduledFailure } from "../../check/check.mjs";
+export { CHECK_COMMAND, scheduledFailed, scheduledLog } from "../../check/check.mjs";
 
 /** The check's workflow file in `.github/workflows/`. */
 export const CHECK_WORKFLOW_FILE = "opscrew-check.yml";

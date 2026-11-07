@@ -113,15 +113,19 @@ export function localRead(): Promise<string>;
 /**
  * The check key's forced command on each server (a copy of `CHECK_KEY_COMMAND` in
  * `@opscrew/connector-ssh-host`): `df -P -B1 /`, then each scheduled snapshot's
- * `scheduled <app> at|said|running` lines. Read-only.
+ * `scheduled <app> at|id|after|running` lines, never the log's text. Read-only.
  */
 export const CHECK_COMMAND: string;
 
 /**
- * The rule for a scheduled snapshot's log, from its last lines (`said`): `undefined` when the
- * last run succeeded (its id is the last line), else what failed: `id` when only its copy off the
- * server failed, and `said`, the lines that say why.
+ * How {@link CHECK_COMMAND} reads a scheduled snapshot's log from its `lines`: its last
+ * scheduled snapshot id line (`id`, absent without one) and the non-empty lines after it.
  */
-export function scheduledFailure(
-  said: readonly string[],
-): { id?: string; said: string[] } | undefined;
+export function scheduledLog(lines: readonly string[]): { id?: string; after: string[] };
+
+/**
+ * The rule for a scheduled snapshot's log: its last run failed unless it printed the snapshot's
+ * id and no non-empty line follows it (`after`, their number). With an `id`, only its copy off
+ * the server failed.
+ */
+export function scheduledFailed(log: { id?: string; after: number }): boolean;
