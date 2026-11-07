@@ -164,7 +164,9 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
     script fetches the pinned archive through the pinned rclone image, as Portainer's service
     does, checks the archive's and the binary's hashes, and the binary's again before each use
     (D10).
-  - Every snapshot taken while the copy is on is uploaded right after it.
+  - Every snapshot taken by hand or on the schedule while the copy is on is uploaded after it,
+    once the start lock is released (D16). Pre-release snapshots stay on the server for the
+    rollback.
 - **Portainer:** an `offsite` service in the stack does the same with the snapshots volume
   (spike S2).
 
@@ -259,6 +261,12 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
   - **The rollback's down-migrations choice** saves the extra servers' data first, as it saves the app server's.
 - **D14:** `opscrew rollback --database snapshot` on Portainer restores the pre-release snapshot through T2408's Portainer restore (T2420), so US7 covers Portainer too.
 - **D15 (T2406's report):** `snapshots.offsite` is refused on localhost, like the schedule: its snapshots stay on this computer beside the data, and no bucket root is planned there.
+- **D16 (T2406's review):**
+  - **Uploads:** they run outside the start lock, so a long upload never holds a deploy or a rollback. Pre-release snapshots aren't uploaded.
+  - **Retrying:** each `take` also uploads the complete snapshots that have no `offsite.done` yet, so a failed upload is retried, as Portainer's service retries.
+  - **A re-upload** of an id first removes its `about.json.age`, so a partial re-upload never looks complete.
+  - **The recipients** are kept in `.opscrew/recovery.json` too, so a first provision that fails before its pull request can run again.
+  - **No age key:** a run that can't make one stops before any change.
 
 ## Order
 
