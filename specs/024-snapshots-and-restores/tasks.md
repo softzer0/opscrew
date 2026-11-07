@@ -117,6 +117,7 @@ description: "Tasks for 024-snapshots-and-restores"
     - **The approval:** destroy-grade, its hash covering the id, the services and `about.json`; the one-time approval file on servers.
     - **Restoring:** `--only` restores one service. Servers run the script; Portainer goes through the carrier. With parts on extra servers, the CLI runs the app server's `snapshot.sh hold` first, restores each server's part, and runs `snapshot.sh resume` after, including on failure (plan.md D8). The app server's `snapshot.sh` is rendered whenever any server holds data, so `hold` and `resume` always exist (D13; `workflow/snapshot-script.ts`, after T2406 merges).
     - **`--from offsite`:** downloads and decrypts on this computer with the recovery key file, then streams to the target.
+    - **A stuck rollback's repair** (D18): `restore <hex> --only <services>` restores a pre-release snapshot by its digest on an extra server, with the app held around it.
     - **The bucket from this computer** (FR-2403, T2407's report): `snapshot list` also shows copies that are only in the bucket (their server gone), and `snapshot delete` removes the off-server copy too, both with the bucket's key on this computer.
     - **Tests:** fakes for each path, with a failure that puts the copy back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`

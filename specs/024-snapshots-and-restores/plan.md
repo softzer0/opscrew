@@ -268,6 +268,14 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
   - **The recipients** are kept in `.opscrew/recovery.json` too, so a first provision that fails before its pull request can run again.
   - **No age key:** a run that can't make one stops before any change.
 - **D17 (T2419's report):** snapshots are data. On an own server, the teardown keeps `/srv/apps/<app>/.snapshots` unless `--delete-data` is given, as it keeps `/srv/data/<app>`, and names it as kept.
+- **D18 (T2417's re-review):** a rollback that got stuck can be repaired.
+  - **When the app's server had switched** (`.env` names the failed version and a marker
+    exists): `opscrew rollback --to <the version that ran> --database snapshot` is accepted. It is
+    a normal rollback to that version, restoring the copies saved under it on every server.
+  - **When only extra servers changed before the switch** (`.env` still names the version that ran):
+    the command is refused, naming `opscrew restore <hex> --only <services>` on each changed server
+    (T2408), then starting the app. The stuck message tells the two cases apart.
+  - The rollback step stops the app only when the app's server records that data changes began.
 
 ## Order
 
