@@ -11,6 +11,7 @@ import { appFolder } from "../localhost/services";
 import { splitPlan } from "../network/__fixtures__/plans";
 import { digestOf, inEnvironment } from "../promote/__fixtures__/world";
 import { recordOwnServer, recordServerAddress, updateServerAddresses } from "../shared";
+import { SH_AVAILABLE } from "../snapshot/__fixtures__/server";
 import {
   createTestPhaseDeps,
   OWN_IPV4,
@@ -19,7 +20,7 @@ import {
   type TestPhaseDeps,
   testPlan,
 } from "../testing";
-import { FakeAppFolder, SH_AVAILABLE } from "./__fixtures__/folder";
+import { FakeAppFolder } from "./__fixtures__/folder";
 import { failure } from "./__fixtures__/versions";
 import {
   type DatabaseQuestion,
@@ -541,13 +542,13 @@ describe.skipIf(!SH_AVAILABLE)("the database step with a database on an extra se
     await chosen.leave();
     data.failWith = 1;
     await expect(chosen.clear()).rejects.toThrow(
-      "OpsCrew could not remove the one-time approval of the database step on the server data (exit code 1).",
+      "OpsCrew could not remove the one-time approval of the database step on server data (exit code 1).",
     );
     expect(await app.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
     expect(app.commands.at(-1)).toBe(removeScript("/srv/apps/shop"));
 
     await app.write(ROLLBACK_APPROVAL_FILE, line);
-    await expect(removeDatabaseApproval(run())).rejects.toThrow("on the server data");
+    await expect(removeDatabaseApproval(run())).rejects.toThrow("on server data");
     expect(await app.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
 
     // No address for the server data on this computer counts as an error too.
@@ -576,7 +577,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step with a database on an extra se
     const hint = (choice: "snapshot" | "migrations") =>
       restoreHint(withQueue, { switched: false, servers: [{ name: "data", choice }] }, CURRENT);
     expect(hint("migrations")).toBe(
-      `The rollback that failed changed the data on the server data before the app switched, so staging's app server still runs this version on its own data. Once each of those servers is fixed, run \`opscrew restore --env staging ${hex(CURRENT)} --only db\`: each puts the copy that rollback saved before changing anything back on its server.`,
+      `The rollback that failed changed the data on server data before the app switched, so staging's app server still runs this version on its own data. Once each of those servers is fixed, run \`opscrew restore --env staging ${hex(CURRENT)} --only db\`: each puts the copy that rollback saved before changing anything back on its server.`,
     );
     expect(hint("snapshot")).toContain(
       `run \`opscrew restore --env staging ${hex(CURRENT)} --only db\` and \`opscrew restore --env staging ${hex(CURRENT)} --only queue\`:`,
@@ -589,7 +590,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step with a database on an extra se
     await app.write(`.schema/${hex(TARGET)}`, "count=2\n");
     const chosen = await step({ database: "migrations" });
     expect(chosen.lines.at(-1)).toBe(
-      "Typing shop approves it. OpsCrew then leaves a one-time approval in the app's folder on the app's server and on the server data, valid for 30 minutes, which the deploy uses once.",
+      "Typing shop approves it. OpsCrew then leaves a one-time approval in the app's folder on the app's server and on server data, valid for 30 minutes, which the deploy uses once.",
     );
     await chosen.leave();
     const line = `${hex(TARGET)} migrations ${EXPIRY}\n`;
@@ -609,7 +610,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step with a database on an extra se
       `Database: Restore the snapshot taken 2026-10-11 11:30 UTC, when ${WORDS} stopped running. Everything written since is lost.`,
       "Kept as they are, since the snapshot holds no copy of them: kafka on server data (it must stop for its copy, and deploy.snapshotStop doesn't name it).",
       "The app's settings and secrets stay as they are now. The release command does not run.",
-      "Typing shop approves it. OpsCrew then leaves a one-time approval in the app's folder on the app's server and on the server data, valid for 30 minutes, which the deploy uses once.",
+      "Typing shop approves it. OpsCrew then leaves a one-time approval in the app's folder on the app's server and on server data, valid for 30 minutes, which the deploy uses once.",
     ]);
     expect(chosen.binding?.taken).toBe(TAKEN);
     expect(data.commands).toEqual([readScript("/srv/apps/shop", [snapshotAboutPath(hex(TARGET))])]);
@@ -638,13 +639,13 @@ describe.skipIf(!SH_AVAILABLE)("the database step with a database on an extra se
     const missing = await split();
     expect((await missing.step()).choice).toBe("keep");
     expect((await failure(missing.step({ database: "snapshot" }))).message).toBe(
-      `The server data keeps no complete snapshot of ${WORDS}: a deploy takes one when it replaces a version, and each server keeps those of the last 3. Nothing was changed.`,
+      `Server data keeps no complete snapshot of ${WORDS}: a deploy takes one when it replaces a version, and each server keeps those of the last 3. Nothing was changed.`,
     );
 
     const away = await split({ reachable: false });
     await away.data.snapshot(hex(TARGET), TAKEN);
     expect((await failure(away.step({ database: "snapshot" }))).message).toBe(
-      `This computer can't reach the server data, which holds part of the snapshot of ${WORDS}, so OpsCrew can't restore it. Nothing was changed.`,
+      `This computer can't reach server data, which holds part of the snapshot of ${WORDS}, so OpsCrew can't restore it. Nothing was changed.`,
     );
   });
 
@@ -673,7 +674,7 @@ describe("the database step elsewhere", () => {
     await mkdir(join(folder, `.snapshots/${hex(TARGET)}`), { recursive: true });
     await writeFile(
       join(folder, snapshotAboutPath(hex(TARGET))),
-      JSON.stringify({ id: hex(TARGET), kind: "release", taken: TAKEN, services: [] }),
+      JSON.stringify({ id: hex(TARGET), kind: "release", taken: TAKEN, version: "", services: [] }),
     );
     const run = await rollbackRun(deps, { database: "snapshot" });
     const chosen = await databaseStep(run, {

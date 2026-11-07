@@ -39,10 +39,8 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
 /** OpsCrew's snapshot of the app's server, taken before. */
 const EARLIER: ServerSnapshot = {
   id: "770011",
-  name: "OpsCrew snapshot of shop-staging (staging)",
   createdAt: "2026-11-05T08:00:00Z",
   sizeGb: 2,
-  labels: { "created-by": "opscrew" },
 };
 
 /**
@@ -79,10 +77,8 @@ function fakeServerApi(
       await step(`snapshot ${serverId}`);
       snapshots.push({
         id: "880022",
-        name: request.description,
         createdAt: "2026-11-07T12:00:00Z",
         sizeGb: o.takenGb ?? 2.5,
-        labels: request.labels,
       });
       return { snapshotId: "880022" };
     },

@@ -20,7 +20,7 @@ import {
 } from "@opscrew/connector-docker";
 import type { CommandResult, DockerTransport } from "@opscrew/contracts";
 import { ageDecryptStream, NodeStreamRunner, OpsCrewError } from "@opscrew/core";
-import { appDir, IMAGES, OFFSITE_PREFIX, RCLONE_PROVIDERS } from "@opscrew/iac-templates";
+import { appDir, IMAGES, OFFSITE_PREFIX, rcloneSettings } from "@opscrew/iac-templates";
 import { APP_SERVER, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { setupCloudflare } from "../provision/credentials";
 import { requireOffsiteKey } from "../provision/storage";
@@ -28,7 +28,8 @@ import type { CloudflareApi } from "../provision/types";
 import { privateReach, r2Endpoint, STORAGE_ENDPOINTS, sshArgs } from "../shared";
 import { serverShell } from "../status/servers";
 import { hostFailure, READ_TIMEOUT_MS, type ScriptHost } from "./hosts";
-import { DIR, failed, ONE_OFF_LABEL, type PortainerPlace } from "./portainer";
+import type { OffsiteProvider } from "./offsite";
+import { box, DIR, failed, ONE_OFF_LABEL, type PortainerPlace } from "./portainer";
 import type { SnapshotRun } from "./run";
 import { type About, aboutOf, SERVER_SNAPSHOTS, SNAPSHOT_ID } from "./store";
 import type { SnapshotServices } from "./types";
@@ -57,26 +58,44 @@ export interface OffsiteBucket {
 /** How long a listing or a deletion in the bucket may take. */
 const BUCKET_TIMEOUT_MS = 5 * 60_000;
 /** rclone's exit code for a path that is not there. */
-const NOT_FOUND = 3;
+export const RCLONE_NOT_FOUND = 3;
 /** The most bytes an `about.json` may take. */
 const MAX_ABOUT_BYTES = 1024 * 1024;
 /** A record's object in the bucket, written last (plan.md 1.). */
 const ABOUT_OBJECT = "about.json.age";
 
-/** rclone here: the pinned image in local Docker, else this computer's rclone. */
+/**
+ * rclone's remote `offsite` for the off-server copies of `offsite` (its provider and region) at
+ * `endpoint` with the bucket's `key`: its settings (`RCLONE_CONFIG_OFFSITE_*`, for rclone's
+ * environment only) and the arguments that run the pinned rclone image in Docker with them,
+ * before rclone's own.
+ */
+export function offsiteRclone(
+  offsite: { provider: OffsiteProvider; region: string },
+  endpoint: string,
+  key: { accessKeyId: string; secretAccessKey: string },
+): { settings: Record<string, string>; docker: string[] } {
+  const settings = {
+    ...rcloneSettings(offsite),
+    RCLONE_CONFIG_OFFSITE_ENDPOINT: endpoint,
+    RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: key.accessKeyId,
+    RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: key.secretAccessKey,
+  };
+  const env = Object.keys(settings).flatMap((name) => ["-e", name]);
+  return { settings, docker: ["run", "--rm", "-i", ...env, IMAGES.rclone.ref] };
+}
+
+/** rclone here: the pinned image in local Docker (`docker`'s arguments), else this computer's rclone. */
 async function rcloneHere(
   run: SnapshotRun,
-  names: readonly string[],
+  docker: string[],
 ): Promise<{ command: string; prefix: string[] }> {
   const { runner } = run.deps;
   const answered = (result: CommandResult | undefined) => result?.exitCode === 0;
-  const docker = await runner
+  const version = await runner
     .run("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 30_000 })
     .catch(() => undefined);
-  if (answered(docker)) {
-    const env = names.flatMap((name) => ["-e", name]);
-    return { command: "docker", prefix: ["run", "--rm", "-i", ...env, IMAGES.rclone.ref] };
-  }
+  if (answered(version)) return { command: "docker", prefix: docker };
   const local = await runner
     .run("rclone", ["version"], { timeoutMs: 30_000 })
     .catch(() => undefined);
@@ -125,17 +144,8 @@ export async function offsiteBucket(
   } else {
     endpoint = STORAGE_ENDPOINTS[offsite.provider]?.(offsite.region) ?? "";
   }
-  const settings: Record<string, string> = {
-    RCLONE_CONFIG_OFFSITE_TYPE: "s3",
-    RCLONE_CONFIG_OFFSITE_PROVIDER: RCLONE_PROVIDERS[offsite.provider],
-    RCLONE_CONFIG_OFFSITE_REGION: offsite.region,
-    RCLONE_CONFIG_OFFSITE_ENDPOINT: endpoint,
-    RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: key.accessKeyId,
-    RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: key.secretAccessKey,
-    // The bucket exists: rclone never tries to create it.
-    RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET: "true",
-  };
-  const tool = await rcloneHere(run, Object.keys(settings));
+  const { settings, docker } = offsiteRclone(offsite, endpoint, key);
+  const tool = await rcloneHere(run, docker);
   const own = Object.entries(deps.env).filter(([name]) => !/^RCLONE_/i.test(name));
   return {
     name: offsite.bucket,
@@ -160,7 +170,7 @@ function bucketFailure(
   );
 }
 
-/** rclone's `args` in the bucket, its output read whole; `NOT_FOUND` is returned, not thrown. */
+/** rclone's `args` in the bucket, its output read whole; `RCLONE_NOT_FOUND` is returned, not thrown. */
 async function rclone(
   run: SnapshotRun,
   bucket: OffsiteBucket,
@@ -171,7 +181,7 @@ async function rclone(
     env: bucket.env,
     timeoutMs: BUCKET_TIMEOUT_MS,
   });
-  if (result.exitCode !== 0 && result.exitCode !== NOT_FOUND) {
+  if (result.exitCode !== 0 && result.exitCode !== RCLONE_NOT_FOUND) {
     throw bucketFailure(run, bucket, what, result);
   }
   return result;
@@ -185,7 +195,7 @@ export async function bucketObjects(
 ): Promise<string[]> {
   const path = under === "" ? bucket.root : `${bucket.root}/${under}`;
   const result = await rclone(run, bucket, ["lsf", "-R", "--files-only", path], "list the copies");
-  if (result.exitCode === NOT_FOUND) return [];
+  if (result.exitCode === RCLONE_NOT_FOUND) return [];
   return result.stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -343,7 +353,7 @@ export async function bucketDelete(
     ["purge", `${bucket.root}/${id}`],
     `delete the copy ${id}`,
   );
-  return result.exitCode === NOT_FOUND ? "already gone" : "deleted";
+  return result.exitCode === RCLONE_NOT_FOUND ? "already gone" : "deleted";
 }
 
 /** One file of a copy to put back: its name in the snapshot's folder and its size. */
@@ -600,13 +610,7 @@ export async function copyToPortainer(
   const mount: MountSpec = { type: "volume", source: place.volume, target: DIR };
   const archive = copyArchive(run, bucket, identity, { ...input, uid: 0, gid: 0 });
   const exitCode = await receive(place.docker, mount, id, archive).catch(async (error: unknown) => {
-    await runOneOff(place.docker, {
-      image: IMAGES.busybox.ref,
-      cmd: ["rm", "-rf", `${DIR}/${id}.taking`],
-      labels: { [ONE_OFF_LABEL]: place.volume },
-      mounts: [mount],
-      network: "none",
-    }).catch(() => undefined);
+    await box(place, `rm -rf ${DIR}/${id}.taking`).catch(() => undefined);
     throw error;
   });
   if (exitCode === PRESENT) {

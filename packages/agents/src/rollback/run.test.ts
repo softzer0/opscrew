@@ -26,6 +26,7 @@ import {
 } from "../promote/__fixtures__/world";
 import { promotionFile, readPromotion, writePromotion } from "../promote/record";
 import { recordServerAddress, updateServerAddresses } from "../shared";
+import { SH_AVAILABLE } from "../snapshot/__fixtures__/server";
 import {
   createTestPhaseDeps,
   movingPlan,
@@ -34,7 +35,7 @@ import {
   SERVER_IPV4,
   testPlan,
 } from "../testing";
-import { FakeAppFolder, SH_AVAILABLE } from "./__fixtures__/folder";
+import { FakeAppFolder } from "./__fixtures__/folder";
 import {
   at,
   type Built,
@@ -1490,7 +1491,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
       expect(before.message).toContain("runs");
       expect(before.message).toContain("already");
       expect(before.hint).toBe(
-        `The rollback that failed changed the data on the server data before the app switched, so staging's app server still runs this version on its own data. Once each of those servers is fixed, run \`opscrew restore --env staging ${hexC} --only db\`: each puts the copy that rollback saved before changing anything back on its server.`,
+        `The rollback that failed changed the data on server data before the app switched, so staging's app server still runs this version on its own data. Once each of those servers is fixed, run \`opscrew restore --env staging ${hexC} --only db\`: each puts the copy that rollback saved before changing anything back on its server.`,
       );
 
       // Without the app's record of a held app, nothing was left changed: the usual refusal.

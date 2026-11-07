@@ -11,8 +11,8 @@ import {
   PORTAINER_TOKEN,
   type PortainerWorld,
   portainerWorld,
-  SH,
 } from "./__fixtures__/portainer";
+import { SH_AVAILABLE } from "./__fixtures__/server";
 import { everythingShown, RUNNING, stagingPlan } from "./__fixtures__/world";
 import { deleteSnapshot } from "./delete";
 import { listSnapshots } from "./list";
@@ -57,7 +57,7 @@ async function failure(promise: Promise<unknown>): Promise<OpsCrewError> {
   return error;
 }
 
-describe.skipIf(!SH)("a snapshot by hand in the user's Portainer", () => {
+describe.skipIf(!SH_AVAILABLE)("a snapshot by hand in the user's Portainer", () => {
   it("copies the online parts by one-offs and the stop-only one stopped alone, then writes about.json", async () => {
     const world = await portainerWorld(plan());
     world.copies.set("sqlite.tar", 3);

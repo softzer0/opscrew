@@ -229,15 +229,9 @@ describe("servers.listSnapshots", () => {
       },
     });
     expect(await connector.servers?.listSnapshots("7")).toEqual([
-      { id: "11", name: "", createdAt: "2026-11-02T10:00:00+00:00", sizeGb: 1.25, labels: ours },
-      {
-        id: "12",
-        name: "snapshot 12",
-        createdAt: "2026-11-05T10:00:00+00:00",
-        sizeGb: 1.25,
-        labels: ours,
-      },
-      { id: "13", name: "snapshot 13", createdAt: "2026-11-06T10:00:00+00:00", labels: ours },
+      { id: "11", createdAt: "2026-11-02T10:00:00+00:00", sizeGb: 1.25 },
+      { id: "12", createdAt: "2026-11-05T10:00:00+00:00", sizeGb: 1.25 },
+      { id: "13", createdAt: "2026-11-06T10:00:00+00:00" },
     ]);
     expect(calls.map((call) => param(call, "type"))).toEqual(["snapshot", "snapshot"]);
     expect(calls.map((call) => param(call, "label_selector"))).toEqual([

@@ -11,8 +11,10 @@ export interface Disk {
   freeKb: number;
 }
 
-/** The command that prints `disk <size> <free>` (KiB) of the disk that holds the current folder. */
-export const DISK_COMMAND = `df -Pk . | awk 'NR == 2 { print "disk", $2, $4 }'`;
+/** The command that prints `disk <size> <free>` (KiB) of the disk that holds the folder `dir`. */
+export function diskCommand(dir: string): string {
+  return `df -Pk ${dir} | awk 'NR == 2 { print "disk", $2, $4 }'`;
+}
 
 /** The `disk <size> <free>` line of a probe; `undefined` without one. */
 export function readDisk(stdout: string): Disk | undefined {

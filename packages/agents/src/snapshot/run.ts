@@ -17,6 +17,9 @@ import { runningDeploy } from "../shared/deploy-pause";
 import { deploysOnTheirOwn } from "../status/deploys";
 import type { SnapshotServices } from "./types";
 
+/** What `opscrew snapshot` and `opscrew snapshot --server` refuse with, after what. */
+export const NOTHING_TAKEN = "No snapshot was taken.";
+
 /** One run of a snapshot command, on the environment its deps belong to. */
 export interface SnapshotRun {
   deps: PhaseDeps;

@@ -31,16 +31,19 @@ import { pollUntil } from "../shared/wait";
 import { checkHealth, siteUrl, type VerifyCheckContext } from "../verify/checks";
 import { defaultDnsResolver, defaultTlsConnect } from "../verify/net";
 import { cloudProviders, type ProviderSnapshot, providerSnapshots, serverApi } from "./provider";
-import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
+import {
+  NOTHING_TAKEN,
+  requireNoDeployOrMove,
+  type SnapshotRun,
+  snapshotRun,
+  snapshotTarget,
+} from "./run";
 import { snapshotIdAt } from "./store";
 import type { SnapshotEntry, SnapshotServices } from "./types";
 
 /** How long the app may take to answer after a rebuild, and how often it is asked. */
 const HEALTH_WAIT_MS = 5 * 60_000;
 const HEALTH_INTERVAL_MS = 10_000;
-
-/** What `opscrew snapshot --server` refuses with, after what. */
-const NOTHING_TAKEN = "No snapshot was taken.";
 
 /**
  * Collaborators of the whole-server commands: the snapshot commands' ones, a provider's price

@@ -11,16 +11,8 @@ import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { sizeText } from "../retarget/texts";
 import { shortDigest } from "../rollback/versions";
-import {
-  computerHost,
-  dataServers,
-  hostFailure,
-  READ_TIMEOUT_MS,
-  type ScriptHost,
-  scriptCommand,
-  serverHost,
-  serverName,
-} from "./hosts";
+import { serverWords } from "../shared/server-address";
+import { dataHosts, hostFailure, READ_TIMEOUT_MS, type ScriptHost, scriptCommand } from "./hosts";
 import { type PortainerPlace, portainerListing, portainerPlace } from "./portainer";
 import { providerSnapshots } from "./provider";
 import {
@@ -80,13 +72,11 @@ export async function portainerPlaceListing(place: PortainerPlace): Promise<Plac
 
 /** The data snapshots' listings of `run`'s target, one per machine that holds data. */
 export async function dataListings(run: SnapshotRun): Promise<PlaceListing[]> {
-  const target = snapshotTarget(run);
-  if (target === "portainer") return [await portainerPlaceListing(await portainerPlace(run))];
-  if (target === "computer") return [await hostListing(run, await computerHost(run))];
-  const listings: PlaceListing[] = [];
-  for (const server of dataServers(run.plan)) {
-    listings.push(await hostListing(run, await serverHost(run, server)));
+  if (snapshotTarget(run) === "portainer") {
+    return [await portainerPlaceListing(await portainerPlace(run))];
   }
+  const listings: PlaceListing[] = [];
+  for (const host of (await dataHosts(run)).values()) listings.push(await hostListing(run, host));
   return listings;
 }
 
@@ -142,7 +132,7 @@ export function mergeListings(
 }
 
 /** Newest first. */
-function newestFirst(a: SnapshotEntry, b: SnapshotEntry): number {
+export function newestFirst(a: SnapshotEntry, b: SnapshotEntry): number {
   return Date.parse(b.taken) - Date.parse(a.taken);
 }
 
@@ -162,7 +152,7 @@ export interface ListSnapshotsOptions extends SnapshotCommandOptions {
  * the machines' are, `where` the bucket; without it, only their ids, said in a line, since nothing
  * else of them can be read without the key.
  */
-export async function bucketEntries(
+async function bucketEntries(
   run: SnapshotRun,
   bucket: OffsiteBucket,
   known: ReadonlySet<string>,
@@ -183,7 +173,7 @@ export async function bucketEntries(
     for (const server of servers) {
       const { about } = await bucketAbout(run, bucket, identity, id, server);
       listings.push({
-        name: serverName(server),
+        name: serverWords(server),
         ...(server === APP_SERVER ? {} : { server }),
         listing: { abouts: [about], offsite: new Set([id]), unreadable: 0 },
       });
@@ -200,7 +190,7 @@ export async function bucketEntries(
  * The bucket of `run`'s off-server copies, or `undefined` without one, or when this computer has
  * no key for it or no rclone, which a warning says: what reads the machines goes on without it.
  */
-export async function readableBucket(
+async function readableBucket(
   run: SnapshotRun,
   services: RestoreServices,
   command: string,

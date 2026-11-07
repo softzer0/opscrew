@@ -24,7 +24,6 @@ import {
   failed,
   type PortainerPlace,
   portainerPlace,
-  portainerTake,
   stackContainers,
 } from "../snapshot/portainer";
 import {
@@ -36,6 +35,8 @@ import {
   type RestoredMark,
   readMarkIn,
   readRecord,
+  runningIds,
+  stopAndSave,
 } from "../snapshot/restore-portainer";
 import type { SnapshotRun } from "../snapshot/run";
 import type { About } from "../snapshot/store";
@@ -227,37 +228,25 @@ export function portainerRestore(
       const place = await portainerPlace(snap);
       const { saved, probed } = await probeFree(snap, place, hex);
       const containers = await stackContainers(place);
-      const ran = new Set(
-        containers
-          .filter((container) => container.state === "running")
-          .map((container) => container.id),
-      );
-      const app = appContainers(snap, containers).filter((container) => ran.has(container.id));
-      const startApp = async () => {
-        for (const container of app) await place.docker.startContainer(container.id);
-      };
       run.deps.reporter.step(
         `Restoring the snapshot of ${words} in your Portainer: the app stops until the rollback starts ${words}`,
       );
-      try {
-        for (const container of app) await place.docker.stopContainer(container.id);
-        await portainerTake(snap, place, { id: saved, version: probed.version, parts });
+      const { ran, startApp } = await stopAndSave(snap, place, {
+        containers,
+        saved,
+        version: probed.version,
+        parts,
+        failure:
+          "So OpsCrew could not copy and mark the current data before the restore; the app runs again.",
         // The mark first: from here on no other version starts on this data.
-        const marked = await box(
-          place,
-          markScript({ image: images.target, wayOut: wayOut(run, saved) }),
-        );
-        if (marked.exitCode !== 0) {
-          throw failed(`mark the data for ${words}`, marked.exitCode);
-        }
-      } catch (error) {
-        await startApp();
-        throw new OpsCrewError(
-          error instanceof OpsCrewError ? error.code : "COMMAND_FAILED",
-          `${errorMessage(error)} So OpsCrew could not copy and mark the current data before the restore; the app runs again.`,
-          error instanceof OpsCrewError && error.hint !== undefined ? { hint: error.hint } : {},
-        );
-      }
+        async mark() {
+          const marked = await box(
+            place,
+            markScript({ image: images.target, wayOut: wayOut(run, saved) }),
+          );
+          if (marked.exitCode !== 0) throw failed(`mark the data for ${words}`, marked.exitCode);
+        },
+      });
       restore.saved = saved;
       try {
         await putBack(snap, place, parts, hex, ran);
@@ -389,11 +378,7 @@ export async function undoPortainerRestore(
       markScript({ image: onBranch ? images.target : image, wayOut: wayOut(run, saved) }),
     );
     if (marked.exitCode !== 0) throw failed(`rewrite ${RESTORED_IMAGE_FILE}`, marked.exitCode);
-    const ran = new Set(
-      containers
-        .filter((container) => container.state === "running")
-        .map((container) => container.id),
-    );
+    const ran = runningIds(containers);
     for (const container of appContainers(snap, containers)) {
       if (ran.has(container.id)) await place.docker.stopContainer(container.id);
     }

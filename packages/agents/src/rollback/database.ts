@@ -8,7 +8,7 @@
 import { chmod, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CommandResult } from "@opscrew/contracts";
-import { listText, OpsCrewError } from "@opscrew/core";
+import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
 import {
   appDir,
   DATABASE_CHANGED,
@@ -34,10 +34,11 @@ import {
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
-import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { appFolder } from "../localhost/services";
 import { NOTHING_CHANGED } from "../promote/shared";
+import { serverWords } from "../shared/server-address";
+import { type About, aboutOf } from "../snapshot/store";
 import { serverShell } from "../status/servers";
 import type { RollbackServices } from "./index";
 import { type PortainerRestore, portainerRestore, readPortainerSnapshot } from "./portainer";
@@ -105,11 +106,6 @@ export function readSections(stdout: string, paths: readonly string[]): Map<stri
   return files;
 }
 
-/** `server` in a message: "the app's server" or "the server <name>". */
-function serverWords(server: string): string {
-  return server === APP_SERVER ? "the app's server" : `the server ${server}`;
-}
-
 /**
  * The app's folder on its server `server` (the app's, or an extra one), through the login `logs`
  * uses ({@link serverShell}): the deploy user on a server OpsCrew created, the admin login on the
@@ -146,7 +142,7 @@ async function serverFolder(
       const what = `${line === undefined ? "remove" : "leave"} the one-time approval of the database step`;
       const said = answered(result)
         ? `OpsCrew could not ${what} on ${where} (exit code ${result.exitCode}).`
-        : `${server === APP_SERVER ? "The app's server" : `The server ${server}`} did not answer over SSH, so OpsCrew could not ${what}.`;
+        : `${upperFirst(where)} did not answer over SSH, so OpsCrew could not ${what}.`;
       throw new OpsCrewError("COMMAND_FAILED", said, {
         hint: "Check that the server is on and answers (`opscrew status`), then try again.",
       });
@@ -320,9 +316,6 @@ export function databaseOutcome(record: DatabaseRecord, plan: DeployPlan, words:
   return "The database stayed as it was.";
 }
 
-/** A complete snapshot's `taken`: an ISO time. */
-const TakenSchema = z.iso.datetime({ offset: true });
-
 /** A count tool's record: `count=<n>`. */
 function countOf(record: string): number | undefined {
   const match = /^count=(\d+)$/m.exec(record);
@@ -342,35 +335,6 @@ function countGrew(tool: Migrations["tool"], target: string, current: string): b
 }
 
 /**
- * What the rollback reads of a complete snapshot's `about.json` (024 plan.md 1.): when it was
- * taken, and each service's entry, its kind, and `skipped` or `failed` for one it holds no copy of.
- */
-const AboutSchema = z.object({
-  taken: TakenSchema,
-  services: z.array(
-    z.object({
-      name: z.string(),
-      kind: z.string(),
-      skipped: z.literal(true).optional(),
-      failed: z.literal(true).optional(),
-    }),
-  ),
-});
-
-type About = z.infer<typeof AboutSchema>;
-
-/** `text` as a complete snapshot's `about.json`, or `undefined` when it is none (0.2.4's folders). */
-function aboutOf(text: string | undefined): About | undefined {
-  if (text === undefined) return undefined;
-  try {
-    const parsed = AboutSchema.safeParse(JSON.parse(text));
-    return parsed.success ? parsed.data : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * The services a snapshot holds no copy of on each server (`abouts`, by server), which its restore
  * keeps as they are, each with its reason: the SQLite volume was empty; its copy failed; a
  * stop-only service `deploy.snapshotStop` doesn't name; or any other had no container yet. In the
@@ -381,12 +345,12 @@ function leftOutLines(plan: DeployPlan, abouts: ReadonlyMap<string, About>): str
   const stop = plan.deploy.snapshotStop ?? [];
   const items = [...abouts].flatMap(([server, about]) =>
     about.services
-      .filter((service) => service.skipped === true || service.failed === true)
+      .filter((service) => "skipped" in service || "failed" in service)
       .map((service) => {
         const on = server === APP_SERVER ? "" : ` on server ${server}`;
         if (service.kind === "sqlite") return `the app's SQLite files${on} (the volume was empty)`;
         const why =
-          service.failed === true
+          "failed" in service
             ? "its copy failed"
             : !ONLINE_SNAPSHOT_KINDS.some((kind) => kind === service.kind) &&
                 !stop.includes(service.name)
@@ -582,7 +546,9 @@ export async function databaseStep(
   const unreached: string[] = [];
   const folders = new Map<string, AppFolder>();
   if (snapshots && about !== undefined) {
-    const own = snapshotParts(plan).length > 0 ? aboutOf(files.get(about)) : undefined;
+    // A folder without about.json (0.2.4's) holds no complete snapshot.
+    const text = snapshotParts(plan).length > 0 ? files.get(about) : undefined;
+    const own = text === undefined ? undefined : aboutOf(text);
     if (own !== undefined) abouts.set(APP_SERVER, own);
     else if (snapshotParts(plan).length > 0) missing.push(APP_SERVER);
     for (const server of restoring) {
@@ -593,7 +559,8 @@ export async function databaseStep(
         continue;
       }
       folders.set(server, extra);
-      const part = aboutOf(read.get(about));
+      const partText = read.get(about);
+      const part = partText === undefined ? undefined : aboutOf(partText);
       if (part !== undefined) abouts.set(server, part);
       else missing.push(server);
     }
@@ -612,8 +579,7 @@ export async function databaseStep(
     why.snapshot = `This computer can't reach ${listText(unreached.map(serverWords))}, which holds part of the snapshot of ${input.words}, so OpsCrew can't restore it.`;
   } else if (missing.length > 0 || taken === undefined) {
     const listed = listText(missing.map(serverWords));
-    const where =
-      restoring.length === 0 ? "The server" : `${listed.charAt(0).toUpperCase()}${listed.slice(1)}`;
+    const where = restoring.length === 0 ? "The server" : upperFirst(listed);
     const each = restoring.length === 0 ? "the server keeps" : "each server keeps";
     why.snapshot = `${where} ${missing.length > 1 ? "keep" : "keeps"} no complete snapshot of ${input.words}: a deploy takes one when it replaces a version, and ${each} those of the last ${keepSnapshotsOf(plan)}.`;
   } else {

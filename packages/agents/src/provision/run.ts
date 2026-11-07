@@ -199,10 +199,9 @@ import {
   applyStorage,
   BACKUPS_PLAN_SUFFIX,
   offsiteEnvFile,
+  offsitePreflight,
   offsiteSetup,
   providerBucket,
-  requireOffsiteKey,
-  requireOffsiteRecipient,
   requireR2Cloudflare,
   requireStorageKey,
   STORAGE_PLAN_SUFFIX,
@@ -573,16 +572,14 @@ async function provisionFlow(
     bucket !== undefined && bucket.provider !== "r2"
       ? await requireStorageKey(deps, plan, services, { command })
       : undefined;
-  // The off-server copies' bucket likewise (024 plan.md 7.), with a key of its own.
+  // The off-server copies' bucket likewise (024 plan.md 7.), with a key of its own, and the age
+  // key the copies are encrypted to, or what makes it, before any change (D16).
   const offsite = snapshotOffsiteOf(plan);
-  const offsiteKey =
-    offsite !== undefined && offsite.provider !== "r2"
-      ? await requireOffsiteKey(deps, plan, services, { command })
-      : undefined;
-  // The age key the copies are encrypted to, or what makes it, before any change (D16).
-  const recovery = options.planOnly
-    ? options.recovery
-    : await requireOffsiteRecipient(deps, plan, options.recovery, command);
+  const { key: offsiteKey, recovery } = await offsitePreflight(deps, plan, services, {
+    command,
+    planOnly: options.planOnly,
+    recovery: options.recovery,
+  });
   // The app's own additions to its site, checked before any change (FR-1443) against the site
   // this run means to deploy.
   const intended = originTlsHostnames(plan);

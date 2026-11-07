@@ -12,7 +12,7 @@ import { APPROVAL_SECONDS } from "../rollback/database";
 import { shortDigest } from "../rollback/versions";
 import type { RestoreServices } from "./restore-offsite";
 import type { SnapshotRun } from "./run";
-import type { About } from "./store";
+import { type About, KIND_WORDS } from "./store";
 
 /** `opscrew restore`'s options. */
 export interface RestoreSnapshotOptions {
@@ -185,13 +185,6 @@ export function checkImages(
     }
   }
 }
-
-/** A snapshot's kind in the approval's words. */
-const KIND_WORDS: Record<About["kind"], string> = {
-  manual: "taken by hand",
-  release: "taken before a release",
-  scheduled: "taken on the schedule",
-};
 
 /** The restore's facts that change nothing but the approval's words. */
 export interface RestoreApproval {

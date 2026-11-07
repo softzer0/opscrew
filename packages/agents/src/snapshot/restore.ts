@@ -29,8 +29,7 @@ import type { PhaseDeps } from "../context";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { APPROVAL_SECONDS } from "../rollback/database";
 import {
-  computerHost,
-  dataServers,
+  dataHosts,
   hostFailure,
   READ_TIMEOUT_MS,
   type ScriptHost,
@@ -60,7 +59,7 @@ import {
 } from "./restore-offsite";
 import { restoreInPortainer } from "./restore-portainer";
 import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
-import { aboutOf, SNAPSHOT_ID, versionLine } from "./store";
+import { aboutOf, requireSnapshotId, versionLine } from "./store";
 
 /** How long one machine's restore may take: its copy first, then the restore. */
 const RESTORE_TIMEOUT_MS = 6 * 60 * 60_000;
@@ -177,11 +176,8 @@ async function restoreOnHosts(
   local: boolean,
 ): Promise<RestoredSnapshot> {
   const { deps, plan, environment, flags } = run;
-  const servers = local ? [APP_SERVER] : dataServers(plan);
-  const hosts = new Map<string, ScriptHost>();
-  for (const server of servers) {
-    hosts.set(server, local ? await computerHost(run) : await serverHost(run, server));
-  }
+  const hosts = await dataHosts(run);
+  const servers = [...hosts.keys()];
   const app = hosts.get(APP_SERVER) ?? (await serverHost(run, APP_SERVER));
   const partsOf = (server: string): SnapshotPart[] =>
     local ? snapshotParts(plan) : snapshotParts(plan, server);
@@ -478,18 +474,16 @@ async function restoreEach(
     ...holders.filter((holder) => holder.server !== APP_SERVER),
     ...holders.filter((holder) => holder.server === APP_SERVER),
   ];
-  const resumeApp = () =>
+  // A machine that throws counts as one that did not answer.
+  const appScript = (command: "hold" | "resume") =>
     app
-      .run(scriptCommand(["resume"]), READ_TIMEOUT_MS)
+      .run(scriptCommand([command]), READ_TIMEOUT_MS)
       .catch(
         (error: unknown): CommandResult => ({ exitCode: 255, stdout: "", stderr: String(error) }),
       );
+  const resumeApp = () => appScript("resume");
   deps.reporter.step(`Holding the app's requests and stopping it ${app.where}`);
-  const held = await app
-    .run(scriptCommand(["hold"]), READ_TIMEOUT_MS)
-    .catch(
-      (error: unknown): CommandResult => ({ exitCode: 255, stdout: "", stderr: String(error) }),
-    );
+  const held = await appScript("hold");
   if (held.exitCode !== 0) {
     // A hold that stopped part-way lets the app go again, best effort.
     await resumeApp();
@@ -557,13 +551,7 @@ export async function restoreSnapshot(
   id: string,
   options: RestoreSnapshotOptions = {},
 ): Promise<RestoredSnapshot> {
-  if (!SNAPSHOT_ID.test(id)) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `${id} is no snapshot's id: an id has only letters and digits. ${NOTHING_CHANGED}`,
-      { hint: "`opscrew snapshot list` shows each snapshot's id." },
-    );
-  }
+  requireSnapshotId(id);
   const services = options.services ?? {};
   const run = await snapshotRun(deps, services);
   hideIdentity(run, options.identity);

@@ -33,15 +33,13 @@ import {
   type TestPhaseDeps,
 } from "../../testing";
 import type { SnapshotServices } from "../types";
+import { SH_AVAILABLE } from "./server";
 import { fakeRuns, gitRemote } from "./world";
 
 export const PORTAINER_TOKEN = fakeSecret("generic-password", "portainer token");
 export const DB_SECRET = fakeSecret("generic-password", "portainer db password");
 export const CACHE_SECRET = fakeSecret("generic-password", "portainer cache password");
 const CERT = fakeCertificate();
-
-/** True when `sh` runs here (Git's on Windows), which the finish needs. */
-export const SH = spawnSync("sh", ["-c", "exit 0"]).status === 0;
 
 /** A file in a fake volume, root's, mode 600. */
 function file(data: string | Buffer): FakeFile {
@@ -285,7 +283,7 @@ export async function portainerWorld(
       return { exitCode };
     }
     if (script.startsWith("set -e\n{")) {
-      if (!SH) return { exitCode: 0 };
+      if (!SH_AVAILABLE) return { exitCode: 0 };
       const id = /\/snapshots\/([0-9A-Za-z]+)\.taking/.exec(script)?.[1] ?? "";
       const { run, finished } = finish(script, volume);
       if (finished === undefined) return run;

@@ -327,7 +327,7 @@ function ownServerNames(session: Pick<OwnServerSession, "connection">): string[]
 }
 
 /** The app's snapshots in its folder on the server (D17), when it has any. */
-function appSnapshots(facts: HostFacts, app: string): string | undefined {
+export function appSnapshots(facts: HostFacts, app: string): string | undefined {
   return facts.snapshotDirs.includes(app) ? snapshotsDir(app) : undefined;
 }
 

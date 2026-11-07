@@ -126,10 +126,9 @@ import {
 import {
   applyBackups,
   applyStorage,
+  offsitePreflight,
   offsiteSetup,
   providerBucket,
-  requireOffsiteKey,
-  requireOffsiteRecipient,
   requireR2Cloudflare,
   requireStorageKey,
   storageLogin,
@@ -586,14 +585,13 @@ export async function provisionPortainer(
     bucket !== undefined && bucket.provider !== "r2"
       ? await requireStorageKey(deps, plan, services, { command })
       : undefined;
-  const offsiteKey =
-    offsite !== undefined && offsite.provider !== "r2"
-      ? await requireOffsiteKey(deps, plan, services, { command })
-      : undefined;
-  // The age key the copies are encrypted to, or what makes it, before any change (D16).
-  const recovery = options.planOnly
-    ? options.recovery
-    : await requireOffsiteRecipient(deps, plan, options.recovery, command);
+  // The off-server copies' bucket likewise, and the age key the copies are encrypted to, or what
+  // makes it, before any change (D16).
+  const { key: offsiteKey, recovery } = await offsitePreflight(deps, plan, services, {
+    command,
+    planOnly: options.planOnly,
+    recovery: options.recovery,
+  });
   // 2. Connect with the pinned certificate, inspect read-only, stop on what blocks the deploy.
   const valueKey = await ensurePortainerValueKey(deps, portainerServices.randomBytes);
   const client = portainerClientFor(deps, {

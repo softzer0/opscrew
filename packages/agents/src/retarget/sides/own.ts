@@ -1,14 +1,13 @@
-import {
-  appDirs,
-  hostPlanHash,
-  otherActiveApps,
-  planTeardown,
-  snapshotsDir,
-} from "@opscrew/connector-ssh-host";
+import { appDirs, hostPlanHash, otherActiveApps, planTeardown } from "@opscrew/connector-ssh-host";
 import { listText, plural } from "@opscrew/core";
 import { serverData } from "../../destroy/checks";
 import { confirmDeletion } from "../../destroy/deletion";
-import { applyHostPlanApproved, type OwnHost, offsiteCopiesStay } from "../../destroy/own";
+import {
+  applyHostPlanApproved,
+  appSnapshots,
+  type OwnHost,
+  offsiteCopiesStay,
+} from "../../destroy/own";
 import { project } from "../../destroy/servers";
 import type { DestroyPreview } from "../../destroy/types";
 import { requireNoForeignPreviews } from "../../previews/host";
@@ -187,11 +186,12 @@ async function remove(
     deps.reporter.info(`Nothing of ${app} is left on ${words}.`);
     return undefined;
   }
+  // Its snapshots there (D17) go with it: the teardown deletes its data.
+  const snapshots = appSnapshots(facts, app);
   const data = [
     ...serverData(plan),
     `what it stored in ${appDirs(app).data} and in its volumes`,
-    // Its snapshots there (D17) go with it: the teardown deletes its data.
-    ...(facts.snapshotDirs.includes(app) ? [`its snapshots in ${snapshotsDir(app)}`] : []),
+    ...(snapshots === undefined ? [] : [`its snapshots in ${snapshots}`]),
   ];
   const dataWarning =
     which === "old"

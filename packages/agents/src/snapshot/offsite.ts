@@ -3,7 +3,7 @@
  * server, in a bucket of its own (`snapshots.offsite`), which provision then plans (approved by its
  * hash, D9) and the servers or the Portainer stack upload to. Only the plan changes here.
  */
-import { formatMoney, OpsCrewError, readTextIfExists } from "@opscrew/core";
+import { formatMoney, OpsCrewError } from "@opscrew/core";
 import { STORAGE_NAMES } from "@opscrew/iac-templates";
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { z } from "zod";
@@ -12,6 +12,7 @@ import { HETZNER_STORAGE_LOCATIONS, storagePrice, storageRegionAt } from "../des
 import { NOTHING_CHANGED } from "../promote/shared";
 import { backupsCreateFile, backupsStateFile } from "../provision/storage";
 import { planFile } from "../runners/words";
+import { readValidJson } from "../shared/files";
 import { type SnapshotRun, snapshotRun } from "./run";
 import {
   provisionLine,
@@ -205,17 +206,6 @@ const StateSchema = z.object({
   ),
 });
 
-/** `file`'s JSON, or undefined when it is missing or not JSON. */
-async function readJson(file: string): Promise<unknown> {
-  const text = await readTextIfExists(file);
-  if (text === undefined) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * The backups bucket of `run`'s environment that exists or is being created: the plan's
  * `snapshots.offsite`, else the one the backups root's marker or state still names after
@@ -229,11 +219,11 @@ async function existingBucket(run: SnapshotRun): Promise<KnownBucket | undefined
   });
   const current = snapshotOffsiteOf(run.plan);
   if (current !== undefined) return named(current);
-  const marker = MarkerSchema.safeParse(await readJson(backupsCreateFile(run.deps.paths)));
-  if (marker.success) return named(marker.data);
-  const state = StateSchema.safeParse(await readJson(backupsStateFile(run.deps.paths)));
-  if (!state.success) return undefined;
-  for (const resource of state.data.resources) {
+  const marker = await readValidJson(backupsCreateFile(run.deps.paths), MarkerSchema);
+  if (marker !== undefined) return named(marker);
+  const state = await readValidJson(backupsStateFile(run.deps.paths), StateSchema);
+  if (state === undefined) return undefined;
+  for (const resource of state.resources) {
     if (resource.type !== "cloudflare_r2_bucket" && resource.type !== "aws_s3_bucket") continue;
     const attributes = resource.instances[0]?.attributes;
     const bucket = attributes?.bucket ?? attributes?.name;

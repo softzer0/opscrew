@@ -12,8 +12,8 @@ import {
   PORTAINER_TOKEN,
   type PortainerWorld,
   portainerWorld,
-  SH,
 } from "../snapshot/__fixtures__/portainer";
+import { SH_AVAILABLE } from "../snapshot/__fixtures__/server";
 import { stagingPlan } from "../snapshot/__fixtures__/world";
 import { restoreSnapshot } from "../snapshot/restore";
 import { PORTAINER_HOST, portainerPlan, type ScriptedApprovalHandler } from "../testing";
@@ -333,7 +333,7 @@ function failWith(world: World, text: string, times = Number.POSITIVE_INFINITY) 
   };
 }
 
-describe.skipIf(!SH)(
+describe.skipIf(!SH_AVAILABLE)(
   "opscrew rollback --database snapshot in the user's Portainer (D14, D19)",
   () => {
     it("restores the target's snapshot before the dispatch, approved like a destroy, and unmarks the data once the run succeeded", async () => {

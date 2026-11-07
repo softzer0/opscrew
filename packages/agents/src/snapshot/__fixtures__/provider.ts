@@ -5,10 +5,8 @@ import { OpsCrewError } from "@opscrew/core";
 /** OpsCrew's snapshot of the app's server at the provider. */
 export const WHOLE_SERVER: ServerSnapshot = {
   id: "770011",
-  name: "opscrew shop-staging 2026-11-05",
   createdAt: "2026-11-05T08:00:00Z",
   sizeGb: 2,
-  labels: { "created-by": "opscrew" },
 };
 
 /**

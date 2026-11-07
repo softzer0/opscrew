@@ -1,4 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { snapshotScheduleTag } from "@opscrew/connector-ssh-host";
+import { switchCommands } from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
@@ -6,6 +9,7 @@ import { createTestPhaseDeps, testPlan } from "../testing";
 import { portainerPlan } from "../testing/portainer";
 import { previewTestPlan } from "../testing/previews";
 import { sitePlan } from "../testing/serverless";
+import { SH_AVAILABLE } from "./__fixtures__/server";
 import { stagingPlan } from "./__fixtures__/world";
 import { snapshotScheduleOff, snapshotScheduleOn } from "./schedule";
 
@@ -169,5 +173,20 @@ describe("opscrew snapshot schedule off", () => {
       lines: ["Scheduled snapshots of staging's data are already off. Nothing was changed."],
     });
     expect(await onDisk()).toBe(before);
+  });
+});
+
+describe.skipIf(!SH_AVAILABLE)("the schedule's crontab line", () => {
+  it("ends with the tag ssh-host finds the app's line by (the two packages keep a copy each)", () => {
+    const plan = serverPlan({ snapshots: { schedule: { every: "daily", keep: 2 } } });
+    const write = switchCommands(plan, []).find((line) => line.endsWith("| crontab -")) as string;
+    // A crontab that starts empty and prints what it is given.
+    const crontab = 'crontab() { if [ "$1" = -l ]; then return 1; fi; cat; }; APPS_DIR=/srv/apps';
+    const run = spawnSync("sh", ["-c", `${crontab}\n${write}`], { encoding: "utf8" });
+    const app = plan.app.name;
+
+    expect(run.stdout).toBe(
+      `0 * * * * sh /srv/apps/${app}/snapshot.sh take scheduled > /dev/null 2>&1${snapshotScheduleTag(app)}\n`,
+    );
   });
 });

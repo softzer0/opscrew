@@ -10,7 +10,8 @@
  */
 import type { DockerContainer, MountSpec } from "@opscrew/connector-docker";
 import type { GitHubClient } from "@opscrew/connector-github";
-import { listText, OpsCrewError } from "@opscrew/core";
+import { COMPOSE_SERVICE_LABEL } from "@opscrew/connector-portainer";
+import { errorMessage, listText, OpsCrewError } from "@opscrew/core";
 import {
   PORTAINER_COMPOSE_FILE,
   partRestore,
@@ -167,7 +168,7 @@ export async function probeFree(
 export function imagesOf(containers: readonly DockerContainer[]): Map<string, string> {
   const images = new Map<string, string>();
   for (const container of containers) {
-    const service = container.labels["com.docker.compose.service"];
+    const service = container.labels[COMPOSE_SERVICE_LABEL];
     if (service !== undefined && !images.has(service)) images.set(service, container.image);
   }
   return images;
@@ -247,8 +248,59 @@ export async function putBack(
 export function appContainers(run: SnapshotRun, containers: readonly DockerContainer[]) {
   const names = ["app", ...processServices(run.plan)];
   return containers.filter((container) =>
-    names.includes(container.labels["com.docker.compose.service"] ?? ""),
+    names.includes(container.labels[COMPOSE_SERVICE_LABEL] ?? ""),
   );
+}
+
+/** The ids of the containers among `containers` that run. */
+export function runningIds(containers: readonly DockerContainer[]): Set<string> {
+  return new Set(
+    containers
+      .filter((container) => container.state === "running")
+      .map((container) => container.id),
+  );
+}
+
+/**
+ * Before a restore in the user's Portainer: the app's running containers among `containers` stop,
+ * `parts` are copied as they are now into the snapshot `saved` ({@link portainerTake}), and
+ * `mark` runs (the rollback's mark). When one of them fails, the app starts again and the error
+ * adds `failure`. Returns the containers that ran (`ran`) and how to start the app again.
+ */
+export async function stopAndSave(
+  run: SnapshotRun,
+  place: PortainerPlace,
+  input: {
+    containers: readonly DockerContainer[];
+    saved: string;
+    version: string;
+    parts: readonly SnapshotPart[];
+    failure: string;
+    mark?: () => Promise<void>;
+  },
+): Promise<{ ran: Set<string>; startApp: () => Promise<void> }> {
+  const ran = runningIds(input.containers);
+  const app = appContainers(run, input.containers).filter((container) => ran.has(container.id));
+  const startApp = async () => {
+    for (const container of app) await place.docker.startContainer(container.id);
+  };
+  try {
+    for (const container of app) await place.docker.stopContainer(container.id);
+    await portainerTake(run, place, {
+      id: input.saved,
+      version: input.version,
+      parts: input.parts,
+    });
+    await input.mark?.();
+  } catch (error) {
+    await startApp();
+    throw new OpsCrewError(
+      error instanceof OpsCrewError ? error.code : "COMMAND_FAILED",
+      `${errorMessage(error)} ${input.failure}`,
+      error instanceof OpsCrewError && error.hint !== undefined ? { hint: error.hint } : {},
+    );
+  }
+  return { ran, startApp };
 }
 
 /** The repository whose deploy branch {@link settleMark} reads, or `undefined` without one. */
@@ -364,31 +416,17 @@ export async function restoreInPortainer(
       record,
     });
   }
-  const ran = new Set(
-    containers
-      .filter((container) => container.state === "running")
-      .map((container) => container.id),
-  );
-  const app = appContainers(run, containers).filter((container) => ran.has(container.id));
-  const startApp = async () => {
-    for (const container of app) await place.docker.startContainer(container.id);
-  };
   deps.reporter.step(
     `Restoring the snapshot ${id} in your Portainer: the app stops until its data is back`,
   );
-  try {
-    for (const container of app) await place.docker.stopContainer(container.id);
-    await portainerTake(run, place, { id: saved, version: probed.version, parts });
-  } catch (error) {
-    await startApp();
-    throw error instanceof OpsCrewError
-      ? new OpsCrewError(
-          error.code,
-          `${error.message} So OpsCrew could not copy the current data before the restore, and changed nothing; the app runs again.`,
-          { ...(error.hint === undefined ? {} : { hint: error.hint }) },
-        )
-      : error;
-  }
+  const { ran, startApp } = await stopAndSave(run, place, {
+    containers,
+    saved,
+    version: probed.version,
+    parts,
+    failure:
+      "So OpsCrew could not copy the current data before the restore, and changed nothing; the app runs again.",
+  });
   const audit = (outcome: string) =>
     deps.audit.append({
       kind: "remote-exec",

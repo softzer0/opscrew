@@ -3,10 +3,34 @@
  * tasks): each snapshot's `about.json`, one line, the same on servers, this computer and
  * Portainer, and its `offsite.done` marker once the off-server copy is uploaded.
  */
+import { OpsCrewError } from "@opscrew/core";
 import { z } from "zod";
+import { NOTHING_CHANGED } from "../promote/shared";
+import type { SnapshotKind } from "./types";
 
 /** A snapshot's id: letters and digits (`20261106T190000Z`, or a release's 64-hex digest). */
 export const SNAPSHOT_ID = /^[0-9A-Za-z]+$/;
+
+/**
+ * Stops (`INVALID_INPUT`) when `id` is no snapshot's id ({@link SNAPSHOT_ID}).
+ * @throws OpsCrewError `INVALID_INPUT`.
+ */
+export function requireSnapshotId(id: string): void {
+  if (SNAPSHOT_ID.test(id)) return;
+  throw new OpsCrewError(
+    "INVALID_INPUT",
+    `${id} is no snapshot's id: an id has only letters and digits. ${NOTHING_CHANGED}`,
+    { hint: "`opscrew snapshot list` shows each snapshot's id." },
+  );
+}
+
+/** A kind of snapshot in an approval's words. */
+export const KIND_WORDS: Record<SnapshotKind, string> = {
+  manual: "taken by hand",
+  release: "taken before a release",
+  scheduled: "taken on the schedule",
+  server: "of the whole server",
+};
 
 /** The snapshots' folder in the app's folder on a server and on this computer (plan.md 1.). */
 export const SERVER_SNAPSHOTS = ".snapshots";

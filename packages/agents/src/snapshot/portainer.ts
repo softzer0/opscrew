@@ -28,6 +28,7 @@ import {
   portainerSnapshotsVolume,
   portainerStackName,
   portainerTarget,
+  RUNNING_IMAGE_FILE,
   type SnapshotPart,
   shellQuote,
   snapshotParts,
@@ -37,7 +38,7 @@ import { requirePortainerConnection, requirePortainerToken } from "../provision/
 import { STOP_SECONDS } from "../retarget/sides/types";
 import { pollUntil, portainerClientFor, readValidJson } from "../shared";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
-import { type Disk, readDisk } from "./disk";
+import { type Disk, diskCommand, readDisk } from "./disk";
 import type { SnapshotRun } from "./run";
 import { type Listing, offsiteLines, readListing, versionLine } from "./store";
 
@@ -160,8 +161,8 @@ export interface PortainerProbe {
 /** Reads the snapshots volume's disk, the running version and whether `id` is taken. */
 export async function portainerProbe(place: PortainerPlace, id: string): Promise<PortainerProbe> {
   const script = [
-    `df -Pk ${DIR} | awk 'NR == 2 { print "disk", $2, $4 }'`,
-    `sed -n 's/^.*@sha256:\\([0-9a-f]\\{64\\}\\)$/version \\1/p' ${DIR}/.running 2> /dev/null`,
+    diskCommand(DIR),
+    `sed -n 's/^.*@sha256:\\([0-9a-f]\\{64\\}\\)$/version \\1/p' ${RUNNING_IMAGE_FILE} 2> /dev/null`,
     `if [ -e ${DIR}/${id} ]; then echo taken; fi`,
     "exit 0",
   ].join("\n");

@@ -11,13 +11,12 @@ export {
   backupsBucketName,
   type OffsiteOnOptions,
   type OffsiteProvider,
-  offsitePriceText,
   snapshotOffsiteOff,
   snapshotOffsiteOn,
 } from "./offsite";
 export { restoreSnapshot } from "./restore";
 export type { RestoredSnapshot, RestoreSnapshotOptions } from "./restore-checks";
-export type { RestoreServices } from "./restore-offsite";
+export { offsiteRclone, RCLONE_NOT_FOUND, type RestoreServices } from "./restore-offsite";
 export { type ScheduleOnOptions, snapshotScheduleOff, snapshotScheduleOn } from "./schedule";
 export * from "./server";
 export type { SnapshotSettingChange } from "./settings";

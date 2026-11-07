@@ -4,7 +4,8 @@ import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { PORTAINER_HOST, portainerPlan } from "../testing";
 import { FakeBucket, OFFSITE_ENV, OFFSITE_KEY } from "./__fixtures__/bucket";
-import { DB_SECRET, type PortainerWorld, portainerWorld, SH } from "./__fixtures__/portainer";
+import { DB_SECRET, type PortainerWorld, portainerWorld } from "./__fixtures__/portainer";
+import { SH_AVAILABLE } from "./__fixtures__/server";
 import { everythingShown, RUNNING, stagingPlan } from "./__fixtures__/world";
 import { restoreSnapshot } from "./restore";
 
@@ -67,7 +68,7 @@ function container(world: PortainerWorld, service: string) {
   );
 }
 
-describe.skipIf(!SH)("opscrew restore in the user's Portainer", () => {
+describe.skipIf(!SH_AVAILABLE)("opscrew restore in the user's Portainer", () => {
   it("stops the app, copies the data first, puts each part back exactly, and starts the app", async () => {
     const world = await portainerWorld(plan());
     world.probe.version = RUNNING;

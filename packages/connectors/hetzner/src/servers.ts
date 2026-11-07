@@ -4,7 +4,7 @@ import type {
   ServerSnapshotApi,
   SnapshotRequest,
 } from "@opscrew/contracts";
-import { OpsCrewError } from "@opscrew/core";
+import { errorText, OpsCrewError } from "@opscrew/core";
 import type { HetznerClient, HetznerServerState } from "./client";
 
 /** Default wait for a snapshot or a rebuild to finish (15 minutes). */
@@ -48,10 +48,8 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
       return images
         .map((image) => ({
           id: String(image.id),
-          name: image.description ?? "",
           createdAt: image.created,
           ...(typeof image.image_size === "number" && { sizeGb: image.image_size }),
-          labels: { ...image.labels },
         }))
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     },
@@ -105,22 +103,15 @@ async function setProtection(
   await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
 }
 
-/** `error` in words, with its hint when it has one (a timed-out wait's "It may still be running"). */
-function said(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
-  const hint = error instanceof OpsCrewError ? error.hint : undefined;
-  return hint === undefined ? error.message : `${error.message} ${hint}`;
-}
-
 /**
  * The error when the protection lifted for a rebuild could not be set back; `failure` is the
  * rebuild's own error, if it failed.
  */
 function unprotected(serverId: number, failure: unknown, cause: unknown): OpsCrewError {
-  const outcome = failure === undefined ? "which finished" : `which failed (${said(failure)})`;
+  const outcome = failure === undefined ? "which finished" : `which failed (${errorText(failure)})`;
   return new OpsCrewError(
     "PROVIDER_ERROR",
-    `Hetzner server ${serverId} is unprotected: OpsCrew lifted its delete and rebuild protection for the rebuild, ${outcome}, and could not set it again (${said(cause)}).`,
+    `Hetzner server ${serverId} is unprotected: OpsCrew lifted its delete and rebuild protection for the rebuild, ${outcome}, and could not set it again (${errorText(cause)}).`,
     {
       hint: "Run `opscrew provision`: it sets the protection again from the infrastructure state (or turn it on for the server in the Hetzner Cloud Console).",
       cause,

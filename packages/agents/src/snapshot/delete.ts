@@ -22,19 +22,11 @@ import {
   type RestoreServices,
 } from "./restore-offsite";
 import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
-import { SERVER_SNAPSHOTS, SNAPSHOT_ID } from "./store";
+import { KIND_WORDS, requireSnapshotId, SERVER_SNAPSHOTS } from "./store";
 import type { DeletedSnapshot, SnapshotCommandOptions, SnapshotEntry } from "./types";
 
 /** The exit code of a deletion whose snapshot folder went meanwhile. */
 const GONE = 5;
-
-/** A kind of snapshot in the approval's words. */
-const KIND_WORDS: Record<SnapshotEntry["kind"], string> = {
-  manual: "taken by hand",
-  release: "taken before a release",
-  scheduled: "taken on the schedule",
-  server: "of the whole server",
-};
 
 /**
  * What the approval says is deleted for good; `bucket` names the off-server bucket that holds a
@@ -113,13 +105,7 @@ export async function deleteSnapshot(
   id: string,
   options: DeleteSnapshotOptions = {},
 ): Promise<DeletedSnapshot> {
-  if (!SNAPSHOT_ID.test(id)) {
-    throw new OpsCrewError(
-      "INVALID_INPUT",
-      `${id} is no snapshot's id: an id has only letters and digits. ${NOTHING_CHANGED}`,
-      { hint: "`opscrew snapshot list` shows each snapshot's id." },
-    );
-  }
+  requireSnapshotId(id);
   const run = await snapshotRun(deps, options.services);
   const { environment, flags } = run;
   const target = snapshotTarget(run);

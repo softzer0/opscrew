@@ -114,14 +114,10 @@ export interface SnapshotRequest {
 export interface ServerSnapshot {
   /** Provider image or snapshot id as a string. */
   id: string;
-  /** The snapshot's name (DigitalOcean) or description (Hetzner). */
-  name: string;
   /** ISO 8601 time the provider created it. */
   createdAt: string;
   /** Size in GB as the provider bills it; absent while the provider doesn't know it yet. */
   sizeGb?: number;
-  /** The snapshot's labels where the provider has them (Hetzner); empty otherwise. */
-  labels: Record<string, string>;
 }
 
 /**

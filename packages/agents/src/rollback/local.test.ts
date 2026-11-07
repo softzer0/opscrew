@@ -244,7 +244,13 @@ describe("opscrew rollback on this computer", () => {
     await mkdir(join(world.folder, ".snapshots", hex), { recursive: true });
     await writeFile(
       join(world.folder, ".snapshots", hex, "about.json"),
-      JSON.stringify({ id: hex, kind: "release", taken: "2026-10-11T11:30:00Z", services: [] }),
+      JSON.stringify({
+        id: hex,
+        kind: "release",
+        taken: "2026-10-11T11:30:00Z",
+        version: "",
+        services: [],
+      }),
     );
 
     const result = await world.run({ database: "snapshot" });
@@ -290,7 +296,13 @@ describe("opscrew rollback on this computer", () => {
     await mkdir(join(world.folder, ".snapshots", hex), { recursive: true });
     await writeFile(
       join(world.folder, ".snapshots", hex, "about.json"),
-      JSON.stringify({ id: hex, kind: "release", taken: "2026-10-11T11:30:00Z", services: [] }),
+      JSON.stringify({
+        id: hex,
+        kind: "release",
+        taken: "2026-10-11T11:30:00Z",
+        version: "",
+        services: [],
+      }),
     );
     world.computer.script = (script) => {
       if (SWITCH.test(script)) throw new Error("the start script could not run");

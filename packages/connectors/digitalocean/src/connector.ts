@@ -234,12 +234,10 @@ function serverApi(
         .filter((snapshot) => snapshot.name.startsWith(SNAPSHOT_PREFIX))
         .map((snapshot) => ({
           id: snapshot.id,
-          name: snapshot.name,
           createdAt: snapshot.created_at ?? "",
           ...(typeof snapshot.size_gigabytes === "number" && {
             sizeGb: snapshot.size_gigabytes,
           }),
-          labels: {},
         }))
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     },

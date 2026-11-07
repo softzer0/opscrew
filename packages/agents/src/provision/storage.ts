@@ -480,6 +480,36 @@ export async function requireOffsiteRecipient(
 }
 
 /**
+ * Before any change of a run with `snapshots.offsite` (024 plan.md 7., D16): the user's key for a
+ * Hetzner or Spaces bucket of the copies ({@link requireOffsiteKey}; R2's comes after its bucket),
+ * and, unless the run only plans, the age key they are encrypted to ({@link requireOffsiteRecipient}).
+ */
+export async function offsitePreflight(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: Pick<ProvisionServices, "askStorageKey">,
+  options: {
+    command: string;
+    planOnly?: boolean | undefined;
+    recovery?: RecoveryAnswers | undefined;
+  },
+): Promise<{ key?: StorageKey; recovery?: RecoveryAnswers }> {
+  const { command } = options;
+  const offsite = snapshotOffsiteOf(plan);
+  const key =
+    offsite !== undefined && offsite.provider !== "r2"
+      ? await requireOffsiteKey(deps, plan, services, { command })
+      : undefined;
+  const recovery = options.planOnly
+    ? options.recovery
+    : await requireOffsiteRecipient(deps, plan, options.recovery, command);
+  return {
+    ...(key === undefined ? {} : { key }),
+    ...(recovery === undefined ? {} : { recovery }),
+  };
+}
+
+/**
  * {@link offsiteValues} for the deploy secrets or the stack, when `snapshots.offsite` is on: the
  * bucket's key (`key`, read before the bucket at Hetzner and Spaces; R2's, a token limited to the
  * bucket, asked now that it exists) and the first recipient of the recovery copy

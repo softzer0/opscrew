@@ -432,21 +432,9 @@ describe("digitaloceanConnector.servers snapshots and rebuilds", () => {
       },
     });
     expect(await c.servers?.listSnapshots("3164444")).toEqual([
-      {
-        id: "1",
-        name: "opscrew-shop-a",
-        createdAt: "2026-10-12T10:05:00Z",
-        sizeGb: 2.34,
-        labels: {},
-      },
-      {
-        id: "2",
-        name: "opscrew-shop-b",
-        createdAt: "2026-10-12T10:20:00Z",
-        sizeGb: 1.5,
-        labels: {},
-      },
-      { id: "3", name: "opscrew-shop-c", createdAt: "2026-10-12T11:00:00Z", labels: {} },
+      { id: "1", createdAt: "2026-10-12T10:05:00Z", sizeGb: 2.34 },
+      { id: "2", createdAt: "2026-10-12T10:20:00Z", sizeGb: 1.5 },
+      { id: "3", createdAt: "2026-10-12T11:00:00Z" },
     ]);
     expect(calls.map((call) => call.method)).toEqual(["GET"]);
   });

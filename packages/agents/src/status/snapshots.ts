@@ -15,6 +15,7 @@ import {
   hostListing,
   KIND_WORDS,
   mergeListings,
+  newestFirst,
   type PlaceListing,
   portainerPlaceListing,
 } from "../snapshot/list";
@@ -117,7 +118,7 @@ async function readSnapshotStatus(run: SnapshotRun): Promise<SnapshotStatus> {
       if (failure !== undefined) scheduledFailures.push(failure);
     }
   }
-  const [last] = mergeListings(places).sort((a, b) => Date.parse(b.taken) - Date.parse(a.taken));
+  const [last] = mergeListings(places).sort(newestFirst);
   return { ...(last === undefined ? {} : { last }), scheduledFailures };
 }
 

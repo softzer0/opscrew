@@ -6,27 +6,22 @@
  * they run; each stop-only service stops alone for its copy, after an approval naming it.
  */
 import { listText, OpsCrewError } from "@opscrew/core";
-import {
-  SNAPSHOT_SCRIPT,
-  type SnapshotPart,
-  serviceSpec,
-  snapshotParts,
-} from "@opscrew/iac-templates";
+import { SNAPSHOT_SCRIPT, type SnapshotPart, snapshotParts } from "@opscrew/iac-templates";
 import { APP_SERVER, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { STOP_SECONDS } from "../retarget/sides/types";
 import { MAINTENANCE_WINDOW_TITLE, sizeText } from "../retarget/texts";
+import { serverWords } from "../shared/server-address";
 import { deleteOnHost } from "./delete";
-import { DISK_COMMAND, type Disk, lowDisk, readDisk } from "./disk";
+import { type Disk, diskCommand, lowDisk, readDisk } from "./disk";
 import {
-  computerHost,
+  dataHosts,
   dataServers,
   hostFailure,
   READ_TIMEOUT_MS,
   type ScriptHost,
   scriptCommand,
   serverHost,
-  serverName,
 } from "./hosts";
 import { hostListing, mergeListings, type PlaceListing, portainerPlaceListing } from "./list";
 import {
@@ -36,15 +31,19 @@ import {
   portainerTake,
   stopOnlySizes,
 } from "./portainer";
-import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
+import { partWords } from "./restore-checks";
+import {
+  NOTHING_TAKEN,
+  requireNoDeployOrMove,
+  type SnapshotRun,
+  snapshotRun,
+  snapshotTarget,
+} from "./run";
 import { SNAPSHOT_ID, snapshotIdAt, versionLine } from "./store";
 import type { SnapshotService, TakenSnapshot, TakeSnapshotOptions } from "./types";
 
 /** How long the copies of one machine's parts may take. */
 const TAKE_TIMEOUT_MS = 6 * 60 * 60_000;
-
-/** What `opscrew snapshot` refuses with, after what. */
-const NOTHING_TAKEN = "No snapshot was taken.";
 
 /** The parts of the snapshot on one machine: all of them there, and those it copies. */
 interface Place {
@@ -54,12 +53,6 @@ interface Place {
   where: string;
   parts: SnapshotPart[];
   take: SnapshotPart[];
-}
-
-/** A part in words: `db (PostgreSQL)`, `sqlite (the app's SQLite files)`. */
-function partWords(part: SnapshotPart): string {
-  const kind = part.kind === "sqlite" ? "the app's SQLite files" : serviceSpec(part.kind).title;
-  return `${part.name} (${kind})`;
 }
 
 /**
@@ -87,7 +80,7 @@ function placesOf(run: SnapshotRun, skip: ReadonlySet<string>): Place[] {
     target === "servers"
       ? dataServers(plan).map((server) => ({
           server,
-          where: `on ${serverName(server)}`,
+          where: `on ${serverWords(server)}`,
           parts: snapshotParts(plan, server),
         }))
       : [
@@ -172,7 +165,7 @@ const VERSION_COMMAND = `sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/
 
 /** The free disk and the running version on `host`, read-only. */
 async function probe(run: SnapshotRun, host: ScriptHost): Promise<{ disk: Disk; version: string }> {
-  const result = await host.run(`${DISK_COMMAND}; ${VERSION_COMMAND}`, READ_TIMEOUT_MS);
+  const result = await host.run(`${diskCommand(".")}; ${VERSION_COMMAND}`, READ_TIMEOUT_MS);
   const disk = result.exitCode === 0 ? readDisk(result.stdout) : undefined;
   if (disk === undefined) throw hostFailure(run, host, result, "read the free disk");
   return { disk, version: versionLine(result.stdout) };
@@ -269,11 +262,10 @@ async function takeOnHosts(
   skip: ReadonlySet<string>,
 ): Promise<TakenSnapshot> {
   const { deps } = run;
-  const local = snapshotTarget(run) === "computer";
-  const hosts = new Map<string, ScriptHost>();
-  for (const place of places) {
-    hosts.set(place.server, local ? await computerHost(run) : await serverHost(run, place.server));
-  }
+  const hosts = await dataHosts(
+    run,
+    places.map((place) => place.server),
+  );
   const hostOf = (place: Place) => hosts.get(place.server) as ScriptHost;
   // 1. The disks and the running version, before anything is approved or stops.
   let version = "";

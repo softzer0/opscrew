@@ -6,9 +6,6 @@ import type { CommandResult, RemoteExec } from "@opscrew/contracts";
 import { ROLLBACK_APPROVAL_FILE, shellQuote, snapshotAboutPath } from "@opscrew/iac-templates";
 import { removeScript } from "../database";
 
-/** True when `sh` runs here (Git's on Windows), which the app folder's scripts need. */
-export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
-
 /**
  * The app's folder on a fake server for the database step: each command runs under `sh` with the
  * server's folder (`/srv/apps/<app>`) standing for a temp folder, through `sudo -n` as a plain

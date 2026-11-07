@@ -9,8 +9,9 @@ import { OpsCrewError, upperFirst } from "@opscrew/core";
 import { appDir, SNAPSHOT_SCRIPT, shellQuote, snapshotParts } from "@opscrew/iac-templates";
 import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
 import { computer, localShell, requireShell } from "../localhost/services";
+import { serverWords } from "../shared/server-address";
 import { serverShell } from "../status/servers";
-import type { SnapshotRun } from "./run";
+import { type SnapshotRun, snapshotTarget } from "./run";
 
 /** One machine with the app's folder: a server, or this computer. */
 export interface ScriptHost {
@@ -57,11 +58,6 @@ export function dataServers(plan: DeployPlan): string[] {
   );
 }
 
-/** `the app's server` or `server <name>`. */
-export function serverName(server: string): string {
-  return server === APP_SERVER ? "the app's server" : `server ${server}`;
-}
-
 /**
  * The server `server` of `run`'s plan, as the deploy user: its address is registered with the
  * redactor, so no output or error shows it.
@@ -73,8 +69,8 @@ export async function serverHost(run: SnapshotRun, server: string): Promise<Scri
   const dir = appDir(plan);
   return {
     server,
-    name: serverName(server),
-    where: `on ${serverName(server)}`,
+    name: serverWords(server),
+    where: `on ${serverWords(server)}`,
     audit: `server ${server}`,
     local: false,
     run: (command, timeoutMs) =>
@@ -98,6 +94,20 @@ export async function computerHost(run: SnapshotRun): Promise<ScriptHost> {
     run: (command, timeoutMs) =>
       exec.run(`cd ${dir} || exit ${NO_FOLDER}; ${command}`, { timeoutMs }),
   };
+}
+
+/**
+ * The machines with data of `run`'s target, by server: this computer alone (as `app`), or each
+ * of `servers` (every server with data by default, the app's first).
+ */
+export async function dataHosts(
+  run: SnapshotRun,
+  servers: readonly string[] = dataServers(run.plan),
+): Promise<Map<string, ScriptHost>> {
+  if (snapshotTarget(run) === "computer") return new Map([[APP_SERVER, await computerHost(run)]]);
+  const hosts = new Map<string, ScriptHost>();
+  for (const server of servers) hosts.set(server, await serverHost(run, server));
+  return hosts;
 }
 
 /** The last lines `snapshot.sh` wrote on stderr, redacted: its messages never quote data. */
