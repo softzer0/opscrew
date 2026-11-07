@@ -305,8 +305,9 @@ never through `cntb` (constitution IV).
 
 ## 027 Shared hosting: cPanel, Plesk, DirectAdmin and SFTP
 
-The founder placed cPanel, Plesk, DirectAdmin and SFTP before AWS, as one feature, on 2026-11-07.
-Many apps live on hosting the user already pays for: a control panel, no root, no Docker.
+The founder placed cPanel, Plesk, DirectAdmin and SFTP before AWS, as one feature, on 2026-11-07,
+because most shared hosting providers run one of these three panels. Many apps live on hosting the
+user already pays for: a control panel, no root, no Docker.
 WordPress, Laravel, static sites and small Node.js apps are typical.
 
 - **A new kind of target, a hosting account.** There is no server to harden and no containers.
