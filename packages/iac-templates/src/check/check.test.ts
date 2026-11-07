@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { readCheckScript, renderGeneratedCheck } from "../../scripts/gen-modules";
 import { testPlan } from "../__fixtures__/plans";
+import { withServices } from "../catalog/__fixtures__/plans";
 import { CHECK_SCRIPT } from "../generated/check";
 import { portainerTestPlan } from "../portainer-target/__fixtures__/plans";
 import { ssrPlan } from "../serverless/__fixtures__/plans";
@@ -381,6 +382,69 @@ describe("renderCheck with extra servers", () => {
       OPSCREW_CHECK_SSH_KEY: "${{ secrets.OPSCREW_CHECK_SSH_KEY }}",
       OPSCREW_CHECK_SERVER: "${{ secrets.OPSCREW_CHECK_SERVER }}",
     });
+  });
+});
+
+describe("renderCheck with scheduled snapshots", () => {
+  /** `plan` with scheduled snapshots on. */
+  const scheduled = (plan: DeployPlan) =>
+    DeployPlanSchema.parse({ ...plan, snapshots: { schedule: {} } });
+  const snapshotsOf = (files: RenderedFile[]) =>
+    configOf(files).environments.map((e: { snapshots?: unknown }) => e.snapshots);
+
+  it("names the app's folder and every server with its data, the extra ones included", () => {
+    const split = withCheck(inEnvironment(splitPlan(), { runner: "github" }));
+    expect(snapshotsOf(renderCheck({ plans: [scheduled(split)], repo: PUBLIC }))).toEqual([
+      { app: "shop", servers: ["hetzner-shop", "hetzner-shop-data", "own-shop-box-2"] },
+    ]);
+    // Off, nothing is read.
+    expect(snapshotsOf(renderCheck({ plans: [split], repo: PUBLIC }))).toEqual([undefined]);
+  });
+
+  it("leaves out servers without data, and an environment whose disk is not read", () => {
+    // Only the extra servers hold data: the app's server runs no service with any.
+    const split = splitPlan();
+    const noData = withCheck(
+      DeployPlanSchema.parse({
+        ...split,
+        services: split.services.filter((service) => service.server !== undefined),
+        network: {
+          ...split.network,
+          grants: split.network?.grants?.filter((grant) => grant.service !== "cache"),
+        },
+      }),
+    );
+    expect(snapshotsOf(renderCheck({ plans: [scheduled(noData)], repo: PUBLIC }))).toEqual([
+      { app: "shop", servers: ["hetzner-shop-data", "own-shop-box-2"] },
+    ]);
+    const portainer = withCheck(portainerTestPlan({ domain: "portal.example.com" }));
+    expect(snapshotsOf(renderCheck({ plans: [scheduled(portainer)], repo: PUBLIC }))).toEqual([
+      undefined,
+    ]);
+  });
+
+  it("checks each environment's snapshots on a shared server, whose disk the first one checks", () => {
+    const own = withCheck(
+      withServices(
+        [{ kind: "postgres", name: "db" }],
+        {},
+        { provider: "own", domain: "shop.example.com" },
+      ),
+    );
+    const staging = inEnvironment(own, { name: "staging" });
+    const serverIds = { "shop/prod": "own-1", "shop/staging": "own-1" };
+    const files = renderCheck({
+      plans: [scheduled(own), scheduled(staging)],
+      repo: PRIVATE,
+      serverIds,
+    });
+    const [prod, other] = configOf(files).environments;
+    expect(prod.server).toEqual({ id: "own-1", secret: "OPSCREW_CHECK_SERVER", via: "github" });
+    expect(other.server).toBeUndefined();
+    expect(snapshotsOf(files)).toEqual([
+      { app: "shop", servers: ["own-1"] },
+      { app: "shop-staging", servers: ["own-1"] },
+    ]);
   });
 });
 

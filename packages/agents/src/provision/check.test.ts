@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
-import type { HostPlan } from "@opscrew/connector-ssh-host";
+import { checkKeyLine, type HostPlan } from "@opscrew/connector-ssh-host";
 import type { RemoteExec, ResourceChange } from "@opscrew/contracts";
 import { findExecutable } from "@opscrew/core";
 import { CHECK_PAUSED_VARIABLE } from "@opscrew/iac-templates";
@@ -131,9 +131,7 @@ describe.skipIf(!findExecutable("git"))("provision with the scheduled check", ()
     const tfvars = JSON.parse(
       await readFile(join(root, "opscrew/infra/prod/terraform.tfvars.json"), "utf8"),
     );
-    expect(tfvars.check_key_line).toBe(
-      `restrict,command="df -P -B1 /" ${key.publicKeyOpenSsh} opscrew-check:acme/shop`,
-    );
+    expect(tfvars.check_key_line).toBe(checkKeyLine(key.publicKeyOpenSsh, "acme/shop"));
     // No host plan for it, no read of the server's keys; its secrets are stored.
     expect(handler.requests.map((request) => request.kind)).not.toContain("host-apply");
     expect(applied).toEqual([]);
@@ -240,7 +238,7 @@ describe.skipIf(!findExecutable("git"))("provision with the scheduled check", ()
       ),
     );
     const key = await ensureCheckKey(deps.paths, deps.redactor);
-    serverKeys(`restrict,command="df -P -B1 /" ${key.publicKeyOpenSsh} opscrew-check:acme/shop\n`);
+    serverKeys(`${checkKeyLine(key.publicKeyOpenSsh, "acme/shop")}\n`);
     handler.requests.length = 0;
     github.openPulls.set(DEPLOY_SETUP_BRANCH, {
       number: 7,

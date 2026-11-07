@@ -469,7 +469,7 @@ const DeployKeysParams = z.object({
 /**
  * `deploy-key` (setup and teardown): the deploy user's authorized_keys holds exactly the deploy
  * keys of the apps on the server, so a removed app's key or an old key stops working. The
- * scheduled check's key in OpsCrew's form (`check-key`, which can run only `df`) and a preview
+ * scheduled check's key in OpsCrew's form (`check-key`, which can run only OpsCrew's fixed read-only command) and a preview
  * environment's key (`previews`, which can run only its preview command) stay.
  */
 function deployKeyScripts(step: HostStep): StepScripts {
@@ -497,8 +497,8 @@ keys="$home/.ssh/authorized_keys"
 if [ -L "$keys" ]; then fail "$keys is a symbolic link; OpsCrew does not follow it."; fi
 # OpsCrew created this user: its keys file holds exactly the deploy keys of the apps on the
 # server, so an old deploy key, or the key of an app that was removed, stops working. The
-# scheduled check's key, which can run only df, and a preview key, which can run only its
-# preview command, are not an app's: they stay.
+# scheduled check's key, which can run only OpsCrew's fixed read-only command, and a preview
+# key, which can run only its preview command, are not an app's: they stay.
 kept=$(grep -E "$KEEP_RE" "$keys" 2>/dev/null) || kept=''
 {
   printf '%s' "$KEYS_B64" | base64 -d
@@ -2570,7 +2570,7 @@ rm -f "$DIR/admin_password"`,
 }
 
 // ---------------------------------------------------------------------------------------------
-// check-key: the scheduled check's key, which can run only df (feature 017)
+// check-key: the scheduled check's key, which can run only OpsCrew's fixed read-only command (feature 017)
 
 /** A public key without its comment: `<type> <base64>`. */
 const BareKeySchema = z.string().regex(/^[a-z0-9@.-]+ [A-Za-z0-9+/]+={0,3}$/);
@@ -2598,8 +2598,8 @@ read_others() {
 
 /**
  * `check-key`: the deploy user's authorized_keys holds one line with the repository's check
- * comment, `restrict,command="df -P -B1 /" <key> opscrew-check:<owner>/<repo>` (a line with the
- * same comment is replaced); removed, it holds none. Every other line stays, other repositories'
+ * comment, `checkKeyLine`'s (a line with the same comment, an older command's included, is
+ * replaced); removed, it holds none. Every other line stays, other repositories'
  * check keys included. It runs as the deploy user, and changes nothing when the file can't be
  * read.
  */

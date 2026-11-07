@@ -3,7 +3,7 @@ import { appPaths } from "../apps/list";
 import { ensureSecretFile, readSecretFile, type SecretFile } from "../shared/secret-files";
 import { generateEd25519KeyPair } from "../shared/ssh-keys";
 
-/** The scheduled check's key: the one key servers let run only `df`. */
+/** The scheduled check's key: the one key servers let run only OpsCrew's fixed read-only command. */
 export interface CheckKey {
   /** The unencrypted OpenSSH private key, with its final newline. */
   privateKeyOpenSsh: string;

@@ -25,7 +25,7 @@ import {
 } from "./__fixtures__/helpers";
 import { keyFingerprint } from "./addons";
 import { applyHostPlan } from "./apply";
-import { checkKeyLine } from "./constants";
+import { CHECK_KEY_COMMAND, CHECK_KEY_LINE_RE, checkKeyLine } from "./constants";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
 import { type AddonEnable, planAddon, planHost, planTeardown } from "./plan";
@@ -62,7 +62,7 @@ describe("check-key", () => {
 
     const result = await applyApproved(fake, plan);
     expect(result.applied).toEqual(["check-key"]);
-    const line = `restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop`;
+    const line = `restrict,command="${CHECK_KEY_COMMAND}" ${check} opscrew-check:acme/shop`;
     expect(checkKeyLine(check, REPOSITORY)).toBe(line);
     expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY, line]);
     const calls = fake.calls.filter((call) => call.name.startsWith("check-key"));
@@ -111,6 +111,39 @@ describe("check-key", () => {
       other,
       checkKeyLine(check, REPOSITORY),
     ]);
+  });
+
+  it("replaces an older OpsCrew's line, whose command only ran df: the deploy-key step removes it and the check-key step writes the new one", async () => {
+    const fake = await ownServer();
+    const check = ed25519PublicKey();
+    const old = `restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop`;
+    fake.users.get("deploy")?.keys.push(old);
+    // An old line is no check key: inspection lists it with the deploy keys, and no repository.
+    const facts = await inspectHost(fake);
+    expect(facts.deployUser).toMatchObject({ keys: [DEPLOY_KEY, old], checkKeys: [] });
+    const setup = planHost(facts, desiredFor(fake), "opscrew provision");
+    expect(setup.steps.find((step) => step.id === "deploy-key")?.state).toBe("change");
+
+    await provision(fake, desiredFor(fake));
+    expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY]);
+    await applyApproved(fake, checkKeyPlan("root", { publicKey: check }));
+    expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY, checkKeyLine(check, REPOSITORY)]);
+    expect((await inspectHost(fake)).deployUser?.checkKeys).toEqual(["acme/shop"]);
+  });
+
+  it("matches only the line with OpsCrew's fixed command, as a JavaScript RegExp", () => {
+    const re = new RegExp(CHECK_KEY_LINE_RE);
+    const check = ed25519PublicKey();
+    expect(CHECK_KEY_COMMAND).not.toContain('"');
+    expect(re.test(checkKeyLine(check, "acme/shop"))).toBe(true);
+    for (const other of [
+      `restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop`,
+      `restrict,command="${CHECK_KEY_COMMAND}; sh" ${check} opscrew-check:acme/shop`,
+      checkKeyLine(check, "acme/shop").replace("$(stat", "X(stat"),
+      checkKeyLine(check, "acme/shop").replace("restrict,", ""),
+    ]) {
+      expect(re.test(other)).toBe(false);
+    }
   });
 
   it("is removed alone by its undo, and by the last app's teardown (its own repository's only)", async () => {

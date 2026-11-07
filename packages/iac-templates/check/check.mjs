@@ -4,14 +4,17 @@
 // your plans:
 // - each hostname's health path over HTTPS, trying again before it counts a failure;
 // - how many days each hostname's certificate has left;
-// - each server's disk: over SSH with a key the server lets run only `df`, or on the server's own
-//   runner (`node check.mjs --only disk:<server id>`).
+// - each server's disk: over SSH with a key the server lets run only OpsCrew's fixed read-only
+//   command (CHECK_COMMAND below), or on the server's own runner (`node check.mjs --only
+//   disk:<server id>`);
+// - with scheduled snapshots on, whether the last one of each app on each server with its data
+//   failed, or its copy off the server did, which the same command reads with the disk.
 //
 // A failing check opens a GitHub issue labelled opscrew-check, one per check, and closes it when
 // the check passes again. With a webhook set (Slack, Discord or ntfy), the same text is posted
 // there when an issue opens or closes. That text holds only fixed sentences, names, hostnames,
-// status codes, error codes, days and disk figures: never what a server answered, never an
-// address and never a secret.
+// status codes, error codes, days, disk figures and snapshot ids and times: never what a server
+// answered or a snapshot's log said, never an address and never a secret.
 //
 // It needs Node.js 20 or later and nothing else. OpsCrew writes the same file into every
 // repository, and `opscrew provision` replaces it.
@@ -53,6 +56,37 @@ const PAUSE_REASONS = {
 };
 
 /**
+ * What each server runs for the check: the check key's forced command there (a copy of
+ * `CHECK_KEY_COMMAND` in OpsCrew's `@opscrew/connector-ssh-host`), which the server's own runner
+ * runs here. It only reads. It prints `df -P -B1 /`, then, for each app folder with a scheduled
+ * snapshot's log, lines that start with `scheduled <app> `: `at <Unix seconds>` (when the log was
+ * last written), `said <line>` (each of its last 50 lines) and `running` (a snapshot is being
+ * taken: a `.partial` folder while the app's start lock is held).
+ */
+export const CHECK_COMMAND = [
+  "df -P -B1 / &&",
+  "for d in /srv/apps/*/; do",
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
+  "a=${d%/}; a=${a##*/};",
+  "case $a in *[!a-z0-9-]*) continue;; esac;",
+  "l=$d.snapshots/scheduled.log;",
+  "test -f $l || continue;",
+  "echo scheduled $a at $(stat -c %Y $l);",
+  "tail -n 50 $l | sed 's/^/scheduled '$a' said /';",
+  "for p in $d.snapshots/*.partial; do",
+  "if test -d $p; then flock -n $d.start.lock true || echo scheduled $a running; fi;",
+  "break;",
+  "done;",
+  "done",
+].join(" ");
+
+/** A scheduled snapshot's id: the hour of its slot, `20261107T030000Z`. */
+const SCHEDULED_ID = /^\d{8}T\d{6}Z$/;
+
+const SNAPSHOT_HINT =
+  "To see why, run `npx opscrew status` in this repository, with `--app <key>` and `--env <name>` for an app or environment other than the first app's prod. The snapshot's output stays on the server, in .snapshots/scheduled.log in the app's folder.";
+
+/**
  * Runs the check once and returns the exit code: 0 when it could report everything, 1 when it
  * could not (issues turned off while something fails, GitHub's API or the webhook failing).
  * @param {Record<string, string | undefined>} env the process's environment
@@ -64,11 +98,14 @@ export async function run(env, io) {
   const only = onlyServer(io.argv);
   maskSecrets(env, config, io.log);
 
-  const all = config.environments.flatMap(checksOf);
+  const servers = new Map(
+    config.environments.flatMap(serversOf).map((server) => [server.id, server]),
+  );
+  const all = config.environments.flatMap((environment) => checksOf(environment, servers));
   const checks = all.filter((check) =>
     only === undefined
-      ? check.kind !== "disk" || check.server.via === "github"
-      : check.kind === "disk" && check.server.id === only,
+      ? check.server === undefined || check.server.via === "github"
+      : check.server?.id === only,
   );
   if (only !== undefined && checks.length === 0) {
     io.log(
@@ -96,13 +133,19 @@ export async function run(env, io) {
   /** Every key check.json still has: an open issue for any other is closed. */
   const known = new Set([INACTIVITY_KEY, ...all.map((check) => check.key)]);
 
+  /** Each server's answer to CHECK_COMMAND, read once for its disk and its snapshots. */
+  const reads = new Map();
+  const read = (server) => {
+    if (!reads.has(server.id)) reads.set(server.id, readServer(server, env, io));
+    return reads.get(server.id);
+  };
   /** @type {Map<string, Failure | null>} a failure, null for a pass; absent when unknown */
   const results = new Map();
   await Promise.all(
     checks
       .filter((check) => paused[check.environment.key] === undefined)
       .map(async (check) => {
-        const result = await runCheck(check, config.thresholds, env, io);
+        const result = await runCheck(check, config.thresholds, read, io);
         if (result !== undefined) results.set(check.key, result);
       }),
   );
@@ -244,8 +287,12 @@ function pauseText(pause) {
     : "OpsCrew paused the check for this environment.";
 }
 
-/** The checks of one environment of check.json, each with its key. */
-function checksOf(environment) {
+/**
+ * The checks of one environment of check.json, each with its key; `servers` are every
+ * environment's servers by id, as an environment's scheduled snapshots can be on a server another
+ * environment lists.
+ */
+function checksOf(environment, servers) {
   const checks = environment.hosts.flatMap((host) => [
     { key: `${environment.key}/https/${host.hostname}`, kind: "https", environment, host },
     {
@@ -257,6 +304,16 @@ function checksOf(environment) {
   ]);
   for (const server of serversOf(environment)) {
     checks.push({ key: `${environment.key}/disk/${server.id}`, kind: "disk", environment, server });
+  }
+  const { snapshots } = environment;
+  for (const server of (snapshots?.servers ?? []).flatMap((id) => servers.get(id) ?? [])) {
+    checks.push({
+      key: `${environment.key}/snapshot/${server.id}`,
+      kind: "snapshot",
+      environment,
+      server,
+      app: snapshots.app,
+    });
   }
   return checks;
 }
@@ -284,15 +341,22 @@ function appLabel(key) {
 function describe(key) {
   if (key === INACTIVITY_KEY) return "GitHub's 60-day rule for scheduled checks";
   const [, , kind, target] = key.split("/");
-  const what = { https: "HTTPS", certificate: "the certificate", disk: "the disk" }[kind] ?? kind;
+  const what =
+    {
+      https: "HTTPS",
+      certificate: "the certificate",
+      disk: "the disk",
+      snapshot: "the scheduled snapshot",
+    }[kind] ?? kind;
   return `${appLabel(key)}, ${what} on ${target}`;
 }
 
 /** @returns {Promise<Failure | null | undefined>} */
-function runCheck(check, thresholds, env, io) {
+function runCheck(check, thresholds, read, io) {
   if (check.kind === "https") return checkHttps(check, thresholds, io);
   if (check.kind === "certificate") return checkCertificate(check, thresholds, io);
-  return checkDisk(check, thresholds, env, io);
+  if (check.kind === "snapshot") return checkSnapshot(check, read, io);
+  return checkDisk(check, thresholds, read, io);
 }
 
 /** The health path over HTTPS: any status below 400 passes, after up to `tries` tries. */
@@ -361,29 +425,34 @@ async function checkCertificate(check, t, io) {
   };
 }
 
-/** The server's disk, from `df -P -B1 /` there: over SSH, or here on the server's own runner. */
-async function checkDisk(check, t, env, io) {
-  const { server } = check;
-  let output;
+/**
+ * The server's answer to CHECK_COMMAND: over SSH with the check key, or here on the server's own
+ * runner. `undefined` when it can't be read, which is logged.
+ */
+async function readServer(server, env, io) {
   try {
-    if (server.via === "own-runner") {
-      output = await io.df();
-    } else {
-      const name = server.name ?? "app";
-      const reach = parseEntries(env[server.secret]).find((entry) => entry.id === name);
-      const key = env.OPSCREW_CHECK_SSH_KEY;
-      if (reach === undefined || !key) {
-        io.log(
-          `::warning::The disk of ${server.id} was not checked: ${reach === undefined ? `the secret ${server.secret} is missing, has no entry for the server ${name} or is not in the form OpsCrew writes` : "the secret OPSCREW_CHECK_SSH_KEY is missing"}. Run \`npx opscrew provision\` for this environment.`,
-        );
-        return undefined;
-      }
-      output = await io.ssh(reach, key);
+    if (server.via === "own-runner") return await io.local();
+    const name = server.name ?? "app";
+    const reach = parseEntries(env[server.secret]).find((entry) => entry.id === name);
+    const key = env.OPSCREW_CHECK_SSH_KEY;
+    if (reach === undefined || !key) {
+      io.log(
+        `::warning::The server ${server.id} was not checked: ${reach === undefined ? `the secret ${server.secret} is missing, has no entry for the server ${name} or is not in the form OpsCrew writes` : "the secret OPSCREW_CHECK_SSH_KEY is missing"}. Run \`npx opscrew provision\` for this environment.`,
+      );
+      return undefined;
     }
+    return await io.ssh(reach, key);
   } catch (error) {
-    io.log(`::warning::The disk of ${server.id} could not be read (${errorCode(error)}).`);
+    io.log(`::warning::The server ${server.id} could not be read (${errorCode(error)}).`);
     return undefined;
   }
+}
+
+/** The server's disk, from the `df -P -B1 /` part of its answer. */
+async function checkDisk(check, t, read, io) {
+  const { server } = check;
+  const output = await read(server);
+  if (output === undefined) return undefined;
   const disk = parseDf(output);
   if (disk === undefined) {
     io.log(`::warning::The disk of ${server.id} answered in a form the check cannot read.`);
@@ -399,13 +468,87 @@ async function checkDisk(check, t, env, io) {
   };
 }
 
-/** The sizes in `df -P -B1` output's last line, or undefined when it has none. */
+/**
+ * The sizes in the last line of `df -P -B1` output, among the server's answer's lines other than
+ * the scheduled snapshots' (`scheduled ...`), or undefined when it has none.
+ */
 function parseDf(output) {
-  const fields = output.trim().split("\n").at(-1)?.trim().split(/\s+/) ?? [];
+  const lines = output
+    .trim()
+    .split("\n")
+    .filter((line) => !line.startsWith("scheduled "));
+  const fields = lines.at(-1)?.trim().split(/\s+/) ?? [];
   if (fields.length < 6) return undefined;
   const [total, used, free] = fields.slice(-5, -2).map(Number);
   if (![total, used, free].every(Number.isFinite) || used + free <= 0) return undefined;
   return { total, free, percent: Math.ceil((used * 100) / (used + free)) };
+}
+
+/**
+ * The last scheduled snapshot of the app on the server, from the `scheduled <app> ` lines of its
+ * answer: a failure when it, or its copy off the server, failed ({@link scheduledFailure}).
+ * Unknown while a snapshot is being taken, and without its log there: none ran yet, or the
+ * server's check key is an older OpsCrew's, which reads only the disk, until its next provision.
+ * Nothing the log says reaches any text.
+ */
+async function checkSnapshot(check, read, io) {
+  const { server, app } = check;
+  const output = await read(server);
+  if (output === undefined) return undefined;
+  const prefix = `scheduled ${app} `;
+  const lines = output
+    .split("\n")
+    .filter((line) => line.startsWith(prefix))
+    .map((line) => line.slice(prefix.length));
+  const seconds = /^at (\d+)$/.exec(lines.find((line) => line.startsWith("at ")) ?? "")?.[1];
+  if (seconds === undefined) {
+    io.log(`${server.id}: no scheduled snapshot of ${app} is recorded there yet.`);
+    return undefined;
+  }
+  if (lines.includes("running")) {
+    io.log(`${server.id}: a snapshot of ${app} is being taken, so the next run checks it.`);
+    return undefined;
+  }
+  const failure = scheduledFailure(
+    lines.filter((line) => line.startsWith("said ")).map((line) => line.slice("said ".length)),
+  );
+  if (failure === undefined) {
+    io.log(`${server.id}: the last scheduled snapshot of ${app} succeeded.`);
+    return null;
+  }
+  const at = utc(new Date(Number(seconds) * 1000));
+  const label = appLabel(check.key);
+  if (failure.id === undefined) {
+    return {
+      title: `OpsCrew check: ${label} scheduled snapshot failed on ${server.id}`,
+      what: `The last scheduled snapshot of ${app} on the server ${server.id} failed, at ${at}: OpsCrew took no snapshot.`,
+      hint: SNAPSHOT_HINT,
+    };
+  }
+  const id = failure.id;
+  const due = `${id.slice(0, 4)}-${id.slice(4, 6)}-${id.slice(6, 8)} ${id.slice(9, 11)}:${id.slice(11, 13)} UTC`;
+  return {
+    title: `OpsCrew check: ${label} scheduled snapshot's off-server copy failed on ${server.id}`,
+    what: `The scheduled snapshot ${id} of ${app}, due at ${due}, was taken on the server ${server.id}, but its copy off the server failed, at ${at}.`,
+    hint: SNAPSHOT_HINT,
+  };
+}
+
+/**
+ * The rule for a scheduled snapshot's log (`.snapshots/scheduled.log` in the app's folder), whose
+ * last lines are `said`: `snapshot.sh` prints the snapshot's id once it is taken, then what its
+ * copy off the server says. `undefined` when the last run succeeded: its id is the last line.
+ * Otherwise what failed: `id` when the snapshot was taken and only its copy
+ * off the server failed, and `said`, the lines that say why (after the id, or else the last
+ * line). OpsCrew's `status` uses the same rule.
+ * @param {readonly string[]} said
+ * @returns {{ id?: string, said: string[] } | undefined}
+ */
+export function scheduledFailure(said) {
+  const lines = said.map((line) => line.trim()).filter((line) => line !== "");
+  const at = lines.findLastIndex((line) => SCHEDULED_ID.test(line));
+  if (at !== -1 && at === lines.length - 1) return undefined;
+  return at === -1 ? { said: lines.slice(-1) } : { id: lines[at], said: lines.slice(at + 1) };
 }
 
 /**
@@ -627,8 +770,12 @@ class GitHubError extends Error {
 
 /** The text of a new issue, or of its webhook post with `ref`, where to find the issue. */
 function openingText(failure, now, ref) {
-  const since = `${now.toISOString().slice(0, 16).replace("T", " ")} UTC`;
-  return `${failure.what}\n\nSince ${since}.\n\n${failure.hint}${ref === undefined ? "" : `\n${ref}`}`;
+  return `${failure.what}\n\nSince ${utc(now)}.\n\n${failure.hint}${ref === undefined ? "" : `\n${ref}`}`;
+}
+
+/** `2026-11-07 03:00 UTC`. */
+function utc(date) {
+  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 function json(value) {
@@ -726,11 +873,11 @@ export function tlsDaysLeft(hostname, timeoutMs) {
 }
 
 /**
- * `df` over SSH with the check key, which the server answers with `df -P -B1 /` whatever is asked.
- * The key and the known hosts go into files only this user can read, in the job's temporary
- * folder, removed afterwards.
+ * The server's answer over SSH with the check key, which it answers with CHECK_COMMAND whatever is
+ * asked. The key and the known hosts go into files only this user can read, in the job's
+ * temporary folder, removed afterwards.
  */
-export async function sshDf(server, key) {
+export async function sshRead(server, key) {
   const dir = await mkdtemp(join(process.env.RUNNER_TEMP || tmpdir(), "opscrew-check-"));
   const keyFile = join(dir, "key");
   const knownHosts = join(dir, "known_hosts");
@@ -760,9 +907,12 @@ export async function sshDf(server, key) {
   }
 }
 
-/** `df -P -B1 /` on this machine: the server's own runner. */
-export function localDf() {
-  return exec("df", ["-P", "-B1", "/"]);
+/**
+ * CHECK_COMMAND on this machine: the server's own runner, which runs as the deploy user, whose
+ * scheduled snapshots' logs are.
+ */
+export function localRead() {
+  return exec("sh", ["-c", CHECK_COMMAND]);
 }
 
 /** Runs a program and resolves its output; a failure carries only its exit code. */
@@ -781,15 +931,21 @@ function exec(file, args) {
   });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Only when this file is the program, never inside another one that bundles it (OpsCrew's CLI
+// imports scheduledFailure).
+if (
+  process.argv[1] &&
+  import.meta.url.endsWith("/check.mjs") &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
   const config = JSON.parse(await readFile(new URL("./check.json", import.meta.url), "utf8"));
   process.exitCode = await run(process.env, {
     config,
     argv: process.argv.slice(2),
     fetch,
     tlsDaysLeft,
-    ssh: sshDf,
-    df: localDf,
+    ssh: sshRead,
+    local: localRead,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: () => new Date(),
     log: (line) => console.log(line),

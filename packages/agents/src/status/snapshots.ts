@@ -5,7 +5,7 @@
  * the snapshot's id once it was taken, then what the off-server copy said. Read-only.
  */
 import { errorText, isUserFacingError, listText } from "@opscrew/core";
-import { SCHEDULED_LOG } from "@opscrew/iac-templates";
+import { SCHEDULED_LOG, scheduledFailure } from "@opscrew/iac-templates";
 import { type DeployPlan, snapshotScheduleOf } from "@opscrew/plan-schema";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
@@ -48,9 +48,6 @@ const AT = "scheduled-at";
 const SAID = "scheduled-said";
 const RUNNING = "scheduled-running";
 
-/** A scheduled snapshot's id: the hour of its slot, `20261107T030000Z`. */
-const SCHEDULED_ID = /^\d{8}T\d{6}Z$/;
-
 /** The app's start lock, which a snapshot being taken holds (`switch.ts`). */
 const START_LOCK = ".start.lock";
 
@@ -67,8 +64,11 @@ const SCHEDULED_PROBE = [
   "fi",
 ].join(" ");
 
-/** The failure the probe's lines in `stdout` show on `host`, if its last scheduled run failed. */
-function scheduledFailure(
+/**
+ * The failure the probe's lines in `stdout` show on `host`, if its last scheduled run failed: by
+ * the scheduled check's rule (`scheduledFailure`), unless a snapshot is being taken.
+ */
+function failureOn(
   run: SnapshotRun,
   host: ScriptHost,
   stdout: string,
@@ -76,19 +76,15 @@ function scheduledFailure(
   const lines = stdout.split(/\r?\n/);
   const seconds = Number(lines.find((line) => line.startsWith(`${AT} `))?.slice(AT.length + 1));
   if (!Number.isFinite(seconds) || lines.includes(RUNNING)) return undefined;
-  const said = lines
-    .filter((line) => line.startsWith(`${SAID} `))
-    .map((line) => line.slice(SAID.length + 1).trim())
-    .filter((line) => line !== "");
-  // A scheduled snapshot that was taken prints its id; what follows is its off-server copy's.
-  const at = said.findLastIndex((line) => SCHEDULED_ID.test(line));
-  const after = at === -1 ? said.slice(-1) : said.slice(at + 1);
-  if (at !== -1 && after.length === 0) return undefined;
+  const failure = scheduledFailure(
+    lines.filter((line) => line.startsWith(`${SAID} `)).map((line) => line.slice(SAID.length + 1)),
+  );
+  if (failure === undefined) return undefined;
   return {
     where: host.where,
     at: new Date(seconds * 1000).toISOString(),
-    ...(at === -1 ? {} : { id: said[at] }),
-    said: run.deps.redactor.redact(after.join(" ")).slice(0, 300),
+    ...(failure.id === undefined ? {} : { id: failure.id }),
+    said: run.deps.redactor.redact(failure.said.join(" ")).slice(0, 300),
   };
 }
 
@@ -112,7 +108,7 @@ async function readSnapshotStatus(run: SnapshotRun): Promise<SnapshotStatus> {
         what: "read the snapshots",
       });
       places.push(place);
-      const failure = scheduled ? scheduledFailure(run, host, place.stdout) : undefined;
+      const failure = scheduled ? failureOn(run, host, place.stdout) : undefined;
       if (failure !== undefined) scheduledFailures.push(failure);
     }
   }

@@ -22,7 +22,6 @@ import {
   APPS_DIR,
   addonDir,
   appDirs,
-  CHECK_KEY_COMMAND,
   checkKeyComment,
   DATA_DIR,
   type EcdsaHostKeyType,
@@ -3493,10 +3492,10 @@ function addonStep(
   if ("publicKey" in enable) {
     return step(
       "check-key",
-      `Let the scheduled check of ${repository} read this server's disk usage with its own key (${keyFingerprint(enable.publicKey)}), which can run only "${CHECK_KEY_COMMAND}"`,
+      `Let the scheduled check of ${repository} read this server's disk usage and scheduled snapshots' results with its own key (${keyFingerprint(enable.publicKey)}), which can run only OpsCrew's fixed command`,
       "change",
       { publicKey: keyId(enable.publicKey), repository, runAs },
-      `Its line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only df. A line with its comment (${checkKeyComment(repository)}) is replaced; the other keys stay.`,
+      `Its line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only OpsCrew's fixed command, which reads the disk usage (df -P -B1 /) and, for each app with a scheduled snapshot's log, when it was last written, its last 50 lines and whether a snapshot is being taken. A line with its comment (${checkKeyComment(repository)}) is replaced; the other keys stay.`,
     );
   }
   const addon = kind as AddonKind;

@@ -728,11 +728,11 @@ esac`,
     const step = plan.steps.find((item) => item.id === "deploy-key");
     if (step === undefined) throw new Error("no deploy-key step");
     const deployKey = stepScripts(plan, step);
-    const check = checkKeyLine(ed25519PublicKey(), REPOSITORY);
     const h = harness();
     try {
       // The step's pattern names /srv/apps, which the harness moves under its root.
       const preview = rooted(h, previewKeyLine(ed25519PublicKey(), REPOSITORY, APP));
+      const check = rooted(h, checkKeyLine(ed25519PublicKey(), REPOSITORY));
       h.write(KEYS, `ssh-ed25519 AAAAold old-key\n${preview}\n${check}\n`);
       expect(h.run(deployKey.apply).status).toBe(0);
       expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}\n${preview}\n${check}\n`);

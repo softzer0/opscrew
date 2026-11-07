@@ -5,13 +5,15 @@ import { join } from "node:path";
 import { fakeSecret } from "@opscrew/core/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CHECK_COMMAND,
   type CheckConfig,
   type CheckEnvironment,
   type CheckIo,
   run,
   type ServerEntry,
   type ServerReach,
-  sshDf,
+  scheduledFailure,
+  sshRead,
 } from "../../check/check.mjs";
 import { readCheckScript } from "../../scripts/gen-modules";
 
@@ -160,7 +162,7 @@ class World {
         if (disk instanceof Error) throw disk;
         return disk;
       },
-      df: async () => this.localDisk,
+      local: async () => this.localDisk,
       sleep: async (ms) => {
         this.sleeps.push(ms);
         this.clock = new Date(this.clock.getTime() + ms);
@@ -794,6 +796,246 @@ describe("check.mjs", () => {
   });
 });
 
+/** The lines CHECK_COMMAND prints about `app`'s scheduled snapshots, after `df`'s. */
+function scheduled(app: string, at: Date, said: readonly string[], running = false): string {
+  return [
+    `scheduled ${app} at ${Math.floor(at.getTime() / 1000)}`,
+    ...said.map((line) => `scheduled ${app} said ${line}`),
+    ...(running ? [`scheduled ${app} running`] : []),
+    "",
+  ].join("\n");
+}
+
+describe("scheduled snapshots", () => {
+  const ID = "20261028T030000Z";
+  const RAN = new Date("2026-10-28T03:04:00.000Z");
+  const SCHEDULED: CheckEnvironment = {
+    ...PROD,
+    snapshots: { app: "example-app", servers: ["hetzner-example-app"] },
+  };
+  const KEY = "example-app/prod/snapshot/hetzner-example-app";
+
+  it("follows status's rule for the log's last lines", () => {
+    expect(scheduledFailure(["web was left out of the scheduled snapshot", ID])).toBeUndefined();
+    expect(scheduledFailure([ID, "  "])).toBeUndefined();
+    expect(scheduledFailure(["web was left out", "OpsCrew took no snapshot."])).toEqual({
+      said: ["OpsCrew took no snapshot."],
+    });
+    expect(scheduledFailure([])).toEqual({ said: [] });
+    expect(scheduledFailure([ID, "the upload failed", "  exit 1 "])).toEqual({
+      id: ID,
+      said: ["the upload failed", "exit 1"],
+    });
+    // An older run's id further up: the last id counts.
+    expect(scheduledFailure(["20261021T030000Z", "failed", ID])).toBeUndefined();
+  });
+
+  it("opens an issue for a failed scheduled snapshot, changes it when only the copy off the server fails, and closes it once one succeeds", async () => {
+    const world = new World();
+    world.config = config({ environments: [SCHEDULED] });
+    world.disks.set(SERVER_HOST, `${df(40)}${scheduled("example-app", RAN, ["no space"])}`);
+    expect(await run(env(), world.io())).toBe(0);
+    // One read for the disk and the snapshot.
+    expect(world.sshCalls).toHaveLength(1);
+    const [issue] = world.open();
+    expect(issue?.title).toBe(
+      "OpsCrew check: example-app (prod) scheduled snapshot failed on hetzner-example-app",
+    );
+    expect(issue?.body).toContain(`<!-- opscrew-check:${KEY} -->`);
+    expect(issue?.body).toContain(
+      "The last scheduled snapshot of example-app on the server hetzner-example-app failed, at 2026-10-28 03:04 UTC: OpsCrew took no snapshot.",
+    );
+    expect(issue?.body).toContain("run `npx opscrew status` in this repository");
+
+    world.disks.set(
+      SERVER_HOST,
+      `${df(40)}${scheduled("example-app", RAN, [ID, "the upload failed"])}`,
+    );
+    await run(env(), world.io());
+    expect(issue?.title).toBe(
+      "OpsCrew check: example-app (prod) scheduled snapshot's off-server copy failed on hetzner-example-app",
+    );
+    expect(issue?.comments).toEqual([
+      expect.stringContaining(
+        `The scheduled snapshot ${ID} of example-app, due at 2026-10-28 03:00 UTC, was taken on the server hetzner-example-app, but its copy off the server failed, at 2026-10-28 03:04 UTC.`,
+      ),
+    ]);
+
+    // While one is being taken, the issue stays as it is.
+    world.disks.set(SERVER_HOST, `${df(40)}${scheduled("example-app", RAN, [], true)}`);
+    await run(env(), world.io());
+    expect(world.open()).toEqual([issue]);
+    expect(world.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
+
+    world.disks.set(SERVER_HOST, `${df(40)}${scheduled("example-app", RAN, [ID])}`);
+    await run(env(), world.io());
+    expect(world.open()).toEqual([]);
+    expect(issue?.state_reason).toBe("completed");
+    expect(world.summaries.at(-1)).toContain(`- ${KEY}: passed`);
+  });
+
+  it("reads only its app's lines, and counts a server without its log (an older key's answer) as not checked", async () => {
+    const world = new World();
+    world.config = config({ environments: [SCHEDULED] });
+    world.disks.set(SERVER_HOST, `${df(40)}${scheduled("example-app-admin", RAN, ["failed"])}`);
+    await run(env(), world.io());
+    expect(world.open()).toEqual([]);
+    expect(world.logs).toContain(
+      "hetzner-example-app: no scheduled snapshot of example-app is recorded there yet.",
+    );
+    expect(world.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
+    expect(world.summaries.at(-1)).toContain("- example-app/prod/disk/hetzner-example-app: passed");
+  });
+
+  it("reads a server once for its disk and every environment's snapshots on it, extra servers included", async () => {
+    const world = new World();
+    const data = {
+      id: "hetzner-example-app-data",
+      name: "data",
+      secret: "OPSCREW_CHECK_SERVER",
+      via: "github",
+    } as const;
+    world.config = config({
+      environments: [
+        {
+          ...PROD,
+          extraServers: [data],
+          snapshots: { app: "example-app", servers: ["hetzner-example-app", data.id] },
+        },
+        // Staging on the same server: prod checks its disk, staging only its snapshots.
+        {
+          key: "example-app/staging",
+          hosts: [{ hostname: "staging.example.com", healthPath: "/health" }],
+          snapshots: { app: "example-app-staging", servers: ["hetzner-example-app"] },
+        },
+      ],
+    });
+    world.disks.set(
+      SERVER_HOST,
+      `${df(40)}${scheduled("example-app", RAN, [ID])}${scheduled("example-app-staging", RAN, ["failed"])}`,
+    );
+    world.disks.set(DATA_ENTRY.host, `${df(40)}${scheduled("example-app", RAN, ["failed"])}`);
+    await run(env({ OPSCREW_CHECK_SERVER: JSON.stringify([APP_ENTRY, DATA_ENTRY]) }), world.io());
+    expect(world.sshCalls.map((call) => call.server)).toEqual([APP_ENTRY, DATA_ENTRY]);
+    expect(world.open().map((issue) => issue.title)).toEqual([
+      "OpsCrew check: example-app (prod) scheduled snapshot failed on hetzner-example-app-data",
+      "OpsCrew check: example-app (staging) scheduled snapshot failed on hetzner-example-app",
+    ]);
+  });
+
+  it("checks the snapshots of a server with its own runner in that runner's job only", async () => {
+    const world = new World();
+    world.config = config({
+      environments: [
+        {
+          ...PROD,
+          server: { id: "own-example-app", via: "own-runner" },
+          snapshots: { app: "example-app", servers: ["own-example-app"] },
+        },
+      ],
+    });
+    world.localDisk = `${df(40)}${scheduled("example-app", RAN, ["failed"])}`;
+    await run(env(), world.io());
+    expect(world.open()).toEqual([]);
+    await run(env(), world.io(["--only", "disk:own-example-app"]));
+    expect(world.open().map((issue) => issue.title)).toEqual([
+      "OpsCrew check: example-app (prod) scheduled snapshot failed on own-example-app",
+    ]);
+  });
+
+  it("never lets what the log says reach any text", async () => {
+    const world = new World();
+    world.config = webhookConfig("slack");
+    world.config.environments = [SCHEDULED];
+    const said = `upload to https://${SERVER_HOST}/bucket failed: ${SECRETS.inBody}`;
+    world.disks.set(SERVER_HOST, `${df(40)}${scheduled("example-app", RAN, [ID, said])}`);
+    await run(env(), world.io());
+    expect(world.open()).toHaveLength(1);
+    expect(world.posts).toHaveLength(1);
+    const texts = world.texts().join("\n");
+    for (const value of [SECRETS.inBody, SERVER_HOST, "upload to", "bucket"]) {
+      expect(texts).not.toContain(value);
+    }
+  });
+});
+
+/** True when `program` runs in sh here. */
+function inShell(program: string): boolean {
+  return spawnSync("sh", ["-c", `command -v ${program}`]).status === 0;
+}
+
+describe.skipIf(!inShell("stat") || !inShell("tail"))("CHECK_COMMAND in a real shell", () => {
+  let dir: string | undefined;
+  afterEach(async () => {
+    if (dir !== undefined) await rm(dir, { recursive: true, force: true });
+  });
+
+  it("prints df, then each app's log time, last 50 lines and whether a snapshot is being taken, and the check reads them", async () => {
+    expect(CHECK_COMMAND).not.toContain('"');
+    // The id line `snapshot.sh` prints once the snapshot is taken.
+    const ID_LINE = "20261028T030000Z";
+    dir = await mkdtemp(join(tmpdir(), "opscrew-check-command-"));
+    const write = async (path: string, text: string) => {
+      await mkdir(join(dir as string, path, ".."), { recursive: true });
+      await writeFile(join(dir as string, path), text);
+    };
+    const lines = Array.from({ length: 60 }, (_, n) => `line ${n} * $HOME`);
+    await write("apps/example-app/.snapshots/scheduled.log", `${[...lines, ID_LINE].join("\n")}\n`);
+    await write("apps/example-app/.snapshots/20261028T030000Z/about.json", "{}");
+    await write("apps/blog/.snapshots/scheduled.log", "web was left out\nfailed\n");
+    await mkdir(join(dir, "apps/blog/.snapshots/20261028T030000Z.partial"), { recursive: true });
+    await write("apps/Odd name/.snapshots/scheduled.log", "failed\n");
+    await mkdir(join(dir, "apps/no-log"), { recursive: true });
+    // A stand-in for flock: the start lock is held.
+    await write("bin/flock", "#!/bin/sh\nexit 1\n");
+    spawnSync("chmod", ["+x", join(dir, "bin/flock")]);
+    // The folder as the shell names it.
+    const root = spawnSync("sh", ["-c", 'cd "$1" && pwd', "sh", dir], {
+      encoding: "utf8",
+    }).stdout.trim();
+    const command = `PATH=${root}/bin:$PATH; ${CHECK_COMMAND.replaceAll("/srv/apps", `${root}/apps`)}`;
+    const result = spawnSync("sh", ["-c", command], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    const out = result.stdout.split("\n");
+    expect(out[0]).toMatch(/^Filesystem/);
+    // Only folders with OpsCrew's app names are read.
+    expect(result.stdout).not.toContain("Odd");
+    const app = out.filter((line) => line.startsWith("scheduled example-app "));
+    expect(app[0]).toMatch(/^scheduled example-app at \d+$/);
+    expect(app.slice(1)).toEqual([
+      ...lines.slice(11).map((line) => `scheduled example-app said ${line}`),
+      `scheduled example-app said ${ID_LINE}`,
+    ]);
+    expect(out.filter((line) => line.startsWith("scheduled blog "))).toEqual([
+      expect.stringMatching(/^scheduled blog at \d+$/),
+      "scheduled blog said web was left out",
+      "scheduled blog said failed",
+      "scheduled blog running",
+    ]);
+
+    // The check reads that answer: the disk, a success, and a snapshot being taken.
+    const world = new World();
+    world.config = config({
+      environments: [
+        { ...PROD, snapshots: { app: "example-app", servers: ["hetzner-example-app"] } },
+        {
+          key: "blog/prod",
+          hosts: [{ hostname: "blog.example.com", healthPath: "/" }],
+          snapshots: { app: "blog", servers: ["hetzner-example-app"] },
+        },
+      ],
+    });
+    world.disks.set(SERVER_HOST, result.stdout);
+    await run(env(), world.io());
+    const summary = world.summaries.at(-1) ?? "";
+    expect(summary).toContain("- example-app/prod/disk/hetzner-example-app: passed");
+    expect(summary).toContain("- example-app/prod/snapshot/hetzner-example-app: passed");
+    expect(summary).toContain(
+      "- blog/prod/snapshot/hetzner-example-app: not checked (see the log)",
+    );
+  });
+});
+
 describe("check.mjs as the main module", () => {
   it("reads check.json next to it and runs with the real side effects", async () => {
     const dir = await mkdtemp(join(tmpdir(), "opscrew-check-main-"));
@@ -816,7 +1058,7 @@ describe("check.mjs as the main module", () => {
   });
 });
 
-describe.skipIf(process.platform === "win32")("sshDf", () => {
+describe.skipIf(process.platform === "win32")("sshRead", () => {
   let dir: string | undefined;
   afterEach(async () => {
     vi.unstubAllEnvs();
@@ -824,7 +1066,7 @@ describe.skipIf(process.platform === "win32")("sshDf", () => {
   });
 
   it("runs ssh with the key and known hosts in 0600 files under RUNNER_TEMP, removed afterwards", async () => {
-    dir = await mkdtemp(join(tmpdir(), "opscrew-sshdf-"));
+    dir = await mkdtemp(join(tmpdir(), "opscrew-sshread-"));
     const bin = join(dir, "bin");
     const temp = join(dir, "runner-temp");
     const record = join(dir, "record");
@@ -846,7 +1088,7 @@ describe.skipIf(process.platform === "win32")("sshDf", () => {
     vi.stubEnv("PATH", `${bin}:${process.env.PATH}`);
     vi.stubEnv("RUNNER_TEMP", temp);
 
-    expect(await sshDf(REACH, SECRETS.sshKey)).toContain("/dev/sda1 100 40 60 40% /");
+    expect(await sshRead(REACH, SECRETS.sshKey)).toContain("/dev/sda1 100 40 60 40% /");
     const lines = (await readFile(record, "utf8")).trim().split("\n");
     const keyFile = lines[1] ?? "";
     expect(keyFile.startsWith(join(temp, "opscrew-check-"))).toBe(true);

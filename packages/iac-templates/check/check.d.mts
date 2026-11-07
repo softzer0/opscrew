@@ -33,6 +33,12 @@ export interface CheckEnvironment {
   server?: CheckServer;
   /** The app's extra servers (`plan.servers`), each with its `name`; absent without them. */
   extraServers?: CheckServer[];
+  /**
+   * With scheduled snapshots on: the app's folder in `/srv/apps` and the ids of the servers with
+   * its data (each listed by this or an earlier environment), whose last scheduled snapshot is
+   * checked. Absent when they are off, or no server with its data is read.
+   */
+  snapshots?: { app: string; servers: string[] };
 }
 
 export interface CheckServer {
@@ -81,10 +87,10 @@ export interface CheckIo {
   fetch: typeof fetch;
   /** The days the hostname's certificate has left, negative once expired. */
   tlsDaysLeft(hostname: string, timeoutMs: number): Promise<number>;
-  /** `df` over SSH with the check key: the server's `df -P -B1 /` output. */
+  /** The server's answer over SSH with the check key: its {@link CHECK_COMMAND} output. */
   ssh(server: ServerReach, key: string): Promise<string>;
-  /** `df -P -B1 /` on this machine. */
-  df(): Promise<string>;
+  /** {@link CHECK_COMMAND}'s output on this machine. */
+  local(): Promise<string>;
   sleep(ms: number): Promise<void>;
   now(): Date;
   log(line: string): void;
@@ -98,8 +104,24 @@ export function run(env: Record<string, string | undefined>, io: CheckIo): Promi
 /** The days the certificate on `hostname`:443 has left, negative once expired. */
 export function tlsDaysLeft(hostname: string, timeoutMs: number): Promise<number>;
 
-/** `df` over SSH with the check key, from key files in `RUNNER_TEMP` removed afterwards. */
-export function sshDf(server: ServerReach, key: string): Promise<string>;
+/** The server's answer over SSH with the check key, from key files in `RUNNER_TEMP` removed afterwards. */
+export function sshRead(server: ServerReach, key: string): Promise<string>;
 
-/** `df -P -B1 /` on this machine. */
-export function localDf(): Promise<string>;
+/** {@link CHECK_COMMAND} on this machine. */
+export function localRead(): Promise<string>;
+
+/**
+ * The check key's forced command on each server (a copy of `CHECK_KEY_COMMAND` in
+ * `@opscrew/connector-ssh-host`): `df -P -B1 /`, then each scheduled snapshot's
+ * `scheduled <app> at|said|running` lines. Read-only.
+ */
+export const CHECK_COMMAND: string;
+
+/**
+ * The rule for a scheduled snapshot's log, from its last lines (`said`): `undefined` when the
+ * last run succeeded (its id is the last line), else what failed: `id` when only its copy off the
+ * server failed, and `said`, the lines that say why.
+ */
+export function scheduledFailure(
+  said: readonly string[],
+): { id?: string; said: string[] } | undefined;

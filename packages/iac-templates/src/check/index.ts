@@ -1,7 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are GitHub Actions expressions, not JavaScript templates.
 import { createHash } from "node:crypto";
 import { OpsCrewError } from "@opscrew/core";
-import { type DeployPlan, isServerlessTarget } from "@opscrew/plan-schema";
+import { type DeployPlan, isServerlessTarget, snapshotScheduleOf } from "@opscrew/plan-schema";
 import type {
   CheckConfig,
   CheckEnvironment,
@@ -23,6 +23,9 @@ import {
   runnerLabel,
   selfHosted,
 } from "../workflow/shared";
+import { snapshotParts } from "../workflow/snapshots";
+
+export { CHECK_COMMAND, scheduledFailure } from "../../check/check.mjs";
 
 /** The check's workflow file in `.github/workflows/`. */
 export const CHECK_WORKFLOW_FILE = "opscrew-check.yml";
@@ -38,7 +41,7 @@ export const CHECK_PAUSED_VARIABLE = "OPSCREW_CHECK_PAUSED";
  * (`deploySecretName(plan, CHECK_SECRETS.server)`) and holding {@link checkServerSecret}'s JSON.
  */
 export const CHECK_SECRETS = {
-  /** The check key: the private key servers let run only `df`. */
+  /** The check key: the private key servers let run only OpsCrew's fixed read-only command. */
   sshKey: "OPSCREW_CHECK_SSH_KEY",
   server: "OPSCREW_CHECK_SERVER",
   /** The webhook's address. */
@@ -103,14 +106,16 @@ export function checkServerSecret(servers: readonly ServerEntry[]): string {
  *   or a runner machine, which checks that server's disk there, and one per extra server of such
  *   an environment, which reads its disk over SSH from that runner;
  * - `opscrew/check/check.json`: each environment's hostnames, health path and server, by id and
- *   the name of the secret with its address, never an address;
+ *   the name of the secret with its address, never an address, and with scheduled snapshots on,
+ *   the app's folder and the servers with its data;
  * - `opscrew/check/check.mjs`, the same in every repository.
  *
  * The interval and the webhook are the repository's: the first app's prod plan's, else every 15
  * minutes in a public repository and 60 in a private one.
  *
  * A server's disk is checked once, by the first environment in the repository's order whose plan
- * has it: one disk check, one disk issue, and one job on its own runner per server.
+ * has it: one disk check, one disk issue, and one job on its own runner per server. Each
+ * environment's scheduled snapshots there are checked from the same read.
  */
 export function renderCheck(input: {
   plans: readonly DeployPlan[];
@@ -145,8 +150,11 @@ export function renderCheck(input: {
       seen.add(server.id);
       return server;
     };
-    const server = once(serverOf(plan, input.serverIds?.[checkEnvironmentKey(plan)]));
-    const extraServers = extraServersOf(plan).flatMap((extra) => once(extra) ?? []);
+    const app = serverOf(plan, input.serverIds?.[checkEnvironmentKey(plan)]);
+    const extras = extraServersOf(plan);
+    const snapshots = scheduledSnapshots(plan, app, extras);
+    const server = once(app);
+    const extraServers = extras.flatMap((extra) => once(extra) ?? []);
     return {
       plan,
       environment: {
@@ -154,6 +162,7 @@ export function renderCheck(input: {
         hosts: siteHosts(plan).map((hostname) => ({ hostname, healthPath: path })),
         ...(server === undefined ? {} : { server }),
         ...(extraServers.length === 0 ? {} : { extraServers }),
+        ...(snapshots === undefined ? {} : { snapshots }),
       },
     };
   });
@@ -227,6 +236,26 @@ function extraServersOf(plan: DeployPlan): CheckServer[] {
     secret: deploySecretName(plan, CHECK_SECRETS.server),
     via,
   }));
+}
+
+/**
+ * With `plan`'s scheduled snapshots on, its app's folder and the ids of the servers with its data
+ * the check reads (`app`, the app's server, and `extras`): those `status` reads the scheduled
+ * snapshots' logs of. `undefined` when they are off or there is none.
+ */
+function scheduledSnapshots(
+  plan: DeployPlan,
+  app: CheckServer | undefined,
+  extras: readonly CheckServer[],
+): CheckEnvironment["snapshots"] {
+  if (snapshotScheduleOf(plan) === undefined) return undefined;
+  const servers = [
+    ...(app !== undefined && snapshotParts(plan).length > 0 ? [app.id] : []),
+    ...extras
+      .filter((extra) => extra.name !== undefined && snapshotParts(plan, extra.name).length > 0)
+      .map((extra) => extra.id),
+  ];
+  return servers.length === 0 ? undefined : { app: plan.app.name, servers };
 }
 
 /**

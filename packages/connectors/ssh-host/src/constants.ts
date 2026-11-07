@@ -268,20 +268,60 @@ export function checkKeyComment(repository: string): string {
   return `${CHECK_KEY_COMMENT}${repository}`;
 }
 
-/** The only command the check's key can run (OpenSSH's forced command). */
-export const CHECK_KEY_COMMAND = "df -P -B1 /";
+/**
+ * The only command the check's key can run (OpenSSH's forced command), whatever the client asks.
+ * It only reads, and it is one line with no `"`, as it sits inside `command="..."`. It prints
+ * `df -P -B1 /`, then, for each app folder with a scheduled snapshot's log
+ * (`.snapshots/scheduled.log`, feature 024), lines that start with `scheduled <app> `:
+ * - `at <seconds>`: when the log was last written, in Unix seconds;
+ * - `said <line>`: each of the log's last 50 lines;
+ * - `running`: a snapshot is being taken (a `.partial` folder while the app's start lock is held).
+ *
+ * `CHECK_COMMAND` in `@opscrew/iac-templates`' `check.mjs` is a copy, which the server's own
+ * runner runs.
+ */
+export const CHECK_KEY_COMMAND = [
+  "df -P -B1 / &&",
+  `for d in ${APPS_DIR}/*/; do`,
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
+  "a=${d%/}; a=${a##*/};",
+  "case $a in *[!a-z0-9-]*) continue;; esac;",
+  "l=$d.snapshots/scheduled.log;",
+  "test -f $l || continue;",
+  "echo scheduled $a at $(stat -c %Y $l);",
+  "tail -n 50 $l | sed 's/^/scheduled '$a' said /';",
+  "for p in $d.snapshots/*.partial; do",
+  "if test -d $p; then flock -n $d.start.lock true || echo scheduled $a running; fi;",
+  "break;",
+  "done;",
+  "done",
+].join(" ");
 
 /**
  * A repository's check key line in authorized_keys, as the spike tested it under OpsCrew's sshd
- * settings: `restrict` turns off terminals and forwarding, and the forced command runs only `df`.
- * `publicKey` is `<type> <base64>`, `repository` is `owner/repo`.
+ * settings: `restrict` turns off terminals and forwarding, and the forced command runs only
+ * {@link CHECK_KEY_COMMAND}. `publicKey` is `<type> <base64>`, `repository` is `owner/repo`.
  */
 export function checkKeyLine(publicKey: string, repository: string): string {
   return `restrict,command="${CHECK_KEY_COMMAND}" ${publicKey} ${checkKeyComment(repository)}`;
 }
 
-/** ERE for a check key line in OpsCrew's form, of any repository: the deploy-key step keeps it. */
-export const CHECK_KEY_LINE_RE = `^restrict,command="${CHECK_KEY_COMMAND}" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
+/**
+ * `text` as a literal in both an ERE (`grep -E`) and a JavaScript RegExp: a backslash before each
+ * character that is special in either. `]` and `}` are literal in both when no `[` or `{` opens
+ * them, and newer GNU greps warn about a backslash before them.
+ */
+function literalRe(text: string): string {
+  return text.replace(/[\\^$.|?*+()[{]/g, "\\$&");
+}
+
+/**
+ * ERE (and JavaScript RegExp) for a check key line in OpsCrew's form, of any repository, with
+ * exactly {@link CHECK_KEY_COMMAND}: the deploy-key step keeps it. A line with another command (an
+ * older OpsCrew's) is no check key: the deploy-key step removes it, and the check-key step writes
+ * the line again.
+ */
+export const CHECK_KEY_LINE_RE = `^restrict,command="${literalRe(CHECK_KEY_COMMAND)}" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
 
 /** The recipe file that is the preview command, the only one written runnable (0755). */
 export const PREVIEW_COMMAND_FILE = "bin/opscrew-preview";

@@ -28,7 +28,7 @@ import {
   tunnelToken,
 } from "./__fixtures__/helpers";
 import { ShellHarness } from "./__fixtures__/shell-harness";
-import { BESZEL_TOKEN_PLACEHOLDER, sshdDropIn } from "./constants";
+import { BESZEL_TOKEN_PLACEHOLDER, checkKeyLine, sshdDropIn } from "./constants";
 import {
   inspectHost,
   inspectRunners,
@@ -1014,11 +1014,12 @@ describe.skipIf(!SH_AVAILABLE)("the check key's and the add-ons' scripts in a re
 
   it("check-key: replaces only its repository's line, keeps every other key, and the deploy-key step keeps every check key", async () => {
     const check = ed25519PublicKey();
-    const line = `restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop.web`;
-    // A name that would match if the dot were not escaped, and another repository's key.
-    const lookalike = `restrict,command="df -P -B1 /" ${ed25519PublicKey()} opscrew-check:acme/shopxweb`;
     const { on, off } = checkKeyScriptsOf(check, "acme/shop.web");
     const h = harness();
+    // As the harness moves the command's /srv/apps under its root, in the scripts too.
+    const line = h.rooted(checkKeyLine(check, "acme/shop.web"));
+    // A name that would match if the dot were not escaped, and another repository's key.
+    const lookalike = h.rooted(checkKeyLine(ed25519PublicKey(), "acme/shopxweb"));
     try {
       h.write(
         KEYS,
@@ -1046,6 +1047,51 @@ describe.skipIf(!SH_AVAILABLE)("the check key's and the add-ons' scripts in a re
       expect(removed.status, removed.stderr).toBe(0);
       expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}\n${lookalike}\n`);
       expect(h.run(off.verify).status).toBe(0);
+    } finally {
+      h.dispose();
+    }
+  });
+
+  it("check-key: an older OpsCrew's line, which ran only df, is no check key: the deploy-key step removes it and check-key writes the new one", async () => {
+    const check = ed25519PublicKey();
+    const old = `restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop`;
+    const { on } = checkKeyScriptsOf(check, "acme/shop");
+    const fake = new FakeHost();
+    const plan = planHost(await inspectHost(fake), desiredFor(fake), "opscrew provision");
+    const step = plan.steps.find((item) => item.id === "deploy-key");
+    if (step === undefined) throw new Error("no deploy-key step");
+    const deployKey = stepScripts(plan, step);
+    const h = harness();
+    const line = h.rooted(checkKeyLine(check, "acme/shop"));
+    try {
+      // grep -E keeps the new line and not the old one.
+      h.write(
+        KEYS,
+        `${DEPLOY_KEY}
+${old}
+`,
+      );
+      expect(h.run(deployKey.verify).status).not.toBe(0);
+      expect(h.run(deployKey.apply).status).toBe(0);
+      expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}
+`);
+
+      h.write(
+        KEYS,
+        `${DEPLOY_KEY}
+${old}
+`,
+      );
+      expect(h.run(on.check).stdout).toContain("state=change");
+      const applied = h.run(on.apply);
+      expect(applied.status, applied.stderr).toBe(0);
+      expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}
+${line}
+`);
+      expect(h.run(on.verify).status).toBe(0);
+      const kept = h.run(deployKey.verify);
+      expect(kept.status, kept.stderr).toBe(0);
+      expect(kept.stderr).toBe("");
     } finally {
       h.dispose();
     }

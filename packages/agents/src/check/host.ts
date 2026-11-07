@@ -1,4 +1,4 @@
-import { checkKeyComment, planAddon } from "@opscrew/connector-ssh-host";
+import { checkKeyLine, planAddon } from "@opscrew/connector-ssh-host";
 import type { PhaseName, RemoteExec } from "@opscrew/contracts";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
@@ -11,8 +11,9 @@ import type { CheckKey } from "./key";
 
 /**
  * True when the deploy user's authorized_keys on a server OpsCrew created already holds `key` as
- * the check key of `repository` (`owner/repo`): read over `remote` as deploy (read-only, audited
- * without the address).
+ * the check key of `repository` (`owner/repo`), in exactly `checkKeyLine`'s line: an older
+ * OpsCrew's line, with another command, is planned again. Read over `remote` as deploy
+ * (read-only, audited without the address).
  */
 export async function hasCheckKey(
   deps: Pick<PhaseDeps, "audit">,
@@ -29,19 +30,15 @@ export async function hasCheckKey(
     decision: "allow",
   });
   if (result.exitCode !== 0) return false;
-  const blob = ` ${key.publicKeyOpenSsh.split(" ")[1]} `;
-  return result.stdout
-    .split(/\r?\n/)
-    .some(
-      (line) => line.includes(blob) && line.trimEnd().endsWith(` ${checkKeyComment(repository)}`),
-    );
+  const line = checkKeyLine(key.publicKeyOpenSsh, repository);
+  return result.stdout.split(/\r?\n/).some((each) => each.trim() === line);
 }
 
 /**
  * The `check-key` host step (`planAddon`): the scheduled check's public key of `repository` in
- * the deploy user's authorized_keys, where it can run only `df`. Shown, approved by its hash
- * (`host-apply`) and applied over `remote`: as deploy (`login`) on a server OpsCrew created, as
- * root on the user's own.
+ * the deploy user's authorized_keys, where it can run only OpsCrew's fixed read-only command.
+ * Shown, approved by its hash (`host-apply`) and applied over `remote`: as deploy (`login`) on a
+ * server OpsCrew created, as root on the user's own.
  */
 export async function addCheckKey(
   deps: Pick<PhaseDeps, "paths" | "reporter" | "approvals" | "audit" | "version" | "clock">,
