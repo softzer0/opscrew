@@ -503,6 +503,11 @@ export const HostFactsSchema = z.object({
       }),
     )
     .default([]),
+  /**
+   * The apps whose scheduled snapshots (feature 024) have their line in the deploy user's crontab
+   * (one ending in `snapshotScheduleTag(app)`), in order.
+   */
+  snapshotSchedules: z.array(z.string()).default([]),
   /** Docker's firewall and OpsCrew's web filter. */
   webFilter: WebFilterFactsSchema,
   /**

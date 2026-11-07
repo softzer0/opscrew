@@ -692,6 +692,40 @@ esac`;
       expect(h.read("/srv/data/shop/postgres/PG_VERSION")).toBe("17\n");
     });
 
+    it("removes the app's scheduled snapshots from deploy's crontab, matched at the line's end", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.write("/state/active.docker", "");
+      h.stub(
+        "getent",
+        `[ "$1 $2" = "passwd deploy" ] && echo "deploy:x:1001:1001::/home/deploy:/bin/sh"`,
+      );
+      // crontab -u deploy -l | - : deploy's crontab in a state file, "no crontab" without one.
+      h.stub(
+        "crontab",
+        `case "$*" in
+  "-u deploy -l") if [ -f "$S/tab" ]; then cat "$S/tab"; else echo "no crontab for deploy" >&2; exit 1; fi ;;
+  "-u deploy -") cat > "$S/tab" ;;
+  *) exit 2 ;;
+esac`,
+      );
+      const { apply, verify } = teardown(false);
+      // No crontab yet: nothing to remove.
+      expect(h.run(verify).status).toBe(0);
+      const own = "30 2 * * * /usr/local/bin/backup";
+      const admin =
+        "0 * * * * sh /srv/apps/shop-admin/snapshot.sh take scheduled > /dev/null 2>&1 # opscrew-snapshots shop-admin";
+      h.write(
+        "/state/tab",
+        `${own}\n0 * * * * sh /srv/apps/shop/snapshot.sh take scheduled > /dev/null 2>&1 # opscrew-snapshots shop\n${admin}\n`,
+      );
+      expect(h.run(verify).status).not.toBe(0);
+      const run = h.run(apply);
+      expect(run.status, run.stderr).toBe(0);
+      expect(h.read("/state/tab")).toBe(`${own}\n${admin}\n`);
+      expect(h.run(verify).status).toBe(0);
+    });
+
     it("removes the shared edge with its containers, network, volumes and folder", () => {
       const h = harness();
       h.stub("docker", DOCKER);

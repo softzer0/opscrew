@@ -33,6 +33,7 @@ import {
   SHARED_DIRS,
   SSHD_DROP_IN,
   SYSCTL_FILE,
+  snapshotScheduleTag,
   TUNNELS_DIR,
   tunnelProject,
 } from "./constants";
@@ -80,6 +81,7 @@ import {
   parsePreviews,
   parseRunners,
   parseRuntimeFiles,
+  parseSnapshotSchedules,
   parseSs,
   parseSshdT,
   parseSysctl,
@@ -351,6 +353,12 @@ if [ -n "$uid" ] && [ -d "${RUNNERS_DIR}" ] && [ ! -L "${RUNNERS_DIR}" ]; then
   done
 fi`;
 
+/** The deploy user's crontab in `$tab`, read as root or as deploy itself (none is empty). */
+const DEPLOY_TAB = `tab=''
+if [ "$(id -u)" = 0 ]; then tab=$(crontab -u deploy -l 2>/dev/null) || tab=''
+elif [ "$(id -un)" = deploy ]; then tab=$(crontab -l 2>/dev/null) || tab=''
+fi`;
+
 /**
  * Each preview environment's recipe (feature 022), an app folder in /srv/apps with the preview
  * command: the SHA-256 of each of its files (never `values.env`, `previews.log` or dot-files),
@@ -360,10 +368,7 @@ fi`;
  * `/srv/apps/<app>-pr-<n>`. Never follows a symbolic link.
  */
 export const PREVIEWS_SNIPPET = `${APP_NAME_FN}
-tab=''
-if [ "$(id -u)" = 0 ]; then tab=$(crontab -u deploy -l 2>/dev/null) || tab=''
-elif [ "$(id -un)" = deploy ]; then tab=$(crontab -l 2>/dev/null) || tab=''
-fi
+${DEPLOY_TAB}
 if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
   for d in "${APPS_DIR}"/*; do
     app=\${d##*/}
@@ -384,6 +389,13 @@ if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
     done
   done
 fi`;
+
+/**
+ * The apps whose scheduled snapshots (feature 024) have a line in the deploy user's crontab, one
+ * per line: the name at the end of each line that ends in `snapshotScheduleTag(<app>)`.
+ */
+const SNAPSHOT_SCHEDULES_SNIPPET = `${DEPLOY_TAB}
+printf '%s\\n' "$tab" | sed -n 's/.*${snapshotScheduleTag("")}\\([a-z0-9][a-z0-9-]*\\)$/\\1/p'`;
 
 /** OpsCrew's web filter: its files' SHA-256 and its unit's state. */
 const WEB_FILTER_SNIPPET = `for f in script:${WEB_FILTER_SCRIPT} unit:${WEB_FILTER_UNIT} dropin:${WEB_FILTER_DROP_IN}; do
@@ -539,6 +551,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["monitoring", MONITORING_SNIPPET],
   ["runners", RUNNERS_SNIPPET],
   ["previews", PREVIEWS_SNIPPET],
+  ["snapshot-schedules", SNAPSHOT_SCHEDULES_SNIPPET],
   ["web-filter", WEB_FILTER_SNIPPET],
   ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
   ["ssh-connection", `${SSH_FIREWALL_FUNCTIONS}\nssh_connection`],
@@ -929,6 +942,7 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
     ...(monitoring.alloy === undefined ? {} : { alloy: monitoring.alloy }),
     runners: parseRunners(text("runners")),
     previews: parsePreviews(text("previews")),
+    snapshotSchedules: parseSnapshotSchedules(text("snapshot-schedules")),
     webFilter: {
       ...dockerFirewall({
         daemonJson: section(sections, "docker-daemon"),

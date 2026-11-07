@@ -67,6 +67,7 @@ import {
   SSHD_MODULI,
   SSHD_MODULI_FILE,
   SYSCTL_FILE,
+  snapshotScheduleTag,
   sshdDropIn,
   TUNNELS_DIR,
   tunnelDir,
@@ -2010,8 +2011,17 @@ function appDirsScripts(plan: HostPlan, step: HostStep): StepScripts {
       TLS_DIR: `${EDGE_DIR}/tls/${p.app}`,
       EDGE_COMPOSE: `${EDGE_DIR}/compose.yaml`,
       EDGE_PROJECT,
+      // The app's line of scheduled snapshots, by its tag at the end (letters, digits, dashes and
+      // `#` mean themselves in an extended pattern).
+      CRON_RE: `${snapshotScheduleTag(p.app)}$`,
     },
     helpers: `${PROJECT_HELPERS}
+${CRON_HELPERS}
+# The deploy user's crontab, read as root; a server without the deploy user has none.
+read_schedule() {
+  tab=''
+  if getent passwd deploy >/dev/null; then read_tab -u deploy; fi
+}
 remove_dir() {
   if [ -d "$1" ]; then
     find "$1" -xdev -mindepth 1 -delete
@@ -2025,12 +2035,16 @@ edge() { docker compose -p "$EDGE_PROJECT" -f "$EDGE_COMPOSE" "$@"; }`,
     [ ! -e "$f" ] && [ ! -L "$f" ] || return 1
   done
   if [ "$DELETE_DATA" = true ] && [ -e "$DATA_DIR" ]; then return 1; fi
-  return 0`,
+  read_schedule || return 1
+  [ "$(cron_count)" = 0 ]`,
     snapshot: `echo "prev.appFiles=$(ls -A "$APP_DIR" 2>/dev/null | wc -l)"
 echo "prev.dataFiles=$(ls -A "$DATA_DIR" 2>/dev/null | wc -l)"`,
     apply: `for d in "$APP_DIR" "$DATA_DIR" "$TLS_DIR"; do
   if [ -L "$d" ]; then fail "$d is a symbolic link; OpsCrew does not follow it."; fi
 done
+# The scheduled snapshots go first, so none starts while the app goes; other apps' lines stay.
+read_schedule || fail "OpsCrew could not read the deploy user's crontab, so it did not remove the app's scheduled snapshots."
+if [ "$(cron_count)" != 0 ]; then drop_cron -u deploy; fi
 remove_project "$APP" "$APP_COMPOSE" "$APP_DIR" "$DELETE_DATA"
 # The app's site (Caddy's or nginx's), its additions, its origin certificate and its kamal-proxy
 # service leave the shared edge, which stays for other apps (remove_project started Docker when it
@@ -3224,19 +3238,30 @@ const RECIPE_FILE_RULES: FileRules = {
 const PreviewNumberSchema = z.string().regex(/^[1-9][0-9]{0,5}$/);
 
 /**
- * Shell helpers of the previews step, which runs as the deploy user: its keys, its crontab in
- * `$tab` (none is empty, and so is a server without the crontab command; anything else unreadable
- * fails) and how many of its lines run this recipe's cleanup.
+ * A crontab in `$tab` (`read_tab`, with `crontab`'s arguments: `-u deploy` as root, none as the
+ * user itself; none is empty, and so is a server without the crontab command; anything else
+ * unreadable fails), how many of its lines match `$CRON_RE` (`cron_count`), and `drop_cron`, which
+ * writes it back without them (with the same arguments as `read_tab`).
  */
-const PREVIEW_HELPERS = `${KEY_HELPERS}
-read_tab() {
+const CRON_HELPERS = `read_tab() {
   tab=''
   command -v crontab >/dev/null 2>&1 || return 0
-  if tab=$(crontab -l 2>&1); then return 0; fi
+  if tab=$(crontab "$@" -l 2>&1); then return 0; fi
   case "$tab" in "no crontab for "*) tab=''; return 0 ;; esac
   return 1
 }
 cron_count() { printf '%s\\n' "$tab" | grep -cE "$CRON_RE"; }
+drop_cron() {
+  rest=$(printf '%s\\n' "$tab" | grep -vE "$CRON_RE") || rest=''
+  if [ -n "$rest" ]; then printf '%s\\n' "$rest"; fi | crontab "$@" - || fail "OpsCrew could not write the deploy user's crontab."
+}`;
+
+/**
+ * Shell helpers of the previews step, which runs as the deploy user: its keys, its crontab
+ * ({@link CRON_HELPERS}) and the recipe's files.
+ */
+const PREVIEW_HELPERS = `${KEY_HELPERS}
+${CRON_HELPERS}
 put() {
   if [ -L "$1" ]; then fail "$1 is a symbolic link; OpsCrew does not follow it."; fi
   write_file "$1" "$2"
@@ -3322,10 +3347,7 @@ if [ -f "$k" ] && grep -qE "$KEY_RE" "$k"; then
   if [ -n "$others" ]; then printf '%s\\n' "$others"; fi | write_file "$k" 0600
 fi
 read_tab || fail "OpsCrew could not read the deploy user's crontab, so it did not remove the cleanup of idle previews."
-if [ "$(cron_count)" != 0 ]; then
-  rest=$(printf '%s\\n' "$tab" | grep -vE "$CRON_RE") || rest=''
-  if [ -n "$rest" ]; then printf '%s\\n' "$rest"; fi | crontab - || fail "OpsCrew could not write the deploy user's crontab."
-fi
+if [ "$(cron_count)" != 0 ]; then drop_cron; fi
 # A preview this plan does not list started after it was made: its data was never approved for
 # removal, so nothing more goes. No new preview can start now.
 late=$(unlisted)

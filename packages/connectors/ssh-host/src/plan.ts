@@ -1847,8 +1847,9 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
 /**
  * The host plan that removes the app `opts.app` from the server, and only its own parts: its
  * GitHub Actions runner (first, so no deploy job runs meanwhile), its containers (by their Compose
- * project label, so they go without a record too), its folder `/srv/apps/<app>`, its site and
- * kamal-proxy service on the shared edge, its tunnel connector, its deploy key while other apps
+ * project label, so they go without a record too), its folder `/srv/apps/<app>`, the line of its
+ * scheduled snapshots in the deploy user's crontab (feature 024), its site and kamal-proxy service
+ * on the shared edge, its tunnel connector, its deploy key while other apps
  * stay, and its record. Its data (`/srv/data/<app>`, its Compose
  * volumes) is deleted only with `deleteData`; otherwise its record stays as `data-kept`, so only
  * its project can take the data again. With the last app the shared edge goes too (the
@@ -1929,20 +1930,29 @@ export function planTeardown(
 
   // Data goes only together with the app (its containers or its folder, or files in its data
   // folder), or with its record: never Compose volumes alone, which could be another project's.
+  // Its scheduled snapshots' line in the deploy user's crontab goes with it; other apps' stay.
+  const scheduled = f.snapshotSchedules.includes(app);
   const busy =
     containers.length > 0 ||
     dir(dirs.app) !== undefined ||
+    scheduled ||
     (deleteData && (dataFiles || (own !== null && volumes)));
+  const parts = [
+    "its containers",
+    dirs.app,
+    "its site on the shared edge",
+    ...(scheduled ? ["its scheduled snapshots in the deploy user's crontab"] : []),
+  ];
   steps.push(
     step(
       "app-dirs",
       deleteData
-        ? `Remove the app "${app}": its containers, ${dirs.app}, its site on the shared edge, and its data in ${dirs.data} and Compose volumes`
-        : `Remove the app "${app}": its containers, ${dirs.app} and its site on the shared edge (its data in ${dirs.data} and Compose volumes stay)`,
+        ? `Remove the app "${app}": ${parts.join(", ")}, and its data in ${dirs.data} and Compose volumes`
+        : `Remove the app "${app}": ${listText(parts)} (its data in ${dirs.data} and Compose volumes stay)`,
       busy ? "change" : "in-place",
       { app, deleteData },
       busy
-        ? `${plural(containers.length, "container")} of the app; its runtime files in ${dirs.app}.`
+        ? `${plural(containers.length, "container")} of the app; its runtime files in ${dirs.app}${scheduled ? `; its line in the deploy user's crontab (other apps' lines stay)` : ""}.`
         : "Nothing of the app is left.",
     ),
   );

@@ -296,6 +296,15 @@ export function previewCommand(app: string): string {
 }
 
 /**
+ * The end of the app's line for scheduled snapshots in the deploy user's crontab (feature 024),
+ * which the deploy writes: a copy of the tag in `@opscrew/iac-templates`' `workflow/snapshots.ts`.
+ * Matched only at the end of the line, so `shop`'s never matches `shop-admin`'s.
+ */
+export function snapshotScheduleTag(app: string): string {
+  return ` # opscrew-snapshots ${app}`;
+}
+
+/**
  * The files of a recipe's folder that a recipe leaves out: the preview values and the preview
  * command's log. No recipe file takes their names, and inspection never reads them.
  */

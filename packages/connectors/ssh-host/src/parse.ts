@@ -829,6 +829,12 @@ export function parsePreviews(text: string): HostFacts["previews"] {
     .sort((a, b) => a.app.localeCompare(b.app));
 }
 
+/** The apps named by the inspection's `snapshot-schedules` lines, each once, in order. */
+export function parseSnapshotSchedules(text: string): string[] {
+  const apps = linesOf(text).filter((app) => AppNameSchema.safeParse(app).success);
+  return [...new Set(apps)].sort();
+}
+
 /** The filter table of `iptables-save` (or `ip6tables-save`) output: its chain and rule lines. */
 function filterTable(save: string): string[] {
   const lines: string[] = [];

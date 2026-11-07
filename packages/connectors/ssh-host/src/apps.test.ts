@@ -438,6 +438,51 @@ describe("removing an app", () => {
     expect((await planFor(fake, blog(fake))).steps.every((s) => s.state === "in-place")).toBe(true);
   });
 
+  it("removes the app's scheduled snapshots from the deploy user's crontab; other lines stay", async () => {
+    const fake = await withShop();
+    const line = (app: string) =>
+      `0 * * * * sh /srv/apps/${app}/snapshot.sh take scheduled > /dev/null 2>&1 # opscrew-snapshots ${app}`;
+    const own = "30 2 * * * /usr/local/bin/backup # opscrew-snapshots shop extra";
+    fake.crontab = [line("shop"), line("shop-admin"), own];
+    const facts = await inspectHost(fake);
+    expect(facts.snapshotSchedules).toEqual(["shop", "shop-admin"]);
+    const plan = planTeardown(
+      facts,
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy",
+    );
+    expect(plan.steps.find((step) => step.id === "app-dirs")?.title).toBe(
+      'Remove the app "shop": its containers, /srv/apps/shop, its site on the shared edge and its scheduled snapshots in the deploy user\'s crontab (its data in /srv/data/shop and Compose volumes stay)',
+    );
+    await applyApproved(fake, plan, { command: "opscrew destroy" });
+    // Matched at the end of the line only: shop-admin's line and the user's own stay.
+    expect(fake.crontab).toEqual([line("shop-admin"), own]);
+    expect((await inspectHost(fake)).snapshotSchedules).toEqual(["shop-admin"]);
+  });
+
+  it("removes a schedule left behind by an earlier teardown, and a missing crontab is fine", async () => {
+    const fake = await withShop();
+    await removeApp(fake, "shop");
+    fake.crontab = [
+      "0 * * * * sh /srv/apps/shop/snapshot.sh take scheduled > /dev/null 2>&1 # opscrew-snapshots shop",
+    ];
+    const facts = await inspectHost(fake);
+    const plan = planTeardown(
+      facts,
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy",
+    );
+    expect(changes(plan)).toEqual(["app-dirs"]);
+    await applyApproved(fake, plan, { command: "opscrew destroy" });
+    expect(fake.crontab).toEqual([]);
+
+    // Without a crontab, or without cron at all, the teardown has nothing to remove there.
+    const bare = await withShop();
+    bare.cron = false;
+    await removeApp(bare, "shop");
+    expect(bare.dirs.has("/srv/apps/shop")).toBe(false);
+  });
+
   it("starts a stopped kamal-proxy to remove the app's route; one that cannot start stops the teardown", async () => {
     const fake = await withTwo();
     const proxy = fake.containers.find((container) => container.name.includes("kamal-proxy"));

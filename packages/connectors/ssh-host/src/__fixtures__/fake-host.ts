@@ -1005,6 +1005,7 @@ export class FakeHost implements RemoteExec {
     add("monitoring", this.monitoringLines());
     add("runners", this.runnerLines());
     add("previews", this.previewLines());
+    add("snapshot-schedules", this.snapshotScheduleLines());
     const fileLine = (name: string, path: string) => {
       const content = this.files.get(path);
       return `file ${name} ${content === undefined ? "-" : sha256(content)}`;
@@ -1780,10 +1781,15 @@ export class FakeHost implements RemoteExec {
           !this.running(p.APP ?? "") &&
           !this.dirs.has(p.APP_DIR ?? "") &&
           !this.files.has(p.SITE ?? "") &&
-          !(wipe && (this.dirs.has(p.DATA_DIR ?? "") || this.volumes.has(p.APP ?? "")));
+          !(wipe && (this.dirs.has(p.DATA_DIR ?? "") || this.volumes.has(p.APP ?? ""))) &&
+          !(this.crontab ?? []).some((line) => new RegExp(p.CRON_RE ?? "").test(line));
         return name.endsWith("check") ? this.check(ok) : this.verify(ok, p);
       }
       case "app-dirs.teardown.apply": {
+        if (this.crontab !== null) {
+          const cron = new RegExp(p.CRON_RE ?? "");
+          this.crontab = this.crontab.filter((line) => !cron.test(line));
+        }
         this.removeProject(p.APP ?? "", p.DELETE_DATA === "true");
         this.files.delete(p.SITE ?? "");
         if (this.files.has(p.EDGE_COMPOSE ?? "")) {
@@ -2048,6 +2054,12 @@ export class FakeHost implements RemoteExec {
    * The previews section as `PREVIEWS_SNIPPET` prints it: each app folder with the preview
    * command, its files' SHA-256, its values file, its cron lines and its previews' folders.
    */
+  /** The `snapshot-schedules` section: the apps with a line of scheduled snapshots in deploy's crontab. */
+  private snapshotScheduleLines(): string {
+    const tag = / # opscrew-snapshots ([a-z0-9][a-z0-9-]*)$/;
+    return (this.crontab ?? []).flatMap((line) => tag.exec(line)?.[1] ?? []).join("\n");
+  }
+
   private previewLines(): string {
     const command = new RegExp(`^${APPS_DIR}/([a-z0-9-]+)/${PREVIEW_COMMAND_FILE}$`);
     const apps = [...this.files.keys()]

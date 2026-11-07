@@ -190,6 +190,33 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
     ).not.toContain(OWN_IPV4);
   });
 
+  it("removes the app's scheduled snapshots in its teardown; another app's schedule stays", async () => {
+    const s = await deployed();
+    // "shop" and "shop-admin" each have their line in the deploy user's crontab.
+    s.host.facts = HostFactsSchema.parse({
+      ...s.host.facts,
+      snapshotSchedules: ["shop", "shop-admin"],
+    });
+    const previews: DestroyPreview[] = [];
+    await runDestroy(s.deps, {
+      services: services(s),
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+    // Named where the user confirms and in the approved teardown host plan.
+    expect(previews[0]?.hostSteps?.join("\n")).toContain(
+      "its scheduled snapshots in the deploy user's crontab",
+    );
+    const teardown = s.host.applies.at(-1)?.plan;
+    expect(teardown?.purpose).toBe("teardown");
+    expect(teardown?.steps.find((step) => step.id === "app-dirs")?.title).toContain(
+      "its scheduled snapshots in the deploy user's crontab",
+    );
+    expect(s.host.facts.snapshotSchedules).toEqual(["shop-admin"]);
+  });
+
   it("deletes the app's data only with deleteData, the destroy approval and the typed app name", async () => {
     const s = await deployed();
     // The host approval is answered with the wrong name: nothing on the server changes.

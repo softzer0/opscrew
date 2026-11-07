@@ -573,9 +573,9 @@ function changes(plan: HostPlan, id: HostStepId, app?: string): boolean {
 
 /**
  * The facts after the teardown `plan`: only what OpsCrew set up for the app goes (its Compose
- * project, its folder, its tunnel connector and deploy key, Portainer and the edge with the last
- * app, its record; its data only with `deleteData`, else its record stays as data-kept), as the
- * real adapter does. Other apps, and containers, volumes and users OpsCrew did not create, stay.
+ * project, its folder, its line of scheduled snapshots in deploy's crontab, its tunnel connector
+ * and deploy key, Portainer and the edge with the last app, its record; its data only with
+ * `deleteData`, else its record stays as data-kept), as the real adapter does. Other apps, and containers, volumes and users OpsCrew did not create, stay.
  */
 function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
   const f = structuredClone(before);
@@ -597,6 +597,9 @@ function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
       gone.has(EDGE_PROJECT) && dir.path === EDGE_DIR ? { path: dir.path, kind: "absent" } : dir,
     );
   f.runtimeFiles = f.runtimeFiles.filter((file) => file.app !== plan.app);
+  if (changes(plan, "app-dirs")) {
+    f.snapshotSchedules = f.snapshotSchedules.filter((app) => app !== plan.app);
+  }
   f.tunnels = f.tunnels.filter((tunnel) => tunnel.app !== plan.app);
   f.runners = f.runners.filter((runner) => !changes(plan, "github-runner", runner.app));
   if (paramsOf(plan, "portainer") !== undefined) {
