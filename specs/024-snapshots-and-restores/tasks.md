@@ -142,7 +142,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, the Docker test with `OPSCREW_DOCKER_TESTS=1`
   - Effort: high
 
-- [ ] T2419 [US5] Destroy and moves leave no snapshot schedule behind (plan.md D12), in `packages/connectors/ssh-host/src/**`, `packages/agents/src/testing/own.ts` and `packages/agents/src/destroy/portainer.ts` (+ tests)
+- [x] T2419 [US5] Destroy and moves leave no snapshot schedule behind (plan.md D12), in `packages/connectors/ssh-host/src/**`, `packages/agents/src/testing/own.ts` and `packages/agents/src/destroy/portainer.ts` (+ tests)
   - Owns: those paths and their tests
   - Reads: plan.md 1., 3.–4., D12; `packages/iac-templates/src/workflow/snapshots.ts` (the crontab tag)
   - Depends: T2404; the Portainer part after T2418
