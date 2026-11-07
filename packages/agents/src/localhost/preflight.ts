@@ -9,7 +9,7 @@ import { exists, listText, type OpsCrewError, toPosixRelative } from "@opscrew/c
 import { EDGE_PROJECT, serviceSpec } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { composeVersion, dockerInfo, projectObjects } from "./docker";
+import { composeVersion, dockerInfo, projectObjects, publishedPorts } from "./docker";
 import { emulationNote, imageSource, localBuild, planBuildsLocally } from "./image";
 import {
   computer,
@@ -60,7 +60,8 @@ export async function otherLocalApps(appsDir: string, app: string): Promise<stri
  * - Docker answers (`docker info`) and runs Linux containers;
  * - Docker Compose is 2.23 or newer;
  * - the sum of the stack's memory limits fits the memory Docker has;
- * - the plan's ports on 127.0.0.1 are free, or OpsCrew's own edge holds them, and they are the
+ * - the plan's ports on 127.0.0.1 are free (no program listens there and no other container
+ *   publishes them), or OpsCrew's own edge holds them, and they are the
  *   ports the edge already serves this computer's other OpsCrew apps on;
  * - the shell the scripts run with is found;
  * - Docker runs the plan's CPU; a local build has its Dockerfile;
@@ -138,16 +139,27 @@ export async function localPreflight(
     const edge = await projectObjects(deps, EDGE_PROJECT);
     const ours = (port: number) =>
       edge.containers.some((container) => container.ports.includes(`127.0.0.1:${port}->`));
+    // Docker Desktop holds the ports other containers publish in its VM, unseen by `portFree`.
+    const held = await publishedPorts(deps);
+    const free = async (port: number) =>
+      ours(port) || (!held.has(port) && (await local.portFree(port)));
+    const holder = (port: number) => {
+      const container = held.get(port);
+      return container === undefined ? "another program" : `the Docker container ${container}`;
+    };
     for (const [kind, port, fallback] of [
       ["HTTPS", target.ports.https, 8443],
       ["HTTP", target.ports.http, 8080],
     ] as const) {
-      if (ours(port) || (await local.portFree(port))) continue;
+      if (await free(port)) continue;
       const field = kind === "HTTPS" ? "https" : "http";
+      const iis = held.has(port) ? "" : " (on Windows often IIS or another web server)";
       problems.push(
         port === fallback
-          ? `Port ${port} on 127.0.0.1 is in use by another program. Stop it, then run the command again.`
-          : `Port ${port} on 127.0.0.1 is in use by another program (on Windows often IIS or another web server). Stop it, or set target.ports.${field} to ${fallback} in ${file}, then run the command again.`,
+          ? `Port ${port} on 127.0.0.1 is in use by ${holder(port)}. Stop it, then run the command again.`
+          : !(await free(fallback))
+            ? `Ports ${port} and ${fallback} on 127.0.0.1, the two OpsCrew's edge can use for ${kind}, are in use: ${port} by ${holder(port)}, ${fallback} by ${holder(fallback)}. Stop the one on ${port}, or the one on ${fallback} and set target.ports.${field} to ${fallback} in ${file}, then run the command again.`
+            : `Port ${port} on 127.0.0.1 is in use by ${holder(port)}${iis}. Stop it, or set target.ports.${field} to ${fallback} in ${file}, then run the command again.`,
       );
     }
   }

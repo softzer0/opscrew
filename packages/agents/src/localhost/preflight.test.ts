@@ -109,6 +109,55 @@ describe("localPreflight", () => {
     expect((await preflight(ours)).problems).toEqual([]);
   });
 
+  it("counts the ports other containers publish, which Docker Desktop holds unseen, but not the edge's", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...localPlan(),
+      target: { ...localPlan().target, ports: { https: 443, http: 80 } },
+    });
+    const sail = {
+      name: "sail-laravel.test-1",
+      project: "sail",
+      service: "laravel.test",
+      running: true,
+      ports: "0.0.0.0:80->80/tcp, [::]:80->80/tcp",
+    };
+    // 80 held by another container (nothing listens on 127.0.0.1): 8080 is the way out.
+    const one = new FakeComputer();
+    one.containers.push(sail);
+    expect((await preflight(one, plan)).problems).toEqual([
+      "Port 80 on 127.0.0.1 is in use by the Docker container sail-laravel.test-1. Stop it, or set target.ports.http to 8080 in opscrew/plan.yaml, then run the command again.",
+    ]);
+    // 80 and 8080 both held: the refusal names both holders.
+    const both = new FakeComputer();
+    both.containers.push(sail, {
+      name: "mailpit-1",
+      project: "mail",
+      service: "mailpit",
+      running: true,
+      ports: "127.0.0.1:8025-8080->8025-8080/tcp",
+    });
+    expect((await preflight(both, plan)).problems).toEqual([
+      "Ports 80 and 8080 on 127.0.0.1, the two OpsCrew's edge can use for HTTP, are in use: 80 by the Docker container sail-laravel.test-1, 8080 by the Docker container mailpit-1. Stop the one on 80, or the one on 8080 and set target.ports.http to 8080 in opscrew/plan.yaml, then run the command again.",
+    ]);
+    expect((await preflight(both)).problems).toEqual([
+      "Port 8080 on 127.0.0.1 is in use by the Docker container mailpit-1. Stop it, then run the command again.",
+    ]);
+    // A stopped container holds nothing; OpsCrew's own edge on 80 and 443 is not counted.
+    const ours = new FakeComputer();
+    ours.containers.push(
+      { ...sail, running: false },
+      {
+        name: "opscrew-edge-caddy-1",
+        project: "opscrew-edge",
+        service: "caddy",
+        running: true,
+        ports: "127.0.0.1:80->80/tcp, 127.0.0.1:443->443/tcp",
+      },
+    );
+    ours.busy = new Set([80, 443]);
+    expect((await preflight(ours, plan)).problems).toEqual([]);
+  });
+
   it("stops when the edge serves the computer's other apps on other ports", async () => {
     const computer = new FakeComputer();
     const plan = localPlan();

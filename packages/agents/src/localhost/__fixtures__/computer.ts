@@ -158,6 +158,15 @@ export class FakeComputer {
     const project = this.project(args);
     const named = (objects: DockerObject[]) =>
       objects.filter((o) => project === undefined || o.project === project).map((o) => o.name);
+    if (first === "ps" && !args.includes("--filter")) {
+      // Every running container's host ports (`publishedPorts`).
+      return ok(
+        this.containers
+          .filter((c) => c.running)
+          .map((c) => `${c.name}|${c.project ?? ""}|${c.ports ?? ""}`)
+          .join("\n"),
+      );
+    }
     if (first === "ps") {
       return ok(
         this.containers

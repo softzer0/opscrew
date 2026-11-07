@@ -18,6 +18,7 @@ import {
   createTestPhaseDeps,
   makeRequirements,
   nextPostgresFacts,
+  ScriptedRunner,
   type TestPhaseDeps,
 } from "../testing";
 import { resolveLocalImage } from "./image";
@@ -77,6 +78,21 @@ describe("design for this computer", () => {
     expect(chosen).toMatchObject({ id: "localhost", title: "This computer", recommended: true });
     expect(deps.reporter.text()).toContain("no server cost (it runs in this computer's Docker)");
     expect(deps.reporter.text()).not.toContain("Memory limits:");
+  });
+
+  it("falls back from a port another container publishes, which Docker Desktop holds unseen", async () => {
+    const deps = await setup();
+    // Another project's container publishes 80 inside Docker Desktop's VM: 127.0.0.1:80 binds.
+    const runner = new ScriptedRunner((command, args) => ({
+      exitCode: 0,
+      stdout:
+        command === "docker" && args[0] === "ps"
+          ? "sail-laravel.test-1|sail|0.0.0.0:80->80/tcp, [::]:80->80/tcp, 5173/tcp\n"
+          : "",
+      stderr: "",
+    }));
+    const { plan } = await runDesign({ ...deps, runner }, { localhost: computer("x64") });
+    expect(plan.target).toMatchObject({ ports: { https: 443, http: 8080 } });
   });
 
   it("keeps the ports OpsCrew's edge on this computer already serves", async () => {

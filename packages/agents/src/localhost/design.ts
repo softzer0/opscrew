@@ -17,6 +17,7 @@ import type { PhaseDeps } from "../context";
 import { noServerCost } from "../design/own";
 import { containersText, sizeFor } from "../design/sizing";
 import { providerProfile } from "../providers";
+import { publishedPorts } from "./docker";
 import { buildsLocally, emulationNote, imageSource } from "./image";
 import { computer, computerArch, type LocalhostServices } from "./services";
 import { edgePorts } from "./stack";
@@ -53,18 +54,21 @@ export function onThisComputer(requirements: Requirements): Requirements {
 /**
  * The ports the edge listens on: those of OpsCrew's edge already on this computer (every app there
  * shares it), else the previous plan's, else 443 and 80 when free and 8443 and 8080 otherwise.
+ * A port another running container publishes is not free.
  */
 async function edgePortsFor(
-  deps: Pick<PhaseDeps, "paths">,
+  deps: Pick<PhaseDeps, "paths" | "runner">,
   previous: DeployPlan | undefined,
   portFree: (port: number) => Promise<boolean>,
 ): Promise<LocalhostDeployTarget["ports"]> {
   const serving = await edgePorts(deps.paths);
   if (serving !== undefined) return serving;
   if (previous?.target.provider === "localhost") return previous.target.ports;
+  const held = await publishedPorts(deps);
+  const free = async (port: number) => !held.has(port) && (await portFree(port));
   return {
-    https: (await portFree(443)) ? 443 : 8443,
-    http: (await portFree(80)) ? 80 : 8080,
+    https: (await free(443)) ? 443 : 8443,
+    http: (await free(80)) ? 80 : 8080,
   };
 }
 
@@ -75,7 +79,7 @@ async function edgePortsFor(
  * @throws OpsCrewError `PHASE_PRECONDITION` on a CPU Docker runs no Linux images for.
  */
 export async function localhostDesignChoice(
-  deps: Pick<PhaseDeps, "paths" | "env">,
+  deps: Pick<PhaseDeps, "paths" | "env" | "runner">,
   input: { previous: DeployPlan | undefined; environment: Pick<DeployPlan, "environment"> },
   services: Pick<LocalhostServices, "arch" | "portFree"> = {},
 ): Promise<LocalhostDesignChoice> {

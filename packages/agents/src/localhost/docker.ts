@@ -1,10 +1,11 @@
 /**
  * Read-only questions to this computer's Docker, through the phase's runner: whether it runs and
- * what it has (`docker info`), Compose's version, and the containers, networks and volumes of a
- * Compose project, found by Compose's own labels. Nothing here changes anything: changes go through
- * the local executor's scripts.
+ * what it has (`docker info`), Compose's version, the containers, networks and volumes of a
+ * Compose project, found by Compose's own labels, and the host ports running containers publish.
+ * Nothing here changes anything: changes go through the local executor's scripts.
  */
 import { isUserFacingError } from "@opscrew/core";
+import { EDGE_PROJECT } from "@opscrew/iac-templates";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
 
@@ -132,4 +133,29 @@ export async function projectObjects(
     networks: await lines(deps, ["network", "ls", ...filter, "--format", "{{.Name}}"]),
     volumes: await lines(deps, ["volume", "ls", ...filter, "--format", "{{.Name}}"]),
   };
+}
+
+/**
+ * The host ports running containers publish, each with the name of the container holding it,
+ * OpsCrew's own edge left out. Docker Desktop holds them inside its VM, where a listener on
+ * 127.0.0.1 does not show them. None when Docker is not installed or does not answer.
+ */
+export async function publishedPorts(
+  deps: Pick<PhaseDeps, "runner">,
+): Promise<Map<number, string>> {
+  const format = '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Ports}}';
+  const running = await lines(deps, ["ps", "--format", format]).catch((error: unknown) => {
+    if (isUserFacingError(error)) return [];
+    throw error;
+  });
+  const held = new Map<number, string>();
+  for (const line of running) {
+    const [name = "", project, ports = ""] = line.split("|");
+    if (project === EDGE_PROJECT) continue;
+    // For example `0.0.0.0:80->80/tcp, [::]:80->80/tcp, 127.0.0.1:8000-8001->8000-8001/tcp`.
+    for (const [, from = "", to] of ports.matchAll(/(?:^|[\s,])(?:\S*:)?(\d+)(?:-(\d+))?->/g)) {
+      for (let port = Number(from); port <= Number(to ?? from); port++) held.set(port, name);
+    }
+  }
+  return held;
 }
