@@ -129,6 +129,11 @@ const PendingRollbackSchema = z.object({
    * target's (D19): put back, with the version that ran started again, when the run failed.
    */
   saved: z.string().regex(SNAPSHOT_ID).optional(),
+  /**
+   * In the user's Portainer, the rollback removes the mark on restored data once the run
+   * succeeded: one that restored a snapshot (`saved`), or the way out of a stuck one.
+   */
+  unmark: z.literal(true).optional(),
 });
 
 export type PendingRollback = z.infer<typeof PendingRollbackSchema>;

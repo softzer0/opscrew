@@ -155,10 +155,13 @@ describe("renderWorkflow for a Portainer target", () => {
     expect(portainerHealthUrl(updaterPlan)).toBe("https://shop.example.com/api/health");
   });
 
-  it("rolls back only after it changed the branch, and always fails the run", () => {
+  it("rolls back only after it changed the branch, also when the run is cancelled, and always fails the run", () => {
     for (const doc of [updaterDoc, cloudflareDoc]) {
       const rollback = step(doc, "Roll back to the previous version");
-      expect(rollback.if).toBe("failure() && steps.write.outputs.changed == 'true'");
+      // A cancelled run (T2420) must not leave the new version on the branch either.
+      expect(rollback.if).toBe(
+        "(failure() || cancelled()) && steps.write.outputs.changed == 'true'",
+      );
       expect(rollback.env).toMatchObject({
         PREVIOUS: "${{ steps.write.outputs.previous }}",
         DEPLOYED: "${{ steps.write.outputs.deployed }}",
@@ -209,7 +212,7 @@ describe("renderWorkflow for a Portainer target", () => {
     ) as Workflow;
     expect(notice.run).toBe(step(noDomain, "Check the app").run);
     expect(step(doc, "Roll back to the previous version").if).toBe(
-      "failure() && steps.write.outputs.changed == 'true'",
+      "(failure() || cancelled()) && steps.write.outputs.changed == 'true'",
     );
   });
 

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import type { FakeContainer, FakeFile } from "@opscrew/connector-docker/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { canonicalJson, OpsCrewError, sha256Hex } from "@opscrew/core";
-import { DEPLOY_PAUSED_VARIABLE, IMAGES } from "@opscrew/iac-templates";
+import { DEPLOY_PAUSED_VARIABLE, IMAGES, portainerStackTemplatePath } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { blobOf, cleanDrift, DEPLOY_RUN_URL } from "../promote/__fixtures__/world";
@@ -28,9 +28,12 @@ import {
   readRollback,
   rollbackFile,
 } from "./record";
+import { shortImage } from "./versions";
 
 const STAGING = "opscrew rollback --env staging";
 const WORKFLOW = ".github/workflows/opscrew-deploy-staging.yml";
+/** Staging's deploy branch, which Portainer deploys. */
+const DEPLOY_BRANCH = "opscrew-deploy-staging";
 /** When b's snapshot was taken. */
 const TAKEN = "2026-10-11T11:30:00Z";
 /** The copy taken just before the restore: the test clock's time. */
@@ -63,11 +66,12 @@ const file = (text: string): FakeFile => ({
 
 /**
  * Staging in the user's Portainer, deployed three times with c running and b's snapshot before a
- * release in the snapshots volume (unless `snapshot` is false). Each dispatch plays Portainer's
- * redeploy as `redeploy` says: `none` (the run waits), `target` (b starts), or `revert` (b starts,
- * fails its health check, and the workflow's revert writes c back, whose snapshot step the stack's
- * guard refuses while the data is marked for b). `events` records, in order, each restore's source,
- * the mark's writes and each stack container that starts.
+ * release in the snapshots volume (unless `snapshot` is false), the stack template merged on main.
+ * Each dispatch plays Portainer's redeploy as `play.redeploy` says: `none` (the run deploys
+ * nothing), `target` (the deploy branch names the dispatched version, which starts), or `revert`
+ * (it starts, fails its health check, and the workflow's revert writes c back to the branch, whose
+ * snapshot step the stack's guard refuses while the data is marked for another). `events` records,
+ * in order, each restore's source, the mark's writes and each stack container that starts.
  */
 async function world(
   o: {
@@ -91,11 +95,14 @@ async function world(
       base.github.variables.delete(name);
     },
   });
-  const workflow = "name: OpsCrew deploy (staging)\n";
-  const path = join(deps.paths.root, WORKFLOW);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, workflow);
-  github.onMain.set(WORKFLOW, blobOf(workflow));
+  const merged = async (path: string, text: string) => {
+    const file = join(deps.paths.root, path);
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, text);
+    github.onMain.set(path, blobOf(text));
+  };
+  await merged(WORKFLOW, "name: OpsCrew deploy (staging)\n");
+  await merged(portainerStackTemplatePath(plan), "services: {}\n");
   const on = { environment: "staging" };
   base.deploy("a", 1, on);
   const b = base.deploy("b", 2, on);
@@ -108,30 +115,36 @@ async function world(
   portainer.probe.version = hexOf(c.digest);
   portainer.volume().set(".running", file(`${imageOf(c)}\n`));
   if (o.snapshot !== false) portainer.store(hexB, about(hexB, b));
+  /** The deploy branch's compose.yaml names `built`. */
+  const branch = (built: Built) =>
+    github.files.set(`${DEPLOY_BRANCH}:compose.yaml`, `image: ${imageOf(built)}\n`);
+  branch(c);
 
   const events: string[] = [];
   const volume = () => portainer.volume();
+  const name = (image: string) => (hexOf(image) === hexOf(c.digest) ? "c" : "b");
   const inner = docker.onStart;
   docker.onStart = (container) => {
     const script = container.cmd[2] ?? "";
     const service = container.labels["com.docker.compose.service"];
-    if (service !== undefined) {
-      const marked = volume().has(".restored") ? " (marked)" : "";
-      events.push(`start ${service} ${container.image === imageOf(c) ? "c" : "b"}${marked}`);
-    }
+    if (service !== undefined) events.push(`start ${service} ${name(container.image)}`);
     const mark =
       /^umask 077 && printf '%s\\n%s\\n' '([^']+)' '([^']+)' > \/snapshots\/\.restored\.tmp/.exec(
         script,
       );
     if (mark !== null) {
       volume().set(".restored", file(`${mark[1]}\n${mark[2]}\n`));
-      events.push("mark");
+      events.push(`mark ${name(mark[1] ?? "")}`);
       return { exitCode: 0 };
+    }
+    if (script.startsWith("if [ -f /snapshots/.restored ]; then echo mark;")) {
+      const text = volume().get(".restored")?.data?.toString();
+      return { exitCode: 0, stdout: text === undefined ? "" : `mark\n${text}` };
     }
     const reset = /^printf '%s\\n' '([^']+)' > \/snapshots\/\.running\.tmp/.exec(script)?.[1];
     if (reset !== undefined) {
       volume().set(".running", file(`${reset}\n`));
-      events.push(`running ${reset === imageOf(c) ? "c" : reset}`);
+      events.push(`running ${name(reset)}`);
       return { exitCode: 0 };
     }
     if (script === "rm -f /snapshots/.restored") {
@@ -139,11 +152,14 @@ async function world(
       events.push("unmark");
       return { exitCode: 0 };
     }
-    // The restore's removal of a stuck rollback's mark.
-    if (script.startsWith("if [ -f /snapshots/.restored ]; then rm -f /snapshots/.restored")) {
-      const had = volume().delete(".restored");
+    // The restore's removal of a stuck rollback's mark, when its way out names that restore.
+    const restoring = /grep -Eq '\^opscrew restore ([0-9A-Za-z]+)\( \|\$\)'/.exec(script)?.[1];
+    if (restoring !== undefined) {
+      const way = volume().get(".restored")?.data?.toString().split("\n")[1] ?? "";
+      if (!new RegExp(`^opscrew restore ${restoring}( |$)`).test(way)) return { exitCode: 0 };
+      volume().delete(".restored");
       events.push("unmark");
-      return { exitCode: 0, stdout: had ? "removed\n" : "" };
+      return { exitCode: 0, stdout: "removed\n" };
     }
     const from = /(?:--single-transaction|-xpf) \/snapshots\/([0-9A-Za-z]+)\//.exec(script)?.[1];
     if (from !== undefined) events.push(`restore ${from === hexB ? "b" : from}`);
@@ -160,13 +176,14 @@ async function world(
     docker.containers.delete(old.id);
     const id = `${old.id.slice(0, 60)}${built === b ? "000b" : "000c"}`;
     docker.containers.set(id, { ...old, id, image: imageOf(built), state: "created" });
+    const word = built === b ? "b" : "c";
     if (blocked) {
-      events.push(`refused ${built === b ? "b" : "c"}`);
+      events.push(`refused ${word}`);
       return;
     }
     const started = docker.containers.get(id) as FakeContainer;
     started.state = "running";
-    events.push(`ran ${built === b ? "b" : "c"}`);
+    events.push(`ran ${word}`);
     volume().set(".running", file(`${imageOf(built)}\n`));
   };
   const atDispatch: { app?: string; marked?: string; saved?: boolean }[] = [];
@@ -178,8 +195,15 @@ async function world(
       saved: volume().has(`${SAVED}/about.json`),
     });
     const accepted = await dispatch(...args);
-    if (play.redeploy !== "none") redeploy(b);
-    if (play.redeploy === "revert") redeploy(c);
+    const target = args[4]?.digest === b.digest ? b : c;
+    if (play.redeploy !== "none") {
+      branch(target);
+      redeploy(target);
+    }
+    if (play.redeploy === "revert") {
+      branch(c);
+      redeploy(c);
+    }
     return accepted;
   };
 
@@ -197,7 +221,28 @@ async function world(
   };
   const run = (options: Omit<RollbackOptions, "services"> = {}) =>
     rollback(deps, { ...options, services });
-  return { ...portainer, github, b, c, hexB, events, play, atDispatch, redeploy, run };
+  /** `opscrew restore <id>` in this Portainer. */
+  const restore = (id: string) =>
+    restoreSnapshot(deps, id, {
+      services: {
+        github,
+        ...(portainer.services.portainer ? { portainer: portainer.services.portainer } : {}),
+      },
+    });
+  return {
+    ...portainer,
+    github,
+    b,
+    c,
+    hexB,
+    events,
+    play,
+    atDispatch,
+    branch,
+    redeploy,
+    run,
+    restore,
+  };
 }
 
 type World = Awaited<ReturnType<typeof world>>;
@@ -276,6 +321,23 @@ const WAY_OUT = `opscrew restore ${SAVED} --env staging`;
 /** The mark on the data restored for b: its image, then the way out. */
 const MARK = (world: World) => `${imageOf(world.b)}\n${WAY_OUT}\n`;
 
+/** The mark the undo leaves when the deploy branch still names b: for c, its way out the rollback. */
+const BACK = (world: World) =>
+  `${imageOf(world.c)}\n${STAGING} --to ${world.c.digest} --database keep\n`;
+
+/** Makes the next scripts that hold `text` fail with exit 1, `times` times (default always). */
+function failWith(world: World, text: string, times = Number.POSITIVE_INFINITY) {
+  const start = world.docker.onStart;
+  let left = times;
+  world.docker.onStart = (each) => {
+    if (left > 0 && (each.cmd[2] ?? "").includes(text)) {
+      left--;
+      return { exitCode: 1 };
+    }
+    return start?.(each);
+  };
+}
+
 describe.skipIf(!SH)(
   "opscrew rollback --database snapshot in the user's Portainer (D14, D19)",
   () => {
@@ -311,9 +373,9 @@ describe.skipIf(!SH)(
         `Typing shop-staging approves it. OpsCrew then stops the app in your Portainer, copies its data as it is now, restores the snapshot and starts the rollback's run, which starts ${words(w)}: until the rollback ends, no other version starts on that data.`,
       );
       expect(request.details).not.toContain(KEEP_LINE);
-      // Before the dispatch: the app stopped, the copy taken, the snapshot restored and marked.
+      // Before the dispatch: the app stopped, the copy taken, the data marked, then restored.
       expect(w.atDispatch).toEqual([{ app: "exited", marked: MARK(w), saved: true }]);
-      expect(w.events).toEqual(["restore b", "restore b", "mark", "ran b", "unmark"]);
+      expect(w.events).toEqual(["mark b", "restore b", "restore b", "ran b", "unmark"]);
       expect(w.volume().has(".restored")).toBe(false);
       expect(appContainer(w)).toMatchObject({ image: imageOf(w.b), state: "running" });
       expect((await readRollback(w.deps.paths))?.database).toEqual({
@@ -363,35 +425,43 @@ describe.skipIf(!SH)(
       expect(w.volume().has(".restored")).toBe(false);
     });
 
-    it("puts the copy back and starts the app when the restore fails, before any dispatch", async () => {
+    it("refuses the snapshot until the stack template on the dispatch branch is the committed one", async () => {
       const w = await world();
-      const start = w.docker.onStart;
-      w.docker.onStart = (each) =>
-        (each.cmd[2] ?? "").includes(`/snapshots/${w.hexB}/db.dump`)
-          ? { exitCode: 1, stderr: "a row of data" }
-          : start?.(each);
+      w.github.onMain.set(portainerStackTemplatePath(w.plan), blobOf("services: {old: {}}\n"));
+      const error = await failure(w.run({ database: "snapshot" }));
+      expect(error.message).toBe(
+        `The stack template on the branch the rollback's run deploys from (${portainerStackTemplatePath(w.plan)}) is not the one committed here, so the stack may not keep other versions off the restored data. Merge the deploy-setup pull request \`opscrew provision --env staging\` opened (or run it, if none is open) first. Nothing was changed.`,
+      );
+      expect(w.handler.requests).toEqual([]);
+      expect(w.events).toEqual([]);
+    });
+
+    it("puts the copy back, then unmarks the data and starts the app, when the restore fails before any dispatch", async () => {
+      const w = await world();
+      failWith(w, `/snapshots/${w.hexB}/db.dump`);
 
       const error = await failure(w.run({ database: "snapshot" }));
 
       expect(error.message).toBe(
         `Restoring the snapshot of ${words(w)} failed (OpsCrew could not restore db (its output can quote data, so it is not shown) in your Portainer (exit code 1)), so OpsCrew put the data back as it was (the snapshot ${SAVED}), and the app runs again. The rollback did not start, and OpsCrew put staging's deploy pause back as it was. Nothing was changed.`,
       );
-      expect(w.events).toEqual([`restore ${SAVED}`, `restore ${SAVED}`, "start app c"]);
+      expect(w.events).toEqual([
+        "mark b",
+        `restore ${SAVED}`,
+        `restore ${SAVED}`,
+        "unmark",
+        "start app c",
+      ]);
       expect(appContainer(w)).toMatchObject({ image: imageOf(w.c), state: "running" });
       expect(w.github.dispatches).toEqual([]);
       expect(paused(w)).toBeUndefined();
       expect(w.volume().has(".restored")).toBe(false);
       await nothingLeaked(w, error);
-      expect(await everythingShown(w, error)).not.toContain("a row of data");
     });
 
-    it("leaves the app stopped and the deploys paused when putting the copy back fails too, naming it", async () => {
+    it("keeps the mark, naming the way out, when putting the copy back fails too", async () => {
       const w = await world();
-      const start = w.docker.onStart;
-      w.docker.onStart = (each) =>
-        (each.cmd[2] ?? "").includes("db.dump") && (each.cmd[2] ?? "").includes("pg_restore")
-          ? { exitCode: 1 }
-          : start?.(each);
+      failWith(w, "pg_restore");
 
       const error = await failure(w.run({ database: "snapshot" }));
 
@@ -403,6 +473,7 @@ describe.skipIf(!SH)(
       expect(error.hint).toBe(
         `Once the cause is fixed, run \`${WAY_OUT}\`: it puts that copy back and removes /snapshots/.restored. Then run \`${STAGING} --resume\` and redeploy the stack in Portainer.`,
       );
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(MARK(w));
       expect(appContainer(w).state).toBe("exited");
       expect(paused(w)).toEqual({
         "shop/staging": expect.objectContaining({ reason: "rollback" }),
@@ -410,17 +481,11 @@ describe.skipIf(!SH)(
       expect(w.github.dispatches).toEqual([]);
     });
 
-    it("gets out of a stuck mark with the restore its messages name, after which the next deploy starts", async () => {
+    it("gets out of a stuck mark with the restore it names, which another restore leaves alone, after which the next deploy starts", async () => {
       const w = await world();
       w.play.redeploy = "revert";
       w.github.conclusion = "failure";
-      // The put-back after the failed run fails: the data stays marked for b.
-      let failing = true;
-      const start = w.docker.onStart;
-      w.docker.onStart = (each) =>
-        failing && (each.cmd[2] ?? "").includes(`/snapshots/${SAVED}/db.dump`)
-          ? { exitCode: 1 }
-          : start?.(each);
+      failWith(w, `/snapshots/${SAVED}/db.dump`, 1);
 
       const stuck = await failure(w.run({ database: "snapshot" }));
 
@@ -433,18 +498,21 @@ describe.skipIf(!SH)(
       expect(w.volume().get(".running")?.data?.toString()).toBe(`${imageOf(w.c)}\n`);
       w.redeploy(w.c);
       expect(w.events.at(-1)).toBe("refused c");
-      expect(paused(w)).toEqual({
-        "shop/staging": expect.objectContaining({ reason: "rollback" }),
-      });
 
-      failing = false;
-      const restored = await restoreSnapshot(w.deps, SAVED, {
-        services: {
-          github: w.github,
-          ...(w.services.portainer ? { portainer: w.services.portainer } : {}),
-        },
-      });
-      expect(restored).toMatchObject({ id: SAVED, saved: { app: expect.any(String) } });
+      // Any rollback refuses, naming the way out.
+      const refused = await failure(w.run({ database: "keep" }));
+      expect(refused.message).toBe(
+        `staging's data in your Portainer is marked for ${shortImage(imageOf(w.b))} by a rollback that did not end (/snapshots/.restored), so OpsCrew starts no other rollback on it. Nothing was changed.`,
+      );
+      expect(refused.hint).toBe(`Run \`${WAY_OUT}\`.`);
+
+      // Another snapshot of the running version leaves the mark alone.
+      const other = "20261011T100000Z";
+      w.store(other, { ...about(other, w.c), kind: "manual", version: w.c.digest });
+      expect(await w.restore(other)).toMatchObject({ id: other });
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(MARK(w));
+
+      await w.restore(SAVED);
       expect(w.volume().has(".restored")).toBe(false);
       expect(w.deps.reporter.text()).toContain(
         "OpsCrew removed /snapshots/.restored, which a rollback left to keep other versions off the data it restored: the stack's next deploy starts the app again (redeploy it in Portainer).",
@@ -509,9 +577,9 @@ describe.skipIf(!SH)(
       // b ran on its data; c's revert was refused while the data was marked for b, and c started only
       // once the copy was back and the mark gone.
       expect(w.events).toEqual([
+        "mark b",
         "restore b",
         "restore b",
-        "mark",
         "ran b",
         "refused c",
         "running c",
@@ -521,22 +589,63 @@ describe.skipIf(!SH)(
         "start app c",
       ]);
       expect(appContainer(w)).toMatchObject({ image: imageOf(w.c), state: "running" });
-      expect(w.volume().get(".running")?.data?.toString()).toBe(`${imageOf(w.c)}\n`);
       expect(w.volume().has(".restored")).toBe(false);
       expect(paused(w)).toBeUndefined();
       expect(await readRollback(w.deps.paths)).toBeUndefined();
       await nothingLeaked(w, error);
     });
 
-    it("leaves the app stopped when no container of the version that ran is left, saying to redeploy", async () => {
+    it.each([
+      ["the run is cancelled", "cancelled"],
+      ["the revert could not push", "failure"],
+    ] as const)(
+      "marks the data for the version that ran when %s and the branch still names the target",
+      async (_what, conclusion) => {
+        const w = await world();
+        // b ran and failed; the revert never wrote c back to the branch.
+        w.github.conclusion = conclusion;
+
+        const error = await failure(w.run({ database: "snapshot" }));
+
+        expect(error.message).toContain(
+          `OpsCrew put the data back as it was before the rollback (the snapshot ${SAVED}), but your Portainer has no container of the version that ran left, so the app stays stopped. The deploy branch ${DEPLOY_BRANCH} still names the version the rollback went to (the workflow's revert was cancelled or could not push), so OpsCrew marked the data for the version that ran: no other version starts on it. To write that version back to the branch, run \`${STAGING} --to ${w.c.digest} --database keep\`, or write the compose.yaml of the commit before the newest one back to ${DEPLOY_BRANCH} by hand.`,
+        );
+        expect(w.volume().get(".restored")?.data?.toString()).toBe(BACK(w));
+        // Portainer's next redeploy of the branch, b, is refused on c's data.
+        w.redeploy(w.b);
+        expect(w.events.at(-1)).toBe("refused b");
+      },
+    );
+
+    it("allows only the mark's way out, the keep rollback to the version it names, which clears the mark", async () => {
       const w = await world();
       w.github.conclusion = "failure";
-      const error = await failure(w.run({ database: "snapshot" }));
-      expect(error.message).toContain(
-        `OpsCrew put the data back as it was before the rollback (the snapshot ${SAVED}), but your Portainer has no container of the version that ran left, so the app stays stopped: redeploy the stack opscrew-shop-staging in Portainer.`,
-      );
-      expect(appContainer(w)).toMatchObject({ image: imageOf(w.b), state: "exited" });
+      await failure(w.run({ database: "snapshot" }));
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(BACK(w));
+      w.github.conclusion = "success";
+      const asked = w.handler.requests.length;
+
+      const way = `${STAGING} --to ${w.c.digest} --database keep`;
+      for (const options of [
+        { database: "snapshot" },
+        { database: "keep" },
+        { to: w.c.digest, database: "snapshot" },
+        { to: w.b.digest, database: "keep" },
+      ] as const) {
+        const refused = await failure(w.run(options));
+        expect(refused.message).toContain(
+          `staging's data in your Portainer is marked for ${shortImage(imageOf(w.c))} by a rollback that did not end`,
+        );
+        expect(refused.hint).toBe(`Run \`${way}\`.`);
+      }
+      expect(w.handler.requests).toHaveLength(asked);
+
+      const result = await w.run({ to: w.c.digest, database: "keep" });
+      expect(result).toMatchObject({ status: "deployed", database: { choice: "keep" } });
+      expect(w.github.dispatches.at(-1)?.inputs.digest).toBe(w.c.digest);
+      expect(w.events.slice(-2)).toEqual(["ran c", "unmark"]);
       expect(w.volume().has(".restored")).toBe(false);
+      expect(await readRollback(w.deps.paths)).toMatchObject({ digest: w.c.digest });
     });
 
     it("puts the copy back and starts the app again when GitHub refuses the dispatch", async () => {
@@ -552,6 +661,39 @@ describe.skipIf(!SH)(
       expect(appContainer(w)).toMatchObject({ image: imageOf(w.c), state: "running" });
       expect(w.volume().has(".restored")).toBe(false);
       expect(paused(w)).toBeUndefined();
+    });
+
+    it("follows a run it lost track of on the next rollback, and puts the copy back once it failed", async () => {
+      let approves = true;
+      const w = await world({ approve: () => approves });
+      w.play.redeploy = "none";
+      w.github.waitError = new Error("socket hang up");
+
+      const lost = await failure(w.run({ database: "snapshot" }));
+
+      expect(lost.message).toContain(
+        `The snapshot of ${words(w)} stays restored in your Portainer, marked so that no other version starts on it, with the app stopped until the run starts ${words(w)}; the copy from just before is the snapshot ${SAVED}. staging's deploys stay paused.`,
+      );
+      expect(lost.hint).toBe(
+        `Once the run ended, run \`${STAGING}\`: it records the rollback, or puts that copy back if the run failed.`,
+      );
+      expect(await readPendingRollback(w.deps.paths)).toMatchObject({
+        runId: 777,
+        saved: SAVED,
+        unmark: true,
+      });
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(MARK(w));
+
+      w.github.waitError = undefined;
+      w.github.conclusion = "failure";
+      approves = false;
+      expect((await failure(w.run({ database: "snapshot" }))).code).toBe("APPROVAL_REFUSED");
+      expect(w.deps.reporter.text()).toContain(
+        `OpsCrew put the data back as it was before the rollback (the snapshot ${SAVED}) and started the version that ran again.`,
+      );
+      expect(await readPendingRollback(w.deps.paths)).toBeUndefined();
+      expect(w.volume().has(".restored")).toBe(false);
+      expect(appContainer(w)).toMatchObject({ image: imageOf(w.c), state: "running" });
     });
 
     it("refuses the snapshot with a required reviewer, naming keep and then opscrew restore, before any change", async () => {
@@ -575,7 +717,7 @@ describe.skipIf(!SH)(
       );
       expect(error.hint).toBe(`Run \`${STAGING}\` with --database keep.`);
       expect(w.handler.requests).toEqual([]);
-      expect(w.ran).toEqual([]);
+      expect(w.events).toEqual([]);
       expect(w.github.dispatches).toEqual([]);
     });
 
@@ -606,6 +748,59 @@ describe.skipIf(!SH)(
       expect(w.volume().has(".restored")).toBe(false);
       expect(paused(w)).toBeUndefined();
       await nothingLeaked(w);
+    });
+
+    it("keeps the pending record when the put-back fails before any change, and tries again next time", async () => {
+      let approves = true;
+      const w = await world({ approve: () => approves });
+      w.play.redeploy = "none";
+      w.github.reviewer = "pending";
+      await w.run({ database: "snapshot" });
+      w.github.reviewer = "none";
+      w.github.conclusion = "failure";
+      // The copy's record can't be read: nothing changes.
+      failWith(w, `/snapshots/${SAVED}/about.json`, 1);
+
+      const error = await failure(w.run({ database: "snapshot" }));
+
+      expect(error.message).toMatch(
+        new RegExp(
+          `So OpsCrew did not put back the data from before the rollback yet \\(the snapshot ${SAVED}\\), and the app stays stopped\\. Nothing was changed\\.$`,
+        ),
+      );
+      expect(error.message.match(/Nothing was changed\./g)).toHaveLength(1);
+      expect(error.hint).toBe(
+        `Once the cause is fixed, run \`${STAGING}\` again: it puts that data back.`,
+      );
+      expect(await readPendingRollback(w.deps.paths)).toMatchObject({ saved: SAVED });
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(MARK(w));
+
+      // The next run puts the copy back; the new rollback it goes on with is not approved.
+      approves = false;
+      expect((await failure(w.run({ database: "keep" }))).code).toBe("APPROVAL_REFUSED");
+      expect(await readPendingRollback(w.deps.paths)).toBeUndefined();
+      expect(w.volume().has(".restored")).toBe(false);
+      expect(appContainer(w)).toMatchObject({ image: imageOf(w.c), state: "running" });
+    });
+
+    it("removes the mark before recording, and keeps the pending record when that fails", async () => {
+      const w = await world();
+      failWith(w, "rm -f /snapshots/.restored", 1);
+
+      const error = await failure(w.run({ database: "snapshot" }));
+
+      expect(error.message).toContain("OpsCrew could not remove /snapshots/.restored");
+      expect(error.hint).toContain(
+        `run \`${STAGING}\` again: it removes the file and records the rollback.`,
+      );
+      expect(await readRollback(w.deps.paths)).toBeUndefined();
+      expect(await readPendingRollback(w.deps.paths)).toMatchObject({ saved: SAVED, unmark: true });
+
+      const result = await w.run();
+      expect(result).toMatchObject({ status: "deployed", database: { choice: "snapshot" } });
+      expect(w.volume().has(".restored")).toBe(false);
+      expect(await readRollback(w.deps.paths)).toMatchObject({ digest: w.b.digest });
+      expect(await readPendingRollback(w.deps.paths)).toBeUndefined();
     });
 
     it("unmarks the data once a run that waited succeeded", async () => {

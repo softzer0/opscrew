@@ -113,7 +113,7 @@ function shortList(items: readonly string[]): string {
 }
 
 /** The git blob SHA-1 of a file's text, as GitHub's contents API names it. */
-function gitBlobSha(text: string): string {
+export function gitBlobSha(text: string): string {
   const bytes = Buffer.from(text, "utf8");
   return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 }

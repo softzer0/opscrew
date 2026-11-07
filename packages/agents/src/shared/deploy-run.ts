@@ -45,8 +45,9 @@ type FinishedRun = Awaited<ReturnType<DispatchRepository["api"]["waitForWorkflow
  */
 export type DeployRunFailure =
   | { kind: "refused" }
-  | { kind: "failed"; conclusion: string | null; runUrl: string }
-  | { kind: "unknown" };
+  | { kind: "failed"; conclusion: string | null; runUrl: string; runId: number }
+  /** `runId` once GitHub accepted the dispatch and named its run. */
+  | { kind: "unknown"; runId?: number };
 
 /** An error of {@link dispatchAndFollow}, with what it tells of the run. */
 class DeployRunError extends OpsCrewError {
@@ -156,7 +157,7 @@ export async function dispatchAndFollow(
     });
   } catch (error) {
     throw new DeployRunError(
-      { kind: "unknown" },
+      { kind: "unknown", runId: dispatched.runId },
       codeOf(error),
       deps.redactor.redact(
         `OpsCrew could not follow ${target}'s deploy run to its end: ${reasonOf(error)}. The run may still deploy the image. ${NOT_RECORDED}`,
@@ -182,7 +183,7 @@ export async function dispatchAndFollow(
         ? ` Its verify job checks ${input.verifies} before the deploy job runs.`
         : "";
     throw new DeployRunError(
-      { kind: "failed", conclusion: run.conclusion, runUrl: run.htmlUrl },
+      { kind: "failed", conclusion: run.conclusion, runUrl: run.htmlUrl, runId: run.id },
       "COMMAND_FAILED",
       `${target}'s deploy run did not succeed (${run.conclusion ?? "no result"}): ${run.htmlUrl}.${verifies} ${NOT_RECORDED}`,
       `Open the run to see which job failed, fix what it says, then run \`${command}\` again.`,

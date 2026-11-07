@@ -187,14 +187,18 @@ export function appContainers(run: SnapshotRun, containers: readonly DockerConta
 }
 
 /**
- * Removes the mark a rollback left on data it restored ({@link RESTORED_IMAGE_FILE}), saying so
- * when there was one: the data and the running version match again, so the stack's next deploy
- * starts.
+ * Removes the mark a rollback left on data it restored ({@link RESTORED_IMAGE_FILE}) when its way
+ * out (its second line) is the restore of the snapshot `id` just done, saying so: the data and the
+ * running version match again, so the stack's next deploy starts. `id` is letters and digits.
  */
-async function unmark(place: PortainerPlace, reporter: SnapshotRun["deps"]["reporter"]) {
+async function unmark(
+  place: PortainerPlace,
+  id: string,
+  reporter: SnapshotRun["deps"]["reporter"],
+) {
   const removed = await box(
     place,
-    `if [ -f ${RESTORED_IMAGE_FILE} ]; then rm -f ${RESTORED_IMAGE_FILE} && echo removed; fi`,
+    `if [ -f ${RESTORED_IMAGE_FILE} ] && sed -n 2p ${RESTORED_IMAGE_FILE} | grep -Eq '^opscrew restore ${id}( |$)'; then rm -f ${RESTORED_IMAGE_FILE} && echo removed; fi`,
   );
   if (removed.exitCode !== 0) throw failed(`remove ${RESTORED_IMAGE_FILE}`, removed.exitCode);
   if (!/^removed$/m.test(removed.stdout)) return;
@@ -332,7 +336,7 @@ export async function restoreInPortainer(
   await startApp();
   await audit("restored");
   // The whole snapshot of the version that runs is back: a stuck rollback's mark goes (D19).
-  if (!allow && options.only === undefined) await unmark(place, deps.reporter);
+  if (!allow && options.only === undefined) await unmark(place, id, deps.reporter);
   deps.reporter.success(
     `Restored the snapshot ${id} of ${environment} ${where} (${listText(parts.map((part) => part.name))}). The data from just before is the snapshot ${saved}: \`opscrew restore ${saved}${flags}\` puts it back.`,
   );

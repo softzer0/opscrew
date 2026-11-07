@@ -4,6 +4,8 @@
  * own, deployed by its digest through its deploy workflow's rollback dispatch, which builds
  * nothing and runs no release command, with the environment's deploys paused from then on.
  */
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   canonicalJson,
   errorMessage,
@@ -11,13 +13,18 @@ import {
   sha256Hex,
   toPosixRelative,
 } from "@opscrew/core";
-import { checkEnvironmentKey, ROLLBACK_INPUTS } from "@opscrew/iac-templates";
+import {
+  checkEnvironmentKey,
+  portainerStackTemplatePath,
+  RESTORED_IMAGE_FILE,
+  ROLLBACK_INPUTS,
+} from "@opscrew/iac-templates";
 import { formatUtc } from "@opscrew/secops";
 import { workflowBranch } from "../environments/branches";
 import { appImageOf, imageReference } from "../promote/image";
 import { clearPendingPromotion, readPromotion, writePromotion } from "../promote/record";
 import { requireRollbackServices } from "../promote/run";
-import { movePaused, NOTHING_CHANGED, requireApplied } from "../promote/shared";
+import { gitBlobSha, movePaused, NOTHING_CHANGED, requireApplied } from "../promote/shared";
 import { approve, guardText, reviewedEnvironment } from "../promote/site";
 import {
   type DeployPause,
@@ -39,10 +46,16 @@ import {
   restoreHint,
 } from "./database";
 import type { RollbackResult } from "./index";
-import { finishPortainerRestore, PutBackFailedError, undoPortainerRestore } from "./portainer";
+import {
+  finishPortainerRestore,
+  PutBackFailedError,
+  readMark,
+  undoPortainerRestore,
+} from "./portainer";
 import {
   imageRollbackHash,
   PENDING_ROLLBACK_FILE,
+  type PendingRollback,
   type RolledBack,
   readPendingRollback,
   writePendingRollback,
@@ -56,6 +69,7 @@ import {
   commitWords,
   listVersions,
   shortDigest,
+  shortImage,
   versionText,
 } from "./versions";
 
@@ -249,8 +263,9 @@ async function checkPending(
       // `--resume` follows once this record is gone.
       const ran = imageReference(appImageOf(deps, plan, github), pending.from.digest);
       try {
-        data = ` ${await undoPortainerRestore(run, pending.saved, ran)}`;
+        data = ` ${await undoPortainerRestore(run, github, pending.saved, ran)}`;
       } catch (error) {
+        // A failure that changed nothing keeps this record: the next rollback tries again.
         if (error instanceof PutBackFailedError) {
           await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
         }
@@ -267,6 +282,8 @@ async function checkPending(
     );
     return undefined;
   }
+  // The mark goes first: when that fails, this record stays, so the next rollback finishes.
+  if (pending.saved !== undefined || pending.unmark === true) await finishPortainerRestore(run);
   await recordRollback(run, {
     ...target,
     from: pending.from,
@@ -276,7 +293,6 @@ async function checkPending(
     ...(database !== undefined ? { database } : {}),
   });
   await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
-  if (pending.saved !== undefined) await finishPortainerRestore(run);
   const outcome =
     database === undefined ? "" : ` ${databaseOutcome(database, plan, shortText(target))}`;
   deps.reporter.success(
@@ -344,6 +360,29 @@ async function clearApproval(run: RollbackRun, remove: () => Promise<void>): Pro
 }
 
 /**
+ * The way out a mark on restored data names when the rollback to the version that ran, with keep,
+ * gets the deploy branch back (`portainer.ts`): its target's digest.
+ */
+const WAY_OUT_ROLLBACK = /^opscrew rollback\b.* --to (sha256:[0-9a-f]{64}) --database keep$/;
+
+/**
+ * True when the stack template on `branch` (where the rollback's run deploys from) is the one
+ * committed here, by its git blob, as the deploy workflow is checked: its guard keeps other
+ * versions off data a rollback restored.
+ */
+async function templateApplied(
+  run: RollbackRun,
+  github: RollbackRepository,
+  branch: string,
+): Promise<boolean> {
+  const path = portainerStackTemplatePath(run.plan);
+  const committed = await readFile(join(run.deps.paths.root, path), "utf8").catch(() => undefined);
+  if (committed === undefined) return false;
+  const onBranch = await github.api.fileSha(github.owner, github.repo, path, branch);
+  return onBranch === gitBlobSha(committed.replace(/\r\n/g, "\n"));
+}
+
+/**
  * Undoes what the database step's `leave` did once no run can use it (the dispatch was refused, or
  * the run failed), and returns what the failure's message adds of the data: in the user's
  * Portainer, the copy from before the restore put back (`PutBackFailedError`, the pause kept, when
@@ -379,6 +418,8 @@ async function dispatchRollback(
     hash: string;
     pauseBefore: DeployPause | undefined;
     database: DatabaseStep;
+    /** The pending record of the run `runId`, for the next `opscrew rollback` to follow it. */
+    pendingOf: (runId: number) => PendingRollback;
   },
 ): Promise<{ status: "deployed" | "waiting"; runId: number; runUrl: string; expires?: string }> {
   const { deps, plan, environment, command, flags } = run;
@@ -421,7 +462,16 @@ async function dispatchRollback(
     const failure = deployRunFailure(error);
     if (failure.kind === "failed") {
       // The start step used the one-time approval, or never ran: it is of no use now.
-      const data = await undoDatabase(run, database);
+      let data: string;
+      try {
+        data = await undoDatabase(run, database);
+      } catch (undone) {
+        // A put-back in Portainer that changed nothing yet: the next rollback tries again.
+        if (database.portainer !== undefined && !(undone instanceof PutBackFailedError)) {
+          await writePendingRollback(deps.paths, input.pendingOf(failure.runId));
+        }
+        throw undone;
+      }
       await restoreDeployPause(deps, github, plan, input.pauseBefore);
       throw new OpsCrewError(
         "COMMAND_FAILED",
@@ -444,14 +494,25 @@ async function dispatchRollback(
       );
     }
     const saved = database.portainer?.saved;
-    const restored =
-      saved === undefined
-        ? ""
-        : ` The snapshot of ${shortText(target)} stays restored in your Portainer, the app stopped until the run starts it; the copy from just before is the snapshot ${saved}.`;
+    if (saved === undefined) {
+      throw new OpsCrewError(
+        codeOf(error),
+        `${errorMessage(error)} ${environment}'s deploys stay paused, pinned to ${shortText(target)}: \`${command} --resume\` ends the pause.`,
+        hint !== undefined ? { hint } : {},
+      );
+    }
+    // In Portainer the data stays restored and marked: the next rollback follows the run.
+    const runId = failure.kind === "unknown" ? failure.runId : undefined;
+    if (runId !== undefined) await writePendingRollback(deps.paths, input.pendingOf(runId));
     throw new OpsCrewError(
       codeOf(error),
-      `${errorMessage(error)}${restored} ${environment}'s deploys stay paused, pinned to ${shortText(target)}: \`${command} --resume\` ends the pause.`,
-      hint !== undefined ? { hint } : {},
+      `${errorMessage(error)} The snapshot of ${shortText(target)} stays restored in your Portainer, marked so that no other version starts on it, with the app stopped until the run starts ${shortText(target)}; the copy from just before is the snapshot ${saved}. ${environment}'s deploys stay paused.`,
+      {
+        hint:
+          runId !== undefined
+            ? `Once the run ended, run \`${command}\`: it records the rollback, or puts that copy back if the run failed.`
+            : `Once the run ended, run \`${command}\`: it names the way out of the restored data.`,
+      },
     );
   }
 }
@@ -464,7 +525,9 @@ async function dispatchRollback(
  * 2. a move's window pausing the deploys refuses;
  * 3. the environment is applied, and the workflow on the branch it runs on (`workflowBranch`) is
  *    the one its plan generates (`requireApplied`), which a workflow from before 019 is not;
- * 4. no run of its deploy workflow is queued or in progress (ADR 0023 D6);
+ * 4. no run of its deploy workflow is queued or in progress (ADR 0023 D6); in the user's
+ *    Portainer, while a rollback that did not end left the data marked (`RESTORED_IMAGE_FILE`),
+ *    only the mark's way out goes ahead, the keep rollback to the version it names (D19);
  * 5. the version: the one before the running one, or `--to`'s, among its versions
  *    (`listVersions`, `chooseVersion`), with the services it ran with still in the plan, and how
  *    to treat the database ({@link databaseStep});
@@ -512,6 +575,10 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
   });
   await requireNoDeployRunning(run, github);
 
+  // In the user's Portainer, data a rollback restored and marked: only its way out goes ahead.
+  const mark = plan.target.provider === "portainer" ? await readMark(run) : undefined;
+  const markedTo = mark === undefined ? undefined : WAY_OUT_ROLLBACK.exec(mark.wayOut)?.[1];
+
   // 5. The version, and what it ran with.
   deps.reporter.step(`Reading ${environment}'s versions in GitHub Container Registry`);
   const list = await listVersions(deps, ctx);
@@ -529,20 +596,37 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     environment,
     ...(options.to !== undefined ? { to: options.to } : {}),
     command,
-    ...(earlier?.switched === true ? { allowRunning: true } : {}),
+    ...(earlier?.switched === true || markedTo !== undefined ? { allowRunning: true } : {}),
     ...(earlier !== undefined && !earlier.switched && list.running !== undefined
       ? { runningHint: restoreHint(run, earlier, list.running) }
       : {}),
   });
+  if (mark !== undefined && (markedTo !== target.digest || options.database !== "keep")) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${environment}'s data in your Portainer is marked for ${shortImage(mark.image)} by a rollback that did not end (${RESTORED_IMAGE_FILE}), so OpsCrew starts no other rollback on it. ${NOTHING_CHANGED}`,
+      { hint: `Run \`${mark.wayOut}\`.` },
+    );
+  }
   const added = await servicesLines(run, ctx, target);
   const reviewed = await reviewedEnvironment(plan, github);
   const database = await databaseStep(run, {
     current: runningDigest,
     target: target.digest,
     words: shortText(target),
-    ...(reviewed !== undefined ? { reviewed } : {}),
-    images: { current: imageReference(ctx.image, runningDigest), target: target.image },
+    ...(plan.target.provider === "portainer"
+      ? {
+          portainer: {
+            ...(reviewed !== undefined ? { reviewed } : {}),
+            templateApplied: await templateApplied(run, github, branch),
+            images: { current: imageReference(ctx.image, runningDigest), target: target.image },
+            github,
+          },
+        }
+      : {}),
   });
+  // The run's success removes the mark: the snapshot's, or the one this way out was for.
+  const unmarks = database.portainer !== undefined || mark !== undefined;
 
   // 6. The approval, bound to the rollback's hash. It says whether GitHub also asks a reviewer.
   const targetPlanHash = sha256Hex(canonicalJson(plan));
@@ -582,6 +666,24 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     },
   );
 
+  const from = {
+    digest: runningDigest,
+    ...(current !== undefined ? { commit: current.commit } : {}),
+  };
+  /** What the next `opscrew rollback` follows of the run `runId`. */
+  const pendingOf = (runId: number): PendingRollback => ({
+    digest: target.digest,
+    commit: target.commit,
+    from,
+    runId,
+    at: deps.clock.now().toISOString(),
+    hash,
+    pauseBefore: pauseBefore ?? null,
+    database: database.record,
+    ...(database.portainer?.saved !== undefined ? { saved: database.portainer.saved } : {}),
+    ...(unmarks ? { unmark: true as const } : {}),
+  });
+
   // 7. The pause, then the workflow with the digest, and its run.
   deps.reporter.step(`Pausing ${environment}'s deploys`);
   const pauseBefore = await setDeployPause(deps, github, plan, {
@@ -604,13 +706,10 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     hash,
     pauseBefore,
     database,
+    pendingOf,
   });
 
   // 8. The record.
-  const from = {
-    digest: runningDigest,
-    ...(current !== undefined ? { commit: current.commit } : {}),
-  };
   const at = deps.clock.now().toISOString();
   const result = {
     kind: "rolled-back",
@@ -621,23 +720,22 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     how: "image",
   } as const;
   if (outcome.status === "waiting") {
-    await writePendingRollback(deps.paths, {
-      digest: target.digest,
-      commit: target.commit,
-      from,
-      runId: outcome.runId,
-      at,
-      hash,
-      pauseBefore: pauseBefore ?? null,
-      database: database.record,
-      ...(database.portainer?.saved !== undefined ? { saved: database.portainer.saved } : {}),
-    });
+    await writePendingRollback(deps.paths, pendingOf(outcome.runId));
     const expiry =
       outcome.expires === undefined
         ? ""
         : ` The database step's one-time approval on the server expires at ${formatUtc(outcome.expires)}: if the run starts later, it stops before any change and \`${command}\` asks again.`;
     deps.reporter.warn(`${stillWaiting(run, outcome.runUrl, shortText(target))}${expiry}`);
     return { ...result, status: "waiting" };
+  }
+  if (unmarks) {
+    // The mark goes first; when that fails, the pending record lets the next rollback finish.
+    try {
+      await finishPortainerRestore(run);
+    } catch (error) {
+      await writePendingRollback(deps.paths, pendingOf(outcome.runId));
+      throw error;
+    }
   }
   await recordRollback(run, {
     digest: target.digest,
@@ -648,7 +746,6 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     hash,
     database: database.record,
   });
-  await database.portainer?.finish();
   deps.reporter.success(
     `${environment} runs ${shortText(target)} again (${shortDigest(target.digest)}, ${outcome.runUrl}): no build, and no release command ran. ${database.outcome}`,
   );

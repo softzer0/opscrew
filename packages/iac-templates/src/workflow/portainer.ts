@@ -334,10 +334,10 @@ export function renderPortainerWorkflow(
       `    VERSION_URL: https://${plan.dns.domain}${PORTAINER_VERSION_PATH}`,
       image,
       ...run(healthScript(plan, HEALTH_ATTEMPTS[target.redeploy])),
-      // Runs only when the branch was changed (not when the version was already there), and always
-      // fails the job.
+      // Runs only when the branch was changed (not when the version was already there), also when
+      // the run is cancelled, so the new version never stays on the branch; it always fails the job.
       "- name: Roll back to the previous version",
-      "  if: failure() && steps.write.outputs.changed == 'true'",
+      "  if: (failure() || cancelled()) && steps.write.outputs.changed == 'true'",
       "  env:",
       "    PREVIOUS: ${{ steps.write.outputs.previous }}",
       "    DEPLOYED: ${{ steps.write.outputs.deployed }}",

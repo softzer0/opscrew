@@ -14,6 +14,7 @@ import {
   DATABASE_CHANGED,
   migratedParts,
   OTHERS_HELD,
+  portainerStackTemplatePath,
   ROLLBACK_APPROVAL_FILE,
   rollbackApprovalLine,
   rollbackServers,
@@ -41,7 +42,7 @@ import { serverShell } from "../status/servers";
 import type { RollbackServices } from "./index";
 import { type PortainerRestore, portainerRestore, readPortainerSnapshot } from "./portainer";
 import type { DatabaseBinding, DatabaseChoice, DatabaseRecord } from "./record";
-import type { RollbackRun } from "./run";
+import type { RollbackRepository, RollbackRun } from "./run";
 
 /** One answer to "How should the rollback treat the database?", in the order offered. */
 export interface DatabaseOffer {
@@ -411,6 +412,18 @@ function leftOutLines(plan: DeployPlan, abouts: ReadonlyMap<string, About>): str
 const KEEP_LINE =
   "The data, the database schema and the app's settings and secrets stay as they are now: the earlier version must work with them. The release command does not run.";
 
+/** What a rollback in the user's Portainer gives its database step. */
+export interface PortainerFacts {
+  /** The GitHub environment whose required reviewer GitHub asks before the deploy job. */
+  reviewed?: string;
+  /** The stack template on the dispatch branch is the committed one, by its blob. */
+  templateApplied: boolean;
+  /** The image references running now and of the target. */
+  images: { current: string; target: string };
+  /** The repository, whose deploy branch the undo reads. */
+  github: RollbackRepository;
+}
+
 /** The database step of one rollback, once chosen ({@link databaseStep}). */
 export interface DatabaseStep {
   choice: DatabaseChoice;
@@ -483,9 +496,11 @@ function notOffered(
  * volume ({@link readPortainerSnapshot}) and offers it, or keep, the default answer there; down
  * migrations aren't run there.
  * The rollback's switch runs in the workflow, so this computer restores the snapshot before the
- * dispatch (`leave`, {@link portainerRestore}, from `images.current` to `images.target`), and the
- * app stays stopped until the run starts the target: with a required reviewer on the
- * environment (`reviewed`), the snapshot is not offered.
+ * dispatch (`leave`, {@link portainerRestore}, from `portainer.images.current` to
+ * `portainer.images.target`), and the app stays stopped until the run starts the target. The
+ * snapshot is not offered with a required reviewer on the environment (`portainer.reviewed`), nor
+ * when the stack template on the dispatch branch is not the committed one
+ * (`portainer.templateApplied`), whose guard keeps other versions off the restored data.
  */
 export async function databaseStep(
   run: RollbackRun,
@@ -493,10 +508,8 @@ export async function databaseStep(
     current: string;
     target: string;
     words: string;
-    /** The GitHub environment whose required reviewer GitHub asks before the deploy job. */
-    reviewed?: string;
-    /** The image references running now and of the target (the user's Portainer). */
-    images?: { current: string; target: string };
+    /** What the user's Portainer needs ({@link databaseStep}). */
+    portainer?: PortainerFacts;
   },
 ): Promise<DatabaseStep> {
   const { deps, options, plan, environment } = run;
@@ -702,19 +715,28 @@ async function portainerStep(
 ): Promise<DatabaseStep> {
   const { deps, plan, environment } = run;
   const { words } = input;
+  const facts = input.portainer;
+  if (facts === undefined) {
+    throw new OpsCrewError("INTERNAL", "The rollback in Portainer was given no Portainer facts.", {
+      hint: "This is a bug in OpsCrew; please report it.",
+    });
+  }
   // A Portainer target's versions are digests.
   const hex = hexOf(input.target) as string;
   let read: Awaited<ReturnType<typeof readPortainerSnapshot>>;
-  if (input.reviewed !== undefined) {
-    read = { why: reviewerReason(run, input.reviewed, hex, words) };
+  if (facts.reviewed !== undefined) {
+    read = { why: reviewerReason(run, facts.reviewed, hex, words) };
   } else {
     deps.reporter.step(`Reading ${environment}'s snapshot of ${words} in your Portainer`);
     read = await readPortainerSnapshot(run, hex, words);
   }
   if ("unreachable" in read) {
-    shared.keepOnly(() => read.why, read.why);
+    const unreachable = read.why;
+    shared.keepOnly(() => unreachable, unreachable);
     return shared.keep();
   }
+  // A snapshot there is offered only with the stack's guard merged on the dispatch branch.
+  if ("snapshot" in read && !facts.templateApplied) read = { why: templateReason(run) };
   const offers: DatabaseOffer[] = [];
   const why: Partial<Record<DatabaseChoice, string>> = {
     migrations: unreadReason(run, "migrations"),
@@ -732,12 +754,13 @@ async function portainerStep(
     targetRecord: null,
   };
   if (choice !== "snapshot" || snapshot === undefined) return shared.keep(binding);
-  if (input.images === undefined) {
-    throw new OpsCrewError("INTERNAL", "The rollback in Portainer was given no image references.", {
-      hint: "This is a bug in OpsCrew; please report it.",
-    });
-  }
-  const restore = portainerRestore(run, { hex, words, snapshot, images: input.images });
+  const restore = portainerRestore(run, {
+    hex,
+    words,
+    snapshot,
+    images: facts.images,
+    github: facts.github,
+  });
   const record: DatabaseRecord = { choice, taken: snapshot.about.taken };
   const name = plan.app.name;
   return {
@@ -799,6 +822,15 @@ async function choose(
  */
 function reviewerReason(run: RollbackRun, reviewed: string, hex: string, words: string): string {
   return `GitHub asks a required reviewer of the GitHub environment ${reviewed} before ${run.environment}'s rollback run deploys, and in your Portainer OpsCrew restores the snapshot before that run starts, so the app would stay stopped until someone approved it. Roll back with --database keep, then, once the rollback is done, run \`opscrew restore ${hex}${run.flags}\` to put the snapshot of ${words} back.`;
+}
+
+/**
+ * Why the snapshot is not offered in the user's Portainer when the stack template on the dispatch
+ * branch is not the committed one: its guard may not keep other versions off the restored data.
+ */
+function templateReason(run: RollbackRun): string {
+  const path = portainerStackTemplatePath(run.plan);
+  return `The stack template on the branch the rollback's run deploys from (${path}) is not the one committed here, so the stack may not keep other versions off the restored data. Merge the deploy-setup pull request \`opscrew provision${run.flags}\` opened (or run it, if none is open) first.`;
 }
 
 /** Why `choice` is not offered when the plan has neither snapshots nor its kind of change. */
