@@ -62,7 +62,7 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
     new version starts.
   - a snapshot taken before any `.running` exists records `"version":""`: restores treat it
     as an unknown version (refused unless `--allow-other-version`);
-  - the bucket holds `backups/<id>/<file>.age`, `about.json.age` written last; the snapshot
+  - the bucket holds `backups/<id>/<file>.age`, `about.json.age` written last (an extra server's parts under `backups/<id>/<server>/`); the snapshot
     folder gains an `offsite.done` marker once uploaded.
 
 ### 2. Per kind (R2)
@@ -258,6 +258,7 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
   - **`.running` on extra servers** is written whenever `snapshotsOn` is true or a schedule is on. Prod's scheduled snapshots then know their version.
   - **The rollback's down-migrations choice** saves the extra servers' data first, as it saves the app server's.
 - **D14:** `opscrew rollback --database snapshot` on Portainer restores the pre-release snapshot through T2408's Portainer restore (T2420), so US7 covers Portainer too.
+- **D15 (T2406's report):** `snapshots.offsite` is refused on localhost, like the schedule: its snapshots stay on this computer beside the data, and no bucket root is planned there.
 
 ## Order
 

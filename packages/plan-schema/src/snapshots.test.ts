@@ -199,8 +199,14 @@ describe("snapshots.schedule", () => {
           "is refused with the localhost target: this computer isn't always on to take them; take one when you need it with opscrew snapshot, and remove snapshots.schedule",
       },
     ]);
-    // The off-server copy of a snapshot taken by hand stays possible.
-    expect(DeployPlanSchema.safeParse({ ...plan, snapshots: { offsite } }).success).toBe(true);
+    // Snapshots stay beside the data on this computer: no bucket off it either.
+    expect(issues({ ...plan, snapshots: { offsite } })).toEqual([
+      {
+        path: "snapshots.offsite",
+        message:
+          "is refused with the localhost target: its snapshots stay on this computer, beside the data; copy the snapshots folder yourself if you need a copy elsewhere, and remove snapshots.offsite",
+      },
+    ]);
   });
 });
 

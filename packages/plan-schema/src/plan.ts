@@ -2119,12 +2119,14 @@ function checkSnapshots(plan: DeployPlanFields, ctx: z.RefinementCtx): void {
         path: ["snapshots", field],
         message: `is refused on ${where}; remove snapshots.${field}`,
       });
-    } else if (field === "schedule" && plan.target.provider === "localhost") {
+    } else if (plan.target.provider === "localhost") {
       ctx.addIssue({
         code: "custom",
         path: ["snapshots", field],
         message:
-          "is refused with the localhost target: this computer isn't always on to take them; take one when you need it with opscrew snapshot, and remove snapshots.schedule",
+          field === "schedule"
+            ? "is refused with the localhost target: this computer isn't always on to take them; take one when you need it with opscrew snapshot, and remove snapshots.schedule"
+            : "is refused with the localhost target: its snapshots stay on this computer, beside the data; copy the snapshots folder yourself if you need a copy elsewhere, and remove snapshots.offsite",
       });
     }
   }
