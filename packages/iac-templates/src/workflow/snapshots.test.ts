@@ -1426,6 +1426,27 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
       expect(callAt("docker compose up -d --wait --remove-orphans")).toBe(-1);
     });
 
+    it("stops the job at its first contact with the app's server while a restore holds the app", () => {
+      write(at(".snapshots/.held"), "");
+      const outgoing = step(STEPS.outgoing, {});
+      expect(outgoing.status).toBe(1);
+      expect(outgoing.output).toContain(
+        "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder)",
+      );
+      // The job ends there, before any extra server's step: none was reached, nothing was copied.
+      const reached = readFileSync(`${work}/ssh.log`, "utf8");
+      expect(reached).not.toContain(HOSTS.data);
+      expect(reached).not.toContain(HOSTS.more);
+      expect(existsSync(at(".env.previous"))).toBe(false);
+      expect(read(".env")).toBe(`APP_IMAGE=${image(A)}\n`);
+      expect(callAt("docker")).toBe(-1);
+
+      rmSync(at(".snapshots/.held"));
+      const resumed = step(STEPS.outgoing, {});
+      expect(resumed.status, resumed.output).toBe(0);
+      expect(resumed.outputs.image).toBe(image(A));
+    });
+
     it("refuses arguments it can't use before any change", () => {
       for (const env of [
         { IMAGE: "ghcr.io/acme/shop:latest" },

@@ -29,6 +29,7 @@ const stepOf = (plan: DeployPlan, name: string) => {
 const CONFIGURE = "Configure SSH for the app's other servers";
 const DATA = "Update the services on the server data";
 const BOX = "Update the services on the server box-2";
+const HELD = "Check that no restore holds the app";
 
 /** `plan` as prod with its deploys on `runner`. */
 const on = (plan: DeployPlan, runner: "github" | "server" | "host") =>
@@ -94,7 +95,9 @@ describe("the deploy job with extra servers", () => {
     expect(at(CONFIGURE)).toBeGreaterThan(-1);
     expect(at(CONFIGURE)).toBeLessThan(at(DATA));
     expect(at(DATA)).toBeLessThan(at(BOX));
-    expect(at(BOX)).toBeLessThan(at("Configure SSH with the pinned host key"));
+    // The app's SSH comes first: the job stops there while a restore holds the app.
+    expect(at("Configure SSH with the pinned host key")).toBeLessThan(at(HELD));
+    expect(at(HELD)).toBeLessThan(at(CONFIGURE));
     expect(at(BOX)).toBeLessThan(at("Upload runtime files and environment"));
     expect(at(BOX)).toBeLessThan(at("start"));
   });
@@ -223,9 +226,11 @@ describe("the deploy job with extra servers", () => {
     expect(stepOf(off, DATA).run).toContain(
       `ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'`,
     );
-    expect(names(off).indexOf(CONFIGURE)).toBeLessThan(
-      names(off).indexOf("Configure SSH with the pinned host key"),
+    // A restore can still hold the app: the job checks that first.
+    expect(names(off).indexOf("Configure SSH with the pinned host key")).toBeLessThan(
+      names(off).indexOf(HELD),
     );
+    expect(names(off).indexOf(HELD)).toBeLessThan(names(off).indexOf(CONFIGURE));
 
     // A stuck rollback names a restore of each part the server's copy holds: after the down
     // migrations, its databases only.

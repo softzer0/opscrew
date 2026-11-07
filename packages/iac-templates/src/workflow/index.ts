@@ -78,7 +78,9 @@ import {
   dockerConfig,
   type EdgeFiles,
   HELD_ROLLBACK,
+  HELD_STOP,
   OTHERS_HELD,
+  RESTORE_HELD,
   rollbackCommands,
   runningCommands,
   serverCommands,
@@ -548,6 +550,8 @@ interface Reach {
   savePrevious: string;
   /** The command that prints the image the app's machine runs ({@link readRunning}). */
   readRunning: string;
+  /** The command that prints `held` while a restore holds the app ({@link RESTORE_HELD}). */
+  held: string;
   /** Logs in to GHCR with `$REGISTRY_TOKEN` in the app's own Docker settings (script lines). */
   login: readonly string[];
   /** The shell there, which reads a script on its stdin (`-s`). */
@@ -794,6 +798,8 @@ interface Upload {
   /** The repository paths copied into the app's folder. */
   files: readonly string[];
   edgeFiles: EdgeFiles;
+  /** The upload is the job's first contact with the app's server: it checks the hold first. */
+  held: boolean;
 }
 
 /**
@@ -840,6 +846,7 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
   ];
   // The app's folder: OpsCrew's own servers (cloud-init) have only /srv/apps before the first deploy.
   const dir = appDir(plan);
+  const held = OVER_SSH(`if [ -e ${dir}/${RESTORE_HELD} ]; then echo held; fi`);
   const connect = [
     ...(tunnelHost === undefined ? [] : installCloudflaredStep(machine)),
     ...sshKeySetup(plan, machine),
@@ -853,6 +860,7 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
     "  run: |",
     "    set -euo pipefail",
     sshOpts,
+    ...(upload.held ? heldCheck(held) : []),
     `    ${OVER_SSH(`mkdir -p ${dir}`)}`,
     `    scp -r "\${ssh_opts[@]}" ${upload.files.join(" ")} "deploy@\${HOST}:${dir}/"`,
     ...envFileWrites(upload.envFiles, dir, OVER_SSH),
@@ -870,6 +878,7 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
       prelude: [sshOpts],
       savePrevious: OVER_SSH(`cd ${dir} && ${SAVE_PREVIOUS}`),
       readRunning: OVER_SSH(readRunning(dir)),
+      held,
       login: [
         `    printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=${dockerConfig(plan)} docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"`,
       ],
@@ -1014,10 +1023,42 @@ function stuckLines(plan: DeployPlan, reach: Reach, others: readonly string[]): 
 }
 
 /**
- * Before the extra servers' steps when a rollback can change their data (`others`): reads the
- * image the app's server runs (`.env`, through `reach`), as the step's output `image`, empty when
- * it names none by digest. Their steps snapshot their data under it, and a rollback saves their
- * data under it before changing it (plan.md D7).
+ * The lines that stop the job on its first contact with the app's server while a restore holds
+ * the app ({@link RESTORE_HELD}), before any step changes anything there or on an extra server;
+ * `held` is {@link Reach.held}. A failed read stops the job too.
+ */
+function heldCheck(held: string): string[] {
+  return [
+    `    hold="$(${held})"`,
+    '    if [[ "$hold" == held ]]; then',
+    `      echo "${HELD_STOP}"`,
+    "      exit 1",
+    "    fi",
+  ];
+}
+
+/**
+ * Before the extra servers' steps when a restore can hold the app and no rollback reads its version
+ * first ({@link outgoingStep}): the job's first step on the app's server, which stops it while a
+ * restore holds the app.
+ */
+function heldStep(reach: Reach): string[] {
+  return [
+    "- name: Check that no restore holds the app",
+    ...(reach.env.length === 0 ? [] : ["  env:", ...reach.env]),
+    "  run: |",
+    "    set -euo pipefail",
+    ...reach.prelude,
+    ...heldCheck(reach.held),
+  ];
+}
+
+/**
+ * Before the extra servers' steps when a rollback can change their data (`others`): stops the job
+ * while a restore holds the app ({@link heldCheck}), then reads the image the app's server runs
+ * (`.env`, through `reach`), as the step's output `image`, empty when it names none by digest.
+ * Their steps snapshot their data under it, and a rollback saves their data under it before
+ * changing it (plan.md D7).
  */
 function outgoingStep(reach: Reach): string[] {
   return [
@@ -1027,6 +1068,7 @@ function outgoingStep(reach: Reach): string[] {
     "  run: |",
     "    set -euo pipefail",
     ...reach.prelude,
+    ...heldCheck(reach.held),
     `    running="$(${reach.readRunning})"`,
     `    if [[ ! "$running" =~ ${DIGEST_REF_PATTERN} ]]; then running=; fi`,
     '    echo "image=$running" >> "$GITHUB_OUTPUT"',
@@ -1332,6 +1374,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
   const local = plan.environment?.runner === "local";
   const dir = local ? `    dir="$OPSCREW_APPS_DIR/${app}"` : `    dir=${appDir(plan)}`;
   const tls = local ? `    tls="$OPSCREW_EDGE_DIR/tls/${app}"` : `    tls=${EDGE_DIR}/tls/${app}`;
+  const held = `if [ -e "$dir"/${RESTORE_HELD} ]; then echo held; fi`;
   const setup = [
     "- name: Copy the runtime files and environment into the app's folder",
     "  env:",
@@ -1347,6 +1390,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
         ]
       : []),
     dir,
+    ...(upload.held ? heldCheck(held) : []),
     '    mkdir -p "$dir"',
     `    cp -r ${upload.files.join(" ")} "$dir"/`,
     ...envFileWrites(upload.envFiles, '"$dir"', HERE),
@@ -1362,6 +1406,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
       prelude: local ? [...localDeployLock(plan), dir] : [dir],
       savePrevious: `cd "$dir" && ${SAVE_PREVIOUS}`,
       readRunning: `(${readRunning('"$dir"')})`,
+      held,
       // The scripts run here, so they must not inherit the job's token. On this computer the app's
       // Docker settings start with a ghcr.io entry: settings without any make docker log in to the
       // computer's credential store, where the user's own login lives.
@@ -1500,6 +1545,11 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ...serviceEnvFiles(servicesOn(plan, APP_SERVER)),
     ...offsiteEnvFiles(plan, APP_SERVER),
   ];
+  // A restore can hold the app where its server has a snapshot.sh: any of its servers holds data.
+  // The job's first contact with the app's server stops it then: before the extra servers' steps
+  // when it has any, else the upload.
+  const holdable = snapshotScript(plan).length > 0;
+  const early = holdable && (plan.servers ?? []).length > 0;
   const upload: Upload = {
     env: [
       ...envFileEnv(plan, envFiles),
@@ -1514,6 +1564,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
       ...(edgeFiles.additions ? [additionsPath(plan)] : []),
     ],
     edgeFiles,
+    held: holdable && !early,
   };
   const own = deploysInPlace(plan);
   const { connect, setup, reach } = own ? localDeploy(plan, upload) : sshDeploy(plan, ctx, upload);
@@ -1537,9 +1588,9 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     // A self-hosted runner keeps its workspace: the job's token stays out of its git settings.
     ...(selfHosted(plan) ? ["  with:", "    persist-credentials: false"] : []),
     ...edgeCheckStep(plan, edgeFiles),
-    ...(others.length > 0 ? [...connect, ...outgoingStep(reach)] : []),
+    ...(early ? [...connect, ...(others.length > 0 ? outgoingStep(reach) : heldStep(reach))] : []),
     ...extraServerSteps(plan, ctx, releaseSnapshotServers(plan)),
-    ...(others.length > 0 ? [] : connect),
+    ...(early ? [] : connect),
     ...setup,
     ...(others.length > 0 ? othersStep(plan, ctx, reach, others) : []),
     ...startStep(plan, edgeFiles, reach, others),

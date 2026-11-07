@@ -233,7 +233,9 @@ export async function applyLocal(
               ? "There is no earlier version on this computer to go back to."
               : switched.back === "unchanged"
                 ? "The previous version keeps running."
-                : `OpsCrew could not put the previous version back: run \`docker compose ps\` in ${folder}.`;
+                : switched.back === "held"
+                  ? "A restore holds the app here, so OpsCrew changed nothing: finish it with `opscrew restore <copy>`, or run `sh snapshot.sh resume` in the app's folder, then run `opscrew provision` again."
+                  : `OpsCrew could not put the previous version back: run \`docker compose ps\` in ${folder}.`;
         const why =
           switched.startFailed === undefined
             ? `The new version did not answer at ${localPlan.address}${plan.app.healthPath}.`
@@ -264,8 +266,8 @@ export type SwitchOutcome =
       /** The start script's last lines when it failed; absent when the app did not answer. */
       startFailed?: string;
       /**
-       * The rollback script's last line: `restored`, `unchanged`, `no-previous`, or anything else
-       * when it could not switch back.
+       * The rollback script's last line: `restored`, `unchanged`, `no-previous`, `held` (a restore
+       * holds the app, and nothing was changed), or anything else when it could not switch back.
        */
       back: string | undefined;
     };

@@ -275,6 +275,11 @@ jobs:
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop-staging/.snapshots/.held ]; then echo held; fi')"
+          if [[ "$hold" == held ]]; then
+            echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
+            exit 1
+          fi
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop-staging'
           scp -r "\${ssh_opts[@]}" opscrew/environments/staging/runtime/compose.yaml opscrew/environments/staging/runtime/edge "deploy@\${HOST}:/srv/apps/shop-staging/"
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop-staging/app.env'
@@ -1551,6 +1556,11 @@ jobs:
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"
+          if [[ "$hold" == held ]]; then
+            echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
+            exit 1
+          fi
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop'
           scp -r "\${ssh_opts[@]}" opscrew/runtime/compose.yaml opscrew/runtime/edge "deploy@\${HOST}:/srv/apps/shop/"
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop/app.env'
@@ -2423,6 +2433,11 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop-eu-staging/.snapshots/.held ]; then echo held; fi')"
+          if [[ "$hold" == held ]]; then
+            echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
+            exit 1
+          fi
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop-eu-staging'
           scp -r "\${ssh_opts[@]}" opscrew/environments/eu-staging/runtime/compose.yaml opscrew/environments/eu-staging/runtime/edge "deploy@\${HOST}:/srv/apps/shop-eu-staging/"
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop-eu-staging/app.env'
@@ -3270,6 +3285,11 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
         run: |
           set -euo pipefail
           dir=/srv/apps/shop-staging
+          hold="$(if [ -e "$dir"/.snapshots/.held ]; then echo held; fi)"
+          if [[ "$hold" == held ]]; then
+            echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
+            exit 1
+          fi
           mkdir -p "$dir"
           cp -r opscrew/environments/staging/runtime/compose.yaml opscrew/environments/staging/runtime/edge "$dir"/
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | (umask 077 && cat > "$dir"/app.env)
@@ -4131,6 +4151,11 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             exit 1
           fi
           dir="$OPSCREW_APPS_DIR/shop-dev"
+          hold="$(if [ -e "$dir"/.snapshots/.held ]; then echo held; fi)"
+          if [[ "$hold" == held ]]; then
+            echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
+            exit 1
+          fi
           mkdir -p "$dir"
           cp -r opscrew/environments/dev/runtime/compose.yaml opscrew/environments/dev/runtime/edge "$dir"/
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | (umask 077 && cat > "$dir"/app.env)

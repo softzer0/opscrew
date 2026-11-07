@@ -1412,6 +1412,45 @@ describe("the deploy's upload of snapshot.sh", () => {
     expect(upload).toContain("          snapshot_cmd_hold() {");
   });
 
+  it("stops the job at its first contact with the app's server while a restore holds the app", () => {
+    // One server: the upload checks first, before it makes the app's folder.
+    const one = renderWorkflow(serverPlanWithRunner(), testContext()).content;
+    const upload = step(one, UPLOAD);
+    const check = upload.indexOf(
+      `hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"`,
+    );
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(upload.indexOf('if [[ "$hold" == held ]]; then'));
+    expect(upload.indexOf('if [[ "$hold" == held ]]; then')).toBeLessThan(
+      upload.indexOf("mkdir -p /srv/apps/shop"),
+    );
+    expect(one.split("hold=")).toHaveLength(2);
+    expect(one).not.toContain("- name: Check that no restore holds the app");
+    // With extra servers, before theirs (with a rollback that changes their data, the step that
+    // reads the app's version first does it instead: snapshots.test.ts).
+    const split = renderWorkflow(splitPlan(), testContext()).content;
+    const first = split.indexOf("- name: Check that no restore holds the app");
+    expect(first).toBeGreaterThan(-1);
+    expect(first).toBeLessThan(split.indexOf("- name: Update the services on the server data"));
+    const staging = renderWorkflow(
+      inEnvironment(splitPlan(), { name: "staging" }),
+      testContext(),
+    ).content;
+    const outgoing = staging.indexOf("- id: outgoing");
+    expect(outgoing).toBeGreaterThan(-1);
+    expect(staging.indexOf(".snapshots/.held")).toBeGreaterThan(outgoing);
+    expect(staging.indexOf(".snapshots/.held")).toBeLessThan(
+      staging.indexOf("- name: Update the services on the server data"),
+    );
+    expect(staging).not.toContain("- name: Check that no restore holds the app");
+    // No data: no check.
+    const plain = renderWorkflow(
+      inEnvironment(withServices([]), { name: "staging" }),
+      testContext(),
+    );
+    expect(plain.content).not.toContain(".snapshots/.held");
+  });
+
   it("checks for a restore's hold first in the start step, and the rollback step says so plainly", () => {
     const content = renderWorkflow(splitPlan(), testContext()).content;
     expect(content).toContain(

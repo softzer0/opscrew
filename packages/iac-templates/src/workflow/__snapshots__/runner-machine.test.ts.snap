@@ -143,6 +143,11 @@ exports[`the deploy job on a runner machine > runs on the environment's label an
         run: |
           set -euo pipefail
           ssh_opts=(-i "$RUNNER_TEMP/opscrew-ssh/opscrew" -o UserKnownHostsFile="$RUNNER_TEMP/opscrew-ssh/known_hosts" -F "$RUNNER_TEMP/opscrew-ssh/config" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
+          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop-staging/.snapshots/.held ]; then echo held; fi')"
+          if [[ "$hold" == held ]]; then
+            echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
+            exit 1
+          fi
           ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'mkdir -p /srv/apps/shop-staging'
           scp -r "\${ssh_opts[@]}" opscrew/environments/staging/runtime/compose.yaml opscrew/environments/staging/runtime/edge "deploy@\${HOST}:/srv/apps/shop-staging/"
           printf '%s\\n' "\${OPSCREW_APP_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > /srv/apps/shop-staging/app.env'

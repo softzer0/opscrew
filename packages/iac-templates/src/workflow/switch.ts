@@ -455,10 +455,16 @@ function heldRefusal(plan: DeployPlan, o: ScriptOptions, outcome?: string): stri
   if (o.preview === true || !data) return [];
   return [
     outcome === undefined
-      ? `if [ -f ${RESTORE_HELD} ]; then echo ${shellQuote(`::error::OpsCrew changed nothing on the server: ${HELD_MESSAGE}`)} >&2; exit 1; fi`
+      ? `if [ -f ${RESTORE_HELD} ]; then echo ${shellQuote(HELD_STOP)} >&2; exit 1; fi`
       : `if [ -f ${RESTORE_HELD} ]; then echo ${outcome}; exit 0; fi`,
   ];
 }
+
+/**
+ * What a script or the job's first step on the app's server says when it stops, before any change,
+ * while a restore holds the app.
+ */
+export const HELD_STOP = `::error::OpsCrew changed nothing on the server: ${HELD_MESSAGE}`;
 
 /** What the rollback step says when the rollback script found a restore holding the app. */
 export const HELD_ROLLBACK = `::error::This run stopped before changing anything: ${HELD_MESSAGE}`;

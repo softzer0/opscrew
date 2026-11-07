@@ -424,6 +424,29 @@ describe("provision on this computer", () => {
       (await readArtifact("plan", deps.paths.files.plan)).deployment.lastApplyAt,
     ).toBeUndefined();
   });
+  it("says a restore holds the app when the start script refused, never that it could not put a version back", async () => {
+    const computer = new FakeComputer();
+    const held = "OpsCrew changed nothing on the server: a restore holds the app";
+    computer.script = (script) =>
+      script.includes("no-previous")
+        ? { exitCode: 0, stdout: "held\n", stderr: "" }
+        : script.includes("docker build")
+          ? { exitCode: 0, stdout: "opscrew-local/shop:0123456789ab\n", stderr: "" }
+          : script.includes("echo started >")
+            ? { exitCode: 1, stdout: "", stderr: `::error::${held}\n` }
+            : { exitCode: 0, stdout: "", stderr: "" };
+    const { run } = await project(localPlan(), computer);
+    const failed = await run().then(
+      () => undefined,
+      (error: unknown) => error as { message: string },
+    );
+
+    expect(failed?.message).toContain(held);
+    expect(failed?.message).toContain(
+      "A restore holds the app here, so OpsCrew changed nothing: finish it with `opscrew restore <copy>`",
+    );
+    expect(failed?.message).not.toContain("could not put the previous version back");
+  });
   // The local runner's workflow, secrets and pull request: runners/local-provision.test.ts.
 });
 
