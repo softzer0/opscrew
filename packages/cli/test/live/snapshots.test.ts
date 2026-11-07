@@ -991,6 +991,9 @@ describe.skipIf(MISSING.portainer.length > 0)(
           withSnapshotServices(await run.readPlan(), false),
         );
         await run.opscrewOk("design");
+        // Design proposes the off-server copy for data that matters in a Portainer; this pass is
+        // about snapshots by hand, and the copy has passes of its own.
+        await run.opscrewOk("snapshot", "offsite", "off");
         const plan = await envs.designed("prod");
         expect(plan.target.provider, "the plan's target").toBe("portainer");
         await run.adaptAndMerge();
