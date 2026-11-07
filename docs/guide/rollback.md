@@ -36,8 +36,8 @@ On a server OpsCrew created, [a server you already have](own-server.md) or
 1. OpsCrew reads the environment's versions: the images its deploy workflow built that are still
    in [GitHub Container Registry](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
 2. It picks the version before the one running, or the one you named with `--to`.
-3. On a server or your computer, it asks how to treat the database: restore the snapshot taken
-   when that version stopped running, migrate it down, or keep it as it is (see
+3. On a server, your computer or your Portainer, it asks how to treat the database: restore the
+   snapshot taken when that version stopped running, migrate it down, or keep it as it is (see
    [The database](#the-database)).
 4. It shows both versions and asks for your approval.
 5. It pauses the environment's automatic deploys, then starts its deploy workflow with the earlier
@@ -134,8 +134,9 @@ migration records). If any of them changes, it no longer applies.
 ## The database
 
 A release often changes the database: its migrations add a table or a column, or change one. Once
-the version is chosen, on a server OpsCrew created, [a server you already have](own-server.md) or
-[your computer](localhost.md), the rollback asks how to treat the database:
+the version is chosen, on a server OpsCrew created, [a server you already have](own-server.md),
+[your computer](localhost.md) or [your Portainer](#in-your-portainer), the rollback asks how to
+treat the database:
 
 ```text
 How should the rollback treat the database?
@@ -163,19 +164,25 @@ restored from the snapshot taken 2026-10-31 10:01 UTC.".
 
 ### Snapshots before each release
 
-On every environment except prod, OpsCrew dumps the app's databases before each release, while the
-running version keeps serving:
+On every environment except prod, OpsCrew takes a snapshot of the app's data before each release,
+while the running version keeps serving:
 
 - **When:** at each deploy that replaces a running version, after the services are set up and
   before the release command. The first deploy has nothing to save, and a deploy of the image
-  already running takes none.
-- **What:** each [PostgreSQL](https://www.postgresql.org/), [MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/) and [MongoDB](https://www.mongodb.com/) database on the app's server, with its own
-  image's dump tool (`pg_dump`, `mysqldump`, `mariadb-dump`, `mongodump`). The snapshot is filed
-  under the version that was running, so it holds the database as it was when that version stopped
-  running.
-- **Where:** in `.snapshots` in the app's folder on the server, for example
-  `/srv/apps/shop-staging/.snapshots`, or in the app's folder on your computer. Only the deploy user
-  can read the files. No password is ever on a command line, and no dumped value is printed.
+  already running takes none. So the first deploy after you turn snapshots on has no snapshot
+  before it either.
+- **What:** everything a [snapshot by hand](snapshots.md#what-a-snapshot-holds-and-where-it-is)
+  copies while it runs: each [PostgreSQL](https://www.postgresql.org/), [MySQL](https://www.mysql.com/), [MariaDB](https://mariadb.org/) and [MongoDB](https://www.mongodb.com/) database with its own image's
+  dump tool, Valkey, Redis and Dragonfly, and the app's [SQLite](databases.md#sqlite) files, on the
+  app's server and on [its other servers](split-placement.md). A service that must stop for its
+  copy (Kafka, OpenSearch, Meilisearch …) is included only when `deploy.snapshotStop` names it; it
+  then stops alone while it is copied. The snapshot is filed under the version that was running,
+  so it holds the data as it was when that version stopped running.
+- **Where:** in `.snapshots` in the app's folder on each server, for example
+  `/srv/apps/shop-staging/.snapshots`, in the app's folder on your computer, or in the stack's
+  `snapshots` volume in your Portainer. Only the deploy user can read the files. No password is
+  ever on a command line, and no dumped value is printed. `opscrew snapshot list` lists them
+  (`before a release`).
 - **How many:** the snapshots of the last 3 versions stay; older ones are deleted at the next
   deploy. Set `deploy.keepSnapshots` (1 to 10) in `opscrew/plan.yaml` to keep more or fewer.
 - **Disk space:** each snapshot takes about as much space as the database's data, so the server
@@ -193,12 +200,15 @@ To change whether an environment takes snapshots, set `deploy.snapshots` in its 
 
 ```yaml
 deploy:
-  snapshots: true      # prod takes snapshots only with this
-  keepSnapshots: 5     # the snapshots of the last 5 versions stay
+  snapshots: true          # prod takes snapshots only with this
+  keepSnapshots: 5         # the snapshots of the last 5 versions stay
+  snapshotStop: [kafka]    # also copy kafka, stopped alone meanwhile
 ```
 
 `deploy.snapshots: false` turns them off on any environment. Preview environments never take
-snapshots.
+snapshots. In your Portainer, `deploy.snapshotStop` doesn't apply: only the services copied while
+they run are included. They stay on the server, so they are not backups: for those, see
+[Snapshots and restores](snapshots.md).
 
 ### Down migrations
 
@@ -310,16 +320,26 @@ only keep and says why: the snapshot and down migrations need this computer to r
 [recovery copy](secrets-recovery.md)). The rollback then goes on through GitHub alone, and
 `--database snapshot` or `--database migrations` is refused before any change.
 
-### Not covered yet
+### In your Portainer
 
-These keep their data on a rollback, and the approval names them as kept. Snapshots of them come
-in a later release:
+[Your Portainer](portainer-target.md) offers the snapshot or keep; down migrations aren't run
+there. The switch to the earlier version runs in the deploy workflow, out of this computer's
+reach, so with `snapshot` OpsCrew restores the snapshot through Portainer's API before it starts
+the run, and the app stays stopped until the run starts the earlier version. Meanwhile a file in
+the stack's `snapshots` volume keeps every other version off the restored data, the workflow's
+switch back after a failed health check included. OpsCrew removes it once the run succeeds, or
+once it put the data from before back.
 
-- **[Your Portainer](portainer-target.md):** a rollback there keeps the database, and
-  `deploy.snapshots: true` is refused in its plan.
-- **The app's own files,** such as a [SQLite](databases.md#sqlite) database or uploads.
-- **A database on another server** ([split placement](split-placement.md)). Down migrations still
-  reach it, since they run where the release command does.
+When the environment's GitHub environment has a required reviewer, `--database snapshot` is
+refused there, since the app would stay stopped until someone approved the run. Roll back with
+`--database keep`, then put the snapshot back with
+[`opscrew restore <id>`](snapshots.md#restoring); the refusal names it.
+
+### What a snapshot doesn't hold
+
+The app's files in object storage (its bucket at R2, Hetzner or Spaces) stay as they are on a
+rollback. A database on another server ([split placement](split-placement.md)) is in the snapshot,
+and down migrations reach it too, since they run where the release command does.
 
 Sites ([Cloudflare's hosting](cloudflare-hosting.md), [GitHub Pages](github-pages.md)) and
 [previews](previews.md) have no rollback of their data, and refuse `--database snapshot` or

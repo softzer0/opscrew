@@ -45,6 +45,7 @@ an app yet.
 - [Alerts: the scheduled check](alerts.md)
 - [When a deploy fails, and how to recover](when-a-deploy-fails.md)
 - [Rolling back a release](rollback.md)
+- [Snapshots and restores](snapshots.md)
 - [Beszel: charts and history for your server](beszel.md)
 - [Grafana Cloud: searchable logs and metrics, free](grafana-cloud.md)
 - [Self-hosted monitoring: Prometheus, Loki and Grafana on your own server](monitoring.md)

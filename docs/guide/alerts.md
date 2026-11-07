@@ -20,7 +20,7 @@ set `observability.check.enabled` to `true` or `false` in that environment's pla
 
 `provision` then, each step after its own approval:
 
-1. puts the check key on the server, for the disk check (see [below](#where-it-runs));
+1. puts the check key on the server, for the disk and snapshot checks (see [below](#where-it-runs));
 2. stores the check's secrets in GitHub: the check key, how to reach the server, and the webhook's
    address when you set one. The approval lists their names; the values are never shown;
 3. adds three files to the deploy-setup pull request:
@@ -61,6 +61,7 @@ writing issues.
 | Each hostname (and `www` when the app serves it) at its health path over HTTPS | No answer within 10 seconds, or a status of 400 or more, on three tries 30 seconds apart. One slow answer opens nothing | The hostname, the status code or the error (such as `ECONNREFUSED`), and when it started |
 | Each hostname's certificate | Fewer than 14 days left. Certificates are renewed 30 days before they expire, so this means the renewal is failing | The days left, and the command to see why |
 | Each server's disk | 85% full, and again at 95% | The server, its free space and what usually fills it (old images and logs) |
+| With [scheduled snapshots](snapshots.md#the-schedule) on, the last one of each app on each server with its data | The last scheduled snapshot failed, or its [copy off the server](snapshots.md#an-encrypted-copy-off-the-server) did. A snapshot being taken is checked at the next run | The server, when it failed, the snapshot's id for a failed copy, and to run `npx opscrew status` to see why |
 
 On a hostname behind [Cloudflare](https://www.cloudflare.com/)'s proxy, the certificate the check sees is Cloudflare's.
 `npx opscrew secure` and `npx opscrew status` check the server's own.
@@ -72,19 +73,28 @@ A server that several environments share is checked once.
 The check runs on GitHub's `ubuntu-slim` runner, a small machine that takes under half a minute for
 the whole check.
 
-The disk is read where the deploy job runs:
+The disk and the scheduled snapshots are read where the deploy job runs:
 
 - **When GitHub deploys to the server over SSH,** the check connects with the **check key**: one key
   pair per repository, which OpsCrew makes. Its public half is in the deploy user's
-  `authorized_keys` on each checked server, limited to one command: `df -P -B1 /`. Whatever the
+  `authorized_keys` on each checked server, limited to one fixed, read-only command. Whatever the
   key asks for, the server runs only that, with no shell, no terminal, no port forwarding and no
-  file copy. A leaked check key reads one disk figure.
+  file copy. The command reads:
+  - the disk's size and free space (`df -P -B1 /`);
+  - for each app with a scheduled snapshot's log (`.snapshots/scheduled.log` in the app's folder),
+    only when the log was last written, the id of its last scheduled snapshot, how many lines
+    followed that id, and whether a snapshot is being taken now. Nothing else of the log.
+
+  A leaked check key reads those figures and ids.
   - A new cloud server gets the key's line when it is created, in the infrastructure plan.
   - An existing server, or your own, gets it through a host plan that you approve by its hash.
+  - A server set up before the check read snapshots has a key line that reads only the disk: the
+    check says so in its run. `npx opscrew provision` gives the app's server and your own servers
+    the new line; another server OpsCrew created gets it when it is created again.
 - **On a [runner machine](runners.md#runner-machines),** a job on that machine uses the check key in
   the same way.
 - **On a server that deploys from [its own runner](runners.md#the-servers-runner),** a job on that
-  runner runs `df` there, so GitHub needs no way in. Jobs on self-hosted runners cost no Actions
+  runner runs the same command there, so GitHub needs no way in. Jobs on self-hosted runners cost no Actions
   minutes. When the server is down, its disk job waits for the runner, and the main check reports
   the outage over HTTPS meanwhile.
 
@@ -109,9 +119,10 @@ what failed, and what to run to see more (`npx opscrew status`, `npx opscrew log
 GitHub tells everyone watching the repository about a new issue, by email too, depending on each
 person's notification settings. The issues are opened by `github-actions[bot]`.
 
-What goes into an issue or a post is fixed text, names, hostnames, status codes, error codes, days
-and disk figures. The check never copies what your app answered, its headers or a server's address,
-so nothing your app returns can carry a secret into them.
+What goes into an issue or a post is fixed text, names, hostnames, status codes, error codes, days,
+disk figures and snapshot ids and times. The check never copies what your app answered, its
+headers, what a snapshot's log said or a server's address, so nothing your app returns can carry a
+secret into them.
 
 ## The webhook: Slack, Discord or ntfy
 
@@ -209,7 +220,8 @@ Set `observability.check.enabled` to `false` in the environment's plan and run
 on any more, the next deploy-setup pull request removes `.github/workflows/opscrew-check.yml` and
 `opscrew/check/`.
 
-The check key's line in the server's `authorized_keys` (it can only run `df`) and the secrets
+The check key's line in the server's `authorized_keys` (it can only run the check's read-only
+command) and the secrets
 `OPSCREW_CHECK_SSH_KEY` and `OPSCREW_CHECK_SERVER` (with the environment's prefix outside prod) stay
 until the environment is destroyed. To delete the secrets earlier, run `gh secret delete <name>` for
 each.
@@ -221,8 +233,9 @@ each.
   minutes, sometimes more), plus up to a minute of retries.
 - **Check your computer:** GitHub can't reach an app running [on your computer](localhost.md), so
   design offers no check there.
-- **Read the disk of a [Portainer](https://www.portainer.io/)'s server:** OpsCrew reaches your Portainer only through its API.
-  The check still checks the app's hostnames.
+- **Read the disk or the scheduled snapshots of a [Portainer](https://www.portainer.io/)'s server:** OpsCrew reaches your Portainer only through its API.
+  The check still checks the app's hostnames, and `npx opscrew status` shows the last snapshot and
+  its result.
 - **Read the disk of your own server reached through a [Cloudflare Tunnel](https://www.cloudflare.com/products/tunnel/),** unless the server
   deploys from [its own runner](runners.md#the-servers-runner): the check's SSH can't pass the
   tunnel's [Cloudflare Access](https://www.cloudflare.com/zero-trust/products/access/) login.

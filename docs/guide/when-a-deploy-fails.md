@@ -146,8 +146,8 @@ earlier version than the one running.
 ## The snapshot before the release fails
 
 On environments that take [snapshots before each release](rollback.md#snapshots-before-each-release)
-(every one but prod, by default), the deploy dumps the databases before the release command. When a
-dump fails, the deploy stops there and the previous version keeps serving. The message names the log
+(every one but prod, by default), the deploy copies the app's data before the release command. When
+a copy fails, the deploy stops there and the previous version keeps serving. The message names the log
 on the server (`.snapshots/snapshot.log` in the app's folder), which can quote data and so is not
 printed. Fix what it shows, or set `deploy.snapshots: false` in the environment's plan and run
 `npx opscrew provision` to deploy without snapshots. Too little disk space doesn't stop a deploy:
@@ -328,9 +328,13 @@ server is doing), then run `npx opscrew provision` again: it continues where it 
   data lives on the server (here PostgreSQL) or backups are on, because Hetzner deletes a server's
   backups with it. Add `--no-snapshot` to skip it.
 
-OpsCrew has no command that restores a backup. Restore a backup in Hetzner Console, or a dump with
-the commands in the runbook. On [a server you already have](own-server.md), backups are yours to
-set up.
+- **Snapshots of the data:** `npx opscrew snapshot` copies the app's data, and
+  `npx opscrew restore <id>` puts it back without changing the version that runs; they can also be
+  taken on a schedule, with an encrypted copy off the server. On
+  [a server you already have](own-server.md) and in your Portainer, they are the backup. See
+  [Snapshots and restores](snapshots.md).
+
+Restore a Hetzner backup in Hetzner Console, or a dump with the commands in the runbook.
 
 ## Other targets
 

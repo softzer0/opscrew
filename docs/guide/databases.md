@@ -84,15 +84,17 @@ docker compose exec -T mysql sh -c 'mysqldump -u root -p"$MYSQL_ROOT_PASSWORD" a
 docker compose exec -T mongodb sh -c 'mongodump --archive -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin' > backup.archive
 ```
 
-On a server you already have, and in your Portainer, backups are yours: OpsCrew cannot turn them
-on there.
+On every target, `npx opscrew snapshot` copies every database, SQLite included, and
+`npx opscrew restore <id>` puts it back. Scheduled snapshots with an encrypted copy off the server
+are the backup on a server you already have and in your Portainer, where no provider backs up the
+data: see [Snapshots and restores](snapshots.md).
 
 ## Snapshots for a rollback
 
-On every environment except prod, each deploy dumps PostgreSQL, MySQL, MariaDB and MongoDB on the
-app's server before its release command, so that
-[a rollback can restore them](rollback.md#the-database). The dumps stay in `.snapshots` in the
-app's folder, for example `/srv/apps/shop-staging/.snapshots`, readable only by the deploy user:
+On every environment except prod, each deploy takes a snapshot of the app's data before its release
+command, so that [a rollback can restore it](rollback.md#the-database): the databases, SQLite, the
+other services with data, and a database on another server. The snapshots stay in `.snapshots` in
+the app's folder, for example `/srv/apps/shop-staging/.snapshots`, readable only by the deploy user:
 
 - `deploy.snapshots: true` in `opscrew/plan.yaml` turns them on for prod, and `false` turns them
   off anywhere;
@@ -100,9 +102,9 @@ app's folder, for example `/srv/apps/shop-staging/.snapshots`, readable only by 
   about as much disk as the database's data; with too little free space a deploy skips its snapshot
   with a warning.
 
-Run `npx opscrew provision` after changing either. They are not backups: they live on the same
-server as the database, so keep the server backups or dumps above too. A database on another
-server, your Portainer and SQLite get no snapshots yet; they come in a later release.
+Run `npx opscrew provision` after changing either. They live on the same server as the database,
+so keep a copy elsewhere too: the server backups, the dumps above, or
+[the encrypted copy off the server](snapshots.md#an-encrypted-copy-off-the-server).
 
 ## SQLite
 

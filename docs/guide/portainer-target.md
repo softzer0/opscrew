@@ -308,9 +308,23 @@ deploys already need no SSH.
 
 ## Backups
 
-OpsCrew cannot back up a Portainer host. The app's data lives in the stack's named volumes (for
-example the [Postgres](https://www.postgresql.org/) volume) on that host. Back it up yourself: with your NAS's snapshot or backup
-feature, or by copying the volumes regularly to somewhere else.
+The app's data lives in the stack's named volumes (for example the [Postgres](https://www.postgresql.org/) volume) on that host.
+OpsCrew takes [snapshots of it](snapshots.md) through Portainer's API, into the stack's `snapshots`
+volume (`opscrew-<app>_snapshots`): by hand with `npx opscrew snapshot`, on a schedule with
+`npx opscrew snapshot schedule on`, and before each release. Small services in the app's stack take
+the scheduled ones, and an `offsite` service uploads an encrypted copy of each to a bucket of its
+own with `npx opscrew snapshot offsite on` (see
+[An encrypted copy off the server](snapshots.md#an-encrypted-copy-off-the-server)). When the
+interview says the data matters, design proposes both.
+
+- **Scheduled snapshots and those before a release** copy only the services copied while they run
+  (the databases, Valkey, Redis, Dragonfly and SQLite): stopping another service needs Docker on
+  the host, which the stack has no access to. A snapshot by hand copies every service.
+- **`npx opscrew restore <id>`** puts a snapshot back through Portainer's API.
+- **The [scheduled check](alerts.md)** doesn't reach your Portainer: `npx opscrew status` shows the
+  last snapshot and its result.
+
+Your NAS's own snapshot or backup feature, if it has one, still covers the rest of the host.
 
 ## Removing the app
 
@@ -323,8 +337,9 @@ npx opscrew destroy --delete-data   # also deletes the app's data volumes
 OpsCrew created: the app's stacks, the registry entry, the deploy secrets in GitHub, the
 Cloudflare tunnel, DNS records and Access, and the app's hostnames in OpsCrew's rules in your zone
 (other OpsCrew apps there keep theirs; the account's Zero Trust organization stays). Portainer itself, its settings, your other stacks and the
-host stay exactly as they are. The app's data volumes stay too, unless you add `--delete-data`;
-deleting them cannot be undone unless you have your own backup. A later `--delete-data` run also
+host stay exactly as they are. The app's data volumes stay too, its `snapshots` and
+`snapshot_tools` volumes included, unless you add `--delete-data`; deleting them cannot be undone
+unless you have a copy elsewhere, such as [the off-server copy](snapshots.md#an-encrypted-copy-off-the-server). A later `--delete-data` run also
 deletes the volumes an earlier `destroy` kept.
 
 In scripts, pass the app's name: `npx opscrew destroy --confirm <app>` (with `--delete-data` to

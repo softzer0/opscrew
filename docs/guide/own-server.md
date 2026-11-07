@@ -337,12 +337,19 @@ confirmed.
   [Lynis, ssh-audit and testssl.sh](deeper-checks.md).
 - `npx opscrew verify` checks the live site.
 
-## Backups are your responsibility
+## Backups
 
-OpsCrew cannot turn on backups or snapshots on a server it did not create. Back up the app's data
-yourself, in particular `/srv/data/<app>` (where its databases and other services keep their files)
-and the app's Docker volumes, for example with your provider's backup feature or a nightly copy to
-another machine. [Databases](databases.md#backups) shows how to dump a database.
+No provider backs up a server OpsCrew did not create, so OpsCrew takes
+[snapshots of the app's data](snapshots.md) there: by hand with `npx opscrew snapshot`, on a
+schedule with `npx opscrew snapshot schedule on`, and before each release. They stay in
+`/srv/apps/<app>/.snapshots`, so keep an encrypted copy of each off the server too, with
+`npx opscrew snapshot offsite on` (see
+[An encrypted copy off the server](snapshots.md#an-encrypted-copy-off-the-server)). When the
+interview says the data matters, design proposes both. The schedule needs cron on the server (on
+Debian and Ubuntu: `apt install cron`).
+
+`npx opscrew restore <id>` puts a snapshot back. A snapshot of the whole disk is refused here; your
+provider's own backups or snapshots, if it has them, still cover the rest of the server.
 
 ## Removing the app, and undoing OpsCrew's changes
 
@@ -353,7 +360,8 @@ theirs; see [Removing an app](cloudflare.md#removing-an-app)). The other apps on
 running; the shared edge goes with the last app. It asks you to type the app's name first, and
 never deletes, rebuilds or reinstalls your server.
 
-- The app's data (`/srv/data/<app>`, its Docker volumes and its bucket) stays unless you add
+- The app's data (`/srv/data/<app>`, its snapshots in `/srv/apps/<app>/.snapshots`, its Docker
+  volumes and its bucket) stays unless you add
   `--delete-data`; deleting it needs the app's name typed as well. Its name stays reserved for the
   same project, which can take the kept data again.
 - `npx opscrew destroy --undo-host` also reverses OpsCrew's own changes to the server (the deploy
