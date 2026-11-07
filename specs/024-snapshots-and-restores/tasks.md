@@ -170,7 +170,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
 
-- [ ] T2423 Destroy removes a failed first provision's shared Cloudflare entries (found in T2414)
+- [x] T2423 Destroy removes a failed first provision's shared Cloudflare entries (found in T2414)
   - Accept: with no state and no deployment but this app's entries in OpsCrew's Cloudflare record, `opscrew destroy` plans and applies only the shared-rules removal (approved as today) instead of refusing "Nothing is deployed"; with nothing at all the refusal stays.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
