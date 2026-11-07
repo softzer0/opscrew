@@ -24,9 +24,9 @@ import {
 } from "../testing";
 import {
   buildPortainerOption,
-  PORTAINER_BACKUPS_NOTE,
   PORTAINER_HOST_NOTE,
   PORTAINER_OPTION_ID,
+  portainerBackupsNote,
   portainerDesignChoice,
 } from "./portainer";
 import { previewDesignOptions, runDesign } from "./run";
@@ -95,14 +95,14 @@ describe("the design option in an existing Portainer", () => {
     expect(option.summary).toContain("Docker Compose stack in the environment you picked (arm64)");
     expect(option.summary).toContain("No server price: you already run this Portainer.");
     expect(option.summary).toContain(PORTAINER_HOST_NOTE);
-    expect(option.summary).toContain(PORTAINER_BACKUPS_NOTE);
+    expect(option.summary).toContain(portainerBackupsNote(true));
     expect(PORTAINER_HOST_NOTE).toBe(
       "OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.",
     );
     expect(option.tradeoffs).toContain(
       "Your Portainer host uses arm64, so OpsCrew builds the app image for arm64.",
     );
-    expect(option.tradeoffs).toContain(PORTAINER_BACKUPS_NOTE);
+    expect(option.tradeoffs).toContain(portainerBackupsNote(true));
     expect(serviceOf(option, "postgres")).toBeDefined();
     // Never Portainer's address.
     expect(JSON.stringify(option)).not.toContain("nas.home");
@@ -146,7 +146,8 @@ describe("runDesign for an existing Portainer", () => {
     expect(plan).not.toMatch(/nas\.home|9443/);
     expect(deps.reporter.text()).toContain("no server cost (you already run this Portainer)");
     expect(deps.reporter.text()).toContain(PORTAINER_HOST_NOTE);
-    expect(deps.reporter.text()).toContain(PORTAINER_BACKUPS_NOTE);
+    // A static site keeps no data: no snapshots to name.
+    expect(deps.reporter.text()).toContain(portainerBackupsNote(false));
     expect((await deps.state.read()).phases.design).toMatchObject({
       status: "ok",
       summary: "portainer, no server cost",

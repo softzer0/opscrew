@@ -3,12 +3,14 @@
  * server, in a bucket of its own (`snapshots.offsite`), which provision then plans (approved by its
  * hash, D9) and the servers or the Portainer stack upload to. Only the plan changes here.
  */
-import { formatMoney, OpsCrewError } from "@opscrew/core";
+import { formatMoney, OpsCrewError, readTextIfExists } from "@opscrew/core";
 import { STORAGE_NAMES } from "@opscrew/iac-templates";
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import { z } from "zod";
 import type { PhaseDeps } from "../context";
 import { HETZNER_STORAGE_LOCATIONS, storagePrice, storageRegionAt } from "../design/storage";
 import { NOTHING_CHANGED } from "../promote/shared";
+import { backupsCreateFile, backupsStateFile } from "../provision/storage";
 import { planFile } from "../runners/words";
 import { type SnapshotRun, snapshotRun } from "./run";
 import {
@@ -62,7 +64,8 @@ export function offsiteText(plan: Pick<DeployPlan, "snapshots">): string {
 
 /**
  * The bucket's region: `region` at Hetzner (where it has object storage) or DigitalOcean, else
- * the app's server's location where `to` has object storage there; none for R2.
+ * the plan's while the provider stays the same, else the app's server's location where `to` has
+ * object storage there; none for R2.
  * @throws OpsCrewError `INVALID_INPUT` for `--region` with R2, a Hetzner location without object
  * storage, and when no region is given or known.
  */
@@ -90,7 +93,9 @@ function regionFor(run: SnapshotRun, to: OffsiteProvider, region: string | undef
     target.provider === to && "location" in target
       ? storageRegionAt(to, target.location)
       : undefined;
-  const chosen = region ?? known;
+  const current = snapshotOffsiteOf(plan);
+  const kept = current?.provider === to ? current.region : undefined;
+  const chosen = region ?? kept ?? known;
   if (chosen !== undefined) return chosen;
   throw new OpsCrewError(
     "INVALID_INPUT",
@@ -134,12 +139,18 @@ export async function snapshotOffsiteOn(
   }
   const region = regionFor(run, to, options.region);
   const current = snapshotOffsiteOf(plan);
+  const bucket = current?.bucket ?? backupsBucketName(plan);
+  await requireSameBucket(run, {
+    provider: to,
+    bucket,
+    ...(region === undefined ? {} : { region }),
+  });
   const after = withSnapshotSetting(
     plan,
     "offsite",
     {
       provider: to,
-      bucket: current?.bucket ?? backupsBucketName(plan),
+      bucket,
       ...(region === undefined ? {} : { region }),
       days: options.days ?? current?.days ?? 90,
     },
@@ -168,6 +179,98 @@ const CONSOLES: Readonly<Record<OffsiteProvider, string>> = {
   digitalocean: "the DigitalOcean control panel (Spaces Object Storage)",
 };
 
+/** A backups bucket as the plan, the backups root's marker or its state names it. */
+interface KnownBucket {
+  bucket: string;
+  /** `s3` when only the state names it, at Hetzner or DigitalOcean (both through S3). */
+  provider: OffsiteProvider | "s3";
+  /** Absent for R2, and where the state does not say. */
+  region?: string;
+}
+
+const MarkerSchema = z.object({
+  provider: z.enum(["r2", "hetzner", "digitalocean"]),
+  bucket: z.string(),
+  region: z.string(),
+});
+
+const StateSchema = z.object({
+  resources: z.array(
+    z.object({
+      type: z.string(),
+      instances: z.array(
+        z.object({ attributes: z.object({ bucket: z.string(), name: z.string() }).partial() }),
+      ),
+    }),
+  ),
+});
+
+/** `file`'s JSON, or undefined when it is missing or not JSON. */
+async function readJson(file: string): Promise<unknown> {
+  const text = await readTextIfExists(file);
+  if (text === undefined) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The backups bucket of `run`'s environment that exists or is being created: the plan's
+ * `snapshots.offsite`, else the one the backups root's marker or state still names after
+ * `snapshot offsite off`; undefined without one.
+ */
+async function existingBucket(run: SnapshotRun): Promise<KnownBucket | undefined> {
+  const named = (o: { provider: OffsiteProvider; bucket: string; region: string }) => ({
+    provider: o.provider,
+    bucket: o.bucket,
+    ...(o.provider === "r2" ? {} : { region: o.region }),
+  });
+  const current = snapshotOffsiteOf(run.plan);
+  if (current !== undefined) return named(current);
+  const marker = MarkerSchema.safeParse(await readJson(backupsCreateFile(run.deps.paths)));
+  if (marker.success) return named(marker.data);
+  const state = StateSchema.safeParse(await readJson(backupsStateFile(run.deps.paths)));
+  if (!state.success) return undefined;
+  for (const resource of state.data.resources) {
+    if (resource.type !== "cloudflare_r2_bucket" && resource.type !== "aws_s3_bucket") continue;
+    const attributes = resource.instances[0]?.attributes;
+    const bucket = attributes?.bucket ?? attributes?.name;
+    if (bucket === undefined) continue;
+    return { bucket, provider: resource.type === "cloudflare_r2_bucket" ? "r2" : "s3" };
+  }
+  return undefined;
+}
+
+/**
+ * Stops before any change when a backups bucket exists ({@link existingBucket}) and `wanted` is
+ * another provider, region or bucket: OpsCrew never moves the copies' bucket.
+ * @throws OpsCrewError `PHASE_PRECONDITION` with how to start on another bucket.
+ */
+async function requireSameBucket(run: SnapshotRun, wanted: KnownBucket): Promise<void> {
+  const known = await existingBucket(run);
+  if (known === undefined) return;
+  const differs =
+    known.bucket !== wanted.bucket ||
+    (known.provider === "s3" ? wanted.provider === "r2" : known.provider !== wanted.provider) ||
+    (known.region !== undefined && wanted.region !== undefined && known.region !== wanted.region);
+  if (!differs) return;
+  const { provider, region } = known;
+  const where =
+    provider === "s3"
+      ? ""
+      : ` on ${STORAGE_NAMES[provider]}${region === undefined ? "" : ` (${region})`}`;
+  const records = `${backupsStateFile(run.deps.paths)}, and ${backupsCreateFile(run.deps.paths)} if it exists`;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The copies of ${run.environment}'s snapshots are in the bucket ${known.bucket}${where}, and OpsCrew does not move that bucket or its copies. ${NOTHING_CHANGED}`,
+    {
+      hint: `To keep them in another bucket: first delete the bucket ${known.bucket} in ${provider === "s3" ? "its provider's console" : CONSOLES[provider]}, then delete OpsCrew's record of it (${records}), then run \`opscrew snapshot offsite on${run.flags}\` again.`,
+    },
+  );
+}
+
 /**
  * `opscrew snapshot offsite off`: `snapshots.offsite` removed from the plan, so no new copy is
  * uploaded. The bucket and its copies stay (D9: OpsCrew never deletes them); the lines say so,
@@ -184,7 +287,7 @@ export async function snapshotOffsiteOff(deps: PhaseDeps): Promise<SnapshotSetti
       : [
           `The copy of ${run.environment}'s snapshots off the server (snapshots.offsite in ${planFile(plan)}): ${offsiteText(plan)} → off.`,
           // Spaces gets no lifecycle rule: the servers delete the old copies after each upload.
-          `The bucket ${offsite.bucket} and the copies in it stay: OpsCrew never deletes them${offsite.provider === "digitalocean" ? ", and with no more uploads nothing deletes the old ones" : `, and ${STORAGE_NAMES[offsite.provider]} deletes each ${offsite.days} days after it was copied`}. To delete them sooner, empty and delete the bucket in ${CONSOLES[offsite.provider]}.`,
+          `The bucket ${offsite.bucket} and the copies in it stay: OpsCrew never deletes them${offsite.provider === "digitalocean" ? ", and with no more uploads nothing deletes the old ones" : `, and ${STORAGE_NAMES[offsite.provider]} expires each copy after ${offsite.days} days`}. To delete them sooner, empty and delete the bucket in ${CONSOLES[offsite.provider]}.`,
           provisionLine(run, "stop the uploads"),
         ];
   return writeSnapshotSetting(

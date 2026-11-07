@@ -85,7 +85,7 @@ describe("opscrew provision for the user's Portainer", () => {
     expect(fake.options.at(-1)).toMatchObject({ approveHashes: [INFRA, stack] });
     expect(approved.output).toContain(`Applied the stack plan ${stack} to your Portainer.`);
     expect(approved.output).toContain("opscrew verify");
-    expect(approved.output).toContain("back up the app's data volumes yourself");
+    expect(approved.output).toContain("backing up the Portainer host itself stays yours");
     for (const ctx of [planCtx, yesOnly, other, approved]) {
       expect(`${ctx.output}${ctx.errors}`).not.toContain(PORTAINER_HOST);
     }

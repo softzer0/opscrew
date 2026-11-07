@@ -58,7 +58,9 @@ const ANSWERS = {
   expectedMonthlyUsers: "<1k",
   budgetMonthly: "30 EUR",
   uptime: "standard",
-  dataCriticality: "critical",
+  // Data that matters would get design's scheduled snapshots and their copy on R2 (024), whose
+  // age key and bucket key this flow does not cover.
+  dataCriticality: "none",
   domain: "app.example.com",
   dnsProvider: "cloudflare",
   "server.host": OWN_IPV4,

@@ -35,12 +35,23 @@ export type PlaceListing = {
   listing: Listing;
 } & ({ host: ScriptHost } | { portainer: PortainerPlace });
 
-/** `host`'s snapshots: its `snapshot.sh list` and the `offsite.done` markers. */
-export async function hostListing(run: SnapshotRun, host: ScriptHost): Promise<PlaceListing> {
-  const command = `${scriptCommand(["list"])} && ${offsiteLines(SERVER_SNAPSHOTS)}`;
+/**
+ * `host`'s snapshots: its `snapshot.sh list` and the `offsite.done` markers, then `probe`'s lines
+ * when given (`status`'s), all in `stdout`; `what` follows "could not" in a failure.
+ */
+export async function hostListing(
+  run: SnapshotRun,
+  host: ScriptHost,
+  o: { probe?: string; what?: string } = {},
+): Promise<PlaceListing & { stdout: string }> {
+  const listing = `${scriptCommand(["list"])} && ${offsiteLines(SERVER_SNAPSHOTS)}`;
+  const command = o.probe === undefined ? listing : `{ ${listing}; } || exit $?; ${o.probe}`;
   const result = await host.run(command, READ_TIMEOUT_MS);
-  if (result.exitCode !== 0) throw hostFailure(run, host, result, "list the snapshots");
+  if (result.exitCode !== 0) {
+    throw hostFailure(run, host, result, o.what ?? "list the snapshots");
+  }
   return {
+    stdout: result.stdout,
     name: host.name,
     where: host.where,
     ...(host.local ? {} : { server: host.server }),
@@ -151,7 +162,7 @@ export async function listSnapshots(
 }
 
 /** A kind of snapshot in words. */
-const KIND_WORDS: Record<SnapshotEntry["kind"], string> = {
+export const KIND_WORDS: Record<SnapshotEntry["kind"], string> = {
   manual: "by hand",
   release: "before a release",
   scheduled: "scheduled",

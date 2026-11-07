@@ -381,7 +381,7 @@ export async function runDestroyCommand(
     }
     printNextSteps(ctx, [
       deployAgainStep(flag),
-      "your Portainer, its other stacks and the host stay as they are; back up anything you keep yourself (OpsCrew cannot back up a Portainer host).",
+      "your Portainer, its other stacks and the host stay as they are; OpsCrew never backs up the host itself, so back up anything else you keep there yourself.",
     ]);
     return;
   }

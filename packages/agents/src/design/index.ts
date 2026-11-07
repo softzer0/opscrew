@@ -8,10 +8,11 @@ export {
   placementEstimate,
 } from "./placement";
 export {
-  PORTAINER_BACKUPS_NOTE,
   PORTAINER_HOST_NOTE,
-  PORTAINER_NOTES,
   PORTAINER_SERVER_TYPE,
+  portainerBackupsNote,
+  portainerHasData,
+  portainerNotes,
 } from "./portainer";
 export {
   type DesignPreview,

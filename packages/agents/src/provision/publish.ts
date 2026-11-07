@@ -22,7 +22,8 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, isServerlessProvider } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { OWN_SERVER_BACKUPS_NOTE } from "../design/own";
+import { PORTAINER_HOST_NOTE, portainerBackupsNote, portainerHasData } from "../design/portainer";
 import { workflowBranch } from "../environments/branches";
 import { planProvider, providerProfile } from "../providers";
 import { planFile, planWhere } from "../runners/words";
@@ -162,12 +163,7 @@ export function deploySetupPullRequestBody(
     ...dependabotPullRequestLines(options.dependabot),
     "",
     ...nextStepLines(options.secretsStored, ready, host, flag),
-    ...(own
-      ? [
-          "",
-          "OpsCrew cannot turn on backups or snapshots on your own server; backups are your responsibility.",
-        ]
-      : []),
+    ...(own ? ["", OWN_SERVER_BACKUPS_NOTE] : []),
     "",
     "Review checklist:",
     PINNED_ACTIONS_CHECK,
@@ -417,7 +413,7 @@ function portainerPullRequestBody(
     ...(dns !== undefined ? ["", dns] : []),
     "",
     PORTAINER_HOST_NOTE,
-    PORTAINER_BACKUPS_NOTE,
+    portainerBackupsNote(portainerHasData(plan)),
     "",
     "Review checklist:",
     PINNED_ACTIONS_CHECK,

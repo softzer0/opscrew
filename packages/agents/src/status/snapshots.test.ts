@@ -22,6 +22,13 @@ function about(id: string, kind: string, taken: string, services: object[]): str
   return `${JSON.stringify({ id, kind, taken, version: VERSION, services })}\n`;
 }
 
+/** `shop` in staging with PostgreSQL `db` and scheduled snapshots. */
+function scheduledPlan() {
+  return stagingPlan([{ kind: "postgres", name: "db" }], {
+    fields: { snapshots: { schedule: { every: "daily", keep: 4 } } },
+  });
+}
+
 /** The scheduled snapshot's log on `world`'s app server, last written at `at`. */
 async function scheduledLog(world: SnapshotWorld, text: string, at: string): Promise<void> {
   const app = world.servers.app;
@@ -83,7 +90,7 @@ describe.skipIf(!SH_AVAILABLE)("status's snapshots on servers", () => {
   });
 
   it("reports a scheduled snapshot that failed, redacted, but not one being taken", async () => {
-    const world = await snapshotWorld(stagingPlan([{ kind: "postgres", name: "db" }]));
+    const world = await snapshotWorld(scheduledPlan());
     const secret = fakeSecret("generic-password", "a value in the log");
     world.deps.redactor.addLiteral(secret, "test-secret");
     await scheduledLog(
@@ -104,10 +111,51 @@ describe.skipIf(!SH_AVAILABLE)("status's snapshots on servers", () => {
     ]);
     expect(JSON.stringify(report)).not.toContain(secret);
 
-    // While a snapshot is being taken, its log is not finished.
+    // A `.partial` folder left by a run that stopped is stale: the failure stays.
     await world.servers.app?.write(".snapshots/20261107T040000Z.partial/db.dump", "");
+    const stale = await snapshotStatusReport(world.deps, world.plan, world.services);
+    expect(stale.snapshot?.scheduledFailures).toHaveLength(1);
+    // While a snapshot is being taken (the start lock held), its log is not finished.
+    await world.servers.app?.write("lock.held", "");
     const running = await snapshotStatusReport(world.deps, world.plan, world.services);
     expect(running.snapshot?.scheduledFailures).toEqual([]);
+  });
+
+  it("reports an off-server copy that failed after the snapshot was taken, not the snapshot", async () => {
+    const world = await snapshotWorld(scheduledPlan());
+    const id = "20261107T030000Z";
+    await world.servers.app?.write(
+      `.snapshots/${id}/about.json`,
+      about(id, "scheduled", "2026-11-07T03:00:05Z", [
+        { name: "db", kind: "postgres", file: "db.dump", size: 10 },
+      ]),
+    );
+    await scheduledLog(
+      world,
+      `${id}\nCopying the snapshot ${id} off the server failed, so the bucket has no complete copy of it yet.\n`,
+      "2026-11-07T03:01:00Z",
+    );
+    const report = await snapshotStatusReport(world.deps, world.plan, world.services);
+    expect(report.lines).toEqual([
+      `Last snapshot: ${id}, scheduled, 2026-11-07 03:00 UTC, every part copied, on the app's server.`,
+      `The off-server copy of the scheduled snapshot ${id} on the app's server failed at 2026-11-07 03:01 UTC: Copying the snapshot ${id} off the server failed, so the bucket has no complete copy of it yet. Its output is in .snapshots/scheduled.log in the app's folder there.`,
+    ]);
+    expect(report.snapshot?.scheduledFailures).toEqual([
+      expect.objectContaining({ id, at: "2026-11-07T03:01:00.000Z" }),
+    ]);
+
+    // An id with nothing after it: taken and copied.
+    await scheduledLog(world, `left out: nothing\n${id}\n`, "2026-11-07T03:01:00Z");
+    const fine = await snapshotStatusReport(world.deps, world.plan, world.services);
+    expect(fine.snapshot?.scheduledFailures).toEqual([]);
+  });
+
+  it("reads no scheduled failure once the schedule is off", async () => {
+    const world = await snapshotWorld(stagingPlan([{ kind: "postgres", name: "db" }]));
+    await scheduledLog(world, "OpsCrew took no snapshot.\n", "2026-11-07T03:00:20Z");
+    const report = await snapshotStatusReport(world.deps, world.plan, world.services);
+    expect(report.snapshot?.scheduledFailures).toEqual([]);
+    expect(world.servers.app?.commands.join("\n")).not.toContain("scheduled.log");
   });
 
   it("gives a note when a server can't be read, and nothing without data", async () => {
@@ -116,7 +164,7 @@ describe.skipIf(!SH_AVAILABLE)("status's snapshots on servers", () => {
       world.servers.app.answer = () => ({ exitCode: 255, stdout: "", stderr: "" });
     }
     expect((await snapshotStatusReport(world.deps, world.plan, world.services)).lines).toEqual([
-      "OpsCrew could not read the snapshots. The app's server did not answer over SSH, so OpsCrew could not read the snapshots. Check that it is on and reachable (`opscrew status`), then try again.",
+      "Snapshots: The app's server did not answer over SSH, so OpsCrew could not read the snapshots. Check that it is on and reachable (`opscrew status`), then try again.",
     ]);
     const empty = await snapshotWorld(stagingPlan([]));
     expect(await snapshotStatusReport(empty.deps, empty.plan, empty.services)).toEqual({

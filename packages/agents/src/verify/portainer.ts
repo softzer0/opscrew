@@ -19,7 +19,7 @@ import {
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type PortainerDeployTarget, serviceOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { PORTAINER_HOST_NOTE, portainerBackupsNote, portainerHasData } from "../design/portainer";
 import { originTlsHostnames } from "../provision/origin-tls";
 import { portainerDnsRecordNote } from "../provision/publish";
 import { namedEnvironmentFlag, planFile } from "../runners/words";
@@ -158,8 +158,8 @@ function originTlsLines(plan: DeployPlan, flag: string): string[] {
 
 /**
  * `opscrew/RUNBOOK.md` for an app in the user's Portainer: how it runs and deploys, where its logs
- * are, how to roll back and rotate secrets, how to remove it, and that OpsCrew does not change the
- * host and backups are the user's. Committed: never Portainer's address, a token or a value.
+ * are, how to roll back and rotate secrets, what OpsCrew backs up (the app's data, by its
+ * snapshots) and how to remove it, and that OpsCrew does not change the host. Committed: never Portainer's address, a token or a value.
  * Its commands name the environment's `--env` (prod's too, beside the app's other `environments`).
  */
 export function renderPortainerRunbook(
@@ -233,10 +233,16 @@ export function renderPortainerRunbook(
     "",
     ...originTlsLines(plan, flag),
     ...recoverySection(plan, environments),
+    "## Backups",
+    "",
+    portainerBackupsNote(portainerHasData(plan)),
+    volumes.length > 0
+      ? `The stack's volumes are ${volumes.map((name) => `\`${name}\``).join(", ")}; \`${version}\` holds only the version the site serves, with nothing to back up.`
+      : `\`${version}\` holds only the version the site serves, with nothing to back up.`,
+    "",
     "## What OpsCrew does not do here",
     "",
     `- ${PORTAINER_HOST_NOTE}`,
-    `- ${PORTAINER_BACKUPS_NOTE}${volumes.length > 0 ? ` This app's volumes: ${volumes.map((name) => `\`${name}\``).join(", ")}.` : ""} \`${version}\` holds only the version the site serves: nothing to back up.`,
     "- OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.",
     "",
     "## Removing the app",

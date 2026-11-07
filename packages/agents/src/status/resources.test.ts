@@ -643,7 +643,7 @@ describe("componentStatusReport with the figures", () => {
       ),
       // The snapshots, read after the components, give a note of their own.
       "",
-      "OpsCrew could not read the snapshots. The app's server did not answer over SSH, so OpsCrew could not read the snapshots. Check that it is on and reachable (`opscrew status`), then try again.",
+      "Snapshots: The app's server did not answer over SSH, so OpsCrew could not read the snapshots. Check that it is on and reachable (`opscrew status`), then try again.",
     ]);
     expect(report.status).toBeDefined();
     expect(report.resources).toBeUndefined();

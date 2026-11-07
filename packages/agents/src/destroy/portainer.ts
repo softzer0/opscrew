@@ -24,7 +24,7 @@ import {
 } from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
-import { PORTAINER_NOTES } from "../design/portainer";
+import { portainerNotes } from "../design/portainer";
 import { providerBucket } from "../provision";
 import { portainerCloudflare } from "../provision/credentials";
 import {
@@ -103,19 +103,23 @@ import { destroyConfirmPrompt } from "./texts";
 import type { DestroyGitHubApi, DestroyOptions, DestroyResult } from "./types";
 
 /** Said wherever the teardown in the user's Portainer is described (FR-1014, FR-1015). */
-const PORTAINER_STAYS = `Portainer itself, its settings and every stack, volume and registry entry OpsCrew did not create stay as they are: OpsCrew removes only what its record lists for this app. ${PORTAINER_NOTES}`;
+function portainerStays(plan: DeployPlan): string {
+  return `Portainer itself, its settings and every stack, volume and registry entry OpsCrew did not create stay as they are: OpsCrew removes only what its record lists for this app. ${portainerNotes(plan)}`;
+}
 
 /** Why the tunnel goes last, said in the approval and the summary. */
 const TUNNEL_AFTER_STACKS =
   "Cloudflare deletes a tunnel only after its connector has stopped, and the connector runs in your Portainer,";
 
-/** How the Cloudflare part of the teardown is worded in the user's Portainer. */
-const WORDS: CloudflareRemovalWords = {
-  what: "Cloudflare Tunnel, DNS records and Access",
-  place: "your Portainer",
-  tunnelAfter: TUNNEL_AFTER_STACKS,
-  stays: PORTAINER_STAYS,
-};
+/** How the Cloudflare part of the teardown of `plan` is worded in the user's Portainer. */
+function removalWords(plan: DeployPlan): CloudflareRemovalWords {
+  return {
+    what: "Cloudflare Tunnel, DNS records and Access",
+    place: "your Portainer",
+    tunnelAfter: TUNNEL_AFTER_STACKS,
+    stays: portainerStays(plan),
+  };
+}
 
 /** Stops (`PHASE_PRECONDITION`, nothing changed) when the teardown plan cannot run. */
 function requireNoStackBlockers(plan: StackPlan, name: string): void {
@@ -366,7 +370,7 @@ function remainingInPortainer(input: {
   const { plan, github, files } = input;
   const items = [
     "Your Portainer itself, its settings and every stack, volume and registry entry OpsCrew did not create: OpsCrew never changes them.",
-    PORTAINER_NOTES,
+    portainerNotes(plan),
   ];
   if (input.keptVolumes.length > 0) {
     items.push(
@@ -498,6 +502,7 @@ export async function destroyPortainer(
     versionVolume: version,
   });
   requireNoStackBlockers(teardown, name);
+  const words = removalWords(plan);
   const stackWork = teardown.changes.filter((change) => change.state === "change");
   let session: DeletionSession | undefined;
   let resources: ResourceChange[] = [];
@@ -508,7 +513,7 @@ export async function destroyPortainer(
     setPortainerOrigin(deps.redactor, setup.env, connection.url);
     await setPortainerRecordsAddress(deps.paths, plan, setup.env);
     session = deletionSession(scope, { ...setup, dir: join(deps.paths.root, plan.infra.dir) });
-    ({ resources, confirmed } = await previewCloudflareRemoval(session, WORDS));
+    ({ resources, confirmed } = await previewCloudflareRemoval(session, words));
   }
   // With --delete-data, the bucket's deletion through its own root and plan, made now so the
   // confirmation lists it.
@@ -555,7 +560,7 @@ export async function destroyPortainer(
     teardownSummary({
       resources,
       removed: stackTitles,
-      words: WORDS,
+      words,
       notes: branchNote !== undefined ? [branchNote] : [],
     }),
   );
@@ -603,7 +608,7 @@ export async function destroyPortainer(
       removal = await approveCloudflareRemoval(session, {
         confirmed,
         appChanges: stackWork.length > 0,
-        words: WORDS,
+        words,
         // The branch's deletion and the check's pause are said in the typed confirmation they go
         // under (the stack teardown's when there is one).
         notes:
@@ -635,7 +640,7 @@ export async function destroyPortainer(
                 : []),
               ...(branchNote !== undefined ? [branchNote] : []),
               ...(removeApp ? checkPauseNote(plan) : []),
-              PORTAINER_STAYS,
+              portainerStays(plan),
             ],
             refused: `The removal of ${name} from your Portainer was not approved, so nothing in your Portainer was changed and nothing in Cloudflare was deleted.`,
           })

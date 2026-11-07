@@ -52,6 +52,7 @@ import {
   withDesignedCheck,
 } from "../check/settings";
 import type { PhaseDeps } from "../context";
+import { commandFlags } from "../environments/choice";
 import { requireOwnHostnames } from "../environments/hostnames";
 import { environmentPaths } from "../environments/paths";
 import { readEnvironmentRequirements } from "../environments/requirements";
@@ -136,10 +137,11 @@ import { hasPlacement, type PlacementEdits, readPlanWithEdits } from "./placemen
 import { optionToPlan } from "./plan";
 import {
   buildPortainerOption,
-  PORTAINER_BACKUPS_NOTE,
+  componentsKeepData,
   PORTAINER_HOST_NOTE,
   PORTAINER_PRICE_NOTE,
   type PortainerDesignChoice,
+  portainerBackupsNote,
   portainerChoiceProblem,
   portainerDesignChoice,
 } from "./portainer";
@@ -544,7 +546,7 @@ async function pricePortainer(
     ),
   );
   deps.reporter.info(PORTAINER_HOST_NOTE);
-  deps.reporter.info(PORTAINER_BACKUPS_NOTE);
+  deps.reporter.info(portainerBackupsNote(componentsKeepData(designed.components)));
   appWarnings(facts, designed.components, warner(deps, warnings));
   return {
     options: [option],
@@ -1294,7 +1296,10 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
         ]),
   ].map(say);
   for (const line of componentLines) reporter.info(line);
-  const snapshotLines = snapshotDesignLines(plan).map(say);
+  const snapshotLines = snapshotDesignLines(
+    plan,
+    await commandFlags(paths.root, name, paths.app),
+  ).map(say);
   for (const line of snapshotLines) reporter.info(line);
   // Each server, the total, each hop's delay, what has no login and a move's window.
   const placementLines = placement.lines.map(say);

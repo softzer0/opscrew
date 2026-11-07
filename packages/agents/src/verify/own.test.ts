@@ -168,7 +168,7 @@ describe("runVerify on a server the user owns", () => {
     expect(runbook).not.toContain(LAN_IPV4);
     expect(runbook).not.toContain("198.51.100.7");
     expect(runbook).toContain("-p 2222");
-    expect(runbook).toContain("Backups are your responsibility");
+    expect(runbook).toContain("OpsCrew cannot back up the server itself");
   });
 
   it("public mode keeps the login port in the runbook when a router forwards it to sshd", async () => {

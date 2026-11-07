@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { PORTAINER_HOST_NOTE, portainerBackupsNote } from "../design/portainer";
 import { portainerPlan } from "../testing";
 import { deploySetupPullRequestBody, portainerDnsRecordNote } from "./publish";
 
@@ -15,7 +15,8 @@ describe("the deploy pull request for the user's Portainer", () => {
     expect(body).toContain("the updater stack in your Portainer");
     expect(body).toContain("**Merging this pull request deploys the app to shop.example.com.**");
     expect(body).toContain(PORTAINER_HOST_NOTE);
-    expect(body).toContain(PORTAINER_BACKUPS_NOTE);
+    // The test app keeps its PostgreSQL in the stack: the snapshots copy it.
+    expect(body).toContain(portainerBackupsNote(true));
     expect(body).toContain("Portainer's address is not in the repository");
     // Nothing about servers OpsCrew creates.
     expect(body).not.toMatch(/firewall rules|server is already running|IP address/);

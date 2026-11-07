@@ -74,10 +74,14 @@ opscrew provision                                        # reuses the restored f
   encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets
   themselves too.
 
+## Backups
+
+The app keeps no data for OpsCrew to snapshot; backing up the Portainer host itself is your responsibility.
+The stack's volumes are \`opscrew-shop_caddy_data\`, \`opscrew-shop_caddy_config\`; \`opscrew-shop_version\` holds only the version the site serves, with nothing to back up.
+
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
-- OpsCrew snapshots the app's data into the stack's snapshots volume with \`opscrew snapshot\`; \`opscrew snapshot schedule on\` takes them on a schedule (only the services copied while they run) and \`opscrew snapshot offsite on\` keeps an encrypted copy off the host. Backing up the Portainer host itself is your responsibility. This app's volumes: \`opscrew-shop_caddy_data\`, \`opscrew-shop_caddy_config\`. \`opscrew-shop_version\` holds only the version the site serves: nothing to back up.
 - OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.
 
 ## Removing the app
@@ -160,10 +164,14 @@ opscrew provision                                        # reuses the restored f
   encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets
   themselves too.
 
+## Backups
+
+The app keeps no data for OpsCrew to snapshot; backing up the Portainer host itself is your responsibility.
+\`opscrew-shop_version\` holds only the version the site serves, with nothing to back up.
+
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
-- OpsCrew snapshots the app's data into the stack's snapshots volume with \`opscrew snapshot\`; \`opscrew snapshot schedule on\` takes them on a schedule (only the services copied while they run) and \`opscrew snapshot offsite on\` keeps an encrypted copy off the host. Backing up the Portainer host itself is your responsibility. \`opscrew-shop_version\` holds only the version the site serves: nothing to back up.
 - OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.
 
 ## Removing the app
@@ -243,10 +251,14 @@ opscrew provision                                        # reuses the restored f
   encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets
   themselves too.
 
+## Backups
+
+OpsCrew snapshots the app's data into the stack's snapshots volume with \`opscrew snapshot\`; \`opscrew snapshot schedule on\` takes them on a schedule (only the services copied while they run) and \`opscrew snapshot offsite on\` keeps an encrypted copy off the host. Backing up the Portainer host itself is your responsibility.
+The stack's volumes are \`opscrew-shop_db_data\`, \`opscrew-shop_snapshots\`; \`opscrew-shop_version\` holds only the version the site serves, with nothing to back up.
+
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
-- OpsCrew snapshots the app's data into the stack's snapshots volume with \`opscrew snapshot\`; \`opscrew snapshot schedule on\` takes them on a schedule (only the services copied while they run) and \`opscrew snapshot offsite on\` keeps an encrypted copy off the host. Backing up the Portainer host itself is your responsibility. This app's volumes: \`opscrew-shop_db_data\`, \`opscrew-shop_snapshots\`. \`opscrew-shop_version\` holds only the version the site serves: nothing to back up.
 - OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.
 
 ## Removing the app
@@ -340,10 +352,14 @@ opscrew provision                                        # reuses the restored f
   encrypted to it, in a pull request. Older commits still open with the old key: if it leaked, change the secrets
   themselves too.
 
+## Backups
+
+OpsCrew snapshots the app's data into the stack's snapshots volume with \`opscrew snapshot\`; \`opscrew snapshot schedule on\` takes them on a schedule (only the services copied while they run) and \`opscrew snapshot offsite on\` keeps an encrypted copy off the host. Backing up the Portainer host itself is your responsibility.
+The stack's volumes are \`opscrew-shop_db_data\`, \`opscrew-shop_snapshots\`; \`opscrew-shop_version\` holds only the version the site serves, with nothing to back up.
+
 ## What OpsCrew does not do here
 
 - OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.
-- OpsCrew snapshots the app's data into the stack's snapshots volume with \`opscrew snapshot\`; \`opscrew snapshot schedule on\` takes them on a schedule (only the services copied while they run) and \`opscrew snapshot offsite on\` keeps an encrypted copy off the host. Backing up the Portainer host itself is your responsibility. This app's volumes: \`opscrew-shop_db_data\`, \`opscrew-shop_snapshots\`. \`opscrew-shop_version\` holds only the version the site serves: nothing to back up.
 - OpsCrew changes nothing in your Portainer that it did not create: other stacks, volumes, registry entries and Portainer's settings stay yours.
 
 ## Removing the app

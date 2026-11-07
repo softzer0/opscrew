@@ -1,5 +1,7 @@
 import { OpsCrewError } from "@opscrew/core";
+import { snapshotParts } from "@opscrew/iac-templates";
 import {
+  type DeployPlan,
   type DesignOption,
   DesignOptionSchema,
   type PortainerDeployTarget,
@@ -8,6 +10,7 @@ import {
   serviceOf,
 } from "@opscrew/plan-schema";
 import type { PortainerConnection } from "../shared";
+import { type Components, designComponents } from "./components";
 import { hasCloudflareDomain, noServerCost, OWN_SERVER_LOCATION } from "./own";
 import { containersText, sizeFor } from "./sizing";
 
@@ -24,12 +27,34 @@ export const PORTAINER_OPTION_ID = "portainer";
 export const PORTAINER_HOST_NOTE =
   "OpsCrew does not change the host: its firewall, SSH and Portainer's own security stay yours.";
 
-/** Said wherever OpsCrew designs, documents or removes a deployment in the user's Portainer. */
-export const PORTAINER_BACKUPS_NOTE =
-  "OpsCrew snapshots the app's data into the stack's snapshots volume with `opscrew snapshot`; `opscrew snapshot schedule on` takes them on a schedule (only the services copied while they run) and `opscrew snapshot offsite on` keeps an encrypted copy off the host. Backing up the Portainer host itself is your responsibility.";
+/**
+ * Said wherever OpsCrew designs, documents or removes a deployment in the user's Portainer: what
+ * OpsCrew backs up of an app with data (`hasData`, {@link portainerHasData}), by its snapshots,
+ * and that the host is the user's to back up.
+ */
+export function portainerBackupsNote(hasData: boolean): string {
+  return hasData
+    ? "OpsCrew snapshots the app's data into the stack's snapshots volume with `opscrew snapshot`; `opscrew snapshot schedule on` takes them on a schedule (only the services copied while they run) and `opscrew snapshot offsite on` keeps an encrypted copy off the host. Backing up the Portainer host itself is your responsibility."
+    : "The app keeps no data for OpsCrew to snapshot; backing up the Portainer host itself is your responsibility.";
+}
 
-/** Both Portainer notes as one paragraph. */
-export const PORTAINER_NOTES = `${PORTAINER_HOST_NOTE} ${PORTAINER_BACKUPS_NOTE}`;
+/** True when `plan`'s app keeps data in its stack that `opscrew snapshot` copies. */
+export function portainerHasData(plan: DeployPlan): boolean {
+  return snapshotParts(plan).length > 0;
+}
+
+/** True when the designed `components` keep data: a service turned on, or SQLite. */
+export function componentsKeepData(components: Components): boolean {
+  return (
+    components.services.some((service) => service.enabled) ||
+    components.storage?.sqlite !== undefined
+  );
+}
+
+/** Both Portainer notes as one paragraph, for `plan`. */
+export function portainerNotes(plan: DeployPlan): string {
+  return `${PORTAINER_HOST_NOTE} ${portainerBackupsNote(portainerHasData(plan))}`;
+}
 
 /** Why a Portainer option has no price. */
 export const PORTAINER_PRICE_NOTE = "No server price: you already run this Portainer.";
@@ -141,7 +166,9 @@ export interface PortainerOptionInput {
  */
 export function buildPortainerOption(input: PortainerOptionInput): DesignOption {
   const { facts, requirements, choice } = input;
-  const sizing = sizeFor(facts, requirements);
+  const components = designComponents({ facts, requirements }).components;
+  const sizing = sizeFor(facts, requirements, components);
+  const backups = portainerBackupsNote(componentsKeepData(components));
   const cost = noServerCost(
     "Your Portainer (you already run it)",
     requirements.budgetMonthly.currency,
@@ -152,7 +179,7 @@ export function buildPortainerOption(input: PortainerOptionInput): DesignOption 
     webText(choice.web),
     PORTAINER_PRICE_NOTE,
     PORTAINER_HOST_NOTE,
-    PORTAINER_BACKUPS_NOTE,
+    backups,
   ].join(" ");
 
   const tradeoffs: string[] = [redeployText(choice.redeploy)];
@@ -177,7 +204,7 @@ export function buildPortainerOption(input: PortainerOptionInput): DesignOption 
       "Postgres runs in the app's stack with a named volume on the same host, so its data is only as safe as that host: keep the snapshots' encrypted copy off it.",
     );
   }
-  tradeoffs.push(PORTAINER_HOST_NOTE, PORTAINER_BACKUPS_NOTE);
+  tradeoffs.push(PORTAINER_HOST_NOTE, backups);
 
   return DesignOptionSchema.parse({
     id: PORTAINER_OPTION_ID,

@@ -122,7 +122,10 @@ export class FakeSnapshotServer {
     };
   }
 
-  /** Runs the command under `sh` in the folder, with `df` answering `df.out`. */
+  /**
+   * Runs the command under `sh` in the folder, with `df` answering `df.out` and `flock` failing
+   * while `lock.held` exists (the start lock held by another run).
+   */
   sh(command: string): CommandResult {
     // A login that reaches Docker through passwordless sudo: `sudo -n sh -c '<command>'`.
     const sudo = /^sudo -n sh -c ('(?:[^']|'\\'')*')$/s.exec(command)?.[1];
@@ -134,7 +137,7 @@ export class FakeSnapshotServer {
             if (unquote(wrapped[1] ?? "") !== this.serverDir) throw new Error(`cd to ${wrapped[1]}`);
             return unquote(wrapped[2] ?? "");
           })();
-    const script = `df() { cat df.out; }\ncd ${shellQuote(this.dir)} || exit 3\n${inner}`;
+    const script = `df() { cat df.out; }\nflock() { [ ! -f lock.held ]; }\ncd ${shellQuote(this.dir)} || exit 3\n${inner}`;
     const run = spawnSync("sh", ["-c", script], { encoding: "utf8" });
     return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
   }

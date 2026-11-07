@@ -258,7 +258,8 @@ describe("opscrew status and the server's address", () => {
         provision: { remote: ssh.remote },
       });
       expect(await main(argv("status"), ctx)).toBe(0);
-      expect(ssh.hosts).toEqual([SERVER_IPV4]);
+      // The components, then the snapshots (024).
+      expect(ssh.hosts).toEqual([SERVER_IPV4, SERVER_IPV4]);
       expect(ctx.output).toContain(
         [
           "Components:",

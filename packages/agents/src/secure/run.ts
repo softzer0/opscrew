@@ -69,7 +69,7 @@ import { monitoringSecurityChecks } from "./monitoring";
 import { type OwnSecureTarget, ownSecureTarget } from "./own";
 import {
   PORTAINER_PROBES_SKIPPED,
-  PORTAINER_SECURE_NOTES,
+  portainerSecureNotes,
   portainerSecurityChecks,
 } from "./portainer";
 import { previewServiceChecks } from "./previews";
@@ -591,7 +591,9 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
     ...(hostChecksSkipped !== undefined ? { hostChecksSkipped } : {}),
     ...(deep !== undefined ? { deep } : {}),
     ...(portainer
-      ? { portainer: { notes: PORTAINER_SECURE_NOTES, probesSkipped: PORTAINER_PROBES_SKIPPED } }
+      ? {
+          portainer: { notes: portainerSecureNotes(plan), probesSkipped: PORTAINER_PROBES_SKIPPED },
+        }
       : {}),
     ...(localhost
       ? { localhost: { notes: LOCAL_SECURE_NOTES, probesSkipped: LOCAL_PROBES_SKIPPED } }
@@ -643,7 +645,7 @@ async function secure(deps: PhaseDeps, options: RunSecureOptions): Promise<Secur
   if (passed) reporter.success(headline);
   else reporter.error(headline);
   for (const line of details) reporter.info(line);
-  if (portainer) reporter.info(PORTAINER_SECURE_NOTES.join(" "));
+  if (portainer) reporter.info(portainerSecureNotes(plan).join(" "));
   if (localhost) reporter.info(LOCAL_SECURE_NOTES.join(" "));
   if (site !== undefined) reporter.info(siteSecureNotes(site).join(" "));
   if (hostChecksSkipped !== undefined)

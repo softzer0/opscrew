@@ -22,12 +22,13 @@ function runbook(o: Parameters<typeof testPlan>[0], context: RenderContext = ctx
 }
 
 describe("renderRunbook for a server the user owns", () => {
-  it("shows no server price and says backups are the user's responsibility", () => {
+  it("shows no server price and says OpsCrew snapshots the data, the server's backups the user's", () => {
     const text = runbook({ domain: "shop.example.com" });
     expect(text).toContain("no server price: you already pay for this server");
     expect(text).not.toMatch(/€|\$\d|per month/);
-    expect(text).toContain("## Backups are your responsibility");
-    expect(text).toContain("OpsCrew cannot turn on backups or snapshots on a server you own");
+    expect(text).toContain("## Backups");
+    expect(text).toContain("takes a snapshot of the app's data on this server");
+    expect(text).toContain("OpsCrew cannot back up the server itself");
     expect(text).toContain("pg_dump");
     expect(text).not.toMatch(/Hetzner|DigitalOcean|Droplet/);
   });

@@ -31,7 +31,7 @@ import {
 import { type DeployPlan, type Requirements, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { deploySetupCheck, provisionCheck, resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
-import { PORTAINER_NOTES } from "../design/portainer";
+import { portainerNotes } from "../design/portainer";
 import { builderBranch } from "../environments/branches";
 import { knownRecipients } from "../secrets/store";
 import {
@@ -1180,7 +1180,7 @@ export async function provisionPortainer(
   const dns = portainerDnsRecordNote(plan);
   if (dns !== undefined) deps.reporter.info(dns);
   if (routeChanges) deps.reporter.warn(ROUTE_CHANGE_NOTE);
-  deps.reporter.info(PORTAINER_NOTES);
+  deps.reporter.info(portainerNotes(plan));
   const merge = mergeDeploysNote(plan, published.published, options.secrets !== false);
   if (secretsStored && merge !== undefined) deps.reporter.info(merge);
   // While a rollback pins the environment, what this run merges deploys only once it resumes.

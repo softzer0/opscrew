@@ -16,7 +16,7 @@ import {
 import type { DeployPlan, PortainerDeployTarget } from "@opscrew/plan-schema";
 import { parse } from "yaml";
 import type { PhaseDeps } from "../context";
-import { PORTAINER_BACKUPS_NOTE, PORTAINER_HOST_NOTE } from "../design/portainer";
+import { PORTAINER_HOST_NOTE, portainerBackupsNote, portainerHasData } from "../design/portainer";
 import { PORTAINER_TOKEN_VAR } from "../providers";
 import {
   ensurePortainerValueKey,
@@ -38,8 +38,10 @@ import {
   serverAddressesFile,
 } from "../shared";
 
-/** Said in the report and the terminal for an app in the user's Portainer (FR-1015). */
-export const PORTAINER_SECURE_NOTES = [PORTAINER_HOST_NOTE, PORTAINER_BACKUPS_NOTE] as const;
+/** Said in the report and the terminal for `plan`'s app in the user's Portainer (FR-1015). */
+export function portainerSecureNotes(plan: DeployPlan): string[] {
+  return [PORTAINER_HOST_NOTE, portainerBackupsNote(portainerHasData(plan))];
+}
 
 /** Why `opscrew secure` probes no port of the user's Portainer host. */
 export const PORTAINER_PROBES_SKIPPED =

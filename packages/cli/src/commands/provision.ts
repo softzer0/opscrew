@@ -647,7 +647,7 @@ export async function runInfraCommand(
       : secureServerStep(flag, result.securityReport),
     ...(result.own
       ? [
-          "back up your server and the app's data yourself: OpsCrew cannot turn on backups or snapshots on your own server.",
+          `take snapshots of the app's data with \`opscrew snapshot${flag}\`, on a schedule with \`opscrew snapshot schedule on${flag}\` and an encrypted copy off the server with \`opscrew snapshot offsite on --to <provider>${flag}\`; backing up the server itself stays yours.`,
         ]
       : []),
   ]);
@@ -748,7 +748,7 @@ function portainerNextSteps(
       ? `${deploys ? "when the deploy run in GitHub Actions has finished and" : "when"} your reverse proxy routes to the app, run \`opscrew verify${flag}\` (add \`--url <address>\` to check the address your proxy serves it on) to check the live site and write ${runbook}.`
       : verifyStep(flag, runbook, deploys),
     `run \`opscrew secure${flag}\` to check the app's stack and write ${files.securityReport} (the host, its firewall, SSH and Portainer's own security stay yours).`,
-    "back up the app's data volumes yourself: OpsCrew cannot back up a Portainer host.",
+    `take snapshots of the app's data with \`opscrew snapshot${flag}\`, on a schedule with \`opscrew snapshot schedule on${flag}\` and an encrypted copy off the host with \`opscrew snapshot offsite on --to <provider>${flag}\`; backing up the Portainer host itself stays yours.`,
   ];
 }
 

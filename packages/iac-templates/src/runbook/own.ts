@@ -81,7 +81,11 @@ export function renderOwnRunbook(
     : proxied
       ? `kept private behind Cloudflare: \`${status}\` shows them`
       : `kept out of this repository: \`${status}\` shows them`;
-  const db = dataCell(plan, "backups are your responsibility", externalDatabaseCell(plan));
+  const db = dataCell(
+    plan,
+    `snapshots with \`${opscrew(plan, "snapshot", environments)}\` (see Backups)`,
+    externalDatabaseCell(plan),
+  );
   const dns = tunnel
     ? "Cloudflare, through a Cloudflare Tunnel (no DNS record points at the server)"
     : cloudflare
@@ -147,14 +151,16 @@ export function renderOwnRunbook(
     deployKeyStored(plan, environments),
     "secret). OpsCrew turned off password logins on the server.",
     "",
-    "## Backups are your responsibility",
+    "## Backups",
     "",
-    `OpsCrew cannot turn on backups or snapshots on a server you own, and \`${opscrew(plan, "destroy", environments)}\` takes no snapshot. Back up`,
-    "the server the way your hosting provider or your own setup allows, and keep copies somewhere else.",
+    `\`${opscrew(plan, "snapshot", environments)}\` takes a snapshot of the app's data on this server, \`${opscrew(plan, "snapshot schedule on", environments)}\` takes them on a`,
+    `schedule, and \`${opscrew(plan, "snapshot offsite on --to <provider>", environments)}\` keeps an encrypted copy of each off the server; \`${opscrew(plan, "restore <id>", environments)}\``,
+    `puts one back. \`${opscrew(plan, "destroy", environments)}\` takes no snapshot first. OpsCrew cannot back up the server itself: back it up the`,
+    "way your hosting provider or your own setup allows, and keep copies somewhere else.",
     "",
   ];
   if (serviceOf(plan, "postgres")) {
-    lines.push("Back up the database regularly, for example:", "", ...DATABASE_DUMP);
+    lines.push("You can also dump the database by hand, for example:", "", ...DATABASE_DUMP);
   }
 
   if (portainer !== undefined) {

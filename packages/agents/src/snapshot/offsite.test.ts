@@ -1,7 +1,9 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { localPlan } from "../localhost/__fixtures__/computer";
+import { backupsStateFile } from "../provision/storage";
 import { createTestPhaseDeps, ownPlan, testPlan } from "../testing";
 import { stagingPlan } from "./__fixtures__/world";
 import { snapshotOffsiteOff, snapshotOffsiteOn } from "./offsite";
@@ -45,12 +47,11 @@ describe("opscrew snapshot offsite on", () => {
     ]);
   });
 
-  it("takes R2 for a domain on Cloudflare, with --days, and keeps the bucket's name", async () => {
+  it("takes R2 for a domain on Cloudflare, with --days", async () => {
     const plan = stagingPlan(DB, {
       base: testPlan({ deployed: true, domain: "shop.example.com" }),
     });
     const { deps } = await world(plan);
-    await snapshotOffsiteOn(deps, { to: "hetzner", region: "fsn1" });
     const change = await snapshotOffsiteOn(deps, { to: "r2", days: 30 });
 
     expect(change.plan.snapshots?.offsite).toEqual({
@@ -59,11 +60,71 @@ describe("opscrew snapshot offsite on", () => {
       days: 30,
     });
     expect(change.lines[0]).toBe(
-      "The copy of staging's snapshots off the server (snapshots.offsite in opscrew/environments/staging/plan.yaml): the private bucket shop-staging-backups on Hetzner Object Storage (fsn1), each copy kept 90 days → the private bucket shop-staging-backups on Cloudflare R2, each copy kept 30 days.",
+      "The copy of staging's snapshots off the server (snapshots.offsite in opscrew/environments/staging/plan.yaml): off → the private bucket shop-staging-backups on Cloudflare R2, each copy kept 30 days.",
     );
     expect(change.lines[2]).toBe(
       "Expected cost: $0.00/month at Cloudflare R2, plus what the copies store beyond what that includes.",
     );
+  });
+
+  it("keeps a region given earlier when --days alone changes", async () => {
+    // The server is in nbg1; the copies went to hel1.
+    const { deps } = await world(stagingPlan(DB));
+    await snapshotOffsiteOn(deps, { to: "hetzner", region: "hel1" });
+    const change = await snapshotOffsiteOn(deps, { to: "hetzner", days: 30 });
+    expect(change.plan.snapshots?.offsite).toEqual({
+      provider: "hetzner",
+      bucket: "shop-staging-backups",
+      region: "hel1",
+      days: 30,
+    });
+  });
+
+  it("refuses another provider or region while the copies' bucket exists, saying how to start over", async () => {
+    const plan = stagingPlan(DB, {
+      base: testPlan({ deployed: true, domain: "shop.example.com" }),
+    });
+    const { deps, onDisk } = await world(plan);
+    await snapshotOffsiteOn(deps, { to: "hetzner", region: "fsn1" });
+    const before = await onDisk();
+    const state = backupsStateFile(deps.paths);
+    await expect(
+      snapshotOffsiteOn(deps, { to: "digitalocean", region: "fra1" }),
+    ).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message:
+        "The copies of staging's snapshots are in the bucket shop-staging-backups on Hetzner Object Storage (fsn1), and OpsCrew does not move that bucket or its copies. Nothing was changed.",
+      hint: expect.stringContaining(
+        `first delete the bucket shop-staging-backups in the Hetzner Console (Object Storage), then delete OpsCrew's record of it (${state}`,
+      ),
+    });
+    await expect(snapshotOffsiteOn(deps, { to: "hetzner", region: "hel1" })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+    });
+    expect(await onDisk()).toBe(before);
+
+    // After `off`, the backups root's state still holds the bucket.
+    await snapshotOffsiteOff(deps);
+    await mkdir(dirname(state), { recursive: true });
+    await writeFile(
+      state,
+      JSON.stringify({
+        resources: [
+          {
+            type: "aws_s3_bucket",
+            instances: [{ attributes: { bucket: "shop-staging-backups" } }],
+          },
+        ],
+      }),
+    );
+    await expect(snapshotOffsiteOn(deps, { to: "r2" })).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining("are in the bucket shop-staging-backups, and OpsCrew"),
+      hint: expect.stringContaining("in its provider's console"),
+    });
+    // The same bucket again is fine.
+    const again = await snapshotOffsiteOn(deps, { to: "hetzner", region: "fsn1" });
+    expect(again.changed).toBe(true);
   });
 
   it("takes the Spaces region of a droplet's location, and writes nothing when nothing changes", async () => {
@@ -153,7 +214,7 @@ describe("opscrew snapshot offsite off", () => {
     expect((await readArtifact("plan", deps.paths.files.plan)).snapshots).toEqual({ schedule });
     expect(change.lines).toEqual([
       "The copy of staging's snapshots off the server (snapshots.offsite in opscrew/environments/staging/plan.yaml): the private bucket shop-staging-backups on Hetzner Object Storage (nbg1), each copy kept 60 days → off.",
-      "The bucket shop-staging-backups and the copies in it stay: OpsCrew never deletes them, and Hetzner Object Storage deletes each 60 days after it was copied. To delete them sooner, empty and delete the bucket in the Hetzner Console (Object Storage).",
+      "The bucket shop-staging-backups and the copies in it stay: OpsCrew never deletes them, and Hetzner Object Storage expires each copy after 60 days. To delete them sooner, empty and delete the bucket in the Hetzner Console (Object Storage).",
       "Run `opscrew provision` to stop the uploads.",
     ]);
   });
