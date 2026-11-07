@@ -153,7 +153,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2420 [US7] The Portainer rollback restores its pre-release snapshot (plan.md D14, D19), in `packages/agents/src/rollback/**` and the guard in `packages/iac-templates/src/portainer-target/snapshots.ts` (+ tests)
+- [x] T2420 [US7] The Portainer rollback restores its pre-release snapshot (plan.md D14, D19), in `packages/agents/src/rollback/**` and the guard in `packages/iac-templates/src/portainer-target/snapshots.ts` (+ tests)
   - Depends: T2408, T2417
   - Accept: with releases taking snapshots on Portainer, `opscrew rollback --to <v> --database snapshot` offers and restores the target's pre-release snapshot through T2408's Portainer restore, with the same approval and put-back on failure as servers; keep stays the default answer.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
@@ -164,6 +164,11 @@ description: "Tasks for 024-snapshots-and-restores"
   - Accept: the check's forced SSH command also prints, per app folder, the time and last line of `.snapshots/scheduled.log`; the check script opens or updates its issue when the last scheduled run failed (the same rule as status, T2410). Existing servers get the widened key line through their next provision (a host plan on own servers). Portainer isn't reached by the check: status shows it, and the guide says so.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents`
   - Effort: high
+
+- [ ] T2422 [US1] The localhost target sees ports other containers publish (found in T2414's prep)
+  - Accept: on Docker Desktop, the port check also reads the ports running containers publish (`docker ps`), so a port another container holds falls back to 8080/8443 as R4 says, instead of failing at `docker compose up` with "port is already allocated". Test with a fake Docker answer.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
+  - Effort: medium
 
 ## Phase 4: Wave 3 (parallel)
 
