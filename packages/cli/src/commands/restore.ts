@@ -1,14 +1,13 @@
-import { readFile } from "node:fs/promises";
 import { restoreServerSnapshot, restoreSnapshot } from "@opscrew/agents";
 import type { ApprovalHandler, Clock } from "@opscrew/contracts";
-import { errorText, isPlanHash, OpsCrewError } from "@opscrew/core";
+import { isPlanHash, OpsCrewError } from "@opscrew/core";
 import { type Command, Option } from "commander";
 import { FlagConfirmation, formatRequest } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
-import { userPath } from "../ui/recovery";
+import { readKeyFile } from "./secrets";
 
 interface RestoreFlags extends AppEnvFlags {
   /** `--server`: rebuild the server from a whole-server snapshot at its provider. */
@@ -19,35 +18,12 @@ interface RestoreFlags extends AppEnvFlags {
   allowOtherVersion?: boolean;
   /** `--from offsite`: the copy in the off-server bucket. */
   from?: "offsite";
-  /** `--key <file>`: the age key file that opens the off-server copies. */
-  key?: string;
+  /** `--key-file <path>`: the age key file that opens the off-server copies. */
+  keyFile?: string;
   /** `--confirm <name>`: in a script, the name typed to approve the restore. */
   confirm?: string;
   /** `--approve <hash>`: in a script, the restore's hash an earlier run showed. */
   approve?: string;
-}
-
-/**
- * The text of the age key file `file` (relative to the project directory), which opens the
- * snapshots' copies in the off-server bucket. Its keys are registered with the redactor at once,
- * so no output of the run shows them.
- * @throws OpsCrewError `INVALID_INPUT` when the file cannot be read.
- */
-export async function readKeyFile(ctx: CliContext, file: string): Promise<string> {
-  const path = userPath(ctx, file);
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch (error) {
-    throw new OpsCrewError("INVALID_INPUT", `OpsCrew could not read the key file ${path}.`, {
-      hint: `Check the path of your age key file (${errorText(error)}), then try again.`,
-    });
-  }
-  for (const line of text.split(/\r?\n/)) {
-    const key = line.trim();
-    if (key.startsWith("AGE-SECRET-KEY-1")) ctx.redactor.addLiteral(key, "age-identity");
-  }
-  return text;
 }
 
 /**
@@ -68,7 +44,7 @@ function checkFlags(flags: RestoreFlags, id: string, given: string): string | un
     [flags.only !== undefined, "--only"],
     [flags.allowOtherVersion === true, "--allow-other-version"],
     [flags.from !== undefined, "--from"],
-    [flags.key !== undefined, "--key"],
+    [flags.keyFile !== undefined, "--key-file"],
   ] as const;
   const extra = data.filter(([set]) => set).map(([, name]) => name);
   if (flags.server === true && extra.length > 0) {
@@ -80,11 +56,13 @@ function checkFlags(flags: RestoreFlags, id: string, given: string): string | un
       },
     );
   }
-  if (flags.key !== undefined && flags.from === undefined) {
+  if (flags.keyFile !== undefined && flags.from === undefined) {
     throw new OpsCrewError(
       "INVALID_INPUT",
-      "--key goes only with --from offsite: it opens the encrypted copy in the off-server bucket.",
-      { hint: `Run \`${command} --from offsite --key <file>\`, or \`${command}\` without --key.` },
+      "--key-file goes only with --from offsite: it opens the encrypted copy in the off-server bucket.",
+      {
+        hint: `Run \`${command} --from offsite --key-file <path>\`, or \`${command}\` without --key-file.`,
+      },
     );
   }
   return approve;
@@ -126,8 +104,8 @@ const SUMMARY =
 
 /**
  * `opscrew restore` (feature 024, US3, US4, US6), through the agents' restores:
- * - `opscrew restore <id> [--only <service>] [--allow-other-version] [--from offsite --key
- *   <file>]`: the snapshot's data put back where it lives, the version that runs unchanged; a
+ * - `opscrew restore <id> [--only <service>] [--allow-other-version] [--from offsite
+ *   --key-file <path>]`: the snapshot's data put back where it lives, the version that runs unchanged; a
  *   snapshot of another version is refused unless `--allow-other-version`.
  * - `opscrew restore --server <id>`: the provider rebuilds the server from its whole-server
  *   snapshot in place; OpsCrew then checks the app answers.
@@ -161,7 +139,10 @@ export function register(program: Command, ctx: CliContext): void {
         "offsite: restore the encrypted copy in the off-server bucket, decrypted on this computer",
       ).choices(["offsite"]),
     )
-    .option("--key <file>", "With --from offsite: the file with your age key, which opens the copy")
+    .option(
+      "--key-file <path>",
+      "With --from offsite: the file with your age key, which opens the copy",
+    )
     .option(
       "--server",
       "Rebuild the server from this whole-server snapshot at its provider (Hetzner, DigitalOcean)",
@@ -182,7 +163,7 @@ export function register(program: Command, ctx: CliContext): void {
         "  opscrew snapshot list                         the snapshots and their ids",
         "  opscrew restore <id>                          put a snapshot's data back",
         "  opscrew restore <id> --only db                only the service db",
-        "  opscrew restore <id> --from offsite --key <file>   from the copy off the server",
+        "  opscrew restore <id> --from offsite --key-file <path>   from the copy off the server",
         "  opscrew restore --server <id>                 rebuild the server from it",
       ].join("\n"),
     )
@@ -207,7 +188,8 @@ export function register(program: Command, ctx: CliContext): void {
         return;
       }
       const only = flags.only?.trim();
-      const identity = flags.key === undefined ? undefined : await readKeyFile(ctx, flags.key);
+      const identity =
+        flags.keyFile === undefined ? undefined : await readKeyFile(ctx, flags.keyFile);
       await restoreSnapshot(deps, id, {
         ...(only === undefined ? {} : { only }),
         ...(flags.allowOtherVersion === true ? { allowOtherVersion: true } : {}),

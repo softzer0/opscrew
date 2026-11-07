@@ -25,7 +25,7 @@ their approval. Never run them through a tool, never type a confirmation for the
   SSH host key was confirmed in a terminal.
 - Copies only the off-server bucket still holds (their server was lost) are encrypted, so without
   the user's key OpsCrew names only their ids. In the terminal,
-  `npx opscrew snapshot list --key <age key file>` lists them with their details.
+  `npx opscrew snapshot list --key-file <age key file>` lists them with their details.
 - `opscrew_status` names the last snapshot with its time and result, and a scheduled snapshot that
   failed, with where its log is.
 - Never claim a snapshot exists that the tool didn't list.
@@ -58,7 +58,7 @@ The user runs `npx opscrew restore <id>` with the id `opscrew_snapshots` shows.
   data is `npx opscrew rollback --to <that version> --database snapshot`.
   `--allow-other-version` restores the data alone; suggest it only when the user knows the schema
   didn't change in between.
-- `--from offsite --key <age key file>` restores the encrypted copy off the server (below), for
+- `--from offsite --key-file <age key file>` restores the encrypted copy off the server (below), for
   example onto a new server after the old one was lost: this computer downloads and decrypts it, so
   the server never holds the key.
 

@@ -20,6 +20,28 @@ import { cancelled } from "../ui/prompts";
 import { askKeyOut, userPath } from "../ui/recovery";
 
 /**
+ * The text of the age key file `keyFile` (`--key-file`, relative to the project directory). Its
+ * keys are registered with the redactor at once, so no output of the run shows them.
+ * @throws OpsCrewError `INVALID_INPUT` when the file cannot be read.
+ */
+export async function readKeyFile(ctx: CliContext, keyFile: string): Promise<string> {
+  const file = userPath(ctx, keyFile);
+  let text: string;
+  try {
+    text = await readFile(file, "utf8");
+  } catch (error) {
+    throw new OpsCrewError("INVALID_INPUT", `OpsCrew could not read the key file ${file}.`, {
+      hint: `Check the path of your age key file (${errorText(error)}), then try again.`,
+    });
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const key = line.trim();
+    if (key.startsWith("AGE-SECRET-KEY-1")) ctx.redactor.addLiteral(key, "age-identity");
+  }
+  return text;
+}
+
+/**
  * The age key for a restore: the key file's text, or (in a terminal only) a hidden prompt; `flag`
  * is the app's and environment's for the command it suggests.
  */
@@ -28,16 +50,7 @@ async function readIdentity(
   keyFile: string | undefined,
   flag: string,
 ): Promise<string> {
-  if (keyFile !== undefined) {
-    const file = userPath(ctx, keyFile);
-    try {
-      return await readFile(file, "utf8");
-    } catch (error) {
-      throw new OpsCrewError("INVALID_INPUT", `OpsCrew could not read the key file ${file}.`, {
-        hint: `Check the path of your age key file (${errorText(error)}), then try again.`,
-      });
-    }
-  }
+  if (keyFile !== undefined) return readKeyFile(ctx, keyFile);
   if (!ctx.isInteractive) {
     throw new OpsCrewError(
       "INVALID_INPUT",

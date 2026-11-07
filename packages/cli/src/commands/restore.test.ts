@@ -126,9 +126,9 @@ describe("opscrew restore: the flags, checked before any work", () => {
       ["--server", "9001", "--allow-other-version", "--from", "offsite"],
       "--server takes no --allow-other-version, --from",
     ],
-    [[ID, "--key", "age.txt"], "--key goes only with --from offsite"],
+    [[ID, "--key-file", "age.txt"], "--key-file goes only with --from offsite"],
     [[ID, "--from", "bucket"], "Allowed choices are offsite."],
-    [[ID, "--from", "offsite", "--key", "missing-key.txt"], "could not read the key file"],
+    [[ID, "--from", "offsite", "--key-file", "missing-key.txt"], "could not read the key file"],
   ])("refuses %j", async (flags, message) => {
     const ctx = await setup();
     expect(await run(ctx, "restore", ...flags, "--env", "staging")).toBe(2);
@@ -144,7 +144,7 @@ describe("opscrew restore: the flags, checked before any work", () => {
       "--only <service>",
       "--allow-other-version",
       "--from <where>",
-      "--key <file>",
+      "--key-file <path>",
       "--server",
       "--confirm <name>",
       "--approve <hash>",
@@ -174,7 +174,7 @@ describe("opscrew restore <id>", () => {
         "--allow-other-version",
         "--from",
         "offsite",
-        "--key",
+        "--key-file",
         "age.txt",
       ),
       ctx.errors,
@@ -230,7 +230,17 @@ describe("opscrew restore <id>", () => {
       throw new OpsCrewError("SECRETS_KEY_REJECTED", `The key ${identity} does not open it.`);
     };
     expect(
-      await run(ctx, "restore", ID, "--env", "staging", "--from", "offsite", "--key", "age.txt"),
+      await run(
+        ctx,
+        "restore",
+        ID,
+        "--env",
+        "staging",
+        "--from",
+        "offsite",
+        "--key-file",
+        "age.txt",
+      ),
     ).toBe(2);
     expect(`${ctx.output}${ctx.errors}`).not.toContain(identity);
     expect(await auditText(project as TempProject)).not.toContain(identity);

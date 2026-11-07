@@ -142,9 +142,11 @@ describe.skipIf(!SH_AVAILABLE)("the off-server bucket from this computer", () =>
     await bucketWorld(names);
     const listed = await listSnapshots(names.deps, { services: names.services });
     expect(listed.map((entry) => entry.id)).toEqual([ON_SERVER]);
-    expect(names.deps.reporter.text()).toContain(
-      `The off-server bucket shop-backups also holds the copy ${ONLY_IN_BUCKET}, which no server holds any more. Their records are encrypted: give the recovery copy's age key file to list what they hold.`,
-    );
+    // A warning, so `snapshot list --json` keeps it on stderr.
+    expect(names.deps.reporter.lines).toContainEqual({
+      level: "warn",
+      message: `The off-server bucket shop-backups also holds the copy ${ONLY_IN_BUCKET}, which no server holds any more. Their records are encrypted: give the recovery copy's age key file to list what they hold.`,
+    });
     const shown = everythingShown(world);
     for (const secret of [OFFSITE_KEY.accessKeyId, OFFSITE_KEY.secretAccessKey, key.identity]) {
       expect(shown).not.toContain(secret);

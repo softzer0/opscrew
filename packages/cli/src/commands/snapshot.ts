@@ -20,7 +20,7 @@ import { quietReporter } from "../reporter";
 import { collect, runPhaseCommand } from "../ui/deploy";
 import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
-import { readKeyFile } from "./restore";
+import { readKeyFile } from "./secrets";
 
 interface TakeFlags extends AppEnvFlags {
   /** `--skip <service>`, repeatable: services left out of the data snapshot. */
@@ -223,12 +223,13 @@ export function register(program: Command, ctx: CliContext): void {
       )
       .option("--json", "Print the snapshots as JSON")
       .option(
-        "--key <file>",
+        "--key-file <path>",
         "The file with your age key: the copies only the off-server bucket holds are then listed with their details",
       ),
-  ).action(async (flags: AppEnvFlags & { json?: boolean; key?: string }) => {
+  ).action(async (flags: AppEnvFlags & { json?: boolean; keyFile?: string }) => {
     const json = flags.json === true;
-    const identity = flags.key === undefined ? undefined : await readKeyFile(ctx, flags.key);
+    const identity =
+      flags.keyFile === undefined ? undefined : await readKeyFile(ctx, flags.keyFile);
     const { app, name } = await chooseEnvironment(ctx, flags, "snapshot list");
     // Progress is dropped for `--json` so stdout holds only the snapshots; problems go to stderr.
     const deps = createPhaseDeps(ctx, {

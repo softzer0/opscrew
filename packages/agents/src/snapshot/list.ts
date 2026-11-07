@@ -173,7 +173,7 @@ export async function bucketEntries(
   );
   if (copies.length === 0) return [];
   if (identity === undefined) {
-    run.deps.reporter.info(
+    run.deps.reporter.warn(
       `The off-server bucket ${bucket.name} also holds ${copies.length === 1 ? "the copy" : "the copies"} ${listText(copies.map(([id]) => id))}, which no server holds any more. Their records are encrypted: give the recovery copy's age key file to list what they hold.`,
     );
     return [];

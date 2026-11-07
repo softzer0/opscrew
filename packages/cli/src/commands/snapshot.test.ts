@@ -297,7 +297,7 @@ describe("opscrew snapshot list", () => {
     expect(ctx.output).toContain("db, on the app's server");
   });
 
-  it("gives the key file's text to the agent with --key, and never shows it", async () => {
+  it("gives the key file's text to the agent with --key-file, and never shows it", async () => {
     const ctx = await setup();
     const identity = `AGE-SECRET-KEY-1${"H".repeat(58)}`;
     await writeFile(path.join(project?.root ?? "", "age.txt"), `# a key\n${identity}\n`);
@@ -305,11 +305,13 @@ describe("opscrew snapshot list", () => {
       deps.reporter.warn(`Read the bucket with ${identity}`);
       return [entry({ where: "in the off-server bucket shop-staging-backups" })];
     };
-    expect(await run(ctx, "snapshot", "list", "--env", "staging", "--key", "age.txt")).toBe(0);
+    expect(await run(ctx, "snapshot", "list", "--env", "staging", "--key-file", "age.txt")).toBe(0);
     expect(lastCall("listSnapshots").args).toEqual([{ identity: `# a key\n${identity}\n` }]);
     expect(ctx.output).toContain("in the off-server bucket shop-staging-backups");
     expect(`${ctx.output}${ctx.errors}`).not.toContain(identity);
-    expect(await run(ctx, "snapshot", "list", "--env", "staging", "--key", "nope.txt")).toBe(2);
+    expect(await run(ctx, "snapshot", "list", "--env", "staging", "--key-file", "nope.txt")).toBe(
+      2,
+    );
     expect(ctx.errors).toContain("could not read the key file");
   });
 
