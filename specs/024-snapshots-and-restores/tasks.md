@@ -222,7 +222,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Depends: T2411
   - Effort: high
 
-- [ ] T2414 The live runs (lead), `docs/e2e-coverage.md` per run.
+- [x] T2414 The live runs (lead), `docs/e2e-coverage.md` per run.
 - [x] T2415 The simplify pass (lead), its findings as tasks.
 
 ### Simplify tasks (from T2415's review, 2026-11-07)
@@ -233,7 +233,7 @@ Portainer dump's login (T2424) and the wording below, no change alters behaviour
 approval, the scripts' files, exit codes or markers, or what is redacted; snapshots may change only
 where a test fixture or the text below does.
 
-- [ ] T2424 [P] Simplify iac-templates, and the age pin the updater can refresh
+- [x] T2424 [P] Simplify iac-templates, and the age pin the updater can refresh
   - Owns: `packages/iac-templates/src/**`, `packages/iac-templates/scripts/**` (+ tests, fixtures, snapshots)
   - Accept:
     - **The copies:** one `onlineCopy(part, file)` exported from `workflow/snapshots.ts` (the
@@ -268,7 +268,7 @@ where a test fixture or the text below does.
   - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, then with `OPSCREW_DOCKER_TESTS=1` `snapshot-script.docker.test.ts`, `workflow/snapshots.docker.test.ts` and `portainer-target/snapshots.docker.test.ts`
   - Effort: high
 
-- [ ] T2425 Simplify agents, the connectors and the snapshot contract
+- [x] T2425 Simplify agents, the connectors and the snapshot contract
   - Owns: `packages/agents/src/**`, `packages/connectors/{hetzner,digitalocean}/src/**` (+ tests), `packages/contracts/src/connector.ts` (only the two fields below)
   - Depends: T2424
   - Accept:
@@ -302,7 +302,7 @@ where a test fixture or the text below does.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-hetzner --filter=@opscrew/connector-digitalocean && pnpm typecheck`
   - Effort: high
 
-- [ ] T2426 [P] Simplify core's age test helpers, a schema test, the guide and the skill
+- [x] T2426 [P] Simplify core's age test helpers, a schema test, the guide and the skill
   - Owns: `packages/core/src/{crypto/age.ts,testing/**}`, `packages/plan-schema/src/snapshots.test.ts`, `docs/guide/snapshots.md`, `plugin/skills/opscrew-snapshots/SKILL.md`
   - Accept:
     - `crypto/age.ts` exports (from the module, not the package root) `AGE_VERSION`, the X25519
@@ -320,7 +320,7 @@ where a test fixture or the text below does.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/plan-schema && pnpm lint`
   - Effort: medium
 
-- [ ] T2427 Simplify the CLI, MCP and the live harness
+- [x] T2427 Simplify the CLI, MCP and the live harness
   - Owns: `packages/cli/src/**`, `packages/cli/test/live/**`, `packages/mcp-server/src/**` (+ tests)
   - Depends: T2424, T2425, T2426
   - Accept:
