@@ -133,7 +133,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/plan-schema --filter=@opscrew/iac-templates --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2418 [US1] [US7] Portainer's SQLite as `sqlite.tar` (plan.md D6), in `packages/iac-templates/src/portainer-target/**` (+ tests, Docker test)
+- [x] T2418 [US1] [US7] Portainer's SQLite as `sqlite.tar` (plan.md D6), in `packages/iac-templates/src/portainer-target/**` (+ tests, Docker test)
   - Owns: `packages/iac-templates/src/portainer-target/**`
   - Depends: T2404
   - Accept: the scheduled and pre-release SQLite parts use the Python program from `workflow/snapshots.ts`; a volume with several databases and other files gives one `sqlite.tar`; an empty volume is `skipped`. The Docker test covers both. The snapshots volume is the stack's `snapshots` (`opscrew-<app>_snapshots`), recorded with `snapshot_tools` among the stack's volumes (D12). `portainerSnapshotParts(plan)` and `portainerServiceEnvironment(plan, service)` are exported for T2407.
