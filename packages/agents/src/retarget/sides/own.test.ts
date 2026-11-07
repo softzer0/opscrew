@@ -329,6 +329,22 @@ describe.skipIf(!findExecutable("git"))("a side on a server the user owns", () =
     expect(s.confirmed[0]?.dataWarning).toContain("The move copied it to the new side");
   });
 
+  it("names the old side's snapshots in the warning, and the off-server copies that stay", async () => {
+    const s = await moving({ from: "own" });
+    s.session.plan = DeployPlanSchema.parse({
+      ...s.session.plan,
+      snapshots: { offsite: { provider: "hetzner", bucket: "shop-prod-backups", region: "fsn1" } },
+    });
+    s.host.facts = HostFactsSchema.parse({
+      ...preparedServerFacts(s.deps.paths.projectId),
+      snapshotDirs: ["shop"],
+    });
+    expect(await ownSide("old", s.services).remove(s.session, s.confirm)).toBeUndefined();
+    expect(s.confirmed[0]?.dataWarning).toContain(
+      "its snapshots in /srv/apps/shop/.snapshots. The off-server copies of the snapshots in the bucket shop-prod-backups stay until its lifecycle rule expires them. The move copied it to the new side",
+    );
+  });
+
   it("waits for --approve and the typed name in a script before a teardown", async () => {
     const s = await moving({ interactive: false });
     s.host.facts = preparedServerFacts(s.deps.paths.projectId);

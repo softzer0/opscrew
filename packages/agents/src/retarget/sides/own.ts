@@ -1,8 +1,14 @@
-import { appDirs, hostPlanHash, otherActiveApps, planTeardown } from "@opscrew/connector-ssh-host";
+import {
+  appDirs,
+  hostPlanHash,
+  otherActiveApps,
+  planTeardown,
+  snapshotsDir,
+} from "@opscrew/connector-ssh-host";
 import { listText, plural } from "@opscrew/core";
 import { serverData } from "../../destroy/checks";
 import { confirmDeletion } from "../../destroy/deletion";
-import { applyHostPlanApproved, type OwnHost } from "../../destroy/own";
+import { applyHostPlanApproved, type OwnHost, offsiteCopiesStay } from "../../destroy/own";
 import { project } from "../../destroy/servers";
 import type { DestroyPreview } from "../../destroy/types";
 import { requireNoForeignPreviews } from "../../previews/host";
@@ -181,11 +187,16 @@ async function remove(
     deps.reporter.info(`Nothing of ${app} is left on ${words}.`);
     return undefined;
   }
-  const data = [...serverData(plan), `what it stored in ${appDirs(app).data} and in its volumes`];
+  const data = [
+    ...serverData(plan),
+    `what it stored in ${appDirs(app).data} and in its volumes`,
+    // Its snapshots there (D17) go with it: the teardown deletes its data.
+    ...(facts.snapshotDirs.includes(app) ? [`its snapshots in ${snapshotsDir(app)}`] : []),
+  ];
   const dataWarning =
     which === "old"
-      ? `Removing the app from ${words} deletes its data there: ${listText(data)}. The move copied it to the new side, where the app runs now; OpsCrew takes no snapshot of your own server.`
-      : `Removing the app from ${words} deletes its data there: ${listText(data)}. That is the move's copy; the app and its data stay on the old side.`;
+      ? `Removing the app from ${words} deletes its data there: ${listText(data)}.${offsiteCopiesStay(plan)} The move copied it to the new side, where the app runs now; OpsCrew takes no snapshot of your own server.`
+      : `Removing the app from ${words} deletes its data there: ${listText(data)}.${offsiteCopiesStay(plan)} That is the move's copy; the app and its data stay on the old side.`;
   const hostSteps = changes.map((step) => step.title);
   deps.reporter.info(
     [`This removes ${app} from ${words}:`, ...hostSteps.map((title) => `  - ${title}`)].join("\n"),
