@@ -1,0 +1,184 @@
+/**
+ * `opscrew snapshot delete <id>` (US2, FR-2403): a data snapshot's parts where they are (on the
+ * app's servers, this computer or in the user's Portainer), or a provider's whole-server snapshot
+ * at the provider. Destroy-grade: an approval with `allowDestroy` and the id typed (`--confirm <id>`
+ * in a script, never `--yes`), audited. A snapshot that went meanwhile is reported as already gone.
+ */
+import { listText, OpsCrewError } from "@opscrew/core";
+import { formatUtc } from "@opscrew/secops";
+import type { PhaseDeps } from "../context";
+import { NOTHING_CHANGED } from "../promote/shared";
+import {
+  computerHost,
+  hostFailure,
+  READ_TIMEOUT_MS,
+  type ScriptHost,
+  scriptCommand,
+  serverHost,
+} from "./hosts";
+import { dataListings, mergeListings, type PlaceListing } from "./list";
+import { portainerDelete, portainerPlace } from "./portainer";
+import { type ProviderSnapshot, providerSnapshots } from "./provider";
+import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
+import { SERVER_SNAPSHOTS, SNAPSHOT_ID } from "./store";
+import type { DeletedSnapshot, SnapshotCommandOptions, SnapshotEntry } from "./types";
+
+/** The exit code of a deletion whose snapshot folder went meanwhile. */
+const GONE = 5;
+
+/** A kind of snapshot in the approval's words. */
+const KIND_WORDS: Record<SnapshotEntry["kind"], string> = {
+  manual: "taken by hand",
+  release: "taken before a release",
+  scheduled: "taken on the schedule",
+  server: "of the whole server",
+};
+
+/** What the approval says is deleted for good. */
+function deletionLines(entry: SnapshotEntry, provider: boolean): string[] {
+  const copied = entry.services.filter((service) => service.state === "copied");
+  return [
+    `The snapshot ${entry.id} ${KIND_WORDS[entry.kind]}, ${formatUtc(entry.taken)}, ${entry.where}.`,
+    provider && entry.server !== undefined
+      ? `It is deleted at the provider for good: a rebuild can no longer use it.`
+      : `Its copies of ${listText(copied.map((service) => service.name))} are deleted for good: \`opscrew restore\` can no longer put them back.`,
+    ...(entry.offsite
+      ? ["Its copy off the server stays in the bucket until the bucket's retention expires it."]
+      : []),
+    `Typing ${entry.id} approves it.`,
+  ];
+}
+
+/** Deletes `id` on `host`: `already gone` when its folder went meanwhile. */
+async function deleteOnHost(
+  run: SnapshotRun,
+  host: ScriptHost,
+  id: string,
+): Promise<DeletedSnapshot["outcome"]> {
+  const command = `[ -d ${SERVER_SNAPSHOTS}/${id} ] || exit ${GONE}; ${scriptCommand(["delete", id])}`;
+  const result = await host.run(command, READ_TIMEOUT_MS);
+  if (result.exitCode === GONE) return "already gone";
+  if (result.exitCode !== 0) throw hostFailure(run, host, result, `delete the snapshot ${id}`);
+  return "deleted";
+}
+
+/** The machine of a listing: the app's server or an extra one, or this computer. */
+function hostOf(run: SnapshotRun, listing: PlaceListing): Promise<ScriptHost> {
+  return listing.server === undefined ? computerHost(run) : serverHost(run, listing.server);
+}
+
+/**
+ * Deletes the provider's snapshot; a failure while it is no longer listed (the provider's 404) is
+ * `already gone`.
+ */
+async function deleteAtProvider(found: ProviderSnapshot): Promise<DeletedSnapshot["outcome"]> {
+  const { api, entry } = found;
+  const server = entry.server as NonNullable<SnapshotEntry["server"]>;
+  try {
+    await api.deleteSnapshot(entry.id);
+    return "deleted";
+  } catch (error) {
+    const left = await api.listSnapshots(server.id);
+    if (left.some((snapshot) => snapshot.id === entry.id)) throw error;
+    return "already gone";
+  }
+}
+
+/**
+ * `opscrew snapshot delete <id>` on the environment `deps` belong to: refused while a deploy or a
+ * move runs; otherwise finds `id` among its data snapshots, then its providers' whole-server ones,
+ * and deletes it after the destroy-grade approval. Every machine that holds a part loses it.
+ * @throws OpsCrewError `INVALID_INPUT` for an id that isn't letters and digits,
+ * `PHASE_PRECONDITION` for each refusal and an unknown id, `APPROVAL_REFUSED` when the id is not
+ * typed, `COMMAND_FAILED` and `PROVIDER_ERROR` when a deletion fails.
+ */
+export async function deleteSnapshot(
+  deps: PhaseDeps,
+  id: string,
+  options: SnapshotCommandOptions = {},
+): Promise<DeletedSnapshot> {
+  if (!SNAPSHOT_ID.test(id)) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      `${id} is no snapshot's id: an id has only letters and digits. ${NOTHING_CHANGED}`,
+      { hint: "`opscrew snapshot list` shows each snapshot's id." },
+    );
+  }
+  const run = await snapshotRun(deps, options.services);
+  const { environment, flags } = run;
+  const target = snapshotTarget(run);
+  await requireNoDeployOrMove(run, "delete a snapshot");
+  const listings = await dataListings(run);
+  const holders = listings.filter((place) => place.listing.abouts.some((about) => about.id === id));
+  const data = mergeListings(holders).find((entry) => entry.id === id);
+  const provider =
+    data === undefined && target === "servers"
+      ? (await providerSnapshots(run)).find((found) => found.entry.id === id)
+      : undefined;
+  const entry = data ?? provider?.entry;
+  if (entry === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `${environment} has no snapshot ${id}. ${NOTHING_CHANGED}`,
+      { hint: `\`opscrew snapshot list${flags}\` shows its snapshots.` },
+    );
+  }
+  const approval = await deps.approvals.request({
+    kind: "remote-exec",
+    title: `Delete the snapshot ${id} of ${environment} ${entry.where}`,
+    details: deletionLines(entry, provider !== undefined).join("\n"),
+    allowDestroy: true,
+    confirmPhrase: id,
+  });
+  if (!approval.approved) {
+    throw new OpsCrewError(
+      "APPROVAL_REFUSED",
+      `The snapshot ${id} was not deleted${approval.reason === undefined ? "" : `: ${approval.reason}`}. ${NOTHING_CHANGED}`,
+      {
+        hint: `Run \`opscrew snapshot delete ${id}${flags}\` again and type ${id} (in a script: --confirm ${id}).`,
+      },
+    );
+  }
+  const outcomes: DeletedSnapshot["outcome"][] = [];
+  if (provider !== undefined) {
+    const server = provider.entry.server as NonNullable<SnapshotEntry["server"]>;
+    deps.reporter.step(`Deleting the snapshot ${id} ${entry.where}`);
+    outcomes.push(await deleteAtProvider(provider));
+    await deps.audit.append({
+      kind: "provider-call",
+      actor: "opscrew",
+      action: "delete a snapshot",
+      target: `${server.provider} server ${server.name}`,
+      decision: "approved",
+      detail: `${id}: ${outcomes.at(-1)}`,
+    });
+  }
+  for (const place of holders) {
+    deps.reporter.step(`Deleting the snapshot ${id} ${place.where}`);
+    const outcome =
+      target === "portainer"
+        ? await portainerDelete(await portainerPlace(run), id)
+        : await deleteOnHost(run, await hostOf(run, place), id);
+    outcomes.push(outcome);
+    await deps.audit.append({
+      kind: "remote-exec",
+      actor: "opscrew",
+      action: "delete a snapshot",
+      target:
+        target === "portainer"
+          ? "portainer"
+          : place.server === undefined
+            ? "this computer"
+            : `server ${place.server}`,
+      decision: "approved",
+      detail: `${id}: ${outcome}`,
+    });
+  }
+  const outcome = outcomes.includes("deleted") ? "deleted" : "already gone";
+  if (outcome === "deleted") {
+    deps.reporter.success(`Deleted the snapshot ${id} of ${environment} ${entry.where}.`);
+  } else {
+    deps.reporter.info(`The snapshot ${id} of ${environment} ${entry.where} was already gone.`);
+  }
+  return { id, where: entry.where, outcome };
+}
