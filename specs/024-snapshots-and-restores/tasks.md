@@ -81,7 +81,7 @@ description: "Tasks for 024-snapshots-and-restores"
 
 ## Phase 3: Wave 2 (parallel)
 
-- [ ] T2406 [US6] The encrypted copy off the server: the bucket in its own `backups` root (D9) and the upload, in `packages/iac-templates/src/{storage,workflow/snapshot-script.ts}` and `packages/agents/src/provision/{storage,portainer-flow,run,secrets,publish,steps,types}.ts`, `packages/agents/src/{secrets/copy,shared/apply-command}.ts`, the backups hash in `packages/cli/src/commands/provision.ts` and `packages/mcp-server/src/tools/deploy.ts` and the root's rendering (+ tests); the deploy's `offsite.env` (`workflow/{index,shared}.ts`) after T2417
+- [x] T2406 [US6] The encrypted copy off the server: the bucket in its own `backups` root (D9) and the upload, in `packages/iac-templates/src/{storage,workflow/snapshot-script.ts}` and `packages/agents/src/provision/{storage,portainer-flow,run,secrets,publish,steps,types}.ts`, `packages/agents/src/{secrets/copy,shared/apply-command}.ts`, the backups hash in `packages/cli/src/commands/provision.ts` and `packages/mcp-server/src/tools/deploy.ts` and the root's rendering (+ tests); the deploy's `offsite.env` (`workflow/{index,shared}.ts`) after T2417
   - Owns: those paths (`portainer-flow.ts` only to fill the Portainer stack's `OPSCREW_OFFSITE_*` variables, which T2405's `offsite` service reads)
   - Reads: plan.md 7., research R3 and R7 (S3)
   - Depends: T2404
