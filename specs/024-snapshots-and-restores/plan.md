@@ -253,11 +253,16 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
   - **Portainer:** the snapshots volume is the stack's own `snapshots` volume
     (`opscrew-<app>_snapshots`, not `opscrew-snapshots-<app>`), recorded with `snapshot_tools`
     among the stack's volumes. So destroy deletes both only with `--delete-data`, as all data.
+- **D13 (T2417's report):**
+  - **`hold` and `resume` always exist:** `snapshot.sh` is rendered on the app's server whenever any server holds data, so they are there even when only extra servers hold data. Rendering them reuses `appHoldCommands`.
+  - **`.running` on extra servers** is written whenever `snapshotsOn` is true or a schedule is on. Prod's scheduled snapshots then know their version.
+  - **The rollback's down-migrations choice** saves the extra servers' data first, as it saves the app server's.
+- **D14:** `opscrew rollback --database snapshot` on Portainer restores the pre-release snapshot through T2408's Portainer restore (T2420), so US7 covers Portainer too.
 
 ## Order
 
 T2401 (spikes) → T2402 (contracts and plan fields, lead) → {T2403 connectors, T2404 server script,
 T2405 Portainer} → {T2406 off-server, T2407 the commands, T2408 restore, T2417 every kind before a
-release, T2418 Portainer's SQLite, T2419 no schedule left behind} → {T2409 whole server,
+release, T2418 Portainer's SQLite, T2419 no schedule left behind} → T2420 Portainer rollback → {T2409 whole server,
 T2410 design/advise/status/MCP} → {T2411 CLI and plugin, T2412 guide} → T2413 live tests →
 T2414 live runs → T2415 simplify → T2416 release.

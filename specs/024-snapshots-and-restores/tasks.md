@@ -115,7 +115,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Accept:
     - **The version check:** a snapshot of another version is refused with the rollback command; `--allow-other-version` restores the data alone.
     - **The approval:** destroy-grade, its hash covering the id, the services and `about.json`; the one-time approval file on servers.
-    - **Restoring:** `--only` restores one service. Servers run the script; Portainer goes through the carrier. With parts on extra servers, the CLI runs the app server's `snapshot.sh hold` first, restores each server's part, and runs `snapshot.sh resume` after, including on failure (plan.md D8).
+    - **Restoring:** `--only` restores one service. Servers run the script; Portainer goes through the carrier. With parts on extra servers, the CLI runs the app server's `snapshot.sh hold` first, restores each server's part, and runs `snapshot.sh resume` after, including on failure (plan.md D8). The app server's `snapshot.sh` is rendered whenever any server holds data, so `hold` and `resume` always exist (D13; `workflow/snapshot-script.ts`, after T2406 merges).
     - **`--from offsite`:** downloads and decrypts on this computer with the recovery key file, then streams to the target.
     - **Tests:** fakes for each path, with a failure that puts the copy back.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
@@ -149,6 +149,12 @@ description: "Tasks for 024-snapshots-and-restores"
     - **Portainer:** destroy's data warning and its "kept" text name the `snapshots` and `snapshot_tools` volumes as holding the app's snapshots (T2418 records them among the stack's volumes).
     - **Tests:** a second app's line survives; the Portainer texts name the volumes.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
+  - Effort: high
+
+- [ ] T2420 [US7] The Portainer rollback restores its pre-release snapshot (plan.md D14), in `packages/agents/src/rollback/**` (+ tests)
+  - Depends: T2408, T2417
+  - Accept: with releases taking snapshots on Portainer, `opscrew rollback --to <v> --database snapshot` offers and restores the target's pre-release snapshot through T2408's Portainer restore, with the same approval and put-back on failure as servers; keep stays the default answer.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
 ## Phase 4: Wave 3 (parallel)
