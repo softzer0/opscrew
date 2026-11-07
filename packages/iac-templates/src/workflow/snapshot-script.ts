@@ -95,6 +95,13 @@ const OFFSITE_ERROR_LINES = "(ERROR|CRITICAL) *: |Failed to |^OpsCrew: |^docker:
 const AGE_DIR = ".offsite";
 
 /**
+ * How many more times, and how far apart, the upload sends what a node that does not know the
+ * bucket yet refused: for 15 minutes, the time some of Hetzner's nodes take to know a new bucket.
+ */
+const LATE_BUCKET_TRIES = 15;
+const LATE_BUCKET_WAIT_SECONDS = 60;
+
+/**
  * The off-server copy's functions (024 plan.md 7., D10, D16) on `server`, when `snapshots.offsite`
  * is on; none otherwise.
  *
@@ -106,6 +113,9 @@ const AGE_DIR = ".offsite";
  * - the id's `about.json.age` goes first, so a copy that fails part-way never looks complete;
  * - each file `about.json` names, then `about.json`, streams through `age -r <recipient>` into
  *   `rclone rcat` as `backups/<id>/<file>.age` (an extra server's under `backups/<id>/<server>/`);
+ * - for up to 15 minutes, a minute apart, the deletion and each file are sent again while the
+ *   bucket answers NoSuchBucket, or rclone's read of an upload finds no object: some of Hetzner's
+ *   nodes know a new bucket only that long after it is created;
  * - where the bucket expires nothing itself ({@link offsiteExpires}), the copies older than
  *   `snapshots.offsite.days` are deleted after the upload.
  * Then the snapshot gets `offsite.done`. A snapshot that holds no file has nothing to copy. The
@@ -113,9 +123,9 @@ const AGE_DIR = ".offsite";
  * line, and returns 1, and a failed deletion only warns.
  *
  * `snapshot_offsite_pending` copies, newest first, each complete snapshot by hand or on the
- * schedule that holds a file, has no `offsite.done` yet and was taken within the retention: a
- * failed copy is tried again at the next `take`. Snapshots before a release stay on the server
- * for the rollback.
+ * schedule that holds a file, has no `offsite.done` yet and was taken within the retention, and
+ * stops at the first that fails (the others would fail alike): a failed copy is tried again at the
+ * next `take`. Snapshots before a release stay on the server for the rollback.
  */
 function offsiteFunctions(plan: DeployPlan, server: string): string[] {
   const copy = snapshotOffsiteOf(plan);
@@ -136,7 +146,6 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
   const days = offsiteExpires(copy.provider) ? undefined : copy.days;
   // One line: the deploy embeds the script in its YAML one line at a time. `$1` is the objects'
   // folder under the prefix, the others the snapshot's files; exit 4: only the deletion failed.
-  // rclone exits 4 when the object to delete is not there.
   const upload = [
     "set -o pipefail",
     "umask 077",
@@ -145,8 +154,14 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
     "age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; exit 1; }",
     'to="$1"',
     "shift",
-    `rclone deletefile ${shellQuote(`${remote}/`)}"$to/about.json.age" || [ "$?" -eq 4 ] || exit 1`,
-    `for f in "$@" about.json; do /tools/age -r "$${v.recipient}" < /snapshot/"$f" | rclone rcat ${shellQuote(`${remote}/`)}"$to/$f.age" || exit 1; done`,
+    // `late` runs its command again while a node that does not know the new bucket yet answers:
+    // NoSuchBucket, or no object when rclone reads an upload back. Any other failure returns.
+    `late() { n=0; until "$@" 2> /tmp/rclone.log; do rc=$?; cat /tmp/rclone.log >&2; grep -qE 'NoSuchBucket|object not found' /tmp/rclone.log && [ "$n" -lt ${LATE_BUCKET_TRIES} ] || return "$rc"; n=$((n + 1)); sleep ${LATE_BUCKET_WAIT_SECONDS}; done; cat /tmp/rclone.log >&2; }`,
+    // rclone exits 4 when the object to delete is not there.
+    `unmark() { rclone deletefile ${shellQuote(`${remote}/`)}"$to/about.json.age" || [ "$?" -eq 4 ]; }`,
+    `put() { /tools/age -r "$${v.recipient}" < /snapshot/"$1" | rclone rcat ${shellQuote(`${remote}/`)}"$to/$1.age"; }`,
+    "late unmark || exit 1",
+    'for f in "$@" about.json; do late put "$f" || exit 1; done',
     ...(days === undefined
       ? []
       : [`rclone delete --min-age ${days}d ${shellQuote(remote)} || exit 4`]),
@@ -208,7 +223,7 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
     `    echo "$(cat "$_pending_dir"/taken) \${_pending_dir#${SNAPSHOTS_DIR}/}"`,
     "  done | sort -r | while read -r _pending_taken _pending_id; do",
     '    if [ "$(date -u -d "$_pending_taken" +%s)" -ge "$_pending_since" ]; then',
-    '      snapshot_offsite "$_pending_id" || :',
+    '      snapshot_offsite "$_pending_id" || break',
     "    fi",
     "  done",
     "}",

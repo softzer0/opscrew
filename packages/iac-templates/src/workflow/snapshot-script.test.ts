@@ -1045,12 +1045,14 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(text).toContain(`echo '${TOOLS.age.sha256.amd64}  /tmp/age/age.tar.gz'`);
       expect(text).toContain("age_ok || age_fetch || {");
       // The id's about.json goes before any file: a copy that fails part-way never looks complete.
-      const removed = text.indexOf(
-        `rclone deletefile 'offsite:shop-staging-backups/backups/'"$to/about.json.age" || [ "$?" -eq 4 ] || exit 1`,
+      expect(text).toContain(
+        `unmark() { rclone deletefile 'offsite:shop-staging-backups/backups/'"$to/about.json.age" || [ "$?" -eq 4 ]; }`,
       );
-      const loop = text.indexOf(
-        `/tools/age -r "$OPSCREW_OFFSITE_RECIPIENT" < /snapshot/"$f" | rclone rcat 'offsite:shop-staging-backups/backups/'"$to/$f.age" || exit 1`,
+      expect(text).toContain(
+        `put() { /tools/age -r "$OPSCREW_OFFSITE_RECIPIENT" < /snapshot/"$1" | rclone rcat 'offsite:shop-staging-backups/backups/'"$to/$1.age"; }`,
       );
+      const removed = text.indexOf("late unmark || exit 1");
+      const loop = text.indexOf('for f in "$@" about.json; do late put "$f" || exit 1; done');
       expect(removed).toBeGreaterThan(-1);
       expect(removed).toBeLessThan(loop);
       expect(text).toContain("set -o pipefail");
@@ -1093,6 +1095,78 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(read(at(".snapshots/offsite.log"))).toContain("upload failed with");
       expect(read(at(".snapshots/offsite.log"))).toContain(RCLONE_ERROR);
       expectNoSecret(taken.output, failed.output);
+    });
+
+    it("sends again what a node that does not know the new bucket yet refused, for up to 15 minutes, and stops at once on any other error", () => {
+      offsiteServer(hetzner);
+      const id = "20261106T120000Z";
+      stored(id, "manual", iso(new Date()));
+      expect(snap(["offsite", id]).status).toBe(0);
+      // The one-off's own script, with age, rclone and sleep made up: deletefile fails as many
+      // times as $WORK/unmark says, then finds nothing (exit 4); rcat fails as many times as
+      // $WORK/fails says; each failure prints $ERR, as rclone prints its errors.
+      const upload = script()
+        .trim()
+        .replace("age_ok || age_fetch ||", "true ||")
+        .replaceAll('/tools/age -r "$OPSCREW_OFFSITE_RECIPIENT"', "cat")
+        .replaceAll("/snapshot/", `${at(`.snapshots/${id}`)}/`)
+        .replaceAll("/tmp/rclone.log", `${work}/rclone.log`);
+      const stubs = [
+        'fail() { n="$(cat "$WORK/$1")"; [ "$n" -gt 0 ] || return 1; echo "$((n - 1))" > "$WORK/$1"; echo "$ERR" >&2; }',
+        'rclone() { case "$1" in',
+        '  deletefile) if fail unmark; then return 1; fi; echo "$2: object not found" >&2; return 4 ;;',
+        '  rcat) cat > /dev/null; if fail fails; then return 1; fi; echo "$2" >> "$WORK/sent" ;;',
+        "esac; }",
+        'sleep() { echo "$1" >> "$WORK/slept"; }',
+      ];
+      const lines = (file: string) => (read(`${work}/${file}`) ?? "").split("\n").filter(Boolean);
+      const send = (o: { unmark?: number; fails?: number; error: string }) => {
+        write(`${work}/unmark`, `${o.unmark ?? 0}\n`);
+        write(`${work}/fails`, `${o.fails ?? 0}\n`);
+        rmSync(`${work}/sent`, { force: true });
+        rmSync(`${work}/slept`, { force: true });
+        const run = runSh([...stubs, upload], [id, "db.dump"], { WORK: work, ERR: o.error });
+        return { ...run, sent: lines("sent"), slept: lines("slept") };
+      };
+      const all = ["db.dump", "about.json"].map(
+        (f) => `offsite:shop-staging-backups/backups/${id}/${f}.age`,
+      );
+      // As Hetzner's nodes answered in the live run, and rclone's read of an upload back.
+      const missing = RCLONE_FAILED.replace("403", "404").replace(
+        "AccessDenied: Access Denied",
+        "NoSuchBucket: UnknownError",
+      );
+      const unread =
+        "2026/11/07 18:08:50 NOTICE: Failed to rcat with 2 errors: last error was: object not found";
+
+      const twice = send({ unmark: 1, fails: 2, error: missing });
+      expect(twice.status, twice.output).toBe(0);
+      expect(twice.sent).toEqual(all);
+      expect(twice.slept).toEqual(["60", "60", "60"]);
+      // rclone's words still reach the upload's log.
+      expect(twice.output).toContain(missing);
+      const readBack = send({ fails: 1, error: unread });
+      expect(readBack.status, readBack.output).toBe(0);
+      expect(readBack.sent).toEqual(all);
+      expect(readBack.slept).toEqual(["60"]);
+      const gone = send({ fails: 99, error: missing });
+      expect(gone.status).toBe(1);
+      expect(gone.slept).toHaveLength(15);
+      expect(gone.sent).toEqual([]);
+      const refused = send({ fails: 1, error: RCLONE_FAILED });
+      expect(refused.status).toBe(1);
+      expect(refused.slept).toEqual([]);
+      expect(refused.sent).toEqual([]);
+    });
+
+    it("stops the copies not made yet at the first that fails, which the next snapshot tries again", () => {
+      offsiteServer(hetzner);
+      stored("20261101T000000Z", "manual", iso(new Date(Date.now() - 86_400_000)));
+      const taken = snap(["take", "manual"], { UPLOAD_FAIL: "1" });
+      expect(taken.status, taken.output).toBe(0);
+      expect(uploadCalls()).toHaveLength(1);
+      expect(uploadCalls()[0]).toContain(`/.snapshots/${taken.stdout}:/snapshot:ro`);
+      expect(existsSync(at(".snapshots/20261101T000000Z/offsite.done"))).toBe(false);
     });
 
     it("tries the copies not made yet again at each snapshot, newest first, within the retention", () => {

@@ -642,15 +642,29 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
           });
           expect(servicesIn(copy()), "the services it copied").toEqual(COPIED(false));
           const store = bucket as BackupsBucket;
-          const objects = await store.objects();
-          expect(
-            bucketObjectProblems(objects, id, servicesIn(copy()).length),
-            "the bucket's objects",
-          ).toEqual([]);
+          // Some of Hetzner's nodes do not know a new bucket for about 15 minutes, and answer that
+          // it is not there: each read is tried again until it holds the copy.
+          const objects = await waitFor(
+            `the copy ${id} in the bucket`,
+            minutes(5),
+            async () => {
+              const listed = await store.objects();
+              const wrong = bucketObjectProblems(listed, id, servicesIn(copy()).length);
+              if (wrong.length > 0) throw new Error(wrong.join(" "));
+              return listed;
+            },
+            15_000,
+          );
           const known = run.scrubber.entries().filter(({ label }) => !label.startsWith("server-"));
           const problems: string[] = [];
           for (const object of objects.filter((path) => path.startsWith(`${id}/`))) {
-            problems.push(...objectContentProblems(object, await store.read(object), known));
+            const text = await waitFor(
+              `${object} read`,
+              minutes(5),
+              () => store.read(object),
+              15_000,
+            );
+            problems.push(...objectContentProblems(object, text, known));
           }
           expect(problems, "the copy's objects").toEqual([]);
           expect(

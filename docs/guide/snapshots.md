@@ -265,6 +265,9 @@ access to create the bucket.
   `opscrew snapshot` warns when the copy of the snapshot it took failed, with the upload's last
   error; the upload's whole output stays in `.snapshots/offsite.log` in the app's folder on the
   server.
+- For about 15 minutes after a bucket is created, some of Hetzner's nodes answer that it doesn't
+  exist. The upload then sends that part again a minute later, so the first snapshot after
+  `opscrew provision` can take a few minutes longer.
 - Snapshots before a release stay on the server, for the rollback.
 - `opscrew snapshot list` says `copied off the server` once a snapshot's copy is complete.
 
