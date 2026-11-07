@@ -159,7 +159,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2421 [US5] The scheduled check (017) reports a failed scheduled snapshot (US5.2), in `packages/iac-templates/src/{types,check}*`, `packages/iac-templates/src/check/**` and `packages/agents/src/check/**` (+ tests)
+- [ ] T2421 [US5] The scheduled check (017) reports a failed scheduled snapshot (US5.2), in `packages/iac-templates/{check/**,src/generated/check.ts}`, `packages/connectors/ssh-host/src/{constants,plan,steps}.ts`, `packages/agents/src/{check/**,status/snapshots.ts}` (+ tests)
   - Depends: T2410
   - Accept: the check's forced SSH command also prints, per app folder, the time and last line of `.snapshots/scheduled.log`; the check script opens or updates its issue when the last scheduled run failed (the same rule as status, T2410). Existing servers get the widened key line through their next provision (a host plan on own servers). Portainer isn't reached by the check: status shows it, and the guide says so.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents`
@@ -177,7 +177,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/iac-templates`
   - Effort: high
 
-- [ ] T2410 [US5] [US6] [US8] The schedule and off-server commands, design, advise, status and MCP, in `packages/agents/src/{snapshot,design,advise,status}/**` and `packages/mcp-server/**` (+ tests)
+- [x] T2410 [US5] [US6] [US8] The schedule and off-server commands, design, advise, status and MCP, in `packages/agents/src/{snapshot,design,advise,status}/**` and `packages/mcp-server/**` (+ tests)
   - Depends: T2406, T2407
   - Accept:
     - **The commands:** `snapshot schedule on|off` and `snapshot offsite on|off` write the plan, with the price shown, and say to provision.
