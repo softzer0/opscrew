@@ -223,5 +223,127 @@ description: "Tasks for 024-snapshots-and-restores"
   - Effort: high
 
 - [ ] T2414 The live runs (lead), `docs/e2e-coverage.md` per run.
-- [ ] T2415 The simplify pass (lead), its findings as tasks.
+- [x] T2415 The simplify pass (lead), its findings as tasks.
+
+### Simplify tasks (from T2415's review, 2026-11-07)
+
+Three read-only reviewers went over `a5ab66cc..HEAD`: iac-templates; agents and the connectors;
+the schema, core, the CLI, MCP, the guide and the plugin. Apart from the age pin (T2424), the
+Portainer dump's login (T2424) and the wording below, no change alters behaviour, a refusal, an
+approval, the scripts' files, exit codes or markers, or what is redacted; snapshots may change only
+where a test fixture or the text below does.
+
+- [ ] T2424 [P] Simplify iac-templates, and the age pin the updater can refresh
+  - Owns: `packages/iac-templates/src/**`, `packages/iac-templates/scripts/**` (+ tests, fixtures, snapshots)
+  - Accept:
+    - **The copies:** one `onlineCopy(part, file)` exported from `workflow/snapshots.ts` (the
+      databases' login and dump, Valkey's and Redis' login and `--rdb`); the servers'
+      `partCommands` and Portainer both use it, and Portainer keeps only Dragonfly's and SQLite's
+      own, built from the exported constants. `portainerSnapshotParts` is `snapshotParts(plan)`'s
+      online parts with Portainer's service, image, mounts and copy. Portainer's `pg_dump` logs in
+      as `app`, as its `partRestore` does. `databaseKind` reads `DATABASE_KINDS`, the two
+      Redis-protocol checks `REDIS_PROTOCOL_KINDS`, and `everySeconds` is `scheduleHours * 3600`.
+    - **age (found in review: the pin updater never refreshes `binarySha256`, so an age bump
+      would fail every copy off the server):** the checked archive stays in the tools folder;
+      `age_ok` checks the archive's pinned SHA-256 before each use and unpacks the binary for that
+      run only; `binarySha256` and its pins go. `pins.test.ts` checks age's hashes with its
+      `HEX64` loop and builds its URLs from `TOOLS.age.version`.
+    - **Hold and data:** one `holdsData(plan)` in `snapshots.ts` for `heldRefusal`, `holdScript`
+      and `index.ts`'s two `snapshotScript(plan).length` uses; `holdApp(plan)` and
+      `resumeApp(plan)` in `switch.ts`, used by `snapshot-script.ts` (`recordRunning` stays
+      outside them); one `heldProbe(dir)` beside `RESTORE_HELD` for `index.ts`'s two held checks,
+      with `-f` everywhere; `heldStep` goes, `outgoingStep` runs when `early`.
+    - **The off-server copy:** one `rcloneSettings(copy)` in `offsite.ts` (exported, for T2425)
+      for the server's and Portainer's rclone settings; one `age_ready` in `ageFunctions` for the
+      "age could not be fetched" line.
+    - **Small:** `migratedParts` includes SQLite, and `switch.ts`'s down-migration parts use
+      `migratedParts(plan, APP_SERVER)`; `serverWords` exported from `switch.ts` for
+      `snapshot-script.ts`'s three inline copies; one `said` beside `printfFormat` in
+      `shared.ts`; one root-folder builder for `storageRootDir` and `backupsRootDir`;
+      `offsiteVariables` inlined in `stack.ts`; `kafkaTool` exported from the root (for T2427).
+    - **Tests:** the `snapshot-script.test.ts` test whose secrets never reach the script goes
+      (the regex check after it stays); the fuller fake `flock` and `df` move to
+      `workflow/__fixtures__/sh.ts` for both tests; one `__fixtures__/docker.ts` spawn helper (cwd,
+      input, env, timeout) for the Docker tests.
+  - Verify: `PATH="$PWD/.tools/bin:$PATH" pnpm turbo run typecheck test --filter=@opscrew/iac-templates`, then with `OPSCREW_DOCKER_TESTS=1` `snapshot-script.docker.test.ts`, `workflow/snapshots.docker.test.ts` and `portainer-target/snapshots.docker.test.ts`
+  - Effort: high
+
+- [ ] T2425 Simplify agents, the connectors and the snapshot contract
+  - Owns: `packages/agents/src/**`, `packages/connectors/{hetzner,digitalocean}/src/**` (+ tests), `packages/contracts/src/connector.ts` (only the two fields below)
+  - Depends: T2424
+  - Accept:
+    - **Words:** `shared/server-address.ts`'s `serverWords` replaces `snapshot/hosts.ts`'s
+      `serverName` and `rollback/database.ts`'s two variants (`upperFirst` where capitalised;
+      "server data" for "the server data", pinned texts follow); one `partWords`; one
+      `KIND_WORDS: Record<SnapshotKind, string>` for `delete.ts` and `restore-checks.ts`
+      (`list.ts`'s own stays); one `NOTHING_TAKEN`.
+    - **The store:** `rollback/database.ts` uses `snapshot/store.ts`'s `About` and `aboutOf`; one
+      `requireSnapshotId(id)` beside `SNAPSHOT_ID` for `delete.ts` and `restore.ts`;
+      `offsite.ts` reads with `readValidJson`.
+    - **Portainer:** one `stopAndSave(...)` in `restore-portainer.ts` for the restore's and the
+      Portainer rollback's stop, copy and put-back (the rollback's marking passed in), the
+      started-services set built once; `restore-offsite.ts`'s cleanup uses `portainer.ts`'s
+      `box`; `portainer.ts` uses a `diskCommand(dir)` and `RUNNING_IMAGE_FILE`;
+      `restore-portainer.ts` uses `COMPOSE_SERVICE_LABEL`.
+    - **Hosts and calls:** one `dataHosts(run)` in `hosts.ts` for take, restore and list;
+      `restoreEach`'s two script calls through one closure; one `offsitePreflight` in
+      `provision/storage.ts` for `run.ts` and `portainer-flow.ts`.
+    - **rclone:** one pure `offsiteRclone(offsite, endpoint, key)` returning the settings and the
+      Docker arguments, and `RCLONE_NOT_FOUND`, exported from the root (for T2427), built on
+      iac-templates' `rcloneSettings`; `restore-offsite.ts` and `offsiteBucket` use it.
+    - **Small:** `retarget/sides/own.ts` uses `destroy/own.ts`'s `appSnapshots`;
+      `status/snapshots.ts` uses `list.ts`'s `newestFirst`; `bucketEntries`, `readableBucket` and
+      the `offsitePriceText` re-export unexported; one `SH_AVAILABLE` fixture; one agents test
+      pins ssh-host's `snapshotScheduleTag(app)` equal to the tag of the crontab line `snapshot.sh`'s
+      schedule renders (the packages share no dependency, so the two definitions stay).
+    - **Connectors and contract:** the Hetzner connector's `said()` uses core's `errorText`;
+      `ServerSnapshot.name` and `.labels`, which nothing reads, go with their mapping in both
+      connectors.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-hetzner --filter=@opscrew/connector-digitalocean && pnpm typecheck`
+  - Effort: high
+
+- [ ] T2426 [P] Simplify core's age test helpers, a schema test, the guide and the skill
+  - Owns: `packages/core/src/{crypto/age.ts,testing/**}`, `packages/plan-schema/src/snapshots.test.ts`, `docs/guide/snapshots.md`, `plugin/skills/opscrew-snapshots/SKILL.md`
+  - Accept:
+    - `crypto/age.ts` exports (from the module, not the package root) `AGE_VERSION`, the X25519
+      prefix, the chunk size, `hkdf` and the stanza strings; `testing/age.ts` imports them, and
+      `@opscrew/core/testing` re-exports `AGE_VERSION` (for T2427).
+    - `plan-schema`'s two Portainer tests become one loop over both paths.
+    - **The guide:** "The snapshot before each release" and "Rolling back in your Portainer"
+      become a few lines linking `rollback.md#snapshots-before-each-release` and
+      `rollback.md#in-your-portainer`; where `scheduled.log` is and that status reports a failed
+      scheduled snapshot, said once; the script approvals link to "In a script". Found in review:
+      the bucket is named `<app>-<env>-backups` (`shop-prod-backups` for prod), not `<app>-backups`.
+    - **The skill:** the list of kinds once. Found in review: versioning is on only at Hetzner,
+      and on Spaces the copies stay after `offsite off` until the user deletes them (the server
+      deletes old ones only after its uploads); Hetzner and R2 expire them after `--days`.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/core --filter=@opscrew/plan-schema && pnpm lint`
+  - Effort: medium
+
+- [ ] T2427 Simplify the CLI, MCP and the live harness
+  - Owns: `packages/cli/src/**`, `packages/cli/test/live/**`, `packages/mcp-server/src/**` (+ tests)
+  - Depends: T2424, T2425, T2426
+  - Accept:
+    - **Copies the live tests drop:** `AGE_HEADER` uses `@opscrew/core/testing`'s `AGE_VERSION`;
+      `rcloneSettings`, `rcloneDockerArgs`, the `BackupsBucket` endpoint choice and
+      `RCLONE_NOT_FOUND` use agents' `offsiteRclone` (its support test goes); `kafkaTool` comes from
+      iac-templates; `runAppName`'s regex check goes (`designRunApp` already checks the name).
+    - **Shared with 019 and 023's passes:** one `storageChoice(env, provider)` from
+      `componentSettings` for the components, retarget and snapshot support files and O1;
+      retarget's `ROWS_TABLE`, `psql`, `mysql`, `seedData` and `readData` (a SQLite-script
+      parameter) exported, the snapshot checks adding only Kafka; one `requireDocker(why)` with
+      `tls-checks.ts`; `deployLogLeaks` in `snapshots-support.ts`, used by `rollback.test.ts`; one
+      `deployBranchImage` with `portainer-target.test.ts`.
+    - **`snapshots.test.ts`:** one `startPass(run, envs, commit)` for the three Hetzner passes;
+      `snapshotLeaks(run, envs, deployRuns = [])`; `OFFSITE_PREFIX` for `BACKUPS_PREFIX`;
+      `restoredMark` reads `RESTORED_IMAGE_FILE` as it is.
+    - **CLI tests:** `snapshot.test.ts`'s and `restore.test.ts`'s `setup`, `lastCall` and `asking`
+      (its refusal text a parameter) in `ui/__fixtures__`; `provision-offsite.test.ts`'s two tests
+      become one.
+    - **MCP:** one `refuseUnconfirmedOwnServer(...)` in `elicitation.ts` for `snapshots.ts`,
+      `logs.ts` and `status.ts`; one plan-text function for `backupsPlanText` and `bucketPlanText`.
+    - No live pass changes what it checks.
+  - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && pnpm lint`
+  - Effort: high
+
 - [ ] T2416 The release (lead): `docs/releasing.md`.
