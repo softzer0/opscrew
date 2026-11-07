@@ -18,7 +18,7 @@ import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
 import { quietReporter } from "../reporter";
 import { collect, runPhaseCommand } from "../ui/deploy";
-import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
+import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
 import { readKeyFile } from "./secrets";
 
@@ -46,11 +46,6 @@ interface OffsiteFlags extends AppEnvFlags {
   to?: OffsiteProvider;
   region?: string;
   days?: number;
-}
-
-/** `--app`/`--env` as the user gave them, for the hints of a refusal before any work. */
-function givenFlags(flags: AppEnvFlags): string {
-  return `${flags.app === undefined ? "" : ` --app ${flags.app.trim()}`}${flags.env === undefined ? "" : ` --env ${flags.env.trim()}`}`;
 }
 
 /** Commander's parser of a whole number from 1 up (`--keep`, `--days`). */

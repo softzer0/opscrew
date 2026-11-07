@@ -128,6 +128,10 @@ describe("opscrew restore: the flags, checked before any work", () => {
     ],
     [[ID, "--key-file", "age.txt"], "--key-file goes only with --from offsite"],
     [[ID, "--from", "bucket"], "Allowed choices are offsite."],
+    [
+      [ID, "--from", "offsite"],
+      "--from offsite needs --key-file <path>: the age key file that opens the encrypted copy.",
+    ],
     [[ID, "--from", "offsite", "--key-file", "missing-key.txt"], "could not read the key file"],
   ])("refuses %j", async (flags, message) => {
     const ctx = await setup();

@@ -15,6 +15,14 @@ export interface AppEnvFlags {
   env?: string;
 }
 
+/**
+ * ` --app <key> --env <name>` as the user gave them (either may be absent), for the hints of a
+ * refusal before the environment is chosen.
+ */
+export function givenFlags(flags: AppEnvFlags): string {
+  return `${flags.app === undefined ? "" : ` --app ${flags.app.trim()}`}${flags.env === undefined ? "" : ` --env ${flags.env.trim()}`}`;
+}
+
 /** Adds `--app <key>` and `--env <name>` to `command`: an environment is always an app's. */
 export function addEnvOption(command: Command): Command {
   return addAppOption(command).option("--env <name>", ENV_DESCRIPTION);

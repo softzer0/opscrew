@@ -101,8 +101,8 @@ schedule is encrypted on the server to the recovery copy's age key and uploaded.
   it, and keep the old one after `npx opscrew secrets rotate`: copies made before stay readable
   only with it. Never ask for the key or its file's contents in the chat.
 - The bucket's access key can also delete; versioning is on where the provider offers it.
-- `npx opscrew snapshot offsite off` stops new uploads. The bucket and its copies stay; OpsCrew
-  never deletes them.
+- `npx opscrew snapshot offsite off` stops new uploads. The bucket stays, and its copies until
+  they expire (`--days`) or you delete them; OpsCrew never deletes the bucket.
 
 ## Their own server or Portainer
 

@@ -5,7 +5,7 @@ import { type Command, Option } from "commander";
 import { FlagConfirmation, formatRequest } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, servicesOf } from "../deps";
-import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
+import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
 import { printNextSteps } from "../ui/output";
 import { readKeyFile } from "./secrets";
 
@@ -63,6 +63,13 @@ function checkFlags(flags: RestoreFlags, id: string, given: string): string | un
       {
         hint: `Run \`${command} --from offsite --key-file <path>\`, or \`${command}\` without --key-file.`,
       },
+    );
+  }
+  if (flags.from === "offsite" && flags.keyFile === undefined) {
+    throw new OpsCrewError(
+      "INVALID_INPUT",
+      "--from offsite needs --key-file <path>: the age key file that opens the encrypted copy.",
+      { hint: `Run \`${command} --from offsite --key-file <path>\`.` },
     );
   }
   return approve;
@@ -169,7 +176,7 @@ export function register(program: Command, ctx: CliContext): void {
     )
     .action(async (raw: string, flags: RestoreFlags) => {
       const id = raw.trim();
-      const given = `${flags.app === undefined ? "" : ` --app ${flags.app.trim()}`}${flags.env === undefined ? "" : ` --env ${flags.env.trim()}`}`;
+      const given = givenFlags(flags);
       const approve = checkFlags(flags, id, given);
       const { app, name, flag } = await chooseEnvironment(ctx, flags, "restore");
       const deps = createPhaseDeps(ctx, {

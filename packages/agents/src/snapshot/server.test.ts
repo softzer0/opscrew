@@ -480,7 +480,11 @@ describe("opscrew restore --server", () => {
       restoreServerSnapshot(world.deps, "770011", { services: services(world, provider.api) }),
     );
     expect(error.code).toBe("APPROVAL_REFUSED");
-    expect(error.hint).toContain("type shop-staging (in a script: --confirm shop-staging)");
+    const hash = world.handler.requests[0]?.planHash;
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(error.hint).toContain(
+      `type shop-staging (in a script: --confirm shop-staging --approve ${hash}).`,
+    );
     expect(provider.events).toEqual([]);
   });
 

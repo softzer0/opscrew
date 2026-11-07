@@ -13,7 +13,7 @@ import type { Command } from "commander";
 import { FlagConfirmation } from "../approval";
 import type { CliContext } from "../context";
 import { createPhaseDeps, promptsOf, servicesOf } from "../deps";
-import { type AppEnvFlags, addEnvOption, chooseEnvironment } from "../ui/environment";
+import { type AppEnvFlags, addEnvOption, chooseEnvironment, givenFlags } from "../ui/environment";
 import { printNextSteps, textTable } from "../ui/output";
 
 interface RollbackFlags extends AppEnvFlags {
@@ -271,7 +271,7 @@ export function register(program: Command, ctx: CliContext): void {
       ].join("\n"),
     )
     .action(async (flags: RollbackFlags) => {
-      const given = `${flags.app === undefined ? "" : ` --app ${flags.app.trim()}`}${flags.env === undefined ? "" : ` --env ${flags.env.trim()}`}`;
+      const given = givenFlags(flags);
       const { approve, database } = checkFlags(flags, given);
       const { app, name, flag } = await chooseEnvironment(ctx, flags, "rollback");
       const confirm = flags.confirm?.trim();

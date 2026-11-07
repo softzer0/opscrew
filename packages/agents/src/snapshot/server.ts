@@ -503,7 +503,7 @@ export async function restoreServerSnapshot(
       "APPROVAL_REFUSED",
       `The ${noun} ${server.name} was not rebuilt${approval.reason === undefined ? "" : `: ${approval.reason}`}. ${NOTHING_CHANGED}`,
       {
-        hint: `Run \`opscrew restore --server ${id}${flags}\` again and type ${server.name} (in a script: --confirm ${server.name}).`,
+        hint: `Run \`opscrew restore --server ${id}${flags}\` again and type ${server.name} (in a script: --confirm ${server.name} --approve ${hash}).`,
       },
     );
   }
