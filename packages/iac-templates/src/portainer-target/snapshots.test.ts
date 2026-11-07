@@ -428,7 +428,7 @@ describe("the parts and environments for a snapshot by hand", () => {
         file: "db.dump",
         image: IMAGES.postgres.ref,
         service: "db",
-        mounts: [],
+        mounts: [{ volume: "db_data", target: "/var/lib/postgresql/data", readOnly: true }],
       },
       {
         name: "queue",
@@ -436,7 +436,7 @@ describe("the parts and environments for a snapshot by hand", () => {
         file: "queue.rdb",
         image: IMAGES.valkey.ref,
         service: "queue",
-        mounts: [],
+        mounts: [{ volume: "queue_data", target: "/data", readOnly: true }],
       },
       {
         name: "sqlite",
@@ -450,13 +450,18 @@ describe("the parts and environments for a snapshot by hand", () => {
     for (const part of parts) {
       const service = scheduled.stack.services[`snapshots-${part.name}`];
       expect(service?.image).toBe(part.image);
-      for (const { volume, target } of part.mounts) {
-        expect(service?.volumes).toContain(`${volume}:${target}`);
-      }
+      // The part's mounts are its container's only ones, with the snapshots volume.
+      expect(service?.volumes).toEqual([
+        ...part.mounts.map(
+          ({ volume, target, readOnly }) => `${volume}:${target}${readOnly ? ":ro" : ""}`,
+        ),
+        "snapshots:/snapshots",
+      ]);
       expect(script(service)).toContain(`(umask 077 && ${part.copy}); r=$?`);
     }
     // Stop-only kinds are not among them.
     expect(parts.map((part) => part.name)).not.toContain("rabbitmq");
+    expect(scheduled.stack.services["snapshots-queue"]?.volumes).toContain("queue_data:/data:ro");
   });
 
   it("gives each service's environment as the stack does, its secrets as stack variables", () => {

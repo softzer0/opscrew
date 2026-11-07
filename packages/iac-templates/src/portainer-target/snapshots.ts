@@ -10,7 +10,7 @@ import {
   snapshotScheduleOf,
   snapshotsOn,
 } from "@opscrew/plan-schema";
-import { enabledServices, serviceSpec } from "../catalog";
+import { dataDirs, enabledServices, serviceSpec } from "../catalog";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { portainerTarget } from "../providers";
 import { memoryLimit, type RenderedServices, SQLITE_VOLUME } from "../runtime/components";
@@ -39,14 +39,14 @@ const OFFSITE_PREFIX = "backups";
 
 /**
  * The stack's volumes for its snapshots, by their keys: `snapshots` whenever the stack takes or
- * copies any (the schedule with an online part, the snapshot before each release, the off-server
- * copy), and the off-server copy's `snapshot_tools`; none otherwise.
+ * copies any (the schedule or the snapshot before each release, with an online part; the
+ * off-server copy), and the off-server copy's `snapshot_tools`; none otherwise.
  */
 export function snapshotVolumes(plan: DeployPlan): string[] {
   const offsite = snapshotOffsiteOf(plan) !== undefined;
-  const scheduled =
-    snapshotScheduleOf(plan) !== undefined && portainerSnapshotParts(plan).length > 0;
-  if (!scheduled && !snapshotsOn(plan) && !offsite) return [];
+  const online = portainerSnapshotParts(plan).length > 0;
+  const takes = online && (snapshotScheduleOf(plan) !== undefined || snapshotsOn(plan));
+  if (!takes && !offsite) return [];
   return [SNAPSHOTS_VOLUME, ...(offsite ? [TOOLS_VOLUME] : [])];
 }
 
@@ -65,9 +65,9 @@ export interface PortainerSnapshotPart {
   /** The image that runs `copy`: the service's own pinned image, the pinned python for SQLite. */
   image: string;
   /**
-   * The part's own mounts besides the snapshots volume, by the stack's volume key: SQLite's
-   * `sqlite` volume read-write at `/sqlite`. Empty for a service's part, whose data volumes are
-   * the service's own, mounted read-only.
+   * The part's mounts besides the snapshots volume, by the stack's volume key, the only ones its
+   * container gets: SQLite's `sqlite` volume read-write at `/sqlite`; a service's data volumes
+   * read-only at its data folders (`queue_data` at `/data`).
    */
   mounts: { volume: string; target: string; readOnly: boolean }[];
   /**
@@ -133,7 +133,13 @@ export function portainerSnapshotParts(plan: DeployPlan): PortainerSnapshotPart[
         file: `${service.name}.${database ? "dump" : "rdb"}`,
         service,
         image: IMAGES[serviceSpec(kind).image].ref,
-        mounts: [],
+        // The service's data volumes, as the stack names them (so Docker adds no anonymous ones
+        // for the image's; Dragonfly's part reads its saved file there).
+        mounts: dataDirs(serviceSpec(kind)).map(([name, dir]) => ({
+          volume: `${service.name}_${name}`,
+          target: dir,
+          readOnly: true,
+        })),
         copy: COPIES[kind](service.name),
       },
     ];
@@ -157,8 +163,8 @@ export function portainerSnapshotParts(plan: DeployPlan): PortainerSnapshotPart[
 }
 
 /**
- * The shell function `take <folder>` of one part (R7, S2): makes the folder (mode 1777, since the
- * SQLite part writes as the app's user), writes the copy as `<file>.tmp`, renames it, then touches
+ * The shell function `take <folder>` of one part (R7, S2), as root: makes the folder, writes the
+ * copy as `<file>.tmp`, renames it, then touches
  * `<name>.done`; `<name>.skipped` when the copy exits 3 (nothing to copy yet), and
  * `<name>.failed` (returning 1) when it failed.
  */
@@ -166,7 +172,7 @@ function takeFunction(part: PortainerSnapshotPart): string[] {
   const marker = (end: string) => `"$1"/${part.name}.${end}`;
   return [
     "take() {",
-    `  mkdir -p "$1" && chmod 1777 "$1" && rm -f ${marker("done")} ${marker("failed")} ${marker("skipped")} || return 1`,
+    `  mkdir -p "$1" && rm -f ${marker("done")} ${marker("failed")} ${marker("skipped")} || return 1`,
     `  t="$1"/${part.file}.tmp`,
     `  (umask 077 && ${part.copy}); r=$?`,
     `  if [ "$r" = 0 ] && mv "$t" "$1"/${part.file}; then`,
@@ -276,10 +282,9 @@ const FINALIZER_MEMORY_MB = 16;
 const OFFSITE_MEMORY_MB = 256;
 
 /**
- * A container that runs `part`'s `script`, as root: a service's part on the service's own pinned
- * image, with its environment and its data volumes read-only (so Docker adds no anonymous ones for
- * the image's; Dragonfly's part reads its saved file there), on the stack's network; the SQLite
- * part on the pinned python image with the `sqlite` volume read-write and no network.
+ * A container that runs `part`'s `script`, as root, with the part's `mounts` and the snapshots
+ * volume: a service's part on the service's own pinned image, with its environment, on the
+ * stack's network; the SQLite part on the pinned python image with no network.
  */
 function partContainer(
   part: PortainerSnapshotPart,
@@ -302,21 +307,14 @@ function partContainer(
       ...hardened(),
     };
   }
-  const service = backing.services[part.service.name] as {
-    environment?: Record<string, string>;
-    volumes?: string[];
-  };
+  const service = backing.services[part.service.name] as { environment?: Record<string, string> };
   return {
     image: part.image,
     restart,
     user: "0:0",
     environment: { ...service.environment, ...environment },
     ...run,
-    volumes: [
-      ...mountEntries(part),
-      ...(service.volumes ?? []).map((volume) => `${volume}:ro`),
-      SNAPSHOTS_MOUNT,
-    ],
+    volumes: [...mountEntries(part), SNAPSHOTS_MOUNT],
     depends_on: { [part.service.name]: { condition: "service_healthy" } },
     ...memoryLimit(part.service.memoryMb),
     ...hardened({ internal: true }),
@@ -516,7 +514,7 @@ function offsite(plan: DeployPlan): Record<string, object> {
         RCLONE_CONFIG_OFFSITE_TYPE: "s3",
         RCLONE_CONFIG_OFFSITE_PROVIDER: copy.provider === "digitalocean" ? "DigitalOcean" : "Other",
         RCLONE_CONFIG_OFFSITE_ENDPOINT: `\${${v.endpoint}}`,
-        RCLONE_CONFIG_OFFSITE_REGION: copy.region,
+        RCLONE_CONFIG_OFFSITE_REGION: composeLiteral(copy.region),
         RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: `\${${v.accessKeyId}}`,
         RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: `\${${v.secretAccessKey}}`,
         // The bucket exists: rclone never tries to create it.
@@ -542,7 +540,8 @@ export function stackSnapshots(
   deploy: DeployFilled,
 ): StackSnapshots {
   const all = portainerSnapshotParts(plan);
-  const release = snapshotsOn(plan);
+  // Only the online parts: Portainer stops no service (D3), so a stop-only service alone gets none.
+  const release = all.length > 0 && snapshotsOn(plan);
   const services = {
     ...(all.length > 0 ? scheduled(plan, all, backing) : {}),
     ...(release ? beforeRelease(plan, all, backing, deploy) : {}),

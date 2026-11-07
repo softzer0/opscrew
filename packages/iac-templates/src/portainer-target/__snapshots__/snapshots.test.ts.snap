@@ -549,7 +549,7 @@ services:
       - -c
       - |-
         take() {
-          mkdir -p "$$1" && chmod 1777 "$$1" && rm -f "$$1"/db.done "$$1"/db.failed "$$1"/db.skipped || return 1
+          mkdir -p "$$1" && rm -f "$$1"/db.done "$$1"/db.failed "$$1"/db.skipped || return 1
           t="$$1"/db.dump.tmp
           (umask 077 && PGPASSWORD="$$POSTGRES_PASSWORD" pg_dump -h db -U "$$POSTGRES_USER" -Fc -f "$$t" "$$POSTGRES_DB"); r=$$?
           if [ "$$r" = 0 ] && mv "$$t" "$$1"/db.dump; then
@@ -597,7 +597,7 @@ services:
       - -c
       - |-
         take() {
-          mkdir -p "$$1" && chmod 1777 "$$1" && rm -f "$$1"/queue.done "$$1"/queue.failed "$$1"/queue.skipped || return 1
+          mkdir -p "$$1" && rm -f "$$1"/queue.done "$$1"/queue.failed "$$1"/queue.skipped || return 1
           t="$$1"/queue.rdb.tmp
           (umask 077 && REDISCLI_AUTH="$$VALKEY_PASSWORD" valkey-cli -h queue --rdb "$$t"); r=$$?
           if [ "$$r" = 0 ] && mv "$$t" "$$1"/queue.rdb; then
@@ -645,7 +645,7 @@ services:
       - -c
       - |-
         take() {
-          mkdir -p "$$1" && chmod 1777 "$$1" && rm -f "$$1"/sqlite.done "$$1"/sqlite.failed "$$1"/sqlite.skipped || return 1
+          mkdir -p "$$1" && rm -f "$$1"/sqlite.done "$$1"/sqlite.failed "$$1"/sqlite.skipped || return 1
           t="$$1"/sqlite.tar.tmp
           (umask 077 && python3 -c 'import os, sqlite3, sys, tarfile, tempfile
         d = sys.argv[1]
@@ -664,30 +664,31 @@ services:
                 return False
             with open(path, "rb") as f:
                 return f.read(16) == b"SQLite format 3\\x00"
-        copy = os.path.join(tempfile.mkdtemp(), "copy")
-        with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.GNU_FORMAT) as tar:
-            for root, dirs, files in os.walk(d):
-                dirs.sort()
-                tar.add(root, os.path.relpath(root, d), recursive=False, filter=numeric)
-                for name in sorted(files):
-                    path = os.path.join(root, name)
-                    arcname = os.path.relpath(path, d)
-                    if name.endswith(("-wal", "-shm", "-journal")):
-                        continue
-                    if not database(path):
-                        tar.add(path, arcname, recursive=False, filter=numeric)
-                        continue
-                    src = sqlite3.connect("file:" + path + "?mode=rw", uri=True)
-                    dst = sqlite3.connect(copy)
-                    src.backup(dst)
-                    src.close()
-                    dst.execute("pragma journal_mode=delete")
-                    dst.close()
-                    info = numeric(tar.gettarinfo(path, arcname))
-                    info.size = os.path.getsize(copy)
-                    with open(copy, "rb") as f:
-                        tar.addfile(info, f)
-                    os.remove(copy)' /sqlite > "$$t"); r=$$?
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = os.path.join(tmp, "copy")
+            with tarfile.open(fileobj=sys.stdout.buffer, mode="w|", format=tarfile.GNU_FORMAT) as tar:
+                for root, dirs, files in os.walk(d):
+                    dirs.sort()
+                    tar.add(root, os.path.relpath(root, d), recursive=False, filter=numeric)
+                    for name in sorted(files):
+                        path = os.path.join(root, name)
+                        arcname = os.path.relpath(path, d)
+                        if name.endswith(("-wal", "-shm", "-journal")):
+                            continue
+                        if not database(path):
+                            tar.add(path, arcname, recursive=False, filter=numeric)
+                            continue
+                        src = sqlite3.connect("file:" + path + "?mode=rw", uri=True)
+                        dst = sqlite3.connect(copy)
+                        src.backup(dst)
+                        src.close()
+                        dst.execute("pragma journal_mode=delete")
+                        dst.close()
+                        info = numeric(tar.gettarinfo(path, arcname))
+                        info.size = os.path.getsize(copy)
+                        with open(copy, "rb") as f:
+                            tar.addfile(info, f)
+                        os.remove(copy)' /sqlite > "$$t"); r=$$?
           if [ "$$r" = 0 ] && mv "$$t" "$$1"/sqlite.tar; then
             touch "$$1"/sqlite.done
           elif [ "$$r" = 3 ]; then
