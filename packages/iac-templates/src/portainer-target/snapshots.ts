@@ -30,11 +30,13 @@ const DIR = "/snapshots";
 export const RUNNING_IMAGE_FILE = `${DIR}/.running`;
 
 /**
- * The file in the snapshots volume that names the image (`ghcr.io/…@sha256:<hex>`) whose data
- * `opscrew rollback` restored there (024 plan.md D19). While it names another image, the snapshot
- * before a release fails, so neither the release command nor the app, its workers or cron of
- * another version start on that data, the workflow's revert after a failed health check included.
- * The rollback removes it once its run succeeded, or once it put the data from before back.
+ * The file in the snapshots volume that names, on its first line, the image
+ * (`ghcr.io/…@sha256:<hex>`) whose data `opscrew rollback` restored there (024 plan.md D19), and on
+ * its second the `opscrew restore` of the copy taken just before, the way out of a stuck rollback.
+ * While it names another image, the snapshot before a release fails, so neither the release
+ * command nor the app, its workers or cron of another version start on that data, the workflow's
+ * revert after a failed health check included. The rollback removes it once its run succeeded, or
+ * once it put the data from before back; so does that restore.
  */
 export const RESTORED_IMAGE_FILE = `${DIR}/.restored`;
 
@@ -216,8 +218,8 @@ const OUTGOING = [
  * a rollback restored the data for that one.
  */
 const RESTORED_GUARD = [
-  `if [ -f ${RESTORED_IMAGE_FILE} ] && [ "$(sed -n 's/.*@//p' ${RESTORED_IMAGE_FILE})" != "\${OPSCREW_APP_IMAGE##*@}" ]; then`,
-  `  echo "OpsCrew: opscrew rollback restored this stack's data for $(cat ${RESTORED_IMAGE_FILE}), so no other version starts on it until that rollback ends (${RESTORED_IMAGE_FILE} names it)." >&2`,
+  `if [ -f ${RESTORED_IMAGE_FILE} ] && [ "$(sed -n '1s/.*@//p' ${RESTORED_IMAGE_FILE})" != "\${OPSCREW_APP_IMAGE##*@}" ]; then`,
+  `  echo "OpsCrew: opscrew rollback restored this stack's data for $(sed -n 1p ${RESTORED_IMAGE_FILE}), so no other version starts on it until that rollback ends (${RESTORED_IMAGE_FILE} names it). If that rollback is stuck, run $(sed -n 2p ${RESTORED_IMAGE_FILE}) on the computer that ran it: it puts back the data from before the rollback and removes ${RESTORED_IMAGE_FILE}." >&2`,
   "  exit 1",
   "fi",
 ];

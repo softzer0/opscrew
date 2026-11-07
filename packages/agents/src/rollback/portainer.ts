@@ -118,14 +118,22 @@ export async function readPortainerSnapshot(
  */
 export class PutBackFailedError extends OpsCrewError {}
 
+/**
+ * The way out of a rollback stuck on restored data: the restore of the copy `saved` taken just
+ * before, which puts the data from before back and removes the mark.
+ */
+function wayOut(run: RollbackRun, saved: string): string {
+  return `opscrew restore ${saved}${run.flags}`;
+}
+
 /** The refusal after `what` failed (`said`) and putting the copy `saved` back failed too. */
 function putBackFailed(run: RollbackRun, what: string, said: string, saved: string) {
-  const { environment, flags } = run;
+  const { environment, command } = run;
   return new PutBackFailedError(
     "COMMAND_FAILED",
     `${what} failed (${said.replace(/\.$/, "")}), and putting back the data as it was before the rollback failed too, so it may be partly changed. The app stays stopped in your Portainer and ${environment}'s deploys stay paused, so no version runs on it. The copy from just before the rollback is the snapshot ${saved} in your Portainer.`,
     {
-      hint: `Once the cause is fixed, put it back with \`opscrew restore ${saved}${flags}\`, then run \`opscrew status${flags}\`.`,
+      hint: `Once the cause is fixed, run \`${wayOut(run, saved)}\`: it puts that copy back and removes ${RESTORED_IMAGE_FILE}. Then run \`${command} --resume\` and redeploy the stack in Portainer.`,
     },
   );
 }
@@ -209,7 +217,7 @@ export function portainerRestore(
         await putBack(snap, place, parts, hex, ran);
         const marked = await box(
           place,
-          `umask 077 && printf '%s\\n' ${shellQuote(images.target)} > ${RESTORED_IMAGE_FILE}.tmp && mv ${RESTORED_IMAGE_FILE}.tmp ${RESTORED_IMAGE_FILE}`,
+          `umask 077 && printf '%s\\n%s\\n' ${shellQuote(images.target)} ${shellQuote(wayOut(run, saved))} > ${RESTORED_IMAGE_FILE}.tmp && mv ${RESTORED_IMAGE_FILE}.tmp ${RESTORED_IMAGE_FILE}`,
         );
         if (marked.exitCode !== 0) {
           throw failed(`mark the restored data for ${words}`, marked.exitCode);
@@ -254,8 +262,8 @@ export async function finishPortainerRestore(run: RollbackRun): Promise<void> {
 }
 
 /**
- * Once the rollback's run failed or never started: the app's containers stopped, the copy `saved`
- * taken just before the restore put back, `.running` naming `image` (the image that ran) again and
+ * Once the rollback's run failed or never started: the app's containers stopped, `.running` naming
+ * `image` (the image that ran) again, the copy `saved` taken just before the restore put back and
  * the mark removed, then the app's containers of that image started. Returns what the failure's
  * message says of the data.
  * @throws PutBackFailedError when the copy could not be put back, the app stopped.
@@ -281,13 +289,18 @@ export async function undoPortainerRestore(
     for (const container of appContainers(snap, containers)) {
       if (ran.has(container.id)) await place.docker.stopContainer(container.id);
     }
-    await putBack(snap, place, partsOf(run, record.about), saved, ran);
+    // `.running` first: the mark keeps every version off the data meanwhile, and once a put-back
+    // failed, `opscrew restore` of the copy finds the version it was taken with.
     const reset = await box(
       place,
-      `printf '%s\\n' ${shellQuote(image)} > ${RUNNING_IMAGE_FILE}.tmp && mv ${RUNNING_IMAGE_FILE}.tmp ${RUNNING_IMAGE_FILE} && rm -f ${RESTORED_IMAGE_FILE}`,
+      `printf '%s\\n' ${shellQuote(image)} > ${RUNNING_IMAGE_FILE}.tmp && mv ${RUNNING_IMAGE_FILE}.tmp ${RUNNING_IMAGE_FILE}`,
     );
-    if (reset.exitCode !== 0)
-      throw failed("mark the data for the version that ran", reset.exitCode);
+    if (reset.exitCode !== 0) {
+      throw failed("name the version that ran in the snapshots volume", reset.exitCode);
+    }
+    await putBack(snap, place, partsOf(run, record.about), saved, ran);
+    const unmarked = await box(place, `rm -f ${RESTORED_IMAGE_FILE}`);
+    if (unmarked.exitCode !== 0) throw failed(`remove ${RESTORED_IMAGE_FILE}`, unmarked.exitCode);
     return place;
   };
   let place: PortainerPlace;

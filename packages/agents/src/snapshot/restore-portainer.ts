@@ -14,6 +14,7 @@ import {
   partRestore,
   portainerServiceEnvironment,
   processServices,
+  RESTORED_IMAGE_FILE,
   type SnapshotPart,
   SQLITE_VOLUME,
   snapshotParts,
@@ -186,10 +187,28 @@ export function appContainers(run: SnapshotRun, containers: readonly DockerConta
 }
 
 /**
+ * Removes the mark a rollback left on data it restored ({@link RESTORED_IMAGE_FILE}), saying so
+ * when there was one: the data and the running version match again, so the stack's next deploy
+ * starts.
+ */
+async function unmark(place: PortainerPlace, reporter: SnapshotRun["deps"]["reporter"]) {
+  const removed = await box(
+    place,
+    `if [ -f ${RESTORED_IMAGE_FILE} ]; then rm -f ${RESTORED_IMAGE_FILE} && echo removed; fi`,
+  );
+  if (removed.exitCode !== 0) throw failed(`remove ${RESTORED_IMAGE_FILE}`, removed.exitCode);
+  if (!/^removed$/m.test(removed.stdout)) return;
+  reporter.info(
+    `OpsCrew removed ${RESTORED_IMAGE_FILE}, which a rollback left to keep other versions off the data it restored: the stack's next deploy starts the app again (redeploy it in Portainer).`,
+  );
+}
+
+/**
  * The restore in the user's Portainer: the record in the snapshots volume (or in the bucket with
  * `--from offsite`, copied into the volume once approved), the running version and the stack's
  * images read and checked, approved, then restored ({@link putBack}) between the app's stop and
- * start, with the copy taken just before put back on failure.
+ * start, with the copy taken just before put back on failure. A whole restore of the running
+ * version's data also removes the mark of a stuck rollback.
  */
 export async function restoreInPortainer(
   run: SnapshotRun,
@@ -312,6 +331,8 @@ export async function restoreInPortainer(
   }
   await startApp();
   await audit("restored");
+  // The whole snapshot of the version that runs is back: a stuck rollback's mark goes (D19).
+  if (!allow && options.only === undefined) await unmark(place, deps.reporter);
   deps.reporter.success(
     `Restored the snapshot ${id} of ${environment} ${where} (${listText(parts.map((part) => part.name))}). The data from just before is the snapshot ${saved}: \`opscrew restore ${saved}${flags}\` puts it back.`,
   );

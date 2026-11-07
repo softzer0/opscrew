@@ -244,10 +244,18 @@ async function checkPending(
     const changesData = database !== undefined && database.choice !== "keep";
     let data = changesData ? ` ${DATABASE_FAILED}` : "";
     if (pending.saved !== undefined) {
-      // In the user's Portainer, the copy from before the restore goes back first; when that
-      // fails, the pause and this record stay, so the next rollback tries again.
+      // In the user's Portainer, the copy from before the restore goes back first. When that
+      // fails, the pause stays and its message names the restore that is the way out, which
+      // `--resume` follows once this record is gone.
       const ran = imageReference(appImageOf(deps, plan, github), pending.from.digest);
-      data = ` ${await undoPortainerRestore(run, pending.saved, ran)}`;
+      try {
+        data = ` ${await undoPortainerRestore(run, pending.saved, ran)}`;
+      } catch (error) {
+        if (error instanceof PutBackFailedError) {
+          await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
+        }
+        throw error;
+      }
     } else if (changesData) {
       // The run ended: its one-time approval, if it left one unused, is of no use now.
       await clearApproval(run, () => removeDatabaseApproval(run));
@@ -384,9 +392,11 @@ async function dispatchRollback(
     if (error instanceof PutBackFailedError) throw error;
     await restoreDeployPause(deps, github, plan, input.pauseBefore);
     const hint = error instanceof OpsCrewError ? error.hint : undefined;
+    // Said once, also after a refusal that says it (the disk too full for the copy).
+    const said = errorMessage(error).replace(` ${NOTHING_CHANGED}`, "");
     throw new OpsCrewError(
       codeOf(error),
-      `${errorMessage(error)} The rollback did not start, and OpsCrew put ${environment}'s deploy pause back as it was. ${NOTHING_CHANGED}`,
+      `${said} The rollback did not start, and OpsCrew put ${environment}'s deploy pause back as it was. ${NOTHING_CHANGED}`,
       hint !== undefined ? { hint } : {},
     );
   }

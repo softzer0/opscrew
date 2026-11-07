@@ -637,6 +637,7 @@ describe.skipIf(!SH)("the snapshot scripts under sh", () => {
 
   describe("the guard on data a rollback restored (D19)", () => {
     const OLD = `ghcr.io/acme/shop@sha256:${"0a".repeat(32)}`;
+    const RESTORE = "opscrew restore 20261011T120000Z --env staging";
     // The finalizer, which prints the snapshot's key instead of finishing it.
     const finalizer = script(release.stack.services.snapshot).replace(
       'finish /snapshots/"$hex".partial "$hex" release && prune release 3',
@@ -645,7 +646,10 @@ describe.skipIf(!SH)("the snapshot scripts under sh", () => {
     const finalize = (restored: string | undefined, env: Record<string, string>) => {
       volume();
       writeFileSync(join(root, ".running"), `${OLD}\n`);
-      if (restored !== undefined) writeFileSync(join(root, ".restored"), `${restored}\n`);
+      // As the rollback writes it: the image, then the restore that is the way out.
+      if (restored !== undefined) {
+        writeFileSync(join(root, ".restored"), `${restored}\n${RESTORE}\n`);
+      }
       return run(finalizer, { OPSCREW_RELEASE: "run", OPSCREW_APP_IMAGE: IMAGE, ...env });
     };
 
@@ -680,7 +684,7 @@ describe.skipIf(!SH)("the snapshot scripts under sh", () => {
         expect(result.status).toBe(1);
         expect(result.stdout).toBe("");
         expect(result.stderr).toContain(
-          `OpsCrew: opscrew rollback restored this stack's data for ${OLD}, so no other version starts on it until that rollback ends (/snapshots/.restored names it).`.replaceAll(
+          `OpsCrew: opscrew rollback restored this stack's data for ${OLD}, so no other version starts on it until that rollback ends (/snapshots/.restored names it). If that rollback is stuck, run ${RESTORE} on the computer that ran it: it puts back the data from before the rollback and removes /snapshots/.restored.`.replaceAll(
             "/snapshots",
             root,
           ),
