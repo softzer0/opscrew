@@ -107,7 +107,7 @@ it runs on 018's private network and extra servers. On 2026-10-31 rollback went 
   large log volumes (OpenSearch with OpenSearch Dashboards on the monitoring server) is a later
   opt-in, only if users ask.
 - **Not here:** dashboards across several projects, team notifications and spend alerts belong to
-  the hosted control plane. On AWS (027), the light checks map to CloudWatch alarms.
+  the hosted control plane. On AWS (028), the light checks map to CloudWatch alarms.
 
 ## 021 Advise
 
@@ -127,7 +127,7 @@ figures and priced:
 - **Reliability:** backups off; restart loops; a flapping health check; no uptime alert.
 - **Upkeep and security:** waiting Dependabot updates; pending OS security updates; `secure`
   findings; tokens about to expire.
-- **Moving:** `retarget` to a cheaper provider (023), or to AWS (027) when an app outgrows one
+- **Moving:** `retarget` to a cheaper provider (023), or to AWS (028) when an app outgrows one
   server.
 
 It changes nothing itself: each proposal is applied through the existing flows (a plan and a
@@ -296,14 +296,61 @@ never through `cntb` (constitution IV).
 - Hetzner, DigitalOcean, own server and Portainer move behind the same contract but stay built in,
   in the `opscrew` npm package and the `opscrew@opscrew` Claude Code plugin; one can move out
   later if it grows.
-- Contabo is built in, like Hetzner and DigitalOcean, as an everyday VPS provider. AWS (027)
+- Contabo is built in, like Hetzner and DigitalOcean, as an everyday VPS provider. AWS (028)
   ships as the first separately installed plugin, then Azure and Google Cloud.
 - The Claude Code side follows the same split: one provider = one npm package plus one Claude
   Code plugin `opscrew-<provider>@opscrew`, released together; the core plugin keeps only the
   provider-neutral flow skills; one MCP server serves the tools of whichever provider packages are
   installed. One ADR covers both.
 
-## 027 AWS
+## 027 Shared hosting: cPanel, Plesk, DirectAdmin and SFTP
+
+The founder placed cPanel, Plesk, DirectAdmin and SFTP before AWS, as one feature, on 2026-11-07.
+Many apps live on hosting the user already pays for: a control panel, no root, no Docker.
+WordPress, Laravel, static sites and small Node.js apps are typical.
+
+- **A new kind of target, a hosting account.** There is no server to harden and no containers.
+  - **What fits:**
+    - static sites;
+    - PHP apps (Laravel, Symfony, WordPress);
+    - Node.js or Python apps where the panel runs them (cPanel's application manager, CloudLinux's
+      Node.js and Python selectors);
+    - the panel's databases (MySQL or MariaDB, PostgreSQL where offered), cron jobs, domains and
+      subdomains, and its free certificates (AutoSSL).
+  - **What doesn't fit** is refused with the reason and a VPS target suggested: long-running
+    workers, Redis and queues, websockets, anything that needs Docker.
+- **The panels:**
+  - cPanel through its UAPI with an API token;
+  - Plesk through its REST API;
+  - DirectAdmin through its API with a login key.
+
+  Each has a typed connector. Their changes go through a plan approved by hash, as an own
+  server's host plans do (ADR 0011).
+- **SFTP** is the plainest target, any host with SFTP: a built static site or a PHP app uploaded.
+  There is no panel API, so databases and domains stay the user's, and the plan names them.
+- **Deploys** come from GitHub Actions into release folders with an atomic switch, so a rollback
+  switches back. The token or key is a deploy secret.
+- **Security:**
+  - the scan;
+  - the PHP version;
+  - the app's secrets kept outside the web root;
+  - file permissions;
+  - HTTPS forced.
+- **Snapshots (024):** the panel's database dumps and the app's files.
+- **Live tests:**
+  - on the founder's cPanel account (`OPSCREW_E2E_CPANEL_*` in `.env.e2e`), whose test objects are
+    all named `e2e-…` (founder, 2026-11-07: fine on that account; the token doesn't expire);
+  - SFTP on the same account when it has SSH access;
+  - Plesk and DirectAdmin with fakes, as DigitalOcean is today, since there are no test accounts
+    yet. Their live passes follow once an account exists.
+- **Research first:**
+  - cPanel's UAPI: tokens, Domains, Mysql, SSL, Cron, the application manager and VersionControl;
+  - Plesk's REST API and DirectAdmin's API for the same operations;
+  - their limits;
+  - how the CloudLinux selectors are driven through the API.
+- **Built in, or a plugin:** decided in its plan, on 026's plugin system.
+
+## 028 AWS
 
 The first hyperscaler. **Direction (founder, 2026-10-13):** the most suitable setup using AWS's
 managed services for each app, not just the backend on Fargate or EC2, while the user keeps
