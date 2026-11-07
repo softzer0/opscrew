@@ -334,7 +334,7 @@ describe("the off-server copy in a stack", () => {
       RCLONE_CONFIG_OFFSITE_TYPE: "s3",
       RCLONE_CONFIG_OFFSITE_PROVIDER: "Other",
       RCLONE_CONFIG_OFFSITE_ENDPOINT: "${OPSCREW_OFFSITE_ENDPOINT}",
-      RCLONE_CONFIG_OFFSITE_REGION: "${OPSCREW_OFFSITE_REGION}",
+      RCLONE_CONFIG_OFFSITE_REGION: "fsn1",
       RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: "${OPSCREW_OFFSITE_ACCESS_KEY_ID}",
       RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: "${OPSCREW_OFFSITE_SECRET_ACCESS_KEY}",
       RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET: "true",
@@ -389,16 +389,19 @@ describe("the off-server copy in a stack", () => {
     expect(shParses(text)).toBe(true);
   });
 
-  it("names the region only for Hetzner, and DigitalOcean as rclone's provider", () => {
-    const spaces = snapshotPlan({
-      snapshots: {
-        offsite: { provider: "digitalocean", bucket: "shop-prod-backups", region: "fra1" },
-      },
+  it("takes the bucket's region from the plan, R2's auto, and DigitalOcean as rclone's provider", () => {
+    const environment = (offsite: object) =>
+      render(snapshotPlan({ snapshots: { offsite } })).stack.services.offsite?.environment;
+    const spaces = environment({
+      provider: "digitalocean",
+      bucket: "shop-prod-backups",
+      region: "fra1",
     });
-    const environment = render(spaces).stack.services.offsite?.environment;
-    expect(environment?.RCLONE_CONFIG_OFFSITE_PROVIDER).toBe("DigitalOcean");
-    expect(environment?.RCLONE_CONFIG_OFFSITE_REGION).toBeUndefined();
-    expect(portainerStackEnvKeys(spaces).opscrew).not.toContain("OPSCREW_OFFSITE_REGION");
+    expect(spaces?.RCLONE_CONFIG_OFFSITE_PROVIDER).toBe("DigitalOcean");
+    expect(spaces?.RCLONE_CONFIG_OFFSITE_REGION).toBe("fra1");
+    const r2 = environment({ provider: "r2", bucket: "shop-prod-backups" });
+    expect(r2?.RCLONE_CONFIG_OFFSITE_PROVIDER).toBe("Other");
+    expect(r2?.RCLONE_CONFIG_OFFSITE_REGION).toBe("auto");
   });
 
   it("matches the snapshot", () => {
@@ -410,21 +413,30 @@ describe("the parts and environments for a snapshot by hand", () => {
   it("lists each online part with its file, image and copy, the ones the stack runs", () => {
     const parts = portainerSnapshotParts(scheduledPlan);
     expect(
-      parts.map(({ name, kind, file, image, service }) => ({
+      parts.map(({ name, kind, file, image, service, mounts }) => ({
         name,
         kind,
         file,
         image,
         service: service?.name,
+        mounts,
       })),
     ).toEqual([
-      { name: "db", kind: "postgres", file: "db.dump", image: IMAGES.postgres.ref, service: "db" },
+      {
+        name: "db",
+        kind: "postgres",
+        file: "db.dump",
+        image: IMAGES.postgres.ref,
+        service: "db",
+        mounts: [],
+      },
       {
         name: "queue",
         kind: "valkey",
         file: "queue.rdb",
         image: IMAGES.valkey.ref,
         service: "queue",
+        mounts: [],
       },
       {
         name: "sqlite",
@@ -432,11 +444,15 @@ describe("the parts and environments for a snapshot by hand", () => {
         file: "sqlite.tar",
         image: IMAGES.python.ref,
         service: undefined,
+        mounts: [{ volume: "sqlite", target: "/sqlite", readOnly: false }],
       },
     ]);
     for (const part of parts) {
       const service = scheduled.stack.services[`snapshots-${part.name}`];
       expect(service?.image).toBe(part.image);
+      for (const { volume, target } of part.mounts) {
+        expect(service?.volumes).toContain(`${volume}:${target}`);
+      }
       expect(script(service)).toContain(`(umask 077 && ${part.copy}); r=$?`);
     }
     // Stop-only kinds are not among them.
