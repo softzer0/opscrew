@@ -19,7 +19,7 @@ Once an app is live, OpsCrew couldn't show its logs, how much it uses, or tell a
   - a vendored Node script with no dependencies, and generated JSON with no addresses or secrets;
   - one job on GitHub's runners for every app and environment, plus a free job on each server's own runner;
   - **alerts** are GitHub issues found again by a hidden marker, with an optional Slack, Discord or ntfy post;
-  - **the disk** is read with a per-repository key that each server lets run only `df` (OpenSSH `restrict,command=`), added by a host plan step;
+  - **the disk** is read with a per-repository key that each server lets run only `df` (OpenSSH `restrict,command=`), added by a host plan step. Feature 024 widened that fixed, read-only command: it also prints, per app, the last scheduled snapshot's id, how many lines followed it, and whether one is running, so the check reports a failed scheduled snapshot;
   - **planned outages** (retarget's window, destroy) pause it through a repository variable, `OPSCREW_CHECK_PAUSED`.
 - **Add-ons on servers,** each added and removed by a host plan approved by its hash, as Portainer's web UI is:
   - **Beszel:** the hub and agent, or only the agent connected out to the user's hub over WebSocket;
