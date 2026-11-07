@@ -635,6 +635,61 @@ describe.skipIf(!SH)("the snapshot scripts under sh", () => {
     });
   });
 
+  describe("the guard on data a rollback restored (D19)", () => {
+    const OLD = `ghcr.io/acme/shop@sha256:${"0a".repeat(32)}`;
+    // The finalizer, which prints the snapshot's key instead of finishing it.
+    const finalizer = script(release.stack.services.snapshot).replace(
+      'finish /snapshots/"$hex".partial "$hex" release && prune release 3',
+      'echo "hex=$hex"',
+    );
+    const finalize = (restored: string | undefined, env: Record<string, string>) => {
+      volume();
+      writeFileSync(join(root, ".running"), `${OLD}\n`);
+      if (restored !== undefined) writeFileSync(join(root, ".restored"), `${restored}\n`);
+      return run(finalizer, { OPSCREW_RELEASE: "run", OPSCREW_APP_IMAGE: IMAGE, ...env });
+    };
+
+    it("checks .restored in the finalizer only, before the outgoing version", () => {
+      expect(finalizer.indexOf("/snapshots/.restored")).toBeGreaterThan(-1);
+      expect(finalizer.indexOf("/snapshots/.restored")).toBeLessThan(
+        finalizer.indexOf("OPSCREW_RELEASE"),
+      );
+      expect(script(release.stack.services["snapshot-db"])).not.toContain(".restored");
+    });
+
+    it("leaves a deploy and a rollback as they were without the file", () => {
+      expect(finalize(undefined, {})).toMatchObject({
+        status: 0,
+        stdout: `hex=${"0a".repeat(32)}`,
+      });
+      expect(finalize(undefined, { OPSCREW_RELEASE: "skip" })).toMatchObject({
+        status: 0,
+        stdout: "",
+      });
+    });
+
+    it("lets the image the data was restored for start, by its digest", () => {
+      expect(finalize(IMAGE, { OPSCREW_RELEASE: "skip" })).toMatchObject({ status: 0 });
+      const other = `ghcr.io/Acme/shop@${IMAGE.split("@")[1]}`;
+      expect(finalize(other, { OPSCREW_RELEASE: "skip" })).toMatchObject({ status: 0 });
+    });
+
+    it("fails for any other image: the workflow's revert, and a deploy", () => {
+      for (const env of [{ OPSCREW_RELEASE: "skip" }, { OPSCREW_RELEASE: "run" }]) {
+        const result = finalize(OLD, env);
+        expect(result.status).toBe(1);
+        expect(result.stdout).toBe("");
+        expect(result.stderr).toContain(
+          `OpsCrew: opscrew rollback restored this stack's data for ${OLD}, so no other version starts on it until that rollback ends (/snapshots/.restored names it).`.replaceAll(
+            "/snapshots",
+            root,
+          ),
+        );
+      }
+      expect(finalize("", {}).status).toBe(1);
+    });
+  });
+
   describe("a part and the finished snapshot", () => {
     const take = shFunction(script(scheduled.stack.services["snapshots-sqlite"]), "take");
     /** The SQLite part's `take` with Python exiting `code` (after writing its copy, for 0). */

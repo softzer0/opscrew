@@ -29,6 +29,15 @@ const DIR = "/snapshots";
  */
 export const RUNNING_IMAGE_FILE = `${DIR}/.running`;
 
+/**
+ * The file in the snapshots volume that names the image (`ghcr.io/…@sha256:<hex>`) whose data
+ * `opscrew rollback` restored there (024 plan.md D19). While it names another image, the snapshot
+ * before a release fails, so neither the release command nor the app, its workers or cron of
+ * another version start on that data, the workflow's revert after a failed health check included.
+ * The rollback removes it once its run succeeded, or once it put the data from before back.
+ */
+export const RESTORED_IMAGE_FILE = `${DIR}/.restored`;
+
 /** The snapshots volume's mount in a service of the stack. */
 export const SNAPSHOTS_MOUNT = `${SNAPSHOTS_VOLUME}:${DIR}`;
 
@@ -198,6 +207,17 @@ const OUTGOING = [
   'case "$hex" in *[!0-9a-f]*) hex= ;; esac',
   'if [ "${#hex}" -ne 64 ]; then',
   `  echo ${shellQuote(`OpsCrew: ${RUNNING_IMAGE_FILE} in the snapshots volume names no image pinned by digest, so the snapshot before this release can't be taken.`)} >&2`,
+  "  exit 1",
+  "fi",
+];
+
+/**
+ * Fails while {@link RESTORED_IMAGE_FILE} names another image than the one deployed, by its digest:
+ * a rollback restored the data for that one.
+ */
+const RESTORED_GUARD = [
+  `if [ -f ${RESTORED_IMAGE_FILE} ] && [ "$(sed -n 's/.*@//p' ${RESTORED_IMAGE_FILE})" != "\${OPSCREW_APP_IMAGE##*@}" ]; then`,
+  `  echo "OpsCrew: opscrew rollback restored this stack's data for $(cat ${RESTORED_IMAGE_FILE}), so no other version starts on it until that rollback ends (${RESTORED_IMAGE_FILE} names it)." >&2`,
   "  exit 1",
   "fi",
 ];
@@ -404,7 +424,9 @@ function scheduled(
  * `<hex>.partial`, `hex` the outgoing image's digest, then the one-off `snapshot`, which finishes
  * it once every part succeeded and keeps the newest `deploy.keepSnapshots`. A failed part stops
  * the deploy before the release command and the new version, and the previous version keeps
- * serving. Each deploy recreates them, the image in their environment being new.
+ * serving. The finalizer first refuses an image other than the one a rollback restored the data
+ * for ({@link RESTORED_IMAGE_FILE}). Each deploy recreates them, the image in their environment
+ * being new.
  */
 function beforeRelease(
   plan: DeployPlan,
@@ -427,6 +449,7 @@ function beforeRelease(
   services.snapshot = finalizer(
     [
       ...finalizerFunctions(all),
+      ...RESTORED_GUARD,
       ...OUTGOING,
       `finish ${DIR}/"$hex".partial "$hex" release && prune release ${keepSnapshotsOf(plan)}`,
     ],

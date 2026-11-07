@@ -8,6 +8,7 @@ import { canonicalJson, type ProjectPaths, sha256Hex, writeFileAtomic } from "@o
 import { z } from "zod";
 import { readValidJson } from "../shared";
 import { DeployPauseSchema } from "../shared/deploy-pause";
+import { SNAPSHOT_ID } from "../snapshot/store";
 
 /** How a rollback treats the database (`--database`, plan.md 12.5). */
 export const DATABASE_CHOICES = ["snapshot", "migrations", "keep"] as const;
@@ -123,6 +124,11 @@ const PendingRollbackSchema = z.object({
   pauseBefore: DeployPauseSchema.nullable(),
   /** What the run is to do with the database, recorded once it succeeded. */
   database: DatabaseRecordSchema.optional(),
+  /**
+   * In the user's Portainer, the snapshot of the data taken just before the rollback restored the
+   * target's (D19): put back, with the version that ran started again, when the run failed.
+   */
+  saved: z.string().regex(SNAPSHOT_ID).optional(),
 });
 
 export type PendingRollback = z.infer<typeof PendingRollbackSchema>;

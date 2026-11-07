@@ -24,7 +24,6 @@ import {
 } from "@opscrew/iac-templates";
 import {
   APP_SERVER,
-  DATABASE_KINDS,
   type DeployPlan,
   keepSnapshotsOf,
   MIGRATION_TOOLS,
@@ -40,6 +39,7 @@ import { appFolder } from "../localhost/services";
 import { NOTHING_CHANGED } from "../promote/shared";
 import { serverShell } from "../status/servers";
 import type { RollbackServices } from "./index";
+import { type PortainerRestore, portainerRestore, readPortainerSnapshot } from "./portainer";
 import type { DatabaseBinding, DatabaseChoice, DatabaseRecord } from "./record";
 import type { RollbackRun } from "./run";
 
@@ -370,26 +370,11 @@ function aboutOf(text: string | undefined): About | undefined {
 }
 
 /**
- * In a Portainer, the data a rollback keeps as it is, since it restores no snapshot there yet
- * (FR-1930).
- */
-function portainerKeptLines(plan: DeployPlan): string[] {
-  const items = [
-    ...plan.services
-      .filter((service) => service.enabled && DATABASE_KINDS.some((kind) => kind === service.kind))
-      .map((service) => service.name),
-    ...(plan.storage?.sqlite !== undefined ? ["the app's own files"] : []),
-  ];
-  if (items.length === 0) return [];
-  return [
-    `Kept as they are in your Portainer: ${listText(items)}. Snapshots there come in a later release.`,
-  ];
-}
-
-/**
  * The services a snapshot holds no copy of on each server (`abouts`, by server), which its restore
  * keeps as they are, each with its reason: the SQLite volume was empty; its copy failed; a
- * stop-only service `deploy.snapshotStop` doesn't name; or any other had no container yet.
+ * stop-only service `deploy.snapshotStop` doesn't name; or any other had no container yet. In the
+ * user's Portainer, also a stop-only service the snapshot doesn't list: the snapshot before a
+ * release there copies only what it can copy while it runs (D3).
  */
 function leftOutLines(plan: DeployPlan, abouts: ReadonlyMap<string, About>): string[] {
   const stop = plan.deploy.snapshotStop ?? [];
@@ -409,6 +394,15 @@ function leftOutLines(plan: DeployPlan, abouts: ReadonlyMap<string, About>): str
         return `${service.name}${on} (${why})`;
       }),
   );
+  if (plan.target.provider === "portainer") {
+    const listed = abouts.get(APP_SERVER)?.services.map((service) => service.name) ?? [];
+    for (const part of snapshotParts(plan)) {
+      if (part.online || listed.includes(part.name)) continue;
+      items.push(
+        `${part.name} (it must stop for its copy, which the snapshot before a release in your Portainer never does)`,
+      );
+    }
+  }
   if (items.length === 0) return [];
   return [`Kept as they are, since the snapshot holds no copy of them: ${listText(items)}.`];
 }
@@ -440,6 +434,11 @@ export interface DatabaseStep {
   leave(): Promise<string | undefined>;
   /** Removes the one-time approval of a choice that changes data once no run can use it. */
   clear(): Promise<void>;
+  /**
+   * In the user's Portainer, the snapshot's restore, which `leave` runs before the dispatch (D19):
+   * finished once the run succeeded, undone once it failed or never started.
+   */
+  portainer?: PortainerRestore;
 }
 
 /** The refusal of a choice not offered, with why and what is offered, before any change. */
@@ -460,8 +459,8 @@ function notOffered(
  * 1. with snapshots on (`snapshotsOn`) or down migrations in the plan (`app.migrations`), it reads
  *    the target's snapshot (its `about.json`) and both versions' records with a fixed read-only
  *    script, through the access `logs --failed` uses, or locally on this computer, and the
- *    target's `about.json` on each extra server that holds part of the snapshot; Portainer has
- *    neither;
+ *    target's `about.json` on each extra server that holds part of the snapshot (Portainer:
+ *    below);
  * 2. it offers the snapshot when every server that holds part of it has the target's complete
  *    snapshot (a folder without `about.json`, such as 0.2.4's, is none), down migrations when both
  *    records exist and a count tool's count did not grow going back, and keep, always;
@@ -479,17 +478,32 @@ function notOffered(
  * first. Keep's `leave` removes a one-time approval an earlier run left, where the folders are
  * reachable, so the deploy neither changes this rollback's data nor stops on an expired one; it
  * never stops the rollback.
+ *
+ * In the user's Portainer (D14, D19) it reads the target's snapshot in the stack's snapshots
+ * volume ({@link readPortainerSnapshot}) and offers it, or keep, the default answer there; down
+ * migrations aren't run there.
+ * The rollback's switch runs in the workflow, so this computer restores the snapshot before the
+ * dispatch (`leave`, {@link portainerRestore}, from `images.current` to `images.target`), and the
+ * app stays stopped until the run starts the target: with a required reviewer on the
+ * environment (`reviewed`), the snapshot is not offered.
  */
 export async function databaseStep(
   run: RollbackRun,
-  input: { current: string; target: string; words: string },
+  input: {
+    current: string;
+    target: string;
+    words: string;
+    /** The GitHub environment whose required reviewer GitHub asks before the deploy job. */
+    reviewed?: string;
+    /** The image references running now and of the target (the user's Portainer). */
+    images?: { current: string; target: string };
+  },
 ): Promise<DatabaseStep> {
   const { deps, options, plan, environment } = run;
-  // Portainer's snapshots aren't restored by a rollback yet, nor its down migrations run.
+  // Down migrations aren't run by a rollback in the user's Portainer.
   const portainer = plan.target.provider === "portainer";
-  const snapshots = !portainer && snapshotsOn(plan);
+  const snapshots = snapshotsOn(plan);
   const migrations = portainer ? undefined : plan.app.migrations;
-  const kept = portainer ? portainerKeptLines(plan) : [];
   // The extra servers that hold part of the snapshot, each restored from the runner.
   const restoring = snapshots ? otherServers(plan, "snapshot") : [];
   /** The app's folder on `server`, or `undefined` without an address or login for it here. */
@@ -502,7 +516,7 @@ export async function databaseStep(
     const step: DatabaseStep = {
       choice: "keep",
       ...(binding !== undefined ? { binding } : {}),
-      lines: [KEEP_LINE, ...kept],
+      lines: [KEEP_LINE],
       flags: binding !== undefined ? " --database keep" : "",
       record: { choice: "keep" },
       outcome: databaseOutcome({ choice: "keep" }, plan, input.words),
@@ -532,6 +546,7 @@ export async function databaseStep(
     // Connected only after the approval, to remove an earlier one-time approval.
     return keep();
   }
+  if (portainer) return portainerStep(run, input, { keep, keepOnly, keepOffer });
   const targetHex = hexOf(input.target);
   const currentHex = hexOf(input.current);
   const about = targetHex === undefined ? undefined : snapshotAboutPath(targetHex);
@@ -589,10 +604,7 @@ export async function databaseStep(
     const each = restoring.length === 0 ? "the server keeps" : "each server keeps";
     why.snapshot = `${where} ${missing.length > 1 ? "keep" : "keeps"} no complete snapshot of ${input.words}: a deploy takes one when it replaces a version, and ${each} those of the last ${keepSnapshotsOf(plan)}.`;
   } else {
-    offers.push({
-      choice: "snapshot",
-      text: `Restore the snapshot taken ${formatUtc(taken)}, when ${input.words} stopped running. Everything written since is lost.`,
-    });
+    offers.push(snapshotOffer(taken, input.words));
   }
   if (migrations === undefined) {
     why.migrations = unreadReason(run, "migrations");
@@ -614,18 +626,13 @@ export async function databaseStep(
   }
   offers.push(keepOffer);
 
-  // 3. The choice.
-  // Prod's plan names no environment.
-  const fallback =
-    plan.environment?.name !== undefined && offers[0]?.choice === "snapshot" ? "snapshot" : "keep";
-  let choice: DatabaseChoice = fallback;
-  if (options.database !== undefined) {
-    const reason = why[options.database];
-    if (reason !== undefined) throw notOffered(run, reason, offers);
-    choice = options.database;
-  } else if (offers.length > 1 && options.chooseDatabase !== undefined) {
-    choice = await options.chooseDatabase({ offers, default: fallback });
-  }
+  // 3. The choice: by default the snapshot outside prod (whose plan names no environment).
+  const choice = await choose(
+    run,
+    offers,
+    why,
+    plan.environment?.name !== undefined && offers[0]?.choice === "snapshot" ? "snapshot" : "keep",
+  );
   const binding: DatabaseBinding = {
     choice,
     taken: taken ?? null,
@@ -679,11 +686,126 @@ export async function databaseStep(
   };
 }
 
+/**
+ * The database step in the user's Portainer, with snapshots on ({@link databaseStep}): the target's
+ * snapshot in the stack's snapshots volume, unless a required reviewer would hold the stopped app,
+ * or keep; `shared` holds `databaseStep`'s keep, its refusal of other choices and keep's offer.
+ */
+async function portainerStep(
+  run: RollbackRun,
+  input: Parameters<typeof databaseStep>[1],
+  shared: {
+    keep: (binding?: DatabaseBinding) => DatabaseStep;
+    keepOnly: (reason: () => string, warn: string) => void;
+    keepOffer: DatabaseOffer;
+  },
+): Promise<DatabaseStep> {
+  const { deps, plan, environment } = run;
+  const { words } = input;
+  // A Portainer target's versions are digests.
+  const hex = hexOf(input.target) as string;
+  let read: Awaited<ReturnType<typeof readPortainerSnapshot>>;
+  if (input.reviewed !== undefined) {
+    read = { why: reviewerReason(run, input.reviewed, hex, words) };
+  } else {
+    deps.reporter.step(`Reading ${environment}'s snapshot of ${words} in your Portainer`);
+    read = await readPortainerSnapshot(run, hex, words);
+  }
+  if ("unreachable" in read) {
+    shared.keepOnly(() => read.why, read.why);
+    return shared.keep();
+  }
+  const offers: DatabaseOffer[] = [];
+  const why: Partial<Record<DatabaseChoice, string>> = {
+    migrations: unreadReason(run, "migrations"),
+  };
+  if ("snapshot" in read) offers.push(snapshotOffer(read.snapshot.about.taken, words));
+  else why.snapshot = read.why;
+  offers.push(shared.keepOffer);
+  // Keep by default: the restore stops the app before the run.
+  const choice = await choose(run, offers, why, "keep");
+  const snapshot = "snapshot" in read ? read.snapshot : undefined;
+  const binding: DatabaseBinding = {
+    choice,
+    taken: snapshot?.about.taken ?? null,
+    currentRecord: null,
+    targetRecord: null,
+  };
+  if (choice !== "snapshot" || snapshot === undefined) return shared.keep(binding);
+  if (input.images === undefined) {
+    throw new OpsCrewError("INTERNAL", "The rollback in Portainer was given no image references.", {
+      hint: "This is a bug in OpsCrew; please report it.",
+    });
+  }
+  const restore = portainerRestore(run, { hex, words, snapshot, images: input.images });
+  const record: DatabaseRecord = { choice, taken: snapshot.about.taken };
+  const name = plan.app.name;
+  return {
+    choice,
+    binding,
+    lines: [
+      `Database: ${(offers[0] as DatabaseOffer).text}`,
+      ...leftOutLines(plan, new Map([[APP_SERVER, snapshot.about]])),
+      "The app's settings and secrets stay as they are now. The release command does not run.",
+      `Typing ${name} approves it. OpsCrew then stops the app in your Portainer, copies its data as it is now, restores the snapshot and starts the rollback's run, which starts ${words}: until the rollback ends, no other version starts on that data. If the run fails, OpsCrew puts the copy back and starts the version that runs now again.`,
+    ],
+    confirmPhrase: name,
+    flags: ` --database snapshot --confirm ${name}`,
+    record,
+    outcome: databaseOutcome(record, plan, words),
+    leave: async () => {
+      await restore.leave();
+      return undefined;
+    },
+    clear: async () => {},
+    portainer: restore,
+  };
+}
+
+/** The offer of the snapshot taken `taken` (ISO), when the target named `words` stopped running. */
+function snapshotOffer(taken: string, words: string): DatabaseOffer {
+  return {
+    choice: "snapshot",
+    text: `Restore the snapshot taken ${formatUtc(taken)}, when ${words} stopped running. Everything written since is lost.`,
+  };
+}
+
+/**
+ * The choice among `offers` (keep last), `why` saying why each other one is not offered:
+ * `--database`, refused with its reason when not offered (`PHASE_PRECONDITION`, nothing changed);
+ * else, with several offers, the terminal's `chooseDatabase`; else the default, `fallback`.
+ */
+async function choose(
+  run: RollbackRun,
+  offers: readonly DatabaseOffer[],
+  why: Partial<Record<DatabaseChoice, string>>,
+  fallback: DatabaseChoice,
+): Promise<DatabaseChoice> {
+  const { options } = run;
+  if (options.database !== undefined) {
+    const reason = why[options.database];
+    if (reason !== undefined) throw notOffered(run, reason, offers);
+    return options.database;
+  }
+  if (offers.length > 1 && options.chooseDatabase !== undefined) {
+    return options.chooseDatabase({ offers: [...offers], default: fallback });
+  }
+  return fallback;
+}
+
+/**
+ * Why the snapshot is not offered in the user's Portainer with a required reviewer (`reviewed`):
+ * the restore runs before the dispatch, and the app would stay stopped until someone approved.
+ */
+function reviewerReason(run: RollbackRun, reviewed: string, hex: string, words: string): string {
+  return `GitHub asks a required reviewer of the GitHub environment ${reviewed} before ${run.environment}'s rollback run deploys, and in your Portainer OpsCrew restores the snapshot before that run starts, so the app would stay stopped until someone approved it. Roll back with --database keep, then, once the rollback is done, run \`opscrew restore ${hex}${run.flags}\` to put the snapshot of ${words} back.`;
+}
+
 /** Why `choice` is not offered when the plan has neither snapshots nor its kind of change. */
 function unreadReason(run: RollbackRun, choice: "snapshot" | "migrations"): string {
   const { plan, environment } = run;
-  if (plan.target.provider === "portainer") {
-    return "In your Portainer, a rollback keeps the database as it is: snapshots and down migrations there come in a later release.";
+  if (plan.target.provider === "portainer" && choice === "migrations") {
+    return "A rollback in your Portainer runs no down migrations.";
   }
   if (choice === "migrations") {
     return `${environment}'s plan has no app.migrations, so OpsCrew knows no down migrations for its app. It sets them for Rails, Django, Alembic, Flask-Migrate, Knex, Sequelize, TypeORM and Laravel.`;

@@ -4,6 +4,8 @@ export {
   PORTAINER_OFFSITE_VARIABLES,
   type PortainerSnapshotPart,
   portainerSnapshotParts,
+  RESTORED_IMAGE_FILE,
+  RUNNING_IMAGE_FILE,
 } from "./snapshots";
 export {
   fillPortainerStack,

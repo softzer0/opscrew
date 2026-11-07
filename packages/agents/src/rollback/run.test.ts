@@ -1527,34 +1527,35 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     expect(world.handler.requests[0]?.allowDestroy).toBeUndefined();
   });
 
-  it("offers only keep in the user's Portainer, saying snapshots there come later", async () => {
+  it("offers only keep in prod's Portainer, where releases take no snapshots, nor run down migrations", async () => {
     const { world } = await prodWorld({ plan: portainerPlan({ deployed: true }) });
     const error = await failure(world.run({ database: "snapshot" }));
     expect(error.message).toBe(
-      "In your Portainer, a rollback keeps the database as it is: snapshots and down migrations there come in a later release. Nothing was changed.",
+      "prod takes no snapshots before its releases: deploy.snapshots is off in its plan (prod takes them only with deploy.snapshots: true). Nothing was changed.",
     );
     await nothingChanged(world, error);
-    await world.run();
-    expect(world.handler.requests[0]?.details).toContain(
-      "Kept as they are in your Portainer: db. Snapshots there come in a later release.",
+    const migrations = await failure(world.run({ database: "migrations" }));
+    expect(migrations.message).toBe(
+      "A rollback in your Portainer runs no down migrations. Nothing was changed.",
     );
+    await world.run();
+    expect(world.handler.requests[0]?.details).toContain(KEEP_LINE);
     expect(world.folder.commands).toEqual([]);
   });
 
-  it("offers only keep in the user's Portainer outside prod too, where releases take snapshots", async () => {
+  it("offers only keep in staging's Portainer when this computer can't reach it", async () => {
     const plan = inEnvironment(portainerPlan({ deployed: true }), "staging");
     expect(snapshotsOn(plan)).toBe(true);
     const { world } = await stagingWorld({ plan, snapshot: false });
+    const unreachable =
+      "This computer can't reach staging's Portainer, so OpsCrew offers only to keep the database as it is: the snapshot needs this computer to reach it (the computer that provisioned it, or one restored from the recovery copy, with PORTAINER_API_KEY set).";
     const error = await failure(world.run({ database: "snapshot" }));
-    expect(error.message).toBe(
-      "In your Portainer, a rollback keeps the database as it is: snapshots and down migrations there come in a later release. Nothing was changed.",
-    );
+    expect(error.message).toBe(`${unreachable} Nothing was changed.`);
     await nothingChanged(world, error);
-    await world.run();
-    expect(world.handler.requests[0]?.details).toContain(
-      "Kept as they are in your Portainer: db. Snapshots there come in a later release.",
-    );
-    expect(world.deps.reporter.text()).not.toContain("can't reach");
+    const result = await world.run();
+    expect(result).toMatchObject({ status: "deployed", database: { choice: "keep" } });
+    expect(world.handler.requests[0]?.details).toContain(KEEP_LINE);
+    expect(world.deps.reporter.text()).toContain(unreachable);
     expect(world.folder.commands).toEqual([]);
   });
 });

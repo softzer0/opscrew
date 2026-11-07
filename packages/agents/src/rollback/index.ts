@@ -8,7 +8,7 @@ import { isServerlessProvider } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import type { LocalhostServices } from "../localhost/services";
 import type { PromoteServices } from "../promote/types";
-import type { ProvisionServices } from "../provision/types";
+import type { PortainerServices, ProvisionServices } from "../provision/types";
 import type { DeployPause } from "../shared/deploy-pause";
 import type { DatabaseQuestion } from "./database";
 import { rollbackLocal } from "./local";
@@ -71,6 +71,8 @@ export interface RollbackServices extends Omit<PromoteServices, "github"> {
   localhost?: LocalhostServices;
   /** The app's server's shell, given its address (default: ssh with the login `logs` uses). */
   remote?: ProvisionServices["remote"];
+  /** The user's Portainer: its client (default: pinned to the confirmed certificate). */
+  portainer?: PortainerServices;
 }
 
 export interface RollbackOptions {

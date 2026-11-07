@@ -14,7 +14,7 @@ import {
 import { checkEnvironmentKey, ROLLBACK_INPUTS } from "@opscrew/iac-templates";
 import { formatUtc } from "@opscrew/secops";
 import { workflowBranch } from "../environments/branches";
-import { appImageOf } from "../promote/image";
+import { appImageOf, imageReference } from "../promote/image";
 import { clearPendingPromotion, readPromotion, writePromotion } from "../promote/record";
 import { requireRollbackServices } from "../promote/run";
 import { movePaused, NOTHING_CHANGED, requireApplied } from "../promote/shared";
@@ -39,6 +39,7 @@ import {
   restoreHint,
 } from "./database";
 import type { RollbackResult } from "./index";
+import { finishPortainerRestore, PutBackFailedError, undoPortainerRestore } from "./portainer";
 import {
   imageRollbackHash,
   PENDING_ROLLBACK_FILE,
@@ -241,12 +242,20 @@ async function checkPending(
   // The pending file goes only once what it holds is put back or recorded.
   if (last.conclusion !== "success") {
     const changesData = database !== undefined && database.choice !== "keep";
-    // The run ended: its one-time approval, if it left one unused, is of no use now.
-    if (changesData) await clearApproval(run, () => removeDatabaseApproval(run));
+    let data = changesData ? ` ${DATABASE_FAILED}` : "";
+    if (pending.saved !== undefined) {
+      // In the user's Portainer, the copy from before the restore goes back first; when that
+      // fails, the pause and this record stay, so the next rollback tries again.
+      const ran = imageReference(appImageOf(deps, plan, github), pending.from.digest);
+      data = ` ${await undoPortainerRestore(run, pending.saved, ran)}`;
+    } else if (changesData) {
+      // The run ended: its one-time approval, if it left one unused, is of no use now.
+      await clearApproval(run, () => removeDatabaseApproval(run));
+    }
     await restoreDeployPause(deps, github, plan, pending.pauseBefore ?? undefined);
     await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
     deps.reporter.warn(
-      `${environment}'s rollback run that waited for a reviewer did not succeed (${last.conclusion ?? "no result"}): ${last.htmlUrl}.${changesData ? ` ${DATABASE_FAILED}` : ""} OpsCrew put ${environment}'s deploy pause back as it was, and goes on with a new rollback.`,
+      `${environment}'s rollback run that waited for a reviewer did not succeed (${last.conclusion ?? "no result"}): ${last.htmlUrl}.${data} OpsCrew put ${environment}'s deploy pause back as it was, and goes on with a new rollback.`,
     );
     return undefined;
   }
@@ -259,6 +268,7 @@ async function checkPending(
     ...(database !== undefined ? { database } : {}),
   });
   await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
+  if (pending.saved !== undefined) await finishPortainerRestore(run);
   const outcome =
     database === undefined ? "" : ` ${databaseOutcome(database, plan, shortText(target))}`;
   deps.reporter.success(
@@ -326,6 +336,21 @@ async function clearApproval(run: RollbackRun, remove: () => Promise<void>): Pro
 }
 
 /**
+ * Undoes what the database step's `leave` did once no run can use it (the dispatch was refused, or
+ * the run failed), and returns what the failure's message adds of the data: in the user's
+ * Portainer, the copy from before the restore put back (`PutBackFailedError`, the pause kept, when
+ * that fails); elsewhere, the one-time approval removed.
+ */
+async function undoDatabase(run: RollbackRun, database: DatabaseStep): Promise<string> {
+  if (database.portainer !== undefined) {
+    const said = await database.portainer.undo();
+    return said === "" ? "" : ` ${said}`;
+  }
+  await clearApproval(run, database.clear);
+  return database.confirmPhrase === undefined ? "" : ` ${DATABASE_FAILED}`;
+}
+
+/**
  * After the pause is set: waits for the deploys created just before it, leaves the database
  * step's one-time approval on the server (or removes an earlier one), then starts the workflow
  * with the target's digest and commit tag and `rollback`, and follows its run. A failed or
@@ -355,6 +380,8 @@ async function dispatchRollback(
   try {
     expires = await database.leave();
   } catch (error) {
+    // The data may be partly changed: the pause stays, so nothing deploys onto it.
+    if (error instanceof PutBackFailedError) throw error;
     await restoreDeployPause(deps, github, plan, input.pauseBefore);
     const hint = error instanceof OpsCrewError ? error.hint : undefined;
     throw new OpsCrewError(
@@ -384,9 +411,8 @@ async function dispatchRollback(
     const failure = deployRunFailure(error);
     if (failure.kind === "failed") {
       // The start step used the one-time approval, or never ran: it is of no use now.
-      await clearApproval(run, database.clear);
+      const data = await undoDatabase(run, database);
       await restoreDeployPause(deps, github, plan, input.pauseBefore);
-      const data = database.confirmPhrase === undefined ? "" : ` ${DATABASE_FAILED}`;
       throw new OpsCrewError(
         "COMMAND_FAILED",
         `The rollback of ${environment} did not succeed (${failure.conclusion ?? "no result"}): ${failure.runUrl}. When the earlier version fails its checks, the automatic switch back returns ${environment} to the version it ran, ${input.from}.${data} OpsCrew put ${environment}'s deploy pause back as it was.`,
@@ -395,16 +421,26 @@ async function dispatchRollback(
         },
       );
     }
+    const hint = error instanceof OpsCrewError ? error.hint : undefined;
     // A definite refusal started nothing.
     if (failure.kind === "refused") {
-      await clearApproval(run, database.clear);
+      const data = await undoDatabase(run, database);
       await restoreDeployPause(deps, github, plan, input.pauseBefore);
-      throw error;
+      if (database.portainer === undefined) throw error;
+      throw new OpsCrewError(
+        codeOf(error),
+        `${errorMessage(error)}${data} OpsCrew put ${environment}'s deploy pause back as it was.`,
+        hint !== undefined ? { hint } : {},
+      );
     }
-    const hint = error instanceof OpsCrewError ? error.hint : undefined;
+    const saved = database.portainer?.saved;
+    const restored =
+      saved === undefined
+        ? ""
+        : ` The snapshot of ${shortText(target)} stays restored in your Portainer, the app stopped until the run starts it; the copy from just before is the snapshot ${saved}.`;
     throw new OpsCrewError(
       codeOf(error),
-      `${errorMessage(error)} ${environment}'s deploys stay paused, pinned to ${shortText(target)}: \`${command} --resume\` ends the pause.`,
+      `${errorMessage(error)}${restored} ${environment}'s deploys stay paused, pinned to ${shortText(target)}: \`${command} --resume\` ends the pause.`,
       hint !== undefined ? { hint } : {},
     );
   }
@@ -427,8 +463,8 @@ async function dispatchRollback(
  *    A database choice that changes data is approved like a destroy: the environment's app name
  *    typed (`--confirm` in a script);
  * 7. the pause set, the deploys created just before it waited for, the database step's one-time
- *    approval left on the server, the workflow dispatched with the digest, the commit tag and
- *    `rollback`, and its run followed;
+ *    approval left on the server (in the user's Portainer, its snapshot restored, D19), the
+ *    workflow dispatched with the digest, the commit tag and `rollback`, and its run followed;
  * 8. recorded once the run succeeded (`rollback.json`, and `promotion.json` when promoted), or as
  *    pending while it waits for a reviewer; the pause is put back when it failed.
  */
@@ -489,10 +525,13 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
       : {}),
   });
   const added = await servicesLines(run, ctx, target);
+  const reviewed = await reviewedEnvironment(plan, github);
   const database = await databaseStep(run, {
     current: runningDigest,
     target: target.digest,
     words: shortText(target),
+    ...(reviewed !== undefined ? { reviewed } : {}),
+    images: { current: imageReference(ctx.image, runningDigest), target: target.image },
   });
 
   // 6. The approval, bound to the rollback's hash. It says whether GitHub also asks a reviewer.
@@ -525,7 +564,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
           : []),
         `Rollback hash: ${hash}`,
         "",
-        guardText(await reviewedEnvironment(plan, github)),
+        guardText(reviewed),
       ].join("\n"),
       hash,
       later: `${command} --to ${target.digest}${database.flags} --approve ${hash}`,
@@ -581,6 +620,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
       hash,
       pauseBefore: pauseBefore ?? null,
       database: database.record,
+      ...(database.portainer?.saved !== undefined ? { saved: database.portainer.saved } : {}),
     });
     const expiry =
       outcome.expires === undefined
@@ -598,6 +638,7 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     hash,
     database: database.record,
   });
+  await database.portainer?.finish();
   deps.reporter.success(
     `${environment} runs ${shortText(target)} again (${shortDigest(target.digest)}, ${outcome.runUrl}): no build, and no release command ran. ${database.outcome}`,
   );

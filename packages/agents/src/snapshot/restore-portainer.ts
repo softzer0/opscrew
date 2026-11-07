@@ -27,6 +27,7 @@ import {
   failed,
   ofService,
   type PortainerPlace,
+  type PortainerProbe,
   portainerPlace,
   portainerProbe,
   portainerTake,
@@ -59,7 +60,10 @@ import type { SnapshotRun } from "./run";
 import { aboutOf, snapshotIdAt } from "./store";
 
 /** The record of the snapshot `id` in the volume (`about <json>`), when it is complete. */
-async function readRecord(place: PortainerPlace, id: string): Promise<BucketAbout | undefined> {
+export async function readRecord(
+  place: PortainerPlace,
+  id: string,
+): Promise<BucketAbout | undefined> {
   const script = [
     `if [ -f ${DIR}/${id}/about.json ]; then printf 'about '; cat ${DIR}/${id}/about.json; fi`,
     "exit 0",
@@ -71,8 +75,30 @@ async function readRecord(place: PortainerPlace, id: string): Promise<BucketAbou
   return about?.id === id && text !== undefined ? { about, text } : undefined;
 }
 
+/**
+ * The volume's probe with a free id for the copy taken just before a restore: the clock's second,
+ * or the next one that neither holds a snapshot nor is `restoring`.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when the volume's disk is too low for the copy.
+ */
+export async function probeFree(
+  run: SnapshotRun,
+  place: PortainerPlace,
+  restoring: string,
+): Promise<{ saved: string; probed: PortainerProbe }> {
+  const { clock } = run.deps;
+  let saved = snapshotIdAt(clock.now());
+  let probed = await portainerProbe(place, saved);
+  for (let second = 1; saved === restoring || probed.taken; second++) {
+    saved = snapshotIdAt(new Date(clock.now().getTime() + second * 1000));
+    probed = await portainerProbe(place, saved);
+  }
+  const low = lowDisk(probed.disk, "in your Portainer");
+  if (low !== undefined) throw low;
+  return { saved, probed };
+}
+
 /** The image the first container of each service in `containers` runs, by service. */
-function imagesOf(containers: readonly DockerContainer[]): Map<string, string> {
+export function imagesOf(containers: readonly DockerContainer[]): Map<string, string> {
   const images = new Map<string, string>();
   for (const container of containers) {
     const service = container.labels["com.docker.compose.service"];
@@ -87,7 +113,7 @@ function imagesOf(containers: readonly DockerContainer[]): Map<string, string> {
  * with its volumes read-write and the snapshots volume read-only, started again and waited for;
  * `load` runs in a one-off of the service's image with its secrets on the stack's network.
  */
-async function putBack(
+export async function putBack(
   run: SnapshotRun,
   place: PortainerPlace,
   parts: readonly SnapshotPart[],
@@ -152,7 +178,7 @@ async function putBack(
 }
 
 /** The app's web, workers and cron among the stack's containers, which use its data. */
-function appContainers(run: SnapshotRun, containers: readonly DockerContainer[]) {
+export function appContainers(run: SnapshotRun, containers: readonly DockerContainer[]) {
   const names = ["app", ...processServices(run.plan)];
   return containers.filter((container) =>
     names.includes(container.labels["com.docker.compose.service"] ?? ""),
@@ -175,14 +201,7 @@ export async function restoreInPortainer(
   const place = await portainerPlace(run);
   // 1. What the volume holds and the stack runs, read-only; a free id for the copy just before.
   let record = await readRecord(place, id);
-  let saved = snapshotIdAt(deps.clock.now());
-  let probed = await portainerProbe(place, saved);
-  for (let second = 1; saved === id || probed.taken; second++) {
-    saved = snapshotIdAt(new Date(deps.clock.now().getTime() + second * 1000));
-    probed = await portainerProbe(place, saved);
-  }
-  const low = lowDisk(probed.disk, "in your Portainer");
-  if (low !== undefined) throw low;
+  const { saved, probed } = await probeFree(run, place, id);
   const containers = await stackContainers(place);
   // 2. The record: in the volume, or in the bucket when the volume lacks it (a complete snapshot in
   // the volume is used as it is, also with --from offsite; the bucket's copy replaces a folder
