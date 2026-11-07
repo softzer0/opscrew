@@ -203,7 +203,7 @@ describe("the deploy job with extra servers", () => {
       [...order.map((name) => names(staging).indexOf(name))].sort((x, y) => x - y),
     );
     expect(stepOf(staging, DATA).run).toContain(
-      `ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$RUNNING" "$MODE" <<'REMOTE'`,
+      `ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" "$RUNNING" <<'REMOTE'`,
     );
     expect(stepOf(staging, "start").run).toContain(
       `sh -s -- "$IMAGE" "$MODE" "$RESTORED" <<'REMOTE'`,
@@ -221,6 +221,12 @@ describe("the deploy job with extra servers", () => {
     expect(names(off).indexOf(CONFIGURE)).toBeLessThan(
       names(off).indexOf("Configure SSH with the pinned host key"),
     );
+
+    // A schedule alone keeps .running there too (D13), so its snapshots know their version.
+    const scheduled = DeployPlanSchema.parse({ ...off, snapshots: { schedule: {} } });
+    expect(names(scheduled).filter((name) => added.some((a) => a === name))).toEqual([
+      "Record the running version on the app's other servers",
+    ]);
   });
 });
 

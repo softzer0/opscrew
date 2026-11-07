@@ -12,8 +12,8 @@ import { listText, OpsCrewError } from "@opscrew/core";
 import {
   appDir,
   ROLLBACK_APPROVAL_FILE,
-  releaseSnapshotServers,
   rollbackApprovalLine,
+  rollbackServers,
   schemaRecordPath,
   shellQuote,
   snapshotAboutPath,
@@ -26,6 +26,7 @@ import {
   keepSnapshotsOf,
   MIGRATION_TOOLS,
   type Migrations,
+  ONLINE_SNAPSHOT_KINDS,
   onOneServer,
   snapshotsOn,
 } from "@opscrew/plan-schema";
@@ -187,22 +188,39 @@ async function folderOf(run: RollbackRun, server = APP_SERVER): Promise<AppFolde
 }
 
 /**
- * The extra servers that hold part of `plan`'s release snapshot, which a rollback restores from
- * the runner, each after its own one-time approval (plan.md D7).
+ * The extra servers whose data `plan`'s rollback changes from the runner, each after its own
+ * one-time approval (plan.md D7, D13): for `choice`, or for either.
  */
-function snapshotServers(plan: DeployPlan): string[] {
-  return plan.target.provider === "localhost" ? [] : releaseSnapshotServers(plan);
+function otherServers(plan: DeployPlan, choice?: "snapshot" | "migrations"): string[] {
+  return plan.target.provider === "localhost" ? [] : rollbackServers(plan, choice);
+}
+
+/**
+ * Removes the one-time approval in each of `folders` (the app's server's first), each tried
+ * whatever the others did; a folder this computer can't reach counts as an error. Throws the
+ * first error once all were tried.
+ */
+async function removeApprovals(
+  folders: readonly (() => Promise<AppFolder | undefined>)[],
+): Promise<void> {
+  const errors: unknown[] = [];
+  for (const folder of folders) {
+    await folder()
+      .then((reached) => reached?.approval(undefined))
+      .catch((error: unknown) => errors.push(error));
+  }
+  if (errors.length > 0) throw errors[0];
 }
 
 /**
  * Removes the one-time approval of the database step from the app's folder of `run`'s target, if
- * it has one, and from each extra server's that holds part of the snapshot: a run that waited for
- * a reviewer ended without using them.
+ * it has one, then from each extra server's whose data the rollback changes: a run that waited
+ * for a reviewer ended without using them.
  */
 export async function removeDatabaseApproval(run: RollbackRun): Promise<void> {
-  for (const server of [...snapshotServers(run.plan), APP_SERVER]) {
-    await (await folderOf(run, server))?.approval(undefined);
-  }
+  await removeApprovals(
+    [APP_SERVER, ...otherServers(run.plan)].map((server) => () => folderOf(run, server)),
+  );
 }
 
 /**
@@ -242,13 +260,14 @@ function countGrew(tool: Migrations["tool"], target: string, current: string): b
 
 /**
  * What the rollback reads of a complete snapshot's `about.json` (024 plan.md 1.): when it was
- * taken, and each service's entry, `skipped` or `failed` for one it holds no copy of.
+ * taken, and each service's entry, its kind, and `skipped` or `failed` for one it holds no copy of.
  */
 const AboutSchema = z.object({
   taken: TakenSchema,
   services: z.array(
     z.object({
       name: z.string(),
+      kind: z.string(),
       skipped: z.literal(true).optional(),
       failed: z.literal(true).optional(),
     }),
@@ -287,20 +306,29 @@ function portainerKeptLines(plan: DeployPlan): string[] {
 
 /**
  * The services a snapshot holds no copy of on each server (`abouts`, by server), which its restore
- * keeps as they are: a stop-only service `deploy.snapshotStop` doesn't name.
+ * keeps as they are, each with its reason: the SQLite volume was empty; its copy failed; a
+ * stop-only service `deploy.snapshotStop` doesn't name; or any other had no container yet.
  */
-function leftOutLines(abouts: ReadonlyMap<string, About>): string[] {
+function leftOutLines(plan: DeployPlan, abouts: ReadonlyMap<string, About>): string[] {
+  const stop = plan.deploy.snapshotStop ?? [];
   const items = [...abouts].flatMap(([server, about]) =>
     about.services
       .filter((service) => service.skipped === true || service.failed === true)
-      .map((service) =>
-        server === APP_SERVER ? service.name : `${service.name} on server ${server}`,
-      ),
+      .map((service) => {
+        const on = server === APP_SERVER ? "" : ` on server ${server}`;
+        if (service.kind === "sqlite") return `the app's SQLite files${on} (the volume was empty)`;
+        const why =
+          service.failed === true
+            ? "its copy failed"
+            : !ONLINE_SNAPSHOT_KINDS.some((kind) => kind === service.kind) &&
+                !stop.includes(service.name)
+              ? "it must stop for its copy, and deploy.snapshotStop doesn't name it"
+              : "it had no container yet";
+        return `${service.name}${on} (${why})`;
+      }),
   );
   if (items.length === 0) return [];
-  return [
-    `Kept as they are, since the snapshot holds no copy of them: ${listText(items)}. A service that must stop for its copy is in the snapshot before a release only when deploy.snapshotStop names it.`,
-  ];
+  return [`Kept as they are, since the snapshot holds no copy of them: ${listText(items)}.`];
 }
 
 /** What the approval says when the database stays as it is. */
@@ -344,11 +372,6 @@ function notOffered(
   });
 }
 
-/** `text` with its first letter upper case. */
-function sentence(text: string): string {
-  return `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
-}
-
 /**
  * The database step of `run`'s rollback from the image `current` to `target` (digests, or this
  * computer's image references), the target named `words` (FR-1924; 024 US7):
@@ -368,10 +391,12 @@ function sentence(text: string): string {
  * offers only keep and says why, and the rollback goes on through GitHub as without snapshots; an
  * extra server it cannot reach leaves the snapshot out.
  *
- * The snapshot's `leave` writes the one-time approval on each extra server that holds part of it,
- * then on the app's server, and removes those it wrote when one fails. Keep's `leave` removes a
- * one-time approval an earlier run left, where the folders are reachable, so the deploy neither
- * changes this rollback's data nor stops on an expired one; it never stops the rollback.
+ * A choice that changes data leaves its one-time approval on each extra server whose data it
+ * changes (plan.md D7, D13: for the down migrations, those with a database), then on the app's
+ * server, and removes them all when one fails; its `clear` tries every one, the app's server's
+ * first. Keep's `leave` removes a one-time approval an earlier run left, where the folders are
+ * reachable, so the deploy neither changes this rollback's data nor stops on an expired one; it
+ * never stops the rollback.
  */
 export async function databaseStep(
   run: RollbackRun,
@@ -384,7 +409,7 @@ export async function databaseStep(
   const migrations = portainer ? undefined : plan.app.migrations;
   const kept = portainer ? portainerKeptLines(plan) : [];
   // The extra servers that hold part of the snapshot, each restored from the runner.
-  const others = snapshots ? snapshotServers(plan) : [];
+  const restoring = snapshots ? otherServers(plan, "snapshot") : [];
   /** The app's folder on `server`, or `undefined` without an address or login for it here. */
   const reach = (server: string) =>
     folderOf(run, server).catch((error: unknown) => {
@@ -406,11 +431,10 @@ export async function databaseStep(
       // An approval an earlier run left must not change this one's data, nor stop it: best effort.
       leave: async () => {
         if (!reachable) return undefined;
-        for (const server of [...others, APP_SERVER]) {
-          await reach(server)
-            .then((reached) => reached?.approval(undefined))
-            .catch(() => undefined);
-        }
+        const servers = [APP_SERVER, ...otherServers(plan)];
+        await removeApprovals(servers.map((server) => () => folderOf(run, server))).catch(
+          () => undefined,
+        );
         return undefined;
       },
       clear: async () => {},
@@ -455,7 +479,7 @@ export async function databaseStep(
     const own = snapshotParts(plan).length > 0 ? aboutOf(files.get(about)) : undefined;
     if (own !== undefined) abouts.set(APP_SERVER, own);
     else if (snapshotParts(plan).length > 0) missing.push(APP_SERVER);
-    for (const server of others) {
+    for (const server of restoring) {
       const extra = await reach(server);
       const read = await extra?.read([about]);
       if (extra === undefined || read === undefined) {
@@ -481,8 +505,10 @@ export async function databaseStep(
   } else if (unreached.length > 0) {
     why.snapshot = `This computer can't reach ${listText(unreached.map(serverWords))}, which holds part of the snapshot of ${input.words}, so OpsCrew can't restore it.`;
   } else if (missing.length > 0 || taken === undefined) {
-    const where = others.length === 0 ? "The server" : sentence(listText(missing.map(serverWords)));
-    const each = others.length === 0 ? "the server keeps" : "each server keeps";
+    const listed = listText(missing.map(serverWords));
+    const where =
+      restoring.length === 0 ? "The server" : `${listed.charAt(0).toUpperCase()}${listed.slice(1)}`;
+    const each = restoring.length === 0 ? "the server keeps" : "each server keeps";
     why.snapshot = `${where} ${missing.length > 1 ? "keep" : "keeps"} no complete snapshot of ${input.words}: a deploy takes one when it replaces a version, and ${each} those of the last ${keepSnapshotsOf(plan)}.`;
   } else {
     offers.push({
@@ -537,21 +563,20 @@ export async function databaseStep(
   const name = plan.app.name;
   const record: DatabaseRecord =
     choice === "snapshot" ? { choice, taken: taken as string } : { choice };
-  // The snapshot's approval is also left on each extra server, before the app's server's.
-  const approved = [...(choice === "snapshot" ? [...folders.values()] : []), folder];
+  // The approval is also left on each extra server whose data the choice changes, before the app's
+  // server's, so the deploy finds the app's only once every other is there.
+  const changing = otherServers(plan, choice);
+  /** The app's folder on an extra server: as read for the snapshot, or reached now. */
+  const extra = (server: string) => async () => folders.get(server) ?? folderOf(run, server);
   const where =
-    choice === "snapshot" && others.length > 0
-      ? ` on the app's server and on ${listText(others.map(serverWords))}`
-      : "";
-  const clear = async () => {
-    for (const each of approved) await each.approval(undefined);
-  };
+    changing.length > 0 ? ` on the app's server and on ${listText(changing.map(serverWords))}` : "";
+  const clear = () => removeApprovals([async () => folder, ...changing.map(extra)]);
   return {
     choice,
     binding,
     lines: [
       `Database: ${offer.text}`,
-      ...(choice === "snapshot" ? leftOutLines(abouts) : []),
+      ...(choice === "snapshot" ? leftOutLines(plan, abouts) : []),
       "The app's settings and secrets stay as they are now. The release command does not run.",
       `Typing ${name} approves it. OpsCrew then leaves a one-time approval in the app's folder${where}, valid for ${APPROVAL_SECONDS / 60} minutes, which the deploy uses once.`,
     ],
@@ -561,8 +586,10 @@ export async function databaseStep(
     outcome: databaseOutcome(record, plan, input.words),
     leave: async () => {
       const expiry = Math.floor(deps.clock.now().getTime() / 1000) + APPROVAL_SECONDS;
+      const line = rollbackApprovalLine(hex, choice, expiry);
       try {
-        for (const each of approved) await each.approval(rollbackApprovalLine(hex, choice, expiry));
+        for (const server of changing) await (await extra(server)())?.approval(line);
+        await folder.approval(line);
       } catch (error) {
         // None of them may stay usable without the others.
         await clear().catch(() => undefined);

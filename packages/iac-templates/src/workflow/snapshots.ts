@@ -126,6 +126,45 @@ export function releaseSnapshotServers(plan: DeployPlan): string[] {
     .filter((name) => releaseSnapshotOn(plan, name));
 }
 
+/** The parts on `server` that a rollback's down migrations change: its databases. */
+export function migratedParts(plan: DeployPlan, server: string): SnapshotPart[] {
+  return snapshotParts(plan, server).filter((part) => databaseKind(part.kind));
+}
+
+/**
+ * The extra servers, in plan order, whose data a rollback changes, each after its own one-time
+ * approval, saving it first under the running version (plan.md D7, D13): for `snapshot`, those
+ * that hold part of the release snapshot ({@link releaseSnapshotServers}); for `migrations`, with
+ * `app.migrations`, those that hold a database the down migrations change; with neither, those of
+ * either choice.
+ */
+export function rollbackServers(plan: DeployPlan, choice?: "snapshot" | "migrations"): string[] {
+  const snapshot = releaseSnapshotServers(plan);
+  const migrations =
+    plan.app.migrations === undefined
+      ? []
+      : (plan.servers ?? [])
+          .map((server) => server.name)
+          .filter((name) => migratedParts(plan, name).length > 0);
+  if (choice === "snapshot") return snapshot;
+  if (choice === "migrations") return migrations;
+  return (plan.servers ?? [])
+    .map((server) => server.name)
+    .filter((name) => snapshot.includes(name) || migrations.includes(name));
+}
+
+/**
+ * The extra servers, in plan order, whose {@link RUNNING_FILE} the deploy keeps, so their
+ * snapshots record the version that runs: those with a part ({@link snapshotParts}), when
+ * snapshots are on before each release or on a schedule (plan.md D13).
+ */
+export function runningServers(plan: DeployPlan): string[] {
+  if (!snapshotsOn(plan) && snapshotScheduleOf(plan) === undefined) return [];
+  return (plan.servers ?? [])
+    .map((server) => server.name)
+    .filter((name) => snapshotParts(plan, name).length > 0);
+}
+
 /**
  * The file in the app's folder on an extra server that names the image running on the app's
  * server (`ghcr.io/…@sha256:<hex>`), which the deploy writes there once the app answers (T2417):

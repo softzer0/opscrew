@@ -28,6 +28,7 @@ import {
   hexOf,
   readScript,
   readSections,
+  removeDatabaseApproval,
   removeScript,
   writeScript,
 } from "./database";
@@ -273,15 +274,38 @@ describe.skipIf(!SH_AVAILABLE)("the database step on a server", () => {
     );
   });
 
-  it("names the services the snapshot left out as kept", async () => {
-    const { folder, step } = await world(serverPlan({ environment: "staging" }));
+  it("names the services the snapshot left out as kept, each with its reason", async () => {
+    const base = serverPlan({ environment: "staging" });
+    const service = (name: string, kind: string, options: object = {}) => ({
+      ...base.services[0],
+      name,
+      kind,
+      options,
+    });
+    const plan = serverPlan({
+      environment: "staging",
+      extra: {
+        services: [
+          base.services[0],
+          service("kafka", "kafka"),
+          service("mq", "rabbitmq"),
+          service("cache", "valkey", { mode: "cache" }),
+        ],
+        storage: { sqlite: { dir: "data" } },
+        deploy: { strategy: "recreate", snapshotStop: ["mq"] },
+      },
+    });
+    const { folder, step } = await world(plan);
     await folder.snapshot(hex(TARGET), TAKEN, [
       { name: "db", kind: "postgres", file: "db.dump", size: 4 },
       { name: "kafka", kind: "kafka", skipped: true },
+      { name: "mq", kind: "rabbitmq", skipped: true },
+      { name: "cache", kind: "valkey", skipped: true },
+      { name: "sqlite", kind: "sqlite", skipped: true },
     ]);
     const chosen = await step();
     expect(chosen.lines[1]).toBe(
-      "Kept as they are, since the snapshot holds no copy of them: kafka. A service that must stop for its copy is in the snapshot before a release only when deploy.snapshotStop names it.",
+      "Kept as they are, since the snapshot holds no copy of them: kafka (it must stop for its copy, and deploy.snapshotStop doesn't name it), mq (it had no container yet), cache (it had no container yet) and the app's SQLite files (the volume was empty).",
     );
   });
 
@@ -475,8 +499,13 @@ describe.skipIf(!SH_AVAILABLE)("the database step with a database on an extra se
    * `shop` in staging with `db` on the server `data`: the app's folder on its server and on
    * `data`, each a fake reached at its address, the latter's recorded unless `reachable` is false.
    */
-  async function split(o: { reachable?: boolean } = {}) {
-    const plan = { ...splitPlan(), environment: { name: "staging" } } as DeployPlan;
+  async function split(o: { reachable?: boolean; migrations?: boolean } = {}) {
+    const base = splitPlan();
+    const plan = {
+      ...base,
+      environment: { name: "staging" },
+      ...(o.migrations === true ? { app: { ...base.app, ...KNEX } } : {}),
+    } as DeployPlan;
     const deps = await createTestPhaseDeps({ environment: "staging" });
     await recordServerAddress(deps.paths, { ipv4: SERVER_IPV4 });
     if (o.reachable !== false) {
@@ -487,23 +516,61 @@ describe.skipIf(!SH_AVAILABLE)("the database step with a database on an extra se
     }
     const app = await FakeAppFolder.create("/srv/apps/shop");
     const data = await FakeAppFolder.create("/srv/apps/shop");
+    const run = (options: RollbackRun["options"] = {}): RollbackRun => ({
+      deps,
+      options,
+      services: {
+        remote: (host) => (host === DATA_IPV4 ? data.remote(host) : app.remote(host)),
+      },
+      plan,
+      environment: "staging",
+      flags: " --env staging",
+      command: "opscrew rollback --env staging",
+    });
     const step = (options: RollbackRun["options"] = {}) =>
-      databaseStep(
-        {
-          deps,
-          options,
-          services: {
-            remote: (host) => (host === DATA_IPV4 ? data.remote(host) : app.remote(host)),
-          },
-          plan,
-          environment: "staging",
-          flags: " --env staging",
-          command: "opscrew rollback --env staging",
-        },
-        { current: CURRENT, target: TARGET, words: WORDS },
-      );
-    return { app, data, step };
+      databaseStep(run(options), { current: CURRENT, target: TARGET, words: WORDS });
+    return { app, data, run, step };
   }
+
+  it("clears every approval, the app's server's first, even when an extra server fails or can't be reached", async () => {
+    const line = `${hex(TARGET)} snapshot ${EXPIRY}\n`;
+    const { app, data, run, step } = await split();
+    await data.snapshot(hex(TARGET), TAKEN);
+    const chosen = await step();
+    await chosen.leave();
+    data.failWith = 1;
+    await expect(chosen.clear()).rejects.toThrow(
+      "OpsCrew could not remove the one-time approval of the database step on the server data (exit code 1).",
+    );
+    expect(await app.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
+    expect(app.commands.at(-1)).toBe(removeScript("/srv/apps/shop"));
+
+    await app.write(ROLLBACK_APPROVAL_FILE, line);
+    await expect(removeDatabaseApproval(run())).rejects.toThrow("on the server data");
+    expect(await app.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
+
+    // No address for the server data on this computer counts as an error too.
+    const away = await split({ reachable: false });
+    await away.app.write(ROLLBACK_APPROVAL_FILE, line);
+    await expect(removeDatabaseApproval(away.run())).rejects.toThrow(
+      "OpsCrew does not know the address of server data on this computer.",
+    );
+    expect(await away.app.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
+  });
+
+  it("leaves the down migrations' approval on the server data too, which saves its database first (D13)", async () => {
+    const { app, data, step } = await split({ migrations: true });
+    await app.write(`.schema/${hex(CURRENT)}`, "count=3\n");
+    await app.write(`.schema/${hex(TARGET)}`, "count=2\n");
+    const chosen = await step({ database: "migrations" });
+    expect(chosen.lines.at(-1)).toBe(
+      "Typing shop approves it. OpsCrew then leaves a one-time approval in the app's folder on the app's server and on the server data, valid for 30 minutes, which the deploy uses once.",
+    );
+    await chosen.leave();
+    const line = `${hex(TARGET)} migrations ${EXPIRY}\n`;
+    expect(await data.read(ROLLBACK_APPROVAL_FILE)).toBe(line);
+    expect(await app.read(ROLLBACK_APPROVAL_FILE)).toBe(line);
+  });
 
   it("offers the snapshot the server data holds, and leaves the approval there and on the app's server", async () => {
     const { app, data, step } = await split();
@@ -515,7 +582,7 @@ describe.skipIf(!SH_AVAILABLE)("the database step with a database on an extra se
     expect(chosen.choice).toBe("snapshot");
     expect(chosen.lines).toEqual([
       `Database: Restore the snapshot taken 2026-10-11 11:30 UTC, when ${WORDS} stopped running. Everything written since is lost.`,
-      "Kept as they are, since the snapshot holds no copy of them: kafka on server data. A service that must stop for its copy is in the snapshot before a release only when deploy.snapshotStop names it.",
+      "Kept as they are, since the snapshot holds no copy of them: kafka on server data (it must stop for its copy, and deploy.snapshotStop doesn't name it).",
       "The app's settings and secrets stay as they are now. The release command does not run.",
       "Typing shop approves it. OpsCrew then leaves a one-time approval in the app's folder on the app's server and on the server data, valid for 30 minutes, which the deploy uses once.",
     ]);

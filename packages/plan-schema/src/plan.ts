@@ -3,9 +3,7 @@ import { ENVIRONMENT_NAME_MESSAGE, ENVIRONMENT_NAME_PATTERN } from "@opscrew/cor
 import { z } from "zod";
 import { AppKeySchema, infraDirFor, workflowPathFor } from "./apps";
 import {
-  APP_SERVER,
   ComponentNameSchema,
-  type PlanService,
   PlanServiceSchema,
   ProcessesSchema,
   REDIS_PROTOCOL_KINDS,
@@ -39,7 +37,7 @@ import {
 import { AbsolutePathSchema } from "./facts";
 import { MigrationsSchema } from "./migrations";
 import { isOutsideMember, monitoringOf } from "./monitoring";
-import { checkPlacement, MoveSchema, NetworkSchema, servicesOn } from "./placement";
+import { checkPlacement, MoveSchema, NetworkSchema } from "./placement";
 
 /** Services that conflict with a self-hosted Postgres container. */
 const POSTGRES_PROVIDERS = new Set(["postgres", "supabase"]);
@@ -1645,17 +1643,6 @@ export function snapshotOffsiteOf(plan: { snapshots?: Snapshots | undefined }):
   const offsite = plan.snapshots?.offsite;
   if (offsite === undefined) return undefined;
   return { ...offsite, region: offsite.region ?? "auto", days: offsite.days ?? 90 };
-}
-
-type DatabaseService = PlanService & { kind: (typeof DATABASE_KINDS)[number] };
-
-/** The plan's services of the {@link DATABASE_KINDS} on the app's server, enabled. */
-export function snapshotDatabases(plan: {
-  readonly services: readonly PlanService[];
-}): DatabaseService[] {
-  return servicesOn(plan, APP_SERVER).filter((service): service is DatabaseService =>
-    DATABASE_KINDS.some((kind) => kind === service.kind),
-  );
 }
 
 /**

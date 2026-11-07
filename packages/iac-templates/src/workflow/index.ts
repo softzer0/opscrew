@@ -22,6 +22,7 @@ import {
 } from "../runtime";
 import { servicesRunningOn } from "../runtime/move";
 import { privateAddress } from "../runtime/network";
+import { shellQuote } from "../runtime/services";
 import { runtimeDir } from "../runtime-dir";
 import { siteEnvSecret } from "../serverless/site";
 import { sshHostname, tunnelMode } from "../tunnel";
@@ -46,12 +47,15 @@ import {
   imageOutput,
   MODE_ENV,
   onRunnerMachine,
+  opscrew,
   planFilePath,
   promoted,
   promotedAbout,
   provisionCommand,
   ROLLING_BACK,
+  refuse,
   run,
+  runbookFilePath,
   runnerStartCommand,
   secret,
   selfHosted,
@@ -59,7 +63,12 @@ import {
   workflowStart,
 } from "./shared";
 import { snapshotScript } from "./snapshot-script";
-import { releaseSnapshotServers, SNAPSHOT_SCRIPT } from "./snapshots";
+import {
+  releaseSnapshotServers,
+  rollbackServers,
+  runningServers,
+  SNAPSHOT_SCRIPT,
+} from "./snapshots";
 import {
   appHoldCommands,
   DATABASE_CHANGED,
@@ -96,6 +105,7 @@ export {
 } from "./snapshot-script";
 export {
   releaseSnapshotServers,
+  rollbackServers,
   SNAPSHOT_SCRIPT,
   type SnapshotPart,
   snapshotAboutPath,
@@ -497,8 +507,13 @@ function snapshotUpload(plan: DeployPlan, server: string, dir: string, on: On): 
  */
 const SAVE_PREVIOUS = `rm -f .env.previous ${DATABASE_CHANGED} && if [ -f .env ]; then cp .env .env.previous && sed -n "s/^APP_IMAGE=//p" .env; fi`;
 
-/** Prints the image `.env` names in the app's folder, if any; changes nothing. */
-const READ_RUNNING = 'if [ -f .env ]; then sed -n "s/^APP_IMAGE=//p" .env; fi';
+/**
+ * Prints the image `.env` names in the app's folder `dir`, if any, also before the folder exists
+ * (a first deploy); changes nothing.
+ */
+function readRunning(dir: string): string {
+  return `f=${dir}/.env; if [ -f "$f" ]; then sed -n "s/^APP_IMAGE=//p" "$f"; fi`;
+}
 
 /** How the start and rollback steps reach the app's machine: over SSH, or on the runner's own. */
 interface Reach {
@@ -508,7 +523,7 @@ interface Reach {
   prelude: readonly string[];
   /** The command that runs {@link SAVE_PREVIOUS} in the app's folder. */
   savePrevious: string;
-  /** The command that runs {@link READ_RUNNING} in the app's folder. */
+  /** The command that prints the image the app's machine runs ({@link readRunning}). */
   readRunning: string;
   /** Logs in to GHCR with `$REGISTRY_TOKEN` in the app's own Docker settings (script lines). */
   login: readonly string[];
@@ -591,11 +606,15 @@ function rolledBackStep(plan: DeployPlan): string[] {
  * `rollback`) its messages say that the rollback failed, and that the version restored is the one
  * that ran before it.
  *
- * When the rollback restored the snapshot on extra servers (`others`, {@link othersStep}'s
- * `restored`), it first stops the app and puts each one's data back as it was before the rollback,
- * then runs the app's rollback script, and starts the app again once that script answered. When
- * stopping or a put-back failed, the app stays stopped, its requests let through, and nothing else
- * runs: no version starts on data it doesn't match.
+ * With extra servers a rollback changes (`others`, plan.md D7, D13), it also runs when
+ * {@link othersStep} failed or was cancelled, and in a rollback dispatch it first asks each of them
+ * whether this run's marker says its data may have changed (`marked`). With any, or a server that
+ * doesn't answer, it stops the app and puts each one's data back as it was before the rollback
+ * (`back`), then runs the app's rollback script, and starts the app again (`resume`) once that
+ * script answered. When stopping or a put-back failed, or a server's state is unknown, the app
+ * stays stopped with its requests let through, nothing else runs, and the message says what state
+ * the servers are in and the way out ({@link stuckMessage}): no version starts on data it doesn't
+ * match.
  */
 function rollbackStep(
   plan: DeployPlan,
@@ -604,24 +623,39 @@ function rollbackStep(
   localhost: LocalhostSite | undefined,
   others: readonly string[],
 ): string[] {
+  const hold = (command: string) => `${reach.sh} -s -- ${command} < "$RUNNER_TEMP/opscrew-hold.sh"`;
+  const script = '"$RUNNER_TEMP/opscrew-rollback-$server.sh"';
+  const valid = `[[ "$MODE" == rollback && "\${IMAGE:-}" =~ ${DIGEST_REF_PATTERN} && "\${RUNNING:-}" =~ ${DIGEST_REF_PATTERN} ]]`;
   const putBack =
     others.length === 0
       ? []
       : [
-          '    restored="${RESTORED:-}"',
-          '    if [[ -n "$restored" ]]; then',
+          `    if ${valid}; then`,
           // At the block's indentation: each here-document ends at the line's start.
           ...otherServerScripts(plan, ctx, others),
           "      stuck=0",
-          `      ${reach.sh} -s -- stop < "$RUNNER_TEMP/opscrew-hold.sh" || stuck=1`,
-          "      if (( ! stuck )); then",
-          "        for server in $restored; do",
-          '          server_sh "$server" back "$RUNNING" < "$RUNNER_TEMP/opscrew-rollback-$server.sh" || stuck=1',
-          "        done",
+          "      marked=()",
+          `      for server in ${others.join(" ")}; do`,
+          `        answer="$(server_sh "$server" marked "$IMAGE" "$RUNNING" < ${script})" || answer=""`,
+          '        case "$answer" in',
+          '          marked) marked+=("$server") ;;',
+          "          none) ;;",
+          "          *)",
+          '            echo "::error::OpsCrew could not tell whether this rollback changed the data on the server $server: it did not answer."',
+          "            stuck=1 ;;",
+          "        esac",
+          "      done",
+          "      if (( ${#marked[@]} > 0 || stuck )); then",
+          `        ${hold("stop")} || stuck=1`,
+          "        if (( ! stuck )); then",
+          '          for server in "${marked[@]}"; do',
+          `            server_sh "$server" back "$IMAGE" "$RUNNING" < ${script} || stuck=1`,
+          "          done",
+          "        fi",
           "      fi",
           "      if (( stuck )); then",
-          `        ${reach.sh} -s -- requests < "$RUNNER_TEMP/opscrew-hold.sh" || true`,
-          `        echo "::error::The rollback failed, and OpsCrew could not stop the app or put the data on its other servers back as it was before the rollback (the messages above say which), so the app stays stopped and no version runs on that data. Restore each server's copy from before the rollback, then start the app. ${reach.stuck}"`,
+          `        ${hold("requests")} || true`,
+          `        echo "${stuckMessage(plan, reach)}"`,
           "        exit 1",
           "      fi",
           "    fi",
@@ -630,21 +664,25 @@ function rollbackStep(
     others.length === 0
       ? []
       : [
-          '    if [[ -n "$restored" ]]; then',
+          `    if ${valid}; then`,
           '      case "$outcome" in',
-          `        restored | unchanged | no-previous) ${reach.sh} -s -- resume < "$RUNNER_TEMP/opscrew-hold.sh" || true ;;`,
+          `        restored | unchanged | no-previous) ${hold("resume")} || true ;;`,
           "      esac",
           "    fi",
         ];
+  const otherOutcomes =
+    others.length === 0
+      ? ""
+      : " || steps.others.outcome == 'failure' || steps.others.outcome == 'cancelled'";
   return [
     "- name: Roll back to the previous version",
-    "  if: (failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure')",
+    `  if: (failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure'${otherOutcomes})`,
     "  env:",
     ...reach.env,
     ...(others.length === 0 ? [] : otherServersEnv(plan, others)),
     `    IMAGE: ${imageOutput(plan, "image")}`,
     MODE_ENV,
-    ...(others.length === 0 ? [] : [RESTORED_ENV, RUNNING_ENV]),
+    ...(others.length === 0 ? [] : [RUNNING_ENV]),
     "  run: |",
     "    set -uo pipefail",
     ...reach.prelude,
@@ -789,7 +827,7 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
       env: hostEnv,
       prelude: [sshOpts],
       savePrevious: OVER_SSH(`cd ${dir} && ${SAVE_PREVIOUS}`),
-      readRunning: OVER_SSH(`cd ${dir} && ${READ_RUNNING}`),
+      readRunning: OVER_SSH(readRunning(dir)),
       login: [
         `    printf '%s\\n' "$REGISTRY_TOKEN" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" "DOCKER_CONFIG=${dockerConfig(plan)} docker login ghcr.io -u '\${GITHUB_ACTOR}' --password-stdin"`,
       ],
@@ -818,7 +856,10 @@ function extraServerHost(plan: DeployPlan, server: ExtraServer): string {
 /** The step's `$RUNNING`: the image the app's server ran when the job began ({@link outgoingStep}). */
 const RUNNING_ENV = "    RUNNING: ${{ steps.outgoing.outputs.image }}";
 
-/** The step's `$RESTORED`: the extra servers whose snapshot the rollback restored ({@link othersStep}). */
+/**
+ * The step's `$RESTORED`: the extra servers whose data the rollback changed ({@link othersStep}),
+ * comma-joined, since ssh joins its words with spaces and the server splits them again.
+ */
 const RESTORED_ENV = "    RESTORED: ${{ steps.others.outputs.restored }}";
 
 /** The variable that holds the address of the extra server `name` in a step reaching several. */
@@ -873,10 +914,19 @@ function otherServerShell(ctx: RuntimeContext, names: readonly string[]): string
 }
 
 /**
- * Before the extra servers' steps when they hold part of the release snapshot (`others`): reads
- * the image the app's server runs (`.env`, through `reach`), as the step's output `image`, empty
- * when it names none by digest. Their steps snapshot their data under it, and a rollback saves
- * their data under it before restoring (plan.md D7).
+ * The rollback step's message when the data on an extra server could not be put back (an echo's
+ * double-quoted text, with `$RUNNING`): what state the servers stay in, and the way out, which
+ * never starts the failed version on data it doesn't match.
+ */
+function stuckMessage(plan: DeployPlan, reach: Reach): string {
+  return `::error::The rollback failed, and OpsCrew could not put the data on the app's other servers back as it was before the rollback (the messages above say which, and where each copy stays), so the app stays stopped and no version runs on data it doesn't match. The app's server stays as the rollback left it: its .env may name the version the rollback went to, its own data may hold that version's snapshot, and its .database.changed marker stays. Once the server that failed is fixed, run \\\`${opscrew(plan, "rollback")} --to \${RUNNING##*@} --database snapshot\\\`: it restores the copies this run saved before changing anything, on every server, and starts that version. Start the app by hand (\\\`docker compose start\\\` in its folder; ${runbookFilePath(plan)} has the SSH command) only once the data on every server matches the version its .env names. ${reach.stuck}`;
+}
+
+/**
+ * Before the extra servers' steps when a rollback can change their data (`others`): reads the
+ * image the app's server runs (`.env`, through `reach`), as the step's output `image`, empty when
+ * it names none by digest. Their steps snapshot their data under it, and a rollback saves their
+ * data under it before changing it (plan.md D7).
  */
 function outgoingStep(reach: Reach): string[] {
   return [
@@ -893,17 +943,17 @@ function outgoingStep(reach: Reach): string[] {
 }
 
 /**
- * In a rollback dispatch, before the start step, when extra servers hold part of the release
- * snapshot (`others`, plan.md D7):
- * 1. each one's one-time approval is checked and removed there (`check`); without one approving
- *    the snapshot anywhere, nothing more happens;
+ * In a rollback dispatch, before the start step, when the rollback can change the data on extra
+ * servers (`others`, plan.md D7, D13):
+ * 1. each one's one-time approval is checked and removed there (`check`); without any, nothing
+ *    more happens; unless every server the choice changes ({@link rollbackServers}) approved the
+ *    same choice and no other did, the step stops before any change;
  * 2. the app's server holds the requests and stops the app (`hold`);
- * 3. each approved server copies its data under the running version and restores the snapshot
- *    (`restore`); the step's output `restored` names them, for the start step's database step and
- *    the rollback step.
- * When step 2 or 3 fails, the servers already restored get their data back (`back`) and the app
- * starts again (`resume`); when a put-back failed, or a server's state is unknown, the app stays
- * stopped with its requests let through. The step then fails, before the start step.
+ * 3. each approved server saves its data under the running version and, for the snapshot,
+ *    restores it (`change`), leaving its marker; the step's output `restored` names them,
+ *    comma-joined, for the start step's database step.
+ * When step 2 or 3 fails, or the run is cancelled, the step stops there: the rollback step puts
+ * the data back where a marker says it may have changed, and starts the app again.
  */
 function othersStep(
   plan: DeployPlan,
@@ -911,11 +961,18 @@ function othersStep(
   reach: Reach,
   others: readonly string[],
 ): string[] {
-  const hold = (command: string) => `${reach.sh} -s -- ${command} < "$RUNNER_TEMP/opscrew-hold.sh"`;
   const script = '"$RUNNER_TEMP/opscrew-rollback-$server.sh"';
+  /** `<server>:<choice>` for each server `choice` changes, as the checks' answers line up. */
+  const answers = (choice: "snapshot" | "migrations") =>
+    rollbackServers(plan, choice)
+      .map((server) => `${server}:${choice}`)
+      .join(" ");
+  const expected = (["snapshot", "migrations"] as const)
+    .filter((choice) => rollbackServers(plan, choice).length > 0)
+    .map((choice) => `      ${shellQuote(answers(choice))}) choice=${choice} ;;`);
   return [
     "- id: others",
-    "  name: Restore the snapshot on the app's other servers",
+    "  name: Change the data on the app's other servers",
     `  if: ${ROLLING_BACK}`,
     "  env:",
     ...reach.env,
@@ -927,50 +984,48 @@ function othersStep(
     ...block(CHECK_IMAGE, 4),
     ...reach.prelude,
     ...otherServerScripts(plan, ctx, others),
-    "    approved=()",
+    '    got=""',
     `    for server in ${others.join(" ")}; do`,
     `      answer="$(server_sh "$server" check "$IMAGE" < ${script})"`,
-    '      if [[ "$answer" == snapshot ]]; then approved+=("$server"); fi',
+    '      case "$answer" in',
+    '        snapshot | migrations) got="$got $server:$answer" ;;',
+    "        keep) ;;",
+    '        *) echo "::error::The server $server gave no answer OpsCrew can use about its one-time approval, so nothing was changed."; exit 1 ;;',
+    "      esac",
     "    done",
-    "    if (( ${#approved[@]} == 0 )); then exit 0; fi",
+    '    got="${got# }"',
+    '    if [[ -z "$got" ]]; then exit 0; fi',
+    '    case "$got" in',
+    ...expected,
+    "      *)",
+    `        echo "::error::The one-time approvals on the app's other servers don't match the rollback's choice on every server it changes ($got), so nothing was changed. Run opscrew rollback again."`,
+    "        exit 1 ;;",
+    "    esac",
     `    if [[ ! "$RUNNING" =~ ${DIGEST_REF_PATTERN} ]]; then`,
-    `      echo "::error::The app's server names no version by its image digest, so OpsCrew can't save the data on its other servers before restoring it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is."`,
+    `      echo "::error::The app's server names no version by its image digest, so OpsCrew can't save the data on its other servers before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is."`,
     "      exit 1",
     "    fi",
+    `    ${reach.sh} -s -- hold < "$RUNNER_TEMP/opscrew-hold.sh"`,
     '    restored=""',
-    "    stuck=0",
-    "    put_back() {",
-    "      local server",
-    "      for server in $restored; do",
-    `        server_sh "$server" back "$RUNNING" < ${script} || stuck=1`,
-    "      done",
-    "      if (( stuck )); then",
-    `        ${hold("requests")} || true`,
-    `        echo "::error::OpsCrew could not put the data on the app's other servers back as it was before the rollback (the messages above say which), so the app stays stopped and no version runs on that data. Restore each server's copy from before the rollback, then start the app. ${reach.stuck}"`,
-    "      else",
-    `        ${hold("resume")} || true`,
-    "      fi",
-    "    }",
-    "    trap 'status=$?; if (( status != 0 )); then put_back; fi; exit $status' EXIT",
-    `    ${hold("hold")}`,
-    '    for server in "${approved[@]}"; do',
+    "    for entry in $got; do",
+    '      server="${entry%%:*}"',
     "      code=0",
-    `      server_sh "$server" restore "$IMAGE" "$RUNNING" < ${script} || code=$?`,
-    // 1: the server put its own data back; anything else leaves it unknown.
+    `      server_sh "$server" change "$choice" "$IMAGE" "$RUNNING" < ${script} || code=$?`,
     "      if (( code != 0 )); then",
-    "        if (( code != 1 )); then stuck=1; fi",
+    // 1 and 2: the server's own message says what happened there.
+    '        if (( code != 1 && code != 2 )); then echo "::error::The change on the server $server did not finish (exit code $code), so its data may be partly changed: the rollback step checks it."; fi',
     "        exit 1",
     "      fi",
-    '      restored="$restored $server"',
+    '      restored="$restored,$server"',
     "    done",
-    '    echo "restored=${restored# }" >> "$GITHUB_OUTPUT"',
+    '    echo "restored=${restored#,}" >> "$GITHUB_OUTPUT"',
   ];
 }
 
 /**
- * At the end of the job, once the start step ran (`others`, plan.md D7): the image the app's server
- * runs (`.env`, after the deploy, a rollback dispatch or the rollback step) goes to
- * {@link RUNNING_FILE} on each extra server that holds part of the snapshot
+ * At the end of the job, once the start step ran (`servers`, {@link runningServers}, plan.md
+ * D7, D13): the image the app's server runs (`.env`, after the deploy, a rollback dispatch or the
+ * rollback step) goes to {@link RUNNING_FILE} on each of those extra servers
  * ({@link runningCommands}), so its scheduled and manual snapshots record the version. A failure
  * warns: the deploy itself is done.
  */
@@ -978,7 +1033,7 @@ function runningStep(
   plan: DeployPlan,
   ctx: RuntimeContext,
   reach: Reach,
-  others: readonly string[],
+  servers: readonly string[],
 ): string[] {
   const warn = (what: string) =>
     `echo "::warning::OpsCrew could not ${what}, so the snapshots taken there by hand or on a schedule may record another version than the one that runs, until the next deploy."`;
@@ -987,11 +1042,11 @@ function runningStep(
     "  if: always() && steps.start.outcome != 'skipped'",
     "  env:",
     ...reach.env,
-    ...otherServersEnv(plan, others),
+    ...otherServersEnv(plan, servers),
     "  run: |",
     "    set -uo pipefail",
     ...reach.prelude,
-    ...otherServerShell(ctx, others),
+    ...otherServerShell(ctx, servers),
     "    cat > \"$RUNNER_TEMP/opscrew-running.sh\" <<'REMOTE'",
     ...remote(runningCommands(plan)),
     `    if ! running="$(${reach.readRunning})"; then`,
@@ -999,7 +1054,7 @@ function runningStep(
     "      exit 0",
     "    fi",
     `    if [[ ! "$running" =~ ${DIGEST_REF_PATTERN} ]]; then running=; fi`,
-    `    for server in ${others.join(" ")}; do`,
+    `    for server in ${servers.join(" ")}; do`,
     `      server_sh "$server" "$running" < "$RUNNER_TEMP/opscrew-running.sh" || ${warn("record the version that runs on the server $server")}`,
     "    done",
   ];
@@ -1020,13 +1075,14 @@ function runningStep(
  *    service's old copy's too, until its switch), its own `snapshot.sh` ({@link snapshotUpload}),
  *    then {@link serverCommands} (pull, the server's part of the release snapshot, start and wait,
  *    the published-port repair, the services' one-time setup, the scheduled snapshots' crontab
- *    line). A server among `others`, which holds part of the release snapshot, gets the new image,
- *    the one the app's server runs ({@link outgoingStep}) and the mode as its arguments.
+ *    line). A server among `snapshotting`, which holds part of the release snapshot
+ *    ({@link releaseSnapshotServers}), gets the new image, the mode and the one the app's server
+ *    runs ({@link outgoingStep}) as its arguments, each checked first.
  */
 function extraServerSteps(
   plan: DeployPlan,
   ctx: RuntimeContext,
-  others: readonly string[],
+  snapshotting: readonly string[],
 ): string[] {
   const servers = (plan.servers ?? []).filter(
     (server) => servicesRunningOn(plan, server.name).length > 0,
@@ -1058,7 +1114,7 @@ function extraServerSteps(
       const folders = services
         .map((service) => `${runtimeDir(plan)}/services/${service.name}`)
         .filter((folder) => rendered.some((path) => path.startsWith(`${folder}/`)));
-      const release = others.includes(server.name);
+      const release = snapshotting.includes(server.name);
       return [
         `- name: Update the services on the server ${server.name}`,
         "  env:",
@@ -1067,6 +1123,19 @@ function extraServerSteps(
         ...(release ? [`    IMAGE: ${imageOutput(plan, "image")}`, RUNNING_ENV, MODE_ENV] : []),
         "  run: |",
         "    set -euo pipefail",
+        // The server's shell reads the arguments again: only checked words reach it.
+        ...(release
+          ? block(
+              [
+                ...CHECK_IMAGE,
+                ...refuse(
+                  `[[ -n "$RUNNING" && ! "$RUNNING" =~ ${DIGEST_REF_PATTERN} || ( "$MODE" != deploy && "$MODE" != rollback ) ]]`,
+                  `The step for the server ${server.name} was given no running version or mode it can use, so nothing changed there; re-run the workflow.`,
+                ),
+              ],
+              4,
+            )
+          : []),
         `    ssh_opts=(-i ${serversFile("key")} -o UserKnownHostsFile=${serversFile("known_hosts")} -F ${serversFile("config")} ${SSH_OPTS_BASE}${portOption(port)})`,
         `    ${OVER_SSH(`mkdir -p ${folders.length === 0 ? dir : `${dir}/services`}`)}`,
         `    scp "\${ssh_opts[@]}" ${serverComposePath(plan, server.name)} "deploy@\${HOST}:${dir}/compose.yaml"`,
@@ -1079,7 +1148,8 @@ function extraServerSteps(
         ...mask.map((line) => `    ${line}`),
         ...snapshotUpload(plan, server.name, dir, OVER_SSH),
         release
-          ? `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$RUNNING" "$MODE" <<'REMOTE'`
+          ? // `$RUNNING` last: ssh drops it when it is empty (a first deploy).
+            `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" "$RUNNING" <<'REMOTE'`
           : `    ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'`,
         ...remote(serverCommands(plan, server.name, initStepsFor(plan, server.name))),
       ];
@@ -1180,7 +1250,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
       env: [],
       prelude: local ? [...localDeployLock(plan), dir] : [dir],
       savePrevious: `cd "$dir" && ${SAVE_PREVIOUS}`,
-      readRunning: `(cd "$dir" && ${READ_RUNNING})`,
+      readRunning: `(${readRunning('"$dir"')})`,
       // The scripts run here, so they must not inherit the job's token. On this computer the app's
       // Docker settings start with a ghcr.io entry: settings without any make docker log in to the
       // computer's credential store, where the user's own login lives.
@@ -1331,8 +1401,9 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   };
   const own = deploysInPlace(plan);
   const { connect, setup, reach } = own ? localDeploy(plan, upload) : sshDeploy(plan, ctx, upload);
-  // The extra servers that hold part of the release snapshot need the app's server's version first.
-  const others = releaseSnapshotServers(plan);
+  // The extra servers whose data a rollback changes need the app's server's version first.
+  const others = rollbackServers(plan);
+  const running = runningServers(plan);
   const local: LocalEdge | undefined =
     plan.target.provider === "localhost"
       ? { hostname: localhostSite(ctx.localhost).hostname, port: plan.target.ports.https }
@@ -1351,7 +1422,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ...(selfHosted(plan) ? ["  with:", "    persist-credentials: false"] : []),
     ...edgeCheckStep(plan, edgeFiles),
     ...(others.length > 0 ? [...connect, ...outgoingStep(reach)] : []),
-    ...extraServerSteps(plan, ctx, others),
+    ...extraServerSteps(plan, ctx, releaseSnapshotServers(plan)),
     ...(others.length > 0 ? [] : connect),
     ...setup,
     ...(others.length > 0 ? othersStep(plan, ctx, reach, others) : []),
@@ -1365,7 +1436,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ...healthScript(plan, edgeServesTls(plan, sshHostname(plan)) && !edgeFiles.originTls, local),
     ...rolledBackStep(plan),
     ...rollbackStep(plan, ctx, reach, edgeFiles.localhost, others),
-    ...(others.length > 0 ? runningStep(plan, ctx, reach, others) : []),
+    ...(running.length > 0 ? runningStep(plan, ctx, reach, running) : []),
   ];
 
   const lines = [

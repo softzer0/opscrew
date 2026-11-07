@@ -41,10 +41,11 @@ import {
   serverLogNote,
 } from "./shared";
 import {
+  migratedParts,
   ROLLBACK_APPROVAL_FILE,
   RUNNING_FILE,
   releaseSnapshotOn,
-  releaseSnapshotServers,
+  rollbackServers,
   SNAPSHOT_FUNCTIONS,
   SNAPSHOT_LOG,
   SNAPSHOT_SCRIPT,
@@ -831,24 +832,24 @@ export interface ScriptOptions {
 
 /**
  * Whether a rollback can change the app's data (plan.md 12.4): not in a preview's scripts, with a
- * part a snapshot holds on the app's server ({@link snapshotParts}), down migrations, or a part of
- * the release snapshot on an extra server ({@link restoresOthers}).
+ * part a snapshot holds on the app's server ({@link snapshotParts}), down migrations, or data on
+ * an extra server a rollback changes ({@link changesOthers}).
  */
 function databaseRollback(plan: DeployPlan, o: ScriptOptions): boolean {
   if (o.preview === true) return false;
   return (
-    snapshotParts(plan).length > 0 || plan.app.migrations !== undefined || restoresOthers(plan, o)
+    snapshotParts(plan).length > 0 || plan.app.migrations !== undefined || changesOthers(plan, o)
   );
 }
 
 /**
- * Whether a rollback can restore the release snapshot on the app's extra servers (plan.md D7):
- * not in a preview's scripts, with an extra server whose data each release snapshots
- * ({@link releaseSnapshotServers}). The workflow restores them from the runner before the start
- * step, and names those it restored in the start script's `$3`.
+ * Whether a rollback can change the data on the app's extra servers (plan.md D7, D13): not in a
+ * preview's scripts, with an extra server a rollback's choice changes ({@link rollbackServers}).
+ * The workflow saves, and for the snapshot restores, their data from the runner before the start
+ * step, and names those it changed in the start script's `$3`, comma-joined.
  */
-function restoresOthers(plan: DeployPlan, o: ScriptOptions): boolean {
-  return o.preview !== true && releaseSnapshotServers(plan).length > 0;
+function changesOthers(plan: DeployPlan, o: ScriptOptions): boolean {
+  return o.preview !== true && rollbackServers(plan).length > 0;
 }
 
 /** The marker of a rollback's database step, in the app's folder (plan.md 12.4). */
@@ -885,33 +886,32 @@ export function approvalExpiry(refuse: readonly string[]): string[] {
  * at once ({@link readApproval}), so it is used once:
  * - one for another version is ignored with a note, and the rollback keeps the data;
  * - one for `$target` sets `$database` to its choice (`snapshot` with a part a snapshot holds on
- *   the app's server or, with `others`, an extra server's; `migrations` with `app.migrations`), or,
- *   past its time ({@link approvalExpiry}) or with another choice, stops the script before any
- *   change: the user approved the switch and the database step together.
- * With `others` ({@link restoresOthers}), `$others` is `$3`: the extra servers whose snapshot the
- * workflow restored for this rollback, each checked to be one of them. They need this server's
- * approval to restore the snapshot too; without it the script stops before any change here, and
- * the workflow's rollback step puts them back.
+ *   the app's server or an extra server's; `migrations` with `app.migrations`), or, past its time
+ *   ({@link approvalExpiry}) or with another choice, stops the script before any change: the user
+ *   approved the switch and the database step together.
+ * With `others` ({@link changesOthers}), `$others` is `$3` with its commas as spaces: the extra
+ * servers whose data the workflow changed for this rollback. They must be exactly those the
+ * choice changes ({@link rollbackServers}; none to keep the data); otherwise the script stops
+ * before any change here, and the workflow's rollback step puts their data back.
  * The deploy's snapshot uses `$target` and `$running` too.
  */
 function approvalCheck(plan: DeployPlan, others: boolean): string[] {
+  const snapshotServers = rollbackServers(plan, "snapshot").join(" ");
   const choices = [
-    ...(snapshotParts(plan).length > 0 || others ? ["snapshot"] : []),
+    ...(snapshotParts(plan).length > 0 || snapshotServers !== "" ? ["snapshot"] : []),
     ...(plan.app.migrations === undefined ? [] : ["migrations"]),
   ];
   const file = ROLLBACK_APPROVAL_FILE;
-  const servers = releaseSnapshotServers(plan).join(" ");
   const checkOthers = others
     ? [
-        'others="${3:-}"',
-        "for other in $others; do",
-        `  case ${shellQuote(` ${servers} `)} in *" $other "*) ;; *)`,
-        `    echo ${shellQuote(`::error::The start script was given a server that holds no part of the snapshot (only ${servers} do), so nothing was changed. Run the workflow again.`)}`,
-        "    exit 1 ;;",
-        "  esac",
-        "done",
-        'if [ -n "$others" ] && [ "$database" != snapshot ]; then',
-        `  echo ${shellQuote(`::error::The rollback restored the snapshot on the app's other servers, but this server has no one-time approval to restore its own (${file}), so nothing was changed here: the rollback step puts the other servers' data back. Run opscrew rollback again.`)}`,
+        `others="$(printf '%s' "\${3:-}" | tr , ' ')"`,
+        'case "$database" in',
+        `  snapshot) expected=${shellQuote(snapshotServers)} ;;`,
+        `  migrations) expected=${shellQuote(rollbackServers(plan, "migrations").join(" "))} ;;`,
+        '  *) expected="" ;;',
+        "esac",
+        'if [ "$others" != "$expected" ]; then',
+        `  printf ${printfFormat(`::error::The app's other servers this rollback changed (%s) aren't those this server's one-time approval (${file}) needs (%s), so nothing was changed here, and the rollback step puts their data back. Run opscrew rollback again.`)} "\${others:-none}" "\${expected:-none}"`,
         "  exit 1",
         "fi",
       ]
@@ -970,11 +970,11 @@ function snapshotLogNote(plan: DeployPlan): string {
  * ({@link databaseBack}). Without a copy, the running version starts on the database as step 4
  * left it.
  *
- * With `others` ({@link restoresOthers}), the workflow restored the snapshot on the extra servers
- * `$others` names before this step, the app held and stopped. When this step fails, the running
- * version doesn't start here: the workflow's rollback step puts those servers' data back first,
- * then starts it. Without a part on the app's server, step 4 changes nothing here, so the marker
- * says `changed=1` only for the down migrations.
+ * With `others` ({@link changesOthers}), the workflow saved, and for the snapshot restored, the
+ * data on the extra servers `$others` names before this step, the app held and stopped. When this
+ * step fails, the running version doesn't start here: the workflow's rollback step puts those
+ * servers' data back first, then starts it. Without a part on the app's server, step 4 changes
+ * nothing here, so the marker says `changed=1` only for the down migrations.
  */
 function databaseStep(plan: DeployPlan, others: boolean): string[] {
   const folder = appFolder(plan);
@@ -1025,8 +1025,11 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
           "  fi",
         ]
       : [];
+  const alone = `printf ${printfFormat(`::error::%s failed, and no copy of the database from before the rollback was saved (OpsCrew saves only the PostgreSQL, MySQL, MariaDB, MongoDB and SQLite databases on the app's server), so the database may be partly changed; the running version starts again. ${note} Fix the cause, then run opscrew rollback again or restore a backup.`)} "$what" ${folder}`;
   const noCopy = [
-    `printf ${printfFormat(`::error::%s failed, and no copy of the database from before the rollback was saved (OpsCrew saves only the PostgreSQL, MySQL, MariaDB, MongoDB and SQLite databases on the app's server), so the database may be partly changed; the running version starts again. ${note} Fix the cause, then run opscrew rollback again or restore a backup.`)} "$what" ${folder}`,
+    others
+      ? `if [ -n "$others" ]; then printf ${printfFormat(`::error::%s failed: the rollback step puts the data on the app's other servers back from the copies this run saved there, then starts the running version again. ${note}`)} "$what" ${folder}; else ${alone}; fi`
+      : alone,
     giveUp.join("; "),
   ];
   const putBack =
@@ -1141,7 +1144,8 @@ export function switchCommands(
 ): string[] {
   const steady = steadyServices(plan);
   const data = databaseRollback(plan, o);
-  const others = restoresOthers(plan, o);
+  const others = changesOthers(plan, o);
+  const record = recordProcesses(processServices(plan));
   const release =
     plan.app.releaseCommand === undefined
       ? []
@@ -1203,8 +1207,17 @@ export function switchCommands(
     ...(data ? snapshotStep(plan, appFolder(plan)) : []),
     ...release,
     // Before the switch: `recreate` writes `.env` first, and from then on the rollback acts.
-    // After the workflow's hold (`others`), the app is stopped and the hold's record stays.
-    ...(others ? recordRunning(plan) : recordProcesses(processServices(plan))),
+    // A rollback that changes the extra servers' data finds the app held and stopped by the
+    // workflow (`others`): the hold's record stays.
+    ...(others && record.length > 0
+      ? [
+          'if [ "$MODE" = rollback ]; then',
+          ...recordRunning(plan).map((line) => `  ${line}`),
+          "else",
+          ...record.map((line) => `  ${line}`),
+          "fi",
+        ]
+      : record),
     ...(data ? databaseStep(plan, others) : []),
     ...switching,
     ...startProcesses(plan, processServices(plan)),
@@ -1295,8 +1308,10 @@ function serverSnapshotStep(plan: DeployPlan, server: string): string[] {
  * healthy, repairs a port that came up unpublished ({@link portRepair}), runs their one-time setup
  * steps (`init`), then writes or removes the server's line for scheduled snapshots
  * ({@link snapshotScheduleLines}). With the release snapshot, its arguments are the new image, the
- * one the app's server runs (empty on a first deploy) and the mode, each checked before use. Any
- * failure exits non-zero, before the app's switch.
+ * mode and the image the app's server runs (absent on a first deploy: ssh drops an empty word),
+ * each checked before use. On a server a rollback changes ({@link rollbackServers}), an earlier
+ * run's {@link DATABASE_CHANGED} goes first, as on the app's server. Any failure exits non-zero,
+ * before the app's switch.
  */
 export function serverCommands(
   plan: DeployPlan,
@@ -1308,11 +1323,12 @@ export function serverCommands(
     ...SCRIPT_ROOTS,
     "set -eu",
     `cd ${appFolder(plan)}`,
+    ...(rollbackServers(plan).includes(server) ? [`rm -f ${DATABASE_CHANGED}`] : []),
     ...(release
       ? [
           'target="${1:-}"',
-          'running="${2:-}"',
-          'MODE="${3:-}"',
+          'MODE="${2:-}"',
+          'running="${3:-}"',
           ...IMAGE_REF,
           'if [ -z "$target" ] || ! image_ref "$target" || ! image_ref "$running" || { [ "$MODE" != deploy ] && [ "$MODE" != rollback ]; }; then',
           `  echo ${shellQuote(`::error::The deploy step of the server ${server} was given no image digests or mode it can use, so nothing changed there. Run the workflow again.`)}`,
@@ -1331,31 +1347,46 @@ export function serverCommands(
 
 /**
  * The rollback's script on the extra server `server` (POSIX sh, in the app's folder there; plan.md
- * D7), which the workflow runs from the runner with the snapshot functions of the server's
- * {@link SNAPSHOT_SCRIPT}, under the app's start lock there. Each image argument is checked first:
+ * D7, D13), which the workflow runs from the runner with the snapshot functions of the server's
+ * {@link SNAPSHOT_SCRIPT}, under the app's start lock there. Its arguments are checked first. A
+ * rollback that changes the data there leaves {@link DATABASE_CHANGED}, as the app's server does:
+ * `target=`, `saved=` (the running version, whose copy it saved) and `changed=` (1 once the data
+ * may differ from that copy).
  * - `check <target>` reads and removes the server's one-time approval
- *   ({@link ROLLBACK_APPROVAL_FILE}) and prints `snapshot` when it approves restoring `<target>`'s
- *   snapshot there, which must be complete, or `keep` without one (one for another version is
- *   removed with a note); an expired one, or another choice, exits 1;
- * - `restore <target> <running>` (the app held and stopped): copies the parts the target's
- *   snapshot holds under the running version, as the app's server does, then restores them;
- *   exits 1 with nothing changed when the copy or the restore failed and the copy is back, 2 when
- *   putting it back failed too;
- * - `back <running>` restores that copy, once the rollback failed after `restore`.
+ *   ({@link ROLLBACK_APPROVAL_FILE}) and prints its choice, `snapshot` (the target's snapshot there
+ *   must be complete) or `migrations`, or `keep` without one (one for another version is removed
+ *   with a note); an expired one, or a choice it can't carry out, exits 1;
+ * - `change <choice> <target> <running>` (the app held and stopped): writes the marker, copies the
+ *   parts the choice changes under the running version, as the app's server does (the target
+ *   snapshot's parts, or the databases the down migrations change), marks `changed=1`, and for
+ *   the snapshot restores it. It exits 1 when nothing was changed (the copy failed, or the restore
+ *   failed and the copy is back; the marker goes), 2 when putting the copy back failed too (the
+ *   marker stays);
+ * - `marked <target> [<running>]` prints `marked` when this run's marker (the same target and
+ *   running version) says the data may have changed, `none` otherwise;
+ * - `back <target> <running>` restores this run's copy where its marker says the data may have
+ *   changed, and removes the marker; with no such marker it changes nothing.
  * Messages go to stderr and never quote data.
  */
 export function serverRollbackCommands(plan: DeployPlan, server: string): string[] {
   const folder = appFolder(plan);
   const where = serverWords(server);
   const file = ROLLBACK_APPROVAL_FILE;
+  const marker = DATABASE_CHANGED;
   const log = serverLogWords(server);
   const said = (text: string) => `printf ${printfFormat(text)}`;
+  const migrated = migratedParts(plan, server).map((part) => part.name);
+  const choices = (["snapshot", "migrations"] as const).filter((choice) =>
+    rollbackServers(plan, choice).includes(server),
+  );
   const usage = (args: string, check: string) => [
     `    if ${check}; then`,
     `      echo ${shellQuote(`::error::The rollback's script on ${where} needs ${args}, so nothing was changed there.`)} >&2`,
     "      exit 1",
     "    fi",
   ];
+  /** `$2`, `$3`… as `target` and `running`, both images by digest of other versions. */
+  const versions = ['    target="${2##*@sha256:}"', '    running="${3##*@sha256:}"'];
   return [
     ...SCRIPT_ROOTS,
     "set -eu",
@@ -1366,6 +1397,15 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
       plan,
       `::error::A snapshot on ${where} kept the app's start lock there for 15 minutes, so the rollback changed nothing there. Run opscrew rollback again.`,
     ),
+    "mark() {",
+    `  (umask 077; printf 'target=%s\\nsaved=%s\\nchanged=%s\\n' "$target" "$running" "$1" > ${marker})`,
+    "}",
+    "ours() {",
+    `  [ -f ${marker} ] && [ "$(sed -n 's/^target=//p' ${marker})" = "$target" ] && [ "$(sed -n 's/^saved=//p' ${marker})" = "$running" ]`,
+    "}",
+    "changed() {",
+    `  ours && [ "$(sed -n 's/^changed=//p' ${marker})" = 1 ]`,
+    "}",
     'case "${1:-}" in',
     "  check)",
     ...usage("the image it goes back to", '[ "$#" -ne 2 ] || [ -z "$2" ] || ! image_ref "$2"'),
@@ -1373,59 +1413,84 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
     `    if [ ! -f ${file} ]; then echo keep; exit 0; fi`,
     ...readApproval(file).map((line) => `    ${line}`),
     '    if [ "$approved" != "$target" ]; then',
-    `      echo ${shellQuote(`::warning::The approval to restore the data on ${where} on a rollback (${file} there) is for another version, so OpsCrew removed it: this rollback keeps the data there as it is.`)} >&2`,
+    `      echo ${shellQuote(`::warning::The approval to change the data on ${where} on a rollback (${file} there) is for another version, so OpsCrew removed it: this rollback keeps the data there as it is.`)} >&2`,
     "      echo keep",
     "      exit 0",
     "    fi",
-    '    if [ "$choice" != snapshot ]; then',
+    // A server a rollback changes ({@link rollbackServers}) has at least one of them.
+    `    case "$choice" in ${choices.join(" | ")}) ;; *)`,
     `      echo ${shellQuote(`::error::The one-time approval on ${where} (${file}) names a choice it can't carry out, so nothing was changed. Run opscrew rollback again.`)} >&2`,
-    "      exit 1",
-    "    fi",
+    "      exit 1 ;;",
+    "    esac",
     ...approvalExpiry([
-      `echo ${shellQuote(`::error::The one-time approval to restore the data on ${where} on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.`)} >&2`,
+      `echo ${shellQuote(`::error::The one-time approval to change the data on ${where} on this rollback expired before the run started, so nothing was changed. Run opscrew rollback again.`)} >&2`,
       "exit 1",
     ]).map((line) => `    ${line}`),
-    '    if ! snapshot_complete "$target"; then',
+    '    if [ "$choice" = snapshot ] && ! snapshot_complete "$target"; then',
     `      echo ${shellQuote(`::error::The snapshot this rollback was approved to restore is no longer complete on ${where} (in ${SNAPSHOTS_DIR}), so the rollback changed nothing. Run opscrew rollback again to choose again.`)} >&2`,
     "      exit 1",
     "    fi",
-    "    echo snapshot ;;",
-    "  restore)",
+    '    echo "$choice" ;;',
+    "  change)",
     ...usage(
-      "the image it goes back to and the one that runs",
-      '[ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3" || [ "${2##*@sha256:}" = "${3##*@sha256:}" ]',
+      "a choice, the image it goes back to and the one that runs",
+      '[ "$#" -ne 4 ] || [ -z "$3" ] || [ -z "$4" ] || ! image_ref "$3" || ! image_ref "$4" || [ "${3##*@sha256:}" = "${4##*@sha256:}" ]',
     ),
-    '    target="${2##*@sha256:}"',
-    '    running="${3##*@sha256:}"',
-    '    parts="$(snapshot_parts "$target")"',
+    '    target="${3##*@sha256:}"',
+    '    running="${4##*@sha256:}"',
+    '    case "$2" in',
+    '      snapshot) snapshot_complete "$target" || exit 1; parts="$(snapshot_parts "$target")" ;;',
+    `      migrations) parts=${shellQuote(migrated.join(" "))} ;;`,
+    "      *) exit 1 ;;",
+    "    esac",
+    "    mark 0",
     '    if ! snapshot_take "$running" release "$running" $parts; then',
+    `      rm -f ${marker}`,
     `      ${said(`::error::OpsCrew could not save the data on ${where} before changing it (a copy failed, or the disk is too full), so the rollback changed nothing there. ${log}`)} ${folder} >&2`,
     "      exit 1",
+    "    fi",
+    "    mark 1",
+    '    if [ "$2" = migrations ]; then',
+    `      echo ${shellQuote(`OpsCrew saved the data on ${where} before the down migrations change it.`)} >&2`,
+    "      exit 0",
     "    fi",
     '    if snapshot_restore "$target" $parts; then',
     `      echo "OpsCrew restored the data on ${where} from the snapshot taken $(cat ${snapshotTakenPath('"$target"')})." >&2`,
     "      exit 0",
     "    fi",
     '    if snapshot_restore "$running" $parts; then',
+    `      rm -f ${marker}`,
     `      ${said(`::error::Restoring the snapshot on ${where} failed, so OpsCrew put its data back as it was before the rollback. ${log}`)} ${folder} >&2`,
     "      exit 1",
     "    fi",
     `    ${said(`::error::Restoring the snapshot on ${where} failed, and putting its data back as it was before the rollback failed too, so it may be partly changed. Its copy from before the rollback stays there in %s/${SNAPSHOTS_DIR}/%s. ${log}`)} ${folder} "$running" ${folder} >&2`,
     "    exit 2 ;;",
+    "  marked)",
+    ...usage(
+      "the image it goes back to, and the one that ran",
+      '[ "$#" -lt 2 ] || [ "$#" -gt 3 ] || [ -z "$2" ] || ! image_ref "$2" || ! image_ref "${3:-}"',
+    ),
+    ...versions,
+    "    if changed; then echo marked; else echo none; fi ;;",
     "  back)",
     ...usage(
-      "the image that ran before the rollback",
-      '[ "$#" -ne 2 ] || [ -z "$2" ] || ! image_ref "$2"',
+      "the image it went back to and the one that ran before",
+      '[ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"',
     ),
-    '    running="${2##*@sha256:}"',
+    ...versions,
+    "    if ! changed; then",
+    `      if ours; then rm -f ${marker}; fi`,
+    "      exit 0",
+    "    fi",
     '    if snapshot_complete "$running" && snapshot_restore "$running" $(snapshot_parts "$running"); then',
+    `      rm -f ${marker}`,
     `      echo ${shellQuote(`OpsCrew put the data on ${where} back as it was before the rollback.`)} >&2`,
     "      exit 0",
     "    fi",
     `    ${said(`::error::Putting the data on ${where} back as it was before the rollback failed, so it may be partly changed. Its copy from before the rollback stays there in %s/${SNAPSHOTS_DIR}/%s. ${log}`)} ${folder} "$running" ${folder} >&2`,
     "    exit 1 ;;",
     "  *)",
-    `    echo ${shellQuote(`::error::The rollback's script on ${where} knows only check, restore and back, so nothing was changed there.`)} >&2`,
+    `    echo ${shellQuote(`::error::The rollback's script on ${where} knows only check, change, marked and back, so nothing was changed there.`)} >&2`,
     "    exit 1 ;;",
     "esac",
   ];
