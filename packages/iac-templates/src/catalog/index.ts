@@ -9,10 +9,16 @@ import {
 import { IMAGES } from "../pins";
 import { planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
-import { DRAGONFLY_MIN_VCPUS, grantHashSecret, hasLogin, SERVICE_SPECS } from "./entries";
+import {
+  DRAGONFLY_MIN_VCPUS,
+  grantHashSecret,
+  hasLogin,
+  kafkaTool,
+  SERVICE_SPECS,
+} from "./entries";
 import type { ServiceContext, ServiceSpec } from "./types";
 
-export { DRAGONFLY_MIN_VCPUS, grantHashSecret, hasLogin, SERVICE_SPECS };
+export { DRAGONFLY_MIN_VCPUS, grantHashSecret, hasLogin, kafkaTool, SERVICE_SPECS };
 
 /** {@link SERVICE_SPECS} by kind: one entry for every kind (a test checks each is there). */
 export const CATALOG = Object.fromEntries(

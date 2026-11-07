@@ -1,11 +1,12 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose and shell syntax, not JavaScript templates.
 
 import { listText, OpsCrewError, sha256Hex } from "@opscrew/core";
-import type {
-  DeployPlan,
-  PlanService,
-  PortainerWeb,
-  SelfHostedServiceKind,
+import {
+  type DeployPlan,
+  type PlanService,
+  type PortainerWeb,
+  type SelfHostedServiceKind,
+  snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { stringify } from "yaml";
 import { appVariables, enabledServices, renderContext, serviceSpec } from "../catalog";
@@ -39,7 +40,7 @@ import type { RenderedFile } from "../types";
 import { DIGEST_REF_PATTERN, hasCronJobs, planFilePath } from "../workflow/shared";
 import type { ServiceInitStep } from "../workflow/switch";
 import {
-  offsiteVariables,
+  PORTAINER_OFFSITE_VARIABLES,
   RUNNING_IMAGE_FILE,
   SNAPSHOTS_MOUNT,
   SNAPSHOTS_VOLUME,
@@ -474,7 +475,9 @@ export function portainerStackEnvKeys(
   }
   if (web.mode === "tunnel") opscrew.add(PORTAINER_STACK_VARIABLES.tunnelToken);
   if (stackOriginTls(plan, ctx) !== undefined) opscrew.add(PORTAINER_STACK_VARIABLES.originTls);
-  for (const variable of offsiteVariables(plan)) opscrew.add(variable);
+  if (snapshotOffsiteOf(plan) !== undefined) {
+    for (const variable of Object.values(PORTAINER_OFFSITE_VARIABLES)) opscrew.add(variable);
+  }
   return { app: appEnvKeys(plan), opscrew: [...opscrew].sort() };
 }
 

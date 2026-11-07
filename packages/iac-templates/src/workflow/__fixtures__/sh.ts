@@ -77,6 +77,29 @@ export const COMPOSE_PROLOGUE: readonly string[] = [
 ];
 
 /**
+ * The fake `flock`: logs its call among docker's ($WORK/docker.log); with FLOCK_BUSY, a bounded
+ * wait (`-w`) runs out, as when another script holds the lock all that time.
+ */
+export const FAKE_FLOCK = [
+  "#!/bin/sh",
+  'echo "flock $*" >> "$WORK/docker.log"',
+  'if [ "$1" = -w ] && [ -n "${FLOCK_BUSY:-}" ]; then exit 1; fi',
+].join("\n");
+
+/**
+ * The fake `df -Pk`: DISK_TOTAL_KB (default about 1 TB) with DISK_FREE_KB free (default half),
+ * or almost nothing once $WORK/disk-full exists.
+ */
+export const FAKE_DF = [
+  "#!/bin/sh",
+  'total="${DISK_TOTAL_KB:-1000000000}"',
+  'free="${DISK_FREE_KB:-500000000}"',
+  'if [ -f "$WORK/disk-full" ]; then free=1000; fi',
+  'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"',
+  'echo "/dev/sda1 $total 0 $free 50% /"',
+].join("\n");
+
+/**
  * Why the tests on Docker skip here, or `undefined` when they run: they need
  * OPSCREW_DOCKER_TESTS=1, an engine for Linux containers and `docker compose`.
  */

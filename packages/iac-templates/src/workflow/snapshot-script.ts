@@ -8,13 +8,14 @@ import {
   targetArch,
 } from "@opscrew/plan-schema";
 import { offsiteExpires } from "../infra/storage";
-import { ageFunctions, OFFSITE_PREFIX, RCLONE_PROVIDERS } from "../offsite";
+import { AGE_BINARY, ageFunctions, OFFSITE_PREFIX, rcloneSettings } from "../offsite";
 import { IMAGES } from "../pins";
 import { PORTAINER_OFFSITE_VARIABLES } from "../portainer-target/snapshots";
 import { extraServer } from "../runtime/components";
 import { shellQuote } from "../runtime/services";
-import { planFilePath, printfFormat } from "./shared";
+import { planFilePath, printfFormat, said } from "./shared";
 import {
+  holdsData,
   SNAPSHOT_LOG,
   SNAPSHOT_SCRIPT,
   SNAPSHOTS_DIR,
@@ -26,13 +27,14 @@ import {
   appFolder,
   approvalExpiry,
   EDGE_FUNCTION,
+  holdApp,
   holdRequests,
-  pauseRequests,
   RESTORE_HELD,
   readApproval,
   recordRunning,
-  resumeRequests,
+  resumeApp,
   SCRIPT_ROOTS,
+  serverWords,
   startApp,
   startLock,
   stopApp,
@@ -91,7 +93,7 @@ export const OFFSITE_LOG = `${SNAPSHOTS_DIR}/offsite.log`;
  */
 const OFFSITE_ERROR_LINES = "(ERROR|CRITICAL) *: |Failed to |^OpsCrew: |^docker: |^age: ";
 
-/** The folder in the app's folder where the script keeps the age binary it fetched and checked. */
+/** The folder in the app's folder where the script keeps the age release archive it fetched. */
 const AGE_DIR = ".offsite";
 
 /**
@@ -108,8 +110,9 @@ const LATE_BUCKET_WAIT_SECONDS = 60;
  * `snapshot_offsite <id>` copies the complete snapshot `.snapshots/<id>` to the bucket, from a
  * one-off of the pinned rclone image as the deploy user, with {@link OFFSITE_ENV_FILE} as its
  * environment and the plan's region:
- * - the age binary of the server's architecture ({@link AGE_DIR}`/age`) is made ready
- *   (`ageFunctions`: checked against its pinned SHA-256, fetched and checked when missing);
+ * - age of the server's architecture is made ready (`ageFunctions`: its release archive in
+ *   {@link AGE_DIR} checked against its pinned SHA-256, fetched when missing or changed, and its
+ *   binary unpacked for this upload only);
  * - the id's `about.json.age` goes first, so a copy that fails part-way never looks complete;
  * - each file `about.json` names, then `about.json`, streams through `age -r <recipient>` into
  *   `rclone rcat` as `backups/<id>/<file>.age` (an extra server's under `backups/<id>/<server>/`);
@@ -131,7 +134,7 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
   const copy = snapshotOffsiteOf(plan);
   if (copy === undefined) return [];
   const folder = appFolder(plan);
-  const where = server === APP_SERVER ? "the app's server" : `the server ${server}`;
+  const where = serverWords(server);
   // An extra server's architecture, as `targetArch` reads the app's: an own server's, else amd64.
   const extra = server === APP_SERVER ? undefined : extraServer(plan, server).target;
   const arch =
@@ -151,7 +154,7 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
     "umask 077",
     `export HOME=/tmp ${login.join(" ")}`,
     ...ageFunctions(arch),
-    "age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; exit 1; }",
+    "age_ready || exit 1",
     'to="$1"',
     "shift",
     // `late` runs its command again while a node that does not know the new bucket yet answers:
@@ -159,7 +162,7 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
     `late() { n=0; until "$@" 2> /tmp/rclone.log; do rc=$?; cat /tmp/rclone.log >&2; grep -qE 'NoSuchBucket|object not found' /tmp/rclone.log && [ "$n" -lt ${LATE_BUCKET_TRIES} ] || return "$rc"; n=$((n + 1)); sleep ${LATE_BUCKET_WAIT_SECONDS}; done; cat /tmp/rclone.log >&2; }`,
     // rclone exits 4 when the object to delete is not there.
     `unmark() { rclone deletefile ${shellQuote(`${remote}/`)}"$to/about.json.age" || [ "$?" -eq 4 ]; }`,
-    `put() { /tools/age -r "$${v.recipient}" < /snapshot/"$1" | rclone rcat ${shellQuote(`${remote}/`)}"$to/$1.age"; }`,
+    `put() { ${AGE_BINARY} -r "$${v.recipient}" < /snapshot/"$1" | rclone rcat ${shellQuote(`${remote}/`)}"$to/$1.age"; }`,
     "late unmark || exit 1",
     'for f in "$@" about.json; do late put "$f" || exit 1; done',
     ...(days === undefined
@@ -167,16 +170,12 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
       : [`rclone delete --min-age ${days}d ${shellQuote(remote)} || exit 4`]),
   ].join("; ");
   const to = server === APP_SERVER ? '"$1"' : `"$1"/${server}`;
-  const said = (text: string) => `printf ${printfFormat(text)}`;
   // `%s` and `%s`: the app's folder, then `; its last error: <line>` or `.`.
   const log = `The upload's output is in %s/${OFFSITE_LOG}%s`;
-  const environment = [
-    "RCLONE_CONFIG_OFFSITE_TYPE=s3",
-    `RCLONE_CONFIG_OFFSITE_PROVIDER=${RCLONE_PROVIDERS[copy.provider]}`,
-    `RCLONE_CONFIG_OFFSITE_REGION=${copy.region}`,
-    // The bucket exists: rclone never tries to create it.
-    "RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET=true",
-  ].flatMap((variable) => ["-e", shellQuote(variable)]);
+  const environment = Object.entries(rcloneSettings(copy)).flatMap(([name, value]) => [
+    "-e",
+    shellQuote(`${name}=${value}`),
+  ]);
   return [
     "snapshot_offsite() {",
     `  if [ ! -f ${OFFSITE_ENV_FILE} ]; then`,
@@ -333,7 +332,7 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
         ]),
     "    *)",
     `      if [ -n "$_id" ] && [ -e ${SNAPSHOTS_DIR}/"$_id" ]; then`,
-    `        printf ${printfFormat(`There is already a snapshot %s on ${server === APP_SERVER ? "the app's server" : `the server ${server}`}.`)} "$_id" >&2`,
+    `        ${said(`There is already a snapshot %s on ${serverWords(server)}.`)} "$_id" >&2`,
     "        return 1",
     "      fi",
     '      _id="${_id:-$(snapshot_new_id)}" ;;',
@@ -393,7 +392,6 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
   const file = RESTORE_APPROVAL_FILE;
   const start = app ? [`    if [ -z "$_held" ]; then ${startApp(plan)}; fi`] : [];
   const note = `The output of the copies and restores stays on the server in %s/${SNAPSHOT_LOG} (it can quote data, so it is not printed here).`;
-  const said = (text: string) => `printf ${printfFormat(text)}`;
   return [
     "snapshot_cmd_restore() {",
     '  [ "$#" -ge 1 ] || { snapshot_usage; return 1; }',
@@ -476,9 +474,8 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
 /**
  * The app's server's `snapshot_cmd_hold` and `snapshot_cmd_resume` (D8), the pieces of the
  * workflow's hold script (`appHoldCommands`): which workers and cron run is recorded while the web
- * runs ({@link recordRunning}), the app's requests are held and its web, workers and cron stop
- * ({@link pauseRequests}, {@link stopApp}); then they start again and the requests go through
- * ({@link startApp}, {@link resumeRequests}). `hold` leaves {@link RESTORE_HELD}, which `resume` removes.
+ * runs ({@link recordRunning}), then the app is held ({@link holdApp}); `resume` ends the hold
+ * ({@link resumeApp}). `hold` leaves {@link RESTORE_HELD}, which `resume` removes.
  * `opscrew restore` runs them around its restores. They change no data, so they need no approval;
  * kamal-proxy lets requests through itself after its longest hold, to the stopped app.
  */
@@ -487,12 +484,10 @@ function holdCommands(plan: DeployPlan): string[] {
     "snapshot_cmd_hold() {",
     `  (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && : > ${RESTORE_HELD})`,
     ...recordRunning(plan).map((line) => `  ${line}`),
-    `  ${pauseRequests(plan)}`,
-    `  ${stopApp(plan)}`,
+    ...holdApp(plan).map((line) => `  ${line}`),
     "}",
     "snapshot_cmd_resume() {",
-    `  ${startApp(plan)}`,
-    `  ${resumeRequests(plan)}`,
+    ...resumeApp(plan).map((line) => `  ${line}`),
     `  rm -f ${RESTORE_HELD}`,
     "}",
   ];
@@ -526,7 +521,7 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
   const functions = snapshotFunctions(plan, server, folder);
   const app = server === APP_SERVER;
   if (functions.length === 0) return app ? holdScript(plan) : [];
-  const where = app ? "the app's server" : `the server ${server}`;
+  const where = serverWords(server);
   const take = `take <manual|release|scheduled> [--skip <service>]... [--stop <service>]... [--id <id>] [--version sha256:<hex>]`;
   const commands = [
     take,
@@ -625,8 +620,7 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
  * can hold the app around the restores there. Empty when no server holds data.
  */
 function holdScript(plan: DeployPlan): string[] {
-  const others = (plan.servers ?? []).some((server) => snapshotParts(plan, server.name).length > 0);
-  if (!others) return [];
+  if (!holdsData(plan)) return [];
   const usage = `Usage: sh ${SNAPSHOT_SCRIPT} hold | resume`;
   return [
     `# OpsCrew's hold of ${plan.app.name} on the app's server while its data on the other servers is restored, generated from ${planFilePath(plan)}; each deploy uploads it.`,

@@ -480,6 +480,11 @@ export function printfFormat(text: string): string {
   return shellQuote(`${text}\\n`);
 }
 
+/** `printf` with `text` as its format ({@link printfFormat}), its arguments to follow. */
+export function said(text: string): string {
+  return `printf ${printfFormat(text)}`;
+}
+
 /**
  * The workflow's header comment (`about`), triggers, default permissions and concurrency. An
  * environment that follows the branch deploys on each push to it that changes one of `paths`

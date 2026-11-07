@@ -65,6 +65,7 @@ import {
 } from "./shared";
 import { OFFSITE_ENV_FILE, OFFSITE_ENV_SECRET, snapshotScript } from "./snapshot-script";
 import {
+  holdsData,
   migratedParts,
   releaseSnapshotServers,
   rollbackServers,
@@ -79,6 +80,7 @@ import {
   type EdgeFiles,
   HELD_ROLLBACK,
   HELD_STOP,
+  heldProbe,
   OTHERS_HELD,
   RESTORE_HELD,
   rollbackCommands,
@@ -740,7 +742,7 @@ function rollbackStep(
     '    case "$MODE:$outcome" in',
     // A restore holds the app: the rollback script changed nothing, nor did the start script. Only
     // where a restore can hold it: the app's server has a snapshot.sh.
-    ...(snapshotScript(plan).length === 0 ? [] : [`      *:held) echo "${HELD_ROLLBACK}" ;;`]),
+    ...(holdsData(plan) ? [`      *:held) echo "${HELD_ROLLBACK}" ;;`] : []),
     "      rollback:restored)",
     '        echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;',
     "      rollback:unchanged)",
@@ -846,7 +848,7 @@ function sshDeploy(plan: DeployPlan, ctx: RuntimeContext, upload: Upload): Deplo
   ];
   // The app's folder: OpsCrew's own servers (cloud-init) have only /srv/apps before the first deploy.
   const dir = appDir(plan);
-  const held = OVER_SSH(`if [ -e ${dir}/${RESTORE_HELD} ]; then echo held; fi`);
+  const held = OVER_SSH(heldProbe(dir));
   const connect = [
     ...(tunnelHost === undefined ? [] : installCloudflaredStep(machine)),
     ...sshKeySetup(plan, machine),
@@ -1038,27 +1040,11 @@ function heldCheck(held: string): string[] {
 }
 
 /**
- * Before the extra servers' steps when a restore can hold the app and no rollback reads its version
- * first ({@link outgoingStep}): the job's first step on the app's server, which stops it while a
- * restore holds the app.
- */
-function heldStep(reach: Reach): string[] {
-  return [
-    "- name: Check that no restore holds the app",
-    ...(reach.env.length === 0 ? [] : ["  env:", ...reach.env]),
-    "  run: |",
-    "    set -euo pipefail",
-    ...reach.prelude,
-    ...heldCheck(reach.held),
-  ];
-}
-
-/**
- * Before the extra servers' steps when a rollback can change their data (`others`): stops the job
- * while a restore holds the app ({@link heldCheck}), then reads the image the app's server runs
- * (`.env`, through `reach`), as the step's output `image`, empty when it names none by digest.
- * Their steps snapshot their data under it, and a rollback saves their data under it before
- * changing it (plan.md D7).
+ * Before the extra servers' steps when a restore can hold the app: the job's first step on the
+ * app's server, which stops it while a restore holds the app ({@link heldCheck}), then reads the
+ * image the app's server runs (`.env`, through `reach`), as the step's output `image`, empty when
+ * it names none by digest. When a rollback can change their data (`others`), their steps snapshot
+ * their data under it, and a rollback saves their data under it before changing it (plan.md D7).
  */
 function outgoingStep(reach: Reach): string[] {
   return [
@@ -1374,7 +1360,7 @@ function localDeploy(plan: DeployPlan, upload: Upload): Deploy {
   const local = plan.environment?.runner === "local";
   const dir = local ? `    dir="$OPSCREW_APPS_DIR/${app}"` : `    dir=${appDir(plan)}`;
   const tls = local ? `    tls="$OPSCREW_EDGE_DIR/tls/${app}"` : `    tls=${EDGE_DIR}/tls/${app}`;
-  const held = `if [ -e "$dir"/${RESTORE_HELD} ]; then echo held; fi`;
+  const held = heldProbe('"$dir"');
   const setup = [
     "- name: Copy the runtime files and environment into the app's folder",
     "  env:",
@@ -1548,7 +1534,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   // A restore can hold the app where its server has a snapshot.sh: any of its servers holds data.
   // The job's first contact with the app's server stops it then: before the extra servers' steps
   // when it has any, else the upload.
-  const holdable = snapshotScript(plan).length > 0;
+  const holdable = holdsData(plan);
   const early = holdable && (plan.servers ?? []).length > 0;
   const upload: Upload = {
     env: [
@@ -1588,7 +1574,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     // A self-hosted runner keeps its workspace: the job's token stays out of its git settings.
     ...(selfHosted(plan) ? ["  with:", "    persist-credentials: false"] : []),
     ...edgeCheckStep(plan, edgeFiles),
-    ...(early ? [...connect, ...(others.length > 0 ? outgoingStep(reach) : heldStep(reach))] : []),
+    ...(early ? [...connect, ...outgoingStep(reach)] : []),
     ...extraServerSteps(plan, ctx, releaseSnapshotServers(plan)),
     ...(early ? [] : connect),
     ...setup,

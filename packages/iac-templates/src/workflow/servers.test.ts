@@ -29,7 +29,8 @@ const stepOf = (plan: DeployPlan, name: string) => {
 const CONFIGURE = "Configure SSH for the app's other servers";
 const DATA = "Update the services on the server data";
 const BOX = "Update the services on the server box-2";
-const HELD = "Check that no restore holds the app";
+/** The step that stops the job while a restore holds the app, then reads the app's version. */
+const HELD = "outgoing";
 
 /** `plan` as prod with its deploys on `runner`. */
 const on = (plan: DeployPlan, runner: "github" | "server" | "host") =>
@@ -222,7 +223,7 @@ describe("the deploy job with extra servers", () => {
       ...staging,
       deploy: { ...staging.deploy, snapshots: false },
     });
-    expect(names(off).filter((name) => added.some((a) => a === name))).toEqual([]);
+    expect(names(off).filter((name) => added.some((a) => a === name))).toEqual([HELD]);
     expect(stepOf(off, DATA).run).toContain(
       `ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'`,
     );
@@ -269,6 +270,7 @@ describe("the deploy job with extra servers", () => {
     // A schedule alone keeps .running there too (D13), so its snapshots know their version.
     const scheduled = DeployPlanSchema.parse({ ...off, snapshots: { schedule: {} } });
     expect(names(scheduled).filter((name) => added.some((a) => a === name))).toEqual([
+      HELD,
       "Record the running version on the app's other servers",
     ]);
   });

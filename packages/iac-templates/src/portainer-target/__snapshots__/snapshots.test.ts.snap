@@ -174,22 +174,23 @@ services:
     environment:
       RCLONE_CONFIG_OFFSITE_TYPE: s3
       RCLONE_CONFIG_OFFSITE_PROVIDER: Hetzner
-      RCLONE_CONFIG_OFFSITE_ENDPOINT: \${OPSCREW_OFFSITE_ENDPOINT}
       RCLONE_CONFIG_OFFSITE_REGION: fsn1
+      RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET: "true"
+      RCLONE_CONFIG_OFFSITE_ENDPOINT: \${OPSCREW_OFFSITE_ENDPOINT}
       RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: \${OPSCREW_OFFSITE_ACCESS_KEY_ID}
       RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: \${OPSCREW_OFFSITE_SECRET_ACCESS_KEY}
-      RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET: "true"
       OPSCREW_OFFSITE_RECIPIENT: \${OPSCREW_OFFSITE_RECIPIENT}
     entrypoint:
       - /bin/sh
       - -c
       - |-
         set -o pipefail
-        age_ok() { echo '<pin:TOOLS.age.binarySha256.amd64>  /tools/age' | sha256sum -c -s; }
-        age_fetch() { rm -rf /tmp/age && mkdir /tmp/age && rclone copyurl 'https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz' /tmp/age/age.tar.gz && echo '<pin:TOOLS.age.sha256.amd64>  /tmp/age/age.tar.gz' | sha256sum -c -s && tar -xzf /tmp/age/age.tar.gz -C /tmp/age age/age && echo '<pin:TOOLS.age.binarySha256.amd64>  /tmp/age/age/age' | sha256sum -c -s && mv /tmp/age/age/age /tools/age.new && mv /tools/age.new /tools/age; _age=$$?; rm -rf /tmp/age; return "$$_age"; }
+        age_ok() { echo '<pin:TOOLS.age.sha256.amd64>  /tools/age.tar.gz' | sha256sum -c -s && rm -rf /tmp/age && mkdir /tmp/age && tar -xzf /tools/age.tar.gz -C /tmp/age age/age; }
+        age_fetch() { rm -rf /tmp/age && mkdir /tmp/age && rclone copyurl 'https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz' /tmp/age/age.tar.gz && mv /tmp/age/age.tar.gz /tools/age.tar.gz.new && mv /tools/age.tar.gz.new /tools/age.tar.gz && age_ok; }
+        age_ready() { age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; return 1; }; }
         put() {
-          age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; return 1; }
-          /tools/age -r "$$OPSCREW_OFFSITE_RECIPIENT" < "$$1" | rclone rcat 'offsite:shop-prod-backups/backups/'"$$2"
+          age_ready || return 1
+          /tmp/age/age/age -r "$$OPSCREW_OFFSITE_RECIPIENT" < "$$1" | rclone rcat 'offsite:shop-prod-backups/backups/'"$$2"
         }
         umask 077
         while :; do
@@ -544,7 +545,7 @@ services:
         take() {
           mkdir -p "$$1" && rm -f "$$1"/db.done "$$1"/db.failed "$$1"/db.skipped || return 1
           t="$$1"/db.dump.tmp
-          (umask 077 && PGPASSWORD="$$POSTGRES_PASSWORD" pg_dump -h db -U "$$POSTGRES_USER" -Fc -f "$$t" "$$POSTGRES_DB"); r=$$?
+          (umask 077 && export PGPASSWORD="$$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f "$$t" app); r=$$?
           if [ "$$r" = 0 ] && mv "$$t" "$$1"/db.dump; then
             touch "$$1"/db.done
           elif [ "$$r" = 3 ]; then
@@ -592,7 +593,7 @@ services:
         take() {
           mkdir -p "$$1" && rm -f "$$1"/queue.done "$$1"/queue.failed "$$1"/queue.skipped || return 1
           t="$$1"/queue.rdb.tmp
-          (umask 077 && REDISCLI_AUTH="$$VALKEY_PASSWORD" valkey-cli -h queue --rdb "$$t"); r=$$?
+          (umask 077 && export REDISCLI_AUTH="$$VALKEY_PASSWORD" && valkey-cli -h queue --rdb "$$t"); r=$$?
           if [ "$$r" = 0 ] && mv "$$t" "$$1"/queue.rdb; then
             touch "$$1"/queue.done
           elif [ "$$r" = 3 ]; then

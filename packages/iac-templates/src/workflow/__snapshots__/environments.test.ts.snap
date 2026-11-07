@@ -275,7 +275,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop-staging/.snapshots/.held ]; then echo held; fi')"
+          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -f /srv/apps/shop-staging/.snapshots/.held ]; then echo held; fi')"
           if [[ "$hold" == held ]]; then
             echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
             exit 1
@@ -1556,7 +1556,7 @@ jobs:
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"
+          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -f /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"
           if [[ "$hold" == held ]]; then
             echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
             exit 1
@@ -2433,7 +2433,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop-eu-staging/.snapshots/.held ]; then echo held; fi')"
+          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -f /srv/apps/shop-eu-staging/.snapshots/.held ]; then echo held; fi')"
           if [[ "$hold" == held ]]; then
             echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
             exit 1
@@ -3285,7 +3285,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
         run: |
           set -euo pipefail
           dir=/srv/apps/shop-staging
-          hold="$(if [ -e "$dir"/.snapshots/.held ]; then echo held; fi)"
+          hold="$(if [ -f "$dir"/.snapshots/.held ]; then echo held; fi)"
           if [[ "$hold" == held ]]; then
             echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
             exit 1
@@ -4151,7 +4151,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             exit 1
           fi
           dir="$OPSCREW_APPS_DIR/shop-dev"
-          hold="$(if [ -e "$dir"/.snapshots/.held ]; then echo held; fi)"
+          hold="$(if [ -f "$dir"/.snapshots/.held ]; then echo held; fi)"
           if [[ "$hold" == held ]]; then
             echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
             exit 1

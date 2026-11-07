@@ -28,6 +28,7 @@ import { generateAgeIdentity } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
+import { docker } from "../__fixtures__/docker";
 import { testContext } from "../__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { withSqlite } from "../workflow/__fixtures__/plans";
@@ -177,24 +178,6 @@ function project(recipient: string): object {
   };
 }
 
-/** Runs `docker args`, returning its output; throws with the output when it fails. */
-function docker(args: string[], o: { cwd?: string; input?: string; timeoutMs?: number } = {}) {
-  const result = spawnSync("docker", args, {
-    cwd: o.cwd,
-    input: o.input,
-    env: { ...process.env, MSYS_NO_PATHCONV: "1", MSYS2_ARG_CONV_EXCL: "*" },
-    encoding: "utf8",
-    timeout: o.timeoutMs ?? 300_000,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `docker ${args.join(" ")} failed (${result.status ?? result.signal}):\n${result.stdout}${result.stderr}`,
-    );
-  }
-  return result.stdout.trim();
-}
-
 /** `script` in a one-off container of `image` (`sh` as root), with `volumes`. */
 function inside(image: string, volumes: string[], script: string, input?: string): string {
   return docker(
@@ -334,8 +317,20 @@ describe.skipIf(reason !== undefined)(
       });
       expect(about.taken).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
       expect(about.services).toEqual([
-        { name: "db", kind: "postgres", file: "db.dump", size: expect.any(Number) },
-        { name: "queue", kind: "valkey", file: "queue.rdb", size: expect.any(Number) },
+        {
+          name: "db",
+          kind: "postgres",
+          file: "db.dump",
+          size: expect.any(Number),
+          image: IMAGES.postgres.ref,
+        },
+        {
+          name: "queue",
+          kind: "valkey",
+          file: "queue.rdb",
+          size: expect.any(Number),
+          image: IMAGES.valkey.ref,
+        },
         { name: "sqlite", kind: "sqlite", file: "sqlite.tar", size: expect.any(Number) },
       ]);
       for (const service of about.services) expect(service.size).toBeGreaterThan(0);
@@ -416,9 +411,10 @@ describe.skipIf(reason !== undefined)(
           "set -e",
           "umask 077",
           "cat > /tmp/id",
+          "tar -xzf /tools/age.tar.gz -C /tmp age/age",
           `ls ${remote}`,
           "for f in about.json db.dump queue.rdb sqlite.tar; do",
-          `  a=$(/tools/age -d -i /tmp/id ${remote}/$f.age | sha256sum | cut -d ' ' -f 1)`,
+          `  a=$(/tmp/age/age -d -i /tmp/id ${remote}/$f.age | sha256sum | cut -d ' ' -f 1)`,
           `  b=$(sha256sum /s/${id}/$f | cut -d ' ' -f 1)`,
           '  if [ "$a" = "$b" ]; then echo "$f same"; else echo "$f differs"; fi',
           "done",

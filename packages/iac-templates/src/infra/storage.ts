@@ -341,7 +341,18 @@ function s3Variables(shape: S3Shape): { specs: VariableSpec[]; values: Record<st
  * never an infrastructure root of its own.
  */
 export function storageRootDir(plan: Pick<DeployPlan, "app" | "infra" | "environment">): string {
-  const name = ["storage", plan.app.key, plan.environment?.name]
+  return bucketRootDir(plan, "storage");
+}
+
+/**
+ * The folder of a bucket's own root beside `plan.infra.dir`: `root`, then a further app's key and
+ * the environment's name outside prod, each after `-`.
+ */
+function bucketRootDir(
+  plan: Pick<DeployPlan, "app" | "infra" | "environment">,
+  root: "storage" | "backups",
+): string {
+  const name = [root, plan.app.key, plan.environment?.name]
     .filter((part) => part !== undefined)
     .join("-");
   return besideInfraDir(plan, name);
@@ -468,10 +479,7 @@ export function offsiteExpires(provider: BucketProvider): boolean {
  * prod, each after `-`. No key or environment name starts with `backups`.
  */
 export function backupsRootDir(plan: Pick<DeployPlan, "app" | "infra" | "environment">): string {
-  const name = ["backups", plan.app.key, plan.environment?.name]
-    .filter((part) => part !== undefined)
-    .join("-");
-  return besideInfraDir(plan, name);
+  return bucketRootDir(plan, "backups");
 }
 
 const BACKUPS_COMMENT = [

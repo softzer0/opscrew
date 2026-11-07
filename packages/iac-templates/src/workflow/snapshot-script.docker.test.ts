@@ -34,6 +34,7 @@ import { pipeline } from "node:stream/promises";
 import { ageDecryptStream, generateAgeIdentity } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
+import { docker } from "../__fixtures__/docker";
 import { withServices } from "../catalog/__fixtures__/plans";
 import { IMAGES } from "../pins";
 import { inEnvironment } from "./__fixtures__/plans";
@@ -46,23 +47,6 @@ if (reason) console.warn(`[iac-templates] skipping the off-server copy on Docker
 const RUN = randomBytes(3).toString("hex");
 const GARAGE = `opscrew-t2406-garage-${RUN}`;
 const BUCKET = "shop-staging-backups";
-
-/** Docker without Git Bash's path conversion, its output; a failure throws with the output. */
-function docker(args: string[], input?: string): string {
-  const result = spawnSync("docker", args, {
-    input,
-    env: { ...process.env, MSYS_NO_PATHCONV: "1", MSYS2_ARG_CONV_EXCL: "*" },
-    encoding: "utf8",
-    timeout: 600_000,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `docker ${args.join(" ")} failed (${result.status ?? result.signal}):\n${result.stdout}${result.stderr}`,
-    );
-  }
-  return result.stdout.trim();
-}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -170,7 +154,7 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
           "-c",
           script,
         ],
-        input,
+        { input },
       );
     // The bucket answers once Garage made it.
     for (let attempt = 0; ; attempt++) {
@@ -241,7 +225,7 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
     // Again: the id's about.json.age goes first, now that there is one, and the copy is whole.
     const again = offsite(hetzner, id);
     expect(again.status, `${again.output}\n${again.log}`).toBe(0);
-    expect(existsSync(`${hetzner}/.offsite/age`)).toBe(true);
+    expect(existsSync(`${hetzner}/.offsite/age.tar.gz`)).toBe(true);
     for (const text of [uploaded.output, uploaded.log]) expect(text).not.toContain(secret);
 
     const objects = rclone(hetzner, `rclone lsf -R bucket:${BUCKET}/backups/${id}`).split("\n");
@@ -257,8 +241,9 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
         "set -e",
         "umask 077",
         "cat > /tmp/id",
+        "tar -xzf /tools/age.tar.gz -C /tmp age/age",
         "for f in db.dump about.json; do",
-        `  rclone cat bucket:${BUCKET}/backups/${id}/$f.age | /tools/age -d -i /tmp/id | sha256sum | cut -d ' ' -f 1`,
+        `  rclone cat bucket:${BUCKET}/backups/${id}/$f.age | /tmp/age/age -d -i /tmp/id | sha256sum | cut -d ' ' -f 1`,
         "done",
       ].join("\n"),
       `${identity}\n`,

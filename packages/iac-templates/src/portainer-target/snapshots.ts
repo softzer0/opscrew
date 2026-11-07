@@ -1,22 +1,28 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are Compose and shell syntax, not JavaScript templates.
 
 import {
-  DATABASE_KINDS,
   type DeployPlan,
   keepSnapshotsOf,
-  ONLINE_SNAPSHOT_KINDS,
   type PlanService,
   snapshotOffsiteOf,
   snapshotScheduleOf,
   snapshotsOn,
 } from "@opscrew/plan-schema";
-import { dataDirs, enabledServices, serviceSpec } from "../catalog";
-import { ageFunctions, OFFSITE_PREFIX, RCLONE_PROVIDERS } from "../offsite";
+import { dataDirs, serviceSpec } from "../catalog";
+import { AGE_BINARY, ageFunctions, OFFSITE_PREFIX, rcloneSettings } from "../offsite";
 import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
 import { memoryLimit, type RenderedServices, SQLITE_VOLUME } from "../runtime/components";
 import { composeLiteral, hardened, shellQuote } from "../runtime/services";
-import { SQLITE_COPY, snapshotParts } from "../workflow/snapshots";
+import {
+  DRAGONFLY_SAVE,
+  onlineCopy,
+  REDIS_CLIENTS,
+  type SnapshotPart,
+  SQLITE_COPY,
+  scheduleHours,
+  snapshotParts,
+} from "../workflow/snapshots";
 
 /** The snapshots volume's key in the stack (`opscrew-<app>_snapshots`, D12), and where every snapshot service mounts it. */
 export const SNAPSHOTS_VOLUME = "snapshots";
@@ -43,7 +49,7 @@ export const RESTORED_IMAGE_FILE = `${DIR}/.restored`;
 /** The snapshots volume's mount in a service of the stack. */
 export const SNAPSHOTS_MOUNT = `${SNAPSHOTS_VOLUME}:${DIR}`;
 
-/** The off-server copy's tools volume, where it keeps the checked age binary. */
+/** The off-server copy's tools volume, where it keeps age's release archive. */
 const TOOLS_VOLUME = "snapshot_tools";
 
 /**
@@ -60,15 +66,11 @@ export function snapshotVolumes(plan: DeployPlan): string[] {
 }
 
 /**
- * One file of a snapshot on Portainer: a service's dump, or the tar of the app's SQLite volume. The
- * stack's scheduled and pre-release parts run `copy`, and so can a one-off by hand.
+ * One file of a snapshot on Portainer: an online part of the servers' ({@link snapshotParts}; its
+ * name also its markers' name), a service's dump or the tar of the app's SQLite volume. The stack's
+ * scheduled and pre-release parts run `copy`, and so can a one-off by hand.
  */
-export interface PortainerSnapshotPart {
-  /** The service's name (`sqlite` for the app's SQLite volume), also its markers' name. */
-  name: string;
-  kind: string;
-  /** The file in the snapshot's folder. */
-  file: string;
+export interface PortainerSnapshotPart extends SnapshotPart {
   /** The service it copies; undefined for SQLite. */
   service?: PlanService;
   /** The image that runs `copy`: the service's own pinned image, the pinned python for SQLite. */
@@ -88,34 +90,6 @@ export interface PortainerSnapshotPart {
   copy: string;
 }
 
-/** The MongoDB tools' settings file inside the part's container, with the root password. */
-const MONGO_CONFIG = "/tmp/opscrew-mongo.yaml";
-
-/** The file name Dragonfly's `SAVE RDB` writes in its data folder, never a `dump*` it would load. */
-const DRAGONFLY_SAVE = "opscrew-snapshot";
-
-/**
- * Each online kind's copy of the running service `host` (research R2 and R7, S1), from a container
- * of its own image with the service's environment: no password in an argument. PostgreSQL's user
- * and database come from the stack's variables, as the service's own.
- */
-const COPIES: Record<(typeof ONLINE_SNAPSHOT_KINDS)[number], (host: string) => string> = {
-  postgres: (host) =>
-    `PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h ${host} -U "$POSTGRES_USER" -Fc -f "$t" "$POSTGRES_DB"`,
-  mysql: (host) =>
-    `MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump -h ${host} -u root --single-transaction --routines --events --triggers --no-tablespaces app > "$t"`,
-  mariadb: (host) =>
-    `MYSQL_PWD="$MARIADB_ROOT_PASSWORD" mariadb-dump -h ${host} -u root --single-transaction --routines --events --triggers --no-tablespaces app > "$t"`,
-  mongodb: (host) =>
-    `printf "password: '%s'\\n" "$MONGO_INITDB_ROOT_PASSWORD" > ${MONGO_CONFIG} && mongodump --host ${host} --username app --authenticationDatabase admin --config ${MONGO_CONFIG} --db app --archive="$t" --gzip`,
-  valkey: (host) => `REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli -h ${host} --rdb "$t"`,
-  redis: (host) => `REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -h ${host} --rdb "$t"`,
-  // Dragonfly has no SYNC for --rdb: it saves the file itself, which the part reads from its
-  // data volume, mounted read-only (redis-cli answers an error with exit code 0, so the reply is read).
-  dragonfly: (host) =>
-    `REDISCLI_AUTH="$DFLY_requirepass" redis-cli -h ${host} SAVE RDB ${DRAGONFLY_SAVE} | grep -qx OK && cat /data/${DRAGONFLY_SAVE}.rdb > "$t"`,
-};
-
 /** Where the SQLite part mounts the app's `sqlite` volume. */
 const SQLITE_MOUNT = "/sqlite";
 
@@ -127,48 +101,45 @@ function mountEntries(part: PortainerSnapshotPart): string[] {
 }
 
 /**
- * The copies a snapshot of `plan` makes on Portainer while everything runs, in the plan's order:
- * each service of the online kinds, then the app's SQLite volume. The stack's parts run these.
+ * The copies a snapshot of `plan` makes on Portainer while everything runs: the online parts of
+ * {@link snapshotParts}, in the plan's order, each from a container of its own image with the
+ * service's environment (research R2 and R7, S1), no password in an argument. The databases,
+ * Valkey and Redis copy as on servers ({@link onlineCopy}); Dragonfly saves the file itself (it has
+ * no SYNC for `--rdb`), which the part reads from its data volume; the app's SQLite volume runs the
+ * servers' program (plan.md D6): the whole volume as one tar, exit 3 when it is empty, which `take`
+ * records as skipped. The stack's parts run these.
  */
 export function portainerSnapshotParts(plan: DeployPlan): PortainerSnapshotPart[] {
-  const services = enabledServices(plan).flatMap((service): PortainerSnapshotPart[] => {
-    const kind = ONLINE_SNAPSHOT_KINDS.find((online) => online === service.kind);
-    if (kind === undefined) return [];
-    const database = DATABASE_KINDS.some((db) => db === kind);
-    return [
-      {
-        name: service.name,
-        kind,
-        file: `${service.name}.${database ? "dump" : "rdb"}`,
+  return snapshotParts(plan)
+    .filter((part) => part.online)
+    .map((part): PortainerSnapshotPart => {
+      const service = plan.services.find((each) => each.name === part.name);
+      if (part.kind === "sqlite" || service === undefined) {
+        return {
+          ...part,
+          image: IMAGES.python.ref,
+          mounts: [{ volume: SQLITE_VOLUME, target: SQLITE_MOUNT, readOnly: false }],
+          copy: `python3 -c ${shellQuote(SQLITE_COPY)} ${SQLITE_MOUNT} > "$t"`,
+        };
+      }
+      const { cli, password } = REDIS_CLIENTS.dragonfly;
+      return {
+        ...part,
         service,
-        image: IMAGES[serviceSpec(kind).image].ref,
+        image: IMAGES[serviceSpec(service.kind).image].ref,
         // The service's data volumes, as the stack names them (so Docker adds no anonymous ones
         // for the image's; Dragonfly's part reads its saved file there).
-        mounts: dataDirs(serviceSpec(kind)).map(([name, dir]) => ({
+        mounts: dataDirs(serviceSpec(service.kind)).map(([name, dir]) => ({
           volume: `${service.name}_${name}`,
           target: dir,
           readOnly: true,
         })),
-        copy: COPIES[kind](service.name),
-      },
-    ];
-  });
-  const sqlite: PortainerSnapshotPart[] =
-    plan.storage?.sqlite === undefined
-      ? []
-      : [
-          {
-            name: "sqlite",
-            kind: "sqlite",
-            file: "sqlite.tar",
-            image: IMAGES.python.ref,
-            mounts: [{ volume: SQLITE_VOLUME, target: SQLITE_MOUNT, readOnly: false }],
-            // The servers' program (plan.md D6): the whole volume as one tar, every database copied
-            // online; exit 3 when the volume is empty, which `take` records as skipped.
-            copy: `python3 -c ${shellQuote(SQLITE_COPY)} ${SQLITE_MOUNT} > "$t"`,
-          },
-        ];
-  return [...services, ...sqlite];
+        // redis-cli answers an error with exit code 0, so Dragonfly's reply is read.
+        copy:
+          onlineCopy(part, '"$t"') ??
+          `REDISCLI_AUTH="$${password}" ${cli} -h ${service.name} SAVE RDB ${DRAGONFLY_SAVE} | grep -qx OK && cat /data/${DRAGONFLY_SAVE}.rdb > "$t"`,
+      };
+    });
 }
 
 /**
@@ -223,13 +194,6 @@ const RESTORED_GUARD = [
   "  exit 1",
   "fi",
 ];
-
-/** `every` in seconds: `daily`, `weekly` or `<n>h`. */
-function everySeconds(every: string): number {
-  if (every === "daily") return 86_400;
-  if (every === "weekly") return 604_800;
-  return Number.parseInt(every, 10) * 3600;
-}
 
 /** A scheduled slot that hasn't finished is given up after this long, at most the slot's length. */
 const GIVE_UP_SECONDS = 6 * 3600;
@@ -370,7 +334,7 @@ function scheduled(
 ): Record<string, object> {
   const schedule = snapshotScheduleOf(plan);
   if (schedule === undefined) return {};
-  const every = everySeconds(schedule.every);
+  const every = scheduleHours(schedule.every) * 3600;
   const services: Record<string, object> = {};
   for (const part of all) {
     services[`snapshots-${part.name}`] = partContainer(
@@ -472,16 +436,10 @@ export const PORTAINER_OFFSITE_VARIABLES = {
   recipient: "OPSCREW_OFFSITE_RECIPIENT",
 } as const;
 
-/** The stack variables {@link offsite} reads, sorted; none without `snapshots.offsite`. */
-export function offsiteVariables(plan: DeployPlan): string[] {
-  if (snapshotOffsiteOf(plan) === undefined) return [];
-  return Object.values(PORTAINER_OFFSITE_VARIABLES).sort();
-}
-
 /**
  * The off-server copy (`snapshots.offsite`, plan.md 7., R7 S2) on the pinned rclone image: it
- * fetches the pinned age with `rclone copyurl`, checks the archive's and the binary's SHA-256 and
- * keeps the binary in its tools volume, checking it again before each use. Every minute, each
+ * fetches the pinned age's release archive with `rclone copyurl` and keeps it in its tools volume,
+ * checking its SHA-256 and unpacking the binary before each use ({@link ageFunctions}). Every minute, each
  * finished snapshot without `offsite.done` streams file by file through `age -r <recipient>` into
  * `rclone rcat` (`backups/<id>/<file>.age`), `about.json` last, then gets `offsite.done`; the
  * snapshots before a release (named by their digest) stay here for the rollback (D16). The
@@ -496,8 +454,8 @@ function offsite(plan: DeployPlan): Record<string, object> {
     "set -o pipefail",
     ...ageFunctions(arch),
     "put() {",
-    "  age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; return 1; }",
-    `  /tools/age -r "$${v.recipient}" < "$1" | rclone rcat ${shellQuote(`offsite:${copy.bucket}/${OFFSITE_PREFIX}/`)}"$2"`,
+    "  age_ready || return 1",
+    `  ${AGE_BINARY} -r "$${v.recipient}" < "$1" | rclone rcat ${shellQuote(`offsite:${copy.bucket}/${OFFSITE_PREFIX}/`)}"$2"`,
     "}",
     "umask 077",
     "while :; do",
@@ -527,14 +485,15 @@ function offsite(plan: DeployPlan): Record<string, object> {
       restart: "unless-stopped",
       user: "0:0",
       environment: {
-        RCLONE_CONFIG_OFFSITE_TYPE: "s3",
-        RCLONE_CONFIG_OFFSITE_PROVIDER: RCLONE_PROVIDERS[copy.provider],
+        ...Object.fromEntries(
+          Object.entries(rcloneSettings(copy)).map(([name, value]) => [
+            name,
+            composeLiteral(value),
+          ]),
+        ),
         RCLONE_CONFIG_OFFSITE_ENDPOINT: `\${${v.endpoint}}`,
-        RCLONE_CONFIG_OFFSITE_REGION: composeLiteral(copy.region),
         RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: `\${${v.accessKeyId}}`,
         RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: `\${${v.secretAccessKey}}`,
-        // The bucket exists: rclone never tries to create it.
-        RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET: "true",
         [v.recipient]: `\${${v.recipient}}`,
       },
       entrypoint: ["/bin/sh", "-c", composeLiteral(script.join("\n"))],

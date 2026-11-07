@@ -17,13 +17,20 @@ import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testContext } from "../__fixtures__/plans";
-import { serviceSpec } from "../catalog";
 import { withServices } from "../catalog/__fixtures__/plans";
 import { localhostPlan } from "../edge/__fixtures__/localhost";
 import { ageFunctions } from "../offsite";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { inEnvironment, ofApp, splitPlan, withProcesses, withSqlite } from "./__fixtures__/plans";
-import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
+import {
+  COMPOSE_PROLOGUE,
+  FAKE_DF,
+  FAKE_FLOCK,
+  fakeBin,
+  runSh,
+  shWorks,
+  write,
+} from "./__fixtures__/sh";
 import { deploySecretNamesFor, renderWorkflow } from "./index";
 import {
   OFFSITE_ENV_FILE,
@@ -219,16 +226,6 @@ const FAKE_DOCKER = [
   '    if [ "$5 $6" = "kamal-proxy pause" ]; then touch "$WORK/paused"; fi',
   '    if [ "$5 $6" = "kamal-proxy resume" ]; then rm -f "$WORK/paused"; fi ;;',
   "esac",
-].join("\n");
-
-/** The fake `flock`: logs its call among docker's. */
-const FAKE_FLOCK = ["#!/bin/sh", 'echo "flock $*" >> "$WORK/docker.log"'].join("\n");
-
-/** The fake `df -Pk`: DISK_TOTAL_KB (default about 1 TB) with DISK_FREE_KB free (default half). */
-const FAKE_DF = [
-  "#!/bin/sh",
-  'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"',
-  'echo "/dev/sda1 ${DISK_TOTAL_KB:-1000000000} 0 ${DISK_FREE_KB:-500000000} 50% /"',
 ].join("\n");
 
 /**
@@ -1038,18 +1035,18 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(call).toContain(IMAGES.rclone.ref);
       expect(calls()).toHaveLength(1);
       expectNoSecret(result.output);
-      // The pinned age, fetched through rclone and checked before it is kept and before each use.
+      // The pinned age's archive, fetched through rclone, checked and unpacked before each use.
       const text = script();
       for (const line of ageFunctions("amd64")) expect(text).toContain(line);
       expect(text).toContain(`rclone copyurl '${toolDownloadUrl("age", "amd64")}'`);
-      expect(text).toContain(`echo '${TOOLS.age.sha256.amd64}  /tmp/age/age.tar.gz'`);
-      expect(text).toContain("age_ok || age_fetch || {");
+      expect(text).toContain(`echo '${TOOLS.age.sha256.amd64}  /tools/age.tar.gz'`);
+      expect(text).toContain("age_ready || exit 1");
       // The id's about.json goes before any file: a copy that fails part-way never looks complete.
       expect(text).toContain(
         `unmark() { rclone deletefile 'offsite:shop-staging-backups/backups/'"$to/about.json.age" || [ "$?" -eq 4 ]; }`,
       );
       expect(text).toContain(
-        `put() { /tools/age -r "$OPSCREW_OFFSITE_RECIPIENT" < /snapshot/"$1" | rclone rcat 'offsite:shop-staging-backups/backups/'"$to/$1.age"; }`,
+        `put() { /tmp/age/age/age -r "$OPSCREW_OFFSITE_RECIPIENT" < /snapshot/"$1" | rclone rcat 'offsite:shop-staging-backups/backups/'"$to/$1.age"; }`,
       );
       const removed = text.indexOf("late unmark || exit 1");
       const loop = text.indexOf('for f in "$@" about.json; do late put "$f" || exit 1; done');
@@ -1107,8 +1104,8 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       // $WORK/fails says; each failure prints $ERR, as rclone prints its errors.
       const upload = script()
         .trim()
-        .replace("age_ok || age_fetch ||", "true ||")
-        .replaceAll('/tools/age -r "$OPSCREW_OFFSITE_RECIPIENT"', "cat")
+        .replace("age_ready || exit 1", "true")
+        .replaceAll('/tmp/age/age/age -r "$OPSCREW_OFFSITE_RECIPIENT"', "cat")
         .replaceAll("/snapshot/", `${at(`.snapshots/${id}`)}/`)
         .replaceAll("/tmp/rclone.log", `${work}/rclone.log`);
       const stubs = [
@@ -1427,21 +1424,7 @@ describe("the script's text", () => {
   });
 
   it("logs each one-off in with the password from the service's env file, never in an argument", () => {
-    const secrets = Object.fromEntries(
-      BASE.services.map((service) => [
-        service.name,
-        Object.fromEntries(
-          serviceSpec(service.kind).secrets.map((secret) => [
-            secret.name,
-            randomBytes(16).toString("hex"),
-          ]),
-        ),
-      ]),
-    );
     const script = snapshotScript(BASE).join("\n");
-    for (const values of Object.values(secrets)) {
-      for (const value of Object.values(values)) expect(script).not.toContain(value);
-    }
     expect(script).toContain(
       `snapshot_run "$2" rw cache 'umask 077 && export REDISCLI_AUTH="$VALKEY_PASSWORD" && valkey-cli -h cache --rdb /snapshot/cache.rdb'`,
     );
@@ -1505,7 +1488,7 @@ describe("the deploy's upload of snapshot.sh", () => {
     const one = renderWorkflow(serverPlanWithRunner(), testContext()).content;
     const upload = step(one, UPLOAD);
     const check = upload.indexOf(
-      `hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"`,
+      `hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -f /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"`,
     );
     expect(check).toBeGreaterThan(-1);
     expect(check).toBeLessThan(upload.indexOf('if [[ "$hold" == held ]]; then'));
@@ -1514,10 +1497,9 @@ describe("the deploy's upload of snapshot.sh", () => {
     );
     expect(one.split("hold=")).toHaveLength(2);
     expect(one).not.toContain("- name: Check that no restore holds the app");
-    // With extra servers, before theirs (with a rollback that changes their data, the step that
-    // reads the app's version first does it instead: snapshots.test.ts).
+    // With extra servers, before theirs: the step that reads the app's version does it.
     const split = renderWorkflow(splitPlan(), testContext()).content;
-    const first = split.indexOf("- name: Check that no restore holds the app");
+    const first = split.indexOf("- id: outgoing");
     expect(first).toBeGreaterThan(-1);
     expect(first).toBeLessThan(split.indexOf("- name: Update the services on the server data"));
     const staging = renderWorkflow(

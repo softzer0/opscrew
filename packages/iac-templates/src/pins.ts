@@ -21,13 +21,11 @@ export interface ImagePin {
 
 /**
  * A tool binary: its release version and the SHA-256 of its Linux archive per architecture.
- * `sha256` is absent for a tool installed by an action that verifies it (cosign). `binarySha256`
- * is the SHA-256 of the binary inside the archive, for a tool whose binary is checked where it runs.
+ * `sha256` is absent for a tool installed by an action that verifies it (cosign).
  */
 export interface ToolPin {
   version: string;
   sha256?: Record<PinArch, string>;
-  binarySha256?: Record<PinArch, string>;
 }
 
 /** A tool released as one archive for every architecture (Lynis, a shell script): URL and SHA-256. */
@@ -320,18 +318,13 @@ export const TOOLS = {
   },
   /**
    * age, which encrypts each snapshot before it leaves the server (the release tarballs
-   * `age-v<version>-linux-amd64.tar.gz` and `-arm64`), and of the `age/age` binary inside each,
-   * which the server checks before it runs it.
+   * `age-v<version>-linux-amd64.tar.gz` and `-arm64`, which the server checks before each use).
    */
   age: {
     version: "1.3.2",
     sha256: {
       amd64: "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10",
       arm64: "6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4",
-    },
-    binarySha256: {
-      amd64: "eb7dd1b518f0a307c99cd97782623c5321da049154b04acd2d98d21aa7bc9b2c",
-      arm64: "41b072352f4561018949623c674d16ef704019b9108a9bbdbd21292efebfc94f",
     },
   },
   /** The cosign release `sigstore/cosign-installer` installs; the installer verifies it. */

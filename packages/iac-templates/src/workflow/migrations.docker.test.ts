@@ -42,6 +42,7 @@ import {
 } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
+import { docker } from "../__fixtures__/docker";
 import { testPlan } from "../__fixtures__/plans";
 import { serviceSpec } from "../catalog";
 import { onThisComputer } from "../edge/__fixtures__/localhost";
@@ -313,23 +314,6 @@ function casePlan(c: Case): DeployPlan {
     ...plan,
     app: { ...plan.app, releaseCommand: c.releaseCommand, migrations: c.migrations },
   });
-}
-
-function docker(args: string[], o: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string } = {}) {
-  const result = spawnSync("docker", args, {
-    ...o,
-    encoding: "utf8",
-    timeout: 900_000,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `docker ${args.join(" ")} failed (${result.status ?? result.signal}):\n${result.stdout}${result.stderr}`.slice(
-        -6000,
-      ),
-    );
-  }
-  return result.stdout.trim();
 }
 
 /** Copies the fixture folder `from` to `to`, a `.fixture` suffix left out of each file's name. */

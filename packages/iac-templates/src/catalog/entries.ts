@@ -751,7 +751,7 @@ function kafkaEnvironment(ctx: ServiceContext): Record<string, string> {
  * One of Kafka's tools: a JVM of its own (about 2 seconds), with a small heap so it fits beside
  * the broker's.
  */
-function kafkaTool(name: string): string {
+export function kafkaTool(name: string): string {
   return `KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/${name}.sh`;
 }
 

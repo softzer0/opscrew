@@ -38,9 +38,11 @@ import {
   printfFormat,
   RELEASE_LOG,
   runbookFilePath,
+  said,
   serverLogNote,
 } from "./shared";
 import {
+  holdsData,
   migratedParts,
   ROLLBACK_APPROVAL_FILE,
   RUNNING_FILE,
@@ -439,6 +441,11 @@ export function startLock(plan: DeployPlan, timedOut?: string): string[] {
  */
 export const RESTORE_HELD = `${SNAPSHOTS_DIR}/.held`;
 
+/** The sh line that prints `held` while {@link RESTORE_HELD} is in the app's folder `dir`. */
+export function heldProbe(dir: string): string {
+  return `if [ -f ${dir}/${RESTORE_HELD} ]; then echo held; fi`;
+}
+
 /** Why the scripts refuse to run while a restore holds the app, and the way out. */
 const HELD_MESSAGE = `a restore holds the app (${RESTORE_HELD} in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again.`;
 
@@ -450,9 +457,7 @@ const HELD_MESSAGE = `a restore holds the app (${RESTORE_HELD} in its folder), s
  * when the app's server has no `snapshot.sh`.
  */
 function heldRefusal(plan: DeployPlan, o: ScriptOptions, outcome?: string): string[] {
-  const servers = [APP_SERVER, ...(plan.servers ?? []).map((server) => server.name)];
-  const data = servers.some((server) => snapshotParts(plan, server).length > 0);
-  if (o.preview === true || !data) return [];
+  if (o.preview === true || !holdsData(plan)) return [];
   return [
     outcome === undefined
       ? `if [ -f ${RESTORE_HELD} ]; then echo ${shellQuote(HELD_STOP)} >&2; exit 1; fi`
@@ -486,6 +491,22 @@ export function holdRequests(plan: DeployPlan, onExit: readonly string[]): strin
 /** kamal-proxy holds the app's requests: the line of {@link holdRequests} without its trap. */
 export function pauseRequests(plan: DeployPlan): string {
   return `${kamalProxy(`pause ${plan.app.name} --drain-timeout ${plan.deploy.drainSeconds}s --max-pause ${MAX_PAUSE_SECONDS}s`)} > /dev/null 2>&1 || true`;
+}
+
+/**
+ * The lines that hold the app: kamal-proxy holds its requests ({@link pauseRequests}), and its web,
+ * workers and cron stop ({@link stopApp}).
+ */
+export function holdApp(plan: DeployPlan): string[] {
+  return [pauseRequests(plan), stopApp(plan)];
+}
+
+/**
+ * The lines that end {@link holdApp}: the web, workers and cron start again ({@link startApp}),
+ * and the requests go through ({@link resumeRequests}).
+ */
+export function resumeApp(plan: DeployPlan): string[] {
+  return [startApp(plan), resumeRequests(plan)];
 }
 
 /**
@@ -1031,9 +1052,7 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
     "exit 1",
   ];
   /** The parts the down migrations change: the databases and SQLite. */
-  const migrated = parts
-    .filter((part) => part.kind === "sqlite" || part.file.endsWith(".dump"))
-    .map((part) => part.name);
+  const migrated = migratedParts(plan, APP_SERVER).map((part) => part.name);
   const save =
     parts.length > 0
       ? [
@@ -1295,7 +1314,7 @@ const IMAGE_REF = [
 ];
 
 /** `server` in a message: "the app's server" or "the server <name>". */
-function serverWords(server: string): string {
+export function serverWords(server: string): string {
   return server === APP_SERVER ? "the app's server" : `the server ${server}`;
 }
 
@@ -1410,7 +1429,6 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
   const file = ROLLBACK_APPROVAL_FILE;
   const marker = DATABASE_CHANGED;
   const log = serverLogWords(server);
-  const said = (text: string) => `printf ${printfFormat(text)}`;
   const migrated = migratedParts(plan, server).map((part) => part.name);
   const choices = (["snapshot", "migrations"] as const).filter((choice) =>
     rollbackServers(plan, choice).includes(server),
@@ -1582,11 +1600,10 @@ export function appHoldCommands(plan: DeployPlan): string[] {
     `      (umask 077; printf '%s\\n' "$2" > ${OTHERS_HELD})`,
     ...record.map((line) => `      ${line}`),
     "    fi",
-    `    ${pauseRequests(plan)}`,
-    `    ${stopApp(plan)} ;;`,
+    ...holdApp(plan).map((line) => `    ${line}`),
+    "    ;;",
     "  resume)",
-    `    ${startApp(plan)}`,
-    `    ${resumeRequests(plan)}`,
+    ...resumeApp(plan).map((line) => `    ${line}`),
     `    rm -f ${OTHERS_HELD} ;;`,
     `  requests) ${resumeRequests(plan)} ;;`,
     `  held) if [ -n "\${2:-}" ] && [ "$(cat ${OTHERS_HELD} 2> /dev/null)" = "$2" ]; then echo held; else echo none; fi ;;`,

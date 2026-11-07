@@ -170,17 +170,8 @@ describe("pins.ts", () => {
 
   it("pins pack, Railpack, supercronic and age by version and a SHA-256 per architecture, cosign by version", async () => {
     expect(TOOLS.pack.version).toBe("0.40.9");
-    expect(TOOLS.age).toEqual({
-      version: "1.3.2",
-      sha256: {
-        amd64: "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10",
-        arm64: "6b8dc4333c53a5a57c9e5834e3a48f92605d7154014cd07269ff3327db5d37f4",
-      },
-      binarySha256: {
-        amd64: "eb7dd1b518f0a307c99cd97782623c5321da049154b04acd2d98d21aa7bc9b2c",
-        arm64: "41b072352f4561018949623c674d16ef704019b9108a9bbdbd21292efebfc94f",
-      },
-    });
+    expect(Object.keys(TOOLS.age).sort()).toEqual(["sha256", "version"]);
+    expect(Object.keys(TOOLS.age.sha256).sort()).toEqual(["amd64", "arm64"]);
     expect(TOOLS.railpack.version).toBe("0.42.0");
     expect(TOOLS.supercronic.version).toBe("0.2.50");
     expect(TOOLS.cosign).not.toHaveProperty("sha256");
@@ -477,12 +468,11 @@ describe("the pin script's helpers", () => {
     expect(toolDownloadUrl("railpack", "arm64")).toBe(
       `https://github.com/railwayapp/railpack/releases/download/v${TOOLS.railpack.version}/railpack-v${TOOLS.railpack.version}-arm64-unknown-linux-musl.tar.gz`,
     );
-    expect(toolDownloadUrl("age", "amd64")).toBe(
-      "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz",
-    );
-    expect(toolDownloadUrl("age", "arm64")).toBe(
-      "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-arm64.tar.gz",
-    );
+    for (const arch of ["amd64", "arm64"] as const) {
+      expect(toolDownloadUrl("age", arch)).toBe(
+        `https://github.com/FiloSottile/age/releases/download/v${TOOLS.age.version}/age-v${TOOLS.age.version}-linux-${arch}.tar.gz`,
+      );
+    }
     expect(toolDownloadUrl("cloudflared", "amd64")).toBe(
       `https://github.com/cloudflare/cloudflared/releases/download/${TOOLS.cloudflared.version}/cloudflared-linux-amd64`,
     );

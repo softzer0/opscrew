@@ -159,12 +159,12 @@ describe("the scheduled snapshots in a stack", () => {
     expect(db?.depends_on).toEqual({ db: { condition: "service_healthy" } });
     expect(db?.networks).toEqual(["internal"]);
     expect(script(db)).toContain(
-      'PGPASSWORD="$POSTGRES_PASSWORD" pg_dump -h db -U "$POSTGRES_USER" -Fc -f "$t" "$POSTGRES_DB"',
+      'export PGPASSWORD="$POSTGRES_PASSWORD" && pg_dump -h db -U app -Fc -f "$t" app',
     );
     const queue = scheduled.stack.services["snapshots-queue"];
     expect(queue?.image).toBe(IMAGES.valkey.ref);
     expect(script(queue)).toContain(
-      'REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli -h queue --rdb "$t"',
+      'export REDISCLI_AUTH="$VALKEY_PASSWORD" && valkey-cli -h queue --rdb "$t"',
     );
     expect(queue?.volumes).toEqual(["queue_data:/data:ro", "snapshots:/snapshots"]);
   });
@@ -354,25 +354,22 @@ describe("the off-server copy in a stack", () => {
     );
   });
 
-  it("fetches age once, checking the archive's and the binary's SHA-256, and the binary before each use", () => {
+  it("keeps age's archive in its tools volume, checking its SHA-256 and unpacking age before each use", () => {
     const text = script(offsite);
     expect(text).toContain(
       `rclone copyurl '${toolDownloadUrl("age", "amd64")}' /tmp/age/age.tar.gz`,
     );
     expect(text).toContain(
-      `echo '${TOOLS.age.sha256.amd64}  /tmp/age/age.tar.gz' | sha256sum -c -s`,
+      `age_ok() { echo '${TOOLS.age.sha256.amd64}  /tools/age.tar.gz' | sha256sum -c -s && rm -rf /tmp/age && mkdir /tmp/age && tar -xzf /tools/age.tar.gz -C /tmp/age age/age; }`,
     );
     expect(text).toContain(
-      `echo '${TOOLS.age.binarySha256.amd64}  /tmp/age/age/age' | sha256sum -c -s`,
+      "age_ready() { age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; return 1; }; }",
     );
-    expect(text).toContain(
-      `age_ok() { echo '${TOOLS.age.binarySha256.amd64}  /tools/age' | sha256sum -c -s; }`,
-    );
-    expect(text).toContain("  age_ok || age_fetch || {");
+    expect(text).toContain("  age_ready || return 1");
     const arm = render(
       DeployPlanSchema.parse({ ...plan, target: { ...plan.target, arch: "arm64" } }),
     );
-    expect(script(arm.stack.services.offsite)).toContain(TOOLS.age.binarySha256.arm64);
+    expect(script(arm.stack.services.offsite)).toContain(TOOLS.age.sha256.arm64);
   });
 
   it("streams each file through age into rclone rcat, about.json last, then offsite.done", () => {
@@ -381,7 +378,7 @@ describe("the off-server copy in a stack", () => {
     // Never a snapshot being written: the schedule's and a release's, or one by hand.
     expect(text).toContain('case "$d" in *.partial|*.taking) continue ;; esac');
     expect(text).toContain(
-      `/tools/age -r "$OPSCREW_OFFSITE_RECIPIENT" < "$1" | rclone rcat 'offsite:shop-prod-backups/backups/'"$2"`,
+      `/tmp/age/age/age -r "$OPSCREW_OFFSITE_RECIPIENT" < "$1" | rclone rcat 'offsite:shop-prod-backups/backups/'"$2"`,
     );
     expect(text.indexOf('put "$f" "$id/${f##*/}.age"')).toBeLessThan(
       text.indexOf('put "$d"/about.json "$id"/about.json.age'),

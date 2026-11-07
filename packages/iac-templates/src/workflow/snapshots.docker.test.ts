@@ -33,6 +33,7 @@ import {
 } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { parse, stringify } from "yaml";
+import { docker } from "../__fixtures__/docker";
 import { dataDirs, initStepsFor, serviceSpec } from "../catalog";
 import { withServices } from "../catalog/__fixtures__/plans";
 import { onThisComputer } from "../edge/__fixtures__/localhost";
@@ -63,23 +64,6 @@ async function eventually<T>(fn: () => T, ms = 180_000): Promise<T> {
       await sleep(2_000);
     }
   }
-}
-
-/** One docker command's output; a failure throws with its output. */
-function docker(args: string[], o: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): string {
-  const result = spawnSync("docker", args, {
-    cwd: o.cwd,
-    env: o.env ?? { ...process.env, MSYS_NO_PATHCONV: "1", MSYS2_ARG_CONV_EXCL: "*" },
-    encoding: "utf8",
-    timeout: 1_800_000,
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `docker ${args.join(" ")} failed (${result.status ?? result.signal}):\n${result.stdout}${result.stderr}`,
-    );
-  }
-  return result.stdout.trim();
 }
 
 /** A value as one line of an env file, as `opscrew provision` writes it. */

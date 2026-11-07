@@ -1,9 +1,10 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import {
   APP_SERVER,
-  type DATABASE_KINDS,
+  DATABASE_KINDS,
   type DeployPlan,
   ONLINE_SNAPSHOT_KINDS,
+  REDIS_PROTOCOL_KINDS,
   type SelfHostedServiceKind,
   servicesOn,
   snapshotScheduleOf,
@@ -78,9 +79,14 @@ function onlineKind(kind: SelfHostedServiceKind): boolean {
   return ONLINE_SNAPSHOT_KINDS.some((online) => online === kind);
 }
 
-/** True for one of the four databases a snapshot dumps. */
+/** True for one of the four databases a snapshot dumps ({@link DATABASE_KINDS}). */
 function databaseKind(kind: string): kind is (typeof DATABASE_KINDS)[number] {
-  return kind === "postgres" || kind === "mysql" || kind === "mariadb" || kind === "mongodb";
+  return DATABASE_KINDS.some((database) => database === kind);
+}
+
+/** True for Valkey, Redis or Dragonfly ({@link REDIS_PROTOCOL_KINDS}). */
+function redisProtocolKind(kind: string): kind is (typeof REDIS_PROTOCOL_KINDS)[number] {
+  return REDIS_PROTOCOL_KINDS.some((redis) => redis === kind);
 }
 
 /**
@@ -132,9 +138,20 @@ export function releaseSnapshotServers(plan: DeployPlan): string[] {
     .filter((name) => releaseSnapshotOn(plan, name));
 }
 
-/** The parts on `server` that a rollback's down migrations change: its databases. */
+/** The parts on `server` that a rollback's down migrations change: its databases and SQLite. */
 export function migratedParts(plan: DeployPlan, server: string): SnapshotPart[] {
-  return snapshotParts(plan, server).filter((part) => databaseKind(part.kind));
+  return snapshotParts(plan, server).filter(
+    (part) => part.kind === "sqlite" || databaseKind(part.kind),
+  );
+}
+
+/**
+ * True when any of the app's servers holds data ({@link snapshotParts}): then the app's server has
+ * {@link SNAPSHOT_SCRIPT}, and a restore can hold the app.
+ */
+export function holdsData(plan: DeployPlan): boolean {
+  const servers = [APP_SERVER, ...(plan.servers ?? []).map((server) => server.name)];
+  return servers.some((server) => snapshotParts(plan, server).length > 0);
 }
 
 /**
@@ -281,14 +298,20 @@ const DATABASES: Record<(typeof DATABASE_KINDS)[number], DatabaseCommands> = {
  * Valkey's, Redis's and Dragonfly's client in their own image, and the variable of the service's
  * env file that holds the default user's password (`catalog/entries.ts`).
  */
-const REDIS_CLIENTS: Record<"valkey" | "redis" | "dragonfly", { cli: string; password: string }> = {
+export const REDIS_CLIENTS: Record<
+  (typeof REDIS_PROTOCOL_KINDS)[number],
+  { cli: string; password: string }
+> = {
   valkey: { cli: "valkey-cli", password: "VALKEY_PASSWORD" },
   redis: { cli: "redis-cli", password: "REDIS_PASSWORD" },
   dragonfly: { cli: "redis-cli", password: "DFLY_requirepass" },
 };
 
-/** The name of the file Dragonfly's `SAVE RDB` writes in its data folder (`<name>.rdb`). */
-const DRAGONFLY_SAVE = "opscrew-snapshot";
+/**
+ * The name of the file Dragonfly's `SAVE RDB` writes in its data folder (`<name>.rdb`), never a
+ * `dump*` it would load.
+ */
+export const DRAGONFLY_SAVE = "opscrew-snapshot";
 
 /**
  * The copy of the app's SQLite volume (plan.md D6, research R7 S1): a Python program for the pinned
@@ -399,7 +422,25 @@ function catOf(from: string): string {
 
 /** Valkey's, Redis's and Dragonfly's client login, its password from the service's environment. */
 function redisLogin(kind: keyof typeof REDIS_CLIENTS): string {
-  return `umask 077 && export REDISCLI_AUTH="$${REDIS_CLIENTS[kind].password}"`;
+  return `export REDISCLI_AUTH="$${REDIS_CLIENTS[kind].password}"`;
+}
+
+/**
+ * The copy of the running `part` into `file`, sh inside a one-off of its own image with the
+ * service's environment, its login from there (no password in an argument): the four databases'
+ * dumps (019 research R9), and Valkey's and Redis's `--rdb`. Undefined for the other parts, which
+ * Dragonfly, SQLite and the stop-only kinds copy their own way. Servers and Portainer both run it.
+ */
+export function onlineCopy(part: SnapshotPart, file: string): string | undefined {
+  const { name: host, kind } = part;
+  if (databaseKind(kind)) {
+    const commands = DATABASES[kind];
+    return `${commands.login} && ${commands.dump(host, file)}`;
+  }
+  if (kind === "valkey" || kind === "redis") {
+    return `${redisLogin(kind)} && ${REDIS_CLIENTS[kind].cli} -h ${host} --rdb ${file}`;
+  }
+  return undefined;
 }
 
 /**
@@ -425,7 +466,7 @@ export function partRestore(part: SnapshotPart): PartRestore {
     };
   }
   const dirs = dataDirs(serviceSpec(kind)).map(([, dir]) => dir);
-  if (kind === "valkey" || kind === "redis" || kind === "dragonfly") {
+  if (redisProtocolKind(kind)) {
     const [data = "/data"] = dirs;
     const owner = `o="$(stat -c %u:%g ${data})"`;
     const queue = part.mode === "queue";
@@ -457,7 +498,7 @@ export function partRestore(part: SnapshotPart): PartRestore {
           stop: false,
           put: (from) => `${owner} && ${catOf(from)} > ${saved} && chown "$o" ${saved}`,
           load: () =>
-            `${redisLogin(kind)} && [ "$(${REDIS_CLIENTS[kind].cli} -h ${service} DFLY LOAD ${DRAGONFLY_SAVE}.rdb)" = OK ]`,
+            `umask 077 && ${redisLogin(kind)} && [ "$(${REDIS_CLIENTS[kind].cli} -h ${service} DFLY LOAD ${DRAGONFLY_SAVE}.rdb)" = OK ]`,
           after: `rm -f ${saved}`,
         };
   }
@@ -524,29 +565,18 @@ function partCommands(part: SnapshotPart): PartCommands {
       restore,
     };
   }
-  const { name, kind } = part;
-  const service = name;
-  if (databaseKind(kind)) {
-    const commands = DATABASES[kind];
-    return {
-      take: [
-        `snapshot_run "$2" rw ${service} ${shellQuote(`umask 077 && ${commands.login} && ${commands.dump(service, `${MOUNT}/${part.file}`)}`)}`,
-      ],
-      restore,
-    };
-  }
+  const { name: service, kind } = part;
+  const run = (command: string) =>
+    `snapshot_run "$2" rw ${service} ${shellQuote(`umask 077 && ${command}`)}`;
+  const copy = onlineCopy(part, `${MOUNT}/${part.file}`);
+  if (copy !== undefined) return { take: [run(copy)], restore };
   const dirs = dataDirs(serviceSpec(kind)).map(([, dir]) => dir);
-  if (kind === "valkey" || kind === "redis" || kind === "dragonfly") {
+  if (kind === "dragonfly") {
     const { cli } = REDIS_CLIENTS[kind];
-    const run = (command: string) =>
-      `snapshot_run "$2" rw ${service} ${shellQuote(`${redisLogin(kind)} && ${command}`)}`;
-    if (kind !== "dragonfly") {
-      return { take: [run(`${cli} -h ${service} --rdb ${MOUNT}/${part.file}`)], restore };
-    }
     const saved = `${dirs[0] ?? "/data"}/${DRAGONFLY_SAVE}.rdb`;
     return {
       take: [
-        `${run(`[ "$(${cli} -h ${service} SAVE RDB ${DRAGONFLY_SAVE})" = OK ]`)} || return 1`,
+        `${run(`${redisLogin(kind)} && [ "$(${cli} -h ${service} SAVE RDB ${DRAGONFLY_SAVE})" = OK ]`)} || return 1`,
         `${box("ro", service, `cat ${saved}`)} < /dev/null > ${file} || return 1`,
         `${box("rw", service, `rm -f ${saved}`)} < /dev/null`,
       ],

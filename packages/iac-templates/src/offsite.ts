@@ -15,24 +15,50 @@ export const RCLONE_PROVIDERS = {
 } as const;
 
 /**
- * The two sh functions, one line each, that make the pinned age ready at `/tools/age` in a one-off
- * of the pinned rclone image (024 D10, research R7 S2): `age_ok` checks the binary against its
- * pinned SHA-256; `age_fetch` fetches the release archive with `rclone copyurl`, checks its
- * SHA-256, unpacks the binary and checks its SHA-256 before it is kept, and removes what it
- * fetched. Servers' `snapshot.sh` and Portainer's `offsite` service both run them.
+ * rclone's settings of the remote `offsite` that `copy` (`snapshots.offsite`) names, as
+ * `RCLONE_CONFIG_OFFSITE_*` variables: S3, its provider and region, and no bucket check (the bucket
+ * exists: rclone never tries to create it). The endpoint and the key come from where each copy
+ * runs.
+ */
+export function rcloneSettings(copy: {
+  provider: keyof typeof RCLONE_PROVIDERS;
+  region: string;
+}): Record<string, string> {
+  return {
+    RCLONE_CONFIG_OFFSITE_TYPE: "s3",
+    RCLONE_CONFIG_OFFSITE_PROVIDER: RCLONE_PROVIDERS[copy.provider],
+    RCLONE_CONFIG_OFFSITE_REGION: copy.region,
+    RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET: "true",
+  };
+}
+
+/** Where `age_ok` unpacks the age binary for one run, in a one-off of the pinned rclone image. */
+export const AGE_BINARY = "/tmp/age/age/age";
+
+/**
+ * The three sh functions, one line each, that make the pinned age ready at {@link AGE_BINARY} in a
+ * one-off of the pinned rclone image (024 D10, research R7 S2), the release archive kept at
+ * `/tools/age.tar.gz`: `age_ok` checks the archive against its pinned SHA-256 and unpacks the
+ * binary for this run only; `age_fetch` fetches the archive with `rclone copyurl` into the tools
+ * folder, then runs `age_ok`; `age_ready` runs `age_ok`, else `age_fetch`, and says so on stderr
+ * when neither made age ready. Servers' `snapshot.sh` and Portainer's `offsite` service both run
+ * them, `age_ready` before each use.
  */
 export function ageFunctions(arch: PinArch): string[] {
-  const { sha256, binarySha256 } = TOOLS.age;
   const fetch = [
     "rm -rf /tmp/age && mkdir /tmp/age",
     `rclone copyurl ${shellQuote(toolDownloadUrl("age", arch))} /tmp/age/age.tar.gz`,
-    `echo ${shellQuote(`${sha256[arch]}  /tmp/age/age.tar.gz`)} | sha256sum -c -s`,
-    "tar -xzf /tmp/age/age.tar.gz -C /tmp/age age/age",
-    `echo ${shellQuote(`${binarySha256[arch]}  /tmp/age/age/age`)} | sha256sum -c -s`,
-    "mv /tmp/age/age/age /tools/age.new && mv /tools/age.new /tools/age",
+    "mv /tmp/age/age.tar.gz /tools/age.tar.gz.new && mv /tools/age.tar.gz.new /tools/age.tar.gz",
+    "age_ok",
+  ];
+  const ok = [
+    `echo ${shellQuote(`${TOOLS.age.sha256[arch]}  /tools/age.tar.gz`)} | sha256sum -c -s`,
+    "rm -rf /tmp/age && mkdir /tmp/age",
+    "tar -xzf /tools/age.tar.gz -C /tmp/age age/age",
   ];
   return [
-    `age_ok() { echo ${shellQuote(`${binarySha256[arch]}  /tools/age`)} | sha256sum -c -s; }`,
-    `age_fetch() { ${fetch.join(" && ")}; _age=$?; rm -rf /tmp/age; return "$_age"; }`,
+    `age_ok() { ${ok.join(" && ")}; }`,
+    `age_fetch() { ${fetch.join(" && ")}; }`,
+    "age_ready() { age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; return 1; }; }",
   ];
 }

@@ -41,17 +41,21 @@ exports[`the deploy job with extra servers > renders the deploy job as committed
           printf '%s\\n' "$SSH_KEY" > ~/.ssh/opscrew
           chmod 600 ~/.ssh/opscrew
           printf '%s\\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
-      - name: Check that no restore holds the app
+      - id: outgoing
+        name: Read the version that runs on the app's server
         env:
           HOST: \${{ secrets.OPSCREW_HOST }}
         run: |
           set -euo pipefail
           ssh_opts=(-i ~/.ssh/opscrew -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=20)
-          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -e /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"
+          hold="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'if [ -f /srv/apps/shop/.snapshots/.held ]; then echo held; fi')"
           if [[ "$hold" == held ]]; then
             echo "::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again."
             exit 1
           fi
+          running="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'f=/srv/apps/shop/.env; if [ -f "$f" ]; then sed -n "s/^APP_IMAGE=//p" "$f"; fi')"
+          if [[ ! "$running" =~ ^ghcr\\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]; then running=; fi
+          echo "image=$running" >> "$GITHUB_OUTPUT"
       - name: Configure SSH for the app's other servers
         env:
           SSH_KEY: \${{ secrets.OPSCREW_SSH_PRIVATE_KEY }}
