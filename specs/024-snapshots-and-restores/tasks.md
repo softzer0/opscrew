@@ -167,7 +167,7 @@ description: "Tasks for 024-snapshots-and-restores"
 
 ## Phase 4: Wave 3 (parallel)
 
-- [ ] T2409 [US4] `opscrew snapshot --server` and `opscrew restore --server`, in `packages/agents/src/snapshot/server.ts` and the server modules' `ignore_changes` in `packages/iac-templates/src/{hetzner,digitalocean}/**` (+ tests)
+- [x] T2409 [US4] `opscrew snapshot --server` and `opscrew restore --server`, in `packages/agents/src/snapshot/server.ts` and the server modules' `ignore_changes` in `packages/iac-templates/src/{hetzner,digitalocean}/**` (+ tests)
   - Depends: T2403, T2407
   - Accept:
     - **Taking one:** live by default; `--stop` powers off and on, approved first. The price is shown, and attached volumes are named as not included.
