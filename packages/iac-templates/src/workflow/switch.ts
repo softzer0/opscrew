@@ -432,6 +432,37 @@ export function startLock(plan: DeployPlan, timedOut?: string): string[] {
   ];
 }
 
+/**
+ * The marker in the app's folder that `snapshot.sh hold` leaves and `resume` removes: while it is
+ * there, `opscrew restore` holds the app, and its data may be partly restored, so nothing starts
+ * the app or changes its data ({@link heldRefusal}).
+ */
+export const RESTORE_HELD = `${SNAPSHOTS_DIR}/.held`;
+
+/** Why the scripts refuse to run while a restore holds the app, and the way out. */
+const HELD_MESSAGE = `a restore holds the app (${RESTORE_HELD} in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again.`;
+
+/**
+ * The one line that stops a script, before it changes anything, while {@link RESTORE_HELD} is in
+ * the app's folder: with `outcome`, it prints that word and exits 0 (the rollback script, whose
+ * step then says so: {@link HELD_ROLLBACK}), else it fails with {@link HELD_MESSAGE}. None where no
+ * restore can hold the app: in a preview's scripts, and without data on any of the app's servers,
+ * when the app's server has no `snapshot.sh`.
+ */
+function heldRefusal(plan: DeployPlan, o: ScriptOptions, outcome?: string): string[] {
+  const servers = [APP_SERVER, ...(plan.servers ?? []).map((server) => server.name)];
+  const data = servers.some((server) => snapshotParts(plan, server).length > 0);
+  if (o.preview === true || !data) return [];
+  return [
+    outcome === undefined
+      ? `if [ -f ${RESTORE_HELD} ]; then echo ${shellQuote(`::error::OpsCrew changed nothing on the server: ${HELD_MESSAGE}`)} >&2; exit 1; fi`
+      : `if [ -f ${RESTORE_HELD} ]; then echo ${outcome}; exit 0; fi`,
+  ];
+}
+
+/** What the rollback step says when the rollback script found a restore holding the app. */
+export const HELD_ROLLBACK = `::error::This run stopped before changing anything: ${HELD_MESSAGE}`;
+
 /** What the start script's EXIT trap runs: the registry logout of the app's own Docker settings. */
 const LOGOUT = "docker logout ghcr.io > /dev/null 2>&1";
 
@@ -1131,7 +1162,8 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
  * reaches `sh` on its stdin, so the commands that read stdin (`docker compose exec` and `run`) get
  * `/dev/null`; otherwise they would swallow the rest of the script. It starts with
  * {@link SCRIPT_ROOTS}, so the local executor runs it on this computer under its own folders, and
- * holds {@link START_LOCK} from its first lines in the app's folder to its end.
+ * holds {@link START_LOCK} from its first lines in the app's folder to its end. While a restore holds
+ * the app ({@link RESTORE_HELD}) it changes nothing and fails.
  */
 export function switchCommands(
   plan: DeployPlan,
@@ -1188,6 +1220,7 @@ export function switchCommands(
     `trap '${LOGOUT}' EXIT`,
     `cd ${appFolder(plan)}`,
     ...startLock(plan),
+    ...heldRefusal(plan, o),
     `echo started > ${START_OUTCOME}`,
     'export APP_IMAGE="$1"',
     'RUN_IMAGE="$1"',
@@ -1515,7 +1548,8 @@ export const OTHERS_HELD = ".others.held";
  * - `requests`: lets the requests through, the app left stopped;
  * - `held <run>` prints `held` when the record names the run, `none` otherwise;
  * - `forget` removes the record.
- * kamal-proxy lets the requests through itself after its longest hold.
+ * kamal-proxy lets the requests through itself after its longest hold. While a restore holds the app
+ * ({@link RESTORE_HELD}), `hold`, `stop`, `resume` and `requests` fail before any change.
  */
 export function appHoldCommands(plan: DeployPlan): string[] {
   const lock = startLock(
@@ -1528,6 +1562,9 @@ export function appHoldCommands(plan: DeployPlan): string[] {
     "set -eu",
     `cd ${appFolder(plan)}`,
     EDGE_FUNCTION,
+    ...heldRefusal(plan, {}).map(
+      (line) => `case "\${1:-}" in hold | stop | resume | requests) ${line} ;; esac`,
+    ),
     'case "${1:-}" in',
     "  hold | stop)",
     ...lock.map((line) => `    ${line}`),
@@ -1588,7 +1625,8 @@ export function runningCommands(plan: DeployPlan): string[] {
  * DATABASE_CHANGED}), it puts the database back and starts the version that ran before
  * ({@link databaseBack}). First of all it takes {@link START_LOCK}, waiting for a start script
  * that still runs for up to 15 minutes, after which it stops with nothing changed. On this
- * computer `localhost` is the app's hostname there, as the start script had it.
+ * computer `localhost` is the app's hostname there, as the start script had it. Once it holds the
+ * lock, while a restore holds the app ({@link RESTORE_HELD}), it prints `held` and changes nothing.
  */
 export function rollbackCommands(
   plan: DeployPlan,
@@ -1618,6 +1656,7 @@ export function rollbackCommands(
       plan,
       `::error::The start script of this run is still running on the server after ${START_LOCK_WAIT_SECONDS / 60} minutes, so the rollback step changed nothing. Check the app on the server (${runbookFilePath(plan)} has the SSH command), then run the deploy or opscrew rollback again.`,
     ),
+    ...heldRefusal(plan, o, "held"),
     'RUN_IMAGE="$1"',
     ...keepFailed(plan),
     EDGE_FUNCTION,

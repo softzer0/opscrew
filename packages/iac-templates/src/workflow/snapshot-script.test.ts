@@ -34,7 +34,13 @@ import {
   snapshotScript,
 } from "./snapshot-script";
 import { SNAPSHOT_FUNCTIONS, snapshotParts, snapshotScheduleLines } from "./snapshots";
-import { serverCommands, switchCommands } from "./switch";
+import {
+  appHoldCommands,
+  HELD_ROLLBACK,
+  rollbackCommands,
+  serverCommands,
+  switchCommands,
+} from "./switch";
 
 /** The running version's digest. */
 const A = "a".repeat(64);
@@ -800,6 +806,45 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(snap(["hold", "now"]).stderr).toContain("Usage:");
     });
 
+    it("refuses a deploy, a rollback dispatch and the rollback step while a restore holds the app, and runs them once resumed", () => {
+      server();
+      expect(snap(["hold"]).status).toBe(0);
+      rmSync(`${work}/docker.log`);
+      const env = {
+        WORK: work,
+        OPSCREW_APPS_DIR: appsDir(),
+        OPSCREW_EDGE_DIR: `${work}/srv/edge`,
+      };
+      const next = image("b".repeat(64));
+      const start = switchCommands(BASE, []);
+      for (const mode of ["deploy", "rollback"]) {
+        const refused = runSh(start, [next, mode], env);
+        expect(refused.status).toBe(1);
+        expect(refused.output).toContain(
+          "OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder)",
+        );
+      }
+      const back = runSh(rollbackCommands(BASE), [next], env);
+      expect(back.status, back.output).toBe(0);
+      expect(back.stdout).toBe("held");
+      // The workflow's own hold of the app, for its other servers' data, neither.
+      for (const step of [["hold", "1.1"], ["stop"], ["resume"]]) {
+        const others = runSh(appHoldCommands(BASE), step, env);
+        expect(others.status).toBe(1);
+        expect(others.output).toContain("a restore holds the app");
+      }
+      expect(runSh(appHoldCommands(BASE), ["held", "1.1"], env).stdout).toBe("none");
+      // Nothing ran but the locks and the start script's registry logout.
+      expect(calls().filter((call) => !/^flock |^docker logout /.test(call))).toEqual([]);
+      expect(read(at(".env"))).toBe(`APP_IMAGE=${image(A)}\n`);
+
+      expect(snap(["resume"]).status).toBe(0);
+      const resumed = runSh(start, [next, "deploy"], env);
+      expect(resumed.output).not.toContain("a restore holds the app");
+      expect(callAt("docker compose pull")).toBeGreaterThan(-1);
+      expect(runSh(rollbackCommands(BASE), [next], env).stdout).not.toBe("held");
+    });
+
     it("lets no request through and starts no app while held, when a restore fails and its data goes back", () => {
       const id = taken();
       expect(snap(["hold"]).status).toBe(0);
@@ -1365,6 +1410,15 @@ describe("the deploy's upload of snapshot.sh", () => {
     const upload = step(renderWorkflow(extraOnly(), testContext()).content, UPLOAD);
     expect(upload).toContain("/srv/apps/shop/snapshot.sh.new");
     expect(upload).toContain("          snapshot_cmd_hold() {");
+  });
+
+  it("checks for a restore's hold first in the start step, and the rollback step says so plainly", () => {
+    const content = renderWorkflow(splitPlan(), testContext()).content;
+    expect(content).toContain(
+      "if [ -f .snapshots/.held ]; then echo '::error::OpsCrew changed nothing on the server: a restore holds the app",
+    );
+    expect(content).toContain("if [ -f .snapshots/.held ]; then echo held; exit 0; fi");
+    expect(content).toContain(`*:held) echo "${HELD_ROLLBACK}" ;;`);
   });
 
   it("writes none for an app without data", () => {

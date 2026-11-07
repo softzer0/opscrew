@@ -23,6 +23,7 @@ trap 'docker logout ghcr.io > /dev/null 2>&1' EXIT
 cd "$APPS_DIR"/shop
 exec 7> .start.lock
 flock 7
+if [ -f .snapshots/.held ]; then echo '::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app'\\''s folder as the deploy user, then try again.' >&2; exit 1; fi
 echo started > .start.outcome
 export APP_IMAGE="$1"
 RUN_IMAGE="$1"

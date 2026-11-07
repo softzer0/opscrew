@@ -77,6 +77,7 @@ import {
   DATABASE_CHANGED,
   dockerConfig,
   type EdgeFiles,
+  HELD_ROLLBACK,
   OTHERS_HELD,
   rollbackCommands,
   runningCommands,
@@ -733,6 +734,9 @@ function rollbackStep(
     "    fi",
     ...resume,
     '    case "$MODE:$outcome" in',
+    // A restore holds the app: the rollback script changed nothing, nor did the start script. Only
+    // where a restore can hold it: the app's server has a snapshot.sh.
+    ...(snapshotScript(plan).length === 0 ? [] : [`      *:held) echo "${HELD_ROLLBACK}" ;;`]),
     "      rollback:restored)",
     '        echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;',
     "      rollback:unchanged)",

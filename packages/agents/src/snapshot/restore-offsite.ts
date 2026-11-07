@@ -442,7 +442,8 @@ function copyArchive(
 /**
  * Receives `archive` in a busybox one-off with `mount` at {@link DIR}, before it starts, then
  * renames `<id>.taking` to `<id>`, in place of a folder `<id>` without `about.json` (an earlier
- * copy that never completed): the copy appears whole, or not at all.
+ * copy that never completed): the copy appears whole, or not at all. A folder `<id>` with an
+ * `about.json` stays as it is, and the copy goes ({@link PRESENT}).
  */
 async function receive(
   docker: DockerClient,
@@ -457,7 +458,7 @@ async function receive(
       cmd: [
         "sh",
         "-c",
-        `[ ! -e ${DIR}/${id}/about.json ] && rm -rf ${DIR}/${id} && mv ${DIR}/${id}.taking ${DIR}/${id}`,
+        `if [ -e ${DIR}/${id}/about.json ]; then rm -rf ${DIR}/${id}.taking; exit ${PRESENT}; fi; rm -rf ${DIR}/${id} && mv ${DIR}/${id}.taking ${DIR}/${id}`,
       ],
       labels: { [ONE_OFF_LABEL]: mount.source },
       mounts: [mount],
@@ -468,8 +469,25 @@ async function receive(
   return result.exitCode;
 }
 
-/** The exit code of the preparation when the snapshot is there already, complete. */
+/**
+ * The exit code of a copy's preparation or its one-off when the snapshot's folder holds an
+ * `about.json` already: one the restore could not read, since it reads the folder's own first.
+ */
 const PRESENT = 6;
+
+/**
+ * The refusal to replace `folder` (in words), whose `about.json` the restore could not read: only
+ * the user can tell what it holds, so it is not deleted.
+ */
+function unreadableFolder(folder: string, id: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `${folder} has an about.json that OpsCrew can't read, so it did not put the bucket's copy of the snapshot ${id} in its place. Nothing was changed.`,
+    {
+      hint: "Fix that about.json, or remove the folder by hand if you want the bucket's copy instead, then try again.",
+    },
+  );
+}
 
 /**
  * The Docker API of the server `server` of `run`'s plan: `services.docker`'s, else `docker system
@@ -516,8 +534,8 @@ async function serverDocker(
 /**
  * Puts the copy `input` from the bucket into the app's snapshots folder on `host` (a server), as
  * the deploy user's: the folder made if needed, then received whole through the server's Docker
- * API. Changes nothing when the snapshot is there already, complete; a copy that fails part-way
- * leaves nothing.
+ * API. Changes nothing when the snapshot's folder holds an `about.json` already
+ * ({@link unreadableFolder}); a copy that fails part-way leaves nothing.
  */
 export async function copyToServer(
   run: SnapshotRun,
@@ -534,13 +552,8 @@ export async function copyToServer(
     READ_TIMEOUT_MS,
   );
   const owner = /^owner (\d+) (\d+)$/m.exec(prepared.stdout);
-  if (prepared.exitCode === PRESENT) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The snapshot ${id} is ${host.where} already, so OpsCrew did not copy it from the bucket.`,
-      { hint: `Restore it from there: \`opscrew restore ${id}${run.flags}\`.` },
-    );
-  }
+  const folder = `The folder ${dir}/${id} in the app's folder ${host.where}`;
+  if (prepared.exitCode === PRESENT) throw unreadableFolder(folder, id);
   if (prepared.exitCode !== 0 || owner === null) {
     throw hostFailure(run, host, prepared, `make room for the copy ${id}`);
   }
@@ -553,6 +566,7 @@ export async function copyToServer(
     });
     const mount: MountSpec = { type: "bind", source: `${appDir(run.plan)}/${dir}`, target: DIR };
     const exitCode = await receive(docker.client, mount, id, archive);
+    if (exitCode === PRESENT) throw unreadableFolder(folder, id);
     if (exitCode !== 0) throw failedHere(host.where, id, exitCode);
   } catch (error) {
     await host.run(`rm -rf ${dir}/${id}.taking`, READ_TIMEOUT_MS).catch(() => undefined);
@@ -595,5 +609,11 @@ export async function copyToPortainer(
     }).catch(() => undefined);
     throw error;
   });
+  if (exitCode === PRESENT) {
+    throw unreadableFolder(
+      `The folder ${id} in your Portainer's snapshots volume ${place.volume}`,
+      id,
+    );
+  }
   if (exitCode !== 0) throw failed(`put the copy ${id} from the bucket in place`, exitCode);
 }

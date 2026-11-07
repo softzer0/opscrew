@@ -788,6 +788,7 @@ jobs:
           cd "$APPS_DIR"/shop
           exec 7> .start.lock
           flock 7
+          if [ -f .snapshots/.held ]; then echo '::error::OpsCrew changed nothing on the server: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app'\\''s folder as the deploy user, then try again.' >&2; exit 1; fi
           echo started > .start.outcome
           export APP_IMAGE="$1"
           RUN_IMAGE="$1"
@@ -1021,6 +1022,7 @@ jobs:
           cd "$APPS_DIR"/shop
           exec 7> .start.lock
           flock -w 900 7 || { echo '::error::The start script of this run is still running on the server after 15 minutes, so the rollback step changed nothing. Check the app on the server (opscrew/RUNBOOK.md has the SSH command), then run the deploy or opscrew rollback again.' >&2; exit 1; }
+          if [ -f .snapshots/.held ]; then echo held; exit 0; fi
           RUN_IMAGE="$1"
           keep_failed() {
             (
@@ -1123,6 +1125,7 @@ jobs:
             outcome="$(ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" < "$RUNNER_TEMP/rollback.sh")"
           fi
           case "$MODE:$outcome" in
+            *:held) echo "::error::This run stopped before changing anything: a restore holds the app (.snapshots/.held in its folder), so its data may be partly restored: finish the restore with opscrew restore <copy>, or run sh snapshot.sh resume in the app's folder as the deploy user, then try again." ;;
             rollback:restored)
               echo "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback." ;;
             rollback:unchanged)

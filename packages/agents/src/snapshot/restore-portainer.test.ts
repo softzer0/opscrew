@@ -221,9 +221,8 @@ describe.skipIf(!SH)("opscrew restore in the user's Portainer", () => {
       const script = each.cmd[2] ?? "";
       if (!script.includes(`mv /snapshots/${ID}.taking`)) return start?.(each);
       const files = world.volume();
-      if (files.has(`${ID}/about.json`) || !script.includes(`rm -rf /snapshots/${ID} `)) {
-        return { exitCode: 1 };
-      }
+      if (!script.includes(`rm -rf /snapshots/${ID} `)) return { exitCode: 1 };
+      if (files.has(`${ID}/about.json`)) return { exitCode: 6 };
       for (const path of [...files.keys()]) {
         if (path === ID || path.startsWith(`${ID}/`)) files.delete(path);
       }
@@ -257,5 +256,26 @@ describe.skipIf(!SH)("opscrew restore in the user's Portainer", () => {
       identity: generateAgeIdentity().identity,
     });
     expect(bucket.calls).toHaveLength(calls);
+
+    // An about.json OpsCrew can't read: the folder is named, never replaced.
+    world.volume().set(`${ID}/about.json`, {
+      type: "file",
+      mode: 0o600,
+      uid: 0,
+      gid: 0,
+      data: Buffer.from("{broken\n"),
+    });
+    const unreadable = await failure(
+      restoreSnapshot(world.deps, ID, {
+        services: world.services,
+        from: "offsite",
+        identity: key.identity,
+      }),
+    );
+    expect(unreadable.message).toContain(
+      `The folder ${ID} in your Portainer's snapshots volume ${STACK}_snapshots has an about.json that OpsCrew can't read`,
+    );
+    expect(unreadable.hint).toContain("remove the folder by hand");
+    expect(world.volume().get(`${ID}/about.json`)?.data?.toString()).toBe("{broken\n");
   });
 });

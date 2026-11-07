@@ -549,7 +549,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
       const files = docker.folders.get(folder)?.files;
       const name = (path: string) => path.slice(path.lastIndexOf("/snapshots/") + 11);
       const within = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
-      if (files?.has(`${name(to)}/about.json`)) return { exitCode: 1 };
+      if (files?.has(`${name(to)}/about.json`)) return { exitCode: 6 };
       for (const path of [...(files?.keys() ?? [])])
         if (within(path, name(to))) files?.delete(path);
       for (const [path, file] of [...(files?.entries() ?? [])]) {
@@ -649,6 +649,22 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
 
     expect(docker.folders.get(folder)?.files.get(`${ID}/db.dump`)?.data?.equals(dump)).toBe(true);
     expect((await restores(world)).at(-1)).toBe(`restore ${ID}`);
+  });
+
+  it("names a folder whose about.json can't be read, and leaves it as it is", async () => {
+    const { world, key, services } = await offsiteWorld();
+    await world.servers.app?.write(`.snapshots/${ID}/about.json`, "{broken\n");
+    const unreadable = await failure(
+      restoreSnapshot(world.deps, ID, { services, from: "offsite", identity: key.identity }),
+    );
+
+    expect(unreadable.message).toContain(
+      `The folder .snapshots/${ID} in the app's folder on the app's server has an about.json that OpsCrew can't read`,
+    );
+    expect(unreadable.message).not.toContain("Restore it from there");
+    expect(unreadable.hint).toContain("Fix that about.json, or remove the folder by hand");
+    expect(await world.servers.app?.read(`.snapshots/${ID}/about.json`)).toBe("{broken\n");
+    expect(await restores(world)).toEqual([]);
   });
 
   it("ends a damaged download at once, its rclone killed, leaving no part of the copy", async () => {
