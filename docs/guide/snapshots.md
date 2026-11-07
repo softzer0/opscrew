@@ -97,8 +97,8 @@ npx opscrew snapshot delete 20261106T190000Z
 ```
 
 `delete` removes the snapshot for good: where it is, its copy in the off-server bucket, and a
-whole-server snapshot at its provider. You type its id to approve it; in a script, give
-`--confirm <id>`. `--yes` never approves it.
+whole-server snapshot at its provider. You type its id to approve it (in a script, see
+[In a script](#in-a-script)).
 
 ## Restoring
 
@@ -120,10 +120,7 @@ it runs, the app's requests wait and the app stops until its data is back:
 5. It starts the app and lets the held requests through.
 
 When it is done, it names the snapshot it took just before, so `opscrew restore` can put that back
-too. `--only <service>` puts back only that service.
-
-In a script, a restore needs both `--confirm <app name>` and `--approve <hash>`. A run without them
-shows the restore with its hash and changes nothing. `--yes` never approves it.
+too. `--only <service>` puts back only that service. In a script, see [In a script](#in-a-script).
 
 ### The version rule
 
@@ -214,10 +211,6 @@ puts the schedule on the server or in your Portainer, or takes it away.
 your Portainer, `opscrew destroy` removes the schedule and keeps the snapshots, as it keeps the
 data, unless you add `--delete-data`.
 
-A scheduled snapshot that fails leaves its output on the server, in `.snapshots/scheduled.log` in
-the app's folder. `opscrew status` and the [scheduled check](alerts.md) report it (see
-[Status and alerts](#status-and-alerts)).
-
 ## An encrypted copy off the server
 
 ```bash
@@ -239,7 +232,7 @@ key itself, so only your key opens the copies.
 | `hetzner` | [Hetzner Object Storage](https://www.hetzner.com/storage/object-storage/), in `--region` (default: the server's location, where it has object storage) | A lifecycle rule deletes each copy after `--days`, with versioning on |
 | `digitalocean` | [DigitalOcean Spaces](https://www.digitalocean.com/products/spaces), in `--region` | The server deletes the copies older than `--days` after each upload |
 
-`--days` is 90 by default (1 to 3650). The bucket is named `<app>-backups`, for example
+`--days` is 90 by default (1 to 3650). The bucket is named `<app>-<env>-backups`, for example
 `shop-staging-backups` for staging and `shop-prod-backups` for prod. `offsite on` shows the
 expected monthly cost from the same price data provision uses; the providers' price pages have the
 details. OpsCrew never moves the bucket to another provider or region.
@@ -302,7 +295,8 @@ OpsCrew never deletes the bucket or its copies: not `offsite off`, not `destroy`
 `destroy --delete-data`. Deleting it is yours to do:
 
 1. Run `npx opscrew snapshot offsite off` and `npx opscrew provision`, so no more copies are
-   uploaded. The copies left expire after `--days`, except on Spaces.
+   uploaded. The copies left expire after `--days`, except on Spaces, where they stay until you
+   delete them.
 2. Empty and delete the bucket in Cloudflare's dashboard (R2 Object Storage), the Hetzner Console
    (Object Storage) or the DigitalOcean control panel (Spaces Object Storage).
 3. To start again with another bucket, also delete OpsCrew's record of it: `backups.tfstate` in
@@ -314,36 +308,11 @@ Then revoke the bucket's key in the same console.
 ## The snapshot before each release
 
 With `deploy.snapshots` on (every environment but prod, by default), each deploy takes a snapshot
-before its release command, so that [a rollback can restore it](rollback.md#the-database). It
-covers everything a snapshot by hand does, on every target: SQLite, a database on another server,
-and your Portainer included. A service that must stop for its copy is included only when its name
-is in `deploy.snapshotStop`:
-
-```yaml
-deploy:
-  snapshots: true          # prod takes them only with this
-  keepSnapshots: 5         # the snapshots of the last 5 versions stay (default 3)
-  snapshotStop: [kafka]    # also copy kafka, stopped alone meanwhile
-```
-
-In your Portainer, only the services copied while they run are included.
-
-The first deploy after you turn snapshots on has no snapshot before it: there is no earlier
-version's data to save yet. [Rolling back a release](rollback.md#snapshots-before-each-release)
-has the details.
-
-### Rolling back in your Portainer
-
-`opscrew rollback --database snapshot` restores the snapshot in your Portainer too. There the
-switch to the earlier version runs in the deploy workflow, so OpsCrew restores the snapshot first,
-and the app stays stopped until the workflow starts the earlier version. A file in the snapshots
-volume keeps every other version off the restored data meanwhile, the workflow's switch back after
-a failed health check included. OpsCrew removes it once the rollback succeeds, or after it put the
-data from before back.
-
-When the GitHub environment has a **required reviewer**, `--database snapshot` is refused there:
-the app would stay stopped until someone approved the run. Roll back with `--database keep`, then
-restore the snapshot with `opscrew restore <id>`; the refusal names it.
+before its release command, so that [a rollback can restore it](rollback.md#the-database).
+`opscrew snapshot list` lists them as `before a release`. What they hold, how many stay and how
+`deploy.snapshotStop` adds a service that stops for its copy are in
+[Snapshots before each release](rollback.md#snapshots-before-each-release); how a rollback
+restores one in your Portainer is in [In your Portainer](rollback.md#in-your-portainer).
 
 ## Status and alerts
 

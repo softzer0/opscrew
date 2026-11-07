@@ -9,21 +9,18 @@ import {
   createPublicKey,
   diffieHellman,
   generateKeyPairSync,
-  hkdfSync,
   randomBytes,
 } from "node:crypto";
-import { bech32Decode, isAgeRecipient } from "../crypto/age";
+import {
+  AGE_VERSION,
+  bech32Decode,
+  CHUNK_BYTES,
+  hkdf,
+  isAgeRecipient,
+  X25519_INFO,
+  X25519_SPKI_PREFIX,
+} from "../crypto/age";
 import { OpsCrewError } from "../errors";
-
-/** SubjectPublicKeyInfo DER of an X25519 public key, up to its 32 raw bytes (RFC 8410). */
-const X25519_SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
-/** A plaintext chunk of the payload's STREAM. */
-const CHUNK_BYTES = 64 * 1024;
-
-/** HKDF-SHA-256 of `ikm` to 32 bytes. */
-function hkdf(ikm: Uint8Array, salt: Uint8Array, info: string): Buffer {
-  return Buffer.from(hkdfSync("sha256", ikm, salt, info, 32));
-}
 
 /** `bytes` as unpadded standard base64, as age writes it. */
 function base64Text(bytes: Uint8Array): string {
@@ -62,10 +59,10 @@ export function ageEncrypt(plain: Buffer, recipients: readonly string[]): Buffer
         type: "spki",
       }),
     });
-    const wrap = hkdf(shared, Buffer.concat([share, theirs]), "age-encryption.org/v1/X25519");
+    const wrap = hkdf(shared, Buffer.concat([share, theirs]), X25519_INFO);
     return `-> X25519 ${base64Text(share)}\n${base64Text(seal(wrap, Buffer.alloc(12), fileKey))}\n`;
   });
-  const covered = `age-encryption.org/v1\n${stanzas.join("")}---`;
+  const covered = `${AGE_VERSION}\n${stanzas.join("")}---`;
   const mac = createHmac("sha256", hkdf(fileKey, Buffer.alloc(0), "header"))
     .update(covered)
     .digest();

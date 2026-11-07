@@ -147,13 +147,13 @@ export function isAgeRecipient(text: string): boolean {
 }
 
 /** The first line of every age file (age-encryption.org/v1). */
-const AGE_VERSION = "age-encryption.org/v1";
+export const AGE_VERSION = "age-encryption.org/v1";
 /** SubjectPublicKeyInfo DER of an X25519 public key, up to its 32 raw bytes (RFC 8410). */
-const X25519_SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
+export const X25519_SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
 /** The X25519 stanza's HKDF info. */
-const X25519_INFO = "age-encryption.org/v1/X25519";
+export const X25519_INFO = "age-encryption.org/v1/X25519";
 /** A plaintext chunk of the payload's STREAM, and its Poly1305 tag. */
-const CHUNK_BYTES = 64 * 1024;
+export const CHUNK_BYTES = 64 * 1024;
 const TAG_BYTES = 16;
 const SEALED_CHUNK_BYTES = CHUNK_BYTES + TAG_BYTES;
 /** The payload's nonce, after the header. */
@@ -180,7 +180,7 @@ function base64Of(text: string, bytes?: number): Buffer {
 }
 
 /** HKDF-SHA-256 of `ikm` to 32 bytes. */
-function hkdf(ikm: Uint8Array, salt: Uint8Array, info: string): Buffer {
+export function hkdf(ikm: Uint8Array, salt: Uint8Array, info: string): Buffer {
   return Buffer.from(hkdfSync("sha256", ikm, salt, info, 32));
 }
 

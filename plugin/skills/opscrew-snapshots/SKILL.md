@@ -5,11 +5,11 @@ description: Back up and restore the data of an app OpsCrew deployed, with OpsCr
 
 # Snapshots and restores with OpsCrew
 
-A snapshot copies every service of an environment that keeps data (PostgreSQL, MySQL, MariaDB,
-MongoDB, Valkey, Redis, Dragonfly, a queue or search engine…) and the app's SQLite files, in one
-folder named by its UTC time (`20261106T190000Z`, its id), with the version that ran recorded beside
-it. It is filed where the data lives: on the app's servers (a database on another server keeps its
-part there), on this computer, or in the stack's snapshots volume of the user's Portainer.
+A snapshot copies every service of an environment that keeps data (its databases, caches, queues
+and search engines, listed under "Taking one") and the app's SQLite files, in one folder named by
+its UTC time (`20261106T190000Z`, its id), with the version that ran recorded beside it. It is
+filed where the data lives: on the app's servers (a database on another server keeps its part
+there), on this computer, or in the stack's snapshots volume of the user's Portainer.
 
 Only looking happens through a tool. **Taking, restoring and deleting a snapshot, and turning the
 schedule or the off-server copy on or off, stay in the user's terminal**, because each asks for
@@ -100,9 +100,13 @@ schedule is encrypted on the server to the recovery copy's age key and uploaded.
 - The server holds only the public key; the user's age key file opens the copies. They must keep
   it, and keep the old one after `npx opscrew secrets rotate`: copies made before stay readable
   only with it. Never ask for the key or its file's contents in the chat.
-- The bucket's access key can also delete; versioning is on where the provider offers it.
+- The bucket's access key can also delete. Only at Hetzner is versioning on, keeping what was
+  deleted or overwritten for `--days` more.
+- At Hetzner and R2 the bucket's lifecycle rule expires each copy after `--days`. On DigitalOcean
+  Spaces only the server deletes old copies, after each upload.
 - `npx opscrew snapshot offsite off` stops new uploads. The bucket stays, and its copies until
-  they expire (`--days`) or you delete them; OpsCrew never deletes the bucket.
+  they expire at Hetzner and R2; on Spaces they stay until the user deletes them. OpsCrew never
+  deletes the bucket.
 
 ## Their own server or Portainer
 
