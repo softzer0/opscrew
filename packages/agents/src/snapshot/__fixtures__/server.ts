@@ -22,8 +22,10 @@ export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
  * `--stop`. `restore` needs its one-time approval, which it keeps as `approval.<id>` and removes,
  * names its copy from just before (`saved 20261107T120000Z`, unless `restore.nosaved`), then says
  * what it did: `restore-<id>.exit` with `restore-<id>.stderr` makes the restore of that id fail,
- * `restore.exit` with `restore.stderr` every restore. `hold` and `resume` fail with `hold.exit`
- * and `resume.exit`.
+ * `restore.exit` with `restore.stderr` every restore. On the app's server (no file `extra`), a
+ * restore that ends without `hold`'s marker (`.snapshots/.held`) starts the app, which it logs as
+ * `app started`, as the real script lets the requests through then. `hold` leaves the marker and
+ * `resume` removes it; they fail with `hold.exit` and `resume.exit`.
  */
 const SHIM = `echo "$*" >> calls.log
 case "$1" in
@@ -38,10 +40,16 @@ case "$1" in
     cp .restore-snapshot "approval.$2"; rm -f .restore-snapshot
     if [ ! -f restore.nosaved ]; then echo "saved 20261107T120000Z"; fi
     f="restore-$2"; [ -f "$f.exit" ] || f=restore
-    if [ -f "$f.exit" ]; then cat "$f.stderr" >&2; exit "$(cat "$f.exit")"; fi
+    code=0; if [ -f "$f.exit" ]; then code="$(cat "$f.exit")"; fi
+    if [ "$code" != 5 ] && [ ! -f extra ] && [ ! -f .snapshots/.held ]; then echo "app started" >> calls.log; fi
+    if [ "$code" != 0 ]; then cat "$f.stderr" >&2; exit "$code"; fi
     echo "OpsCrew restored the snapshot $2. The data from just before the restore is the snapshot 20261107T120000Z." >&2 ;;
-  hold | resume)
-    if [ -f "$1.exit" ]; then exit "$(cat "$1.exit")"; fi ;;
+  hold)
+    if [ -f hold.exit ]; then exit "$(cat hold.exit)"; fi
+    mkdir -p .snapshots && : > .snapshots/.held ;;
+  resume)
+    if [ -f resume.exit ]; then exit "$(cat resume.exit)"; fi
+    rm -f .snapshots/.held ;;
   take)
     if [ -f take.exit ]; then cat take.stderr >&2; exit "$(cat take.exit)"; fi
     id="$(cat next.id)"; version=""; skip=" "; stop=" "; shift 2

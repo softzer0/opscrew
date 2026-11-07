@@ -441,7 +441,8 @@ function copyArchive(
 
 /**
  * Receives `archive` in a busybox one-off with `mount` at {@link DIR}, before it starts, then
- * renames `<id>.taking` to `<id>`: the copy appears whole, or not at all.
+ * renames `<id>.taking` to `<id>`, in place of a folder `<id>` without `about.json` (an earlier
+ * copy that never completed): the copy appears whole, or not at all.
  */
 async function receive(
   docker: DockerClient,
@@ -453,7 +454,11 @@ async function receive(
     docker,
     {
       image: IMAGES.busybox.ref,
-      cmd: ["mv", `${DIR}/${id}.taking`, `${DIR}/${id}`],
+      cmd: [
+        "sh",
+        "-c",
+        `[ ! -e ${DIR}/${id}/about.json ] && rm -rf ${DIR}/${id} && mv ${DIR}/${id}.taking ${DIR}/${id}`,
+      ],
       labels: { [ONE_OFF_LABEL]: mount.source },
       mounts: [mount],
       network: "none",
@@ -463,7 +468,7 @@ async function receive(
   return result.exitCode;
 }
 
-/** The exit code of the preparation when the snapshot's folder is there already. */
+/** The exit code of the preparation when the snapshot is there already, complete. */
 const PRESENT = 6;
 
 /**
@@ -511,8 +516,8 @@ async function serverDocker(
 /**
  * Puts the copy `input` from the bucket into the app's snapshots folder on `host` (a server), as
  * the deploy user's: the folder made if needed, then received whole through the server's Docker
- * API. Changes nothing when the snapshot is there already; a copy that fails part-way leaves
- * nothing.
+ * API. Changes nothing when the snapshot is there already, complete; a copy that fails part-way
+ * leaves nothing.
  */
 export async function copyToServer(
   run: SnapshotRun,
@@ -525,7 +530,7 @@ export async function copyToServer(
   const { id } = input;
   const dir = SERVER_SNAPSHOTS;
   const prepared = await host.run(
-    `mkdir -p ${dir} && chmod 700 ${dir} && rm -rf ${dir}/${id}.taking && if [ -e ${dir}/${id} ]; then exit ${PRESENT}; fi; echo "owner $(id -u) $(id -g)"`,
+    `mkdir -p ${dir} && chmod 700 ${dir} && rm -rf ${dir}/${id}.taking && if [ -e ${dir}/${id}/about.json ]; then exit ${PRESENT}; fi; echo "owner $(id -u) $(id -g)"`,
     READ_TIMEOUT_MS,
   );
   const owner = /^owner (\d+) (\d+)$/m.exec(prepared.stdout);

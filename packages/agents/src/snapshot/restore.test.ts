@@ -77,6 +77,12 @@ async function store(world: SnapshotWorld, server: string, record: { id: string 
   );
 }
 
+/** The `snapshot.sh restore` calls `server` (the app's by default) got, in order. */
+async function restores(world: SnapshotWorld, server = "app"): Promise<string[]> {
+  const calls = (await world.servers[server]?.calls()) ?? [];
+  return calls.filter((call) => call.startsWith("restore "));
+}
+
 /** The `snapshot.sh` calls every fake machine got, in order, as `<server>: <arguments>`. */
 function journal(world: SnapshotWorld): string[] {
   const seen: string[] = [];
@@ -127,7 +133,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on servers", () => {
       "What is lost: everything written to db and kafka since 2026-11-06 19:00 UTC.",
     );
     expect(request?.details).toContain(`Restore hash: ${request?.planHash}`);
-    expect(await world.servers.app?.calls()).toEqual(["list", `restore ${ID}`]);
+    expect(await world.servers.app?.calls()).toEqual(["list", "hold", `restore ${ID}`, "resume"]);
     // The one-time approval, for exactly this restore and every service, valid 30 minutes.
     const expiry = Math.floor(world.deps.clock.now().getTime() / 1000) + 1800;
     expect((await world.servers.app?.read(`approval.${ID}`))?.trim()).toBe(`${ID} - ${expiry}`);
@@ -149,7 +155,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on servers", () => {
     await restoreSnapshot(world.deps, ID, { services: world.services });
     await restoreSnapshot(world.deps, ID, { services: world.services, only: "db" });
 
-    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID} --only db`);
+    expect((await restores(world)).at(-1)).toBe(`restore ${ID} --only db`);
     expect((await world.servers.app?.read(`approval.${ID}`))?.trim()).toMatch(
       new RegExp(`^${ID} db \\d+$`),
     );
@@ -176,7 +182,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on servers", () => {
     expect(await world.servers.app?.calls()).toEqual(["list"]);
 
     await restoreSnapshot(world.deps, ID, { services: world.services, allowOtherVersion: true });
-    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
+    expect((await restores(world)).at(-1)).toBe(`restore ${ID}`);
     expect(world.handler.requests[0]?.details).toContain(
       "Only the data goes back (--allow-other-version): the version that runs now stays.",
     );
@@ -190,7 +196,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on servers", () => {
     expect(refused.message).toContain(`The snapshot ${ID} records no version`);
     expect(world.handler.requests).toEqual([]);
     await restoreSnapshot(world.deps, ID, { services: world.services, allowOtherVersion: true });
-    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
+    expect((await restores(world)).at(-1)).toBe(`restore ${ID}`);
   });
 
   it("refuses a stop-only service whose image changed since its copy, naming both, and one with no image unless allowed", async () => {
@@ -218,14 +224,14 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on servers", () => {
     const missing = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
     expect(missing.message).toContain("does not record the image kafka (Apache Kafka) ran");
     await restoreSnapshot(world.deps, ID, { services: world.services, allowOtherVersion: true });
-    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
+    expect((await restores(world)).at(-1)).toBe(`restore ${ID}`);
 
     // Only the digests count: the same image named another way is the same image.
     const digest = IMAGES.kafka.ref.slice(IMAGES.kafka.ref.indexOf("@"));
     await world.servers.app?.write("images/kafka", `apache/kafka${digest}\n`);
     await store(world, "app", about([DB, KAFKA]));
     await restoreSnapshot(world.deps, ID, { services: world.services });
-    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
+    expect((await restores(world)).at(-1)).toBe(`restore ${ID}`);
   });
 
   it("says the copy was put back when the restore fails, and changes nothing more", async () => {
@@ -370,14 +376,14 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore across the app's servers (D8, D1
     expect(failed.message).toContain(
       "OpsCrew put the data back as it was before the restore on server data too, which it had restored: nothing changed.",
     );
+    // Held, the app's server's failed restore starts nothing: no request reaches the app before
+    // the data goes back, and the app starts only with resume.
     expect(order).toEqual([
       "app: list",
       "data: list",
       "app: hold",
       `data: restore ${ID}`,
       `app: restore ${ID}`,
-      // The app's server's restore started the app: it waits again while the data goes back.
-      "app: hold",
       `data: restore ${SAVED}`,
       "app: resume",
     ]);
@@ -409,7 +415,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore across the app's servers (D8, D1
     );
     expect(stuck.message).toContain("the app stays stopped");
     expect(stuck.hint).toContain(`on server data, \`opscrew restore ${SAVED}`);
-    expect((await world.servers.app?.calls())?.at(-1)).toBe("hold");
+    expect(await world.servers.app?.calls()).toEqual(["list", "hold", `restore ${ID}`]);
   });
 
   it("puts back the servers restored before one whose own put-back failed, the app kept stopped", async () => {
@@ -425,7 +431,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore across the app's servers (D8, D1
     expect(stuck.message).toContain("the app stays stopped");
     expect(stuck.hint).toContain(`on the app's server, \`opscrew restore ${SAVED}`);
     expect(stuck.hint).not.toContain("on server data");
-    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
+    expect((await restores(world)).at(-1)).toBe(`restore ${ID}`);
   });
 
   it("keeps the app stopped when a server's own put-back fails, and when its copy is unknown", async () => {
@@ -441,10 +447,10 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore across the app's servers (D8, D1
     await unknown.servers.data?.write("restore.nosaved", "");
     const lost = await failure(restoreSnapshot(unknown.deps, ID, { services: unknown.services }));
     expect(lost.hint).toContain("on server data, the newest snapshot by hand there");
-    expect((await unknown.servers.app?.calls())?.at(-1)).toBe("hold");
+    expect(await unknown.servers.app?.calls()).toEqual(["list", "hold", `restore ${ID}`]);
   });
 
-  it("resumes the app on every other way out: a failed hold, and an error of another kind", async () => {
+  it("resumes the app when the hold fails, and only warns when the audit log can't be written", async () => {
     const world = await split();
     await world.servers.app?.write("hold.exit", "1\n");
     const held = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
@@ -457,10 +463,31 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore across the app's servers (D8, D1
       if (entry.action === "restore a snapshot") throw new Error("the audit log is full");
       return append(entry);
     };
-    await expect(restoreSnapshot(other.deps, ID, { services: other.services })).rejects.toThrow(
-      "the audit log is full",
-    );
+    await restoreSnapshot(other.deps, ID, { services: other.services });
     expect((await other.servers.app?.calls())?.at(-1)).toBe("resume");
+    expect(other.deps.reporter.text()).toContain(
+      'OpsCrew could not write "restore a snapshot" on server data in its audit log: the audit log is full',
+    );
+  });
+
+  it("keeps the app stopped after any other error once a machine began its restore", async () => {
+    const world = await split();
+    const app = world.servers.app as NonNullable<typeof world.servers.app>;
+    app.answer = (command) => {
+      if (command.includes("'restore'")) throw new Error("the connection was reset");
+      return undefined;
+    };
+    const stuck = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
+
+    expect(stuck.message).toContain(
+      "OpsCrew stopped during the restore: the connection was reset.",
+    );
+    expect(stuck.message).toContain("the app stays stopped");
+    expect(stuck.hint).toContain(`on server data, \`opscrew restore ${SAVED}`);
+    expect(stuck.hint).toContain("on the app's server, the newest snapshot by hand there");
+    expect(await app.calls()).toEqual(["list", "hold"]);
+    // Its one-time approval does not stay.
+    expect(await app.read(RESTORE_APPROVAL_FILE)).toBeUndefined();
   });
 
   it("restores a pre-release snapshot by its digest on an extra server alone, the app held around it (D18)", async () => {
@@ -516,13 +543,17 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
     docker.images.add(IMAGES.busybox.ref);
     const folder = `/srv/apps/${world.plan.app.name}/.snapshots`;
     docker.addFolder(folder);
-    // The one-off's rename, on the folder and on the fake server's own copy.
+    // The one-off that replaces a folder without about.json, and renames the copy in its place.
     docker.onStart = (container) => {
-      const [, from = "", to = ""] = container.cmd;
+      const [, from = "", to = ""] = /mv (\S+) (\S+)$/.exec(container.cmd[2] ?? "") ?? [];
       const files = docker.folders.get(folder)?.files;
       const name = (path: string) => path.slice(path.lastIndexOf("/snapshots/") + 11);
+      const within = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
+      if (files?.has(`${name(to)}/about.json`)) return { exitCode: 1 };
+      for (const path of [...(files?.keys() ?? [])])
+        if (within(path, name(to))) files?.delete(path);
       for (const [path, file] of [...(files?.entries() ?? [])]) {
-        if (path !== name(from) && !path.startsWith(`${name(from)}/`)) continue;
+        if (!within(path, name(from))) continue;
         files?.delete(path);
         files?.set(`${name(to)}${path.slice(name(from).length)}`, file);
       }
@@ -549,7 +580,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
       id: ID,
     });
     expect([...(files?.keys() ?? [])].some((path) => path.includes(".taking"))).toBe(false);
-    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
+    expect((await restores(world)).at(-1)).toBe(`restore ${ID}`);
     expect(world.handler.requests[0]?.details).toContain(
       "This computer downloads the copy and decrypts it with your key",
     );
@@ -589,7 +620,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
       identity: generateAgeIdentity().identity,
     });
     expect(bucket.calls.filter((call) => call.args[0] === "cat")).toHaveLength(reads);
-    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
+    expect((await restores(world)).at(-1)).toBe(`restore ${ID}`);
   });
 
   /** {@link offsiteWorld}'s dump changed in its first chunk, its download never ending by itself. */
@@ -602,6 +633,23 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
     bucket.objects.set(`${ID}/db.dump.age`, damaged);
     return offsite;
   }
+
+  it("replaces a folder an earlier copy left without about.json", async () => {
+    const { world, key, docker, folder, services, dump } = await offsiteWorld();
+    // What a copy that never completed left, on the server and as the Docker API sees it.
+    await world.servers.app?.write(`.snapshots/${ID}/db.dump`, "half a dump");
+    docker.folders.get(folder)?.files.set(`${ID}/db.dump`, {
+      type: "file",
+      mode: 0o600,
+      uid: 1000,
+      gid: 1000,
+      data: Buffer.from("half a dump"),
+    });
+    await restoreSnapshot(world.deps, ID, { services, from: "offsite", identity: key.identity });
+
+    expect(docker.folders.get(folder)?.files.get(`${ID}/db.dump`)?.data?.equals(dump)).toBe(true);
+    expect((await restores(world)).at(-1)).toBe(`restore ${ID}`);
+  });
 
   it("ends a damaged download at once, its rclone killed, leaving no part of the copy", async () => {
     const { world, key, bucket, docker, folder, services } = await stalled();
@@ -709,7 +757,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
 });
 
 describe.skipIf(!SH_AVAILABLE)("opscrew restore on this computer", () => {
-  it("restores in the app's folder here after its one-time approval, holding nothing else", async () => {
+  it("restores in the app's folder here after its one-time approval, the app held around it", async () => {
     const computer = new FakeComputer();
     const local = localPlan();
     const { deps } = await localProject(local, computer);
@@ -726,7 +774,14 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on this computer", () => {
     const apps = localRoots(deps.paths).apps.replaceAll("\\", "/");
     const docker = `docker() { if [ "$1 $2" = "image inspect" ]; then echo "sha256:${image}"; fi; }`;
     const approvals: string[] = [];
+    const held: string[] = [];
     computer.script = (text) => {
+      // The hold and resume need Docker here: what they ran is recorded.
+      const step = /'(hold|resume)'/.exec(text)?.[1];
+      if (step !== undefined) {
+        held.push(step);
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
       if (text.includes("'restore'")) {
         approvals.push(readFileSync(join(folder, RESTORE_APPROVAL_FILE), "utf8").trim());
         return {
@@ -747,6 +802,19 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on this computer", () => {
     expect(unknown.message).toContain("records no version");
     await restoreSnapshot(deps, ID, { services, allowOtherVersion: true });
 
+    // Another build: a rebuild of the same code has a new image ID, so no rollback is named.
+    writeFileSync(
+      join(folder, ".snapshots", ID, "about.json"),
+      `${JSON.stringify(about([DB], { version: `sha256:${OTHER}` }))}
+`,
+    );
+    const rebuilt = await failure(restoreSnapshot(deps, ID, { services }));
+    expect(rebuilt.message).toContain(
+      "A local build gets a new image ID each time it is rebuilt, even from the same code",
+    );
+    expect(rebuilt.hint).toContain("--allow-other-version");
+    expect(rebuilt.hint).not.toContain("rollback");
+
     writeFileSync(
       join(folder, ".snapshots", ID, "about.json"),
       `${JSON.stringify(about([DB], { version: `sha256:${image}` }))}\n`,
@@ -762,6 +830,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on this computer", () => {
       expect.stringMatching(new RegExp(`^${ID} - \\d+$`)),
       expect.stringMatching(new RegExp(`^${ID} - \\d+$`)),
     ]);
-    expect(computer.scripts.some((run) => run.script.includes("'hold'"))).toBe(false);
+    // The app is held around the restore, as on servers: the restore here never starts it.
+    expect(held).toEqual(["hold", "resume", "hold", "resume"]);
   });
 });

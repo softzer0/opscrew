@@ -161,6 +161,8 @@ export async function snapshotWorld(
     }),
     data: await FakeSnapshotServer.create(folder, { parts: snapshotParts(plan, "data") }),
   };
+  // An extra server: its restores never start the app.
+  await servers.data?.write("extra", "");
   const byHost: Record<string, FakeSnapshotServer | undefined> = {
     [SERVER_IPV4]: servers.app,
     [OWN_IPV4]: servers.app,

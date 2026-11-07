@@ -602,15 +602,20 @@ jobs:
               printf 'The snapshot %s holds no copy of %s, so nothing was changed.\\n' "$_id" "$_only" >&2
               return 1
             fi
+            _held=""; if [ -f .snapshots/.held ]; then _held=1; fi
+            _starts=", and the app starts again"
+            if [ -n "$_held" ]; then _starts=", and the app stays stopped while opscrew restore holds it"; fi
             printf 'OpsCrew restores the snapshot %s: the app'\\''s requests wait, and the app stops until its data is back.\\n' "$_id" >&2
-            trap 'edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true' EXIT
-            edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            if [ -z "$_held" ]; then
+              trap 'edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true' EXIT
+              edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
+            fi
             docker compose stop app
             _saved="$(snapshot_new_id)"
             _rc=0
             snapshot_take "$_saved" manual "$(snapshot_version)" $_parts || _rc=$?
             if [ "$_rc" -ne 0 ]; then
-              docker compose start app
+              if [ -z "$_held" ]; then docker compose start app; fi
               if [ "$_rc" -eq 2 ]; then
                 printf 'The disk that holds %s has too little free space to copy the current data before the restore, so nothing was changed. Free some space and run opscrew restore again.\\n' "$APPS_DIR"/docs >&2
               else
@@ -620,25 +625,27 @@ jobs:
             fi
             echo "saved $_saved"
             if snapshot_restore "$_id" $_parts; then
-              docker compose start app
+              if [ -z "$_held" ]; then docker compose start app; fi
               printf 'OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.\\n' "$_id" "$_saved" >&2
               return 0
             fi
             if snapshot_restore "$_saved" $_parts; then
-              docker compose start app
-              printf 'Restoring the snapshot %s failed, so OpsCrew put the data back as it was before the restore (the snapshot %s), and the app starts again: nothing changed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$_saved" "$APPS_DIR"/docs >&2
+              if [ -z "$_held" ]; then docker compose start app; fi
+              printf 'Restoring the snapshot %s failed, so OpsCrew put the data back as it was before the restore (the snapshot %s)%s: nothing changed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$_saved" "$_starts" "$APPS_DIR"/docs >&2
               return 1
             fi
             printf 'Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed, and the app was not started. The copy from just before the restore stays in %s/.snapshots/%s: restore it with opscrew restore %s once the cause is fixed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$APPS_DIR"/docs "$_saved" "$_saved" "$APPS_DIR"/docs >&2
             return 5
           }
           snapshot_cmd_hold() {
+            (umask 077 && mkdir -p .snapshots && : > .snapshots/.held)
             edge exec -T kamal-proxy kamal-proxy pause docs --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
             docker compose stop app
           }
           snapshot_cmd_resume() {
             docker compose start app
             edge exec -T kamal-proxy kamal-proxy resume docs < /dev/null > /dev/null 2>&1 || true
+            rm -f .snapshots/.held
           }
           if [ "\${OPSCREW_SNAPSHOT_FUNCTIONS:-}" = 1 ]; then return 0; fi
           case "\${1:-}" in

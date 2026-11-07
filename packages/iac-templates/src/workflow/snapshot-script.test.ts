@@ -770,11 +770,12 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(existsSync(`${work}/paused`)).toBe(false);
     });
 
-    it("holds the app and resumes it, with no approval, and a restore after the hold keeps its record", () => {
+    it("holds the app and resumes it, with no approval, and a restore while held never starts it", () => {
       const id = taken();
       const held = snap(["hold"]);
       expect(held.status, held.output).toBe(0);
       expect(existsSync(`${work}/paused`)).toBe(true);
+      expect(existsSync(at(".snapshots/.held"))).toBe(true);
       expect(running("app")).toBe(false);
       expect(running("worker")).toBe(false);
       expect(calls()).toContain("docker compose stop app worker");
@@ -782,17 +783,37 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       approve(id);
       const restored = snap(["restore", id]);
       expect(restored.status, restored.output).toBe(0);
-      // The workers that ran before the hold start again with the web.
-      expect(calls()).toContain("docker compose start app worker");
-      expect(running("worker")).toBe(true);
+      // Held: the requests wait and the app stays stopped until resume.
+      expect(callAt("docker compose start")).toBe(-1);
+      expect(callAt("kamal-proxy resume")).toBe(-1);
+      expect(existsSync(`${work}/paused`)).toBe(true);
+      expect(running("app")).toBe(false);
 
-      expect(snap(["hold"]).status).toBe(0);
       const resumed = snap(["resume"]);
       expect(resumed.status, resumed.output).toBe(0);
+      // The workers that ran before the hold start again with the web.
+      expect(calls()).toContain("docker compose start app worker");
       expect(running("app")).toBe(true);
       expect(running("worker")).toBe(true);
       expect(existsSync(`${work}/paused`)).toBe(false);
+      expect(existsSync(at(".snapshots/.held"))).toBe(false);
       expect(snap(["hold", "now"]).stderr).toContain("Usage:");
+    });
+
+    it("lets no request through and starts no app while held, when a restore fails and its data goes back", () => {
+      const id = taken();
+      expect(snap(["hold"]).status).toBe(0);
+      approve(id);
+      const result = snap(["restore", id], { RESTORE_FAIL: "kafka rows of before" });
+      expect(result.status).toBe(1);
+      for (const part of PARTS) expect(data(part)).toBe(`${part} rows of now`);
+      expect(result.stderr).toContain(
+        ", and the app stays stopped while opscrew restore holds it: nothing changed.",
+      );
+      expect(callAt("docker compose start")).toBe(-1);
+      expect(callAt("kamal-proxy resume")).toBe(-1);
+      expect(existsSync(`${work}/paused`)).toBe(true);
+      expect(running("app")).toBe(false);
     });
 
     it("holds and resumes the app on its server when only extra servers hold data (D13)", () => {

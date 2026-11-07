@@ -62,6 +62,13 @@ export function restoreApprovalLine(
  */
 export const RESTORE_STUCK = 5;
 
+/**
+ * The marker `snapshot.sh hold` leaves in the app's folder and `resume` removes: while it is
+ * there, a restore on the app's server neither lets the requests through nor starts the app, so
+ * nothing reaches the app until `opscrew restore` is done with every server (D8).
+ */
+const HELD = `${SNAPSHOTS_DIR}/.held`;
+
 /** Where the last scheduled snapshot's output is, in the app's folder: its id, or why it failed. */
 export const SCHEDULED_LOG = `${SNAPSHOTS_DIR}/scheduled.log`;
 
@@ -349,18 +356,18 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
  * without the one-time approval for exactly this restore ({@link RESTORE_APPROVAL_FILE}, read and
  * removed at once, as the rollback's), or when the snapshot is not complete. On the app's server
  * the app's requests wait and its web, workers and cron stop ({@link holdRequests},
- * {@link stopApp}), also after `hold` (which recorded the workers and cron that ran); then the
- * parts it restores are copied as they are now (a `manual` snapshot), and each is restored exactly.
- * Once that copy is taken, `saved <id>` on stdout names it. When a restore fails, that copy is put
- * back (exit 1); the app starts again unless the put-back failed too ({@link RESTORE_STUCK}). Each
- * outcome is a message on stderr. On an extra server it neither holds nor stops the app: the CLI
- * holds it first (D8).
+ * {@link stopApp}); after `hold` ({@link HELD}) they stay held, and the app is not started again
+ * by the restore either way. Then the parts it restores are copied as they are now (a `manual`
+ * snapshot), and each is restored exactly. Once that copy is taken, `saved <id>` on stdout names
+ * it. When a restore fails, that copy is put back (exit 1); the app starts again, unless held or the
+ * put-back failed too ({@link RESTORE_STUCK}). Each outcome is a message on stderr. On an extra
+ * server it neither holds nor stops the app: the CLI holds it first (D8).
  */
 function restoreCommand(plan: DeployPlan, server: string): string[] {
   const folder = appFolder(plan);
   const app = server === APP_SERVER;
   const file = RESTORE_APPROVAL_FILE;
-  const start = app ? [`    ${startApp(plan)}`] : [];
+  const start = app ? [`    if [ -z "$_held" ]; then ${startApp(plan)}; fi`] : [];
   const note = `The output of the copies and restores stays on the server in %s/${SNAPSHOT_LOG} (it can quote data, so it is not printed here).`;
   const said = (text: string) => `printf ${printfFormat(text)}`;
   return [
@@ -402,9 +409,14 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
     "  fi",
     ...(app
       ? [
+          `  _held=""; if [ -f ${HELD} ]; then _held=1; fi`,
+          '  _starts=", and the app starts again"',
+          `  if [ -n "$_held" ]; then _starts=", and the app stays stopped while opscrew restore holds it"; fi`,
           `  ${said("OpsCrew restores the snapshot %s: the app's requests wait, and the app stops until its data is back.")} "$_id" >&2`,
-          ...recordRunning(plan).map((line) => `  ${line}`),
-          ...holdRequests(plan, []).map((line) => `  ${line}`),
+          '  if [ -z "$_held" ]; then',
+          ...recordRunning(plan).map((line) => `    ${line}`),
+          ...holdRequests(plan, []).map((line) => `    ${line}`),
+          "  fi",
           `  ${stopApp(plan)}`,
         ]
       : []),
@@ -428,7 +440,7 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
     "  fi",
     '  if snapshot_restore "$_saved" $_parts; then',
     ...start,
-    `    ${said(`Restoring the snapshot %s failed, so OpsCrew put the data back as it was before the restore (the snapshot %s)${app ? ", and the app starts again" : ""}: nothing changed. ${note}`)} "$_id" "$_saved" ${folder} >&2`,
+    `    ${said(`Restoring the snapshot %s failed, so OpsCrew put the data back as it was before the restore (the snapshot %s)${app ? "%s" : ""}: nothing changed. ${note}`)} "$_id" "$_saved" ${app ? '"$_starts" ' : ""}${folder} >&2`,
     "    return 1",
     "  fi",
     `  ${said(`Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed${app ? ", and the app was not started" : ""}. The copy from just before the restore stays in %s/${SNAPSHOTS_DIR}/%s: restore it with opscrew restore %s once the cause is fixed. ${note}`)} "$_id" ${folder} "$_saved" "$_saved" ${folder} >&2`,
@@ -442,13 +454,14 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
  * workflow's hold script (`appHoldCommands`): which workers and cron run is recorded while the web
  * runs ({@link recordRunning}), the app's requests are held and its web, workers and cron stop
  * ({@link pauseRequests}, {@link stopApp}); then they start again and the requests go through
- * ({@link startApp}, {@link resumeRequests}). `opscrew restore` runs them around the restores on
- * extra servers. They change no data, so they need no approval; kamal-proxy lets requests through
- * itself after its longest hold.
+ * ({@link startApp}, {@link resumeRequests}). `hold` leaves {@link HELD}, which `resume` removes.
+ * `opscrew restore` runs them around its restores. They change no data, so they need no approval;
+ * kamal-proxy lets requests through itself after its longest hold, to the stopped app.
  */
 function holdCommands(plan: DeployPlan): string[] {
   return [
     "snapshot_cmd_hold() {",
+    `  (umask 077 && mkdir -p ${SNAPSHOTS_DIR} && : > ${HELD})`,
     ...recordRunning(plan).map((line) => `  ${line}`),
     `  ${pauseRequests(plan)}`,
     `  ${stopApp(plan)}`,
@@ -456,6 +469,7 @@ function holdCommands(plan: DeployPlan): string[] {
     "snapshot_cmd_resume() {",
     `  ${startApp(plan)}`,
     `  ${resumeRequests(plan)}`,
+    `  rm -f ${HELD}`,
     "}",
   ];
 }

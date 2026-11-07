@@ -5,17 +5,17 @@
  *   version and the stop-only services' images checked ({@link checkVersion}, {@link checkImages}),
  *   then the restore is approved like a destroy ({@link approveRestore}).
  * - **Servers and this computer:** each machine's `snapshot.sh restore`, after the one-time
- *   approval file the script requires; it holds the requests, stops the app, copies the data as it
- *   is now and puts that copy back on failure. With parts on extra servers, the app's server's
- *   `snapshot.sh hold` runs first and `snapshot.sh resume` after, also on failure (D8). A
- *   pre-release snapshot is restored by its digest the same way (D18: `restore <hex> --only <s>`).
+ *   approval file the script requires; it copies the data as it is now and puts that copy back on
+ *   failure. The app's server's `snapshot.sh hold` runs first and `snapshot.sh resume` after (D8):
+ *   while held, no restore lets a request through or starts the app. A pre-release snapshot is
+ *   restored by its digest the same way (D18: `restore <hex> --only <s>`).
  * - **The user's Portainer:** through its Docker API ({@link restoreInPortainer}).
  * - **`--from offsite`:** the copy is downloaded and decrypted on this computer and streamed into
  *   the snapshots' folder first ({@link copyToServer}); the servers never hold the key.
  * Nothing it prints, audits or asks holds a password, a key, an address or data.
  */
 import type { CommandResult } from "@opscrew/contracts";
-import { listText, OpsCrewError, upperFirst } from "@opscrew/core";
+import { errorMessage, listText, OpsCrewError } from "@opscrew/core";
 import {
   RESTORE_APPROVAL_FILE,
   RESTORE_STUCK,
@@ -60,7 +60,7 @@ import {
 } from "./restore-offsite";
 import { restoreInPortainer } from "./restore-portainer";
 import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
-import { aboutOf, SERVER_SNAPSHOTS, SNAPSHOT_ID, versionLine } from "./store";
+import { aboutOf, SNAPSHOT_ID, versionLine } from "./store";
 
 /** How long one machine's restore may take: its copy first, then the restore. */
 const RESTORE_TIMEOUT_MS = 6 * 60 * 60_000;
@@ -86,8 +86,6 @@ const VERSION_COMMAND = [
 interface Probe {
   /** The snapshot's record there, with its bytes. */
   record?: BucketAbout;
-  /** True when its folder is there (complete or not). */
-  present: boolean;
   /** The running version (`sha256:<hex>`), or empty. */
   version: string;
   /** The image each of its services' containers runs, by service. */
@@ -96,8 +94,8 @@ interface Probe {
 
 /**
  * Reads, in one command on `host` and changing nothing: the snapshot `id`'s `about.json` through
- * `snapshot.sh list` (with `list`, a machine with parts), whether its folder is there, the version
- * that runs, and the image of each of `services`' containers.
+ * `snapshot.sh list` (with `list`, a machine with parts), the version that runs, and the image of
+ * each of `services`' containers.
  */
 async function probe(
   run: SnapshotRun,
@@ -108,7 +106,6 @@ async function probe(
 ): Promise<Probe> {
   const lines = [
     ...(list ? [`${scriptCommand(["list"])} || exit $?`] : []),
-    `if [ -e ${SERVER_SNAPSHOTS}/${id} ]; then echo present; fi`,
     VERSION_COMMAND,
     ...(services.length === 0
       ? []
@@ -126,7 +123,6 @@ async function probe(
   );
   return {
     ...recordOf(result.stdout, id),
-    present: /^present$/m.test(result.stdout),
     version: versionLine(result.stdout),
     images,
   };
@@ -215,16 +211,8 @@ async function restoreOnHosts(
   if (options.from === "offsite") {
     bucket = await offsiteBucket(run, services, `opscrew restore ${id}${flags} --from offsite`);
     for (const server of await bucketServers(run, bucket as OffsiteBucket, id)) {
+      // A folder without about.json there is an incomplete copy: the bucket's replaces it.
       if (!servers.includes(server) || records.has(server)) continue;
-      if (probes.get(server)?.present === true) {
-        throw new OpsCrewError(
-          "PHASE_PRECONDITION",
-          `${upperFirst((hosts.get(server) as ScriptHost).name)} has a snapshot ${id} that is not complete, so OpsCrew does not replace it with the bucket's copy. ${NOTHING_CHANGED}`,
-          {
-            hint: `Delete it there with \`opscrew snapshot delete ${id}${flags}\` only if the bucket's copy is the one you want, then try again.`,
-          },
-        );
-      }
       const identity = options.identity as string;
       records.set(server, await bucketAbout(run, bucket as OffsiteBucket, identity, id, server));
       copies.add(server);
@@ -265,7 +253,7 @@ async function restoreOnHosts(
       record: records.get(holder.server) as BucketAbout,
     });
   }
-  const saved = await restoreEach(run, id, options, holders, hosts, app, local);
+  const saved = await restoreEach(run, id, options, holders, hosts, app);
   const restored = holders.flatMap((holder) =>
     holder.parts.map((part) => ({
       name: part.name,
@@ -289,10 +277,10 @@ interface Outcome {
 }
 
 /**
- * `snapshot.sh restore <id> [--only s]` on `host` after its one-time approval, audited (`action`).
- * A restore that did not end well has its approval file removed, should it not have been read. A
- * machine that did not answer may have changed anything: `stuck`, as a failed put-back
- * ({@link RESTORE_STUCK}).
+ * `snapshot.sh restore <id> [--only s]` on `host` after its one-time approval, audited (`action`;
+ * an audit log that can't be written only warns). A restore that did not end well, or did not end
+ * at all, has its approval file removed, should it not have been read. A machine that did not
+ * answer may have changed anything: `stuck`, as a failed put-back ({@link RESTORE_STUCK}).
  */
 async function restoreOn(
   run: SnapshotRun,
@@ -302,15 +290,20 @@ async function restoreOn(
   const { deps } = run;
   const { id, only } = input;
   const expiry = Math.floor(deps.clock.now().getTime() / 1000) + APPROVAL_SECONDS;
-  const written = await host.run(
-    approvalCommand(restoreApprovalLine(id, only, expiry)),
-    READ_TIMEOUT_MS,
-  );
   const args = ["restore", id, ...(only === undefined ? [] : ["--only", only])];
-  const result =
-    written.exitCode === 0 ? await host.run(scriptCommand(args), RESTORE_TIMEOUT_MS) : written;
-  if (result.exitCode !== 0) {
-    await host.run(`rm -f ${RESTORE_APPROVAL_FILE}`, READ_TIMEOUT_MS).catch(() => undefined);
+  let written: CommandResult | undefined;
+  let result: CommandResult | undefined;
+  try {
+    written = await host.run(
+      approvalCommand(restoreApprovalLine(id, only, expiry)),
+      READ_TIMEOUT_MS,
+    );
+    result =
+      written.exitCode === 0 ? await host.run(scriptCommand(args), RESTORE_TIMEOUT_MS) : written;
+  } finally {
+    if (result?.exitCode !== 0) {
+      await host.run(`rm -f ${RESTORE_APPROVAL_FILE}`, READ_TIMEOUT_MS).catch(() => undefined);
+    }
   }
   const unanswered = result.exitCode === 255 || result.timedOut === true;
   const state =
@@ -319,14 +312,20 @@ async function restoreOn(
       : result.exitCode === RESTORE_STUCK || (unanswered && written.exitCode === 0)
         ? "stuck"
         : "back";
-  await deps.audit.append({
-    kind: "remote-exec",
-    actor: "opscrew",
-    action: input.action,
-    target: host.audit,
-    decision: "approved",
-    detail: `${id}: ${input.parts.join(", ")}: ${state}`,
-  });
+  await deps.audit
+    .append({
+      kind: "remote-exec",
+      actor: "opscrew",
+      action: input.action,
+      target: host.audit,
+      decision: "approved",
+      detail: `${id}: ${input.parts.join(", ")}: ${state}`,
+    })
+    .catch((error: unknown) => {
+      deps.reporter.warn(
+        `OpsCrew could not write "${input.action}" ${host.where} in its audit log: ${deps.redactor.redact(errorMessage(error))}`,
+      );
+    });
   const saved = /^saved ([0-9A-Za-z]+)$/m.exec(result.stdout)?.[1];
   return {
     state,
@@ -346,15 +345,17 @@ async function restoreOn(
   };
 }
 
+/** A machine whose data may be partly changed, with its copy from just before when it is known. */
+interface Stuck {
+  host: ScriptHost;
+  copy?: string;
+}
+
 /**
  * The error when a machine's data may be partly changed: the app stays stopped, so no version runs
- * on data that doesn't match, and each machine's copy from just before is named (`stuck`).
+ * on data that doesn't match, and each machine's copy from just before is named.
  */
-function stuckError(
-  run: SnapshotRun,
-  cause: string,
-  stuck: readonly { host: ScriptHost; copy?: string }[],
-): OpsCrewError {
+function stuckError(run: SnapshotRun, cause: string, stuck: readonly Stuck[]): OpsCrewError {
   const { flags } = run;
   const each = stuck.map(({ host, copy }) =>
     copy === undefined
@@ -370,13 +371,99 @@ function stuckError(
   );
 }
 
+/** How the restores ended when one failed: its error, and whether the app must stay stopped. */
+interface Failed {
+  error: OpsCrewError;
+  stuck: boolean;
+}
+
 /**
- * Each holder's restore ({@link restoreOn}), the extra servers first; with an extra server among
- * them, the app's server's `hold` first and `resume` after, on every way out but one: when a
- * machine's data may be partly changed, the app stays stopped ({@link stuckError}). When a
- * machine's restore fails, the machines restored before it are put back too, in reverse, from the
- * copies they took just before, within the same hold and the same approval. Returns those copies,
- * by server.
+ * Each holder's restore ({@link restoreOn}), the extra servers first, each machine noted in `begun`
+ * before it starts and its copy from just before in `saved`. When one fails, the machines restored
+ * before it are put back too, in reverse, from the copies they took just before, under the same
+ * hold and approval. `undefined` when every one was restored.
+ */
+async function restoreAll(
+  run: SnapshotRun,
+  input: {
+    id: string;
+    only?: string;
+    ordered: readonly Holder[];
+    hosts: ReadonlyMap<string, ScriptHost>;
+    saved: Record<string, string>;
+    begun: ScriptHost[];
+  },
+): Promise<Failed | undefined> {
+  const { deps } = run;
+  const { id, only, hosts, saved, begun } = input;
+  const done: Holder[] = [];
+  for (const holder of input.ordered) {
+    const host = hosts.get(holder.server) as ScriptHost;
+    deps.reporter.step(`Restoring the snapshot ${id} ${host.where}`);
+    begun.push(host);
+    const outcome = await restoreOn(run, host, {
+      id,
+      ...(only === undefined ? {} : { only }),
+      parts: holder.parts.map((part) => part.name),
+      action: "restore a snapshot",
+    });
+    if (outcome.saved !== undefined) saved[holder.server] = outcome.saved;
+    if (outcome.state === "restored") {
+      done.push(holder);
+      continue;
+    }
+    const said = (outcome.error as OpsCrewError).message;
+    const left: Stuck[] =
+      outcome.state === "stuck"
+        ? [{ host, ...(outcome.saved === undefined ? {} : { copy: outcome.saved }) }]
+        : [];
+    const failedBack: Stuck[] = [];
+    for (const restored of [...done].reverse()) {
+      const back = hosts.get(restored.server) as ScriptHost;
+      const copy = saved[restored.server];
+      deps.reporter.step(`Putting the data ${back.where} back as it was before the restore`);
+      const put =
+        copy === undefined
+          ? undefined
+          : await restoreOn(run, back, {
+              id: copy,
+              ...(only === undefined ? {} : { only }),
+              parts: restored.parts.map((part) => part.name),
+              action: "put back a restore",
+            });
+      if (put?.state !== "restored") {
+        failedBack.push({ host: back, ...(copy === undefined ? {} : { copy }) });
+      }
+    }
+    left.push(...failedBack);
+    if (left.length > 0) {
+      const cause =
+        failedBack.length === 0
+          ? said
+          : `${said} OpsCrew could not put the data back as it was before the restore on ${listText(failedBack.map((each) => each.host.name))}, which it had restored.`;
+      return { stuck: true, error: stuckError(run, cause, left) };
+    }
+    if (done.length === 0) return { stuck: false, error: outcome.error as OpsCrewError };
+    return {
+      stuck: false,
+      error: new OpsCrewError(
+        "COMMAND_FAILED",
+        `${said} OpsCrew put the data back as it was before the restore on ${listText(done.map((each) => (hosts.get(each.server) as ScriptHost).name))} too, which it had restored: nothing changed.`,
+        { hint: "Fix what it names, then try again." },
+      ),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * The restores of `holders` ({@link restoreAll}) between the app's server's `snapshot.sh hold` and
+ * `resume` (D8): while held, no restore lets a request through or starts the app, so nothing is
+ * written before every machine is done. `resume` runs on every way out, but when a machine's data
+ * may be partly changed (a put-back that failed or a machine that didn't answer, or any other error
+ * once a restore began): then the app stays stopped and each machine's copy is named
+ * ({@link stuckError}). A hold that fails resumes best effort. Returns the copies taken just
+ * before, by server.
  */
 async function restoreEach(
   run: SnapshotRun,
@@ -385,111 +472,73 @@ async function restoreEach(
   holders: readonly Holder[],
   hosts: ReadonlyMap<string, ScriptHost>,
   app: ScriptHost,
-  local: boolean,
 ): Promise<Record<string, string>> {
   const { deps, flags } = run;
-  const { only } = options;
   const ordered = [
     ...holders.filter((holder) => holder.server !== APP_SERVER),
     ...holders.filter((holder) => holder.server === APP_SERVER),
   ];
-  const hold = !local && ordered.some((holder) => holder.server !== APP_SERVER);
-  const holdApp = () => app.run(scriptCommand(["hold"]), READ_TIMEOUT_MS);
   const resumeApp = () =>
     app
       .run(scriptCommand(["resume"]), READ_TIMEOUT_MS)
       .catch(
         (error: unknown): CommandResult => ({ exitCode: 255, stdout: "", stderr: String(error) }),
       );
-  if (hold) {
-    deps.reporter.step("Holding the app's requests and stopping it on the app's server");
-    const held = await holdApp();
-    if (held.exitCode !== 0) {
-      // A hold that stopped part-way lets the app go again, best effort.
-      await resumeApp();
-      throw hostFailure(run, app, held, "hold the app's requests before the restore");
-    }
+  deps.reporter.step(`Holding the app's requests and stopping it ${app.where}`);
+  const held = await app
+    .run(scriptCommand(["hold"]), READ_TIMEOUT_MS)
+    .catch(
+      (error: unknown): CommandResult => ({ exitCode: 255, stdout: "", stderr: String(error) }),
+    );
+  if (held.exitCode !== 0) {
+    // A hold that stopped part-way lets the app go again, best effort.
+    await resumeApp();
+    throw hostFailure(run, app, held, "hold the app's requests before the restore");
   }
   const saved: Record<string, string> = {};
-  let failure: unknown;
-  let stuck = false;
+  const begun: ScriptHost[] = [];
+  let failed: Failed | undefined;
+  let unexpected: unknown;
   try {
-    const done: Holder[] = [];
-    for (const holder of ordered) {
-      const host = hosts.get(holder.server) as ScriptHost;
-      deps.reporter.step(`Restoring the snapshot ${id} ${host.where}`);
-      const parts = holder.parts.map((part) => part.name);
-      const outcome = await restoreOn(run, host, {
-        id,
-        ...(only === undefined ? {} : { only }),
-        parts,
-        action: "restore a snapshot",
-      });
-      if (outcome.saved !== undefined) saved[holder.server] = outcome.saved;
-      if (outcome.state === "restored") {
-        done.push(holder);
-        continue;
-      }
-      const said = (outcome.error as OpsCrewError).message;
-      const self = { host, ...(outcome.saved === undefined ? {} : { copy: outcome.saved }) };
-      if (done.length === 0) {
-        stuck = outcome.state === "stuck";
-        throw stuck ? stuckError(run, said, [self]) : outcome.error;
-      }
-      // Its own restore started the app again: it waits once more while the others go back.
-      if (hold && holder.server === APP_SERVER && outcome.state === "back") await holdApp();
-      const left: { host: ScriptHost; copy?: string }[] = outcome.state === "stuck" ? [self] : [];
-      for (const restored of [...done].reverse()) {
-        const back = hosts.get(restored.server) as ScriptHost;
-        const copy = saved[restored.server];
-        deps.reporter.step(`Putting the data ${back.where} back as it was before the restore`);
-        const put =
-          copy === undefined
-            ? undefined
-            : await restoreOn(run, back, {
-                id: copy,
-                ...(only === undefined ? {} : { only }),
-                parts: restored.parts.map((part) => part.name),
-                action: "put back a restore",
-              });
-        if (put?.state !== "restored")
-          left.push({ host: back, ...(copy === undefined ? {} : { copy }) });
-      }
-      const failedBack = left.filter((each) => each.host !== host);
-      if (left.length > 0) {
-        stuck = true;
-        throw stuckError(
-          run,
-          failedBack.length === 0
-            ? said
-            : `${said} OpsCrew could not put the data back as it was before the restore on ${listText(failedBack.map((each) => each.host.name))}, which it had restored.`,
-          left,
-        );
-      }
-      throw new OpsCrewError(
-        "COMMAND_FAILED",
-        `${said} OpsCrew put the data back as it was before the restore on ${listText(done.map((each) => (hosts.get(each.server) as ScriptHost).name))} too, which it had restored: nothing changed.`,
-        { hint: "Fix what it names, then try again." },
-      );
-    }
+    failed = await restoreAll(run, {
+      id,
+      ...(options.only === undefined ? {} : { only: options.only }),
+      ordered,
+      hosts,
+      saved,
+      begun,
+    });
   } catch (error) {
-    failure = error;
-  }
-  if (hold && !stuck) {
-    const resumed = await resumeApp();
-    if (resumed.exitCode !== 0) {
-      const said = scriptSaid(resumed, deps.redactor.redact);
-      const message = `OpsCrew could not start the app again and let its requests through on the app's server (exit code ${resumed.exitCode})${said === "" ? "" : `: ${said}`}.`;
-      throw new OpsCrewError(
-        failure instanceof OpsCrewError ? failure.code : "COMMAND_FAILED",
-        failure instanceof Error ? `${failure.message} ${message}` : message,
-        {
-          hint: `Start it as the deploy user in the app's folder there with \`sh snapshot.sh resume\` (${run.plan.app.name}'s runbook has the SSH command), then run \`opscrew status${flags}\`.`,
-        },
-      );
+    if (begun.length === 0) {
+      unexpected = error;
+    } else {
+      const said = deps.redactor.redact(errorMessage(error)).replace(/\.?$/, ".");
+      const stuck = begun.map((host) => ({
+        host,
+        ...(saved[host.server] === undefined ? {} : { copy: saved[host.server] }),
+      }));
+      failed = {
+        stuck: true,
+        error: stuckError(run, `OpsCrew stopped during the restore: ${said}`, stuck),
+      };
     }
   }
-  if (failure !== undefined) throw failure;
+  if (failed?.stuck === true) throw failed.error;
+  const resumed = await resumeApp();
+  if (resumed.exitCode !== 0) {
+    const said = scriptSaid(resumed, deps.redactor.redact);
+    const message = `OpsCrew could not start the app again and let its requests through ${app.where} (exit code ${resumed.exitCode})${said === "" ? "" : `: ${said}`}.`;
+    const before = failed?.error ?? (unexpected instanceof Error ? unexpected : undefined);
+    throw new OpsCrewError(
+      before instanceof OpsCrewError ? before.code : "COMMAND_FAILED",
+      before === undefined ? message : `${before.message} ${message}`,
+      {
+        hint: `Start it as the deploy user in the app's folder there with \`sh snapshot.sh resume\` (${run.plan.app.name}'s runbook has the SSH command), then run \`opscrew status${flags}\`.`,
+      },
+    );
+  }
+  if (unexpected !== undefined) throw unexpected;
+  if (failed !== undefined) throw failed.error;
   return saved;
 }
 

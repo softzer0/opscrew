@@ -207,11 +207,26 @@ describe.skipIf(!SH)("opscrew restore in the user's Portainer", () => {
     world.deps.env = { ...world.deps.env, ...OFFSITE_ENV };
     world.deps.runner = bucket.runner(world.deps.runner);
     world.deps.streams = bucket.streams();
-    // The one-off that renames the copy once it is all there.
+    // What a copy that never completed left: a folder without about.json, which the copy replaces.
+    world.volume().set(`${ID}/db.dump`, {
+      type: "file",
+      mode: 0o600,
+      uid: 0,
+      gid: 0,
+      data: Buffer.from("half"),
+    });
+    // The one-off that replaces it and renames the copy once it is all there.
     const start = world.docker.onStart;
     world.docker.onStart = (each) => {
-      if (each.cmd[0] !== "mv") return start?.(each);
+      const script = each.cmd[2] ?? "";
+      if (!script.includes(`mv /snapshots/${ID}.taking`)) return start?.(each);
       const files = world.volume();
+      if (files.has(`${ID}/about.json`) || !script.includes(`rm -rf /snapshots/${ID} `)) {
+        return { exitCode: 1 };
+      }
+      for (const path of [...files.keys()]) {
+        if (path === ID || path.startsWith(`${ID}/`)) files.delete(path);
+      }
       for (const [path, file] of [...files]) {
         if (path !== `${ID}.taking` && !path.startsWith(`${ID}.taking/`)) continue;
         files.delete(path);

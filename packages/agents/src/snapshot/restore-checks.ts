@@ -128,6 +128,13 @@ export function checkVersion(
       { hint: `If you know it does, ${alone}.` },
     );
   }
+  if (run.plan.target.provider === "localhost") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The snapshot ${id} was taken while another build ran on this computer (image ${shortDigest(version)}) than the one that runs now (${running === "" ? "unknown" : `image ${shortDigest(running)}`}). A local build gets a new image ID each time it is rebuilt, even from the same code, so its data may well fit. ${NOTHING_CHANGED}`,
+      { hint: `If it does, ${alone}.` },
+    );
+  }
   throw new OpsCrewError(
     "PHASE_PRECONDITION",
     `The snapshot ${id} was taken while another version ran (${shortDigest(version)}) than the one that runs now (${running === "" ? "unknown" : shortDigest(running)}), so its data may not fit it. ${NOTHING_CHANGED}`,
