@@ -3,16 +3,20 @@
  * servers, providers or GitHub:
  * - the example's data seeded, changed and read in the containers of the app's target;
  * - `opscrew snapshot list --json` and `opscrew restore` as a script runs them;
+ * - the app named after the run, so every resource and the bucket are the run's own;
  * - the off-server copies' bucket read with the pinned rclone image in local Docker, and deleted
  *   explicitly at the end (deleting it is the user's job, not OpsCrew's);
- * - the whole-server snapshots OpsCrew took at Hetzner, deleted if a run left any;
+ * - the whole-server snapshots OpsCrew took of the run's server at Hetzner, deleted if a run left
+ *   any;
  * - the deploy jobs' logs in the leak search.
  * Nothing here prints a secret, a dumped value or an address: everything logged goes through the
  * run's scrubber.
  */
-import { r2Endpoint, STORAGE_ENDPOINTS, storageS3Client } from "@opscrew/agents";
+import { type ProviderBucket, r2Endpoint, STORAGE_ENDPOINTS } from "@opscrew/agents";
+import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { api, HETZNER_API, minutes, retryDelete, waitFor } from "./cloud";
-import type { ServerExec } from "./component-checks";
+import type { BucketPass, ServerExec } from "./component-checks";
+import type { AppEnvironments } from "./environment-checks";
 import type { CliRun, LiveRun } from "./harness";
 import { jobLog } from "./portainer-cloud";
 import {
@@ -34,11 +38,38 @@ import {
   type OffsiteProvider,
   rcloneDockerArgs,
   rcloneSettings,
+  runAppName,
   type SnapshotData,
   SQLITE_CONTENT_SCRIPT,
   shownRestore,
 } from "./snapshots-support";
 import { leakedLabels, SERVER_DEPLOY_JOB } from "./support";
+
+// ---------------------------------------------------------------------------------------------
+// The run's own app name.
+
+/**
+ * After `analyze` (and the interview): the project's name in `opscrew/architecture.json` set to
+ * {@link runAppName}, as design names the app after it, then `design`, which must plan that name;
+ * then the zone's snapshot for the cleanup, taken under that name (the app's hostname and `www.`).
+ * Returns prod's plan.
+ */
+export async function designRunApp(run: LiveRun, envs: AppEnvironments): Promise<DeployPlan> {
+  const name = runAppName(run.runId);
+  const file = run.paths().files.architecture;
+  const architecture = await readArtifact("architecture", file);
+  await writeArtifact("architecture", file, {
+    ...architecture,
+    facts: { ...architecture.facts, name },
+  });
+  await run.opscrewOk("design");
+  const plan = await envs.designed("prod");
+  if (plan.app.name !== name) {
+    throw new Error(`design named the app ${plan.app.name}, not the run's ${name}.`);
+  }
+  await run.snapshotCloudflare(() => [run.appHost, `www.${run.appHost}`]);
+  return plan;
+}
 
 // ---------------------------------------------------------------------------------------------
 // The example's data.
@@ -177,19 +208,23 @@ const RCLONE_NOT_FOUND = 3;
 
 /**
  * The off-server copies' bucket `name` at `provider` (`region` its location; R2's `auto`, in the
- * zone's account `accountId`), read with the pinned rclone image in local Docker with the bucket's
- * key, which stays in rclone's environment.
+ * zone's account `accountId`): read with the pinned rclone image in local Docker with the bucket's
+ * key, which stays in rclone's environment; checked and deleted as the components pass's buckets
+ * are (`pass`, its `bucketPass`).
  */
 export class BackupsBucket {
   private readonly settings: Record<string, string>;
+  /** The bucket as `pass` reads it: its provider, name and region (the rest is the app's only). */
+  private readonly bucket: ProviderBucket;
 
   constructor(
     private readonly run: LiveRun,
+    private readonly pass: Pick<BucketPass, "exists" | "deleteThroughApi">,
     readonly provider: OffsiteProvider,
     readonly name: string,
-    private readonly region: string,
-    private readonly key: { accessKeyId: string; secretAccessKey: string },
-    private readonly accountId: string,
+    region: string,
+    key: { accessKeyId: string; secretAccessKey: string },
+    accountId: string,
   ) {
     const hetzner = STORAGE_ENDPOINTS.hetzner;
     if (hetzner === undefined) throw new Error("OpsCrew knows no endpoint for Hetzner's buckets.");
@@ -199,6 +234,7 @@ export class BackupsBucket {
       region,
       ...key,
     });
+    this.bucket = { provider, bucket: name, region } as ProviderBucket;
   }
 
   /** rclone's `args`; its exit code 3 (not there) is returned, any other failure thrown. */
@@ -239,13 +275,9 @@ export class BackupsBucket {
     return read.stdout;
   }
 
-  /** Whether the bucket is there, by its provider's API (R2's) or a signed `HEAD` (Hetzner's). */
-  async exists(): Promise<boolean> {
-    if (this.provider === "hetzner") return this.s3().headBucket();
-    const got = await this.run.cloudflare.call("GET", this.r2Path());
-    if (got.status === 404) return false;
-    if (got.status === 200) return true;
-    throw new Error(`Cloudflare answered HTTP ${got.status} for the bucket ${this.name}.`);
+  /** Whether the bucket is there (R2's API, or Hetzner's answer to an unsigned `HEAD`). */
+  exists(): Promise<boolean> {
+    return this.pass.exists(this.bucket);
   }
 
   /**
@@ -254,6 +286,8 @@ export class BackupsBucket {
    */
   async remove(): Promise<void> {
     if (!(await this.exists())) return;
+    const { deleteThroughApi } = this.pass;
+    if (deleteThroughApi === undefined) throw new Error(`No way to delete ${this.name} is known.`);
     this.run.log(`deleting the off-server bucket ${this.name}, which OpsCrew leaves to the user`);
     await this.rclone(["delete", `offsite:${this.name}`], "delete the copies");
     if (this.provider === "hetzner") {
@@ -261,28 +295,11 @@ export class BackupsBucket {
         ["backend", "cleanup-hidden", `offsite:${this.name}`],
         "delete the copies' old versions",
       );
-      await this.s3().deleteBucket();
-    } else if (!(await retryDelete(() => this.run.cloudflare.call("DELETE", this.r2Path())))) {
-      throw new Error(`Cloudflare did not delete the bucket ${this.name}.`);
     }
+    await deleteThroughApi(this.bucket);
     if (await this.exists()) {
       throw new Error(`The off-server bucket ${this.name} is still there after its deletion.`);
     }
-  }
-
-  private r2Path(): string {
-    return `/accounts/${this.accountId}/r2/buckets/${this.name}`;
-  }
-
-  private s3() {
-    return storageS3Client(
-      { provider: "hetzner", region: this.region, bucket: this.name },
-      this.key,
-      {
-        fetch,
-        now: () => new Date(),
-      },
-    );
   }
 }
 
@@ -301,8 +318,15 @@ export async function requireDocker(run: LiveRun, what: string): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 // Hetzner's whole-server snapshots.
 
+/** A snapshot at Hetzner: its id, the server it was taken of, and when. */
+interface HetznerImage {
+  id: number;
+  created: string;
+  created_from?: { id: number } | null;
+}
+
 /** The snapshots OpsCrew took at Hetzner of `app`'s servers (its labels, never `managed-by`). */
-async function serverSnapshots(token: string, app: string): Promise<{ id: number }[]> {
+async function serverSnapshots(token: string, app: string): Promise<HetznerImage[]> {
   const selector = encodeURIComponent(`created-by=opscrew,app=${app}`);
   const listed = await api(
     HETZNER_API,
@@ -311,16 +335,33 @@ async function serverSnapshots(token: string, app: string): Promise<{ id: number
     `/images?type=snapshot&label_selector=${selector}`,
   );
   if (listed.status !== 200) throw new Error(`Hetzner answered HTTP ${listed.status} for images.`);
-  return (listed.json as { images?: { id: number }[] }).images ?? [];
+  return (listed.json as { images?: HetznerImage[] }).images ?? [];
 }
 
 /**
- * The cleanup's: deletes every whole-server snapshot of `app` OpsCrew took at Hetzner that the run
- * left, each a problem (the pass deletes its own with `opscrew snapshot delete`).
+ * The cleanup's: deletes every whole-server snapshot of `app` OpsCrew took at Hetzner that this
+ * run left, each a problem (the pass deletes its own with `opscrew snapshot delete`). Only the
+ * run's are deleted: taken of the run's server `serverId` (when known), or since `since`. Any
+ * other with the app's labels is a problem and stays.
  */
-export async function removeServerSnapshots(token: string, app: string): Promise<string[]> {
+export async function removeServerSnapshots(
+  token: string,
+  app: string,
+  serverId: number | undefined,
+  since: Date,
+): Promise<string[]> {
   const problems: string[] = [];
-  for (const { id } of await serverSnapshots(token, app)) {
+  for (const image of await serverSnapshots(token, app)) {
+    const { id } = image;
+    const ours =
+      (serverId !== undefined && image.created_from?.id === serverId) ||
+      Date.parse(image.created) >= since.getTime();
+    if (!ours) {
+      problems.push(
+        `Hetzner has the whole-server snapshot ${id} of ${app} from before this run; it is not this run's, so the cleanup left it: check it in the console (Servers → Snapshots)`,
+      );
+      continue;
+    }
     const deleted = await retryDelete(() => api(HETZNER_API, token, "DELETE", `/images/${id}`));
     problems.push(
       deleted

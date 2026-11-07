@@ -1,7 +1,8 @@
 /**
  * The live passes of feature 024 (docs/e2e.md "Snapshots and restores", plan.md 10.), each with
  * its own gate, run id, server and cleanup, on examples/flask-sqlite (its own SQLite file in its
- * `sqlite` volume) with feature 023's Postgres, MySQL and Valkey queue added in plan.yaml:
+ * `sqlite` volume) with feature 023's Postgres, MySQL and Valkey queue added in plan.yaml. The app
+ * is named after the run (`e2e-snap-<run id>`), so its bucket and snapshots are the run's alone:
  * - **data**, with `OPSCREW_E2E_SNAPSHOTS=1`: staging at Hetzner, with Kafka added too. A snapshot
  *   in a script refuses to stop Kafka without `--allow-downtime`; `--skip kafka` stops nothing.
  *   With `--allow-downtime` under load, only Kafka restarts and no request fails (SC-2402). The
@@ -23,6 +24,7 @@
  * state file and deploy log, with every value the test wrote searched for, and no server address
  * in a snapshot or restore output (SC-2406).
  */
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { backupsBucketName } from "@opscrew/agents";
@@ -50,6 +52,7 @@ import {
   changeData,
   type DeployRun,
   deployLogLeaks,
+  designRunApp,
   hetznerImageExists,
   hetznerServer,
   listSnapshots,
@@ -85,6 +88,7 @@ import {
   servicesIn,
   takenSnapshotId,
   withSnapshotServices,
+  writtenValues,
 } from "./snapshots-support";
 import { missingVariables } from "./support";
 
@@ -155,7 +159,15 @@ describe.skipIf(MISSING.data.length > 0)(
     const changed = `value-${run.runId}-changed`;
     const kafkaSeeded = kafkaMessages(run.runId, "a", 5);
     const kafkaAdded = kafkaMessages(run.runId, "b", 3);
-    rememberDumped(run, [value, changed, ...kafkaSeeded, ...kafkaAdded]);
+    const changeMarker = `changed-${run.runId}`;
+    const onlyMarker = `only-${run.runId}`;
+    rememberDumped(run, [
+      value,
+      changed,
+      ...kafkaSeeded,
+      ...kafkaAdded,
+      ...writtenValues([run.runId], [changeMarker, onlyMarker]),
+    ]);
     let workflow = "";
     let health = "";
     let project = "";
@@ -198,6 +210,7 @@ describe.skipIf(MISSING.data.length > 0)(
         await envs.snapshotGithub();
         // Prod is designed, as `env add` starts from it, but never provisioned: only staging runs.
         await designProd(run, envs, SETTINGS.region);
+        await designRunApp(run, envs);
         await run.adaptAndMerge();
         await run.opscrewOk("env", "add", STAGING, "--target", "hetzner", "--from", "main");
         // As a user adds services to staging's plan.yaml; design keeps them.
@@ -304,7 +317,7 @@ describe.skipIf(MISSING.data.length > 0)(
       "4. the data changed, opscrew restore <id> in a script shows what is lost and puts every service back exactly; the version that runs is unchanged (SC-2401)",
       minutes(30),
       async () => {
-        await changeData(await exec(), project, `changed-${run.runId}`, kafkaAdded);
+        await changeData(await exec(), project, changeMarker, kafkaAdded);
         await writeValue(originOf(health), changed);
         expect(
           differingServices(data(), await readData(await exec(), project, true)),
@@ -335,7 +348,7 @@ describe.skipIf(MISSING.data.length > 0)(
       "5. restore --only db puts back only the database: MySQL keeps its change (US3)",
       minutes(20),
       async () => {
-        const changes = changeScripts(`only-${run.runId}`);
+        const changes = changeScripts(onlyMarker);
         const shell = await exec();
         await shell(inContainer(project, MOVE_SERVICES.postgres, changes.postgres));
         await shell(inContainer(project, MOVE_SERVICES.mysql, changes.mysql));
@@ -396,11 +409,17 @@ describe.skipIf(MISSING.data.length > 0)(
         expect(onTheHour(second.taken), `${second.id} taken on the hour`).toBe(true);
         const hours = (Date.parse(second.taken) - Date.parse(first.taken)) / minutes(60);
         expect(Math.round(hours), "hours between the two scheduled snapshots").toBe(1);
-        const listed = await listSnapshots(run, env);
-        expect(
-          listed.filter((snapshot) => snapshot.kind === "scheduled").map((snapshot) => snapshot.id),
-          "the scheduled snapshots kept",
-        ).toEqual([second.id]);
+        // The prune follows the second's take: wait until only the second is listed.
+        const listed = await waitFor(
+          "the first scheduled snapshot pruned (--keep 1)",
+          minutes(10),
+          async () => {
+            const now = await listSnapshots(run, env);
+            const kept = now.filter((snapshot) => snapshot.kind === "scheduled");
+            return kept.length === 1 && kept[0]?.id === second.id ? now : undefined;
+          },
+          30_000,
+        );
         snapshotOf(listed, taken);
         const status = await run.opscrewOk("status", ...env);
         expect(
@@ -476,7 +495,8 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
       const envs = new AppEnvironments(run, SETTINGS.hcloudToken);
       const { log } = run;
       const value = `value-${run.runId}`;
-      rememberDumped(run, [value]);
+      rememberDumped(run, [value, ...writtenValues([run.runId], [])]);
+      const deployRuns: DeployRun[] = [];
       let ageKey = "";
       let site = "";
       let project = "";
@@ -500,6 +520,7 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
           });
           await envs.snapshotGithub();
           await designProd(run, envs, SETTINGS.region);
+          await designRunApp(run, envs);
           await writeArtifact(
             "plan",
             run.paths().files.plan,
@@ -549,25 +570,36 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
           const offsite = snapshotOffsiteOf(plan);
           expect(offsite?.provider, "the plan's off-server copy").toBe(provider);
           expect(offsite?.bucket, "the copies' bucket").toBe(backupsBucketName(plan));
-          await envs.provision("prod", "prod with the off-server copy");
-          expect(
-            await run.rememberSecretFile(ageKey, "age-identity"),
-            "provision wrote the recovery copy's age key to --key-out",
-          ).toBe(true);
           const zone = run.zone;
           if (offsite === undefined || zone === undefined) {
             throw new Error("The pass needs the off-server copy and the run's Cloudflare zone.");
           }
-          bucket = new BackupsBucket(
+          // The bucket must be this run's own: the cleanup deletes it, and only it.
+          const planned = new BackupsBucket(
             run,
+            pass,
             provider,
             offsite.bucket,
             offsite.region,
             key,
             zone.accountId,
           );
-          expect(await bucket.exists(), `the bucket ${offsite.bucket} after provision`).toBe(true);
-          await run.deployAny("the first deploy");
+          if (await planned.exists()) {
+            throw new Error(
+              `A bucket named ${offsite.bucket} is already there; this test would take it over. Delete it (in ${where}, emptied first), then run the test again.`,
+            );
+          }
+          bucket = planned;
+          await envs.provision("prod", "prod with the off-server copy");
+          expect(
+            await run.rememberSecretFile(ageKey, "age-identity"),
+            "provision wrote the recovery copy's age key to --key-out",
+          ).toBe(true);
+          expect(await planned.exists(), `the bucket ${offsite.bucket} after provision`).toBe(true);
+          deployRuns.push({
+            what: "the first deploy",
+            id: await run.deployAny("the first deploy"),
+          });
           await run.waitForHealth();
           site = `https://${run.appHost}`;
           project = composeProjectOf(plan);
@@ -625,7 +657,10 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
           envs.destroyed.delete("prod");
           run.destroyed = false;
           await envs.provision("prod", "prod again, empty");
-          await run.deployAny("the deploy on the new server");
+          deployRuns.push({
+            what: "the deploy on the new server",
+            id: await run.deployAny("the deploy on the new server"),
+          });
           await run.waitForHealth();
           expect((await httpRequest(`${site}/data`)).status, "GET /data on the new server").toBe(
             404,
@@ -685,13 +720,26 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
       );
 
       run.step(
-        "O6. no secret, key, dumped value or server address in any output, audit entry, commit, pull request, plan or state file (SC-2406)",
+        "O6. no secret, key, dumped value or server address in any output, deploy job's log, audit entry, commit, pull request, plan or state file (SC-2406)",
         minutes(10),
-        async () => run.expectNothingLeaked(await snapshotLeaks(run, envs)),
+        async () => {
+          // Also after a provision that failed past writing the key: it is searched for.
+          if (ageKey !== "") await run.rememberSecretFile(ageKey, "age-identity");
+          run.expectNothingLeaked([
+            ...(await snapshotLeaks(run, envs)),
+            ...(await deployLogLeaks(run, deployRuns)),
+          ]);
+        },
         { always: true },
       );
 
       envs.registerCleanup({
+        // The cleanup's messages are scrubbed of the age key too.
+        first: () => {
+          if (ageKey !== "" && existsSync(ageKey)) {
+            run.scrubber.add(readFileSync(ageKey, "utf8"), "age-identity");
+          }
+        },
         last: async (attempt) => {
           const store = bucket;
           if (store !== undefined) {
@@ -723,6 +771,9 @@ describe.skipIf(MISSING.server.length > 0)(
     const after = `value-${run.runId}-after`;
     rememberDumped(run, [before, after]);
     let snapshot = "";
+    /** The run's server at Hetzner: the cleanup deletes only snapshots taken of it. */
+    let serverId: number | undefined;
+    const deployRuns: DeployRun[] = [];
     const site = () => `https://${run.appHost}`;
 
     run.step(
@@ -738,9 +789,14 @@ describe.skipIf(MISSING.server.length > 0)(
         });
         await envs.snapshotGithub();
         await designProd(run, envs, SETTINGS.region);
+        await designRunApp(run, envs);
         await run.adaptAndMerge();
         await envs.provision("prod", "prod");
-        await run.deployAny("the first deploy");
+        serverId = (await hetznerServer(SETTINGS.hcloudToken, run.app())).id;
+        deployRuns.push({
+          what: "the first deploy",
+          id: await run.deployAny("the first deploy"),
+        });
         await run.waitForHealth();
         await writeValue(site(), before);
       },
@@ -825,9 +881,13 @@ describe.skipIf(MISSING.server.length > 0)(
     });
 
     run.step(
-      "W6. no secret or server address in any output, audit entry, commit, pull request, plan or state file (SC-2406)",
+      "W6. no secret or server address in any output, deploy job's log, audit entry, commit, pull request, plan or state file (SC-2406)",
       minutes(10),
-      async () => run.expectNothingLeaked(await snapshotLeaks(run, envs)),
+      async () =>
+        run.expectNothingLeaked([
+          ...(await snapshotLeaks(run, envs)),
+          ...(await deployLogLeaks(run, deployRuns)),
+        ]),
       { always: true },
     );
 
@@ -835,8 +895,8 @@ describe.skipIf(MISSING.server.length > 0)(
       last: async (attempt) => {
         if (run.appName === undefined) return;
         const app = run.appName;
-        await attempt(`delete the whole-server snapshots of ${app}`, () =>
-          removeServerSnapshots(SETTINGS.hcloudToken, app),
+        await attempt(`delete this run's whole-server snapshots of ${app}`, () =>
+          removeServerSnapshots(SETTINGS.hcloudToken, app, serverId, run.startedAt),
         );
       },
     });
@@ -861,7 +921,8 @@ describe.skipIf(MISSING.portainer.length > 0)(
     const { log } = run;
     const value = `value-${run.runId}`;
     const changed = `value-${run.runId}-changed`;
-    rememberDumped(run, [value, changed]);
+    const changeMarker = `changed-${run.runId}`;
+    rememberDumped(run, [value, changed, ...writtenValues([run.runId], [changeMarker])]);
     let portainer: PortainerHost | undefined;
     let project = "";
     let seeded: SnapshotData | undefined;
@@ -923,7 +984,7 @@ describe.skipIf(MISSING.portainer.length > 0)(
           "--portainer-cert",
           host.fingerprint,
         );
-        await run.opscrewOk("design");
+        await designRunApp(run, envs);
         await writeArtifact(
           "plan",
           run.paths().files.plan,
@@ -932,7 +993,6 @@ describe.skipIf(MISSING.portainer.length > 0)(
         await run.opscrewOk("design");
         const plan = await envs.designed("prod");
         expect(plan.target.provider, "the plan's target").toBe("portainer");
-        await run.snapshotCloudflare(() => [run.appHost, `www.${run.appHost}`]);
         await run.adaptAndMerge();
         await run.provisionUntilDone("the app in your Portainer");
         await run.deploy("the first deploy in your Portainer");
@@ -965,7 +1025,7 @@ describe.skipIf(MISSING.portainer.length > 0)(
       "P4. the data changed, opscrew restore <id> through Portainer's API puts every service back exactly (SC-2401)",
       minutes(30),
       async () => {
-        await changeData(exec(), project, `changed-${run.runId}`);
+        await changeData(exec(), project, changeMarker);
         await writeValue(site(), changed);
         expect(
           differingServices(seeded as SnapshotData, await readData(exec(), project, false)),

@@ -2690,6 +2690,11 @@ cheapest types (check the providers' price lists):
 cleanup, and is skipped with a message naming what it is missing. With several gates set they run
 one after another; run one alone with vitest's `-t` (below). `OPSCREW_E2E_APP` is ignored.
 
+**The app is named after the run:** `e2e-snap-<run id>`. The example has no project name, so
+OpsCrew would name it after the checkout folder, the same in every run. Right after `analyze`, the
+test sets the project's name in `opscrew/architecture.json`, and `design` must then plan that
+name. The bucket, the snapshots' labels and every resource are then this run's alone.
+
 Every command runs as a script runs it:
 - a snapshot that stops a service passes `--allow-downtime`;
 - a restore runs first without `--approve`, which must stop at its approval (exit 1) and show
@@ -2752,7 +2757,8 @@ messages, and another value written through the app. Each change must make every
 6. **Destroy:** as for the database pass of [Rollback](#the-database-pass).
 7. **Nothing leaked** (SC-2406): as for environments, over every CLI output, commit, pull request,
    audit entry, plan and state file. The database passwords and every value the test wrote (the
-   SQLite values, Kafka's messages) are searched for there and in the deploy job's log of each
+   SQLite values, Kafka's messages, a Valkey job of each batch, the markers of the databases'
+   changed rows) are searched for there and in the deploy job's log of each
    deploy run. No snapshot or restore output may name the server's address.
 
 **The schedule** (with `OPSCREW_E2E_SNAPSHOTS_SCHEDULE=1` too, about two hours more; its steps run
@@ -2762,8 +2768,8 @@ between 5 and 6):
   snapshot must appear within 70 minutes, taken within the first 10 minutes of an hour (the line
   runs at minute 0), copying all but Kafka. Kafka is listed as skipped, since `--stop` didn't
   name it.
-- **S2** (SC-2403): the next scheduled snapshot must come an hour after the first. The first must
-  then be gone (`--keep 1`), while the snapshot by hand stays. `status --env staging` must say
+- **S2** (SC-2403): the next scheduled snapshot must come an hour after the first. Within 10
+  minutes the first must be gone (`--keep 1`), while the snapshot by hand stays. `status --env staging` must say
   `Last snapshot: <the second's id>, scheduled`.
 - **S3.** `snapshot schedule off`, then provision and deploy. The crontab line must be gone, and
   the scheduled snapshot must still be listed.
@@ -2778,9 +2784,10 @@ reads the bucket with rclone from its pinned image, and so does the test.
 - **O1.** Prod is designed with the services above and `adapt`'s pull request merged. Then
   `secrets folder <a folder of the run>`, and every provision passes `--key-out <file>`, as for
   [your existing Portainer](#your-existing-portainer). `snapshot offsite on --to r2|hetzner` must
-  show "Expected cost:" and set `snapshots.offsite` to the bucket `<app>-prod-backups`.
-  Provision must write the age key to the file and create the bucket. Then the first deploy, and
-  the data is seeded.
+  show "Expected cost:" and set `snapshots.offsite` to the bucket `<app>-prod-backups`. That
+  bucket must not exist yet: if it does, the pass stops before provision, saying to delete it,
+  and the cleanup leaves it alone. Provision must write the age key to the file and create the
+  bucket. Then the first deploy, and the data is seeded.
 - **O2** (SC-2404, SC-2406): `opscrew snapshot`. Within 10 minutes the list must mark it as copied
   off the server. In the bucket every object under `backups/` must be an age file. The copy must
   hold its record (`about.json.age`) and one file per part. Each of the copy's objects, read
@@ -2798,13 +2805,16 @@ reads the bucket with rclone from its pinned image, and so does the test.
 - **O5.** `destroy`: nothing left at Hetzner or in Cloudflare, and the bucket must still be there.
   Then the test deletes the bucket itself, since OpsCrew leaves that to the user: rclone deletes
   every object (on Hetzner, whose bucket keeps versions, `rclone backend cleanup-hidden` deletes
-  the old versions too). Then the bucket goes, through Cloudflare's API for R2 and S3's
-  `DeleteBucket` with the key for Hetzner, and it must be gone.
-- **O6.** Nothing leaked, as step 7; the bucket's key and the age key are searched for too.
+  the old versions too). Then the bucket goes, as [the components](#the-components)' buckets do:
+  through Cloudflare's API for R2, and S3's `DeleteBucket` with the key for Hetzner. It must be
+  gone.
+- **O6.** Nothing leaked, as step 7, the deploy job's log of both deploys included. The bucket's
+  key and the age key are searched for too.
 
 **A whole server** (`OPSCREW_E2E_SNAPSHOTS_SERVER=1`, `-t "whole server"`), on
 `examples/flask-sqlite` alone:
-- **W1.** Prod at Hetzner, provisioned and deployed, and a value written through the app.
+- **W1.** Prod at Hetzner, provisioned and deployed, and a value written through the app. The
+  server's id at Hetzner is kept for the cleanup.
 - **W2** (US4): `snapshot --server --stop` without `--allow-downtime` must exit 1, naming that
   flag, and the app must still answer. `snapshot --server` then runs under load with no failed
   request. Its summary must say "A live snapshot may not be consistent", that attached volumes
@@ -2816,7 +2826,7 @@ reads the bucket with rclone from its pinned image, and so does the test.
   read back the first value, the one from the snapshot's time. `opscrew drift` must find no
   difference: the next plan replaces nothing.
 - **W4.** `snapshot delete <id> --confirm <id>`: Hetzner must no longer have the image.
-- **W5–W6.** Destroy, and nothing leaked, as above.
+- **W5–W6.** Destroy, and nothing leaked, as above, the first deploy's job log included.
 
 **Your Portainer** (`OPSCREW_E2E_SNAPSHOTS_PORTAINER=1`, `-t "snapshots, Portainer"`):
 - **P1.** A throwaway Hetzner server with Portainer CE, as in the Portainer leg of
@@ -2840,17 +2850,20 @@ reads the bucket with rclone from its pinned image, and so does the test.
 The cleanup is the one for environments, after every step and always: `opscrew destroy` if needed,
 then Hetzner's API by the app's labels, the GitHub environments and deploy secrets, the app's
 records in Cloudflare, and the repository reset. Then, per pass:
-- **off-server copy:** the bucket is deleted as in O5 when it is still there;
-- **whole server:** every snapshot OpsCrew took of the app's server at Hetzner (images labelled
-  `created-by=opscrew,app=<app>`) is deleted. Each one found is a problem, since W4 deletes its
-  own;
-- **Portainer:** the throwaway server with its SSH key and firewall.
+- **off-server copy:** the run's bucket, once O1 found it was not there before, is deleted as in
+  O5 when it is still there. A bucket that stays is a problem that fails the run;
+- **whole server:** this run's snapshots of the app's server at Hetzner are deleted: images
+  labelled `created-by=opscrew,app=<app>` and taken of the server W1 kept, or since the run
+  started. Each one deleted is a problem, since W4 deletes its own. An older one with those labels
+  is a problem too, and is never deleted;
+- **Portainer:** nothing of its own. The harness deletes the throwaway Portainer server, with its
+  SSH key and firewall, and the app's stacks and volumes go with it.
 
 **If a run was interrupted**, delete by hand what the environments test lists, and:
-- at Hetzner, the snapshots under Servers → Snapshots labelled `app=<app>`, and the throwaway
-  server `opscrew-e2e-snapshots-portainer-<run id>` (labelled `managed-by=opscrew-e2e`);
-- the bucket `<app>-prod-backups`: in R2 (Cloudflare dashboard → R2) or Hetzner Object Storage
-  (the console's Object Storage), emptied first.
+- at Hetzner, the snapshots under Servers → Snapshots labelled `app=e2e-snap-<run id>`, and the
+  throwaway server `opscrew-e2e-snapshots-portainer-<run id>` (labelled `managed-by=opscrew-e2e`);
+- the bucket `e2e-snap-<run id>-prod-backups`: in R2 (Cloudflare dashboard → R2) or Hetzner
+  Object Storage (the console's Object Storage), emptied first.
 
 | Variable | What it is |
 |---|---|

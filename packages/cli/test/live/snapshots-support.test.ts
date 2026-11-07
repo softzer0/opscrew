@@ -21,10 +21,12 @@ import {
   rcloneDockerArgs,
   rcloneSettings,
   restartedServices,
+  runAppName,
   servicesIn,
   shownRestore,
   takenSnapshotId,
   withSnapshotServices,
+  writtenValues,
 } from "./snapshots-support";
 
 const HASH = "a".repeat(64);
@@ -65,6 +67,24 @@ describe("offsiteKey", () => {
 
   it("throws without both halves", () => {
     expect(() => offsiteKey({ [STORAGE_KEY_VARS.accessKeyId]: "access" })).toThrow(/no access/);
+  });
+});
+
+describe("runAppName", () => {
+  it("names the app after the run, within the app names' rules", () => {
+    expect(runAppName("mhp3k2x1a1b2c3d4")).toBe("e2e-snap-mhp3k2x1a1b2c3d4");
+    expect(() => runAppName("x".repeat(40))).toThrow(/no valid app name/);
+    expect(() => runAppName("Run_1")).toThrow(/no valid app name/);
+  });
+});
+
+describe("writtenValues", () => {
+  it("gives a Valkey job of each marker and the changes' markers", () => {
+    expect(writtenValues(["run1"], ["changed-run1"])).toEqual([
+      "job-1-run1",
+      "job-1-changed-run1",
+      "changed-run1",
+    ]);
   });
 });
 

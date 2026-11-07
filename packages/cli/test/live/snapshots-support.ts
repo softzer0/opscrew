@@ -99,6 +99,28 @@ export function offsiteKey(storageEnv: Readonly<Record<string, string>>): {
 /** The example of every data pass: its own SQLite file in its `sqlite` volume (`PUT /data`). */
 export const SNAPSHOT_EXAMPLE = "flask-sqlite";
 
+/**
+ * The run's own app name, `e2e-snap-<run id>`, so the backups bucket, the snapshots' labels and
+ * every resource are this run's alone (examples/flask-sqlite has no project name, so OpsCrew would
+ * name it after the checkout folder, the same in every run). Within the app names' rules
+ * (`^[a-z0-9][a-z0-9-]{0,40}$`).
+ */
+export function runAppName(runId: string): string {
+  const name = `e2e-snap-${runId}`;
+  if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(name)) {
+    throw new Error(`The run id ${runId} makes no valid app name.`);
+  }
+  return name;
+}
+
+/**
+ * The values the seed and the changes write that the leak search looks for (a Valkey job of each
+ * marker, and the changes' markers themselves, which the databases hold).
+ */
+export function writtenValues(seedMarkers: readonly string[], changes: readonly string[]) {
+  return [...[...seedMarkers, ...changes].map((marker) => `job-1-${marker}`), ...changes];
+}
+
 /** Kafka's service name: a stop-only kind, copied with the service stopped alone. */
 export const KAFKA_SERVICE = "kafka";
 
