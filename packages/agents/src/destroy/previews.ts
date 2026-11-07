@@ -36,7 +36,12 @@ import {
   teardownSummary,
 } from "./common";
 import { confirmDeletion, deletionSession, discardPlan } from "./deletion";
-import { applySharedRemoval, planSharedRemoval, removalDetails } from "./shared-rules";
+import {
+  applySharedRemoval,
+  planSharedRemoval,
+  removalDetails,
+  removeSharedOnly,
+} from "./shared-rules";
 import { destroyConfirmPrompt } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
@@ -66,6 +71,9 @@ export async function destroySharedPreviews(
     );
   }
   if (!hasDeployment(plan) && !(stateHere && plan.deployment.destroyedAt === undefined)) {
+    // Only what a stopped provision left in OpsCrew's shared Cloudflare rules, when any.
+    const removed = await removeSharedOnly(deps, plan, services);
+    if (removed !== undefined) return removed;
     throw nothingDeployed(plan);
   }
   // 1. Preconditions: without the state OpsCrew cannot remove the wildcard record.

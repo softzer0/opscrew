@@ -114,6 +114,7 @@ import {
   applySharedRemoval,
   planSharedRemoval,
   removalDetails,
+  removeSharedOnly,
   zeroTrustLeft,
 } from "./shared-rules";
 import {
@@ -513,7 +514,12 @@ export async function destroyOwnServer(
   const stateHere = await hasState(deps.paths);
   // A finished teardown records `destroyedAt`; an interrupted one does not, so it continues.
   const removeApp = hasDeployment(plan) || (stateHere && plan.deployment.destroyedAt === undefined);
-  if (!removeApp && options.undoHost !== true) throw nothingDeployed(plan);
+  if (!removeApp && options.undoHost !== true) {
+    // Only what a stopped provision left in OpsCrew's shared Cloudflare rules, when any.
+    const removed = await removeSharedOnly(deps, plan, services);
+    if (removed !== undefined) return removed;
+    throw nothingDeployed(plan);
+  }
   const scope = teardownScope(deps, plan, "own");
   // The extra servers OpsCrew created are in the same root module: deleted with the rest, each
   // after its own typed name, with Hetzner's delete protection lifted first.

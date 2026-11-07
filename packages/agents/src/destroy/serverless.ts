@@ -69,7 +69,12 @@ import {
   previewDeletion,
   savePlan,
 } from "./deletion";
-import { applySharedRemoval, planSharedRemoval, removalDetails } from "./shared-rules";
+import {
+  applySharedRemoval,
+  planSharedRemoval,
+  removalDetails,
+  removeSharedOnly,
+} from "./shared-rules";
 import { destroyConfirmPrompt } from "./texts";
 import type { DestroyOptions, DestroyResult } from "./types";
 
@@ -190,7 +195,12 @@ export async function destroyCloudflareWorkers(
 
   // 1. Preconditions
   if (!(await exists(tfstateFile(deps.paths)))) {
-    if (!hasDeployment(plan)) throw nothingDeployed(plan);
+    if (!hasDeployment(plan)) {
+      // Only what a stopped provision left in OpsCrew's shared Cloudflare rules, when any.
+      const removed = await removeSharedOnly(deps, plan, services);
+      if (removed !== undefined) return removed;
+      throw nothingDeployed(plan);
+    }
     throw await teardownStateNotHere(deps.paths.root, plan);
   }
   await requireInfraCode(deps, plan, "the teardown");
@@ -446,6 +456,9 @@ export async function destroyGithubPages(
     verificationChanges.length === 0 &&
     !hasDeployment(plan)
   ) {
+    // Only what a stopped provision left in OpsCrew's shared Cloudflare rules, when any.
+    const removed = await removeSharedOnly(deps, plan, services);
+    if (removed !== undefined) return removed;
     throw nothingDeployed(plan);
   }
   const record = verificationRecordName(owner, domain);

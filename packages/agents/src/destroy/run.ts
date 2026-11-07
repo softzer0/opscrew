@@ -88,6 +88,7 @@ import {
   applySharedRemoval,
   planSharedRemoval,
   removalDetails,
+  removeSharedOnly,
   zeroTrustLeft,
 } from "./shared-rules";
 import {
@@ -540,7 +541,12 @@ async function destroyDeployment(
   const profile = providerProfile(provider);
   const texts = destroyTexts(provider);
 
-  // 1. Preconditions
+  // 1. Preconditions. With nothing deployed, only what a stopped provision left in OpsCrew's
+  // shared Cloudflare rules, when the record lists any.
+  if (!(await exists(tfstateFile(deps.paths))) && !hasDeployment(plan)) {
+    const removed = await removeSharedOnly(deps, plan, services);
+    if (removed !== undefined) return removed;
+  }
   await requirePreconditions(deps, plan);
 
   // 2. Credentials

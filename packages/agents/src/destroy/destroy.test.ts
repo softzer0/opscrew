@@ -981,6 +981,75 @@ describe.skipIf(!findExecutable("git"))("runDestroy", () => {
     expect(result.remaining.join("\n")).not.toContain("Zero Trust");
   });
 
+  describe("after a first provision that stopped before the infrastructure (no state, no deployment)", () => {
+    /** The app's hostname in the shared rules (another app's beside it with `other`), no state. */
+    async function stopped(other: boolean, answer?: Answer) {
+      const zone = new FakeZone();
+      const client = fakeSharedCloudflare(zone);
+      const record = await addToSharedRules(client, "shop.example.com");
+      if (other) await addToSharedRules(client, "api.example.com");
+      const s = await setup({
+        plan: testPlan({ domain: "shop.example.com" }),
+        state: false,
+        services: { sharedCloudflare: client },
+        ...(answer === undefined ? {} : { answer }),
+      });
+      await mkdir(dirname(s.deps.paths.files.cloudflareRecord), { recursive: true });
+      await writeFile(s.deps.paths.files.cloudflareRecord, JSON.stringify(record));
+      return { s, zone };
+    }
+
+    it("removes only the app's entries from OpsCrew's shared rules, after their approval, and keeps another app's hostnames", async () => {
+      const { s, zone } = await stopped(true);
+
+      const result = await runDestroy(s.deps, { services: s.services });
+
+      expect(result).toEqual({ destroyed: [], secretsRemoved: [], remaining: [] });
+      expect(s.events).toEqual(["approval:cloudflare-apply"]);
+      expect(s.engine.calls).toEqual([]);
+      const rule = String(zone.opscrewRule(WAF)?.expression);
+      expect(rule).toContain("api.example.com");
+      expect(rule).not.toContain("shop.example.com");
+      const after = JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"));
+      expect(after).toMatchObject({ hostnames: {} });
+      expect(s.deps.reporter.text()).toContain(
+        "Removed shop's entries from OpsCrew's shared Cloudflare rules. That was all there was to remove: nothing else of it was deployed.",
+      );
+      expect(s.github.deleted).toEqual([]);
+      const plan = await readArtifact("plan", s.deps.paths.files.plan);
+      expect(plan.deployment.destroyedAt).toBeUndefined();
+
+      // The record lists nothing now: a second run refuses as before.
+      await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+        code: "PHASE_PRECONDITION",
+        message: "Nothing is deployed for this project, so there is nothing to destroy.",
+      });
+    });
+
+    it("deletes OpsCrew's rules that list only this app, with the typed name", async () => {
+      const { s, zone } = await stopped(false);
+
+      await runDestroy(s.deps, { services: s.services });
+
+      expect(s.handler.requests.find((r) => r.kind === "cloudflare-apply")).toMatchObject({
+        allowDestroy: true,
+        confirmPhrase: "shop",
+      });
+      expect(zone.entrypoints.size).toBe(0);
+    });
+
+    it("changes nothing when the removal is not approved", async () => {
+      const { s, zone } = await stopped(true, () => false);
+
+      await expect(runDestroy(s.deps, { services: s.services })).rejects.toMatchObject({
+        code: "APPROVAL_REFUSED",
+      });
+      expect(String(zone.opscrewRule(WAF)?.expression)).toContain("shop.example.com");
+      const after = JSON.parse(await readFile(s.deps.paths.files.cloudflareRecord, "utf8"));
+      expect(after.hostnames["opscrew-block-probes"]).toEqual(["shop.example.com"]);
+    });
+  });
+
   it("a rerun after a failed removal from OpsCrew's shared rules asks for the name and finishes it", async () => {
     const zone = new FakeZone();
     const client = fakeSharedCloudflare(zone);

@@ -86,6 +86,7 @@ import {
   applySharedRemoval,
   planSharedRemoval,
   removalDetails,
+  removeSharedOnly,
   zeroTrustLeft,
 } from "./shared-rules";
 import {
@@ -438,7 +439,12 @@ export async function destroyPortainer(
   // Cloudflare resources when the plan has any (without it they cannot be removed).
   const recorded = await readPortainerConnection(deps.paths);
   if (recorded === undefined) {
-    if (!hasDeployment(plan)) throw nothingDeployed(plan);
+    if (!hasDeployment(plan)) {
+      // Only what a stopped provision left in OpsCrew's shared Cloudflare rules, when any.
+      const removed = await removeSharedOnly(deps, plan, services);
+      if (removed !== undefined) return removed;
+      throw nothingDeployed(plan);
+    }
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       "OpsCrew's record of what it created in your Portainer is not on this computer, so it cannot tell what to remove. Nothing was changed.",
@@ -456,7 +462,11 @@ export async function destroyPortainer(
     recordedStacks ||
     (stateHere && plan.deployment.destroyedAt === undefined);
   const dataOnly = !removeApp && deleteData && record.volumes.length > 0;
-  if (!removeApp && !dataOnly) throw nothingDeployed(plan);
+  if (!removeApp && !dataOnly) {
+    const removed = await removeSharedOnly(deps, plan, services);
+    if (removed !== undefined) return removed;
+    throw nothingDeployed(plan);
+  }
   const root = portainerCloudflare(plan) ?? { appTunnel: false, webhook: false, records: false };
   if (removeApp && (root.appTunnel || root.webhook || root.records) && !stateHere)
     throw await teardownStateNotHere(deps.paths.root, plan);

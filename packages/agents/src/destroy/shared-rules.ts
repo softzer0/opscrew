@@ -23,7 +23,7 @@ import {
 } from "../provision/shared-cloudflare";
 import { listsRedirect } from "../serverless/cloudflare/rules";
 import { COMMAND } from "./common";
-import type { DestroyServices } from "./types";
+import type { DestroyResult, DestroyServices } from "./types";
 
 /** The removal of this app's hostnames from OpsCrew's shared Cloudflare rules, planned. */
 export interface SharedRemoval {
@@ -108,6 +108,42 @@ export async function applySharedRemoval(
     allowDestroy: true,
   });
   return approval;
+}
+
+/**
+ * `opscrew destroy` with nothing deployed (no state, no deployment), on every target: when the
+ * app's record still lists its entries in OpsCrew's shared Cloudflare rules or its origin TLS (a
+ * first provision that applied its Cloudflare plan, then stopped before the infrastructure),
+ * removes only those, through {@link planSharedRemoval} and {@link applySharedRemoval}, approved
+ * as in a full destroy, and says that was all there was to remove. `undefined` when the removal
+ * changes nothing in Cloudflare: the caller then refuses with "Nothing is deployed", as before.
+ */
+export async function removeSharedOnly(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: Pick<DestroyServices, "sharedCloudflare">,
+): Promise<DestroyResult | undefined> {
+  const shared = await planSharedRemoval(deps, plan, services);
+  const details = removalDetails(shared);
+  if (details === undefined) return undefined;
+  const name = plan.app.name;
+  deps.reporter.info(
+    `Nothing is deployed for ${name}, but OpsCrew's record (.opscrew/cloudflare.json) still lists its entries in OpsCrew's shared Cloudflare rules: a provision stopped before it created the infrastructure. OpsCrew removes only those.`,
+  );
+  deps.reporter.info(details);
+  await applySharedRemoval(deps, plan, shared);
+  await deps.audit.append({
+    kind: "phase",
+    actor: "opscrew",
+    action: "destroy",
+    phase: "provision",
+    target: name,
+    detail: "nothing deployed: the app's entries removed from OpsCrew's shared Cloudflare rules",
+  });
+  deps.reporter.success(
+    `Removed ${name}'s entries from OpsCrew's shared Cloudflare rules. That was all there was to remove: nothing else of it was deployed.`,
+  );
+  return { destroyed: [], secretsRemoved: [], remaining: [] };
 }
 
 /**
