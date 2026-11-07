@@ -16,7 +16,12 @@ import {
   tfstateFile,
   writeFileAtomic,
 } from "@opscrew/core";
-import { portainerTarget, portainerVersionVolume } from "@opscrew/iac-templates";
+import {
+  portainerSnapshotsVolume,
+  portainerStackName,
+  portainerTarget,
+  portainerVersionVolume,
+} from "@opscrew/iac-templates";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
@@ -327,6 +332,19 @@ export async function deleteDeployBranch(
   }
 }
 
+/**
+ * What the snapshots' volumes among `names` hold (feature 024), as sentences said after the list
+ * of volumes: the app's snapshots and the off-server copy's tools; "" without them.
+ */
+function snapshotVolumesNote(plan: DeployPlan, names: readonly string[]): string {
+  const snapshots = portainerSnapshotsVolume(plan);
+  const tools = `${portainerStackName(plan)}_snapshot_tools`;
+  return [
+    ...(names.includes(snapshots) ? [` ${snapshots} holds the app's snapshots.`] : []),
+    ...(names.includes(tools) ? [` ${tools} holds the off-server copy's tools.`] : []),
+  ].join("");
+}
+
 /** What still exists after the teardown in the user's Portainer, in plain English. */
 function remainingInPortainer(input: {
   plan: DeployPlan;
@@ -351,7 +369,7 @@ function remainingInPortainer(input: {
   ];
   if (input.keptVolumes.length > 0) {
     items.push(
-      `The app's data in your Portainer: the volume${input.keptVolumes.length === 1 ? "" : "s"} ${listText(input.keptVolumes)}. OpsCrew took no backup. To delete ${input.keptVolumes.length === 1 ? "it" : "them"} when you no longer need ${input.keptVolumes.length === 1 ? "it" : "them"}, run \`opscrew destroy --delete-data\` (you type ${plan.app.name} to confirm), or remove ${input.keptVolumes.length === 1 ? "it" : "them"} in Portainer (Volumes).`,
+      `The app's data in your Portainer: the volume${input.keptVolumes.length === 1 ? "" : "s"} ${listText(input.keptVolumes)}.${snapshotVolumesNote(plan, input.keptVolumes) || " OpsCrew took no backup."} To delete ${input.keptVolumes.length === 1 ? "it" : "them"} when you no longer need ${input.keptVolumes.length === 1 ? "it" : "them"}, run \`opscrew destroy --delete-data\` (you type ${plan.app.name} to confirm), or remove ${input.keptVolumes.length === 1 ? "it" : "them"} in Portainer (Volumes).`,
     );
   }
   const bucket = input.bucketDeleted ? undefined : bucketKept(plan);
@@ -515,7 +533,7 @@ export async function destroyPortainer(
   const keptData = dataOf(record.volumes);
   const kinds = serverData(plan);
   const dataWarning = deletesData
-    ? `Removing the app also deletes its data in your Portainer: the volume${dataNames.length === 1 ? "" : "s"} ${listText(dataNames)}${kinds.length > 0 ? ` (with ${listText(kinds)})` : ""}. OpsCrew takes no backup of your Portainer host, so this cannot be undone unless you have your own backup.`
+    ? `Removing the app also deletes its data in your Portainer: the volume${dataNames.length === 1 ? "" : "s"} ${listText(dataNames)}${kinds.length > 0 ? ` (with ${listText(kinds)})` : ""}.${snapshotVolumesNote(plan, dataNames)} ${dataNames.includes(portainerSnapshotsVolume(plan)) ? "The app's snapshots go with them" : "OpsCrew takes no backup of your Portainer host"}, so this cannot be undone unless you have your own backup.`
     : undefined;
   if (deleteData && !deletesData) {
     deps.reporter.info(
@@ -544,7 +562,7 @@ export async function destroyPortainer(
   if (dataWarning !== undefined) deps.reporter.warn(dataWarning);
   else if (!deleteData && keptData.length > 0) {
     deps.reporter.info(
-      `The app's data in your Portainer (the volume${keptData.length === 1 ? "" : "s"} ${listText(keptData)}) is kept. To delete it as well, cancel now and run \`opscrew destroy --delete-data\`.`,
+      `The app's data in your Portainer (the volume${keptData.length === 1 ? "" : "s"} ${listText(keptData)}) is kept.${snapshotVolumesNote(plan, keptData)} To delete it as well, cancel now and run \`opscrew destroy --delete-data\`.`,
     );
   }
   if (bucket !== undefined) deps.reporter.warn(bucketDeletionWarning(bucket));

@@ -370,6 +370,49 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     );
   });
 
+  it("keeps the snapshots' volume without --delete-data and deletes it with it, saying it holds the snapshots", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...portainerPlan({ web: { mode: "proxy", port: 8080 } }),
+      snapshots: {
+        schedule: { every: "daily", keep: 7 },
+        offsite: { provider: "hetzner", bucket: "shop-prod-backups", region: "fsn1" },
+      },
+    });
+    const s = await deployed({ plan });
+    const volumes = ["opscrew-shop_snapshots", "opscrew-shop_snapshot_tools"];
+    s.fake.volumes.push(
+      ...volumes.map((Name) => ({
+        Name,
+        Labels: { "com.docker.compose.project": "opscrew-shop" },
+      })),
+    );
+    expect((await readPortainerConnection(s.deps.paths))?.created.volumes).toEqual(
+      expect.arrayContaining(volumes),
+    );
+    const kept = await destroy(s);
+    expect(s.fake.volumes.map((volume) => volume.Name)).toContain("opscrew-shop_snapshots");
+    expect(s.deps.reporter.text()).toContain(
+      "opscrew-shop_snapshots) is kept. opscrew-shop_snapshots holds the app's snapshots. opscrew-shop_snapshot_tools holds the off-server copy's tools.",
+    );
+    expect(kept.remaining.join("\n")).toContain(
+      "opscrew-shop_snapshots holds the app's snapshots. opscrew-shop_snapshot_tools holds the off-server copy's tools. To delete them",
+    );
+
+    s.deps.reporter.lines.length = 0;
+    const previews: DestroyPreview[] = [];
+    await destroy(s, {
+      deleteData: true,
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+    expect(s.fake.volumes.map((volume) => volume.Name)).toEqual(["media_data"]);
+    expect(previews[0]?.dataWarning).toContain(
+      "opscrew-shop_snapshots holds the app's snapshots. opscrew-shop_snapshot_tools holds the off-server copy's tools. The app's snapshots go with them, so this cannot be undone unless you have your own backup.",
+    );
+  });
+
   it("keeps the app's R2 bucket without --delete-data, and with it deletes the bucket first", async () => {
     const key = {
       [STORAGE_KEY_VARS.accessKeyId]: fakeSecret("aws-access-key-id", "destroy"),
