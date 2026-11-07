@@ -3,9 +3,9 @@ import { Readable } from "node:stream";
 import { buffer } from "node:stream/consumers";
 import { pipeline } from "node:stream/promises";
 import { describe, expect, it } from "vitest";
+import { ageEncrypt } from "../testing/age";
 import {
   ageDecryptStream,
-  ageEncrypt,
   ageRecipientOf,
   bech32Decode,
   bech32Encode,

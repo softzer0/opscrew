@@ -4,7 +4,8 @@
  * - The script fetches the pinned age with the pinned rclone image, checks its hashes, and streams
  *   each file the snapshot's `about.json` names, then `about.json`, through `age -r <recipient>`
  *   into `rclone rcat`, the key only in the mode-600 `offsite.env`. Each object holds age's
- *   ciphertext only, and decrypts with the test's own age key to exactly the snapshot's file.
+ *   ciphertext only, and decrypts with the test's own age key to exactly the snapshot's file, both
+ *   with the real age and with OpsCrew's own decryption in Node.
  * - A second copy of the same id removes its `about.json.age` first (a first one, where there is
  *   none, too) and ends whole.
  * - On DigitalOcean Spaces, whose bucket expires nothing itself, the copies older than the
@@ -27,7 +28,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateAgeIdentity } from "@opscrew/core";
+import { Readable } from "node:stream";
+import { buffer } from "node:stream/consumers";
+import { pipeline } from "node:stream/promises";
+import { ageDecryptStream, generateAgeIdentity } from "@opscrew/core";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterAll, describe, expect, it } from "vitest";
 import { withServices } from "../catalog/__fixtures__/plans";
@@ -263,6 +267,31 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
       sha(dump),
       sha(readFileSync(`${hetzner}/.snapshots/${id}/about.json`)),
     ]);
+    // The real age's copy opens in Node too, as `opscrew restore --from offsite` reads it.
+    for (const [file, expected] of [
+      ["db.dump", sha(dump)],
+      ["about.json", sha(readFileSync(`${hetzner}/.snapshots/${id}/about.json`))],
+    ]) {
+      const raw = spawnSync(
+        "docker",
+        [
+          "run",
+          "--rm",
+          ...remote,
+          IMAGES.rclone.ref,
+          "cat",
+          `bucket:${BUCKET}/backups/${id}/${file}.age`,
+        ],
+        { env: { ...process.env, MSYS_NO_PATHCONV: "1" }, maxBuffer: 64 * 1024 * 1024 },
+      );
+      expect(raw.status, String(raw.stderr)).toBe(0);
+      const decrypt = ageDecryptStream(identity);
+      const [plain] = await Promise.all([
+        buffer(decrypt),
+        pipeline(Readable.from([raw.stdout]), decrypt),
+      ]);
+      expect(sha(plain)).toBe(expected);
+    }
 
     // Spaces: an old copy goes after the next upload, the new copies stay.
     rclone(

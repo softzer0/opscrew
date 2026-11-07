@@ -8,7 +8,7 @@
  *   its Docker API over SSH, or into the snapshots volume of the user's Portainer, by a busybox
  *   one-off that receives it as an archive (`putArchive`), streamed.
  */
-import { Readable, Transform } from "node:stream";
+import { pipeline, Readable, Transform } from "node:stream";
 import {
   type DockerClient,
   dialStdioTransport,
@@ -30,7 +30,7 @@ import { serverShell } from "../status/servers";
 import { hostFailure, READ_TIMEOUT_MS, type ScriptHost } from "./hosts";
 import { DIR, failed, ONE_OFF_LABEL, type PortainerPlace } from "./portainer";
 import type { SnapshotRun } from "./run";
-import { type About, AboutSchema, SERVER_SNAPSHOTS, SNAPSHOT_ID } from "./store";
+import { type About, aboutOf, SERVER_SNAPSHOTS, SNAPSHOT_ID } from "./store";
 import type { SnapshotServices } from "./types";
 
 /** The collaborators of `opscrew restore` and of the bucket's copies, besides the snapshots'. */
@@ -216,6 +216,16 @@ export function bucketCopies(objects: readonly string[]): Map<string, string[]> 
   return copies;
 }
 
+/** The servers whose part of the copy `id` the bucket holds whole ({@link bucketCopies}). */
+export async function bucketServers(
+  run: SnapshotRun,
+  bucket: OffsiteBucket,
+  id: string,
+): Promise<string[]> {
+  const objects = await bucketObjects(run, bucket, id);
+  return bucketCopies(objects.map((object) => `${id}/${object}`)).get(id) ?? [];
+}
+
 /** Where `server`'s part of the copy `id` is in the bucket, under the root. */
 export function partPath(id: string, server: string, file: string): string {
   return server === APP_SERVER ? `${id}/${file}.age` : `${id}/${server}/${file}.age`;
@@ -223,7 +233,7 @@ export function partPath(id: string, server: string, file: string): string {
 
 /**
  * The object `path` as it streams out of the bucket, still encrypted: the stream fails when rclone
- * fails, its words redacted.
+ * fails, its words redacted, and destroyed before rclone ended, it kills rclone.
  */
 export function bucketRead(run: SnapshotRun, bucket: OffsiteBucket, path: string): Readable {
   const streams = run.deps.streams ?? new NodeStreamRunner();
@@ -231,19 +241,21 @@ export function bucketRead(run: SnapshotRun, bucket: OffsiteBucket, path: string
     env: bucket.env,
   });
   child.stream.end();
+  let ended = false;
   const out = new Transform({
     transform: (chunk, _encoding, done) => done(null, chunk),
     flush: (done) => {
-      child.exit.then(
-        ({ exitCode, stderr }) =>
+      child.exit.then(({ exitCode, stderr }) => {
+        ended = true;
+        done(
           exitCode === 0
-            ? done()
-            : done(bucketFailure(run, bucket, `read ${path}`, { exitCode, stdout: "", stderr })),
-        done,
-      );
+            ? null
+            : bucketFailure(run, bucket, `read ${path}`, { exitCode, stdout: "", stderr }),
+        );
+      }, done);
     },
     destroy: (error, done) => {
-      child.kill();
+      if (!ended) child.kill();
       done(error);
     },
   });
@@ -259,17 +271,19 @@ export function hideIdentity(run: SnapshotRun, identity: string | undefined): vo
   }
 }
 
-/** The object `path`, decrypted with `identity` as it streams. */
+/**
+ * The object `path`, decrypted with `identity` as it streams. A chunk that doesn't check, a
+ * download that fails, or a reader that stops early (a file longer than its size) ends both, and
+ * with them the rclone child.
+ */
 export function bucketDecrypted(
   run: SnapshotRun,
   bucket: OffsiteBucket,
   identity: string,
   path: string,
 ): Readable {
-  const source = bucketRead(run, bucket, path);
-  const decrypt = ageDecryptStream(identity);
-  source.on("error", (error) => decrypt.destroy(error));
-  return source.pipe(decrypt);
+  // The error reaches the reader through the decrypted stream, which the pipeline destroys.
+  return pipeline(bucketRead(run, bucket, path), ageDecryptStream(identity), () => {});
 }
 
 /** One part's record in the bucket: its `about.json`, as read, and its bytes. */
@@ -302,17 +316,10 @@ export async function bucketAbout(
     if (bytes > MAX_ABOUT_BYTES) throw unreadable(id);
     chunks.push(chunk as Buffer);
   }
-  const plain = Buffer.concat(chunks);
-  const text = plain.toString("utf8").trim();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw unreadable(id);
-  }
-  const about = AboutSchema.safeParse(parsed);
-  if (!about.success || about.data.id !== id) throw unreadable(id);
-  return { about: about.data, text };
+  const text = Buffer.concat(chunks).toString("utf8").trim();
+  const about = aboutOf(text);
+  if (about === undefined || about.id !== id) throw unreadable(id);
+  return { about, text };
 }
 
 /** The refusal of a record in the bucket that does not read as the store's contract. */
@@ -345,23 +352,45 @@ export interface CopyFile {
   size: number;
 }
 
-/** What a copy from the bucket puts in its snapshot's folder. */
+/** The files a record names, with their sizes. */
+export function filesOf(about: About): CopyFile[] {
+  return about.services.flatMap((entry) =>
+    "file" in entry ? [{ file: entry.file, size: entry.size }] : [],
+  );
+}
+
+/** What a copy from the bucket puts in its snapshot's folder: every file its record names. */
 export interface CopyInput {
   id: string;
   /** The server whose part it is (`app` in a Portainer). */
   server: string;
   record: BucketAbout;
-  files: readonly CopyFile[];
 }
 
-/** A stream that opens only when it is first read: one download at a time. */
+/**
+ * A stream that opens its source only when it is first read, one download at a time; destroyed, it
+ * destroys the source, which ends its download.
+ */
 function lazy(open: () => Readable): Readable {
-  return Readable.from(
-    (async function* () {
-      yield* open();
-    })(),
-    { objectMode: false },
-  );
+  let source: Readable | undefined;
+  return new Readable({
+    read() {
+      if (source !== undefined) {
+        source.resume();
+        return;
+      }
+      source = open();
+      source.on("data", (chunk: Buffer) => {
+        if (!this.push(chunk)) source?.pause();
+      });
+      source.on("end", () => this.push(null));
+      source.on("error", (error) => this.destroy(error));
+    },
+    destroy(error, done) {
+      source?.destroy();
+      done(error);
+    },
+  });
 }
 
 /**
@@ -381,7 +410,7 @@ function copyArchive(
   const owned = { uid, gid };
   const entries: TarEntry[] = [
     { name: `${folder}/`, type: "dir", mode: 0o700, ...owned },
-    ...input.files.map(
+    ...filesOf(record.about).map(
       (part): TarEntry => ({
         name: `${folder}/${part.file}`,
         type: "file",

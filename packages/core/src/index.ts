@@ -2,7 +2,6 @@ export * from "./approvals";
 export * from "./audit";
 export {
   ageDecryptStream,
-  ageEncrypt,
   ageRecipientOf,
   generateAgeIdentity,
   isAgeRecipient,

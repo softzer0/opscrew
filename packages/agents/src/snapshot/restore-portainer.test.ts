@@ -159,6 +159,19 @@ describe.skipIf(!SH)("opscrew restore in the user's Portainer", () => {
     expect(container(world, "app")?.state).toBe("running");
   });
 
+  it("starts the app again when stopping it fails, having changed nothing", async () => {
+    const world = await portainerWorld(plan());
+    world.probe.version = RUNNING;
+    world.store(ID, record());
+    const app = container(world, "app");
+    world.docker.fail("POST", new RegExp(`/containers/${app?.id}/stop`), 500, "the daemon is busy");
+    const failed = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
+
+    expect(failed.message).toContain("could not copy the current data before the restore");
+    expect(ranWith(world, "pg_restore")).toEqual([]);
+    expect(app?.state).toBe("running");
+  });
+
   it("refuses another version, and a stop-only service whose image changed, before any change", async () => {
     const world = await portainerWorld(plan());
     world.probe.version = "b".repeat(64);
@@ -220,5 +233,14 @@ describe.skipIf(!SH)("opscrew restore in the user's Portainer", () => {
     for (const secret of [OFFSITE_KEY.secretAccessKey, key.identity, DB_SECRET]) {
       expect(shown).not.toContain(secret);
     }
+
+    // A retry once the copy got there: the volume's own is used, and the bucket is not read.
+    const calls = bucket.calls.length;
+    await restoreSnapshot(world.deps, ID, {
+      services: world.services,
+      from: "offsite",
+      identity: generateAgeIdentity().identity,
+    });
+    expect(bucket.calls).toHaveLength(calls);
   });
 });

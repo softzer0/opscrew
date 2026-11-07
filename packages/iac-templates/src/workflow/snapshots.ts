@@ -193,6 +193,27 @@ export function snapshotRunning(): string[] {
   ]);
 }
 
+/**
+ * `snapshot_version`, which prints the 64 hex digits of the version a snapshot records: the one
+ * {@link snapshotRunning} prints, else, for a local build on this computer (`.env`'s `APP_IMAGE`
+ * without a digest), its image's ID (`docker image inspect`); nothing without either. Only
+ * `snapshot.sh` records it: the start script's own version stays {@link snapshotRunning}'s, so a
+ * local build's deploy takes no release snapshot.
+ */
+function snapshotVersionFunction(): string[] {
+  return shellFunction("snapshot_version", [
+    '  _version="$(snapshot_running)"',
+    '  if [ -z "$_version" ] && [ -f .env ]; then',
+    "    _version_image=\"$(sed -n 's/^APP_IMAGE=//p' .env)\"",
+    '    case "$_version_image" in',
+    '      "" | *@sha256:*) ;;',
+    "      *) _version=\"$(docker image inspect --format '{{.Id}}' \"$_version_image\" 2> /dev/null | sed -n 's/^sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p')\" ;;",
+    "    esac",
+    "  fi",
+    '  echo "$_version"',
+  ]);
+}
+
 /** Where a one-off container of a service mounts the snapshot's folder. */
 const MOUNT = "/snapshot";
 
@@ -582,7 +603,7 @@ function partCase(
  *   emptied, its folders untarred, started);
  * - `part_take <part> <folder>` (3: nothing to copy), `part_restore <part> <folder>`
  *   ({@link partCommands});
- * - `snapshot_running` ({@link snapshotRunning});
+ * - `snapshot_running` ({@link snapshotRunning}) and `snapshot_version` ({@link snapshotVersionFunction});
  * - `snapshot_about <id> <kind> <taken> <version> <folder> [<part>]...`: prints `about.json`, one
  *   line, as the store's contract has it (024 plan.md 1.): `version` the 64-hex digest or empty,
  *   each part's kind, file, size and image (a service's), or `skipped` for the parts not given;
@@ -683,6 +704,7 @@ export function snapshotFunctions(plan: DeployPlan, server: string, folder: stri
       partCase(parts, (part) => commands.get(part.name)?.restore ?? []),
     ),
     ...snapshotRunning(),
+    ...snapshotVersionFunction(),
     ...shellFunction("snapshot_about", [
       '  _about_version=""',
       '  if [ -n "$4" ]; then _about_version="sha256:$4"; fi',

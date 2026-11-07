@@ -2,7 +2,7 @@
  * A fake off-server bucket for the restore's and the bucket's tests, played by a fake rclone: the
  * runner answers `docker version` (local Docker, so rclone runs as the pinned image) and rclone's
  * `lsf` and `purge`; the stream runner answers `cat` with an object's bytes. Objects are encrypted
- * with real age (`ageEncrypt`) to a key the test generates.
+ * in age's format (`ageEncrypt`) to a key the test generates.
  */
 import { Duplex, Readable, Writable } from "node:stream";
 import type {
@@ -12,8 +12,7 @@ import type {
   StreamProcess,
   StreamRunner,
 } from "@opscrew/contracts";
-import { ageEncrypt } from "@opscrew/core";
-import { fakeSecret } from "@opscrew/core/testing";
+import { ageEncrypt, fakeSecret } from "@opscrew/core/testing";
 import { IMAGES } from "@opscrew/iac-templates";
 import { ScriptedRunner } from "../../testing";
 
@@ -41,6 +40,10 @@ export class FakeBucket {
   /** The objects by their path under `backups/`. */
   readonly objects = new Map<string, Buffer>();
   readonly calls: RcloneCall[] = [];
+  /** Downloads keep their stream open after the object's bytes, until killed. */
+  endless = false;
+  /** How many downloads were killed. */
+  killed = 0;
 
   constructor(readonly bucket: string) {}
 
@@ -98,18 +101,40 @@ export class FakeBucket {
         const rclone = this.record(command, args, options?.env);
         const path = rclone?.[0] === "cat" ? this.path(rclone[1]) : undefined;
         const data = path === undefined ? undefined : this.objects.get(path);
+        // A download that never ends on its own, as a stalled one: only a kill ends it.
+        let sent = false;
+        const readable = this.endless
+          ? new Readable({
+              read() {
+                if (sent || data === undefined) return;
+                sent = true;
+                this.push(data);
+              },
+            })
+          : Readable.from(data === undefined ? [] : [data], { objectMode: false });
         const stream = Duplex.from({
-          readable: Readable.from(data === undefined ? [] : [data], { objectMode: false }),
+          readable,
           writable: new Writable({ write: (_chunk, _encoding, done) => done() }),
         });
+        let exited: (exit: { exitCode: number; stderr: string }) => void = () => {};
+        const exit = this.endless
+          ? new Promise<{ exitCode: number; stderr: string }>((resolve) => {
+              exited = resolve;
+            })
+          : Promise.resolve(
+              data === undefined
+                ? { exitCode: 3, stderr: "object not found" }
+                : { exitCode: 0, stderr: "" },
+            );
         return {
           stream,
-          exit: Promise.resolve(
-            data === undefined
-              ? { exitCode: 3, stderr: "object not found" }
-              : { exitCode: 0, stderr: "" },
-          ),
-          kill: () => stream.destroy(),
+          exit,
+          kill: () => {
+            this.killed++;
+            readable.destroy();
+            stream.destroy();
+            exited({ exitCode: 143, stderr: "killed" });
+          },
         };
       },
     };

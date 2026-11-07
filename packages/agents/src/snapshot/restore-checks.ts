@@ -119,12 +119,12 @@ export function checkVersion(
   allow: boolean,
 ): void {
   if (allow || (version !== "" && version === running)) return;
-  const { environment, flags } = run;
+  const { flags } = run;
   const alone = `to restore its data alone under the version that runs now, run \`opscrew restore ${id}${flags} --allow-other-version\``;
   if (version === "") {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
-      `The snapshot ${id} records no version (it was taken before ${environment} recorded the version that ran), so OpsCrew can't tell whether its data fits the version that runs now. ${NOTHING_CHANGED}`,
+      `The snapshot ${id} records no version: no version was known when it was taken (before a first deploy, or with an older OpsCrew), so OpsCrew can't tell whether its data fits the version that runs now. ${NOTHING_CHANGED}`,
       { hint: `If you know it does, ${alone}.` },
     );
   }
@@ -137,11 +137,16 @@ export function checkVersion(
   );
 }
 
+/** An image reference's `sha256:` digest, or the reference itself without one. */
+function digestOf(image: string): string {
+  return /@(sha256:[0-9a-f]{64})$/.exec(image)?.[1] ?? image;
+}
+
 /**
  * Refuses, before any change, a stop-only service whose image now (its container's, or the plan's
- * pin without one) is not the one its copy was taken with: its files may not open in another
- * version (Meilisearch's need the very same one). A copy that records no image is refused unless
- * `--allow-other-version`.
+ * pin without one) is not the one its copy was taken with, by their digests: its files may not open
+ * in another version (Meilisearch's need the very same one). A copy that records no image is
+ * refused unless `--allow-other-version`.
  */
 export function checkImages(
   run: SnapshotRun,
@@ -164,7 +169,7 @@ export function checkImages(
           },
         );
       }
-      if (then === now) continue;
+      if (now !== undefined && digestOf(then) === digestOf(now)) continue;
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
         `${partWords(part)} ran ${then} when the snapshot ${id} was copied, and runs ${now} now: its files may not open in another version (Meilisearch's need the very same one), so OpsCrew does not put them back. ${NOTHING_CHANGED}`,
@@ -243,6 +248,11 @@ export async function approveRestore(run: SnapshotRun, input: RestoreApproval): 
       ? ["Only the data goes back (--allow-other-version): the version that runs now stays."]
       : []),
     "While it runs, the app's requests wait and the app stops until its data is back. OpsCrew first copies the data as it is now, and puts that copy back if the restore fails.",
+    ...(holders.length > 1
+      ? [
+          "If the restore fails on one machine, OpsCrew puts back what it restored on the others too, under this approval.",
+        ]
+      : []),
     input.approvalFile
       ? `Typing ${name} approves it. OpsCrew then leaves a one-time approval in the app's folder on each server that holds a part, valid for ${APPROVAL_SECONDS / 60} minutes, which the restore uses once.`
       : `Typing ${name} approves it.`,

@@ -54,6 +54,7 @@ export { previewWorkflowPath, renderPreviewWorkflow } from "./workflow/preview";
 export {
   OFFSITE_ENV_FILE,
   OFFSITE_ENV_SECRET,
+  RESTORE_STUCK,
   snapshotScript,
 } from "./workflow/snapshot-script";
 export {

@@ -29,6 +29,7 @@ import {
   OFFSITE_ENV_FILE,
   OFFSITE_ENV_SECRET,
   RESTORE_APPROVAL_FILE,
+  RESTORE_STUCK,
   restoreApprovalLine,
   snapshotScript,
 } from "./snapshot-script";
@@ -163,6 +164,7 @@ const FAKE_DOCKER = [
   '    s="${last#c-}"',
   '    if [ -f "$WORK/running/$s" ]; then echo "running 0"; else echo "exited $(cat "$WORK/exit-$s" 2> /dev/null || echo 0)"; fi ;;',
   '  "volume inspect") [ -z "${NO_VOLUME:-}" ] ;;',
+  '  "image inspect") if [ -n "${LOCAL_IMAGE_ID:-}" ]; then echo "sha256:$LOCAL_IMAGE_ID"; else exit 1; fi ;;',
   '  "compose run")',
   '    host=""; service=""; script=""; p1=""; p2=""',
   '    for arg in "$@"; do',
@@ -467,6 +469,18 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(snapshots()).toEqual([]);
     });
 
+    it("records a local build's image ID as the version, and none without one", () => {
+      const local = "e".repeat(64);
+      server();
+      write(at(".env"), "APP_IMAGE=opscrew-local/shop:0123456789ab\n");
+      const recorded = snap(["take", "manual"], { LOCAL_IMAGE_ID: local });
+      expect(recorded.status, recorded.output).toBe(0);
+      expect(about(recorded.stdout).version).toBe(`sha256:${local}`);
+      const unknown = snap(["take", "manual"]);
+      expect(unknown.status, unknown.output).toBe(0);
+      expect(about(unknown.stdout).version).toBe("");
+    });
+
     it("never replaces a snapshot taken by hand in the same second", () => {
       server();
       const first = snap(["take", "manual"]);
@@ -676,6 +690,8 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(result.stderr).toContain(
         `OpsCrew restored the snapshot ${id}. The data from just before the restore is the snapshot ${saved}.`,
       );
+      // The copy from just before, named on stdout for opscrew restore.
+      expect(result.stdout).toBe(`saved ${saved}`);
       const order = [
         "flock 7",
         "kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s",
@@ -744,7 +760,7 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       const id = taken();
       approve(id);
       const result = snap(["restore", id], { RESTORE_FAIL: "db rows" });
-      expect(result.status).toBe(1);
+      expect(result.status).toBe(RESTORE_STUCK);
       const saved = snapshots().find((name) => name !== id) ?? "";
       expect(result.stderr).toContain(
         `Restoring the snapshot ${id} failed, and putting the data back as it was before the restore failed too, so it may be partly changed, and the app was not started. The copy from just before the restore stays in ${appDir()}/.snapshots/${saved}: restore it with opscrew restore ${saved} once the cause is fixed.`,

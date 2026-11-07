@@ -50,14 +50,13 @@ import {
 import {
   type BucketAbout,
   bucketAbout,
-  bucketCopies,
-  bucketObjects,
+  bucketServers,
   copyToPortainer,
   offsiteBucket,
   type RestoreServices,
 } from "./restore-offsite";
 import type { SnapshotRun } from "./run";
-import { AboutSchema, snapshotIdAt } from "./store";
+import { aboutOf, snapshotIdAt } from "./store";
 
 /** The record of the snapshot `id` in the volume (`about <json>`), and whether its folder is there. */
 async function readRecord(
@@ -73,15 +72,10 @@ async function readRecord(
   if (result.exitCode !== 0) throw failed("read its snapshots", result.exitCode);
   const present = /^present$/m.test(result.stdout);
   const text = /^about (\{.*\})$/m.exec(result.stdout)?.[1];
-  if (text === undefined) return { present };
-  try {
-    const about = AboutSchema.safeParse(JSON.parse(text));
-    return about.success && about.data.id === id
-      ? { record: { about: about.data, text }, present }
-      : { present };
-  } catch {
-    return { present };
-  }
+  const about = text === undefined ? undefined : aboutOf(text);
+  return about?.id === id && text !== undefined
+    ? { record: { about, text }, present }
+    : { present };
 }
 
 /** The image the first container of each service in `containers` runs, by service. */
@@ -197,23 +191,24 @@ export async function restoreInPortainer(
   const low = lowDisk(probed.disk, "in your Portainer");
   if (low !== undefined) throw low;
   const containers = await stackContainers(place);
-  // 2. The record: in the volume, or in the bucket.
+  // 2. The record: in the volume, or in the bucket when the volume lacks it (a complete snapshot in
+  // the volume is used as it is, also with --from offsite).
   let record = read.record;
   const bucket =
-    options.from === "offsite"
+    options.from === "offsite" && record === undefined
       ? await offsiteBucket(run, services, `opscrew restore ${id}${flags} --from offsite`)
       : undefined;
   if (bucket !== undefined) {
     if (read.present) {
       throw new OpsCrewError(
         "PHASE_PRECONDITION",
-        `The snapshot ${id} is in your Portainer already, so its copy in the bucket is not needed. ${NOTHING_CHANGED}`,
-        { hint: `Restore it from there: \`opscrew restore ${id}${flags}\`.` },
+        `Your Portainer has a snapshot ${id} that is not complete, so OpsCrew does not replace it with the bucket's copy. ${NOTHING_CHANGED}`,
+        {
+          hint: `Delete it there with \`opscrew snapshot delete ${id}${flags}\` only if the bucket's copy is the one you want, then try again.`,
+        },
       );
     }
-    const objects = await bucketObjects(run, bucket, id);
-    const servers = bucketCopies(objects.map((object) => `${id}/${object}`)).get(id) ?? [];
-    record = servers.includes(APP_SERVER)
+    record = (await bucketServers(run, bucket, id)).includes(APP_SERVER)
       ? await bucketAbout(run, bucket, options.identity as string, id, APP_SERVER)
       : undefined;
   }
@@ -252,9 +247,6 @@ export async function restoreInPortainer(
       id,
       server: APP_SERVER,
       record,
-      files: record.about.services.flatMap((entry) =>
-        "file" in entry ? [{ file: entry.file, size: entry.size }] : [],
-      ),
     });
   }
   const ran = new Set(
@@ -269,8 +261,8 @@ export async function restoreInPortainer(
   deps.reporter.step(
     `Restoring the snapshot ${id} in your Portainer: the app stops until its data is back`,
   );
-  for (const container of app) await place.docker.stopContainer(container.id);
   try {
+    for (const container of app) await place.docker.stopContainer(container.id);
     await portainerTake(run, place, { id: saved, version: probed.version, parts });
   } catch (error) {
     await startApp();

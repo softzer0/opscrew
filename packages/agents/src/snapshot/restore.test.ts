@@ -3,7 +3,12 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FakeDocker } from "@opscrew/connector-docker/testing";
 import { generateAgeIdentity, OpsCrewError } from "@opscrew/core";
-import { IMAGES, RESTORE_APPROVAL_FILE, snapshotScript } from "@opscrew/iac-templates";
+import {
+  IMAGES,
+  RESTORE_APPROVAL_FILE,
+  RESTORE_STUCK,
+  snapshotScript,
+} from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { FakeComputer, localPlan, localProject } from "../localhost/__fixtures__/computer";
@@ -214,6 +219,13 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on servers", () => {
     expect(missing.message).toContain("does not record the image kafka (Apache Kafka) ran");
     await restoreSnapshot(world.deps, ID, { services: world.services, allowOtherVersion: true });
     expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
+
+    // Only the digests count: the same image named another way is the same image.
+    const digest = IMAGES.kafka.ref.slice(IMAGES.kafka.ref.indexOf("@"));
+    await world.servers.app?.write("images/kafka", `apache/kafka${digest}\n`);
+    await store(world, "app", about([DB, KAFKA]));
+    await restoreSnapshot(world.deps, ID, { services: world.services });
+    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
   });
 
   it("says the copy was put back when the restore fails, and changes nothing more", async () => {
@@ -230,8 +242,34 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on servers", () => {
     expect(failed.message).toContain("OpsCrew put the data back as it was before the restore");
     expect(failed.message).not.toContain(SERVER_IPV4);
     expect(world.deps.audit.entries).toContainEqual(
-      expect.objectContaining({ action: "restore a snapshot", detail: `${ID}: db: failed` }),
+      expect.objectContaining({ action: "restore a snapshot", detail: `${ID}: db: back` }),
     );
+  });
+
+  it("names the copy to restore when putting the data back failed too", async () => {
+    const world = await snapshotWorld(plan());
+    await store(world, "app", about([DB]));
+    await world.servers.app?.write("restore.exit", `${RESTORE_STUCK}\n`);
+    await world.servers.app?.write("restore.stderr", "the put-back failed\n");
+    const stuck = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
+
+    expect(stuck.message).toContain("the app stays stopped");
+    expect(stuck.hint).toContain(`on the app's server, \`opscrew restore ${SAVED}`);
+    expect(world.deps.audit.entries).toContainEqual(
+      expect.objectContaining({ action: "restore a snapshot", detail: `${ID}: db: stuck` }),
+    );
+  });
+
+  it("removes the one-time approval when the restore did not run", async () => {
+    const world = await snapshotWorld(plan());
+    await store(world, "app", about([DB]));
+    const app = world.servers.app as NonNullable<typeof world.servers.app>;
+    app.answer = (command) =>
+      command.includes("'restore'") ? { exitCode: 4, stdout: "", stderr: "" } : undefined;
+    const failed = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
+
+    expect(failed.message).toContain("has no snapshot.sh");
+    expect(await app.read(RESTORE_APPROVAL_FILE)).toBeUndefined();
   });
 
   it("restores nothing when the app's name is not typed", async () => {
@@ -289,7 +327,8 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore across the app's servers (D8, D1
     expect(shown).not.toContain(DATA_IPV4);
   });
 
-  it("resumes the app when a server's restore fails, and says what the others did", async () => {
+  /** The split plan's snapshot {@link ID}: Valkey on the app's server, PostgreSQL on `data`. */
+  async function split() {
     const world = await snapshotWorld(splitStagingPlan());
     await store(
       world,
@@ -297,14 +336,21 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore across the app's servers (D8, D1
       about([{ name: "cache", kind: "valkey", file: "cache.rdb", size: 9 }]),
     );
     await store(world, "data", about([{ ...DB }]));
-    await world.servers.data?.write("restore.exit", "1\n");
-    await world.servers.data?.write(
-      "restore.stderr",
-      `Restoring the snapshot ${ID} failed, so OpsCrew put the data back as it was before the restore (the snapshot ${SAVED}): nothing changed.\n`,
-    );
+    return world;
+  }
+
+  /** Makes `server`'s restore of `id` end with `exit`, saying `stderr`. */
+  async function failing(world: SnapshotWorld, server: string, id: string, exit: number) {
+    await world.servers[server]?.write(`restore-${id}.exit`, `${exit}\n`);
+    await world.servers[server]?.write(`restore-${id}.stderr`, `the restore of ${id} failed\n`);
+  }
+
+  it("resumes the app when the first server's restore fails, its data put back by its script", async () => {
+    const world = await split();
+    await failing(world, "data", ID, 1);
     const failed = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
 
-    expect(failed.message).toContain("put the data back as it was before the restore");
+    expect(failed.message).toContain(`the restore of ${ID} failed`);
     expect(await world.servers.app?.calls()).toEqual(["list", "hold", "resume"]);
     expect(await world.servers.data?.calls()).toEqual(["list", `restore ${ID}`]);
 
@@ -313,6 +359,108 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore across the app's servers (D8, D1
     const stuck = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
     expect(stuck.message).toContain("OpsCrew could not start the app again");
     expect(stuck.hint).toContain("sh snapshot.sh resume");
+  });
+
+  it("puts back what an earlier server restored when a later one fails, in the same hold", async () => {
+    const world = await split();
+    await failing(world, "app", ID, 1);
+    const order = journal(world);
+    const failed = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
+
+    expect(failed.message).toContain(
+      "OpsCrew put the data back as it was before the restore on server data too, which it had restored: nothing changed.",
+    );
+    expect(order).toEqual([
+      "app: list",
+      "data: list",
+      "app: hold",
+      `data: restore ${ID}`,
+      `app: restore ${ID}`,
+      // The app's server's restore started the app: it waits again while the data goes back.
+      "app: hold",
+      `data: restore ${SAVED}`,
+      "app: resume",
+    ]);
+    // The put-back's own one-time approval, under the restore's approval.
+    expect((await world.servers.data?.read(`approval.${SAVED}`))?.trim()).toMatch(
+      new RegExp(`^${SAVED} - \\d+$`),
+    );
+    expect(world.handler.requests).toHaveLength(1);
+    expect(world.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        action: "put back a restore",
+        target: "server data",
+        detail: `${SAVED}: db: restored`,
+      }),
+    );
+    expect(world.handler.requests[0]?.details).toContain(
+      "If the restore fails on one machine, OpsCrew puts back what it restored on the others too",
+    );
+  });
+
+  it("keeps the app stopped when a put-back fails, naming the copy to restore", async () => {
+    const world = await split();
+    await failing(world, "app", ID, 1);
+    await failing(world, "data", SAVED, 1);
+    const stuck = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
+
+    expect(stuck.message).toContain(
+      "OpsCrew could not put the data back as it was before the restore on server data, which it had restored.",
+    );
+    expect(stuck.message).toContain("the app stays stopped");
+    expect(stuck.hint).toContain(`on server data, \`opscrew restore ${SAVED}`);
+    expect((await world.servers.app?.calls())?.at(-1)).toBe("hold");
+  });
+
+  it("puts back the servers restored before one whose own put-back failed, the app kept stopped", async () => {
+    const world = await split();
+    await failing(world, "app", ID, RESTORE_STUCK);
+    const stuck = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
+
+    expect(await world.servers.data?.calls()).toEqual([
+      "list",
+      `restore ${ID}`,
+      `restore ${SAVED}`,
+    ]);
+    expect(stuck.message).toContain("the app stays stopped");
+    expect(stuck.hint).toContain(`on the app's server, \`opscrew restore ${SAVED}`);
+    expect(stuck.hint).not.toContain("on server data");
+    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
+  });
+
+  it("keeps the app stopped when a server's own put-back fails, and when its copy is unknown", async () => {
+    const world = await split();
+    await failing(world, "data", ID, RESTORE_STUCK);
+    const stuck = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
+
+    expect(stuck.hint).toContain(`on server data, \`opscrew restore ${SAVED}`);
+    expect(await world.servers.app?.calls()).toEqual(["list", "hold"]);
+
+    const unknown = await split();
+    await failing(unknown, "app", ID, 1);
+    await unknown.servers.data?.write("restore.nosaved", "");
+    const lost = await failure(restoreSnapshot(unknown.deps, ID, { services: unknown.services }));
+    expect(lost.hint).toContain("on server data, the newest snapshot by hand there");
+    expect((await unknown.servers.app?.calls())?.at(-1)).toBe("hold");
+  });
+
+  it("resumes the app on every other way out: a failed hold, and an error of another kind", async () => {
+    const world = await split();
+    await world.servers.app?.write("hold.exit", "1\n");
+    const held = await failure(restoreSnapshot(world.deps, ID, { services: world.services }));
+    expect(held.message).toContain("could not hold the app's requests before the restore");
+    expect(await world.servers.app?.calls()).toEqual(["list", "hold", "resume"]);
+
+    const other = await split();
+    const append = other.deps.audit.append.bind(other.deps.audit);
+    other.deps.audit.append = async (entry) => {
+      if (entry.action === "restore a snapshot") throw new Error("the audit log is full");
+      return append(entry);
+    };
+    await expect(restoreSnapshot(other.deps, ID, { services: other.services })).rejects.toThrow(
+      "the audit log is full",
+    );
+    expect((await other.servers.app?.calls())?.at(-1)).toBe("resume");
   });
 
   it("restores a pre-release snapshot by its digest on an extra server alone, the app held around it (D18)", async () => {
@@ -418,8 +566,8 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
     expect(shown).not.toContain(SERVER_IPV4);
   });
 
-  it("refuses another key before any change, and a copy the server holds already", async () => {
-    const { world, services } = await offsiteWorld();
+  it("refuses another key before any change, and uses the copy a server still holds", async () => {
+    const { world, bucket, services } = await offsiteWorld();
     const wrong = await failure(
       restoreSnapshot(world.deps, ID, {
         services,
@@ -432,29 +580,119 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore --from offsite", () => {
 
     const none = await failure(restoreSnapshot(world.deps, ID, { services, from: "offsite" }));
     expect(none.code).toBe("INVALID_INPUT");
+    // A retry once the first copy got there: the server's own is used, nothing is downloaded.
     await store(world, "app", about([DB]));
-    const present = await failure(
-      restoreSnapshot(world.deps, ID, {
-        services,
-        from: "offsite",
-        identity: generateAgeIdentity().identity,
-      }),
-    );
-    expect(present.message).toContain("is on the app's server already");
+    const reads = bucket.calls.filter((call) => call.args[0] === "cat").length;
+    await restoreSnapshot(world.deps, ID, {
+      services,
+      from: "offsite",
+      identity: generateAgeIdentity().identity,
+    });
+    expect(bucket.calls.filter((call) => call.args[0] === "cat")).toHaveLength(reads);
+    expect((await world.servers.app?.calls())?.at(-1)).toBe(`restore ${ID}`);
   });
 
-  it("leaves no part of a copy whose download is damaged", async () => {
-    const { world, key, bucket, docker, folder, services } = await offsiteWorld();
+  /** {@link offsiteWorld}'s dump changed in its first chunk, its download never ending by itself. */
+  async function stalled() {
+    const offsite = await offsiteWorld();
+    const { bucket } = offsite;
     const damaged = Buffer.from(bucket.objects.get(`${ID}/db.dump.age`) ?? Buffer.alloc(0));
-    damaged[damaged.length - 20] = (damaged[damaged.length - 20] as number) ^ 1;
+    const payload = damaged.indexOf("\n", damaged.indexOf("\n--- ") + 1) + 1 + 16;
+    damaged[payload + 10] = (damaged[payload + 10] as number) ^ 1;
     bucket.objects.set(`${ID}/db.dump.age`, damaged);
+    return offsite;
+  }
+
+  it("ends a damaged download at once, its rclone killed, leaving no part of the copy", async () => {
+    const { world, key, bucket, docker, folder, services } = await stalled();
+    // The record downloads whole; the dump's stream would stay open.
+    const open = bucket.streams().open;
+    world.deps.streams = {
+      open: (command, args, options) => {
+        bucket.endless = args.some((arg) => arg.endsWith("db.dump.age"));
+        return open(command, args, options);
+      },
+    };
     const failed = await failure(
       restoreSnapshot(world.deps, ID, { services, from: "offsite", identity: key.identity }),
     );
 
     expect(failed.code).toBe("ARTIFACT_INVALID");
+    expect(bucket.killed).toBe(1);
     expect(docker.folders.get(folder)?.files.has(`${ID}/about.json`)).toBe(false);
     expect(await world.servers.app?.calls()).toEqual(["list"]);
+  });
+
+  it("ends a copy longer than its record says, its rclone killed", async () => {
+    const { world, key, bucket, services } = await offsiteWorld();
+    const short = about([{ ...DB, size: 10 }]);
+    bucket.put(`${ID}/about.json.age`, JSON.stringify(short), key.recipient);
+    const open = bucket.streams().open;
+    world.deps.streams = {
+      open: (command, args, options) => {
+        bucket.endless = args.some((arg) => arg.endsWith("db.dump.age"));
+        return open(command, args, options);
+      },
+    };
+    const failed = await failure(
+      restoreSnapshot(world.deps, ID, { services, from: "offsite", identity: key.identity }),
+    );
+
+    expect(failed.code).toBe("ARTIFACT_INVALID");
+    expect(bucket.killed).toBe(1);
+  });
+
+  it("copies from the bucket only to the servers that lack the snapshot", async () => {
+    const world = await snapshotWorld(withOffsite(splitStagingPlan()));
+    const key = generateAgeIdentity();
+    const bucket = new FakeBucket("shop-backups");
+    const cache = {
+      name: "cache",
+      kind: "valkey",
+      file: "cache.rdb",
+      size: 4,
+      image: IMAGES.valkey.ref,
+    };
+    await store(world, "app", about([cache]));
+    bucket.put(`${ID}/cache.rdb.age`, "rdb.", key.recipient);
+    bucket.put(`${ID}/about.json.age`, JSON.stringify(about([cache])), key.recipient);
+    bucket.put(`${ID}/data/db.dump.age`, "dump", key.recipient);
+    bucket.put(
+      `${ID}/data/about.json.age`,
+      JSON.stringify(about([{ ...DB, size: 4 }])),
+      key.recipient,
+    );
+    world.deps.env = { ...world.deps.env, ...OFFSITE_ENV };
+    world.deps.runner = bucket.runner(world.deps.runner);
+    world.deps.streams = bucket.streams();
+    const docker = new FakeDocker();
+    docker.images.add(IMAGES.busybox.ref);
+    const folder = `/srv/apps/${world.plan.app.name}/.snapshots`;
+    docker.addFolder(folder);
+    docker.onStart = () => ({ exitCode: 0 });
+    const reached: string[] = [];
+    const services = {
+      ...world.services,
+      docker: (server: string) => {
+        reached.push(server);
+        return docker;
+      },
+    };
+    await restoreSnapshot(world.deps, ID, { services, from: "offsite", identity: key.identity });
+
+    expect(reached).toEqual(["data"]);
+    expect(docker.folders.get(folder)?.files.get(`${ID}.taking/db.dump`)?.data?.toString()).toBe(
+      "dump",
+    );
+    const downloaded = bucket.calls
+      .filter((call) => call.args[0] === "cat")
+      .map((call) => call.args[1]);
+    expect(downloaded).toEqual([
+      "offsite:shop-backups/backups/20261106T190000Z/data/about.json.age",
+      "offsite:shop-backups/backups/20261106T190000Z/data/db.dump.age",
+    ]);
+    expect(await world.servers.data?.calls()).toEqual(["list", `restore ${ID}`]);
+    expect(await world.servers.app?.calls()).toEqual(["list", "hold", `restore ${ID}`, "resume"]);
   });
 
   it("refuses without the off-server copy in the plan", async () => {
@@ -478,24 +716,27 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on this computer", () => {
     const folder = appFolder(deps.paths, local);
     mkdirSync(join(folder, ".snapshots", ID), { recursive: true });
     writeFileSync(join(folder, "snapshot.sh"), `${snapshotScript(local).join("\n")}\n`);
-    // A local build has no digest: its snapshots record no version.
+    // A local build has no digest: its snapshots record its image's ID, as the version here does.
+    const image = "f".repeat(64);
+    writeFileSync(join(folder, ".env"), "APP_IMAGE=opscrew-local/shop:0123456789ab\n");
     writeFileSync(
       join(folder, ".snapshots", ID, "about.json"),
       `${JSON.stringify(about([DB], { version: "" }))}\n`,
     );
     const apps = localRoots(deps.paths).apps.replaceAll("\\", "/");
+    const docker = `docker() { if [ "$1 $2" = "image inspect" ]; then echo "sha256:${image}"; fi; }`;
     const approvals: string[] = [];
     computer.script = (text) => {
       if (text.includes("'restore'")) {
         approvals.push(readFileSync(join(folder, RESTORE_APPROVAL_FILE), "utf8").trim());
         return {
           exitCode: 0,
-          stdout: "",
+          stdout: `saved ${SAVED}\n`,
           stderr: `OpsCrew restored the snapshot ${ID}. The data from just before the restore is the snapshot ${SAVED}.\n`,
         };
       }
-      // Docker answers no container here: the images are the plan's.
-      const run = spawnSync("sh", ["-c", `docker() { :; }\n${text}`], {
+      // Docker knows the local image, and runs no service container: the images are the plan's.
+      const run = spawnSync("sh", ["-c", `${docker}\n${text}`], {
         encoding: "utf8",
         env: { ...process.env, OPSCREW_APPS_DIR: apps },
       });
@@ -504,15 +745,23 @@ describe.skipIf(!SH_AVAILABLE)("opscrew restore on this computer", () => {
     const services = { localhost: computer.services() };
     const unknown = await failure(restoreSnapshot(deps, ID, { services }));
     expect(unknown.message).toContain("records no version");
+    await restoreSnapshot(deps, ID, { services, allowOtherVersion: true });
 
-    const restored = await restoreSnapshot(deps, ID, { services, allowOtherVersion: true });
+    writeFileSync(
+      join(folder, ".snapshots", ID, "about.json"),
+      `${JSON.stringify(about([DB], { version: `sha256:${image}` }))}\n`,
+    );
+    const restored = await restoreSnapshot(deps, ID, { services });
     expect(restored).toEqual({
       id: ID,
       where: "on this computer",
       services: [{ name: "db" }],
       saved: { app: SAVED },
     });
-    expect(approvals).toEqual([expect.stringMatching(new RegExp(`^${ID} - \\d+$`))]);
+    expect(approvals).toEqual([
+      expect.stringMatching(new RegExp(`^${ID} - \\d+$`)),
+      expect.stringMatching(new RegExp(`^${ID} - \\d+$`)),
+    ]);
     expect(computer.scripts.some((run) => run.script.includes("'hold'"))).toBe(false);
   });
 });

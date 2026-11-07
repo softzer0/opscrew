@@ -52,6 +52,16 @@ export interface Listing {
 /** The line a listing prints for a snapshot folder with `offsite.done`: `offsite <id>`. */
 export const OFFSITE_LINE = "offsite";
 
+/** One `about.json` line as the store's contract has it, or `undefined` when it isn't one. */
+export function aboutOf(line: string): About | undefined {
+  try {
+    const about = AboutSchema.safeParse(JSON.parse(line));
+    return about.success ? about.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * The listing printed by {@link listingCommand} or Portainer's list: each `about.json` on a line of
  * its own, and `offsite <id>` for each folder with `offsite.done`. Other lines are ignored.
@@ -66,15 +76,8 @@ export function readListing(stdout: string): Listing {
       continue;
     }
     if (!line.startsWith("{")) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      listing.unreadable++;
-      continue;
-    }
-    const about = AboutSchema.safeParse(parsed);
-    if (about.success) listing.abouts.push(about.data);
+    const about = aboutOf(line);
+    if (about !== undefined) listing.abouts.push(about);
     else listing.unreadable++;
   }
   return listing;

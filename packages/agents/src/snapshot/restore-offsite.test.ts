@@ -224,4 +224,16 @@ describe.skipIf(!SH_AVAILABLE)("the off-server bucket from this computer", () =>
     expect(world.handler.requests).toEqual([]);
     expect(await world.servers.app?.calls()).toEqual(["list"]);
   });
+
+  it("deletes a snapshot before a release without the bucket, which never holds one", async () => {
+    const world = await snapshotWorld(plan());
+    await world.servers.app?.write(
+      `.snapshots/${RUNNING}/about.json`,
+      `${JSON.stringify({ ...about(ON_SERVER), id: RUNNING, kind: "release" })}\n`,
+    );
+    const deleted = await deleteSnapshot(world.deps, RUNNING, { services: world.services });
+
+    expect(deleted.outcome).toBe("deleted");
+    expect(world.handler.requests[0]?.details).not.toContain("off the server");
+  });
 });

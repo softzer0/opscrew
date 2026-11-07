@@ -387,6 +387,17 @@ jobs:
               sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .running
             fi
           }
+          snapshot_version() {
+            _version="$(snapshot_running)"
+            if [ -z "$_version" ] && [ -f .env ]; then
+              _version_image="$(sed -n 's/^APP_IMAGE=//p' .env)"
+              case "$_version_image" in
+                "" | *@sha256:*) ;;
+                *) _version="$(docker image inspect --format '{{.Id}}' "$_version_image" 2> /dev/null | sed -n 's/^sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p')" ;;
+              esac
+            fi
+            echo "$_version"
+          }
           snapshot_about() {
             _about_version=""
             if [ -n "$4" ]; then _about_version="sha256:$4"; fi
@@ -478,7 +489,7 @@ jobs:
               scheduled) _stop='' ;;
               *) _stop="" ;;
             esac
-            _skip=""; _id=""; _hex="$(snapshot_running)"
+            _skip=""; _id=""; _hex="$(snapshot_version)"
             while [ "$#" -gt 0 ]; do
               [ "$#" -ge 2 ] || { snapshot_usage; return 1; }
               case "$1" in
@@ -595,7 +606,7 @@ jobs:
             docker compose stop app
             _saved="$(snapshot_new_id)"
             _rc=0
-            snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?
+            snapshot_take "$_saved" manual "$(snapshot_version)" $_parts || _rc=$?
             if [ "$_rc" -ne 0 ]; then
               docker compose start app
               if [ "$_rc" -eq 2 ]; then
@@ -605,6 +616,7 @@ jobs:
               fi
               return 1
             fi
+            echo "saved $_saved"
             if snapshot_restore "$_id" $_parts; then
               docker compose start app
               printf 'OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.\\n' "$_id" "$_saved" >&2
@@ -616,7 +628,7 @@ jobs:
               return 1
             fi
             printf 'Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed, and the app was not started. The copy from just before the restore stays in %s/.snapshots/%s: restore it with opscrew restore %s once the cause is fixed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$APPS_DIR"/shop-staging "$_saved" "$_saved" "$APPS_DIR"/shop-staging >&2
-            return 1
+            return 5
           }
           snapshot_cmd_hold() {
             edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
@@ -1641,6 +1653,17 @@ jobs:
               sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .running
             fi
           }
+          snapshot_version() {
+            _version="$(snapshot_running)"
+            if [ -z "$_version" ] && [ -f .env ]; then
+              _version_image="$(sed -n 's/^APP_IMAGE=//p' .env)"
+              case "$_version_image" in
+                "" | *@sha256:*) ;;
+                *) _version="$(docker image inspect --format '{{.Id}}' "$_version_image" 2> /dev/null | sed -n 's/^sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p')" ;;
+              esac
+            fi
+            echo "$_version"
+          }
           snapshot_about() {
             _about_version=""
             if [ -n "$4" ]; then _about_version="sha256:$4"; fi
@@ -1732,7 +1755,7 @@ jobs:
               scheduled) _stop='' ;;
               *) _stop="" ;;
             esac
-            _skip=""; _id=""; _hex="$(snapshot_running)"
+            _skip=""; _id=""; _hex="$(snapshot_version)"
             while [ "$#" -gt 0 ]; do
               [ "$#" -ge 2 ] || { snapshot_usage; return 1; }
               case "$1" in
@@ -1849,7 +1872,7 @@ jobs:
             docker compose stop app
             _saved="$(snapshot_new_id)"
             _rc=0
-            snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?
+            snapshot_take "$_saved" manual "$(snapshot_version)" $_parts || _rc=$?
             if [ "$_rc" -ne 0 ]; then
               docker compose start app
               if [ "$_rc" -eq 2 ]; then
@@ -1859,6 +1882,7 @@ jobs:
               fi
               return 1
             fi
+            echo "saved $_saved"
             if snapshot_restore "$_id" $_parts; then
               docker compose start app
               printf 'OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.\\n' "$_id" "$_saved" >&2
@@ -1870,7 +1894,7 @@ jobs:
               return 1
             fi
             printf 'Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed, and the app was not started. The copy from just before the restore stays in %s/.snapshots/%s: restore it with opscrew restore %s once the cause is fixed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$APPS_DIR"/shop "$_saved" "$_saved" "$APPS_DIR"/shop >&2
-            return 1
+            return 5
           }
           snapshot_cmd_hold() {
             edge exec -T kamal-proxy kamal-proxy pause shop --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
@@ -2491,6 +2515,17 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
               sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .running
             fi
           }
+          snapshot_version() {
+            _version="$(snapshot_running)"
+            if [ -z "$_version" ] && [ -f .env ]; then
+              _version_image="$(sed -n 's/^APP_IMAGE=//p' .env)"
+              case "$_version_image" in
+                "" | *@sha256:*) ;;
+                *) _version="$(docker image inspect --format '{{.Id}}' "$_version_image" 2> /dev/null | sed -n 's/^sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p')" ;;
+              esac
+            fi
+            echo "$_version"
+          }
           snapshot_about() {
             _about_version=""
             if [ -n "$4" ]; then _about_version="sha256:$4"; fi
@@ -2582,7 +2617,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
               scheduled) _stop='' ;;
               *) _stop="" ;;
             esac
-            _skip=""; _id=""; _hex="$(snapshot_running)"
+            _skip=""; _id=""; _hex="$(snapshot_version)"
             while [ "$#" -gt 0 ]; do
               [ "$#" -ge 2 ] || { snapshot_usage; return 1; }
               case "$1" in
@@ -2699,7 +2734,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
             docker compose stop app
             _saved="$(snapshot_new_id)"
             _rc=0
-            snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?
+            snapshot_take "$_saved" manual "$(snapshot_version)" $_parts || _rc=$?
             if [ "$_rc" -ne 0 ]; then
               docker compose start app
               if [ "$_rc" -eq 2 ]; then
@@ -2709,6 +2744,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
               fi
               return 1
             fi
+            echo "saved $_saved"
             if snapshot_restore "$_id" $_parts; then
               docker compose start app
               printf 'OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.\\n' "$_id" "$_saved" >&2
@@ -2720,7 +2756,7 @@ exports[`the deploy job > reads OPSCREW_<ENV>_* repository secrets with prefixed
               return 1
             fi
             printf 'Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed, and the app was not started. The copy from just before the restore stays in %s/.snapshots/%s: restore it with opscrew restore %s once the cause is fixed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$APPS_DIR"/shop-eu-staging "$_saved" "$_saved" "$APPS_DIR"/shop-eu-staging >&2
-            return 1
+            return 5
           }
           snapshot_cmd_hold() {
             edge exec -T kamal-proxy kamal-proxy pause shop-eu-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
@@ -3316,6 +3352,17 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .running
             fi
           }
+          snapshot_version() {
+            _version="$(snapshot_running)"
+            if [ -z "$_version" ] && [ -f .env ]; then
+              _version_image="$(sed -n 's/^APP_IMAGE=//p' .env)"
+              case "$_version_image" in
+                "" | *@sha256:*) ;;
+                *) _version="$(docker image inspect --format '{{.Id}}' "$_version_image" 2> /dev/null | sed -n 's/^sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p')" ;;
+              esac
+            fi
+            echo "$_version"
+          }
           snapshot_about() {
             _about_version=""
             if [ -n "$4" ]; then _about_version="sha256:$4"; fi
@@ -3407,7 +3454,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               scheduled) _stop='' ;;
               *) _stop="" ;;
             esac
-            _skip=""; _id=""; _hex="$(snapshot_running)"
+            _skip=""; _id=""; _hex="$(snapshot_version)"
             while [ "$#" -gt 0 ]; do
               [ "$#" -ge 2 ] || { snapshot_usage; return 1; }
               case "$1" in
@@ -3524,7 +3571,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             docker compose stop app
             _saved="$(snapshot_new_id)"
             _rc=0
-            snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?
+            snapshot_take "$_saved" manual "$(snapshot_version)" $_parts || _rc=$?
             if [ "$_rc" -ne 0 ]; then
               docker compose start app
               if [ "$_rc" -eq 2 ]; then
@@ -3534,6 +3581,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               fi
               return 1
             fi
+            echo "saved $_saved"
             if snapshot_restore "$_id" $_parts; then
               docker compose start app
               printf 'OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.\\n' "$_id" "$_saved" >&2
@@ -3545,7 +3593,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               return 1
             fi
             printf 'Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed, and the app was not started. The copy from just before the restore stays in %s/.snapshots/%s: restore it with opscrew restore %s once the cause is fixed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$APPS_DIR"/shop-staging "$_saved" "$_saved" "$APPS_DIR"/shop-staging >&2
-            return 1
+            return 5
           }
           snapshot_cmd_hold() {
             edge exec -T kamal-proxy kamal-proxy pause shop-staging --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true
@@ -4155,6 +4203,17 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               sed -n 's/^[^=]*@sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p' .running
             fi
           }
+          snapshot_version() {
+            _version="$(snapshot_running)"
+            if [ -z "$_version" ] && [ -f .env ]; then
+              _version_image="$(sed -n 's/^APP_IMAGE=//p' .env)"
+              case "$_version_image" in
+                "" | *@sha256:*) ;;
+                *) _version="$(docker image inspect --format '{{.Id}}' "$_version_image" 2> /dev/null | sed -n 's/^sha256:\\([0-9a-f]\\{64\\}\\)$/\\1/p')" ;;
+              esac
+            fi
+            echo "$_version"
+          }
           snapshot_about() {
             _about_version=""
             if [ -n "$4" ]; then _about_version="sha256:$4"; fi
@@ -4246,7 +4305,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               scheduled) _stop='' ;;
               *) _stop="" ;;
             esac
-            _skip=""; _id=""; _hex="$(snapshot_running)"
+            _skip=""; _id=""; _hex="$(snapshot_version)"
             while [ "$#" -gt 0 ]; do
               [ "$#" -ge 2 ] || { snapshot_usage; return 1; }
               case "$1" in
@@ -4363,7 +4422,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
             docker compose stop app
             _saved="$(snapshot_new_id)"
             _rc=0
-            snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?
+            snapshot_take "$_saved" manual "$(snapshot_version)" $_parts || _rc=$?
             if [ "$_rc" -ne 0 ]; then
               docker compose start app
               if [ "$_rc" -eq 2 ]; then
@@ -4373,6 +4432,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               fi
               return 1
             fi
+            echo "saved $_saved"
             if snapshot_restore "$_id" $_parts; then
               docker compose start app
               printf 'OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.\\n' "$_id" "$_saved" >&2
@@ -4384,7 +4444,7 @@ exports[`the deploy job on a self-hosted runner > deploys on the runner's own ma
               return 1
             fi
             printf 'Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed, and the app was not started. The copy from just before the restore stays in %s/.snapshots/%s: restore it with opscrew restore %s once the cause is fixed. The output of the copies and restores stays on the server in %s/.snapshots/snapshot.log (it can quote data, so it is not printed here).\\n' "$_id" "$APPS_DIR"/shop-dev "$_saved" "$_saved" "$APPS_DIR"/shop-dev >&2
-            return 1
+            return 5
           }
           snapshot_cmd_hold() {
             edge exec -T kamal-proxy kamal-proxy pause shop-dev --drain-timeout 30s --max-pause 90s < /dev/null > /dev/null 2>&1 || true

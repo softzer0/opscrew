@@ -131,9 +131,10 @@ export async function deleteSnapshot(
     data === undefined && target === "servers"
       ? (await providerSnapshots(run)).find((found) => found.entry.id === id)
       : undefined;
-  // The copy in the off-server bucket: its key is needed before anything is approved.
+  // The copy in the off-server bucket: its key is needed before anything is approved. A snapshot
+  // before a release is never copied off the server.
   const bucket: OffsiteBucket | undefined =
-    provider === undefined
+    provider === undefined && data?.kind !== "release"
       ? await offsiteBucket(run, options.services ?? {}, `opscrew snapshot delete ${id}${flags}`)
       : undefined;
   const inBucket = bucket !== undefined && (await bucketObjects(run, bucket, id)).length > 0;

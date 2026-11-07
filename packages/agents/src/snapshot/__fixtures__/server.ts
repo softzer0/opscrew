@@ -20,8 +20,10 @@ export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
  * each part of `parts.txt` (`<name> <kind> <file> <online 1|0>` lines, as the real script renders
  * them from the plan): copied (10 bytes) unless `--skip` names it or it is stop-only without
  * `--stop`. `restore` needs its one-time approval, which it keeps as `approval.<id>` and removes,
- * then says what it did (`restore.exit` with `restore.stderr` makes it fail); `hold` and
- * `resume` fail with `hold.exit` and `resume.exit`.
+ * names its copy from just before (`saved 20261107T120000Z`, unless `restore.nosaved`), then says
+ * what it did: `restore-<id>.exit` with `restore-<id>.stderr` makes the restore of that id fail,
+ * `restore.exit` with `restore.stderr` every restore. `hold` and `resume` fail with `hold.exit`
+ * and `resume.exit`.
  */
 const SHIM = `echo "$*" >> calls.log
 case "$1" in
@@ -34,7 +36,9 @@ case "$1" in
   restore)
     if [ ! -f .restore-snapshot ]; then echo "A restore needs its one-time approval on this server." >&2; exit 1; fi
     cp .restore-snapshot "approval.$2"; rm -f .restore-snapshot
-    if [ -f restore.exit ]; then cat restore.stderr >&2; exit "$(cat restore.exit)"; fi
+    if [ ! -f restore.nosaved ]; then echo "saved 20261107T120000Z"; fi
+    f="restore-$2"; [ -f "$f.exit" ] || f=restore
+    if [ -f "$f.exit" ]; then cat "$f.stderr" >&2; exit "$(cat "$f.exit")"; fi
     echo "OpsCrew restored the snapshot $2. The data from just before the restore is the snapshot 20261107T120000Z." >&2 ;;
   hold | resume)
     if [ -f "$1.exit" ]; then exit "$(cat "$1.exit")"; fi ;;

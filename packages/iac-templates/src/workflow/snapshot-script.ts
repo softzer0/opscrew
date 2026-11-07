@@ -56,6 +56,12 @@ export function restoreApprovalLine(
   return `${id} ${only ?? "-"} ${expiresAt}`;
 }
 
+/**
+ * The exit code of `snapshot.sh restore` when the restore failed and putting the data back as it
+ * was before failed too: the data may be partly changed, and the app was not started.
+ */
+export const RESTORE_STUCK = 5;
+
 /** Where the last scheduled snapshot's output is, in the app's folder: its id, or why it failed. */
 export const SCHEDULED_LOG = `${SNAPSHOTS_DIR}/scheduled.log`;
 
@@ -224,8 +230,8 @@ function pruneScheduled(keep: number): string[] {
 /**
  * `snapshot_cmd_take <manual|release|scheduled> [--skip <service>]... [--stop <service>]...
  * [--id <id>] [--version sha256:<hex>]`:
- * - the version that runs is `--version`'s, or `snapshot_running`'s (`.env`, or `.running` on an
- *   extra server);
+ * - the version that runs is `--version`'s, or `snapshot_version`'s (`.env`'s digest, `.running`
+ *   on an extra server, or a local build's image ID on this computer);
  * - the snapshot's id is `--id` (one id for the parts on several servers, D8), or the version's
  *   digest for `release`, the hour of the schedule's slot for `scheduled` (outside the schedule's
  *   hours, or once that slot is taken, it does nothing; its output goes to {@link SCHEDULED_LOG}),
@@ -248,7 +254,7 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
     `    scheduled) _stop=${shellQuote(stopOnly(plan, server, schedule?.stop ?? []))} ;;`,
     '    *) _stop="" ;;',
     "  esac",
-    '  _skip=""; _id=""; _hex="$(snapshot_running)"',
+    '  _skip=""; _id=""; _hex="$(snapshot_version)"',
     '  while [ "$#" -gt 0 ]; do',
     '    [ "$#" -ge 2 ] || { snapshot_usage; return 1; }',
     '    case "$1" in',
@@ -345,9 +351,10 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
  * the app's requests wait and its web, workers and cron stop ({@link holdRequests},
  * {@link stopApp}), also after `hold` (which recorded the workers and cron that ran); then the
  * parts it restores are copied as they are now (a `manual` snapshot), and each is restored exactly.
- * When a restore fails, that copy is put back; the app starts again unless the put-back failed
- * too. Each outcome is a message on stderr. On an extra server it neither holds nor stops the app:
- * the CLI holds it first (D8).
+ * Once that copy is taken, `saved <id>` on stdout names it. When a restore fails, that copy is put
+ * back (exit 1); the app starts again unless the put-back failed too ({@link RESTORE_STUCK}). Each
+ * outcome is a message on stderr. On an extra server it neither holds nor stops the app: the CLI
+ * holds it first (D8).
  */
 function restoreCommand(plan: DeployPlan, server: string): string[] {
   const folder = appFolder(plan);
@@ -403,7 +410,7 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
       : []),
     '  _saved="$(snapshot_new_id)"',
     "  _rc=0",
-    '  snapshot_take "$_saved" manual "$(snapshot_running)" $_parts || _rc=$?',
+    '  snapshot_take "$_saved" manual "$(snapshot_version)" $_parts || _rc=$?',
     '  if [ "$_rc" -ne 0 ]; then',
     ...start,
     '    if [ "$_rc" -eq 2 ]; then',
@@ -413,6 +420,7 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
     "    fi",
     "    return 1",
     "  fi",
+    '  echo "saved $_saved"',
     '  if snapshot_restore "$_id" $_parts; then',
     ...start,
     `    ${said("OpsCrew restored the snapshot %s. The data from just before the restore is the snapshot %s.")} "$_id" "$_saved" >&2`,
@@ -424,7 +432,7 @@ function restoreCommand(plan: DeployPlan, server: string): string[] {
     "    return 1",
     "  fi",
     `  ${said(`Restoring the snapshot %s failed, and putting the data back as it was before the restore failed too, so it may be partly changed${app ? ", and the app was not started" : ""}. The copy from just before the restore stays in %s/${SNAPSHOTS_DIR}/%s: restore it with opscrew restore %s once the cause is fixed. ${note}`)} "$_id" ${folder} "$_saved" "$_saved" ${folder} >&2`,
-    "  return 1",
+    `  return ${RESTORE_STUCK}`,
     "}",
   ];
 }
