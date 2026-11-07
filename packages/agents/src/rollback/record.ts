@@ -134,6 +134,8 @@ const PendingRollbackSchema = z.object({
    * succeeded: one that restored a snapshot (`saved`), or the way out of a stuck one.
    */
   unmark: z.literal(true).optional(),
+  /** OpsCrew lost track of the run (its outcome unknown), rather than leaving it for a reviewer. */
+  lost: z.literal(true).optional(),
 });
 
 export type PendingRollback = z.infer<typeof PendingRollbackSchema>;

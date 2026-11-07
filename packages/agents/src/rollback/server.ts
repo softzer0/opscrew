@@ -232,7 +232,12 @@ async function checkPending(
   const { deps, plan, environment } = run;
   const pending = await readPendingRollback(deps.paths);
   if (pending === undefined) return undefined;
-  deps.reporter.step(`Checking ${environment}'s rollback run that waited for a reviewer`);
+  // A run left waiting for a reviewer, or one OpsCrew lost track of (`lost`).
+  const which =
+    pending.lost === true
+      ? "rollback run OpsCrew lost track of"
+      : "rollback run that waited for a reviewer";
+  deps.reporter.step(`Checking ${environment}'s ${which}`);
   const last = await github.api.getWorkflowRun(github.owner, github.repo, pending.runId);
   const target = { digest: pending.digest, commit: pending.commit };
   const result = {
@@ -278,7 +283,7 @@ async function checkPending(
     await restoreDeployPause(deps, github, plan, pending.pauseBefore ?? undefined);
     await clearPendingPromotion(deps.paths, PENDING_ROLLBACK_FILE);
     deps.reporter.warn(
-      `${environment}'s rollback run that waited for a reviewer did not succeed (${last.conclusion ?? "no result"}): ${last.htmlUrl}.${data} OpsCrew put ${environment}'s deploy pause back as it was, and goes on with a new rollback.`,
+      `${environment}'s ${which} did not succeed (${last.conclusion ?? "no result"}): ${last.htmlUrl}.${data} OpsCrew put ${environment}'s deploy pause back as it was, and goes on with a new rollback.`,
     );
     return undefined;
   }
@@ -503,7 +508,11 @@ async function dispatchRollback(
     }
     // In Portainer the data stays restored and marked: the next rollback follows the run.
     const runId = failure.kind === "unknown" ? failure.runId : undefined;
-    if (runId !== undefined) await writePendingRollback(deps.paths, input.pendingOf(runId));
+    if (runId !== undefined) {
+      await writePendingRollback(deps.paths, { ...input.pendingOf(runId), lost: true });
+      // The rollback that follows the run is now the way out, whatever the run does.
+      await database.portainer?.followedBy(command);
+    }
     throw new OpsCrewError(
       codeOf(error),
       `${errorMessage(error)} The snapshot of ${shortText(target)} stays restored in your Portainer, marked so that no other version starts on it, with the app stopped until the run starts ${shortText(target)}; the copy from just before is the snapshot ${saved}. ${environment}'s deploys stay paused.`,

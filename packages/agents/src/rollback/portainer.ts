@@ -207,6 +207,12 @@ export interface PortainerRestore {
   leave(): Promise<void>;
   /** Once the run failed or never started: {@link undoPortainerRestore}, when leave took a copy. */
   undo(): Promise<string>;
+  /**
+   * Once a pending record follows a run OpsCrew lost track of: the mark's way out becomes
+   * `command`, the rollback that follows that run and then removes the mark or puts the copy back.
+   * A rewrite that fails is said; the mark then still names the copy's restore.
+   */
+  followedBy(command: string): Promise<void>;
 }
 
 /**
@@ -293,6 +299,20 @@ export function portainerRestore(
     async undo() {
       if (restore.saved === undefined) return "";
       return undoPortainerRestore(run, github, restore.saved, images.current);
+    },
+    async followedBy(command) {
+      const failure = await portainerPlace(snapshotRunOf(run))
+        .then((place) => box(place, markScript({ image: images.target, wayOut: command })))
+        .then((marked) =>
+          marked.exitCode === 0
+            ? undefined
+            : failed(`rewrite ${RESTORED_IMAGE_FILE}`, marked.exitCode).message,
+        )
+        .catch((error: unknown) => errorMessage(error));
+      if (failure === undefined) return;
+      run.deps.reporter.warn(
+        `${failure} Its way out stays \`${wayOut(run, restore.saved ?? "")}\`, which works once the run failed; \`${command}\` follows the run either way.`,
+      );
     },
   };
   return restore;

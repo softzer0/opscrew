@@ -681,19 +681,42 @@ describe.skipIf(!SH)(
         runId: 777,
         saved: SAVED,
         unmark: true,
+        lost: true,
       });
-      expect(w.volume().get(".restored")?.data?.toString()).toBe(MARK(w));
+      // The rollback that follows the run is the way out now.
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(`${imageOf(w.b)}\n${STAGING}\n`);
 
       w.github.waitError = undefined;
       w.github.conclusion = "failure";
       approves = false;
       expect((await failure(w.run({ database: "snapshot" }))).code).toBe("APPROVAL_REFUSED");
       expect(w.deps.reporter.text()).toContain(
-        `OpsCrew put the data back as it was before the rollback (the snapshot ${SAVED}) and started the version that ran again.`,
+        `staging's rollback run OpsCrew lost track of did not succeed (failure): ${DEPLOY_RUN_URL}. OpsCrew put the data back as it was before the rollback (the snapshot ${SAVED}) and started the version that ran again.`,
       );
+      expect(w.deps.reporter.text()).not.toContain("waited for a reviewer");
       expect(await readPendingRollback(w.deps.paths)).toBeUndefined();
       expect(w.volume().has(".restored")).toBe(false);
       expect(appContainer(w)).toMatchObject({ image: imageOf(w.c), state: "running" });
+    });
+
+    it("clears the mark with the command it names once a run it lost track of succeeded", async () => {
+      const w = await world();
+      w.github.waitError = new Error("socket hang up");
+      await failure(w.run({ database: "snapshot" }));
+      const way = w.volume().get(".restored")?.data?.toString().split("\n")[1];
+      expect(way).toBe(STAGING);
+
+      // The run went on and b serves; the named command follows it and finishes the rollback.
+      w.github.waitError = undefined;
+      expect(appContainer(w)).toMatchObject({ image: imageOf(w.b), state: "running" });
+      const result = await w.run();
+      expect(result).toMatchObject({ status: "deployed", database: { choice: "snapshot" } });
+      expect(w.volume().has(".restored")).toBe(false);
+      expect(await readPendingRollback(w.deps.paths)).toBeUndefined();
+      expect(await readRollback(w.deps.paths)).toMatchObject({ digest: w.b.digest });
+      expect(w.deps.reporter.text()).toContain(
+        "Checking staging's rollback run OpsCrew lost track of",
+      );
     });
 
     it("refuses the snapshot with a required reviewer, naming keep and then opscrew restore, before any change", async () => {
