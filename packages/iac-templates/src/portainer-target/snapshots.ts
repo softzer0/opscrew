@@ -219,7 +219,7 @@ const OUTGOING = [
  */
 const RESTORED_GUARD = [
   `if [ -f ${RESTORED_IMAGE_FILE} ] && [ "$(sed -n '1s/.*@//p' ${RESTORED_IMAGE_FILE})" != "\${OPSCREW_APP_IMAGE##*@}" ]; then`,
-  `  echo "OpsCrew: opscrew rollback restored this stack's data for $(sed -n 1p ${RESTORED_IMAGE_FILE}), so no other version starts on it until that rollback ends (${RESTORED_IMAGE_FILE} names it). If that rollback is stuck, run $(sed -n 2p ${RESTORED_IMAGE_FILE}) on the computer that ran it: it puts back the data from before the rollback and removes ${RESTORED_IMAGE_FILE}." >&2`,
+  `  echo "OpsCrew: opscrew rollback restored this stack's data for $(sed -n 1p ${RESTORED_IMAGE_FILE}), so no other version starts on it until that rollback ends (${RESTORED_IMAGE_FILE} names it). If that rollback is stuck, run $(sed -n 2p ${RESTORED_IMAGE_FILE}) on the computer that ran it; it finishes the rollback and removes ${RESTORED_IMAGE_FILE}." >&2`,
   "  exit 1",
   "fi",
 ];

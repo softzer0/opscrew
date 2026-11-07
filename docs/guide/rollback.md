@@ -328,7 +328,23 @@ reach, so with `snapshot` OpsCrew restores the snapshot through Portainer's API 
 the run, and the app stays stopped until the run starts the earlier version. Meanwhile a file in
 the stack's `snapshots` volume keeps every other version off the restored data, the workflow's
 switch back after a failed health check included. OpsCrew removes it once the run succeeds, or
-once it put the data from before back.
+once it put the data from before back and the deploy branch names the version that ran again.
+
+If the rollback gets stuck (a run OpsCrew lost track of, a switch back that couldn't write the
+deploy branch, or a put-back that failed), that file stays and names the one command that finishes
+the rollback. A deploy that stops at the stack's `snapshot` step prints it in Portainer's log, and
+every other `opscrew rollback` of the environment is refused, naming it. It is one of (with
+`--app <key>` when the project has several apps):
+
+- `opscrew rollback --env <env>`, while OpsCrew follows a run it lost track of: it records the
+  rollback once the run succeeded, or puts the data from before back once it failed;
+- `opscrew restore <copy>`, the copy OpsCrew took just before the restore: it puts that data
+  back, and when the deploy branch still names another version, the file then names the next
+  command below;
+- `opscrew rollback --env <env> --to <digest> --database keep`, the version that ran: it writes
+  that version back to the deploy branch and starts it.
+
+Run that command; never remove the file by hand.
 
 When the environment's GitHub environment has a required reviewer, `--database snapshot` is
 refused there, since the app would stay stopped until someone approved the run. Roll back with

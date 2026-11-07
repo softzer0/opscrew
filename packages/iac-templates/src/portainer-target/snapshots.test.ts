@@ -684,7 +684,7 @@ describe.skipIf(!SH)("the snapshot scripts under sh", () => {
         expect(result.status).toBe(1);
         expect(result.stdout).toBe("");
         expect(result.stderr).toContain(
-          `OpsCrew: opscrew rollback restored this stack's data for ${OLD}, so no other version starts on it until that rollback ends (/snapshots/.restored names it). If that rollback is stuck, run ${RESTORE} on the computer that ran it: it puts back the data from before the rollback and removes /snapshots/.restored.`.replaceAll(
+          `OpsCrew: opscrew rollback restored this stack's data for ${OLD}, so no other version starts on it until that rollback ends (/snapshots/.restored names it). If that rollback is stuck, run ${RESTORE} on the computer that ran it; it finishes the rollback and removes /snapshots/.restored.`.replaceAll(
             "/snapshots",
             root,
           ),
