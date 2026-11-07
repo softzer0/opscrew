@@ -10,8 +10,14 @@ import type { PortainerServices, ProvisionServices } from "../provision/types";
  * from `PhaseDeps`; tests replace them with fakes.
  */
 export interface SnapshotServices {
-  /** The deploy workflow's runs (default: a client with the user's token); `null` means no token. */
-  github?: Pick<GitHubClient, "listWorkflowRuns"> | null;
+  /**
+   * The deploy workflow's runs, and the deploy branch's files for a restore that clears a stuck
+   * rollback's mark on Portainer (without `fileText` the branch counts as unreadable); default: a
+   * client with the user's token; `null` means no token.
+   */
+  github?:
+    | (Pick<GitHubClient, "listWorkflowRuns"> & Partial<Pick<GitHubClient, "fileText">>)
+    | null;
   /** A server's shell, given its address (default: ssh with the login `opscrew logs` uses). */
   remote?: ProvisionServices["remote"];
   /** This computer (`target.provider: localhost`). */

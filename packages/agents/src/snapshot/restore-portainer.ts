@@ -9,18 +9,25 @@
  * app stays stopped and the message says where the copy is.
  */
 import type { DockerContainer, MountSpec } from "@opscrew/connector-docker";
+import type { GitHubClient } from "@opscrew/connector-github";
 import { listText, OpsCrewError } from "@opscrew/core";
 import {
+  PORTAINER_COMPOSE_FILE,
   partRestore,
+  portainerDeployBranch,
   portainerServiceEnvironment,
   processServices,
   RESTORED_IMAGE_FILE,
   type SnapshotPart,
   SQLITE_VOLUME,
+  shellQuote,
   snapshotParts,
 } from "@opscrew/iac-templates";
-import { APP_SERVER } from "@opscrew/plan-schema";
+import { APP_SERVER, type DeployPlan } from "@opscrew/plan-schema";
+import { appFlag } from "../apps/choice";
 import { NOTHING_CHANGED } from "../promote/shared";
+import { shortDigest } from "../rollback/versions";
+import { gitClient, githubClientFromToken, githubCoordinates } from "../shared";
 import { lowDisk } from "./disk";
 import {
   box,
@@ -59,6 +66,64 @@ import {
 } from "./restore-offsite";
 import type { SnapshotRun } from "./run";
 import { aboutOf, snapshotIdAt } from "./store";
+
+/**
+ * The mark a rollback leaves on data it restored ({@link RESTORED_IMAGE_FILE}, 024 plan.md D19):
+ * the image it is for, and the way out of a stuck rollback.
+ */
+export interface RestoredMark {
+  image: string;
+  /** The command that gets a stuck rollback out (the mark's second line). */
+  wayOut: string;
+  /**
+   * The third line, `restored`: the data is the image's snapshot, whole, so the keep rollback to
+   * that image may go ahead on it.
+   */
+  restored?: true;
+}
+
+/** Writes the mark, whole or not at all. */
+export function markScript(mark: RestoredMark): string {
+  const restored = mark.restored === true ? " restored" : "";
+  return `umask 077 && printf '%s\\n' ${shellQuote(mark.image)} ${shellQuote(mark.wayOut)}${restored} > ${RESTORED_IMAGE_FILE}.tmp && mv ${RESTORED_IMAGE_FILE}.tmp ${RESTORED_IMAGE_FILE}`;
+}
+
+/** The mark in the snapshots volume (which exists), read-only; `undefined` without one. */
+export async function readMarkIn(place: PortainerPlace): Promise<RestoredMark | undefined> {
+  const read = await box(
+    place,
+    `if [ -f ${RESTORED_IMAGE_FILE} ]; then echo mark; cat ${RESTORED_IMAGE_FILE}; fi`,
+    { readOnly: true },
+  );
+  if (read.exitCode !== 0) throw failed(`read ${RESTORED_IMAGE_FILE}`, read.exitCode);
+  const [first, image = "", wayOut = "", third] = read.stdout.split(/\r?\n/);
+  if (first !== "mark") return undefined;
+  return { image, wayOut, ...(third === "restored" ? { restored: true as const } : {}) };
+}
+
+/**
+ * True when the deploy branch's `compose.yaml` names `image` (by its digest), which Portainer
+ * deploys; false when it names another or can't be read (`api` without `fileText` included).
+ */
+export async function deployBranchNames(
+  plan: DeployPlan,
+  github: { api: Partial<Pick<GitHubClient, "fileText">>; owner: string; repo: string },
+  image: string,
+): Promise<boolean> {
+  const digest = image.slice(image.lastIndexOf("@") + 1);
+  try {
+    const text = await github.api.fileText?.(
+      github.owner,
+      github.repo,
+      PORTAINER_COMPOSE_FILE,
+      portainerDeployBranch(plan),
+    );
+    return text?.includes(`@${digest}`) === true;
+  } catch {
+    // Unread, it may name another version: the caller keeps that one off the data.
+    return false;
+  }
+}
 
 /** The record of the snapshot `id` in the volume (`about <json>`), when it is complete. */
 export async function readRecord(
@@ -186,24 +251,48 @@ export function appContainers(run: SnapshotRun, containers: readonly DockerConta
   );
 }
 
+/** The repository whose deploy branch {@link settleMark} reads, or `undefined` without one. */
+async function repositoryOf(run: SnapshotRun) {
+  const { deps, services } = run;
+  try {
+    const api = services.github === undefined ? await githubClientFromToken(deps) : services.github;
+    if (api === undefined || api === null) return undefined;
+    return { api, ...(await githubCoordinates(gitClient(deps))) };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
- * Removes the mark a rollback left on data it restored ({@link RESTORED_IMAGE_FILE}) when its way
- * out (its second line) is the restore of the snapshot `id` just done, saying so: the data and the
- * running version match again, so the stack's next deploy starts. `id` is letters and digits.
+ * Once the snapshot `id` of the version `version` (`sha256:<hex>`) is back whole: the mark a
+ * stuck rollback left on the data ({@link RESTORED_IMAGE_FILE}), when its way out (its second line)
+ * is this restore. When the deploy branch names that version, the mark goes and the stack's next
+ * deploy starts; otherwise (or unread) Portainer would deploy another version on this data, so the
+ * mark is rewritten for this version, whole, its way out the keep rollback to it, which writes it
+ * back to the branch. Says which.
  */
-async function unmark(
-  place: PortainerPlace,
-  id: string,
-  reporter: SnapshotRun["deps"]["reporter"],
-) {
-  const removed = await box(
-    place,
-    `if [ -f ${RESTORED_IMAGE_FILE} ] && sed -n 2p ${RESTORED_IMAGE_FILE} | grep -Eq '^opscrew restore ${id}( |$)'; then rm -f ${RESTORED_IMAGE_FILE} && echo removed; fi`,
-  );
-  if (removed.exitCode !== 0) throw failed(`remove ${RESTORED_IMAGE_FILE}`, removed.exitCode);
-  if (!/^removed$/m.test(removed.stdout)) return;
-  reporter.info(
-    `OpsCrew removed ${RESTORED_IMAGE_FILE}, which a rollback left to keep other versions off the data it restored: the stack's next deploy starts the app again (redeploy it in Portainer).`,
+async function settleMark(run: SnapshotRun, place: PortainerPlace, id: string, version: string) {
+  const { deps, plan, environment } = run;
+  const mark = await readMarkIn(place);
+  if (mark === undefined || !new RegExp(`^opscrew restore ${id}( |$)`).test(mark.wayOut)) return;
+  const image = `${mark.image.slice(0, mark.image.lastIndexOf("@"))}@${version}`;
+  const repository = await repositoryOf(run);
+  if (repository !== undefined && (await deployBranchNames(plan, repository, image))) {
+    const removed = await box(place, `rm -f ${RESTORED_IMAGE_FILE}`);
+    if (removed.exitCode !== 0) throw failed(`remove ${RESTORED_IMAGE_FILE}`, removed.exitCode);
+    deps.reporter.info(
+      `OpsCrew removed ${RESTORED_IMAGE_FILE}, which a rollback left to keep other versions off the data it restored: the stack's next deploy starts the app again (redeploy it in Portainer).`,
+    );
+    return;
+  }
+  // As `opscrew rollback` names itself: the app's and the environment's flags, always.
+  const flags = `${await appFlag(deps.paths.root, deps.paths.app)} --env ${environment}`;
+  const back = `opscrew rollback${flags} --to ${version} --database keep`;
+  const marked = await box(place, markScript({ image, wayOut: back, restored: true }));
+  if (marked.exitCode !== 0) throw failed(`rewrite ${RESTORED_IMAGE_FILE}`, marked.exitCode);
+  const branch = portainerDeployBranch(plan);
+  deps.reporter.warn(
+    `The deploy branch ${branch} names another version than this snapshot's (${shortDigest(version)}), or OpsCrew could not read it, so Portainer would deploy that one on this data. OpsCrew marked the data for ${shortDigest(version)} in ${RESTORED_IMAGE_FILE} instead of removing the mark. Run \`${back}\`: it writes that version back to the branch, starts it, and removes the mark.`,
   );
 }
 
@@ -336,7 +425,7 @@ export async function restoreInPortainer(
   await startApp();
   await audit("restored");
   // The whole snapshot of the version that runs is back: a stuck rollback's mark goes (D19).
-  if (!allow && options.only === undefined) await unmark(place, id, deps.reporter);
+  if (!allow && options.only === undefined) await settleMark(run, place, id, record.about.version);
   deps.reporter.success(
     `Restored the snapshot ${id} of ${environment} ${where} (${listText(parts.map((part) => part.name))}). The data from just before is the snapshot ${saved}: \`opscrew restore ${saved}${flags}\` puts it back.`,
   );

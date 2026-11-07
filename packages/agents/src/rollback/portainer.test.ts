@@ -153,15 +153,6 @@ async function world(
       events.push("unmark");
       return { exitCode: 0 };
     }
-    // The restore's removal of a stuck rollback's mark, when its way out names that restore.
-    const restoring = /grep -Eq '\^opscrew restore ([0-9A-Za-z]+)\( \|\$\)'/.exec(script)?.[1];
-    if (restoring !== undefined) {
-      const way = volume().get(".restored")?.data?.toString().split("\n")[1] ?? "";
-      if (!new RegExp(`^opscrew restore ${restoring}( |$)`).test(way)) return { exitCode: 0 };
-      volume().delete(".restored");
-      events.push("unmark");
-      return { exitCode: 0, stdout: "removed\n" };
-    }
     const from = /(?:--single-transaction|-xpf) \/snapshots\/([0-9A-Za-z]+)\//.exec(script)?.[1];
     if (from !== undefined) events.push(`restore ${from === hexB ? "b" : from}`);
     return inner?.(container);
@@ -742,6 +733,42 @@ describe.skipIf(!SH)(
       expect(w.events.at(-1)).toBe("ran c");
     });
 
+    it("gets out of a triple failure: the run fails, its revert can't push, the put-back fails, then the restore and the keep rollback it names", async () => {
+      const w = await world();
+      // b runs and fails; the revert never writes c back, so the branch still names b.
+      w.github.conclusion = "failure";
+      failWith(w, `/snapshots/${SAVED}/db.dump`, 1);
+
+      const stuck = await failure(w.run({ database: "snapshot" }));
+      expect(stuck.hint).toContain(`run \`${WAY_OUT}\``);
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(PARTIAL(w, imageOf(w.c)));
+      expect(w.github.files.get(`${DEPLOY_BRANCH}:compose.yaml`)).toContain(w.b.digest);
+
+      // The restore puts the copy back but keeps b, which the branch names, off c's data.
+      await w.restore(SAVED);
+      const way = `${STAGING} --to ${w.c.digest} --database keep`;
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(
+        `${imageOf(w.c)}\n${way}\nrestored\n`,
+      );
+      expect(w.deps.reporter.text()).toContain(
+        `The deploy branch ${DEPLOY_BRANCH} names another version than this snapshot's (${w.c.digest.slice(0, 19)}), or OpsCrew could not read it, so Portainer would deploy that one on this data. OpsCrew marked the data for ${w.c.digest.slice(0, 19)} in /snapshots/.restored instead of removing the mark. Run \`${way}\`: it writes that version back to the branch, starts it, and removes the mark.`,
+      );
+      w.redeploy(w.b);
+      expect(w.events.at(-1)).toBe("refused b");
+
+      // The keep rollback it names writes c back to the branch, starts it and clears the mark.
+      w.github.conclusion = "success";
+      const result = await w.run({ to: w.c.digest, database: "keep" });
+      expect(result).toMatchObject({ status: "deployed", database: { choice: "keep" } });
+      expect(w.events.slice(-2)).toEqual(["ran c", "unmark"]);
+      expect(w.volume().has(".restored")).toBe(false);
+      // Portainer's next deploy matches: the branch and the stack both run c, on c's data.
+      expect(w.github.files.get(`${DEPLOY_BRANCH}:compose.yaml`)).toContain(w.c.digest);
+      w.redeploy(w.c);
+      expect(w.events.at(-1)).toBe("ran c");
+      expect(appContainer(w)).toMatchObject({ image: imageOf(w.c), state: "running" });
+    });
+
     it("leaves a way out that works when stopping the app fails during the put-back", async () => {
       const w = await world();
       w.github.conclusion = "failure";
@@ -759,8 +786,12 @@ describe.skipIf(!SH)(
       expect(w.volume().get(".running")?.data?.toString()).toBe(`${imageOf(w.c)}\n`);
       // The branch still names b: the mark keeps the version that ran off it, naming the restore.
       expect(w.volume().get(".restored")?.data?.toString()).toBe(PARTIAL(w, imageOf(w.c)));
+      // The restore it names passes its version check and puts the copy back; with the branch on
+      // b, it hands over to the keep rollback to c.
       await w.restore(SAVED);
-      expect(w.volume().has(".restored")).toBe(false);
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(
+        `${imageOf(w.c)}\n${STAGING} --to ${w.c.digest} --database keep\nrestored\n`,
+      );
     });
 
     it("says plainly when it can't tell whether GitHub started the run, with the way out of each answer", async () => {

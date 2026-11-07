@@ -10,7 +10,6 @@
  */
 import { errorMessage, listText, OpsCrewError } from "@opscrew/core";
 import {
-  PORTAINER_COMPOSE_FILE,
   portainerDeployBranch,
   RESTORED_IMAGE_FILE,
   RUNNING_IMAGE_FILE,
@@ -28,7 +27,16 @@ import {
   portainerTake,
   stackContainers,
 } from "../snapshot/portainer";
-import { appContainers, probeFree, putBack, readRecord } from "../snapshot/restore-portainer";
+import {
+  appContainers,
+  deployBranchNames,
+  markScript,
+  probeFree,
+  putBack,
+  type RestoredMark,
+  readMarkIn,
+  readRecord,
+} from "../snapshot/restore-portainer";
 import type { SnapshotRun } from "../snapshot/run";
 import type { About } from "../snapshot/store";
 import { hexOf } from "./database";
@@ -126,40 +134,13 @@ export async function readPortainerSnapshot(
   return { snapshot: { about, parts } };
 }
 
-/** The mark on data a rollback restored: the image it is for, and the way out of a stuck one. */
-export interface RestoredMark {
-  image: string;
-  /** The command that gets a stuck rollback out (the mark's second line). */
-  wayOut: string;
-  /**
-   * The third line, `restored`: the data is the image's snapshot, whole, so the keep rollback to
-   * that image may go ahead on it.
-   */
-  restored?: true;
-}
-
-/** Writes the mark, whole or not at all. */
-function markScript(mark: RestoredMark): string {
-  const restored = mark.restored === true ? " restored" : "";
-  return `umask 077 && printf '%s\\n' ${shellQuote(mark.image)} ${shellQuote(mark.wayOut)}${restored} > ${RESTORED_IMAGE_FILE}.tmp && mv ${RESTORED_IMAGE_FILE}.tmp ${RESTORED_IMAGE_FILE}`;
-}
-
 /**
  * The mark in the stack's snapshots volume, read-only; `undefined` without one, or when this
  * computer can't reach the user's Portainer (the stack's guard then still holds).
  */
 export async function readMark(run: RollbackRun): Promise<RestoredMark | undefined> {
   const reached = await reachVolume(run);
-  if (reached?.exists !== true) return undefined;
-  const read = await box(
-    reached.place,
-    `if [ -f ${RESTORED_IMAGE_FILE} ]; then echo mark; cat ${RESTORED_IMAGE_FILE}; fi`,
-    { readOnly: true },
-  );
-  if (read.exitCode !== 0) throw failed(`read ${RESTORED_IMAGE_FILE}`, read.exitCode);
-  const [first, image = "", wayOut = "", third] = read.stdout.split(/\r?\n/);
-  if (first !== "mark") return undefined;
-  return { image, wayOut, ...(third === "restored" ? { restored: true as const } : {}) };
+  return reached?.exists === true ? readMarkIn(reached.place) : undefined;
 }
 
 /**
@@ -345,24 +326,6 @@ export async function finishPortainerRestore(run: RollbackRun): Promise<void> {
   );
 }
 
-/** True when the deploy branch's `compose.yaml` names the image `image` (by its digest). */
-async function branchNames(run: RollbackRun, github: RollbackRepository, image: string) {
-  const digest = image.slice(image.lastIndexOf("@") + 1);
-  const branch = portainerDeployBranch(run.plan);
-  try {
-    const text = await github.api.fileText(
-      github.owner,
-      github.repo,
-      PORTAINER_COMPOSE_FILE,
-      branch,
-    );
-    return text?.includes(`@${digest}`) === true;
-  } catch {
-    // Unread, it may name another version: the mark then keeps that one off the data.
-    return false;
-  }
-}
-
 /**
  * Once the rollback's run failed or never started:
  * 1. what is there is read, changing nothing; a failure here says so, and the next
@@ -406,7 +369,7 @@ export async function undoPortainerRestore(
   }
   const { place, containers } = read;
   const image = images.current;
-  const onBranch = await branchNames(run, github, image);
+  const onBranch = await deployBranchNames(run.plan, github, image);
   const digest = image.slice(image.lastIndexOf("@") + 1);
   const back = `${run.command} --to ${digest} --database keep`;
   try {
