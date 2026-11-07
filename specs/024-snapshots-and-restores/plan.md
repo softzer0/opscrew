@@ -267,6 +267,7 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
   - **A re-upload** of an id first removes its `about.json.age`, so a partial re-upload never looks complete.
   - **The recipients** are kept in `.opscrew/recovery.json` too, so a first provision that fails before its pull request can run again.
   - **No age key:** a run that can't make one stops before any change.
+- **D17 (T2419's report):** snapshots are data. On an own server, the teardown keeps `/srv/apps/<app>/.snapshots` unless `--delete-data` is given, as it keeps `/srv/data/<app>`, and names it as kept.
 
 ## Order
 

@@ -174,7 +174,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Depends: T2406, T2407
   - Accept:
     - **The commands:** `snapshot schedule on|off` and `snapshot offsite on|off` write the plan, with the price shown, and say to provision.
-    - **Proposals:** design proposes both for an own server or Portainer when the data matters; advise proposes them when they're off.
+    - **Proposals:** design proposes both for an own server or Portainer when the data matters; advise proposes them when they're off. Portainer's notes (`design/portainer.ts` `PORTAINER_NOTES`, also shown by destroy) no longer say OpsCrew can't back up a Portainer host.
     - **Status** shows the last snapshot and its result.
     - **MCP:** the `opscrew_snapshots` tool is read-only.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/mcp-server`
