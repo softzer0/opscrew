@@ -726,6 +726,56 @@ esac`,
       expect(h.run(verify).status).toBe(0);
     });
 
+    it("stops before anything goes when deploy's crontab cannot be read, and leaves it as it is", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.write("/state/active.docker", "");
+      h.stub(
+        "getent",
+        `[ "$1 $2" = "passwd deploy" ] && echo "deploy:x:1001:1001::/home/deploy:/bin/sh"`,
+      );
+      h.stub(
+        "crontab",
+        `case "$*" in
+  "-u deploy -l") echo "crontab: permission denied" >&2; exit 1 ;;
+  *) cat > "$S/written" ;;
+esac`,
+      );
+      const tab =
+        "0 * * * * sh /srv/apps/shop/snapshot.sh take scheduled > /dev/null 2>&1 # opscrew-snapshots shop\n";
+      h.write("/state/tab", tab);
+      h.write("/srv/apps/shop/compose.yaml", "name: shop\n");
+      const run = h.run(teardown(false).apply);
+      expect(run.status).not.toBe(0);
+      expect(run.stderr).toContain("could not read the deploy user's crontab");
+      expect(h.read("/state/tab")).toBe(tab);
+      expect(h.exists("/state/written")).toBe(false);
+      expect(h.read("/srv/apps/shop/compose.yaml")).toBe("name: shop\n");
+    });
+
+    it("keeps the app's snapshots in its folder without deleteData, and deletes them with it", () => {
+      const h = harness();
+      h.stub("docker", DOCKER);
+      h.write("/state/active.docker", "");
+      h.write("/srv/apps/shop/compose.yaml", "name: shop\n");
+      h.write("/srv/apps/shop/app.env", "SECRET=x\n");
+      h.write("/srv/apps/shop/.rollback-database", "x\n");
+      h.write("/srv/apps/shop/.snapshots/20261106T190000Z/about.json", "{}\n");
+      const keep = teardown(false);
+      const run = h.run(keep.apply);
+      expect(run.status, run.stderr).toBe(0);
+      expect(h.read("/srv/apps/shop/.snapshots/20261106T190000Z/about.json")).toBe("{}\n");
+      expect(readdirSync(h.native("/srv/apps/shop"))).toEqual([".snapshots"]);
+      expect(h.run(keep.verify).status).toBe(0);
+
+      const wipe = teardown(true);
+      expect(h.run(wipe.verify).status).not.toBe(0);
+      const again = h.run(wipe.apply);
+      expect(again.status, again.stderr).toBe(0);
+      expect(h.exists("/srv/apps/shop")).toBe(false);
+      expect(h.run(wipe.verify).status).toBe(0);
+    });
+
     it("removes the shared edge with its containers, network, volumes and folder", () => {
       const h = harness();
       h.stub("docker", DOCKER);

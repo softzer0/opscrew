@@ -409,7 +409,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     });
     expect(s.fake.volumes.map((volume) => volume.Name)).toEqual(["media_data"]);
     expect(previews[0]?.dataWarning).toContain(
-      "opscrew-shop_snapshots holds the app's snapshots. opscrew-shop_snapshot_tools holds the off-server copy's tools. The app's snapshots go with them, so this cannot be undone unless you have your own backup.",
+      "opscrew-shop_snapshots holds the app's snapshots. opscrew-shop_snapshot_tools holds the off-server copy's tools. The off-server copies of the snapshots in the bucket shop-prod-backups stay until its lifecycle rule expires them. The app's snapshots go with them, so this cannot be undone unless you have your own backup.",
     );
   });
 

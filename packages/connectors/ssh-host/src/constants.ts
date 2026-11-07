@@ -305,6 +305,15 @@ export function snapshotScheduleTag(app: string): string {
 }
 
 /**
+ * The app's snapshots (feature 024), `/srv/apps/<app>/.snapshots`: data, which a teardown keeps
+ * unless it deletes the app's data. A copy of `SNAPSHOTS_DIR` in `@opscrew/iac-templates`'
+ * `workflow/snapshots.ts`.
+ */
+export function snapshotsDir(app: string): string {
+  return `${appDirs(app).app}/.snapshots`;
+}
+
+/**
  * The files of a recipe's folder that a recipe leaves out: the preview values and the preview
  * command's log. No recipe file takes their names, and inspection never reads them.
  */

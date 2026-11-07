@@ -13,11 +13,17 @@ import {
   planTeardown,
   planUndo,
   readableRecords,
+  snapshotsDir,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRecord, ResourceChange } from "@opscrew/contracts";
 import { listText, lowerFirst, OpsCrewError, plural, replaceNames } from "@opscrew/core";
 import { usesTunnel } from "@opscrew/iac-templates";
-import { APP_SERVER, type DeployPlan, writeArtifact } from "@opscrew/plan-schema";
+import {
+  APP_SERVER,
+  type DeployPlan,
+  snapshotOffsiteOf,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { providerProfile } from "../providers";
 import {
@@ -319,10 +325,33 @@ function ownServerNames(session: Pick<OwnServerSession, "connection">): string[]
   );
 }
 
-/** True when app data is on the server: files in its data folder or a Docker volume of the app. */
+/** The app's snapshots in its folder on the server (D17), when it has any. */
+function appSnapshots(facts: HostFacts, app: string): string | undefined {
+  return facts.snapshotDirs.includes(app) ? snapshotsDir(app) : undefined;
+}
+
+/**
+ * The sentence that says the off-server copies of the snapshots (`snapshots.offsite`) stay in
+ * their bucket after the data is deleted, with a space before it, or "" without them.
+ */
+export function offsiteCopiesStay(plan: DeployPlan): string {
+  const offsite = snapshotOffsiteOf(plan);
+  return offsite === undefined
+    ? ""
+    : ` The off-server copies of the snapshots in the bucket ${offsite.bucket} stay until its lifecycle rule expires them.`;
+}
+
+/**
+ * True when app data is on the server: files in its data folder, a Docker volume of the app or
+ * its snapshots.
+ */
 function hasAppData(facts: HostFacts, app: string): boolean {
   const data = facts.dirs.find((dir) => dir.path === appDirs(app).data);
-  return (data?.entries ?? 0) > 0 || facts.volumeProjects.includes(app);
+  return (
+    (data?.entries ?? 0) > 0 ||
+    facts.volumeProjects.includes(app) ||
+    appSnapshots(facts, app) !== undefined
+  );
 }
 
 /** What is deleted with `deleteData`, for the warning shown before the typed confirmation. */
@@ -333,11 +362,17 @@ function dataLoss(plan: DeployPlan, facts: HostFacts): string {
   lost.push(
     `everything the app stored in ${appDirs(plan.app.name).data} and in its Docker volumes`,
   );
+  const snapshots = appSnapshots(facts, plan.app.name);
+  if (snapshots !== undefined) lost.push(`its snapshots in ${snapshots}`);
   // Portainer is shared: it goes only with the last app.
   if (facts.portainer.dataVolume && otherApps(plan, facts).length === 0) {
     lost.push("Portainer's data");
   }
-  return `Removing the app also deletes its data on your server: ${listText(lost)}. OpsCrew takes no snapshot of your own server, so this cannot be undone unless you have your own backup.`;
+  const undone =
+    snapshots === undefined
+      ? "OpsCrew takes no snapshot of your own server"
+      : "The app's snapshots go with it";
+  return `Removing the app also deletes its data on your server: ${listText(lost)}.${offsiteCopiesStay(plan)} ${undone}, so this cannot be undone unless you have your own backup.`;
 }
 
 /** `docker volume rm` for every volume of the Compose project `project`. */
@@ -347,7 +382,7 @@ function volumeRm(project: string): string {
 
 /**
  * Exactly which data stays on the server after a teardown without `deleteData` (the data
- * directory, the app's Compose volumes, and with the last app Portainer's volumes) and the
+ * directory, the app's Compose volumes, its snapshots, and with the last app Portainer's volumes) and the
  * commands that remove it, or `undefined` when there is none.
  */
 function keptData(facts: HostFacts, app: string, last: boolean): string | undefined {
@@ -361,6 +396,12 @@ function keptData(facts: HostFacts, app: string, last: boolean): string | undefi
   if (facts.volumeProjects.includes(app)) {
     parts.push(`the Docker volumes of the Compose project "${app}"`);
     commands.push(volumeRm(app));
+  }
+  // The snapshots are all that the teardown leaves in the app's folder.
+  const snapshots = appSnapshots(facts, app);
+  if (snapshots !== undefined) {
+    parts.push(`the app's snapshots in ${snapshots}`);
+    commands.push(`\`rm -rf ${appDirs(app).app}\``);
   }
   if (last && (facts.portainer.dataVolume || facts.volumeProjects.includes(PORTAINER_PROJECT))) {
     parts.push(
@@ -643,6 +684,9 @@ export async function destroyOwnServer(
     );
   }
   const dataWarning = deleteData && hasAppData(facts, name) ? dataLoss(plan, facts) : undefined;
+  const snapshotsHere = appSnapshots(facts, name);
+  const keptSnapshots =
+    snapshotsHere === undefined ? "" : `, and its snapshots in ${snapshotsHere}`;
   // This app's hostnames in OpsCrew's shared Cloudflare rules: removed after the rest.
   const shared = removeApp ? await planSharedRemoval(deps, plan, services) : undefined;
   const cloudflarePlan = removalDetails(shared);
@@ -658,7 +702,7 @@ export async function destroyOwnServer(
       const canDelete =
         plan.deployment.destroyedAt === undefined &&
         (teardown?.steps ?? []).some((step) => step.id === "app-dirs");
-      const kept = `The app's data on your server (${appDirs(name).data} and its Docker volumes) is kept.`;
+      const kept = `The app's data on your server (${appDirs(name).data} and its Docker volumes${keptSnapshots}) is kept.`;
       deps.reporter.info(
         canDelete
           ? `${kept} To delete the data as well, cancel now and run \`opscrew destroy --delete-data\`.`
@@ -810,7 +854,7 @@ export async function destroyOwnServer(
         intro: [
           deleteData
             ? `This removes ${name} from your server, including its data.`
-            : `This removes ${name} from your server; its data in ${appDirs(name).data} and its Docker volumes stay.`,
+            : `This removes ${name} from your server; its data in ${appDirs(name).data} and its Docker volumes${keptSnapshots}${keptSnapshots === "" ? "" : ","} stay.`,
           ...(dataWarning !== undefined ? [dataWarning] : []),
           ...(serverFirst
             ? [

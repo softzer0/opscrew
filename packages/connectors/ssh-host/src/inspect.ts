@@ -62,6 +62,7 @@ import {
   linesOf,
   parseAddons,
   parseAddresses,
+  parseAppNames,
   parseAppRecords,
   parseAptPeriodic,
   parseAvx,
@@ -81,7 +82,6 @@ import {
   parsePreviews,
   parseRunners,
   parseRuntimeFiles,
-  parseSnapshotSchedules,
   parseSs,
   parseSshdT,
   parseSysctl,
@@ -397,6 +397,15 @@ fi`;
 const SNAPSHOT_SCHEDULES_SNIPPET = `${DEPLOY_TAB}
 printf '%s\\n' "$tab" | sed -n 's/.*${snapshotScheduleTag("")}\\([a-z0-9][a-z0-9-]*\\)$/\\1/p'`;
 
+/** The apps whose folder in /srv/apps holds a snapshots folder (`snapshotsDir`), one per line. */
+const SNAPSHOT_DIRS_SNIPPET = `${APP_NAME_FN}
+if [ -d "${APPS_DIR}" ] && [ ! -L "${APPS_DIR}" ]; then
+  for d in "${APPS_DIR}"/*; do
+    app_name "\${d##*/}" || continue
+    if [ -d "$d" ] && [ ! -L "$d" ] && [ -d "$d/.snapshots" ] && [ ! -L "$d/.snapshots" ]; then echo "\${d##*/}"; fi
+  done
+fi`;
+
 /** OpsCrew's web filter: its files' SHA-256 and its unit's state. */
 const WEB_FILTER_SNIPPET = `for f in script:${WEB_FILTER_SCRIPT} unit:${WEB_FILTER_UNIT} dropin:${WEB_FILTER_DROP_IN}; do
   if [ -f "\${f#*:}" ]; then echo "file \${f%%:*} $(sha256sum "\${f#*:}" | cut -d ' ' -f 1)"; else echo "file \${f%%:*} -"; fi
@@ -552,6 +561,7 @@ export const INSPECT_SECTIONS: readonly (readonly [string, string])[] = [
   ["runners", RUNNERS_SNIPPET],
   ["previews", PREVIEWS_SNIPPET],
   ["snapshot-schedules", SNAPSHOT_SCHEDULES_SNIPPET],
+  ["snapshot-dirs", SNAPSHOT_DIRS_SNIPPET],
   ["web-filter", WEB_FILTER_SNIPPET],
   ["docker-firewall", "docker_up && docker info --format '{{json .FirewallBackend}}'"],
   ["ssh-connection", `${SSH_FIREWALL_FUNCTIONS}\nssh_connection`],
@@ -942,7 +952,8 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
     ...(monitoring.alloy === undefined ? {} : { alloy: monitoring.alloy }),
     runners: parseRunners(text("runners")),
     previews: parsePreviews(text("previews")),
-    snapshotSchedules: parseSnapshotSchedules(text("snapshot-schedules")),
+    snapshotSchedules: parseAppNames(text("snapshot-schedules")),
+    snapshotDirs: parseAppNames(text("snapshot-dirs")),
     webFilter: {
       ...dockerFirewall({
         daemonJson: section(sections, "docker-daemon"),

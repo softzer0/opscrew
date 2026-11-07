@@ -48,6 +48,7 @@ import {
   SUPPORTED_ARCH,
   SUPPORTED_OS,
   SYSCTL_FILE,
+  snapshotsDir,
   sshdDropIn,
   TUNNEL_APP_PORT,
   tunnelDir,
@@ -1849,10 +1850,10 @@ export function planHost(facts: HostFacts, desired: DesiredHost, command: string
  * GitHub Actions runner (first, so no deploy job runs meanwhile), its containers (by their Compose
  * project label, so they go without a record too), its folder `/srv/apps/<app>`, the line of its
  * scheduled snapshots in the deploy user's crontab (feature 024), its site and kamal-proxy service
- * on the shared edge, its tunnel connector, its deploy key while other apps
- * stay, and its record. Its data (`/srv/data/<app>`, its Compose
- * volumes) is deleted only with `deleteData`; otherwise its record stays as `data-kept`, so only
- * its project can take the data again. With the last app the shared edge goes too (the
+ * on the shared edge, its tunnel connector, its deploy key while other apps stay, and its record.
+ * Its data (`/srv/data/<app>`, its Compose volumes, its snapshots in `/srv/apps/<app>/.snapshots`)
+ * is deleted only with `deleteData`; otherwise its record stays as `data-kept`, so only its
+ * project can take the data again. With the last app the shared edge goes too (the
  * `opscrew-edge` project's containers, network and volumes, and `/srv/edge` when OpsCrew created
  * it), and Portainer (its data only with `deleteData`). The server itself and OpsCrew's host
  * settings stay (`planUndo` reverses those).
@@ -1932,28 +1933,50 @@ export function planTeardown(
   // folder), or with its record: never Compose volumes alone, which could be another project's.
   // Its scheduled snapshots' line in the deploy user's crontab goes with it; other apps' stay.
   const scheduled = f.snapshotSchedules.includes(app);
+  // Its snapshots are data (D17): they stay in its folder without `deleteData`, as its data does.
+  const snapshots = f.snapshotDirs.includes(app) ? snapshotsDir(app) : undefined;
+  const folder = dir(dirs.app);
+  // A folder that holds only the snapshots has no runtime files left.
+  const runtime = folder !== undefined && !(snapshots !== undefined && folder.entries === 1);
   const busy =
     containers.length > 0 ||
-    dir(dirs.app) !== undefined ||
+    runtime ||
     scheduled ||
-    (deleteData && (dataFiles || (own !== null && volumes)));
+    (deleteData && (dataFiles || snapshots !== undefined || (own !== null && volumes)));
   const parts = [
     "its containers",
     dirs.app,
     "its site on the shared edge",
     ...(scheduled ? ["its scheduled snapshots in the deploy user's crontab"] : []),
   ];
+  const data =
+    snapshots === undefined
+      ? `its data in ${dirs.data} and Compose volumes`
+      : `its data in ${dirs.data}, its snapshots in ${snapshots} and Compose volumes`;
+  // What is there now, each part only when it is.
+  const present = [
+    ...(containers.length > 0 ? [`${plural(containers.length, "container")} of the app`] : []),
+    ...(runtime ? [`its runtime files in ${dirs.app}`] : []),
+    ...(scheduled ? ["its line in the deploy user's crontab (other apps' lines stay)"] : []),
+    ...(deleteData && dataFiles ? [`its data in ${dirs.data}`] : []),
+    ...(deleteData && own !== null && volumes ? ["its Compose volumes"] : []),
+    ...(snapshots === undefined
+      ? []
+      : [`its snapshots in ${snapshots}${deleteData ? "" : ", which stay"}`]),
+  ];
   steps.push(
     step(
       "app-dirs",
       deleteData
-        ? `Remove the app "${app}": ${parts.join(", ")}, and its data in ${dirs.data} and Compose volumes`
-        : `Remove the app "${app}": ${listText(parts)} (its data in ${dirs.data} and Compose volumes stay)`,
+        ? `Remove the app "${app}": ${parts.join(", ")}, and ${data}`
+        : `Remove the app "${app}": ${listText(parts)} (${data} stay)`,
       busy ? "change" : "in-place",
       { app, deleteData },
       busy
-        ? `${plural(containers.length, "container")} of the app; its runtime files in ${dirs.app}${scheduled ? `; its line in the deploy user's crontab (other apps' lines stay)` : ""}.`
-        : "Nothing of the app is left.",
+        ? `${upperFirst(present.join("; "))}.`
+        : snapshots === undefined
+          ? "Nothing of the app is left."
+          : `Only its snapshots in ${snapshots} are left, which stay.`,
     ),
   );
   // The app's private network goes once its containers, which listen on it, are gone.
@@ -2044,7 +2067,7 @@ export function planTeardown(
     }
   }
   const isListed = listed.includes(app);
-  const keepData = !deleteData && own !== null && (dataFiles || volumes);
+  const keepData = !deleteData && own !== null && (dataFiles || volumes || snapshots !== undefined);
   if (keepData) {
     const kept = dataKeptRecord(app, projectId);
     steps.push(

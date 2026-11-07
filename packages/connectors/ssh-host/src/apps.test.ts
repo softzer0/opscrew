@@ -460,27 +460,72 @@ describe("removing an app", () => {
     expect((await inspectHost(fake)).snapshotSchedules).toEqual(["shop-admin"]);
   });
 
-  it("removes a schedule left behind by an earlier teardown, and a missing crontab is fine", async () => {
+  it("removes a schedule left behind by an earlier teardown, naming only what is left", async () => {
     const fake = await withShop();
     await removeApp(fake, "shop");
     fake.crontab = [
       "0 * * * * sh /srv/apps/shop/snapshot.sh take scheduled > /dev/null 2>&1 # opscrew-snapshots shop",
     ];
-    const facts = await inspectHost(fake);
     const plan = planTeardown(
-      facts,
+      await inspectHost(fake),
       { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
       "opscrew destroy",
     );
     expect(changes(plan)).toEqual(["app-dirs"]);
+    expect(plan.steps.find((step) => step.id === "app-dirs")?.reason).toBe(
+      "Its line in the deploy user's crontab (other apps' lines stay).",
+    );
     await applyApproved(fake, plan, { command: "opscrew destroy" });
     expect(fake.crontab).toEqual([]);
+  });
 
-    // Without a crontab, or without cron at all, the teardown has nothing to remove there.
-    const bare = await withShop();
-    bare.cron = false;
-    await removeApp(bare, "shop");
-    expect(bare.dirs.has("/srv/apps/shop")).toBe(false);
+  it("keeps the app's snapshots without deleteData, names them as kept, and deletes them with it", async () => {
+    const fake = await withShop();
+    const owner = { owner: "deploy", group: "deploy", mode: "700", entries: 0 };
+    fake.dirs.set("/srv/apps/shop/.snapshots", owner);
+    fake.files.set("/srv/apps/shop/.snapshots/20261106T190000Z/about.json", "{}");
+    const facts = await inspectHost(fake);
+    expect(facts.snapshotDirs).toEqual(["shop"]);
+    const keep = planTeardown(
+      facts,
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy",
+    );
+    const step = keep.steps.find((item) => item.id === "app-dirs");
+    expect(step?.title).toBe(
+      'Remove the app "shop": its containers, /srv/apps/shop and its site on the shared edge (its data in /srv/data/shop, its snapshots in /srv/apps/shop/.snapshots and Compose volumes stay)',
+    );
+    expect(step?.reason).toContain("its snapshots in /srv/apps/shop/.snapshots, which stay.");
+    await applyApproved(fake, keep, { command: "opscrew destroy" });
+    // The rest of the folder goes; the snapshots and the record of the kept data stay.
+    expect(fake.files.get("/srv/apps/shop/.snapshots/20261106T190000Z/about.json")).toBe("{}");
+    expect(fake.files.has("/srv/apps/shop/compose.yaml")).toBe(false);
+    expect(appRecord(fake, "shop")?.state).toBe("data-kept");
+    const again = planTeardown(
+      await inspectHost(fake),
+      { deleteData: false, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy",
+    );
+    expect(again.steps.find((item) => item.id === "app-dirs")).toMatchObject({
+      state: "in-place",
+      reason: "Only its snapshots in /srv/apps/shop/.snapshots are left, which stay.",
+    });
+
+    const wipe = planTeardown(
+      await inspectHost(fake),
+      { deleteData: true, app: "shop", projectId: SHOP_PROJECT, repositoryUrl: SHOP_REPOSITORY },
+      "opscrew destroy",
+    );
+    const remove = wipe.steps.find((item) => item.id === "app-dirs");
+    expect(remove?.state).toBe("change");
+    expect(remove?.title).toContain(
+      "and its data in /srv/data/shop, its snapshots in /srv/apps/shop/.snapshots and Compose volumes",
+    );
+    expect(remove?.reason).toContain("its snapshots in /srv/apps/shop/.snapshots.");
+    await applyApproved(fake, wipe, { command: "opscrew destroy" });
+    expect(fake.dirs.has("/srv/apps/shop")).toBe(false);
+    expect(fake.files.has("/srv/apps/shop/.snapshots/20261106T190000Z/about.json")).toBe(false);
+    expect((await inspectHost(fake)).snapshotDirs).toEqual([]);
   });
 
   it("starts a stopped kamal-proxy to remove the app's route; one that cannot start stops the teardown", async () => {

@@ -68,6 +68,7 @@ import {
   SSHD_MODULI_FILE,
   SYSCTL_FILE,
   snapshotScheduleTag,
+  snapshotsDir,
   sshdDropIn,
   TUNNELS_DIR,
   tunnelDir,
@@ -2014,6 +2015,7 @@ function appDirsScripts(plan: HostPlan, step: HostStep): StepScripts {
       // The app's line of scheduled snapshots, by its tag at the end (letters, digits, dashes and
       // `#` mean themselves in an extended pattern).
       CRON_RE: `${snapshotScheduleTag(p.app)}$`,
+      SNAPSHOTS_DIR: snapshotsDir(p.app),
     },
     helpers: `${PROJECT_HELPERS}
 ${CRON_HELPERS}
@@ -2028,9 +2030,14 @@ remove_dir() {
     rmdir "$1" || fail "OpsCrew could not remove $1 completely."
   fi
 }
-edge() { docker compose -p "$EDGE_PROJECT" -f "$EDGE_COMPOSE" "$@"; }`,
+edge() { docker compose -p "$EDGE_PROJECT" -f "$EDGE_COMPOSE" "$@"; }
+# The app's snapshots are data (D17): without DELETE_DATA they stay in its folder.
+keeps_snapshots() { [ "$DELETE_DATA" != true ] && [ -d "$SNAPSHOTS_DIR" ] && [ ! -L "$SNAPSHOTS_DIR" ]; }
+app_dir_gone() {
+  if keeps_snapshots; then [ "$(ls -A "$APP_DIR")" = .snapshots ]; else [ ! -e "$APP_DIR" ]; fi
+}`,
     verify: `  project_gone "$APP" "$DELETE_DATA" || return 1
-  [ ! -e "$APP_DIR" ] || return 1
+  app_dir_gone || return 1
   for f in "$SITE" "$NGINX_SITE" "$ADDITIONS" "$TLS_DIR"; do
     [ ! -e "$f" ] && [ ! -L "$f" ] || return 1
   done
@@ -2069,7 +2076,13 @@ if [ -f "$EDGE_COMPOSE" ] && command -v docker >/dev/null 2>&1; then
     nginx) edge exec -T nginx sh -c 'nginx -t && nginx -s reload' </dev/null >/dev/null 2>&1 || true ;;
   esac
 fi
-remove_dir "$APP_DIR"
+if keeps_snapshots; then
+  # Everything in the app's folder but its snapshots.
+  find "$APP_DIR" -xdev -mindepth 1 ! -path "$SNAPSHOTS_DIR" ! -path "$SNAPSHOTS_DIR/*" -delete
+  app_dir_gone || fail "OpsCrew could not remove everything but the snapshots from $APP_DIR."
+else
+  remove_dir "$APP_DIR"
+fi
 if [ "$DELETE_DATA" = true ]; then remove_dir "$DATA_DIR"; fi
 if [ "$DELETE_DATA" = true ] && ! project_gone "$APP" true; then
   fail 'Some Docker volumes of the app could not be removed.'

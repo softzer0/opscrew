@@ -7,10 +7,11 @@ import {
   HostPlanSchema,
   hostPlanHash,
   planTeardown,
+  snapshotScheduleTag,
 } from "@opscrew/connector-ssh-host";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
-import { TOOLS } from "@opscrew/iac-templates";
+import { renderWorkflow, TOOLS } from "@opscrew/iac-templates";
 import { DeployPlanSchema, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
@@ -215,6 +216,69 @@ describe.skipIf(!findExecutable("git"))("runDestroy on a server the user owns", 
       "its scheduled snapshots in the deploy user's crontab",
     );
     expect(s.host.facts.snapshotSchedules).toEqual(["shop-admin"]);
+  });
+
+  it("ties the crontab tag the teardown removes to the line the deploy writes", () => {
+    const plan = DeployPlanSchema.parse({
+      ...ownPlan(),
+      snapshots: { schedule: { every: "daily", keep: 7 } },
+    });
+    const workflow = renderWorkflow(plan, {
+      opscrewVersion: "0.0.0-test",
+      github: { owner: "acme", repo: "shop" },
+      deploySshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKeyOnly opscrew-test",
+    });
+    // The deploy drops an earlier line of the app with the same end-anchored pattern.
+    const anchored = `grep -v '${snapshotScheduleTag("shop")}$'`;
+    expect(workflow.content).toContain(anchored);
+  });
+
+  it("keeps the app's snapshots without --delete-data and says where they stay", async () => {
+    const s = await deployed();
+    s.host.facts = HostFactsSchema.parse({ ...s.host.facts, snapshotDirs: ["shop"] });
+    const previews: DestroyPreview[] = [];
+    const result = await runDestroy(s.deps, {
+      services: services(s),
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+    expect(previews[0]?.hostSteps?.join("\n")).toContain(
+      "its snapshots in /srv/apps/shop/.snapshots and Compose volumes stay",
+    );
+    expect(s.handler.requests.find((r) => r.kind === "host-apply")?.details).toContain(
+      "its Docker volumes, and its snapshots in /srv/apps/shop/.snapshots, stay",
+    );
+    expect(result.remaining.join("\n")).toContain(
+      "the app's snapshots in /srv/apps/shop/.snapshots",
+    );
+    expect(result.remaining.join("\n")).toContain("`rm -rf /srv/apps/shop`");
+    expect(s.host.facts.snapshotDirs).toEqual(["shop"]);
+  });
+
+  it("deletes the app's snapshots with --delete-data, saying the off-server copies stay in their bucket", async () => {
+    const s = await deployed();
+    s.host.facts = HostFactsSchema.parse({ ...s.host.facts, snapshotDirs: ["shop"] });
+    const plan = await readArtifact("plan", s.deps.paths.files.plan);
+    await writeArtifact("plan", s.deps.paths.files.plan, {
+      ...plan,
+      snapshots: { offsite: { provider: "hetzner", bucket: "shop-prod-backups", region: "fsn1" } },
+    });
+    const previews: DestroyPreview[] = [];
+    await runDestroy(s.deps, {
+      services: services(s),
+      deleteData: true,
+      confirm: async (preview) => {
+        previews.push(preview);
+        return true;
+      },
+    });
+    expect(previews[0]?.dataWarning).toContain("its snapshots in /srv/apps/shop/.snapshots.");
+    expect(previews[0]?.dataWarning).toContain(
+      "The off-server copies of the snapshots in the bucket shop-prod-backups stay until its lifecycle rule expires them. The app's snapshots go with it, so this cannot be undone",
+    );
+    expect(s.host.facts.snapshotDirs).toEqual([]);
   });
 
   it("deletes the app's data only with deleteData, the destroy approval and the typed app name", async () => {

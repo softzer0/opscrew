@@ -703,7 +703,21 @@ export class FakeHost implements RemoteExec {
   /** Removes a folder and everything in it (the files OpsCrew's fake keeps there too). */
   private removeDir(path: string): void {
     this.dirs.delete(path);
+    for (const dir of [...this.dirs.keys()]) if (dir.startsWith(`${path}/`)) this.dirs.delete(dir);
     this.removeUnder(path);
+  }
+
+  /** True when `path` is under `dir`, but not `keep` or under it. */
+  private static goesBut(path: string, dir: string, keep: string): boolean {
+    return path.startsWith(`${dir}/`) && path !== keep && !path.startsWith(`${keep}/`);
+  }
+
+  /** Empties `dir` but `keep` (a folder in it) and what is in that. */
+  private removeBut(dir: string, keep: string): void {
+    for (const path of [...this.files.keys()]) if (FakeHost.goesBut(path, dir, keep)) this.files.delete(path);
+    for (const path of [...this.dirs.keys()]) if (FakeHost.goesBut(path, dir, keep)) this.dirs.delete(path);
+    const kept = this.dirs.get(dir);
+    if (kept !== undefined) this.dirs.set(dir, { ...kept, entries: 0 });
   }
 
   private removeProject(project: string, volumes: boolean): void {
@@ -1006,6 +1020,7 @@ export class FakeHost implements RemoteExec {
     add("runners", this.runnerLines());
     add("previews", this.previewLines());
     add("snapshot-schedules", this.snapshotScheduleLines());
+    add("snapshot-dirs", this.snapshotDirLines());
     const fileLine = (name: string, path: string) => {
       const content = this.files.get(path);
       return `file ${name} ${content === undefined ? "-" : sha256(content)}`;
@@ -1777,9 +1792,16 @@ export class FakeHost implements RemoteExec {
       case "app-dirs.teardown.check":
       case "app-dirs.teardown.verify": {
         const wipe = p.DELETE_DATA === "true";
+        const app = p.APP_DIR ?? "";
+        const snapshots = p.SNAPSHOTS_DIR ?? "";
+        // Without DELETE_DATA the app's snapshots stay in its folder.
+        const appGone =
+          !wipe && this.dirs.has(snapshots)
+            ? ![...this.files.keys(), ...this.dirs.keys()].some((path) => FakeHost.goesBut(path, app, snapshots))
+            : !this.dirs.has(app);
         const ok =
           !this.running(p.APP ?? "") &&
-          !this.dirs.has(p.APP_DIR ?? "") &&
+          appGone &&
           !this.files.has(p.SITE ?? "") &&
           !(wipe && (this.dirs.has(p.DATA_DIR ?? "") || this.volumes.has(p.APP ?? ""))) &&
           !(this.crontab ?? []).some((line) => new RegExp(p.CRON_RE ?? "").test(line));
@@ -1802,7 +1824,8 @@ export class FakeHost implements RemoteExec {
           }
           this.proxyServices.delete(p.APP ?? "");
         }
-        this.removeDir(p.APP_DIR ?? "");
+        if (p.DELETE_DATA !== "true" && this.dirs.has(p.SNAPSHOTS_DIR ?? "")) this.removeBut(p.APP_DIR ?? "", p.SNAPSHOTS_DIR ?? "");
+        else this.removeDir(p.APP_DIR ?? "");
         this.appFiles.delete(p.APP ?? "");
         if (p.DELETE_DATA === "true") this.removeDir(p.DATA_DIR ?? "");
         return result();
@@ -2050,16 +2073,22 @@ export class FakeHost implements RemoteExec {
       .sort();
   }
 
-  /**
-   * The previews section as `PREVIEWS_SNIPPET` prints it: each app folder with the preview
-   * command, its files' SHA-256, its values file, its cron lines and its previews' folders.
-   */
   /** The `snapshot-schedules` section: the apps with a line of scheduled snapshots in deploy's crontab. */
   private snapshotScheduleLines(): string {
     const tag = / # opscrew-snapshots ([a-z0-9][a-z0-9-]*)$/;
     return (this.crontab ?? []).flatMap((line) => tag.exec(line)?.[1] ?? []).join("\n");
   }
 
+  /** The `snapshot-dirs` section: the apps whose folder holds a `.snapshots` folder. */
+  private snapshotDirLines(): string {
+    const dir = new RegExp(`^${APPS_DIR}/([a-z0-9-]+)/\\.snapshots$`);
+    return [...this.dirs.keys()].flatMap((path) => dir.exec(path)?.[1] ?? []).sort().join("\n");
+  }
+
+  /**
+   * The previews section as `PREVIEWS_SNIPPET` prints it: each app folder with the preview
+   * command, its files' SHA-256, its values file, its cron lines and its previews' folders.
+   */
   private previewLines(): string {
     const command = new RegExp(`^${APPS_DIR}/([a-z0-9-]+)/${PREVIEW_COMMAND_FILE}$`);
     const apps = [...this.files.keys()]

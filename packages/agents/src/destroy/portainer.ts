@@ -81,6 +81,7 @@ import {
   teardownSummary,
 } from "./common";
 import { confirmDeletion, type DeletionSession, deletionSession, discardPlan } from "./deletion";
+import { offsiteCopiesStay } from "./own";
 import {
   applySharedRemoval,
   planSharedRemoval,
@@ -533,7 +534,7 @@ export async function destroyPortainer(
   const keptData = dataOf(record.volumes);
   const kinds = serverData(plan);
   const dataWarning = deletesData
-    ? `Removing the app also deletes its data in your Portainer: the volume${dataNames.length === 1 ? "" : "s"} ${listText(dataNames)}${kinds.length > 0 ? ` (with ${listText(kinds)})` : ""}.${snapshotVolumesNote(plan, dataNames)} ${dataNames.includes(portainerSnapshotsVolume(plan)) ? "The app's snapshots go with them" : "OpsCrew takes no backup of your Portainer host"}, so this cannot be undone unless you have your own backup.`
+    ? `Removing the app also deletes its data in your Portainer: the volume${dataNames.length === 1 ? "" : "s"} ${listText(dataNames)}${kinds.length > 0 ? ` (with ${listText(kinds)})` : ""}.${snapshotVolumesNote(plan, dataNames)}${offsiteCopiesStay(plan)} ${dataNames.includes(portainerSnapshotsVolume(plan)) ? "The app's snapshots go with them" : "OpsCrew takes no backup of your Portainer host"}, so this cannot be undone unless you have your own backup.`
     : undefined;
   if (deleteData && !deletesData) {
     deps.reporter.info(

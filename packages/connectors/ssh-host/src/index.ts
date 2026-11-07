@@ -59,6 +59,8 @@ export {
   runtimeFilePath,
   SECRET_RUNTIME_FILES,
   SHARED_DIRS,
+  snapshotScheduleTag,
+  snapshotsDir,
   sshdDropIn,
   tunnelDir,
   tunnelProject,

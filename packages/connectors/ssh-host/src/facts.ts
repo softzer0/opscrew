@@ -508,6 +508,8 @@ export const HostFactsSchema = z.object({
    * (one ending in `snapshotScheduleTag(app)`), in order.
    */
   snapshotSchedules: z.array(z.string()).default([]),
+  /** The apps whose folder holds a snapshots folder (`snapshotsDir(app)`, not a link), in order. */
+  snapshotDirs: z.array(z.string()).default([]),
   /** Docker's firewall and OpsCrew's web filter. */
   webFilter: WebFilterFactsSchema,
   /**

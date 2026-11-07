@@ -829,8 +829,8 @@ export function parsePreviews(text: string): HostFacts["previews"] {
     .sort((a, b) => a.app.localeCompare(b.app));
 }
 
-/** The apps named by the inspection's `snapshot-schedules` lines, each once, in order. */
-export function parseSnapshotSchedules(text: string): string[] {
+/** The app names of a section with one per line (such as `snapshot-schedules`), each once, in order. */
+export function parseAppNames(text: string): string[] {
   const apps = linesOf(text).filter((app) => AppNameSchema.safeParse(app).success);
   return [...new Set(apps)].sort();
 }

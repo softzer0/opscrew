@@ -574,8 +574,9 @@ function changes(plan: HostPlan, id: HostStepId, app?: string): boolean {
 /**
  * The facts after the teardown `plan`: only what OpsCrew set up for the app goes (its Compose
  * project, its folder, its line of scheduled snapshots in deploy's crontab, its tunnel connector
- * and deploy key, Portainer and the edge with the last app, its record; its data only with
- * `deleteData`, else its record stays as data-kept), as the real adapter does. Other apps, and containers, volumes and users OpsCrew did not create, stay.
+ * and deploy key, Portainer and the edge with the last app, its record; its data, and its
+ * snapshots in its folder, only with `deleteData`, else its record stays as data-kept), as the
+ * real adapter does. Other apps, and containers, volumes and users OpsCrew did not create, stay.
  */
 function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
   const f = structuredClone(before);
@@ -591,10 +592,19 @@ function tornDownFacts(before: HostFacts, plan: HostPlan): HostFacts {
   f.volumeProjects = f.volumeProjects.filter(
     (project) => !(gone.has(project) && (project === EDGE_PROJECT || deleteData)),
   );
+  // Without `deleteData` the app's snapshots stay, the only thing left in its folder.
+  const keepsSnapshots = !deleteData && f.snapshotDirs.includes(plan.app);
+  if (deleteData) f.snapshotDirs = f.snapshotDirs.filter((app) => app !== plan.app);
   f.dirs = f.dirs
-    .filter((dir) => dir.path !== own.app && !(deleteData && dir.path === own.data))
+    .filter(
+      (dir) => (dir.path !== own.app || keepsSnapshots) && !(deleteData && dir.path === own.data),
+    )
     .map((dir) =>
-      gone.has(EDGE_PROJECT) && dir.path === EDGE_DIR ? { path: dir.path, kind: "absent" } : dir,
+      gone.has(EDGE_PROJECT) && dir.path === EDGE_DIR
+        ? { path: dir.path, kind: "absent" as const }
+        : keepsSnapshots && dir.path === own.app
+          ? { ...dir, entries: 1 }
+          : dir,
     );
   f.runtimeFiles = f.runtimeFiles.filter((file) => file.app !== plan.app);
   if (changes(plan, "app-dirs")) {
