@@ -108,7 +108,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2408 [US3] [US6] `opscrew restore <id>`, in `packages/agents/src/snapshot/restore.ts` (+ tests)
+- [x] T2408 [US3] [US6] `opscrew restore <id>`, in `packages/agents/src/snapshot/restore.ts` (+ tests)
   - Owns: `packages/agents/src/snapshot/restore*.ts`
   - Reads: plan.md 6.–7.
   - Depends: T2407, T2406
