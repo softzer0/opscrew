@@ -123,7 +123,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2417 [US7] The release snapshot for every kind and extra server (plan.md D7), in `packages/plan-schema/src/plan.ts` (`snapshotsOn` only), `packages/agents/src/rollback/**` and `packages/iac-templates/src/workflow/{servers,switch,snapshots,index}.ts` (+ tests)
+- [x] T2417 [US7] The release snapshot for every kind and extra server (plan.md D7), in `packages/plan-schema/src/plan.ts` (`snapshotsOn` only), `packages/agents/src/rollback/**` and `packages/iac-templates/src/workflow/{servers,switch,snapshots,index}.ts` (+ tests)
   - Owns: those paths, their tests and stored snapshots
   - Reads: plan.md 1.–3. and D7, specs/019-rollback/plan.md 12.
   - Depends: T2404
