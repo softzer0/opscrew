@@ -24,9 +24,10 @@ import { ageFunctions } from "../offsite";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { inEnvironment, ofApp, splitPlan, withProcesses, withSqlite } from "./__fixtures__/plans";
 import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
-import { renderWorkflow } from "./index";
+import { deploySecretNamesFor, renderWorkflow } from "./index";
 import {
   OFFSITE_ENV_FILE,
+  OFFSITE_ENV_SECRET,
   RESTORE_APPROVAL_FILE,
   restoreApprovalLine,
   snapshotScript,
@@ -1288,6 +1289,44 @@ describe("the deploy's upload of snapshot.sh", () => {
       testContext(),
     ).content;
     expect(content).not.toContain("snapshot.sh");
+  });
+
+  it("writes offsite.env from its secret on each server with data, on stdin, only with the off-server copy", () => {
+    const offsite = withSnapshots(splitPlan(), {
+      snapshots: { offsite: { provider: "r2", bucket: "shop-backups" } },
+    });
+    const content = renderWorkflow(offsite, testContext()).content;
+    const write = (dir: string) =>
+      `printf '%s\\n' "\${OPSCREW_OFFSITE_ENV:-}" | ssh "\${ssh_opts[@]}" "deploy@\${HOST}" 'umask 077 && cat > ${dir}/offsite.env'`;
+    const servers = ["data", "box-2"].map((name) => `Update the services on the server ${name}`);
+    for (const name of [UPLOAD, ...servers]) {
+      const lines = step(content, name);
+      expect(lines).toContain("OPSCREW_OFFSITE_ENV: ${{ secrets.OPSCREW_OFFSITE_ENV }}");
+      expect(lines).toContain(write("/srv/apps/shop"));
+    }
+    // The file only ever goes from the secret's reference to stdin, never into an argument.
+    for (const line of content.split("\n").filter((l) => /OPSCREW_OFFSITE_ENV\b/.test(l))) {
+      expect(line.trim()).toMatch(
+        /^(OPSCREW_OFFSITE_ENV: \$\{\{ secrets\.OPSCREW_OFFSITE_ENV \}\}|printf '%s\\n' "\$\{OPSCREW_OFFSITE_ENV:-\}" \| ssh .*'umask 077 && cat > \/srv\/apps\/shop\/offsite\.env')$/,
+      );
+    }
+    expect(deploySecretNamesFor(offsite)).toContain(OFFSITE_ENV_SECRET);
+
+    // On the server's own runner, written in place.
+    const own = renderWorkflow(
+      withSnapshots(inEnvironment(serverPlanWithRunner(), { name: "staging", runner: "server" }), {
+        snapshots: { offsite: { provider: "r2", bucket: "shop-backups" } },
+      }),
+      testContext(),
+    ).content;
+    expect(own).toContain(
+      `printf '%s\\n' "\${OPSCREW_OFFSITE_ENV:-}" | (umask 077 && cat > "$dir"/offsite.env)`,
+    );
+
+    // Without it: no file, no secret.
+    const plain = renderWorkflow(splitPlan(), testContext()).content;
+    expect(plain).not.toContain("OFFSITE");
+    expect(deploySecretNamesFor(splitPlan())).not.toContain(OFFSITE_ENV_SECRET);
   });
 });
 

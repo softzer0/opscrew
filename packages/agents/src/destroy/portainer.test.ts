@@ -388,12 +388,11 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     });
     const s = await deployed({ plan });
     const volumes = ["opscrew-shop_snapshots", "opscrew-shop_snapshot_tools"];
-    s.fake.volumes.push(
-      ...volumes.map((Name) => ({
-        Name,
-        Labels: { "com.docker.compose.project": "opscrew-shop" },
-      })),
-    );
+    // The first deploy made the snapshots' volume already; Docker's volume names are unique.
+    s.fake.volumes.push({
+      Name: "opscrew-shop_snapshot_tools",
+      Labels: { "com.docker.compose.project": "opscrew-shop" },
+    });
     expect((await readPortainerConnection(s.deps.paths))?.created.volumes).toEqual(
       expect.arrayContaining(volumes),
     );

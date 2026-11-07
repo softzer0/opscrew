@@ -9,6 +9,7 @@ import {
   monitoringOf,
   type PlanService,
   servicesOn,
+  snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { enabledServices, initStepsFor } from "../catalog";
 import { additionsPath, appDir, EDGE_DIR, type LocalhostSite } from "../edge";
@@ -62,7 +63,7 @@ import {
   serviceEnvSecret,
   workflowStart,
 } from "./shared";
-import { snapshotScript } from "./snapshot-script";
+import { OFFSITE_ENV_FILE, OFFSITE_ENV_SECRET, snapshotScript } from "./snapshot-script";
 import {
   migratedParts,
   releaseSnapshotServers,
@@ -322,6 +323,16 @@ function installCloudflaredStep(machine: boolean): string[] {
  */
 function serviceEnvFiles(services: readonly PlanService[]): EnvFile[] {
   return services.map(({ name }) => ({ file: `${name}.env`, secret: serviceEnvSecret(name) }));
+}
+
+/**
+ * The off-server copy's env file on `server` ({@link OFFSITE_ENV_FILE}, the bucket's key for its
+ * `snapshot.sh offsite`) with its deploy secret, when `snapshots.offsite` is on and the server
+ * holds data; none otherwise.
+ */
+function offsiteEnvFiles(plan: DeployPlan, server: string): EnvFile[] {
+  if (snapshotOffsiteOf(plan) === undefined || snapshotParts(plan, server).length === 0) return [];
+  return [{ file: OFFSITE_ENV_FILE, secret: OFFSITE_ENV_SECRET }];
 }
 
 /** The `env:` lines that give a step each env file's secret under its own name. */
@@ -1202,7 +1213,8 @@ function extraServerSteps(
       const port = ctx.serverSshPorts?.[server.name];
       checkSshPort(port);
       const services = servicesOn(plan, server.name);
-      const envFiles = serviceEnvFiles(services);
+      const offsite = offsiteEnvFiles(plan, server.name);
+      const envFiles = [...serviceEnvFiles(services), ...offsite];
       // The mask also holds a moving service's old copy's values while it still runs there.
       const maskFiles = serviceEnvFiles(servicesRunningOn(plan, server.name));
       const mask = maskFileWrite(plan, server.name, maskFiles, dir, OVER_SSH);
@@ -1214,7 +1226,7 @@ function extraServerSteps(
         `- name: Update the services on the server ${server.name}`,
         "  env:",
         `    HOST: ${extraServerHost(plan, server)}`,
-        ...envFileEnv(plan, mask.length > 0 ? maskFiles : envFiles),
+        ...envFileEnv(plan, mask.length > 0 ? [...maskFiles, ...offsite] : envFiles),
         ...(release ? [`    IMAGE: ${imageOutput(plan, "image")}`, RUNNING_ENV, MODE_ENV] : []),
         "  run: |",
         "    set -euo pipefail",
@@ -1420,6 +1432,7 @@ export function deploySecretNamesFor(plan: DeployPlan): string[] {
     ...extra,
     DEPLOY_SECRETS.appEnv,
     ...enabledServices(plan).map(({ name }) => serviceEnvSecret(name)),
+    ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
     ...(tunnel ? [] : [DEPLOY_SECRETS.originTls]),
     ...build,
   ];
@@ -1478,7 +1491,11 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
   checkRunnerReachesServers(plan);
 
   // The services on the app's server; each extra server's get their env files in its own step.
-  const envFiles = [APP_ENV_FILE, ...serviceEnvFiles(servicesOn(plan, APP_SERVER))];
+  const envFiles = [
+    APP_ENV_FILE,
+    ...serviceEnvFiles(servicesOn(plan, APP_SERVER)),
+    ...offsiteEnvFiles(plan, APP_SERVER),
+  ];
   const upload: Upload = {
     env: [
       ...envFileEnv(plan, envFiles),

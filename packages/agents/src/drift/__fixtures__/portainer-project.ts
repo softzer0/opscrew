@@ -3,13 +3,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type PortainerClientDeps, portainerClient } from "@opscrew/connector-portainer";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
-import { NodeCommandRunner } from "@opscrew/core";
+import { generateAgeIdentity, NodeCommandRunner } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { fillPortainerStack, portainerStackTemplatePath } from "@opscrew/iac-templates";
-import { type DeployPlan, DeployPlanSchema, writeArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  DeployPlanSchema,
+  snapshotOffsiteOf,
+  writeArtifact,
+} from "@opscrew/plan-schema";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../../provision/portainer";
 import { runProvision } from "../../provision/run";
+import { OFFSITE_KEY_VARS } from "../../provision/storage";
 import type { ProvisionServices } from "../../provision/types";
+import { writeRecord } from "../../secrets/store";
 import {
   deployBranchOf,
   type PortainerConnectionInput,
@@ -181,6 +188,13 @@ export async function portainerProject(o: PortainerProjectOptions = {}) {
     PORTAINER_API_KEY: secrets.portainerToken,
     [REPOSITORY_TOKEN_VAR]: secrets.repositoryToken,
     [REGISTRY_TOKEN_VAR]: secrets.registryToken,
+    // The off-server copies' bucket's key, which the user creates, when the plan has the copy.
+    ...(snapshotOffsiteOf(plan) !== undefined
+      ? {
+          [OFFSITE_KEY_VARS.accessKeyId]: fakeSecret("aws-access-key-id", "offsite"),
+          [OFFSITE_KEY_VARS.secretAccessKey]: fakeSecret("aws-secret-access-key", "offsite"),
+        }
+      : {}),
     ...o.env,
   };
   const deps = await createTestPhaseDeps({
@@ -193,6 +207,10 @@ export async function portainerProject(o: PortainerProjectOptions = {}) {
   });
   if (environment !== undefined || key !== undefined) {
     await writeArtifact("plan", deps.paths.files.plan, plan);
+  }
+  // The off-server copies are encrypted to the recovery copy's age key: an earlier provision's.
+  if (snapshotOffsiteOf(plan) !== undefined) {
+    await writeRecord(deps.paths, { recipients: [generateAgeIdentity().recipient] });
   }
   const target = plan.target.provider === "portainer" ? plan.target : undefined;
   await recordPortainerConnection(deps.paths, {

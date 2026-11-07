@@ -13,7 +13,7 @@
  *    upload as it was;
  * 4. the `offsite` service, its remote turned into a local folder, fetches and checks age and
  *    uploads every file encrypted, `about.json` too; each decrypts with the test's age identity to
- *    exactly the snapshot's file.
+ *    exactly the snapshot's file. A snapshot before a release (named by its digest) stays here.
  * Neither the services' logs nor `about.json` hold a password.
  *
  * It pulls the pinned images and fetches age from GitHub, so it runs only with
@@ -293,6 +293,13 @@ describe.skipIf(reason !== undefined)(
 
       // Waits for a finished slot with its off-server copy.
       const volumes = [`${SNAPSHOTS_VOLUME}:/s`];
+      // A snapshot before a release, named by its digest, which sorts before every slot: it stays.
+      const release = "0".repeat(64);
+      inside(
+        IMAGES.busybox.ref,
+        volumes,
+        `mkdir -p /s/${release} && echo dump > /s/${release}/db.dump && echo '{"id":"${release}","kind":"release","services":[{"name":"db","kind":"postgres","file":"db.dump","size":5}]}' > /s/${release}/about.json`,
+      );
       const started = Date.now();
       let id = "";
       while (id === "") {
@@ -386,6 +393,19 @@ describe.skipIf(reason !== undefined)(
       expect(databases.slice(0, 3)).toEqual(["delete", "delete", "100"]);
       expect(Number(databases[3])).toBeGreaterThan(0);
       expect(databases[4]).toBe("True");
+
+      // The snapshot before a release was never copied off.
+      const copied = inside(
+        IMAGES.busybox.ref,
+        [`${PROJECT}_remote:/remote:ro`],
+        `ls /remote/${BUCKET}/backups`,
+      ).split("\n");
+      expect(copied).toContain(id);
+      expect(copied).not.toContain(release);
+      expect(inside(IMAGES.busybox.ref, volumes, `ls /s/${release}`).split("\n")).toEqual([
+        "about.json",
+        "db.dump",
+      ]);
 
       // The off-server copy decrypts with the identity to exactly the snapshot's files.
       const remote = `/remote/${BUCKET}/backups/${id}`;

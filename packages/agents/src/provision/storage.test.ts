@@ -1212,6 +1212,17 @@ describe.skipIf(!findExecutable("git"))("provision with the off-server copy (024
     expect(await readTextIfExists(backupsCreateFile(o.f.deps.paths))).toBeUndefined();
     const main = await readTextIfExists(join(o.f.root, "opscrew/infra/backups/main.tf"));
     expect(main).toContain('resource "aws_s3_bucket_lifecycle_configuration" "this"');
+    // The server's offsite.env goes in a deploy secret of its own, with the bucket's key.
+    const recipient = (await readRecord(o.f.deps.paths)).recipients?.[0];
+    expect(o.f.github.secrets.get("OPSCREW_OFFSITE_ENV")).toBe(
+      [
+        "OPSCREW_OFFSITE_ENDPOINT=https://nbg1.your-objectstorage.com",
+        `OPSCREW_OFFSITE_ACCESS_KEY_ID=${OFFSITE_KEY.accessKeyId}`,
+        `OPSCREW_OFFSITE_SECRET_ACCESS_KEY=${OFFSITE_KEY.secretAccessKey}`,
+        `OPSCREW_OFFSITE_RECIPIENT=${recipient}`,
+        "",
+      ].join("\n"),
+    );
     const printed = await leaks(o.f);
     expect(printed).not.toContain(OFFSITE_KEY.secretAccessKey);
     expect(printed).not.toContain(OFFSITE_KEY.accessKeyId);
@@ -1287,10 +1298,12 @@ describe.skipIf(!findExecutable("git"))("provision with the off-server copy (024
     const plain = await without.run();
     const withCopy = await offsiteFlow(withOffsite(testPlan(), HETZNER_OFFSITE));
     await withCopy.run();
-    // The same approvals, but the backups root's, and its four files to write.
+    // The same approvals, but the backups root's, its four files to write and its env file's
+    // secret.
     const kinds = (o: typeof without) =>
       o.f.handler.requests.map(
-        (r) => `${r.kind} ${r.title.replace(/\(\d+ new files\)/, "(N new files)")}`,
+        (r) =>
+          `${r.kind} ${r.title.replace(/\(\d+ new files\)/, "(N new files)").replace(/Store \d+ /, "Store N ")}`,
       );
     expect(kinds(withCopy).filter((k) => !k.includes("off-server copies"))).toEqual(kinds(without));
     const written = (o: typeof without) =>
@@ -1300,6 +1313,9 @@ describe.skipIf(!findExecutable("git"))("provision with the off-server copy (024
           ?.title.match(/\((\d+) new files\)/)?.[1],
       );
     expect(written(withCopy)).toBe(written(without) + 4);
+    expect([...withCopy.f.github.secrets.keys()].sort()).toEqual(
+      [...without.f.github.secrets.keys(), "OPSCREW_OFFSITE_ENV"].sort(),
+    );
     expect(plain.backupsPlanHash).toBeUndefined();
     expect(without.backups.calls).toEqual([]);
     // The recovery copy is made when the pull request is, after the secrets, as before.

@@ -195,6 +195,7 @@ services:
         while :; do
           for d in /snapshots/*; do
             case "$$d" in *.partial|*.taking) continue ;; esac
+            case "$\${d##*/}" in *[!0-9a-f]*) ;; *) continue ;; esac
             if [ ! -f "$$d"/about.json ] || [ -e "$$d"/offsite.done ]; then continue; fi
             id=$\${d##*/}; ok=1
             for f in "$$d"/*; do

@@ -457,7 +457,8 @@ export function offsiteVariables(plan: DeployPlan): string[] {
  * fetches the pinned age with `rclone copyurl`, checks the archive's and the binary's SHA-256 and
  * keeps the binary in its tools volume, checking it again before each use. Every minute, each
  * finished snapshot without `offsite.done` streams file by file through `age -r <recipient>` into
- * `rclone rcat` (`backups/<id>/<file>.age`), `about.json` last, then gets `offsite.done`. The
+ * `rclone rcat` (`backups/<id>/<file>.age`), `about.json` last, then gets `offsite.done`; the
+ * snapshots before a release (named by their digest) stay here for the rollback (D16). The
  * bucket's endpoint, key and the recipient are stack variables.
  */
 function offsite(plan: DeployPlan): Record<string, object> {
@@ -477,6 +478,8 @@ function offsite(plan: DeployPlan): Record<string, object> {
     `  for d in ${DIR}/*; do`,
     // A snapshot being written: the schedule's and a release's `.partial`, one by hand `.taking`.
     '    case "$d" in *.partial|*.taking) continue ;; esac',
+    // A snapshot before a release, named by its 64-hex digest, stays here for the rollback (D16).
+    '    case "${d##*/}" in *[!0-9a-f]*) ;; *) continue ;; esac',
     '    if [ ! -f "$d"/about.json ] || [ -e "$d"/offsite.done ]; then continue; fi',
     "    id=${d##*/}; ok=1",
     '    for f in "$d"/*; do',

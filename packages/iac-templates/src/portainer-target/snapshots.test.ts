@@ -18,6 +18,7 @@ import { testContext } from "../__fixtures__/plans";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { shellQuote } from "../runtime/services";
 import { withSqlite } from "../workflow/__fixtures__/plans";
+import { shWorks } from "../workflow/__fixtures__/sh";
 import { SQLITE_COPY } from "../workflow/snapshots";
 import { portainerTestPlan } from "./__fixtures__/plans";
 import {
@@ -388,6 +389,26 @@ describe("the off-server copy in a stack", () => {
     expect(text).toContain('touch "$d"/offsite.done');
     expect(shParses(text)).toBe(true);
   });
+
+  it.skipIf(!shWorks())(
+    "never copies off a snapshot before a release, which a 64-hex digest names (D16)",
+    () => {
+      const skip = script(offsite)
+        .split("\n")
+        .find((line) => line.includes("*[!0-9a-f]*"));
+      expect(skip?.trim()).toBe('case "${d##*/}" in *[!0-9a-f]*) ;; *) continue ;; esac');
+      const names = ["a".repeat(64), "20261107T000000Z", "0123abcd".repeat(8)];
+      const kept = spawnSync(
+        "sh",
+        [
+          "-c",
+          `for d in ${names.map((n) => `/snapshots/${n}`).join(" ")}; do\n${skip}\necho "\${d##*/}"\ndone`,
+        ],
+        { encoding: "utf8" },
+      );
+      expect(kept.stdout.trim().split("\n")).toEqual(["20261107T000000Z"]);
+    },
+  );
 
   it("takes the bucket's region from the plan, R2's auto, and rclone's provider of each", () => {
     const environment = (offsite: object) =>
