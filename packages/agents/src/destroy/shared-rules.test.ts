@@ -1,6 +1,12 @@
-import { writeFile } from "node:fs/promises";
-import { CloudflareClient } from "@opscrew/connector-cloudflare";
-import { FakeZone } from "@opscrew/connector-cloudflare/testing";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import {
+  applyShared,
+  CloudflareClient,
+  inspectShared,
+  planShared,
+} from "@opscrew/connector-cloudflare";
+import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID, FakeZone } from "@opscrew/connector-cloudflare/testing";
 import type { FetchLike } from "@opscrew/contracts";
 import { findExecutable, OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
@@ -55,6 +61,36 @@ async function expectError(promise: Promise<unknown>, code: string): Promise<Ops
 describe.skipIf(!findExecutable("git"))(
   "opscrew destroy and OpsCrew's shared Cloudflare rules",
   () => {
+    it("on the user's own server, a provision that stopped after its Cloudflare plan: destroy removes only its hostname, the other app's stays", async () => {
+      const zone = new FakeZone();
+      await deployed(zone, "api.example.com");
+      const s = await ownProject({ plan: ownPlan({ domain: "shop.example.com" }) });
+      const client = fakeSharedCloudflare(zone);
+      s.services.sharedCloudflare = client;
+      // What the stopped provision applied and recorded, and nothing else.
+      const facts = await inspectShared(client, {
+        zoneId: FAKE_ZONE_ID,
+        accountId: FAKE_ACCOUNT_ID,
+        access: false,
+      });
+      const added = planShared(
+        facts,
+        { hostnames: { "opscrew-block-probes": ["shop.example.com"] } },
+        undefined,
+      );
+      const { record } = await applyShared(client, added, { approvedHash: added.hash });
+      await mkdir(dirname(s.deps.paths.files.cloudflareRecord), { recursive: true });
+      await writeFile(s.deps.paths.files.cloudflareRecord, JSON.stringify(record));
+      expect(listed(zone, WAF)).toEqual(["api.example.com", "shop.example.com"]);
+
+      const result = await runDestroy(s.deps, { services: services(s) });
+
+      expect(result).toEqual({ destroyed: [], secretsRemoved: [], remaining: [] });
+      expect(s.handler.requests.map((r) => r.kind)).toEqual(["cloudflare-apply"]);
+      expect(listed(zone, WAF)).toEqual(["api.example.com"]);
+      expect(s.deps.reporter.text()).toContain("That was all there was to remove");
+    });
+
     it("two apps in one zone: the first destroy keeps the other's hostnames, the last deletes OpsCrew's rules and leaves the user's rule as it was", async () => {
       const zone = new FakeZone();
       zone.seedRule(WAF, USER_RULE);
