@@ -50,7 +50,8 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
 - **The contract** (T2405, 2026-11-06), the same on servers and Portainer:
   - `about.json` is one line:
     `{"id","kind","taken","version":"sha256:<hex>","services":[…]}`;
-  - each service entry is `{"name","kind","file","size"}`, or
+  - each service entry is `{"name","kind","file","size"}` (plus an optional `"image"`, the
+    service's image reference when it was taken, T2408), or
     `{"name","kind","failed":true}`, or `{"name","kind","skipped":true}` for a stop-only
     service left out;
   - `kind` is `manual`, `release` or `scheduled`;
