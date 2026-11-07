@@ -50,13 +50,21 @@ const EARLIER: ServerSnapshot = {
  * connectors' fakes answer: every call is recorded in `events`; `fail` makes one throw.
  */
 function fakeServerApi(
-  o: { snapshots?: ServerSnapshot[]; fail?: Partial<Record<string, Error>> } = {},
+  o: {
+    snapshots?: ServerSnapshot[];
+    fail?: Partial<Record<string, Error>>;
+    /** The app's server's id (default 42). */
+    appId?: string;
+    /** The billed size of the snapshot it takes (default 2.5 GB). */
+    takenGb?: number;
+  } = {},
 ) {
   const events: string[] = [];
   const requests: SnapshotRequest[] = [];
   const snapshots = [...(o.snapshots ?? [EARLIER])];
+  const appId = o.appId ?? "42";
   const servers: AppServer[] = [
-    { id: "42", name: "shop-staging", status: "running" },
+    { id: appId, name: "shop-staging", status: "running" },
     { id: "43", name: "shop-staging-data", status: "running" },
   ];
   const step = async (name: string) => {
@@ -73,12 +81,12 @@ function fakeServerApi(
         id: "880022",
         name: request.description,
         createdAt: "2026-11-07T12:00:00Z",
-        sizeGb: 2.5,
+        sizeGb: o.takenGb ?? 2.5,
         labels: request.labels,
       });
       return { snapshotId: "880022" };
     },
-    listSnapshots: async (serverId) => (serverId === "42" ? snapshots : []),
+    listSnapshots: async (serverId) => (serverId === appId ? snapshots : []),
     deleteSnapshot: async () => {
       throw new Error("not in these tests");
     },
@@ -114,6 +122,7 @@ function fakeCatalog(provider: CloudProvider): ComputeCatalog {
     ],
     extras: async () => ({
       snapshotPerGbMonth: { amount: provider === "hetzner" ? 0.011 : 0.06, currency },
+      ...(provider === "digitalocean" ? { snapshotRateAsOf: "2026-11-06T00:00:00.000Z" } : {}),
       pricesIncludeVat: false,
       source: "live",
       asOf: "2026-11-07T00:00:00Z",
@@ -233,6 +242,24 @@ describe("opscrew snapshot --server", () => {
     );
     expect(provider.events).toEqual(["powerOff 42", "powerOn 42"]);
     expect(error.message).toContain("was not off within 5 minutes: it is running");
+    expect(error.message).toContain("OpsCrew asked the server to start again");
+    expect(error.message).not.toContain("was started again");
+  });
+
+  it.each([
+    ["the snapshot", { snapshot: new Error("image quota reached") }],
+    ["the shutdown", { powerOff: new Error("server is locked") }],
+  ])("says the server may be off when %s and the start both fail", async (_what, fail) => {
+    const world = await snapshotWorld(stagingPlan([]));
+    const provider = fakeServerApi({ fail: { ...fail, powerOn: new Error("API unavailable") } });
+    const error = await failure(
+      takeServerSnapshot(world.deps, { stop: true, services: services(world, provider.api) }),
+    );
+    expect(provider.events.at(-1)).toBe("powerOn 42");
+    expect(error.message).toContain("Starting the server again failed too (API unavailable)");
+    expect(error.message).toContain(
+      "it may be off and the app offline: check it in the Hetzner Cloud Console and start it there",
+    );
   });
 
   it("says the server is off when it cannot be started again", async () => {
@@ -273,8 +300,19 @@ describe("opscrew snapshot --server", () => {
     const provider = fakeServerApi();
     await takeServerSnapshot(world.deps, { services: services(world, provider.api) });
     const text = world.deps.reporter.text();
-    expect(text).toContain("the Droplet's 40 GB disk at $0.06 per GB per month, excl. tax");
+    expect(text).toContain(
+      "the Droplet's 40 GB disk at $0.06 per GB per month, excl. tax (the published rate of 2026-11-06)",
+    );
     expect(text).toContain("volumes attached to it at DigitalOcean are not included");
+  });
+
+  it("says under €0.01 for a price two decimals would show as nothing", async () => {
+    const world = await snapshotWorld(stagingPlan([]));
+    const taken = await takeServerSnapshot(world.deps, {
+      services: services(world, fakeServerApi({ takenGb: 0.2 }).api),
+    });
+    expect(taken.monthly?.amount).toBeCloseTo(0.0022);
+    expect(world.deps.reporter.text()).toContain("(0.2 GB, under €0.01 a month excl. VAT)");
   });
 
   it("needs the provider's token", async () => {
@@ -336,6 +374,20 @@ describe("--server refused where OpsCrew created no server", () => {
     );
     expect(error.message).toContain("Server data of staging is your own server");
   });
+
+  it.each([
+    ["in your Portainer", plans["your Portainer"]],
+    ["on this computer", plans["this computer"]],
+  ])("with --server-name, says the environment runs %s", async (where, plan) => {
+    const world = await snapshotWorld(plan());
+    const error = await failure(
+      takeServerSnapshot(world.deps, {
+        serverName: "data",
+        services: services(world, fakeServerApi().api),
+      }),
+    );
+    expect(error.message).toContain(`staging runs ${where}`);
+  });
 });
 
 describe("opscrew restore --server", () => {
@@ -390,9 +442,33 @@ describe("opscrew restore --server", () => {
     for (const id of ["770011", "770012"]) {
       await restoreServerSnapshot(world.deps, id, { services: services(world, provider.api) });
     }
-    const [one, two] = world.handler.requests.map((request) => request.planHash);
-    expect(one).not.toBe(two);
-    expect(one).not.toBe(sha256Hex(""));
+    // The same snapshot id on another server, and at another provider.
+    await restoreServerSnapshot(world.deps, "770011", {
+      services: services(world, fakeServerApi({ appId: "44" }).api),
+    });
+    const droplet = await snapshotWorld(
+      stagingPlan([], { base: testPlan({ deployed: true, provider: "digitalocean" }) }),
+    );
+    droplet.deps.fetch = health([200]).fetch;
+    await restoreServerSnapshot(droplet.deps, "770011", {
+      services: services(droplet, fakeServerApi().api),
+    });
+    const hashes = [...world.handler.requests, ...droplet.handler.requests].map(
+      (request) => request.planHash,
+    );
+    expect(hashes).toHaveLength(4);
+    expect(new Set(hashes).size).toBe(4);
+    expect(hashes).not.toContain(sha256Hex(""));
+  });
+
+  it("needs the provider's token, as taking one does", async () => {
+    const world = await snapshotWorld(stagingPlan([]));
+    const error = await failure(
+      restoreServerSnapshot(world.deps, "770011", { services: services(world, undefined) }),
+    );
+    expect(error.code).toBe("CREDENTIALS_MISSING");
+    expect(error.message).toContain("HCLOUD_TOKEN");
+    expect(world.handler.requests).toEqual([]);
   });
 
   it("rebuilds nothing unless the server's name is typed", async () => {

@@ -30,8 +30,9 @@ import { cloudServerName } from "../shared/servers";
 import { pollUntil } from "../shared/wait";
 import { checkHealth, siteUrl, type VerifyCheckContext } from "../verify/checks";
 import { defaultDnsResolver, defaultTlsConnect } from "../verify/net";
-import { type ProviderSnapshot, providerSnapshots } from "./provider";
+import { cloudProviders, type ProviderSnapshot, providerSnapshots, serverApi } from "./provider";
 import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
+import { snapshotIdAt } from "./store";
 import type { SnapshotEntry, SnapshotServices } from "./types";
 
 /** How long the app may take to answer after a rebuild, and how often it is asked. */
@@ -90,25 +91,14 @@ export interface RestoredServer extends ServerSnapshotResult {
   checked: boolean;
 }
 
-/** `provider`'s server API with its token, or `undefined` when none is set (as `provider.ts`). */
-function serverApi(run: SnapshotRun, provider: CloudProvider): ServerSnapshotApi | undefined {
-  const { deps, services } = run;
-  return services.serverSnapshots === undefined
-    ? vpsConnector(provider, deps).servers
-    : services.serverSnapshots(provider);
-}
-
 /** `--server` refused where OpsCrew created no server, naming the data snapshot instead. */
 function noProviderServer(run: SnapshotRun, which: string, command: string): OpsCrewError {
   const { plan, environment, flags } = run;
-  const provider =
-    which === APP_SERVER
-      ? plan.target.provider
-      : plan.servers?.find((server) => server.name === which)?.target.provider;
+  const app = plan.target.provider;
   const place =
-    provider === "portainer"
+    app === "portainer"
       ? `${environment} runs in your Portainer`
-      : provider === "localhost"
+      : app === "localhost"
         ? `${environment} runs on this computer`
         : `${which === APP_SERVER ? "The app's server" : `Server ${which}`} of ${environment} is your own server`;
   return new OpsCrewError(
@@ -117,6 +107,14 @@ function noProviderServer(run: SnapshotRun, which: string, command: string): Ops
     {
       hint: `\`opscrew snapshot${flags}\` takes a snapshot of the app's data there, \`opscrew snapshot list${flags}\` shows them and \`opscrew restore <id>${flags}\` restores one.`,
     },
+  );
+}
+
+/** `CREDENTIALS_MISSING` for `provider`'s token. */
+function noToken(run: SnapshotRun, provider: CloudProvider): OpsCrewError {
+  return missing(
+    providerProfile(provider).displayName,
+    vpsConnector(provider, run.deps).credentials,
   );
 }
 
@@ -153,9 +151,7 @@ async function serverToSnapshot(run: SnapshotRun, which: string): Promise<FoundS
   const provider = target.provider;
   const profile = providerProfile(provider);
   const api = serverApi(run, provider);
-  if (api === undefined) {
-    throw missing(profile.displayName, vpsConnector(provider, run.deps).credentials);
-  }
+  if (api === undefined) throw noToken(run, provider);
   const name = which === APP_SERVER ? plan.app.name : cloudServerName(plan, which);
   const named = (await api.findAppServers(plan.app.name)).filter((s) => s.name === name);
   const [server] = named;
@@ -184,6 +180,13 @@ function priceOf(sizeGb: number, rate: Money): Money {
   return { amount: sizeGb * rate.amount, currency: rate.currency };
 }
 
+/** `€0.44`, or `under €0.01` for an amount two decimals would show as nothing. */
+function priceText(price: Money): string {
+  return price.amount < 0.005
+    ? `under ${formatMoney({ ...price, amount: 0.01 })}`
+    : formatMoney(price);
+}
+
 /** The provider's snapshot rate and the server's disk size, from its price catalogue. */
 async function prices(
   deps: PhaseDeps,
@@ -204,10 +207,14 @@ function priceLine(provider: CloudProvider, extras: ProviderExtras, diskGb?: num
   const rate = extras.snapshotPerGbMonth;
   if (rate === undefined) return `It is ${destroyTexts(provider).snapshotBilled}.`;
   const tax = taxLabel(rate.currency, extras.pricesIncludeVat);
-  const per = `${rateText(rate)} per GB per month, ${tax}`;
+  const published =
+    extras.snapshotRateAsOf === undefined
+      ? ""
+      : ` (the published rate of ${extras.snapshotRateAsOf.slice(0, 10)})`;
+  const per = `${rateText(rate)} per GB per month, ${tax}${published}`;
   return diskGb === undefined
     ? `It costs ${per}, for the size the provider bills once it is taken.`
-    : `It costs up to ${formatMoney(priceOf(diskGb, rate))} a month: the ${noun}'s ${diskGb} GB disk at ${per}. The provider bills the snapshot's size, shown once it is taken.`;
+    : `It costs up to ${priceText(priceOf(diskGb, rate))} a month: the ${noun}'s ${diskGb} GB disk at ${per}. The provider bills the snapshot's size, shown once it is taken.`;
 }
 
 /**
@@ -221,11 +228,7 @@ async function snapshotWith(
   const { deps, plan, environment } = run;
   const { provider, api, server, stop } = input;
   const { noun, console: where } = destroyTexts(provider);
-  const stamp = deps.clock
-    .now()
-    .toISOString()
-    .replace(/[-:]/g, "")
-    .replace(/\.\d+Z$/, "Z");
+  const stamp = snapshotIdAt(deps.clock.now());
   const request = {
     name: `opscrew-${plan.app.name}-${stamp}`,
     description: `OpsCrew snapshot of ${server.name} (${environment}), ${stamp}`,
@@ -250,10 +253,12 @@ async function snapshotWith(
   }
   let snapshotId: string | undefined;
   let failure: unknown;
+  let off = false;
   try {
     deps.reporter.step(`Shutting the ${noun} ${server.name} down (up to 5 minutes)`);
     await audit("shut down server", `${server.name}, for a snapshot`);
     await api.powerOff(server.id);
+    off = true;
     deps.reporter.step(`Taking the snapshot of the ${noun} ${server.name}`);
     await audit("create snapshot", `snapshot ${request.name} of ${server.name}, shut down`);
     snapshotId = (await api.snapshotServer(server.id, request)).snapshotId;
@@ -269,7 +274,9 @@ async function snapshotWith(
   await audit("start server", `${server.name}: ${started === undefined ? "started" : "failed"}`);
   const startedText =
     started === undefined
-      ? `The ${noun} was started again.`
+      ? off
+        ? `The ${noun} was started again.`
+        : `OpsCrew asked the ${noun} to start again, in case its shutdown went on.`
       : `Starting the ${noun} again failed too (${errorText(started)}), so it may be off and the app offline: check it in ${where} and start it there.`;
   if (failure !== undefined) {
     throw new OpsCrewError(
@@ -351,7 +358,7 @@ export async function takeServerSnapshot(
       ? `${profile.displayName} does not report its size yet; \`opscrew snapshot list${flags}\` shows it later`
       : monthly === undefined
         ? `${sizeGb} GB, ${destroyTexts(provider).snapshotBilled}`
-        : `${sizeGb} GB, ${formatMoney(monthly)} a month ${taxLabel(monthly.currency, extras.pricesIncludeVat)}`;
+        : `${sizeGb} GB, ${priceText(monthly)} a month ${taxLabel(monthly.currency, extras.pricesIncludeVat)}`;
   deps.reporter.success(
     `Took the snapshot ${id} of the ${noun} ${server.name} of ${environment} at ${profile.displayName} (${billed}). Delete it in ${where} or with \`opscrew snapshot delete ${id}${flags}\` when you no longer need it.`,
   );
@@ -454,13 +461,11 @@ export async function restoreServerSnapshot(
     );
   }
   const run = await snapshotRun(deps, options.services);
-  const { plan, environment, flags } = run;
-  const cloud =
-    isCloudProvider(plan.target.provider) ||
-    plan.servers?.some((s) => isCloudProvider(s.target.provider));
-  if (snapshotTarget(run) !== "servers" || cloud !== true) {
-    throw noProviderServer(run, APP_SERVER, "opscrew restore --server");
-  }
+  const { environment, flags } = run;
+  const providers = snapshotTarget(run) === "servers" ? cloudProviders(run) : [];
+  if (providers.length === 0) throw noProviderServer(run, APP_SERVER, "opscrew restore --server");
+  const tokenless = providers.find((provider) => serverApi(run, provider) === undefined);
+  if (tokenless !== undefined) throw noToken(run, tokenless);
   await requireNoDeployOrMove(run, "restore a server from a snapshot");
   const found = (await providerSnapshots(run)).find((candidate) => candidate.entry.id === id);
   if (found === undefined) {

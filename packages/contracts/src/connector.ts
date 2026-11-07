@@ -69,6 +69,8 @@ export interface ProviderExtras {
   backupPercent?: number;
   /** A whole-server snapshot per GB per month, where the provider publishes the rate. */
   snapshotPerGbMonth?: Money;
+  /** When the snapshot rate was read, where that differs from `asOf` (a dated published rate). */
+  snapshotRateAsOf?: IsoDateTime;
   pricesIncludeVat: boolean;
   source: "live" | "static";
   asOf: IsoDateTime;

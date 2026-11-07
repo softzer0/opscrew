@@ -66,24 +66,26 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
       const { protection } = await client.getServer(id);
       const lifted = protection.rebuild;
       const before = { delete: protection.delete, rebuild: protection.rebuild };
-      let rebuilt = false;
+      let failure: unknown;
       try {
         if (lifted) await setProtection(client, id, { delete: false, rebuild: false });
         const { actionId } = await client.rebuildServer(id, image);
         await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
-        rebuilt = true;
+      } catch (error) {
+        failure = error;
+        throw error;
       } finally {
         if (lifted) {
           await setProtection(client, id, before).catch((error: unknown) => {
-            throw unprotected(id, rebuilt, error);
+            throw unprotected(id, failure, error);
           });
         }
       }
     },
     async powerOff(serverId: string): Promise<void> {
       const id = numericId(serverId, "server");
-      const { actionId } = await client.shutdownServer(id);
-      await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
+      // The action only says the request was sent: the server's status says when it is off.
+      await client.shutdownServer(id);
       await client.waitForServerStatus(id, "off", { timeoutMs: SHUTDOWN_TIMEOUT_MS });
     },
     async powerOn(serverId: string): Promise<void> {
@@ -103,12 +105,22 @@ async function setProtection(
   await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
 }
 
-/** The error when the protection lifted for a rebuild could not be set back. */
-function unprotected(serverId: number, rebuilt: boolean, cause: unknown): OpsCrewError {
-  const reason = cause instanceof Error ? cause.message : String(cause);
+/** `error` in words, with its hint when it has one (a timed-out wait's "It may still be running"). */
+function said(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  const hint = error instanceof OpsCrewError ? error.hint : undefined;
+  return hint === undefined ? error.message : `${error.message} ${hint}`;
+}
+
+/**
+ * The error when the protection lifted for a rebuild could not be set back; `failure` is the
+ * rebuild's own error, if it failed.
+ */
+function unprotected(serverId: number, failure: unknown, cause: unknown): OpsCrewError {
+  const outcome = failure === undefined ? "which finished" : `which failed (${said(failure)})`;
   return new OpsCrewError(
     "PROVIDER_ERROR",
-    `Hetzner server ${serverId} is unprotected: OpsCrew lifted its delete and rebuild protection for the rebuild${rebuilt ? ", which finished," : ", which did not finish,"} and could not set it again (${reason}).`,
+    `Hetzner server ${serverId} is unprotected: OpsCrew lifted its delete and rebuild protection for the rebuild, ${outcome}, and could not set it again (${said(cause)}).`,
     {
       hint: "Run `opscrew provision`: it sets the protection again from the infrastructure state (or turn it on for the server in the Hetzner Cloud Console).",
       cause,

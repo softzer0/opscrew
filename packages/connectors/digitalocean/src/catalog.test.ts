@@ -109,6 +109,7 @@ describe("DigitalOceanCatalog (live)", () => {
     expect(extras).toEqual({
       backupPercent: 30,
       snapshotPerGbMonth: { amount: 0.06, currency: "USD" },
+      snapshotRateAsOf: "2026-11-06T00:00:00.000Z",
       pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,
@@ -179,6 +180,7 @@ describe("StaticDigitalOceanCatalog", () => {
     expect(await catalog.extras("ams3")).toEqual({
       backupPercent: 30,
       snapshotPerGbMonth: { amount: 0.06, currency: "USD" },
+      snapshotRateAsOf: "2026-11-06T00:00:00.000Z",
       pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,

@@ -375,14 +375,16 @@ export class DigitalOceanClient {
   }
 
   /**
-   * Polls the Droplet every 5 seconds until its status is `status`. One in another status after
-   * `timeoutMs` throws `OpsCrewError` (`PROVIDER_ERROR`) naming the status it is in.
+   * Polls the Droplet every 5 seconds until its status is `status`. One in another status
+   * `timeoutMs` after `since` (epoch ms, default now; a deadline shared with an earlier wait) throws
+   * `OpsCrewError` (`PROVIDER_ERROR`) naming the status it is in.
    */
   waitForDropletStatus(
     dropletId: string | number,
     status: string,
-    options: { timeoutMs: number },
+    options: { timeoutMs: number; since?: number },
   ): Promise<string> {
+    const since = options.since ?? this.#http.now();
     return pollAction({
       read: () => this.getDropletStatus(dropletId),
       finished: (current) => current === status,
@@ -394,7 +396,7 @@ export class DigitalOceanClient {
             hint: "Check the Droplet in the DigitalOcean control panel (https://cloud.digitalocean.com/droplets).",
           },
         ),
-      timeoutMs: options.timeoutMs,
+      timeoutMs: Math.max(0, options.timeoutMs - (this.#http.now() - since)),
       intervalMs: ACTION_POLL_MS,
       sleep: this.#http.sleep,
       now: this.#http.now,

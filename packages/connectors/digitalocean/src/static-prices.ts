@@ -17,6 +17,8 @@ export const BACKUP_PERCENT = 30;
  * it. Source: https://docs.digitalocean.com/products/snapshots/details/pricing/, read 2026-11-06.
  */
 export const SNAPSHOT_PER_GB_MONTH = 0.06;
+/** When {@link SNAPSHOT_PER_GB_MONTH} was read. */
+export const SNAPSHOT_PRICE_AS_OF = "2026-11-06T00:00:00.000Z";
 
 /** Droplet regions on 2026-10-12 (https://docs.digitalocean.com/platform/regional-availability/). */
 export const STATIC_REGIONS: readonly string[] = [

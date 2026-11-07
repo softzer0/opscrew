@@ -11,14 +11,17 @@ import type { SnapshotRun } from "./run";
 import type { SnapshotEntry } from "./types";
 
 /** The cloud providers of the app's servers OpsCrew created: the app's, then its extra servers'. */
-function cloudProviders(run: SnapshotRun): CloudProvider[] {
+export function cloudProviders(run: SnapshotRun): CloudProvider[] {
   const { plan } = run;
   const app = plan.target.provider;
   return [...(isCloudProvider(app) ? [app] : []), ...extraCloudProviders(plan, app)];
 }
 
 /** `provider`'s server API with its token, or `undefined` when none is set. */
-function serverApi(run: SnapshotRun, provider: CloudProvider): ServerSnapshotApi | undefined {
+export function serverApi(
+  run: SnapshotRun,
+  provider: CloudProvider,
+): ServerSnapshotApi | undefined {
   const { deps, services } = run;
   return services.serverSnapshots === undefined
     ? vpsConnector(provider, deps).servers

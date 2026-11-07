@@ -426,7 +426,28 @@ describe("servers.rebuild", () => {
     expect(textOf(error)).not.toContain(password);
   });
 
-  it("says the rebuild did not finish when neither it nor the protection went through", async () => {
+  it("keeps a timed-out rebuild's words when the protection cannot be set back", async () => {
+    const { connector } = setup(
+      {
+        "/servers/7": serverState(true),
+        "POST /servers/7/actions/change_protection": [
+          protectAction(90),
+          { status: 503, body: { error: { code: "unavailable", message: "maintenance" } } },
+        ],
+        "/actions/90": protectAction(90),
+        "POST /servers/7/actions/rebuild": rebuildAnswer,
+        "/actions/77": rebuildAction("running"),
+      },
+      60_000,
+    );
+    const error = await errorOf(connector.servers?.rebuild("7", "4711"));
+    expect(error.message).toContain("is unprotected");
+    expect(error.message).toContain("which failed (Hetzner action 77");
+    expect(error.message).toContain("did not finish within 15 minutes");
+    expect(error.message).toContain("It may still be running");
+  });
+
+  it("names the rebuild's failure when neither it nor the protection went through", async () => {
     const { connector } = setup({
       "/servers/7": serverState(true),
       "POST /servers/7/actions/change_protection": [
@@ -441,7 +462,8 @@ describe("servers.rebuild", () => {
     });
     const error = await errorOf(connector.servers?.rebuild("7", "4711"));
     expect(error.message).toContain("is unprotected");
-    expect(error.message).toContain("which did not finish");
+    expect(error.message).toContain("which failed (Hetzner API request");
+    expect(error.message).toContain("image is not compatible");
   });
 
   it("surfaces a rebuild action that ends in error, without the password or token", async () => {
@@ -527,33 +549,30 @@ describe("servers.powerOff and powerOn", () => {
     body: { server: { id: 7, status, protection: { delete: true, rebuild: true } } },
   });
 
-  it("shuts down gracefully, waits for the request, then until the server is off", async () => {
+  it("shuts down gracefully, then waits until the server's status is off", async () => {
     const { connector, calls } = setup({
       "POST /servers/7/actions/shutdown": {
         status: 201,
         ...sent(81, "shutdown_server", "running"),
       },
-      "/actions/81": sent(81, "shutdown_server", "success"),
       "/servers/7": [server("running"), server("stopping"), server("off")],
     });
     await expect(connector.servers?.powerOff("7")).resolves.toBeUndefined();
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
       "POST /servers/7/actions/shutdown",
-      "GET /actions/81",
       "GET /servers/7",
       "GET /servers/7",
       "GET /servers/7",
     ]);
   });
 
-  it("stops waiting after 5 minutes, naming the state, and never forces the power off", async () => {
-    const { connector, calls } = setup(
+  it("stops waiting 5 minutes after the request, naming the state, and never forces the power off", async () => {
+    const { connector, calls, waits } = setup(
       {
         "POST /servers/7/actions/shutdown": {
           status: 201,
           ...sent(81, "shutdown_server", "running"),
         },
-        "/actions/81": sent(81, "shutdown_server", "success"),
         "/servers/7": server("running"),
       },
       60_000,
@@ -561,6 +580,9 @@ describe("servers.powerOff and powerOn", () => {
     const error = await errorOf(connector.servers?.powerOff("7"));
     expect(error.code).toBe("PROVIDER_ERROR");
     expect(error.message).toContain("was not off within 5 minutes: it is running");
+    // One deadline: only the status is polled, never the shutdown's action.
+    expect(calls.some((call) => call.path.startsWith("/actions/"))).toBe(false);
+    expect(waits.reduce((sum, ms) => sum + ms, 0)).toBeLessThanOrEqual(5 * 60_000);
     expect(calls.some((call) => call.path.includes("poweroff"))).toBe(false);
     expect(textOf(error)).not.toContain(token);
   });

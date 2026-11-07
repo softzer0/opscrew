@@ -4,6 +4,7 @@ import type { DigitalOceanClient, DigitalOceanSize } from "./client";
 import {
   BACKUP_PERCENT,
   SNAPSHOT_PER_GB_MONTH,
+  SNAPSHOT_PRICE_AS_OF,
   STATIC_PRICES_AS_OF,
   STATIC_REGIONS,
   STATIC_SIZES,
@@ -143,6 +144,7 @@ function publishedExtras(): ProviderExtras {
   return {
     backupPercent: BACKUP_PERCENT,
     snapshotPerGbMonth: { amount: SNAPSHOT_PER_GB_MONTH, currency: "USD" },
+    snapshotRateAsOf: SNAPSHOT_PRICE_AS_OF,
     pricesIncludeVat: false,
     source: "static",
     asOf: STATIC_PRICES_AS_OF,

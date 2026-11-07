@@ -651,6 +651,28 @@ describe("digitaloceanConnector.servers power", () => {
     expect(textOf(error)).not.toContain(token);
   });
 
+  it("shares one 5-minute deadline between the shutdown's action and the status", async () => {
+    const clock = fakeClock();
+    const start = clock.now();
+    const shutdown = (status: string) => ({ body: action(60, status, { type: "shutdown" }) });
+    // The action takes 4 minutes (48 polls 5 seconds apart), then the Droplet stays active.
+    const { connector: c } = connector(
+      {
+        "POST /v2/droplets/7/actions": { status: 201, ...shutdown("in-progress") },
+        "/v2/actions/60": [
+          ...Array.from({ length: 48 }, () => shutdown("in-progress")),
+          shutdown("completed"),
+        ],
+        "/v2/droplets/7": droplet("active"),
+      },
+      undefined,
+      { clock },
+    );
+    const error = await errorOf(c.servers?.powerOff("7"));
+    expect(error.message).toContain("was not off within 5 minutes: it is active");
+    expect(clock.now() - start).toBe(5 * 60_000);
+  });
+
   it("powers on and waits for the action", async () => {
     const clock = fakeClock();
     const on = (status: string) => ({ body: action(61, status, { type: "power_on" }) });

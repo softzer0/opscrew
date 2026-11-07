@@ -94,7 +94,10 @@ export function digitaloceanConnector(
     credentials: DIGITALOCEAN_CREDENTIALS,
     configured: client !== undefined,
     client,
-    servers: client === undefined ? undefined : serverApi(client, options.sleep ?? realSleep),
+    servers:
+      client === undefined
+        ? undefined
+        : serverApi(client, options.sleep ?? realSleep, () => now().getTime()),
     catalog: () => {
       catalog ??=
         client === undefined
@@ -182,6 +185,7 @@ function withoutEmail(text: string, email: string | null | undefined): string {
 function serverApi(
   client: DigitalOceanClient,
   sleep: (ms: number) => Promise<void>,
+  now: () => number,
 ): ServerSnapshotApi {
   return {
     async findAppServers(app: string): Promise<AppServer[]> {
@@ -251,9 +255,11 @@ function serverApi(
     },
     async powerOff(serverId: string): Promise<void> {
       const id = numericId(serverId, "Droplet");
+      // One deadline for the shutdown's action and the Droplet's status after it.
+      const since = now();
       const action = await client.powerDroplet(id, "shutdown");
       await client.waitForAction(action.id, { timeoutMs: SHUTDOWN_TIMEOUT_MS });
-      await client.waitForDropletStatus(id, "off", { timeoutMs: SHUTDOWN_TIMEOUT_MS });
+      await client.waitForDropletStatus(id, "off", { timeoutMs: SHUTDOWN_TIMEOUT_MS, since });
     },
     async powerOn(serverId: string): Promise<void> {
       const action = await client.powerDroplet(numericId(serverId, "Droplet"), "power_on");
