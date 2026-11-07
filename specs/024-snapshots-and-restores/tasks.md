@@ -93,7 +93,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents`
   - Effort: xhigh
 
-- [ ] T2407 [US1] [US2] `opscrew snapshot`, `snapshot list` and `snapshot delete`, in `packages/agents/src/snapshot/**` (+ tests)
+- [x] T2407 [US1] [US2] `opscrew snapshot`, `snapshot list` and `snapshot delete`, in `packages/agents/src/snapshot/**` (+ tests)
   - Owns: `packages/agents/src/snapshot/**`
   - Reads: plan.md 1., 3.–4., 6.
   - Depends: T2404, T2405
