@@ -2683,6 +2683,222 @@ cheapest types (check the providers' price lists):
   for the size design picks), and Hetzner Object Storage and Spaces, each billed monthly in
   part (about 5 EUR or USD a month, a few cents for the run's hours), for about 2 hours.
 
+## Snapshots and restores
+
+`packages/cli/test/live/snapshots.test.ts` runs feature 024's `opscrew snapshot` and
+`opscrew restore` in four passes. Each pass has its own gate, run id, hostname, server and
+cleanup, and is skipped with a message naming what it is missing. With several gates set they run
+one after another; run one alone with vitest's `-t` (below). `OPSCREW_E2E_APP` is ignored.
+
+Every command runs as a script runs it:
+- a snapshot that stops a service passes `--allow-downtime`;
+- a restore runs first without `--approve`, which must stop at its approval (exit 1) and show
+  `Restore hash: <hash>` and "Typing <name> approves it.". The second run passes
+  `--confirm <name> --approve <hash>`. The name must be the app's (with `--server`, the server's);
+- `snapshot delete <id>` passes `--confirm <id>`.
+
+The test reads `opscrew snapshot list --json` to find each snapshot, its kind, version, services
+and where it is.
+
+**The data.** Each pass but the whole server's runs `examples/flask-sqlite`, with Postgres (`db`),
+MySQL (`mysql`) and a Valkey queue (`queue`) added to `services` in `opscrew/plan.yaml`, as
+[Retarget anywhere](#retarget-anywhere) does, and designed again. The data pass adds Kafka
+(`kafka`) too. After the first deploy the test seeds the data in the containers with `docker
+exec`, and each script gets its password from the container's own environment:
+- 1,000 rows in a table of each database;
+- 300 jobs in a Valkey list;
+- five messages in a Kafka topic of one partition;
+- a value written through the app into its SQLite file.
+
+The test keeps:
+- each table's count and checksum;
+- the jobs' and the messages' count and checksum (Kafka's read takes exactly as many messages as
+  the topic's end offset says it has);
+- the SHA-256 of the SQLite file's SQL dump. The dump is compared, not the file's bytes: a
+  snapshot copies the file through SQLite's backup API, so the copy holds the same rows in other
+  bytes.
+
+"Changed" below means a row deleted and one added in each database, the jobs replaced, three more
+messages, and another value written through the app. Each change must make every service differ.
+
+### The passes
+
+**Data on staging** (`OPSCREW_E2E_SNAPSHOTS=1`, `-t "snapshots, data"`):
+1. Prod is designed, as for [environments](#environments-and-promotion), but never provisioned.
+   `adapt`'s pull request is merged. Then `env add staging --target hetzner --from main`, and the
+   services above, Kafka included, go into staging's plan, as a user adds them. After `design
+   --env staging`, the plan must keep them and its SQLite volume. Staging is provisioned until
+   done and its deploy-setup pull request merged. Then the data is seeded and its version (the
+   image digest in the server's `.env`) kept.
+2. **The stop's approval** (US1, US2):
+   - `opscrew snapshot --env staging` without `--allow-downtime` must exit 1. Its summary must
+     name `kafka (Apache Kafka)`, that it "stops alone for its copy", the seconds it takes to stop
+     cleanly, `--allow-downtime`, and "No snapshot was taken.". The list must not change.
+   - `--skip kafka` must start no container again. Its snapshot must copy the other four parts,
+     the SQLite volume included, and list Kafka as skipped.
+   - `snapshot delete <id>` without `--confirm` must fail and keep it. With `--confirm <id>` it
+     must be gone from the list.
+3. **The snapshot** (SC-2402): `snapshot --env staging --allow-downtime` runs under 20 requests per
+   second to staging's health route, with no failed request allowed (as for
+   [the builders](#the-builders)). Comparing the containers' start times before and after, only
+   Kafka's container may have started again. The listed snapshot must be `manual`, on the app's
+   server, record the version kept in step 1, and copy all five parts.
+4. **The restore** (SC-2401): the data is changed. The restore's approval must say "What is lost:
+   everything written to". Its result must say "Restored the snapshot <id> of staging". Then every
+   service's data must be exactly as seeded, the app must read back the first value, and the
+   server must still run the same version.
+5. **`--only db`:** both databases are changed, and `restore <id> --only db` must put back only
+   Postgres: MySQL keeps its change.
+6. **Destroy:** as for the database pass of [Rollback](#the-database-pass).
+7. **Nothing leaked** (SC-2406): as for environments, over every CLI output, commit, pull request,
+   audit entry, plan and state file. The database passwords and every value the test wrote (the
+   SQLite values, Kafka's messages) are searched for there and in the deploy job's log of each
+   deploy run. No snapshot or restore output may name the server's address.
+
+**The schedule** (with `OPSCREW_E2E_SNAPSHOTS_SCHEDULE=1` too, about two hours more; its steps run
+between 5 and 6):
+- **S1.** `snapshot schedule on --env staging --every 1h --keep 1`, then provision and deploy. The
+  deploy user's crontab must have the app's line (`# opscrew-snapshots <app>`). A `scheduled`
+  snapshot must appear within 70 minutes, taken within the first 10 minutes of an hour (the line
+  runs at minute 0), copying all but Kafka. Kafka is listed as skipped, since `--stop` didn't
+  name it.
+- **S2** (SC-2403): the next scheduled snapshot must come an hour after the first. The first must
+  then be gone (`--keep 1`), while the snapshot by hand stays. `status --env staging` must say
+  `Last snapshot: <the second's id>, scheduled`.
+- **S3.** `snapshot schedule off`, then provision and deploy. The crontab line must be gone, and
+  the scheduled snapshot must still be listed.
+
+**The off-server copy** (`OPSCREW_E2E_SNAPSHOTS_OFFSITE=1`), to Cloudflare R2
+(`-t "Cloudflare R2"`, with `OPSCREW_E2E_R2=1`) and to Hetzner Object Storage
+(`-t "Hetzner Object Storage"`, with its S3 key). Each target is a pass of its own, and a target
+without its variables is skipped. The bucket's key is the one [the components](#the-components)
+use (R2's comes from the Cloudflare token), which OpsCrew reads as `OPSCREW_OFFSITE_ACCESS_KEY_ID`
+and `OPSCREW_OFFSITE_SECRET_ACCESS_KEY`. Each pass needs Docker on this computer: the restore
+reads the bucket with rclone from its pinned image, and so does the test.
+- **O1.** Prod is designed with the services above and `adapt`'s pull request merged. Then
+  `secrets folder <a folder of the run>`, and every provision passes `--key-out <file>`, as for
+  [your existing Portainer](#your-existing-portainer). `snapshot offsite on --to r2|hetzner` must
+  show "Expected cost:" and set `snapshots.offsite` to the bucket `<app>-prod-backups`.
+  Provision must write the age key to the file and create the bucket. Then the first deploy, and
+  the data is seeded.
+- **O2** (SC-2404, SC-2406): `opscrew snapshot`. Within 10 minutes the list must mark it as copied
+  off the server. In the bucket every object under `backups/` must be an age file. The copy must
+  hold its record (`about.json.age`) and one file per part. Each of the copy's objects, read
+  whole, must start with age's header and hold no known secret or value the test wrote. No file
+  in the app's folder or its snapshots on the server may hold an age private key (searched for
+  `AGE-SECRET-KEY-`, never the key).
+- **O3.** `destroy`: nothing left at Hetzner, and the bucket stays. Then provision and deploy
+  again. `GET /data` must answer 404 on the new, empty server. `snapshot list --json --key-file
+  <file>` must list the copy "only in the off-server bucket", with its parts, read with the key.
+- **O4.** `restore <id> --from offsite --key-file <file>`. When the new server runs another image
+  than the copy's (a new build), the first run must refuse, saying "was taken while another
+  version ran" and naming `--allow-other-version`, which the next runs then pass. The approval
+  must say "the key never leaves this computer". Afterwards every service's data must be exactly
+  as seeded, and the app must read back the value.
+- **O5.** `destroy`: nothing left at Hetzner or in Cloudflare, and the bucket must still be there.
+  Then the test deletes the bucket itself, since OpsCrew leaves that to the user: rclone deletes
+  every object (on Hetzner, whose bucket keeps versions, `rclone backend cleanup-hidden` deletes
+  the old versions too). Then the bucket goes, through Cloudflare's API for R2 and S3's
+  `DeleteBucket` with the key for Hetzner, and it must be gone.
+- **O6.** Nothing leaked, as step 7; the bucket's key and the age key are searched for too.
+
+**A whole server** (`OPSCREW_E2E_SNAPSHOTS_SERVER=1`, `-t "whole server"`), on
+`examples/flask-sqlite` alone:
+- **W1.** Prod at Hetzner, provisioned and deployed, and a value written through the app.
+- **W2** (US4): `snapshot --server --stop` without `--allow-downtime` must exit 1, naming that
+  flag, and the app must still answer. `snapshot --server` then runs under load with no failed
+  request. Its summary must say "A live snapshot may not be consistent", that attached volumes
+  "are not included", and the price "per GB per month". The list must show it as kind `server` of
+  the app's server.
+- **W3** (SC-2405): a second value is written. `restore --server <id>` asks for the server's name,
+  and its result must say "and the app answers". Hetzner must then list the same server id, IPv4
+  address and delete and rebuild protection as before. The app must answer through Cloudflare and
+  read back the first value, the one from the snapshot's time. `opscrew drift` must find no
+  difference: the next plan replaces nothing.
+- **W4.** `snapshot delete <id> --confirm <id>`: Hetzner must no longer have the image.
+- **W5–W6.** Destroy, and nothing leaked, as above.
+
+**Your Portainer** (`OPSCREW_E2E_SNAPSHOTS_PORTAINER=1`, `-t "snapshots, Portainer"`):
+- **P1.** A throwaway Hetzner server with Portainer CE, as in the Portainer leg of
+  [Retarget anywhere](#retarget-anywhere). OpsCrew gets the admin's API key as `PORTAINER_API_KEY`.
+- **P2.** The app designed for that Portainer, with the updater and the tunnel
+  (`portainer.redeploy: updater`, `portainer.web: tunnel`) and the services above. Then `adapt`,
+  provision until done, the first deploy, and the data seeded in the stack's containers
+  (`opscrew-<app>`) as root on the host.
+- **P3** (SC-2402): `opscrew snapshot` under load. It must be listed "in your Portainer", copying
+  all four parts, with the running image's digest as its version.
+- **P4** (SC-2401): the data is changed, then `restore <id>`, through Portainer's API. Every
+  service's data must be exactly as seeded, and the app must read back the first value.
+- **P5.** `rollback --database snapshot` in Portainer (US7): skipped, marked TODO in the test,
+  until the Portainer rollback (T2420) is merged.
+- **P6.** `destroy --confirm <app> --delete-data`: no container or volume of the stack may be left
+  on the host (its `snapshots` volume goes with the data), and nothing of the app in Cloudflare.
+- **P7.** Nothing leaked, as above.
+
+### Cleanup
+
+The cleanup is the one for environments, after every step and always: `opscrew destroy` if needed,
+then Hetzner's API by the app's labels, the GitHub environments and deploy secrets, the app's
+records in Cloudflare, and the repository reset. Then, per pass:
+- **off-server copy:** the bucket is deleted as in O5 when it is still there;
+- **whole server:** every snapshot OpsCrew took of the app's server at Hetzner (images labelled
+  `created-by=opscrew,app=<app>`) is deleted. Each one found is a problem, since W4 deletes its
+  own;
+- **Portainer:** the throwaway server with its SSH key and firewall.
+
+**If a run was interrupted**, delete by hand what the environments test lists, and:
+- at Hetzner, the snapshots under Servers → Snapshots labelled `app=<app>`, and the throwaway
+  server `opscrew-e2e-snapshots-portainer-<run id>` (labelled `managed-by=opscrew-e2e`);
+- the bucket `<app>-prod-backups`: in R2 (Cloudflare dashboard → R2) or Hetzner Object Storage
+  (the console's Object Storage), emptied first.
+
+| Variable | What it is |
+|---|---|
+| `OPSCREW_E2E_SNAPSHOTS` | `1` runs the data pass. |
+| `OPSCREW_E2E_SNAPSHOTS_SCHEDULE` | With the data pass, `1` also runs the schedule's steps (about two hours more). |
+| `OPSCREW_E2E_SNAPSHOTS_OFFSITE` | `1` runs the off-server copy, once for each target whose variables are set. |
+| `OPSCREW_E2E_SNAPSHOTS_SERVER` | `1` runs the whole-server pass. |
+| `OPSCREW_E2E_SNAPSHOTS_PORTAINER` | `1` runs the Portainer pass. |
+| `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | Every pass, as for environments. |
+| `OPSCREW_E2E_R2` | The off-server copy to R2: `1` once R2 is on for the account, as for [the components](#the-components). |
+| `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | The off-server copy to Hetzner Object Storage, as for the components. The test never deletes the key. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | The Portainer pass: as for [your existing Portainer](#your-existing-portainer), Portainer pulls the app's image with it. |
+| `OPSCREW_E2E_REPO_READ_TOKEN` | The Portainer pass, when `OPSCREW_E2E_GITHUB_REPO` is private. |
+| `OPSCREW_E2E_REGION` | Optional, as above. The off-server copy to Hetzner needs `eu-central` (the default) or `eu-north`, where Hetzner has Object Storage. |
+
+```bash
+pnpm --filter opscrew build
+cd packages/cli
+export OPSCREW_E2E_HCLOUD_TOKEN=… OPSCREW_E2E_GITHUB_REPO=you/opscrew-e2e \
+  OPSCREW_E2E_GITHUB_TOKEN=… OPSCREW_E2E_CLOUDFLARE_TOKEN=… OPSCREW_E2E_DOMAIN=e2e.example.com
+# Data on staging (add OPSCREW_E2E_SNAPSHOTS_SCHEDULE=1 for the schedule).
+OPSCREW_E2E_SNAPSHOTS=1 npx vitest run test/live/snapshots.test.ts -t "snapshots, data"
+# The off-server copy, to R2 and to Hetzner Object Storage.
+OPSCREW_E2E_SNAPSHOTS_OFFSITE=1 OPSCREW_E2E_R2=1 OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID=… \
+  OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY=… npx vitest run test/live/snapshots.test.ts -t "off-server"
+# A whole server.
+OPSCREW_E2E_SNAPSHOTS_SERVER=1 npx vitest run test/live/snapshots.test.ts -t "whole server"
+# Your Portainer.
+OPSCREW_E2E_SNAPSHOTS_PORTAINER=1 OPSCREW_E2E_GHCR_READ_TOKEN=… \
+  npx vitest run test/live/snapshots.test.ts -t "snapshots, Portainer"
+```
+
+Not measured yet. What each pass runs, at about 0.01–0.02 EUR an hour per server of the sizes
+design picks (check Hetzner's price list):
+- **data:** one staging server (with Kafka and MySQL, a few GB of memory) for about an hour, and
+  one deploy run. With the schedule, about 2.5 hours more and two more deploy runs;
+- **off-server copy:** per target, two servers in turn for about 1.5–2 hours, and two deploy runs.
+  R2 stays within its free tier. Hetzner Object Storage is billed monthly in part (about 5 EUR a
+  month, a few cents for the run's hours);
+- **whole server:** one server for about 45 minutes, one deploy run, and a snapshot of a few GB
+  for a few minutes (Hetzner bills about 0.01 EUR per GB a month, so well under a cent);
+- **Portainer:** the Portainer server for about an hour, and one deploy run.
+
+What these passes don't cover: DigitalOcean (whole-server snapshots and Spaces), parts on extra
+servers (feature 018), the free-disk refusal, a restore that fails partway and puts back the copy
+taken before it, kinds other than these five, Portainer's scheduled snapshots and off-server copy,
+and the scheduled check's report of a failed scheduled snapshot.
+
 ## Price tables
 
 Before each release, check that the dated price tables OpsCrew falls back to without a token still
