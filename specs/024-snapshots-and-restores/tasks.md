@@ -208,7 +208,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Depends: T2411
   - Effort: medium
 
-- [ ] T2413 The live passes, in `packages/cli/test/live/snapshots*.ts` and `docs/e2e.md` (plan.md 10.)
+- [x] T2413 The live passes, in `packages/cli/test/live/snapshots*.ts` and `docs/e2e.md` (plan.md 10.)
   - Depends: T2411
   - Effort: high
 
