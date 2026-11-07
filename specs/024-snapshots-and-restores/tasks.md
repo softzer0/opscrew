@@ -189,7 +189,7 @@ description: "Tasks for 024-snapshots-and-restores"
 
 ## Phase 5: Wave 4
 
-- [ ] T2411 [US1]–[US6] The CLI's `snapshot` and `restore` commands and the plugin's skill, in `packages/cli/src/commands/{snapshot,restore}.ts` and `plugin/skills/**` (+ tests)
+- [x] T2411 [US1]–[US6] The CLI's `snapshot` and `restore` commands and the plugin's skill, in `packages/cli/src/commands/{snapshot,restore}.ts` and `plugin/skills/**` (+ tests)
   - Depends: T2407–T2410
   - Effort: high
 
