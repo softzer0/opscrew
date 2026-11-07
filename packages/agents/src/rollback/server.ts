@@ -266,9 +266,13 @@ async function checkPending(
       // In the user's Portainer, the copy from before the restore goes back first. When that
       // fails, the pause stays and its message names the restore that is the way out, which
       // `--resume` follows once this record is gone.
-      const ran = imageReference(appImageOf(deps, plan, github), pending.from.digest);
+      const image = appImageOf(deps, plan, github);
+      const images = {
+        current: imageReference(image, pending.from.digest),
+        target: imageReference(image, pending.digest),
+      };
       try {
-        data = ` ${await undoPortainerRestore(run, github, pending.saved, ran)}`;
+        data = ` ${await undoPortainerRestore(run, github, pending.saved, images)}`;
       } catch (error) {
         // A failure that changed nothing keeps this record: the next rollback tries again.
         if (error instanceof PutBackFailedError) {
@@ -513,14 +517,18 @@ async function dispatchRollback(
       // The rollback that follows the run is now the way out, whatever the run does.
       await database.portainer?.followedBy(command);
     }
+    const kept = `The snapshot of ${shortText(target)} stays restored in your Portainer, marked so that no other version starts on it, with the app stopped until the run starts ${shortText(target)}; the copy from just before is the snapshot ${saved}. ${environment}'s deploys stay paused.`;
+    if (runId !== undefined) {
+      throw new OpsCrewError(codeOf(error), `${errorMessage(error)} ${kept}`, {
+        hint: `Once the run ended, run \`${command}\`: it records the rollback, or puts that copy back if the run failed.`,
+      });
+    }
+    // GitHub's answer to the dispatch was lost: no run to follow, so each answer has its way out.
     throw new OpsCrewError(
       codeOf(error),
-      `${errorMessage(error)} The snapshot of ${shortText(target)} stays restored in your Portainer, marked so that no other version starts on it, with the app stopped until the run starts ${shortText(target)}; the copy from just before is the snapshot ${saved}. ${environment}'s deploys stay paused.`,
+      `${errorMessage(error)} ${kept} OpsCrew could not tell whether GitHub started the rollback's run: check the Actions tab, https://github.com/${github.owner}/${github.repo}/actions.`,
       {
-        hint:
-          runId !== undefined
-            ? `Once the run ended, run \`${command}\`: it records the rollback, or puts that copy back if the run failed.`
-            : `Once the run ended, run \`${command}\`: it names the way out of the restored data.`,
+        hint: `If the run failed or never ran, run \`opscrew restore ${saved}${flags}\`: it puts back the data from before the rollback. If it succeeded, run \`${command} --to ${target.digest} --database keep\`: it records the rollback and removes the mark.`,
       },
     );
   }
@@ -586,7 +594,13 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
 
   // In the user's Portainer, data a rollback restored and marked: only its way out goes ahead.
   const mark = plan.target.provider === "portainer" ? await readMark(run) : undefined;
-  const markedTo = mark === undefined ? undefined : WAY_OUT_ROLLBACK.exec(mark.wayOut)?.[1];
+  // The one rollback a mark lets go ahead, with keep: to the version its way out names, or to the
+  // image whose snapshot the data is, whole.
+  const markedTo =
+    mark === undefined
+      ? undefined
+      : (WAY_OUT_ROLLBACK.exec(mark.wayOut)?.[1] ??
+        (mark.restored === true ? mark.image.slice(mark.image.lastIndexOf("@") + 1) : undefined));
 
   // 5. The version, and what it ran with.
   deps.reporter.step(`Reading ${environment}'s versions in GitHub Container Registry`);

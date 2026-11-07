@@ -129,12 +129,13 @@ async function world(
     const service = container.labels["com.docker.compose.service"];
     if (service !== undefined) events.push(`start ${service} ${name(container.image)}`);
     const mark =
-      /^umask 077 && printf '%s\\n%s\\n' '([^']+)' '([^']+)' > \/snapshots\/\.restored\.tmp/.exec(
+      /^umask 077 && printf '%s\\n' '([^']+)' '([^']+)'( restored)? > \/snapshots\/\.restored\.tmp/.exec(
         script,
       );
     if (mark !== null) {
-      volume().set(".restored", file(`${mark[1]}\n${mark[2]}\n`));
-      events.push(`mark ${name(mark[1] ?? "")}`);
+      const whole = mark[3] === undefined ? "" : "restored\n";
+      volume().set(".restored", file(`${mark[1]}\n${mark[2]}\n${whole}`));
+      events.push(`mark ${name(mark[1] ?? "")}${whole === "" ? "" : " whole"}`);
       return { exitCode: 0 };
     }
     if (script.startsWith("if [ -f /snapshots/.restored ]; then echo mark;")) {
@@ -319,7 +320,10 @@ const words = (world: World) => `${world.b.commit.slice(0, 7)} "b"`;
 const WAY_OUT = `opscrew restore ${SAVED} --env staging`;
 
 /** The mark on the data restored for b: its image, then the way out. */
-const MARK = (world: World) => `${imageOf(world.b)}\n${WAY_OUT}\n`;
+const MARK = (world: World) => `${imageOf(world.b)}\n${WAY_OUT}\nrestored\n`;
+
+/** The mark while the data may be partly changed: no `restored` line, only the copy's restore. */
+const PARTIAL = (world: World, image = imageOf(world.b)) => `${image}\n${WAY_OUT}\n`;
 
 /** The mark the undo leaves when the deploy branch still names b: for c, its way out the rollback. */
 const BACK = (world: World) =>
@@ -375,7 +379,14 @@ describe.skipIf(!SH)(
       expect(request.details).not.toContain(KEEP_LINE);
       // Before the dispatch: the app stopped, the copy taken, the data marked, then restored.
       expect(w.atDispatch).toEqual([{ app: "exited", marked: MARK(w), saved: true }]);
-      expect(w.events).toEqual(["mark b", "restore b", "restore b", "ran b", "unmark"]);
+      expect(w.events).toEqual([
+        "mark b",
+        "restore b",
+        "restore b",
+        "mark b whole",
+        "ran b",
+        "unmark",
+      ]);
       expect(w.volume().has(".restored")).toBe(false);
       expect(appContainer(w)).toMatchObject({ image: imageOf(w.b), state: "running" });
       expect((await readRollback(w.deps.paths))?.database).toEqual({
@@ -473,7 +484,7 @@ describe.skipIf(!SH)(
       expect(error.hint).toBe(
         `Once the cause is fixed, run \`${WAY_OUT}\`: it puts that copy back and removes /snapshots/.restored. Then run \`${STAGING} --resume\` and redeploy the stack in Portainer.`,
       );
-      expect(w.volume().get(".restored")?.data?.toString()).toBe(MARK(w));
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(PARTIAL(w));
       expect(appContainer(w).state).toBe("exited");
       expect(paused(w)).toEqual({
         "shop/staging": expect.objectContaining({ reason: "rollback" }),
@@ -494,7 +505,7 @@ describe.skipIf(!SH)(
       );
       expect(stuck.hint).toContain(`run \`${WAY_OUT}\`: it puts that copy back`);
       // The mark names the way out on its second line, which the stack's guard prints.
-      expect(w.volume().get(".restored")?.data?.toString()).toBe(MARK(w));
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(PARTIAL(w));
       expect(w.volume().get(".running")?.data?.toString()).toBe(`${imageOf(w.c)}\n`);
       w.redeploy(w.c);
       expect(w.events.at(-1)).toBe("refused c");
@@ -510,7 +521,7 @@ describe.skipIf(!SH)(
       const other = "20261011T100000Z";
       w.store(other, { ...about(other, w.c), kind: "manual", version: w.c.digest });
       expect(await w.restore(other)).toMatchObject({ id: other });
-      expect(w.volume().get(".restored")?.data?.toString()).toBe(MARK(w));
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(PARTIAL(w));
 
       await w.restore(SAVED);
       expect(w.volume().has(".restored")).toBe(false);
@@ -580,9 +591,12 @@ describe.skipIf(!SH)(
         "mark b",
         "restore b",
         "restore b",
+        "mark b whole",
         "ran b",
         "refused c",
+        // The undo: `.running` and the mark naming the copy's restore first, then the put-back.
         "running c",
+        "mark b",
         `restore ${SAVED}`,
         `restore ${SAVED}`,
         "unmark",
@@ -611,6 +625,11 @@ describe.skipIf(!SH)(
           `OpsCrew put the data back as it was before the rollback (the snapshot ${SAVED}), but your Portainer has no container of the version that ran left, so the app stays stopped. The deploy branch ${DEPLOY_BRANCH} still names the version the rollback went to (the workflow's revert was cancelled or could not push), so OpsCrew marked the data for the version that ran: no other version starts on it. To write that version back to the branch, run \`${STAGING} --to ${w.c.digest} --database keep\`, or write the compose.yaml of the commit before the newest one back to ${DEPLOY_BRANCH} by hand.`,
         );
         expect(w.volume().get(".restored")?.data?.toString()).toBe(BACK(w));
+        // The mark keeps b off the data before the put-back begins, not only after it.
+        const putBackAt = w.events.indexOf(`restore ${SAVED}`);
+        expect(w.events.lastIndexOf("mark c", putBackAt)).toBeGreaterThan(
+          w.events.indexOf("ran b"),
+        );
         // Portainer's next redeploy of the branch, b, is refused on c's data.
         w.redeploy(w.b);
         expect(w.events.at(-1)).toBe("refused b");
@@ -684,7 +703,9 @@ describe.skipIf(!SH)(
         lost: true,
       });
       // The rollback that follows the run is the way out now.
-      expect(w.volume().get(".restored")?.data?.toString()).toBe(`${imageOf(w.b)}\n${STAGING}\n`);
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(
+        `${imageOf(w.b)}\n${STAGING}\nrestored\n`,
+      );
 
       w.github.waitError = undefined;
       w.github.conclusion = "failure";
@@ -697,6 +718,76 @@ describe.skipIf(!SH)(
       expect(await readPendingRollback(w.deps.paths)).toBeUndefined();
       expect(w.volume().has(".restored")).toBe(false);
       expect(appContainer(w)).toMatchObject({ image: imageOf(w.c), state: "running" });
+    });
+
+    it("names the copy's restore in the mark and the error when a lost run failed and its put-back fails, and that restore clears the mark", async () => {
+      const w = await world();
+      w.play.redeploy = "none";
+      w.github.waitError = new Error("socket hang up");
+      await failure(w.run({ database: "snapshot" }));
+      expect(w.volume().get(".restored")?.data?.toString().split("\n")[1]).toBe(STAGING);
+
+      w.github.waitError = undefined;
+      w.github.conclusion = "failure";
+      failWith(w, `/snapshots/${SAVED}/db.dump`, 1);
+      const stuck = await failure(w.run({ database: "snapshot" }));
+
+      expect(stuck.hint).toContain(`run \`${WAY_OUT}\`: it puts that copy back`);
+      // The mark names the same restore, not the rollback that followed the run.
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(PARTIAL(w));
+      expect(w.volume().get(".running")?.data?.toString()).toBe(`${imageOf(w.c)}\n`);
+      await w.restore(SAVED);
+      expect(w.volume().has(".restored")).toBe(false);
+      w.redeploy(w.c);
+      expect(w.events.at(-1)).toBe("ran c");
+    });
+
+    it("leaves a way out that works when stopping the app fails during the put-back", async () => {
+      const w = await world();
+      w.github.conclusion = "failure";
+      // b runs on its data when the run fails; stopping it fails once.
+      const dispatch = w.github.dispatchWorkflow.bind(w.github);
+      w.github.dispatchWorkflow = async (...args: Parameters<typeof dispatch>) => {
+        const accepted = await dispatch(...args);
+        w.docker.fail("POST", new RegExp(`/containers/${appContainer(w).id}/stop`), 500, "busy");
+        return accepted;
+      };
+
+      const stuck = await failure(w.run({ database: "snapshot" }));
+
+      expect(stuck.hint).toContain(`run \`${WAY_OUT}\``);
+      expect(w.volume().get(".running")?.data?.toString()).toBe(`${imageOf(w.c)}\n`);
+      // The branch still names b: the mark keeps the version that ran off it, naming the restore.
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(PARTIAL(w, imageOf(w.c)));
+      await w.restore(SAVED);
+      expect(w.volume().has(".restored")).toBe(false);
+    });
+
+    it("says plainly when it can't tell whether GitHub started the run, with the way out of each answer", async () => {
+      const w = await world();
+      w.play.redeploy = "none";
+      w.github.afterAcceptedError = new Error("socket hang up");
+
+      const lost = await failure(w.run({ database: "snapshot" }));
+
+      expect(lost.message).toContain(
+        "OpsCrew could not tell whether GitHub started the rollback's run: check the Actions tab, https://github.com/acme/shop/actions.",
+      );
+      expect(lost.hint).toBe(
+        `If the run failed or never ran, run \`${WAY_OUT}\`: it puts back the data from before the rollback. If it succeeded, run \`${STAGING} --to ${w.b.digest} --database keep\`: it records the rollback and removes the mark.`,
+      );
+      expect(await readPendingRollback(w.deps.paths)).toBeUndefined();
+      expect(w.volume().get(".restored")?.data?.toString()).toBe(MARK(w));
+
+      // Say it succeeded: the keep rollback it names is the one the whole mark lets go ahead.
+      w.github.afterAcceptedError = undefined;
+      w.play.redeploy = "target";
+      const refused = await failure(w.run({ to: w.c.digest, database: "keep" }));
+      expect(refused.hint).toBe(`Run \`${WAY_OUT}\`.`);
+      const result = await w.run({ to: w.b.digest, database: "keep" });
+      expect(result).toMatchObject({ status: "deployed", database: { choice: "keep" } });
+      expect(w.events.slice(-2)).toEqual(["ran b", "unmark"]);
+      expect(w.volume().has(".restored")).toBe(false);
     });
 
     it("clears the mark with the command it names once a run it lost track of succeeded", async () => {

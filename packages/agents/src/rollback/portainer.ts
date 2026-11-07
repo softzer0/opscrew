@@ -131,11 +131,17 @@ export interface RestoredMark {
   image: string;
   /** The command that gets a stuck rollback out (the mark's second line). */
   wayOut: string;
+  /**
+   * The third line, `restored`: the data is the image's snapshot, whole, so the keep rollback to
+   * that image may go ahead on it.
+   */
+  restored?: true;
 }
 
-/** Writes the mark naming `mark.image` and `mark.wayOut`, whole or not at all. */
+/** Writes the mark, whole or not at all. */
 function markScript(mark: RestoredMark): string {
-  return `umask 077 && printf '%s\\n%s\\n' ${shellQuote(mark.image)} ${shellQuote(mark.wayOut)} > ${RESTORED_IMAGE_FILE}.tmp && mv ${RESTORED_IMAGE_FILE}.tmp ${RESTORED_IMAGE_FILE}`;
+  const restored = mark.restored === true ? " restored" : "";
+  return `umask 077 && printf '%s\\n' ${shellQuote(mark.image)} ${shellQuote(mark.wayOut)}${restored} > ${RESTORED_IMAGE_FILE}.tmp && mv ${RESTORED_IMAGE_FILE}.tmp ${RESTORED_IMAGE_FILE}`;
 }
 
 /**
@@ -151,8 +157,9 @@ export async function readMark(run: RollbackRun): Promise<RestoredMark | undefin
     { readOnly: true },
   );
   if (read.exitCode !== 0) throw failed(`read ${RESTORED_IMAGE_FILE}`, read.exitCode);
-  const [first, image = "", wayOut = ""] = read.stdout.split(/\r?\n/);
-  return first === "mark" ? { image, wayOut } : undefined;
+  const [first, image = "", wayOut = "", third] = read.stdout.split(/\r?\n/);
+  if (first !== "mark") return undefined;
+  return { image, wayOut, ...(third === "restored" ? { restored: true as const } : {}) };
 }
 
 /**
@@ -273,6 +280,12 @@ export function portainerRestore(
       restore.saved = saved;
       try {
         await putBack(snap, place, parts, hex, ran);
+        // Whole now: the keep rollback to the target may go ahead on it, whatever the run does.
+        const whole = await box(
+          place,
+          markScript({ image: images.target, wayOut: wayOut(run, saved), restored: true }),
+        );
+        if (whole.exitCode !== 0) throw failed(`mark the data for ${words}`, whole.exitCode);
       } catch (error) {
         const said = errorMessage(error);
         try {
@@ -298,11 +311,13 @@ export function portainerRestore(
     },
     async undo() {
       if (restore.saved === undefined) return "";
-      return undoPortainerRestore(run, github, restore.saved, images.current);
+      return undoPortainerRestore(run, github, restore.saved, images);
     },
     async followedBy(command) {
       const failure = await portainerPlace(snapshotRunOf(run))
-        .then((place) => box(place, markScript({ image: images.target, wayOut: command })))
+        .then((place) =>
+          box(place, markScript({ image: images.target, wayOut: command, restored: true })),
+        )
         .then((marked) =>
           marked.exitCode === 0
             ? undefined
@@ -352,11 +367,12 @@ async function branchNames(run: RollbackRun, github: RollbackRepository, image: 
  * Once the rollback's run failed or never started:
  * 1. what is there is read, changing nothing; a failure here says so, and the next
  *    `opscrew rollback` tries again;
- * 2. the app's containers stop, `.running` names `image` (the image that ran) again, and the copy
- *    `saved` taken just before the restore goes back;
- * 3. the mark goes when the deploy branch names `image`; otherwise (the workflow's revert was
- *    cancelled or could not push) it is rewritten for `image`, its way out the rollback to it,
- *    which writes it back to the branch;
+ * 2. `.running` names `images.current` (the image that ran) again, the mark is rewritten to name
+ *    `opscrew restore` of the copy `saved` (for the target, or for the image that ran when the
+ *    deploy branch still names the target), the app's containers stop, and the copy goes back;
+ * 3. the mark goes when the deploy branch names the image that ran; otherwise (the workflow's
+ *    revert was cancelled or could not push) its way out becomes the rollback to that image, which
+ *    writes it back to the branch;
  * 4. the app's containers of that image start.
  *
  * Returns what the failure's message says of the data.
@@ -366,7 +382,7 @@ export async function undoPortainerRestore(
   run: RollbackRun,
   github: RollbackRepository,
   saved: string,
-  image: string,
+  images: { current: string; target: string },
 ): Promise<string> {
   const snap = snapshotRunOf(run);
   let read: {
@@ -389,10 +405,27 @@ export async function undoPortainerRestore(
     );
   }
   const { place, containers } = read;
+  const image = images.current;
   const onBranch = await branchNames(run, github, image);
   const digest = image.slice(image.lastIndexOf("@") + 1);
   const back = `${run.command} --to ${digest} --database keep`;
   try {
+    // `.running` and the mark first, before anything stops: from here on a failure names
+    // `opscrew restore` of the copy, whose version check `.running` passes, and which removes the
+    // mark. The mark keeps off the version the branch names, which Portainer may deploy again:
+    // the target, or the version that ran when the branch still names the target.
+    const reset = await box(
+      place,
+      `printf '%s\\n' ${shellQuote(image)} > ${RUNNING_IMAGE_FILE}.tmp && mv ${RUNNING_IMAGE_FILE}.tmp ${RUNNING_IMAGE_FILE}`,
+    );
+    if (reset.exitCode !== 0) {
+      throw failed("name the version that ran in the snapshots volume", reset.exitCode);
+    }
+    const marked = await box(
+      place,
+      markScript({ image: onBranch ? images.target : image, wayOut: wayOut(run, saved) }),
+    );
+    if (marked.exitCode !== 0) throw failed(`rewrite ${RESTORED_IMAGE_FILE}`, marked.exitCode);
     const ran = new Set(
       containers
         .filter((container) => container.state === "running")
@@ -400,15 +433,6 @@ export async function undoPortainerRestore(
     );
     for (const container of appContainers(snap, containers)) {
       if (ran.has(container.id)) await place.docker.stopContainer(container.id);
-    }
-    // `.running` first: the mark keeps every version off the data meanwhile, and once a put-back
-    // failed, `opscrew restore` of the copy finds the version it was taken with.
-    const reset = await box(
-      place,
-      `printf '%s\\n' ${shellQuote(image)} > ${RUNNING_IMAGE_FILE}.tmp && mv ${RUNNING_IMAGE_FILE}.tmp ${RUNNING_IMAGE_FILE}`,
-    );
-    if (reset.exitCode !== 0) {
-      throw failed("name the version that ran in the snapshots volume", reset.exitCode);
     }
     await putBack(snap, place, partsOf(run, read.about), saved, ran);
     const unmarked = await box(
