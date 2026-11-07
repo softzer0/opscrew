@@ -194,6 +194,17 @@ description: "Tasks for 024-snapshots-and-restores"
   - Effort: high
 
 - [ ] T2412 The guide: a new `docs/guide/snapshots.md`; `rollback.md`, `databases.md`, `own-server.md` and `portainer-target.md` link to it, and "backups are yours to set up" changes.
+  - Also say (found while building):
+    - **Before the first release snapshot:** the first deploy after turning snapshots on has no pre-release snapshot.
+    - **DigitalOcean scopes:** `snapshot:delete` and `droplet:admin` are needed only to delete or restore whole-server snapshots.
+    - **The bucket's key can delete** (R3): versioning is on at Hetzner, and R2 offers none.
+    - **Deleting the backups bucket** is the user's job, and the page says how.
+    - **Keep old recovery keys:** copies made before a key change need the old one.
+    - **Not in a snapshot:** the app's own object storage.
+    - **Whole-server restore at Hetzner:** OpsCrew lifts and restores the server's protection for the rebuild.
+    - **Portainer:** the scheduled check (017) doesn't reach it, so `opscrew status` shows its snapshots.
+    - **The check key:** `alerts.md` changes "runs only df" to what the check key now reads.
+    - **ADR 0021:** gets a one-line note that 024 widened the check key's command.
   - Depends: T2411
   - Effort: medium
 
