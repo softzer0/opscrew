@@ -2832,15 +2832,29 @@ reads the bucket with rclone from its pinned image, and so does the test.
 - **P1.** A throwaway Hetzner server with Portainer CE, as in the Portainer leg of
   [Retarget anywhere](#retarget-anywhere). OpsCrew gets the admin's API key as `PORTAINER_API_KEY`.
 - **P2.** The app designed for that Portainer, with the updater and the tunnel
-  (`portainer.redeploy: updater`, `portainer.web: tunnel`) and the services above. Then `adapt`,
-  provision until done, the first deploy, and the data seeded in the stack's containers
+  (`portainer.redeploy: updater`, `portainer.web: tunnel`), the services above and
+  `deploy.snapshots: true` (prod takes snapshots before a release only with it). Then `adapt`,
+  provision until done, the first deploy (v1), and the data seeded in the stack's containers
   (`opscrew-<app>`) as root on the host.
 - **P3** (SC-2402): `opscrew snapshot` under load. It must be listed "in your Portainer", copying
   all four parts, with the running image's digest as its version.
 - **P4** (SC-2401): the data is changed, then `restore <id>`, through Portainer's API. Every
   service's data must be exactly as seeded, and the app must read back the first value.
-- **P5.** `rollback --database snapshot` in Portainer (US7): skipped, marked TODO in the test,
-  until the Portainer rollback (T2420) is merged.
+- **P5** (US7): the rollback to v1 with its snapshot.
+  - A merged change deploys v2. The deploy branch must then name v2's image and the site serve
+    its version. `snapshot list` must show the snapshot taken before that release, recording v1's
+    image. The data is then changed under v2.
+  - `rollback --to <v1's commit> --database snapshot` without `--approve` must exit 1. Its printed
+    command must name v1's image, `--database snapshot` and `--confirm <app>`, and the deploy
+    branch must still name v2.
+  - The printed command, with `--confirm` and `--approve <hash>`, must succeed. Then:
+    - the deploy branch names v1's image again, and the site serves v1;
+    - every service's data is exactly as v1's snapshot holds it, and the app reads back the first
+      value;
+    - `.restored` is gone from the stack's `snapshots` volume (read as root with a read-only
+      busybox one-off).
+  - `rollback --resume --deploy --yes` must then deploy another image, which the site serves:
+    the guard doesn't stop the next deploy. The mark is still gone and the value stays.
 - **P6.** `destroy --confirm <app> --delete-data`: no container or volume of the stack may be left
   on the host (its `snapshots` volume goes with the data), and nothing of the app in Cloudflare.
 - **P7.** Nothing leaked, as above.
@@ -2875,7 +2889,7 @@ records in Cloudflare, and the repository reset. Then, per pass:
 | `OPSCREW_E2E_HCLOUD_TOKEN`, `OPSCREW_E2E_GITHUB_REPO`, `OPSCREW_E2E_GITHUB_TOKEN`, `OPSCREW_E2E_CLOUDFLARE_TOKEN`, `OPSCREW_E2E_DOMAIN` | Every pass, as for environments. |
 | `OPSCREW_E2E_R2` | The off-server copy to R2: `1` once R2 is on for the account, as for [the components](#the-components). |
 | `OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID`, `OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY` | The off-server copy to Hetzner Object Storage, as for the components. The test never deletes the key. |
-| `OPSCREW_E2E_GHCR_READ_TOKEN` | The Portainer pass: as for [your existing Portainer](#your-existing-portainer), Portainer pulls the app's image with it. |
+| `OPSCREW_E2E_GHCR_READ_TOKEN` | The Portainer pass: as for [your existing Portainer](#your-existing-portainer), Portainer pulls the app's image with it, and P5's rollback lists the versions with it, as for [Rollback](#rollback). The GitHub token needs Variables (read and write) too: the rollback sets the deploy pause, and `--resume` removes it. |
 | `OPSCREW_E2E_REPO_READ_TOKEN` | The Portainer pass, when `OPSCREW_E2E_GITHUB_REPO` is private. |
 | `OPSCREW_E2E_REGION` | Optional, as above. The off-server copy to Hetzner needs `eu-central` (the default) or `eu-north`, where Hetzner has Object Storage. |
 
@@ -2905,7 +2919,8 @@ design picks (check Hetzner's price list):
   month, a few cents for the run's hours);
 - **whole server:** one server for about 45 minutes, one deploy run, and a snapshot of a few GB
   for a few minutes (Hetzner bills about 0.01 EUR per GB a month, so well under a cent);
-- **Portainer:** the Portainer server for about an hour, and one deploy run.
+- **Portainer:** the Portainer server for about 1.5 hours, three deploy runs with a build (v1,
+  v2, the resume's) and one rollback run without one.
 
 What these passes don't cover: DigitalOcean (whole-server snapshots and Spaces), parts on extra
 servers (feature 018), the free-disk refusal, a restore that fails partway and puts back the copy

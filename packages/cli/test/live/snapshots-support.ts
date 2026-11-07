@@ -412,8 +412,8 @@ export function rcloneDockerArgs(
 // The leak search.
 
 /**
- * The outputs of the snapshot and restore commands (by their labels) that name a server address
- * among `addresses` (the scrubber's `server-*` entries): the problems found, by label only.
+ * The outputs of the snapshot, restore and rollback commands (by their labels) that name a server
+ * address among `addresses` (the scrubber's `server-*` entries): the problems found, by label only.
  */
 export function addressesInSnapshotOutputs(
   outputs: ReadonlyMap<string, string>,
@@ -421,7 +421,7 @@ export function addressesInSnapshotOutputs(
 ): string[] {
   const problems: string[] = [];
   for (const [label, output] of outputs) {
-    if (!/opscrew (?:snapshot|restore)\b/.test(label)) continue;
+    if (!/opscrew (?:snapshot|restore|rollback)\b/.test(label)) continue;
     const found = leakedLabels(output, addresses);
     if (found.length > 0) problems.push(`the output of ${label} contains: ${found.join(", ")}`);
   }

@@ -275,15 +275,17 @@ describe("the off-server bucket", () => {
 });
 
 describe("addressesInSnapshotOutputs", () => {
-  it("searches only the snapshot and restore outputs", () => {
+  it("searches only the snapshot, restore and rollback outputs", () => {
     const addresses = [{ label: "server-ipv4", value: "203.0.113.7" }];
     const outputs = new Map([
       ["#1 opscrew snapshot --env staging", "on 203.0.113.7"],
       ["#2 opscrew restore 20261107T101500Z", "fine"],
       ["#3 opscrew provision --yes", "your server at 203.0.113.7"],
+      ["#4 opscrew rollback --to abc --database snapshot", "at 203.0.113.7"],
     ]);
     expect(addressesInSnapshotOutputs(outputs, addresses)).toEqual([
       "the output of #1 opscrew snapshot --env staging contains: server-ipv4",
+      "the output of #4 opscrew rollback --to abc --database snapshot contains: server-ipv4",
     ]);
   });
 });

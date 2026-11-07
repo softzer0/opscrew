@@ -14,12 +14,19 @@
  */
 import { rm } from "node:fs/promises";
 import { type ProviderBucket, r2Endpoint, STORAGE_ENDPOINTS } from "@opscrew/agents";
+import {
+  PORTAINER_VERSION_PATH,
+  portainerDeployBranch,
+  portainerSnapshotsVolume,
+  RESTORED_IMAGE_FILE,
+} from "@opscrew/iac-templates";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
-import { api, HETZNER_API, minutes, retryDelete, waitFor } from "./cloud";
+import { api, HETZNER_API, httpRequest, minutes, retryDelete, waitFor } from "./cloud";
 import type { BucketPass, ServerExec } from "./component-checks";
 import type { AppEnvironments } from "./environment-checks";
 import type { CliRun, LiveRun } from "./harness";
-import { jobLog } from "./portainer-cloud";
+import { fileAt, jobLog } from "./portainer-cloud";
+import { BUSYBOX_IMAGE, type DeployedImage, deployedImage } from "./portainer-support";
 import {
   inContainer,
   jobsDigest,
@@ -412,6 +419,42 @@ export async function hetznerImageExists(token: string, id: string): Promise<boo
   if (got.status === 404) return false;
   if (got.status === 200) return true;
   throw new Error(`Hetzner answered HTTP ${got.status} for the image ${id}.`);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Your Portainer: the version its stack runs, and the rollback's mark.
+
+/** The app image the deploy branch of `plan` names now (the version Portainer deploys). */
+export async function deployBranchImage(run: LiveRun, plan: DeployPlan): Promise<DeployedImage> {
+  const compose = await fileAt(run.github, "compose.yaml", portainerDeployBranch(plan));
+  const image = compose === undefined ? undefined : deployedImage(compose);
+  if (image === undefined) throw new Error("The deploy branch names no app image yet.");
+  return image;
+}
+
+/** Waits up to `ms` until the site serves `version` at its version path, through Cloudflare. */
+export async function waitForVersion(run: LiveRun, version: string, ms = minutes(15)) {
+  const url = `https://${run.appHost}${PORTAINER_VERSION_PATH}`;
+  run.log(`waiting for the site to serve version ${version}`);
+  await waitFor(`the site serving version ${version}`, ms, async () => {
+    const answer = await httpRequest(url);
+    if (answer.status !== 200 || answer.body.trim() !== version) {
+      throw new Error(`it answered ${answer.status} with ${answer.body.trim() || "(nothing)"}`);
+    }
+    return true;
+  });
+}
+
+/**
+ * Whether the stack's `snapshots` volume holds the rollback's mark (`.restored`), read as root on
+ * the Portainer host with a read-only one-off of busybox.
+ */
+export async function restoredMark(exec: ServerExec, plan: DeployPlan): Promise<boolean> {
+  const inside = RESTORED_IMAGE_FILE.replace(/^\/snapshots\//, "");
+  const answer = await exec(
+    `docker run --rm -v ${portainerSnapshotsVolume(plan)}:/data:ro ${BUSYBOX_IMAGE} sh -c 'if [ -e /data/${inside} ]; then echo yes; else echo no; fi'`,
+  );
+  return answer.trim() === "yes";
 }
 
 // ---------------------------------------------------------------------------------------------

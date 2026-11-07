@@ -19,17 +19,18 @@
  *   serves, `restore --server` rebuilds it: the same server and address, its protection back, the
  *   SQLite value of the snapshot's time, and the app answers (SC-2405).
  * - **your Portainer**, with `OPSCREW_E2E_SNAPSHOTS_PORTAINER=1`: a Portainer set up as the user's
- *   on a throwaway server, a snapshot by hand under load and a restore through its API (SC-2401).
+ *   on a throwaway server, a snapshot by hand under load and a restore through its API (SC-2401),
+ *   then v2 over v1 and `rollback --database snapshot` back to v1 on its snapshot's data (US7).
  * Each pass ends with the leak search over every output, commit, pull request, audit entry, plan,
  * state file and deploy log, with every value the test wrote searched for, and no server address
- * in a snapshot or restore output (SC-2406).
+ * in a snapshot, restore or rollback output (SC-2406).
  */
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { backupsBucketName } from "@opscrew/agents";
 import { appDir } from "@opscrew/iac-templates";
-import { snapshotOffsiteOf, writeArtifact } from "@opscrew/plan-schema";
+import { snapshotOffsiteOf, snapshotsOn, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { underLoad } from "./builder-checks";
 import { httpRequest, minutes, waitFor } from "./cloud";
@@ -45,12 +46,14 @@ import {
   setUpPortainer,
 } from "./retarget-anywhere-checks";
 import { composeProjectOf, inContainer, MOVE_SERVICES } from "./retarget-anywhere-support";
+import { shownRollback } from "./rollback-support";
 import {
   ageKeysOnServer,
   approvedRestore,
   BackupsBucket,
   changeData,
   type DeployRun,
+  deployBranchImage,
   deployLogLeaks,
   designRunApp,
   hetznerImageExists,
@@ -59,8 +62,10 @@ import {
   readData,
   removeServerSnapshots,
   requireDocker,
+  restoredMark,
   seedData,
   snapshotOf,
+  waitForVersion,
 } from "./snapshots-checks";
 import {
   addressesInSnapshotOutputs,
@@ -90,7 +95,7 @@ import {
   withSnapshotServices,
   writtenValues,
 } from "./snapshots-support";
-import { missingVariables } from "./support";
+import { deployRunProblem, missingVariables } from "./support";
 
 const ENV = process.env;
 const SETTINGS = { ...serverSettings(ENV), app: SNAPSHOT_EXAMPLE };
@@ -922,7 +927,14 @@ describe.skipIf(MISSING.portainer.length > 0)(
     const value = `value-${run.runId}`;
     const changed = `value-${run.runId}-changed`;
     const changeMarker = `changed-${run.runId}`;
-    rememberDumped(run, [value, changed, ...writtenValues([run.runId], [changeMarker])]);
+    const rollbackMarker = `rollback-${run.runId}`;
+    const underV2 = `value-${run.runId}-v2`;
+    rememberDumped(run, [
+      value,
+      changed,
+      underV2,
+      ...writtenValues([run.runId], [changeMarker, rollbackMarker]),
+    ]);
     let portainer: PortainerHost | undefined;
     let project = "";
     let seeded: SnapshotData | undefined;
@@ -985,17 +997,20 @@ describe.skipIf(MISSING.portainer.length > 0)(
           host.fingerprint,
         );
         await designRunApp(run, envs);
-        await writeArtifact(
-          "plan",
-          run.paths().files.plan,
-          withSnapshotServices(await run.readPlan(), false),
-        );
+        // As the guide says to: prod takes a snapshot before each release only with
+        // `deploy.snapshots`, which P5's rollback restores.
+        const named = withSnapshotServices(await run.readPlan(), false);
+        await writeArtifact("plan", run.paths().files.plan, {
+          ...named,
+          deploy: { ...named.deploy, snapshots: true },
+        });
         await run.opscrewOk("design");
         // Design proposes the off-server copy for data that matters in a Portainer; this pass is
         // about snapshots by hand, and the copy has passes of its own.
         await run.opscrewOk("snapshot", "offsite", "off");
         const plan = await envs.designed("prod");
         expect(plan.target.provider, "the plan's target").toBe("portainer");
+        expect(snapshotsOn(plan), "prod takes a snapshot before each release").toBe(true);
         await run.adaptAndMerge();
         await run.provisionUntilDone("the app in your Portainer");
         await run.deploy("the first deploy in your Portainer");
@@ -1050,16 +1065,89 @@ describe.skipIf(MISSING.portainer.length > 0)(
       },
     );
 
-    // TODO(lead, T2420): once T2420 is merged, a step here: a merged change deploys v2 (its
-    // pre-release snapshot in the stack's `snapshots` volume), the data changes, then
-    // `opscrew rollback --to <v1> --database snapshot` (the printed command, with --confirm and
-    // --approve) brings v1 back with the data of the moment v2 deployed (US7, D14, D19), and
-    // `rollback --resume --deploy --yes` after it.
     run.step(
-      "P5. opscrew rollback --database snapshot in your Portainer (US7)",
-      minutes(1),
-      async () => undefined,
-      { skip: "TODO(lead): written once T2420, the Portainer rollback's snapshot, is merged" },
+      "P5. v2 deployed over v1 takes v1's snapshot; the data changed under v2; opscrew rollback --to <v1> --database snapshot, in a script then with --confirm and --approve: v1 runs on exactly that data, .restored is gone, and rollback --resume --deploy --yes deploys again past the guard (US7)",
+      minutes(90),
+      async () => {
+        const plan = await run.readPlan();
+        // v1: what P2 deployed, its data put back by P4 as seeded.
+        const v1 = await deployBranchImage(run, plan);
+        const v1Commit = await run.git("rev-parse", "HEAD");
+        const v2Commit = await run.merge("e2e: v2, over the snapshot of v1's data");
+        const done = await run.github.waitForDeploy({ headSha: v2Commit });
+        const problem = deployRunProblem(done);
+        if (problem !== undefined) throw new Error(`v2's deploy run ${done.id}: ${problem}.`);
+        const v2 = await waitFor("the deploy branch naming v2", minutes(10), async () => {
+          const image = await deployBranchImage(run, plan);
+          return image.digest === v1.digest ? undefined : image;
+        });
+        await waitForVersion(run, v2.version);
+        expect(
+          (await listSnapshots(run)).some(
+            (snapshot) => snapshot.kind === "release" && snapshot.version === `sha256:${v1.digest}`,
+          ),
+          "the pre-release snapshot of v1's data in the stack's snapshots volume",
+        ).toBe(true);
+
+        await changeData(exec(), project, rollbackMarker);
+        await writeValue(site(), underV2);
+        expect(
+          differingServices(seeded as SnapshotData, await readData(exec(), project, false)),
+          "the services whose data changed under v2",
+        ).toEqual(Object.keys(seeded as SnapshotData));
+
+        const shown = await shownRollback(run, ["--to", v1Commit, "--database", "snapshot"]);
+        expect(shown.to, "the version the printed command goes back to: v1's image").toBe(
+          `sha256:${v1.digest}`,
+        );
+        expect(shown.database, "the printed command's --database").toBe("snapshot");
+        expect(shown.confirm, "the printed command's --confirm").toBe(run.app());
+        expect((await deployBranchImage(run, plan)).digest, "after a run without --approve").toBe(
+          v2.digest,
+        );
+        await run.opscrewOk(
+          "rollback",
+          "--to",
+          shown.to,
+          "--database",
+          "snapshot",
+          "--confirm",
+          run.app(),
+          "--approve",
+          shown.hash,
+        );
+        expect((await deployBranchImage(run, plan)).digest, "the image after the rollback").toBe(
+          v1.digest,
+        );
+        await waitForVersion(run, v1.version);
+        await run.waitForHealth(minutes(5));
+        expect(
+          differingServices(seeded as SnapshotData, await readData(exec(), project, false)),
+          "the services whose data differs from v1's snapshot after the rollback",
+        ).toEqual([]);
+        await readValue(site(), value);
+        expect(await restoredMark(exec(), plan), "/snapshots/.restored after the rollback").toBe(
+          false,
+        );
+
+        // The next deploy: the guard lets it through, onto the data as it is.
+        await run.opscrewOk("rollback", "--resume", "--deploy", "--yes");
+        const next = await waitFor(
+          "the deploy branch naming another version",
+          minutes(15),
+          async () => {
+            const image = await deployBranchImage(run, plan);
+            return image.digest === v1.digest ? undefined : image;
+          },
+        );
+        await waitForVersion(run, next.version);
+        await run.waitForHealth(minutes(5));
+        expect(await restoredMark(exec(), plan), "/snapshots/.restored after the next deploy").toBe(
+          false,
+        );
+        await readValue(site(), value);
+        log("observed: the rollback put v1 back on its snapshot's data; the next deploy ran");
+      },
     );
 
     run.step(
