@@ -220,7 +220,7 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
         encoding: "utf8",
         timeout: 600_000,
       });
-      // The upload's own output, never printed by the script, shown when this test fails.
+      // The upload's whole output (the script prints only its last error), shown when this fails.
       const log = readFileSync(`${folder}/.snapshots/offsite.log`, "utf8");
       return { status: result.status, output: `${result.stdout}${result.stderr}`, log };
     };

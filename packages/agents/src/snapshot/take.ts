@@ -6,8 +6,13 @@
  * they run; each stop-only service stops alone for its copy, after an approval naming it.
  */
 import { listText, OpsCrewError } from "@opscrew/core";
-import { type SnapshotPart, serviceSpec, snapshotParts } from "@opscrew/iac-templates";
-import { APP_SERVER } from "@opscrew/plan-schema";
+import {
+  SNAPSHOT_SCRIPT,
+  type SnapshotPart,
+  serviceSpec,
+  snapshotParts,
+} from "@opscrew/iac-templates";
+import { APP_SERVER, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { STOP_SECONDS } from "../retarget/sides/types";
 import { MAINTENANCE_WINDOW_TITLE, sizeText } from "../retarget/texts";
@@ -200,6 +205,30 @@ function recorded(listings: readonly PlaceListing[], id: string): SnapshotServic
 }
 
 /**
+ * With the off-server copy on, a warning after `place`'s part of the snapshot `id` was taken: what
+ * its `snapshot.sh` said of the copy (its lines naming `id`, redacted: why it was not copied, the
+ * upload's last error and where its whole output is), or, when it said nothing and the part holds
+ * a file without `offsite.done`, that it was not copied. The snapshot itself stays.
+ */
+function warnNotCopied(run: SnapshotRun, place: PlaceListing, id: string, stderr: string): void {
+  if (snapshotOffsiteOf(run.plan) === undefined) return;
+  const lines = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.includes(id));
+  if (lines.length > 0) {
+    run.deps.reporter.warn(run.deps.redactor.redact(lines.join(" ")));
+    return;
+  }
+  const about = place.listing.abouts.find((entry) => entry.id === id);
+  const files = about?.services.some((service) => "file" in service) ?? false;
+  if (!files || place.listing.offsite.has(id)) return;
+  run.deps.reporter.warn(
+    `The snapshot ${id} ${place.where} was not copied off the server, and ${place.name} did not say why. Deploy the app again, so that its ${SNAPSHOT_SCRIPT} copies each snapshot off the server, then take another snapshot.`,
+  );
+}
+
+/**
  * Removes the parts of `id` that `done`'s machines took, best effort, each audited; returns the
  * sentence the error adds: that they went, or which are left and how to delete them.
  */
@@ -265,6 +294,7 @@ async function takeOnHosts(
   // 3. Each machine's part, under one id.
   let id: string | undefined;
   const done: ScriptHost[] = [];
+  const said = new Map<ScriptHost, string>();
   for (const place of places) {
     const host = hostOf(place);
     const args = [
@@ -287,11 +317,16 @@ async function takeOnHosts(
     }
     id = printed;
     done.push(host);
+    said.set(host, result.stderr);
     await audited(run, { target: host.audit, id, parts: place.take, approved });
   }
   const taken = id as string;
   const listings: PlaceListing[] = [];
-  for (const host of done) listings.push(await hostListing(run, host));
+  for (const host of done) {
+    const listing = await hostListing(run, host);
+    listings.push(listing);
+    warnNotCopied(run, listing, taken, said.get(host) ?? "");
+  }
   return {
     id: taken,
     where: `on ${listText(done.map((host) => host.name))}`,

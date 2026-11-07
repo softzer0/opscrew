@@ -29,7 +29,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { backupsBucketName } from "@opscrew/agents";
-import { appDir } from "@opscrew/iac-templates";
+import { appDir, OFFSITE_LOG } from "@opscrew/iac-templates";
 import { snapshotOffsiteOf, snapshotsOn, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { underLoad } from "./builder-checks";
@@ -59,6 +59,7 @@ import {
   hetznerImageExists,
   hetznerServer,
   listSnapshots,
+  offsiteLogTail,
   readData,
   removeServerSnapshots,
   requireDocker,
@@ -629,7 +630,16 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
               return listed.offsite ? listed : undefined;
             },
             30_000,
-          );
+          ).catch(async (error: unknown) => {
+            // What the snapshot said, and the upload's own log on the server, both scrubbed.
+            const dir = appDir(await run.readPlan());
+            const log = await offsiteLogTail(await exec(), dir).catch(
+              (failure: unknown) => `The log was not read: ${String(failure)}`,
+            );
+            throw new Error(
+              `${String(error)}\nopscrew snapshot printed:\n${run.tail(result.output)}\nThe server's ${dir}/${OFFSITE_LOG}, its last lines:\n${run.tail(log)}`,
+            );
+          });
           expect(servicesIn(copy()), "the services it copied").toEqual(COPIED(false));
           const store = bucket as BackupsBucket;
           const objects = await store.objects();

@@ -262,6 +262,9 @@ access to create the bucket.
 - After each snapshot by hand or on the schedule, outside the app's start lock, so an upload never
   holds a deploy or a rollback.
 - A copy that failed is tried again after the next snapshot, while it is within the retention.
+  `opscrew snapshot` warns when the copy of the snapshot it took failed, with the upload's last
+  error; the upload's whole output stays in `.snapshots/offsite.log` in the app's folder on the
+  server.
 - Snapshots before a release stay on the server, for the rollback.
 - `opscrew snapshot list` says `copied off the server` once a snapshot's copy is complete.
 

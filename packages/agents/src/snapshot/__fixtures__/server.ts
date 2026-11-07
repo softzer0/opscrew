@@ -19,7 +19,8 @@ export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
  * The shim of `snapshot.sh`: `take.exit` (with `take.stderr`) makes `take` fail. `take` records
  * each part of `parts.txt` (`<name> <kind> <file> <online 1|0>` lines, as the real script renders
  * them from the plan): copied (10 bytes) unless `--skip` names it or it is stop-only without
- * `--stop`. `restore` needs its one-time approval, which it keeps as `approval.<id>` and removes,
+ * `--stop`. After the id, as the off-server copy's upload, it prints `offsite.stderr` on stderr
+ * and, with `offsite.copied`, marks the snapshot `offsite.done`. `restore` needs its one-time approval, which it keeps as `approval.<id>` and removes,
  * names its copy from just before (`saved 20261107T120000Z`, unless `restore.nosaved`), then says
  * what it did: `restore-<id>.exit` with `restore-<id>.stderr` makes the restore of that id fail,
  * `restore.exit` with `restore.stderr` every restore. On the app's server (no file `extra`), a
@@ -78,7 +79,9 @@ case "$1" in
     done < parts.txt
     mkdir -p ".snapshots/$id"
     printf '{"id":"%s","kind":"manual","taken":"2026-11-06T19:00:00Z","version":"%s","services":[%s]}\\n' "$id" "$version" "$services" > ".snapshots/$id/about.json"
-    echo "$id" ;;
+    echo "$id"
+    if [ -f offsite.stderr ]; then cat offsite.stderr >&2; fi
+    if [ -f offsite.copied ]; then : > ".snapshots/$id/offsite.done"; fi ;;
 esac
 `;
 

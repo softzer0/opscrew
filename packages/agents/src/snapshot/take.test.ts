@@ -306,6 +306,52 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on servers", () => {
   });
 });
 
+describe.skipIf(!SH_AVAILABLE)("opscrew snapshot with the copy off the server", () => {
+  const DB: ServiceEntry[] = [{ kind: "postgres", name: "db" }];
+  const OFFSITE = {
+    snapshots: { offsite: { provider: "hetzner", bucket: "shop-backups", region: "fsn1" } },
+  };
+  const ID = "20261106T190000Z";
+  const warnings = (world: Awaited<ReturnType<typeof snapshotWorld>>) =>
+    world.deps.reporter.lines.filter((line) => line.level === "warn").map((line) => line.message);
+
+  it("says plainly when the copy failed, with what the server said of it, redacted, and keeps the snapshot", async () => {
+    const world = await snapshotWorld(stagingPlan(DB, { fields: OFFSITE }));
+    const failed = `Copying the snapshot ${ID} off the server failed, so the bucket has no complete copy of it yet; the snapshot itself stays on the app's server, and the next snapshot tries again. The upload's output is in /srv/apps/shop-staging/.snapshots/offsite.log; its last error: 2026/11/06 19:00:02 ERROR : db.dump.age: Failed to copy: dial tcp ${SERVER_IPV4}:443: i/o timeout`;
+    await world.servers.app?.write(
+      "offsite.stderr",
+      `Copying the snapshot 20261105T190000Z off the server failed, so the bucket has no complete copy of it yet.\n${failed}\n`,
+    );
+    const taken = await takeSnapshot(world.deps, { services: world.services });
+
+    expect(taken.id).toBe(ID);
+    expect(warnings(world)).toEqual([failed.replace(SERVER_IPV4, "[REDACTED:server-address]")]);
+    expect(world.deps.reporter.text()).toContain(`Took the snapshot ${ID} of staging`);
+    expect(everythingShown(world)).not.toContain(SERVER_IPV4);
+  });
+
+  it("says when a part with a file has no copy off the server and the server said nothing", async () => {
+    const world = await snapshotWorld(stagingPlan(DB, { fields: OFFSITE }));
+    await takeSnapshot(world.deps, { services: world.services });
+
+    expect(warnings(world)).toEqual([
+      `The snapshot ${ID} on the app's server was not copied off the server, and the app's server did not say why. Deploy the app again, so that its snapshot.sh copies each snapshot off the server, then take another snapshot.`,
+    ]);
+  });
+
+  it("warns of nothing once the copy is made, nor without the copy off the server", async () => {
+    const copied = await snapshotWorld(stagingPlan(DB, { fields: OFFSITE }));
+    await copied.servers.app?.write("offsite.copied", "");
+    await takeSnapshot(copied.deps, { services: copied.services });
+    expect(warnings(copied)).toEqual([]);
+
+    const without = await snapshotWorld(stagingPlan(DB));
+    await without.servers.app?.write("offsite.stderr", `Something about ${ID}.\n`);
+    await takeSnapshot(without.deps, { services: without.services });
+    expect(warnings(without)).toEqual([]);
+  });
+});
+
 describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on this computer", () => {
   it("runs snapshot.sh in the app's folder through the local shell", async () => {
     const local = localPlan();

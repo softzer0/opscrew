@@ -15,6 +15,7 @@
 import { rm } from "node:fs/promises";
 import { type ProviderBucket, r2Endpoint, STORAGE_ENDPOINTS } from "@opscrew/agents";
 import {
+  OFFSITE_LOG,
   PORTAINER_VERSION_PATH,
   portainerDeployBranch,
   portainerSnapshotsVolume,
@@ -486,6 +487,15 @@ export async function deployLogLeaks(run: LiveRun, runs: readonly DeployRun[]): 
   }
   run.log(`observed: the leak search read the deploy job's log of ${runs.length} runs`);
   return problems;
+}
+
+/**
+ * The last 40 lines of the off-server copy's upload log in the app's folder `dir` on the server
+ * (`OFFSITE_LOG`), or that there is none, for a failure to show (scrubbed by the caller).
+ */
+export function offsiteLogTail(exec: ServerExec, dir: string): Promise<string> {
+  const log = `${dir}/${OFFSITE_LOG}`;
+  return exec(`if [ -f ${log} ]; then tail -n 40 ${log}; else echo "There is no ${log}."; fi`);
 }
 
 /**

@@ -88,6 +88,12 @@ function withSnapshots(
   });
 }
 
+/** A failed upload's error line in rclone's log, and its summary, as rclone 1.75 prints them. */
+const RCLONE_ERROR =
+  "2026/11/07 16:19:13 ERROR : about.json.age: Post request rcat error: operation error S3: PutObject, https response error StatusCode: 403, api error AccessDenied: Access Denied";
+const RCLONE_FAILED =
+  "2026/11/07 16:19:13 NOTICE: Failed to rcat with 2 errors: last error was: operation error S3: PutObject, https response error StatusCode: 403, api error AccessDenied: Access Denied";
+
 /**
  * The fake `docker`: logs every call to $WORK/docker.log. Each part's data is the file
  * $WORK/data/<part>; a service runs while $WORK/running/<service> exists, and its container is
@@ -112,7 +118,8 @@ function withSnapshots(
  * $WORK/uploads.log, and notes in $WORK/upload-lock.log whether it holds the start lock (fd 7). A
  * script that deletes the id's about.json.age first has it removed. Without its env file it fails
  * as Docker does (125); with UPLOAD_FAIL it fails (after that deletion) printing the env file (the
- * bucket's key), and with DELETE_FAIL it exits 4 after the upload.
+ * bucket's key), then rclone's error and its summary as rclone prints them, and with DELETE_FAIL
+ * it exits 4 after the upload.
  */
 const FAKE_DOCKER = [
   "#!/bin/sh",
@@ -134,7 +141,12 @@ const FAKE_DOCKER = [
   '  printf \'%s\\n\' "$script" > "$WORK/upload.sh"',
   '  if { true >&7; } 2> /dev/null; then echo held >> "$WORK/upload-lock.log"; else echo free >> "$WORK/upload-lock.log"; fi',
   '  case "$script" in *"rclone deletefile"*) rm -f "$WORK/bucket/$to/about.json.age" ;; esac',
-  '  if [ -n "${UPLOAD_FAIL:-}" ]; then echo "upload failed with $(cat "$envfile")" >&2; exit 1; fi',
+  '  if [ -n "${UPLOAD_FAIL:-}" ]; then',
+  '    echo "upload failed with $(cat "$envfile")" >&2',
+  `    echo "${RCLONE_ERROR}" >&2`,
+  `    echo "${RCLONE_FAILED}" >&2`,
+  "    exit 1",
+  "  fi",
   '  mkdir -p "$WORK/bucket/$to"',
   "  for f in $files about.json; do",
   '    { echo age:; cat "$snap/$f"; } > "$WORK/bucket/$to/$f.age"',
@@ -1073,11 +1085,13 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(failed.status, failed.output).toBe(0);
       expect(failed.stdout).toMatch(ID);
       expect(failed.stderr).toContain(
-        `Copying the snapshot ${failed.stdout} off the server failed, so the bucket has no complete copy of it yet; the snapshot itself stays on the app's server, and the next snapshot tries again. The upload's output stays in ${appDir()}/.snapshots/offsite.log (it is not printed here).`,
+        `Copying the snapshot ${failed.stdout} off the server failed, so the bucket has no complete copy of it yet; the snapshot itself stays on the app's server, and the next snapshot tries again. The upload's output is in ${appDir()}/.snapshots/offsite.log; its last error: ${RCLONE_FAILED}`,
       );
       expect(existsSync(at(`.snapshots/${failed.stdout}/offsite.done`))).toBe(false);
-      // The output went to the log alone.
+      // The rest of the output went to the log alone.
+      expect(failed.stderr).not.toContain("upload failed with");
       expect(read(at(".snapshots/offsite.log"))).toContain("upload failed with");
+      expect(read(at(".snapshots/offsite.log"))).toContain(RCLONE_ERROR);
       expectNoSecret(taken.output, failed.output);
     });
 
@@ -1165,7 +1179,7 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       const kept = snap(["offsite", result.stdout], { DELETE_FAIL: "1" });
       expect(kept.status, kept.output).toBe(0);
       expect(kept.stderr).toContain(
-        `OpsCrew copied the snapshot ${result.stdout} off the server, but could not delete the copies there older than 90 days.`,
+        `OpsCrew copied the snapshot ${result.stdout} off the server, but could not delete the copies there older than 90 days. The upload's output is in ${appDir()}/.snapshots/offsite.log.`,
       );
       expect(existsSync(at(`.snapshots/${result.stdout}/offsite.done`))).toBe(true);
     });

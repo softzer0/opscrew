@@ -78,8 +78,18 @@ export const OFFSITE_ENV_FILE = "offsite.env";
 /** The GitHub Actions secret holding {@link OFFSITE_ENV_FILE}; `opscrew provision` sets it. */
 export const OFFSITE_ENV_SECRET = "OPSCREW_OFFSITE_ENV";
 
-/** The last off-server copy's output, in the app's folder, never printed. */
+/**
+ * The last off-server copy's output, in the app's folder. Only its last error line
+ * ({@link OFFSITE_ERROR_LINES}) is printed, in the failure's message.
+ */
 export const OFFSITE_LOG = `${SNAPSHOTS_DIR}/offsite.log`;
+
+/**
+ * The lines of {@link OFFSITE_LOG} that say what failed (`grep -E`): rclone's errors and its
+ * `Failed to …` summary, Docker's, age's and the script's own. rclone and Docker never print the
+ * key they were given.
+ */
+const OFFSITE_ERROR_LINES = "(ERROR|CRITICAL) *: |Failed to |^OpsCrew: |^docker: |^age: ";
 
 /** The folder in the app's folder where the script keeps the age binary it fetched and checked. */
 const AGE_DIR = ".offsite";
@@ -99,8 +109,8 @@ const AGE_DIR = ".offsite";
  * - where the bucket expires nothing itself ({@link offsiteExpires}), the copies older than
  *   `snapshots.offsite.days` are deleted after the upload.
  * Then the snapshot gets `offsite.done`. A snapshot that holds no file has nothing to copy. The
- * output goes to {@link OFFSITE_LOG}; a failure is a message on stderr and returns 1, and a failed
- * deletion only warns.
+ * output goes to {@link OFFSITE_LOG}; a failure is a message on stderr, with the log's last error
+ * line, and returns 1, and a failed deletion only warns.
  *
  * `snapshot_offsite_pending` copies, newest first, each complete snapshot by hand or on the
  * schedule that holds a file, has no `offsite.done` yet and was taken within the retention: a
@@ -143,7 +153,8 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
   ].join("; ");
   const to = server === APP_SERVER ? '"$1"' : `"$1"/${server}`;
   const said = (text: string) => `printf ${printfFormat(text)}`;
-  const log = `The upload's output stays in %s/${OFFSITE_LOG} (it is not printed here).`;
+  // `%s` and `%s`: the app's folder, then `; its last error: <line>` or `.`.
+  const log = `The upload's output is in %s/${OFFSITE_LOG}%s`;
   const environment = [
     "RCLONE_CONFIG_OFFSITE_TYPE=s3",
     `RCLONE_CONFIG_OFFSITE_PROVIDER=${RCLONE_PROVIDERS[copy.provider]}`,
@@ -170,8 +181,12 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
     `  rm -f ${SNAPSHOTS_DIR}/"$1"/offsite.done`,
     "  _offsite_rc=0",
     `  docker run --rm --env-file ${OFFSITE_ENV_FILE} ${environment.join(" ")} --user "$(id -u):$(id -g)" -v ${folder}/${SNAPSHOTS_DIR}/"$1":/snapshot:ro -v ${folder}/${AGE_DIR}:/tools --entrypoint sh ${IMAGES.rclone.ref} -c ${shellQuote(upload)} sh ${to} $_offsite_files < /dev/null >> ${OFFSITE_LOG} 2>&1 || _offsite_rc=$?`,
+    '  if [ "$_offsite_rc" -ne 0 ]; then',
+    `    _offsite_error="$(grep -E ${shellQuote(OFFSITE_ERROR_LINES)} ${OFFSITE_LOG} | tail -n 1 | cut -c 1-500 || :)"`,
+    '    if [ -n "$_offsite_error" ]; then _offsite_error="; its last error: $_offsite_error"; else _offsite_error="."; fi',
+    "  fi",
     '  if [ "$_offsite_rc" -ne 0 ] && [ "$_offsite_rc" -ne 4 ]; then',
-    `    ${said(`Copying the snapshot %s off the server failed, so the bucket has no complete copy of it yet; the snapshot itself stays on ${where}, and the next snapshot tries again. ${log}`)} "$1" ${folder} >&2`,
+    `    ${said(`Copying the snapshot %s off the server failed, so the bucket has no complete copy of it yet; the snapshot itself stays on ${where}, and the next snapshot tries again. ${log}`)} "$1" ${folder} "$_offsite_error" >&2`,
     "    return 1",
     "  fi",
     `  (umask 077 && : > ${SNAPSHOTS_DIR}/"$1"/offsite.done) || return 1`,
@@ -179,7 +194,7 @@ function offsiteFunctions(plan: DeployPlan, server: string): string[] {
       ? []
       : [
           '  if [ "$_offsite_rc" -eq 4 ]; then',
-          `    ${said(`OpsCrew copied the snapshot %s off the server, but could not delete the copies there older than ${days} days. ${log}`)} "$1" ${folder} >&2`,
+          `    ${said(`OpsCrew copied the snapshot %s off the server, but could not delete the copies there older than ${days} days. ${log}`)} "$1" ${folder} "$_offsite_error" >&2`,
           "  fi",
         ]),
     "}",
