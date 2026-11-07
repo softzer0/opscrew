@@ -1,5 +1,5 @@
 import { FAKE_ACCOUNT_ID, FAKE_ZONE_ID } from "@opscrew/connector-cloudflare/testing";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { createTestPhaseDeps, fakeCloudflare, portainerPlan, testPlan } from "../testing";
 import { setupCloudflare } from "./credentials";
@@ -74,6 +74,21 @@ describe("setupCloudflare for the user's Portainer", () => {
       expect(await result).toBeUndefined();
       expect(cloudflare.listed).toEqual([]);
     }
+  });
+
+  it("reads the account for the off-server copies' bucket on R2 without a tunnel", async () => {
+    const plan = DeployPlanSchema.parse({
+      ...portainerPlan({ web: { mode: "proxy", port: 8080 } }),
+      snapshots: { offsite: { provider: "r2", bucket: "shop-backups" } },
+    });
+    const { result } = await setup(plan);
+    expect(await result).toMatchObject({ zoneId: FAKE_ZONE_ID, accountId: "acc-1" });
+    // At Hetzner the copies need no Cloudflare account.
+    const hetzner = DeployPlanSchema.parse({
+      ...plan,
+      snapshots: { offsite: { provider: "hetzner", bucket: "shop-backups", region: "fsn1" } },
+    });
+    expect(await (await setup(hetzner)).result).toBeUndefined();
   });
 
   it("tunnel mode: checks the app's hostnames and reads the account", async () => {

@@ -83,11 +83,18 @@ export {
 export { isRemovalLiftRequest, removalConfirmPhrase } from "./servers";
 export { describeStackPlan, ROUTE_CHANGE_NOTE } from "./stack-plan";
 export {
+  applyBackups,
   applyStorage,
+  BACKUPS_PLAN_SUFFIX,
   type BucketProvider,
+  backupsStateFile,
   NEW_STORAGE_KEY_VARS,
+  OFFSITE_KEY_VARS,
+  offsiteEnvFile,
+  offsiteValues,
   type ProviderBucket,
   providerBucket,
+  requireOffsiteKey,
   requireStorageKey,
   STORAGE_KEY_VARS,
   STORAGE_PLAN_SUFFIX,

@@ -633,6 +633,23 @@ describe("runInitChecks", () => {
       );
     });
 
+    it("names R2's permission for the off-server copies' bucket on R2, and nothing more without it", async () => {
+      const { deps } = await setup();
+      const offsite = DeployPlanSchema.parse({
+        ...testPlan(),
+        snapshots: { offsite: { provider: "r2", bucket: "shop-backups" } },
+      });
+      await writeArtifact("plan", deps.paths.files.plan, offsite);
+      const message = async () =>
+        (await runInitChecks(deps, { services: services() })).find((c) => c.id === "cloudflare")
+          ?.message ?? "";
+      expect(await message()).toContain(
+        "The bucket of the off-server copies on Cloudflare R2 also needs Account → Workers R2 Storage → Edit.",
+      );
+      await writeArtifact("plan", deps.paths.files.plan, testPlan());
+      expect(await message()).not.toContain("R2");
+    });
+
     it("names the missing permission when the token cannot see the planned zone", async () => {
       const { deps } = await setup({ net: { zone: false } });
       await writeArtifact("plan", deps.paths.files.plan, testPlan());

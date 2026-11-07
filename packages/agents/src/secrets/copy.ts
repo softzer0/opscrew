@@ -67,6 +67,8 @@ export type RefreshRecoveryResult =
       changed: true;
       /** The files for the caller's pull request (the copy, `.sops.yaml`, `.gitattributes`). */
       repositoryFiles: RenderedFile[];
+      /** The age recipients (`age1…`) the copy is encrypted to, the main key's first. */
+      recipients: string[];
       /** The folder copy written, when the user named a folder. */
       folderCopy?: string;
       /** The file the first key was written to. */
@@ -345,6 +347,7 @@ export async function refreshRecoveryCopy(
   return {
     changed: true,
     repositoryFiles: placed.repositoryFiles,
+    recipients,
     ...(placed.folderCopy !== undefined ? { folderCopy: placed.folderCopy } : {}),
     ...(firstKey !== undefined ? { firstKey } : {}),
     ...(own !== undefined ? { recipient: own } : {}),

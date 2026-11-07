@@ -87,11 +87,12 @@ function fakeAccess(rejectToken = false) {
  * A fake `runProvision` for the user's Portainer: `planOnly` saves a stack plan and describes it;
  * otherwise it asks for that plan's `stack-apply` approval, as provision does.
  */
-function fakeProvision(o: { bucket?: boolean; originTls?: boolean } = {}) {
+function fakeProvision(o: { bucket?: boolean; backups?: boolean; originTls?: boolean } = {}) {
   const calls: ProvisionOptions[] = [];
   const run: typeof runProvision = async (deps, options = {}) => {
     calls.push(options);
     if (o.bucket === true) return bucketProvision(deps, options);
+    if (o.backups === true) return bucketProvision(deps, options, "backups");
     if (o.originTls === true && options.planOnly === true) {
       // The Cloudflare plan creates the stack Caddy's origin certificate: the stack plan follows.
       return {
@@ -128,6 +129,8 @@ function fakeProvision(o: { bucket?: boolean; originTls?: boolean } = {}) {
 
 /** The hash of the fake bucket plan (the `storage` root) {@link bucketProvision} saves. */
 const BUCKET_HASH = "cd".repeat(32);
+/** The hash of the fake plan of the off-server copies' bucket (the `backups` root). */
+const BACKUPS_HASH = "ef".repeat(32);
 /** The hash of the fake Cloudflare plan that brings the stack Caddy's origin TLS. */
 const CLOUDFLARE_HASH = "ab".repeat(32);
 
@@ -139,13 +142,15 @@ const CLOUDFLARE_HASH = "ab".repeat(32);
 async function bucketProvision(
   deps: Parameters<typeof runProvision>[0],
   options: ProvisionOptions,
+  root: "storage" | "backups" = "storage",
 ): Promise<ProvisionResult> {
   const dir = deps.paths.files.plansDir;
   await mkdir(dir, { recursive: true });
+  const hash = root === "storage" ? BUCKET_HASH : BACKUPS_HASH;
   const sidecar = {
-    planHash: BUCKET_HASH,
-    planFile: path.join(dir, "20261015T120000-storage.tfplan"),
-    dir: "opscrew/infra/storage",
+    planHash: hash,
+    planFile: path.join(dir, `20261015T120000-${root}.tfplan`),
+    dir: `opscrew/infra/${root}`,
     engine: { name: "tofu", version: "1.13.1", binary: "tofu" },
     createdAt: "2026-10-15T12:00:00.000Z",
     changes: [
@@ -162,19 +167,21 @@ async function bucketProvision(
     policy: [],
     planJson: {},
   };
-  await writeFile(path.join(dir, "20261015T120000-storage.tfplan.json"), JSON.stringify(sidecar));
-  if (options.planOnly === true) {
-    return { storagePlanHash: BUCKET_HASH, applied: false, outputs: {} };
-  }
+  await writeFile(path.join(dir, `20261015T120000-${root}.tfplan.json`), JSON.stringify(sidecar));
+  const result = root === "storage" ? { storagePlanHash: hash } : { backupsPlanHash: hash };
+  if (options.planOnly === true) return { ...result, applied: false, outputs: {} };
   const decision = await deps.approvals.request({
     kind: "iac-apply",
-    title: "Apply the plan of the app's bucket shop-uploads on Cloudflare R2",
-    details: `Plan hash: ${BUCKET_HASH}`,
-    planHash: BUCKET_HASH,
+    title:
+      root === "storage"
+        ? "Apply the plan of the app's bucket shop-uploads on Cloudflare R2"
+        : "Apply the plan of the off-server copies' bucket shop-backups on Cloudflare R2",
+    details: `Plan hash: ${hash}`,
+    planHash: hash,
   });
   if (!decision.approved)
-    throw new OpsCrewError("APPROVAL_REFUSED", "The storage plan was not approved.");
-  return { storagePlanHash: BUCKET_HASH, applied: false, outputs: {} };
+    throw new OpsCrewError("APPROVAL_REFUSED", `The ${root} plan was not approved.`);
+  return { ...result, applied: false, outputs: {} };
 }
 
 async function connect(
@@ -183,6 +190,7 @@ async function connect(
     token?: string;
     rejectToken?: boolean;
     bucket?: boolean;
+    backups?: boolean;
     originTls?: boolean;
   } = {},
 ) {
@@ -213,6 +221,7 @@ async function connect(
   const { access, listed } = fakeAccess(options.rejectToken);
   const provision = fakeProvision({
     bucket: options.bucket === true,
+    backups: options.backups === true,
     originTls: options.originTls === true,
   });
   const server = new McpServer({ name: "opscrew", version: "0.0.0-test" });
@@ -445,6 +454,68 @@ describe("the MCP tools for the user's existing Portainer", () => {
     const unknown = await h.call("opscrew_apply", { storagePlanHash: "ef".repeat(32) });
     expect(unknown.isError).toBe(true);
     expect(textOf(unknown)).toContain("No saved bucket plan has the hash");
+  });
+
+  it("returns the off-server copies' bucket plan with its own hash, and applies it after its own dialog", async () => {
+    const h = await connect({ elicit: trust, backups: true });
+    await h.call("opscrew_save_requirements", { answers: ANSWERS });
+    const options = await h.call("opscrew_design_options");
+    const id = (options.structuredContent as { options: { id: string }[] }).options[0]?.id;
+    await h.call("opscrew_select_design", { optionId: id });
+
+    const planned = await h.call("opscrew_plan");
+    expect(planned.isError, textOf(planned)).toBeFalsy();
+    expect(planned.structuredContent).toMatchObject({ backupsPlanHash: BACKUPS_HASH });
+    const text = textOf(planned);
+    expect(text).toContain(
+      `Plan of the bucket of the off-server copies of the app's snapshots, with its own hash ${BACKUPS_HASH}:`,
+    );
+    expect(text).toContain("OPSCREW_OFFSITE_ACCESS_KEY_ID");
+    expect(text).toContain(`call opscrew_apply with backupsPlanHash ${BACKUPS_HASH}`);
+    expect(text).toContain(`opscrew provision --approve ${BACKUPS_HASH}`);
+
+    const before = h.elicited.length;
+    const applied = await h.call("opscrew_apply", { backupsPlanHash: BACKUPS_HASH });
+    expect(applied.isError, textOf(applied)).toBeFalsy();
+    expect(h.elicited.length).toBe(before + 1);
+    expect(h.provision.calls[1]).toMatchObject({ approveHashes: [BACKUPS_HASH] });
+    expect(textOf(applied)).toContain(
+      `Applied the plan of the off-server copies' bucket ${BACKUPS_HASH}.`,
+    );
+    expect(applied.structuredContent).toMatchObject({ backupsPlanHash: BACKUPS_HASH });
+  });
+
+  it("refuses a plan of the off-server copies' bucket the chat was not given, before any dialog", async () => {
+    const h = await connect({ elicit: trust, backups: true });
+    await h.call("opscrew_save_requirements", { answers: ANSWERS });
+    const options = await h.call("opscrew_design_options");
+    const id = (options.structuredContent as { options: { id: string }[] }).options[0]?.id;
+    await h.call("opscrew_select_design", { optionId: id });
+    await h.call("opscrew_plan");
+    const paths = resolveProjectPaths(h.root, { env: h.env });
+    const text = `${JSON.stringify({ changes: [{ id: "app-stack", state: "change" }] })}\n`;
+    const stackHash = createHash("sha256").update(text).digest("hex");
+    await writeFile(stackPlanFile(paths, stackHash), text);
+
+    const before = h.elicited.length;
+    const refused = await h.call("opscrew_apply", { planHash: stackHash });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toContain(
+      "opscrew_plan did not return this plan of the off-server copies' bucket to the user",
+    );
+    expect(textOf(refused)).toContain("pass its backupsPlanHash to opscrew_apply");
+    expect(h.elicited.length).toBe(before);
+  });
+
+  it("returns no backups plan hash and says nothing of it without the off-server copy", async () => {
+    const h = await connect({ elicit: trust });
+    await h.call("opscrew_save_requirements", { answers: ANSWERS });
+    const options = await h.call("opscrew_design_options");
+    const id = (options.structuredContent as { options: { id: string }[] }).options[0]?.id;
+    await h.call("opscrew_select_design", { optionId: id });
+    const planned = await h.call("opscrew_plan");
+    expect(planned.structuredContent).not.toHaveProperty("backupsPlanHash");
+    expect(textOf(planned)).not.toMatch(/off-server|backupsPlanHash/);
   });
 
   it("says the stack plan follows the Cloudflare plan when the stack's Caddy needs the origin certificate it creates", async () => {

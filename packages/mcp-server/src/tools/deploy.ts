@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   applyCommand,
+  BACKUPS_PLAN_SUFFIX,
   CHECK_MARK,
   describeChanges,
   describePlan,
@@ -41,7 +42,12 @@ import {
   OpsCrewError,
   resolveProjectPaths,
 } from "@opscrew/core";
-import { type DeployPlan, onOneServer, readArtifact } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  onOneServer,
+  readArtifact,
+  snapshotOffsiteOf,
+} from "@opscrew/plan-schema";
 import { DEEP_TOOL_NAME, type DeepToolResult } from "@opscrew/secops";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
@@ -140,6 +146,22 @@ function bucketPlanText(saved: SavedPlan, plan: DeployPlan): string {
   ].join("\n");
 }
 
+/**
+ * The plan of the off-server copies' bucket (the `backups` root), for the user: its changes and its
+ * policy results.
+ */
+function backupsPlanText(saved: SavedPlan, plan: DeployPlan): string {
+  const bucket = snapshotOffsiteOf(plan)?.bucket;
+  const failed = saved.policy.filter((result) => !result.passed);
+  return [
+    `Plan of the bucket of the off-server copies of the app's snapshots${bucket === undefined ? "" : ` ${bucket}`}, with its own hash ${saved.planHash}:`,
+    ...describeChanges(saved.changes),
+    `Security policies: ${saved.policy.length - failed.length} passed, ${failed.length} failed.`,
+    ...failed.map((result) => `  ✗ [${result.severity}] ${result.title}: ${result.message}`),
+    "The key for it is the user's own: `opscrew provision` in a terminal asks for it, or it comes from OPSCREW_OFFSITE_ACCESS_KEY_ID and OPSCREW_OFFSITE_SECRET_ACCESS_KEY. Never ask for it in the chat.",
+  ].join("\n");
+}
+
 function checkLines(checks: readonly CheckResult[]): string[] {
   return checks.map(
     (c) =>
@@ -219,21 +241,30 @@ function planText(
  * hash is the `cloudflarePlanHash` opscrew_plan returned: any other Cloudflare plan (it changed
  * since, or the hash was not passed) is refused before a dialog, so the user never approves a
  * Cloudflare plan the chat did not show. A plan of the app's bucket (a saved plan of the `storage`
- * root) is shown likewise only when its hash is the `storagePlanHash` given, and a GitHub Pages
- * site's Pages plan (`pages-apply`) only when its hash is the `pagesPlanHash` given.
+ * root) is shown likewise only when its hash is the `storagePlanHash` given, a plan of the
+ * off-server copies' bucket (the `backups` root) only when its hash is the `backupsPlanHash`
+ * given, and a GitHub Pages site's Pages plan (`pages-apply`) only when its hash is the
+ * `pagesPlanHash` given.
  */
 class CloudflarePlanGate implements ApprovalHandler {
   /** True once a Cloudflare plan with another hash was refused. */
   refusedOther = false;
   /** True once a bucket plan with another hash was refused. */
   refusedBucket = false;
+  /** True once a plan of the off-server copies' bucket with another hash was refused. */
+  refusedBackups = false;
   /** True once a Pages plan with another hash was refused. */
   refusedPages = false;
 
   constructor(
     private readonly dialogs: ElicitationApprovalHandler,
     private readonly hash: string | undefined,
-    private readonly storage: { hash: string | undefined; plansDir: string },
+    private readonly storage: {
+      hash: string | undefined;
+      /** The `backups` root's plan hash given (`backupsPlanHash`). */
+      backups: string | undefined;
+      plansDir: string;
+    },
     private readonly pagesHash: string | undefined,
     private readonly clock: Clock,
   ) {}
@@ -258,6 +289,18 @@ class CloudflarePlanGate implements ApprovalHandler {
             this.storage.hash === undefined
               ? "opscrew_apply was not given this bucket plan's storagePlanHash"
               : `its hash is not the storagePlanHash ${this.storage.hash}; the bucket plan changed since opscrew_plan returned it`,
+        });
+      }
+      if (
+        saved?.planFile.endsWith(BACKUPS_PLAN_SUFFIX) === true &&
+        planHash !== this.storage.backups
+      ) {
+        this.refusedBackups = true;
+        return approvalDecision(this.clock, "opscrew_apply", false, {
+          reason:
+            this.storage.backups === undefined
+              ? "opscrew_apply was not given this plan's backupsPlanHash"
+              : `its hash is not the backupsPlanHash ${this.storage.backups}; the plan of the off-server copies' bucket changed since opscrew_plan returned it`,
         });
       }
     }
@@ -498,6 +541,15 @@ export function registerDeployTools(
         if (storageHash !== undefined && storage === undefined) {
           throw noSavedPlan("bucket plan", storageHash);
         }
+        // The off-server copies' bucket: the `backups` root's own plan, likewise.
+        const backupsHash = result.backupsPlanHash;
+        const backups =
+          backupsHash === undefined
+            ? undefined
+            : await findSavedPlan(phase.paths.files.plansDir, backupsHash);
+        if (backupsHash !== undefined && backups === undefined) {
+          throw noSavedPlan("plan of the off-server copies' bucket", backupsHash);
+        }
         const stackFollows = portainer
           ? stackFollowsReason(result, saved !== undefined)
           : undefined;
@@ -527,6 +579,7 @@ export function registerDeployTools(
         const hashes = [
           ...(cloudflareHash !== undefined ? [cloudflareHash] : []),
           ...(storageHash !== undefined ? [storageHash] : []),
+          ...(backupsHash !== undefined ? [backupsHash] : []),
           ...(pagesHash !== undefined ? [pagesHash] : []),
           ...(saved !== undefined ? [saved.planHash] : []),
           ...(verificationHash !== undefined ? [verificationHash] : []),
@@ -572,6 +625,7 @@ export function registerDeployTools(
           ...(saved !== undefined && second !== undefined ? [`${secondArg} ${second}`] : []),
           ...(cloudflareHash !== undefined ? [`cloudflarePlanHash ${cloudflareHash}`] : []),
           ...(storageHash !== undefined ? [`storagePlanHash ${storageHash}`] : []),
+          ...(backupsHash !== undefined ? [`backupsPlanHash ${backupsHash}`] : []),
           ...(pagesHash !== undefined ? [`pagesPlanHash ${pagesHash}`] : []),
           ...(verificationHash !== undefined
             ? [`pagesVerificationPlanHash ${verificationHash}`]
@@ -596,6 +650,7 @@ export function registerDeployTools(
         const text = [
           ...(cloudflareText !== undefined ? [cloudflareText, ""] : []),
           ...(storage !== undefined ? [bucketPlanText(storage, plan), ""] : []),
+          ...(backups !== undefined ? [backupsPlanText(backups, plan), ""] : []),
           // A server the user owns or their Portainer costs nothing more: no price in the plan.
           ...(pagesText !== undefined ? [pagesText, ""] : []),
           ...(saved !== undefined
@@ -635,6 +690,7 @@ export function registerDeployTools(
             stackPlanHash: stackHash,
             cloudflarePlanHash: cloudflareHash,
             storagePlanHash: storageHash,
+            ...(backupsHash !== undefined ? { backupsPlanHash: backupsHash } : {}),
             ...(pagesHash !== undefined ? { pagesPlanHash: pagesHash } : {}),
             ...(verificationHash !== undefined
               ? { pagesVerificationPlanHash: verificationHash }
@@ -689,6 +745,12 @@ export function registerDeployTools(
           .describe(
             "The app's bucket: SHA-256 hash of the bucket plan (the opscrew/infra/storage root), exactly as returned by opscrew_plan. Its key comes only from the user's terminal or OPSCREW_STORAGE_ACCESS_KEY_ID and OPSCREW_STORAGE_SECRET_ACCESS_KEY, never from the chat.",
           ),
+        backupsPlanHash: z
+          .string()
+          .optional()
+          .describe(
+            "The bucket of the snapshots' off-server copies: SHA-256 hash of its plan (the opscrew/infra/backups root), exactly as returned by opscrew_plan. Its key comes only from the user's terminal or OPSCREW_OFFSITE_ACCESS_KEY_ID and OPSCREW_OFFSITE_SECRET_ACCESS_KEY, never from the chat.",
+          ),
         runnerHostPlanHashes: z
           .array(z.string())
           .optional()
@@ -738,6 +800,7 @@ export function registerDeployTools(
         hostPlanHash,
         stackPlanHash,
         storagePlanHash,
+        backupsPlanHash,
         runnerHostPlanHashes,
         pagesPlanHash,
         pagesVerificationPlanHash,
@@ -757,6 +820,7 @@ export function registerDeployTools(
           hostPlanHash,
           stackPlanHash,
           storagePlanHash,
+          backupsPlanHash,
           pagesPlanHash,
           pagesVerificationPlanHash,
         ];
@@ -764,6 +828,7 @@ export function registerDeployTools(
           (planHash === undefined &&
             cloudflarePlanHash === undefined &&
             storagePlanHash === undefined &&
+            backupsPlanHash === undefined &&
             pagesPlanHash === undefined &&
             pagesVerificationPlanHash === undefined &&
             runnerHashes.length === 0) ||
@@ -780,12 +845,14 @@ export function registerDeployTools(
         const hostHash = hostPlanHash?.toLowerCase();
         const stackHash = stackPlanHash?.toLowerCase();
         const storageHash = storagePlanHash?.toLowerCase();
+        const backupsHash = backupsPlanHash?.toLowerCase();
         const pagesHash = pagesPlanHash?.toLowerCase();
         const verificationHash = pagesVerificationPlanHash?.toLowerCase();
         const hashes = [
           ...[
             cloudflareHash,
             storageHash,
+            backupsHash,
             pagesHash,
             hash,
             verificationHash,
@@ -807,6 +874,7 @@ export function registerDeployTools(
           cloudflareHash,
           {
             hash: storageHash,
+            backups: backupsHash,
             plansDir: resolveProjectPaths(call.projectDir, {
               env: deps.env,
               app: appKey,
@@ -875,6 +943,12 @@ export function registerDeployTools(
           throw noSavedPlan("bucket plan", storageHash);
         }
         if (
+          backupsHash !== undefined &&
+          (await findSavedPlan(phase.paths.files.plansDir, backupsHash)) === undefined
+        ) {
+          throw noSavedPlan("plan of the off-server copies' bucket", backupsHash);
+        }
+        if (
           verificationHash !== undefined &&
           (await findSavedPlan(phase.paths.files.plansDir, verificationHash)) === undefined
         ) {
@@ -891,6 +965,7 @@ export function registerDeployTools(
                 ...(hostHash === undefined ? [] : [hostHash]),
                 ...(stackHash === undefined ? [] : [stackHash]),
                 ...(storageHash === undefined ? [] : [storageHash]),
+                ...(backupsHash === undefined ? [] : [backupsHash]),
                 ...(cloudflareHash === undefined ? [] : [cloudflareHash]),
                 ...(pagesHash === undefined ? [] : [pagesHash]),
                 ...(verificationHash === undefined ? [] : [verificationHash]),
@@ -933,6 +1008,11 @@ export function registerDeployTools(
             ? [`Applied the plan of the app's bucket ${result.storagePlanHash}.`]
             : storageHash !== undefined
               ? ["The app's bucket needed no change."]
+              : []),
+          ...(result.backupsPlanHash !== undefined
+            ? [`Applied the plan of the off-server copies' bucket ${result.backupsPlanHash}.`]
+            : backupsHash !== undefined
+              ? ["The off-server copies' bucket needed no change."]
               : []),
           local
             ? result.localApplied === true
@@ -987,6 +1067,9 @@ export function registerDeployTools(
               : {}),
             ...(result.storagePlanHash !== undefined
               ? { storagePlanHash: result.storagePlanHash }
+              : {}),
+            ...(result.backupsPlanHash !== undefined
+              ? { backupsPlanHash: result.backupsPlanHash }
               : {}),
             applied: result.applied,
             ...(result.hostPlanHash !== undefined
@@ -1144,7 +1227,10 @@ export function registerDeployTools(
 function refusalWithNextStep(
   error: unknown,
   handler: ElicitationApprovalHandler,
-  gate: Pick<CloudflarePlanGate, "refusedOther" | "refusedBucket" | "refusedPages">,
+  gate: Pick<
+    CloudflarePlanGate,
+    "refusedOther" | "refusedBucket" | "refusedBackups" | "refusedPages"
+  >,
   flag: string,
 ): unknown {
   if (!isUserFacingError(error) || error.code !== "APPROVAL_REFUSED") return error;
@@ -1171,6 +1257,16 @@ function refusalWithNextStep(
       "opscrew_plan did not return this plan of the app's bucket to the user, so OpsCrew did not show or apply it, and the bucket was not changed.",
       {
         hint: "Call opscrew_plan, show the user its bucket plan and pass its storagePlanHash to opscrew_apply with the other hashes.",
+        cause: error,
+      },
+    );
+  }
+  if (gate.refusedBackups) {
+    return new OpsCrewError(
+      "APPROVAL_REFUSED",
+      "opscrew_plan did not return this plan of the off-server copies' bucket to the user, so OpsCrew did not show or apply it, and the bucket was not changed.",
+      {
+        hint: "Call opscrew_plan, show the user that plan and pass its backupsPlanHash to opscrew_apply with the other hashes.",
         cause: error,
       },
     );

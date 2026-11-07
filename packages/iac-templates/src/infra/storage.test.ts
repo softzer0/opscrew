@@ -11,7 +11,13 @@ import { testCloudflareAccount, testContext, testPlan } from "../__fixtures__/pl
 import type { RenderedFile } from "../types";
 import { CLOUDFLARE_PROVIDER } from "./hcl";
 import { MOVE_LAYOUTS, type MoveLayoutName } from "./layouts";
-import { PREVIOUS_BUCKET_PROFILE, renderStorage } from "./storage";
+import {
+  backupsRootDir,
+  offsiteExpires,
+  PREVIOUS_BUCKET_PROFILE,
+  renderBackups,
+  renderStorage,
+} from "./storage";
 
 type StorageProvider = "r2" | "digitalocean" | "hetzner" | "garage";
 
@@ -266,6 +272,132 @@ describe("renderStorage", () => {
   });
 });
 
+/** `plan` with the off-server copies of its snapshots in `offsite`'s bucket. */
+function withOffsite(
+  plan: DeployPlan,
+  offsite: NonNullable<DeployPlan["snapshots"]>["offsite"],
+): DeployPlan {
+  return DeployPlanSchema.parse({ ...plan, snapshots: { offsite } });
+}
+
+const OFFSITE = {
+  r2: { provider: "r2", bucket: "shop-backups" },
+  hetzner: { provider: "hetzner", bucket: "shop-backups", region: "fsn1", days: 30 },
+  digitalocean: { provider: "digitalocean", bucket: "shop-backups", region: "fra1" },
+} as const;
+
+/** The file `name` of the `backups` root of the first app's prod. */
+function backupsFile(files: readonly RenderedFile[], name: string): string {
+  const found = files.find((f) => f.path === `opscrew/infra/backups/${name}`);
+  if (!found) throw new Error(`no ${name} in ${files.map((f) => f.path).join(", ")}`);
+  return found.content;
+}
+
+describe("renderBackups", () => {
+  it("renders nothing without the off-server copy, and leaves the storage root as it is", () => {
+    expect(renderBackups(storagePlan("hetzner"), ctx())).toEqual([]);
+    const plan = withOffsite(storagePlan("hetzner"), OFFSITE.r2);
+    expect(renderStorage(plan, ctx())).toEqual(renderStorage(storagePlan("hetzner"), ctx()));
+  });
+
+  it("puts the root beside plan.infra.dir, named like the storage root, for each app and environment", () => {
+    const STAGING = {
+      name: "staging",
+      deploySource: { from: "main" as const },
+      runner: "github" as const,
+    };
+    const plan = withOffsite(testPlan(), OFFSITE.r2);
+    expect(renderBackups(plan, ctx()).map((f) => f.path)).toEqual([
+      "opscrew/infra/backups/versions.tf",
+      "opscrew/infra/backups/main.tf",
+      "opscrew/infra/backups/variables.tf",
+      "opscrew/infra/backups/terraform.tfvars.json",
+    ]);
+    const named = { ...plan, app: { ...plan.app, key: "docs" }, environment: STAGING };
+    expect(backupsRootDir(named)).toBe("opscrew/infra/backups-docs-staging");
+    expect(backupsRootDir({ ...plan, environment: STAGING })).toBe("opscrew/infra/backups-staging");
+  });
+
+  it("expires R2's copies through Cloudflare's lifecycle, with no versioning", () => {
+    const files = renderBackups(withOffsite(testPlan(), OFFSITE.r2), ctx());
+    const main = backupsFile(files, "main.tf");
+    expect(main).toContain('provider "cloudflare" {}');
+    expect(main).toContain('resource "cloudflare_r2_bucket" "this" {');
+    expect(main).toContain('resource "cloudflare_r2_bucket_lifecycle" "this" {');
+    expect(main).toContain('conditions = { prefix = "backups/" }');
+    expect(main).toContain('condition = { type = "Age", max_age = var.days * 86400 }');
+    expect(main).not.toMatch(/aws|versioning/);
+    expect(JSON.parse(backupsFile(files, "terraform.tfvars.json"))).toEqual({
+      bucket: "shop-backups",
+      cloudflare_account_id: testCloudflareAccount().accountId,
+      days: 90,
+    });
+    expect(() => renderBackups(withOffsite(testPlan(), OFFSITE.r2), testContext())).toThrow(
+      /Cloudflare account id is required/,
+    );
+  });
+
+  it("keeps Hetzner's copies versioned and expires them and their older versions", () => {
+    const files = renderBackups(withOffsite(testPlan(), OFFSITE.hetzner), ctx());
+    const main = backupsFile(files, "main.tf");
+    expect(main).toContain('s3 = "https://${var.region}.your-objectstorage.com"');
+    expect(main).toContain('resource "aws_s3_bucket" "this" {');
+    expect(block(main, 'resource "aws_s3_bucket_versioning" "this"')).toContain(
+      'status = "Enabled"',
+    );
+    const rule = block(main, 'resource "aws_s3_bucket_lifecycle_configuration" "this"') ?? "";
+    for (const line of [
+      "depends_on = [aws_s3_bucket_versioning.this]",
+      'prefix = "backups/"',
+      "days = var.days",
+      "noncurrent_days = var.days",
+      "days_after_initiation = 1",
+    ]) {
+      expect(rule).toContain(line);
+    }
+    expect(main).not.toContain("cloudflare");
+    expect(JSON.parse(backupsFile(files, "terraform.tfvars.json"))).toEqual({
+      bucket: "shop-backups",
+      region: "fsn1",
+      days: 30,
+    });
+  });
+
+  it("gives Spaces the bucket alone: the script deletes old copies there", () => {
+    const files = renderBackups(withOffsite(testPlan(), OFFSITE.digitalocean), ctx());
+    const main = backupsFile(files, "main.tf");
+    expect(main).toContain('s3 = "https://${var.region}.digitaloceanspaces.com"');
+    expect(main).toContain('resource "aws_s3_bucket" "this" {');
+    expect(main).not.toMatch(/versioning|lifecycle_configuration|var\.days/);
+    expect(JSON.parse(backupsFile(files, "terraform.tfvars.json"))).toEqual({
+      bucket: "shop-backups",
+      region: "fra1",
+    });
+    expect(offsiteExpires("digitalocean")).toBe(false);
+    expect(offsiteExpires("hetzner") && offsiteExpires("r2")).toBe(true);
+  });
+
+  it("never destroys the bucket, never deletes its files, holds no key and is dialect-neutral", () => {
+    const keyId = fakeSecret("aws-access-key-id", "backups");
+    for (const offsite of Object.values(OFFSITE)) {
+      const files = renderBackups(withOffsite(testPlan(), offsite), ctx());
+      const main = backupsFile(files, "main.tf");
+      const bucket = main.slice(main.indexOf('_bucket" "this" {'));
+      expect(bucket.slice(0, bucket.indexOf("\n}\n"))).toContain(
+        ["  lifecycle {", "    prevent_destroy = true", "  }"].join("\n"),
+      );
+      expect(main).not.toContain("force_destroy");
+      for (const file of files) {
+        expect(file.kind).toBe("infra");
+        expect(file.content).not.toContain(keyId);
+        expect(file.content, file.path).not.toMatch(/access_key|secret_key|sensitive|output/);
+      }
+      const tf = files.filter((f) => f.path.endsWith(".tf"));
+      expect(checkDialect(tf.map((f) => ({ path: f.path, content: f.content })))).toEqual([]);
+    }
+  });
+});
+
 describe("renderStorage while the bucket moves to another provider", () => {
   const ORIGINS = ["https://example.com", "https://www.example.com"];
   const resources = (main: string) =>
@@ -456,13 +588,14 @@ describe.skipIf(!runIt)("the storage root validates and plans (integration)", ()
 
     /**
      * Writes `files`, then initialises (a local state named `label`), validates, checks the format
-     * and plans the root offline (nothing refreshed) with `env`.
+     * and plans the root `root` offline (nothing refreshed) with `env`.
      */
     async function planOffline(
       test: TestContext,
       files: readonly RenderedFile[],
       label: string,
       env: NodeJS.ProcessEnv,
+      root = "opscrew/infra/storage",
     ): Promise<Planned> {
       const dir = await folder();
       for (const file of files) {
@@ -470,7 +603,7 @@ describe.skipIf(!runIt)("the storage root validates and plans (integration)", ()
         await mkdir(dirname(target), { recursive: true });
         await writeFile(target, file.content);
       }
-      const cwd = join(dir, "opscrew/infra/storage");
+      const cwd = join(dir, root);
       const runner = new NodeCommandRunner();
       const init = await runner.run(
         bin,
@@ -544,6 +677,32 @@ describe.skipIf(!runIt)("the storage root validates and plans (integration)", ()
           const bucket = provider === "r2" ? "cloudflare_r2_bucket" : "aws_s3_bucket";
           expect(planned.stdout).toContain(`${bucket}.this`);
           expect(planned.stdout).toContain('"https://www.example.com"');
+          expectNoSecret(planned, secrets);
+        },
+        600_000,
+      );
+    }
+
+    // The `backups` root (the off-server copies' bucket) with each provider's rules, its own key in
+    // neither the plan's output nor the saved plan.
+    for (const offsite of Object.values(OFFSITE)) {
+      it.skipIf(!engine)(
+        `validates and plans the ${offsite.provider} backups root with ${name} without the key in the plan`,
+        async (test: TestContext) => {
+          const { env, secrets } = keys(`backups-${offsite.provider}`);
+          const files = renderBackups(withOffsite(testPlan(), offsite), ctx());
+          const planned = await planOffline(
+            test,
+            files,
+            `backups-${offsite.provider}`,
+            env,
+            "opscrew/infra/backups",
+          );
+          for (const [, type] of backupsFile(files, "main.tf").matchAll(
+            /^resource "(w+)" "this"/gm,
+          )) {
+            expect(planned.stdout).toContain(`${type}.this will be created`);
+          }
           expectNoSecret(planned, secrets);
         },
         600_000,

@@ -13,7 +13,7 @@ import {
   tunnelMode,
   usesTunnel,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { cloudflareTokenHint } from "../domain/common";
 import { type ProviderProfile, providerProfile, vpsConnector } from "../providers";
@@ -311,9 +311,10 @@ export async function setupCloudflare(
   const domain = previews?.domain ?? plan.dns.domain;
   if (plan.dns.provider !== "cloudflare" || domain === undefined) return undefined;
   const portainer = portainerCloudflare(plan);
-  // In the user's Portainer only a tunnel, the stack Caddy's origin TLS or an R2 bucket (it
-  // belongs to the zone's account) needs it.
-  const r2 = plan.storage?.objectStorage?.provider === "r2";
+  // In the user's Portainer only a tunnel, the stack Caddy's origin TLS or an R2 bucket, the app's
+  // or the off-server copies' (it belongs to the zone's account), needs it.
+  const r2 =
+    plan.storage?.objectStorage?.provider === "r2" || snapshotOffsiteOf(plan)?.provider === "r2";
   if (
     portainer !== undefined &&
     !portainer.appTunnel &&

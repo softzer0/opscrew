@@ -440,6 +440,10 @@ export async function runInfraCommand(
         if (result.storagePlanHash !== undefined) {
           planned.push({ label: "bucket (object storage)", hash: result.storagePlanHash });
         }
+        // So has the bucket of the snapshots' off-server copies.
+        if (result.backupsPlanHash !== undefined) {
+          planned.push({ label: "bucket of the off-server copies", hash: result.backupsPlanHash });
+        }
         const saved =
           result.planHash === undefined
             ? undefined

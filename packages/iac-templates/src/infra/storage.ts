@@ -1,6 +1,6 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { wrongTarget } from "../providers";
 import type { RenderContext, RenderedFile } from "../types";
 import { planFilePath } from "../workflow/shared";
@@ -188,7 +188,7 @@ function moveShape(name: MoveLayoutName, next: S3Bucket, old: S3Bucket): S3Shape
 }
 
 /** The `provider "aws"` block reaching `bucket`'s service; `previous` makes it the alias. */
-function s3Provider(bucket: S3Bucket, previous: boolean): string[] {
+function s3Provider(bucket: Pick<S3Bucket, "provider">, previous: boolean): string[] {
   const service = S3_SERVICES[bucket.provider];
   const region = previous ? "previous_region" : "region";
   return [
@@ -421,19 +421,213 @@ export function renderStorage(
     });
     values.cors_origins = corsOrigins(plan);
   }
-  const dir = storageRootDir(plan);
+  return rootFiles(plan, storageRootDir(plan), { provider, main, variables, values });
+}
+
+/** A bucket root's four files in `dir`: its provider, `main`, its variables and their values. */
+function rootFiles(
+  plan: DeployPlan,
+  dir: string,
+  root: {
+    provider: ProviderRequirement;
+    main: readonly string[];
+    variables: readonly VariableSpec[];
+    values: Record<string, unknown>;
+  },
+): RenderedFile[] {
   return [
-    { path: `${dir}/versions.tf`, content: versionsTf(plan, [provider]), kind: "infra" },
+    { path: `${dir}/versions.tf`, content: versionsTf(plan, [root.provider]), kind: "infra" },
     {
       path: `${dir}/main.tf`,
-      content: [rootHeader(plan), "", ...main, ""].join("\n"),
+      content: [rootHeader(plan), "", ...root.main, ""].join("\n"),
       kind: "infra",
     },
-    { path: `${dir}/variables.tf`, content: variablesTf(plan, variables), kind: "infra" },
+    { path: `${dir}/variables.tf`, content: variablesTf(plan, root.variables), kind: "infra" },
     {
       path: `${dir}/terraform.tfvars.json`,
-      content: `${JSON.stringify(values, null, 2)}\n`,
+      content: `${JSON.stringify(root.values, null, 2)}\n`,
       kind: "infra",
     },
   ];
+}
+
+/**
+ * The prefix of every object of the off-server copy (`backups/<id>/<file>.age`, 024 plan.md 1.),
+ * which the `backups` root's lifecycle rule expires.
+ */
+export const OFFSITE_PREFIX = "backups";
+
+/**
+ * Whether the off-server copy's bucket at `provider` expires old copies itself, through the
+ * `backups` root's lifecycle rule (Hetzner, with versioning; R2, which has none). Where it does
+ * not (DigitalOcean Spaces, untested live: neither), `snapshot.sh` deletes the copies older than
+ * the retention after each upload (024 plan.md 7.).
+ */
+export function offsiteExpires(provider: BucketProvider): boolean {
+  return provider !== "digitalocean";
+}
+
+/**
+ * The `backups` root's folder, beside `plan.infra.dir` as the `storage` root's
+ * ({@link storageRootDir}): `backups`, then a further app's key and the environment's name outside
+ * prod, each after `-`. No key or environment name starts with `backups`.
+ */
+export function backupsRootDir(plan: Pick<DeployPlan, "app" | "infra" | "environment">): string {
+  const name = ["backups", plan.app.key, plan.environment?.name]
+    .filter((part) => part !== undefined)
+    .join("-");
+  return besideInfraDir(plan, name);
+}
+
+const BACKUPS_COMMENT = [
+  "# The bucket of the encrypted copies of the app's snapshots (snapshots.offsite), which only your",
+  "# age key opens. OpsCrew never creates storage keys: you create one for this bucket.",
+  "# Never destroyed by a plan, a destroy included: the copies outlive the server, which is what",
+  "# they are for. Delete the bucket yourself when you no longer need them.",
+];
+
+const BACKUPS_GUARD = ["", "  lifecycle {", "    prevent_destroy = true", "  }"];
+
+const BACKUPS_RULE = "opscrew-backups";
+
+/** R2's bucket and its lifecycle rule: copies deleted `var.days` after their upload. */
+function r2Backups(): string[] {
+  return [
+    ...CLOUDFLARE_PROVIDER_BLOCK,
+    ...BACKUPS_COMMENT,
+    'resource "cloudflare_r2_bucket" "this" {',
+    "  account_id = var.cloudflare_account_id",
+    "  name       = var.bucket",
+    ...BACKUPS_GUARD,
+    "}",
+    "",
+    `# Deletes each copy under ${OFFSITE_PREFIX}/ var.days days after its upload, and uploads left`,
+    "# unfinished after a day. R2 keeps no older versions of a file.",
+    'resource "cloudflare_r2_bucket_lifecycle" "this" {',
+    "  account_id  = var.cloudflare_account_id",
+    "  bucket_name = cloudflare_r2_bucket.this.name",
+    "",
+    "  rules = [{",
+    `    id         = "${BACKUPS_RULE}"`,
+    "    enabled    = true",
+    `    conditions = { prefix = "${OFFSITE_PREFIX}/" }`,
+    "    delete_objects_transition = {",
+    '      condition = { type = "Age", max_age = var.days * 86400 }',
+    "    }",
+    "    abort_multipart_uploads_transition = {",
+    '      condition = { type = "Age", max_age = 86400 }',
+    "    }",
+    "  }]",
+    "}",
+  ];
+}
+
+/**
+ * The bucket at Hetzner or Spaces (the root's own provider, with the bucket's key) and, where the
+ * provider expires copies ({@link offsiteExpires}), versioning and the lifecycle rule.
+ */
+function s3Backups(provider: "hetzner" | "digitalocean"): string[] {
+  const bucket = [
+    ...BACKUPS_COMMENT,
+    'resource "aws_s3_bucket" "this" {',
+    "  bucket = var.bucket",
+    ...BACKUPS_GUARD,
+    "}",
+  ];
+  const expiry = offsiteExpires(provider)
+    ? [
+        "",
+        "# The server's key can delete and overwrite copies, as every provider's key can: versioning",
+        "# keeps what it deleted or overwrote as older versions, for var.days days more.",
+        'resource "aws_s3_bucket_versioning" "this" {',
+        "  bucket = aws_s3_bucket.this.id",
+        "",
+        "  versioning_configuration {",
+        '    status = "Enabled"',
+        "  }",
+        "}",
+        "",
+        `# Expires each copy under ${OFFSITE_PREFIX}/ var.days days after its upload, its older versions`,
+        "# var.days days after they were replaced, and uploads left unfinished after a day.",
+        'resource "aws_s3_bucket_lifecycle_configuration" "this" {',
+        "  bucket     = aws_s3_bucket.this.id",
+        "  depends_on = [aws_s3_bucket_versioning.this]",
+        "",
+        "  rule {",
+        `    id     = "${BACKUPS_RULE}"`,
+        '    status = "Enabled"',
+        "",
+        "    filter {",
+        `      prefix = "${OFFSITE_PREFIX}/"`,
+        "    }",
+        "",
+        "    expiration {",
+        "      days = var.days",
+        "    }",
+        "",
+        "    noncurrent_version_expiration {",
+        "      noncurrent_days = var.days",
+        "    }",
+        "",
+        "    abort_incomplete_multipart_upload {",
+        "      days_after_initiation = 1",
+        "    }",
+        "  }",
+        "}",
+      ]
+    : [];
+  return [...s3Provider({ provider }, false), "", ...bucket, ...expiry];
+}
+
+/**
+ * The `backups` root ({@link backupsRootDir}, D9) when `snapshots.offsite` is on: the bucket of the
+ * off-server copies, with its own state, plan and approval, apart from the app's `storage` root,
+ * so moves, data deletion and drift never handle its key. It holds only that bucket, with
+ * `prevent_destroy` always: OpsCrew never deletes the copies.
+ * - R2: `cloudflare_r2_bucket` through the Cloudflare provider (`CLOUDFLARE_API_TOKEN`), with a
+ *   lifecycle rule deleting copies `days` after their upload; needs `ctx.cloudflare.accountId`.
+ * - Hetzner: `aws_s3_bucket` through `hashicorp/aws` at its endpoint, as the `storage` root's
+ *   (the bucket's own key in `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`), with versioning and
+ *   a lifecycle rule expiring copies and their older versions after `days`.
+ * - Spaces: the bucket alone; `snapshot.sh` deletes old copies ({@link offsiteExpires}).
+ * Deterministic; contains no secrets.
+ */
+export function renderBackups(plan: DeployPlan, ctx: RenderContext): RenderedFile[] {
+  const offsite = snapshotOffsiteOf(plan);
+  if (offsite === undefined) return [];
+  const { provider } = offsite;
+  const variables: VariableSpec[] = [
+    { name: "bucket", type: "string", description: "Name of the off-server copies' bucket." },
+  ];
+  const values: Record<string, unknown> = { bucket: offsite.bucket };
+  if (provider === "r2") {
+    variables.push({
+      name: "cloudflare_account_id",
+      type: "string",
+      description: "Cloudflare account id (R2 buckets belong to the account).",
+    });
+    values.cloudflare_account_id = accountId(ctx);
+  } else {
+    const service = S3_SERVICES[provider];
+    variables.push({
+      name: "region",
+      type: "string",
+      description: service.regionDescription("the off-server copies' bucket"),
+    });
+    values.region = offsite.region;
+  }
+  if (offsiteExpires(provider)) {
+    variables.push({
+      name: "days",
+      type: "number",
+      description: "Days each copy is kept (snapshots.offsite.days).",
+    });
+    values.days = offsite.days;
+  }
+  return rootFiles(plan, backupsRootDir(plan), {
+    provider: provider === "r2" ? CLOUDFLARE_PROVIDER : AWS_PROVIDER,
+    main: provider === "r2" ? r2Backups() : s3Backups(provider),
+    variables,
+    values,
+  });
 }

@@ -1,7 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import { devNull } from "node:os";
 import { dirname, join } from "node:path";
-import type { IacEngine, PhaseName } from "@opscrew/contracts";
+import type { IacEngine, Money, PhaseName } from "@opscrew/contracts";
 import {
   exists,
   OpsCrewError,
@@ -12,20 +12,26 @@ import {
 } from "@opscrew/core";
 import {
   type BucketProvider,
+  backupsRootDir,
+  PORTAINER_OFFSITE_VARIABLES,
   PREVIOUS_BUCKET_PROFILE,
   type ProviderBucket,
   providerBucket,
   type RenderedFile,
   STORAGE_NAMES,
+  STORAGE_PRICES,
   storageRootDir,
 } from "@opscrew/iac-templates";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import type { StorageLogin } from "../shared";
+import { type RefreshRecoveryOptions, SOPS_CONFIG_PATH } from "../secrets";
+import { readRecipients } from "../secrets/store";
+import { STORAGE_ENDPOINTS, type StorageLogin } from "../shared";
 import { storageS3Client } from "../shared/s3";
-import type { CloudflareSetup } from "./credentials";
+import type { CloudflareSetup, GitHubSetup } from "./credentials";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
+import { type RecoveryCopy, recoveryCopyFiles } from "./publish";
 import type { ProvisionServices } from "./types";
 
 export { type BucketProvider, type ProviderBucket, providerBucket };
@@ -53,7 +59,16 @@ export const NEW_STORAGE_KEY_VARS = {
   secretAccessKey: "OPSCREW_NEW_STORAGE_SECRET_ACCESS_KEY",
 } as const;
 
-type KeyVars = typeof STORAGE_KEY_VARS | typeof NEW_STORAGE_KEY_VARS;
+/** The variables a non-interactive run reads the off-server copies' bucket's key from. */
+export const OFFSITE_KEY_VARS = {
+  accessKeyId: "OPSCREW_OFFSITE_ACCESS_KEY_ID",
+  secretAccessKey: "OPSCREW_OFFSITE_SECRET_ACCESS_KEY",
+} as const;
+
+type KeyVars = typeof STORAGE_KEY_VARS | typeof NEW_STORAGE_KEY_VARS | typeof OFFSITE_KEY_VARS;
+
+/** A bucket as its key, its marker and its S3 endpoint need it. */
+type Bucket = Pick<ProviderBucket, "provider" | "bucket" | "region">;
 
 /** The steps to create the key in each provider's console, for `app` and `bucket`. */
 const KEY_STEPS: Readonly<Record<BucketProvider, (app: string, bucket: string) => string[]>> = {
@@ -105,7 +120,7 @@ export const STORAGE_PLAN_SUFFIX = "-storage.tfplan";
  * it is read from ({@link NEW_STORAGE_KEY_VARS} for the new bucket of a move).
  */
 function keyHint(
-  bucket: ProviderBucket,
+  bucket: Bucket,
   app: string,
   command: string,
   how: { asks: boolean; vars: KeyVars },
@@ -189,7 +204,7 @@ async function keepKeys(deps: Pick<PhaseDeps, "paths">, keys: readonly StoredKey
 }
 
 /** The kept key for this bucket, or undefined (none kept for it). */
-async function storedKey(deps: PhaseDeps, bucket: ProviderBucket): Promise<StorageKey | undefined> {
+async function storedKey(deps: PhaseDeps, bucket: Bucket): Promise<StorageKey | undefined> {
   const kept = (await keptKeys(deps)).find((key) => sameBucket(key, bucket));
   if (kept === undefined) return undefined;
   return { accessKeyId: kept.accessKeyId, secretAccessKey: kept.secretAccessKey };
@@ -226,19 +241,63 @@ export async function requireStorageKey(
 ): Promise<StorageKey> {
   const bucket = options.bucket ?? providerBucket(plan);
   if (bucket === undefined) throw new Error("The plan has no bucket at a provider.");
-  const name = STORAGE_NAMES[bucket.provider];
   const leaving = plan.retarget?.from.objectStorage;
   const vars =
     leaving !== undefined && !sameBucket(bucket, leaving) ? NEW_STORAGE_KEY_VARS : STORAGE_KEY_VARS;
+  return bucketKey(deps, services, options, {
+    bucket,
+    vars,
+    noun: "The app's bucket",
+    keyName: plan.app.name,
+  });
+}
+
+/**
+ * The user's key for the bucket of the off-server copies (`snapshots.offsite`, 024 plan.md 7.), as
+ * {@link requireStorageKey} gets the app's: from {@link OFFSITE_KEY_VARS}, else the key kept for
+ * that bucket beside the others, else asked once (interactive runs only) and kept. Hetzner's and
+ * Spaces' key is needed before the bucket, R2's (a token limited to the bucket) after it.
+ * Registered with the redactor.
+ * @throws OpsCrewError `CREDENTIALS_MISSING` with the steps when no key is known and nobody can be
+ * asked.
+ */
+export async function requireOffsiteKey(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: Pick<ProvisionServices, "askStorageKey">,
+  options: { command: string; already?: string },
+): Promise<StorageKey> {
+  const offsite = snapshotOffsiteOf(plan);
+  if (offsite === undefined) throw new Error("The plan has no off-server copy.");
+  return bucketKey(deps, services, options, {
+    bucket: offsite,
+    vars: OFFSITE_KEY_VARS,
+    noun: "The off-server copies' bucket",
+    keyName: `${plan.app.name}-backups`,
+  });
+}
+
+/**
+ * The key of `bucket`: from `vars` when they are set (never saved), else the kept one, else asked
+ * once with the console steps for a key named `opscrew-<keyName>` and kept.
+ */
+async function bucketKey(
+  deps: PhaseDeps,
+  services: Pick<ProvisionServices, "askStorageKey">,
+  options: { command: string; already?: string; asks?: boolean },
+  what: { bucket: Bucket; vars: KeyVars; noun: string; keyName: string },
+): Promise<StorageKey> {
+  const { bucket, vars, noun } = what;
+  const name = STORAGE_NAMES[bucket.provider];
   let key = keyFromEnv(deps.env, vars) ?? (await storedKey(deps, bucket));
   if (key === undefined && deps.interactive && services.askStorageKey !== undefined) {
     deps.reporter.info(
-      `The app's bucket ${bucket.bucket} on ${name} needs a key that you create, so OpsCrew never holds one in infrastructure state.`,
+      `${noun} ${bucket.bucket} on ${name} needs a key that you create, so OpsCrew never holds one in infrastructure state.`,
     );
     const answer = await services.askStorageKey({
       provider: name,
       bucket: bucket.bucket,
-      steps: KEY_STEPS[bucket.provider](plan.app.name, bucket.bucket),
+      steps: KEY_STEPS[bucket.provider](what.keyName, bucket.bucket),
     });
     key = checkedKey(
       { accessKeyId: answer.accessKeyId.trim(), secretAccessKey: answer.secretAccessKey.trim() },
@@ -250,9 +309,9 @@ export async function requireStorageKey(
   if (key === undefined) {
     throw new OpsCrewError(
       "CREDENTIALS_MISSING",
-      `The app's bucket ${bucket.bucket} on ${name} needs a key you create in ${bucket.provider === "r2" ? "Cloudflare's dashboard" : "the provider's console"}; OpsCrew never creates one. ${options.already ?? "Nothing was changed."}`,
+      `${noun} ${bucket.bucket} on ${name} needs a key you create in ${bucket.provider === "r2" ? "Cloudflare's dashboard" : "the provider's console"}; OpsCrew never creates one. ${options.already ?? "Nothing was changed."}`,
       {
-        hint: keyHint(bucket, plan.app.name, options.command, {
+        hint: keyHint(bucket, what.keyName, options.command, {
           asks: options.asks !== false,
           vars,
         }),
@@ -269,14 +328,25 @@ export async function requireStorageKey(
  * Cloudflare: R2 needs OpsCrew's Cloudflare token and account.
  */
 export function requireR2Cloudflare(plan: DeployPlan, cloudflare: CloudflareSetup | undefined) {
-  if (providerBucket(plan)?.provider !== "r2" || cloudflare !== undefined) return;
-  throw new OpsCrewError(
-    "PHASE_PRECONDITION",
-    "opscrew/plan.yaml keeps the app's files on Cloudflare R2, but the app has no domain on Cloudflare, so OpsCrew has no Cloudflare account to create the bucket in. Nothing was changed.",
-    {
-      hint: "Give the app a domain on Cloudflare (`opscrew dns --domain <hostname>`), or run `opscrew design` again for another storage option, then run the command again.",
-    },
-  );
+  if (cloudflare !== undefined) return;
+  if (providerBucket(plan)?.provider === "r2") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "opscrew/plan.yaml keeps the app's files on Cloudflare R2, but the app has no domain on Cloudflare, so OpsCrew has no Cloudflare account to create the bucket in. Nothing was changed.",
+      {
+        hint: "Give the app a domain on Cloudflare (`opscrew dns --domain <hostname>`), or run `opscrew design` again for another storage option, then run the command again.",
+      },
+    );
+  }
+  if (snapshotOffsiteOf(plan)?.provider === "r2") {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      "opscrew/plan.yaml keeps the off-server copies of the app's snapshots on Cloudflare R2, but the app has no domain on Cloudflare, so OpsCrew has no Cloudflare account to create their bucket in. Nothing was changed.",
+      {
+        hint: "Give the app a domain on Cloudflare (`opscrew dns --domain <hostname>`), or keep the copies at Hetzner or DigitalOcean (`opscrew snapshot offsite on --to hetzner --region <region>`), then run the command again.",
+      },
+    );
+  }
 }
 
 /** What the app receives besides `key`: R2's endpoint, from the zone's Cloudflare account. */
@@ -305,6 +375,28 @@ export function storageEngineEnv(
   previousKeyFile?: string,
 ): Record<string, string | undefined> {
   if (providerBucket(plan)?.provider === "r2") return { ...env };
+  return s3EngineEnv(env, key, previousKeyFile);
+}
+
+/**
+ * The engine's environment for the `backups` root, as {@link storageEngineEnv} for the `storage`
+ * root, with the off-server copies' bucket's own key ({@link requireOffsiteKey}).
+ */
+export function backupsEngineEnv(
+  env: Record<string, string | undefined>,
+  plan: DeployPlan,
+  key: StorageKey | undefined,
+): Record<string, string | undefined> {
+  if (snapshotOffsiteOf(plan)?.provider === "r2") return { ...env };
+  return s3EngineEnv(env, key);
+}
+
+/** `env` without `AWS_*`, with `key` for the `aws` provider and no AWS files but `credentials`. */
+function s3EngineEnv(
+  env: Record<string, string | undefined>,
+  key: StorageKey | undefined,
+  credentials?: string,
+): Record<string, string | undefined> {
   const out = Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith("AWS_")));
   if (key === undefined) throw new Error("The aws provider needs the bucket's key.");
   return {
@@ -312,8 +404,106 @@ export function storageEngineEnv(
     AWS_ACCESS_KEY_ID: key.accessKeyId,
     AWS_SECRET_ACCESS_KEY: key.secretAccessKey,
     AWS_CONFIG_FILE: devNull,
-    AWS_SHARED_CREDENTIALS_FILE: previousKeyFile ?? devNull,
+    AWS_SHARED_CREDENTIALS_FILE: credentials ?? devNull,
   };
+}
+
+/**
+ * The values of the off-server copy's variables (`PORTAINER_OFFSITE_VARIABLES`, by name): the
+ * bucket's S3 endpoint (R2's from the zone's Cloudflare account), its region at Hetzner, the
+ * bucket's key and the age recipient the copies are encrypted to. Portainer's stack holds them as
+ * variables; a server as `OFFSITE_ENV_FILE` ({@link offsiteEnvFile}).
+ */
+export function offsiteValues(
+  plan: DeployPlan,
+  input: {
+    key: StorageKey;
+    recipient: string;
+    cloudflare: Pick<CloudflareSetup, "accountId"> | undefined;
+  },
+): Record<string, string> {
+  const offsite = snapshotOffsiteOf(plan);
+  if (offsite === undefined) throw new Error("The plan has no off-server copy.");
+  const v = PORTAINER_OFFSITE_VARIABLES;
+  let endpoint: string;
+  if (offsite.provider === "r2") {
+    if (input.cloudflare === undefined) throw new Error("R2 needs the Cloudflare account.");
+    endpoint = `https://${input.cloudflare.accountId}.r2.cloudflarestorage.com`;
+  } else {
+    const at = STORAGE_ENDPOINTS[offsite.provider];
+    if (at === undefined) throw new Error(`No S3 endpoint is known for ${offsite.provider}.`);
+    endpoint = at(offsite.region);
+  }
+  return {
+    [v.endpoint]: endpoint,
+    ...(offsite.provider === "hetzner" ? { [v.region]: offsite.region } : {}),
+    [v.accessKeyId]: input.key.accessKeyId,
+    [v.secretAccessKey]: input.key.secretAccessKey,
+    [v.recipient]: input.recipient,
+  };
+}
+
+/**
+ * {@link offsiteValues} for the deploy secrets or the stack, when `snapshots.offsite` is on: the
+ * bucket's key (`key`, read before the bucket at Hetzner and Spaces; R2's, a token limited to the
+ * bucket, asked now that it exists) and the first recipient of `opscrew/.sops.yaml`. When that
+ * file names none yet (the first provision), the recovery copy is brought up to date now, which
+ * makes its age key (D11), and is returned for the pull request ({@link RecoveryCopy}, which holds
+ * no private key).
+ * @throws OpsCrewError `PHASE_PRECONDITION` when there is still no age key (a run that can make
+ * none, such as a script without `--key-out`): the copies could not be encrypted, so nothing that
+ * holds the bucket's key is stored.
+ */
+export async function offsiteSetup(
+  deps: PhaseDeps,
+  plan: DeployPlan,
+  services: Pick<ProvisionServices, "askStorageKey">,
+  input: {
+    github: GitHubSetup;
+    recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+    key: StorageKey | undefined;
+    cloudflare: Pick<CloudflareSetup, "accountId"> | undefined;
+    command: string;
+    /** What is done already, said when it stops. */
+    already: string;
+  },
+): Promise<{ values: Record<string, string>; recoveryCopy?: RecoveryCopy }> {
+  let recipient = (await readRecipients(deps.paths))?.[0];
+  let recoveryCopy: RecoveryCopy | undefined;
+  if (recipient === undefined) {
+    recoveryCopy = await recoveryCopyFiles(deps, {
+      github: input.github,
+      plan,
+      ...(input.recovery !== undefined ? { recovery: input.recovery } : {}),
+    });
+    recipient = recoveryCopy.recipients?.[0];
+  }
+  if (recipient === undefined) {
+    throw new OpsCrewError(
+      "PHASE_PRECONDITION",
+      `The off-server copies of the app's snapshots are encrypted to the age key of its recovery copy, and there is none yet, so OpsCrew stored nothing that holds their bucket's key. ${input.already}`,
+      {
+        hint: `Run \`${input.command}\` in a terminal, which asks for a file to write your new age key to or for your own age key (age1…), or name the file with \`--key-out <path>\`. If OpsCrew made the recovery copy before, merge the pull request that adds ${SOPS_CONFIG_PATH} first.`,
+      },
+    );
+  }
+  const key =
+    input.key ??
+    (await requireOffsiteKey(deps, plan, services, {
+      command: input.command,
+      already: input.already,
+    }));
+  return {
+    values: offsiteValues(plan, { key, recipient, cloudflare: input.cloudflare }),
+    ...(recoveryCopy !== undefined ? { recoveryCopy } : {}),
+  };
+}
+
+/** {@link offsiteValues} as the lines of the server's `offsite.env`, which `docker --env-file` reads. */
+export function offsiteEnvFile(values: Record<string, string>): string {
+  return `${Object.entries(values)
+    .map(([name, value]) => `${name}=${value}`)
+    .join("\n")}\n`;
 }
 
 /**
@@ -349,7 +539,7 @@ export async function withPreviousBucketKey<T>(
   }
 }
 
-/** The bucket's resource in the `storage` root at Hetzner and Spaces. */
+/** The bucket's resource at Hetzner and Spaces, in the `storage` and the `backups` root. */
 const S3_BUCKET = "aws_s3_bucket.this";
 
 /**
@@ -374,6 +564,19 @@ export function storageCreateFile(paths: Pick<ProjectPaths, "projectHomeDir">): 
   return join(paths.projectHomeDir, "storage-create.json");
 }
 
+/** The `backups` root's state, beside the deployment's. */
+export function backupsStateFile(paths: Pick<ProjectPaths, "files">): string {
+  return join(paths.files.tfstateDir, "backups.tfstate");
+}
+
+/** File name ending of a saved plan of the `backups` root. */
+export const BACKUPS_PLAN_SUFFIX = "-backups.tfplan";
+
+/** The `backups` root's marker, as {@link storageCreateFile} is the `storage` root's. */
+export function backupsCreateFile(paths: Pick<ProjectPaths, "projectHomeDir">): string {
+  return join(paths.projectHomeDir, "backups-create.json");
+}
+
 const CreateMarkerSchema = z.object({
   provider: z.enum(["r2", "digitalocean", "hetzner"]),
   bucket: z.string(),
@@ -382,9 +585,31 @@ const CreateMarkerSchema = z.object({
   createdAt: z.string(),
 });
 
+/** A root of one bucket at a provider, as {@link applyBucketRoot} applies it. */
+interface BucketRoot {
+  bucket: Bucket;
+  /** The bucket in a sentence, after "the": "app's bucket". */
+  noun: string;
+  /** The root's folder in the repository. */
+  dir: string;
+  statePath: string;
+  planSuffix: string;
+  /** What a refused approval calls its plan. */
+  planNoun: string;
+  /** Its create marker ({@link storageCreateFile}). */
+  markerFile: string;
+  /** The plan's field that names the bucket. */
+  field: string;
+  /** The variables its key is read from. */
+  vars: KeyVars;
+  /** What the rest of a plan after a stop adds, in the hint: "such as the bucket's CORS rule". */
+  rest: string;
+  costDelta: Money;
+}
+
 /** True when the marker names `bucket` (provider, region and name); a missing or damaged one names none. */
-async function markerNames(deps: PhaseDeps, bucket: ProviderBucket): Promise<boolean> {
-  const text = await readTextIfExists(storageCreateFile(deps.paths));
+async function markerNames(root: BucketRoot): Promise<boolean> {
+  const text = await readTextIfExists(root.markerFile);
   if (text === undefined) return false;
   let marker: z.infer<typeof CreateMarkerSchema>;
   try {
@@ -392,6 +617,7 @@ async function markerNames(deps: PhaseDeps, bucket: ProviderBucket): Promise<boo
   } catch {
     return false;
   }
+  const { bucket } = root;
   return (
     marker.provider === bucket.provider &&
     marker.region === bucket.region &&
@@ -399,28 +625,28 @@ async function markerNames(deps: PhaseDeps, bucket: ProviderBucket): Promise<boo
   );
 }
 
-/** Notes that the apply of `planHash` sets out to create `bucket`. */
-async function writeMarker(deps: PhaseDeps, bucket: ProviderBucket, planHash: string) {
-  const file = storageCreateFile(deps.paths);
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+/** Notes that the apply of `planHash` sets out to create the root's bucket. */
+async function writeMarker(deps: PhaseDeps, root: BucketRoot, planHash: string) {
+  await mkdir(dirname(root.markerFile), { recursive: true, mode: 0o700 });
   const marker = {
-    provider: bucket.provider,
-    bucket: bucket.bucket,
-    region: bucket.region,
+    provider: root.bucket.provider,
+    bucket: root.bucket.bucket,
+    region: root.bucket.region,
     planHash,
     createdAt: deps.clock.now().toISOString(),
   };
-  await writeFileAtomic(file, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
+  await writeFileAtomic(root.markerFile, `${JSON.stringify(marker)}\n`, { mode: 0o600 });
 }
 
-const removeMarker = (deps: PhaseDeps) => rm(storageCreateFile(deps.paths), { force: true });
+const removeMarker = (root: BucketRoot) => rm(root.markerFile, { force: true });
 
-/** What a failed apply of the `storage` root at Hetzner or Spaces needs to keep the bucket. */
+/** What a failed apply of a bucket root at Hetzner or Spaces needs to keep the bucket. */
 interface FailedBucketApply {
   engine: IacEngine;
+  root: BucketRoot;
+  /** The root's folder on this computer. */
   dir: string;
   env: Record<string, string | undefined>;
-  bucket: ProviderBucket;
   command: string;
   sleep: (ms: number) => Promise<void>;
   /** True when an earlier run's apply set out to create this bucket (its marker was there). */
@@ -428,7 +654,7 @@ interface FailedBucketApply {
 }
 
 /** True when the bucket answers HEAD with the user's key (200); any other answer is not ours. */
-async function answersToKey(deps: PhaseDeps, bucket: ProviderBucket, key: StorageKey) {
+async function answersToKey(deps: PhaseDeps, bucket: Bucket, key: StorageKey) {
   const client = storageS3Client(bucket, key, { fetch: deps.fetch, now: () => deps.clock.now() });
   try {
     return await client.headBucket();
@@ -443,7 +669,8 @@ async function answersToKey(deps: PhaseDeps, bucket: ProviderBucket, key: Storag
  * for about a minute while the provider cannot read it yet. False when it never could.
  */
 async function importBucket(deps: PhaseDeps, failed: FailedBucketApply): Promise<boolean> {
-  const { engine, dir, env, bucket } = failed;
+  const { engine, dir, env } = failed;
+  const { bucket } = failed.root;
   deps.reporter.step(
     `Recording the bucket ${bucket.bucket} in the bucket's state (nothing changes on ${STORAGE_NAMES[bucket.provider]})`,
   );
@@ -468,7 +695,7 @@ async function keepLateBucket(
   deps: PhaseDeps,
   failed: FailedBucketApply,
 ): Promise<boolean | undefined> {
-  const state = storageStateFile(deps.paths);
+  const state = failed.root.statePath;
   const recorded =
     (await exists(state)) &&
     (await failed.engine.stateResources(state, { env: failed.env })).includes(S3_BUCKET);
@@ -476,28 +703,29 @@ async function keepLateBucket(
     await failed.engine.untaint(failed.dir, S3_BUCKET, { env: failed.env });
     return true;
   }
-  if (!(await markerNames(deps, failed.bucket))) return undefined;
+  if (!(await markerNames(failed.root))) return undefined;
   return importBucket(deps, failed);
 }
 
 /**
- * A stop instead of the engine's words, for what an apply of the `storage` root reports. At
- * Hetzner and Spaces (with `key`), a bucket this project set out to create (its marker,
+ * A stop instead of the engine's words, for what an apply of a bucket root reports. At Hetzner and
+ * Spaces (with `key`), a bucket this project set out to create (its marker,
  * {@link storageCreateFile}) is kept: a new bucket shown late, and a taken name whose bucket
  * answers to the user's key and that an earlier run set out to create. A bucket of the user's that
  * OpsCrew did not create for this app is never taken over. Keeping one only changes the root's
  * state, and removes the marker; what is left is planned and approved in the next run.
  */
-async function storageFailure(
+async function bucketFailure(
   deps: PhaseDeps,
   log: string,
   failed: FailedBucketApply,
   key: StorageKey | undefined,
 ): Promise<OpsCrewError | undefined> {
-  const { bucket, command } = failed;
+  const { root, command } = failed;
+  const { bucket, vars } = root;
   const name = STORAGE_NAMES[bucket.provider];
   const s3Key = bucket.provider === "r2" ? undefined : key;
-  const rerun = `Run \`${command}\` again: it plans what is left, such as the bucket's CORS rule, for you to approve as usual.`;
+  const rerun = `Run \`${command}\` again: it plans what is left, ${root.rest}, for you to approve as usual.`;
   const notShown = () =>
     new OpsCrewError(
       "PROVIDER_ERROR",
@@ -506,10 +734,10 @@ async function storageFailure(
         hint: `Wait a few minutes, then run \`${command}\` again: OpsCrew then finds the bucket and keeps it.`,
       },
     );
-  const rename = `Change storage.objectStorage.bucket in opscrew/plan.yaml to another name (3–63 lower-case letters, digits or hyphens), then run \`${command}\` again.`;
+  const rename = `Change ${root.field} in opscrew/plan.yaml to another name (3–63 lower-case letters, digits or hyphens), then run \`${command}\` again.`;
   if (/BucketAlreadyExists|BucketAlreadyOwnedByYou/.test(log)) {
     // This apply created nothing: only an earlier run's marker may name the bucket.
-    if (!failed.createdEarlier) await removeMarker(deps);
+    if (!failed.createdEarlier) await removeMarker(root);
     if (s3Key !== undefined && (await answersToKey(deps, bucket, s3Key))) {
       if (!failed.createdEarlier) {
         return new OpsCrewError(
@@ -519,7 +747,7 @@ async function storageFailure(
         );
       }
       if (!(await importBucket(deps, failed))) return notShown();
-      await removeMarker(deps);
+      await removeMarker(root);
       return new OpsCrewError(
         "PROVIDER_ERROR",
         `${name} says the bucket name ${bucket.bucket} is taken, and the bucket answers to your key: OpsCrew found the bucket from an earlier run and kept it.`,
@@ -535,7 +763,7 @@ async function storageFailure(
   if (s3Key === undefined) return undefined;
   if (/InvalidAccessKeyId|SignatureDoesNotMatch/.test(log)) {
     return new OpsCrewError("CREDENTIALS_INVALID", `${name} refused the bucket's key.`, {
-      hint: `Create a new key (\`${command}\` shows the steps when it has none), then set ${STORAGE_KEY_VARS.accessKeyId} and ${STORAGE_KEY_VARS.secretAccessKey} to it, or delete OpsCrew's copy of the old one (${storageKeyFile(deps.paths)}) and run \`${command}\` in a terminal to paste the new one.`,
+      hint: `Create a new key (\`${command}\` shows the steps when it has none), then set ${vars.accessKeyId} and ${vars.secretAccessKey} to it, or delete OpsCrew's copy of the old one (${storageKeyFile(deps.paths)}) and run \`${command}\` in a terminal to paste the new one.`,
     });
   }
   if (BUCKET_SHOWN_LATE.test(log)) {
@@ -544,7 +772,7 @@ async function storageFailure(
     const kept = await keepLateBucket(deps, failed);
     if (kept === undefined) return undefined;
     if (!kept) return notShown();
-    await removeMarker(deps);
+    await removeMarker(root);
     return new OpsCrewError(
       "PROVIDER_ERROR",
       `${name} did not show the new bucket ${bucket.bucket} right away, so the apply stopped. OpsCrew kept the bucket.`,
@@ -552,6 +780,21 @@ async function storageFailure(
     );
   }
   return undefined;
+}
+
+/** What {@link applyStorage} and {@link applyBackups} apply a root with. */
+interface BucketApplyInput {
+  engine: IacEngine;
+  env: Record<string, string | undefined>;
+  plan: DeployPlan;
+  /** The rendered root. */
+  files: readonly RenderedFile[];
+  key: StorageKey | undefined;
+  approvePlanHash?: string;
+  planOnly?: boolean;
+  command: string;
+  phase: PhaseName;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -567,31 +810,76 @@ async function storageFailure(
  * waits between imports), and the run stops, so the next run plans what is left for a new
  * approval. A refused approval says "storage plan".
  */
-export async function applyStorage(
+export function applyStorage(
   deps: PhaseDeps,
-  input: {
-    engine: IacEngine;
-    env: Record<string, string | undefined>;
-    plan: DeployPlan;
-    /** The rendered `storage` root (`renderStorage`). */
-    files: readonly RenderedFile[];
-    key: StorageKey | undefined;
+  input: BucketApplyInput & {
     /** A move's root: the credentials file with the key of the bucket being left. */
     previousKeyFile?: string;
-    approvePlanHash?: string;
-    planOnly?: boolean;
-    command: string;
-    phase: PhaseName;
-    sleep?: (ms: number) => Promise<void>;
   },
 ): Promise<PlanAndApplyResult> {
-  const { plan, command } = input;
-  const bucket = providerBucket(plan);
+  const bucket = providerBucket(input.plan);
   if (bucket === undefined) throw new Error("The plan has no bucket at a provider.");
+  const root: BucketRoot = {
+    bucket,
+    noun: "app's bucket",
+    dir: storageRootDir(input.plan),
+    statePath: storageStateFile(deps.paths),
+    planSuffix: STORAGE_PLAN_SUFFIX,
+    planNoun: "storage plan",
+    markerFile: storageCreateFile(deps.paths),
+    field: "storage.objectStorage.bucket",
+    vars: STORAGE_KEY_VARS,
+    rest: "such as the bucket's CORS rule",
+    costDelta: { amount: bucket.price.monthly, currency: bucket.price.currency },
+  };
+  const env = storageEngineEnv(input.env, input.plan, input.key, input.previousKeyFile);
+  return applyBucketRoot(deps, root, { ...input, env });
+}
+
+/**
+ * The `backups` root (D9: the bucket of the off-server copies, `snapshots.offsite`) as
+ * {@link applyStorage} applies the `storage` root: its own plan, approved by its hash, its own
+ * state ({@link backupsStateFile}) and marker ({@link backupsCreateFile}), the bucket's own key
+ * reaching the engine only as {@link backupsEngineEnv} says. A bucket shown late is kept the same
+ * way. The approval names the provider's base monthly price, which the bucket adds at least. A
+ * refused approval says "backups plan".
+ */
+export function applyBackups(
+  deps: PhaseDeps,
+  input: BucketApplyInput,
+): Promise<PlanAndApplyResult> {
+  const offsite = snapshotOffsiteOf(input.plan);
+  if (offsite === undefined) throw new Error("The plan has no off-server copy.");
+  const base = STORAGE_PRICES[offsite.provider].monthlyPrice({ storageGb: 0, egressGbPerMonth: 0 });
+  const root: BucketRoot = {
+    bucket: offsite,
+    noun: "off-server copies' bucket",
+    dir: backupsRootDir(input.plan),
+    statePath: backupsStateFile(deps.paths),
+    planSuffix: BACKUPS_PLAN_SUFFIX,
+    planNoun: "backups plan",
+    markerFile: backupsCreateFile(deps.paths),
+    field: "snapshots.offsite.bucket",
+    vars: OFFSITE_KEY_VARS,
+    rest: "such as the bucket's lifecycle rule",
+    costDelta: { amount: base.amount, currency: base.currency },
+  };
+  const env = backupsEngineEnv(input.env, input.plan, input.key);
+  return applyBucketRoot(deps, root, { ...input, env });
+}
+
+/** {@link applyStorage}'s steps for `root`, with the engine's environment `input.env`. */
+async function applyBucketRoot(
+  deps: PhaseDeps,
+  root: BucketRoot,
+  input: BucketApplyInput,
+): Promise<PlanAndApplyResult> {
+  const { plan, command } = input;
+  const { bucket } = root;
   const name = STORAGE_NAMES[bucket.provider];
-  const dir = join(deps.paths.root, storageRootDir(plan));
-  const env = storageEngineEnv(input.env, plan, input.key, input.previousKeyFile);
-  deps.reporter.step(`Planning the app's bucket ${bucket.bucket} on ${name}`);
+  const dir = join(deps.paths.root, root.dir);
+  const { env } = input;
+  deps.reporter.step(`Planning the ${root.noun} ${bucket.bucket} on ${name}`);
   let failedLog: string | undefined;
   let createdEarlier = false;
   const applied = planAndApply(deps, {
@@ -600,16 +888,16 @@ export async function applyStorage(
     env,
     deployPlan: plan,
     files: input.files,
-    statePath: storageStateFile(deps.paths),
-    planSuffix: STORAGE_PLAN_SUFFIX,
-    planNoun: "storage plan",
+    statePath: root.statePath,
+    planSuffix: root.planSuffix,
+    planNoun: root.planNoun,
     command,
     phase: input.phase,
-    approvalTitle: `Apply the plan of the app's bucket ${bucket.bucket} on ${name}`,
-    costDelta: { amount: bucket.price.monthly, currency: bucket.price.currency },
+    approvalTitle: `Apply the plan of the ${root.noun} ${bucket.bucket} on ${name}`,
+    costDelta: root.costDelta,
     beforeApply: async (saved) => {
-      createdEarlier = await markerNames(deps, bucket);
-      await writeMarker(deps, bucket, saved.planHash);
+      createdEarlier = await markerNames(root);
+      await writeMarker(deps, root, saved.planHash);
     },
     applyFailed: (log) => {
       failedLog = log;
@@ -624,16 +912,16 @@ export async function applyStorage(
     if (failedLog === undefined) throw error;
     const failed = {
       engine: input.engine,
+      root,
       dir,
       env,
-      bucket,
       command,
       sleep: input.sleep ?? realSleep,
       createdEarlier,
     };
-    throw (await storageFailure(deps, failedLog, failed, input.key)) ?? error;
+    throw (await bucketFailure(deps, failedLog, failed, input.key)) ?? error;
   }
   // The bucket is in the state now.
-  if (result.applied) await removeMarker(deps);
+  if (result.applied) await removeMarker(root);
   return result;
 }

@@ -21,6 +21,7 @@ import {
   deploySecretNamesFor,
   githubEnvironment,
   grantHashSecret,
+  OFFSITE_ENV_SECRET,
   PORTAINER_DEPLOY_SECRETS,
   serverDeploySecrets,
   serviceEnvSecret,
@@ -33,6 +34,7 @@ import {
   EnvironmentSchema,
   environmentsOf,
   isServerlessProvider,
+  snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { z } from "zod";
 import { environmentText } from "../apps/names";
@@ -316,7 +318,9 @@ export function serviceEnvFiles(
 /**
  * Every GitHub Actions secret provision may have set for the plan's environment, by its name there
  * (`deploySecretName`: `OPSCREW_<ENV>_…` outside prod). On a server: the deploy secrets, one per
- * service (enabled or not, an earlier run may have set it), each extra server's
+ * service (enabled or not, an earlier run may have set it), the off-server copy's env file
+ * (`OFFSITE_ENV_SECRET`) while `snapshots.offsite` is on (turning it off deletes it as stale),
+ * each extra server's
  * address and known hosts and, on a server the user owns, the tunnel's service token. In the user's
  * Portainer: the build values and the webhook's.
  * On a server-less target: those its workflow reads (`deploySecretNamesFor`: on Cloudflare the
@@ -334,6 +338,7 @@ export function deploySecretNames(plan: DeployPlan): string[] {
       : [
           ...Object.values(DEPLOY_SECRETS),
           ...plan.services.map((service) => serviceEnvSecret(service.name)),
+          ...(snapshotOffsiteOf(plan) !== undefined ? [OFFSITE_ENV_SECRET] : []),
           ...(plan.servers ?? []).flatMap((server) =>
             Object.values(serverDeploySecrets(server.name)),
           ),
@@ -790,7 +795,8 @@ export interface ServerReach {
  * then the tunnel's SSH hostname and `knownHosts` holds the server's host key under that name.
  * With origin TLS, `originTls` is the origin certificate's PEM, then its key's
  * (`OPSCREW_ORIGIN_TLS`). Each of `servers`, the app's extra servers, gets its address and its
- * known hosts lines (`serverDeploySecrets`), which the deploy reaches it with.
+ * known hosts lines (`serverDeploySecrets`), which the deploy reaches it with. With the off-server
+ * copy on, `offsite` is its env file (`offsiteEnvFile`) as `OFFSITE_ENV_SECRET`.
  */
 export function deploySecrets(input: {
   plan: DeployPlan;
@@ -801,6 +807,7 @@ export function deploySecrets(input: {
   tunnel?: { serviceTokenId: string; serviceTokenSecret: string };
   originTls?: string;
   servers?: readonly ServerReach[];
+  offsite?: string;
 }): Record<string, string> {
   return {
     [DEPLOY_SECRETS.host]: input.host,
@@ -826,6 +833,7 @@ export function deploySecrets(input: {
         }
       : {}),
     ...(input.originTls !== undefined ? { [DEPLOY_SECRETS.originTls]: input.originTls } : {}),
+    ...(input.offsite !== undefined ? { [OFFSITE_ENV_SECRET]: input.offsite } : {}),
   };
 }
 

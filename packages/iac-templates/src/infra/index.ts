@@ -74,9 +74,13 @@ export {
 export { appServerVariables, extraServerVariables } from "./servers";
 export {
   type BucketProvider,
+  backupsRootDir,
+  OFFSITE_PREFIX,
+  offsiteExpires,
   PREVIOUS_BUCKET_PROFILE,
   type ProviderBucket,
   providerBucket,
+  renderBackups,
   renderStorage,
   storageRootDir,
 } from "./storage";

@@ -25,6 +25,7 @@ import {
   type PublishResult,
   previewsNext,
   publishDeploySetup,
+  type RecoveryCopy,
 } from "./publish";
 import { withCloudflareZone } from "./render";
 import { deploySecretsStoredFor } from "./secrets";
@@ -41,6 +42,8 @@ export interface SavedInfrastructureHashes {
   removal?: string;
   /** The saved plan of the `storage` root (the app's bucket). */
   storage?: string;
+  /** The saved plan of the `backups` root (the off-server copies' bucket). */
+  backups?: string;
 }
 
 /**
@@ -229,6 +232,8 @@ export async function publishDeployment(
     dependabot: DependabotStep | undefined;
     /** What the recovery copy's first key needs (`ProvisionOptions.recovery`). */
     recovery?: ProvisionOptions["recovery"];
+    /** The recovery copy this run already brought up to date (`recoveryCopyFiles`). */
+    recoveryCopy?: RecoveryCopy;
   },
 ): Promise<{ plan: DeployPlan; published: PublishResult }> {
   await writePlanIfChanged(deps, input.plan);
@@ -243,6 +248,7 @@ export async function publishDeployment(
     ...(input.branch !== undefined ? { branch: input.branch } : {}),
     ...(input.dependabot !== undefined ? { dependabot: input.dependabot } : {}),
     ...(input.recovery !== undefined ? { recovery: input.recovery } : {}),
+    ...(input.recoveryCopy !== undefined ? { recoveryCopy: input.recoveryCopy } : {}),
   });
   return { plan: input.plan, published };
 }

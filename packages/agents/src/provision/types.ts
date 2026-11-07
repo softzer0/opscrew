@@ -299,6 +299,11 @@ export interface ProvisionResult {
    * or, with `--plan-only`, the hash to approve.
    */
   storagePlanHash?: string;
+  /**
+   * The `backups` root's plan hash (the off-server copies' bucket, `snapshots.offsite`), when it
+   * has changes: applied by this run or, with `--plan-only`, the hash to approve.
+   */
+  backupsPlanHash?: string;
   /** True when this run applied an infrastructure plan. */
   applied: boolean;
   /**
@@ -338,6 +343,12 @@ export interface ProvisionResult {
    * the stack's Caddy needs the origin certificate it creates (`stackPlanHash` is then absent).
    */
   stackFollowsOriginTls?: true;
+  /**
+   * The user's Portainer, with `--plan-only` and `snapshots.offsite`: the stack plan follows a run
+   * that applies, which first makes the recovery copy's age key the off-server copies are
+   * encrypted to (`stackPlanHash` is then absent).
+   */
+  stackFollowsRecoveryKey?: true;
   /** The user's Portainer: true when this run changed something in Portainer. */
   stackApplied?: boolean;
   /**

@@ -8,7 +8,12 @@ import {
   portainerClient,
 } from "@opscrew/connector-portainer";
 import type { ApprovalRequest, ResourceChange } from "@opscrew/contracts";
-import { findExecutable, fingerprintSha256, OpsCrewError } from "@opscrew/core";
+import {
+  findExecutable,
+  fingerprintSha256,
+  generateAgeIdentity,
+  OpsCrewError,
+} from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import {
   DEPLOY_PAUSED_VARIABLE,
@@ -28,6 +33,7 @@ import {
 import { describe, expect, it } from "vitest";
 import { runDns } from "../dns";
 import { planAndCopyFiles } from "../secrets/__fixtures__/world";
+import { sopsConfigFile } from "../secrets/store";
 import {
   type PortainerConnection,
   type PortainerConnectionInput,
@@ -79,7 +85,7 @@ import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 import { readCloudflareRecord } from "./shared-cloudflare";
 import { ROUTE_CHANGE_NOTE, switchesWebRoute } from "./stack-plan";
-import { STORAGE_KEY_VARS } from "./storage";
+import { OFFSITE_KEY_VARS, STORAGE_KEY_VARS } from "./storage";
 import type { ProvisionOptions, ProvisionServices } from "./types";
 import { tunnelTokenPermissions } from "./zero-trust";
 
@@ -1188,6 +1194,76 @@ describe.skipIf(!findExecutable("git"))("the components in the user's Portainer"
     expect(s.deps.reporter.text()).toContain(
       "The stack plan for your Portainer follows once the app's bucket exists",
     );
+  });
+});
+
+const OFFSITE_KEY = {
+  accessKeyId: fakeSecret("aws-access-key-id", "offsite"),
+  secretAccessKey: fakeSecret("aws-secret-access-key", "offsite"),
+};
+const OFFSITE_KEY_ENV = {
+  [OFFSITE_KEY_VARS.accessKeyId]: OFFSITE_KEY.accessKeyId,
+  [OFFSITE_KEY_VARS.secretAccessKey]: OFFSITE_KEY.secretAccessKey,
+};
+
+describe.skipIf(!findExecutable("git"))("the off-server copy in the user's Portainer", () => {
+  const offsite = () =>
+    DeployPlanSchema.parse({
+      ...portainerPlan({ web: { mode: "proxy", port: 8080 } }),
+      snapshots: { offsite: { provider: "hetzner", bucket: "shop-backups", region: "fsn1" } },
+    });
+  const env = (s: Setup) =>
+    Object.fromEntries(
+      (s.fake.stacks.find((stack) => stack.Name === "opscrew-shop")?.Env ?? []).map((pair) => [
+        pair.name,
+        pair.value,
+      ]),
+    );
+  /** The recovery copy's `.sops.yaml` of an earlier provision, naming `recipient` first. */
+  const sopsYaml = async (s: Setup, recipient: string) => {
+    const file = sopsConfigFile([recipient]);
+    await mkdir(join(s.root, "opscrew"), { recursive: true });
+    await writeFile(join(s.root, file.path), file.content);
+  };
+
+  it("fills the offsite service's variables: the bucket's endpoint, region and key, and the recovery copy's recipient", async () => {
+    const s = await setup({ plan: offsite(), env: OFFSITE_KEY_ENV });
+    const { recipient } = generateAgeIdentity();
+    await sopsYaml(s, recipient);
+    await s.run();
+    expect(env(s)).toMatchObject({
+      OPSCREW_OFFSITE_ENDPOINT: "https://fsn1.your-objectstorage.com",
+      OPSCREW_OFFSITE_REGION: "fsn1",
+      OPSCREW_OFFSITE_ACCESS_KEY_ID: OFFSITE_KEY.accessKeyId,
+      OPSCREW_OFFSITE_SECRET_ACCESS_KEY: OFFSITE_KEY.secretAccessKey,
+      OPSCREW_OFFSITE_RECIPIENT: recipient,
+    });
+    const published = await everythingPublished(s);
+    expect(published).not.toContain(OFFSITE_KEY.secretAccessKey);
+    expect(published).not.toContain(OFFSITE_KEY.accessKeyId);
+  });
+
+  it("in --plan-only before the recovery copy's key exists, plans the stack in a later run", async () => {
+    const s = await setup({ plan: offsite(), env: OFFSITE_KEY_ENV });
+    const result = await s.run({ planOnly: true });
+    expect(result.stackPlanHash).toBeUndefined();
+    expect(result.stackFollowsRecoveryKey).toBe(true);
+    expect(stackFollowsReason(result, false)).toBe(
+      "these plans are applied, which first makes the recovery copy's age key the off-server copies are encrypted to",
+    );
+    expect(s.deps.reporter.text()).toContain(
+      "The stack plan for your Portainer follows once the recovery copy's age key exists",
+    );
+    expect(s.fake.mutations()).toEqual([]);
+  });
+
+  it("sets none of those variables, and asks for no key, without the off-server copy", async () => {
+    const s = await setup({ plan: portainerPlan({ web: { mode: "proxy", port: 8080 } }) });
+    const result = await s.run();
+    expect(Object.keys(env(s)).filter((name) => name.startsWith("OPSCREW_OFFSITE_"))).toEqual([]);
+    expect(result.backupsPlanHash).toBeUndefined();
+    expect(result.stackFollowsRecoveryKey).toBeUndefined();
+    await expect(readFile(join(s.root, "opscrew/infra/backups/main.tf"), "utf8")).rejects.toThrow();
   });
 });
 

@@ -40,6 +40,7 @@ import {
   type Requirements,
   readArtifact,
   type ServerlessProvider,
+  snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { PAGES_NOT_ALLOWED } from "../design/serverless";
@@ -181,6 +182,8 @@ interface CloudflareUsage {
   tunnel?: boolean;
   /** The plan keeps the app's files in a bucket on Cloudflare R2 (one more permission). */
   r2?: boolean;
+  /** The plan keeps its snapshots' off-server copies on Cloudflare R2 (the same permission). */
+  offsiteR2?: boolean;
   /** The plan hosts the site on Cloudflare with `www`, redirected by a shared Single Redirect rule. */
   redirect?: boolean;
 }
@@ -217,6 +220,7 @@ function cloudflareUsage({ plan, requirements }: ProjectArtifacts): CloudflareUs
           domain: plan.dns.domain,
           tunnel: usesTunnel(plan),
           r2: plan.storage?.objectStorage?.provider === "r2",
+          offsiteR2: snapshotOffsiteOf(plan)?.provider === "r2",
           redirect: plan.target.provider === "cloudflare-workers" && plan.dns.www,
         }
       : { needed: false };
@@ -799,7 +803,7 @@ function cloudflareFix(domain?: string, tunnel = false): string {
 
 /**
  * Said with a working token: what else the token needs when the plan has a Cloudflare Tunnel, or
- * keeps the app's files on Cloudflare R2.
+ * keeps the app's files or its snapshots' off-server copies on Cloudflare R2.
  */
 function tunnelNote(usage: CloudflareUsage): string {
   return [
@@ -810,7 +814,9 @@ function tunnelNote(usage: CloudflareUsage): string {
       : []),
     ...(usage.r2 === true
       ? [` The app's bucket on Cloudflare R2 also needs ${R2_PERMISSION}.`]
-      : []),
+      : usage.offsiteR2 === true
+        ? [` The bucket of the off-server copies on Cloudflare R2 also needs ${R2_PERMISSION}.`]
+        : []),
   ].join("");
 }
 

@@ -3,8 +3,14 @@ import {
   APP_SERVER,
   type DeployPlan,
   keepSnapshotsOf,
+  snapshotOffsiteOf,
   snapshotScheduleOf,
+  targetArch,
 } from "@opscrew/plan-schema";
+import { OFFSITE_PREFIX, offsiteExpires } from "../infra/storage";
+import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
+import { PORTAINER_OFFSITE_VARIABLES } from "../portainer-target/snapshots";
+import { extraServer } from "../runtime/components";
 import { shellQuote } from "../runtime/services";
 import { planFilePath, printfFormat } from "./shared";
 import {
@@ -53,6 +59,118 @@ export function restoreApprovalLine(
 /** Where the last scheduled snapshot's output is, in the app's folder: its id, or why it failed. */
 export const SCHEDULED_LOG = `${SNAPSHOTS_DIR}/scheduled.log`;
 
+/**
+ * The off-server copy's env file in the app's folder on each server with data (mode 600, 024
+ * plan.md 7.), as the deploy writes it from {@link OFFSITE_ENV_SECRET}: `NAME=value` lines of
+ * Portainer's five variables (`PORTAINER_OFFSITE_VARIABLES`: the bucket's S3 endpoint, its region
+ * at Hetzner, its key and the recovery copy's age recipient). It reaches the upload's container
+ * only through `docker run --env-file`, never a command line.
+ */
+export const OFFSITE_ENV_FILE = "offsite.env";
+
+/** The GitHub Actions secret holding {@link OFFSITE_ENV_FILE}; `opscrew provision` sets it. */
+export const OFFSITE_ENV_SECRET = "OPSCREW_OFFSITE_ENV";
+
+/** The last off-server copy's output, in the app's folder, never printed. */
+export const OFFSITE_LOG = `${SNAPSHOTS_DIR}/offsite.log`;
+
+/** The folder in the app's folder where the script keeps the age binary it fetched and checked. */
+const AGE_DIR = ".offsite";
+
+/** The `RCLONE_CONFIG_*_PROVIDER` of each provider's S3 service. */
+const RCLONE_PROVIDERS = { r2: "Cloudflare", hetzner: "Hetzner", digitalocean: "DigitalOcean" };
+
+/**
+ * `snapshot_offsite <id>` (024 plan.md 7., D10) on `server`, when `snapshots.offsite` is on: it
+ * copies the complete snapshot `.snapshots/<id>` to the bucket, from a one-off of the pinned rclone
+ * image as the deploy user, with {@link OFFSITE_ENV_FILE} as its environment. There:
+ * - the age binary of the server's architecture ({@link AGE_DIR}`/age`) is checked against its
+ *   pinned SHA-256; when it is missing or differs, the pinned archive is fetched with `rclone
+ *   copyurl` and both its and the binary's SHA-256 are checked before it is kept;
+ * - each file `about.json` names, then `about.json`, streams through `age -r <recipient>` into
+ *   `rclone rcat` as `backups/<id>/<file>.age` (an extra server's under `backups/<id>/<server>/`);
+ * - where the bucket expires nothing itself ({@link offsiteExpires}), the copies older than
+ *   `snapshots.offsite.days` are deleted after the upload.
+ * Then the snapshot gets `offsite.done`. The output goes to {@link OFFSITE_LOG}; a failure is a
+ * message on stderr and returns 1, and a failed deletion only warns.
+ */
+function offsiteFunction(plan: DeployPlan, server: string): string[] {
+  const copy = snapshotOffsiteOf(plan);
+  if (copy === undefined) return [];
+  const folder = appFolder(plan);
+  const where = server === APP_SERVER ? "the app's server" : `the server ${server}`;
+  // An extra server's architecture, as `targetArch` reads the app's: an own server's, else amd64.
+  const extra = server === APP_SERVER ? undefined : extraServer(plan, server).target;
+  const arch =
+    extra === undefined ? targetArch(plan.target) : "arch" in extra ? extra.arch : "amd64";
+  const v = PORTAINER_OFFSITE_VARIABLES;
+  const remote = `offsite:${copy.bucket}/${OFFSITE_PREFIX}`;
+  const age = shellQuote(`${TOOLS.age.binarySha256[arch]}  /tools/age`);
+  const login = [
+    `RCLONE_CONFIG_OFFSITE_ENDPOINT="$${v.endpoint}"`,
+    ...(copy.provider === "hetzner" ? [`RCLONE_CONFIG_OFFSITE_REGION="$${v.region}"`] : []),
+    `RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID="$${v.accessKeyId}"`,
+    `RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY="$${v.secretAccessKey}"`,
+  ];
+  const fetchAge = [
+    "rm -rf /tmp/age && mkdir /tmp/age",
+    `rclone copyurl ${shellQuote(toolDownloadUrl("age", arch))} /tmp/age/age.tar.gz`,
+    `echo ${shellQuote(`${TOOLS.age.sha256[arch]}  /tmp/age/age.tar.gz`)} | sha256sum -c -s`,
+    "tar -xzf /tmp/age/age.tar.gz -C /tmp/age age/age",
+    `echo ${shellQuote(`${TOOLS.age.binarySha256[arch]}  /tmp/age/age/age`)} | sha256sum -c -s`,
+    "mv /tmp/age/age/age /tools/age.new && mv /tools/age.new /tools/age",
+  ];
+  const days = offsiteExpires(copy.provider) ? undefined : copy.days;
+  // One line: the deploy embeds the script in its YAML one line at a time. `$1` is the objects'
+  // folder under the prefix, the others the snapshot's files; exit 4: only the deletion failed.
+  const upload = [
+    "set -o pipefail",
+    "umask 077",
+    `export HOME=/tmp ${login.join(" ")}`,
+    `age_ok() { echo ${age} | sha256sum -c -s; }`,
+    `age_fetch() { ${fetchAge.join(" && ")}; }`,
+    "age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; exit 1; }",
+    'to="$1"',
+    "shift",
+    `for f in "$@" about.json; do /tools/age -r "$${v.recipient}" < /snapshot/"$f" | rclone rcat ${shellQuote(`${remote}/`)}"$to/$f.age" || exit 1; done`,
+    ...(days === undefined
+      ? []
+      : [`rclone delete --min-age ${days}d ${shellQuote(remote)} || exit 4`]),
+  ].join("; ");
+  const to = server === APP_SERVER ? '"$1"' : `"$1"/${server}`;
+  const said = (text: string) => `printf ${printfFormat(text)}`;
+  const log = `The upload's output stays in %s/${OFFSITE_LOG} (it is not printed here).`;
+  return [
+    "snapshot_offsite() {",
+    `  if [ ! -f ${OFFSITE_ENV_FILE} ]; then`,
+    `    ${said(`The off-server copy is on, but ${where} has no ${OFFSITE_ENV_FILE} with its bucket's key yet, so the snapshot %s was not copied off the server. Run opscrew provision, then deploy again.`)} "$1" >&2`,
+    "    return 1",
+    "  fi",
+    '  if ! snapshot_complete "$1"; then',
+    `    ${said(`The snapshot %s is not complete on ${where}, so it was not copied off the server.`)} "$1" >&2`,
+    "    return 1",
+    "  fi",
+    `  _offsite_files="$(grep -o '"file":"[^"]*"' ${SNAPSHOTS_DIR}/"$1"/about.json | cut -d '"' -f 4)"`,
+    `  (umask 077 && mkdir -p ${AGE_DIR} && : > ${OFFSITE_LOG}) || return 1`,
+    `  rm -f ${SNAPSHOTS_DIR}/"$1"/offsite.done`,
+    "  _offsite_rc=0",
+    `  docker run --rm --env-file ${OFFSITE_ENV_FILE} -e RCLONE_CONFIG_OFFSITE_TYPE=s3 -e RCLONE_CONFIG_OFFSITE_PROVIDER=${RCLONE_PROVIDERS[copy.provider]} -e RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET=true --user "$(id -u):$(id -g)" -v ${folder}/${SNAPSHOTS_DIR}/"$1":/snapshot:ro -v ${folder}/${AGE_DIR}:/tools --entrypoint sh ${IMAGES.rclone.ref} -c ${shellQuote(upload)} sh ${to} $_offsite_files < /dev/null >> ${OFFSITE_LOG} 2>&1 || _offsite_rc=$?`,
+    '  if [ "$_offsite_rc" -ne 0 ] && [ "$_offsite_rc" -ne 4 ]; then',
+    `    ${said(`Copying the snapshot %s off the server failed, so the bucket has no copy of it yet; the snapshot itself stays on ${where}. ${log}`)} "$1" ${folder} >&2`,
+    "    return 1",
+    "  fi",
+    `  (umask 077 && : > ${SNAPSHOTS_DIR}/"$1"/offsite.done) || return 1`,
+    ...(days === undefined
+      ? []
+      : [
+          '  if [ "$_offsite_rc" -eq 4 ]; then',
+          `    ${said(`OpsCrew copied the snapshot %s off the server, but could not delete the copies there older than ${days} days. ${log}`)} "$1" ${folder} >&2`,
+          "  fi",
+        ]),
+    "}",
+  ];
+}
+
 /** The services of the stop-only kinds on `server` among `names`, in the plan's order. */
 function stopOnly(plan: DeployPlan, server: string, names: readonly string[]): string {
   return snapshotParts(plan, server)
@@ -93,7 +211,9 @@ function pruneScheduled(keep: number): string[] {
  * - it copies every part but those `--skip` names, and of the stop-only ones only those named for
  *   its kind (`deploy.snapshotStop`, `snapshots.schedule.stop`) or with `--stop`; the others it
  *   lists as left out.
- * On success it prints the id, then keeps only the newest release or scheduled snapshots.
+ * On success it keeps only the newest release or scheduled snapshots, copies the new one off the
+ * server when `snapshots.offsite` is on ({@link offsiteFunction}; a failed copy only warns), and
+ * prints the id.
  */
 function takeCommand(plan: DeployPlan, server: string): string[] {
   const folder = appFolder(plan);
@@ -193,6 +313,7 @@ function takeCommand(plan: DeployPlan, server: string): string[] {
           "      ;;",
         ]),
     "  esac",
+    ...(snapshotOffsiteOf(plan) === undefined ? [] : ['  snapshot_offsite "$_id" || :']),
     '  echo "$_id"',
     "}",
   ];
@@ -335,7 +456,8 @@ function holdCommands(plan: DeployPlan): string[] {
  * - on the app's server, `hold` and `resume` ({@link holdCommands});
  * - `list` prints each snapshot's `about.json`, one per line;
  * - `delete <id>` removes a snapshot;
- * - `offsite <id>` does nothing yet (T2406).
+ * - `offsite <id>` copies a snapshot off the server ({@link offsiteFunction}); without
+ *   `snapshots.offsite` it does nothing.
  * All but `list` and `offsite` first take the app's start lock, which a deploy's start script
  * holds, so none runs during a deploy and none at once. The start and rollback scripts read its
  * functions alone ({@link SNAPSHOT_FUNCTIONS}). Messages go to stderr and never quote data or a
@@ -383,6 +505,7 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
     `  while [ -e ${SNAPSHOTS_DIR}/"$_new" ]; do sleep 1; _new="$(date -u +%Y%m%dT%H%M%SZ)"; done`,
     '  echo "$_new"',
     "}",
+    ...offsiteFunction(plan, server),
     ...takeCommand(plan, server),
     ...restoreCommand(plan, server),
     ...(app ? holdCommands(plan) : []),
@@ -397,7 +520,10 @@ export function snapshotScript(plan: DeployPlan, server: string = APP_SERVER): s
     "    done ;;",
     "  offsite)",
     '    [ "$#" -eq 2 ] || { snapshot_usage; exit 1; }',
-    '    snapshot_id "$2" ;;',
+    // Without the off-server copy there is nothing to copy, and the script stays as it was.
+    ...(snapshotOffsiteOf(plan) === undefined
+      ? ['    snapshot_id "$2" ;;']
+      : ['    snapshot_id "$2"', '    snapshot_offsite "$2" ;;']),
     `  take | restore | delete${app ? " | hold | resume" : ""})`,
     ...startLock(plan).map((line) => `    ${line}`),
     '    _command="$1"',

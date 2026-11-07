@@ -21,6 +21,21 @@ describe("stackFollowsReason", () => {
     );
   });
 
+  it("says when the stack plan waits for the off-server copies' bucket or the recovery copy's key", () => {
+    expect(stackFollowsReason({ backupsPlanHash: hash }, true)).toBe(
+      "the off-server copies' bucket exists, because the app's stack gets its key",
+    );
+    expect(stackFollowsReason({ storagePlanHash: hash, backupsPlanHash: hash }, true)).toBe(
+      "the app's bucket exists, because the app's stack gets the bucket's key",
+    );
+    expect(stackFollowsReason({ stackFollowsRecoveryKey: true }, true)).toBe(
+      "these plans are applied, which first makes the recovery copy's age key the off-server copies are encrypted to",
+    );
+    expect(stackFollowsReason({ stackPlanHash: hash, backupsPlanHash: hash }, true)).toBe(
+      undefined,
+    );
+  });
+
   it("gives none when the stack plan came with the plans, or nothing makes it wait", () => {
     expect(stackFollowsReason({ stackPlanHash: hash, stackFollowsOriginTls: true }, true)).toBe(
       undefined,

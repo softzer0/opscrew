@@ -24,14 +24,16 @@ import {
   portainerTarget,
   portainerWebhookHostname,
   type RuntimeContext,
+  renderBackups,
   renderStorage,
   siteHosts,
 } from "@opscrew/iac-templates";
-import type { DeployPlan, Requirements } from "@opscrew/plan-schema";
+import { type DeployPlan, type Requirements, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { deploySetupCheck, provisionCheck, resumeCheck } from "../check/provision";
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
 import { builderBranch } from "../environments/branches";
+import { readRecipients } from "../secrets/store";
 import {
   type AppEnvironment,
   applyStackPlanAudited,
@@ -83,7 +85,7 @@ import {
   setPortainerOrigin,
   stackPlanFile,
 } from "./portainer";
-import { portainerDnsRecordNote } from "./publish";
+import { portainerDnsRecordNote, type RecoveryCopy } from "./publish";
 import { deploymentFiles, deploymentRenderContext, recordedEdge } from "./render";
 import {
   buildAppEnvironment,
@@ -122,8 +124,11 @@ import {
   withLearnedZone,
 } from "./steps";
 import {
+  applyBackups,
   applyStorage,
+  offsiteSetup,
   providerBucket,
+  requireOffsiteKey,
   requireR2Cloudflare,
   requireStorageKey,
   storageLogin,
@@ -231,6 +236,11 @@ export interface PortainerStacksInput {
   services: PortainerServices;
   /** The app's values, read once (also for the deploy secrets) and only when needed. */
   appEnvironment: () => Promise<AppEnvironment>;
+  /**
+   * With `snapshots.offsite`: the off-server copy's stack variables (`offsiteValues`), read once
+   * and only when needed. Without it, those variables are empty.
+   */
+  offsite?: () => Promise<Record<string, string>>;
   /** The stack Caddy's origin TLS and its bundle as rendered: none until known. */
   origin: () => { tls?: RuntimeContext["originTls"]; bundle?: string };
 }
@@ -333,6 +343,8 @@ export function preparePortainerStacks(
     for (const { service, secret, variable } of portainerSecretVariables(plan)) {
       opscrew[variable] = env.values.services[service]?.[secret];
     }
+    // The off-server copy's bucket, key and age recipient, which its `offsite` service reads.
+    Object.assign(opscrew, await input.offsite?.());
     for (const key of stackKeys.opscrew) out[key] = opscrew[key] ?? "";
     const webhookId = (await portainerWebhookId(deps, {
       create: true,
@@ -526,9 +538,12 @@ export async function provisionPortainer(
     records: false,
   };
   const hasRoot = cloudflareRoot.appTunnel || cloudflareRoot.webhook || cloudflareRoot.records;
-  // The app's bucket at a provider: an R2 bucket needs the plan's Cloudflare account.
+  // The app's bucket at a provider, and the off-server copies' bucket (`snapshots.offsite`): one on
+  // R2 needs the plan's Cloudflare account.
   const bucket = providerBucket(plan);
-  const usesCloudflare = hasRoot || cloudflareRoot.originTls || bucket?.provider === "r2";
+  const offsite = snapshotOffsiteOf(plan);
+  const usesCloudflare =
+    hasRoot || cloudflareRoot.originTls || bucket?.provider === "r2" || offsite?.provider === "r2";
   // The stack's variables, before anything else: an app variable a stack cannot hold, or a
   // service that needs a setting of the Docker host, stops here.
   portainerStackEnvKeys(plan);
@@ -569,6 +584,10 @@ export async function provisionPortainer(
   const storageKey =
     bucket !== undefined && bucket.provider !== "r2"
       ? await requireStorageKey(deps, plan, services, { command })
+      : undefined;
+  const offsiteKey =
+    offsite !== undefined && offsite.provider !== "r2"
+      ? await requireOffsiteKey(deps, plan, services, { command })
       : undefined;
   // 2. Connect with the pinned certificate, inspect read-only, stop on what blocks the deploy.
   const valueKey = await ensurePortainerValueKey(deps, portainerServices.randomBytes);
@@ -694,6 +713,24 @@ export async function provisionPortainer(
     }
     return environment;
   };
+  // The off-server copy's stack variables, made once and only when needed: with the recovery
+  // copy's age key, which this makes first when there is none yet (D11), for the pull request.
+  let recoveryCopy: RecoveryCopy | undefined;
+  let offsiteStackValues: Promise<Record<string, string>> | undefined;
+  const offsiteStack = () => {
+    offsiteStackValues ??= offsiteSetup(deps, plan, services, {
+      github,
+      ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+      key: offsiteKey,
+      cloudflare: account,
+      command,
+      already: "Nothing in your Portainer was changed.",
+    }).then((setup) => {
+      recoveryCopy = setup.recoveryCopy;
+      return setup.values;
+    });
+    return offsiteStackValues;
+  };
   // Without values: what blocks the deploy shows before anything is written or changed.
   const stacks = preparePortainerStacks(deps, {
     plan,
@@ -712,6 +749,7 @@ export async function provisionPortainer(
     ...(options.replaceTokens !== undefined ? { replaceTokens: options.replaceTokens } : {}),
     services: portainerServices,
     appEnvironment,
+    ...(offsite !== undefined ? { offsite: offsiteStack } : {}),
     origin: () => ({
       ...(siteOrigin !== undefined ? { tls: siteOrigin } : {}),
       ...(originBundle !== undefined ? { bundle: originBundle } : {}),
@@ -818,11 +856,40 @@ export async function provisionPortainer(
             ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
           }),
         );
+  // 3d. The off-server copies' bucket (the `backups` root, D9) the same way, with its own state.
+  const backups =
+    offsite === undefined
+      ? undefined
+      : await engineSetup().then(({ engine, env }) =>
+          applyBackups(deps, {
+            engine,
+            env,
+            plan,
+            files: renderBackups(plan, ctx),
+            key: offsiteKey,
+            ...(saved.backups !== undefined ? { approvePlanHash: saved.backups } : {}),
+            ...(options.planOnly ? { planOnly: true } : {}),
+            command,
+            phase,
+            ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
+          }),
+        );
   const storagePlanHash =
     storage?.plan !== undefined && storage.plan.changes.length > 0 ? storage.planHash : undefined;
-  const storageHash = storagePlanHash !== undefined ? { storagePlanHash } : {};
+  const backupsPlanHash =
+    backups?.plan !== undefined && backups.plan.changes.length > 0 ? backups.planHash : undefined;
+  const storageHash = {
+    ...(storagePlanHash !== undefined ? { storagePlanHash } : {}),
+    ...(backupsPlanHash !== undefined ? { backupsPlanHash } : {}),
+  };
   // In --plan-only, a bucket still to create has no key yet for the app's stack (R2's comes after it).
   const bucketPending = storage !== undefined && !storage.applied && storagePlanHash !== undefined;
+  // Nor the off-server copies' bucket still to create, whose key the `offsite` service gets.
+  const backupsPending = backups !== undefined && !backups.applied && backupsPlanHash !== undefined;
+  // Nor, before the first provision made it, the recovery copy's age key the copies are encrypted
+  // to: only a run that applies makes it (D11).
+  const recipientPending =
+    offsite !== undefined && (await readRecipients(deps.paths)) === undefined;
 
   // The stack step: plan (bound to the values) → show and save → stop on blockers or missing
   // tokens → stack-apply approval by its hash → apply → record what OpsCrew created.
@@ -837,6 +904,7 @@ export async function provisionPortainer(
   // committed, then its files leave the repository.
   const approvals: PlanApproval[] = (sharedResult?.approvals ?? []).map(approvalEntry);
   if (storage?.approval) approvals.push(approvalEntry(storage.approval));
+  if (backups?.approval) approvals.push(approvalEntry(backups.approval));
   let iac: PlanAndApplyResult = { applied: false, outputs: {} };
   let early: StackStepResult | undefined;
   if (hasRoot || removal) {
@@ -922,6 +990,14 @@ export async function provisionPortainer(
       deps.reporter.info(
         "The stack plan for your Portainer follows once the app's bucket exists, because the app's stack gets the bucket's key. Applying the bucket's plan shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and the hashes shown, then again with `--approve` and the stack plan's hash).",
       );
+    } else if (backupsPending) {
+      deps.reporter.info(
+        "The stack plan for your Portainer follows once the off-server copies' bucket exists, because the app's stack gets its key. Applying the bucket's plan shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and the hashes shown, then again with `--approve` and the stack plan's hash).",
+      );
+    } else if (recipientPending) {
+      deps.reporter.info(
+        "The stack plan for your Portainer follows once the recovery copy's age key exists, because the off-server copies are encrypted to it: a run that applies makes it, then shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and the hashes shown and `--key-out <path>`, then again with `--approve` and the stack plan's hash).",
+      );
     } else if (!tokensKnown || tunnelChange(changes, "create", "replace")) {
       deps.reporter.info(
         "The stack plan for your Portainer follows once this infrastructure plan is applied, because it needs the Cloudflare Tunnel's token. Applying it shows the stack plan and asks for its approval separately (in scripts: run with `--approve` and this hash, then again with `--approve` and the stack plan's hash).",
@@ -957,6 +1033,9 @@ export async function provisionPortainer(
       ...storageHash,
       ...(stackHash !== undefined ? { stackPlanHash: stackHash } : {}),
       ...(originFollows ? { stackFollowsOriginTls: true as const } : {}),
+      ...(recipientPending && !bucketPending && !backupsPending
+        ? { stackFollowsRecoveryKey: true as const }
+        : {}),
       applied: false,
       outputs: {},
     };
@@ -1090,6 +1169,7 @@ export async function provisionPortainer(
     branch: deployBranch,
     dependabot,
     ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+    ...(recoveryCopy !== undefined ? { recoveryCopy } : {}),
   });
   plan = published.plan;
   const dns = portainerDnsRecordNote(plan);

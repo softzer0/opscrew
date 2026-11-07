@@ -669,19 +669,31 @@ export async function chooseDeployBranch(
 }
 
 /**
+ * The recovery copy as {@link recoveryCopyFiles} brought it up to date: the files for the pull
+ * request and, when it made a new copy, the age recipients (`age1…`) it encrypted it to, the main
+ * key's first. No private key is ever in it.
+ */
+export interface RecoveryCopy {
+  files: RenderedFile[];
+  recipients?: string[];
+}
+
+/**
  * The recovery copy's files for the pull request when this computer's files changed since the
  * last copy ({@link refreshRecoveryCopy}, which asks GitHub whether the repository is private only
  * before the copy's first commit), saying where the first key and the folder copy were written, or
- * why there is no copy.
+ * why there is no copy; and its recipients ({@link RecoveryCopy}). Provision brings it up to date
+ * before the deploy secrets when the off-server copy needs its recipient (024 D11), and gives the
+ * result to {@link publishDeploySetup}, which then does not do it again.
  */
-async function recoveryCopyFiles(
+export async function recoveryCopyFiles(
   deps: PhaseDeps,
   input: {
     github: GitHubSetup;
     plan: DeployPlan;
     recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
   },
-): Promise<RenderedFile[]> {
+): Promise<RecoveryCopy> {
   const { github } = input;
   const result = await refreshRecoveryCopy(deps, input.plan, {
     repositoryPrivate: async () => (await github.api.getRepo(github.owner, github.repo)).private,
@@ -699,7 +711,9 @@ async function recoveryCopyFiles(
     deps.reporter.info(`Wrote the encrypted recovery copy to ${result.folderCopy}.`);
   }
   if (result.warning !== undefined) deps.reporter.warn(deps.redactor.redact(result.warning));
-  return result.changed ? result.repositoryFiles : [];
+  return result.changed
+    ? { files: result.repositoryFiles, recipients: result.recipients }
+    : { files: [] };
 }
 
 /**
@@ -732,6 +746,8 @@ export async function publishDeploySetup(
      * new key to; a backup recipient.
      */
     recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+    /** The recovery copy this run already brought up to date ({@link recoveryCopyFiles}). */
+    recoveryCopy?: RecoveryCopy;
   },
 ): Promise<PublishResult> {
   const { git, github, plan } = input;
@@ -748,7 +764,7 @@ export async function publishDeploySetup(
             phase,
           ),
         });
-  const recovery = await recoveryCopyFiles(deps, input);
+  const recovery = (input.recoveryCopy ?? (await recoveryCopyFiles(deps, input))).files;
   const paths = [
     ...input.paths,
     ...(await providerLockFiles(deps.paths.root, input.paths)),

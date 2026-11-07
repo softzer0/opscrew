@@ -7,6 +7,7 @@ import {
   additionsPath,
   checkEnvironmentKey,
   previewRecipeDir,
+  renderBackups,
   renderStorage,
   usesTunnel,
 } from "@opscrew/iac-templates";
@@ -16,6 +17,7 @@ import {
   ghcrImageFor,
   isServerlessProvider,
   readArtifact,
+  snapshotOffsiteOf,
 } from "@opscrew/plan-schema";
 import { hasCheckKey } from "../check/host";
 import type { CheckKey } from "../check/key";
@@ -140,6 +142,7 @@ import {
 } from "./own";
 import { findSavedPlan, planAndApply, REMOVAL_PLAN_SUFFIX } from "./plan-apply";
 import { provisionPortainer } from "./portainer-flow";
+import type { RecoveryCopy } from "./publish";
 import {
   committedTfvars,
   deploymentFiles,
@@ -192,8 +195,13 @@ import {
   withLearnedZone,
 } from "./steps";
 import {
+  applyBackups,
   applyStorage,
+  BACKUPS_PLAN_SUFFIX,
+  offsiteEnvFile,
+  offsiteSetup,
   providerBucket,
+  requireOffsiteKey,
   requireR2Cloudflare,
   requireStorageKey,
   STORAGE_PLAN_SUFFIX,
@@ -354,7 +362,8 @@ async function namesHostOrLocalPlan(deps: PhaseDeps, hash: string): Promise<bool
  * not applied yet (a script that names both hashes again after the infrastructure was applied
  * plans afresh, which finds nothing to change); a saved removal plan is kept apart and only ever
  * applied as the removal; the host or stack plan's hash is granted by the approval handler. On
- * every target, the saved plan of the `storage` root (the app's bucket) is kept apart as `storage`.
+ * every target, the saved plan of the `storage` root (the app's bucket) is kept apart as `storage`,
+ * and the `backups` root's (the off-server copies' bucket) as `backups`.
  * A hash that names a saved host plan or local plan is left out.
  */
 async function savedInfrastructureHashes(
@@ -378,6 +387,9 @@ async function savedInfrastructureHashes(
     // once it was applied a run that names it again plans the bucket afresh.
     if (savedPlan?.planFile.endsWith(STORAGE_PLAN_SUFFIX)) {
       if (savedPlan.appliedAt === undefined) found.storage ??= hash;
+    } else if (savedPlan?.planFile.endsWith(BACKUPS_PLAN_SUFFIX)) {
+      // Likewise the `backups` root's (the off-server copies' bucket).
+      if (savedPlan.appliedAt === undefined) found.backups ??= hash;
     } else others.push(hash);
   }
   if (plan.target.provider !== "own" && plan.target.provider !== "portainer") {
@@ -559,6 +571,12 @@ async function provisionFlow(
   const storageKey =
     bucket !== undefined && bucket.provider !== "r2"
       ? await requireStorageKey(deps, plan, services, { command })
+      : undefined;
+  // The off-server copies' bucket likewise (024 plan.md 7.), with a key of its own.
+  const offsite = snapshotOffsiteOf(plan);
+  const offsiteKey =
+    offsite !== undefined && offsite.provider !== "r2"
+      ? await requireOffsiteKey(deps, plan, services, { command })
       : undefined;
   // The app's own additions to its site, checked before any change (FR-1443) against the site
   // this run means to deploy.
@@ -971,9 +989,31 @@ async function provisionFlow(
           ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
         });
   if (storage?.approval) approvals.push(approvalEntry(storage.approval));
+  // 4c. The off-server copies' bucket (the `backups` root, D9) the same way, with its own state.
+  const backups =
+    offsite === undefined
+      ? undefined
+      : await applyBackups(deps, {
+          engine,
+          env: engineEnv,
+          plan,
+          files: renderBackups(plan, ctx),
+          key: offsiteKey,
+          ...(saved.backups !== undefined ? { approvePlanHash: saved.backups } : {}),
+          ...(options.planOnly ? { planOnly: true } : {}),
+          command,
+          phase,
+          ...(services.sleep !== undefined ? { sleep: services.sleep } : {}),
+        });
+  if (backups?.approval) approvals.push(approvalEntry(backups.approval));
   const storagePlanHash =
     storage?.plan !== undefined && storage.plan.changes.length > 0 ? storage.planHash : undefined;
-  const storageHash = storagePlanHash !== undefined ? { storagePlanHash } : {};
+  const backupsPlanHash =
+    backups?.plan !== undefined && backups.plan.changes.length > 0 ? backups.planHash : undefined;
+  const storageHash = {
+    ...(storagePlanHash !== undefined ? { storagePlanHash } : {}),
+    ...(backupsPlanHash !== undefined ? { backupsPlanHash } : {}),
+  };
 
   // The server's proxy switch, said now and in the infrastructure approval; CAA records of the
   // user's next to OpsCrew's, and a client certificate near its end.
@@ -1364,6 +1404,8 @@ async function provisionFlow(
 
   // 8–9. Production environment and GitHub Actions secrets; a preview environment's workflow gets
   // only the server's address and host key, the preview key and the build values.
+  /** The recovery copy, when the off-server copy's secret needed it first (D11). */
+  let recoveryCopy: RecoveryCopy | undefined;
   const secretsStored = await deploySecretsStep(deps, {
     store: options.secrets !== false,
     plan,
@@ -1400,6 +1442,20 @@ async function provisionFlow(
         address?.ipv4,
         key === undefined ? {} : { storage: storageLogin(plan, key, cloudflare) },
       );
+      // The off-server copy's env file, naming the recovery copy's age recipient, whose key this
+      // makes first when there is none yet (D11).
+      const copy =
+        offsite === undefined
+          ? undefined
+          : await offsiteSetup(deps, plan, services, {
+              github,
+              ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+              key: offsiteKey,
+              cloudflare,
+              command,
+              already: `The bucket ${offsite.bucket} exists; the deploy secrets are not stored yet.`,
+            });
+      recoveryCopy = copy?.recoveryCopy;
       await setDeploySecrets(
         deps,
         github,
@@ -1409,6 +1465,7 @@ async function provisionFlow(
           host: secretsTarget.host,
           privateKey: deployKey.privateKeyOpenSsh,
           knownHosts: secretsTarget.knownHosts,
+          ...(copy !== undefined ? { offsite: offsiteEnvFile(copy.values) } : {}),
           environment,
           ...(secretsTarget.tunnel !== undefined ? { tunnel: secretsTarget.tunnel } : {}),
           ...(ctx.originTls !== undefined ? { originTls: originTlsSecret(site.values) } : {}),
@@ -1479,6 +1536,7 @@ async function provisionFlow(
     branch: deployBranch,
     dependabot,
     ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+    ...(recoveryCopy !== undefined ? { recoveryCopy } : {}),
   });
   plan = published.plan;
   // No first deploy for a preview environment: its previews come from pull requests.

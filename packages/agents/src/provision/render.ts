@@ -6,6 +6,7 @@ import {
   type RenderedFile,
   type RenderedFileKind,
   type RuntimeContext,
+  renderBackups,
   renderDeployment,
   renderInfra,
   renderPreviewRecipe,
@@ -196,7 +197,8 @@ async function ownServerSshPorts(
 /**
  * Every file provision writes for the plan: the deployment (`renderDeployment`), each extra
  * server's Compose file (`renderServerCompose`), the `storage` root of the app's bucket at a
- * provider (`renderStorage`), whenever the plan has a Cloudflare Tunnel (an own server in tunnel
+ * provider (`renderStorage`), the `backups` root of the off-server copies' bucket
+ * (`renderBackups`), whenever the plan has a Cloudflare Tunnel (an own server in tunnel
  * mode, or a Portainer subdomain), the tunnel connector's Compose file
  * (`opscrew/runtime/cloudflared/compose.yaml`, which runs on the server) and, with origin TLS on a
  * server, `pull.pem`, the client certificate (`values`) the site trusts.
@@ -240,6 +242,7 @@ export function deploymentFiles(
     ...renderDeployment(plan, ctx),
     ...(plan.servers ?? []).map((server) => renderServerCompose(plan, server.name)),
     ...renderStorage(plan, ctx),
+    ...renderBackups(plan, ctx),
   ];
   if (usesTunnel(plan)) files.push(renderTunnelConnectorCompose(plan));
   if (ctx.originTls !== undefined && plan.target.provider !== "portainer") {

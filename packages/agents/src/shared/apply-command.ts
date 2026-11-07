@@ -8,18 +8,31 @@ export type ReplaceableToken = (typeof REPLACEABLE_TOKENS)[number];
 /**
  * Why the stack plan of the user's Portainer comes only after a `--plan-only` run's plans are
  * applied, as the end of "The stack plan for your Portainer follows once …", or undefined when it
- * came with them: the app's stack gets the key of a bucket still to create, its Caddy needs the
- * origin certificate the Cloudflare plan creates (`stackFollowsOriginTls`, set only when the
- * stack waits for nothing else), or it needs the token of the Cloudflare Tunnel the saved
- * infrastructure plan (`infrastructurePlan`) creates.
+ * came with them: the app's stack gets the key of a bucket still to create (the app's, or the
+ * off-server copies' on R2), or the recovery copy's age key a run that applies makes first
+ * (`stackFollowsRecoveryKey`), its Caddy needs the origin certificate the Cloudflare plan creates
+ * (`stackFollowsOriginTls`, set only when the stack waits for nothing else), or it needs the token
+ * of the Cloudflare Tunnel the saved infrastructure plan (`infrastructurePlan`) creates.
  */
 export function stackFollowsReason(
-  result: { stackPlanHash?: string; storagePlanHash?: string; stackFollowsOriginTls?: true },
+  result: {
+    stackPlanHash?: string;
+    storagePlanHash?: string;
+    backupsPlanHash?: string;
+    stackFollowsOriginTls?: true;
+    stackFollowsRecoveryKey?: true;
+  },
   infrastructurePlan: boolean,
 ): string | undefined {
   if (result.stackPlanHash !== undefined) return undefined;
   if (result.storagePlanHash !== undefined) {
     return "the app's bucket exists, because the app's stack gets the bucket's key";
+  }
+  if (result.backupsPlanHash !== undefined) {
+    return "the off-server copies' bucket exists, because the app's stack gets its key";
+  }
+  if (result.stackFollowsRecoveryKey === true) {
+    return "these plans are applied, which first makes the recovery copy's age key the off-server copies are encrypted to";
   }
   if (result.stackFollowsOriginTls === true) {
     return "this Cloudflare plan is applied, because the stack's Caddy needs the origin certificate it creates";

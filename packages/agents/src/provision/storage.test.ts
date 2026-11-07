@@ -1,17 +1,26 @@
-import { mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { devNull } from "node:os";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { devNull, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { FakeZone } from "@opscrew/connector-cloudflare/testing";
-import type { FetchLike } from "@opscrew/contracts";
-import { findExecutable, OpsCrewError, readTextIfExists } from "@opscrew/core";
+import type {
+  CommandRunner,
+  FetchLike,
+  IacApproval,
+  IacEngine,
+  IacInitOptions,
+  IacRunOptions,
+} from "@opscrew/contracts";
+import { findExecutable, generateAgeIdentity, OpsCrewError, readTextIfExists } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import type { DeployPlan } from "@opscrew/plan-schema";
+import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import {
   createProject,
   createTestPhaseDeps,
+  FAKE_SOPS,
   FakeEngine,
   FakeGitHub,
+  FakeSops,
   fakeCloudflare,
   fakeSharedCloudflare,
   plainState,
@@ -26,10 +35,18 @@ import { DEPLOY_SETUP_BRANCH } from "./publish";
 import { runProvision } from "./run";
 import {
   applyStorage,
+  BACKUPS_PLAN_SUFFIX,
+  backupsCreateFile,
+  backupsEngineEnv,
+  backupsStateFile,
   forgetStorageKey,
   NEW_STORAGE_KEY_VARS,
+  OFFSITE_KEY_VARS,
+  offsiteEnvFile,
+  offsiteValues,
   previousBucketKeyFile,
   providerBucket,
+  requireOffsiteKey,
   requireR2Cloudflare,
   requireStorageKey,
   STORAGE_KEY_VARS,
@@ -42,7 +59,7 @@ import {
   storageStateFile,
   withPreviousBucketKey,
 } from "./storage";
-import type { ProvisionServices } from "./types";
+import type { ProvisionOptions, ProvisionServices } from "./types";
 
 const KEY = {
   accessKeyId: fakeSecret("aws-access-key-id", "bucket"),
@@ -382,6 +399,7 @@ interface FlowOptions {
   interactive?: boolean;
   answer?: ConstructorParameters<typeof ScriptedApprovalHandler>[0];
   services?: ProvisionServices;
+  runner?: CommandRunner;
 }
 
 async function flow(o: FlowOptions) {
@@ -409,7 +427,7 @@ async function flow(o: FlowOptions) {
   const deps = await createTestPhaseDeps({
     root: project.root,
     env,
-    runner: projectRunner(),
+    runner: o.runner ?? projectRunner(),
     approvalHandler: handler,
     interactive: o.interactive ?? false,
   });
@@ -947,5 +965,320 @@ describe.skipIf(!findExecutable("git"))("the import of a late bucket the state l
     });
     expect(storage.imports).toHaveLength(1);
     expect(sleeps).toEqual([]);
+  });
+});
+
+const OFFSITE_KEY = {
+  accessKeyId: fakeSecret("aws-access-key-id", "offsite"),
+  secretAccessKey: fakeSecret("aws-secret-access-key", "offsite"),
+};
+const OFFSITE_ENV = {
+  [OFFSITE_KEY_VARS.accessKeyId]: OFFSITE_KEY.accessKeyId,
+  [OFFSITE_KEY_VARS.secretAccessKey]: OFFSITE_KEY.secretAccessKey,
+};
+
+/** `plan` with the off-server copies of its snapshots in `offsite`'s bucket. */
+function withOffsite(
+  plan: DeployPlan,
+  offsite: NonNullable<DeployPlan["snapshots"]>["offsite"],
+): DeployPlan {
+  return DeployPlanSchema.parse({ ...plan, snapshots: { offsite } });
+}
+const HETZNER_OFFSITE = { provider: "hetzner", bucket: "shop-backups", region: "nbg1" } as const;
+
+describe("the off-server copies' bucket: its key, engine environment and values", () => {
+  const plan = () => withOffsite(testPlan(), HETZNER_OFFSITE);
+
+  it("reads its own key from its own variables, keeps an asked one beside the app's, and stops without one", async () => {
+    const fromEnv = await createTestPhaseDeps({ env: OFFSITE_ENV });
+    await expect(
+      requireOffsiteKey(fromEnv, plan(), {}, { command: "opscrew provision" }),
+    ).resolves.toEqual(OFFSITE_KEY);
+    // The app's bucket's variables never stand in for it.
+    const appOnly = await createTestPhaseDeps({ env: KEY_ENV });
+    const stop = requireOffsiteKey(appOnly, plan(), {}, { command: "opscrew provision" });
+    await expect(stop).rejects.toMatchObject({
+      code: "CREDENTIALS_MISSING",
+      message:
+        "The off-server copies' bucket shop-backups on Hetzner Object Storage needs a key you create in the provider's console; OpsCrew never creates one. Nothing was changed.",
+      hint: expect.stringContaining(
+        `or set ${OFFSITE_KEY_VARS.accessKeyId} and ${OFFSITE_KEY_VARS.secretAccessKey} to it`,
+      ),
+    });
+    await expect(stop).rejects.toMatchObject({
+      hint: expect.stringContaining("with the description opscrew-shop-backups"),
+    });
+
+    const asked: StorageKeyQuestion[] = [];
+    const d = await createTestPhaseDeps({ env: {}, interactive: true });
+    const services = {
+      askStorageKey: async (question: StorageKeyQuestion) => {
+        asked.push(question);
+        return OFFSITE_KEY;
+      },
+    };
+    await requireStorageKey(
+      d,
+      withBucket(plan(), "hetzner"),
+      { askStorageKey: async () => KEY },
+      { command: "x" },
+    );
+    await expect(requireOffsiteKey(d, plan(), services, { command: "x" })).resolves.toEqual(
+      OFFSITE_KEY,
+    );
+    await expect(requireOffsiteKey(d, plan(), services, { command: "x" })).resolves.toEqual(
+      OFFSITE_KEY,
+    );
+    expect(asked.map((q) => q.bucket)).toEqual(["shop-backups"]);
+    const kept = (await readTextIfExists(storageKeyFile(d.paths)))?.trim().split("\n") ?? [];
+    expect(kept.map((line) => JSON.parse(line).bucket)).toEqual(["shop-uploads", "shop-backups"]);
+    expect(d.redactor.redact(OFFSITE_KEY.secretAccessKey)).not.toContain(
+      OFFSITE_KEY.secretAccessKey,
+    );
+  });
+
+  it("gives the backups root only its own key at Hetzner and Spaces, and Cloudflare's token for R2", () => {
+    const env = { PATH: "/usr/bin", AWS_PROFILE: "work", CLOUDFLARE_API_TOKEN: "cf" };
+    expect(backupsEngineEnv(env, plan(), OFFSITE_KEY)).toEqual({
+      PATH: "/usr/bin",
+      CLOUDFLARE_API_TOKEN: "cf",
+      AWS_ACCESS_KEY_ID: OFFSITE_KEY.accessKeyId,
+      AWS_SECRET_ACCESS_KEY: OFFSITE_KEY.secretAccessKey,
+      AWS_CONFIG_FILE: devNull,
+      AWS_SHARED_CREDENTIALS_FILE: devNull,
+    });
+    const r2 = withOffsite(testPlan(), { provider: "r2", bucket: "shop-backups" });
+    expect(backupsEngineEnv(env, r2, undefined)).toEqual(env);
+  });
+
+  it("gives the off-server copy its endpoint, Hetzner's region, its key and the recipient, as the env file's lines", () => {
+    const recipient = generateAgeIdentity().recipient;
+    const values = offsiteValues(plan(), { key: OFFSITE_KEY, recipient, cloudflare: undefined });
+    expect(values).toEqual({
+      OPSCREW_OFFSITE_ENDPOINT: "https://nbg1.your-objectstorage.com",
+      OPSCREW_OFFSITE_REGION: "nbg1",
+      OPSCREW_OFFSITE_ACCESS_KEY_ID: OFFSITE_KEY.accessKeyId,
+      OPSCREW_OFFSITE_SECRET_ACCESS_KEY: OFFSITE_KEY.secretAccessKey,
+      OPSCREW_OFFSITE_RECIPIENT: recipient,
+    });
+    expect(offsiteEnvFile(values)).toBe(
+      `${Object.entries(values)
+        .map(([name, value]) => `${name}=${value}`)
+        .join("\n")}\n`,
+    );
+    const spaces = withOffsite(testPlan(), {
+      provider: "digitalocean",
+      bucket: "shop-backups",
+      region: "ams3",
+    });
+    expect(
+      offsiteValues(spaces, { key: OFFSITE_KEY, recipient, cloudflare: undefined }),
+    ).toMatchObject({ OPSCREW_OFFSITE_ENDPOINT: "https://ams3.digitaloceanspaces.com" });
+    const r2 = withOffsite(testPlan(), { provider: "r2", bucket: "shop-backups" });
+    const r2Values = offsiteValues(r2, {
+      key: OFFSITE_KEY,
+      recipient,
+      cloudflare: { accountId: "0123abcd" },
+    });
+    expect(r2Values.OPSCREW_OFFSITE_ENDPOINT).toBe("https://0123abcd.r2.cloudflarestorage.com");
+    expect(Object.keys(r2Values)).not.toContain("OPSCREW_OFFSITE_REGION");
+  });
+
+  it("refuses the off-server copies on R2 without a domain on Cloudflare", () => {
+    const r2 = withOffsite(testPlan(), { provider: "r2", bucket: "shop-backups" });
+    expect(() => requireR2Cloudflare(r2, undefined)).toThrow(
+      "opscrew/plan.yaml keeps the off-server copies of the app's snapshots on Cloudflare R2, but the app has no domain on Cloudflare",
+    );
+    expect(() => requireR2Cloudflare(plan(), undefined)).not.toThrow();
+  });
+});
+
+/** One engine for the `backups` root's fake (`backups`) and every other root's (`others`). */
+class BackupsRootEngine implements IacEngine {
+  readonly info = { name: "tofu" as const, version: "1.13.1", binary: "/fake/tofu" };
+  /** The environment of every call into the `backups` root. */
+  readonly backupsEnvs: Record<string, string | undefined>[] = [];
+
+  constructor(
+    readonly others: IacEngine,
+    readonly backups: FakeEngine,
+  ) {}
+
+  #pick(dir: string, options?: IacRunOptions): IacEngine {
+    if (!/[\\/]backups$/.test(dir)) return this.others;
+    if (options?.env !== undefined) this.backupsEnvs.push(options.env);
+    return this.backups;
+  }
+
+  init(dir: string, options?: IacInitOptions) {
+    return this.#pick(dir, options).init(dir, options);
+  }
+  validate(dir: string, options?: IacRunOptions) {
+    return this.#pick(dir, options).validate(dir, options);
+  }
+  plan(dir: string, planFile: string, options?: IacRunOptions & { destroy?: boolean }) {
+    return this.#pick(dir, options).plan(dir, planFile, options);
+  }
+  apply(dir: string, planFile: string, approval: IacApproval, options?: IacRunOptions) {
+    return this.#pick(dir, options).apply(dir, planFile, approval, options);
+  }
+  output(dir: string, options?: IacRunOptions) {
+    return this.#pick(dir, options).output(dir, options);
+  }
+  providerSchemas(dir: string, options?: IacRunOptions) {
+    return this.#pick(dir, options).providerSchemas(dir, options);
+  }
+  stateResources(stateFile: string, options?: IacRunOptions) {
+    return (/backups\.tfstate$/.test(stateFile) ? this.backups : this.others).stateResources(
+      stateFile,
+      options,
+    );
+  }
+  untaint(dir: string, address: string, options?: IacRunOptions) {
+    return this.#pick(dir, options).untaint(dir, address, options);
+  }
+  importResource(dir: string, address: string, id: string, options?: IacRunOptions) {
+    return this.#pick(dir, options).importResource(dir, address, id, options);
+  }
+}
+
+/**
+ * A provision of `plan` whose sops is the fake and whose first age key goes to a file of the
+ * test's: the approvals in order, how many times sops ran when the deploy secrets were approved,
+ * and every file committed on any branch.
+ */
+async function offsiteFlow(plan: DeployPlan, o: { keyOut?: boolean } = {}) {
+  const sops = new FakeSops();
+  let sopsAtSecrets: number | undefined;
+  const f = await flow({
+    plan,
+    storage: bucketEngine("hetzner"),
+    env: { ...OFFSITE_ENV, OPSCREW_SOPS_BIN: FAKE_SOPS },
+    runner: sops.runner(projectRunner()),
+    answer: (request) => {
+      if (request.kind === "github-secrets") sopsAtSecrets = sops.calls.length;
+      return true;
+    },
+  });
+  const backups = bucketEngine("hetzner");
+  const engine = new BackupsRootEngine(f.engine, backups);
+  f.services.engine = async () => engine;
+  const keyOut = join(await mkdtemp(join(tmpdir(), "opscrew-offsite-key-")), "age-key.txt");
+  const run = (options: Partial<ProvisionOptions> = {}) =>
+    runProvision(f.deps, {
+      services: f.services,
+      ...(o.keyOut === false ? {} : { recovery: { keyOut: async () => keyOut } }),
+      ...options,
+    });
+  const committed = async () =>
+    (await f.git(f.root, "log", "--all", "--name-only", "--format="))
+      .split("\n")
+      .filter((line) => line !== "")
+      .sort();
+  return { f, sops, backups, engine, keyOut, run, committed, sopsAtSecrets: () => sopsAtSecrets };
+}
+
+describe.skipIf(!findExecutable("git"))("provision with the off-server copy (024 US6)", () => {
+  it("plans its bucket in a root of its own, approved by its hash, with only its own key", async () => {
+    const o = await offsiteFlow(withOffsite(testPlan(), HETZNER_OFFSITE));
+    const result = await o.run();
+
+    const applies = o.f.handler.requests.filter((r) => r.kind === "iac-apply");
+    expect(applies.map((r) => r.title)).toEqual([
+      "Apply the plan of the off-server copies' bucket shop-backups on Hetzner Object Storage",
+      expect.stringContaining("Apply the infrastructure plan on Hetzner"),
+    ]);
+    // Hetzner's base price, which the bucket adds at least.
+    expect(applies[0]?.costDelta).toEqual({ amount: 6.49, currency: "EUR" });
+    expect(result.backupsPlanHash).toBe(applies[0]?.planHash);
+    expect(result.storagePlanHash).toBeUndefined();
+    expect(o.backups.calls).toEqual(["init", "validate", "plan", "apply"]);
+    expect(o.backups.initOptions?.backendConfig?.path).toBe(backupsStateFile(o.f.deps.paths));
+    expect(o.backups.applied[0]?.planFile.endsWith(BACKUPS_PLAN_SUFFIX)).toBe(true);
+    for (const env of o.engine.backupsEnvs) {
+      expect(env.AWS_ACCESS_KEY_ID).toBe(OFFSITE_KEY.accessKeyId);
+      expect(env.AWS_SECRET_ACCESS_KEY).toBe(OFFSITE_KEY.secretAccessKey);
+      expect(env.AWS_PROFILE).toBeUndefined();
+    }
+    expect(await readTextIfExists(backupsCreateFile(o.f.deps.paths))).toBeUndefined();
+    const main = await readTextIfExists(join(o.f.root, "opscrew/infra/backups/main.tf"));
+    expect(main).toContain('resource "aws_s3_bucket_lifecycle_configuration" "this"');
+    const printed = await leaks(o.f);
+    expect(printed).not.toContain(OFFSITE_KEY.secretAccessKey);
+    expect(printed).not.toContain(OFFSITE_KEY.accessKeyId);
+  });
+
+  it("makes the recovery copy's age key before the deploy secrets on the first provision, and commits that copy", async () => {
+    const o = await offsiteFlow(withOffsite(testPlan(), HETZNER_OFFSITE));
+    await o.run();
+    // The copy was made once, before the secrets were approved, and committed as it was made.
+    expect(o.sopsAtSecrets()).toBe(1);
+    expect(o.sops.calls).toHaveLength(1);
+    const files = await o.committed();
+    for (const file of [".gitattributes", "opscrew/.sops.yaml", "opscrew/secrets.sops.json"]) {
+      expect(files).toContain(file);
+    }
+    // No file in the repository holds the private key.
+    const identity = (await readFile(o.keyOut, "utf8")).split("\n")[2] as string;
+    expect(identity).toMatch(/^AGE-SECRET-KEY-/);
+    expect(await leaks(o.f)).not.toContain(identity);
+  });
+
+  it("stops before storing anything that holds the bucket's key when no age key can be made", async () => {
+    const o = await offsiteFlow(withOffsite(testPlan(), HETZNER_OFFSITE), { keyOut: false });
+    await expect(o.run()).rejects.toMatchObject({
+      code: "PHASE_PRECONDITION",
+      message: expect.stringContaining(
+        "The off-server copies of the app's snapshots are encrypted to the age key of its recovery copy, and there is none yet",
+      ),
+      hint: expect.stringContaining("--key-out <path>"),
+    });
+    expect(o.f.handler.requests.some((r) => r.kind === "github-secrets")).toBe(false);
+    expect(o.f.github.secrets.size).toBe(0);
+  });
+
+  it("--plan-only shows the backups plan's hash, and --approve applies it as that root's", async () => {
+    const o = await offsiteFlow(withOffsite(testPlan(), HETZNER_OFFSITE));
+    const planned = await o.run({ planOnly: true });
+    expect(planned.backupsPlanHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(o.backups.applied).toHaveLength(0);
+    const saved = await findSavedPlan(o.f.deps.paths.files.plansDir, planned.backupsPlanHash ?? "");
+    expect(saved?.planFile.endsWith(BACKUPS_PLAN_SUFFIX)).toBe(true);
+    await o.run({ approveHashes: [planned.backupsPlanHash ?? "", planned.planHash ?? ""] });
+    expect(o.backups.applied[0]?.approval.approvedPlanHash).toBe(planned.backupsPlanHash);
+    expect(o.f.main.applied[0]?.approval.approvedPlanHash).toBe(planned.planHash);
+  });
+
+  it("changes nothing without the off-server copy: the same approvals in the same order, the same files, the copy made at publish", async () => {
+    const without = await offsiteFlow(testPlan());
+    const plain = await without.run();
+    const withCopy = await offsiteFlow(withOffsite(testPlan(), HETZNER_OFFSITE));
+    await withCopy.run();
+    // The same approvals, but the backups root's, and its four files to write.
+    const kinds = (o: typeof without) =>
+      o.f.handler.requests.map(
+        (r) => `${r.kind} ${r.title.replace(/\(\d+ new files\)/, "(N new files)")}`,
+      );
+    expect(kinds(withCopy).filter((k) => !k.includes("off-server copies"))).toEqual(kinds(without));
+    const written = (o: typeof without) =>
+      Number(
+        o.f.handler.requests
+          .find((r) => r.kind === "repo-write")
+          ?.title.match(/\((\d+) new files\)/)?.[1],
+      );
+    expect(written(withCopy)).toBe(written(without) + 4);
+    expect(plain.backupsPlanHash).toBeUndefined();
+    expect(without.backups.calls).toEqual([]);
+    // The recovery copy is made when the pull request is, after the secrets, as before.
+    expect(without.sopsAtSecrets()).toBe(0);
+    expect(without.sops.calls).toHaveLength(1);
+    const files = await without.committed();
+    expect((await withCopy.committed()).filter((file) => !file.includes("/backups/"))).toEqual(
+      files,
+    );
+    expect(files.some((file) => file.includes("/backups/"))).toBe(false);
+    expect(await readTextIfExists(join(without.f.root, "opscrew/infra/backups/main.tf"))).toBe(
+      undefined,
+    );
   });
 });

@@ -1,19 +1,35 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { generateAgeIdentity } from "@opscrew/core";
+import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { testContext } from "../__fixtures__/plans";
 import { serviceSpec } from "../catalog";
 import { withServices } from "../catalog/__fixtures__/plans";
 import { localhostPlan } from "../edge/__fixtures__/localhost";
+import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { inEnvironment, ofApp, splitPlan, withProcesses, withSqlite } from "./__fixtures__/plans";
 import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
 import { renderWorkflow } from "./index";
-import { RESTORE_APPROVAL_FILE, restoreApprovalLine, snapshotScript } from "./snapshot-script";
+import {
+  OFFSITE_ENV_FILE,
+  RESTORE_APPROVAL_FILE,
+  restoreApprovalLine,
+  snapshotScript,
+} from "./snapshot-script";
 import { SNAPSHOT_FUNCTIONS, snapshotParts, snapshotScheduleLines } from "./snapshots";
 import { serverCommands, switchCommands } from "./switch";
 
@@ -80,10 +96,40 @@ function withSnapshots(
  * A restore of content that matches the pattern RESTORE_FAIL fails and leaves `partial`. Failures
  * print SECRET_ROW, as a database's error can quote a row. kamal-proxy's `pause` and `resume` mark
  * $WORK/paused.
+ *
+ * The off-server copy's one-off (`run --rm --env-file <file> … -v <folder>:/snapshot:ro … -c
+ * <script> sh <to> <file>...`) keeps its script in $WORK/upload.sh and "uploads" each file it is
+ * given, then `about.json`, as `$WORK/bucket/<to>/<file>.age` (`age:` and the file), each logged in
+ * $WORK/uploads.log. Without its env file it fails as Docker does (125); with UPLOAD_FAIL it fails
+ * printing the env file (the bucket's key), and with DELETE_FAIL it exits 4 after the upload.
  */
 const FAKE_DOCKER = [
   "#!/bin/sh",
   'echo "docker $*" >> "$WORK/docker.log"',
+  'case " $* " in *" --env-file "*)',
+  '  envfile=""; snap=""; script=""; to=""; files=""; p1=""; n=0',
+  '  for arg in "$@"; do',
+  '    if [ "$n" -eq 2 ]; then to="$arg"; fi',
+  '    if [ "$n" -gt 2 ]; then files="$files $arg"; fi',
+  '    if [ "$n" -gt 0 ]; then n=$((n + 1)); fi',
+  '    case "$p1" in',
+  '      --env-file) envfile="$arg" ;;',
+  '      -v) case "$arg" in *:/snapshot:ro) snap="${arg%:/snapshot:ro}" ;; esac ;;',
+  '      -c) script="$arg"; n=1 ;;',
+  "    esac",
+  '    p1="$arg"',
+  "  done",
+  '  [ -f "$envfile" ] || { echo "docker: open $envfile: no such file or directory" >&2; exit 125; }',
+  '  printf \'%s\\n\' "$script" > "$WORK/upload.sh"',
+  '  if [ -n "${UPLOAD_FAIL:-}" ]; then echo "upload failed with $(cat "$envfile")" >&2; exit 1; fi',
+  '  mkdir -p "$WORK/bucket/$to"',
+  "  for f in $files about.json; do",
+  '    { echo age:; cat "$snap/$f"; } > "$WORK/bucket/$to/$f.age"',
+  '    echo "$to/$f.age" >> "$WORK/uploads.log"',
+  "  done",
+  '  if [ -n "${DELETE_FAIL:-}" ]; then exit 4; fi',
+  "  exit 0 ;;",
+  "esac",
   ...COMPOSE_PROLOGUE,
   'd="$WORK/data"',
   'mkdir -p "$d" "$WORK/running"',
@@ -765,8 +811,181 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
         expect(result.stderr).toContain("A snapshot's id has only letters and digits.");
       }
       expect(snapshots()).toEqual([first]);
+      // Without the off-server copy there is nothing to copy.
+      rmSync(`${work}/docker.log`, { force: true });
       expect(snap(["offsite", first]).status).toBe(0);
+      expect(calls()).toEqual([]);
       expect(snap(["nothing"]).stderr).toContain("Usage: sh snapshot.sh take");
+    });
+  });
+
+  describe("offsite", () => {
+    const r2 = withSnapshots(BASE, {
+      snapshots: { offsite: { provider: "r2", bucket: "shop-staging-backups" } },
+    });
+    const spaces = withSnapshots(BASE, {
+      snapshots: {
+        offsite: { provider: "digitalocean", bucket: "shop-staging-backups", region: "fra1" },
+      },
+    });
+    const hetzner = withSnapshots(BASE, {
+      snapshots: {
+        offsite: { provider: "hetzner", bucket: "shop-staging-backups", region: "fsn1", days: 30 },
+      },
+    });
+    /** The bucket's made-up key and recipient, which only the env file holds. */
+    let secrets: string[] = [];
+
+    /** `plan`'s server with {@link OFFSITE_ENV_FILE} (mode 600) holding a made-up key. */
+    function offsiteServer(plan: DeployPlan): void {
+      server(plan);
+      secrets = [
+        fakeSecret("aws-access-key-id", "offsite"),
+        fakeSecret("aws-secret-access-key", "offsite"),
+      ];
+      const lines = [
+        `OPSCREW_OFFSITE_ENDPOINT=https://${randomBytes(16).toString("hex")}.r2.cloudflarestorage.com`,
+        `OPSCREW_OFFSITE_ACCESS_KEY_ID=${secrets[0]}`,
+        `OPSCREW_OFFSITE_SECRET_ACCESS_KEY=${secrets[1]}`,
+        `OPSCREW_OFFSITE_RECIPIENT=${generateAgeIdentity().recipient}`,
+      ];
+      write(at(OFFSITE_ENV_FILE), `${lines.join("\n")}\n`);
+      if (!windows) chmodSync(at(OFFSITE_ENV_FILE), 0o600);
+    }
+    const uploads = () => (read(`${work}/uploads.log`) ?? "").split("\n").filter(Boolean);
+    const uploaded = (path: string) => read(`${work}/bucket/${path}`);
+    const script = () => read(`${work}/upload.sh`) ?? "";
+    const files = (id: string) =>
+      (about(id).services as { file?: string }[]).flatMap((s) => (s.file ? [s.file] : []));
+    const expectNoSecret = (...texts: string[]) => {
+      for (const text of [...texts, calls().join("\n")]) {
+        for (const secret of secrets) expect(text).not.toContain(secret);
+      }
+    };
+
+    it("streams each file through the checked age into rclone, about.json last, then marks it", () => {
+      offsiteServer(r2);
+      const id = snap(["take", "manual"], { UPLOAD_FAIL: "1" }).stdout;
+      rmSync(`${work}/docker.log`);
+      const result = snap(["offsite", id]);
+      expect(result.status, result.output).toBe(0);
+      expect(uploads()).toEqual([...files(id), "about.json"].map((file) => `${id}/${file}.age`));
+      for (const file of [...files(id), "about.json"]) {
+        expect(uploaded(`${id}/${file}.age`)).toBe(`age:\n${read(at(`.snapshots/${id}/${file}`))}`);
+      }
+      expect(existsSync(at(`.snapshots/${id}/offsite.done`))).toBe(true);
+      if (!windows) expect(mode(at(`.snapshots/${id}/offsite.done`))).toBe("600");
+      // The key reaches the one-off only through its env file, the snapshot read-only.
+      const [call] = calls();
+      expect(call).toContain(`docker run --rm --env-file ${OFFSITE_ENV_FILE} `);
+      expect(call).toContain("-e RCLONE_CONFIG_OFFSITE_PROVIDER=Cloudflare");
+      expect(call).toContain(`${appDir()}/.snapshots/${id}:/snapshot:ro`);
+      expect(call).toContain(`${appDir()}/.offsite:/tools`);
+      expect(call).toContain(IMAGES.rclone.ref);
+      expect(calls()).toHaveLength(1);
+      expectNoSecret(result.output);
+      // The pinned age, fetched through rclone and checked before it is kept and before each use.
+      const text = script();
+      const { sha256, binarySha256 } = TOOLS.age;
+      expect(text).toContain(
+        `age_ok() { echo '${binarySha256.amd64}  /tools/age' | sha256sum -c -s; }`,
+      );
+      expect(text).toContain(
+        `rclone copyurl '${toolDownloadUrl("age", "amd64")}' /tmp/age/age.tar.gz`,
+      );
+      expect(text).toContain(`echo '${sha256.amd64}  /tmp/age/age.tar.gz' | sha256sum -c -s`);
+      expect(text).toContain(`echo '${binarySha256.amd64}  /tmp/age/age/age' | sha256sum -c -s`);
+      expect(text).toContain(
+        `/tools/age -r "$OPSCREW_OFFSITE_RECIPIENT" < /snapshot/"$f" | rclone rcat 'offsite:shop-staging-backups/backups/'"$to/$f.age" || exit 1`,
+      );
+      expect(text).toContain("set -o pipefail");
+      // R2 expires the copies itself.
+      expect(text).not.toContain("rclone delete");
+      expect(text).not.toContain("REGION");
+    });
+
+    it("copies each snapshot off right after it is taken, and a failed copy only warns", () => {
+      offsiteServer(r2);
+      const taken = snap(["take", "manual"]);
+      expect(taken.status, taken.output).toBe(0);
+      expect(taken.stdout).toMatch(ID);
+      expect(uploads().at(-1)).toBe(`${taken.stdout}/about.json.age`);
+      expect(existsSync(at(`.snapshots/${taken.stdout}/offsite.done`))).toBe(true);
+
+      const failed = snap(["take", "manual"], { UPLOAD_FAIL: "1" });
+      expect(failed.status, failed.output).toBe(0);
+      expect(failed.stdout).toMatch(ID);
+      expect(failed.stderr).toContain(
+        `Copying the snapshot ${failed.stdout} off the server failed, so the bucket has no copy of it yet; the snapshot itself stays on the app's server. The upload's output stays in ${appDir()}/.snapshots/offsite.log (it is not printed here).`,
+      );
+      expect(existsSync(at(`.snapshots/${failed.stdout}/offsite.done`))).toBe(false);
+      // The output went to the log alone.
+      expect(read(at(".snapshots/offsite.log"))).toContain("upload failed with");
+      expectNoSecret(taken.output, failed.output);
+    });
+
+    it("copies a release snapshot before a deploy goes on", () => {
+      offsiteServer(r2);
+      const result = snap(["take", "release"]);
+      expect(result.status, result.output).toBe(0);
+      expect(result.stdout).toBe(A);
+      expect(uploads().at(-1)).toBe(`${A}/about.json.age`);
+    });
+
+    it("copies nothing without the env file or a complete snapshot", () => {
+      offsiteServer(r2);
+      const id = snap(["take", "manual"], { UPLOAD_FAIL: "1" }).stdout;
+      rmSync(at(OFFSITE_ENV_FILE));
+      rmSync(`${work}/docker.log`);
+      const missing = snap(["offsite", id]);
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain(
+        `The off-server copy is on, but the app's server has no offsite.env with its bucket's key yet, so the snapshot ${id} was not copied off the server. Run opscrew provision, then deploy again.`,
+      );
+      offsiteServer(r2);
+      const incomplete = snap(["offsite", "20251231T000000Z"]);
+      expect(incomplete.status).toBe(1);
+      expect(incomplete.stderr).toContain(
+        "The snapshot 20251231T000000Z is not complete on the app's server, so it was not copied off the server.",
+      );
+      expect(calls().filter((call) => call.includes("--env-file"))).toEqual([]);
+      expect(snap(["offsite", "../x"]).stderr).toContain(
+        "A snapshot's id has only letters and digits.",
+      );
+    });
+
+    it("deletes the copies older than the retention itself on Spaces, whose bucket expires none", () => {
+      offsiteServer(spaces);
+      const result = snap(["take", "manual"]);
+      expect(result.status, result.output).toBe(0);
+      expect(script()).toContain(
+        "rclone delete --min-age 90d 'offsite:shop-staging-backups/backups' || exit 4",
+      );
+      expect(calls().find((call) => call.includes("--env-file"))).toContain(
+        "-e RCLONE_CONFIG_OFFSITE_PROVIDER=DigitalOcean",
+      );
+      const kept = snap(["offsite", result.stdout], { DELETE_FAIL: "1" });
+      expect(kept.status, kept.output).toBe(0);
+      expect(kept.stderr).toContain(
+        `OpsCrew copied the snapshot ${result.stdout} off the server, but could not delete the copies there older than 90 days.`,
+      );
+      expect(existsSync(at(`.snapshots/${result.stdout}/offsite.done`))).toBe(true);
+    });
+
+    it("gives Hetzner its region from the env file, and an extra server's parts a folder of their own", () => {
+      offsiteServer(hetzner);
+      expect(snap(["take", "manual"]).status).toBe(0);
+      expect(script()).toContain('RCLONE_CONFIG_OFFSITE_REGION="$OPSCREW_OFFSITE_REGION"');
+      expect(script()).not.toContain("rclone delete");
+      expect(calls().find((call) => call.includes("--env-file"))).toContain(
+        "-e RCLONE_CONFIG_OFFSITE_PROVIDER=Hetzner",
+      );
+      const split = withSnapshots(splitPlan(), {
+        snapshots: { offsite: { provider: "r2", bucket: "shop-backups" } },
+      });
+      const text = snapshotScript(split, "data").join("\n");
+      expect(text).toContain(`sh "$1"/data $_offsite_files`);
+      expect(snapshotScript(split).join("\n")).toContain(`sh "$1" $_offsite_files`);
     });
   });
 
@@ -865,6 +1084,11 @@ describe("the script's text", () => {
       snapshotScript(splitPlan(), "box-2"),
       snapshotScript(localhostPlan()),
       snapshotScript(sqliteOnly),
+      snapshotScript(
+        withSnapshots(BASE, {
+          snapshots: { offsite: { provider: "hetzner", bucket: "shop-backups", region: "fsn1" } },
+        }),
+      ),
     ]) {
       expect(script.length).toBeGreaterThan(0);
       expect(parses(script)).toBe(true);
@@ -873,6 +1097,15 @@ describe("the script's text", () => {
 
   it("has one line per element, as the deploy's YAML embeds it", () => {
     for (const line of snapshotScript(BASE)) expect(line).not.toContain("\n");
+    const offsite = withSnapshots(BASE, {
+      snapshots: { offsite: { provider: "digitalocean", bucket: "shop-backups", region: "fra1" } },
+    });
+    for (const line of snapshotScript(offsite)) expect(line).not.toContain("\n");
+  });
+
+  it("copies nothing off the server and runs no rclone without the off-server copy", () => {
+    const script = snapshotScript(BASE).join("\n");
+    expect(script).not.toMatch(/snapshot_offsite|rclone|offsite\.env|\/\.offsite/);
   });
 
   it("is none on a server without data", () => {
