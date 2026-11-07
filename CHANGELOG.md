@@ -4,6 +4,61 @@ What changed in each release of OpsCrew: the `opscrew` CLI on npm and the Claude
 installs the same version. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Until 1.0, a release can change the files OpsCrew writes and the commands' flags.
 
+## [0.2.5] - 2026-11-07
+
+Every server deploy workflow changes. Run `npx opscrew provision` for each environment and merge
+its pull request. Your plans keep working as they are.
+
+### Added
+
+- **Snapshots and restores: `opscrew snapshot` and `opscrew restore`.** A snapshot copies every
+  service of an environment that keeps data, and the app's SQLite files, on a server OpsCrew
+  created, your own server, your computer or your Portainer.
+  - PostgreSQL, MySQL, MariaDB, MongoDB, Valkey, Redis and Dragonfly are copied while they run.
+    The brokers, the search engines, Garage and the other services with data each stop alone for
+    their copy, and only when you allow it (`--allow-downtime` in a script); `--skip <service>`
+    leaves one out.
+  - A snapshot stays where the data is, named by the UTC time it was taken.
+    `opscrew snapshot list` shows them, newest first; `opscrew snapshot delete <id>` deletes one.
+  - `opscrew restore <id>` puts the data back exactly and keeps the version that runs. The app's
+    requests wait while it runs, the data as it is now is saved as a new snapshot first, and you
+    approve it like a destroy, with the app's name typed. `--only <service>` restores one service.
+
+  See [Snapshots and restores](docs/guide/snapshots.md).
+- **Snapshots on a schedule:** `opscrew snapshot schedule on --every daily|weekly|<n>h --keep <n>`,
+  put on the server or in your Portainer by the next provision. `opscrew status` and the
+  [scheduled check](docs/guide/alerts.md) report a scheduled snapshot that failed.
+- **An encrypted copy off the server:** `opscrew snapshot offsite on --to r2|hetzner|digitalocean`
+  uploads each snapshot, encrypted with age to your recovery copy's key, to a bucket of its own,
+  kept for `--days` (90 by default). The server never holds the key.
+  `opscrew restore <id> --from offsite --key-file <file>` brings the data back after the server is
+  lost. See [An encrypted copy off the server](docs/guide/snapshots.md#an-encrypted-copy-off-the-server).
+- **Whole-server snapshots at Hetzner and DigitalOcean:** `opscrew snapshot --server`, live or
+  with `--stop`, shows its price; `opscrew restore --server <id>` rebuilds the server in place,
+  with its addresses and firewall kept. See
+  [Whole-server snapshots](docs/guide/snapshots.md#whole-server-snapshots).
+- **The snapshot before each release covers all the data:** every service with data, a database
+  on another server, SQLite, and your Portainer. `deploy.snapshotStop` adds a service that must stop
+  for its copy. `opscrew rollback --database snapshot` restores it in your Portainer too. See
+  [Snapshots before each release](docs/guide/rollback.md#snapshots-before-each-release).
+- **Design and advise propose snapshots** on your own server or Portainer when the data matters,
+  with a copy off the server.
+- **The Claude Code plugin** has a snapshots skill and the read-only tool `opscrew_snapshots`,
+  and its status answer names the last snapshot.
+
+### Changed
+
+- An app's key and an environment's name can no longer be `backups` or start with `backups-`:
+  the off-server copy's bucket uses those names.
+
+### Fixed
+
+- `opscrew drift` no longer reports a server's image as changed after the server was rebuilt.
+- On your computer, a port another container publishes counts as taken, so OpsCrew uses 8080 and
+  8443 instead of failing when the app starts.
+- `opscrew destroy` with nothing deployed removes what a provision that stopped part-way left in
+  OpsCrew's shared Cloudflare rules, instead of refusing with "Nothing is deployed".
+
 ## [0.2.4] - 2026-11-06
 
 Every server deploy workflow changes. Run `npx opscrew provision` for each environment and merge
@@ -427,6 +482,7 @@ deployment on your own account:
 - `destroy`, `retarget`, `status` and `drift` after the first deploy.
 - The MCP server (`opscrew mcp`) and the Claude Code plugin.
 
+[0.2.5]: https://github.com/softzer0/opscrew/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/softzer0/opscrew/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/softzer0/opscrew/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/softzer0/opscrew/compare/v0.2.1...v0.2.2
