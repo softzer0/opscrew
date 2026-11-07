@@ -1,4 +1,5 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are shell syntax, not JavaScript templates.
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   existsSync,
@@ -14,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { testContext, testPlan } from "../__fixtures__/plans";
 import { serviceSpec } from "../catalog";
 import { withServices } from "../catalog/__fixtures__/plans";
@@ -23,14 +25,21 @@ import { runtimeDir } from "../runtime-dir";
 import {
   inEnvironment,
   NIGHTLY,
+  splitPlan,
   withBuild,
   withPlan,
   withProcesses,
   withSqlite,
 } from "./__fixtures__/plans";
 import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
+import { renderWorkflow } from "./index";
 import { snapshotScript } from "./snapshot-script";
-import { ROLLBACK_APPROVAL_FILE, rollbackApprovalLine, snapshotFunctions } from "./snapshots";
+import {
+  ROLLBACK_APPROVAL_FILE,
+  RUNNING_FILE,
+  rollbackApprovalLine,
+  snapshotFunctions,
+} from "./snapshots";
 import { rollbackCommands, switchCommands } from "./switch";
 
 /** The digests of the earlier and the later version, and of another one. */
@@ -84,7 +93,8 @@ const fourDatabases = inEnvironment(
  * SQLite volume's Python one-off, reads or writes the data on stdin and stdout. Failures print SECRET_ROW, as a
  * database's error can quote a row. kamal-proxy's `deploy` routes to a copy ($WORK/routes/<app>)
  * unless the copy's image is in UNHEALTHY; its `pause` and `resume` mark $WORK/paused. With
- * KILL_AT_STOP, `compose stop` kills the script that runs it, as a cancelled run would end.
+ * KILL_AT_STOP, `compose stop` kills the script that runs it, as a cancelled run would end. A
+ * service NO_CONTAINER names has no container yet, and `compose port` answers PRIVATE_ADDRESS.
  */
 const FAKE_DOCKER = [
   "#!/bin/sh",
@@ -93,7 +103,10 @@ const FAKE_DOCKER = [
   'case "$1 $2" in',
   '  "network inspect") test -f "$WORK/network-$3" ;;',
   '  "network create") touch "$WORK/network-$3" ;;',
-  '  "compose ps") if [ "$last" = app ]; then cut -d " " -f 1 "$state"; else echo "p-$last"; fi ;;',
+  '  "compose ps")',
+  '    case " ${NO_CONTAINER:-} " in *" $last "*) exit 0 ;; esac',
+  '    if [ "$last" = app ]; then cut -d " " -f 1 "$state"; else echo "p-$last"; fi ;;',
+  '  "compose port") echo "${PRIVATE_ADDRESS:-}:$last" ;;',
   '  "compose up")',
   '    if [ "$project" = opscrew-edge ] || [ "$last" != app ]; then exit 0; fi',
   '    n=$(( $(cat "$WORK/next" 2> /dev/null || echo 0) + 1 ))',
@@ -1083,6 +1096,382 @@ describe.skipIf(!shWorks())(
           }
           expect(existsSync(`${appsDir()}/${plan.app.name}/.snapshots`)).toBe(false);
         }
+      });
+    });
+
+    describe("with only one kind of data (US7)", () => {
+      const sqliteOnly = withSqlite(
+        withBuild(inEnvironment(withServices([]), { name: "staging" }), "generated-dockerfile"),
+      );
+      const valkeyOnly = inEnvironment(
+        withServices([{ kind: "valkey", name: "queue", options: { mode: "queue" } }]),
+        { name: "staging" },
+      );
+      for (const [label, plan, part, file] of [
+        ["SQLite", sqliteOnly, "sqlite", "sqlite.tar"],
+        ["Valkey", valkeyOnly, "queue", "queue.rdb"],
+      ] as const) {
+        it(`snapshots an app with only ${label} before its release, and a rollback restores it`, () => {
+          upload(plan);
+          write(at(".env"), `APP_IMAGE=${image(A)}\n`);
+          setDb(`${part} rows of A\n`, part);
+          const deployed = run(switchCommands(plan, []), B, "deploy");
+          expect(deployed.status, deployed.output).toBe(0);
+          expect(deployed.output).toContain(
+            "OpsCrew took a snapshot of the data before this release",
+          );
+          expect(read(`.snapshots/${A}/${file}`)).toBe(`${part} rows of A\n`);
+          expect(JSON.parse(read(`.snapshots/${A}/about.json`) ?? "")).toMatchObject({
+            id: A,
+            kind: "release",
+            version: `sha256:${A}`,
+            services: [{ name: part, kind: part === "sqlite" ? "sqlite" : "valkey", file }],
+          });
+
+          setDb(`${part} rows of B\n`, part);
+          approve(A, "snapshot");
+          const back = run(switchCommands(plan, []), A, "rollback");
+          expect(back.status, back.output).toBe(0);
+          expect(db(part)).toBe(`${part} rows of A\n`);
+          // The copy just before the restore, under the version that ran.
+          expect(read(`.snapshots/${B}/${file}`)).toBe(`${part} rows of B\n`);
+          expect(read(".env")).toBe(`APP_IMAGE=${image(A)}\n`);
+          expect(paused()).toBe(false);
+        });
+      }
+    });
+  },
+);
+
+/** Whether bash runs here, as on GitHub's machines, for the steps of the workflow itself. */
+const BASH_WORKS = (() => {
+  try {
+    return spawnSync("bash", ["-c", "echo ok"], { encoding: "utf8" }).stdout?.trim() === "ok";
+  } catch {
+    return false;
+  }
+})();
+
+/*
+ * The workflow's own steps for a database on an extra server (US7, plan.md D7), in bash against
+ * two fake servers: `ssh` runs what it is given with `sh` locally, the app's server's folders
+ * under $WORK and the server data's under $WORK/data-host (/srv mapped there), and `scp` only logs.
+ * Both servers share the fake `docker`, whose data are the files $WORK/db-<service>.
+ */
+describe.skipIf(!shWorks() || !BASH_WORKS)(
+  "the release snapshot with a database on an extra server",
+  { timeout: 120_000 },
+  () => {
+    const APP_HOST = "203.0.113.10";
+    const DATA_HOST = "203.0.113.20";
+    const base = splitPlan();
+    const network = base.network as NonNullable<DeployPlan["network"]>;
+    /** `shop` in staging with PostgreSQL `db` on the server `data` and nothing on its own server. */
+    const plan = inEnvironment(
+      DeployPlanSchema.parse({
+        ...base,
+        services: base.services.filter((service) => service.name === "db"),
+        servers: (base.servers ?? []).filter((server) => server.name === "data"),
+        network: {
+          ...network,
+          members: network.members.filter((member) => member.name !== "box-2"),
+          devices: [],
+          grants: [],
+        },
+      }),
+      { name: "staging" },
+    );
+    const dataDir = () => `${work}/data-host/srv/apps/${APP}`;
+    const onData = (name: string) => `${dataDir()}/${name}`;
+    const readData = (name: string) =>
+      existsSync(onData(name)) ? readFileSync(onData(name), "utf8") : undefined;
+
+    type Step = { id?: string; name?: string; run?: string };
+    const steps: Step[] = parse(renderWorkflow(plan, testContext()).content).jobs.deploy.steps;
+    const script = (find: (step: Step) => boolean) => {
+      const found = steps.find(find)?.run;
+      if (found === undefined) throw new Error("The workflow has no such step.");
+      return found;
+    };
+    const STEPS = {
+      outgoing: script((step) => step.id === "outgoing"),
+      data: script((step) => step.name === "Update the services on the server data"),
+      others: script((step) => step.id === "others"),
+      start: script((step) => step.id === "start"),
+      rollback: script((step) => step.name?.startsWith("Roll back") === true),
+      running: script(
+        (step) => step.name === "Record the running version on the app's other servers",
+      ),
+    };
+
+    const PRELUDE = [
+      'export PATH="$(cd "$WORK/bin" && pwd):$PATH"',
+      "ssh() {",
+      '  while [[ "$1" != deploy@* ]]; do shift; done',
+      '  local host="${1#deploy@}" root="$WORK"',
+      "  shift",
+      '  if [[ "$host" == "$DATA_HOST" ]]; then root="$WORK/data-host"; fi',
+      '  echo "ssh $host $*" >> "$WORK/ssh.log"',
+      '  if [[ "$1" == sh && "$2" == -s ]]; then',
+      "    shift 2",
+      '    if [[ "${1:-}" == -- ]]; then shift; fi',
+      '    OPSCREW_APPS_DIR="$root/srv/apps" OPSCREW_EDGE_DIR="$root/srv/edge" sh -s -- "$@"',
+      "  else",
+      '    OPSCREW_APPS_DIR="$root/srv/apps" OPSCREW_EDGE_DIR="$root/srv/edge" sh -c "${*//\\/srv\\//$root/srv/}"',
+      "  fi",
+      "}",
+      'scp() { echo "scp $*" >> "$WORK/scp.log"; }',
+    ].join("\n");
+
+    /** Runs a step's script in bash from a file, as GitHub Actions does; its outputs, by name. */
+    function step(text: string, env: Record<string, string>) {
+      const file = join(work, "step.sh");
+      const outputs = join(work, "outputs");
+      writeFileSync(file, `${PRELUDE}\n${text}`);
+      rmSync(outputs, { force: true });
+      mkdirSync(join(work, "repo"), { recursive: true });
+      mkdirSync(join(work, "tmp"), { recursive: true });
+      const result = spawnSync("bash", [file], {
+        cwd: join(work, "repo"),
+        env: {
+          ...process.env,
+          WORK: work,
+          HOST: APP_HOST,
+          DATA_HOST,
+          SERVER_HOST_DATA: DATA_HOST,
+          PRIVATE_ADDRESS: "10.200.4.2",
+          GITHUB_ACTOR: "octocat",
+          GITHUB_OUTPUT: outputs,
+          RUNNER_TEMP: join(work, "tmp"),
+          REGISTRY_TOKEN: "registry-token-placeholder",
+          SECRET_ROW: "row-value-from-the-database",
+          ...env,
+        },
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      const said = existsSync(outputs) ? readFileSync(outputs, "utf8") : "";
+      return {
+        status: result.status,
+        output: `${result.stdout}${result.stderr}`,
+        outputs: Object.fromEntries(
+          said
+            .split("\n")
+            .filter(Boolean)
+            .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+        ),
+      };
+    }
+
+    /** The one-time approval of restoring `hex`'s snapshot on the app's server and the server data. */
+    const approveBoth = (hex: string, seconds = 1800) => {
+      const line = `${rollbackApprovalLine(hex, "snapshot", Math.floor(Date.now() / 1000) + seconds)}\n`;
+      write(at(ROLLBACK_APPROVAL_FILE), line);
+      write(onData(ROLLBACK_APPROVAL_FILE), line);
+    };
+
+    /**
+     * A deploy of `to` from the version that runs (`.env` on the app's server): the steps before the
+     * upload, then the start step and the last one, each with the step's own variables.
+     */
+    function deploy(to: string, mode: "deploy" | "rollback", env: Record<string, string> = {}) {
+      const outgoing = step(STEPS.outgoing, {});
+      expect(outgoing.status, outgoing.output).toBe(0);
+      const running = outgoing.outputs.image ?? "";
+      const common = { IMAGE: image(to), RUNNING: running, MODE: mode, ...env };
+      const data = step(STEPS.data, { ...common, HOST: DATA_HOST, OPSCREW_SERVICE_DB_ENV: "" });
+      return { running, common, data };
+    }
+
+    beforeEach(() => {
+      work = mkdtempSync(join(tmpdir(), "opscrew-extra-snapshots-")).replaceAll("\\", "/");
+      fakeBin(work, { docker: FAKE_DOCKER, df: FAKE_DF, flock: FAKE_FLOCK, sleep: "#!/bin/sh" });
+      upload(plan);
+      write(at(".env"), `APP_IMAGE=${image(A)}\n`);
+      // The server data's own snapshot script, as an earlier deploy uploaded it.
+      write(onData("snapshot.sh"), `${snapshotScript(plan, "data").join("\n")}\n`);
+      setDb("rows while A ran\n");
+    });
+    afterEach(() => rmSync(work, { recursive: true, force: true }));
+
+    it("snapshots the server data under the running version before its services change, and records the new one there", () => {
+      const { running, common, data } = deploy(B, "deploy");
+      expect(running).toBe(image(A));
+      expect(data.status, data.output).toBe(0);
+      expect(data.output).toContain(
+        "OpsCrew took a snapshot of the data on the server data before this release",
+      );
+      expect(readData(`.snapshots/${A}/db.dump`)).toBe("rows while A ran\n");
+      expect(JSON.parse(readData(`.snapshots/${A}/about.json`) ?? "")).toMatchObject({
+        id: A,
+        kind: "release",
+        version: `sha256:${A}`,
+        services: [{ name: "db", kind: "postgres", file: "db.dump" }],
+      });
+      // The copy comes after the pull, and before the services start.
+      expect(callAt(`${A}.partial:/snapshot:rw --entrypoint sh db `)).toBeGreaterThan(
+        callAt("docker compose pull"),
+      );
+      expect(callAt(`${A}.partial:/snapshot:rw --entrypoint sh db `)).toBeLessThan(
+        callAt("docker compose up -d --wait --remove-orphans"),
+      );
+
+      const start = step(STEPS.start, { ...common, RESTORED: "" });
+      expect(start.status, start.output).toBe(0);
+      expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+      const recorded = step(STEPS.running, {});
+      expect(recorded.status, recorded.output).toBe(0);
+      expect(readData(RUNNING_FILE)).toBe(`${image(B)}\n`);
+    });
+
+    it("takes no snapshot on a first deploy, of the same version, or of a service with no container yet", () => {
+      rmSync(at(".env"));
+      expect(deploy(B, "deploy").data.status).toBe(0);
+      write(at(".env"), `APP_IMAGE=${image(B)}\n`);
+      expect(deploy(B, "deploy").data.status).toBe(0);
+      expect(existsSync(onData(".snapshots"))).toBe(false);
+      // A database new on the server has nothing to copy yet.
+      const { data } = deploy(C, "deploy", { NO_CONTAINER: "db" });
+      expect(data.status, data.output).toBe(0);
+      expect(JSON.parse(readData(`.snapshots/${B}/about.json`) ?? "").services).toEqual([
+        { name: "db", kind: "postgres", skipped: true },
+      ]);
+    });
+
+    it("stops the deploy before anything changes when the copy fails, printing none of it", () => {
+      const { data } = deploy(B, "deploy", { DUMP_FAIL: "db" });
+      expect(data.status).toBe(1);
+      expect(data.output).toContain(
+        "::error::The snapshot of the data on the server data before this release failed, so the new version was not started and the previous version keeps serving.",
+      );
+      expect(data.output).not.toContain("row-value-from-the-database");
+      expect(callAt("docker compose up -d --wait --remove-orphans")).toBe(-1);
+    });
+
+    it("refuses arguments it can't use before any change", () => {
+      for (const env of [
+        { IMAGE: "ghcr.io/acme/shop:latest" },
+        { RUNNING: "x; rm -rf /" },
+        { MODE: "other" },
+      ]) {
+        const result = step(STEPS.data, {
+          IMAGE: image(B),
+          RUNNING: image(A),
+          MODE: "deploy",
+          HOST: DATA_HOST,
+          ...env,
+        });
+        expect(result.status).toBe(1);
+        expect(result.output).toContain(
+          "::error::The deploy step of the server data was given no image digests or mode it can use",
+        );
+      }
+      expect(calls().join("\n")).not.toContain("compose pull");
+    });
+
+    describe("on a rollback with the snapshot", () => {
+      /** B runs, with its rows, after a deploy that snapshotted A's on the server data. */
+      const runningB = () => {
+        const { common, data } = deploy(B, "deploy");
+        expect(data.status, data.output).toBe(0);
+        const start = step(STEPS.start, { ...common, RESTORED: "" });
+        expect(start.status, start.output).toBe(0);
+        setDb("rows of B\n");
+        rmSync(`${work}/docker.log`);
+      };
+
+      it("holds the app, copies the server data's data under the running version, restores it, then switches", () => {
+        runningB();
+        approveBoth(A);
+        const { common, data } = deploy(A, "rollback");
+        expect(data.status, data.output).toBe(0);
+        const others = step(STEPS.others, common);
+        expect(others.status, others.output).toBe(0);
+        expect(others.outputs.restored).toBe("data");
+        expect(db()).toBe("rows while A ran\n");
+        expect(readData(`.snapshots/${B}/db.dump`)).toBe("rows of B\n");
+        // Both one-time approvals are used once: the server data's by its check, the app's next.
+        expect(existsSync(onData(ROLLBACK_APPROVAL_FILE))).toBe(false);
+        expect(callAt("compose stop app")).toBeLessThan(callAt(`${B}.partial:/snapshot:rw`));
+
+        const start = step(STEPS.start, { ...common, RESTORED: others.outputs.restored ?? "" });
+        expect(start.status, start.output).toBe(0);
+        expect(read(".env")).toBe(`APP_IMAGE=${image(A)}\n`);
+        expect(existsSync(at(ROLLBACK_APPROVAL_FILE))).toBe(false);
+        expect(paused()).toBe(false);
+        expect(step(STEPS.running, {}).status).toBe(0);
+        expect(readData(RUNNING_FILE)).toBe(`${image(A)}\n`);
+      });
+
+      it("puts the data back and starts the app again when the restore there fails", () => {
+        runningB();
+        approveBoth(A);
+        const { common } = deploy(A, "rollback");
+        const others = step(STEPS.others, { ...common, RESTORE_FAIL: A });
+        expect(others.status).toBe(1);
+        expect(others.output).toContain(
+          "::error::Restoring the snapshot on the server data failed, so OpsCrew put its data back as it was before the rollback.",
+        );
+        expect(others.output).not.toContain("row-value-from-the-database");
+        expect(db()).toBe("rows of B\n");
+        expect(callAt("compose start app")).toBeGreaterThan(callAt("compose stop app"));
+        expect(paused()).toBe(false);
+        expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+      });
+
+      it("puts the server data's data back when the earlier version fails, before the app's own rollback", () => {
+        runningB();
+        approveBoth(A);
+        const { common } = deploy(A, "rollback");
+        const others = step(STEPS.others, common);
+        expect(others.status, others.output).toBe(0);
+        const restored = others.outputs.restored ?? "";
+        const start = step(STEPS.start, { ...common, RESTORED: restored });
+        expect(start.status, start.output).toBe(0);
+        // The check from outside failed: the rollback step takes over.
+        const back = step(STEPS.rollback, { ...common, RESTORED: restored });
+        expect(back.status, back.output).toBe(1);
+        expect(back.output).toContain(
+          "OpsCrew put the data on the server data back as it was before the rollback.",
+        );
+        expect(db()).toBe("rows of B\n");
+        expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+        expect(paused()).toBe(false);
+        expect(step(STEPS.running, {}).status).toBe(0);
+        expect(readData(RUNNING_FILE)).toBe(`${image(B)}\n`);
+      });
+
+      it("changes nothing without the server data's approval, or with an expired one", () => {
+        runningB();
+        const { common } = deploy(A, "rollback");
+        const none = step(STEPS.others, common);
+        expect(none.status, none.output).toBe(0);
+        expect(none.outputs.restored).toBeUndefined();
+        expect(callAt("compose stop app")).toBe(-1);
+
+        approveBoth(A, -60);
+        const expired = step(STEPS.others, common);
+        expect(expired.status).toBe(1);
+        expect(expired.output).toContain(
+          "::error::The one-time approval to restore the data on the server data on this rollback expired before the run started, so nothing was changed.",
+        );
+        expect(callAt("compose stop app")).toBe(-1);
+        expect(db()).toBe("rows of B\n");
+      });
+
+      it("refuses the start step's database step without the app's server's own approval", () => {
+        runningB();
+        approveBoth(A);
+        const { common } = deploy(A, "rollback");
+        const others = step(STEPS.others, common);
+        expect(others.status, others.output).toBe(0);
+        rmSync(at(ROLLBACK_APPROVAL_FILE));
+        const start = step(STEPS.start, { ...common, RESTORED: others.outputs.restored ?? "" });
+        expect(start.status).toBe(1);
+        expect(start.output).toContain(
+          "but this server has no one-time approval to restore its own (.rollback-database), so nothing was changed here",
+        );
+        expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
       });
     });
   },

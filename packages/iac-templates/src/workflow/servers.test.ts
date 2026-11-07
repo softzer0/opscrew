@@ -180,6 +180,48 @@ describe("the deploy job with extra servers", () => {
   it("renders the deploy job as committed", () => {
     expect(jobYaml(content(splitPlan()), "deploy")).toMatchSnapshot();
   });
+
+  it("reads the app's version before the extra servers and restores their snapshot only with snapshots on (US7)", () => {
+    const staging = inEnvironment(splitPlan(), { name: "staging" });
+    const names = (plan: DeployPlan) => steps(plan).map((s) => s.id ?? s.name);
+    const added = [
+      "outgoing",
+      "others",
+      "Record the running version on the app's other servers",
+    ] as const;
+    expect(names(staging).filter((name) => added.some((a) => a === name))).toEqual([...added]);
+    // The app's SSH comes first, then the version that runs, then the extra servers.
+    const order = [
+      "Configure SSH with the pinned host key",
+      "outgoing",
+      CONFIGURE,
+      DATA,
+      "others",
+      "start",
+    ];
+    expect(order.map((name) => names(staging).indexOf(name))).toEqual(
+      [...order.map((name) => names(staging).indexOf(name))].sort((x, y) => x - y),
+    );
+    expect(stepOf(staging, DATA).run).toContain(
+      `ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$RUNNING" "$MODE" <<'REMOTE'`,
+    );
+    expect(stepOf(staging, "start").run).toContain(
+      `sh -s -- "$IMAGE" "$MODE" "$RESTORED" <<'REMOTE'`,
+    );
+
+    // Snapshots off: the deploy job is the one without them, step for step.
+    const off = DeployPlanSchema.parse({
+      ...staging,
+      deploy: { ...staging.deploy, snapshots: false },
+    });
+    expect(names(off).filter((name) => added.some((a) => a === name))).toEqual([]);
+    expect(stepOf(off, DATA).run).toContain(
+      `ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s <<'REMOTE'`,
+    );
+    expect(names(off).indexOf(CONFIGURE)).toBeLessThan(
+      names(off).indexOf("Configure SSH with the pinned host key"),
+    );
+  });
 });
 
 describe("an extra server a moving service leaves (T1811)", () => {

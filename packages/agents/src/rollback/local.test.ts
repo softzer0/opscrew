@@ -242,7 +242,10 @@ describe("opscrew rollback on this computer", () => {
     const world = await localWorld({ snapshots: true });
     const hex = hexOf(digestOf("previous")) as string;
     await mkdir(join(world.folder, ".snapshots", hex), { recursive: true });
-    await writeFile(join(world.folder, ".snapshots", hex, "taken"), "2026-10-11T11:30:00Z");
+    await writeFile(
+      join(world.folder, ".snapshots", hex, "about.json"),
+      JSON.stringify({ id: hex, kind: "release", taken: "2026-10-11T11:30:00Z", services: [] }),
+    );
 
     const result = await world.run({ database: "snapshot" });
 
@@ -285,7 +288,10 @@ describe("opscrew rollback on this computer", () => {
     const world = await localWorld({ snapshots: true });
     const hex = hexOf(digestOf("previous")) as string;
     await mkdir(join(world.folder, ".snapshots", hex), { recursive: true });
-    await writeFile(join(world.folder, ".snapshots", hex, "taken"), "2026-10-11T11:30:00Z");
+    await writeFile(
+      join(world.folder, ".snapshots", hex, "about.json"),
+      JSON.stringify({ id: hex, kind: "release", taken: "2026-10-11T11:30:00Z", services: [] }),
+    );
     world.computer.script = (script) => {
       if (SWITCH.test(script)) throw new Error("the start script could not run");
       return ok();

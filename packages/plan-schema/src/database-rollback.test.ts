@@ -139,21 +139,43 @@ describe("snapshotsOn", () => {
     expect(snapshotsOn(previewPlanOf(await prodPlan()))).toBe(false);
   });
 
-  it("needs PostgreSQL, MySQL, MariaDB or MongoDB on the app's server", async () => {
+  it("needs a service a release snapshot copies, or the SQLite volume (US7)", async () => {
     const plan = await devPlan();
     const db = plan.services[0];
     for (const kind of ["postgres", "mysql", "mariadb", "mongodb"]) {
       const services = [{ ...db, kind, options: {} }];
       expect(snapshotsOn(parse({ ...plan, services })), kind).toBe(true);
     }
+    for (const kind of ["valkey", "redis", "dragonfly"]) {
+      const services = [{ ...db, name: "cache", kind, options: { mode: "cache" } }];
+      expect(snapshotsOn(parse({ ...plan, services })), kind).toBe(true);
+    }
     expect(snapshotsOn(parse({ ...plan, services: [] }))).toBe(false);
-    const valkey = { ...db, name: "cache", kind: "valkey", options: { mode: "cache" } };
-    expect(snapshotsOn(parse({ ...plan, services: [valkey] }))).toBe(false);
     expect(snapshotsOn(parse({ ...plan, services: [{ ...db, enabled: false }] }))).toBe(false);
-    // A database on an extra server stays as it is: only the app's server's are snapshotted.
-    const parsed = parse(plan);
+    // The app's SQLite volume alone.
+    const sqlite = {
+      ...plan,
+      services: [],
+      storage: { sqlite: { dir: "data" } },
+      deploy: { strategy: "recreate" },
+    };
+    expect(snapshotsOn(parse(sqlite))).toBe(true);
+    expect(snapshotsOn(parse({ ...sqlite, deploy: { ...sqlite.deploy, snapshots: false } }))).toBe(
+      false,
+    );
+    // A stop-only kind counts only when deploy.snapshotStop names it.
+    const kafka = { ...db, name: "kafka", kind: "kafka", options: {} };
+    expect(snapshotsOn(parse({ ...plan, services: [kafka] }))).toBe(false);
+    expect(
+      snapshotsOn(parse({ ...plan, services: [kafka], deploy: { snapshotStop: ["kafka"] } })),
+    ).toBe(true);
+  });
+
+  it("counts the data on an extra server as on the app's server", async () => {
+    const parsed = parse(await devPlan());
     const elsewhere = parsed.services.map((service) => ({ ...service, server: "data" }));
-    expect(snapshotsOn({ ...parsed, services: elsewhere })).toBe(false);
+    expect(snapshotsOn({ ...parsed, services: elsewhere })).toBe(true);
+    expect(snapshotsOn({ ...parsed, services: elsewhere, environment: undefined })).toBe(false);
   });
 });
 

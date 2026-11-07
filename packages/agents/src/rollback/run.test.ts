@@ -1207,7 +1207,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     world.label("staging", c);
     world.label("staging", b, true);
     const hexB = hexOf(b.digest);
-    if (o.snapshot !== false) await world.folder.write(`.snapshots/${hexB}/taken`, TAKEN);
+    if (o.snapshot !== false) await world.folder.snapshot(hexB as string, TAKEN);
     const atDispatch: (string | undefined)[] = [];
     const dispatch = world.github.dispatchWorkflow.bind(world.github);
     world.github.dispatchWorkflow = async (...args: Parameters<typeof dispatch>) => {
@@ -1447,7 +1447,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
   it("keeps prod's database by default, even with snapshots on and one taken", async () => {
     const plan = DeployPlanSchema.parse({ ...prodPlan(), deploy: { snapshots: true } });
     const { world, b } = await prodWorld({ plan });
-    await world.folder.write(`.snapshots/${hexOf(b.digest)}/taken`, TAKEN);
+    await world.folder.snapshot(hexOf(b.digest) as string, TAKEN);
     const result = await world.run();
     expect(result).toMatchObject({ database: { choice: "keep" } });
     expect(world.handler.requests[0]?.allowDestroy).toBeUndefined();

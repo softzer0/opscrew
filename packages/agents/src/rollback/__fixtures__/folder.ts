@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
-import { ROLLBACK_APPROVAL_FILE, shellQuote } from "@opscrew/iac-templates";
+import { ROLLBACK_APPROVAL_FILE, shellQuote, snapshotAboutPath } from "@opscrew/iac-templates";
 import { removeScript } from "../database";
 
 /** True when `sh` runs here (Git's on Windows), which the app folder's scripts need. */
@@ -66,6 +66,20 @@ export class FakeAppFolder {
     const file = join(this.dir, path);
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, text);
+  }
+
+  /**
+   * A complete release snapshot of the version `hex`, taken at `taken`: its `taken` file and its
+   * `about.json` with `services` (by default PostgreSQL `db`), as the server's script writes them.
+   */
+  async snapshot(
+    hex: string,
+    taken: string,
+    services: readonly object[] = [{ name: "db", kind: "postgres", file: "db.dump", size: 4 }],
+  ): Promise<void> {
+    const about = { id: hex, kind: "release", taken, version: `sha256:${hex}`, services };
+    await this.write(`.snapshots/${hex}/taken`, `${taken}\n`);
+    await this.write(snapshotAboutPath(hex), `${JSON.stringify(about)}\n`);
   }
 
   /** The text of `path` in the folder, or `undefined` when there is none. */

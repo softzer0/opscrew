@@ -1659,17 +1659,25 @@ export function snapshotDatabases(plan: {
 }
 
 /**
- * True when each release snapshots the databases on the app's server: on a cloud server, the
- * user's own server, this computer or the user's Portainer, outside a preview environment, with PostgreSQL, MySQL,
- * MariaDB or MongoDB on the app's server, and `deploy.snapshots` true, or absent outside prod.
+ * True when each release snapshots the app's data: on a cloud server, the user's own server, this
+ * computer or the user's Portainer, outside a preview environment, with `deploy.snapshots` true, or
+ * absent outside prod, and something a release snapshot copies, on the app's server or an extra
+ * one: the `sqlite` volume, an enabled service of the {@link ONLINE_SNAPSHOT_KINDS}, or one of a
+ * stop-only kind named in `deploy.snapshotStop`.
  */
 export function snapshotsOn(
-  plan: Pick<DeployPlan, "target" | "environment" | "services" | "deploy">,
+  plan: Pick<DeployPlan, "target" | "environment" | "services" | "deploy" | "storage">,
 ): boolean {
   const { provider } = plan.target;
   if (!onOneServer(provider) && provider !== "localhost" && provider !== "portainer") return false;
   if (plan.environment?.previews !== undefined) return false;
-  if (snapshotDatabases(plan).length === 0) return false;
+  const stop = plan.deploy.snapshotStop ?? [];
+  const copied = plan.services.some(
+    (service) =>
+      service.enabled &&
+      (ONLINE_SNAPSHOT_KINDS.some((kind) => kind === service.kind) || stop.includes(service.name)),
+  );
+  if (!copied && plan.storage?.sqlite === undefined) return false;
   return plan.deploy.snapshots ?? plan.environment?.name !== undefined;
 }
 

@@ -26,6 +26,11 @@ export function snapshotTakenPath(id: string): string {
   return `${SNAPSHOTS_DIR}/${id}/taken`;
 }
 
+/** The file that describes the complete snapshot `.snapshots/<id>`, written last (024 plan.md 1.). */
+export function snapshotAboutPath(id: string): string {
+  return `${SNAPSHOTS_DIR}/${id}/about.json`;
+}
+
 /** The one-time approval of a rollback that changes the data (plan.md 12.3), in the app's folder. */
 export const ROLLBACK_APPROVAL_FILE = ".rollback-database";
 
@@ -100,6 +105,25 @@ export function snapshotParts(plan: DeployPlan, server: string = APP_SERVER): Sn
       ? [{ name: "sqlite", kind: "sqlite", file: "sqlite.tar", online: true }]
       : [];
   return [...services, ...sqlite];
+}
+
+/**
+ * True when each release snapshots the data on `server` (the app's by default, or an extra
+ * server's name): snapshots on ({@link snapshotsOn}) and a part there ({@link snapshotParts}).
+ */
+export function releaseSnapshotOn(plan: DeployPlan, server: string = APP_SERVER): boolean {
+  return snapshotsOn(plan) && snapshotParts(plan, server).length > 0;
+}
+
+/**
+ * The extra servers, in plan order, whose data each release snapshots ({@link releaseSnapshotOn}):
+ * the deploy takes their part of the snapshot from the runner, a rollback restores it there, and
+ * the deploy keeps their {@link RUNNING_FILE} (plan.md D7).
+ */
+export function releaseSnapshotServers(plan: DeployPlan): string[] {
+  return (plan.servers ?? [])
+    .map((server) => server.name)
+    .filter((name) => releaseSnapshotOn(plan, name));
 }
 
 /**
@@ -599,16 +623,16 @@ function snapshotFailed(plan: DeployPlan): string {
 }
 
 /**
- * The deploy's snapshot (019 plan.md 12.4, FR-1921; 024 US7), after the services' setup and before
- * the release command: when snapshots are on ({@link snapshotsOn}) and `.env` names another
- * image's digest (`$running`, the script's; `$target` is `$1`'s), {@link SNAPSHOT_SCRIPT}'s
- * `take release` copies the data under the running version, then keeps only the newest
- * `deploy.keepSnapshots` release snapshots. A failed copy stops the deploy (FR-1922); too little
- * disk warns, and the deploy goes on without a snapshot. `folder` is the app's folder in the
- * script.
+ * The deploy's snapshot on the app's server (019 plan.md 12.4, FR-1921; 024 US7), after the
+ * services' setup and before the release command: when it snapshots the data there
+ * ({@link releaseSnapshotOn}) and `.env` names another image's digest (`$running`, the script's;
+ * `$target` is `$1`'s), {@link SNAPSHOT_SCRIPT}'s `take release` copies the data under the running
+ * version, then keeps only the newest `deploy.keepSnapshots` release snapshots. A failed copy stops
+ * the deploy (FR-1922); too little disk warns, and the deploy goes on without a snapshot. `folder`
+ * is the app's folder in the script.
  */
 export function snapshotStep(plan: DeployPlan, folder: string): string[] {
-  if (!snapshotsOn(plan)) return [];
+  if (!releaseSnapshotOn(plan)) return [];
   return [
     'if [ "$MODE" = deploy ] && [ -n "$running" ] && [ "$running" != "$target" ]; then',
     `  ${SNAPSHOT_FUNCTIONS}`,

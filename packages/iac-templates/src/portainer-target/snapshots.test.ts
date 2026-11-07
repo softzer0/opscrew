@@ -300,7 +300,7 @@ describe("the snapshot before each release in a stack", () => {
     });
   });
 
-  it("is off in prod unless asked, with deploy.snapshots false, and without a database", () => {
+  it("is off in prod unless asked, and with deploy.snapshots false", () => {
     const has = (plan: DeployPlan) => "snapshot" in render(plan).stack.services;
     expect(has(snapshotPlan())).toBe(false);
     expect(has(snapshotPlan({ deploy: { ...snapshotPlan().deploy, snapshots: true } }))).toBe(true);
@@ -308,7 +308,7 @@ describe("the snapshot before each release in a stack", () => {
       has(staging(snapshotPlan(), { deploy: { ...snapshotPlan().deploy, snapshots: false } })),
     ).toBe(false);
     const valkeyOnly = portainerTestPlan({ redis: true, releaseCommand: "npm run migrate" });
-    expect(has(staging(valkeyOnly))).toBe(false);
+    expect(has(staging(valkeyOnly))).toBe(true);
   });
 
   it("waits in the app when there is no release command", () => {
