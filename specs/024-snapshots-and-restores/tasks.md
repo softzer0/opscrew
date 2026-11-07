@@ -159,6 +159,12 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: high
 
+- [ ] T2421 [US5] The scheduled check (017) reports a failed scheduled snapshot (US5.2), in `packages/iac-templates/src/{types,check}*`, `packages/iac-templates/src/check/**` and `packages/agents/src/check/**` (+ tests)
+  - Depends: T2410
+  - Accept: the check's forced SSH command also prints, per app folder, the time and last line of `.snapshots/scheduled.log`; the check script opens or updates its issue when the last scheduled run failed (the same rule as status, T2410). Existing servers get the widened key line through their next provision (a host plan on own servers). Portainer isn't reached by the check: status shows it, and the guide says so.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents`
+  - Effort: high
+
 ## Phase 4: Wave 3 (parallel)
 
 - [ ] T2409 [US4] `opscrew snapshot --server` and `opscrew restore --server`, in `packages/agents/src/snapshot/server.ts` and the server modules' `ignore_changes` in `packages/iac-templates/src/{hetzner,digitalocean}/**` (+ tests)
