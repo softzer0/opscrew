@@ -91,6 +91,11 @@ export interface PlanAndApplyOptions {
    */
   costDelta?: Money | null;
   /**
+   * The monthly price of what this plan creates alone (a bucket root's), with where it comes
+   * from: the summary and the approval show it instead of the deployment's monthly cost.
+   */
+  price?: PlanPrice;
+  /**
    * Plan the removal of every resource in the state (`plan -destroy`), for example the old DNS
    * records or tunnel before an own server switches between public and tunnel mode. Such a plan
    * deletes resources, so its approval needs the typed app name.
@@ -246,6 +251,13 @@ export interface PlanAndApplyResult {
 }
 
 /** `Estimated cost: €4.51 per month (…)`: the deployment's monthly price with its source. */
+/** The monthly price of one plan's resources alone, and where it comes from. */
+export interface PlanPrice {
+  monthly: Money;
+  source: string;
+  checkedOn: string;
+}
+
 function estimatedCost(deployPlan: DeployPlan): string {
   const cost = deployPlan.cost.monthly;
   return `Estimated cost: ${formatMoney(cost)} per month (${deployPlan.cost.source === "live" ? "live prices" : `price list of ${deployPlan.cost.asOf.slice(0, 10)}`}, ${taxLabel(cost.currency, deployPlan.cost.pricesIncludeVat)}).`;
@@ -260,12 +272,13 @@ export function isMovesOnly(saved: Pick<SavedPlan, "changes" | "moves">): boolea
  * Plain-English plan summary shown before approval (resources, state renames, cost, policies,
  * hash). A plan that only renames resources in the state says that nothing changes in the cloud;
  * with `costUnchanged` (a plan that only updates what is not billed, such as DNS records) the cost
- * line says the cost does not change instead of quoting the deployment's monthly price.
+ * line says the cost does not change instead of quoting the deployment's monthly price, and with
+ * `price` (a bucket root's) it quotes that price alone.
  */
 export function describePlan(
   saved: SavedPlan,
   deployPlan: DeployPlan,
-  options: { costUnchanged?: boolean } = {},
+  options: { costUnchanged?: boolean; price?: PlanPrice } = {},
 ): string {
   const lines = [
     `${engineLabel(saved.engine.name)} ${saved.engine.version} plan:`,
@@ -291,6 +304,11 @@ export function describePlan(
     );
     if (options.costUnchanged === true) {
       lines.push("Cost: unchanged (nothing that is billed is created or deleted).");
+    } else if (options.price !== undefined) {
+      const { monthly, source, checkedOn } = options.price;
+      lines.push(
+        `Estimated cost: ${formatMoney(monthly)} per month for what this plan creates (from ${source}, checked on ${checkedOn}).`,
+      );
     } else {
       lines.push(estimatedCost(deployPlan));
     }
@@ -626,8 +644,15 @@ export async function planAndApply(
   const ownServer = deployPlan.target.provider === "own";
   const portainer = deployPlan.target.provider === "portainer";
   const costDeltaOption =
-    options.costDelta === undefined && (ownServer || portainer) ? null : options.costDelta;
-  const details = describePlan(saved, deployPlan, { costUnchanged: costDeltaOption === null });
+    options.price !== undefined
+      ? options.price.monthly
+      : options.costDelta === undefined && (ownServer || portainer)
+        ? null
+        : options.costDelta;
+  const details = describePlan(saved, deployPlan, {
+    costUnchanged: costDeltaOption === null,
+    ...(options.price !== undefined ? { price: options.price } : {}),
+  });
   deps.reporter.info(details);
   const blocking = blockingPolicyFailures(saved.policy);
   if (blocking.length > 0) {

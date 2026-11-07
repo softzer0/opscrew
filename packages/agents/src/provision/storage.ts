@@ -1,7 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import { devNull } from "node:os";
 import { dirname, join } from "node:path";
-import type { IacEngine, Money, PhaseName } from "@opscrew/contracts";
+import type { IacEngine, PhaseName } from "@opscrew/contracts";
 import {
   exists,
   OpsCrewError,
@@ -30,7 +30,7 @@ import { knownRecipients } from "../secrets/store";
 import { r2Endpoint, STORAGE_ENDPOINTS, type StorageLogin } from "../shared";
 import { storageS3Client } from "../shared/s3";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
-import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
+import { type PlanAndApplyResult, type PlanPrice, planAndApply } from "./plan-apply";
 import { type RecoveryCopy, recoveryCopyFiles } from "./publish";
 import type { ProvisionServices } from "./types";
 
@@ -637,7 +637,8 @@ interface BucketRoot {
   vars: KeyVars;
   /** What the rest of a plan after a stop adds, in the hint: "such as the bucket's CORS rule". */
   rest: string;
-  costDelta: Money;
+  /** The bucket's monthly price, which its plan's summary and approval show. */
+  price: PlanPrice;
 }
 
 /** True when the marker names `bucket` (provider, region and name); a missing or damaged one names none. */
@@ -863,7 +864,11 @@ export function applyStorage(
     field: "storage.objectStorage.bucket",
     vars: STORAGE_KEY_VARS,
     rest: "such as the bucket's CORS rule",
-    costDelta: { amount: bucket.price.monthly, currency: bucket.price.currency },
+    price: {
+      monthly: { amount: bucket.price.monthly, currency: bucket.price.currency },
+      source: bucket.price.source,
+      checkedOn: bucket.price.checkedOn,
+    },
   };
   const env = storageEngineEnv(input.env, input.plan, input.key, input.previousKeyFile);
   return applyBucketRoot(deps, root, { ...input, env });
@@ -895,7 +900,11 @@ export function applyBackups(
     field: "snapshots.offsite.bucket",
     vars: OFFSITE_KEY_VARS,
     rest: "such as the bucket's lifecycle rule",
-    costDelta: { amount: base.amount, currency: base.currency },
+    price: {
+      monthly: { amount: base.amount, currency: base.currency },
+      source: base.source,
+      checkedOn: base.checkedOn,
+    },
   };
   const env = backupsEngineEnv(input.env, input.plan, input.key);
   return applyBucketRoot(deps, root, { ...input, env });
@@ -927,7 +936,7 @@ async function applyBucketRoot(
     command,
     phase: input.phase,
     approvalTitle: `Apply the plan of the ${root.noun} ${bucket.bucket} on ${name}`,
-    costDelta: root.costDelta,
+    price: root.price,
     beforeApply: async (saved) => {
       createdEarlier = await markerNames(root);
       await writeMarker(deps, root, saved.planHash);

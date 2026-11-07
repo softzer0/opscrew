@@ -13,11 +13,13 @@ import type {
 import {
   ageRecipientOf,
   findExecutable,
+  formatMoney,
   generateAgeIdentity,
   OpsCrewError,
   readTextIfExists,
 } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
+import { STORAGE_PRICES } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { readRecord } from "../secrets/store";
@@ -526,6 +528,11 @@ describe.skipIf(!findExecutable("git"))("provision with a bucket at a provider (
       expect.stringContaining("Apply the infrastructure plan on Hetzner"),
     ]);
     expect(applies[0]?.costDelta).toEqual({ amount: 6.49, currency: "EUR" });
+    // The bucket's own price from the plan, not the deployment's monthly cost.
+    expect(applies[0]?.details).toContain(
+      "Estimated cost: €6.49 per month for what this plan creates (from test, checked on 2026-10-19).",
+    );
+    expect(applies[0]?.details).not.toContain(formatMoney(testPlan().cost.monthly));
     expect(result.storagePlanHash).toBe(applies[0]?.planHash);
     expect(f.engine.storage.calls).toEqual(["init", "validate", "plan", "apply"]);
     expect(f.engine.storage.initOptions?.backendConfig?.path).toBe(storageStateFile(f.deps.paths));
@@ -1197,8 +1204,14 @@ describe.skipIf(!findExecutable("git"))("provision with the off-server copy (024
       "Apply the plan of the off-server copies' bucket shop-backups on Hetzner Object Storage",
       expect.stringContaining("Apply the infrastructure plan on Hetzner"),
     ]);
-    // Hetzner's base price, which the bucket adds at least.
+    // Hetzner's base price, which the bucket adds at least, from the storage price data; never the
+    // deployment's monthly cost (the live pass printed it for this plan, 2026-11-07).
     expect(applies[0]?.costDelta).toEqual({ amount: 6.49, currency: "EUR" });
+    const base = STORAGE_PRICES.hetzner.monthlyPrice({ storageGb: 0, egressGbPerMonth: 0 });
+    expect(applies[0]?.details).toContain(
+      `Estimated cost: €6.49 per month for what this plan creates (from ${base.source}, checked on ${base.checkedOn}).`,
+    );
+    expect(applies[0]?.details).not.toContain(formatMoney(testPlan().cost.monthly));
     expect(result.backupsPlanHash).toBe(applies[0]?.planHash);
     expect(result.storagePlanHash).toBeUndefined();
     expect(o.backups.calls).toEqual(["init", "validate", "plan", "apply"]);

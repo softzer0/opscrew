@@ -355,6 +355,9 @@ describe("renderBackups", () => {
     ]) {
       expect(rule).toContain(line);
     }
+    // Hetzner never reads back the transition-size header the provider sends by default (live,
+    // 2026-11-07): sent, the provider waits for it until its create times out.
+    expect(rule).toContain('  transition_default_minimum_object_size = ""\n');
     expect(main).not.toContain("cloudflare");
     expect(JSON.parse(backupsFile(files, "terraform.tfvars.json"))).toEqual({
       bucket: "shop-backups",
