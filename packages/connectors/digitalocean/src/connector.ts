@@ -38,6 +38,8 @@ const ACCOUNT_URL = "https://cloud.digitalocean.com/account";
 const SNAPSHOT_PREFIX = "opscrew-";
 /** Default wait for a snapshot or a rebuild to finish (15 minutes). */
 const ACTION_TIMEOUT_MS = 15 * 60_000;
+/** How long a graceful shutdown may take before OpsCrew stops waiting (it never forces one). */
+const SHUTDOWN_TIMEOUT_MS = 5 * 60_000;
 /** Extra reads of the snapshot list after the action completes (the list can lag behind). */
 const SNAPSHOT_LOOKUP_RETRIES = 3;
 const SNAPSHOT_LOOKUP_POLL_MS = 5_000;
@@ -245,6 +247,16 @@ function serverApi(
         numericId(serverId, "Droplet"),
         numericId(snapshotId, "snapshot"),
       );
+      await client.waitForAction(action.id, { timeoutMs: ACTION_TIMEOUT_MS });
+    },
+    async powerOff(serverId: string): Promise<void> {
+      const id = numericId(serverId, "Droplet");
+      const action = await client.powerDroplet(id, "shutdown");
+      await client.waitForAction(action.id, { timeoutMs: SHUTDOWN_TIMEOUT_MS });
+      await client.waitForDropletStatus(id, "off", { timeoutMs: SHUTDOWN_TIMEOUT_MS });
+    },
+    async powerOn(serverId: string): Promise<void> {
+      const action = await client.powerDroplet(numericId(serverId, "Droplet"), "power_on");
       await client.waitForAction(action.id, { timeoutMs: ACTION_TIMEOUT_MS });
     },
   };

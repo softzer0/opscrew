@@ -102,12 +102,13 @@ describe("DigitalOceanCatalog (live)", () => {
     expect((await catalog.listOffers()).length).toBeGreaterThan(0);
   });
 
-  it("labels backups as the dated published rate, never live", async () => {
+  it("labels backups and snapshots as the dated published rates, never live", async () => {
     const { catalog, calls } = liveCatalog();
     const extras = await catalog.extras("fra1");
-    // The API has no backup prices: they come from the dated table, so say so.
+    // The API has no backup or snapshot prices: they come from the dated table, so say so.
     expect(extras).toEqual({
       backupPercent: 30,
+      snapshotPerGbMonth: { amount: 0.06, currency: "USD" },
       pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,
@@ -177,6 +178,7 @@ describe("StaticDigitalOceanCatalog", () => {
   it("returns static extras and rejects unknown regions", async () => {
     expect(await catalog.extras("ams3")).toEqual({
       backupPercent: 30,
+      snapshotPerGbMonth: { amount: 0.06, currency: "USD" },
       pricesIncludeVat: false,
       source: "static",
       asOf: STATIC_PRICES_AS_OF,

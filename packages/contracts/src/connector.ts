@@ -67,6 +67,8 @@ export interface ProviderExtras {
   ipv4Monthly?: Money;
   /** Automated backups as a percentage of the server price, for example 20. */
   backupPercent?: number;
+  /** A whole-server snapshot per GB per month, where the provider publishes the rate. */
+  snapshotPerGbMonth?: Money;
   pricesIncludeVat: boolean;
   source: "live" | "static";
   asOf: IsoDateTime;
@@ -139,6 +141,13 @@ export interface ServerSnapshotApi {
    * the provider answers with is dropped, never returned or logged.
    */
   rebuild(serverId: string, snapshotId: string): Promise<void>;
+  /**
+   * Shuts the server down gracefully (ACPI) and resolves when the provider reports it off. Fails
+   * plainly when it is not off within the wait; it never forces the power off.
+   */
+  powerOff(serverId: string): Promise<void>;
+  /** Powers the server on and resolves when the provider reports it done. */
+  powerOn(serverId: string): Promise<void>;
 }
 
 /** A VPS provider connector: credentials, price catalogue and server API. */

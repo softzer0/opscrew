@@ -1,7 +1,13 @@
 import type { ComputeCatalog, ComputeOffer, ProviderExtras } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import type { DigitalOceanClient, DigitalOceanSize } from "./client";
-import { BACKUP_PERCENT, STATIC_PRICES_AS_OF, STATIC_REGIONS, STATIC_SIZES } from "./static-prices";
+import {
+  BACKUP_PERCENT,
+  SNAPSHOT_PER_GB_MONTH,
+  STATIC_PRICES_AS_OF,
+  STATIC_REGIONS,
+  STATIC_SIZES,
+} from "./static-prices";
 
 /** Basic regular sizes (`s-<n>vcpu-<m>gb`); premium Intel/AMD and 512 MiB variants do not match. */
 const BASIC_SLUG = /^s-\d+vcpu-\d+gb$/;
@@ -77,8 +83,8 @@ export class DigitalOceanCatalog implements ComputeCatalog {
   }
 
   /**
-   * Daily backup percentage, IPv4 included in the Droplet price. The API does not return the rate,
-   * so it comes from DigitalOcean's published price page in `static-prices.ts` and is labelled
+   * Daily backup percentage and the snapshot rate, IPv4 included in the Droplet price. The API does
+   * not return the rates, so they come from DigitalOcean's published pages in `static-prices.ts`, labelled
    * `static` with that table's date, never `live`.
    */
   async extras(_location: string): Promise<ProviderExtras> {
@@ -132,10 +138,11 @@ export class StaticDigitalOceanCatalog implements ComputeCatalog {
   }
 }
 
-/** The backup percentage from the dated published price table. */
+/** The backup percentage and the snapshot rate from the dated published price tables. */
 function publishedExtras(): ProviderExtras {
   return {
     backupPercent: BACKUP_PERCENT,
+    snapshotPerGbMonth: { amount: SNAPSHOT_PER_GB_MONTH, currency: "USD" },
     pricesIncludeVat: false,
     source: "static",
     asOf: STATIC_PRICES_AS_OF,

@@ -5,10 +5,12 @@ import type {
   SnapshotRequest,
 } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
-import type { HetznerClient } from "./client";
+import type { HetznerClient, HetznerServerState } from "./client";
 
 /** Default wait for a snapshot or a rebuild to finish (15 minutes). */
 const ACTION_TIMEOUT_MS = 15 * 60_000;
+/** How long a graceful shutdown may take before OpsCrew stops waiting (it never forces one). */
+const SHUTDOWN_TIMEOUT_MS = 5 * 60_000;
 /** The label every snapshot OpsCrew takes carries (never `managed-by`, so cleanups keep it). */
 const OPSCREW_SNAPSHOTS = "created-by=opscrew";
 
@@ -57,13 +59,61 @@ export function hetznerServerApi(client: HetznerClient): ServerSnapshotApi {
       await client.deleteImage(numericId(snapshotId, "snapshot"));
     },
     async rebuild(serverId: string, snapshotId: string): Promise<void> {
-      const { actionId } = await client.rebuildServer(
-        numericId(serverId, "server"),
-        numericId(snapshotId, "snapshot"),
-      );
+      const id = numericId(serverId, "server");
+      const image = numericId(snapshotId, "snapshot");
+      // OpsCrew's servers are delete- and rebuild-protected (Hetzner wants both the same): the
+      // protection is lifted for the rebuild and always set back, as the state records it.
+      const { protection } = await client.getServer(id);
+      const lifted = protection.rebuild;
+      const before = { delete: protection.delete, rebuild: protection.rebuild };
+      let rebuilt = false;
+      try {
+        if (lifted) await setProtection(client, id, { delete: false, rebuild: false });
+        const { actionId } = await client.rebuildServer(id, image);
+        await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
+        rebuilt = true;
+      } finally {
+        if (lifted) {
+          await setProtection(client, id, before).catch((error: unknown) => {
+            throw unprotected(id, rebuilt, error);
+          });
+        }
+      }
+    },
+    async powerOff(serverId: string): Promise<void> {
+      const id = numericId(serverId, "server");
+      const { actionId } = await client.shutdownServer(id);
+      await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
+      await client.waitForServerStatus(id, "off", { timeoutMs: SHUTDOWN_TIMEOUT_MS });
+    },
+    async powerOn(serverId: string): Promise<void> {
+      const { actionId } = await client.powerOnServer(numericId(serverId, "server"));
       await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
     },
   };
+}
+
+/** Sets the server's protection and waits until Hetzner reports it set. */
+async function setProtection(
+  client: HetznerClient,
+  serverId: number,
+  protection: HetznerServerState["protection"],
+): Promise<void> {
+  const { actionId } = await client.changeProtection(serverId, protection);
+  await client.waitForAction(actionId, { timeoutMs: ACTION_TIMEOUT_MS });
+}
+
+/** The error when the protection lifted for a rebuild could not be set back. */
+function unprotected(serverId: number, rebuilt: boolean, cause: unknown): OpsCrewError {
+  const reason = cause instanceof Error ? cause.message : String(cause);
+  return new OpsCrewError(
+    "PROVIDER_ERROR",
+    `Hetzner server ${serverId} is unprotected: OpsCrew lifted its delete and rebuild protection for the rebuild${rebuilt ? ", which finished," : ", which did not finish,"} and could not set it again (${reason}).`,
+    {
+      hint: "Run `opscrew provision`: it sets the protection again from the infrastructure state (or turn it on for the server in the Hetzner Cloud Console).",
+      cause,
+    },
+  );
 }
 
 /** `value` as a Hetzner numeric id; anything else is refused before calling the API. */

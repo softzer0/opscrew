@@ -327,6 +327,14 @@ export class FakeServers implements ServerSnapshotApi {
   async rebuild(): Promise<void> {
     throw new Error("rebuild is not implemented yet");
   }
+
+  async powerOff(): Promise<void> {
+    throw new Error("powerOff is not implemented yet");
+  }
+
+  async powerOn(): Promise<void> {
+    throw new Error("powerOn is not implemented yet");
+  }
 }
 
 /** Provision's GitHub fake plus `deleteActionsSecret`, recording deletions in `events`. */

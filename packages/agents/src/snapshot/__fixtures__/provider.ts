@@ -36,6 +36,12 @@ export function fakeProvider(snapshots: ServerSnapshot[], o: { gone?: boolean } 
     rebuild: async () => {
       throw new Error("not in these tests");
     },
+    powerOff: async () => {
+      throw new Error("not in these tests");
+    },
+    powerOn: async () => {
+      throw new Error("not in these tests");
+    },
   };
   return { api, deleted };
 }

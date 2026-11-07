@@ -601,7 +601,70 @@ describe("digitaloceanConnector.servers snapshots and rebuilds", () => {
     expect((await errorOf(c.servers?.listSnapshots("x"))).code).toBe("INVALID_INPUT");
     expect((await errorOf(c.servers?.deleteSnapshot("../account"))).code).toBe("INVALID_INPUT");
     expect((await errorOf(c.servers?.rebuild("7", "ubuntu-24-04-x64"))).code).toBe("INVALID_INPUT");
+    expect((await errorOf(c.servers?.powerOff("7/x"))).code).toBe("INVALID_INPUT");
+    expect((await errorOf(c.servers?.powerOn("7/x"))).code).toBe("INVALID_INPUT");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("digitaloceanConnector.servers power", () => {
+  const droplet = (status: string) => ({ body: { droplet: { id: 7, name: "shop", status } } });
+
+  it("shuts down gracefully, then waits until the Droplet is off", async () => {
+    const clock = fakeClock();
+    const shutdown = (status: string) => ({ body: action(60, status, { type: "shutdown" }) });
+    const { connector: c, calls } = connector(
+      {
+        "POST /v2/droplets/7/actions": { status: 201, ...shutdown("in-progress") },
+        "/v2/actions/60": shutdown("completed"),
+        "/v2/droplets/7": [droplet("active"), droplet("off")],
+      },
+      undefined,
+      { clock },
+    );
+    await expect(c.servers?.powerOff("7")).resolves.toBeUndefined();
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "POST /v2/droplets/7/actions",
+      "GET /v2/actions/60",
+      "GET /v2/droplets/7",
+      "GET /v2/droplets/7",
+    ]);
+    expect(calls[0]?.body).toEqual({ type: "shutdown" });
+  });
+
+  it("stops waiting after 5 minutes, naming the state, and never forces the power off", async () => {
+    const clock = fakeClock();
+    const { connector: c, calls } = connector(
+      {
+        "POST /v2/droplets/7/actions": { status: 201, body: action(60, "in-progress") },
+        "/v2/actions/60": { body: action(60, "completed", { type: "shutdown" }) },
+        "/v2/droplets/7": droplet("active"),
+      },
+      undefined,
+      { clock },
+    );
+    const error = await errorOf(c.servers?.powerOff("7"));
+    expect(error.code).toBe("PROVIDER_ERROR");
+    expect(error.message).toContain("was not off within 5 minutes: it is active");
+    const posts = calls.filter((call) => call.method === "POST");
+    expect(posts.map((call) => call.body)).toEqual([{ type: "shutdown" }]);
+    expect(textOf(error)).not.toContain(token);
+  });
+
+  it("powers on and waits for the action", async () => {
+    const clock = fakeClock();
+    const on = (status: string) => ({ body: action(61, status, { type: "power_on" }) });
+    const { connector: c, calls } = connector(
+      {
+        "POST /v2/droplets/7/actions": { status: 201, ...on("in-progress") },
+        "/v2/actions/61": [on("in-progress"), on("completed")],
+      },
+      undefined,
+      { clock },
+    );
+    await expect(c.servers?.powerOn("7")).resolves.toBeUndefined();
+    expect(calls[0]?.body).toEqual({ type: "power_on" });
+    expect(calls).toHaveLength(3);
   });
 });
 

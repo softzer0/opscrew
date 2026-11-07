@@ -77,11 +77,12 @@ describe("HetznerCatalog (live)", () => {
     expect(calls.filter((c) => c.path.startsWith("/server_types?"))).toHaveLength(2);
   });
 
-  it("reads extras: IPv4 per location and backup percent", async () => {
+  it("reads extras: IPv4 per location, backup percent and the snapshot rate", async () => {
     const { catalog } = liveCatalog();
     expect(await catalog.extras("fsn1")).toEqual({
       ipv4Monthly: { amount: 0.5, currency: "EUR" },
       backupPercent: 20,
+      snapshotPerGbMonth: { amount: 0.011, currency: "EUR" },
       pricesIncludeVat: false,
       source: "live",
       asOf: NOW.toISOString(),

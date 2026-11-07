@@ -5,5 +5,6 @@
  */
 export { deleteSnapshot } from "./delete";
 export { listSnapshots, snapshotListLines } from "./list";
+export * from "./server";
 export { takeSnapshot } from "./take";
 export type * from "./types";

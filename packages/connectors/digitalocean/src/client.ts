@@ -347,6 +347,60 @@ export class DigitalOceanClient {
     return body.action;
   }
 
+  /**
+   * Starts a power action on a Droplet (`POST /v2/droplets/{id}/actions`): `shutdown` (graceful;
+   * DigitalOcean only guarantees the request is sent, so wait with {@link waitForDropletStatus}
+   * for `off`) or `power_on` (wait with {@link waitForAction}).
+   */
+  async powerDroplet(
+    dropletId: string | number,
+    type: "shutdown" | "power_on",
+  ): Promise<DigitalOceanAction> {
+    const body = await this.#request(
+      `/v2/droplets/${encodeURIComponent(String(dropletId))}/actions`,
+      z.looseObject({ action: actionSchema }),
+      {},
+      { method: "POST", body: { type } },
+    );
+    return body.action;
+  }
+
+  /** A Droplet's status (`GET /v2/droplets/{id}`): `new`, `active`, `off` or `archive`. */
+  async getDropletStatus(dropletId: string | number): Promise<string> {
+    const body = await this.#request(
+      `/v2/droplets/${encodeURIComponent(String(dropletId))}`,
+      z.looseObject({ droplet: z.looseObject({ status: z.string() }) }),
+    );
+    return body.droplet.status;
+  }
+
+  /**
+   * Polls the Droplet every 5 seconds until its status is `status`. One in another status after
+   * `timeoutMs` throws `OpsCrewError` (`PROVIDER_ERROR`) naming the status it is in.
+   */
+  waitForDropletStatus(
+    dropletId: string | number,
+    status: string,
+    options: { timeoutMs: number },
+  ): Promise<string> {
+    return pollAction({
+      read: () => this.getDropletStatus(dropletId),
+      finished: (current) => current === status,
+      timedOut: (current) =>
+        new OpsCrewError(
+          "PROVIDER_ERROR",
+          `DigitalOcean Droplet ${dropletId} was not ${status} within ${durationText(options.timeoutMs)}: it is ${current}.`,
+          {
+            hint: "Check the Droplet in the DigitalOcean control panel (https://cloud.digitalocean.com/droplets).",
+          },
+        ),
+      timeoutMs: options.timeoutMs,
+      intervalMs: ACTION_POLL_MS,
+      sleep: this.#http.sleep,
+      now: this.#http.now,
+    });
+  }
+
   /** Every page of a list, following `links.pages.next` until a page without one or an empty page. */
   async #listAll<T>(
     path: string,

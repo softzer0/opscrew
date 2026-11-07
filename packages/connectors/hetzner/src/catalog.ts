@@ -86,6 +86,9 @@ export class HetznerCatalog implements ComputeCatalog {
       ?.prices.find((p) => p.location === location);
     if (ipv4 !== undefined) out.ipv4Monthly = { amount: ipv4.price_monthly.net, currency };
     if (pricing.server_backup !== undefined) out.backupPercent = pricing.server_backup.percentage;
+    if (pricing.image !== undefined) {
+      out.snapshotPerGbMonth = { amount: pricing.image.price_per_gb_month.net, currency };
+    }
     return out;
   }
 }

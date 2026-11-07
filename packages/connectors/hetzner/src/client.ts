@@ -95,6 +95,8 @@ const pricingSchema = z.looseObject({
     )
     .optional(),
   server_backup: z.looseObject({ percentage: decimal }).optional(),
+  /** Snapshots (and other custom images) per GB per month. */
+  image: z.looseObject({ price_per_gb_month: priceSchema }).optional(),
 });
 export type HetznerPricing = z.infer<typeof pricingSchema>;
 
@@ -110,6 +112,16 @@ const serverSchema = z.looseObject({
     })
     .optional(),
 });
+
+const serverStateSchema = z.looseObject({
+  status: z.string(),
+  protection: z.looseObject({ delete: z.boolean(), rebuild: z.boolean() }),
+});
+/** A server's status and protection, as {@link HetznerClient.getServer} returns them. */
+export interface HetznerServerState {
+  status: string;
+  protection: { delete: boolean; rebuild: boolean };
+}
 
 /** A server as returned by {@link HetznerClient.listServers}. */
 export interface HetznerServerSummary {
@@ -303,6 +315,66 @@ export class HetznerClient {
     return { actionId: body.action.id };
   }
 
+  /**
+   * Asks the server to shut down gracefully (`POST /servers/{id}/actions/shutdown`, an ACPI
+   * request). Its action only says the request was sent: wait with {@link waitForServerStatus}
+   * for `off`.
+   */
+  shutdownServer(serverId: number): Promise<{ actionId: number }> {
+    return this.#serverAction(serverId, "shutdown");
+  }
+
+  /** Powers a server on (`POST /servers/{id}/actions/poweron`); wait with {@link waitForAction}. */
+  powerOnServer(serverId: number): Promise<{ actionId: number }> {
+    return this.#serverAction(serverId, "poweron");
+  }
+
+  /** A server's status (`running`, `off`, `stopping`…) and protection (`GET /servers/{id}`). */
+  async getServer(serverId: number): Promise<HetznerServerState> {
+    const body = await this.#request(
+      `/servers/${encodeURIComponent(String(serverId))}`,
+      z.looseObject({ server: serverStateSchema }),
+    );
+    return body.server;
+  }
+
+  /**
+   * Sets a server's delete and rebuild protection
+   * (`POST /servers/{id}/actions/change_protection`; Hetzner wants both the same); wait with
+   * {@link waitForAction}.
+   */
+  changeProtection(
+    serverId: number,
+    protection: HetznerServerState["protection"],
+  ): Promise<{ actionId: number }> {
+    return this.#serverAction(serverId, "change_protection", protection);
+  }
+
+  /**
+   * Polls the server every 2 seconds until its status is `status`. One in another status after
+   * `timeoutMs` throws `OpsCrewError` (`PROVIDER_ERROR`) naming the status it is in.
+   */
+  waitForServerStatus(
+    serverId: number,
+    status: string,
+    options: { timeoutMs: number },
+  ): Promise<string> {
+    return pollAction({
+      read: async () => (await this.getServer(serverId)).status,
+      finished: (current) => current === status,
+      timedOut: (current) =>
+        new OpsCrewError(
+          "PROVIDER_ERROR",
+          `Hetzner server ${serverId} was not ${status} within ${durationText(options.timeoutMs)}: it is ${current}.`,
+          { hint: "Check the server in the Hetzner Cloud Console." },
+        ),
+      timeoutMs: options.timeoutMs,
+      intervalMs: ACTION_INTERVAL_MS,
+      sleep: this.#http.sleep,
+      now: this.#http.now,
+    });
+  }
+
   /** One action by id (`GET /actions/{id}`). */
   async getAction(actionId: number): Promise<HetznerAction> {
     const body = await this.#request(
@@ -353,6 +425,20 @@ export class HetznerClient {
     await this.#request("/locations", z.looseObject({ locations: z.array(locationSchema) }), {
       per_page: "1",
     });
+  }
+
+  async #serverAction(
+    serverId: number,
+    action: string,
+    body?: unknown,
+  ): Promise<{ actionId: number }> {
+    const answer = await this.#request(
+      `/servers/${encodeURIComponent(String(serverId))}/actions/${action}`,
+      z.looseObject({ action: actionSchema }),
+      {},
+      { method: "POST", ...(body !== undefined && { body }) },
+    );
+    return { actionId: answer.action.id };
   }
 
   async #listAll<T>(

@@ -1168,6 +1168,12 @@ export async function moveFakes(
     rebuild: async () => {
       throw new Error("rebuild is not implemented yet");
     },
+    powerOff: async () => {
+      throw new Error("powerOff is not implemented yet");
+    },
+    powerOn: async () => {
+      throw new Error("powerOn is not implemented yet");
+    },
   });
   let monotonic = 0;
   const ok = { configured: true, verify: async () => ({ ok: true, message: "ok" }) };
