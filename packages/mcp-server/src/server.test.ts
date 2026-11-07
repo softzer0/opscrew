@@ -159,7 +159,8 @@ describe("createOpscrewMcpServer", () => {
       "`--delete-data` and the app's name typed by the user",
       "`--undo-host`",
       "never asks for contact details",
-      "backups are the user's",
+      "it backs up only the app's data, by snapshots",
+      "a Portainer host is the user's to back up",
     ]) {
       expect(instructions, rule).toContain(rule);
     }

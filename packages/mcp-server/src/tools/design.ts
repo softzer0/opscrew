@@ -231,9 +231,9 @@ function optionData(option: DesignOption): Record<string, unknown> {
 
 /** The heading of the one unpriced option: the user's own server or their Portainer. */
 const UNPRICED_HEADING = {
-  own: "Deployment on the user's own server (no server price: they already pay for it; OpsCrew cannot turn on backups there, so backups are the user's responsibility):",
+  own: "Deployment on the user's own server (no server price: they already pay for it; OpsCrew snapshots the app's data there, and backups of the server itself are the user's responsibility):",
   portainer:
-    "Deployment in the user's existing Portainer (no server price: they already run it; OpsCrew does not change the host, and backups of the app's data are the user's responsibility):",
+    "Deployment in the user's existing Portainer (no server price: they already run it; OpsCrew does not change the host, snapshots the app's data there, and backups of the host itself are the user's responsibility):",
 } as const;
 
 /**

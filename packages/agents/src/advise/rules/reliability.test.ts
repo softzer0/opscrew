@@ -5,6 +5,7 @@ import { networked, splitPlan } from "../../network/__fixtures__/plans";
 import { makeRequirements, ownPlan, testPlan } from "../../testing";
 import { pagesTestPlan } from "../../testing/pages";
 import { portainerPlan } from "../../testing/portainer";
+import { previewTestPlan } from "../../testing/previews";
 import { sitePlan } from "../../testing/serverless";
 import { THRESHOLDS } from "../types";
 import {
@@ -88,7 +89,83 @@ describe("reliabilityRules: backups", () => {
     const none = makeRequirements({ dataCriticality: "none" });
     expect(rules(readingsOf(off, { requirements: none }))).toEqual([]);
     expect(rules(readingsOf(off))).toEqual([]);
-    expect(rules(readingsOf(checked(ownPlan()), { requirements: important }))).toEqual([]);
+    // An own server gets no provider backups; with its snapshots scheduled and copied off, nothing.
+    const own = { ...checked(ownPlan()), snapshots: SNAPSHOTS_ON };
+    expect(rules(readingsOf(own, { requirements: important }))).toEqual([]);
+  });
+});
+
+/** Scheduled snapshots with their off-server copy. */
+const SNAPSHOTS_ON = {
+  schedule: { every: "weekly", keep: 4 },
+  offsite: { provider: "r2" as const, bucket: "shop-prod-backups" },
+};
+
+describe("reliabilityRules: snapshots on an own server or Portainer (024)", () => {
+  it("proposes the schedule and the copy off the server on R2 when the data matters, priced", () => {
+    const plan = checked(ownPlan());
+    expect(rules(readingsOf(plan, { requirements: important, flags: " --app web" }))).toEqual([
+      {
+        id: "reliability.env.snapshot-schedule",
+        category: "reliability",
+        urgency: "when-convenient",
+        title: "Take snapshots of the app's data on a schedule",
+        reasons: [
+          {
+            text: "The interview says the app's data is important, and nothing backs it up on your server: no snapshot is taken unless someone runs `opscrew snapshot --app web`",
+            basis: { kind: "plan" },
+          },
+        ],
+        apply: { kind: "command", command: "opscrew snapshot schedule on --app web" },
+      },
+      {
+        id: "reliability.env.snapshot-offsite",
+        category: "reliability",
+        urgency: "when-convenient",
+        title: "Keep an encrypted copy of each snapshot off the server",
+        reasons: [
+          {
+            text: "The interview says the app's data is important, and its snapshots stay on your server: losing it loses them too. The copy is encrypted to the recovery copy's age key, which only you hold",
+            basis: { kind: "plan" },
+          },
+        ],
+        // provision's price data: R2's bucket costs nothing below its free storage.
+        price: { before: 0, after: 0, currency: "USD", source: "static", asOf: "2026-10-19" },
+        apply: { kind: "command", command: "opscrew snapshot offsite on --to r2 --app web" },
+      },
+    ]);
+  });
+
+  it("in Portainer without a domain on Cloudflare, names the other providers by hand", () => {
+    const plan = checked({
+      ...portainerPlan({ domain: null, web: { mode: "proxy", port: 8080 } }),
+      snapshots: { schedule: SNAPSHOTS_ON.schedule },
+    });
+    const critical = makeRequirements({ dataCriticality: "critical" });
+    expect(rules(readingsOf(plan, { requirements: critical }))).toEqual([
+      expect.objectContaining({
+        id: "reliability.env.snapshot-offsite",
+        title: "Keep an encrypted copy of each snapshot off the host",
+        reasons: [
+          expect.objectContaining({
+            text: expect.stringContaining("its snapshots stay on the Portainer host"),
+          }),
+        ],
+        apply: {
+          kind: "manual",
+          text: "Run `opscrew snapshot offsite on --to hetzner --region <region>` (or `--to digitalocean`) with the region the copies should be in",
+        },
+      }),
+    ]);
+  });
+
+  it("proposes neither on a cloud server, for data that matters little, without data or for previews", () => {
+    const ids = (plan: DeployPlan, requirements = important) =>
+      rules(readingsOf(checked(plan), { requirements })).map((proposal) => proposal.id);
+    expect(ids(testPlan())).toEqual([]);
+    expect(ids(ownPlan(), makeRequirements({ dataCriticality: "none" }))).toEqual([]);
+    expect(ids(ownPlan({ postgres: false }))).toEqual([]);
+    expect(ids(previewTestPlan({ own: true }))).toEqual([]);
   });
 });
 

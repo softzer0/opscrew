@@ -48,6 +48,7 @@ import {
 } from "./resources";
 import { readLinks, readPublishedPorts, serverShell, unpublishedOnNetwork } from "./servers";
 import { siteStatusReport } from "./site";
+import { type SnapshotStatus, snapshotStatusReport } from "./snapshots";
 
 /** Options of {@link readServerContainers} and {@link readComponentStatus}. */
 export interface ComponentStatusOptions {
@@ -193,6 +194,8 @@ export interface ComponentStatusReport {
   grants?: Network["grants"];
   /** Self-hosted monitoring's stack as read now, once provision ran (feature 020). */
   monitoring?: MonitoringReading;
+  /** The last snapshot and the scheduled ones that failed, once the app was deployed (024). */
+  snapshot?: SnapshotStatus;
 }
 
 /** One of the app's servers as `status` read it (feature 018). */
@@ -236,7 +239,8 @@ function readingLines(
  * (`networkStatusLines`). A self-hosted runner's state follows (FR-1530), then with self-hosted
  * monitoring one line on this environment's servers sending to the stack (FR-2021), then the version
  * running, the one before and whether deploys are paused once provision ran, whether or not
- * `verify` did (`deployStateReport`, FR-1913), then the scheduled check's state and open alerts when the plan
+ * `verify` did (`deployStateReport`, FR-1913), then once the app was deployed the last snapshot and
+ * a scheduled one that failed (`snapshotStatusReport`, 024), then the scheduled check's state and open alerts when the plan
  * has it on (FR-1708). A site on Cloudflare's hosting
  * or GitHub Pages has no components: its running version, custom domains or Pages site instead
  * (`siteStatusReport`), and the figures it cannot give. A preview environment shows its server's
@@ -294,11 +298,23 @@ export async function componentStatusReport(
       deploys = await deployStateReport(deps, plan, options, read);
     }
   }
+  // The last snapshot and a scheduled one that failed, once the app's components were read: a
+  // server that could not be read is not read again (024 US5 #2).
+  const snapshots =
+    serverless || report.status === undefined
+      ? { lines: [] }
+      : await snapshotStatusReport(deps, plan, {
+          ...(options.services?.remote !== undefined ? { remote: options.services.remote } : {}),
+          ...(options.services?.portainer !== undefined
+            ? { portainer: options.services.portainer }
+            : {}),
+        });
   const state = await checkStateReport(deps, plan, options.services?.github);
   return {
     ...report,
-    lines: joinBlocks(report.lines, deploys.lines, state.lines),
+    lines: joinBlocks(report.lines, deploys.lines, snapshots.lines, state.lines),
     ...(deploys.deploys !== undefined ? { deploys: { ...versions, ...deploys.deploys } } : {}),
+    ...(snapshots.snapshot !== undefined ? { snapshot: snapshots.snapshot } : {}),
     ...(state.check !== undefined ? { check: state.check } : {}),
   };
 }

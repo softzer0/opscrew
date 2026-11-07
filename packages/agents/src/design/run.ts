@@ -167,6 +167,7 @@ import {
   serverlessSecretWarnings,
 } from "./serverless";
 import { ownServerMemory, regionLocations, type ServerApp, sizeFor } from "./sizing";
+import { snapshotDesignLines, withDesignedSnapshots } from "./snapshots";
 import { checkSqliteFolder, sqliteOwnerWarning } from "./storage";
 import { keptDeploy } from "./strategy";
 import { designWording } from "./wording";
@@ -521,7 +522,7 @@ async function priceOwnServer(
 /**
  * The single option in the user's existing Portainer, from the interview's answers in
  * `.opscrew/server.json`: no price, the environment's architecture, and the notes that OpsCrew
- * does not change the host and that backups are the user's.
+ * does not change the host and on what OpsCrew backs up.
  * @throws OpsCrewError `PHASE_PRECONDITION` when the answers are missing or the requirements no
  * longer allow them.
  */
@@ -1106,12 +1107,17 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       : ownPlan(planFor(sourceComponents(planned, source.plan, keep)), source.plan);
   const shared = fromSource?.plan ?? own;
   const keptLines = fromSource?.lines ?? ownLines;
-  // The scheduled check: on for prod and off elsewhere, unless the plan already says.
-  const kept = withDesignedCheck(
-    prodPlan === undefined && source === undefined
-      ? own
-      : environmentPlan(shared, source, keep, paths),
-    name,
+  // The scheduled check: on for prod and off elsewhere, unless the plan already says; the
+  // snapshots: the previous plan's, else proposed on an own server or Portainer (FR-2410).
+  const kept = withDesignedSnapshots(
+    withDesignedCheck(
+      prodPlan === undefined && source === undefined
+        ? own
+        : environmentPlan(shared, source, keep, paths),
+      name,
+    ),
+    previous,
+    requirements,
   );
   // The services placed on other servers, those servers, the private network and a move (018).
   const edgeMb = serverless === undefined ? edgeMemoryMb(edgeProxy(kept)) : 0;
@@ -1288,6 +1294,8 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
         ]),
   ].map(say);
   for (const line of componentLines) reporter.info(line);
+  const snapshotLines = snapshotDesignLines(plan).map(say);
+  for (const line of snapshotLines) reporter.info(line);
   // Each server, the total, each hop's delay, what has no login and a move's window.
   const placementLines = placement.lines.map(say);
   for (const line of placementLines) reporter.info(line);
@@ -1346,6 +1354,7 @@ async function design(deps: PhaseDeps, options: RunDesignOptions): Promise<Desig
       ...previewLines,
       ...buildLines,
       ...componentLines,
+      ...snapshotLines,
       ...placementLines,
       ...supplyLines,
       ...additionLines,

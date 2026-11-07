@@ -84,7 +84,7 @@ export function servingAccess(serving: OwnServerServing): OwnServerAccess {
 
 /** Said wherever OpsCrew designs, documents or removes a deployment on the user's own server. */
 export const OWN_SERVER_BACKUPS_NOTE =
-  "OpsCrew cannot turn on backups or snapshots on your own server; backups are your responsibility.";
+  "OpsCrew snapshots the app's data on your server with `opscrew snapshot`; `opscrew snapshot schedule on` takes them on a schedule and `opscrew snapshot offsite on` keeps an encrypted copy off the server. OpsCrew cannot back up the server itself: those backups are your responsibility.";
 
 /** Why an own-server option has no price. */
 export const OWN_SERVER_PRICE_NOTE = "No server price: you already pay for this server.";
@@ -185,8 +185,8 @@ export function distinctAmounts(a: number, b: number): [string, string] {
  * memory is clearly below what the sizing table plans for the app (below 90%: inspected memory
  * sits a little under the nominal size) or its free disk below what the app itself needs (the
  * operating system is already installed; `ownServerFreeDiskGb`), the Cloudflare Tunnel
- * when the internet cannot reach it (which needs a domain on Cloudflare), and the note that
- * backups are the user's responsibility. Validated with `DesignOptionSchema`.
+ * when the internet cannot reach it (which needs a domain on Cloudflare), and the note on what
+ * OpsCrew backs up (the app's data, by its snapshots) and what is the user's. Validated with `DesignOptionSchema`.
  * @throws OpsCrewError `PHASE_PRECONDITION` when the server has not been inspected (no offer).
  */
 export async function buildOwnServerOption(input: OwnServerOptionInput): Promise<OwnServerDesign> {
@@ -284,7 +284,7 @@ export async function buildOwnServerOption(input: OwnServerOptionInput): Promise
   tradeoffs.push("A single server: if it fails, the app is down until the server is restored.");
   if (serviceOf(sizing, "postgres")) {
     tradeoffs.push(
-      "Postgres runs in a container on the same server; back up its data yourself, because OpsCrew cannot turn on backups on your own server.",
+      "Postgres runs in a container on the same server, so its data is only as safe as that server: keep the snapshots' encrypted copy off it.",
     );
   }
   tradeoffs.push(hostLine ?? OWN_SERVER_BACKUPS_NOTE);

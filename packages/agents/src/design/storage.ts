@@ -73,9 +73,22 @@ export function expectedStorageUse(users: UserScale): ObjectStorage["expected"] 
 }
 
 /** Hetzner Object Storage's locations (research R3); other Hetzner locations have none. */
-const HETZNER_STORAGE = new Set(["fsn1", "nbg1", "hel1"]);
+export const HETZNER_STORAGE_LOCATIONS: readonly string[] = ["fsn1", "nbg1", "hel1"];
 /** Droplet locations whose Spaces region has another name. */
 const SPACES_REGION: Readonly<Record<string, string>> = { nyc1: "nyc3" };
+
+/**
+ * The region of `provider`'s object storage at its server location `location`: the location
+ * itself at Hetzner where it has object storage (else undefined), the Spaces region at
+ * DigitalOcean.
+ */
+export function storageRegionAt(
+  provider: "hetzner" | "digitalocean",
+  location: string,
+): string | undefined {
+  if (provider === "digitalocean") return SPACES_REGION[location] ?? location;
+  return HETZNER_STORAGE_LOCATIONS.includes(location) ? location : undefined;
+}
 
 /** One priced object storage choice. */
 export interface StorageOffer {
@@ -113,10 +126,9 @@ export function storageOffers(
   ];
   if (cloud && requirements.region !== undefined) {
     const locations = providerProfile(provider).regionLocations[requirements.region];
-    const location =
-      provider === "hetzner"
-        ? locations.find((l) => HETZNER_STORAGE.has(l))
-        : locations.map((l) => SPACES_REGION[l] ?? l)[0];
+    const location = locations
+      .map((l) => storageRegionAt(provider, l))
+      .find((region) => region !== undefined);
     if (location !== undefined) offers.push({ provider, region: location });
   }
   if (requirements.dnsProvider === "cloudflare" && requirements.domain !== undefined) {

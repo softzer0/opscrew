@@ -367,3 +367,43 @@ describe("runDesign for an existing Portainer", () => {
     expect((await readArtifact("plan", deps.paths.files.plan)).target.provider).toBe("hetzner");
   });
 });
+
+describe("runDesign's snapshots in an existing Portainer (024 FR-2410)", () => {
+  it("proposes the schedule and the copy on R2 when the data matters, and keeps the user's choice", async () => {
+    const deps = await setup(
+      onCloudflare({ dataCriticality: "important" }),
+      CONNECTION,
+      nextPostgresFacts(),
+    );
+    const result = await runDesign(deps);
+    const bucket = `${result.plan.app.name}-prod-backups`;
+    expect(result.plan.snapshots).toEqual({
+      schedule: { every: "weekly", keep: 4 },
+      offsite: { provider: "r2", bucket, days: 90 },
+    });
+    const said = deps.reporter.text();
+    expect(said).toContain(
+      "Scheduled snapshots of the app's data (snapshots.schedule): weekly, the last 4 kept, on the Portainer host; `opscrew snapshot schedule off` turns them off.",
+    );
+    expect(said).toContain(
+      `An encrypted copy of each snapshot off the Portainer host (snapshots.offsite): the private bucket ${bucket} on Cloudflare R2, each copy kept 90 days. Expected cost: $0.00/month at Cloudflare R2, plus what the copies store beyond what that includes.`,
+    );
+
+    // The user turned the copy off (`opscrew snapshot offsite off`): design keeps that.
+    const plan = await readArtifact("plan", deps.paths.files.plan);
+    await writeArtifact("plan", deps.paths.files.plan, {
+      ...plan,
+      snapshots: { schedule: { every: "daily", keep: 2 } },
+    });
+    const again = await runDesign(deps);
+    expect(again.plan.snapshots).toEqual({ schedule: { every: "daily", keep: 2 } });
+    expect(again.lines).toContain(
+      "The snapshots stay on the Portainer host, so losing it loses them too: `opscrew snapshot offsite on --to hetzner --region <region>` (or `--to digitalocean`) keeps an encrypted copy elsewhere.",
+    );
+  });
+
+  it("proposes none when the data matters little", async () => {
+    const deps = await setup(onCloudflare(), CONNECTION, nextPostgresFacts());
+    expect((await runDesign(deps)).plan.snapshots).toBeUndefined();
+  });
+});

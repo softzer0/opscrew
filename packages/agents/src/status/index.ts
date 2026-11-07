@@ -26,3 +26,4 @@ export {
   readServerContainers,
   type ServerStatus,
 } from "./run";
+export type { ScheduledFailure, SnapshotStatus } from "./snapshots";

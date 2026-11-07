@@ -502,7 +502,10 @@ describe("componentStatusReport with the deploys", () => {
     const at = report.lines.indexOf("Deploys (read from the server and GitHub now):");
     expect(at).toBeGreaterThan(0);
     expect(report.lines[at - 1]).toBe("");
-    expect(report.lines.slice(at + 4, at + 6)).toEqual([
+    // The snapshots follow the deploys (024), then the scheduled check.
+    expect(report.lines.slice(at + 4, at + 8)).toEqual([
+      "",
+      "Snapshots: none yet; `opscrew snapshot` takes one.",
       "",
       "Scheduled check (.github/workflows/opscrew-check.yml, read from GitHub now):",
     ]);

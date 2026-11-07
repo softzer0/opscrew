@@ -175,7 +175,7 @@ describe.skipIf(!findExecutable("git"))("opscrew destroy for the user's Portaine
     });
     expect(approval?.details).toContain("OpsCrew does not change the host");
     expect(approval?.details).toContain(
-      "Backups, including the app's data volumes, are your responsibility",
+      "Backing up the Portainer host itself is your responsibility",
     );
     // The audit names the teardown's apply and each change by the plan's hash only.
     const teardownAudit = s.deps.audit.entries.filter((entry) =>

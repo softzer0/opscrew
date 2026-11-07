@@ -15,5 +15,7 @@ exports[`status of a plan without servers or a network > shows exactly what it s
   "  Running: sha256:111111111111, since 2026-10-30 10:00 UTC",
   "  Before it: none kept",
   "  OpsCrew could not read their commits or whether deploys are paused from GitHub. No GitHub token is available (set GITHUB_TOKEN or run \`gh auth login\`).",
+  "",
+  "Snapshots: none yet; \`opscrew snapshot\` takes one.",
 ]
 `;

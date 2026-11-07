@@ -636,11 +636,14 @@ describe("componentStatusReport with the figures", () => {
           : { exitCode: 255, stdout: "", stderr: "" },
     });
     const report = await componentStatusReport(deps, withWorker(), { services: { remote } });
-    expect(withoutDeploys(report.lines).slice(-2)).toEqual([
+    expect(withoutDeploys(report.lines).slice(-4)).toEqual([
       "",
       expect.stringMatching(
         /^OpsCrew could not read the resource figures\. OpsCrew could not read the server's figures over SSH \(exit code 255\)\. Check that the server is on/,
       ),
+      // The snapshots, read after the components, give a note of their own.
+      "",
+      "OpsCrew could not read the snapshots. The app's server did not answer over SSH, so OpsCrew could not read the snapshots. Check that it is on and reachable (`opscrew status`), then try again.",
     ]);
     expect(report.status).toBeDefined();
     expect(report.resources).toBeUndefined();

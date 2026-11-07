@@ -105,7 +105,7 @@ describe("buildOwnServerOption", () => {
     });
     if (option === undefined) throw new Error("no option");
     expect(option.summary).toBe(
-      "Your own server (4 vCPU, 8 GB memory, 120 GB free disk, arm64, Ubuntu 24.04) running the app and Postgres with Docker Compose behind Caddy. Memory limits: the app 512 MB, db 512 MB; OpsCrew's edge and the system 512 MB; 6.5 GB of 8.0 GB free. No server price: you already pay for this server. OpsCrew cannot turn on backups or snapshots on your own server; backups are your responsibility.",
+      "Your own server (4 vCPU, 8 GB memory, 120 GB free disk, arm64, Ubuntu 24.04) running the app and Postgres with Docker Compose behind Caddy. Memory limits: the app 512 MB, db 512 MB; OpsCrew's edge and the system 512 MB; 6.5 GB of 8.0 GB free. No server price: you already pay for this server. OpsCrew snapshots the app's data on your server with `opscrew snapshot`; `opscrew snapshot schedule on` takes them on a schedule and `opscrew snapshot offsite on` keeps an encrypted copy off the server. OpsCrew cannot back up the server itself: those backups are your responsibility.",
     );
     expect(option.target).toMatchObject({
       serverType: OWN_SERVER_TYPE,
@@ -139,7 +139,9 @@ describe("buildOwnServerOption", () => {
     expect(tradeoffs).toMatch(
       /Your server has 25 GB of free disk, but OpsCrew plans at least 30 GB of free disk/,
     );
-    expect(tradeoffs).toMatch(/Postgres runs in a container on the same server; back up its data/);
+    expect(tradeoffs).toMatch(
+      /Postgres runs in a container on the same server, so its data is only as safe/,
+    );
   });
 
   describe("size boundaries", () => {

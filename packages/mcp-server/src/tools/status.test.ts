@@ -203,8 +203,9 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
   /**
    * `opscrew_status` on `plan`, deployed at {@link SERVER_IPV4} with the project's deploy key: the
    * deploy user's shell answers the figures command with {@link FIGURES}, the deploys' read with
-   * `deploys.server` and anything else with `stdout`, all exiting with `exitCode`; `github` is the
-   * GitHub of `acme/shop`, and `deploys.github` its GitHub and registry for the deploys.
+   * `deploys.server`, the snapshots' listing with `snapshots` (else `stdout`) and anything else with
+   * `stdout`, all exiting with `exitCode`; `github` is the GitHub of `acme/shop`, and
+   * `deploys.github` its GitHub and registry for the deploys.
    */
   async function call(
     plan: ReturnType<typeof deployedPlan>,
@@ -212,6 +213,7 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
     exitCode = 0,
     github?: FakeGitHub,
     deploys: { server?: string; github?: PromoteGitHubApi } = {},
+    snapshots?: string,
   ) {
     const dir = await mkdtemp(path.join(tmpdir(), "opscrew-mcp-status-"));
     cleanups.push(() => rm(dir, { recursive: true, force: true }));
@@ -232,7 +234,9 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
             ? FIGURES
             : command.includes("==opscrew-deploys:")
               ? (deploys.server ?? "")
-              : stdout,
+              : command.includes("snapshot.sh")
+                ? (snapshots ?? stdout)
+                : stdout,
           stderr: "",
         }),
       };
@@ -280,8 +284,8 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
       deployedPlan(),
       "shop-app-1|running\nshop-worker-1|exited\nshop-db-1|running\n",
     );
-    // The components, then the figures, then the deploys.
-    expect(hosts).toEqual([SERVER_IPV4, SERVER_IPV4, SERVER_IPV4]);
+    // The components, then the figures, then the deploys, then the snapshots.
+    expect(hosts).toEqual([SERVER_IPV4, SERVER_IPV4, SERVER_IPV4, SERVER_IPV4]);
     expect(text).toContain(
       [
         "Components:",
@@ -321,6 +325,35 @@ describe("opscrew_status: the app's components (FR-1331)", () => {
         others: [],
       },
     });
+  });
+
+  it("names the last snapshot, as text and data (024 US8)", async () => {
+    const id = "20261107T030000Z";
+    const about = {
+      id,
+      kind: "scheduled",
+      taken: "2026-11-07T03:00:05Z",
+      version: `sha256:${"a".repeat(64)}`,
+      services: [{ name: "db", kind: "postgres", file: "db.dump", size: 10 }],
+    };
+    const { text, data } = await call(
+      deployedPlan(),
+      "shop-app-1|running\nshop-worker-1|running\nshop-db-1|running\n",
+      0,
+      undefined,
+      {},
+      `${JSON.stringify(about)}\n`,
+    );
+    expect(text).toContain(
+      `Last snapshot: ${id}, scheduled, 2026-11-07 03:00 UTC, every part copied, on the app's server.`,
+    );
+    expect(data).toMatchObject({
+      snapshot: {
+        last: { id, kind: "scheduled", where: "on the app's server" },
+        scheduledFailures: [],
+      },
+    });
+    expect(JSON.stringify(data)).not.toContain(SERVER_IPV4);
   });
 
   it("adds the scheduled check's state and open alerts, as text and data", async () => {

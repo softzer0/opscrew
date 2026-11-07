@@ -26,7 +26,7 @@ export const PORTAINER_HOST_NOTE =
 
 /** Said wherever OpsCrew designs, documents or removes a deployment in the user's Portainer. */
 export const PORTAINER_BACKUPS_NOTE =
-  "Backups, including the app's data volumes, are your responsibility: OpsCrew cannot back up a Portainer host.";
+  "OpsCrew snapshots the app's data into the stack's snapshots volume with `opscrew snapshot`; `opscrew snapshot schedule on` takes them on a schedule (only the services copied while they run) and `opscrew snapshot offsite on` keeps an encrypted copy off the host. Backing up the Portainer host itself is your responsibility.";
 
 /** Both Portainer notes as one paragraph. */
 export const PORTAINER_NOTES = `${PORTAINER_HOST_NOTE} ${PORTAINER_BACKUPS_NOTE}`;
@@ -137,7 +137,7 @@ export interface PortainerOptionInput {
  * The single design option in the user's existing Portainer: the app (and the Postgres or Redis
  * it needs) as Portainer stacks in the chosen environment, built for its architecture, with no
  * price, the web and redeploy modes the user chose, and the notes that OpsCrew does not change
- * the host and that backups are the user's. Validated with `DesignOptionSchema`.
+ * the host and on what OpsCrew backs up. Validated with `DesignOptionSchema`.
  */
 export function buildPortainerOption(input: PortainerOptionInput): DesignOption {
   const { facts, requirements, choice } = input;
@@ -174,7 +174,7 @@ export function buildPortainerOption(input: PortainerOptionInput): DesignOption 
   );
   if (serviceOf(sizing, "postgres")) {
     tradeoffs.push(
-      "Postgres runs in the app's stack with a named volume on the same host; back up its data yourself.",
+      "Postgres runs in the app's stack with a named volume on the same host, so its data is only as safe as that host: keep the snapshots' encrypted copy off it.",
     );
   }
   tradeoffs.push(PORTAINER_HOST_NOTE, PORTAINER_BACKUPS_NOTE);

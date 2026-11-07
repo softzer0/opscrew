@@ -151,7 +151,7 @@ describe.skipIf(!findExecutable("git"))("opscrew secure for the user's Portainer
     const report = await readFile(s.deps.paths.files.securityReport, "utf8");
     expect(report).toContain("## The app's stacks in your Portainer");
     expect(report).toContain("OpsCrew does not change the host");
-    expect(report).toContain("Backups, including the app's data volumes, are your responsibility");
+    expect(report).toContain("Backing up the Portainer host itself is your responsibility");
     expect(report).toContain("OpsCrew does not probe your Portainer host");
     expect(report).not.toContain("## Server hardening");
     expect(s.deps.reporter.text()).toContain("OpsCrew does not change the host");

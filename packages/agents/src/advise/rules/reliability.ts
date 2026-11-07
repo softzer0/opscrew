@@ -1,10 +1,14 @@
 /**
- * Advise's reliability rules (spec US6): backups off while the data matters, the scheduled check
- * off for prod, a check that keeps failing and recovering, and a container restarting in a loop.
+ * Advise's reliability rules (spec US6): backups off while the data matters, and on an own server
+ * or Portainer the scheduled snapshots and their off-server copy (024 FR-2410), the scheduled
+ * check off for prod, a check that keeps failing and recovering, and a container restarting in a
+ * loop.
  */
 import { listText, plural } from "@opscrew/core";
-import { isServerlessProvider } from "@opscrew/plan-schema";
+import { isServerlessProvider, snapshotOffsiteOf, snapshotScheduleOf } from "@opscrew/plan-schema";
+import { storagePrice } from "../../design/storage";
 import { logParts } from "../../logs/parts";
+import { dataServers } from "../../snapshot/hosts";
 import { type Proposal, type Readings, THRESHOLDS } from "../types";
 import {
   cloudServers,
@@ -34,6 +38,7 @@ export function reliabilityRules(readings: Readings): Proposal[] {
   if (isServerlessProvider(readings.plan.target.provider)) return [];
   return [
     ...backupProposals(readings),
+    ...snapshotProposals(readings),
     ...checkProposals(readings),
     ...flapProposals(readings),
     ...restartProposals(readings),
@@ -73,6 +78,75 @@ function backupProposals(readings: Readings): Proposal[] {
         apply: { kind: "plan", change: { kind: "backups", server: name, enabled: true } },
       };
     });
+}
+
+/**
+ * On an own server or Portainer whose data matters (no provider backs it up there), with data to
+ * snapshot and outside a preview environment: the scheduled snapshots when they are off, and the
+ * encrypted copy off the server when it is off, on Cloudflare R2 (priced as provision shows it)
+ * when the domain is there, else at Hetzner or DigitalOcean in a region the user picks.
+ */
+function snapshotProposals({ plan, requirements, flags }: Readings): Proposal[] {
+  const criticality = requirements?.dataCriticality;
+  if (criticality !== "important" && criticality !== "critical") return [];
+  const portainer = plan.target.provider === "portainer";
+  if (!portainer && plan.target.provider !== "own") return [];
+  if (plan.environment?.previews !== undefined || dataServers(plan).length === 0) return [];
+  const where = portainer ? "the Portainer host" : "your server";
+  const data = `The interview says the app's data is ${criticality}`;
+  const proposals: Proposal[] = [];
+  if (snapshotScheduleOf(plan) === undefined) {
+    proposals.push({
+      id: "reliability.env.snapshot-schedule",
+      category: "reliability",
+      urgency: "when-convenient",
+      title: "Take snapshots of the app's data on a schedule",
+      reasons: [
+        {
+          text: `${data}, and nothing backs it up on ${where}: no snapshot is taken unless someone runs \`opscrew snapshot${flags}\``,
+          basis: PLAN,
+        },
+      ],
+      apply: { kind: "command", command: `opscrew snapshot schedule on${flags}` },
+    });
+  }
+  if (snapshotOffsiteOf(plan) === undefined) {
+    const r2 = plan.dns.provider === "cloudflare" && plan.dns.domain !== undefined;
+    const price = storagePrice("r2", { storageGb: 0, egressGbPerMonth: 0 });
+    proposals.push({
+      id: "reliability.env.snapshot-offsite",
+      category: "reliability",
+      urgency: "when-convenient",
+      title: `Keep an encrypted copy of each snapshot off ${portainer ? "the host" : "the server"}`,
+      reasons: [
+        {
+          text: `${data}, and its snapshots stay on ${where}: losing it loses them too. The copy is encrypted to the recovery copy's age key, which only you hold`,
+          basis: PLAN,
+        },
+      ],
+      ...(r2
+        ? {
+            price: {
+              before: 0,
+              after: price.amount,
+              currency: price.currency,
+              source: "static" as const,
+              asOf: price.checkedOn,
+            },
+            apply: {
+              kind: "command" as const,
+              command: `opscrew snapshot offsite on --to r2${flags}`,
+            },
+          }
+        : {
+            apply: {
+              kind: "manual" as const,
+              text: `Run \`opscrew snapshot offsite on --to hetzner --region <region>${flags}\` (or \`--to digitalocean\`) with the region the copies should be in`,
+            },
+          }),
+    });
+  }
+  return proposals;
 }
 
 /** The scheduled check off for prod, where GitHub can reach the app. */

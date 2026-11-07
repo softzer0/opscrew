@@ -110,7 +110,13 @@ describe("status of a plan without servers or a network", () => {
       services: { remote: servers.remote },
     });
     expect(report.lines).toMatchSnapshot();
-    expect(Object.keys(report).sort()).toEqual(["deploys", "lines", "resources", "status"]);
+    expect(Object.keys(report).sort()).toEqual([
+      "deploys",
+      "lines",
+      "resources",
+      "snapshot",
+      "status",
+    ]);
   });
 });
 
@@ -149,6 +155,8 @@ describe("status of an app on two servers", () => {
         `${w.prefix}.100): last handshake with server app 1 minute ago, with server data 6 minutes ago`,
       "  Access: device laptop to PostgreSQL (db), read-only",
       "  Public SSH: open on every server",
+      "",
+      "Snapshots: none yet; `opscrew snapshot` takes one.",
     ]);
     // The data for the MCP server: every server, the links, the devices without keys, the grants.
     expect(
@@ -175,7 +183,8 @@ describe("status of an app on two servers", () => {
       services: { remote: w.remote },
       network: w.network,
     });
-    expect(withoutDeploys(report.lines).at(-1)).toBe(
+    // The network's section ends before the snapshots' (024).
+    expect(withoutDeploys(report.lines).at(-3)).toBe(
       `  Warning: PostgreSQL (db) on server data is not published on its private address ${w.prefix}.2:5432, so the app can't reach it. Run \`opscrew provision\` to fix it.`,
     );
     expect(report.servers?.[1]?.unpublished).toEqual([
@@ -252,8 +261,8 @@ describe("status of an app on two servers", () => {
     expect(onData.filter((c) => c.includes("{{.Names}}|{{.State}}"))).toEqual([
       expect.stringMatching(/^sudo -n sh -c /),
     ]);
-    // Once by `serverShell`, once by the network's read.
-    expect(onData.filter((c) => c.includes("echo sudo-password"))).toHaveLength(2);
+    // Once by `serverShell`, once by the network's read, once by the snapshots' read.
+    expect(onData.filter((c) => c.includes("echo sudo-password"))).toHaveLength(3);
   });
 
   it("names an extra server's failed read with its own next step", async () => {

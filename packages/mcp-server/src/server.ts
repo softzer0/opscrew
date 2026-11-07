@@ -18,6 +18,7 @@ import { registerPreviewTools } from "./tools/previews";
 import { registerRunnerHostTools } from "./tools/runners";
 import { registerScanTool } from "./tools/scan";
 import { registerSecretsTools } from "./tools/secrets";
+import { registerSnapshotsTool } from "./tools/snapshots";
 import { registerStatusTool } from "./tools/status";
 
 /**
@@ -35,7 +36,7 @@ const INSTRUCTIONS = [
   "- Never run tofu, terraform, hcloud, doctl, ssh or curl against Portainer yourself.",
   "- Terminal-only, with no tool on purpose (give the user the command): moving the app elsewhere, `npx opscrew retarget --to <hetzner|digitalocean|own|portainer>` (while a move is in progress, pass on the commands the tools name to continue, finish or abort it); buying a domain, `npx opscrew domain buy <domain> [--registrar <id>]` (it shows the price and asks the user to type the domain; scripts need --confirm and --max-price); connecting a domain they own, `npx opscrew domain connect <domain>`; applying an advise proposal, `npx opscrew advise --apply <id>`; removing the app, `npx opscrew destroy` (deleting the app's data needs `--delete-data` and the app's name typed by the user; `--undo-host` also reverses OpsCrew's changes to a server the user has).",
   "- OpsCrew never asks for contact details: registrars use the account's own contact.",
-  "- OpsCrew never changes the host of the user's Portainer, its other stacks or Portainer's settings, and backs up neither a server the user has nor a Portainer host: backups are the user's.",
+  "- OpsCrew never changes the host of the user's Portainer, its other stacks or Portainer's settings; it backs up only the app's data, by snapshots: a server the user has or a Portainer host is the user's to back up.",
 ].join("\n");
 
 /**
@@ -60,6 +61,7 @@ export function createOpscrewMcpServer(deps: OpscrewMcpDeps): McpServer {
   registerAdviseTool(server, resolved);
   registerLogsTool(server, resolved);
   registerPreviewTools(server, resolved);
+  registerSnapshotsTool(server, resolved);
   registerDeployTools(server, resolved);
   registerDriftTool(server, resolved);
   registerInitCheckTool(server, resolved);
