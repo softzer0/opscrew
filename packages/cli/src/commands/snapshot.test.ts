@@ -10,14 +10,14 @@ import { SERVER_IPV4, testPlan } from "@opscrew/agents/testing";
 import type { ApprovalRequest, CommandResult, RemoteExec } from "@opscrew/contracts";
 import { OpsCrewError, resolveProjectPaths } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withServices } from "../deps";
-import { inEnvironment, withEnvironments } from "../ui/__fixtures__/environments";
-import { auditText, projectContext, run, type TempProject } from "../ui/__fixtures__/harness";
+import { auditText, run } from "../ui/__fixtures__/harness";
+import { type AgentCall, asking, lastCall, stagingProjects } from "../ui/__fixtures__/snapshots";
 
 /** Each call of a snapshot command, and the answer a test gives instead of the real agent's. */
 const fake = vi.hoisted(() => ({
-  calls: [] as { name: string; deps: PhaseDeps; args: unknown[] }[],
+  calls: [] as AgentCall[],
   answers: {} as Record<
     string,
     ((deps: PhaseDeps, ...args: unknown[]) => Promise<unknown>) | undefined
@@ -47,24 +47,11 @@ vi.mock("@opscrew/agents", async (importOriginal) => {
   };
 });
 
-let project: TempProject | undefined;
+const { setup, project } = stagingProjects();
 beforeEach(() => {
   fake.calls.length = 0;
   fake.answers = {};
 });
-afterEach(async () => {
-  await project?.cleanup();
-  project = undefined;
-});
-
-/** A project with prod deployed on Hetzner and staging beside it, and a script's context. */
-async function setup(options: { interactive?: boolean; env?: Record<string, string> } = {}) {
-  project = await withEnvironments({
-    staging: inEnvironment(testPlan({ deployed: true }), "staging"),
-  });
-  Object.assign(project.env, options.env);
-  return projectContext(project, { interactive: options.interactive ?? false });
-}
 
 /** The snapshot `20261106T190000Z` of staging on the app's server, with its database. */
 function entry(extra: Partial<SnapshotEntry> = {}): SnapshotEntry {
@@ -97,26 +84,8 @@ const DELETION: ApprovalRequest = {
   confirmPhrase: "20261106T190000Z",
 };
 
-/** The last call's deps and arguments. */
-function lastCall(name: string) {
-  const call = fake.calls.filter((each) => each.name === name).at(-1);
-  if (call === undefined) throw new Error(`${name} was not called`);
-  return call;
-}
-
-/** An answer that asks `request` and reports the decision, as an agent would. */
-function asking(request: ApprovalRequest, decisions: (string | undefined)[], result: unknown) {
-  return async (deps: PhaseDeps) => {
-    const decision = await deps.approvals.request(request);
-    decisions.push(decision.approved ? "approved" : decision.reason);
-    if (!decision.approved) {
-      throw new OpsCrewError("APPROVAL_REFUSED", "Nothing was stopped. No snapshot was taken.", {
-        hint: "Run `opscrew snapshot --env staging` again and approve it.",
-      });
-    }
-    return result;
-  };
-}
+/** What a refused approval says, as the agent does. */
+const REFUSED = "Nothing was stopped. No snapshot was taken.";
 
 const TAKEN = { id: "20261106T190000Z", where: "on the app's server", services: [] };
 
@@ -184,7 +153,7 @@ describe("opscrew snapshot", () => {
       await run(ctx, "snapshot", "--env", "staging", "--skip", " kafka ", "--skip", "search"),
       ctx.errors,
     ).toBe(0);
-    const call = lastCall("takeSnapshot");
+    const call = lastCall(fake.calls, "takeSnapshot");
     expect(call.deps.paths.environment).toBe("staging");
     expect(call.args).toEqual([{ skip: ["kafka", "search"] }]);
     expect(ctx.output).toContain(
@@ -201,13 +170,13 @@ describe("opscrew snapshot", () => {
     withServices(ctx, { snapshot: { remote } });
     fake.answers.takeSnapshot = async () => TAKEN;
     expect(await run(ctx, "snapshot", "--env", "staging"), ctx.errors).toBe(0);
-    expect(lastCall("takeSnapshot").args).toEqual([{ services: { remote } }]);
+    expect(lastCall(fake.calls, "takeSnapshot").args).toEqual([{ services: { remote } }]);
   });
 
   it("approves a stop for the copy in a script only with --allow-downtime", async () => {
     const ctx = await setup();
     const decisions: (string | undefined)[] = [];
-    fake.answers.takeSnapshot = asking(STOP, decisions, TAKEN);
+    fake.answers.takeSnapshot = asking(STOP, decisions, TAKEN, REFUSED);
     expect(await run(ctx, "snapshot", "--env", "staging", "--allow-downtime"), ctx.errors).toBe(0);
     expect(ctx.output).toContain(`✓ ${STOP.title} (allowed with --allow-downtime)`);
     expect(await run(ctx, "snapshot", "--env", "staging")).toBe(1);
@@ -229,7 +198,7 @@ describe("opscrew snapshot", () => {
         },
       },
     });
-    fake.answers.takeSnapshot = asking(STOP, [], TAKEN);
+    fake.answers.takeSnapshot = asking(STOP, [], TAKEN, REFUSED);
     expect(await run(ctx, "snapshot", "--env", "staging", "--allow-downtime"), ctx.errors).toBe(0);
     expect(asked?.title).toBe(STOP.title);
   });
@@ -241,11 +210,16 @@ describe("opscrew snapshot", () => {
       ...STOP,
       title: "Maintenance window: shut down the server shop-staging-data of staging for a snapshot",
     };
-    fake.answers.takeServerSnapshot = asking(window, decisions, {
-      id: "9001",
-      where: "at Hetzner Cloud (server shop-staging-data)",
-      server: { provider: "hetzner", id: "4711", name: "shop-staging-data" },
-    });
+    fake.answers.takeServerSnapshot = asking(
+      window,
+      decisions,
+      {
+        id: "9001",
+        where: "at Hetzner Cloud (server shop-staging-data)",
+        server: { provider: "hetzner", id: "4711", name: "shop-staging-data" },
+      },
+      REFUSED,
+    );
     expect(
       await run(
         ctx,
@@ -260,7 +234,9 @@ describe("opscrew snapshot", () => {
       ),
       ctx.errors,
     ).toBe(0);
-    expect(lastCall("takeServerSnapshot").args).toEqual([{ serverName: "data", stop: true }]);
+    expect(lastCall(fake.calls, "takeServerSnapshot").args).toEqual([
+      { serverName: "data", stop: true },
+    ]);
     expect(decisions).toEqual(["approved"]);
     expect(ctx.output).toContain(
       "`opscrew restore --server 9001 --env staging` rebuilds the server from it",
@@ -300,13 +276,15 @@ describe("opscrew snapshot list", () => {
   it("gives the key file's text to the agent with --key-file, and never shows it", async () => {
     const ctx = await setup();
     const identity = `AGE-SECRET-KEY-1${"H".repeat(58)}`;
-    await writeFile(path.join(project?.root ?? "", "age.txt"), `# a key\n${identity}\n`);
+    await writeFile(path.join(project().root, "age.txt"), `# a key\n${identity}\n`);
     fake.answers.listSnapshots = async (deps) => {
       deps.reporter.warn(`Read the bucket with ${identity}`);
       return [entry({ where: "in the off-server bucket shop-staging-backups" })];
     };
     expect(await run(ctx, "snapshot", "list", "--env", "staging", "--key-file", "age.txt")).toBe(0);
-    expect(lastCall("listSnapshots").args).toEqual([{ identity: `# a key\n${identity}\n` }]);
+    expect(lastCall(fake.calls, "listSnapshots").args).toEqual([
+      { identity: `# a key\n${identity}\n` },
+    ]);
     expect(ctx.output).toContain("in the off-server bucket shop-staging-backups");
     expect(`${ctx.output}${ctx.errors}`).not.toContain(identity);
     expect(await run(ctx, "snapshot", "list", "--env", "staging", "--key-file", "nope.txt")).toBe(
@@ -331,8 +309,8 @@ describe("opscrew snapshot list", () => {
 
   it("reads the server's snapshots through the fakes, with the real agent", async () => {
     const ctx = await setup();
-    const paths = resolveProjectPaths(project?.root ?? "", {
-      env: project?.env ?? {},
+    const paths = resolveProjectPaths(project().root, {
+      env: project().env,
       environment: "staging",
     });
     await recordServerAddress(paths, { ipv4: SERVER_IPV4 });
@@ -375,11 +353,16 @@ describe("opscrew snapshot delete", () => {
   it("approves the deletion in a script only with --confirm <id>, never --yes", async () => {
     const ctx = await setup();
     const decisions: (string | undefined)[] = [];
-    fake.answers.deleteSnapshot = asking(DELETION, decisions, {
-      id: "20261106T190000Z",
-      where: "on the app's server",
-      outcome: "deleted",
-    });
+    fake.answers.deleteSnapshot = asking(
+      DELETION,
+      decisions,
+      {
+        id: "20261106T190000Z",
+        where: "on the app's server",
+        outcome: "deleted",
+      },
+      REFUSED,
+    );
     expect(
       await run(
         ctx,
@@ -393,7 +376,7 @@ describe("opscrew snapshot delete", () => {
       ),
       ctx.errors,
     ).toBe(0);
-    expect(lastCall("deleteSnapshot").args).toEqual(["20261106T190000Z", {}]);
+    expect(lastCall(fake.calls, "deleteSnapshot").args).toEqual(["20261106T190000Z", {}]);
     expect(ctx.output).toContain(`✓ ${DELETION.title} (confirmed with --confirm 20261106T190000Z)`);
     expect(await run(ctx, "snapshot", "delete", "20261106T190000Z", "--env", "staging")).toBe(1);
     expect(decisions).toEqual([
@@ -419,7 +402,7 @@ describe("opscrew snapshot delete", () => {
       },
     });
     const decisions: (string | undefined)[] = [];
-    fake.answers.deleteSnapshot = asking(DELETION, decisions, undefined);
+    fake.answers.deleteSnapshot = asking(DELETION, decisions, undefined, REFUSED);
     expect(await run(ctx, "snapshot", "delete", "20261106T190000Z", "--env", "staging")).toBe(1);
     expect(asked?.confirmPhrase).toBe("20261106T190000Z");
   });
@@ -458,7 +441,7 @@ describe("opscrew snapshot schedule and offsite", () => {
       ),
       ctx.errors,
     ).toBe(0);
-    expect(lastCall("snapshotScheduleOn").args).toEqual([
+    expect(lastCall(fake.calls, "snapshotScheduleOn").args).toEqual([
       { every: "daily", keep: 7, stop: ["kafka", "search"] },
     ]);
     expect(ctx.output).toBe(
@@ -471,7 +454,7 @@ describe("opscrew snapshot schedule and offsite", () => {
     fake.answers.snapshotScheduleOff = async () =>
       change(["Scheduled snapshots of staging are off."]);
     expect(await run(ctx, "snapshot", "schedule", "off", "--env", "staging"), ctx.errors).toBe(0);
-    expect(lastCall("snapshotScheduleOff").args).toEqual([]);
+    expect(lastCall(fake.calls, "snapshotScheduleOff").args).toEqual([]);
     expect(ctx.output).toContain("Scheduled snapshots of staging are off.");
   });
 
@@ -496,11 +479,11 @@ describe("opscrew snapshot schedule and offsite", () => {
       ),
       ctx.errors,
     ).toBe(0);
-    expect(lastCall("snapshotOffsiteOn").args).toEqual([
+    expect(lastCall(fake.calls, "snapshotOffsiteOn").args).toEqual([
       { to: "hetzner", region: "fsn1", days: 30 },
     ]);
     expect(await run(ctx, "snapshot", "offsite", "off", "--env", "staging"), ctx.errors).toBe(0);
-    expect(lastCall("snapshotOffsiteOff").args).toEqual([]);
+    expect(lastCall(fake.calls, "snapshotOffsiteOff").args).toEqual([]);
     expect(ctx.output).toContain(
       "The copies go to shop-staging-backups.\nNo new copy is uploaded.\n",
     );
@@ -513,7 +496,7 @@ describe("opscrew snapshot schedule and offsite", () => {
       ctx.errors,
     ).toBe(0);
     expect(ctx.output).toContain("provision");
-    expect(lastCall("snapshotScheduleOn").deps.paths.environment).toBe("staging");
+    expect(lastCall(fake.calls, "snapshotScheduleOn").deps.paths.environment).toBe("staging");
   });
 });
 
@@ -530,6 +513,6 @@ describe("opscrew snapshot never shows a secret", () => {
     };
     expect(await run(ctx, "snapshot", "--env", "staging")).toBe(2);
     expect(`${ctx.output}${ctx.errors}`).not.toContain(token);
-    expect(await auditText(project as TempProject)).not.toContain(token);
+    expect(await auditText(project())).not.toContain(token);
   });
 });

@@ -11,33 +11,30 @@ afterEach(async () => {
 });
 
 describe("opscrew provision --plan-only and the off-server copies' bucket", () => {
-  it("lists the backups plan's hash and names it in the --approve command", async () => {
-    project = await tempProject();
-    await writeProjectPlan(project, testPlan({ deployed: true, userSecret: false }));
-    const ctx = projectContext(project);
+  it("lists the backups plan's hash and names it in the --approve command, and nothing without one", async () => {
+    const made = await tempProject();
+    project = made;
+    await writeProjectPlan(made, testPlan({ deployed: true, userSecret: false }));
+    const storage = "c".repeat(64);
     const backups = "b".repeat(64);
-    await runInfraCommand(ctx, "provision", { planOnly: true }, async () => ({
-      applied: false,
-      outputs: {},
-      storagePlanHash: "c".repeat(64),
-      backupsPlanHash: backups,
-    }));
-    expect(ctx.output).toContain(`bucket of the off-server copies:  ${backups}`);
-    expect(ctx.output).toContain(
-      `opscrew provision --approve ${"c".repeat(64)} --approve ${backups}`,
-    );
-  });
+    /** `provision --plan-only`'s output for a storage plan and, when given, a backups plan. */
+    const planOnly = async (backupsPlanHash?: string) => {
+      const ctx = projectContext(made);
+      await runInfraCommand(ctx, "provision", { planOnly: true }, async () => ({
+        applied: false,
+        outputs: {},
+        storagePlanHash: storage,
+        ...(backupsPlanHash === undefined ? {} : { backupsPlanHash }),
+      }));
+      return ctx.output;
+    };
 
-  it("prints no such line and no other hash without one", async () => {
-    project = await tempProject();
-    await writeProjectPlan(project, testPlan({ deployed: true, userSecret: false }));
-    const ctx = projectContext(project);
-    await runInfraCommand(ctx, "provision", { planOnly: true }, async () => ({
-      applied: false,
-      outputs: {},
-      storagePlanHash: "c".repeat(64),
-    }));
-    expect(ctx.output).toContain(`opscrew provision --approve ${"c".repeat(64)}`);
-    expect(ctx.output).not.toContain("off-server");
+    const both = await planOnly(backups);
+    expect(both).toContain(`bucket of the off-server copies:  ${backups}`);
+    expect(both).toContain(`opscrew provision --approve ${storage} --approve ${backups}`);
+
+    const alone = await planOnly();
+    expect(alone).toContain(`opscrew provision --approve ${storage}`);
+    expect(alone).not.toContain("off-server");
   });
 });

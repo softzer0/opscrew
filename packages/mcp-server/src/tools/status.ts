@@ -7,7 +7,6 @@ import {
   type PhaseDeps,
   phaseStatusLines,
   placeWords,
-  readOwnServer,
   sideWords,
   supplyChainLines,
   type TlsStatusOptions,
@@ -22,7 +21,7 @@ import {
   readArtifact,
 } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
-import { hostKeyNeedsTerminal } from "./elicitation";
+import { refuseUnconfirmedOwnServer } from "./elicitation";
 import {
   andApp,
   appInput,
@@ -116,14 +115,13 @@ function componentsOf(phase: PhaseDeps, plan: DeployPlan, options: StatusToolOpt
   return componentStatusReport(phase, plan, {
     ...(options.services === undefined ? {} : { services: options.services }),
     ...(options.network === undefined ? {} : { network: options.network }),
-    // The model cannot confirm a host key: an own server never confirmed is left to the terminal.
-    check: async () => {
-      if (plan.target.provider !== "own") return;
-      const recorded = await readOwnServer(phase.paths).catch(() => undefined);
-      if (recorded !== undefined && recorded.hostKey === undefined) {
-        throw hostKeyNeedsTerminal("status", "OpsCrew did not check whether the components run.");
-      }
-    },
+    check: () =>
+      refuseUnconfirmedOwnServer(
+        plan,
+        phase.paths,
+        "status",
+        "OpsCrew did not check whether the components run.",
+      ),
   });
 }
 

@@ -1,9 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { type LogLine, type LogServices, lineText, readLogs, readOwnServer } from "@opscrew/agents";
+import { type LogLine, type LogServices, lineText, readLogs } from "@opscrew/agents";
 import { readArtifact } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
-import { hostKeyNeedsTerminal } from "./elicitation";
+import { refuseUnconfirmedOwnServer } from "./elicitation";
 import { appInput, environmentInput, projectDirInput, runTool, toolEnvironment } from "./shared";
 
 /** The most lines `opscrew_logs` returns. */
@@ -87,13 +87,7 @@ export function registerLogsTool(
         const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
         const phase = await call.phaseDeps({ app: appKey, environment: name });
         const plan = await readArtifact("plan", phase.paths.files.plan);
-        // The model cannot confirm a host key: an own server never confirmed is left to the terminal.
-        if (plan.target.provider === "own") {
-          const recorded = await readOwnServer(phase.paths).catch(() => undefined);
-          if (recorded !== undefined && recorded.hostKey === undefined) {
-            throw hostKeyNeedsTerminal("logs", "Nothing was read.");
-          }
-        }
+        await refuseUnconfirmedOwnServer(plan, phase.paths, "logs", "Nothing was read.");
         const read = await readLogs(phase, plan, {
           ...(service === undefined ? {} : { service }),
           ...(since === undefined ? {} : { since }),

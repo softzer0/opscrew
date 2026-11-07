@@ -44,6 +44,7 @@ import {
   changedRulesets,
   commitDetails,
   createDnsRecord,
+  deployBranchImage,
   fileAt,
   ghcrPullStatus,
   jobErrors,
@@ -98,7 +99,13 @@ import {
   printedHash,
   SERVER_E2E_VARIABLES,
 } from "./support";
-import { originCheck, readTlsRecord, requireDocker, secureDeep } from "./tls-checks";
+import {
+  originCheck,
+  readTlsRecord,
+  requireDocker,
+  secureDeep,
+  secureDeepNeedsDocker,
+} from "./tls-checks";
 import { cloudflareSideProblems } from "./tls-support";
 
 const ENV = process.env;
@@ -428,16 +435,6 @@ describe.skipIf(MISSING.length > 0)(
           ? `${what}: this computer resolved ${hosts.join(" and ")} ${duration(Date.now() - started)} after the wait began`
           : `${what}: this computer still did not resolve ${[...missing].join(" and ")} after ${duration(Date.now() - started)}; verify checks it through the public resolver's answer`,
       );
-    }
-
-    /** The image the deploy branch runs now. */
-    async function deployBranchImage(): Promise<DeployedImage> {
-      const compose = await fileAt(run.github, "compose.yaml", DEPLOY_BRANCH);
-      const image = compose === undefined ? undefined : deployedImage(compose);
-      if (image === undefined) {
-        throw new Error(`The ${DEPLOY_BRANCH} branch does not run an app image yet.`);
-      }
-      return image;
     }
 
     /**
@@ -777,7 +774,7 @@ describe.skipIf(MISSING.length > 0)(
         },
         10_000,
       );
-      const image = await deployBranchImage();
+      const image = await deployBranchImage(run.github, DEPLOY_BRANCH);
       await waitFor(
         `the site answering with the version of "${what}"`,
         minutes(15),
@@ -1395,7 +1392,7 @@ describe.skipIf(MISSING.length > 0)(
 
         await run.deploy("the first deploy, updater + tunnel");
         web = "tunnel";
-        const image = await deployBranchImage();
+        const image = await deployBranchImage(run.github, DEPLOY_BRANCH);
         await waitForSite(image.version);
         const file = await portainer().ok<{ StackFileContent?: string }>(
           "GET",
@@ -1567,7 +1564,7 @@ describe.skipIf(MISSING.length > 0)(
       "3b. a failing change rolls back to the previous version, and a revert deploys again",
       minutes(75),
       async () => {
-        const good = await deployBranchImage();
+        const good = await deployBranchImage(run.github, DEPLOY_BRANCH);
         const dockerfile = (await run.readPlan()).app.dockerfile;
         const original = await readFile(join(run.repo, dockerfile), "utf8");
         // The same image with a last `CMD` that exits at once: the new version never answers.
@@ -1602,7 +1599,7 @@ describe.skipIf(MISSING.length > 0)(
           `the ${DEPLOY_BRANCH} branch's newest commit is the rollback`,
         ).toBe("Roll back to the previous version");
         expect(
-          (await deployBranchImage()).digest,
+          (await deployBranchImage(run.github, DEPLOY_BRANCH)).digest,
           "the rollback wrote the previous image back",
         ).toBe(good.digest);
         await waitForSite(good.version, minutes(10));
@@ -1686,7 +1683,10 @@ describe.skipIf(MISSING.length > 0)(
           );
         }
         await run.deploy("the token replace through MCP");
-        await waitForSite((await deployBranchImage()).version, minutes(10));
+        await waitForSite(
+          (await deployBranchImage(run.github, DEPLOY_BRANCH)).version,
+          minutes(10),
+        );
         await expectDecoysUnchanged("the apply through MCP");
       },
     );
@@ -1809,7 +1809,10 @@ describe.skipIf(MISSING.length > 0)(
         try {
           await run.deploy("caddy");
           web = "caddy";
-          await waitForSite((await deployBranchImage()).version, minutes(15));
+          await waitForSite(
+            (await deployBranchImage(run.github, DEPLOY_BRANCH)).version,
+            minutes(15),
+          );
         } catch (error) {
           // A failed deploy here may be Caddy's or a DNS cache's: record both (scrubbed).
           await caddyDiagnostics(hosts).catch((problem: unknown) => {
@@ -1856,7 +1859,7 @@ describe.skipIf(MISSING.length > 0)(
       "5b. caddy behind Cloudflare's proxy: origin TLS on the stack's Caddy, secure --deep with only testssl.sh, a redeploy under load with no failed request",
       minutes(90),
       async () => {
-        await requireDocker("Step 5b");
+        await requireDocker(secureDeepNeedsDocker("Step 5b"));
         // The recovery copy's first key goes to a file of the test's own, its copy to a folder
         // (a public repository gets no committed copy in a script).
         const copies = join(run.work, "copies");
@@ -1879,7 +1882,10 @@ describe.skipIf(MISSING.length > 0)(
         caddyProxied = true;
         await run.provisionUntilDone("origin TLS in the stack");
         await run.deploy("origin TLS in the stack");
-        await waitForSite((await deployBranchImage()).version, minutes(15));
+        await waitForSite(
+          (await deployBranchImage(run.github, DEPLOY_BRANCH)).version,
+          minutes(15),
+        );
         await run.rememberGeneratedValues();
         if (!(await run.rememberSecretFile(join(run.work, "age-key.txt"), "age-identity"))) {
           run.findings.push(
@@ -1952,7 +1958,7 @@ describe.skipIf(MISSING.length > 0)(
       await run.expectSharedCloudflare("the switch to proxy");
       await run.deploy("proxy");
       web = "proxy";
-      await waitForSite((await deployBranchImage()).version, minutes(10));
+      await waitForSite((await deployBranchImage(run.github, DEPLOY_BRANCH)).version, minutes(10));
       await run.opscrewOk("verify", "--url", `http://${run.ipv4()}:${PROXY_PORT}`);
       observe("verify --url with a route on the Portainer host passed");
       await run.opscrewOk("drift");
@@ -1993,7 +1999,10 @@ describe.skipIf(MISSING.length > 0)(
             "the deploy workflow reached Portainer's webhook through Access (cloudflared → Portainer with no_tls_verify)",
           );
         }
-        await waitForSite((await deployBranchImage()).version, minutes(10));
+        await waitForSite(
+          (await deployBranchImage(run.github, DEPLOY_BRANCH)).version,
+          minutes(10),
+        );
         const all = await stackNames();
         expect(all, "the updater stack is gone").not.toContain(names().updater);
         expect(all, "the connector stack runs").toContain(names().tunnelConnector);
@@ -2049,7 +2058,7 @@ describe.skipIf(MISSING.length > 0)(
           observe(
             `after a registry token replace the entry is still granted to the environment (${changedKeys(before, after).length === 0 ? "unchanged" : "access changed"})`,
           );
-        await waitForSite((await deployBranchImage()).version, minutes(5));
+        await waitForSite((await deployBranchImage(run.github, DEPLOY_BRANCH)).version, minutes(5));
         await expectDecoysUnchanged("the switch to Cloudflare redeploys and the token replace");
       },
     );
@@ -2353,7 +2362,10 @@ describe.skipIf(MISSING.length > 0)(
           },
           10_000,
         );
-        await waitForSite((await deployBranchImage()).version, minutes(10));
+        await waitForSite(
+          (await deployBranchImage(run.github, DEPLOY_BRANCH)).version,
+          minutes(10),
+        );
         observe(
           "with a loopback Portainer address the updater called Portainer through host.docker.internal",
         );

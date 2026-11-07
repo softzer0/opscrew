@@ -1,13 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import {
-  listSnapshots,
-  readOwnServer,
-  type SnapshotServices,
-  snapshotListLines,
-} from "@opscrew/agents";
+import { listSnapshots, type SnapshotServices, snapshotListLines } from "@opscrew/agents";
 import { readArtifact } from "@opscrew/plan-schema";
 import type { ResolvedMcpDeps } from "../deps";
-import { hostKeyNeedsTerminal } from "./elicitation";
+import { refuseUnconfirmedOwnServer } from "./elicitation";
 import { appInput, environmentInput, projectDirInput, runTool, toolEnvironment } from "./shared";
 
 /**
@@ -36,13 +31,7 @@ export function registerSnapshotsTool(
         const { appKey, name } = await toolEnvironment(call.projectDir, app, environment);
         const phase = await call.phaseDeps({ app: appKey, environment: name });
         const plan = await readArtifact("plan", phase.paths.files.plan);
-        // The model cannot confirm a host key: an own server never confirmed is left to the terminal.
-        if (plan.target.provider === "own") {
-          const recorded = await readOwnServer(phase.paths).catch(() => undefined);
-          if (recorded !== undefined && recorded.hostKey === undefined) {
-            throw hostKeyNeedsTerminal("snapshot list", "Nothing was read.");
-          }
-        }
+        await refuseUnconfirmedOwnServer(plan, phase.paths, "snapshot list", "Nothing was read.");
         const snapshots = await listSnapshots(
           phase,
           options.services === undefined ? {} : { services: options.services },

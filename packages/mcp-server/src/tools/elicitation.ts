@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ElicitRequestFormParams } from "@modelcontextprotocol/sdk/types.js";
-import { approvalRequestLines } from "@opscrew/agents";
+import { approvalRequestLines, readOwnServer } from "@opscrew/agents";
 import type {
   ApprovalDecision,
   ApprovalHandler,
@@ -14,7 +14,9 @@ import {
   DECLINED_BY_USER,
   OpsCrewError,
   PHRASE_MISMATCH,
+  type ProjectPaths,
 } from "@opscrew/core";
+import type { DeployPlan } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ResolvedMcpDeps } from "../deps";
 
@@ -66,6 +68,23 @@ export function hostKeyNeedsTerminal(command: string, unchanged: string): OpsCre
       hint: `Ask the user to run \`npx opscrew ${command}\` in a terminal in the project directory: it shows the server's fingerprint to check against the server and pins it. Then call this tool again.`,
     },
   );
+}
+
+/**
+ * Stops a read-only tool (`command` its terminal command) on the user's own server whose SSH host
+ * key was never confirmed: the model cannot confirm a host key, so that is left to the terminal.
+ */
+export async function refuseUnconfirmedOwnServer(
+  plan: Pick<DeployPlan, "target">,
+  paths: Pick<ProjectPaths, "stateDir">,
+  command: string,
+  unchanged: string,
+): Promise<void> {
+  if (plan.target.provider !== "own") return;
+  const recorded = await readOwnServer(paths).catch(() => undefined);
+  if (recorded !== undefined && recorded.hostKey === undefined) {
+    throw hostKeyNeedsTerminal(command, unchanged);
+  }
 }
 
 /** The options of one dialog: the timeout, and the tool call it belongs to (with its abort signal). */

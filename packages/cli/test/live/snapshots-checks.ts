@@ -13,11 +13,17 @@
  * run's scrubber.
  */
 import { rm } from "node:fs/promises";
-import { type ProviderBucket, r2Endpoint, STORAGE_ENDPOINTS } from "@opscrew/agents";
+import {
+  offsiteRclone,
+  type ProviderBucket,
+  RCLONE_NOT_FOUND,
+  r2Endpoint,
+  STORAGE_ENDPOINTS,
+} from "@opscrew/agents";
 import {
   OFFSITE_LOG,
+  OFFSITE_PREFIX,
   PORTAINER_VERSION_PATH,
-  portainerDeployBranch,
   portainerSnapshotsVolume,
   RESTORED_IMAGE_FILE,
 } from "@opscrew/iac-templates";
@@ -26,17 +32,11 @@ import { api, HETZNER_API, httpRequest, minutes, retryDelete, waitFor } from "./
 import type { BucketPass, ServerExec } from "./component-checks";
 import type { AppEnvironments } from "./environment-checks";
 import type { CliRun, LiveRun } from "./harness";
-import { fileAt, jobLog } from "./portainer-cloud";
-import { BUSYBOX_IMAGE, type DeployedImage, deployedImage } from "./portainer-support";
+import { jobLog } from "./portainer-cloud";
+import { BUSYBOX_IMAGE } from "./portainer-support";
+import { readData as readMovedData, seedData as seedMovedData } from "./retarget-anywhere-checks";
+import { inContainer, MOVE_SERVICES, seedScripts } from "./retarget-anywhere-support";
 import {
-  inContainer,
-  jobsDigest,
-  MOVE_SERVICES,
-  READ_SCRIPTS,
-  seedScripts,
-} from "./retarget-anywhere-support";
-import {
-  BACKUPS_PREFIX,
   changeScripts,
   KAFKA_READ_SCRIPT,
   KAFKA_SERVICE,
@@ -45,9 +45,6 @@ import {
   type ListedSnapshot,
   listedSnapshots,
   type OffsiteProvider,
-  rcloneDockerArgs,
-  rcloneSettings,
-  runAppName,
   type SnapshotData,
   SQLITE_CONTENT_SCRIPT,
   shownRestore,
@@ -59,12 +56,14 @@ import { leakedLabels, SERVER_DEPLOY_JOB } from "./support";
 
 /**
  * After `analyze` (and the interview): the project's name in `opscrew/architecture.json` set to
- * {@link runAppName}, as design names the app after it, then `design`, which must plan that name;
- * then the zone's snapshot for the cleanup, taken under that name (the app's hostname and `www.`).
- * Returns prod's plan.
+ * the run's own, `e2e-snap-<run id>`, as design names the app after it, then `design`, which
+ * must plan that name; then the zone's snapshot for the cleanup, taken under that name (the app's
+ * hostname and `www.`). Returns prod's plan. The bucket, the snapshots' labels and every resource
+ * are then the run's alone (examples/flask-sqlite has no project name, so OpsCrew would name it
+ * after the checkout folder, the same in every run).
  */
 export async function designRunApp(run: LiveRun, envs: AppEnvironments): Promise<DeployPlan> {
-  const name = runAppName(run.runId);
+  const name = `e2e-snap-${run.runId}`;
   const file = run.paths().files.architecture;
   const architecture = await readArtifact("architecture", file);
   await writeArtifact("architecture", file, {
@@ -105,10 +104,7 @@ export async function seedData(
   project: string,
   kafka?: readonly string[],
 ): Promise<void> {
-  const scripts = seedScripts(run.runId);
-  for (const kind of Object.keys(MOVE_SERVICES) as (keyof typeof MOVE_SERVICES)[]) {
-    await inService(exec, project, MOVE_SERVICES[kind], scripts[kind]);
-  }
+  await seedMovedData(run, exec, project);
   if (kafka !== undefined) await inService(exec, project, KAFKA_SERVICE, kafkaSeedScript(kafka));
 }
 
@@ -131,25 +127,23 @@ export async function changeData(
 }
 
 /**
- * The data in `project`: both databases' rows, Valkey's jobs, the app's SQLite file by content,
- * and with `kafka` the topic's messages; each read tried again for up to 5 minutes while the
- * services start.
+ * The data in `project`: feature 023's (the app's SQLite file by content), and with `kafka` the
+ * topic's messages; each read tried again for up to 5 minutes while the services start.
  */
-export function readData(exec: ServerExec, project: string, kafka: boolean): Promise<SnapshotData> {
-  return waitFor(
-    `reading the data in ${project}`,
+export async function readData(
+  exec: ServerExec,
+  project: string,
+  kafka: boolean,
+): Promise<SnapshotData> {
+  const data = await readMovedData(exec, project, SQLITE_CONTENT_SCRIPT);
+  if (!kafka) return data;
+  const messages = await waitFor(
+    `reading Kafka's messages in ${project}`,
     minutes(5),
-    async () => ({
-      postgres: await exec(inContainer(project, MOVE_SERVICES.postgres, READ_SCRIPTS.postgres)),
-      mysql: await exec(inContainer(project, MOVE_SERVICES.mysql, READ_SCRIPTS.mysql)),
-      jobs: jobsDigest(await exec(inContainer(project, MOVE_SERVICES.valkey, READ_SCRIPTS.valkey))),
-      sqlite: await exec(inContainer(project, "app", SQLITE_CONTENT_SCRIPT)),
-      ...(kafka
-        ? { kafka: kafkaDigest(await exec(inContainer(project, KAFKA_SERVICE, KAFKA_READ_SCRIPT))) }
-        : {}),
-    }),
+    async () => kafkaDigest(await exec(inContainer(project, KAFKA_SERVICE, KAFKA_READ_SCRIPT))),
     10_000,
   );
+  return { ...data, kafka: messages };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -214,9 +208,6 @@ export async function approvedRestore(
 // ---------------------------------------------------------------------------------------------
 // The off-server copies' bucket.
 
-/** rclone's exit code for a path that is not there. */
-const RCLONE_NOT_FOUND = 3;
-
 /**
  * The off-server copies' bucket `name` at `provider` (`region` its location; R2's `auto`, in the
  * zone's account `accountId`): read with the pinned rclone image in local Docker with the bucket's
@@ -224,7 +215,8 @@ const RCLONE_NOT_FOUND = 3;
  * are (`pass`, its `bucketPass`).
  */
 export class BackupsBucket {
-  private readonly settings: Record<string, string>;
+  /** rclone's settings (the bucket's key among them), and `docker`'s arguments that run it. */
+  private readonly rclone: { settings: Record<string, string>; docker: string[] };
   /** The bucket as `pass` reads it: its provider, name and region (the rest is the app's only). */
   private readonly bucket: ProviderBucket;
 
@@ -237,21 +229,18 @@ export class BackupsBucket {
     key: { accessKeyId: string; secretAccessKey: string },
     accountId: string,
   ) {
-    const hetzner = STORAGE_ENDPOINTS.hetzner;
-    if (hetzner === undefined) throw new Error("OpsCrew knows no endpoint for Hetzner's buckets.");
-    this.settings = rcloneSettings({
-      provider: provider === "r2" ? "Cloudflare" : "Hetzner",
-      endpoint: provider === "r2" ? r2Endpoint(accountId) : hetzner(region),
-      region,
-      ...key,
-    });
+    const endpoint =
+      provider === "r2" ? r2Endpoint(accountId) : STORAGE_ENDPOINTS.hetzner?.(region);
+    if (endpoint === undefined) throw new Error("OpsCrew knows no endpoint for Hetzner's buckets.");
+    this.rclone = offsiteRclone({ provider, region }, endpoint, key);
     this.bucket = { provider, bucket: name, region } as ProviderBucket;
   }
 
   /** rclone's `args`; its exit code 3 (not there) is returned, any other failure thrown. */
-  private async rclone(args: readonly string[], what: string) {
-    const result = await this.run.runner.run("docker", rcloneDockerArgs(this.settings, args), {
-      env: { ...this.run.env, ...this.settings },
+  private async rcloneIn(args: readonly string[], what: string) {
+    const { settings, docker } = this.rclone;
+    const result = await this.run.runner.run("docker", [...docker, ...args], {
+      env: { ...this.run.env, ...settings },
       timeoutMs: minutes(10),
     });
     if (result.exitCode !== 0 && result.exitCode !== RCLONE_NOT_FOUND) {
@@ -265,8 +254,8 @@ export class BackupsBucket {
 
   /** Every object under `backups/`, its path relative to it. */
   async objects(): Promise<string[]> {
-    const listed = await this.rclone(
-      ["lsf", "-R", "--files-only", `offsite:${this.name}/${BACKUPS_PREFIX}`],
+    const listed = await this.rcloneIn(
+      ["lsf", "-R", "--files-only", `offsite:${this.name}/${OFFSITE_PREFIX}`],
       "list the copies",
     );
     if (listed.exitCode === RCLONE_NOT_FOUND) return [];
@@ -278,8 +267,8 @@ export class BackupsBucket {
 
   /** The object `backups/<path>` read whole (still encrypted), as text. */
   async read(path: string): Promise<string> {
-    const read = await this.rclone(
-      ["cat", `offsite:${this.name}/${BACKUPS_PREFIX}/${path}`],
+    const read = await this.rcloneIn(
+      ["cat", `offsite:${this.name}/${OFFSITE_PREFIX}/${path}`],
       `read ${path}`,
     );
     if (read.exitCode === RCLONE_NOT_FOUND) throw new Error(`The bucket has no ${path}.`);
@@ -300,9 +289,9 @@ export class BackupsBucket {
     const { deleteThroughApi } = this.pass;
     if (deleteThroughApi === undefined) throw new Error(`No way to delete ${this.name} is known.`);
     this.run.log(`deleting the off-server bucket ${this.name}, which OpsCrew leaves to the user`);
-    await this.rclone(["delete", `offsite:${this.name}`], "delete the copies");
+    await this.rcloneIn(["delete", `offsite:${this.name}`], "delete the copies");
     if (this.provider === "hetzner") {
-      await this.rclone(
+      await this.rcloneIn(
         ["backend", "cleanup-hidden", `offsite:${this.name}`],
         "delete the copies' old versions",
       );
@@ -311,18 +300,6 @@ export class BackupsBucket {
     if (await this.exists()) {
       throw new Error(`The off-server bucket ${this.name} is still there after its deletion.`);
     }
-  }
-}
-
-/** Throws, saying what to do, unless Docker answers on this computer (the pinned rclone runs there). */
-export async function requireDocker(run: LiveRun, what: string): Promise<void> {
-  const docker = await run.runner
-    .run("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 60_000 })
-    .catch(() => ({ exitCode: -1 }));
-  if (docker.exitCode !== 0) {
-    throw new Error(
-      `${what} reads the off-server bucket with rclone, which this test runs from its pinned image in Docker on this computer (\`docker version\` failed); start Docker and run it again.`,
-    );
   }
 }
 
@@ -423,15 +400,7 @@ export async function hetznerImageExists(token: string, id: string): Promise<boo
 }
 
 // ---------------------------------------------------------------------------------------------
-// Your Portainer: the version its stack runs, and the rollback's mark.
-
-/** The app image the deploy branch of `plan` names now (the version Portainer deploys). */
-export async function deployBranchImage(run: LiveRun, plan: DeployPlan): Promise<DeployedImage> {
-  const compose = await fileAt(run.github, "compose.yaml", portainerDeployBranch(plan));
-  const image = compose === undefined ? undefined : deployedImage(compose);
-  if (image === undefined) throw new Error("The deploy branch names no app image yet.");
-  return image;
-}
+// Your Portainer: the version its site serves, and the rollback's mark.
 
 /** Waits up to `ms` until the site serves `version` at its version path, through Cloudflare. */
 export async function waitForVersion(run: LiveRun, version: string, ms = minutes(15)) {
@@ -448,12 +417,11 @@ export async function waitForVersion(run: LiveRun, version: string, ms = minutes
 
 /**
  * Whether the stack's `snapshots` volume holds the rollback's mark (`.restored`), read as root on
- * the Portainer host with a read-only one-off of busybox.
+ * the Portainer host with a read-only one-off of busybox that mounts it where the stack does.
  */
 export async function restoredMark(exec: ServerExec, plan: DeployPlan): Promise<boolean> {
-  const inside = RESTORED_IMAGE_FILE.replace(/^\/snapshots\//, "");
   const answer = await exec(
-    `docker run --rm -v ${portainerSnapshotsVolume(plan)}:/data:ro ${BUSYBOX_IMAGE} sh -c 'if [ -e /data/${inside} ]; then echo yes; else echo no; fi'`,
+    `docker run --rm -v ${portainerSnapshotsVolume(plan)}:/snapshots:ro ${BUSYBOX_IMAGE} sh -c 'if [ -e ${RESTORED_IMAGE_FILE} ]; then echo yes; else echo no; fi'`,
   );
   return answer.trim() === "yes";
 }

@@ -64,6 +64,7 @@ import {
   shownRollback,
   statusDeploys,
 } from "./rollback-support";
+import { deployLogLeaks } from "./snapshots-checks";
 import { psql } from "./split-checks";
 import {
   BUILD_JOB,
@@ -852,28 +853,12 @@ describe.skipIf(MISSING_DATABASE.length > 0)(
       "D8. no database password, dumped value or server address in any output, deploy job's log, audit entry, commit, pull request, plan or state file (SC-1909)",
       minutes(10),
       async () => {
-        const problems = [
+        run.expectNothingLeaked([
           ...(await envs.leaks({ cloudflare: true })),
           ...addressesInRollbacks(run),
-        ];
-        // The workflow logs: the deploy job dumps and restores. GitHub masks only its own secrets.
-        const secrets = run.scrubber.entries().filter(({ label }) => !label.startsWith("server-"));
-        for (const { what, id } of deployRuns) {
-          const text = await jobLog(run.github, id, SERVER_DEPLOY_JOB).catch((error: Error) => {
-            problems.push(
-              `the deploy job's log of ${what} (run ${id}) is unreadable: ${error.message}`,
-            );
-            return "";
-          });
-          const found = leakedLabels(text, secrets);
-          if (found.length > 0) {
-            problems.push(
-              `the deploy job's log of ${what} (run ${id}) contains: ${found.join(", ")}`,
-            );
-          }
-        }
-        log(`observed: the leak search read the deploy job's log of ${deployRuns.length} runs`);
-        run.expectNothingLeaked(problems);
+          // The workflow logs: the deploy job dumps and restores.
+          ...(await deployLogLeaks(run, deployRuns)),
+        ]);
       },
       { always: true },
     );

@@ -74,31 +74,44 @@ export function componentSettings(
     };
   }
   const choice = env.OPSCREW_E2E_STORAGE?.trim() || "r2";
-  if (choice === "r2") {
-    if (env.OPSCREW_E2E_R2 !== "1") {
-      return {
-        skip: "the bucket on Cloudflare R2 needs an account with R2 turned on: set OPSCREW_E2E_R2=1 once it is (docs/e2e.md), or OPSCREW_E2E_STORAGE=hetzner",
-      };
-    }
-    return { ...settings, storage: { provider: "r2" } };
+  if (choice !== "r2" && choice !== "hetzner") {
+    return { skip: `OPSCREW_E2E_STORAGE="${choice}" is neither r2 nor hetzner` };
   }
-  if (choice === "hetzner") {
-    const region = env.OPSCREW_E2E_REGION?.trim() || "eu-central";
-    if (!HETZNER_STORAGE_REGIONS.includes(region)) {
-      return {
-        skip: `Hetzner Object Storage is only in ${HETZNER_STORAGE_REGIONS.join(" and ")}, not in OPSCREW_E2E_REGION=${region}`,
-      };
-    }
-    const accessKeyId = env.OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID?.trim() ?? "";
-    const secretAccessKey = env.OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY?.trim() ?? "";
-    if (accessKeyId === "" || secretAccessKey === "") {
-      return {
-        skip: "the bucket on Hetzner Object Storage needs your S3 credentials from the Hetzner Console: set OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID and OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY (docs/e2e.md)",
-      };
-    }
-    return { ...settings, storage: { provider: "hetzner", key: { accessKeyId, secretAccessKey } } };
+  const storage = storageChoice(env, choice);
+  if (!("skip" in storage)) return { ...settings, storage };
+  return choice === "r2" ? { skip: `${storage.skip}, or OPSCREW_E2E_STORAGE=hetzner` } : storage;
+}
+
+/**
+ * A run's bucket on `provider`, or `{ skip }` with why it cannot be there: R2 needs the account's
+ * R2 turned on (`OPSCREW_E2E_R2=1`), Hetzner Object Storage a region that has it and the user's S3
+ * key.
+ */
+export function storageChoice(
+  env: Record<string, string | undefined>,
+  provider: StorageChoice["provider"],
+): StorageChoice | { skip: string } {
+  if (provider === "r2") {
+    return env.OPSCREW_E2E_R2 === "1"
+      ? { provider: "r2" }
+      : {
+          skip: "the bucket on Cloudflare R2 needs an account with R2 turned on: set OPSCREW_E2E_R2=1 once it is (docs/e2e.md)",
+        };
   }
-  return { skip: `OPSCREW_E2E_STORAGE="${choice}" is neither r2 nor hetzner` };
+  const region = env.OPSCREW_E2E_REGION?.trim() || "eu-central";
+  if (!HETZNER_STORAGE_REGIONS.includes(region)) {
+    return {
+      skip: `Hetzner Object Storage is only in ${HETZNER_STORAGE_REGIONS.join(" and ")}, not in OPSCREW_E2E_REGION=${region}`,
+    };
+  }
+  const accessKeyId = env.OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID?.trim() ?? "";
+  const secretAccessKey = env.OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY?.trim() ?? "";
+  if (accessKeyId === "" || secretAccessKey === "") {
+    return {
+      skip: "the bucket on Hetzner Object Storage needs your S3 credentials from the Hetzner Console: set OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID and OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY (docs/e2e.md)",
+    };
+  }
+  return { provider: "hetzner", key: { accessKeyId, secretAccessKey } };
 }
 
 /** The variables OpsCrew reads the bucket's key from in a script, holding `key`. */

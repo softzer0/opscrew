@@ -1,10 +1,9 @@
 import { OFFSITE_KEY_VARS, STORAGE_KEY_VARS } from "@opscrew/agents";
-import { IMAGES } from "@opscrew/iac-templates";
+import { AGE_VERSION } from "@opscrew/core/testing";
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import type { ServerContainer } from "./components-support";
 import {
-  AGE_HEADER,
   addressesInSnapshotOutputs,
   bucketObjectProblems,
   changeScripts,
@@ -16,12 +15,8 @@ import {
   listedSnapshots,
   objectContentProblems,
   offsiteKey,
-  offsiteSkip,
   onTheHour,
-  rcloneDockerArgs,
-  rcloneSettings,
   restartedServices,
-  runAppName,
   servicesIn,
   shownRestore,
   takenSnapshotId,
@@ -30,27 +25,6 @@ import {
 } from "./snapshots-support";
 
 const HASH = "a".repeat(64);
-
-describe("offsiteSkip", () => {
-  it("runs R2 only once its account has R2", () => {
-    expect(offsiteSkip({}, "r2")).toContain("OPSCREW_E2E_R2=1");
-    expect(offsiteSkip({ OPSCREW_E2E_R2: "1" }, "r2")).toBeUndefined();
-  });
-
-  it("runs Hetzner with both key variables in a region with Object Storage", () => {
-    const key = {
-      OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID: "id",
-      OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY: "secret",
-    };
-    expect(offsiteSkip({ OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID: "id" }, "hetzner")).toBe(
-      "set OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY",
-    );
-    expect(offsiteSkip(key, "hetzner")).toBeUndefined();
-    expect(offsiteSkip({ ...key, OPSCREW_E2E_REGION: "us-east" }, "hetzner")).toContain(
-      "not in OPSCREW_E2E_REGION=us-east",
-    );
-  });
-});
 
 describe("offsiteKey", () => {
   it("gives the bucket's key and the same key under the off-server copies' variables", () => {
@@ -67,14 +41,6 @@ describe("offsiteKey", () => {
 
   it("throws without both halves", () => {
     expect(() => offsiteKey({ [STORAGE_KEY_VARS.accessKeyId]: "access" })).toThrow(/no access/);
-  });
-});
-
-describe("runAppName", () => {
-  it("names the app after the run, within the app names' rules", () => {
-    expect(runAppName("mhp3k2x1a1b2c3d4")).toBe("e2e-snap-mhp3k2x1a1b2c3d4");
-    expect(() => runAppName("x".repeat(40))).toThrow(/no valid app name/);
-    expect(() => runAppName("Run_1")).toThrow(/no valid app name/);
   });
 });
 
@@ -249,28 +215,11 @@ describe("the off-server bucket", () => {
 
   it("wants each object to start with age's header and hold no known value", () => {
     const known = [{ label: "dumped-value", value: "value-run1" }];
-    expect(objectContentProblems("x.age", `${AGE_HEADER}\n-> X25519 abc\n`, known)).toEqual([]);
+    expect(objectContentProblems("x.age", `${AGE_VERSION}\n-> X25519 abc\n`, known)).toEqual([]);
     expect(objectContentProblems("x.age", "PGDMP value-run1", known)).toEqual([
       "x.age does not start with age's header",
       "x.age contains: dumped-value",
     ]);
-  });
-
-  it("passes rclone's settings by name only", () => {
-    const settings = rcloneSettings({
-      provider: "Hetzner",
-      endpoint: "https://fsn1.your-objectstorage.com",
-      region: "fsn1",
-      accessKeyId: "access",
-      secretAccessKey: "secret",
-    });
-    expect(settings.RCLONE_CONFIG_OFFSITE_PROVIDER).toBe("Hetzner");
-    expect(settings.RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET).toBe("true");
-    const args = rcloneDockerArgs(settings, ["lsf", "offsite:b"]);
-    expect(args.slice(0, 2)).toEqual(["run", "--rm"]);
-    expect(args).toContain("RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY");
-    expect(args).not.toContain("secret");
-    expect(args.slice(-3)).toEqual([IMAGES.rclone.ref, "lsf", "offsite:b"]);
   });
 });
 

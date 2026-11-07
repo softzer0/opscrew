@@ -233,14 +233,17 @@ export async function deployDataApp(
   await seedData(run, exec, composeProjectOf(plan));
   const value = `value-${run.runId}`;
   await writeValue(`https://${run.appHost}`, value);
-  const seeded = await readData(exec, composeProjectOf(plan));
+  const seeded = await readData(exec, composeProjectOf(plan), SQLITE_SCRIPT);
   expect(seedProblems(seeded), "services whose data the seed did not write").toEqual([]);
   run.log("seeded: rows in Postgres and MySQL, jobs in Valkey, a value in the app's SQLite file");
   return { seeded, value, hetzner };
 }
 
-/** Seeds every added service in `project`, each tried again for up to 5 minutes while it starts. */
-async function seedData(run: LiveRun, exec: ServerExec, project: string): Promise<void> {
+/**
+ * Seeds every added service in `project` (the jobs named after the run), each tried again for up
+ * to 5 minutes while it starts.
+ */
+export async function seedData(run: LiveRun, exec: ServerExec, project: string): Promise<void> {
   const scripts = seedScripts(run.runId);
   for (const kind of Object.keys(MOVE_SERVICES) as (keyof typeof MOVE_SERVICES)[]) {
     await waitFor(
@@ -256,10 +259,14 @@ async function seedData(run: LiveRun, exec: ServerExec, project: string): Promis
 }
 
 /**
- * The data in `project` on a side, read through `exec`: each read tried again for up to 5
- * minutes while the services start.
+ * The data in `project` on a side, read through `exec` (the app's SQLite file through
+ * `sqliteScript`): each read tried again for up to 5 minutes while the services start.
  */
-export function readData(exec: ServerExec, project: string): Promise<DataSnapshot> {
+export function readData(
+  exec: ServerExec,
+  project: string,
+  sqliteScript: string,
+): Promise<DataSnapshot> {
   return waitFor(
     `reading the data in ${project}`,
     minutes(5),
@@ -267,7 +274,7 @@ export function readData(exec: ServerExec, project: string): Promise<DataSnapsho
       postgres: await exec(inContainer(project, MOVE_SERVICES.postgres, READ_SCRIPTS.postgres)),
       mysql: await exec(inContainer(project, MOVE_SERVICES.mysql, READ_SCRIPTS.mysql)),
       jobs: jobsDigest(await exec(inContainer(project, MOVE_SERVICES.valkey, READ_SCRIPTS.valkey))),
-      sqlite: await exec(inContainer(project, "app", SQLITE_SCRIPT)),
+      sqlite: await exec(inContainer(project, "app", sqliteScript)),
     }),
     10_000,
   );
@@ -280,7 +287,10 @@ export async function expectData(
   seeded: DataSnapshot,
   where: string,
 ): Promise<void> {
-  expect(dataProblems(seeded, await readData(exec, project)), `the data on ${where}`).toEqual([]);
+  expect(
+    dataProblems(seeded, await readData(exec, project, SQLITE_SCRIPT)),
+    `the data on ${where}`,
+  ).toEqual([]);
 }
 
 /** The architecture of the image the app's container in `project` runs (`amd64`, `arm64`). */

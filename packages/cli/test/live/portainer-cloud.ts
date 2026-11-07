@@ -18,7 +18,7 @@ import {
   type GitHubRepo,
   minutes,
 } from "./cloud";
-import { logErrors } from "./portainer-support";
+import { type DeployedImage, deployedImage, logErrors } from "./portainer-support";
 
 // ---------------------------------------------------------------------------------------------
 // Portainer: the test's own calls, always with the certificate pinned.
@@ -260,6 +260,17 @@ export async function fileAt(
     throw new Error(`Could not read ${path} at ${ref} (HTTP ${got.status}).`);
   }
   return Buffer.from(content, "base64").toString("utf8");
+}
+
+/** The app image the deploy branch `branch` names now (the version Portainer deploys). */
+export async function deployBranchImage(
+  github: GitHubRepo,
+  branch: string,
+): Promise<DeployedImage> {
+  const compose = await fileAt(github, "compose.yaml", branch);
+  const image = compose === undefined ? undefined : deployedImage(compose);
+  if (image === undefined) throw new Error(`The ${branch} branch does not run an app image yet.`);
+  return image;
 }
 
 /** A commit's first message line, its number of parents and the paths in its tree. */

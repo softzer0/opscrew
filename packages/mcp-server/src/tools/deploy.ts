@@ -6,6 +6,7 @@ import {
   describeChanges,
   describePlan,
   findSavedPlan,
+  OFFSITE_KEY_VARS,
   OWN_SERVER_BACKUPS_NOTE,
   type ProvisionResult,
   type ProvisionServices,
@@ -21,6 +22,7 @@ import {
   runSecure,
   runVerify,
   type SavedPlan,
+  STORAGE_KEY_VARS,
   STORAGE_PLAN_SUFFIX,
   savedLocalPlanChanges,
   stackFollowsReason,
@@ -126,14 +128,17 @@ function planData(saved: SavedPlan) {
 }
 
 /**
- * The plan of the app's bucket (the `storage` root), for the user: its changes, its monthly price
- * with its source and date, and its policy results.
+ * The plan of a bucket, for the user: the app's (the `storage` root, with its monthly price, its
+ * source and date) or the off-server copies' (the `backups` root). Its changes, its policy results,
+ * and where the user's own key for it comes from.
  */
-function bucketPlanText(saved: SavedPlan, plan: DeployPlan): string {
-  const storage = plan.storage?.objectStorage;
+function bucketPlanText(saved: SavedPlan, plan: DeployPlan, root: "storage" | "backups"): string {
+  const storage = root === "storage" ? plan.storage?.objectStorage : undefined;
+  const bucket = root === "storage" ? storage?.bucket : snapshotOffsiteOf(plan)?.bucket;
+  const vars = root === "storage" ? STORAGE_KEY_VARS : OFFSITE_KEY_VARS;
   const failed = saved.policy.filter((result) => !result.passed);
   return [
-    `Plan of the app's bucket${storage === undefined ? "" : ` ${storage.bucket}`} (object storage), with its own hash ${saved.planHash}:`,
+    `Plan of ${root === "storage" ? "the app's bucket" : "the bucket of the off-server copies of the app's snapshots"}${bucket === undefined ? "" : ` ${bucket}`}${root === "storage" ? " (object storage)" : ""}, with its own hash ${saved.planHash}:`,
     ...describeChanges(saved.changes),
     ...(storage === undefined
       ? []
@@ -142,23 +147,7 @@ function bucketPlanText(saved: SavedPlan, plan: DeployPlan): string {
         ]),
     `Security policies: ${saved.policy.length - failed.length} passed, ${failed.length} failed.`,
     ...failed.map((result) => `  ✗ [${result.severity}] ${result.title}: ${result.message}`),
-    "The app's key for it is the user's own: `opscrew provision` in a terminal asks for it, or it comes from OPSCREW_STORAGE_ACCESS_KEY_ID and OPSCREW_STORAGE_SECRET_ACCESS_KEY. Never ask for it in the chat.",
-  ].join("\n");
-}
-
-/**
- * The plan of the off-server copies' bucket (the `backups` root), for the user: its changes and its
- * policy results.
- */
-function backupsPlanText(saved: SavedPlan, plan: DeployPlan): string {
-  const bucket = snapshotOffsiteOf(plan)?.bucket;
-  const failed = saved.policy.filter((result) => !result.passed);
-  return [
-    `Plan of the bucket of the off-server copies of the app's snapshots${bucket === undefined ? "" : ` ${bucket}`}, with its own hash ${saved.planHash}:`,
-    ...describeChanges(saved.changes),
-    `Security policies: ${saved.policy.length - failed.length} passed, ${failed.length} failed.`,
-    ...failed.map((result) => `  ✗ [${result.severity}] ${result.title}: ${result.message}`),
-    "The key for it is the user's own: `opscrew provision` in a terminal asks for it, or it comes from OPSCREW_OFFSITE_ACCESS_KEY_ID and OPSCREW_OFFSITE_SECRET_ACCESS_KEY. Never ask for it in the chat.",
+    `${root === "storage" ? "The app's key" : "The key"} for it is the user's own: \`opscrew provision\` in a terminal asks for it, or it comes from ${vars.accessKeyId} and ${vars.secretAccessKey}. Never ask for it in the chat.`,
   ].join("\n");
 }
 
@@ -650,8 +639,8 @@ export function registerDeployTools(
             : planText(call.reporter.messages, "Local plan for", localHash);
         const text = [
           ...(cloudflareText !== undefined ? [cloudflareText, ""] : []),
-          ...(storage !== undefined ? [bucketPlanText(storage, plan), ""] : []),
-          ...(backups !== undefined ? [backupsPlanText(backups, plan), ""] : []),
+          ...(storage !== undefined ? [bucketPlanText(storage, plan, "storage"), ""] : []),
+          ...(backups !== undefined ? [bucketPlanText(backups, plan, "backups"), ""] : []),
           // A server the user owns or their Portainer costs nothing more: no price in the plan.
           ...(pagesText !== undefined ? [pagesText, ""] : []),
           ...(saved !== undefined

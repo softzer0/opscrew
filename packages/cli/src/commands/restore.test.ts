@@ -1,18 +1,17 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { PhaseDeps } from "@opscrew/agents";
-import { testPlan } from "@opscrew/agents/testing";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { withServices } from "../deps";
-import { inEnvironment, withEnvironments } from "../ui/__fixtures__/environments";
-import { auditText, projectContext, run, type TempProject } from "../ui/__fixtures__/harness";
+import { auditText, run } from "../ui/__fixtures__/harness";
+import { type AgentCall, asking, lastCall, stagingProjects } from "../ui/__fixtures__/snapshots";
 
 /** Each call of a restore, and the answer a test gives instead of the real agent's. */
 const fake = vi.hoisted(() => ({
-  calls: [] as { name: string; deps: PhaseDeps; args: unknown[] }[],
+  calls: [] as AgentCall[],
   answers: {} as Record<
     string,
     ((deps: PhaseDeps, ...args: unknown[]) => Promise<unknown>) | undefined
@@ -36,24 +35,14 @@ vi.mock("@opscrew/agents", async (importOriginal) => {
   };
 });
 
-let project: TempProject | undefined;
+const { setup, project } = stagingProjects();
 beforeEach(() => {
   fake.calls.length = 0;
   fake.answers = {};
 });
-afterEach(async () => {
-  await project?.cleanup();
-  project = undefined;
-});
 
-/** A project with prod deployed on Hetzner and staging beside it, and a script's context. */
-async function setup(options: { interactive?: boolean; env?: Record<string, string> } = {}) {
-  project = await withEnvironments({
-    staging: inEnvironment(testPlan({ deployed: true }), "staging"),
-  });
-  Object.assign(project.env, options.env);
-  return projectContext(project, { interactive: options.interactive ?? false });
-}
+/** What a refused approval says, as the agent does. */
+const REFUSED = "The server shop-staging was not rebuilt. Nothing was changed.";
 
 const HASH = "c".repeat(64);
 const OTHER = "d".repeat(64);
@@ -93,28 +82,6 @@ const REBUILT = {
   server: { provider: "hetzner", id: "4711", name: "shop-staging" },
   checked: true,
 };
-
-/** An answer that asks `request` and reports the decision, as the agent does. */
-function asking(request: ApprovalRequest, decisions: (string | undefined)[], result: unknown) {
-  return async (deps: PhaseDeps) => {
-    const decision = await deps.approvals.request(request);
-    decisions.push(decision.approved ? "approved" : decision.reason);
-    if (!decision.approved) {
-      throw new OpsCrewError(
-        "APPROVAL_REFUSED",
-        `The server shop-staging was not rebuilt: ${decision.reason}. Nothing was changed.`,
-      );
-    }
-    return result;
-  };
-}
-
-/** The last call's deps and arguments. */
-function lastCall(name: string) {
-  const call = fake.calls.filter((each) => each.name === name).at(-1);
-  if (call === undefined) throw new Error(`${name} was not called`);
-  return call;
-}
 
 describe("opscrew restore: the flags, checked before any work", () => {
   it.each([
@@ -164,7 +131,7 @@ describe("opscrew restore <id>", () => {
   it("passes --only, --allow-other-version, --from offsite and the key file's text", async () => {
     const ctx = await setup();
     const identity = `AGE-SECRET-KEY-1${"F".repeat(58)}`;
-    await writeFile(path.join(project?.root ?? "", "age.txt"), `${identity}\n`);
+    await writeFile(path.join(project().root, "age.txt"), `${identity}\n`);
     fake.answers.restoreSnapshot = async () => RESTORED;
     expect(
       await run(
@@ -183,11 +150,11 @@ describe("opscrew restore <id>", () => {
       ),
       ctx.errors,
     ).toBe(0);
-    expect(lastCall("restoreSnapshot").args).toEqual([
+    expect(lastCall(fake.calls, "restoreSnapshot").args).toEqual([
       ID,
       { only: "db", allowOtherVersion: true, from: "offsite", identity: `${identity}\n` },
     ]);
-    expect(lastCall("restoreSnapshot").deps.paths.environment).toBe("staging");
+    expect(lastCall(fake.calls, "restoreSnapshot").deps.paths.environment).toBe("staging");
     expect(ctx.output).toContain("run `opscrew verify --env staging` to check the app.");
     expect(ctx.output).not.toContain(identity);
   });
@@ -200,13 +167,13 @@ describe("opscrew restore <id>", () => {
     withServices(ctx, { snapshot: { docker } });
     fake.answers.restoreSnapshot = async () => RESTORED;
     expect(await run(ctx, "restore", ID, "--env", "staging"), ctx.errors).toBe(0);
-    expect(lastCall("restoreSnapshot").args).toEqual([ID, { services: { docker } }]);
+    expect(lastCall(fake.calls, "restoreSnapshot").args).toEqual([ID, { services: { docker } }]);
   });
 
   it("restores in a script only with --confirm <app> and --approve <hash>, showing what is lost", async () => {
     const ctx = await setup();
     const decisions: (string | undefined)[] = [];
-    fake.answers.restoreSnapshot = asking(RESTORE, decisions, RESTORED);
+    fake.answers.restoreSnapshot = asking(RESTORE, decisions, RESTORED, REFUSED);
     const base = ["restore", ID, "--env", "staging"];
     expect(
       await run(ctx, ...base, "--confirm", "shop-staging", "--approve", HASH),
@@ -228,7 +195,7 @@ describe("opscrew restore <id>", () => {
   it("keeps the key file's text out of every output, error and audit entry", async () => {
     const identity = `AGE-SECRET-KEY-1${"G".repeat(58)}`;
     const ctx = await setup();
-    await writeFile(path.join(project?.root ?? "", "age.txt"), identity);
+    await writeFile(path.join(project().root, "age.txt"), identity);
     fake.answers.restoreSnapshot = async (deps) => {
       deps.reporter.info(`Decrypting with ${identity}`);
       throw new OpsCrewError("SECRETS_KEY_REJECTED", `The key ${identity} does not open it.`);
@@ -247,7 +214,7 @@ describe("opscrew restore <id>", () => {
       ),
     ).toBe(2);
     expect(`${ctx.output}${ctx.errors}`).not.toContain(identity);
-    expect(await auditText(project as TempProject)).not.toContain(identity);
+    expect(await auditText(project())).not.toContain(identity);
   });
 });
 
@@ -255,13 +222,13 @@ describe("opscrew restore --server", () => {
   it("rebuilds in a script only with --confirm <server name> and --approve <hash>", async () => {
     const ctx = await setup();
     const decisions: (string | undefined)[] = [];
-    fake.answers.restoreServerSnapshot = asking(REBUILD, decisions, REBUILT);
+    fake.answers.restoreServerSnapshot = asking(REBUILD, decisions, REBUILT, REFUSED);
     const base = ["restore", "--server", " 9001 ", "--env", "staging"];
     expect(
       await run(ctx, ...base, "--confirm", "shop-staging", "--approve", HASH),
       ctx.errors,
     ).toBe(0);
-    expect(lastCall("restoreServerSnapshot").args).toEqual(["9001", {}]);
+    expect(lastCall(fake.calls, "restoreServerSnapshot").args).toEqual(["9001", {}]);
     expect(ctx.output).toContain(`Restore hash: ${HASH}`);
     expect(ctx.output).toContain(`✓ ${REBUILD.title} (confirmed with --confirm shop-staging)`);
     expect(await run(ctx, ...base, "--confirm", "shop-staging")).toBe(1);
@@ -293,7 +260,7 @@ describe("opscrew restore --server", () => {
         },
       },
     });
-    fake.answers.restoreServerSnapshot = asking(REBUILD, [], REBUILT);
+    fake.answers.restoreServerSnapshot = asking(REBUILD, [], REBUILT, REFUSED);
     expect(await run(ctx, "restore", "--server", "9001", "--env", "staging"), ctx.errors).toBe(0);
     expect(asked?.confirmPhrase).toBe("shop-staging");
   });
@@ -314,6 +281,6 @@ describe("opscrew restore --server", () => {
     };
     expect(await run(ctx, "restore", "--server", "9001", "--env", "staging")).toBe(2);
     expect(`${ctx.output}${ctx.errors}`).not.toContain(token);
-    expect(await auditText(project as TempProject)).not.toContain(token);
+    expect(await auditText(project())).not.toContain(token);
   });
 });

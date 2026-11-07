@@ -158,20 +158,19 @@ export async function interruptionOf(
   };
 }
 
-/**
- * Stops when Docker does not answer on this computer: `opscrew secure --deep` runs ssh-audit and
- * testssl.sh in it. `what` names the pass in the message.
- */
-export async function requireDocker(what: string): Promise<void> {
+/** Stops when Docker does not answer on this computer, saying `why` the pass needs it. */
+export async function requireDocker(why: string): Promise<void> {
   const docker = await runner
     .run("docker", ["version", "--format", "{{.Server.Version}}"], { timeoutMs: 60_000 })
     .catch(() => ({ exitCode: -1 }));
   if (docker.exitCode !== 0) {
-    throw new Error(
-      `${what} runs \`opscrew secure --deep\`, whose ssh-audit and testssl.sh need Docker on this computer (\`docker version\` failed); start Docker and run it again.`,
-    );
+    throw new Error(`${why} (\`docker version\` failed); start Docker and run it again.`);
   }
 }
+
+/** Why the pass `what` needs Docker: `opscrew secure --deep` runs ssh-audit and testssl.sh in it. */
+export const secureDeepNeedsDocker = (what: string) =>
+  `${what} runs \`opscrew secure --deep\`, whose ssh-audit and testssl.sh need Docker on this computer`;
 
 /**
  * What the zone's minimum TLS version shows of the plan's `decision` (research R4; the test never
@@ -286,7 +285,7 @@ export function tlsSettings(
  * origin protection). Listing Origin CA certificates needs only Zone Read, so it proves nothing.
  */
 export async function tlsPreflight(settings: TlsSettings): Promise<void> {
-  if (settings.pass === "proxied") await requireDocker("The proxied pass");
+  if (settings.pass === "proxied") await requireDocker(secureDeepNeedsDocker("The proxied pass"));
   if (settings.pass === "live") {
     const zone = await new Cloudflare(settings.cloudflareToken).zoneOf(settings.domain);
     const read = await new Cloudflare(settings.noTlsToken ?? "").call(

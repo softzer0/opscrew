@@ -34,6 +34,7 @@ import {
   readTlsRecord,
   requireDocker,
   secureDeep,
+  secureDeepNeedsDocker,
 } from "./tls-checks";
 import { caaAt, cloudflareSideProblems, tlsLeft, tlsLeftText } from "./tls-support";
 
@@ -224,7 +225,7 @@ describe.skipIf(MISSING.length > 0)(
       "1. creates a throwaway Hetzner server with its own SSH key, outside OpsCrew",
       minutes(30),
       async () => {
-        await requireDocker("This test");
+        await requireDocker(secureDeepNeedsDocker("This test"));
         await run.prepareRepo({
           commit: `e2e: examples/${SETTINGS.app} behind nginx on your own server`,
           env: { CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken },

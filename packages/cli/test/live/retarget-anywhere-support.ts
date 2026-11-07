@@ -12,6 +12,7 @@ import { opscrewNames } from "@opscrew/connector-portainer";
 import { pinnedVersion, serviceSpec } from "@opscrew/iac-templates";
 import { type DeployPlan, PlanServiceSchema } from "@opscrew/plan-schema";
 import { z } from "zod";
+import { storageChoice } from "./components-support";
 import { splitCommand } from "./support";
 
 // ---------------------------------------------------------------------------------------------
@@ -51,9 +52,6 @@ export const LEG_VARIABLES: Readonly<Record<Leg, readonly string[]>> = {
   ],
 };
 
-/** The interview regions whose Hetzner locations have Object Storage. */
-const STORAGE_REGIONS = ["eu-central", "eu-north"];
-
 /**
  * Why `leg` does not run (its title says it), or `undefined` when it does: the gate, then each
  * missing variable; the bucket's leg also needs a region with Hetzner Object Storage.
@@ -64,11 +62,8 @@ export function legSkip(env: Record<string, string | undefined>, leg: Leg): stri
     ...LEG_VARIABLES[leg].filter((name) => (env[name] ?? "").trim() === ""),
   ];
   if (missing.length > 0) return `set ${missing.join(", ")}`;
-  const region = env.OPSCREW_E2E_REGION?.trim() || "eu-central";
-  if (leg === "digitalocean" && !STORAGE_REGIONS.includes(region)) {
-    return `Hetzner Object Storage is only in ${STORAGE_REGIONS.join(" and ")}, not in OPSCREW_E2E_REGION=${region}`;
-  }
-  return undefined;
+  const bucket = leg === "digitalocean" ? storageChoice(env, "hetzner") : undefined;
+  return bucket !== undefined && "skip" in bucket ? bucket.skip : undefined;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -150,7 +145,7 @@ export const ROWS = 1000;
 export const JOBS = 300;
 
 /** The test's table in both databases, and its list of jobs in Valkey. */
-const TABLE = "opscrew_e2e_rows";
+export const ROWS_TABLE = "opscrew_e2e_rows";
 const JOB_LIST = "opscrew-e2e:jobs";
 
 /**
@@ -194,8 +189,11 @@ export function inContainer(project: string, service: string, script: string): s
   ].join("; ");
 }
 
-const psql = (sql: string) => `psql -v ON_ERROR_STOP=1 -U app -d app -tAc "${sql}"`;
-const mysql = (sql: string) => `MYSQL_PWD="$MYSQL_PASSWORD" mysql -uapp -N -B app -e "${sql}"`;
+/** `sql` run by `psql` as the app in its database, printing bare rows. */
+export const psql = (sql: string) => `psql -v ON_ERROR_STOP=1 -U app -d app -tAc "${sql}"`;
+/** `sql` run by `mysql` as the app in its database, printing bare rows. */
+export const mysql = (sql: string) =>
+  `MYSQL_PWD="$MYSQL_PASSWORD" mysql -uapp -N -B app -e "${sql}"`;
 const valkey = (args: string) => `REDISCLI_AUTH="$VALKEY_PASSWORD" valkey-cli ${args}`;
 
 /**
@@ -208,11 +206,11 @@ export function seedScripts(marker: string): Record<keyof typeof MOVE_SERVICES, 
   const jobs = `{ i=1; set --; while [ "$i" -le ${JOBS} ]; do set -- "$@" "job-$i-${marker}"; i=$((i + 1)); done; }`;
   return {
     postgres: psql(
-      `create table if not exists ${TABLE} (id integer primary key, v text not null); insert into ${TABLE} select g, md5(g::text) from generate_series(1, ${ROWS}) g on conflict do nothing`,
+      `create table if not exists ${ROWS_TABLE} (id integer primary key, v text not null); insert into ${ROWS_TABLE} select g, md5(g::text) from generate_series(1, ${ROWS}) g on conflict do nothing`,
     ),
     // MySQL's recursive queries stop at 1,000 levels by default, so ROWS stays at 1,000.
     mysql: mysql(
-      `CREATE TABLE IF NOT EXISTS ${TABLE} (id INT PRIMARY KEY, v VARCHAR(64) NOT NULL); INSERT IGNORE INTO ${TABLE} (id, v) WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < ${ROWS}) SELECT n, MD5(n) FROM s`,
+      `CREATE TABLE IF NOT EXISTS ${ROWS_TABLE} (id INT PRIMARY KEY, v VARCHAR(64) NOT NULL); INSERT IGNORE INTO ${ROWS_TABLE} (id, v) WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < ${ROWS}) SELECT n, MD5(n) FROM s`,
     ),
     // SAVE writes the snapshot at once, so the jobs are on disk before any window.
     valkey: `${valkey(`DEL ${JOB_LIST}`)} >/dev/null && ${jobs} && ${valkey(`RPUSH ${JOB_LIST}`)} "$@" >/dev/null && ${valkey("SAVE")} >/dev/null`,
@@ -225,10 +223,10 @@ export function seedScripts(marker: string): Record<keyof typeof MOVE_SERVICES, 
  */
 export const READ_SCRIPTS: Record<keyof typeof MOVE_SERVICES, string> = {
   postgres: psql(
-    `select count(*) || ':' || md5(string_agg(id || '=' || v, ',' order by id)) from ${TABLE}`,
+    `select count(*) || ':' || md5(string_agg(id || '=' || v, ',' order by id)) from ${ROWS_TABLE}`,
   ),
   mysql: mysql(
-    `SET SESSION group_concat_max_len = 4194304; SELECT CONCAT(COUNT(*), ':', MD5(GROUP_CONCAT(id, '=', v ORDER BY id SEPARATOR ','))) FROM ${TABLE}`,
+    `SET SESSION group_concat_max_len = 4194304; SELECT CONCAT(COUNT(*), ':', MD5(GROUP_CONCAT(id, '=', v ORDER BY id SEPARATOR ','))) FROM ${ROWS_TABLE}`,
   ),
   valkey: valkey(`LRANGE ${JOB_LIST} 0 -1`),
 };

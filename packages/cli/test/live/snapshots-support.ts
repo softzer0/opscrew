@@ -4,17 +4,25 @@
  * examples/flask-sqlite (feature 023's Postgres, MySQL and Valkey queue, and Kafka), the scripts
  * that seed, change and read their data in the containers, what the tests read in OpsCrew's output
  * (a snapshot's id, a restore's hash and typed name, `snapshot list --json`), which containers a
- * snapshot restarted, the off-server bucket's objects, and rclone's settings for it. No network, no
- * processes; unit-tested in `snapshots-support.test.ts`.
+ * snapshot restarted, and the off-server bucket's objects. No network, no processes; unit-tested in
+ * `snapshots-support.test.ts`.
  */
 import { createHash } from "node:crypto";
 import { OFFSITE_KEY_VARS, STORAGE_KEY_VARS } from "@opscrew/agents";
-import { IMAGES, OFFSITE_PREFIX, pinnedVersion, serviceSpec } from "@opscrew/iac-templates";
+import { AGE_VERSION } from "@opscrew/core/testing";
+import { kafkaTool, OFFSITE_PREFIX, pinnedVersion, serviceSpec } from "@opscrew/iac-templates";
 import { type DeployPlan, PlanServiceSchema } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { ServerContainer } from "./components-support";
 import { ENVIRONMENT_E2E_VARIABLES } from "./environments-support";
-import { type DataSnapshot, ROWS, withMoveServices } from "./retarget-anywhere-support";
+import {
+  type DataSnapshot,
+  mysql,
+  psql,
+  ROWS,
+  ROWS_TABLE,
+  withMoveServices,
+} from "./retarget-anywhere-support";
 import { leakedLabels, printedHash } from "./support";
 
 // ---------------------------------------------------------------------------------------------
@@ -43,34 +51,6 @@ export const PORTAINER_VARIABLES = [
 /** Where the off-server pass keeps the copies. */
 export type OffsiteProvider = "r2" | "hetzner";
 
-/** The interview regions whose Hetzner locations have Object Storage (fsn1, nbg1, hel1). */
-const STORAGE_REGIONS = ["eu-central", "eu-north"];
-
-/**
- * Why the off-server pass to `provider` does not run beyond its gate and the common variables, or
- * `undefined` when it does: R2 needs the account's R2 turned on (`OPSCREW_E2E_R2=1`), Hetzner
- * Object Storage the user's S3 key and a region that has it.
- */
-export function offsiteSkip(
-  env: Record<string, string | undefined>,
-  provider: OffsiteProvider,
-): string | undefined {
-  if (provider === "r2") {
-    return env.OPSCREW_E2E_R2 === "1"
-      ? undefined
-      : "the copies on Cloudflare R2 need the account's R2 turned on: set OPSCREW_E2E_R2=1 once it is (docs/e2e.md)";
-  }
-  const missing = [
-    "OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID",
-    "OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY",
-  ].filter((name) => (env[name] ?? "").trim() === "");
-  if (missing.length > 0) return `set ${missing.join(", ")}`;
-  const region = env.OPSCREW_E2E_REGION?.trim() || "eu-central";
-  return STORAGE_REGIONS.includes(region)
-    ? undefined
-    : `Hetzner Object Storage is only in ${STORAGE_REGIONS.join(" and ")}, not in OPSCREW_E2E_REGION=${region}`;
-}
-
 /**
  * The bucket key a pass got as `OPSCREW_STORAGE_*` (the components pass's `bucketPass`), and the
  * same key as the off-server copies' bucket's `OPSCREW_OFFSITE_*`, which OpsCrew reads in a script.
@@ -98,20 +78,6 @@ export function offsiteKey(storageEnv: Readonly<Record<string, string>>): {
 
 /** The example of every data pass: its own SQLite file in its `sqlite` volume (`PUT /data`). */
 export const SNAPSHOT_EXAMPLE = "flask-sqlite";
-
-/**
- * The run's own app name, `e2e-snap-<run id>`, so the backups bucket, the snapshots' labels and
- * every resource are this run's alone (examples/flask-sqlite has no project name, so OpsCrew would
- * name it after the checkout folder, the same in every run). Within the app names' rules
- * (`^[a-z0-9][a-z0-9-]{0,40}$`).
- */
-export function runAppName(runId: string): string {
-  const name = `e2e-snap-${runId}`;
-  if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(name)) {
-    throw new Error(`The run id ${runId} makes no valid app name.`);
-  }
-  return name;
-}
 
 /**
  * The values the seed and the changes write that the leak search looks for (a Valkey job of each
@@ -143,12 +109,6 @@ export function withSnapshotServices(plan: DeployPlan, kafka: boolean): DeployPl
   return { ...moved, services: [...moved.services, service] };
 }
 
-/** feature 023's table in both databases (retarget-anywhere-support's, which seeds it). */
-const ROWS_TABLE = "opscrew_e2e_rows";
-
-const psql = (sql: string) => `psql -v ON_ERROR_STOP=1 -U app -d app -tAc "${sql}"`;
-const mysql = (sql: string) => `MYSQL_PWD="$MYSQL_PASSWORD" mysql -uapp -N -B app -e "${sql}"`;
-
 /**
  * The scripts that change both databases' seeded rows after a snapshot, so a restore must undo
  * them: the first row deleted and a row past the seeded ones written (`marker` its value). Valkey's
@@ -170,9 +130,8 @@ export const SQLITE_CONTENT_SCRIPT = `python -c "import hashlib, sqlite3; print(
 /** The test's topic in Kafka, with one partition so its messages keep their order. */
 const KAFKA_TOPIC = "opscrew-e2e";
 
-/** One of Kafka's own tools in its container, with a small heap (OpsCrew's `kafkaTool`). */
-const kafkaTool = (name: string) =>
-  `KAFKA_HEAP_OPTS=-Xmx64m /opt/kafka/bin/${name}.sh --bootstrap-server localhost:9092`;
+/** One of Kafka's own tools in its container (OpsCrew's), on the broker's plain listener. */
+const kafka = (name: string) => `${kafkaTool(name)} --bootstrap-server localhost:9092`;
 
 /** `count` messages of the run `runId`'s batch `batch` (`e2e-kafka-<run>-<batch><n>`). */
 export function kafkaMessages(runId: string, batch: string, count: number): string[] {
@@ -189,8 +148,8 @@ export function kafkaSeedScript(messages: readonly string[]): string {
     if (!/^[A-Za-z0-9-]+$/.test(message)) throw new Error(`The message "${message}" is not plain.`);
   }
   return [
-    `${kafkaTool("kafka-topics")} --create --if-not-exists --topic ${KAFKA_TOPIC} --partitions 1 --replication-factor 1 > /dev/null`,
-    `printf '%s\\n' ${messages.join(" ")} | ${kafkaTool("kafka-console-producer")} --topic ${KAFKA_TOPIC}`,
+    `${kafka("kafka-topics")} --create --if-not-exists --topic ${KAFKA_TOPIC} --partitions 1 --replication-factor 1 > /dev/null`,
+    `printf '%s\\n' ${messages.join(" ")} | ${kafka("kafka-console-producer")} --topic ${KAFKA_TOPIC}`,
   ].join(" && ");
 }
 
@@ -199,9 +158,9 @@ export function kafkaSeedScript(messages: readonly string[]): string {
  * first (`count <n>`), then exactly that many messages from the start, one per line.
  */
 export const KAFKA_READ_SCRIPT = [
-  `n=$(${kafkaTool("kafka-get-offsets")} --topic ${KAFKA_TOPIC} | awk -F: '{ s += $NF } END { print s + 0 }')`,
+  `n=$(${kafka("kafka-get-offsets")} --topic ${KAFKA_TOPIC} | awk -F: '{ s += $NF } END { print s + 0 }')`,
   'echo "count $n"',
-  `if [ "$n" -gt 0 ]; then ${kafkaTool("kafka-console-consumer")} --topic ${KAFKA_TOPIC} --from-beginning --max-messages "$n" --timeout-ms 60000 2> /dev/null; fi`,
+  `if [ "$n" -gt 0 ]; then ${kafka("kafka-console-consumer")} --topic ${KAFKA_TOPIC} --from-beginning --max-messages "$n" --timeout-ms 60000 2> /dev/null; fi`,
 ].join("; ");
 
 /**
@@ -329,12 +288,6 @@ export function restartedServices(
 // ---------------------------------------------------------------------------------------------
 // The off-server bucket.
 
-/** The first line of every age file: the bucket's objects are readable only with the key. */
-export const AGE_HEADER = "age-encryption.org/v1";
-
-/** The off-server copies' prefix in the bucket (`backups/`), as rclone lists it. */
-export const BACKUPS_PREFIX = OFFSITE_PREFIX;
-
 /**
  * What is wrong with the bucket's objects (`lsf -R` under `backups/`, relative to it) for the copy
  * `id` of `parts` parts on the app's server, by path only: an object that is not an age file, the
@@ -347,65 +300,29 @@ export function bucketObjectProblems(
 ): string[] {
   const problems = objects
     .filter((object) => !object.endsWith(".age"))
-    .map((object) => `${BACKUPS_PREFIX}/${object} is not an age file`);
+    .map((object) => `${OFFSITE_PREFIX}/${object} is not an age file`);
   const record = `${id}/about.json.age`;
-  if (!objects.includes(record)) problems.push(`${BACKUPS_PREFIX}/${record} is missing`);
+  if (!objects.includes(record)) problems.push(`${OFFSITE_PREFIX}/${record} is missing`);
   const files = objects.filter((object) => object.startsWith(`${id}/`) && object !== record);
   if (files.length !== parts) {
-    problems.push(`${BACKUPS_PREFIX}/${id}/ holds ${files.length} part files, not ${parts}`);
+    problems.push(`${OFFSITE_PREFIX}/${id}/ holds ${files.length} part files, not ${parts}`);
   }
   return problems;
 }
 
 /**
  * The problems of one object's content (`text`, read whole from the bucket): it must start with
- * the age header, and hold none of `known` (secrets and the values the test wrote).
+ * age's header (`AGE_VERSION`), and hold none of `known` (secrets and the values the test wrote).
  */
 export function objectContentProblems(
   path: string,
   text: string,
   known: readonly { label: string; value: string }[],
 ): string[] {
-  const problems = text.startsWith(AGE_HEADER) ? [] : [`${path} does not start with age's header`];
+  const problems = text.startsWith(AGE_VERSION) ? [] : [`${path} does not start with age's header`];
   const found = leakedLabels(text, known);
   if (found.length > 0) problems.push(`${path} contains: ${found.join(", ")}`);
   return problems;
-}
-
-/** rclone's settings for the remote `offsite:` (the bucket), as OpsCrew's own reads give them. */
-export function rcloneSettings(options: {
-  provider: "Cloudflare" | "Hetzner";
-  endpoint: string;
-  region: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-}): Record<string, string> {
-  return {
-    RCLONE_CONFIG_OFFSITE_TYPE: "s3",
-    RCLONE_CONFIG_OFFSITE_PROVIDER: options.provider,
-    RCLONE_CONFIG_OFFSITE_REGION: options.region,
-    RCLONE_CONFIG_OFFSITE_ENDPOINT: options.endpoint,
-    RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: options.accessKeyId,
-    RCLONE_CONFIG_OFFSITE_SECRET_ACCESS_KEY: options.secretAccessKey,
-    RCLONE_CONFIG_OFFSITE_NO_CHECK_BUCKET: "true",
-  };
-}
-
-/**
- * `docker`'s arguments that run the pinned rclone image with `args`: each setting passed by its
- * name only (`-e NAME`), so its value stays in the child's environment and off its command line.
- */
-export function rcloneDockerArgs(
-  settings: Readonly<Record<string, string>>,
-  args: readonly string[],
-): string[] {
-  return [
-    "run",
-    "--rm",
-    ...Object.keys(settings).flatMap((name) => ["-e", name]),
-    IMAGES.rclone.ref,
-    ...args,
-  ];
 }
 
 // ---------------------------------------------------------------------------------------------

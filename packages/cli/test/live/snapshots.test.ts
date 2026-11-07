@@ -29,15 +29,16 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, posix } from "node:path";
 import { backupsBucketName } from "@opscrew/agents";
-import { appDir, OFFSITE_LOG } from "@opscrew/iac-templates";
+import { appDir, OFFSITE_LOG, portainerDeployBranch } from "@opscrew/iac-templates";
 import { snapshotOffsiteOf, snapshotsOn, writeArtifact } from "@opscrew/plan-schema";
 import { describe, expect } from "vitest";
 import { underLoad } from "./builder-checks";
 import { httpRequest, minutes, waitFor } from "./cloud";
 import { bucketPass, readValue, serverContainers, writeValue } from "./component-checks";
+import { type StorageChoice, storageChoice } from "./components-support";
 import { AppEnvironments, designProd, opscrewUntilApproved } from "./environment-checks";
 import { LiveRun, serverSettings } from "./harness";
-import { repoInfo } from "./portainer-cloud";
+import { deployBranchImage, repoInfo } from "./portainer-cloud";
 import { portainerAnswers } from "./portainer-support";
 import {
   execOn,
@@ -53,7 +54,6 @@ import {
   BackupsBucket,
   changeData,
   type DeployRun,
-  deployBranchImage,
   deployLogLeaks,
   designRunApp,
   hetznerImageExists,
@@ -62,7 +62,6 @@ import {
   offsiteLogTail,
   readData,
   removeServerSnapshots,
-  requireDocker,
   restoredMark,
   seedData,
   snapshotOf,
@@ -80,7 +79,6 @@ import {
   type OffsiteProvider,
   objectContentProblems,
   offsiteKey,
-  offsiteSkip,
   onTheHour,
   PORTAINER_GATE,
   PORTAINER_VARIABLES,
@@ -97,6 +95,7 @@ import {
   writtenValues,
 } from "./snapshots-support";
 import { deployRunProblem, missingVariables } from "./support";
+import { requireDocker } from "./tls-checks";
 
 const ENV = process.env;
 const SETTINGS = { ...serverSettings(ENV), app: SNAPSHOT_EXAMPLE };
@@ -135,13 +134,36 @@ function rememberDumped(run: LiveRun, values: readonly string[]): void {
   for (const value of values) run.scrubber.add(value, "dumped-value");
 }
 
-/** The leak search of every pass: as for environments, then no address in its snapshot outputs. */
-async function snapshotLeaks(run: LiveRun, envs: AppEnvironments): Promise<string[]> {
+/**
+ * The leak search of every pass: as for environments, then no address in its snapshot outputs,
+ * then the deploy job's log of each of `deployRuns`.
+ */
+async function snapshotLeaks(
+  run: LiveRun,
+  envs: AppEnvironments,
+  deployRuns: readonly DeployRun[] = [],
+): Promise<string[]> {
   const addresses = run.scrubber.entries().filter(({ label }) => label.startsWith("server-"));
   return [
     ...(await envs.leaks({ cloudflare: true })),
     ...addressesInSnapshotOutputs(run.outputs, addresses),
+    ...(await deployLogLeaks(run, deployRuns)),
   ];
+}
+
+/**
+ * The start of each Hetzner pass: the throwaway repository prepared (`commit` its message) with
+ * the Hetzner and Cloudflare tokens, GitHub's snapshot for the cleanup, prod designed and the app
+ * named after the run.
+ */
+async function startPass(run: LiveRun, envs: AppEnvironments, commit: string): Promise<void> {
+  await run.prepareRepo({
+    commit,
+    env: { HCLOUD_TOKEN: SETTINGS.hcloudToken, CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken },
+  });
+  await envs.snapshotGithub();
+  await designProd(run, envs, SETTINGS.region);
+  await designRunApp(run, envs);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -206,17 +228,8 @@ describe.skipIf(MISSING.data.length > 0)(
       `1. examples/${SNAPSHOT_EXAMPLE}: prod designed, staging at Hetzner added with Postgres, MySQL, a Valkey queue and Kafka in its plan, provisioned and deployed; rows, jobs, messages and a SQLite value written`,
       minutes(75),
       async () => {
-        await run.prepareRepo({
-          commit: `e2e: examples/${SNAPSHOT_EXAMPLE} for snapshots`,
-          env: {
-            HCLOUD_TOKEN: SETTINGS.hcloudToken,
-            CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken,
-          },
-        });
-        await envs.snapshotGithub();
         // Prod is designed, as `env add` starts from it, but never provisioned: only staging runs.
-        await designProd(run, envs, SETTINGS.region);
-        await designRunApp(run, envs);
+        await startPass(run, envs, `e2e: examples/${SNAPSHOT_EXAMPLE} for snapshots`);
         await run.adaptAndMerge();
         await run.opscrewOk("env", "add", STAGING, "--target", "hetzner", "--from", "main");
         // As a user adds services to staging's plan.yaml; design keeps them.
@@ -467,10 +480,7 @@ describe.skipIf(MISSING.data.length > 0)(
       "7. no password, dumped value or server address in any output, deploy job's log, audit entry, commit, pull request, plan or state file (SC-2406)",
       minutes(10),
       async () => {
-        run.expectNothingLeaked([
-          ...(await snapshotLeaks(run, envs)),
-          ...(await deployLogLeaks(run, deployRuns)),
-        ]);
+        run.expectNothingLeaked(await snapshotLeaks(run, envs, deployRuns));
       },
       { always: true },
     );
@@ -483,8 +493,8 @@ describe.skipIf(MISSING.data.length > 0)(
 // The off-server copy: to R2, and to Hetzner Object Storage.
 
 for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProvider[]) {
-  const providerSkip = offsiteSkip(ENV, provider);
-  const missing = [...MISSING.offsite, ...(providerSkip === undefined ? [] : [providerSkip])];
+  const storage = storageChoice(ENV, provider);
+  const missing = [...MISSING.offsite, ...("skip" in storage ? [storage.skip] : [])];
   const where = provider === "r2" ? "Cloudflare R2" : "Hetzner Object Storage";
 
   describe.skipIf(missing.length > 0)(
@@ -516,17 +526,10 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
         `O1. snapshot offsite on --to ${provider}, then provision and the first deploy: the bucket <app>-prod-backups, the recovery key; the data seeded`,
         minutes(75),
         async () => {
-          await requireDocker(run, "This pass");
-          await run.prepareRepo({
-            commit: `e2e: examples/${SNAPSHOT_EXAMPLE} for the off-server copy`,
-            env: {
-              HCLOUD_TOKEN: SETTINGS.hcloudToken,
-              CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken,
-            },
-          });
-          await envs.snapshotGithub();
-          await designProd(run, envs, SETTINGS.region);
-          await designRunApp(run, envs);
+          await requireDocker(
+            "This pass reads the off-server bucket with rclone, which this test runs from its pinned image in Docker on this computer",
+          );
+          await startPass(run, envs, `e2e: examples/${SNAPSHOT_EXAMPLE} for the off-server copy`);
           await writeArtifact(
             "plan",
             run.paths().files.plan,
@@ -539,16 +542,8 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
             {
               app: SNAPSHOT_EXAMPLE,
               searchEngine: false,
-              storage:
-                provider === "r2"
-                  ? { provider: "r2" }
-                  : {
-                      provider: "hetzner",
-                      key: {
-                        accessKeyId: ENV.OPSCREW_E2E_HETZNER_S3_ACCESS_KEY_ID?.trim() ?? "",
-                        secretAccessKey: ENV.OPSCREW_E2E_HETZNER_S3_SECRET_ACCESS_KEY?.trim() ?? "",
-                      },
-                    },
+              // The pass runs only when the choice had no skip.
+              storage: storage as StorageChoice,
             },
             SETTINGS.cloudflareToken,
             SETTINGS.domain,
@@ -754,10 +749,7 @@ for (const provider of ["r2", "hetzner"] as const satisfies readonly OffsiteProv
         async () => {
           // Also after a provision that failed past writing the key: it is searched for.
           if (ageKey !== "") await run.rememberSecretFile(ageKey, "age-identity");
-          run.expectNothingLeaked([
-            ...(await snapshotLeaks(run, envs)),
-            ...(await deployLogLeaks(run, deployRuns)),
-          ]);
+          run.expectNothingLeaked(await snapshotLeaks(run, envs, deployRuns));
         },
         { always: true },
       );
@@ -809,16 +801,7 @@ describe.skipIf(MISSING.server.length > 0)(
       `W1. examples/${SNAPSHOT_EXAMPLE} at Hetzner: provision, the first deploy, a SQLite value written`,
       minutes(60),
       async () => {
-        await run.prepareRepo({
-          commit: `e2e: examples/${SNAPSHOT_EXAMPLE} for a whole-server snapshot`,
-          env: {
-            HCLOUD_TOKEN: SETTINGS.hcloudToken,
-            CLOUDFLARE_API_TOKEN: SETTINGS.cloudflareToken,
-          },
-        });
-        await envs.snapshotGithub();
-        await designProd(run, envs, SETTINGS.region);
-        await designRunApp(run, envs);
+        await startPass(run, envs, `e2e: examples/${SNAPSHOT_EXAMPLE} for a whole-server snapshot`);
         await run.adaptAndMerge();
         await envs.provision("prod", "prod");
         serverId = (await hetznerServer(SETTINGS.hcloudToken, run.app())).id;
@@ -912,11 +895,7 @@ describe.skipIf(MISSING.server.length > 0)(
     run.step(
       "W6. no secret or server address in any output, deploy job's log, audit entry, commit, pull request, plan or state file (SC-2406)",
       minutes(10),
-      async () =>
-        run.expectNothingLeaked([
-          ...(await snapshotLeaks(run, envs)),
-          ...(await deployLogLeaks(run, deployRuns)),
-        ]),
+      async () => run.expectNothingLeaked(await snapshotLeaks(run, envs, deployRuns)),
       { always: true },
     );
 
@@ -1094,15 +1073,16 @@ describe.skipIf(MISSING.portainer.length > 0)(
       minutes(90),
       async () => {
         const plan = await run.readPlan();
+        const branch = portainerDeployBranch(plan);
         // v1: what P2 deployed, its data put back by P4 as seeded.
-        const v1 = await deployBranchImage(run, plan);
+        const v1 = await deployBranchImage(run.github, branch);
         const v1Commit = await run.git("rev-parse", "HEAD");
         const v2Commit = await run.merge("e2e: v2, over the snapshot of v1's data");
         const done = await run.github.waitForDeploy({ headSha: v2Commit });
         const problem = deployRunProblem(done);
         if (problem !== undefined) throw new Error(`v2's deploy run ${done.id}: ${problem}.`);
         const v2 = await waitFor("the deploy branch naming v2", minutes(10), async () => {
-          const image = await deployBranchImage(run, plan);
+          const image = await deployBranchImage(run.github, branch);
           return image.digest === v1.digest ? undefined : image;
         });
         await waitForVersion(run, v2.version);
@@ -1126,9 +1106,10 @@ describe.skipIf(MISSING.portainer.length > 0)(
         );
         expect(shown.database, "the printed command's --database").toBe("snapshot");
         expect(shown.confirm, "the printed command's --confirm").toBe(run.app());
-        expect((await deployBranchImage(run, plan)).digest, "after a run without --approve").toBe(
-          v2.digest,
-        );
+        expect(
+          (await deployBranchImage(run.github, branch)).digest,
+          "after a run without --approve",
+        ).toBe(v2.digest);
         await run.opscrewOk(
           "rollback",
           "--to",
@@ -1140,9 +1121,10 @@ describe.skipIf(MISSING.portainer.length > 0)(
           "--approve",
           shown.hash,
         );
-        expect((await deployBranchImage(run, plan)).digest, "the image after the rollback").toBe(
-          v1.digest,
-        );
+        expect(
+          (await deployBranchImage(run.github, branch)).digest,
+          "the image after the rollback",
+        ).toBe(v1.digest);
         await waitForVersion(run, v1.version);
         await run.waitForHealth(minutes(5));
         expect(
@@ -1160,7 +1142,7 @@ describe.skipIf(MISSING.portainer.length > 0)(
           "the deploy branch naming another version",
           minutes(15),
           async () => {
-            const image = await deployBranchImage(run, plan);
+            const image = await deployBranchImage(run.github, branch);
             return image.digest === v1.digest ? undefined : image;
           },
         );
