@@ -173,7 +173,7 @@ services:
     user: 0:0
     environment:
       RCLONE_CONFIG_OFFSITE_TYPE: s3
-      RCLONE_CONFIG_OFFSITE_PROVIDER: Other
+      RCLONE_CONFIG_OFFSITE_PROVIDER: Hetzner
       RCLONE_CONFIG_OFFSITE_ENDPOINT: \${OPSCREW_OFFSITE_ENDPOINT}
       RCLONE_CONFIG_OFFSITE_REGION: fsn1
       RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: \${OPSCREW_OFFSITE_ACCESS_KEY_ID}
@@ -186,17 +186,9 @@ services:
       - |-
         set -o pipefail
         age_ok() { echo '<pin:TOOLS.age.binarySha256.amd64>  /tools/age' | sha256sum -c -s; }
-        fetch_age() {
-          rm -rf /tmp/age && mkdir /tmp/age &&
-          rclone copyurl 'https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz' /tmp/age/age.tar.gz &&
-          echo '<pin:TOOLS.age.sha256.amd64>  /tmp/age/age.tar.gz' | sha256sum -c -s &&
-          tar -xzf /tmp/age/age.tar.gz -C /tmp/age age/age &&
-          echo '<pin:TOOLS.age.binarySha256.amd64>  /tmp/age/age/age' | sha256sum -c -s &&
-          mv /tmp/age/age/age /tools/age.new && mv /tools/age.new /tools/age
-          r=$$?; rm -rf /tmp/age; return $$r
-        }
+        age_fetch() { rm -rf /tmp/age && mkdir /tmp/age && rclone copyurl 'https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz' /tmp/age/age.tar.gz && echo '<pin:TOOLS.age.sha256.amd64>  /tmp/age/age.tar.gz' | sha256sum -c -s && tar -xzf /tmp/age/age.tar.gz -C /tmp/age age/age && echo '<pin:TOOLS.age.binarySha256.amd64>  /tmp/age/age/age' | sha256sum -c -s && mv /tmp/age/age/age /tools/age.new && mv /tools/age.new /tools/age; _age=$$?; rm -rf /tmp/age; return "$$_age"; }
         put() {
-          age_ok || fetch_age || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; return 1; }
+          age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; return 1; }
           /tools/age -r "$$OPSCREW_OFFSITE_RECIPIENT" < "$$1" | rclone rcat 'offsite:shop-prod-backups/backups/'"$$2"
         }
         umask 077

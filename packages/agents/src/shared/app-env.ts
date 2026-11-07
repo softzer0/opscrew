@@ -284,6 +284,11 @@ export const STORAGE_ENDPOINTS: Readonly<Record<string, (region: string) => stri
   digitalocean: (region) => `https://${region}.digitaloceanspaces.com`,
 };
 
+/** R2's S3 endpoint, which names the user's Cloudflare account. */
+export function r2Endpoint(accountId: string): string {
+  return `https://${accountId}.r2.cloudflarestorage.com`;
+}
+
 /**
  * The user's key for a provider's bucket (Spaces, Hetzner, or an R2 token's S3 keys) and, for R2,
  * the endpoint, which names the user's Cloudflare account. Provision keeps it like a provider

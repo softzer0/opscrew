@@ -3,13 +3,15 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { type FakeContainer, FakeDocker } from "@opscrew/connector-docker/testing";
 import { type PinnedStream, portainerClient } from "@opscrew/connector-portainer";
-import { errorMessage } from "@opscrew/core";
+import { errorMessage, generateAgeIdentity } from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { IMAGES } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
 import { REGISTRY_TOKEN_VAR, REPOSITORY_TOKEN_VAR } from "../../provision/portainer";
+import { OFFSITE_KEY_VARS } from "../../provision/storage";
 import type { PortainerServices } from "../../provision/types";
+import { sopsConfigFile } from "../../secrets/store";
 import {
   type PortainerConnection,
   readPortainerConnection,
@@ -39,8 +41,14 @@ const GHCR_TOKEN = fakeSecret("github-token", "ghcr read token");
 const CERT = fakeCertificate();
 const IMAGE = `ghcr.io/acme/shop@sha256:${"a".repeat(64)}`;
 const STACK = "opscrew-shop";
+const OFFSITE_KEY = {
+  accessKeyId: fakeSecret("aws-access-key-id", "offsite"),
+  secretAccessKey: fakeSecret("aws-secret-access-key", "offsite"),
+};
 
 interface HarnessOptions {
+  /** The plan's off-server copy of its snapshots, its key in the environment. */
+  offsite?: NonNullable<DeployPlan["snapshots"]>["offsite"];
   /** The side under test (default: the new one). */
   which?: "new" | "old";
   /** The image is public, as the user said; the record doesn't say. */
@@ -113,6 +121,7 @@ async function harness(options: HarnessOptions = {}) {
       step: "created",
       startedAt: "2026-11-05T12:00:00.000Z",
     },
+    ...(options.offsite !== undefined ? { snapshots: { offsite: options.offsite } } : {}),
   });
   const project = await createProject(plan);
   await writeFile(join(project.root, "production.env"), `STRIPE_SECRET_KEY=${STRIPE}\n`);
@@ -181,6 +190,8 @@ async function harness(options: HarnessOptions = {}) {
       PORTAINER_API_KEY: TOKEN,
       [REPOSITORY_TOKEN_VAR]: REPO_TOKEN,
       [REGISTRY_TOKEN_VAR]: GHCR_TOKEN,
+      [OFFSITE_KEY_VARS.accessKeyId]: OFFSITE_KEY.accessKeyId,
+      [OFFSITE_KEY_VARS.secretAccessKey]: OFFSITE_KEY.secretAccessKey,
     },
     runner: projectRunner(),
     approvalHandler: handler,
@@ -491,6 +502,25 @@ describe("the Portainer side of a move", () => {
     expect(teardowns().map((r) => r.planHash)).toEqual([stop?.pendingPlanHash]);
     expect(h.session.approve).toBeUndefined();
     expect(h.portainer.stacks).toEqual([]);
+  });
+
+  it("fills the off-server copy's stack variables after a move, as provision does", async () => {
+    const h = await harness({
+      offsite: { provider: "hetzner", bucket: "shop-backups", region: "fsn1" },
+    });
+    const { recipient } = generateAgeIdentity();
+    const sops = sopsConfigFile([recipient]);
+    await writeFile(join(h.deps.paths.root, sops.path), sops.content);
+    expect(await h.side.deploy(h.session)).toBeUndefined();
+    const app = h.portainer.stacks.find((stack) => stack.Name === STACK);
+    const env = Object.fromEntries((app?.Env ?? []).map((pair) => [pair.name, pair.value]));
+    expect(env).toMatchObject({
+      OPSCREW_OFFSITE_ENDPOINT: "https://fsn1.your-objectstorage.com",
+      OPSCREW_OFFSITE_ACCESS_KEY_ID: OFFSITE_KEY.accessKeyId,
+      OPSCREW_OFFSITE_SECRET_ACCESS_KEY: OFFSITE_KEY.secretAccessKey,
+      OPSCREW_OFFSITE_RECIPIENT: recipient,
+    });
+    expect(h.visible()).not.toContain(OFFSITE_KEY.secretAccessKey);
   });
 
   it("never shows the token, a password or Portainer's address", async () => {

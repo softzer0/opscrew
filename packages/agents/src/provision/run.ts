@@ -202,6 +202,7 @@ import {
   offsiteSetup,
   providerBucket,
   requireOffsiteKey,
+  requireOffsiteRecipient,
   requireR2Cloudflare,
   requireStorageKey,
   STORAGE_PLAN_SUFFIX,
@@ -578,6 +579,10 @@ async function provisionFlow(
     offsite !== undefined && offsite.provider !== "r2"
       ? await requireOffsiteKey(deps, plan, services, { command })
       : undefined;
+  // The age key the copies are encrypted to, or what makes it, before any change (D16).
+  const recovery = options.planOnly
+    ? options.recovery
+    : await requireOffsiteRecipient(deps, plan, options.recovery, command);
   // The app's own additions to its site, checked before any change (FR-1443) against the site
   // this run means to deploy.
   const intended = originTlsHostnames(plan);
@@ -1449,7 +1454,7 @@ async function provisionFlow(
           ? undefined
           : await offsiteSetup(deps, plan, services, {
               github,
-              ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+              ...(recovery !== undefined ? { recovery } : {}),
               key: offsiteKey,
               cloudflare,
               command,
@@ -1535,7 +1540,7 @@ async function provisionFlow(
     phase,
     branch: deployBranch,
     dependabot,
-    ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+    ...(recovery !== undefined ? { recovery } : {}),
     ...(recoveryCopy !== undefined ? { recoveryCopy } : {}),
   });
   plan = published.plan;

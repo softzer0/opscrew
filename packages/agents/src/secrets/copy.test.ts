@@ -25,7 +25,7 @@ import {
   rotateRecoveryKey,
 } from "./copy";
 import { isCopyPath, localPath, readLocalFiles } from "./files";
-import { setRecoveryFolder } from "./store";
+import { readRecord, setRecoveryFolder, writeRecord } from "./store";
 
 const PLAN = { app: { name: "shop" } } as const;
 const POSIX = process.platform !== "win32";
@@ -186,7 +186,7 @@ describe("refreshRecoveryCopy", () => {
     expect(first.folderCopy).toBe(join(dirname(keyFile), "copies", "shop.sops.json"));
     expect(await readFile(first.folderCopy as string, "utf8")).toBe(copy);
 
-    // The record holds hashes and times only.
+    // The record holds hashes, times and the public keys only.
     const record = JSON.parse(await readFile(join(deps.paths.stateDir, "recovery.json"), "utf8"));
     const hashes = Object.fromEntries(
       Object.entries(provisionedFiles()).map(([path, text]) => [path, sha256Hex(text)]),
@@ -197,6 +197,7 @@ describe("refreshRecoveryCopy", () => {
       copySha256: sha256Hex(copy),
       copiedAt: "2026-10-11T12:00:00.000Z",
       repositoryCopyAt: "2026-10-11T12:00:00.000Z",
+      recipients: [recipient, backup],
     });
 
     // The key and the files' contents are nowhere but in the key file and on stdin.
@@ -503,16 +504,34 @@ describe("refreshRecoveryCopy", () => {
     for (const value of Object.values(VALUES)) expect(shown).not.toContain(value);
   });
 
-  it("keeps the key it made when .sops.yaml is not in this checkout (an unmerged pull request)", async () => {
-    const { deps, root, sops } = await withFirstCopy();
+  it("keeps the key it made when .sops.yaml is not in this checkout, encrypting to the recipients it recorded (D16)", async () => {
+    const { deps, root, sops, identity } = await withFirstCopy();
     await rm(join(root, "opscrew"), { recursive: true });
     await writeLocal(deps, { "state/server.json": '{"ipv4":"203.0.113.11"}\n' });
-    const result = await refreshRecoveryCopy(deps, PLAN, { keyOut: async () => "/never" });
-    expect(result).toEqual({
+    let asked = false;
+    const keyOut = async () => {
+      asked = true;
+      return "/never";
+    };
+    const options = { repositoryPrivate: async () => true, keyOut };
+    const result = changed(await refreshRecoveryCopy(deps, PLAN, options));
+    expect(asked).toBe(false);
+    expect(result.firstKey).toBeUndefined();
+    const recipient = ageRecipientOf(identity);
+    expect(result.recipients).toEqual([recipient]);
+    expect(result.repositoryFiles.map((file) => file.path)).toContain("opscrew/.sops.yaml");
+    expect(sops.calls).toHaveLength(2);
+    expect(sops.calls[1]?.args.slice(-2)).toEqual(["--age", recipient]);
+
+    // A record from before OpsCrew kept the recipients still says to merge the pull request.
+    const { recipients: _kept, ...older } = await readRecord(deps.paths);
+    await writeRecord(deps.paths, older);
+    await rm(join(root, "opscrew"), { recursive: true, force: true });
+    await writeLocal(deps, { "state/server.json": '{"ipv4":"203.0.113.12"}\n' });
+    expect(await refreshRecoveryCopy(deps, PLAN, options)).toEqual({
       changed: false,
       warning: expect.stringContaining("opscrew/.sops.yaml, which names the keys that open it"),
     });
-    expect(sops.calls).toHaveLength(1);
   });
 });
 

@@ -233,6 +233,7 @@ async function placeCopy(
       ...(folderCopy !== undefined ? { folderHashes: hashes } : {}),
       copySha256: sha256Hex(copy),
       copiedAt: now,
+      recipients: plan.recipients,
     });
   }
   const gitattributes = await gitattributesFile(deps.paths);
@@ -261,8 +262,10 @@ async function planApp(deps: PhaseDeps): Promise<string> {
 /**
  * Brings the recovery copy up to date with this computer's files, comparing their SHA-256 hashes
  * with `.opscrew/recovery.json`. On a change it encrypts them with sops to the recipients in
- * `opscrew/.sops.yaml` (no private key needed), writes the folder copy at once and returns the
- * files for the caller's pull request. The first time it encrypts to the user's own recipient
+ * `opscrew/.sops.yaml` (no private key needed), or, while that file is not in this checkout, to
+ * those the record kept (D16: a first provision that stopped before its pull request), writes the
+ * folder copy at once and returns the files for the caller's pull request, `.sops.yaml` too when
+ * the checkout has none. The first time it encrypts to the user's own recipient
  * (`options.recipient`), or makes a key: written once to the file `options.keyOut` names (0600,
  * outside the repository and OpsCrew's folder, never over a file), never printed, and returned
  * only as that path; either way with an optional backup recipient. A public repository gets the
@@ -285,7 +288,9 @@ export async function refreshRecoveryCopy(
   // The repository's copy is up to date when it is in this checkout and holds these files.
   if (repositoryCopy !== undefined && sameHashes(hashes, record.hashes)) return { changed: false };
 
-  let recipients = await readRecipients(deps.paths);
+  const inCheckout = await readRecipients(deps.paths);
+  // A first provision that stopped before its pull request kept them in the record (D16).
+  let recipients = inCheckout ?? record.recipients;
   if (recipients === undefined && record.copySha256 !== undefined) {
     return {
       changed: false,
@@ -293,7 +298,7 @@ export async function refreshRecoveryCopy(
     };
   }
   // The first copy's key first, so a run without one asks nothing else.
-  const newRule = recipients === undefined;
+  const newRule = inCheckout === undefined;
   let own: string | undefined;
   let key: { file: string; identity: string; recipient: string } | undefined;
   if (recipients === undefined) {

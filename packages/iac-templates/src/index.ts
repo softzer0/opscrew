@@ -31,6 +31,7 @@ export {
 export * from "./infra";
 export { CAA_ISSUERS } from "./infra/cloudflare";
 export * from "./monitoring";
+export { OFFSITE_PREFIX, RCLONE_PROVIDERS } from "./offsite";
 export * from "./pins";
 export { keepNewerPins } from "./pins-carry";
 export * from "./portainer-host";

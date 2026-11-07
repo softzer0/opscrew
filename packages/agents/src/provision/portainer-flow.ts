@@ -33,7 +33,7 @@ import { deploySetupCheck, provisionCheck, resumeCheck } from "../check/provisio
 import type { PhaseDeps } from "../context";
 import { PORTAINER_NOTES } from "../design/portainer";
 import { builderBranch } from "../environments/branches";
-import { readRecipients } from "../secrets/store";
+import { knownRecipients } from "../secrets/store";
 import {
   type AppEnvironment,
   applyStackPlanAudited,
@@ -129,6 +129,7 @@ import {
   offsiteSetup,
   providerBucket,
   requireOffsiteKey,
+  requireOffsiteRecipient,
   requireR2Cloudflare,
   requireStorageKey,
   storageLogin,
@@ -589,6 +590,10 @@ export async function provisionPortainer(
     offsite !== undefined && offsite.provider !== "r2"
       ? await requireOffsiteKey(deps, plan, services, { command })
       : undefined;
+  // The age key the copies are encrypted to, or what makes it, before any change (D16).
+  const recovery = options.planOnly
+    ? options.recovery
+    : await requireOffsiteRecipient(deps, plan, options.recovery, command);
   // 2. Connect with the pinned certificate, inspect read-only, stop on what blocks the deploy.
   const valueKey = await ensurePortainerValueKey(deps, portainerServices.randomBytes);
   const client = portainerClientFor(deps, {
@@ -720,7 +725,7 @@ export async function provisionPortainer(
   const offsiteStack = () => {
     offsiteStackValues ??= offsiteSetup(deps, plan, services, {
       github,
-      ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+      ...(recovery !== undefined ? { recovery } : {}),
       key: offsiteKey,
       cloudflare: account,
       command,
@@ -889,7 +894,7 @@ export async function provisionPortainer(
   // Nor, before the first provision made it, the recovery copy's age key the copies are encrypted
   // to: only a run that applies makes it (D11).
   const recipientPending =
-    offsite !== undefined && (await readRecipients(deps.paths)) === undefined;
+    offsite !== undefined && (await knownRecipients(deps.paths)) === undefined;
 
   // The stack step: plan (bound to the values) → show and save → stop on blockers or missing
   // tokens → stack-apply approval by its hash → apply → record what OpsCrew created.
@@ -1168,7 +1173,7 @@ export async function provisionPortainer(
     phase,
     branch: deployBranch,
     dependabot,
-    ...(options.recovery !== undefined ? { recovery: options.recovery } : {}),
+    ...(recovery !== undefined ? { recovery } : {}),
     ...(recoveryCopy !== undefined ? { recoveryCopy } : {}),
   });
   plan = published.plan;

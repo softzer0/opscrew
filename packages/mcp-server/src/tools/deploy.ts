@@ -280,9 +280,13 @@ class CloudflarePlanGate implements ApprovalHandler {
             : `its hash is not the pagesPlanHash ${this.pagesHash}; the Pages plan changed since opscrew_plan returned it`,
       });
     }
-    if (request.kind === "iac-apply" && planHash !== undefined && planHash !== this.storage.hash) {
-      const saved = await findSavedPlan(this.storage.plansDir, planHash);
-      if (saved?.planFile.endsWith(STORAGE_PLAN_SUFFIX) === true) {
+    // A bucket root's saved plan, by its file's ending, is shown only under the hash given for it.
+    const saved =
+      request.kind === "iac-apply" && planHash !== undefined
+        ? await findSavedPlan(this.storage.plansDir, planHash)
+        : undefined;
+    if (saved !== undefined) {
+      if (saved.planFile.endsWith(STORAGE_PLAN_SUFFIX) && planHash !== this.storage.hash) {
         this.refusedBucket = true;
         return approvalDecision(this.clock, "opscrew_apply", false, {
           reason:
@@ -291,10 +295,7 @@ class CloudflarePlanGate implements ApprovalHandler {
               : `its hash is not the storagePlanHash ${this.storage.hash}; the bucket plan changed since opscrew_plan returned it`,
         });
       }
-      if (
-        saved?.planFile.endsWith(BACKUPS_PLAN_SUFFIX) === true &&
-        planHash !== this.storage.backups
-      ) {
+      if (saved.planFile.endsWith(BACKUPS_PLAN_SUFFIX) && planHash !== this.storage.backups) {
         this.refusedBackups = true;
         return approvalDecision(this.clock, "opscrew_apply", false, {
           reason:

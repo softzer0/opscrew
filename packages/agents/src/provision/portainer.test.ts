@@ -1233,7 +1233,6 @@ describe.skipIf(!findExecutable("git"))("the off-server copy in the user's Porta
     await s.run();
     expect(env(s)).toMatchObject({
       OPSCREW_OFFSITE_ENDPOINT: "https://fsn1.your-objectstorage.com",
-      OPSCREW_OFFSITE_REGION: "fsn1",
       OPSCREW_OFFSITE_ACCESS_KEY_ID: OFFSITE_KEY.accessKeyId,
       OPSCREW_OFFSITE_SECRET_ACCESS_KEY: OFFSITE_KEY.secretAccessKey,
       OPSCREW_OFFSITE_RECIPIENT: recipient,

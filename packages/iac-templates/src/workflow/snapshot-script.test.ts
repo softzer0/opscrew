@@ -20,6 +20,7 @@ import { testContext } from "../__fixtures__/plans";
 import { serviceSpec } from "../catalog";
 import { withServices } from "../catalog/__fixtures__/plans";
 import { localhostPlan } from "../edge/__fixtures__/localhost";
+import { ageFunctions } from "../offsite";
 import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
 import { inEnvironment, ofApp, splitPlan, withProcesses, withSqlite } from "./__fixtures__/plans";
 import { COMPOSE_PROLOGUE, fakeBin, runSh, shWorks, write } from "./__fixtures__/sh";
@@ -100,8 +101,10 @@ function withSnapshots(
  * The off-server copy's one-off (`run --rm --env-file <file> … -v <folder>:/snapshot:ro … -c
  * <script> sh <to> <file>...`) keeps its script in $WORK/upload.sh and "uploads" each file it is
  * given, then `about.json`, as `$WORK/bucket/<to>/<file>.age` (`age:` and the file), each logged in
- * $WORK/uploads.log. Without its env file it fails as Docker does (125); with UPLOAD_FAIL it fails
- * printing the env file (the bucket's key), and with DELETE_FAIL it exits 4 after the upload.
+ * $WORK/uploads.log, and notes in $WORK/upload-lock.log whether it holds the start lock (fd 7). A
+ * script that deletes the id's about.json.age first has it removed. Without its env file it fails
+ * as Docker does (125); with UPLOAD_FAIL it fails (after that deletion) printing the env file (the
+ * bucket's key), and with DELETE_FAIL it exits 4 after the upload.
  */
 const FAKE_DOCKER = [
   "#!/bin/sh",
@@ -121,6 +124,8 @@ const FAKE_DOCKER = [
   "  done",
   '  [ -f "$envfile" ] || { echo "docker: open $envfile: no such file or directory" >&2; exit 125; }',
   '  printf \'%s\\n\' "$script" > "$WORK/upload.sh"',
+  '  if { true >&7; } 2> /dev/null; then echo held >> "$WORK/upload-lock.log"; else echo free >> "$WORK/upload-lock.log"; fi',
+  '  case "$script" in *"rclone deletefile"*) rm -f "$WORK/bucket/$to/about.json.age" ;; esac',
   '  if [ -n "${UPLOAD_FAIL:-}" ]; then echo "upload failed with $(cat "$envfile")" >&2; exit 1; fi',
   '  mkdir -p "$WORK/bucket/$to"',
   "  for f in $files about.json; do",
@@ -855,6 +860,10 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
     const uploads = () => (read(`${work}/uploads.log`) ?? "").split("\n").filter(Boolean);
     const uploaded = (path: string) => read(`${work}/bucket/${path}`);
     const script = () => read(`${work}/upload.sh`) ?? "";
+    /** Whether fd 7, the start lock, was open in each upload's one-off. */
+    const lockDuringUploads = () =>
+      (read(`${work}/upload-lock.log`) ?? "").split("\n").filter(Boolean);
+    const uploadCalls = () => calls().filter((call) => call.includes("--env-file"));
     const files = (id: string) =>
       (about(id).services as { file?: string }[]).flatMap((s) => (s.file ? [s.file] : []));
     const expectNoSecret = (...texts: string[]) => {
@@ -862,11 +871,31 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
         for (const secret of secrets) expect(text).not.toContain(secret);
       }
     };
+    /** A complete snapshot `id` of `kind`, taken at `taken`, holding the database's dump. */
+    const stored = (id: string, kind: string, taken: string) => {
+      write(at(`.snapshots/${id}/db.dump`), `db of ${id}`);
+      write(at(`.snapshots/${id}/taken`), `${taken}\n`);
+      const services = [{ name: "db", kind: "postgres", file: "db.dump", size: 1 }];
+      write(
+        at(`.snapshots/${id}/about.json`),
+        `${JSON.stringify({ id, kind, taken, version: `sha256:${A}`, services })}\n`,
+      );
+    };
+    /** A complete snapshot `id` whose every part was left out. */
+    const emptySnapshot = (id: string) => {
+      write(at(`.snapshots/${id}/taken`), `${iso(new Date())}\n`);
+      const services = [{ name: "db", kind: "postgres", skipped: true }];
+      write(
+        at(`.snapshots/${id}/about.json`),
+        `${JSON.stringify({ id, kind: "manual", services })}\n`,
+      );
+    };
+    const iso = (date: Date) => `${date.toISOString().slice(0, 19)}Z`;
 
     it("streams each file through the checked age into rclone, about.json last, then marks it", () => {
       offsiteServer(r2);
-      const id = snap(["take", "manual"], { UPLOAD_FAIL: "1" }).stdout;
-      rmSync(`${work}/docker.log`);
+      const id = "20261106T120000Z";
+      stored(id, "manual", iso(new Date()));
       const result = snap(["offsite", id]);
       expect(result.status, result.output).toBe(0);
       expect(uploads()).toEqual([...files(id), "about.json"].map((file) => `${id}/${file}.age`));
@@ -875,10 +904,12 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       }
       expect(existsSync(at(`.snapshots/${id}/offsite.done`))).toBe(true);
       if (!windows) expect(mode(at(`.snapshots/${id}/offsite.done`))).toBe("600");
-      // The key reaches the one-off only through its env file, the snapshot read-only.
+      // The key reaches the one-off only through its env file, the snapshot read-only, and the
+      // region is the plan's.
       const [call] = calls();
       expect(call).toContain(`docker run --rm --env-file ${OFFSITE_ENV_FILE} `);
       expect(call).toContain("-e RCLONE_CONFIG_OFFSITE_PROVIDER=Cloudflare");
+      expect(call).toContain("-e RCLONE_CONFIG_OFFSITE_REGION=auto");
       expect(call).toContain(`${appDir()}/.snapshots/${id}:/snapshot:ro`);
       expect(call).toContain(`${appDir()}/.offsite:/tools`);
       expect(call).toContain(IMAGES.rclone.ref);
@@ -886,37 +917,52 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expectNoSecret(result.output);
       // The pinned age, fetched through rclone and checked before it is kept and before each use.
       const text = script();
-      const { sha256, binarySha256 } = TOOLS.age;
-      expect(text).toContain(
-        `age_ok() { echo '${binarySha256.amd64}  /tools/age' | sha256sum -c -s; }`,
+      for (const line of ageFunctions("amd64")) expect(text).toContain(line);
+      expect(text).toContain(`rclone copyurl '${toolDownloadUrl("age", "amd64")}'`);
+      expect(text).toContain(`echo '${TOOLS.age.sha256.amd64}  /tmp/age/age.tar.gz'`);
+      expect(text).toContain("age_ok || age_fetch || {");
+      // The id's about.json goes before any file: a copy that fails part-way never looks complete.
+      const removed = text.indexOf(
+        `rclone deletefile 'offsite:shop-staging-backups/backups/'"$to/about.json.age" || [ "$?" -eq 4 ] || exit 1`,
       );
-      expect(text).toContain(
-        `rclone copyurl '${toolDownloadUrl("age", "amd64")}' /tmp/age/age.tar.gz`,
-      );
-      expect(text).toContain(`echo '${sha256.amd64}  /tmp/age/age.tar.gz' | sha256sum -c -s`);
-      expect(text).toContain(`echo '${binarySha256.amd64}  /tmp/age/age/age' | sha256sum -c -s`);
-      expect(text).toContain(
+      const loop = text.indexOf(
         `/tools/age -r "$OPSCREW_OFFSITE_RECIPIENT" < /snapshot/"$f" | rclone rcat 'offsite:shop-staging-backups/backups/'"$to/$f.age" || exit 1`,
       );
+      expect(removed).toBeGreaterThan(-1);
+      expect(removed).toBeLessThan(loop);
       expect(text).toContain("set -o pipefail");
       // R2 expires the copies itself.
-      expect(text).not.toContain("rclone delete");
-      expect(text).not.toContain("REGION");
+      expect(text).not.toContain("rclone delete ");
     });
 
-    it("copies each snapshot off right after it is taken, and a failed copy only warns", () => {
+    it("leaves no about.json.age when a copy of an id copied before fails part-way", () => {
+      offsiteServer(r2);
+      const id = "20261106T120000Z";
+      stored(id, "manual", iso(new Date()));
+      expect(snap(["offsite", id]).status).toBe(0);
+      expect(uploaded(`${id}/about.json.age`)).toBeDefined();
+      const failed = snap(["offsite", id], { UPLOAD_FAIL: "1" });
+      expect(failed.status).toBe(1);
+      expect(uploaded(`${id}/about.json.age`)).toBeUndefined();
+      expect(existsSync(at(`.snapshots/${id}/offsite.done`))).toBe(false);
+    });
+
+    it("copies a snapshot by hand off the server once the start lock is free, and a failed copy only warns", () => {
       offsiteServer(r2);
       const taken = snap(["take", "manual"]);
       expect(taken.status, taken.output).toBe(0);
       expect(taken.stdout).toMatch(ID);
       expect(uploads().at(-1)).toBe(`${taken.stdout}/about.json.age`);
       expect(existsSync(at(`.snapshots/${taken.stdout}/offsite.done`))).toBe(true);
+      // The upload's one-off ran after the take, without the start lock.
+      expect(lockDuringUploads()).toEqual(["free"]);
+      expect(calls().indexOf(uploadCalls()[0] ?? "")).toBeGreaterThan(callAt("flock 7"));
 
       const failed = snap(["take", "manual"], { UPLOAD_FAIL: "1" });
       expect(failed.status, failed.output).toBe(0);
       expect(failed.stdout).toMatch(ID);
       expect(failed.stderr).toContain(
-        `Copying the snapshot ${failed.stdout} off the server failed, so the bucket has no copy of it yet; the snapshot itself stays on the app's server. The upload's output stays in ${appDir()}/.snapshots/offsite.log (it is not printed here).`,
+        `Copying the snapshot ${failed.stdout} off the server failed, so the bucket has no complete copy of it yet; the snapshot itself stays on the app's server, and the next snapshot tries again. The upload's output stays in ${appDir()}/.snapshots/offsite.log (it is not printed here).`,
       );
       expect(existsSync(at(`.snapshots/${failed.stdout}/offsite.done`))).toBe(false);
       // The output went to the log alone.
@@ -924,19 +970,55 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expectNoSecret(taken.output, failed.output);
     });
 
-    it("copies a release snapshot before a deploy goes on", () => {
-      offsiteServer(r2);
-      const result = snap(["take", "release"]);
-      expect(result.status, result.output).toBe(0);
-      expect(result.stdout).toBe(A);
-      expect(uploads().at(-1)).toBe(`${A}/about.json.age`);
+    it("tries the copies not made yet again at each snapshot, newest first, within the retention", () => {
+      offsiteServer(hetzner);
+      const now = Date.now();
+      // Not copied yet: one by hand and one scheduled, within the 30 days.
+      stored("20261101T000000Z", "manual", iso(new Date(now - 5 * 86_400_000)));
+      stored("20261102T000000Z", "scheduled", iso(new Date(now - 4 * 86_400_000)));
+      // Copied already, older than the retention, before a release, or holding no file.
+      stored("20261103T000000Z", "manual", iso(new Date(now - 3 * 86_400_000)));
+      write(at(".snapshots/20261103T000000Z/offsite.done"), "");
+      stored("20250101T000000Z", "manual", iso(new Date(now - 60 * 86_400_000)));
+      stored(A, "release", iso(new Date(now - 86_400_000)));
+      emptySnapshot("20261104T000000Z");
+      const taken = snap(["take", "manual"]);
+      expect(taken.status, taken.output).toBe(0);
+      expect(
+        uploads()
+          .filter((path) => path.endsWith("/about.json.age"))
+          .map((path) => path.split("/")[0]),
+      ).toEqual([taken.stdout, "20261102T000000Z", "20261101T000000Z"]);
+      for (const id of [taken.stdout, "20261101T000000Z", "20261102T000000Z"]) {
+        expect(existsSync(at(`.snapshots/${id}/offsite.done`))).toBe(true);
+      }
+      for (const id of ["20250101T000000Z", A, "20261104T000000Z"]) {
+        expect(existsSync(at(`.snapshots/${id}/offsite.done`))).toBe(false);
+      }
+      expect(lockDuringUploads().every((state) => state === "free")).toBe(true);
     });
 
-    it("copies nothing without the env file or a complete snapshot", () => {
+    it("never copies a snapshot before a release, neither in the deploy nor by take release", () => {
       offsiteServer(r2);
-      const id = snap(["take", "manual"], { UPLOAD_FAIL: "1" }).stdout;
+      stored("20261101T000000Z", "manual", iso(new Date()));
+      const release = snap(["take", "release"]);
+      expect(release.status, release.output).toBe(0);
+      expect(release.stdout).toBe(A);
+      expect(uploadCalls()).toEqual([]);
+      const deploy = runSh(
+        [`cd "$OPSCREW_APPS_DIR"/${APP}`, SNAPSHOT_FUNCTIONS, "snapshot_cmd_take release"],
+        [],
+        { WORK: work, OPSCREW_APPS_DIR: appsDir() },
+      );
+      expect(deploy.status, deploy.output).toBe(0);
+      expect(uploadCalls()).toEqual([]);
+    });
+
+    it("copies nothing without the env file, a complete snapshot, or a file in it", () => {
+      offsiteServer(r2);
+      const id = "20261106T120000Z";
+      stored(id, "manual", iso(new Date()));
       rmSync(at(OFFSITE_ENV_FILE));
-      rmSync(`${work}/docker.log`);
       const missing = snap(["offsite", id]);
       expect(missing.status).toBe(1);
       expect(missing.stderr).toContain(
@@ -948,7 +1030,13 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(incomplete.stderr).toContain(
         "The snapshot 20251231T000000Z is not complete on the app's server, so it was not copied off the server.",
       );
-      expect(calls().filter((call) => call.includes("--env-file"))).toEqual([]);
+      emptySnapshot("20261104T000000Z");
+      const empty = snap(["offsite", "20261104T000000Z"]);
+      expect(empty.status, empty.output).toBe(0);
+      expect(empty.stderr).toContain(
+        "The snapshot 20261104T000000Z holds no copy of any service on the app's server, so there is nothing to copy off the server.",
+      );
+      expect(uploadCalls()).toEqual([]);
       expect(snap(["offsite", "../x"]).stderr).toContain(
         "A snapshot's id has only letters and digits.",
       );
@@ -961,9 +1049,8 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(script()).toContain(
         "rclone delete --min-age 90d 'offsite:shop-staging-backups/backups' || exit 4",
       );
-      expect(calls().find((call) => call.includes("--env-file"))).toContain(
-        "-e RCLONE_CONFIG_OFFSITE_PROVIDER=DigitalOcean",
-      );
+      expect(uploadCalls()[0]).toContain("-e RCLONE_CONFIG_OFFSITE_PROVIDER=DigitalOcean");
+      expect(uploadCalls()[0]).toContain("-e RCLONE_CONFIG_OFFSITE_REGION=fra1");
       const kept = snap(["offsite", result.stdout], { DELETE_FAIL: "1" });
       expect(kept.status, kept.output).toBe(0);
       expect(kept.stderr).toContain(
@@ -972,14 +1059,12 @@ describe.skipIf(!shWorks())("snapshot.sh", { timeout: 120_000 }, () => {
       expect(existsSync(at(`.snapshots/${result.stdout}/offsite.done`))).toBe(true);
     });
 
-    it("gives Hetzner its region from the env file, and an extra server's parts a folder of their own", () => {
+    it("gives Hetzner the plan's region, and an extra server's parts a folder of their own", () => {
       offsiteServer(hetzner);
       expect(snap(["take", "manual"]).status).toBe(0);
-      expect(script()).toContain('RCLONE_CONFIG_OFFSITE_REGION="$OPSCREW_OFFSITE_REGION"');
-      expect(script()).not.toContain("rclone delete");
-      expect(calls().find((call) => call.includes("--env-file"))).toContain(
-        "-e RCLONE_CONFIG_OFFSITE_PROVIDER=Hetzner",
-      );
+      expect(uploadCalls()[0]).toContain("-e RCLONE_CONFIG_OFFSITE_PROVIDER=Hetzner");
+      expect(uploadCalls()[0]).toContain("-e RCLONE_CONFIG_OFFSITE_REGION=fsn1");
+      expect(script()).not.toContain("rclone delete ");
       const split = withSnapshots(splitPlan(), {
         snapshots: { offsite: { provider: "r2", bucket: "shop-backups" } },
       });

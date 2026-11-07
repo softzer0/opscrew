@@ -332,7 +332,7 @@ describe("the off-server copy in a stack", () => {
     expect(offsite?.image).toBe(IMAGES.rclone.ref);
     expect(offsite?.environment).toEqual({
       RCLONE_CONFIG_OFFSITE_TYPE: "s3",
-      RCLONE_CONFIG_OFFSITE_PROVIDER: "Other",
+      RCLONE_CONFIG_OFFSITE_PROVIDER: "Hetzner",
       RCLONE_CONFIG_OFFSITE_ENDPOINT: "${OPSCREW_OFFSITE_ENDPOINT}",
       RCLONE_CONFIG_OFFSITE_REGION: "fsn1",
       RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: "${OPSCREW_OFFSITE_ACCESS_KEY_ID}",
@@ -367,7 +367,7 @@ describe("the off-server copy in a stack", () => {
     expect(text).toContain(
       `age_ok() { echo '${TOOLS.age.binarySha256.amd64}  /tools/age' | sha256sum -c -s; }`,
     );
-    expect(text).toContain("  age_ok || fetch_age || {");
+    expect(text).toContain("  age_ok || age_fetch || {");
     const arm = render(
       DeployPlanSchema.parse({ ...plan, target: { ...plan.target, arch: "arm64" } }),
     );
@@ -389,7 +389,7 @@ describe("the off-server copy in a stack", () => {
     expect(shParses(text)).toBe(true);
   });
 
-  it("takes the bucket's region from the plan, R2's auto, and DigitalOcean as rclone's provider", () => {
+  it("takes the bucket's region from the plan, R2's auto, and rclone's provider of each", () => {
     const environment = (offsite: object) =>
       render(snapshotPlan({ snapshots: { offsite } })).stack.services.offsite?.environment;
     const spaces = environment({
@@ -400,7 +400,7 @@ describe("the off-server copy in a stack", () => {
     expect(spaces?.RCLONE_CONFIG_OFFSITE_PROVIDER).toBe("DigitalOcean");
     expect(spaces?.RCLONE_CONFIG_OFFSITE_REGION).toBe("fra1");
     const r2 = environment({ provider: "r2", bucket: "shop-prod-backups" });
-    expect(r2?.RCLONE_CONFIG_OFFSITE_PROVIDER).toBe("Other");
+    expect(r2?.RCLONE_CONFIG_OFFSITE_PROVIDER).toBe("Cloudflare");
     expect(r2?.RCLONE_CONFIG_OFFSITE_REGION).toBe("auto");
   });
 

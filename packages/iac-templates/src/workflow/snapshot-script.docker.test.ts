@@ -5,6 +5,8 @@
  *   each file the snapshot's `about.json` names, then `about.json`, through `age -r <recipient>`
  *   into `rclone rcat`, the key only in the mode-600 `offsite.env`. Each object holds age's
  *   ciphertext only, and decrypts with the test's own age key to exactly the snapshot's file.
+ * - A second copy of the same id removes its `about.json.age` first (a first one, where there is
+ *   none, too) and ends whole.
  * - On DigitalOcean Spaces, whose bucket expires nothing itself, the copies older than the
  *   retention go after the upload, and the new ones stay.
  * Neither the script's output nor its log holds the bucket's key.
@@ -97,8 +99,8 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
         'rpc_public_addr = "127.0.0.1:3901"',
         "",
         "[s3_api]",
-        // The region every client signs with: DigitalOcean's, which names none, signs with us-east-1.
-        's3_region = "us-east-1"',
+        // The region every client signs with: the plans name it, as a real bucket's location.
+        's3_region = "garage"',
         'api_bind_addr = "0.0.0.0:3900"',
         "",
       ].join("\n"),
@@ -134,7 +136,6 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
     const { identity, recipient } = generateAgeIdentity();
     const login = [
       `OPSCREW_OFFSITE_ENDPOINT=http://${address}:3900`,
-      "OPSCREW_OFFSITE_REGION=us-east-1",
       `OPSCREW_OFFSITE_ACCESS_KEY_ID=${keyId}`,
       `OPSCREW_OFFSITE_SECRET_ACCESS_KEY=${secret}`,
       `OPSCREW_OFFSITE_RECIPIENT=${recipient}`,
@@ -144,7 +145,7 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
       "RCLONE_CONFIG_BUCKET_TYPE=s3",
       "RCLONE_CONFIG_BUCKET_PROVIDER=Other",
       `RCLONE_CONFIG_BUCKET_ENDPOINT=http://${address}:3900`,
-      "RCLONE_CONFIG_BUCKET_REGION=us-east-1",
+      "RCLONE_CONFIG_BUCKET_REGION=garage",
       `RCLONE_CONFIG_BUCKET_ACCESS_KEY_ID=${keyId}`,
       `RCLONE_CONFIG_BUCKET_SECRET_ACCESS_KEY=${secret}`,
       "HOME=/tmp",
@@ -225,18 +226,17 @@ describe.skipIf(reason !== undefined)("the off-server copy on Docker", { timeout
     const id = "20261107T000000Z";
     const dump = randomBytes(7 * 1024 * 1024);
     const hetzner = app(
-      offsitePlan({ provider: "hetzner", bucket: BUCKET, region: "fsn1" }),
+      offsitePlan({ provider: "hetzner", bucket: BUCKET, region: "garage" }),
       "hetzner",
       id,
       dump,
     );
     const uploaded = offsite(hetzner, id);
-    expect(
-      uploaded.status,
-      `${uploaded.output}
-${uploaded.log}`,
-    ).toBe(0);
+    expect(uploaded.status, `${uploaded.output}\n${uploaded.log}`).toBe(0);
     expect(existsSync(`${hetzner}/.snapshots/${id}/offsite.done`)).toBe(true);
+    // Again: the id's about.json.age goes first, now that there is one, and the copy is whole.
+    const again = offsite(hetzner, id);
+    expect(again.status, `${again.output}\n${again.log}`).toBe(0);
     expect(existsSync(`${hetzner}/.offsite/age`)).toBe(true);
     for (const text of [uploaded.output, uploaded.log]) expect(text).not.toContain(secret);
 
@@ -275,17 +275,13 @@ ${uploaded.log}`,
     );
     const later = "20261107T010000Z";
     const spaces = app(
-      offsitePlan({ provider: "digitalocean", bucket: BUCKET, region: "fra1" }),
+      offsitePlan({ provider: "digitalocean", bucket: BUCKET, region: "garage" }),
       "spaces",
       later,
       randomBytes(1024),
     );
     const pruned = offsite(spaces, later);
-    expect(
-      pruned.status,
-      `${pruned.output}
-${pruned.log}`,
-    ).toBe(0);
+    expect(pruned.status, `${pruned.output}\n${pruned.log}`).toBe(0);
     for (const text of [pruned.output, pruned.log]) expect(text).not.toContain(secret);
     const left = rclone(spaces, `rclone lsf -R bucket:${BUCKET}/backups`)
       .split("\n")

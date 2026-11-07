@@ -50,9 +50,15 @@ const RecoveryRecordSchema = z.object({
   folderHashes: z.record(z.string(), HEX64).optional(),
   /** The answer to committing the copy to a public repository (FR-1415). */
   publicConfirmed: z.boolean().optional(),
+  /**
+   * The age recipients (`age1…`, public keys) the copy this computer last wrote is encrypted to,
+   * as `opscrew/.sops.yaml` names them: read when that file is not in this checkout yet (a first
+   * provision that stopped before its pull request, 024 D16).
+   */
+  recipients: z.array(z.string()).optional(),
 });
 
-/** `.opscrew/recovery.json`: hashes and times, never a value. */
+/** `.opscrew/recovery.json`: hashes, times and public keys, never a value. */
 export type RecoveryRecord = z.infer<typeof RecoveryRecordSchema>;
 
 function recordFile(paths: Pick<ProjectPaths, "stateDir">): string {
@@ -171,6 +177,17 @@ export async function readRecipients(
     );
   }
   return recipients;
+}
+
+/**
+ * The recipients the recovery copy is encrypted to, the main key's first: `opscrew/.sops.yaml`'s
+ * ({@link readRecipients}), else those `.opscrew/recovery.json` kept when this computer wrote the
+ * copy (D16); `undefined` while there is no copy.
+ */
+export async function knownRecipients(
+  paths: Pick<ProjectPaths, "root" | "stateDir">,
+): Promise<string[] | undefined> {
+  return (await readRecipients(paths)) ?? (await readRecord(paths)).recipients;
 }
 
 /** `opscrew/.sops.yaml` with the copy's creation rule for `recipients`. */

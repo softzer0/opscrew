@@ -1,6 +1,7 @@
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: these strings are HCL interpolation, not JavaScript templates.
 import { OpsCrewError } from "@opscrew/core";
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
+import { OFFSITE_PREFIX } from "../offsite";
 import { wrongTarget } from "../providers";
 import type { RenderContext, RenderedFile } from "../types";
 import { planFilePath } from "../workflow/shared";
@@ -450,12 +451,6 @@ function rootFiles(
     },
   ];
 }
-
-/**
- * The prefix of every object of the off-server copy (`backups/<id>/<file>.age`, 024 plan.md 1.),
- * which the `backups` root's lifecycle rule expires.
- */
-export const OFFSITE_PREFIX = "backups";
 
 /**
  * Whether the off-server copy's bucket at `provider` expires old copies itself, through the

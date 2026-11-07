@@ -25,9 +25,9 @@ import {
 import { type DeployPlan, snapshotOffsiteOf } from "@opscrew/plan-schema";
 import { z } from "zod";
 import type { PhaseDeps } from "../context";
-import { type RefreshRecoveryOptions, SOPS_CONFIG_PATH } from "../secrets";
-import { readRecipients } from "../secrets/store";
-import { STORAGE_ENDPOINTS, type StorageLogin } from "../shared";
+import type { RefreshRecoveryOptions } from "../secrets";
+import { knownRecipients } from "../secrets/store";
+import { r2Endpoint, STORAGE_ENDPOINTS, type StorageLogin } from "../shared";
 import { storageS3Client } from "../shared/s3";
 import type { CloudflareSetup, GitHubSetup } from "./credentials";
 import { type PlanAndApplyResult, planAndApply } from "./plan-apply";
@@ -356,7 +356,7 @@ export function storageLogin(
   cloudflare: Pick<CloudflareSetup, "accountId"> | undefined,
 ): StorageLogin {
   if (providerBucket(plan)?.provider !== "r2" || cloudflare === undefined) return { ...key };
-  return { ...key, endpoint: `https://${cloudflare.accountId}.r2.cloudflarestorage.com` };
+  return { ...key, endpoint: r2Endpoint(cloudflare.accountId) };
 }
 
 /**
@@ -410,8 +410,8 @@ function s3EngineEnv(
 
 /**
  * The values of the off-server copy's variables (`PORTAINER_OFFSITE_VARIABLES`, by name): the
- * bucket's S3 endpoint (R2's from the zone's Cloudflare account), its region at Hetzner, the
- * bucket's key and the age recipient the copies are encrypted to. Portainer's stack holds them as
+ * bucket's S3 endpoint (R2's from the zone's Cloudflare account), the bucket's key and the age
+ * recipient the copies are encrypted to; the region is the plan's. Portainer's stack holds them as
  * variables; a server as `OFFSITE_ENV_FILE` ({@link offsiteEnvFile}).
  */
 export function offsiteValues(
@@ -428,7 +428,7 @@ export function offsiteValues(
   let endpoint: string;
   if (offsite.provider === "r2") {
     if (input.cloudflare === undefined) throw new Error("R2 needs the Cloudflare account.");
-    endpoint = `https://${input.cloudflare.accountId}.r2.cloudflarestorage.com`;
+    endpoint = r2Endpoint(input.cloudflare.accountId);
   } else {
     const at = STORAGE_ENDPOINTS[offsite.provider];
     if (at === undefined) throw new Error(`No S3 endpoint is known for ${offsite.provider}.`);
@@ -436,31 +436,67 @@ export function offsiteValues(
   }
   return {
     [v.endpoint]: endpoint,
-    ...(offsite.provider === "hetzner" ? { [v.region]: offsite.region } : {}),
     [v.accessKeyId]: input.key.accessKeyId,
     [v.secretAccessKey]: input.key.secretAccessKey,
     [v.recipient]: input.recipient,
   };
 }
 
+/** What the recovery copy's first age key needs (`ProvisionOptions.recovery`). */
+type RecoveryAnswers = Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+
+/** The plain stop when the off-server copies have no age key to be encrypted to. */
+function noAgeKey(command: string, already: string): OpsCrewError {
+  return new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The off-server copies of the app's snapshots are encrypted to the age key of its recovery copy, and there is none yet. ${already}`,
+    {
+      hint: `Run \`${command}\` in a terminal, which asks for a file to write your new age key to or for your own age key (age1…), or name the file with \`--key-out <path>\`.`,
+    },
+  );
+}
+
+/**
+ * Before any change of a run with `snapshots.offsite` (D16): the age key the off-server copies
+ * are encrypted to exists (`knownRecipients`), or this run can make it, from the user's own
+ * recipient or a file for a new key, asked now. The answers come back kept, for the recovery copy
+ * this run makes, so nothing is asked twice; without the copy `recovery` comes back as it is.
+ * @throws OpsCrewError `PHASE_PRECONDITION` when neither gives one: nothing was changed.
+ */
+export async function requireOffsiteRecipient(
+  deps: Pick<PhaseDeps, "paths">,
+  plan: DeployPlan,
+  recovery: RecoveryAnswers | undefined,
+  command: string,
+): Promise<RecoveryAnswers | undefined> {
+  if (snapshotOffsiteOf(plan) === undefined) return recovery;
+  if ((await knownRecipients(deps.paths))?.[0] !== undefined) return recovery;
+  const own = await recovery?.recipient?.();
+  const keyOut = own === undefined ? await recovery?.keyOut?.() : undefined;
+  if (own === undefined && keyOut === undefined) {
+    throw noAgeKey(command, "Nothing was changed.");
+  }
+  return { ...recovery, recipient: async () => own, keyOut: async () => keyOut };
+}
+
 /**
  * {@link offsiteValues} for the deploy secrets or the stack, when `snapshots.offsite` is on: the
  * bucket's key (`key`, read before the bucket at Hetzner and Spaces; R2's, a token limited to the
- * bucket, asked now that it exists) and the first recipient of `opscrew/.sops.yaml`. When that
- * file names none yet (the first provision), the recovery copy is brought up to date now, which
- * makes its age key (D11), and is returned for the pull request ({@link RecoveryCopy}, which holds
- * no private key).
- * @throws OpsCrewError `PHASE_PRECONDITION` when there is still no age key (a run that can make
- * none, such as a script without `--key-out`): the copies could not be encrypted, so nothing that
- * holds the bucket's key is stored.
+ * bucket, asked now that it exists) and the first recipient of the recovery copy
+ * (`knownRecipients`). When there is none yet (the first provision) and `github` is given, the
+ * recovery copy is brought up to date now, which makes its age key (D11), and is returned for the
+ * pull request ({@link RecoveryCopy}, which holds no private key).
+ * @throws OpsCrewError `PHASE_PRECONDITION` when there is still no age key: the copies could not
+ * be encrypted, so nothing that holds the bucket's key is stored.
  */
 export async function offsiteSetup(
   deps: PhaseDeps,
   plan: DeployPlan,
   services: Pick<ProvisionServices, "askStorageKey">,
   input: {
-    github: GitHubSetup;
-    recovery?: Pick<RefreshRecoveryOptions, "recipient" | "keyOut" | "backup">;
+    /** Where the recovery copy goes, when this run may make it. */
+    github?: GitHubSetup;
+    recovery?: RecoveryAnswers;
     key: StorageKey | undefined;
     cloudflare: Pick<CloudflareSetup, "accountId"> | undefined;
     command: string;
@@ -468,9 +504,9 @@ export async function offsiteSetup(
     already: string;
   },
 ): Promise<{ values: Record<string, string>; recoveryCopy?: RecoveryCopy }> {
-  let recipient = (await readRecipients(deps.paths))?.[0];
+  let recipient = (await knownRecipients(deps.paths))?.[0];
   let recoveryCopy: RecoveryCopy | undefined;
-  if (recipient === undefined) {
+  if (recipient === undefined && input.github !== undefined) {
     recoveryCopy = await recoveryCopyFiles(deps, {
       github: input.github,
       plan,
@@ -479,12 +515,9 @@ export async function offsiteSetup(
     recipient = recoveryCopy.recipients?.[0];
   }
   if (recipient === undefined) {
-    throw new OpsCrewError(
-      "PHASE_PRECONDITION",
-      `The off-server copies of the app's snapshots are encrypted to the age key of its recovery copy, and there is none yet, so OpsCrew stored nothing that holds their bucket's key. ${input.already}`,
-      {
-        hint: `Run \`${input.command}\` in a terminal, which asks for a file to write your new age key to or for your own age key (age1…), or name the file with \`--key-out <path>\`. If OpsCrew made the recovery copy before, merge the pull request that adds ${SOPS_CONFIG_PATH} first.`,
-      },
+    throw noAgeKey(
+      input.command,
+      `OpsCrew stored nothing that holds their bucket's key. ${input.already}`,
     );
   }
   const key =

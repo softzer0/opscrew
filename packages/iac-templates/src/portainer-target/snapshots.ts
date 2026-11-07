@@ -11,7 +11,8 @@ import {
   snapshotsOn,
 } from "@opscrew/plan-schema";
 import { dataDirs, enabledServices, serviceSpec } from "../catalog";
-import { IMAGES, TOOLS, toolDownloadUrl } from "../pins";
+import { ageFunctions, OFFSITE_PREFIX, RCLONE_PROVIDERS } from "../offsite";
+import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
 import { memoryLimit, type RenderedServices, SQLITE_VOLUME } from "../runtime/components";
 import { composeLiteral, hardened, shellQuote } from "../runtime/services";
@@ -33,9 +34,6 @@ export const SNAPSHOTS_MOUNT = `${SNAPSHOTS_VOLUME}:${DIR}`;
 
 /** The off-server copy's tools volume, where it keeps the checked age binary. */
 const TOOLS_VOLUME = "snapshot_tools";
-
-/** The prefix of every object of the off-server copy (the bucket's lifecycle rule expires it). */
-const OFFSITE_PREFIX = "backups";
 
 /**
  * The stack's volumes for its snapshots, by their keys: `snapshots` whenever the stack takes or
@@ -466,23 +464,12 @@ function offsite(plan: DeployPlan): Record<string, object> {
   const copy = snapshotOffsiteOf(plan);
   if (copy === undefined) return {};
   const { arch } = portainerTarget(plan.target);
-  const archive = TOOLS.age.sha256[arch];
-  const binary = TOOLS.age.binarySha256[arch];
   const v = PORTAINER_OFFSITE_VARIABLES;
   const script = [
     "set -o pipefail",
-    `age_ok() { echo ${shellQuote(`${binary}  /tools/age`)} | sha256sum -c -s; }`,
-    "fetch_age() {",
-    "  rm -rf /tmp/age && mkdir /tmp/age &&",
-    `  rclone copyurl ${shellQuote(toolDownloadUrl("age", arch))} /tmp/age/age.tar.gz &&`,
-    `  echo ${shellQuote(`${archive}  /tmp/age/age.tar.gz`)} | sha256sum -c -s &&`,
-    "  tar -xzf /tmp/age/age.tar.gz -C /tmp/age age/age &&",
-    `  echo ${shellQuote(`${binary}  /tmp/age/age/age`)} | sha256sum -c -s &&`,
-    "  mv /tmp/age/age/age /tools/age.new && mv /tools/age.new /tools/age",
-    "  r=$?; rm -rf /tmp/age; return $r",
-    "}",
+    ...ageFunctions(arch),
     "put() {",
-    "  age_ok || fetch_age || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; return 1; }",
+    "  age_ok || age_fetch || { echo 'OpsCrew: age could not be fetched and checked against its pinned SHA-256.' >&2; return 1; }",
     `  /tools/age -r "$${v.recipient}" < "$1" | rclone rcat ${shellQuote(`offsite:${copy.bucket}/${OFFSITE_PREFIX}/`)}"$2"`,
     "}",
     "umask 077",
@@ -512,7 +499,7 @@ function offsite(plan: DeployPlan): Record<string, object> {
       user: "0:0",
       environment: {
         RCLONE_CONFIG_OFFSITE_TYPE: "s3",
-        RCLONE_CONFIG_OFFSITE_PROVIDER: copy.provider === "digitalocean" ? "DigitalOcean" : "Other",
+        RCLONE_CONFIG_OFFSITE_PROVIDER: RCLONE_PROVIDERS[copy.provider],
         RCLONE_CONFIG_OFFSITE_ENDPOINT: `\${${v.endpoint}}`,
         RCLONE_CONFIG_OFFSITE_REGION: composeLiteral(copy.region),
         RCLONE_CONFIG_OFFSITE_ACCESS_KEY_ID: `\${${v.accessKeyId}}`,

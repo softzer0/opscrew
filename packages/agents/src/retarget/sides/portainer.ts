@@ -32,7 +32,12 @@ import {
   portainerVersionVolume,
   processServices,
 } from "@opscrew/iac-templates";
-import type { DeployPlan, PortainerDeployTarget, Retarget } from "@opscrew/plan-schema";
+import {
+  type DeployPlan,
+  type PortainerDeployTarget,
+  type Retarget,
+  snapshotOffsiteOf,
+} from "@opscrew/plan-schema";
 import { confirmDeletion } from "../../destroy/deletion";
 import { applyTeardown, approveTeardown, describeTeardown } from "../../destroy/portainer";
 import type { DestroyPreview } from "../../destroy/types";
@@ -46,6 +51,7 @@ import { portainerOriginTls } from "../../provision/origin-tls";
 import { ensurePortainerValueKey, requirePortainerToken } from "../../provision/portainer";
 import { preparePortainerStacks } from "../../provision/portainer-flow";
 import { requireNoStackBlockers, requireUsableFacts } from "../../provision/stack-plan";
+import { offsiteSetup } from "../../provision/storage";
 import type { PortainerServices } from "../../provision/types";
 import {
   committedStackPins,
@@ -314,6 +320,17 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
       }
       return environment;
     };
+    // The off-server copy's stack variables, as provision fills them: its bucket and key stay.
+    let offsite: Promise<Record<string, string>> | undefined;
+    const offsiteStack = () => {
+      offsite ??= offsiteSetup(deps, plan, session.services, {
+        key: undefined,
+        cloudflare: session.cloudflare,
+        command: session.command,
+        already: "Nothing in your Portainer was changed.",
+      }).then((setup) => setup.values);
+      return offsite;
+    };
     const tls = session.site.edge.originTls;
     const bundle = tls === undefined ? undefined : portainerOriginTls(session.site.values);
     if (bundle !== undefined) deps.redactor.addLiteral(bundle, "origin-tls");
@@ -333,6 +350,7 @@ export function portainerSide(input: PortainerSideInput): MoveSide {
       committed: await committedStackPins(deps.paths.root, plan),
       services,
       appEnvironment,
+      ...(snapshotOffsiteOf(plan) !== undefined ? { offsite: offsiteStack } : {}),
       origin: () => ({
         ...(tls !== undefined ? { tls } : {}),
         ...(bundle !== undefined ? { bundle } : {}),

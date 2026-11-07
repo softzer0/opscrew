@@ -10,10 +10,17 @@ import type {
   IacInitOptions,
   IacRunOptions,
 } from "@opscrew/contracts";
-import { findExecutable, generateAgeIdentity, OpsCrewError, readTextIfExists } from "@opscrew/core";
+import {
+  ageRecipientOf,
+  findExecutable,
+  generateAgeIdentity,
+  OpsCrewError,
+  readTextIfExists,
+} from "@opscrew/core";
 import { fakeSecret } from "@opscrew/core/testing";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
 import { describe, expect, it } from "vitest";
+import { readRecord } from "../secrets/store";
 import {
   createProject,
   createTestPhaseDeps,
@@ -1051,12 +1058,11 @@ describe("the off-server copies' bucket: its key, engine environment and values"
     expect(backupsEngineEnv(env, r2, undefined)).toEqual(env);
   });
 
-  it("gives the off-server copy its endpoint, Hetzner's region, its key and the recipient, as the env file's lines", () => {
+  it("gives the off-server copy its endpoint, its key and the recipient, as the env file's lines", () => {
     const recipient = generateAgeIdentity().recipient;
     const values = offsiteValues(plan(), { key: OFFSITE_KEY, recipient, cloudflare: undefined });
     expect(values).toEqual({
       OPSCREW_OFFSITE_ENDPOINT: "https://nbg1.your-objectstorage.com",
-      OPSCREW_OFFSITE_REGION: "nbg1",
       OPSCREW_OFFSITE_ACCESS_KEY_ID: OFFSITE_KEY.accessKeyId,
       OPSCREW_OFFSITE_SECRET_ACCESS_KEY: OFFSITE_KEY.secretAccessKey,
       OPSCREW_OFFSITE_RECIPIENT: recipient,
@@ -1081,7 +1087,6 @@ describe("the off-server copies' bucket: its key, engine environment and values"
       cloudflare: { accountId: "0123abcd" },
     });
     expect(r2Values.OPSCREW_OFFSITE_ENDPOINT).toBe("https://0123abcd.r2.cloudflarestorage.com");
-    expect(Object.keys(r2Values)).not.toContain("OPSCREW_OFFSITE_REGION");
   });
 
   it("refuses the off-server copies on R2 without a domain on Cloudflare", () => {
@@ -1147,7 +1152,10 @@ class BackupsRootEngine implements IacEngine {
  * test's: the approvals in order, how many times sops ran when the deploy secrets were approved,
  * and every file committed on any branch.
  */
-async function offsiteFlow(plan: DeployPlan, o: { keyOut?: boolean } = {}) {
+async function offsiteFlow(
+  plan: DeployPlan,
+  o: { keyOut?: boolean; refuseSecrets?: () => boolean } = {},
+) {
   const sops = new FakeSops();
   let sopsAtSecrets: number | undefined;
   const f = await flow({
@@ -1156,8 +1164,9 @@ async function offsiteFlow(plan: DeployPlan, o: { keyOut?: boolean } = {}) {
     env: { ...OFFSITE_ENV, OPSCREW_SOPS_BIN: FAKE_SOPS },
     runner: sops.runner(projectRunner()),
     answer: (request) => {
-      if (request.kind === "github-secrets") sopsAtSecrets = sops.calls.length;
-      return true;
+      if (request.kind !== "github-secrets") return true;
+      sopsAtSecrets = sops.calls.length;
+      return o.refuseSecrets?.() !== true;
     },
   });
   const backups = bucketEngine("hetzner");
@@ -1224,17 +1233,41 @@ describe.skipIf(!findExecutable("git"))("provision with the off-server copy (024
     expect(await leaks(o.f)).not.toContain(identity);
   });
 
-  it("stops before storing anything that holds the bucket's key when no age key can be made", async () => {
+  it("stops before any change when no age key can be made", async () => {
     const o = await offsiteFlow(withOffsite(testPlan(), HETZNER_OFFSITE), { keyOut: false });
     await expect(o.run()).rejects.toMatchObject({
       code: "PHASE_PRECONDITION",
-      message: expect.stringContaining(
-        "The off-server copies of the app's snapshots are encrypted to the age key of its recovery copy, and there is none yet",
-      ),
+      message:
+        "The off-server copies of the app's snapshots are encrypted to the age key of its recovery copy, and there is none yet. Nothing was changed.",
       hint: expect.stringContaining("--key-out <path>"),
     });
-    expect(o.f.handler.requests.some((r) => r.kind === "github-secrets")).toBe(false);
+    expect(o.f.handler.requests).toEqual([]);
+    expect(o.backups.calls).toEqual([]);
+    expect(o.f.main.applied).toEqual([]);
     expect(o.f.github.secrets.size).toBe(0);
+  });
+
+  it("runs again after a first provision that stopped once it made the age key, to the same recipient", async () => {
+    let refuse = true;
+    const o = await offsiteFlow(withOffsite(testPlan(), HETZNER_OFFSITE), {
+      refuseSecrets: () => refuse,
+    });
+    await expect(o.run()).rejects.toMatchObject({ code: "APPROVAL_REFUSED" });
+    // The key exists, but no .sops.yaml reached the checkout: the record keeps its recipient.
+    const identity = (await readFile(o.keyOut, "utf8")).split("\n")[2] as string;
+    const recipient = ageRecipientOf(identity);
+    expect(await readTextIfExists(join(o.f.root, "opscrew/.sops.yaml"))).toBeUndefined();
+    expect((await readRecord(o.f.deps.paths)).recipients).toEqual([recipient]);
+
+    refuse = false;
+    await o.run();
+    expect(o.f.handler.requests.filter((r) => r.kind === "github-secrets")).toHaveLength(2);
+    const sopsYaml = await o.f.git(o.f.root, "show", "opscrew/deploy-setup:opscrew/.sops.yaml");
+    expect(sopsYaml).toContain(`age: ${recipient}`);
+    expect(await o.committed()).toContain("opscrew/secrets.sops.json");
+    // The second copy is encrypted to that recipient too, and no second key was made.
+    expect(o.sops.calls).toHaveLength(2);
+    expect(o.sops.calls[1]?.args).toContain(recipient);
   });
 
   it("--plan-only shows the backups plan's hash, and --approve applies it as that root's", async () => {
