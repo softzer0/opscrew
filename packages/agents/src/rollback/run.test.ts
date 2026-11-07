@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ApprovalRequest } from "@opscrew/contracts";
 import { OpsCrewError } from "@opscrew/core";
@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import { selfHostedServices } from "../design/sizing";
 import { localPlan } from "../localhost/__fixtures__/computer";
 import { moveWorld } from "../move/__fixtures__/world";
+import { networked, splitPlan } from "../network/__fixtures__/plans";
 import {
   blobOf,
   cleanDrift,
@@ -24,7 +25,7 @@ import {
   WORKFLOWS,
 } from "../promote/__fixtures__/world";
 import { promotionFile, readPromotion, writePromotion } from "../promote/record";
-import { recordServerAddress } from "../shared";
+import { recordServerAddress, updateServerAddresses } from "../shared";
 import {
   createTestPhaseDeps,
   movingPlan,
@@ -1442,6 +1443,62 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
     await world.run();
     expect(await world.folder.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
     expect(world.handler.requests[0]?.planHash).toBe(hashOf(world, c, b));
+  });
+
+  describe("back to the running version after a rollback stuck on an extra server (D7)", () => {
+    /** Staging with PostgreSQL `db` on the server `data`, whose address this computer knows. */
+    async function stuckWorld() {
+      const { network: _none, ...prod } = prodPlan();
+      const split = networked({
+        ...prod,
+        servers: splitPlan().servers,
+        services: prod.services.map((s) => (s.name === "db" ? { ...s, server: "data" } : s)),
+      }).plan;
+      const staging = await stagingWorld({
+        plan: inEnvironment(split, "staging"),
+        snapshot: false,
+      });
+      await updateServerAddresses(staging.world.deps.paths, (current) => ({
+        ...current,
+        servers: { data: { ipv4: "198.51.100.20" } },
+      }));
+      // Every server's app folder is the fake one: the server data's marker and the app's record.
+      const hexC = hexOf(staging.c.digest) as string;
+      await staging.world.folder.write(".others.held", "4242.1\n");
+      await staging.world.folder.write(
+        ".database.changed",
+        `target=${staging.hexB}\nsaved=${hexC}\nchanged=1\n`,
+      );
+      await staging.world.folder.snapshot(hexC, TAKEN);
+      return { ...staging, hexC };
+    }
+
+    it("rolls back to it with the snapshot once the stuck rollback had switched", async () => {
+      const { world, b, c, hexC, atDispatch } = await stuckWorld();
+      await world.folder.write(".env", `APP_IMAGE=ghcr.io/acme/shop@${b.digest}\n`);
+      const result = await world.run({ to: c.digest, database: "snapshot" });
+      expect(result).toMatchObject({ kind: "rolled-back", database: { choice: "snapshot" } });
+      expect(world.github.dispatches[0]?.inputs.digest).toBe(c.digest);
+      // The one-time approval of the copies saved under c, on every server.
+      expect(atDispatch).toEqual([`${hexC} snapshot ${EXPIRY}\n`]);
+    });
+
+    it("refuses it before the switch, naming each service's restore, and without the record", async () => {
+      const { world, c, hexC } = await stuckWorld();
+      await world.folder.write(".env", `APP_IMAGE=ghcr.io/acme/shop@${c.digest}\n`);
+      const before = await failure(world.run({ to: c.digest, database: "snapshot" }));
+      expect(before.message).toContain("runs");
+      expect(before.message).toContain("already");
+      expect(before.hint).toBe(
+        `The rollback that failed changed the data on the server data before the app switched, so staging's app server still runs this version on its own data. Once each of those servers is fixed, run \`opscrew restore --env staging ${hexC} --only db\`: each puts the copy that rollback saved before changing anything back on its server.`,
+      );
+
+      // Without the app's record of a held app, nothing was left changed: the usual refusal.
+      await rm(join(world.folder.dir, ".others.held"));
+      const usual = await failure(world.run({ to: c.digest, database: "snapshot" }));
+      expect(usual.hint).toContain("Name an earlier version with --to");
+      expect(world.github.dispatches).toEqual([]);
+    });
   });
 
   it("keeps prod's database by default, even with snapshots on and one taken", async () => {

@@ -34,7 +34,9 @@ import {
   type DatabaseStep,
   databaseOutcome,
   databaseStep,
+  earlierChange,
   removeDatabaseApproval,
+  restoreHint,
 } from "./database";
 import type { RollbackResult } from "./index";
 import {
@@ -467,6 +469,12 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
   // 5. The version, and what it ran with.
   deps.reporter.step(`Reading ${environment}'s versions in GitHub Container Registry`);
   const list = await listVersions(deps, ctx);
+  // After a rollback that couldn't put the data on extra servers back, `--to` the running version
+  // with the snapshot restores the copies it saved, once its start step had switched (D7).
+  const earlier =
+    options.to !== undefined && options.database === "snapshot" && list.running !== undefined
+      ? await earlierChange(run, list.running)
+      : undefined;
   const {
     target,
     running: current,
@@ -475,6 +483,10 @@ export async function rollbackServer(run: RollbackRun): Promise<RollbackResult> 
     environment,
     ...(options.to !== undefined ? { to: options.to } : {}),
     command,
+    ...(earlier?.switched === true ? { allowRunning: true } : {}),
+    ...(earlier !== undefined && !earlier.switched && list.running !== undefined
+      ? { runningHint: restoreHint(run, earlier, list.running) }
+      : {}),
   });
   const added = await servicesLines(run, ctx, target);
   const database = await databaseStep(run, {

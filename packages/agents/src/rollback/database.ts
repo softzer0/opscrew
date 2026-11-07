@@ -11,6 +11,8 @@ import type { CommandResult } from "@opscrew/contracts";
 import { listText, OpsCrewError } from "@opscrew/core";
 import {
   appDir,
+  DATABASE_CHANGED,
+  OTHERS_HELD,
   ROLLBACK_APPROVAL_FILE,
   rollbackApprovalLine,
   rollbackServers,
@@ -223,6 +225,65 @@ export async function removeDatabaseApproval(run: RollbackRun): Promise<void> {
   );
 }
 
+/** The app's folder of `run`'s target on `server`, or `undefined` when this computer can't reach it. */
+function reachFolder(run: RollbackRun, server: string): Promise<AppFolder | undefined> {
+  return folderOf(run, server).catch((error: unknown) => {
+    if (error instanceof OpsCrewError) return undefined;
+    throw error;
+  });
+}
+
+/** What a rollback that couldn't put the data on extra servers back left ({@link earlierChange}). */
+export interface EarlierChange {
+  /** The app's `.env` names another version than the running one: its start step had switched. */
+  switched: boolean;
+  /** The extra servers whose data it changed, by their markers, in plan order. */
+  servers: string[];
+}
+
+/**
+ * What an earlier rollback of `run`'s target left when it stopped with the data on extra servers
+ * changed (plan.md D7): the app's server's record that a run held the app for them
+ * ({@link OTHERS_HELD}, which a rollback that finished removes) and an extra server's
+ * {@link DATABASE_CHANGED} marking its data changed; `undefined` without both, or when this
+ * computer can't reach the servers. `running` is the version the environment runs by its label.
+ */
+export async function earlierChange(
+  run: RollbackRun,
+  running: string,
+): Promise<EarlierChange | undefined> {
+  const servers = otherServers(run.plan);
+  if (servers.length === 0) return undefined;
+  const app = await (await reachFolder(run, APP_SERVER))?.read([".env", OTHERS_HELD]);
+  if (app?.has(OTHERS_HELD) !== true) return undefined;
+  const changed: string[] = [];
+  for (const server of servers) {
+    const marker = (await (await reachFolder(run, server))?.read([DATABASE_CHANGED]))?.get(
+      DATABASE_CHANGED,
+    );
+    if (marker !== undefined && /^changed=1$/m.test(marker)) changed.push(server);
+  }
+  if (changed.length === 0) return undefined;
+  const image = /^APP_IMAGE=(.*)$/m.exec(app.get(".env") ?? "")?.[1];
+  const hex = image === undefined ? undefined : hexOf(image);
+  return { switched: hex !== undefined && hex !== hexOf(running), servers: changed };
+}
+
+/**
+ * The hint of a rollback to the running version refused after `earlier` stopped before its start
+ * step switched: the app's server still runs that version, and each changed server's copy from
+ * before it goes back with a restore of each of its services.
+ */
+export function restoreHint(run: RollbackRun, earlier: EarlierChange, running: string): string {
+  const hex = hexOf(running) ?? running;
+  const commands = earlier.servers.flatMap((server) =>
+    snapshotParts(run.plan, server).map(
+      (part) => `\`opscrew restore${run.flags} ${hex} --only ${part.name}\``,
+    ),
+  );
+  return `The rollback that failed changed the data on ${listText(earlier.servers.map(serverWords))} before the app switched, so ${run.environment}'s app server still runs this version on its own data. Once each of those servers is fixed, run ${listText(commands)}: each puts the copy that rollback saved before changing anything back on its server.`;
+}
+
 /**
  * What the result says the rollback did with the database (`record`), the target named `words`
  * and its migration tool `plan`'s.
@@ -411,11 +472,7 @@ export async function databaseStep(
   // The extra servers that hold part of the snapshot, each restored from the runner.
   const restoring = snapshots ? otherServers(plan, "snapshot") : [];
   /** The app's folder on `server`, or `undefined` without an address or login for it here. */
-  const reach = (server: string) =>
-    folderOf(run, server).catch((error: unknown) => {
-      if (error instanceof OpsCrewError) return undefined;
-      throw error;
-    });
+  const reach = (server: string) => reachFolder(run, server);
   const keepOffer: DatabaseOffer = {
     choice: "keep",
     text: `Keep it as it is: ${input.words} runs against today's schema.`,

@@ -68,6 +68,7 @@ import {
   rollbackServers,
   runningServers,
   SNAPSHOT_SCRIPT,
+  snapshotParts,
 } from "./snapshots";
 import {
   appHoldCommands,
@@ -111,7 +112,14 @@ export {
   snapshotAboutPath,
   snapshotParts,
 } from "./snapshots";
-export { type EdgeFiles, processServices, rollbackCommands, switchCommands } from "./switch";
+export {
+  DATABASE_CHANGED,
+  type EdgeFiles,
+  OTHERS_HELD,
+  processServices,
+  rollbackCommands,
+  switchCommands,
+} from "./switch";
 
 /**
  * The Cloudflare Access service token the deploy workflow reaches SSH through the tunnel with
@@ -607,14 +615,16 @@ function rolledBackStep(plan: DeployPlan): string[] {
  * that ran before it.
  *
  * With extra servers a rollback changes (`others`, plan.md D7, D13), it also runs when
- * {@link othersStep} failed or was cancelled, and in a rollback dispatch it first asks each of them
- * whether this run's marker says its data may have changed (`marked`). With any, or a server that
- * doesn't answer, it stops the app and puts each one's data back as it was before the rollback
- * (`back`), then runs the app's rollback script, and starts the app again (`resume`) once that
- * script answered. When stopping or a put-back failed, or a server's state is unknown, the app
- * stays stopped with its requests let through, nothing else runs, and the message says what state
- * the servers are in and the way out ({@link stuckMessage}): no version starts on data it doesn't
- * match.
+ * {@link othersStep} failed or was cancelled, or a cancel skipped the start step after it. In a
+ * rollback dispatch whose run held the app to change their data (`held`, the app's server's
+ * record), it asks each of them whether this run's marker says its data may have changed
+ * (`marked`); without that record no server was changed, and the app's rollback script runs as
+ * before. With a marked server, or one that doesn't answer, it stops the app and puts each marked
+ * one's data back as it was before the rollback (`back`), then runs the app's rollback script,
+ * starts the app again (`resume`) once that script answered, and removes the record. When stopping
+ * or a put-back failed, or a server's state is unknown, the app stays stopped with its requests let
+ * through, nothing else runs, and the message says what state the servers are in and the way out
+ * ({@link stuckLines}): no version starts on data it doesn't match.
  */
 function rollbackStep(
   plan: DeployPlan,
@@ -630,11 +640,17 @@ function rollbackStep(
     others.length === 0
       ? []
       : [
+          "    held=none",
           `    if ${valid}; then`,
           // At the block's indentation: each here-document ends at the line's start.
           ...otherServerScripts(plan, ctx, others),
+          `      held="$(${hold('held "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT"')})" || held=unknown`,
+          "    fi",
+          // Without this run's hold, no extra server's data was changed.
+          '    if [[ "$held" != none ]]; then',
           "      stuck=0",
           "      marked=()",
+          "      unknown=()",
           `      for server in ${others.join(" ")}; do`,
           `        answer="$(server_sh "$server" marked "$IMAGE" "$RUNNING" < ${script})" || answer=""`,
           '        case "$answer" in',
@@ -642,20 +658,21 @@ function rollbackStep(
           "          none) ;;",
           "          *)",
           '            echo "::error::OpsCrew could not tell whether this rollback changed the data on the server $server: it did not answer."',
-          "            stuck=1 ;;",
+          '            unknown+=("$server") ;;',
           "        esac",
           "      done",
-          "      if (( ${#marked[@]} > 0 || stuck )); then",
+          "      failed=()",
+          "      if (( ${#marked[@]} + ${#unknown[@]} > 0 )); then",
           `        ${hold("stop")} || stuck=1`,
           "        if (( ! stuck )); then",
           '          for server in "${marked[@]}"; do',
-          `            server_sh "$server" back "$IMAGE" "$RUNNING" < ${script} || stuck=1`,
+          `            server_sh "$server" back "$IMAGE" "$RUNNING" < ${script} || failed+=("$server")`,
           "          done",
           "        fi",
           "      fi",
-          "      if (( stuck )); then",
+          "      if (( stuck || ${#failed[@]} + ${#unknown[@]} > 0 )); then",
           `        ${hold("requests")} || true`,
-          `        echo "${stuckMessage(plan, reach)}"`,
+          ...stuckLines(plan, reach, others).map((line) => `        ${line}`),
           "        exit 1",
           "      fi",
           "    fi",
@@ -664,16 +681,18 @@ function rollbackStep(
     others.length === 0
       ? []
       : [
-          `    if ${valid}; then`,
+          '    if [[ "$held" != none ]]; then',
           '      case "$outcome" in',
           `        restored | unchanged | no-previous) ${hold("resume")} || true ;;`,
           "      esac",
+          `      ${hold("forget")} || true`,
           "    fi",
         ];
+  // A cancel between the change on the other servers and the start step skips the start step.
   const otherOutcomes =
     others.length === 0
       ? ""
-      : " || steps.others.outcome == 'failure' || steps.others.outcome == 'cancelled'";
+      : " || steps.others.outcome == 'failure' || steps.others.outcome == 'cancelled' || (steps.others.outcome == 'success' && steps.start.outcome == 'skipped')";
   return [
     "- name: Roll back to the previous version",
     `  if: (failure() || cancelled()) && (steps.start.outcome == 'failure' || steps.start.outcome == 'cancelled' || steps.health.outcome == 'failure'${otherOutcomes})`,
@@ -914,12 +933,42 @@ function otherServerShell(ctx: RuntimeContext, names: readonly string[]): string
 }
 
 /**
- * The rollback step's message when the data on an extra server could not be put back (an echo's
- * double-quoted text, with `$RUNNING`): what state the servers stay in, and the way out, which
- * never starts the failed version on data it doesn't match.
+ * The rollback step's lines when the data on extra servers could not be put back (`$failed`) or
+ * their state is unknown (`$unknown`): the app stays stopped, and the message says what state the
+ * servers stay in and the way out, which never starts a version on data it doesn't match, by
+ * whether the app's server's `.env` names the version the rollback went to (`$IMAGE`):
+ * - it does (the start step had switched): `opscrew rollback --to <the version that ran>
+ *   --database snapshot` restores, on every server, the copies this run saved under `$RUNNING`;
+ * - it doesn't (the change on the other servers stopped before the start step): the app's server
+ *   still runs that version on its own data, and each server left over gets
+ *   `opscrew restore <hex> --only <service>` for each of its services.
  */
-function stuckMessage(plan: DeployPlan, reach: Reach): string {
-  return `::error::The rollback failed, and OpsCrew could not put the data on the app's other servers back as it was before the rollback (the messages above say which, and where each copy stays), so the app stays stopped and no version runs on data it doesn't match. The app's server stays as the rollback left it: its .env may name the version the rollback went to, its own data may hold that version's snapshot, and its .database.changed marker stays. Once the server that failed is fixed, run \\\`${opscrew(plan, "rollback")} --to \${RUNNING##*@} --database snapshot\\\`: it restores the copies this run saved before changing anything, on every server, and starts that version. Start the app by hand (\\\`docker compose start\\\` in its folder; ${runbookFilePath(plan)} has the SSH command) only once the data on every server matches the version its .env names. ${reach.stuck}`;
+function stuckLines(plan: DeployPlan, reach: Reach, others: readonly string[]): string[] {
+  const start = `Start the app by hand (\\\`docker compose start\\\` in its folder; ${runbookFilePath(plan)} has the SSH command) only once the data on every server matches the version its .env names.`;
+  const said =
+    "::error::The rollback failed, and OpsCrew could not put the data back as it was before the rollback on the app's other servers $left (the messages above say why, and where each copy stays), so the app stays stopped and no version runs on data it doesn't match.";
+  return [
+    'left="${failed[*]} ${unknown[*]}"',
+    'left="${left# }"; left="${left% }"',
+    `env="$(${reach.readRunning})" || env=""`,
+    'hex="${RUNNING##*@sha256:}"',
+    'if [[ "$env" == "$IMAGE" ]]; then',
+    `  echo "${said} The app's server's .env names the version the rollback went to, its own data may hold that version's snapshot, and its .database.changed marker stays. Once those servers are fixed, run \\\`${opscrew(plan, "rollback")} --to sha256:$hex --database snapshot\\\`: it restores the copies this run saved before changing anything, on every server, and starts that version. ${start} ${reach.stuck}"`,
+    "else",
+    '  commands=""',
+    "  for server in $left; do",
+    '    case "$server" in',
+    ...others.map((server) => {
+      const each = snapshotParts(plan, server).map(
+        (part) => ` \\\`${opscrew(plan, "restore")} $hex --only ${part.name}\\\``,
+      );
+      return `      ${server}) commands="$commands${each.join("")}" ;;`;
+    }),
+    "    esac",
+    "  done",
+    `  echo "${said} The app's server still runs the version that ran, on its own data as before. Once those servers are fixed, run$commands: each puts the copy this run saved before changing anything back on its server. ${start} ${reach.stuck}"`,
+    "fi",
+  ];
 }
 
 /**
@@ -1005,7 +1054,7 @@ function othersStep(
     `      echo "::error::The app's server names no version by its image digest, so OpsCrew can't save the data on its other servers before changing it, and the rollback changed nothing. Run opscrew rollback again and keep the database as it is."`,
     "      exit 1",
     "    fi",
-    `    ${reach.sh} -s -- hold < "$RUNNER_TEMP/opscrew-hold.sh"`,
+    `    ${reach.sh} -s -- hold "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" < "$RUNNER_TEMP/opscrew-hold.sh"`,
     '    restored=""',
     "    for entry in $got; do",
     '      server="${entry%%:*}"',
@@ -1019,6 +1068,24 @@ function othersStep(
     '      restored="$restored,$server"',
     "    done",
     '    echo "restored=${restored#,}" >> "$GITHUB_OUTPUT"',
+  ];
+}
+
+/**
+ * Once a rollback that changed the data on extra servers succeeded: the app's server forgets that
+ * this run held the app ({@link OTHERS_HELD}), with the hold script {@link othersStep} left in the
+ * job's temp folder. The record then stays only after a rollback that couldn't put the data back,
+ * which `opscrew rollback --to` reads.
+ */
+function forgetHoldStep(reach: Reach): string[] {
+  return [
+    "- name: Forget the app's hold for its other servers",
+    "  if: success() && steps.others.outputs.restored != ''",
+    ...(reach.env.length === 0 ? [] : ["  env:", ...reach.env]),
+    "  run: |",
+    "    set -euo pipefail",
+    ...reach.prelude,
+    `    ${reach.sh} -s -- forget < "$RUNNER_TEMP/opscrew-hold.sh"`,
   ];
 }
 
@@ -1436,6 +1503,7 @@ export function renderWorkflow(plan: DeployPlan, ctx: RuntimeContext): RenderedF
     ...healthScript(plan, edgeServesTls(plan, sshHostname(plan)) && !edgeFiles.originTls, local),
     ...rolledBackStep(plan),
     ...rollbackStep(plan, ctx, reach, edgeFiles.localhost, others),
+    ...(others.length > 0 ? forgetHoldStep(reach) : []),
     ...(running.length > 0 ? runningStep(plan, ctx, reach, running) : []),
   ];
 

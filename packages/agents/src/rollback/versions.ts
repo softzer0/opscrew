@@ -266,14 +266,22 @@ const DIGEST_PREFIX = /^sha256:[0-9a-f]{12,64}$/;
  * version when it is listed (`running`):
  * without `to`, the `previous` mark; with `to` (`--to`), the version whose commit starts with it
  * (7 to 40 hexadecimal digits) or whose digest does (`sha256:` and 12 to 64 of them).
- * `command` is the rollback's command, which the hints name.
+ * `command` is the rollback's command, which the hints name. `to` may name the running version
+ * only with `allowRunning` (a rollback back to it, after one that failed on its servers);
+ * otherwise `runningHint` replaces the usual hint of that refusal.
  * @throws OpsCrewError `INVALID_INPUT` when `to` is neither, or names more than one version;
  * `PHASE_PRECONDITION` when no image is labelled `opscrew-<env>`, there is no version to go back
  * to (FR-1907), or `to` names none listed (with why, when it was left out) or the running one.
  */
 export function chooseVersion(
   list: VersionList,
-  input: { environment: string; to?: string; command: string },
+  input: {
+    environment: string;
+    to?: string;
+    command: string;
+    allowRunning?: boolean;
+    runningHint?: string;
+  },
 ): { target: Version; running?: Version; runningDigest: string } {
   const { environment, command } = input;
   const listed = `\`${command} --list\` shows the versions there`;
@@ -338,11 +346,11 @@ export function chooseVersion(
       { hint: `Name one of ${environment}'s versions with --to: ${listed}.` },
     );
   }
-  if (target.digest === list.running) {
+  if (target.digest === list.running && input.allowRunning !== true) {
     throw new OpsCrewError(
       "PHASE_PRECONDITION",
       `${environment} runs ${versionText(target)} already. ${NOTHING_CHANGED}`,
-      { hint: `Name an earlier version with --to: ${listed}.` },
+      { hint: input.runningHint ?? `Name an earlier version with --to: ${listed}.` },
     );
   }
   return { target, ...withRunning };

@@ -973,8 +973,8 @@ function snapshotLogNote(plan: DeployPlan): string {
  * With `others` ({@link changesOthers}), the workflow saved, and for the snapshot restored, the
  * data on the extra servers `$others` names before this step, the app held and stopped. When this
  * step fails, the running version doesn't start here: the workflow's rollback step puts those
- * servers' data back first, then starts it. Without a part on the app's server, step 4 changes
- * nothing here, so the marker says `changed=1` only for the down migrations.
+ * servers' data back first, then starts it. Without a part on the app's server, the marker never
+ * says `changed=1`: the extra servers' own markers cover the data the step changes.
  */
 function databaseStep(plan: DeployPlan, others: boolean): string[] {
   const folder = appFolder(plan);
@@ -985,11 +985,8 @@ function databaseStep(plan: DeployPlan, others: boolean): string[] {
   const mark = (changed: 0 | 1) =>
     `  (umask 077; printf 'target=%s\\nAPP_IMAGE=%s\\nsaved=%s\\nchanged=%s\\n' "$target" "$before" "$saved" ${changed} > ${DATABASE_CHANGED})`;
   const changing =
-    parts.length > 0 || !others
-      ? [mark(1)]
-      : migrations === undefined
-        ? []
-        : ['  if [ "$database" = migrations ]; then', `  ${mark(1)}`, "  fi"];
+    // Without a part here, the extra servers' own markers cover the data the step changes.
+    parts.length > 0 || !others ? [mark(1)] : [];
   /** Changes nothing more: the running version starts again, the marker goes, the script stops. */
   const giveUp = [
     `rm -f ${DATABASE_CHANGED}`,
@@ -1362,7 +1359,7 @@ export function serverCommands(
  *   the snapshot restores it. It exits 1 when nothing was changed (the copy failed, or the restore
  *   failed and the copy is back; the marker goes), 2 when putting the copy back failed too (the
  *   marker stays);
- * - `marked <target> [<running>]` prints `marked` when this run's marker (the same target and
+ * - `marked <target> <running>` prints `marked` when this run's marker (the same target and
  *   running version) says the data may have changed, `none` otherwise;
  * - `back <target> <running>` restores this run's copy where its marker says the data may have
  *   changed, and removes the marker; with no such marker it changes nothing.
@@ -1467,8 +1464,8 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
     "    exit 2 ;;",
     "  marked)",
     ...usage(
-      "the image it goes back to, and the one that ran",
-      '[ "$#" -lt 2 ] || [ "$#" -gt 3 ] || [ -z "$2" ] || ! image_ref "$2" || ! image_ref "${3:-}"',
+      "the image it goes back to and the one that ran before",
+      '[ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"',
     ),
     ...versions,
     "    if changed; then echo marked; else echo none; fi ;;",
@@ -1497,15 +1494,27 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
 }
 
 /**
- * The app's server's script that holds and resumes the app around the restores on its extra
+ * The file in the app's folder on the app's server that says which workflow run
+ * (`<run id>.<attempt>`) held the app to change the data on its extra servers: written by
+ * `hold`, removed by `resume` and `forget` ({@link appHoldCommands}). Without it for this run, no
+ * extra server's data was changed, and the rollback step asks none of them.
+ */
+export const OTHERS_HELD = ".others.held";
+
+/**
+ * The app's server's script that holds and resumes the app around the changes on its extra
  * servers (POSIX sh, in the app's folder; 019's code, as `snapshot.sh hold` and `resume`), which
  * the workflow runs from the runner with one command:
- * - `hold`: under the start lock (waiting up to 15 minutes), records which workers and cron run
- *   while the web runs ({@link recordRunning}), holds the requests ({@link pauseRequests}) and
- *   stops the web, workers and cron ({@link stopApp});
+ * - `hold <run>`: under the start lock (waiting up to 15 minutes), records the run in
+ *   {@link OTHERS_HELD} and which workers and cron run while the web runs
+ *   ({@link recordRunning}), holds the requests ({@link pauseRequests}) and stops the web, workers
+ *   and cron ({@link stopApp});
  * - `stop`: holds the requests and stops them, under the lock, keeping the earlier record;
- * - `resume`: starts them again ({@link startApp}) and lets the requests through;
- * - `requests`: lets the requests through, the app left stopped.
+ * - `resume`: starts them again ({@link startApp}), lets the requests through and removes the
+ *   run's record;
+ * - `requests`: lets the requests through, the app left stopped;
+ * - `held <run>` prints `held` when the record names the run, `none` otherwise;
+ * - `forget` removes the record.
  * kamal-proxy lets the requests through itself after its longest hold.
  */
 export function appHoldCommands(plan: DeployPlan): string[] {
@@ -1522,17 +1531,25 @@ export function appHoldCommands(plan: DeployPlan): string[] {
     'case "${1:-}" in',
     "  hold | stop)",
     ...lock.map((line) => `    ${line}`),
-    ...(record.length === 0
-      ? []
-      : ['    if [ "$1" = hold ]; then', ...record.map((line) => `      ${line}`), "    fi"]),
+    '    if [ "$1" = hold ]; then',
+    '      case "${2:-}" in "" | *[!0-9.]*)',
+    `        echo ${shellQuote("::error::The app's hold script needs the workflow run that holds the app, so nothing was changed.")} >&2`,
+    "        exit 1 ;;",
+    "      esac",
+    `      (umask 077; printf '%s\\n' "$2" > ${OTHERS_HELD})`,
+    ...record.map((line) => `      ${line}`),
+    "    fi",
     `    ${pauseRequests(plan)}`,
     `    ${stopApp(plan)} ;;`,
     "  resume)",
     `    ${startApp(plan)}`,
-    `    ${resumeRequests(plan)} ;;`,
+    `    ${resumeRequests(plan)}`,
+    `    rm -f ${OTHERS_HELD} ;;`,
     `  requests) ${resumeRequests(plan)} ;;`,
+    `  held) if [ -n "\${2:-}" ] && [ "$(cat ${OTHERS_HELD} 2> /dev/null)" = "$2" ]; then echo held; else echo none; fi ;;`,
+    `  forget) rm -f ${OTHERS_HELD} ;;`,
     "  *)",
-    `    echo ${shellQuote("::error::The app's hold script knows only hold, stop, resume and requests.")} >&2`,
+    `    echo ${shellQuote("::error::The app's hold script knows only hold, stop, resume, requests, held and forget.")} >&2`,
     "    exit 1 ;;",
     "esac",
   ];

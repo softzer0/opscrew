@@ -118,6 +118,8 @@ const FAKE_DOCKER = [
   '  "compose stop") if [ -n "${KILL_AT_STOP:-}" ]; then kill -9 "$PPID"; fi ;;',
   '  "compose run")',
   '    if [ "$last" = release ]; then exit 0; fi',
+  // The release image's own one-offs (the down migrations, the records) succeed with DOWN_OK.
+  '    case " $* " in *" -T release "*) if [ -n "${DOWN_OK:-}" ]; then exit 0; fi ;; esac',
   '    host=""; service=""; script=""; p1=""; p2=""',
   '    for arg in "$@"; do',
   '      if [ "$p1" = -v ]; then host="${arg%%:/snapshot*}"; fi',
@@ -1256,6 +1258,8 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
       `  if [[ "$host" == ${HOSTS.data} ]]; then root="$WORK/data-host"; private=10.200.4.2; fi`,
       `  if [[ "$host" == ${HOSTS.more} ]]; then root="$WORK/more-host"; private=10.200.4.3; fi`,
       '  echo "ssh $host $*" >> "$WORK/ssh.log"',
+      // A server DOWN names doesn't answer.
+      '  if [[ " ${DOWN:-} " == *" $host "* ]]; then echo "ssh: connect to host $host port 22: Connection refused" >&2; return 255; fi',
       // As a real server: the words joined with spaces, read again by its shell.
       '  PRIVATE_ADDRESS="$private" OPSCREW_APPS_DIR="$root/srv/apps" OPSCREW_EDGE_DIR="$root/srv/edge" sh -c "${*//\\/srv\\//$root/srv/}"',
       "}",
@@ -1283,6 +1287,8 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
           RUNNER_TEMP: join(work, "tmp"),
           REGISTRY_TOKEN: "registry-token-placeholder",
           SECRET_ROW: "row-value-from-the-database",
+          GITHUB_RUN_ID: "4242",
+          GITHUB_RUN_ATTEMPT: "1",
           ...env,
         },
         encoding: "utf8",
@@ -1521,7 +1527,7 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
         expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
       });
 
-      it("keeps the app stopped and says the way out when a server's data can't be put back", () => {
+      it("keeps the app stopped, and names each service's restore, when a server's data can't be put back before the switch", () => {
         runningB();
         approve(A);
         const { common } = deploy(A, "rollback");
@@ -1534,11 +1540,13 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
         const back = step(STEPS.rollback, stuck);
         expect(back.status).toBe(1);
         expect(back.output).toContain(
-          "::error::The rollback failed, and OpsCrew could not put the data on the app's other servers back as it was before the rollback",
+          "::error::The rollback failed, and OpsCrew could not put the data back as it was before the rollback on the app's other servers data (the messages above say why",
         );
+        // `.env` still names the version that ran: the copy goes back with a restore there.
         expect(back.output).toContain(
-          `\`opscrew rollback --env staging --to sha256:${B} --database snapshot\`: it restores the copies this run saved before changing anything, on every server, and starts that version.`,
+          `The app's server still runs the version that ran, on its own data as before. Once those servers are fixed, run \`opscrew restore --env staging ${B} --only db\`: each puts the copy this run saved before changing anything back on its server.`,
         );
+        expect(back.output).not.toContain("opscrew rollback --env staging --to");
         expect(appStopped()).toBe(true);
         expect(paused()).toBe(false);
         expect(existsSync(on("data", ".database.changed"))).toBe(true);
@@ -1556,6 +1564,10 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
         const failing = step(STEPS.rollback, { ...common, RESTORE_FAIL: B });
         expect(failing.status).toBe(1);
         expect(failing.output).toContain("so the app stays stopped and no version runs");
+        // `.env` names the version the rollback went to: the rollback back to the one that ran.
+        expect(failing.output).toContain(
+          `\`opscrew rollback --env staging --to sha256:${B} --database snapshot\`: it restores the copies this run saved before changing anything, on every server, and starts that version.`,
+        );
         expect(appStopped()).toBe(true);
         expect(read(".env")).toBe(`APP_IMAGE=${image(A)}\n`);
 
@@ -1570,6 +1582,105 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
         expect(paused()).toBe(false);
         expect(step(STEPS.running, {}).status).toBe(0);
         expect(readOn("data", RUNNING_FILE)).toBe(`${image(B)}\n`);
+      });
+
+      it("restores every server's copy and starts the version that ran with the stuck message's rollback", () => {
+        runningB();
+        approve(A);
+        const first = deploy(A, "rollback");
+        const others = step(STEPS.others, first.common);
+        const restored = others.outputs.restored ?? "";
+        expect(step(STEPS.start, { ...first.common, RESTORED: restored }).status).toBe(0);
+        expect(step(STEPS.rollback, { ...first.common, RESTORE_FAIL: B }).status).toBe(1);
+        expect(both()).toEqual(["partial\n", "partial\n"]);
+
+        // `opscrew rollback --to <B> --database snapshot`: a rollback from A, the version .env names.
+        approve(B);
+        const again = deploy(B, "rollback");
+        expect(again.running).toBe(image(A));
+        const repaired = step(STEPS.others, again.common);
+        expect(repaired.status, repaired.output).toBe(0);
+        const start = step(STEPS.start, {
+          ...again.common,
+          RESTORED: repaired.outputs.restored ?? "",
+        });
+        expect(start.status, start.output).toBe(0);
+        expect(both()).toEqual(["rows of B\n", "docs of B\n"]);
+        expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+        expect(callAt("kamal-proxy deploy")).toBeGreaterThan(-1);
+        expect(paused()).toBe(false);
+      });
+
+      it("leaves an untouched app running, with its own rollback, when a server doesn't answer and nothing changed (B)", () => {
+        runningB();
+        // The check failed (an expired approval), so nothing was held or changed.
+        approve(A, { seconds: -60 });
+        const { common } = deploy(A, "rollback");
+        expect(step(STEPS.others, common).status).toBe(1);
+        const back = step(STEPS.rollback, { ...common, DOWN: HOSTS.more });
+        expect(back.status).toBe(1);
+        expect(back.output).not.toContain("could not tell whether this rollback changed the data");
+        expect(back.output).toContain(
+          "::error::The rollback failed before the earlier version took traffic; the server still runs the version it had.",
+        );
+        expect(callAt("compose stop app")).toBe(-1);
+        expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+      });
+
+      it("rolls back as before after a rollback that kept the data, whatever a server answers (B)", () => {
+        runningB();
+        const { common } = deploy(A, "rollback");
+        // No approval anywhere: the data stays, and the start step switches to A.
+        expect(step(STEPS.others, common).status).toBe(0);
+        expect(step(STEPS.start, { ...common, RESTORED: "" }).status).toBe(0);
+        const back = step(STEPS.rollback, { ...common, DOWN: HOSTS.more });
+        expect(back.status).toBe(1);
+        expect(back.output).not.toContain("could not tell whether");
+        expect(back.output).toContain(
+          "::error::The rollback failed: the earlier version did not pass its checks, so OpsCrew put back the version that ran before the rollback.",
+        );
+        expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
+        expect(both()).toEqual(["rows of B\n", "docs of B\n"]);
+      });
+
+      it("puts back the servers that answer and keeps the app stopped, naming the one that doesn't (B)", () => {
+        runningB();
+        approve(A);
+        const { common } = deploy(A, "rollback");
+        const others = step(STEPS.others, common);
+        expect(
+          step(STEPS.start, { ...common, RESTORED: others.outputs.restored ?? "" }).status,
+        ).toBe(0);
+        rmSync(`${work}/docker.log`);
+        const back = step(STEPS.rollback, { ...common, DOWN: HOSTS.more });
+        expect(back.status).toBe(1);
+        expect(back.output).toContain(
+          "::error::OpsCrew could not tell whether this rollback changed the data on the server more: it did not answer.",
+        );
+        expect(back.output).toContain(
+          "OpsCrew put the data on the server data back as it was before the rollback.",
+        );
+        expect(back.output).toContain(
+          "on the app's other servers more (the messages above say why",
+        );
+        expect(db("db")).toBe("rows of B\n");
+        expect(db("docs")).toBe("docs while A ran\n");
+        expect(appStopped()).toBe(true);
+        expect(paused()).toBe(false);
+      });
+
+      it("puts the data back after a cancel between the change on the other servers and the start step (C)", () => {
+        runningB();
+        approve(A);
+        const { common } = deploy(A, "rollback");
+        expect(step(STEPS.others, common).status).toBe(0);
+        // The start step was skipped: the rollback step runs next.
+        const back = step(STEPS.rollback, common);
+        expect(back.status).toBe(1);
+        expect(both()).toEqual(["rows of B\n", "docs of B\n"]);
+        expect(callAt("compose start app")).toBeGreaterThan(callAt("compose stop app"));
+        expect(paused()).toBe(false);
+        expect(existsSync(at(".others.held"))).toBe(false);
       });
 
       for (const [why, seconds, said] of [
@@ -1640,6 +1751,36 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
         const back = step(steps.rollback, common);
         expect(back.status).toBe(1);
         expect(both()).toEqual(["rows of B\n", "docs of B\n"]);
+        expect(paused()).toBe(false);
+      });
+
+      it("puts the extra servers' data back, with no warning of an unsaved copy, when the earlier version fails after the down migrations (D)", () => {
+        const knex = planOf({ migrations: true });
+        const steps = stepsOf(knex);
+        upload(knex);
+        runningB(steps);
+        // Knex's records: B has one migration more than A.
+        write(at(`.schema/${B}`), "count=3\n");
+        write(at(`.schema/${A}`), "count=2\n");
+        approve(A, { choice: "migrations" });
+        const { common } = deploy(A, "rollback", {}, steps);
+        const others = step(steps.others, common);
+        expect(others.status, others.output).toBe(0);
+        setDb("migrated down\n", "db");
+        const start = step(steps.start, {
+          ...common,
+          RESTORED: others.outputs.restored ?? "",
+          DOWN_OK: "1",
+        });
+        expect(start.status, start.output).toBe(0);
+        expect(read(".env")).toBe(`APP_IMAGE=${image(A)}\n`);
+        // Nothing on the app's server changed: its marker says so.
+        expect(read(".database.changed")).toContain("changed=0");
+        const back = step(steps.rollback, common);
+        expect(back.status).toBe(1);
+        expect(back.output).not.toContain("no copy of the database from before the rollback");
+        expect(both()).toEqual(["rows of B\n", "docs of B\n"]);
+        expect(read(".env")).toBe(`APP_IMAGE=${image(B)}\n`);
         expect(paused()).toBe(false);
       });
     });

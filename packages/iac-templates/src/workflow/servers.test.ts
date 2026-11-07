@@ -187,6 +187,7 @@ describe("the deploy job with extra servers", () => {
     const added = [
       "outgoing",
       "others",
+      "Forget the app's hold for its other servers",
       "Record the running version on the app's other servers",
     ] as const;
     expect(names(staging).filter((name) => added.some((a) => a === name))).toEqual([...added]);
@@ -204,6 +205,10 @@ describe("the deploy job with extra servers", () => {
     );
     expect(stepOf(staging, DATA).run).toContain(
       `ssh "\${ssh_opts[@]}" "deploy@\${HOST}" sh -s -- "$IMAGE" "$MODE" "$RUNNING" <<'REMOTE'`,
+    );
+    // The rollback step also runs after a cancel between the change on the other servers and start.
+    expect(content(staging)).toContain(
+      "|| (steps.others.outcome == 'success' && steps.start.outcome == 'skipped'))",
     );
     expect(stepOf(staging, "start").run).toContain(
       `sh -s -- "$IMAGE" "$MODE" "$RESTORED" <<'REMOTE'`,
