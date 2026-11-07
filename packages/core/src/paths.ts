@@ -28,9 +28,9 @@ export interface ProjectFiles {
   /** Private record of the server and repository the deploy secrets were last stored for. */
   deploySecrets: string;
   /**
-   * The scheduled check's private SSH key (`check_key`), which servers let run only `df`. The check
-   * is one per repository, so only the first app's prod paths hold it
-   * (`~/.opscrew/projects/<id>/check_key`).
+   * The scheduled check's private SSH key (`check_key`), which servers let run only OpsCrew's
+   * read-only command for the disk and the scheduled snapshots' results. The check is one per
+   * repository, so only the first app's prod paths hold it (`~/.opscrew/projects/<id>/check_key`).
    */
   checkKey: string;
   /** Beszel's dashboard password and agent token (`beszel_secrets.json`), private. */

@@ -728,7 +728,9 @@ async function provisionFlow(
   const repository = `${github.owner}/${github.repo}`;
   const checkKey = await environmentCheckKey(deps, plan);
   if (checkKey?.created) {
-    deps.reporter.info("Created the scheduled check's key, which servers let run only df.");
+    deps.reporter.info(
+      "Created the scheduled check's key, which servers let run only OpsCrew's read-only command for the disk and the scheduled snapshots' results.",
+    );
   }
   const dir = join(root, plan.infra.dir);
   const approvals: PlanApproval[] = [];

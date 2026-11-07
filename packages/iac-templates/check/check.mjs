@@ -67,7 +67,7 @@ const PAUSE_REASONS = {
  * of the log.
  */
 export const CHECK_COMMAND = [
-  "df -P -B1 / && echo scheduled &&",
+  "export LC_ALL=C; df -P -B1 / && echo scheduled &&",
   "for d in /srv/apps/*/; do",
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
   "a=${d%/}; a=${a##*/};",
@@ -75,7 +75,7 @@ export const CHECK_COMMAND = [
   "l=$d.snapshots/scheduled.log;",
   "test -f $l || continue;",
   "echo scheduled $a at $(stat -c %Y $l);",
-  "m=$(grep -nE '^[0-9]{8}T[0-9]{6}Z$' $l | tail -n 1);",
+  "m=$(grep -anE '^[0-9]{8}T[0-9]{6}Z$' $l | tail -n 1);",
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
   "test -z $m || echo scheduled $a id ${m#*:};",
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
@@ -521,13 +521,13 @@ async function checkSnapshot(check, read, io) {
     return undefined;
   }
   const after = /^after (\d+)$/.exec(lines.find((line) => line.startsWith("after ")) ?? "")?.[1];
-  if (after === undefined) {
+  const id = lines.find((line) => line.startsWith("id "))?.slice("id ".length);
+  if (after === undefined || (id !== undefined && !SCHEDULED_ID.test(id))) {
     io.log(
       `::warning::The server ${server.id} answered about ${app}'s snapshots in a form the check cannot read.`,
     );
     return undefined;
   }
-  const id = lines.find((line) => line.startsWith("id "))?.slice("id ".length);
   if (!scheduledFailed({ ...(id === undefined ? {} : { id }), after: Number(after) })) {
     io.log(`${server.id}: the last scheduled snapshot of ${app} succeeded.`);
     return null;

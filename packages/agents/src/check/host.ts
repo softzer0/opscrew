@@ -69,7 +69,7 @@ export async function addCheckKey(
     apply: input.apply,
     // The step changes no SSH or firewall setting.
     verifyLogin: async () => true,
-    title: `Let the scheduled check of ${repository} read the disk of ${server} with its own key`,
+    title: `Let the scheduled check of ${repository} read the disk and every app's scheduled snapshot results on ${server} with its own key`,
     server,
     planOf: server,
     upToDate: `The scheduled check's key is on ${server}; nothing on it changes.`,

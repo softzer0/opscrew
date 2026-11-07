@@ -1052,7 +1052,7 @@ describe.skipIf(!SH_AVAILABLE)("the check key's and the add-ons' scripts in a re
     }
   });
 
-  it("check-key: an older OpsCrew's line, which ran only df, is no check key: the deploy-key step removes it and check-key writes the new one", async () => {
+  it("check-key: the deploy-key step keeps an older OpsCrew's line, which ran only df, and check-key replaces it with the new one", async () => {
     const check = ed25519PublicKey();
     const old = `restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop`;
     const { on } = checkKeyScriptsOf(check, "acme/shop");
@@ -1064,30 +1064,18 @@ describe.skipIf(!SH_AVAILABLE)("the check key's and the add-ons' scripts in a re
     const h = harness();
     const line = h.rooted(checkKeyLine(check, "acme/shop"));
     try {
-      // grep -E keeps the new line and not the old one.
-      h.write(
-        KEYS,
-        `${DEPLOY_KEY}
-${old}
-`,
-      );
-      expect(h.run(deployKey.verify).status).not.toBe(0);
+      // grep -E keeps the old line, so the server never goes without a check key.
+      h.write(KEYS, `${DEPLOY_KEY}\n${old}\n`);
+      const verified = h.run(deployKey.verify);
+      expect(verified.status, verified.stderr).toBe(0);
       expect(h.run(deployKey.apply).status).toBe(0);
-      expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}
-`);
+      expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}\n${old}\n`);
 
-      h.write(
-        KEYS,
-        `${DEPLOY_KEY}
-${old}
-`,
-      );
+      // check-key replaces it in its own plan.
       expect(h.run(on.check).stdout).toContain("state=change");
       const applied = h.run(on.apply);
       expect(applied.status, applied.stderr).toBe(0);
-      expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}
-${line}
-`);
+      expect(h.read(KEYS)).toBe(`${DEPLOY_KEY}\n${line}\n`);
       expect(h.run(on.verify).status).toBe(0);
       const kept = h.run(deployKey.verify);
       expect(kept.status, kept.stderr).toBe(0);

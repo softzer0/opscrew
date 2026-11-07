@@ -10,7 +10,7 @@ function diskText(plan: DeployPlan): string {
       return ", and the server's free disk, read by a job on the server's own runner (an issue at 85% full, and at 95%).";
     case "github":
     case "runner-host":
-      return ", and the server's free disk over SSH, with a key the server lets run only `df` (an issue at 85% full, and at 95%).";
+      return ", and the server's free disk over SSH, with a key the server lets run only OpsCrew's read-only command for the disk and the scheduled snapshots' results (an issue at 85% full, and at 95%).";
     case undefined:
       return tunnelMode(plan)
         ? ". It reads no disk here: the check's SSH can't pass the tunnel's Cloudflare Access login (deploying from the server's own runner would let it read the disk there)."

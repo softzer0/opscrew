@@ -46,7 +46,7 @@ describe("the runbook's scheduled check", () => {
     expect(text).toContain("`gh workflow disable opscrew-check.yml`");
     expect(text).toContain("`gh workflow enable opscrew-check.yml`");
     expect(text).toContain(
-      "the server's free disk over SSH, with a key the server lets run only `df`",
+      "the server's free disk over SSH, with a key the server lets run only OpsCrew's read-only command for the disk and the scheduled snapshots' results",
     );
     expect(text).toContain("after 60 days without activity");
   });

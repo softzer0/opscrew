@@ -18,6 +18,7 @@ import {
   AUTO_UPGRADES_FILE,
   BACKUP_DIR,
   CHECK_KEY_LINE_RE,
+  OLD_CHECK_KEY_LINE_RE,
   DOCKER_DAEMON_JSON,
   DOCKER_DAEMON_JSON_PATH,
   EDGE_DIR,
@@ -65,7 +66,9 @@ export function fakeJump(proto: string, port: string | number): string {
 const JUMPS = [fakeJump("tcp", 80), fakeJump("tcp", 443), fakeJump("udp", 443)];
 
 /** The scheduled check's and the preview keys' lines in OpsCrew's form (the deploy-key step keeps them). */
-const CHECK_LINE = new RegExp(`${CHECK_KEY_LINE_RE}|${PREVIEW_KEY_LINE_RE}`);
+const CHECK_LINE = new RegExp(
+  `${CHECK_KEY_LINE_RE}|${OLD_CHECK_KEY_LINE_RE}|${PREVIEW_KEY_LINE_RE}`,
+);
 
 export const OS_PRESETS = {
   "ubuntu-22.04": {

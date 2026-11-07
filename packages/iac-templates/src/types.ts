@@ -31,8 +31,9 @@ export interface RenderContext {
   deploySshPublicKey: string;
   /**
    * The scheduled check's authorized_keys line for the deploy user
-   * (`restrict,command="df -P -B1 /" <key> opscrew-check:<owner>/<repo>`), which a new cloud
-   * server gets at its first boot; absent without the check (the files stay as they were).
+   * (`restrict,command="<the check key's read-only command>" <key> opscrew-check:<owner>/<repo>`,
+   * as `checkKeyLine` in `@opscrew/connector-ssh-host` writes it), which a new cloud server gets
+   * at its first boot; absent without the check (the files stay as they were).
    */
   checkKeyLine?: string;
   /** Email for TLS certificate registration (Caddy ACME). */

@@ -270,7 +270,8 @@ export function checkKeyComment(repository: string): string {
 
 /**
  * The only command the check's key can run (OpenSSH's forced command), whatever the client asks.
- * It only reads, and it is one line with no `"`, as it sits inside `command="..."`. It prints
+ * It only reads, and it is one line with no `"`, as it sits inside `command="..."`. In the C
+ * locale (any byte is text to grep), it prints
  * `df -P -B1 /`, then the line `scheduled` (an older OpsCrew's key, which ran only `df`, prints
  * none), then, for each app folder with a scheduled snapshot's log
  * (`.snapshots/scheduled.log`, feature 024), lines that start with `scheduled <app> `:
@@ -284,7 +285,7 @@ export function checkKeyComment(repository: string): string {
  * which the server's own runner runs, and its `scheduledLog` the same reading of a log's lines.
  */
 export const CHECK_KEY_COMMAND = [
-  "df -P -B1 / && echo scheduled &&",
+  "export LC_ALL=C; df -P -B1 / && echo scheduled &&",
   `for d in ${APPS_DIR}/*/; do`,
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
   "a=${d%/}; a=${a##*/};",
@@ -292,7 +293,7 @@ export const CHECK_KEY_COMMAND = [
   "l=$d.snapshots/scheduled.log;",
   "test -f $l || continue;",
   "echo scheduled $a at $(stat -c %Y $l);",
-  "m=$(grep -nE '^[0-9]{8}T[0-9]{6}Z$' $l | tail -n 1);",
+  "m=$(grep -anE '^[0-9]{8}T[0-9]{6}Z$' $l | tail -n 1);",
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
   "test -z $m || echo scheduled $a id ${m#*:};",
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell's parameter expansion.
@@ -324,11 +325,18 @@ function literalRe(text: string): string {
 
 /**
  * ERE (and JavaScript RegExp) for a check key line in OpsCrew's form, of any repository, with
- * exactly {@link CHECK_KEY_COMMAND}: the deploy-key step keeps it. A line with another command (an
- * older OpsCrew's) is no check key: the deploy-key step removes it, and the check-key step writes
- * the line again.
+ * exactly {@link CHECK_KEY_COMMAND}: the deploy-key step keeps it, and inspection lists its
+ * repository. A line with an older OpsCrew's command ({@link OLD_CHECK_KEY_LINE_RE}) is no check
+ * key, so the check-key step writes the line again.
  */
 export const CHECK_KEY_LINE_RE = `^restrict,command="${literalRe(CHECK_KEY_COMMAND)}" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
+
+/**
+ * ERE (and JavaScript RegExp) for an older OpsCrew's check key line, which ran only `df`: the
+ * deploy-key step keeps it too, and inspection lists it with neither the deploy keys nor the check
+ * keys, so the check reads the disk until the check-key step replaces it.
+ */
+export const OLD_CHECK_KEY_LINE_RE = `^restrict,command="df -P -B1 /" [^ ]+ [^ ]+ ${CHECK_KEY_COMMENT}[^ ]+$`;
 
 /** The recipe file that is the preview command, the only one written runnable (0755). */
 export const PREVIEW_COMMAND_FILE = "bin/opscrew-preview";

@@ -42,6 +42,7 @@ import {
   MIN_DOCKER_MAJOR,
   MODULI_FILTER,
   maskFilePath,
+  OLD_CHECK_KEY_LINE_RE,
   OPSCREW_DIR,
   PORTAINER_DIR,
   PORTAINER_PORT,
@@ -481,7 +482,7 @@ function deployKeyScripts(step: HostStep): StepScripts {
       USER_NAME: p.user,
       KEYS_B64: base64(keys),
       KEYS_SHA256: sha256Hex(keys),
-      KEEP_RE: `${CHECK_KEY_LINE_RE}|${PREVIEW_KEY_LINE_RE}`,
+      KEEP_RE: `${CHECK_KEY_LINE_RE}|${OLD_CHECK_KEY_LINE_RE}|${PREVIEW_KEY_LINE_RE}`,
     },
     helpers: `user_home() { getent passwd "$USER_NAME" | cut -d: -f6; }`,
     verify: `  getent passwd "$USER_NAME" >/dev/null 2>&1 || return 1

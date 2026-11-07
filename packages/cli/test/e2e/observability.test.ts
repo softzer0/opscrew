@@ -900,9 +900,7 @@ RUN apt-get update -qq \\
       );
       const lines = keys.split("\n");
       expect(lines).toHaveLength(2);
-      expect(lines[1]).toBe(
-        checkKeyLine(checkKey.publicKeyOpenSsh.split(" ").slice(0, 2).join(" "), repository),
-      );
+      expect(lines[1]).toBe(checkKeyLine(checkKey.publicKeyOpenSsh, repository));
     },
     TWO_MINUTES,
   );

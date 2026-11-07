@@ -3056,8 +3056,9 @@ export type AddonEnable<K extends AddonPlanKind> = z.input<(typeof AddonEnableSc
  * A one-step host plan that turns an add-on on (`enable`) or off (`disable`), the step's undo:
  *
  * - `check-key`: the scheduled check's public key of `repository` (`owner/repo`) in the deploy
- *   user's authorized_keys, as `restrict,command="df -P -B1 /" <key> opscrew-check:<owner>/<repo>`
- *   (the line with that exact comment is replaced); off, only that line goes. Other
+ *   user's authorized_keys, as `checkKeyLine` writes it (`restrict,command="<CHECK_KEY_COMMAND>"
+ *   <key> opscrew-check:<owner>/<repo>`; the line with that exact comment, an older command's
+ *   included, is replaced); off, only that line goes. Other
  *   repositories' check keys stay. The plan shows the key's fingerprint.
  * - `beszel` (`mode` hub, with the dashboard user's `email` and the hub's public key `hubKey`,
  *   the agent's `KEY`; or agent) and `alloy`: the files
@@ -3492,7 +3493,7 @@ function addonStep(
   if ("publicKey" in enable) {
     return step(
       "check-key",
-      `Let the scheduled check of ${repository} read this server's disk usage and scheduled snapshots' results with its own key (${keyFingerprint(enable.publicKey)}), which can run only OpsCrew's fixed command`,
+      `Let the scheduled check of ${repository} read this server's disk usage and every app's scheduled snapshot results on it with its own key (${keyFingerprint(enable.publicKey)}), which can run only OpsCrew's fixed command`,
       "change",
       { publicKey: keyId(enable.publicKey), repository, runAs },
       `Its line in the deploy user's authorized_keys is restricted: no terminal and no forwarding, and whatever it asks, the server runs only OpsCrew's fixed command, which reads the disk usage (df -P -B1 /) and, for each app with a scheduled snapshot's log, when it was last written, its last snapshot id, how many lines follow it and whether a snapshot is being taken, never the log's text. A line with its comment (${checkKeyComment(repository)}) is replaced; the other keys stay.`,

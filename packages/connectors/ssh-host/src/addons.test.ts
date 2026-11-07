@@ -25,7 +25,12 @@ import {
 } from "./__fixtures__/helpers";
 import { keyFingerprint } from "./addons";
 import { applyHostPlan } from "./apply";
-import { CHECK_KEY_COMMAND, CHECK_KEY_LINE_RE, checkKeyLine } from "./constants";
+import {
+  CHECK_KEY_COMMAND,
+  CHECK_KEY_LINE_RE,
+  checkKeyLine,
+  OLD_CHECK_KEY_LINE_RE,
+} from "./constants";
 import { hostPlanHash } from "./hash";
 import { inspectHost } from "./inspect";
 import { type AddonEnable, planAddon, planHost, planTeardown } from "./plan";
@@ -113,21 +118,23 @@ describe("check-key", () => {
     ]);
   });
 
-  it("replaces an older OpsCrew's line, whose command only ran df: the deploy-key step removes it and the check-key step writes the new one", async () => {
+  it("keeps an older OpsCrew's line, whose command only ran df, until the check-key step replaces it with the new one", async () => {
     const fake = await ownServer();
     const check = ed25519PublicKey();
     const old = `restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop`;
     fake.users.get("deploy")?.keys.push(old);
-    // An old line is no check key: inspection lists it with the deploy keys, and no repository.
+    // An old line is neither a deploy key nor a check key: the check-key step is due.
     const facts = await inspectHost(fake);
-    expect(facts.deployUser).toMatchObject({ keys: [DEPLOY_KEY, old], checkKeys: [] });
+    expect(facts.deployUser).toMatchObject({ keys: [DEPLOY_KEY], checkKeys: [] });
     const setup = planHost(facts, desiredFor(fake), "opscrew provision");
-    expect(setup.steps.find((step) => step.id === "deploy-key")?.state).toBe("change");
+    expect(setup.steps.find((step) => step.id === "deploy-key")?.state).toBe("in-place");
 
-    await provision(fake, desiredFor(fake));
-    expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY]);
+    // A rotated deploy key rewrites the file, and the old line stays: the check reads the disk.
+    const rotated = DEPLOY_KEY.replace("FAKEFAKEFAKE", "ROTATEDROTAT");
+    await provision(fake, desiredFor(fake, { deploy: { user: "deploy", publicKey: rotated } }));
+    expect(fake.users.get("deploy")?.keys).toEqual([rotated, old]);
     await applyApproved(fake, checkKeyPlan("root", { publicKey: check }));
-    expect(fake.users.get("deploy")?.keys).toEqual([DEPLOY_KEY, checkKeyLine(check, REPOSITORY)]);
+    expect(fake.users.get("deploy")?.keys).toEqual([rotated, checkKeyLine(check, REPOSITORY)]);
     expect((await inspectHost(fake)).deployUser?.checkKeys).toEqual(["acme/shop"]);
   });
 
@@ -144,6 +151,13 @@ describe("check-key", () => {
     ]) {
       expect(re.test(other)).toBe(false);
     }
+    // The older form, which the deploy-key step keeps, is only that.
+    const old = new RegExp(OLD_CHECK_KEY_LINE_RE);
+    expect(old.test(`restrict,command="df -P -B1 /" ${check} opscrew-check:acme/shop`)).toBe(true);
+    expect(old.test(checkKeyLine(check, "acme/shop"))).toBe(false);
+    expect(old.test(`restrict,command="df -P -B1 /; sh" ${check} opscrew-check:acme/shop`)).toBe(
+      false,
+    );
   });
 
   it("is removed alone by its undo, and by the last app's teardown (its own repository's only)", async () => {

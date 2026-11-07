@@ -905,6 +905,24 @@ describe("scheduled snapshots", () => {
     expect(world.summaries.at(-1)).toContain("- example-app/prod/disk/hetzner-example-app: passed");
   });
 
+  it("reads an id that is no scheduled snapshot's, or no count of lines, as a form it cannot read", async () => {
+    for (const lines of [
+      `scheduled example-app id ${SECRETS.inBody}\nscheduled example-app after 0\n`,
+      "scheduled example-app after many\n",
+    ]) {
+      const world = new World();
+      world.config = config({ environments: [SCHEDULED] });
+      world.disks.set(SERVER_HOST, `${df(40)}scheduled example-app at 1761620640\n${lines}`);
+      await run(env(), world.io());
+      expect(world.open()).toEqual([]);
+      expect(world.logs).toContain(
+        "::warning::The server hetzner-example-app answered about example-app's snapshots in a form the check cannot read.",
+      );
+      expect(world.summaries.at(-1)).toContain(`- ${KEY}: not checked (see the log)`);
+      expect(world.texts().join("\n")).not.toContain(SECRETS.inBody);
+    }
+  });
+
   it("says why a server whose check key predates the snapshot check is not checked", async () => {
     const world = new World();
     world.config = config({ environments: [SCHEDULED] });

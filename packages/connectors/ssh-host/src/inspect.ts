@@ -20,6 +20,7 @@ import {
   GRAFANA_ADMIN_CREDENTIAL,
   HASHED_RUNTIME_FILES,
   HOST_SYSCTL_KEYS,
+  OLD_CHECK_KEY_LINE_RE,
   PORTAINER_DIR,
   PORTAINER_PROJECT,
   PREVIEW_COMMAND_FILE,
@@ -798,6 +799,7 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
     .map(({ name, running }) => ({ name, running }));
   const deployKeys = linesOf(ok(sections, "deploy-keys")).filter((line) => !line.startsWith("#"));
   const checkLine = new RegExp(CHECK_KEY_LINE_RE);
+  const oldCheckLine = new RegExp(OLD_CHECK_KEY_LINE_RE);
   const previewLine = new RegExp(PREVIEW_KEY_LINE_RE);
   const addon = (name: string, project: string) => {
     const found = addons.get(name);
@@ -893,7 +895,10 @@ export function factsFromOutput(output: string, privilege: HostFacts["privilege"
       deploy.exit === 0
         ? {
             groups: linesOf(deploy.text).flatMap((line) => line.split(/\s+/)),
-            keys: deployKeys.filter((line) => !checkLine.test(line) && !previewLine.test(line)),
+            keys: deployKeys.filter(
+              (line) =>
+                !checkLine.test(line) && !oldCheckLine.test(line) && !previewLine.test(line),
+            ),
             checkKeys: deployKeys
               .filter((line) => checkLine.test(line))
               .map((line) =>
