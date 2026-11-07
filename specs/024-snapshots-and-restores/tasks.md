@@ -165,7 +165,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2422 [US1] The localhost target sees ports other containers publish (found in T2414's prep)
+- [x] T2422 [US1] The localhost target sees ports other containers publish (found in T2414's prep)
   - Accept: on Docker Desktop, the port check also reads the ports running containers publish (`docker ps`), so a port another container holds falls back to 8080/8443 as R4 says, instead of failing at `docker compose up` with "port is already allocated". Test with a fake Docker answer.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`
   - Effort: medium
