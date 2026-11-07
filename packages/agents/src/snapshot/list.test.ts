@@ -168,13 +168,8 @@ describe("the listing", () => {
       unreadable: 0,
     });
     const [entry] = mergeListings([
-      {
-        name: "the app's server",
-        where: "on the app's server",
-        server: "app",
-        listing: part(true),
-      },
-      { name: "server data", where: "on server data", server: "data", listing: part(false) },
+      { name: "the app's server", server: "app", listing: part(true) },
+      { name: "server data", server: "data", listing: part(false) },
     ]);
     expect(entry?.offsite).toBe(false);
   });

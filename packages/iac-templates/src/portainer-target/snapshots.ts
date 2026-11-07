@@ -16,7 +16,7 @@ import { IMAGES } from "../pins";
 import { portainerTarget } from "../providers";
 import { memoryLimit, type RenderedServices, SQLITE_VOLUME } from "../runtime/components";
 import { composeLiteral, hardened, shellQuote } from "../runtime/services";
-import { SQLITE_COPY } from "../workflow/snapshots";
+import { SQLITE_COPY, snapshotParts } from "../workflow/snapshots";
 
 /** The snapshots volume's key in the stack (`opscrew-<app>_snapshots`, D12), and where every snapshot service mounts it. */
 export const SNAPSHOTS_VOLUME = "snapshots";
@@ -36,15 +36,15 @@ export const SNAPSHOTS_MOUNT = `${SNAPSHOTS_VOLUME}:${DIR}`;
 const TOOLS_VOLUME = "snapshot_tools";
 
 /**
- * The stack's volumes for its snapshots, by their keys: `snapshots` whenever the stack takes or
- * copies any (the schedule or the snapshot before each release, with an online part; the
- * off-server copy), and the off-server copy's `snapshot_tools`; none otherwise.
+ * The stack's volumes for its snapshots, by their keys: `snapshots` whenever the plan has data (a
+ * stateful service or the `sqlite` volume), which `opscrew snapshot` can copy by hand, or the
+ * off-server copy is on, and the off-server copy's `snapshot_tools`; none otherwise. With the
+ * `snapshots` volume, the stamp writes the running image there, so every snapshot knows its
+ * version.
  */
 export function snapshotVolumes(plan: DeployPlan): string[] {
   const offsite = snapshotOffsiteOf(plan) !== undefined;
-  const online = portainerSnapshotParts(plan).length > 0;
-  const takes = online && (snapshotScheduleOf(plan) !== undefined || snapshotsOn(plan));
-  if (!takes && !offsite) return [];
+  if (snapshotParts(plan).length === 0 && !offsite) return [];
   return [SNAPSHOTS_VOLUME, ...(offsite ? [TOOLS_VOLUME] : [])];
 }
 

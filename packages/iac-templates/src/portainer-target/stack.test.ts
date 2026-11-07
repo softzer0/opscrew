@@ -266,11 +266,18 @@ describe("renderPortainerStack", () => {
   it("keeps Postgres and Valkey data in named volumes, with no file next to the stack", () => {
     expect(fullStack.services.db?.volumes).toEqual(["db_data:/var/lib/postgresql/data"]);
     expect(fullStack.services.cache?.volumes).toEqual(["cache_data:/data"]);
-    expect(Object.keys(fullStack.volumes ?? {})).toEqual(["db_data", "cache_data", "version"]);
-    // Data deletion removes the stamp's volume with the data volumes.
+    // With data, the snapshots volume a snapshot by hand writes into, then the stamp's.
+    expect(Object.keys(fullStack.volumes ?? {})).toEqual([
+      "db_data",
+      "cache_data",
+      "snapshots",
+      "version",
+    ]);
+    // Data deletion removes the snapshots and the stamp's volume with the data volumes.
     expect(portainerStackVolumes(full)).toEqual([
       "opscrew-shop_db_data",
       "opscrew-shop_cache_data",
+      "opscrew-shop_snapshots",
       "opscrew-shop_version",
     ]);
     expect(portainerVersionVolume(full)).toBe("opscrew-shop_version");
@@ -400,6 +407,7 @@ describe("renderPortainerStack", () => {
     expect(fullStack.services.app?.image).toBe(PORTAINER_IMAGE_PLACEHOLDER);
     expect(fullStack.services.stamp?.environment).toEqual({
       OPSCREW_APP_VERSION: PORTAINER_VERSION_PLACEHOLDER,
+      OPSCREW_APP_IMAGE: PORTAINER_IMAGE_PLACEHOLDER,
     });
     const filled = fillPortainerStack(fullFile.content, IMAGE);
     expect(filled).not.toContain("__OPSCREW_");
@@ -408,6 +416,7 @@ describe("renderPortainerStack", () => {
     expect(doc.services.release?.image).toBe(IMAGE);
     expect(doc.services.stamp?.environment).toEqual({
       OPSCREW_APP_VERSION: portainerImageVersion(IMAGE),
+      OPSCREW_APP_IMAGE: IMAGE,
     });
     expect(portainerImageVersion(IMAGE)).toBe("c0ffeec0ffee");
   });
@@ -656,6 +665,7 @@ describe("the components in a stack", () => {
       "kafka_data",
       "kafka_secrets",
       "kafka_config",
+      "snapshots",
       "version",
     ]);
     expect(portainerStackVolumes(components)).toEqual([
@@ -664,6 +674,7 @@ describe("the components in a stack", () => {
       "opscrew-shop_kafka_data",
       "opscrew-shop_kafka_secrets",
       "opscrew-shop_kafka_config",
+      "opscrew-shop_snapshots",
       "opscrew-shop_version",
     ]);
   });
@@ -741,6 +752,7 @@ describe("the components in a stack", () => {
       "kafka_secrets",
       "kafka_config",
       "sqlite",
+      "snapshots",
       "version",
     ]);
     // Data deletion removes it with the services' volumes.
@@ -751,6 +763,7 @@ describe("the components in a stack", () => {
       "opscrew-shop_kafka_secrets",
       "opscrew-shop_kafka_config",
       "opscrew-shop_sqlite",
+      "opscrew-shop_snapshots",
       "opscrew-shop_version",
     ]);
     expect(componentsStack.services.app?.volumes).toBeUndefined();

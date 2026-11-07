@@ -10,12 +10,17 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CommandResult, RemoteExec } from "@opscrew/contracts";
-import { shellQuote } from "@opscrew/iac-templates";
+import { type SnapshotPart, shellQuote } from "@opscrew/iac-templates";
 
 /** True when `sh` runs here (Git's on Windows). */
 export const SH_AVAILABLE = spawnSync("sh", ["-c", "exit 0"]).status === 0;
 
-/** The shim of `snapshot.sh`: `take.exit` (with `take.stderr`) makes `take` fail. */
+/**
+ * The shim of `snapshot.sh`: `take.exit` (with `take.stderr`) makes `take` fail. `take` records
+ * each part of `parts.txt` (`<name> <kind> <file> <online 1|0>` lines, as the real script renders
+ * them from the plan): copied (10 bytes) unless `--skip` names it or it is stop-only without
+ * `--stop`.
+ */
 const SHIM = `echo "$*" >> calls.log
 case "$1" in
   list)
@@ -26,13 +31,32 @@ case "$1" in
   delete) rm -rf ".snapshots/$2" ;;
   take)
     if [ -f take.exit ]; then cat take.stderr >&2; exit "$(cat take.exit)"; fi
-    id="$(cat next.id)"; version=""; shift 2
+    id="$(cat next.id)"; version=""; skip=" "; stop=" "; shift 2
     while [ "$#" -gt 0 ]; do
-      case "$1" in --id) id="$2" ;; --version) version="$2" ;; esac
+      case "$1" in
+        --id) id="$2" ;;
+        --version) version="$2" ;;
+        --skip) skip="$skip$2 " ;;
+        --stop) stop="$stop$2 " ;;
+      esac
       shift 2
     done
+    services=""; sep=""
+    while read -r name kind file online; do
+      copied=0
+      case "$skip" in *" $name "*) ;; *)
+        if [ "$online" = 1 ]; then copied=1; fi
+        case "$stop" in *" $name "*) copied=1 ;; esac ;;
+      esac
+      if [ "$copied" = 1 ]; then
+        entry=$(printf '{"name":"%s","kind":"%s","file":"%s","size":10}' "$name" "$kind" "$file")
+      else
+        entry=$(printf '{"name":"%s","kind":"%s","skipped":true}' "$name" "$kind")
+      fi
+      services="$services$sep$entry"; sep=","
+    done < parts.txt
     mkdir -p ".snapshots/$id"
-    printf '{"id":"%s","kind":"manual","taken":"2026-11-06T19:00:00Z","version":"%s","services":[]}\\n' "$id" "$version" > ".snapshots/$id/about.json"
+    printf '{"id":"%s","kind":"manual","taken":"2026-11-06T19:00:00Z","version":"%s","services":[%s]}\\n' "$id" "$version" "$services" > ".snapshots/$id/about.json"
     echo "$id" ;;
 esac
 `;
@@ -56,14 +80,21 @@ export class FakeSnapshotServer {
     private readonly serverDir: string,
   ) {}
 
-  /** A fake machine whose app's folder is `serverDir`, with `snapshot.sh`, a free disk and `.env`. */
+  /**
+   * A fake machine whose app's folder is `serverDir`, with `snapshot.sh` for `parts`, a free disk
+   * and `.env`.
+   */
   static async create(
     serverDir: string,
-    o: { version?: string; script?: boolean } = {},
+    o: { version?: string; script?: boolean; parts?: readonly SnapshotPart[] } = {},
   ): Promise<FakeSnapshotServer> {
     const dir = (await mkdtemp(join(tmpdir(), "opscrew-snapshot-server-"))).replace(/\\/g, "/");
     const server = new FakeSnapshotServer(dir, serverDir);
     if (o.script !== false) await server.write("snapshot.sh", SHIM);
+    const lines = (o.parts ?? []).map(
+      (part) => `${part.name} ${part.kind} ${part.file} ${part.online ? 1 : 0}\n`,
+    );
+    await server.write("parts.txt", lines.join(""));
     await server.write("next.id", "20261106T190000Z\n");
     // 40 GiB with 20 GiB free.
     await server.disk(41_943_040, 20_971_520);

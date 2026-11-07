@@ -109,6 +109,32 @@ describe("dockerClient: containers", () => {
     expect(await docker.listContainers(["com.docker.compose.service"])).toHaveLength(1);
   });
 
+  it("reports a running container's health check, none without one", async () => {
+    const fake = new FakeDocker();
+    fake.images.add(IMAGE);
+    const docker = dockerClient(fake);
+    const ids: string[] = [];
+    for (const service of ["db", "queue", "worker", "web"]) {
+      ids.push(
+        await docker.createContainer({
+          image: IMAGE,
+          labels: { "com.docker.compose.service": service },
+        }),
+      );
+    }
+    const healths = [undefined, "starting", "healthy", "unhealthy"] as const;
+    ids.forEach((id, index) => {
+      const container = fake.containers.get(id);
+      if (container === undefined) return;
+      container.state = "running";
+      const health = healths[index];
+      if (health !== undefined) container.health = health;
+    });
+    const listed = await docker.listContainers(["com.docker.compose.service"]);
+    expect(listed.map((container) => container.health)).toEqual([...healths]);
+    expect(listed[0]).not.toHaveProperty("health");
+  });
+
   it("reports each container's mounts: named volumes, bound folders and others", async () => {
     const fake = new FakeDocker();
     fake.images.add(IMAGE);

@@ -10,7 +10,8 @@ import { type SnapshotPart, serviceSpec, snapshotParts } from "@opscrew/iac-temp
 import { APP_SERVER } from "@opscrew/plan-schema";
 import type { PhaseDeps } from "../context";
 import { STOP_SECONDS } from "../retarget/sides/types";
-import { MAINTENANCE_WINDOW_TITLE } from "../retarget/texts";
+import { MAINTENANCE_WINDOW_TITLE, sizeText } from "../retarget/texts";
+import { deleteOnHost } from "./delete";
 import { DISK_COMMAND, type Disk, lowDisk, readDisk } from "./disk";
 import {
   computerHost,
@@ -22,9 +23,16 @@ import {
   serverHost,
   serverName,
 } from "./hosts";
-import { portainerPlace, portainerProbe, portainerTake } from "./portainer";
+import { hostListing, mergeListings, type PlaceListing, portainerPlaceListing } from "./list";
+import {
+  type PortainerPlace,
+  portainerPlace,
+  portainerProbe,
+  portainerTake,
+  stopOnlySizes,
+} from "./portainer";
 import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
-import { SNAPSHOT_ID, snapshotIdAt } from "./store";
+import { SNAPSHOT_ID, snapshotIdAt, versionLine } from "./store";
 import type { SnapshotService, TakenSnapshot, TakeSnapshotOptions } from "./types";
 
 /** How long the copies of one machine's parts may take. */
@@ -51,12 +59,14 @@ function partWords(part: SnapshotPart): string {
 
 /**
  * The summary's line of each part copied (FR-2402): the online ones while they run, each stop-only
- * one stopped alone for its copy, with how long.
+ * one stopped alone for its copy, with how long, and its data's size where it is known (Portainer).
  */
-function partLine(part: SnapshotPart, where: string): string {
-  return part.online
-    ? `- ${partWords(part)} ${where}, while it runs`
-    : `- ${partWords(part)} ${where}: it stops alone for its copy (up to ${STOP_SECONDS} seconds to stop cleanly, then as long as copying its files takes) and starts again`;
+function partLine(part: SnapshotPart, where: string, size: number | undefined): string {
+  if (part.online) return `- ${partWords(part)} ${where}, while it runs`;
+  const stop = `- ${partWords(part)} ${where}: it stops alone for its copy`;
+  return size === undefined
+    ? `${stop} (up to ${STOP_SECONDS} seconds to stop cleanly, then as long as copying its files takes) and starts again`
+    : `${stop}, up to ${STOP_SECONDS} seconds to stop cleanly; its data, ${sizeText(size)}, is copied while it is stopped, and it starts again`;
 }
 
 /**
@@ -113,20 +123,23 @@ function placesOf(run: SnapshotRun, skip: ReadonlySet<string>): Place[] {
 }
 
 /**
- * Shows what the snapshot copies and asks, when a stop-only service stops for its copy, the
- * `remote-exec` approval of that downtime (a maintenance window's title), before anything stops.
- * Returns whether one was approved.
+ * Shows what the snapshot copies (with each stop-only service's data size in `sizes`, where known)
+ * and asks, when a stop-only service stops for its copy, the `remote-exec` approval of that
+ * downtime (a maintenance window's title), before anything stops. Returns whether one was approved.
  * @throws OpsCrewError `APPROVAL_REFUSED` when it is not.
  */
 async function approveSummary(
   run: SnapshotRun,
   places: readonly Place[],
   skip: ReadonlySet<string>,
+  sizes: ReadonlyMap<string, number> = new Map(),
 ): Promise<boolean> {
   const { deps, environment, flags } = run;
   const lines = [
     `The snapshot of ${environment} copies:`,
-    ...places.flatMap((place) => place.take.map((part) => partLine(part, place.where))),
+    ...places.flatMap((place) =>
+      place.take.map((part) => partLine(part, place.where, sizes.get(part.name))),
+    ),
     ...(skip.size === 0 ? [] : [`Left out (--skip): ${listText([...skip])}.`]),
   ];
   deps.reporter.info(lines.join("\n"));
@@ -152,18 +165,12 @@ async function approveSummary(
 /** The running version's digest in the app's `.env` (`version <hex>`), as `snapshot.sh` reads it. */
 const VERSION_COMMAND = `sed -n 's/^APP_IMAGE=.*@sha256:\\([0-9a-f]\\{64\\}\\)$/version \\1/p' .env 2> /dev/null; exit 0`;
 
-/** The version `version <hex>` names, as `sha256:<hex>`, or empty. */
-function versionOf(stdout: string): string {
-  const hex = /^version ([0-9a-f]{64})$/m.exec(stdout)?.[1];
-  return hex === undefined ? "" : `sha256:${hex}`;
-}
-
 /** The free disk and the running version on `host`, read-only. */
 async function probe(run: SnapshotRun, host: ScriptHost): Promise<{ disk: Disk; version: string }> {
   const result = await host.run(`${DISK_COMMAND}; ${VERSION_COMMAND}`, READ_TIMEOUT_MS);
   const disk = result.exitCode === 0 ? readDisk(result.stdout) : undefined;
   if (disk === undefined) throw hostFailure(run, host, result, "read the free disk");
-  return { disk, version: versionOf(result.stdout) };
+  return { disk, version: versionLine(result.stdout) };
 }
 
 /** The audit entry of a snapshot taken on `target` (never an address): its id and parts. */
@@ -181,42 +188,69 @@ function audited(
   });
 }
 
-/** Each part of `places` as the result lists it: copied, or left out. */
-function services(places: readonly Place[], onServers: boolean): SnapshotService[] {
-  return places.flatMap((place) =>
-    place.parts.map((part) => ({
-      name: part.name,
-      kind: part.kind,
-      ...(onServers ? { server: place.server } : {}),
-      state: place.take.includes(part) ? ("copied" as const) : ("skipped" as const),
-    })),
+/** The parts of the snapshot `id` as `listings` (its machines' new `about.json`) record them. */
+function recorded(listings: readonly PlaceListing[], id: string): SnapshotService[] {
+  const entry = mergeListings(listings).find((candidate) => candidate.id === id);
+  if (entry !== undefined) return entry.services;
+  throw new OpsCrewError(
+    "COMMAND_FAILED",
+    `OpsCrew took the snapshot ${id}, but its record (about.json) is not where the snapshots are.`,
+    { hint: "Run `opscrew snapshot list` to see what is there, then try again." },
   );
+}
+
+/**
+ * Removes the parts of `id` that `done`'s machines took, best effort, each audited; returns the
+ * sentence the error adds: that they went, or which are left and how to delete them.
+ */
+async function removePartial(
+  run: SnapshotRun,
+  done: readonly ScriptHost[],
+  id: string,
+): Promise<string> {
+  const left: string[] = [];
+  for (const host of done) {
+    const outcome = await deleteOnHost(run, host, id).catch(() => undefined);
+    if (outcome === undefined) left.push(host.name);
+    await run.deps.audit.append({
+      kind: "remote-exec",
+      actor: "opscrew",
+      action: "remove a partial snapshot",
+      target: host.audit,
+      detail: `${id}: ${outcome ?? "failed"}`,
+    });
+  }
+  const names = listText(done.map((host) => host.name));
+  if (left.length === 0) {
+    return `OpsCrew removed the parts ${names} had taken, so no partial snapshot ${id} is left.`;
+  }
+  return `OpsCrew could not remove the parts ${listText(left)} had taken: delete them with \`opscrew snapshot delete ${id}${run.flags}\`.`;
 }
 
 /**
  * The snapshot on the app's servers or this computer: each machine's `snapshot.sh take manual`,
  * the app's server first, its id given to the others (`--id`, D8) and the app's running version
  * to all (`--version`); the stop-only parts named with `--stop`, `--skip`'s with `--skip`. A
- * machine that fails stops the snapshot; what the machines before it took stays, and the error
- * says so.
+ * machine that fails stops the snapshot, and the parts the machines before it took are removed.
+ * The result's parts are those the new `about.json` files record.
  */
 async function takeOnHosts(
   run: SnapshotRun,
   places: readonly Place[],
   skip: ReadonlySet<string>,
 ): Promise<TakenSnapshot> {
-  const { deps, flags } = run;
+  const { deps } = run;
   const local = snapshotTarget(run) === "computer";
   const hosts = new Map<string, ScriptHost>();
   for (const place of places) {
     hosts.set(place.server, local ? await computerHost(run) : await serverHost(run, place.server));
   }
+  const hostOf = (place: Place) => hosts.get(place.server) as ScriptHost;
   // 1. The disks and the running version, before anything is approved or stops.
   let version = "";
   for (const place of places) {
-    const host = hosts.get(place.server) as ScriptHost;
-    const read = await probe(run, host);
-    const low = lowDisk(read.disk, host.where);
+    const read = await probe(run, hostOf(place));
+    const low = lowDisk(read.disk, hostOf(place).where);
     if (low !== undefined) throw low;
     if (place.server === APP_SERVER) version = read.version;
   }
@@ -224,15 +258,15 @@ async function takeOnHosts(
     const app = await serverHost(run, APP_SERVER);
     const read = await app.run(VERSION_COMMAND, READ_TIMEOUT_MS);
     if (read.exitCode !== 0) throw hostFailure(run, app, read, "read the version it runs");
-    version = versionOf(read.stdout);
+    version = versionLine(read.stdout);
   }
   // 2. The summary, and the approval of each stop.
   const approved = await approveSummary(run, places, skip);
   // 3. Each machine's part, under one id.
   let id: string | undefined;
-  const done: string[] = [];
+  const done: ScriptHost[] = [];
   for (const place of places) {
-    const host = hosts.get(place.server) as ScriptHost;
+    const host = hostOf(place);
     const args = [
       "take",
       "manual",
@@ -247,24 +281,44 @@ async function takeOnHosts(
     if (result.exitCode !== 0 || !SNAPSHOT_ID.test(printed)) {
       const error = hostFailure(run, host, result, "take the snapshot");
       if (id === undefined) throw error;
-      throw new OpsCrewError(
-        error.code,
-        `${error.message} The parts ${listText(done)} took stay in the snapshot ${id}: delete it with \`opscrew snapshot delete ${id}${flags}\` before you take a new one, or keep them.`,
-        { ...(error.hint === undefined ? {} : { hint: error.hint }) },
-      );
+      throw new OpsCrewError(error.code, `${error.message} ${await removePartial(run, done, id)}`, {
+        ...(error.hint === undefined ? {} : { hint: error.hint }),
+      });
     }
     id = printed;
-    done.push(host.name);
+    done.push(host);
     await audited(run, { target: host.audit, id, parts: place.take, approved });
   }
+  const taken = id as string;
+  const listings: PlaceListing[] = [];
+  for (const host of done) listings.push(await hostListing(run, host));
   return {
-    id: id as string,
-    where: `on ${listText(places.map((place) => (hosts.get(place.server) as ScriptHost).name))}`,
-    services: services(places, !local),
+    id: taken,
+    where: `on ${listText(done.map((host) => host.name))}`,
+    services: recorded(listings, taken),
   };
 }
 
-/** The snapshot in the user's Portainer ({@link portainerTake}), its id this computer's time. */
+/**
+ * Stops (`PHASE_PRECONDITION`) when the app's stack in the user's Portainer was last applied
+ * without the snapshots volume (before snapshots by hand): its volume would be outside the
+ * stack's record, so `destroy --delete-data` would leave it, and no version would be known.
+ */
+function requireSnapshotsVolume(run: SnapshotRun, portainer: PortainerPlace): void {
+  if (portainer.recorded.includes(portainer.volume)) return;
+  throw new OpsCrewError(
+    "PHASE_PRECONDITION",
+    `The app's stack in your Portainer has no snapshots volume yet: it was set up before snapshots by hand. ${NOTHING_TAKEN}`,
+    {
+      hint: `Run \`opscrew provision${run.flags}\` first (it adds the volume to the stack, and the running version to it), then \`opscrew snapshot${run.flags}\` again.`,
+    },
+  );
+}
+
+/**
+ * The snapshot in the user's Portainer ({@link portainerTake}), its id this computer's time, its
+ * parts those its new `about.json` records.
+ */
 async function takeInPortainer(
   run: SnapshotRun,
   place: Place,
@@ -272,6 +326,7 @@ async function takeInPortainer(
 ): Promise<TakenSnapshot> {
   const { deps, environment } = run;
   const portainer = await portainerPlace(run);
+  requireSnapshotsVolume(run, portainer);
   const id = snapshotIdAt(deps.clock.now());
   const read = await portainerProbe(portainer, id);
   if (read.taken) {
@@ -283,15 +338,16 @@ async function takeInPortainer(
   }
   const low = lowDisk(read.disk, "in your Portainer");
   if (low !== undefined) throw low;
-  const approved = await approveSummary(run, [place], skip);
+  const sizes = await stopOnlySizes(portainer, place.take);
+  const approved = await approveSummary(run, [place], skip, sizes);
   deps.reporter.step("Taking the snapshot in your Portainer");
-  const taken = await portainerTake(run, portainer, {
-    id,
-    version: read.version,
-    parts: place.take,
-  });
+  await portainerTake(run, portainer, { id, version: read.version, parts: place.take });
   await audited(run, { target: "portainer", id, parts: place.take, approved });
-  return { id, where: "in your Portainer", services: taken };
+  return {
+    id,
+    where: "in your Portainer",
+    services: recorded([await portainerPlaceListing(portainer)], id),
+  };
 }
 
 /**

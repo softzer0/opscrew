@@ -484,8 +484,20 @@ describe("the parts and environments for a snapshot by hand", () => {
 });
 
 describe("a stack without snapshots", () => {
-  it("has no snapshot service or volume, and the stamp writes only the version", () => {
-    for (const plan of [snapshotPlan(), portainerTestPlan()]) {
+  it("has the snapshots volume a snapshot by hand writes into, and the version there, with data", () => {
+    const plan = snapshotPlan();
+    const { stack } = render(plan);
+    expect(Object.keys(stack.services).filter((name) => /^(snapshot|offsite)/.test(name))).toEqual(
+      [],
+    );
+    expect(stack.volumes.snapshots).toEqual({});
+    expect(portainerStackVolumes(plan)).toContain("opscrew-shop_snapshots");
+    expect(stack.services.stamp?.volumes).toEqual(["version:/version", "snapshots:/snapshots"]);
+  });
+
+  it("has no snapshot service or volume, and the stamp writes only the version, without data", () => {
+    for (const plan of [portainerTestPlan()]) {
+      expect(plan.services.filter((service) => service.enabled)).toEqual([]);
       const { stack } = render(plan);
       expect(
         Object.keys(stack.services).filter((name) => /^(snapshot|offsite)/.test(name)),

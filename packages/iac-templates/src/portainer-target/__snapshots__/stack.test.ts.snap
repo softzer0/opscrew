@@ -422,12 +422,14 @@ services:
     network_mode: none
     environment:
       OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
     entrypoint:
       - /bin/sh
       - -c
-      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version
+      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version && printf '%s\\n' "$$OPSCREW_APP_IMAGE" > /snapshots/.running.tmp && mv /snapshots/.running.tmp /snapshots/.running
     volumes:
       - version:/version
+      - snapshots:/snapshots
     depends_on:
       app:
         condition: service_started
@@ -498,6 +500,7 @@ networks:
 volumes:
   db_data: {}
   cache_data: {}
+  snapshots: {}
   version: {}
 configs:
   caddyfile:
@@ -877,12 +880,14 @@ services:
     network_mode: none
     environment:
       OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
     entrypoint:
       - /bin/sh
       - -c
-      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version
+      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version && printf '%s\\n' "$$OPSCREW_APP_IMAGE" > /snapshots/.running.tmp && mv /snapshots/.running.tmp /snapshots/.running
     volumes:
       - version:/version
+      - snapshots:/snapshots
     depends_on:
       app:
         condition: service_started
@@ -957,6 +962,7 @@ volumes:
   kafka_secrets: {}
   kafka_config: {}
   sqlite: {}
+  snapshots: {}
   version: {}
 configs:
   caddyfile:
@@ -1312,12 +1318,14 @@ services:
     network_mode: none
     environment:
       OPSCREW_APP_VERSION: __OPSCREW_APP_VERSION__
+      OPSCREW_APP_IMAGE: __OPSCREW_APP_IMAGE__
     entrypoint:
       - /bin/sh
       - -c
-      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version
+      - printf '%s\\n' "$$OPSCREW_APP_VERSION" > /version/version && printf '%s\\n' "$$OPSCREW_APP_IMAGE" > /snapshots/.running.tmp && mv /snapshots/.running.tmp /snapshots/.running
     volumes:
       - version:/version
+      - snapshots:/snapshots
     depends_on:
       app:
         condition: service_started
@@ -1391,6 +1399,7 @@ volumes:
   kafka_data: {}
   kafka_secrets: {}
   kafka_config: {}
+  snapshots: {}
   version: {}
 configs:
   caddyfile:

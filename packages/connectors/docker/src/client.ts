@@ -11,6 +11,8 @@ export interface DockerContainer {
   image: string;
   /** Docker's state: `created`, `running`, `exited`… */
   state: string;
+  /** Its health check's answer while it runs; absent without a health check. */
+  health?: "starting" | "healthy" | "unhealthy";
   labels: Record<string, string>;
   mounts: ContainerMount[];
 }
@@ -125,6 +127,8 @@ const ContainerList = z.array(
     Names: z.array(z.string()).nullish(),
     Image: z.string(),
     State: z.string(),
+    /** `Up 2 minutes (healthy)`: the health check's answer in parentheses. */
+    Status: z.string().nullish(),
     Labels,
     Mounts: z
       .array(
@@ -139,6 +143,13 @@ const ContainerList = z.array(
   }),
 );
 const Created = z.object({ Id: z.string() });
+
+/** The health check's answer in a container's `Status` (`(health: starting)`, `(healthy)`). */
+function healthOf(status: string | null | undefined): Pick<DockerContainer, "health"> {
+  const said = /\((health: starting|healthy|unhealthy)\)/.exec(status ?? "")?.[1];
+  if (said === undefined) return {};
+  return { health: said === "healthy" || said === "unhealthy" ? said : "starting" };
+}
 const WaitResult = z.object({
   StatusCode: z.number().int(),
   Error: z.object({ Message: z.string() }).nullish(),
@@ -261,6 +272,7 @@ export function dockerClient(transport: DockerTransport): DockerClient {
         name: (container.Names?.[0] ?? "").replace(/^\//, ""),
         image: container.Image,
         state: container.State,
+        ...healthOf(container.Status),
         labels: container.Labels ?? {},
         mounts: (container.Mounts ?? []).map((mount) => ({
           type: mount.Type,

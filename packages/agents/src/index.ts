@@ -61,6 +61,7 @@ export * from "./shared/s3";
 export * from "./shared/saved-plan";
 export * from "./shared/scan-phase";
 export * from "./shared/unpriced";
+export * from "./snapshot";
 export * from "./status";
 export * from "./verify";
 export * from "./vpn";

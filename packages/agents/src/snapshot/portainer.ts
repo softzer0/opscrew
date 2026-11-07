@@ -35,12 +35,11 @@ import {
 import type { DeployPlan } from "@opscrew/plan-schema";
 import { requirePortainerConnection, requirePortainerToken } from "../provision/portainer";
 import { STOP_SECONDS } from "../retarget/sides/types";
-import { portainerClientFor, readValidJson } from "../shared";
+import { pollUntil, portainerClientFor, readValidJson } from "../shared";
 import { GeneratedValuesSchema, generatedValuesFile } from "../shared/app-secrets";
 import { type Disk, readDisk } from "./disk";
 import type { SnapshotRun } from "./run";
-import { type Listing, offsiteLines, readListing } from "./store";
-import type { SnapshotService } from "./types";
+import { type Listing, offsiteLines, readListing, versionLine } from "./store";
 
 /** Where every container of a snapshot mounts the snapshots volume. */
 const DIR = "/snapshots";
@@ -63,6 +62,8 @@ export interface PortainerPlace {
   stack: string;
   /** The snapshots volume ({@link portainerSnapshotsVolume}). */
   volume: string;
+  /** The stack's volumes the last apply recorded (destroy `--delete-data` deletes exactly these). */
+  recorded: readonly string[];
 }
 
 /**
@@ -71,8 +72,9 @@ export interface PortainerPlace {
  */
 export async function portainerPlace(run: SnapshotRun): Promise<PortainerPlace> {
   const { deps, plan, services } = run;
+  const connection = await requirePortainerConnection(deps, plan);
   const client = portainerClientFor(deps, {
-    connection: await requirePortainerConnection(deps, plan),
+    connection,
     token: requirePortainerToken(deps),
     client: services.portainer?.client,
   });
@@ -82,6 +84,7 @@ export async function portainerPlace(run: SnapshotRun): Promise<PortainerPlace> 
     plan,
     stack: portainerStackName(plan),
     volume: portainerSnapshotsVolume(plan),
+    recorded: connection.created.volumes,
   };
 }
 
@@ -164,14 +167,10 @@ export async function portainerProbe(place: PortainerPlace, id: string): Promise
   ].join("\n");
   const result = await box(place, script, { readOnly: true });
   const disk = result.exitCode === 0 ? readDisk(result.stdout) : undefined;
-  if (disk === undefined)
+  if (disk === undefined) {
     throw failed("read the free disk of its snapshots volume", result.exitCode);
-  const hex = /^version ([0-9a-f]{64})$/m.exec(result.stdout)?.[1];
-  return {
-    disk,
-    version: hex === undefined ? "" : `sha256:${hex}`,
-    taken: /^taken$/m.test(result.stdout),
-  };
+  }
+  return { disk, version: versionLine(result.stdout), taken: /^taken$/m.test(result.stdout) };
 }
 
 /**
@@ -244,6 +243,39 @@ function volumesOf(of: readonly DockerContainer[]): MountSpec[] {
   );
 }
 
+/** The stack's containers of the service `name` among `containers`. */
+function ofService(containers: readonly DockerContainer[], name: string): DockerContainer[] {
+  return containers.filter((container) => container.labels[COMPOSE_SERVICE_LABEL] === name);
+}
+
+/** The app stack's containers. */
+function stackContainers(place: PortainerPlace): Promise<DockerContainer[]> {
+  return place.docker.listContainers([`${COMPOSE_PROJECT_LABEL}=${place.stack}`]);
+}
+
+/**
+ * Each stop-only part's data in bytes, by its name: its containers' volumes, from Docker's disk
+ * usage (a volume Docker can't measure counts as nothing).
+ */
+export async function stopOnlySizes(
+  place: PortainerPlace,
+  parts: readonly SnapshotPart[],
+): Promise<Map<string, number>> {
+  const stopOnly = parts.filter((part) => !part.online);
+  if (stopOnly.length === 0) return new Map();
+  const containers = await stackContainers(place);
+  const sizes = await place.docker.volumeSizes();
+  return new Map(
+    stopOnly.map((part) => [
+      part.name,
+      volumesOf(ofService(containers, part.name)).reduce(
+        (total, mount) => total + (sizes.get(mount.source) ?? 0),
+        0,
+      ),
+    ]),
+  );
+}
+
 /** What a snapshot by hand in the user's Portainer copies. */
 export interface PortainerTake {
   id: string;
@@ -257,14 +289,14 @@ export interface PortainerTake {
  * Takes the snapshot `take.id` in the snapshots volume (plan.md 1.): into `<id>.taking`, an online
  * part at a time by a one-off of its own image ({@link portainerSnapshotParts}) and a stop-only one
  * by stopping it cleanly alone, tarring its volumes and starting it again; then `about.json`,
- * last, and the folder renamed `<id>`. Returns each part's outcome. A failure removes the partial
- * folder and stops, with every stopped service started again.
+ * last, and the folder renamed `<id>`. A failure removes the partial folder and stops, with every
+ * stopped service started again.
  */
 export async function portainerTake(
   run: SnapshotRun,
   place: PortainerPlace,
   take: PortainerTake,
-): Promise<SnapshotService[]> {
+): Promise<void> {
   const { plan } = place;
   const folder = `${DIR}/${take.id}.taking`;
   // Each online part's copy and secrets file, before anything changes.
@@ -287,15 +319,11 @@ export async function portainerTake(
   );
   if (begun.exitCode !== 0) throw failed("start the snapshot", begun.exitCode);
   try {
-    const containers = await place.docker.listContainers([
-      `${COMPOSE_PROJECT_LABEL}=${place.stack}`,
-    ]);
-    const ofService = (name: string) =>
-      containers.filter((container) => container.labels[COMPOSE_SERVICE_LABEL] === name);
+    const containers = await stackContainers(place);
     const copied = new Map<string, boolean>();
     for (const part of take.parts) {
       if (!part.online) {
-        await stopAndTar(place, part, ofService(part.name), folder);
+        await stopAndTar(run, place, part, ofService(containers, part.name), folder);
         copied.set(part.name, true);
         continue;
       }
@@ -310,11 +338,6 @@ export async function portainerTake(
     const all = snapshotParts(plan).map((part) => ({ ...part, copied: copied.get(part.name) }));
     const finished = await box(place, finishScript(take.id, take.version, all));
     if (finished.exitCode !== 0) throw failed("finish the snapshot", finished.exitCode);
-    return all.map((part) => ({
-      name: part.name,
-      kind: part.kind,
-      state: part.copied === true ? "copied" : "skipped",
-    }));
   } catch (error) {
     await box(place, `rm -rf ${folder}`).catch(() => undefined);
     throw error;
@@ -399,6 +422,7 @@ async function copyOnline(
  * copied.
  */
 async function stopAndTar(
+  run: SnapshotRun,
   place: PortainerPlace,
   part: SnapshotPart,
   containers: readonly DockerContainer[],
@@ -445,7 +469,52 @@ async function stopAndTar(
       { hint: `Start it in Portainer (the stack ${place.stack}), then run \`opscrew status\`.` },
     );
   }
+  await waitReady(run, place, part, ran);
   if (copyError !== undefined) throw copyError;
+}
+
+/** How long a stop-only service has to run again after its copy, healthy where it has a check. */
+const READY_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * Waits until each of `started` (a stop-only service's containers) runs again, and answers its
+ * health check where it has one, so the next service stops only once this one serves again.
+ * @throws OpsCrewError `COMMAND_FAILED` when it does not within {@link READY_TIMEOUT_MS}.
+ */
+async function waitReady(
+  run: SnapshotRun,
+  place: PortainerPlace,
+  part: SnapshotPart,
+  started: readonly DockerContainer[],
+): Promise<void> {
+  if (started.length === 0) return;
+  const ids = new Set(started.map((container) => container.id));
+  const wait = run.services.portainer?.wait;
+  const ready = await pollUntil(
+    async () => {
+      const now = (await stackContainers(place)).filter((container) => ids.has(container.id));
+      const up = now.every(
+        (container) =>
+          container.state === "running" &&
+          (container.health === undefined || container.health === "healthy"),
+      );
+      return now.length === ids.size && up ? true : undefined;
+    },
+    {
+      timeoutMs: READY_TIMEOUT_MS,
+      intervalMs: 5_000,
+      ...(wait?.sleep === undefined ? {} : { sleep: wait.sleep }),
+      ...(wait?.now === undefined ? {} : { now: wait.now }),
+    },
+  );
+  if (ready !== undefined) return;
+  throw new OpsCrewError(
+    "COMMAND_FAILED",
+    `${part.name} did not run again and answer its health check within 5 minutes of its copy in your Portainer, so OpsCrew stopped no other service.`,
+    {
+      hint: `See why in Portainer (the stack ${place.stack}, the ${part.name} container's logs), then run \`opscrew status\`.`,
+    },
+  );
 }
 
 /**

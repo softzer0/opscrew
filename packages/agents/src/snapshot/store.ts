@@ -83,6 +83,15 @@ export function offsiteLines(dir: string): string {
   return `for f in ${dir}/*/offsite.done; do if [ -f "$f" ]; then d="\${f%/offsite.done}"; echo "${OFFSITE_LINE} \${d##*/}"; fi; done`;
 }
 
+/**
+ * The running version a probe printed (`version <64 hex>`, read from `.env` or `.running`), as
+ * `about.json` records it: `sha256:<hex>`, or empty without one.
+ */
+export function versionLine(stdout: string): string {
+  const hex = /^version ([0-9a-f]{64})$/m.exec(stdout)?.[1];
+  return hex === undefined ? "" : `sha256:${hex}`;
+}
+
 /** A snapshot's id by hand, its UTC time to the second: `20261106T190000Z`. */
 export function snapshotIdAt(time: Date): string {
   return `${time.toISOString().slice(0, 19).replace(/[-:]/g, "")}Z`;

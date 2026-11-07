@@ -141,7 +141,12 @@ function removeFolder(files: Map<string, FakeFile>, folder: string): void {
  */
 export async function portainerWorld(
   plan: DeployPlan,
-  o: { answer?: ConstructorParameters<typeof ScriptedApprovalHandler>[0]; volume?: boolean } = {},
+  o: {
+    answer?: ConstructorParameters<typeof ScriptedApprovalHandler>[0];
+    volume?: boolean;
+    /** The last apply recorded the snapshots volume among the stack's (default true). */
+    recorded?: boolean;
+  } = {},
 ): Promise<PortainerWorld> {
   const handler = new ScriptedApprovalHandler(o.answer ?? (() => true));
   const deps = await createTestPhaseDeps({
@@ -159,6 +164,10 @@ export async function portainerWorld(
     arch: "amd64",
     redeploy: "updater",
     web: { mode: "tunnel" },
+    created: {
+      stacks: [],
+      volumes: o.recorded === false ? [] : [portainerSnapshotsVolume(plan)],
+    },
   });
   await mkdir(deps.paths.projectHomeDir, { recursive: true });
   await writeFile(
@@ -216,6 +225,10 @@ export async function portainerWorld(
     },
   };
   docker.onStart = (container) => {
+    // A stack's service runs again once started, keeping its health check's answer.
+    if (container.labels["com.docker.compose.service"] !== undefined) {
+      return { exitCode: 0, state: "running" } as FakeRun;
+    }
     world.ran.push({ ...container });
     const script = container.cmd[2] ?? "";
     const volume = files();

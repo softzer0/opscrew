@@ -1,8 +1,8 @@
 /**
  * `opscrew snapshot list` (US2, FR-2403): the data snapshots on the app's servers (each part where
  * its server keeps it, one snapshot per id), on this computer or in the user's Portainer, and the
- * providers' whole-server snapshots, each with whether its off-server copy is uploaded. Read-only.
- * The bucket's copies of a server that is gone are `opscrew restore --from offsite`'s (T2408).
+ * providers' whole-server snapshots, each with whether its off-server copy is uploaded
+ * (`offsite.done`). Read-only. The off-server bucket itself is not listed here (T2408).
  */
 import { listText } from "@opscrew/core";
 import { formatUtc } from "@opscrew/secops";
@@ -18,14 +18,14 @@ import {
   scriptCommand,
   serverHost,
 } from "./hosts";
-import { portainerListing, portainerPlace } from "./portainer";
+import { type PortainerPlace, portainerListing, portainerPlace } from "./portainer";
 import { providerSnapshots } from "./provider";
 import { type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
 import { type About, type Listing, offsiteLines, readListing, SERVER_SNAPSHOTS } from "./store";
 import type { SnapshotCommandOptions, SnapshotEntry, SnapshotService } from "./types";
 
-/** One machine's listing, with where its parts are. */
-export interface PlaceListing {
+/** One machine's listing, with where its parts are and the machine itself. */
+export type PlaceListing = {
   /** The place in words: `the app's server`, `server data`, `this computer`, `your Portainer`. */
   name: string;
   /** Where it is, in words: `on the app's server`, `in your Portainer`. */
@@ -33,7 +33,7 @@ export interface PlaceListing {
   /** The server's name in the plan, for the parts on a server. */
   server?: string;
   listing: Listing;
-}
+} & ({ host: ScriptHost } | { portainer: PortainerPlace });
 
 /** `host`'s snapshots: its `snapshot.sh list` and the `offsite.done` markers. */
 export async function hostListing(run: SnapshotRun, host: ScriptHost): Promise<PlaceListing> {
@@ -43,18 +43,22 @@ export async function hostListing(run: SnapshotRun, host: ScriptHost): Promise<P
   return {
     name: host.name,
     where: host.where,
-    ...(host.audit === "this computer" ? {} : { server: host.server }),
+    ...(host.local ? {} : { server: host.server }),
     listing: readListing(result.stdout),
+    host,
   };
+}
+
+/** `place`'s snapshots in the user's Portainer. */
+export async function portainerPlaceListing(place: PortainerPlace): Promise<PlaceListing> {
+  const listing = await portainerListing(place);
+  return { name: "your Portainer", where: "in your Portainer", listing, portainer: place };
 }
 
 /** The data snapshots' listings of `run`'s target, one per machine that holds data. */
 export async function dataListings(run: SnapshotRun): Promise<PlaceListing[]> {
   const target = snapshotTarget(run);
-  if (target === "portainer") {
-    const listing = await portainerListing(await portainerPlace(run));
-    return [{ name: "your Portainer", where: "in your Portainer", listing }];
-  }
+  if (target === "portainer") return [await portainerPlaceListing(await portainerPlace(run))];
   if (target === "computer") return [await hostListing(run, await computerHost(run))];
   const listings: PlaceListing[] = [];
   for (const server of dataServers(run.plan)) {
@@ -75,7 +79,9 @@ function serviceOf(entry: About["services"][number], server: string | undefined)
  * its kind, time and version the first machine's (the app's server first), its size the parts'
  * added up, and its off-server copy there only when every part has one.
  */
-export function mergeListings(listings: readonly PlaceListing[]): SnapshotEntry[] {
+export function mergeListings(
+  listings: readonly Pick<PlaceListing, "name" | "server" | "listing">[],
+): SnapshotEntry[] {
   const byId = new Map<string, { entry: SnapshotEntry; places: string[] }>();
   for (const { name, server, listing } of listings) {
     for (const about of listing.abouts) {

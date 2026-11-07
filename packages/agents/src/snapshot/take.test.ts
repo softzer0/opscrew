@@ -52,6 +52,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on servers", () => {
     expect(taken.where).toBe("on the app's server");
     expect(await world.servers.app?.calls()).toEqual([
       `take manual --stop kafka --version sha256:${RUNNING}`,
+      "list",
     ]);
     const summary = world.deps.reporter.lines.find((line) => line.level === "info")?.message;
     expect(summary).toContain("- db (PostgreSQL) on the app's server, while it runs");
@@ -80,12 +81,13 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on servers", () => {
         detail: "20261106T190000Z: db, cache, kafka, sqlite",
       }),
     );
-    expect(taken.services).toContainEqual({
-      name: "kafka",
-      kind: "kafka",
-      server: "app",
-      state: "copied",
-    });
+    // As the new about.json records them.
+    expect(taken.services).toEqual([
+      { name: "db", kind: "postgres", server: "app", state: "copied", size: 10 },
+      { name: "cache", kind: "valkey", server: "app", state: "copied", size: 10 },
+      { name: "kafka", kind: "kafka", server: "app", state: "copied", size: 10 },
+      { name: "sqlite", kind: "sqlite", server: "app", state: "copied", size: 10 },
+    ]);
   });
 
   it("leaves a service out with --skip, and asks nothing when nothing stops", async () => {
@@ -94,6 +96,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on servers", () => {
 
     expect(await world.servers.app?.calls()).toEqual([
       `take manual --skip kafka --version sha256:${RUNNING}`,
+      "list",
     ]);
     expect(world.handler.requests).toEqual([]);
     expect(world.deps.reporter.text()).toContain("Left out (--skip): kafka.");
@@ -182,14 +185,18 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on servers", () => {
     const world = await snapshotWorld(splitStagingPlan());
     const taken = await takeSnapshot(world.deps, { services: world.services });
 
-    expect(await world.servers.app?.calls()).toEqual([`take manual --version sha256:${RUNNING}`]);
+    expect(await world.servers.app?.calls()).toEqual([
+      `take manual --version sha256:${RUNNING}`,
+      "list",
+    ]);
     expect(await world.servers.data?.calls()).toEqual([
       `take manual --id 20261106T190000Z --version sha256:${RUNNING}`,
+      "list",
     ]);
     expect(taken.where).toBe("on the app's server and server data");
     expect(taken.services).toEqual([
-      { name: "cache", kind: "valkey", server: "app", state: "copied" },
-      { name: "db", kind: "postgres", server: "data", state: "copied" },
+      { name: "cache", kind: "valkey", server: "app", state: "copied", size: 10 },
+      { name: "db", kind: "postgres", server: "data", state: "copied", size: 10 },
     ]);
     expect(world.deps.audit.entries.map((entry) => entry.target)).toEqual([
       "server app",
@@ -197,7 +204,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on servers", () => {
     ]);
   });
 
-  it("says which parts stay when an extra server's part fails", async () => {
+  it("removes the parts already taken when an extra server's part fails", async () => {
     const world = await snapshotWorld(splitStagingPlan());
     await world.servers.data?.write("take.exit", "1");
     await world.servers.data?.write("take.stderr", "The copy of db failed.");
@@ -205,7 +212,34 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on servers", () => {
 
     expect(error.code).toBe("COMMAND_FAILED");
     expect(error.message).toBe(
-      "OpsCrew could not take the snapshot on server data (exit code 1): The copy of db failed. The parts the app's server took stay in the snapshot 20261106T190000Z: delete it with `opscrew snapshot delete 20261106T190000Z` before you take a new one, or keep them.",
+      "OpsCrew could not take the snapshot on server data (exit code 1): The copy of db failed. OpsCrew removed the parts the app's server had taken, so no partial snapshot 20261106T190000Z is left.",
+    );
+    expect(await world.servers.app?.calls()).toEqual([
+      `take manual --version sha256:${RUNNING}`,
+      "delete 20261106T190000Z",
+    ]);
+    expect(await world.servers.app?.read(".snapshots/20261106T190000Z/about.json")).toBeUndefined();
+    expect(world.deps.audit.entries).toContainEqual(
+      expect.objectContaining({
+        action: "remove a partial snapshot",
+        target: "server app",
+        detail: "20261106T190000Z: deleted",
+      }),
+    );
+  });
+
+  it("says how to delete the parts it could not remove", async () => {
+    const world = await snapshotWorld(splitStagingPlan());
+    await world.servers.data?.write("take.exit", "1");
+    await world.servers.data?.write("take.stderr", "The copy of db failed.");
+    const app = world.servers.app;
+    if (app === undefined) throw new Error("no server");
+    // The removal fails there; nothing else sent to it holds the word.
+    app.answer = (command) =>
+      command.includes("delete") ? { exitCode: 1, stdout: "", stderr: "rm failed" } : undefined;
+    const error = await failure(takeSnapshot(world.deps, { services: world.services }));
+    expect(error.message).toContain(
+      "OpsCrew could not remove the parts the app's server had taken: delete them with `opscrew snapshot delete 20261106T190000Z`.",
     );
   });
 
@@ -258,7 +292,10 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on servers", () => {
     const take = app.commands.find((command) => command.includes("take"));
     expect(take).toMatch(/^sudo -n sh -c '/);
     expect(take).toContain("runuser -u deploy -- sh -c");
-    expect(await app.calls()).toEqual([`take manual --skip kafka --version sha256:${RUNNING}`]);
+    expect(await app.calls()).toEqual([
+      `take manual --skip kafka --version sha256:${RUNNING}`,
+      "list",
+    ]);
     expect(everythingShown(world)).not.toContain(OWN_IPV4);
   });
 
@@ -293,7 +330,10 @@ describe.skipIf(!SH_AVAILABLE)("opscrew snapshot on this computer", () => {
     });
 
     expect(taken.where).toBe("on this computer");
-    expect(await machine.calls()).toEqual([`take manual --skip kafka --version sha256:${RUNNING}`]);
+    expect(await machine.calls()).toEqual([
+      `take manual --skip kafka --version sha256:${RUNNING}`,
+      "list",
+    ]);
     expect(taken.services.every((service) => service.server === undefined)).toBe(true);
   });
 });

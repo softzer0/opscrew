@@ -20,6 +20,8 @@ import {
   renderRuntimeFiles,
   renderWorkflow,
   runtimeDir,
+  SNAPSHOT_SCRIPT,
+  snapshotScript,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, type LocalhostDeployTarget, otherAppDirs } from "@opscrew/plan-schema";
 import { parse } from "yaml";
@@ -61,13 +63,25 @@ export async function localRenderContext(
 
 /**
  * The repository files of a localhost plan: its Compose file, the edge's Compose file and the
- * app's site, and with the local runner (`environment.runner: local`) its deploy workflow, which
- * takes the app's hostname from `ctx.localhost` too.
+ * app's site, with data its `snapshot.sh` in the runtime folder (the start script reads it, and
+ * `opscrew snapshot` runs it; on a server the workflow uploads it), and with the local runner
+ * (`environment.runner: local`) its deploy workflow, which takes the app's hostname from
+ * `ctx.localhost` too.
  */
 export function localStackFiles(plan: DeployPlan, ctx: RuntimeContext): RenderedFile[] {
+  const script = snapshotScript(plan);
   return [
     renderCompose(plan),
     ...renderRuntimeFiles(plan, ctx),
+    ...(script.length === 0
+      ? []
+      : [
+          {
+            path: `${runtimeDir(plan)}/${SNAPSHOT_SCRIPT}`,
+            content: `${script.join("\n")}\n`,
+            kind: "runtime" as const,
+          },
+        ]),
     ...renderEdgeSite(plan, ctx),
     ...(plan.environment?.runner === "local" ? [renderWorkflow(plan, ctx)] : []),
   ];

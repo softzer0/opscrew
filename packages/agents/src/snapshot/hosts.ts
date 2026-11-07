@@ -22,6 +22,8 @@ export interface ScriptHost {
   where: string;
   /** The audit entry's target, never an address. */
   audit: string;
+  /** True for this computer, whose parts belong to no server. */
+  local: boolean;
   /** Runs `command` (POSIX sh) in the app's folder as the deploy user. */
   run(command: string, timeoutMs: number): Promise<CommandResult>;
 }
@@ -74,6 +76,7 @@ export async function serverHost(run: SnapshotRun, server: string): Promise<Scri
     name: serverName(server),
     where: `on ${serverName(server)}`,
     audit: `server ${server}`,
+    local: false,
     run: (command, timeoutMs) =>
       docker.run(`cd ${shellQuote(dir)} || exit ${NO_FOLDER}; ${asDeploy(command)}`, {
         timeoutMs,
@@ -91,6 +94,7 @@ export async function computerHost(run: SnapshotRun): Promise<ScriptHost> {
     name: "this computer",
     where: "on this computer",
     audit: "this computer",
+    local: true,
     run: (command, timeoutMs) =>
       exec.run(`cd ${dir} || exit ${NO_FOLDER}; ${command}`, { timeoutMs }),
   };
@@ -121,7 +125,7 @@ export function hostFailure(
   if (result.exitCode === 255 || result.timedOut === true) {
     return new OpsCrewError(
       "COMMAND_FAILED",
-      `${upperFirst(host.name)} did not answer${host.audit === "this computer" ? "" : " over SSH"}, so OpsCrew could not ${what}.`,
+      `${upperFirst(host.name)} did not answer${host.local ? "" : " over SSH"}, so OpsCrew could not ${what}.`,
       { hint: "Check that it is on and reachable (`opscrew status`), then try again." },
     );
   }

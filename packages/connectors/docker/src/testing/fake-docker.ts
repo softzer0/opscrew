@@ -27,6 +27,8 @@ export interface FakeContainer {
   mounts: FakeMount[];
   network?: string;
   state: "created" | "running" | "exited";
+  /** Its health check's answer while it runs; absent without a health check. */
+  health?: "starting" | "healthy" | "unhealthy";
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -149,6 +151,7 @@ export class FakeDocker implements DockerTransport {
             Names: container.name === undefined ? [] : [`/${container.name}`],
             Image: container.image,
             State: container.state,
+            Status: statusOf(container),
             Labels: container.labels,
             Mounts: mounts(container).map((mount) =>
               mount.source.startsWith("/")
@@ -412,6 +415,13 @@ interface CreateBody {
     Mounts?: { Type: string; Source: string; Target: string; ReadOnly?: boolean }[];
     NetworkMode?: string;
   };
+}
+
+/** Docker's `Status` of a container: `Up` with its health (`(health: starting)`), or `Exited`. */
+function statusOf(container: FakeContainer): string {
+  if (container.state !== "running") return `Exited (${container.exitCode})`;
+  if (container.health === undefined) return "Up 1 second";
+  return `Up 1 second (${container.health === "starting" ? "health: starting" : container.health})`;
 }
 
 /** A container's `Binds` and `Mounts` alike. */

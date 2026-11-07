@@ -8,16 +8,9 @@ import { listText, OpsCrewError } from "@opscrew/core";
 import { formatUtc } from "@opscrew/secops";
 import type { PhaseDeps } from "../context";
 import { NOTHING_CHANGED } from "../promote/shared";
-import {
-  computerHost,
-  hostFailure,
-  READ_TIMEOUT_MS,
-  type ScriptHost,
-  scriptCommand,
-  serverHost,
-} from "./hosts";
-import { dataListings, mergeListings, type PlaceListing } from "./list";
-import { portainerDelete, portainerPlace } from "./portainer";
+import { hostFailure, READ_TIMEOUT_MS, type ScriptHost, scriptCommand } from "./hosts";
+import { dataListings, mergeListings } from "./list";
+import { portainerDelete } from "./portainer";
 import { type ProviderSnapshot, providerSnapshots } from "./provider";
 import { requireNoDeployOrMove, type SnapshotRun, snapshotRun, snapshotTarget } from "./run";
 import { SERVER_SNAPSHOTS, SNAPSHOT_ID } from "./store";
@@ -50,7 +43,7 @@ function deletionLines(entry: SnapshotEntry, provider: boolean): string[] {
 }
 
 /** Deletes `id` on `host`: `already gone` when its folder went meanwhile. */
-async function deleteOnHost(
+export async function deleteOnHost(
   run: SnapshotRun,
   host: ScriptHost,
   id: string,
@@ -60,11 +53,6 @@ async function deleteOnHost(
   if (result.exitCode === GONE) return "already gone";
   if (result.exitCode !== 0) throw hostFailure(run, host, result, `delete the snapshot ${id}`);
   return "deleted";
-}
-
-/** The machine of a listing: the app's server or an extra one, or this computer. */
-function hostOf(run: SnapshotRun, listing: PlaceListing): Promise<ScriptHost> {
-  return listing.server === undefined ? computerHost(run) : serverHost(run, listing.server);
 }
 
 /**
@@ -156,20 +144,15 @@ export async function deleteSnapshot(
   for (const place of holders) {
     deps.reporter.step(`Deleting the snapshot ${id} ${place.where}`);
     const outcome =
-      target === "portainer"
-        ? await portainerDelete(await portainerPlace(run), id)
-        : await deleteOnHost(run, await hostOf(run, place), id);
+      "portainer" in place
+        ? await portainerDelete(place.portainer, id)
+        : await deleteOnHost(run, place.host, id);
     outcomes.push(outcome);
     await deps.audit.append({
       kind: "remote-exec",
       actor: "opscrew",
       action: "delete a snapshot",
-      target:
-        target === "portainer"
-          ? "portainer"
-          : place.server === undefined
-            ? "this computer"
-            : `server ${place.server}`,
+      target: "portainer" in place ? "portainer" : place.host.audit,
       decision: "approved",
       detail: `${id}: ${outcome}`,
     });

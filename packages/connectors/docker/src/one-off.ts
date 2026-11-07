@@ -66,6 +66,10 @@ export async function runOneOff(
     }
     throw error;
   }
-  await client.removeContainer(id);
+  try {
+    await client.removeContainer(id);
+  } catch (error) {
+    throw new ContainerLeftError(error, id);
+  }
   return result;
 }

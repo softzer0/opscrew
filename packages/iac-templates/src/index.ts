@@ -51,7 +51,11 @@ export * from "./types";
 export * from "./workflow";
 export { schemaRecordPath } from "./workflow/migrations";
 export { previewWorkflowPath, renderPreviewWorkflow } from "./workflow/preview";
-export { OFFSITE_ENV_FILE, OFFSITE_ENV_SECRET } from "./workflow/snapshot-script";
+export {
+  OFFSITE_ENV_FILE,
+  OFFSITE_ENV_SECRET,
+  snapshotScript,
+} from "./workflow/snapshot-script";
 export {
   ROLLBACK_APPROVAL_FILE,
   rollbackApprovalLine,

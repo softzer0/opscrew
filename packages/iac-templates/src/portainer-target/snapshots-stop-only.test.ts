@@ -32,7 +32,7 @@ const plan = DeployPlanSchema.parse({
 });
 
 describe("snapshots before each release with only a stop-only service", () => {
-  it("renders no snapshot service and no snapshots volume", () => {
+  it("renders no snapshot service, and the snapshots volume for a snapshot by hand", () => {
     expect(portainerSnapshotParts(plan)).toEqual([]);
     const stack = parse(renderPortainerStack(plan, testContext()).content) as {
       services: Record<string, { depends_on?: Record<string, unknown>; volumes?: string[] }>;
@@ -40,8 +40,8 @@ describe("snapshots before each release with only a stop-only service", () => {
     };
     expect(Object.keys(stack.services).filter((name) => name.startsWith("snapshot"))).toEqual([]);
     expect(stack.services.release?.depends_on).not.toHaveProperty("snapshot");
-    expect(stack.services.stamp?.volumes).toEqual(["version:/version"]);
-    expect(stack.volumes).not.toHaveProperty("snapshots");
-    expect(portainerStackVolumes(plan).some((volume) => volume.includes("snapshot"))).toBe(false);
+    expect(stack.services.stamp?.volumes).toEqual(["version:/version", "snapshots:/snapshots"]);
+    expect(stack.volumes).toHaveProperty("snapshots");
+    expect(portainerStackVolumes(plan)).toContain("opscrew-shop_snapshots");
   });
 });

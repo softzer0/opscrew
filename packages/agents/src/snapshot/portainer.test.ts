@@ -65,11 +65,16 @@ describe.skipIf(!SH)("a snapshot by hand in the user's Portainer", () => {
 
     expect(taken.id).toBe(TAKEN_ID);
     expect(taken.where).toBe("in your Portainer");
+    // As the new about.json records them.
     expect(taken.services).toEqual([
-      { name: "db", kind: "postgres", state: "copied" },
-      { name: "kafka", kind: "kafka", state: "copied" },
+      { name: "db", kind: "postgres", state: "copied", size: 15 },
+      { name: "kafka", kind: "kafka", state: "copied", size: 17 },
       { name: "sqlite", kind: "sqlite", state: "skipped" },
     ]);
+    // The summary names Kafka's data and its size, from Docker's disk usage.
+    expect(world.deps.reporter.text()).toContain(
+      "- kafka (Apache Kafka) in your Portainer: it stops alone for its copy, up to 120 seconds to stop cleanly; its data, 10 bytes, is copied while it is stopped, and it starts again",
+    );
     const about = AboutSchema.parse(
       JSON.parse(world.volume().get(`${TAKEN_ID}/about.json`)?.data?.toString() ?? ""),
     );
@@ -151,6 +156,60 @@ describe.skipIf(!SH)("a snapshot by hand in the user's Portainer", () => {
     expect(world.docker.calls).toContain(`POST /containers/${kafka?.id}/start`);
     expect(ranWith(world, "tar -C / -cf")).toBeUndefined();
     expect([...world.volume().keys()].filter((path) => path !== "")).toEqual([]);
+  });
+
+  it("waits for a stop-only service to answer its health check again before going on", async () => {
+    const world = await portainerWorld(plan());
+    const kafka = world.docker.containers.get(`${STACK}-kafka`.padEnd(64, "0"));
+    if (kafka === undefined) throw new Error("no kafka");
+    kafka.health = "starting";
+    let waits = 0;
+    world.services.portainer = {
+      ...world.services.portainer,
+      wait: {
+        now: () => waits * 5_000,
+        sleep: async () => {
+          waits++;
+          kafka.health = "healthy";
+        },
+      },
+    };
+    const taken = await take(world);
+    expect(waits).toBe(1);
+    expect(taken.services.find((service) => service.name === "kafka")?.state).toBe("copied");
+  });
+
+  it("stops when a stop-only service does not come back healthy, starting nothing else", async () => {
+    const world = await portainerWorld(plan());
+    const kafka = world.docker.containers.get(`${STACK}-kafka`.padEnd(64, "0"));
+    if (kafka === undefined) throw new Error("no kafka");
+    kafka.health = "unhealthy";
+    let clock = 0;
+    world.services.portainer = {
+      ...world.services.portainer,
+      wait: {
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      },
+    };
+    const error = await failure(take(world));
+    expect(error.message).toBe(
+      "kafka did not run again and answer its health check within 5 minutes of its copy in your Portainer, so OpsCrew stopped no other service.",
+    );
+    expect(world.volume().has(TAKEN_ID)).toBe(false);
+  });
+
+  it("asks for a provision first when the stack's record lacks the snapshots volume", async () => {
+    const world = await portainerWorld(plan(), { recorded: false });
+    const error = await failure(take(world));
+    expect(error.code).toBe("PHASE_PRECONDITION");
+    expect(error.message).toBe(
+      "The app's stack in your Portainer has no snapshots volume yet: it was set up before snapshots by hand. No snapshot was taken.",
+    );
+    expect(error.hint).toContain("Run `opscrew provision` first");
+    expect(world.ran).toEqual([]);
   });
 
   it("shows no output of a failed copy, and leaves no partial folder", async () => {

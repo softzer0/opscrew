@@ -1,6 +1,7 @@
 /** Plans and environments for the snapshot commands' tests, with fake machines and GitHub. */
-import { serviceSpec } from "@opscrew/iac-templates";
+import { serviceSpec, snapshotParts } from "@opscrew/iac-templates";
 import {
+  APP_SERVER,
   type DeployPlan,
   DeployPlanSchema,
   REDIS_PROTOCOL_KINDS,
@@ -154,8 +155,11 @@ export async function snapshotWorld(
   }));
   const folder = `/srv/apps/${plan.app.name}`;
   const servers: Record<string, FakeSnapshotServer> = {
-    app: await FakeSnapshotServer.create(folder, { version: RUNNING }),
-    data: await FakeSnapshotServer.create(folder),
+    app: await FakeSnapshotServer.create(folder, {
+      version: RUNNING,
+      parts: snapshotParts(plan, APP_SERVER),
+    }),
+    data: await FakeSnapshotServer.create(folder, { parts: snapshotParts(plan, "data") }),
   };
   const byHost: Record<string, FakeSnapshotServer | undefined> = {
     [SERVER_IPV4]: servers.app,
