@@ -12,6 +12,7 @@
  * Nothing here prints a secret, a dumped value or an address: everything logged goes through the
  * run's scrubber.
  */
+import { rm } from "node:fs/promises";
 import { type ProviderBucket, r2Endpoint, STORAGE_ENDPOINTS } from "@opscrew/agents";
 import { type DeployPlan, readArtifact, writeArtifact } from "@opscrew/plan-schema";
 import { api, HETZNER_API, minutes, retryDelete, waitFor } from "./cloud";
@@ -62,6 +63,8 @@ export async function designRunApp(run: LiveRun, envs: AppEnvironments): Promise
     ...architecture,
     facts: { ...architecture.facts, name },
   });
+  // Design keeps an existing plan's app name, so the plan the first design wrote goes first.
+  await rm(run.paths().files.plan, { force: true });
   await run.opscrewOk("design");
   const plan = await envs.designed("prod");
   if (plan.app.name !== name) {
