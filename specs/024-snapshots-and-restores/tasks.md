@@ -198,7 +198,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Depends: T2407–T2410
   - Effort: high
 
-- [ ] T2412 The guide: a new `docs/guide/snapshots.md`; `rollback.md`, `databases.md`, `own-server.md` and `portainer-target.md` link to it, and "backups are yours to set up" changes.
+- [x] T2412 The guide: a new `docs/guide/snapshots.md`; `rollback.md`, `databases.md`, `own-server.md` and `portainer-target.md` link to it, and "backups are yours to set up" changes.
   - Also say (found while building):
     - **Before the first release snapshot:** the first deploy after turning snapshots on has no pre-release snapshot.
     - **DigitalOcean scopes:** `snapshot:delete` and `droplet:admin` are needed only to delete or restore whole-server snapshots.
