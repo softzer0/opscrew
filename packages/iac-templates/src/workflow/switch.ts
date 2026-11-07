@@ -1347,8 +1347,8 @@ export function serverCommands(
  * D7, D13), which the workflow runs from the runner with the snapshot functions of the server's
  * {@link SNAPSHOT_SCRIPT}, under the app's start lock there. Its arguments are checked first. A
  * rollback that changes the data there leaves {@link DATABASE_CHANGED}, as the app's server does:
- * `target=`, `saved=` (the running version, whose copy it saved) and `changed=` (1 once the data
- * may differ from that copy).
+ * `target=`, `saved=` (the running version, whose copy it saved), `changed=` (1 once the data
+ * may differ from that copy) and `choice=` (`snapshot` or `migrations`).
  * - `check <target>` reads and removes the server's one-time approval
  *   ({@link ROLLBACK_APPROVAL_FILE}) and prints its choice, `snapshot` (the target's snapshot there
  *   must be complete) or `migrations`, or `keep` without one (one for another version is removed
@@ -1359,7 +1359,7 @@ export function serverCommands(
  *   the snapshot restores it. It exits 1 when nothing was changed (the copy failed, or the restore
  *   failed and the copy is back; the marker goes), 2 when putting the copy back failed too (the
  *   marker stays);
- * - `marked <target> <running>` prints `marked` when this run's marker (the same target and
+ * - `marked <target> <running>` prints `marked <choice>` when this run's marker (the same target and
  *   running version) says the data may have changed, `none` otherwise;
  * - `back <target> <running>` restores this run's copy where its marker says the data may have
  *   changed, and removes the marker; with no such marker it changes nothing.
@@ -1395,7 +1395,7 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
       `::error::A snapshot on ${where} kept the app's start lock there for 15 minutes, so the rollback changed nothing there. Run opscrew rollback again.`,
     ),
     "mark() {",
-    `  (umask 077; printf 'target=%s\\nsaved=%s\\nchanged=%s\\n' "$target" "$running" "$1" > ${marker})`,
+    `  (umask 077; printf 'target=%s\\nsaved=%s\\nchanged=%s\\nchoice=%s\\n' "$target" "$running" "$1" "$2" > ${marker})`,
     "}",
     "ours() {",
     `  [ -f ${marker} ] && [ "$(sed -n 's/^target=//p' ${marker})" = "$target" ] && [ "$(sed -n 's/^saved=//p' ${marker})" = "$running" ]`,
@@ -1440,13 +1440,13 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
     `      migrations) parts=${shellQuote(migrated.join(" "))} ;;`,
     "      *) exit 1 ;;",
     "    esac",
-    "    mark 0",
+    '    mark 0 "$2"',
     '    if ! snapshot_take "$running" release "$running" $parts; then',
     `      rm -f ${marker}`,
     `      ${said(`::error::OpsCrew could not save the data on ${where} before changing it (a copy failed, or the disk is too full), so the rollback changed nothing there. ${log}`)} ${folder} >&2`,
     "      exit 1",
     "    fi",
-    "    mark 1",
+    '    mark 1 "$2"',
     '    if [ "$2" = migrations ]; then',
     `      echo ${shellQuote(`OpsCrew saved the data on ${where} before the down migrations change it.`)} >&2`,
     "      exit 0",
@@ -1468,7 +1468,7 @@ export function serverRollbackCommands(plan: DeployPlan, server: string): string
       '[ "$#" -ne 3 ] || [ -z "$2" ] || [ -z "$3" ] || ! image_ref "$2" || ! image_ref "$3"',
     ),
     ...versions,
-    "    if changed; then echo marked; else echo none; fi ;;",
+    `    if changed; then echo "marked $(sed -n 's/^choice=//p' ${marker})"; else echo none; fi ;;`,
     "  back)",
     ...usage(
       "the image it went back to and the one that ran before",

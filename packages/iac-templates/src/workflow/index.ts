@@ -64,6 +64,7 @@ import {
 } from "./shared";
 import { snapshotScript } from "./snapshot-script";
 import {
+  migratedParts,
   releaseSnapshotServers,
   rollbackServers,
   runningServers,
@@ -75,6 +76,7 @@ import {
   DATABASE_CHANGED,
   dockerConfig,
   type EdgeFiles,
+  OTHERS_HELD,
   rollbackCommands,
   runningCommands,
   serverCommands,
@@ -105,6 +107,7 @@ export {
   SCHEDULED_LOG,
 } from "./snapshot-script";
 export {
+  migratedParts,
   releaseSnapshotServers,
   rollbackServers,
   SNAPSHOT_SCRIPT,
@@ -651,10 +654,12 @@ function rollbackStep(
           "      stuck=0",
           "      marked=()",
           "      unknown=()",
+          '      kinds=""',
           `      for server in ${others.join(" ")}; do`,
           `        answer="$(server_sh "$server" marked "$IMAGE" "$RUNNING" < ${script})" || answer=""`,
           '        case "$answer" in',
-          '          marked) marked+=("$server") ;;',
+          // Each one's choice, which says what its copy holds.
+          '          "marked snapshot" | "marked migrations") marked+=("$server"); kinds="$kinds $server:${answer#marked }" ;;',
           "          none) ;;",
           "          *)",
           '            echo "::error::OpsCrew could not tell whether this rollback changed the data on the server $server: it did not answer."',
@@ -663,8 +668,11 @@ function rollbackStep(
           "      done",
           "      failed=()",
           "      if (( ${#marked[@]} + ${#unknown[@]} > 0 )); then",
-          `        ${hold("stop")} || stuck=1`,
-          "        if (( ! stuck )); then",
+          // Without the app stopped, none of their data goes back.
+          `        if ! ${hold("stop")}; then`,
+          "          stuck=1",
+          '          failed=("${marked[@]}")',
+          "        else",
           '          for server in "${marked[@]}"; do',
           `            server_sh "$server" back "$IMAGE" "$RUNNING" < ${script} || failed+=("$server")`,
           "          done",
@@ -935,38 +943,57 @@ function otherServerShell(ctx: RuntimeContext, names: readonly string[]): string
 /**
  * The rollback step's lines when the data on extra servers could not be put back (`$failed`) or
  * their state is unknown (`$unknown`): the app stays stopped, and the message says what state the
- * servers stay in and the way out, which never starts a version on data it doesn't match, by
- * whether the app's server's `.env` names the version the rollback went to (`$IMAGE`):
- * - it does (the start step had switched): `opscrew rollback --to <the version that ran>
- *   --database snapshot` restores, on every server, the copies this run saved under `$RUNNING`;
- * - it doesn't (the change on the other servers stopped before the start step): the app's server
- *   still runs that version on its own data, and each server left over gets
- *   `opscrew restore <hex> --only <service>` for each of its services.
+ * servers stay in and the way out, which never starts a version on data it doesn't match, by what
+ * the app's server's `.env` names:
+ * - the version the rollback went to (`$IMAGE`; the start step had switched): `opscrew rollback
+ *   --to <the version that ran> --database snapshot` restores, on every server, the copies this
+ *   run saved under `$RUNNING`;
+ * - the version that ran (the change stopped before the start step switched): the app's server
+ *   still runs it on its own data, and each server left over gets `opscrew restore <hex> --only
+ *   <service>` for each part its copy holds (`$kinds`: the down migrations' copy holds only the
+ *   databases, {@link migratedParts});
+ * - nothing OpsCrew could read (the app's server didn't answer): both ways out, by what its
+ *   `.env` turns out to name.
  */
 function stuckLines(plan: DeployPlan, reach: Reach, others: readonly string[]): string[] {
   const start = `Start the app by hand (\\\`docker compose start\\\` in its folder; ${runbookFilePath(plan)} has the SSH command) only once the data on every server matches the version its .env names.`;
   const said =
     "::error::The rollback failed, and OpsCrew could not put the data back as it was before the rollback on the app's other servers $left (the messages above say why, and where each copy stays), so the app stays stopped and no version runs on data it doesn't match.";
+  const rollback = `\\\`${opscrew(plan, "rollback")} --to sha256:$hex --database snapshot\\\``;
+  const restores =
+    "run$commands: each puts the copy this run saved before changing anything back on its server";
+  /** One server's restore commands for the parts its copy holds after `choice`. */
+  const branch = (server: string, choice: "snapshot" | "migrations") => {
+    const parts = choice === "snapshot" ? snapshotParts(plan, server) : migratedParts(plan, server);
+    const each = parts.map(
+      (part) => ` \\\`${opscrew(plan, "restore")} $hex --only ${part.name}\\\``,
+    );
+    return `    ${server}:${choice}) commands="$commands${each.join("")}" ;;`;
+  };
   return [
     'left="${failed[*]} ${unknown[*]}"',
     'left="${left# }"; left="${left% }"',
     `env="$(${reach.readRunning})" || env=""`,
     'hex="${RUNNING##*@sha256:}"',
+    'commands=""',
+    "for server in $left; do",
+    // A server that didn't answer: its copy may hold every part.
+    '  case " $kinds " in *" $server:migrations "*) kind=migrations ;; *) kind=snapshot ;; esac',
+    '  case "$server:$kind" in',
+    ...others.flatMap((server) => [
+      branch(server, "snapshot"),
+      ...(rollbackServers(plan, "migrations").includes(server)
+        ? [branch(server, "migrations")]
+        : []),
+    ]),
+    "  esac",
+    "done",
     'if [[ "$env" == "$IMAGE" ]]; then',
-    `  echo "${said} The app's server's .env names the version the rollback went to, its own data may hold that version's snapshot, and its .database.changed marker stays. Once those servers are fixed, run \\\`${opscrew(plan, "rollback")} --to sha256:$hex --database snapshot\\\`: it restores the copies this run saved before changing anything, on every server, and starts that version. ${start} ${reach.stuck}"`,
+    `  echo "${said} The app's server's .env names the version the rollback went to, its own data may hold that version's snapshot, and its .database.changed marker stays. Once those servers are fixed, run ${rollback}: it restores the copies this run saved before changing anything, on every server, and starts that version. ${start} ${reach.stuck}"`,
+    'elif [[ "$env" == "$RUNNING" ]]; then',
+    `  echo "${said} The app's server still runs the version that ran, on its own data as before. Once those servers are fixed, ${restores}. ${start} ${reach.stuck}"`,
     "else",
-    '  commands=""',
-    "  for server in $left; do",
-    '    case "$server" in',
-    ...others.map((server) => {
-      const each = snapshotParts(plan, server).map(
-        (part) => ` \\\`${opscrew(plan, "restore")} $hex --only ${part.name}\\\``,
-      );
-      return `      ${server}) commands="$commands${each.join("")}" ;;`;
-    }),
-    "    esac",
-    "  done",
-    `  echo "${said} The app's server still runs the version that ran, on its own data as before. Once those servers are fixed, run$commands: each puts the copy this run saved before changing anything back on its server. ${start} ${reach.stuck}"`,
+    `  echo "${said} OpsCrew could not reach the app's server either, to read which version its .env names. Once the servers are fixed: if it names the version the rollback went to, run ${rollback}; if it names the version that ran, ${restores}. ${start} ${reach.stuck}"`,
     "fi",
   ];
 }
@@ -1085,7 +1112,8 @@ function forgetHoldStep(reach: Reach): string[] {
     "  run: |",
     "    set -euo pipefail",
     ...reach.prelude,
-    `    ${reach.sh} -s -- forget < "$RUNNER_TEMP/opscrew-hold.sh"`,
+    // The rollback worked: a record left behind doesn't undo it.
+    `    ${reach.sh} -s -- forget < "$RUNNER_TEMP/opscrew-hold.sh" || echo "::warning::The rollback worked, but OpsCrew could not remove the app's server's record that this run held the app (${OTHERS_HELD} in its folder). It stays, and is harmless: opscrew rollback --to reads it only beside a marker of this run on another server, which the next deploy clears."`,
   ];
 }
 

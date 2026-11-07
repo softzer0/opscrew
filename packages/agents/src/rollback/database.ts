@@ -12,6 +12,7 @@ import { listText, OpsCrewError } from "@opscrew/core";
 import {
   appDir,
   DATABASE_CHANGED,
+  migratedParts,
   OTHERS_HELD,
   ROLLBACK_APPROVAL_FILE,
   rollbackApprovalLine,
@@ -235,53 +236,73 @@ function reachFolder(run: RollbackRun, server: string): Promise<AppFolder | unde
 
 /** What a rollback that couldn't put the data on extra servers back left ({@link earlierChange}). */
 export interface EarlierChange {
-  /** The app's `.env` names another version than the running one: its start step had switched. */
+  /** The app's `.env` names the version that rollback went to: its start step had switched. */
   switched: boolean;
-  /** The extra servers whose data it changed, by their markers, in plan order. */
-  servers: string[];
+  /** The extra servers whose data it changed, by their markers, in plan order, with its choice. */
+  servers: { name: string; choice: "snapshot" | "migrations" }[];
+}
+
+/** A line `<name>=<value>` of `text`, or `undefined`. */
+function field(text: string, name: string): string | undefined {
+  return new RegExp(`^${name}=(.*)$`, "m").exec(text)?.[1];
 }
 
 /**
  * What an earlier rollback of `run`'s target left when it stopped with the data on extra servers
  * changed (plan.md D7): the app's server's record that a run held the app for them
- * ({@link OTHERS_HELD}, which a rollback that finished removes) and an extra server's
- * {@link DATABASE_CHANGED} marking its data changed; `undefined` without both, or when this
- * computer can't reach the servers. `running` is the version the environment runs by its label.
+ * ({@link OTHERS_HELD}, which a rollback that finished removes) and the extra servers'
+ * {@link DATABASE_CHANGED} markers of that run, which saved its copy under the running version
+ * (`running`, by the environment's label) and say their data changed. Either the app's `.env`
+ * still names the running version, or it names the version each of those markers went to
+ * (`switched`). `undefined` without them, when this computer can't reach the servers, or when the
+ * files don't tell one rollback's story.
  */
 export async function earlierChange(
   run: RollbackRun,
   running: string,
 ): Promise<EarlierChange | undefined> {
   const servers = otherServers(run.plan);
-  if (servers.length === 0) return undefined;
+  const runningHex = hexOf(running);
+  if (servers.length === 0 || runningHex === undefined) return undefined;
   const app = await (await reachFolder(run, APP_SERVER))?.read([".env", OTHERS_HELD]);
   if (app?.has(OTHERS_HELD) !== true) return undefined;
-  const changed: string[] = [];
+  const marks: { name: string; choice: "snapshot" | "migrations"; target: string }[] = [];
   for (const server of servers) {
     const marker = (await (await reachFolder(run, server))?.read([DATABASE_CHANGED]))?.get(
       DATABASE_CHANGED,
     );
-    if (marker !== undefined && /^changed=1$/m.test(marker)) changed.push(server);
+    if (marker === undefined || field(marker, "changed") !== "1") continue;
+    if (field(marker, "saved") !== runningHex) continue;
+    const choice = field(marker, "choice");
+    if (choice !== "snapshot" && choice !== "migrations") continue;
+    marks.push({ name: server, choice, target: field(marker, "target") ?? "" });
   }
-  if (changed.length === 0) return undefined;
-  const image = /^APP_IMAGE=(.*)$/m.exec(app.get(".env") ?? "")?.[1];
-  const hex = image === undefined ? undefined : hexOf(image);
-  return { switched: hex !== undefined && hex !== hexOf(running), servers: changed };
+  if (marks.length === 0) return undefined;
+  const image = field(app.get(".env") ?? "", "APP_IMAGE");
+  const envHex = image === undefined ? undefined : hexOf(image);
+  const changed = marks.map(({ name, choice }) => ({ name, choice }));
+  if (envHex === runningHex) return { switched: false, servers: changed };
+  if (envHex !== undefined && marks.every((mark) => mark.target === envHex)) {
+    return { switched: true, servers: changed };
+  }
+  return undefined;
 }
 
 /**
  * The hint of a rollback to the running version refused after `earlier` stopped before its start
  * step switched: the app's server still runs that version, and each changed server's copy from
- * before it goes back with a restore of each of its services.
+ * before it goes back with a restore of each part it holds (the down migrations' copy holds only
+ * the databases).
  */
 export function restoreHint(run: RollbackRun, earlier: EarlierChange, running: string): string {
   const hex = hexOf(running) ?? running;
-  const commands = earlier.servers.flatMap((server) =>
-    snapshotParts(run.plan, server).map(
+  const commands = earlier.servers.flatMap(({ name, choice }) =>
+    (choice === "snapshot" ? snapshotParts(run.plan, name) : migratedParts(run.plan, name)).map(
       (part) => `\`opscrew restore${run.flags} ${hex} --only ${part.name}\``,
     ),
   );
-  return `The rollback that failed changed the data on ${listText(earlier.servers.map(serverWords))} before the app switched, so ${run.environment}'s app server still runs this version on its own data. Once each of those servers is fixed, run ${listText(commands)}: each puts the copy that rollback saved before changing anything back on its server.`;
+  const where = listText(earlier.servers.map(({ name }) => serverWords(name)));
+  return `The rollback that failed changed the data on ${where} before the app switched, so ${run.environment}'s app server still runs this version on its own data. Once each of those servers is fixed, run ${listText(commands)}: each puts the copy that rollback saved before changing anything back on its server.`;
 }
 
 /**

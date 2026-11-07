@@ -1467,7 +1467,7 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
       await staging.world.folder.write(".others.held", "4242.1\n");
       await staging.world.folder.write(
         ".database.changed",
-        `target=${staging.hexB}\nsaved=${hexC}\nchanged=1\n`,
+        `target=${staging.hexB}\nsaved=${hexC}\nchanged=1\nchoice=snapshot\n`,
       );
       await staging.world.folder.snapshot(hexC, TAKEN);
       return { ...staging, hexC };
@@ -1497,6 +1497,23 @@ describe.skipIf(!SH_AVAILABLE)("opscrew rollback and the database (US8)", () => 
       await rm(join(world.folder.dir, ".others.held"));
       const usual = await failure(world.run({ to: c.digest, database: "snapshot" }));
       expect(usual.hint).toContain("Name an earlier version with --to");
+      expect(world.github.dispatches).toEqual([]);
+    });
+
+    it("refuses it as usual when the files don't tell that stuck rollback's story", async () => {
+      const { world, b, c, hexB } = await stuckWorld();
+      // .env names a version the marker's rollback didn't go to.
+      await world.folder.write(".env", `APP_IMAGE=ghcr.io/acme/shop@sha256:${"0".repeat(64)}\n`);
+      const other = await failure(world.run({ to: c.digest, database: "snapshot" }));
+      expect(other.hint).toContain("Name an earlier version with --to");
+      // The marker saved the copy under another version than the running one.
+      await world.folder.write(".env", `APP_IMAGE=ghcr.io/acme/shop@${b.digest}\n`);
+      await world.folder.write(
+        ".database.changed",
+        `target=${hexB}\nsaved=${"0".repeat(64)}\nchanged=1\nchoice=snapshot\n`,
+      );
+      const saved = await failure(world.run({ to: c.digest, database: "snapshot" }));
+      expect(saved.hint).toContain("Name an earlier version with --to");
       expect(world.github.dispatches).toEqual([]);
     });
   });

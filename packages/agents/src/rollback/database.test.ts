@@ -30,6 +30,7 @@ import {
   readSections,
   removeDatabaseApproval,
   removeScript,
+  restoreHint,
   writeScript,
 } from "./database";
 import type { RollbackOptions } from "./index";
@@ -556,6 +557,30 @@ describe.skipIf(!SH_AVAILABLE)("the database step with a database on an extra se
       "OpsCrew does not know the address of server data on this computer.",
     );
     expect(await away.app.read(ROLLBACK_APPROVAL_FILE)).toBeUndefined();
+  });
+
+  it("names in the restore hint each part the copy holds: only the databases after the down migrations", async () => {
+    const { run } = await split();
+    const base = run();
+    const queue = {
+      ...base.plan.services[0],
+      name: "queue",
+      kind: "valkey",
+      options: { mode: "queue" },
+      server: "data",
+    };
+    const withQueue: RollbackRun = {
+      ...base,
+      plan: { ...base.plan, services: [...base.plan.services, queue] } as DeployPlan,
+    };
+    const hint = (choice: "snapshot" | "migrations") =>
+      restoreHint(withQueue, { switched: false, servers: [{ name: "data", choice }] }, CURRENT);
+    expect(hint("migrations")).toBe(
+      `The rollback that failed changed the data on the server data before the app switched, so staging's app server still runs this version on its own data. Once each of those servers is fixed, run \`opscrew restore --env staging ${hex(CURRENT)} --only db\`: each puts the copy that rollback saved before changing anything back on its server.`,
+    );
+    expect(hint("snapshot")).toContain(
+      `run \`opscrew restore --env staging ${hex(CURRENT)} --only db\` and \`opscrew restore --env staging ${hex(CURRENT)} --only queue\`:`,
+    );
   });
 
   it("leaves the down migrations' approval on the server data too, which saves its database first (D13)", async () => {

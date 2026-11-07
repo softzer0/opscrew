@@ -227,6 +227,40 @@ describe("the deploy job with extra servers", () => {
       names(off).indexOf("Configure SSH with the pinned host key"),
     );
 
+    // A stuck rollback names a restore of each part the server's copy holds: after the down
+    // migrations, its databases only.
+    const knex = DeployPlanSchema.parse({
+      ...staging,
+      app: {
+        ...staging.app,
+        releaseCommand: "npx knex migrate:latest",
+        migrations: {
+          tool: "knex",
+          status: "npx knex migrate:list",
+          down: "npx knex migrate:down",
+        },
+      },
+      services: [
+        ...staging.services,
+        {
+          ...staging.services[0],
+          name: "queue",
+          kind: "valkey",
+          version: "8",
+          options: { mode: "queue" },
+          server: "data",
+        },
+      ],
+    });
+    const restore = (only: string) => `\\\`opscrew restore --env staging $hex --only ${only}\\\``;
+    const rollbackRun = stepOf(knex, "Roll back to the previous version").run;
+    expect(rollbackRun).toContain(
+      `data:snapshot) commands="$commands ${["db", "docs", "queue"].map(restore).join(" ")}" ;;`,
+    );
+    expect(rollbackRun).toContain(
+      `data:migrations) commands="$commands ${["db", "docs"].map(restore).join(" ")}" ;;`,
+    );
+
     // A schedule alone keeps .running there too (D13), so its snapshots know their version.
     const scheduled = DeployPlanSchema.parse({ ...off, snapshots: { schedule: {} } });
     expect(names(scheduled).filter((name) => added.some((a) => a === name))).toEqual([

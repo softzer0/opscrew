@@ -1244,6 +1244,7 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
         running: script(
           (step) => step.name === "Record the running version on the app's other servers",
         ),
+        forget: script((step) => step.name === "Forget the app's hold for its other servers"),
       };
     };
     const STEPS = stepsOf(plan);
@@ -1667,6 +1668,43 @@ describe.skipIf(!shWorks() || !BASH_WORKS)(
         expect(db("docs")).toBe("docs while A ran\n");
         expect(appStopped()).toBe(true);
         expect(paused()).toBe(false);
+      });
+
+      it("names the marked servers and both ways out when the app's server can't be reached to stop the app", () => {
+        runningB();
+        approve(A);
+        const { common } = deploy(A, "rollback");
+        expect(step(STEPS.others, common).status).toBe(0);
+        // The start step was skipped, and now the app's server doesn't answer.
+        const back = step(STEPS.rollback, { ...common, DOWN: APP_HOST });
+        expect(back.status).toBe(1);
+        expect(back.output).toContain(
+          "on the app's other servers data more (the messages above say why",
+        );
+        expect(back.output).toContain(
+          "OpsCrew could not reach the app's server either, to read which version its .env names.",
+        );
+        expect(back.output).toContain(
+          `if it names the version the rollback went to, run \`opscrew rollback --env staging --to sha256:${B} --database snapshot\`; if it names the version that ran, run \`opscrew restore --env staging ${B} --only db\` \`opscrew restore --env staging ${B} --only docs\`:`,
+        );
+        expect(back.output).not.toContain("still runs the version that ran");
+        // Nothing went back without the app stopped.
+        expect(both()).toEqual(["rows while A ran\n", "docs while A ran\n"]);
+      });
+
+      it("warns, without failing a rollback that worked, when the app's server keeps the record of the hold", () => {
+        runningB();
+        approve(A);
+        const { common } = deploy(A, "rollback");
+        expect(step(STEPS.others, common).status).toBe(0);
+        const kept = step(STEPS.forget, { DOWN: APP_HOST });
+        expect(kept.status, kept.output).toBe(0);
+        expect(kept.output).toContain(
+          "::warning::The rollback worked, but OpsCrew could not remove the app's server's record that this run held the app (.others.held in its folder). It stays, and is harmless",
+        );
+        expect(existsSync(at(".others.held"))).toBe(true);
+        expect(step(STEPS.forget, {}).status).toBe(0);
+        expect(existsSync(at(".others.held"))).toBe(false);
       });
 
       it("puts the data back after a cancel between the change on the other servers and the start step (C)", () => {
