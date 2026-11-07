@@ -15,6 +15,7 @@ import {
   renderRuntimeFiles,
   rollbackCommands,
   runtimeDir,
+  snapshotScript,
   switchCommands,
 } from "@opscrew/iac-templates";
 import { type DeployPlan, DeployPlanSchema } from "@opscrew/plan-schema";
@@ -72,9 +73,14 @@ export function serverStack(plan: DeployPlan, opscrewVersion: string): Map<strin
     cloudflareRanges: CLOUDFLARE_RANGES,
     acmeEmail: "ops@example.com",
   };
+  // The deploy uploads snapshot.sh beside the runtime files; this computer keeps it among them.
+  const snapshot = snapshotScript(plan);
   const files = [
     renderCompose(plan),
     ...renderRuntimeFiles(plan, ctx),
+    ...(snapshot.length === 0
+      ? []
+      : [{ path: `${runtimeDir(plan)}/snapshot.sh`, content: `${snapshot.join("\n")}\n` }]),
     ...renderEdgeSite(plan, ctx),
   ];
   return new Map([...files.map((file) => [file.path, file.content] as const), ...scripts(plan)]);
@@ -148,13 +154,20 @@ const COMPOSE = String.raw`opscrew/runtime/compose\.yaml`;
 const EDGE = String.raw`opscrew/runtime/edge/compose\.yaml`;
 const SITE = String.raw`opscrew/runtime/edge/sites/[\w-]+\.(?:caddy|conf)`;
 const SCRIPT = "(?:switch|rollback) script";
+const SNAPSHOT = String.raw`opscrew/runtime/snapshot\.sh`;
 
 /** The local differences FR-1504 and research.md R4 list, as the lines they change. */
 const LISTED: readonly ListedDifference[] = [
   {
     item: "R4: the scripts run with this computer's POSIX shell (Git Bash and macOS have no flock)",
-    server: new RegExp(`^${SCRIPT}: flock 9$`),
-    local: new RegExp(`^${SCRIPT}: if command -v flock > /dev/null 2>&1; then flock 9; fi$`),
+    server: new RegExp(`^(?:${SCRIPT}|${SNAPSHOT}): flock \\S`),
+    local: new RegExp(
+      `^(?:${SCRIPT}|${SNAPSHOT}): if command -v flock > /dev/null 2>&1; then flock \\S.*; fi$`,
+    ),
+  },
+  {
+    item: "024: no scheduled snapshots on this computer, so no crontab line to remove",
+    server: new RegExp(`^${SCRIPT}: if crontab -l 2> /dev/null \\| grep -q ' # opscrew-snapshots `),
   },
   {
     item: "R4: the data folders become named volumes",
