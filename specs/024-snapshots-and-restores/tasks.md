@@ -153,7 +153,7 @@ description: "Tasks for 024-snapshots-and-restores"
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/connector-ssh-host --filter=@opscrew/agents`
   - Effort: high
 
-- [ ] T2420 [US7] The Portainer rollback restores its pre-release snapshot (plan.md D14), in `packages/agents/src/rollback/**` (+ tests)
+- [ ] T2420 [US7] The Portainer rollback restores its pre-release snapshot (plan.md D14, D19), in `packages/agents/src/rollback/**` and the guard in `packages/iac-templates/src/portainer-target/snapshots.ts` (+ tests)
   - Depends: T2408, T2417
   - Accept: with releases taking snapshots on Portainer, `opscrew rollback --to <v> --database snapshot` offers and restores the target's pre-release snapshot through T2408's Portainer restore, with the same approval and put-back on failure as servers; keep stays the default answer.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents`

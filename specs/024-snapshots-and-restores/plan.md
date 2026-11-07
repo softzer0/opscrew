@@ -277,6 +277,9 @@ of it; Portainer goes through 023's Docker API path and a few scheduled services
     the command is refused, naming `opscrew restore <hex> --only <services>` on each changed server
     (T2408), then starting the app. The stuck message tells the two cases apart.
   - The rollback step stops the app only when the app's server records that data changes began.
+- **D19 (T2420's report):** on Portainer, the rollback's switch runs in the workflow, out of the CLI's reach.
+  - **The guard:** while `/snapshots/.restored` names another image, the stack's `snapshot` one-off fails, so no other version starts on the restored data. That includes the workflow's revert after a failed health check. The CLI writes the file after the restore and removes it once the run succeeds, or after putting the copy back.
+  - **A reviewer:** with a required reviewer on the environment, `--database snapshot` is refused there, because the app would stay stopped until someone approved.
 
 ## Order
 
