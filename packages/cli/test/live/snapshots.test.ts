@@ -250,6 +250,9 @@ describe.skipIf(MISSING.data.length > 0)(
         ).toEqual(expect.arrayContaining([...Object.values(MOVE_SERVICES), KAFKA_SERVICE]));
         expect(staging.storage?.sqlite, "staging's SQLite volume").toBeDefined();
         await provisionAndDeploy("staging's first deploy");
+        // As the guide's next step: verify records the first deploy, after which status reads the
+        // server (its components and snapshots).
+        await run.opscrewOk("verify", ...env);
         version = await envs.runningDigest(STAGING);
         await seedData(run, await exec(), project, kafkaSeeded);
         await writeValue(originOf(health), value);
