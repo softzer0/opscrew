@@ -88,7 +88,10 @@ asks to undo a release:
    - the release command (migrations) doesn't run;
    - so the earlier version must work with the newer schema: a migration that removed or renamed
      something it uses breaks it;
-   - restoring a backup is a separate step, which a rollback doesn't do.
+   - putting data back is a choice of its own: on a server or this computer the rollback asks how
+     to treat the database (the `opscrew-deploy` skill's "Rolling back"), and
+     `npx opscrew restore <id>` puts a snapshot's data back without changing the version (the
+     `opscrew-snapshots` skill).
 2. **Then ask the user to run it in their terminal:** `npx opscrew rollback` goes back to the
    previous version (add `--env <name>` when the app has several environments). It shows the
    version running and the one it goes back to, and asks for approval. `npx opscrew rollback --list`

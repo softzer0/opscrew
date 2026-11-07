@@ -14,12 +14,14 @@ import {
   type PortainerServices,
   type PromoteServices,
   type ProvisionServices,
+  type RestoreServices,
   type RetargetServices,
   type RollbackServices,
   type RunnerGitHubApi,
   type RunnerHostServices,
   type RunSecureOptions,
   type RunVerifyOptions,
+  type ServerSnapshotServices,
   type VpnServices,
 } from "@opscrew/agents";
 import type {
@@ -102,6 +104,12 @@ export interface CliServices {
   runnerHost?: { machine?: RunnerHostServices; github?: RunnerGitHubApi };
   /** The server's shell, own-server, Portainer and Cloudflare fakes for `logs`. */
   logs?: LogServices;
+  /**
+   * The servers' shells and Docker APIs, this computer, Portainer, GitHub's deploy runs, Cloudflare
+   * (an R2 bucket's account), the providers' whole-server snapshots, their prices and the waits of
+   * the health checks for `snapshot` and `restore`.
+   */
+  snapshot?: ServerSnapshotServices & RestoreServices;
   /** The deploy user's shell, host adapter, engine, Cloudflare and own-server fakes for `addon`. */
   addon?: AddonServices;
   /**

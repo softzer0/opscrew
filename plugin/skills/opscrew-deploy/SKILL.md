@@ -130,13 +130,19 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
      /etc/ssh/ssh_host_ed25519_key.pub` in their provider's web console), never approve it for
      them. If the client cannot show the dialog, ask them to run `npx opscrew design` in a
      terminal once. There is one option and no price (they already pay for the server); pass on
-     every warning (too little memory or disk, a tunnel without a Cloudflare domain) and say that
-     OpsCrew cannot turn on backups there, so backups are their responsibility.
+     every warning (too little memory or disk, a tunnel without a Cloudflare domain). There is no
+     provider backup there: OpsCrew backs up the app's data with its snapshots instead, and for
+     data that matters design proposes scheduled snapshots with an encrypted copy off the server
+     (`snapshots.schedule` and `snapshots.offsite` in the plan; see the `opscrew-snapshots`
+     skill). Backing up the server itself stays their responsibility.
    - **Existing Portainer.** There is one option, without a price or sizes: the app and its
      components as stacks in the chosen environment, built for its architecture, with the data in
      named volumes. Say that OpsCrew does not change the host (its firewall, SSH and Portainer's
-     own security stay theirs), that it checks nothing about the host's memory or disk, and that
-     backups of the app's data are their responsibility. OpenSearch and Elasticsearch need a
+     own security stay theirs) and that it checks nothing about the host's memory or disk. The
+     app's data is backed up by OpsCrew's snapshots, in the stack's own snapshots volume; for data
+     that matters design proposes scheduled snapshots (only the services copied while they run)
+     with an encrypted copy off the host (see the `opscrew-snapshots` skill). Backing up the
+     Portainer host itself stays their responsibility. OpenSearch and Elasticsearch need a
      kernel setting on the Docker host (`vm.max_map_count`), which a stack cannot make, so OpsCrew
      does not run them in Portainer: design keeps the app's own (for example a hosted one), and a
      plan that asks for one stops before any change, saying how to make the setting and run the
@@ -444,9 +450,12 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   A snapshot or down migration is approved like a destroy: the user types the app's name, or a
   script gives `--confirm <name>`; never type or pass it for them. Snapshots exist only where
   `deploy.snapshots` is on (every environment but prod, by default; `deploy.keepSnapshots` versions
-  are kept), and need this computer to reach the server. Portainer, the app's own files (SQLite,
-  uploads) and a database on another server keep their data: their snapshots come in a later
-  release.
+  are kept), and need this computer to reach the server. The snapshot taken before each release
+  holds every service with data, the app's SQLite files and the databases on other servers; a
+  service that must stop for its copy (Kafka, RabbitMQ, a search engine…) only when
+  `deploy.snapshotStop` names it. Uploads in object storage are never in a snapshot. To put data
+  back without changing the version, or to take a snapshot before a risky change, follow the
+  `opscrew-snapshots` skill.
 - **This computer.** An environment can run on the user's computer (`localhost`, in Docker, at
   `https://<app>.localhost`). Two steps stay in their terminal: `npx opscrew localhost trust`
   (shows the command that trusts OpsCrew's local certificate authority and asks first;
@@ -530,7 +539,9 @@ infrastructure. Follow these steps in order and keep the user informed in plain 
   never deletes or reinstalls the server: it removes the app and its Cloudflare records after they
   type the app's name, keeps the app's data unless they add `--delete-data`, and reverses
   OpsCrew's own changes to the server only with `--undo-host` (a separate plan they approve).
-  There are no snapshots there: backups are their responsibility. In their existing Portainer it
+  OpsCrew's snapshots of the app's data stay there too unless they add `--delete-data`. On every
+  target, the encrypted copies off the server stay in their bucket, which OpsCrew never deletes
+  (`npx opscrew snapshot offsite off` only stops new uploads). In their existing Portainer it
   removes only what OpsCrew created (the app's stacks, its registry entry, the deploy secrets and
   the Cloudflare resources) after they type the app's name, never Portainer itself or another
   stack, and keeps the app's data volumes unless they add `--delete-data`. A site on Cloudflare's

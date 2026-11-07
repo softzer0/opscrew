@@ -20,12 +20,14 @@ import * as portainer from "./portainer";
 import * as preview from "./preview";
 import * as promote from "./promote";
 import * as provision from "./provision";
+import * as restore from "./restore";
 import * as retarget from "./retarget";
 import * as rollback from "./rollback";
 import * as runner from "./runner";
 import * as scan from "./scan";
 import * as secrets from "./secrets";
 import * as secure from "./secure";
+import * as snapshot from "./snapshot";
 import * as status from "./status";
 import * as verify from "./verify";
 import * as vpn from "./vpn";
@@ -48,6 +50,8 @@ export const ALL_COMMANDS: readonly CommandModule[] = [
   provision,
   promote,
   rollback,
+  snapshot,
+  restore,
   dns,
   domain,
   secure,
