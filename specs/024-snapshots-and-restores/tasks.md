@@ -346,4 +346,4 @@ where a test fixture or the text below does.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew --filter=@opscrew/mcp-server && pnpm lint`
   - Effort: high
 
-- [ ] T2416 The release (lead): `docs/releasing.md`.
+- [x] T2416 The release (lead): `docs/releasing.md`.
