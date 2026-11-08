@@ -114,14 +114,14 @@ secret in any test: `fakeSecret(kind)` and `{{FAKE:<kind>}}` (`@opscrew/core/tes
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents --filter=@opscrew/connector-ssh-host && pnpm lint`
   - Effort: high
 
-- [ ] T2511 [P] [US8] The Cloudflare tokens, the state passphrase and the add-ons
+- [x] T2511 [P] [US8] The Cloudflare tokens, the state passphrase and the add-ons
   - Owns: `packages/agents/src/rotate/infra*.ts`, `packages/agents/src/rotate/addons*.ts`, `packages/agents/src/shared/engine.ts`, `packages/agents/src/shared/secret-files.ts`, `packages/agents/src/secrets/**` (+ tests)
   - Depends: T2502, T2506
   - Accept: plan 8 and 10: `access-token` by an approved `-replace` plan and `tunnel-token` by the Tunnel's secret changed in place through the Cloudflare connector (R11, `packages/connectors/cloudflare/src/**` in Owns for that call), then their copies (own servers in tunnel mode: `module.access`, the Tunnel; Portainer with `redeploy: "cloudflare"`: `module.access` (the webhook's token) and `module.portainer_tunnel`, found by T2505's review); `state-passphrase` by the fallback apply of every state the passphrase encrypts (the app's, storage, backups, the Pages verification), then the file, and every engine call from then on (`shared/engine.ts`, drift, status, destroy) passing `stateKeyName` of the state file as the key's `name` (T2502), proved by a real-engine test of two rotations in a row; `portainer` (`monitoring` and `beszel`: T2519); `recovery-key` (today's code moved, `opscrew secrets rotate` removed); and the deploy key's object at the provider (`hcloud_ssh_key.deploy`, `digitalocean_ssh_key.deploy`) replaced in the deploy-key rotation's own approved plan once the new key proved itself, so the next provision plans no replacement (T2508's review; the server keeps its keys: `ssh_keys` is in `ignore_changes`).
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/agents && pnpm lint`
   - Effort: xhigh
 
-- [ ] T2519 [P] [US8] Monitoring and Beszel (split from T2511, whose report found they need provision's add-on paths)
+- [x] T2519 [P] [US8] Monitoring and Beszel (split from T2511, whose report found they need provision's add-on paths)
   - Owns: `packages/agents/src/rotate/addons-monitoring*.ts`, `packages/agents/src/rotate/addons-beszel*.ts`, `packages/agents/src/provision/monitoring.ts`, `packages/agents/src/addons/**`, the add-on step builders in `packages/connectors/ssh-host/src/**` (+ tests)
   - Depends: T2506
   - Accept: plan 10:
