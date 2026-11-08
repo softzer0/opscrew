@@ -609,8 +609,9 @@ Each wave is merged, gated and pushed before the next starts.
 ## Plain PHP apps (US8, added 2026-11-08)
 
 The founder's request: teach OpsCrew plain PHP apps and release it as 0.2.6 (research R10, spec
-US8, FR-1335–FR-1342, SC-1309). Waves: T1319 → {T1320, T1321} → {T1322, T1323} → T1324 → T1325
-(lead) → T1326 (lead).
+US8, FR-1335–FR-1342, SC-1309). Waves: T1319 → {T1320, T1321} → {T1322, T1323, T1327} → T1324 → T1325
+(lead) → T1326 (lead). T1327 (Laravel) joined on 2026-11-08 from a spike on a Laravel app with Sail,
+Horizon, PostgreSQL and Redis.
 
 - [x] T1319 [US8] The schema of a plain PHP app's facts and plan
   - Owns: `packages/plan-schema/src/**` (+ tests)
@@ -645,6 +646,7 @@ US8, FR-1335–FR-1342, SC-1309). Waves: T1319 → {T1320, T1321} → {T1322, T1
     - **Web root:** with `app.build.webRoot`, `railpack prepare` gets `--env RAILPACK_PHP_ROOT_DIR=<app root>/<webRoot>` and the build reads it as a BuildKit secret, as the runtime version setting is; without it, nothing changes.
     - **The app folder accepts new files:** with `webRoot`, the seal gives the app root mode `1777` (as `/tmp`): uid 10001 can create a file there (an installer's settings file, through a temporary file and a rename) but cannot change or remove the image's files. The Laravel storage link (`public/storage`) is made only without `webRoot`.
     - **The kept folder:** `storage.files.dir` is handled wherever SQLite's folder is: given to the app's user in every builder's seal; a named volume (its own name, not `sqlite`) mounted in the web process, every worker and the cron, on servers and in Portainer stacks; a part of every snapshot and restore (server script and Portainer); named in the runbook. A plan without it renders exactly as today.
+    - **The PHP drivers:** a PHP app built by Railpack gets `RAILPACK_PHP_EXTENSIONS` (to `prepare` and as a BuildKit secret) with the drivers its plan's services and external services need: PostgreSQL `pdo_pgsql`, MySQL and MariaDB `pdo_mysql`, Valkey, Redis and Dragonfly `redis`, MongoDB `mongodb`. Railpack 0.42 installs `pdo_pgsql` only when `DB_CONNECTION=pgsql` is in its own environment and `redis` never, so a Laravel app on these services is built without its driver today (a spike, 2026-11-08). Without such a service, nothing changes.
     - **The database's settings:** the catalog gives PostgreSQL, MySQL and MariaDB their split settings (host, port, database, user, and the password as a secret reference), exported for agents.
     - **Tests:** each case, snapshots updated only where these change them; a Docker check (`OPSCREW_DOCKER_TESTS=1`) of a sealed Railpack PHP image: as uid 10001, creating and renaming a file in the app root works, changing an image file fails.
   - Verify: `pnpm turbo run typecheck test --filter=@opscrew/iac-templates && pnpm lint`
@@ -682,6 +684,19 @@ US8, FR-1335–FR-1342, SC-1309). Waves: T1319 → {T1320, T1321} → {T1322, T1
     - **The guide:** a plain PHP app (builders: served from `public/`, the app folder accepting new files and why such a file lasts until the next deploy); the split settings (databases); the kept folder (components, snapshots); `cron.php` (workers and cron); where the user reads the database's password for an installer that asks for it.
   - Verify: `pnpm turbo run typecheck test --filter=opscrew && pnpm lint`, and `OPSCREW_DOCKER_TESTS=1` for the example
   - Effort: medium
+
+- [ ] T1327 [US8] [P] Laravel apps as they are built
+  - Owns: `packages/detect/src/**` (+ tests, fixtures), `examples/laravel-app/expected.json`
+  - Reads: T1320's changes (`env.ts` `extractPhpEnvReads`, `detect.ts`)
+  - Depends: T1320
+  - Accept:
+    - **Sail is for development:** a Laravel app with `laravel/sail` in `require-dev` and Sail's runtime Dockerfile (`docker/<version>/Dockerfile`, Sail's own: its `start-container` and supervisord) does not get it as its Dockerfile, nor the port of its `EXPOSE` (80): it is built by Railpack on Laravel's port as today without Sail. A Dockerfile at the root still counts.
+    - **Defaults in PHP code for Laravel too:** T1320's scan runs for Laravel apps (`config/*.php` and the rest outside `vendor/`), so `env('NAME', default)` makes a `.env.example` variable optional.
+    - **Laravel's uploads are kept:** a Laravel app gets `files: { dir: "storage/app" }` (its local disk; SQLite's `storage/database` stays apart).
+    - **Health routes in PHP routes:** `Route::get('/up' | '/health' | '/healthz' | '/ping', …)` in `bootstrap/app.php` or `routes/*.php` gives the health endpoint, as `health: '/up'` does.
+    - **Tests:** each rule; `examples/laravel-app/expected.json` updated for what these change.
+  - Verify: `pnpm turbo run typecheck test --filter=@opscrew/detect && pnpm lint`
+  - Effort: high
 
 - [ ] T1325 [US8] Live: `examples/php-plain-mysql` on Hetzner (lead; SC-1309)
   - Through init, analyze, interview, design, adapt, provision and verify with no edit to an OpsCrew file; only `public/` served; it reaches MySQL; a second deploy keeps `storage/`; its cron runs.
